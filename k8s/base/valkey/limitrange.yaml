@@ -1,0 +1,21 @@
+# Default container requests for the redis-system namespace.
+#
+# Lives WITH the valkey component (not in base/limit-ranges-system.yaml)
+# because only this kustomization creates the redis-system namespace —
+# a LimitRange referencing a namespace outside its own render makes the
+# apply fail for any consumer that doesn't also include valkey (the
+# local dev overlay doesn't; observed 2026-06-07: cold `local.sh up`
+# aborted before migrations + seed).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: system-limit-range
+  namespace: redis-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 10m
+        memory: 32Mi

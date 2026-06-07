@@ -167,17 +167,8 @@ spec:
       defaultRequest:
         cpu: 10m
         memory: 32Mi
----
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: system-limit-range
-  namespace: redis-system
-  labels:
-    app.kubernetes.io/part-of: hosting-platform
-spec:
-  limits:
-    - type: Container
-      defaultRequest:
-        cpu: 10m
-        memory: 32Mi
+# NOTE: the redis-system LimitRange moved to k8s/base/valkey/limitrange.yaml
+# (2026-06-07). Only the valkey component creates the redis-system namespace,
+# and the dev overlay does not include valkey — keeping the LimitRange here
+# made every local `kubectl apply` fail with `namespaces "redis-system" not
+# found`, aborting cold-start before migrations + seed ran.

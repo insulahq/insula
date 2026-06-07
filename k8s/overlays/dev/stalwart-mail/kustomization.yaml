@@ -10,8 +10,18 @@
 #
 # Differences from the base:
 #   1. stalwart-mail Service: LoadBalancer → NodePort (DinD has no LB)
-#   2. NetworkPolicy deleted (DinD k3s has no NetworkPolicy enforcer)
-#   3. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
+#   2. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
+#
+# NetworkPolicies are kept AS-IS from the base (2026-06-07). The old
+# "NetworkPolicy deleted — DinD k3s has no NetworkPolicy enforcer"
+# patch rested on a wrong assumption: k3s ships kube-router's netpol
+# controller, which DOES enforce (and REJECTs instead of Calico's
+# DROP, so denials show up as ECONNREFUSED). Deleting only the main
+# stalwart-mail policy while the newer allow-{bulwark,haproxy,
+# rewriter}-to-stalwart policies still applied left the pod in
+# whitelist mode — platform-api could not reach stalwart-mgmt:8080
+# and every JMAP provisioning call failed. The base policy already
+# allows mail ports + :8080 from anywhere, so dev needs no exception.
 #
 # 2026-05-13 (Phase 5 of mail-arch re-audit): removed the stale mail-db
 # CNPG Cluster patch — Stalwart 0.16 uses embedded RocksDB; there is no
@@ -78,17 +88,10 @@ patches:
       kind: Service
       name: stalwart-mail
 
-  # Remove NetworkPolicy — DinD k3s has no NP enforcer
-  - patch: |-
-      $patch: delete
-      apiVersion: networking.k8s.io/v1
-      kind: NetworkPolicy
-      metadata:
-        name: stalwart-mail
-        namespace: mail
-    target:
-      kind: NetworkPolicy
-      name: stalwart-mail
+  # NOTE: the NetworkPolicy delete-patch that lived here was removed on
+  # 2026-06-07 — see the header comment. k3s DOES enforce NetworkPolicy
+  # (kube-router), and deleting only the main policy while the newer
+  # allow-* policies stayed broke platform-api → stalwart-mgmt.
 
   # NOTE: the mail-db CNPG Cluster patch that lived here was deleted on
   # 2026-05-13 — Stalwart 0.16 uses embedded RocksDB on the
