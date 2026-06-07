@@ -7,7 +7,7 @@ site_description: >-
   Insula is an open-source Kubernetes web-hosting platform — a modern Plesk
   replacement with tenant isolation, integrated mail, backups, and one-command
   installs on your own servers.
-site_url: https://insulahq.github.io/insula/
+site_url: https://insulahq.github.io/
 repo_url: https://github.com/insulahq/insula
 repo_name: insulahq/insula
 edit_uri: edit/main/documentation/docs/
