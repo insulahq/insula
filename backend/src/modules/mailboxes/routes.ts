@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
+import crypto from 'node:crypto';
 import { eq, and, desc, lt, sql, or, ilike } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { createMailboxSchema, updateMailboxSchema, mailboxAccessSchema } from '@insula/api-contracts';
-import { mailboxes, tenants, emailDomains, domains } from '../../db/schema.js';
+import { mailboxes, tenants, emailDomains, domains, auditLogs } from '../../db/schema.js';
 import * as service from './service.js';
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -139,6 +140,29 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const created = await service.createMailbox(app.db, tenantId, emailDomainId, parsed.data);
+
+      // Audit the auto-issued "Initial" login password for per-credential
+      // forensic completeness (the explicit /login-passwords route audits
+      // its own creates; mirror that here). Never the secret — label + id.
+      if (created.initialLoginPassword) {
+        const u = request.user as { sub?: string; role?: string } | undefined;
+        await app.db.insert(auditLogs).values({
+          id: crypto.randomUUID(),
+          tenantId,
+          actorId: u?.sub ?? 'system',
+          actorType: 'user',
+          actionType: 'mailbox.login_password.create',
+          resourceType: 'mailbox',
+          resourceId: created.id,
+          changes: {
+            actorRole: u?.role ?? 'unknown',
+            credentialId: created.initialLoginPassword.id,
+            label: created.initialLoginPassword.label,
+            source: 'mailbox.create',
+          },
+        });
+      }
+
       reply.status(201).send(success(created));
     });
 

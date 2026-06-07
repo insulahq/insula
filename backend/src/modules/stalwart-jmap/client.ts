@@ -495,6 +495,74 @@ export async function dkimSignatureSet(params: {
   );
 }
 
+// ── App passwords (a.k.a. "login passwords") ──────────────────────────────────
+//
+// Stalwart "AppPassword" registry objects are per-account secondary
+// credentials: the server generates the secret (returned ONCE on create,
+// masked as "****" on every subsequent get), and they authenticate
+// anywhere the primary password does (IMAP/SMTP/POP3/JMAP/DAV). The
+// platform surfaces them as "login passwords" — the human-facing
+// credential set for a mailbox. Same JMAP wire as DkimSignature
+// (capability urn:stalwart:jmap); accountId = the mailbox's
+// stalwart_principal_id. There is NO REST endpoint for these in v0.16.5.
+
+/**
+ * Metadata for a Stalwart AppPassword. The `secret` is masked ("****")
+ * on /get — the cleartext is only ever returned inside the /set `created`
+ * entry, once.
+ */
+export interface StalwartAppPasswordRow {
+  readonly id: string;
+  readonly description?: string;
+  readonly createdAt?: string;
+  readonly expiresAt?: string | null;
+  /** Map of allowed IP/CIDR → true. Empty object = unrestricted. */
+  readonly allowedIps?: Record<string, boolean>;
+}
+
+interface XAppPasswordGetResponse {
+  readonly accountId: JmapAccountId;
+  readonly list?: readonly StalwartAppPasswordRow[];
+}
+
+/** `x:AppPassword/get` — pass `ids: null` (default) to list all for the account. */
+export async function appPasswordGet(params: {
+  accountId: JmapAccountId;
+  ids?: readonly string[] | null;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<readonly StalwartAppPasswordRow[]> {
+  const { accountId, ids, baseUrl, env } = params;
+  const res = await _xCall<XAppPasswordGetResponse>(
+    JMAP_STALWART,
+    'x:AppPassword/get',
+    { accountId, ids: ids ?? null },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+/** `x:AppPassword/set` — create and/or destroy app-password objects. */
+export async function appPasswordSet(params: {
+  accountId: JmapAccountId;
+  create?: Record<string, Record<string, unknown>>;
+  destroy?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartAppPasswordRow & { readonly secret?: string }>> {
+  const { accountId, create, destroy, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartAppPasswordRow & { readonly secret?: string }>>(
+    JMAP_STALWART,
+    'x:AppPassword/set',
+    {
+      accountId,
+      ...(create ? { create } : {}),
+      ...(destroy ? { destroy } : {}),
+    },
+    baseUrl, env,
+  );
+}
+
 /**
  * `x:Account/query` — search accounts by filter.
  * Stalwart accepts `{ name }`, `{ domainId }`, etc. on the filter.

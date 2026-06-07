@@ -78,7 +78,6 @@ describe('recreateDriftItemEmpty: mailbox kind', () => {
     const mbRow = {
       id: 'mb-1',
       fullAddress: 'jane@xx.staging.example.test',
-      passwordHash: '$2b$10$placeholder',
       emailDomainId: 'ed-1',
     };
     const domainRow = { id: 'ed-1', stalwartDomainId: 'd-new' };
@@ -120,7 +119,6 @@ describe('recreateDriftItemEmpty: mailbox kind', () => {
     const mbRow = {
       id: 'mb-2',
       fullAddress: 'bob@orphan.example',
-      passwordHash: '$2b$10$placeholder',
       emailDomainId: 'ed-2',
     };
     const domainRow = { id: 'ed-2', stalwartDomainId: null }; // parent ALSO drifting
@@ -151,7 +149,6 @@ describe('recreateDriftItemEmpty: mailbox kind', () => {
     const mbRow = {
       id: 'mb-3',
       fullAddress: 'alice@x.example',
-      passwordHash: '$2b$10$placeholder',
       emailDomainId: 'ed-3',
     };
     const domainRow = { id: 'ed-3', stalwartDomainId: 'd-ok' };

@@ -106,7 +106,7 @@ describe('createMailbox', () => {
     selectCallIndex = 0;
   });
 
-  it('should create a mailbox and hash the password', async () => {
+  it('creates a mailbox with NO stored password hash (ADR-049 generate-and-forget)', async () => {
     const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
     const planRow = { planLimit: 50, override: null };
@@ -134,12 +134,16 @@ describe('createMailbox', () => {
       db as never,
       'c1',
       'ed1',
-      { local_part: 'info', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' },
+      { local_part: 'info', quota_mb: 1024, mailbox_type: 'mailbox' },
     );
 
     expect(result.fullAddress).toBe('info@example.com');
     expect(result).not.toHaveProperty('passwordHash');
-    expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).toHaveBeenCalled();
+    // The inserted row carries a NULL password_hash — nothing stored.
+    const insertedRow = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0][0];
+    expect(insertedRow.passwordHash).toBeNull();
+    // No Stalwart in unit tests → no principal → no auto-issued login pw.
+    expect(result.initialLoginPassword).toBeNull();
   });
 
   it('should enforce tenant mailbox limit from the plan', async () => {
@@ -152,7 +156,7 @@ describe('createMailbox', () => {
     const db = createMockDb();
 
     await expect(
-      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' }),
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', quota_mb: 1024, mailbox_type: 'mailbox' }),
     ).rejects.toMatchObject({
       code: 'CLIENT_MAILBOX_LIMIT_REACHED',
       status: 409,
@@ -171,7 +175,7 @@ describe('createMailbox', () => {
     const db = createMockDb();
 
     await expect(
-      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' }),
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'test', quota_mb: 1024, mailbox_type: 'mailbox' }),
     ).rejects.toMatchObject({
       code: 'CLIENT_MAILBOX_LIMIT_REACHED',
       status: 409,
@@ -196,7 +200,7 @@ describe('createMailbox', () => {
     const db = createMockDb();
 
     await expect(
-      createMailbox(db as never, 'c1', 'ed1', { local_part: 'info', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' }),
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'info', quota_mb: 1024, mailbox_type: 'mailbox' }),
     ).rejects.toMatchObject({
       code: 'DUPLICATE_ENTRY',
       status: 409,
@@ -208,7 +212,7 @@ describe('createMailbox', () => {
     const db = createMockDb();
 
     await expect(
-      createMailbox(db as never, 'c1', 'missing-ed', { local_part: 'info', password: 'SecurePass123!', quota_mb: 1024, mailbox_type: 'mailbox' }),
+      createMailbox(db as never, 'c1', 'missing-ed', { local_part: 'info', quota_mb: 1024, mailbox_type: 'mailbox' }),
     ).rejects.toMatchObject({
       code: 'EMAIL_DOMAIN_NOT_FOUND',
       status: 404,
@@ -253,8 +257,7 @@ describe('getMailbox', () => {
 });
 
 describe('updateMailbox', () => {
-  it('should rehash password if provided (already-synced mailbox path)', async () => {
-    // stalwartPrincipalId set → JMAP-PATCH path, NOT orphan-recovery path.
+  it('updates display name (ADR-049: no password field anymore)', async () => {
     const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
     const updated = { ...mailbox, displayName: 'Updated' };
 
@@ -263,7 +266,6 @@ describe('updateMailbox', () => {
     const db = createMockDb();
 
     const result = await updateMailbox(db as never, 'c1', 'mb1', {
-      password: 'NewPassword123!',
       display_name: 'Updated',
     });
 
@@ -271,45 +273,40 @@ describe('updateMailbox', () => {
     expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).toHaveBeenCalled();
   });
 
-  it('orphan recovery: stalwartPrincipalId NULL + password set → tries JMAP-create + completes', async () => {
-    // 2026-05-06 drift recovery: a mailbox row that exists in the
-    // platform DB but has no Stalwart counterpart (e.g. after a
-    // Stalwart data wipe — historically mail-pg, post-2026-05-12
-    // the RocksDB PVC) gets re-created in Stalwart on the operator's
-    // next "Reset password" action. The platform DB bcrypt update
-    // happens UNCONDITIONALLY first; the JMAP-create is best-effort
-    // (a failure logs a warning but does not fail the operation).
-    //
-    // In unit tests there's no mail stack — getJmapAccountId throws,
-    // syncOrphanMailboxToStalwart catches and returns null, the
-    // platform-DB update completes, the function returns the row.
-    const orphanMailbox = {
-      id: 'mb-orphan-1',
-      tenantId: 'c1',
-      emailDomainId: 'ed1',
-      localPart: 'john',
-      fullAddress: 'john@x.staging.example.test',
-      displayName: 'John',
-      quotaMb: 1024,
-      stalwartPrincipalId: null,  // ← orphan
-    };
-    const updated = { ...orphanMailbox, stalwartPrincipalId: null };
-    // Selects in order:
-    //   1) getMailbox             → orphanMailbox
-    //   2) syncOrphanMailboxToStalwart → emailDomain lookup (will be empty,
-    //      but the function returns null without throwing)
-    //   3) final select after update → updated
-    selectResults = [[orphanMailbox], [], [updated]];
+  it('updates quota without touching credentials', async () => {
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
+    const updated = { ...mailbox, quotaMb: 2048 };
+
+    selectResults = [[mailbox], [updated]];
     const db = createMockDb();
 
-    const result = await updateMailbox(db as never, 'c1', 'mb-orphan-1', {
-      password: 'NewPlaintext-12345',
-    });
+    const result = await updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 2048 });
 
-    expect(result.stalwartPrincipalId).toBeNull();
-    // The platform-DB password update IS called even when JMAP recovery
-    // is skipped (operator's password change is the source of truth).
-    expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).toHaveBeenCalled();
+    expect(result.quotaMb).toBe(2048);
+    const setArg = (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mock.results[0].value.set.mock.calls[0][0];
+    expect(setArg).not.toHaveProperty('passwordHash');
+  });
+
+  it('syncs the quota to Stalwart as bytes (MB × 1024²) when the mailbox is provisioned', async () => {
+    // Override the default (rejecting) JMAP mock so getJmapAccountId
+    // resolves and the quota patch path runs.
+    const jmap = await import('../stalwart-jmap/client.js');
+    (jmap.getJmapSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      primaryAccounts: { 'urn:ietf:params:jmap:principals': 'acct-1' },
+    });
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
+    const updated = { ...mailbox, quotaMb: 2048 };
+    selectResults = [[mailbox], [updated]];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 2048 });
+
+    expect(jmap.updatePrincipal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'sp-existing-1',
+        patch: { 'quota/storage': 2048 * 1024 * 1024 },
+      }),
+    );
   });
 });
 

@@ -1,9 +1,13 @@
 import { z } from 'zod';
 import { paginatedResponseSchema } from './shared.js';
+import { createLoginPasswordResultSchema } from './login-passwords.js';
 
+// No `password` field: a mailbox's human-facing credentials are "login
+// passwords" (Stalwart app passwords). On create the backend mints a
+// hidden, never-shown primary secret and auto-issues the first login
+// password (returned once as `initialLoginPassword`). See ADR-049.
 export const createMailboxSchema = z.object({
   local_part: z.string().min(1).max(64).regex(/^[a-zA-Z0-9._-]+$/, 'Invalid mailbox name'),
-  password: z.string().min(8).max(128),
   display_name: z.string().max(255).optional(),
   quota_mb: z.number().int().min(50).max(102400).default(1024),
   mailbox_type: z.enum(['mailbox', 'forward_only']).default('mailbox'),
@@ -11,8 +15,8 @@ export const createMailboxSchema = z.object({
 
 export type CreateMailboxInput = z.infer<typeof createMailboxSchema>;
 
+// No `password` field — credentials are managed via login passwords.
 export const updateMailboxSchema = z.object({
-  password: z.string().min(8).max(128).optional(),
   display_name: z.string().max(255).optional(),
   quota_mb: z.number().int().min(50).max(102400).optional(),
   status: z.enum(['active', 'disabled']).optional(),
@@ -39,6 +43,19 @@ export const mailboxResponseSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
 });
+
+/**
+ * Create response = the mailbox + the auto-issued first login password,
+ * whose `secret` is shown ONCE here. `initialLoginPassword` is null when
+ * the mailbox couldn't be provisioned to the mail server yet (e.g. the
+ * domain isn't enabled) — the operator issues one later from the
+ * mailbox's Login passwords section.
+ */
+export const createMailboxResultSchema = mailboxResponseSchema.extend({
+  initialLoginPassword: createLoginPasswordResultSchema.nullable(),
+});
+
+export type CreateMailboxResult = z.infer<typeof createMailboxResultSchema>;
 
 export type MailboxResponse = z.infer<typeof mailboxResponseSchema>;
 

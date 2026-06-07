@@ -1,0 +1,11 @@
+-- 0052: mailboxes.password_hash → nullable (Login Passwords, ADR-049)
+--
+-- A mailbox's human-facing credentials are now "login passwords"
+-- (Stalwart app passwords). On create the backend mints a random
+-- primary secret, sets it in Stalwart, and stores NOTHING platform-side
+-- (generate-and-forget) — so new mailbox rows have a NULL password_hash.
+--
+-- Existing rows keep their stored hash (backward compatible; their
+-- primary still works until the operator transitions them to login
+-- passwords). No backfill.
+ALTER TABLE mailboxes ALTER COLUMN password_hash DROP NOT NULL;

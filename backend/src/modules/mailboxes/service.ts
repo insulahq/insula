@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import bcrypt from 'bcrypt';
 import { eq, and } from 'drizzle-orm';
 import { mailLogger } from '../../shared/mail-logger.js';
 
@@ -16,10 +15,10 @@ import {
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
-import type { CreateMailboxInput, UpdateMailboxInput } from '@insula/api-contracts';
+import { issueLoginPasswordForPrincipal } from '../login-passwords/service.js';
+import type { CreateMailboxInput, UpdateMailboxInput, CreateMailboxResult } from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
 
-const BCRYPT_ROUNDS = 12;
 
 // ── Stalwart JMAP helpers ─────────────────────────────────────────────────────
 
@@ -158,8 +157,12 @@ export async function createMailbox(
     );
   }
 
-  // 5. Hash password
-  const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
+  // 5. Mint a hidden primary secret (ADR-049 "generate-and-forget"):
+  // the account needs a valid primary credential in Stalwart, but no
+  // human ever sees or types it and we store NOTHING platform-side
+  // (passwordHash stays null). The human-facing credentials are the
+  // login passwords issued below + on the mailbox detail page.
+  const hiddenPrimarySecret = crypto.randomBytes(24).toString('base64url');
 
   // 5b. Provision mailbox in Stalwart via JMAP Principal/set.
   //     Code-review HIGH-1 fix (2026-05-03): use compensating cleanup on
@@ -195,15 +198,17 @@ export async function createMailbox(
         // externally reachable). Follow-up: pass `passwordHash` once
         // hashed-secret IMAP login is proven on staging.
         const { accountSet } = await import('../stalwart-jmap/client.js');
-        const credentials: Record<string, unknown> = {};
-        if (input.password) {
-          credentials['0'] = {
+        // Always set the hidden primary credential so the account is a
+        // normal, valid Stalwart user (login passwords are SECONDARY
+        // credentials layered on top).
+        const credentials: Record<string, unknown> = {
+          '0': {
             '@type': 'Password',
-            secret: input.password,
+            secret: hiddenPrimarySecret,
             allowedIps: {},
             expiresAt: null,
-          };
-        }
+          },
+        };
         const xAccountResult = await accountSet({
           accountId,
           baseUrl: process.env.STALWART_MGMT_URL,
@@ -213,7 +218,7 @@ export async function createMailbox(
                 '@type': 'User',
                 name: input.local_part,
                 domainId: emailDomain.stalwartDomainId,
-                ...(Object.keys(credentials).length > 0 ? { credentials } : {}),
+                credentials,
                 ...(input.display_name ? { description: input.display_name } : {}),
               },
             },
@@ -259,7 +264,8 @@ export async function createMailbox(
       tenantId,
       localPart: input.local_part,
       fullAddress,
-      passwordHash,
+      // ADR-049: generate-and-forget — no platform-side primary hash.
+      passwordHash: null,
       displayName: input.display_name ?? null,
       quotaMb: input.quota_mb,
       mailboxType: input.mailbox_type,
@@ -283,13 +289,36 @@ export async function createMailbox(
     throw dbErr;
   }
 
-  // 7. Return created mailbox without passwordHash
+  // 7. Auto-issue the first login password ("Initial") so the operator
+  // has a credential to hand the user immediately — no dead account.
+  // Best-effort: if the mailbox isn't provisioned to Stalwart yet (no
+  // principal id) or the issue fails, return null and let the operator
+  // create one from the Login passwords section. The secret is shown
+  // ONCE here (in the create response) and never stored.
+  let initialLoginPassword: CreateMailboxResult['initialLoginPassword'] = null;
+  if (stalwartPrincipalId) {
+    try {
+      initialLoginPassword = await issueLoginPasswordForPrincipal(
+        stalwartPrincipalId as JmapAccountId,
+        { label: 'Initial' },
+      );
+    } catch (err) {
+      log.warn({
+        mailboxId: id,
+        err: err instanceof Error ? err.message : String(err),
+      }, 'createMailbox: initial login password issue failed (operator can create one from the mailbox)');
+    }
+  }
+
+  // 8. Return created mailbox (without passwordHash) + the one-time secret.
   const [created] = await db
     .select(mailboxColumns)
     .from(mailboxes)
     .where(eq(mailboxes.id, id));
 
-  return created;
+  // Date fields serialize to ISO strings via the JSON response (the
+  // CreateMailboxResult wire type) — same as every other mailbox route.
+  return { ...created, initialLoginPassword };
 }
 
 export async function listMailboxes(
@@ -324,98 +353,6 @@ export async function getMailbox(
   return record;
 }
 
-/**
- * Drift recovery (origin: 2026-05-06): JMAP-create an orphaned mailbox in Stalwart.
- *
- * Used by `updateMailbox` when the operator sets a new password on a
- * mailbox whose `stalwart_principal_id` is null — typically a leftover
- * from a Stalwart data wipe where the platform DB row survived but
- * Stalwart's Account row was lost. Returns the new Stalwart principal
- * id, or null if Stalwart isn't reachable / not configured / the
- * email-domain itself is also orphan (no `stalwart_domain_id` to
- * attach the account to).
- *
- * Best-effort by design: failures surface as the caller's logged warning,
- * not a transaction abort. The platform-DB bcrypt is updated independently.
- */
-export async function syncOrphanMailboxToStalwart(
-  db: Database,
-  existingMailbox: { id: string; emailDomainId: string; localPart: string; displayName: string | null; quotaMb: number },
-  plaintextPassword: string,
-): Promise<string | null> {
-  // Need the email_domain's stalwart_domain_id to attach the account to.
-  const [emailDomain] = await db
-    .select()
-    .from(emailDomains)
-    .where(eq(emailDomains.id, existingMailbox.emailDomainId));
-
-  if (!emailDomain) {
-    log.warn({ mailboxId: existingMailbox.id }, 'syncOrphanMailboxToStalwart: email_domain row missing');
-    return null;
-  }
-  if (!emailDomain.stalwartDomainId) {
-    log.warn({
-      mailboxId: existingMailbox.id,
-      emailDomainId: emailDomain.id,
-    }, 'syncOrphanMailboxToStalwart: email_domain has no stalwartDomainId — cannot attach account. Re-run enableEmailForDomain first.');
-    return null;
-  }
-
-  const accountId = await getJmapAccountId();
-  if (!accountId) {
-    log.info({ mailboxId: existingMailbox.id }, 'syncOrphanMailboxToStalwart: no JMAP account id (Stalwart unreachable?) — skipping');
-    return null;
-  }
-
-  const { accountSet } = await import('../stalwart-jmap/client.js');
-  const result = await accountSet({
-    accountId,
-    baseUrl: process.env.STALWART_MGMT_URL,
-    request: {
-      create: {
-        'orphan-recovery': {
-          '@type': 'User',
-          name: existingMailbox.localPart,
-          domainId: emailDomain.stalwartDomainId,
-          credentials: {
-            '0': {
-              '@type': 'Password',
-              secret: plaintextPassword,
-              allowedIps: {},
-              expiresAt: null,
-            },
-          },
-          ...(existingMailbox.displayName ? { description: existingMailbox.displayName } : {}),
-          // NOTE: deliberately NOT setting `quotas` at create time —
-          // Stalwart 0.16's `quotas` field is `map<enum StorageQuota, ...>`
-          // and JSON's lowercase keys (e.g. {"storage": ...}) don't match
-          // the enum's TitleCase variant names. The existing createMailbox
-          // path (above in this file) also omits quotas at create. To
-          // sync quota into Stalwart after the orphan-recovery create
-          // succeeds, the operator can issue a follow-up PATCH; that
-          // path uses Principal/set with `quota/storage` (forward-slash
-          // path patch, not enum-keyed map) which IS the documented
-          // shape.
-        },
-      },
-    },
-  });
-
-  const created = result.created?.['orphan-recovery'];
-  const notCreated = result.notCreated?.['orphan-recovery'];
-  if (notCreated) {
-    throw new ApiError(
-      'MAIL_SERVER_ERROR',
-      `Stalwart x:Account/set rejected create during orphan recovery: ${notCreated.description ?? notCreated.type}`,
-      502,
-      { type: notCreated.type },
-      'Likely the local_part collides with an existing account in Stalwart (created out-of-band). Inspect with stalwart-cli query Account.',
-    );
-  }
-  const newId = (created as { id?: string } | undefined)?.id;
-  return typeof newId === 'string' ? newId : null;
-}
-
 export async function updateMailbox(
   db: Database,
   tenantId: string,
@@ -428,9 +365,8 @@ export async function updateMailbox(
 
   const updateData: Record<string, unknown> = {};
 
-  if (input.password !== undefined) {
-    updateData.passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
-  }
+  // Password is no longer settable here — credentials are managed via
+  // login passwords (ADR-049).
   if (input.display_name !== undefined) {
     updateData.displayName = input.display_name;
   }
@@ -454,86 +390,28 @@ export async function updateMailbox(
     await db.update(mailboxes).set(updateData).where(eq(mailboxes.id, mailboxId));
   }
 
-  // Code-review H-3 fix (2026-05-03, second pass): propagate quota +
-  // password to Stalwart so JMAP-side enforcement matches the platform
-  // DB. Best-effort: if Stalwart is unreachable the platform DB is the
-  // authoritative new state and principals-sync will eventually reconcile.
-  // `status` is intentionally NOT synced because Stalwart has no
-  // dedicated "suspended" flag on Principal — suspension is enforced at
-  // the platform layer (auth/quota), and the legacy 0.15 sieve
-  // suspension shim was retired in M11.
-  if (input.quota_mb !== undefined || input.password !== undefined) {
-    if (existingMailbox.stalwartPrincipalId) {
-      // Synced mailbox: JMAP-PATCH the existing principal.
-      const accountId = await getJmapAccountId();
-      if (accountId) {
-        const patch: Record<string, unknown> = {};
-        if (input.quota_mb !== undefined) {
-          // Stalwart `quota.storage` is bytes; the platform stores MB.
-          patch['quota/storage'] = input.quota_mb * 1024 * 1024;
-        }
-        if (input.password !== undefined) {
-          // Stalwart 0.16 path is credentials/0/secret (the new schema
-          // uses `credentials` not `secrets`; secret is the inner field).
-          // The old `secrets/0` path was a 0.15-era leftover that 0.16
-          // rejects with "Invalid property" — verified empirically
-          // 2026-05-06 against staging while validating orphan-recovery.
-          patch['credentials/0/secret'] = input.password;
-        }
-        try {
-          await jmapUpdatePrincipal({
-            accountId,
-            id: existingMailbox.stalwartPrincipalId,
-            patch,
-            baseUrl: process.env.STALWART_MGMT_URL,
-          });
-        } catch (err) {
-          log.warn({
-            mailboxId,
-            err: err instanceof Error ? err.message : String(err),
-          }, 'updateMailbox: JMAP patch failed (platform DB authoritative; principals-sync will reconcile)');
-        }
-      }
-    } else if (input.password !== undefined) {
-      // Orphan-mailbox recovery path (origin: 2026-05-06). The mailbox
-      // exists in platform DB but has no Stalwart counterpart (typical
-      // after a Stalwart data wipe — historically mail-pg, post-2026-05-12
-      // the RocksDB PVC). When the operator sets a NEW password, we
-      // have an opportunity to JMAP-CREATE the mailbox in Stalwart
-      // with that plaintext, since Stalwart cannot import pre-hashed
-      // credentials
-      // (verified empirically 2026-05-06: any bcrypt secret passed to
-      // Account/credentials/0/secret is treated as plaintext + re-hashed).
-      //
-      // This is the EXISTING "Reset password" UI flow doubling as drift
-      // recovery — no new operator action required. Without it, every
-      // operator-initiated password reset on an orphan mailbox just
-      // updated the platform-DB bcrypt and Stalwart never saw the new
-      // password. The mailbox stayed orphan forever and the user could
-      // never log in.
-      //
-      // Best-effort: failures here surface as a logged warning + the
-      // platform-DB bcrypt update still completes. The mailbox stays
-      // orphan but the operator hasn't lost work — they can retry.
+  // Propagate the quota to Stalwart so JMAP-side enforcement matches the
+  // platform DB. Best-effort: if Stalwart is unreachable the platform DB
+  // is authoritative and principals-sync reconciles later. `status` is
+  // intentionally NOT synced (Stalwart has no Principal "suspended" flag;
+  // suspension is enforced at the platform layer). Password is no longer
+  // settable here — see login passwords (ADR-049).
+  if (input.quota_mb !== undefined && existingMailbox.stalwartPrincipalId) {
+    const accountId = await getJmapAccountId();
+    if (accountId) {
       try {
-        const newPrincipalId = await syncOrphanMailboxToStalwart(db, existingMailbox, input.password);
-        if (newPrincipalId) {
-          await db
-            .update(mailboxes)
-            .set({ stalwartPrincipalId: newPrincipalId })
-            .where(eq(mailboxes.id, mailboxId));
-          log.info({
-            mailboxId,
-            fullAddress: existingMailbox.fullAddress,
-            stalwartPrincipalId: newPrincipalId,
-          }, 'updateMailbox: orphan mailbox recovered via JMAP-create on password set');
-        }
+        await jmapUpdatePrincipal({
+          accountId,
+          id: existingMailbox.stalwartPrincipalId,
+          // Stalwart `quota.storage` is bytes; the platform stores MB.
+          patch: { 'quota/storage': input.quota_mb * 1024 * 1024 },
+          baseUrl: process.env.STALWART_MGMT_URL,
+        });
       } catch (err) {
         log.warn({
           mailboxId,
-          fullAddress: existingMailbox.fullAddress,
           err: err instanceof Error ? err.message : String(err),
-        }, 'updateMailbox: orphan recovery failed (mailbox stays orphan; platform-DB bcrypt updated; operator can retry)');
+        }, 'updateMailbox: JMAP quota patch failed (platform DB authoritative; principals-sync will reconcile)');
       }
     }
   }
@@ -584,51 +462,6 @@ export async function deleteMailbox(
   await db.delete(mailboxAccess).where(eq(mailboxAccess.mailboxId, mailboxId));
   // Delete mailbox
   await db.delete(mailboxes).where(eq(mailboxes.id, mailboxId));
-}
-
-export async function changeMailboxPassword(
-  db: Database,
-  tenantId: string,
-  mailboxId: string,
-  newPassword: string,
-) {
-  await getMailbox(db, tenantId, mailboxId);
-
-  // Best-effort JMAP password update — keeps Stalwart in sync.
-  // Non-fatal: the bcrypt hash update below is the authoritative write.
-  const [row] = await db
-    .select({ stalwartPrincipalId: mailboxes.stalwartPrincipalId })
-    .from(mailboxes)
-    .where(eq(mailboxes.id, mailboxId));
-
-  if (row?.stalwartPrincipalId) {
-    const accountId = await getJmapAccountId();
-    if (accountId) {
-      try {
-        await jmapUpdatePrincipal({
-          accountId,
-          id: row.stalwartPrincipalId,
-          patch: { 'secrets/0': newPassword },
-          baseUrl: process.env.STALWART_MGMT_URL,
-        });
-      } catch (err) {
-        log.warn({
-          mailboxId,
-          err: err instanceof Error ? err.message : String(err),
-        }, 'changeMailboxPassword: JMAP update failed (platform DB authoritative)');
-      }
-    }
-  }
-
-  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
-  await db.update(mailboxes).set({ passwordHash }).where(eq(mailboxes.id, mailboxId));
-
-  const [updated] = await db
-    .select(mailboxColumns)
-    .from(mailboxes)
-    .where(eq(mailboxes.id, mailboxId));
-
-  return updated;
 }
 
 export async function grantMailboxAccess(

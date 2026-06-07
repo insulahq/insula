@@ -206,9 +206,9 @@ describe('Email Page', () => {
     expect(screen.getByTestId('edit-mailbox-modal')).toBeInTheDocument();
     expect(screen.getByTestId('edit-mailbox-display-name')).toHaveValue('Alice');
     expect(screen.getByTestId('edit-mailbox-quota')).toHaveValue(1024);
-    // Password field is optional — empty by default so we don't
-    // accidentally reset the password to an empty string
-    expect(screen.getByTestId('edit-mailbox-password')).toHaveValue('');
+    // ADR-049: the edit modal no longer has a password field — credentials
+    // are managed via login passwords.
+    expect(screen.queryByTestId('edit-mailbox-password')).not.toBeInTheDocument();
     expect(screen.getByTestId('edit-mailbox-status')).toBeInTheDocument();
   });
 
@@ -299,7 +299,7 @@ describe('Email Page', () => {
     renderWithProviders(<Email />);
     fireEvent.click(screen.getByTestId('edit-mailbox-mb-1'));
 
-    // Change the display name and quota, leave password blank
+    // Change the display name and quota (no password field — ADR-049)
     fireEvent.change(screen.getByTestId('edit-mailbox-display-name'), {
       target: { value: 'Alice Wonder' },
     });
@@ -317,7 +317,7 @@ describe('Email Page', () => {
     expect(call.id).toBe('mb-1');
     expect(call.input.display_name).toBe('Alice Wonder');
     expect(call.input.quota_mb).toBe(2048);
-    // Empty password → should NOT be sent
+    // Password is no longer a field at all
     expect(call.input.password).toBeUndefined();
     // Status unchanged → should NOT be sent
     expect(call.input.status).toBeUndefined();
