@@ -6,7 +6,7 @@
 
 ## Context
 
-The Stalwart mail server uses RocksDB as its data store. Today we have two backup mechanisms (and the [BACKUP_ARCHITECTURE_RFC](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) Phase R11 may introduce a third):
+The Stalwart mail server uses RocksDB as its data store. Today we have two backup mechanisms (and the [BACKUP_ARCHITECTURE_RFC](../history/04-deployment/BACKUP_ARCHITECTURE_RFC.md) Phase R11 may introduce a third):
 
 | Mechanism                    | Layer       | Captures                       | Survives                                        |
 | ---------------------------- | ----------- | ------------------------------ | ----------------------------------------------- |

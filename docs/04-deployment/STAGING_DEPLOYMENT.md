@@ -4,7 +4,7 @@
 
 > **Related:**
 > - [STAGING_PREFLIGHT_CHECKLIST.md](./STAGING_PREFLIGHT_CHECKLIST.md) — one-page operator checklist for go/no-go
-> - [MULTI_NODE_ROADMAP.md](../05-infrastructure/MULTI_NODE_ROADMAP.md) — Phase 0 baseline
+> - [MULTI_NODE_ROADMAP.md](../history/05-infrastructure/MULTI_NODE_ROADMAP.md) — Phase 0 baseline
 > - [LOCAL_MULTINODE_VM_SETUP.md](../05-infrastructure/LOCAL_MULTINODE_VM_SETUP.md) — future local mirror of staging (deferred)
 > - [HA_MIGRATION_RUNBOOK.md](../02-operations/HA_MIGRATION_RUNBOOK.md) — how to add workers / go HA later
 > - [ADR-022](../07-reference/ARCHITECTURE_DECISION_RECORDS.md) — external services split

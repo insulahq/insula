@@ -21,7 +21,7 @@ KUBECONFIG=... make verdict     # → "PASS=36 FAIL=9"
 # Test 1 only — no kubeconfig needed (probes public DNS hostnames)
 make smoke-public
 
-# Forensic dump (creates docs/diagnostics/<utc-stamp>/ with nodes/pods/Felix logs + smoke.log)
+# Forensic dump (creates docs/history/diagnostics/<utc-stamp>/ with nodes/pods/Felix logs + smoke.log)
 KUBECONFIG=... make diagnose
 
 # Induced-failure drills (DESTRUCTIVE — schedule a maintenance window)
@@ -33,7 +33,7 @@ KUBECONFIG=... make failover
 | # | Test | What it catches |
 |---|------|-----------------|
 | 1 | External IP × hostname matrix | DNS round-robin masks per-IP failures; this probes each external IP individually with 5 attempts × p50/max timing |
-| 2 | ingress→pod cross-node matrix | The exact failure mode of [project_calico_netpol_ipblock_fix.md](../../home/.../memory/project_calico_netpol_ipblock_fix.md) — cross-node host→pod was broken by a NetworkPolicy ipBlock pointing at the wrong CIDR. Test 2 is the regression canary. |
+| 2 | ingress→pod cross-node matrix | The exact failure mode of the 2026-04 Calico NetworkPolicy ipBlock incident — cross-node host→pod was broken by a NetworkPolicy ipBlock pointing at the wrong CIDR. Test 2 is the regression canary. |
 | 3 | pod→pod cross-node | Control: should keep passing even when 2/4 fail. If both fail together, the Calico data plane is broken. |
 | 4 | hostNetwork→pod cross-node | Direct probe of the host-source-via-vxlan-tunnel-IP class of bug. Spawns a hostNetwork=true pod on each node, curls pod-network targets cross-node. |
 | 5 | Longhorn replica health | Catches the "node up but Longhorn replicas degraded/unattached" silent failure mode |
@@ -89,7 +89,7 @@ The drills are sequential and stateful — D3 leaves the node briefly NotReady, 
 
 | Symptom | Likely cause | Reference |
 |---------|--------------|-----------|
-| Test 4 (hostNetwork→pod cross-node) all-FAIL | NetworkPolicy `ipBlock` references the wrong CIDR (underlay instead of pod CIDR) | [verdict](../../docs/diagnostics/2026-04-26-post-fix/verdict.md), [k8s/base/network-policies.yaml](../../k8s/base/network-policies.yaml) |
+| Test 4 (hostNetwork→pod cross-node) all-FAIL | NetworkPolicy `ipBlock` references the wrong CIDR (underlay instead of pod CIDR) | [verdict](../../docs/history/diagnostics/2026-04-26-post-fix/verdict.md), [k8s/base/network-policies.yaml](../../k8s/base/network-policies.yaml) |
 | Test 1 mostly-OK but with 5.5s spikes | Cross-node host→pod broken; nginx upstream-retry hides total failure | Same as Test 4 |
 | Test 3 FAIL but Test 4 PASS | Calico VXLAN data plane is broken (rare) | tcpdump on `vxlan.calico` of source + dest |
 | Test 5 (Longhorn) FAIL with "degraded" | Replica out of sync after a node restart | `kubectl get volumes.longhorn.io -n longhorn-system` |
@@ -100,11 +100,11 @@ The drills are sequential and stateful — D3 leaves the node briefly NotReady, 
 
 ## Forensic record
 
-Successful + failed runs should be committed to `docs/diagnostics/<utc-stamp>/` for future A/B comparison. Use:
+Successful + failed runs should be committed to `docs/history/diagnostics/<utc-stamp>/` for future A/B comparison. Use:
 
 ```bash
 KUBECONFIG=... make diagnose
-git add docs/diagnostics/<the new dir>/
+git add docs/history/diagnostics/<the new dir>/
 git commit -m "diagnostics: <short reason for capture>"
 ```
 

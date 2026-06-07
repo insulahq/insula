@@ -2362,8 +2362,8 @@ mailbox with replace semantics. Per-file restore is supported via a
 ### Related Docs
 
 - `docs/06-features/BACKUP_COMPONENT_MODEL.md` — canonical bundle spec
-- `docs/02-operations/BACKUP_STRATEGY.md` — three-tier strategy
-- `docs/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture pipelines
+- `docs/history/02-operations/BACKUP_STRATEGY.md` — three-tier strategy
+- `docs/history/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` — capture pipelines
 - `docs/06-features/RESTORE_SPECIFICATION.md` — restore API + granularity
 
 ---

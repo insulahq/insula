@@ -71,7 +71,7 @@ authenticates as the platform master account at send time.
 > deliberate — the master account is enough authority to send as any
 > Stalwart user, and silently creating mailboxes from automation
 > would weaken that boundary. The
-> [2026-05-28 spike memory](../../.claude/projects/.../memory/project_stalwart_sender_restrictions_2026_05_28.md)
+> the 2026-05-28 sender-restriction spike
 > has the receipts.
 
 ### Option B — External SMTP provider

@@ -1667,7 +1667,7 @@ configure_firewall() {
   #     ClusterTrustedRange CRDs; bootstrap also seeds from --allow-source.
   #   tenant_ports_{tcp,udp} — runtime-managed by worker-firewall-
   #     reconciler from Pod hostPort + platform.io/firewall-{tcp,udp}-
-  #     ports annotations. See docs/04-deployment/RUNTIME_FIREWALL.md.
+  #     ports annotations. See docs/04-deployment/CLUSTER_NETWORK.md.
   local set_decls="  set tenant_ports_tcp {
     type inet_service
     flags interval
@@ -4024,7 +4024,7 @@ install_longhorn() {
 # StatefulSet keeps running unchanged. Activation is a manual
 # operator step with pre-reqs (existing-PVC import, failover plan,
 # monitoring review) — see
-# docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md.
+# docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md.
 #
 # Installed in its own namespace (cnpg-system) so a later
 # `helm uninstall` reverts cleanly without touching other platform
@@ -4092,7 +4092,7 @@ install_cnpg() {
     --timeout 600s
 
   log "CloudNative-PG operator at chart ${CNPG_CHART_VERSION}."
-  log "  Activation runbook: docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md"
+  log "  Activation runbook: docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md"
 }
 
 install_monitoring() {
@@ -4482,7 +4482,7 @@ generate_platform_secrets() {
   fi
 
   # backup-target-key — the SINGLE root of all backup encryption.
-  # See docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13b.
+  # See docs/history/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13b.
   #
   # 32 cryptographically-random bytes, base64-encoded for storage. Used by:
   #   - rclone `crypt` backends in the backup-rclone-shim DaemonSet
@@ -6017,7 +6017,7 @@ spec:
               # is LE rejecting the contact email's TLD. Operator must
               # set STALWART_CONTACT_EMAIL to a real deliverable address
               # and re-run bootstrap. See:
-              # docs/04-deployment/STALWART_BOOTSTRAP.md (LE contact email).
+              # docs/02-operations/STALWART_DEPLOYMENT.md (LE contact email).
               echo "ERROR: x:AcmeProvider/set was rejected by Stalwart/LE:" >&2
               echo "  contact email tried: \${ACME_CONTACT_EMAIL}" >&2
               echo "  response: \${ACME_FAIL}" >&2
@@ -7385,7 +7385,7 @@ main() {
     install_longhorn
     # M10: CNPG operator (passive — no Cluster CR applied). Installs
     # alongside Longhorn so the Postgres replication activation flow
-    # in docs/09-runbooks/CNPG_ACTIVATION_RUNBOOK.md is a single-CR
+    # in docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md is a single-CR
     # step rather than a multi-phase upgrade when the time comes.
     install_cnpg
     install_monitoring

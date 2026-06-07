@@ -1,6 +1,6 @@
 # ADR-043: `rclone serve s3` shim — universal backup mediator
 
-**Status**: **ACCEPTED-EXTENDED 2026-05-20**, **NFS-AMENDED 2026-05-25** — the shim is adopted as the universal mediator for ALL platform backups, not just postgres + etcd. See [BACKUP_ARCHITECTURE_RFC §13a](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) for topology.
+**Status**: **ACCEPTED-EXTENDED 2026-05-20**, **NFS-AMENDED 2026-05-25** — the shim is adopted as the universal mediator for ALL platform backups, not just postgres + etcd. See [BACKUP_ARCHITECTURE_RFC §13a](../history/04-deployment/BACKUP_ARCHITECTURE_RFC.md) for topology.
 **Original decision (DEFERRED)**: 2026-05-19
 **Withdrawn (incorrectly)**: 2026-05-19 — based on a false assertion that `cnpg-plugin-pgbackrest` exists
 **Accepted + extended**: 2026-05-20 (corrects the round-5 mistake)
@@ -73,7 +73,7 @@ The original ADR scoped the shim to postgres + etcd (the only S3-locked callers)
 
 ## Context
 
-[BACKUP_ARCHITECTURE_RFC](../04-deployment/BACKUP_ARCHITECTURE_RFC.md) §7 documents the hard constraint that some backup mechanisms only support S3-compatible APIs:
+[BACKUP_ARCHITECTURE_RFC](../history/04-deployment/BACKUP_ARCHITECTURE_RFC.md) §7 documents the hard constraint that some backup mechanisms only support S3-compatible APIs:
 
 | Mechanism              | S3 | SFTP | CIFS | NFS |
 | ---------------------- | -- | ---- | ---- | --- |

@@ -1201,8 +1201,8 @@ protected_directory_user_expiring_soon              # Users expiring < 7 days
 
 - [`../01-core/WORKLOAD_DEPLOYMENT.md`](../01-core/WORKLOAD_DEPLOYMENT.md) — Dedicated pod provisioning and catalog images
 - [`../04-deployment/MANAGEMENT_API_SPEC.md`](../04-deployment/MANAGEMENT_API_SPEC.md) — API endpoint specifications
-- [`./TENANT_PANEL_FEATURES.md`](./TENANT_PANEL_FEATURES.md) — Tenant panel features and UI
-- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel features
+- [`./TENANT_PANEL_FEATURES.md`](../history/02-operations/TENANT_PANEL_FEATURES.md) — Tenant panel features and UI
+- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../history/02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel features
 
 ---
 

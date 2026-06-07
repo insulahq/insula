@@ -585,7 +585,7 @@ These are the **platform-level** services that power the hosting infrastructure.
 ---
 
 **See Also:**
-- [QUICKSTART.md](../QUICKSTART.md) — Navigation guide by role and topic
+- [QUICKSTART.md](../history/QUICKSTART.md) — Navigation guide by role and topic
 - [HOSTING_PLANS.md](HOSTING_PLANS.md) — Plan tier definitions
 - [WORKLOAD_DEPLOYMENT.md](WORKLOAD_DEPLOYMENT.md) — Deployment models details
 - [FRONTEND_DEPLOYMENT_ARCHITECTURE.md](../04-deployment/FRONTEND_DEPLOYMENT_ARCHITECTURE.md) — Admin/tenant panel deployment

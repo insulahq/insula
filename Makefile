@@ -75,8 +75,8 @@ backup-target-key-rotate: ## DESTRUCTIVE — rotate BACKUP_TARGET_KEY (invalidat
 	@if [ -z "$$KUBECONFIG" ]; then echo "KUBECONFIG must be set" >&2; exit 2; fi
 	@bash $(CURDIR)/scripts/backup-target-key-rotate.sh
 
-diagnose:     ## Capture forensic snapshot (nodes/pods/Felix logs) under docs/diagnostics/<utc-stamp>/
-	@DST=docs/diagnostics/$$(date -u '+%Y%m%dT%H%M%SZ'); mkdir -p "$$DST"; \
+diagnose:     ## Capture forensic snapshot (nodes/pods/Felix logs) under docs/history/diagnostics/<utc-stamp>/
+	@DST=docs/history/diagnostics/$$(date -u '+%Y%m%dT%H%M%SZ'); mkdir -p "$$DST"; \
 	echo "diagnostics → $$DST"; \
 	kubectl get nodes -o wide > $$DST/nodes.txt 2>&1; \
 	kubectl get pods -A -o wide > $$DST/pods.txt 2>&1; \

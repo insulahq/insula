@@ -48,7 +48,7 @@ resources:
   # DaemonSet is the only writer at runtime. Replaces the prior
   # peer-firewall-reconciler + worker-firewall-reconciler split.
   # See docs/04-deployment/CLUSTER_NETWORK.md +
-  # docs/04-deployment/RUNTIME_FIREWALL.md.
+  # docs/04-deployment/CLUSTER_NETWORK.md.
   - firewall-reconciler/
   # security-probe — read-only host posture probe. Writes one
   # ConfigMap per node (security-probe-<node>) into platform-system
@@ -75,7 +75,7 @@ resources:
   # backup caller (CNPG plugin-barman-cloud sidecar, etcd CronJob,
   # restic CronJobs, rclone-push jobs) speaks S3 to this shim, which
   # translates to whatever upstream backend the operator configured.
-  # See docs/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13a.
+  # See docs/history/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13a.
   - backup-rclone-shim/
   # cnpg-system — CNPG plugin-barman-cloud (R-X6). The plugin runs as
   # a Deployment alongside the CNPG operator; CNPG Clusters reference

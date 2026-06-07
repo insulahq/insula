@@ -94,7 +94,7 @@ schedule.
 - Releases are cut manually (a `scripts/cut-release.sh` helper is on the
   roadmap). A `### BREAKING` CHANGELOG section gates auto-upgrade.
 
-Background: [docs/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md](docs/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md).
+Background: [docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md](docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md).
 
 ## Pull requests
 

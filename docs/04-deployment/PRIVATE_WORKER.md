@@ -400,4 +400,4 @@ Multiple workers per client share the same frps pod via multi-proxy frpc/frps co
 - [ADR-025 / ADR-026 — Catalog scope](../07-reference/ARCHITECTURE_DECISION_RECORDS.md) (private worker is deliberately *not* a catalog entry)
 - [ADR-033 — Tenant lifecycle hook registry](../07-reference/ADR-033-tenant-lifecycle-hook-registry.md)
 - [Cluster firewall](./CLUSTER_NETWORK.md) — peer-IP allowlist; tunnel-server pod inherits client-namespace policy
-- [Network access modes](./NETWORK_ACCESS.md) — orthogonal to private worker; composes via `target_type` polymorphism
+- Network access modes (`backend/src/modules/deployment-network-access/`) — orthogonal to private worker; composes via `target_type` polymorphism
