@@ -4,7 +4,7 @@
 
 Kubernetes-based web hosting platform replacing Plesk. Targets 50-100 tenants initially on self-managed k3s clusters (Hetzner VPS, <$200/month budget).
 
-**Status:** Phase 1 implementation (12-week MVP)
+**Status:** Core feature-complete; production cutover pending. Open follow-ups: `docs/roadmap/ROADMAP.md`
 
 ## Monorepo Structure
 
@@ -19,7 +19,7 @@ k8s/
   base/                   # Kustomize base manifests
   overlays/               # dev, production overlays
 scripts/                  # Utility scripts
-docs/                     # Architecture docs, ADRs, specs (read-only reference)
+docs/                     # architecture/ + operations/ + features/ + development/ (current-state), roadmap/ (planned), history/ (frozen)
 ```
 
 ## Tech Stack
@@ -27,15 +27,15 @@ docs/                     # Architecture docs, ADRs, specs (read-only reference)
 | Layer | Technology |
 |-------|-----------|
 | Backend | Node.js 22 + Fastify 4 + TypeScript 5 |
-| ORM | Drizzle ORM (MariaDB dialect) |
-| Database | MariaDB 10.6+ (primary), Redis 7 (cache) |
+| ORM | Drizzle ORM (PostgreSQL) |
+| Database | PostgreSQL 18 via CNPG (platform DB; tenant add-on DBs are per-tenant MariaDB/PostgreSQL). Cache is in-memory LRU — Redis removed M14 |
 | Frontend | React 18 + Vite + TypeScript + Tailwind CSS + shadcn/ui |
 | State | TanStack Query (server), Zustand (client) |
 | Testing | Vitest + React Testing Library + Playwright |
 | Auth | External Dex OIDC + JWT (Bearer tokens) |
 | CI/CD | GitHub Actions + Flux v2 |
-| Container Registry | GHCR (Phase 1), Harbor (Phase 2) |
-| K8s | k3s + Calico CNI + NGINX Ingress |
+| Container Registry | GHCR |
+| K8s | k3s + Calico CNI + Traefik v3 (ADR-038) |
 
 ## Build & Dev Commands
 
@@ -77,7 +77,7 @@ npm run test             # Vitest
 
 ### Local Development (Docker Compose)
 ```bash
-docker compose up -d     # Start MariaDB, Redis, MailHog
+docker compose up -d     # Start PostgreSQL, Redis, MailHog
 docker compose down      # Stop services
 ```
 
@@ -223,7 +223,7 @@ These services are managed by **separate projects** — this platform consumes t
 - Roadmap (open follow-ups): `docs/roadmap/ROADMAP.md`
 - ADRs: `docs/architecture/adr/ARCHITECTURE_DECISION_RECORDS.md`
 - Tenant lifecycle hook registry: `docs/architecture/adr/ADR-033-tenant-lifecycle-hook-registry.md`
-- **Tenant Backup operator runbook**: `docs/operations/TENANT_BACKUP.md` — bundle architecture, Plesk-style restore cart, schedule, retention, GDPR data export, rollback, list-recent-carts. Authoritative; supersedes the legacy `BACKUP_STRATEGY.md` + `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` which describe the deprecated SSHFS architecture.
+- **Tenant Backup operator runbook**: `docs/operations/TENANT_BACKUP.md` — bundle architecture, Plesk-style restore cart, schedule, retention, GDPR data export, rollback, list-recent-carts. Authoritative; supersedes the legacy `BACKUP_STRATEGY.md` + `BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md` (now in `docs/history/02-operations/`) which describe the deprecated SSHFS architecture.
 - **Bulwark webmail (JMAP-native)**: `docs/features/BULWARK_WEBMAIL.md` + ADR-039. Coexists with Roundcube; `platform_config.default_webmail_engine` selects per-platform default. Architecture: `k8s/base/bulwark/` (the SPA — Bulwark's native `/api/auth/impersonate` route handles JWT-signed master-user handoff; upstream issue #296). Local dev: `./scripts/local.sh bulwark-up`. E2E: `./scripts/integration-bulwark-impersonate.sh` + `./scripts/integration-webmail-platform-e2e.sh`.
 
 **Webmail feature visibility (Contacts / Calendar / Files)**: 2026-05-18 — three independent `platform_settings` flags (`webmail_show_{contacts,calendar,files}`, all default false). `backend/src/modules/webmail-feature-css/` computes a CSS file per engine, writes `mail/webmail-feature-overrides` ConfigMap, stamps a hash annotation on Bulwark + Roundcube Deployment pod templates → rolling restart picks up the change. Bulwark uses an initContainer that appends to the bundled Tailwind CSS; Roundcube extends the existing branding wrapper script. **CSS-only — Stalwart DAV endpoints remain reachable so native DAV clients (Thunderbird, iOS, macOS Contacts/Calendar) keep working regardless of the toggle.** PATCH `/admin/webmail-settings` triggers an inline reconcile; the 5-min `startWebmailFeatureCssReconciler` scheduler covers drift. E2E: `./scripts/integration-webmail-feature-toggle.sh`. CI guard: `scripts/ci-webmail-feature-css-check.sh`.
