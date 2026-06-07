@@ -19,6 +19,7 @@ import {
 } from '../stalwart-jmap/client.js';
 
 export const RSA_SIGNATURE_TYPE = 'Dkim1RsaSha256';
+export const ED25519_SIGNATURE_TYPE = 'Dkim1Ed25519Sha256';
 
 /** Resolve the principals account id from the JMAP session. */
 export async function resolveDkimAccountId(baseUrl?: string): Promise<JmapAccountId> {

@@ -226,6 +226,7 @@ export async function recreateDriftItemEmpty(
         stalwartDomainId: newStalwartId,
         baseUrl,
         currentDbSelector: null,
+        expectAutoPair: true, // drift repair always just created the principal
       });
       await db
         .update(emailDomains)

@@ -4,7 +4,7 @@
  * domain → assert exactly one dkim-1 RSA signature).
  */
 import { describe, it, expect } from 'vitest';
-import { planDkimNormalization } from './normalize.js';
+import { planDkimNormalization, hasCompleteAutoPair } from './normalize.js';
 import type { StalwartDkimSignatureRow } from '../stalwart-jmap/client.js';
 
 const row = (
@@ -73,5 +73,43 @@ describe('email-dkim/normalize: planDkimNormalization', () => {
     const plan = planDkimNormalization(rows, 'd1', null);
     expect(plan.createSelector).toBeNull();
     expect(plan.destroyIds).toEqual([]);
+  });
+});
+
+describe('email-dkim/normalize: hasCompleteAutoPair (auto-keygen race detector)', () => {
+  it('false right after principal create when only the Ed25519 half landed', () => {
+    // The observed live race (2026-06-07): Ed25519 keygen is instant,
+    // RSA-2048 lags — a listing taken too early shows only one half.
+    const rows = [row('ed', 'd1', 'v1-ed25519-20260607', 'Dkim1Ed25519Sha256')];
+    expect(hasCompleteAutoPair(rows, 'd1')).toBe(false);
+  });
+
+  it('false when only the RSA half landed', () => {
+    const rows = [row('rsa', 'd1', 'v1-rsa-20260607')];
+    expect(hasCompleteAutoPair(rows, 'd1')).toBe(false);
+  });
+
+  it('true once both auto rows are visible', () => {
+    const rows = [
+      row('rsa', 'd1', 'v1-rsa-20260607'),
+      row('ed', 'd1', 'v1-ed25519-20260607', 'Dkim1Ed25519Sha256'),
+    ];
+    expect(hasCompleteAutoPair(rows, 'd1')).toBe(true);
+  });
+
+  it('A/B rows do not count toward the pair (platform dkim-1 is not the auto RSA)', () => {
+    const rows = [
+      row('mine', 'd1', 'dkim-1'),
+      row('ed', 'd1', 'v1-ed25519-20260607', 'Dkim1Ed25519Sha256'),
+    ];
+    expect(hasCompleteAutoPair(rows, 'd1')).toBe(false);
+  });
+
+  it('scoped to the domain', () => {
+    const rows = [
+      row('rsa', 'd2', 'v1-rsa-20260607'),
+      row('ed', 'd1', 'v1-ed25519-20260607', 'Dkim1Ed25519Sha256'),
+    ];
+    expect(hasCompleteAutoPair(rows, 'd1')).toBe(false);
   });
 });
