@@ -41,7 +41,7 @@ pages; others are collapsible groups that expand to reveal sub-pages.
 |------|------------------|
 | **Dashboard** | The incident-first home page (below). |
 | **Tenants** | Every customer account, plus cross-tenant tabs for Domains, Workloads, Users, Email Accounts and Cron Jobs. → [Tenants](tenants.md) |
-| **Applications** | The workload/application catalog, installed deployments, upgrades, and catalog repositories. → [Catalogs & applications](catalogs-and-applications.md) |
+| **Applications** | The catalog, installed deployments, upgrades, and catalog repositories. → [The catalog & applications](catalogs-and-applications.md) |
 | **Backups** | Dashboard, System, Tenants, Mail, Remote Storage Targets, Disaster Recovery. → [Backups & restore](backups-and-restore.md) |
 | **Email** | Domains & Relays, Settings, Operations, Data Drift. → [Email](email.md) |
 | **Security** | Posture, Network Trust, Identity & Sessions, Web Defense, OIDC / SSO. → [Security](security.md) |

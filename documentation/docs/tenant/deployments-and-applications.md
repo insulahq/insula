@@ -12,7 +12,7 @@ databases, or your own containers. Each thing you install is called a
 Open **Applications** from the left menu. It has three tabs:
 
 - **Installed Apps** — everything you're running now.
-- **Application Catalog** — the menu of things you can install.
+- **Catalog** — the menu of things you can install.
 - **Custom Containers** — bring-your-own software (if enabled for your plan).
 
 !!! info "Workloads vs applications"
@@ -23,7 +23,7 @@ Open **Applications** from the left menu. It has three tabs:
 
 ## Deploy from the catalog
 
-1. Go to **Applications** → **Application Catalog** tab (or click **Deploy** in
+1. Go to **Applications** → **Catalog** tab (or click **Deploy** in
    the top right).
 2. Use the search box and the type filter (**All**, **Applications**,
    **Runtimes**, **Static**, **Databases**, **Services**) to find what you

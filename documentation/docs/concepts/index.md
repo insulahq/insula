@@ -44,23 +44,24 @@ override any setting for an individual tenant without changing their plan.
 
 Read more in [Tenants and plans](tenants-and-plans.md).
 
-## 3. Workloads and applications — two catalogs
+## 3. One catalog of deployable software
 
-There are two ways to put software in front of a tenant, and they come from two
-separate catalogs:
+Tenants deploy software from a single **catalog** (the **Applications** page in
+the panels). One catalog covers the whole range — there is no separate
+"workloads" vs "applications" split:
 
-| | **Workloads** | **Applications** |
+| Entry type | What it is | Examples |
 |---|---|---|
-| What | Composable building blocks — a PHP/Node/Python runtime, a database, a cache | Self-contained managed stacks — WordPress, Nextcloud, Jitsi |
-| Who supplies the code | The tenant uploads their own files | Pre-configured; deployed as a unit |
-| Database | Shared/platform-managed, separate add-on | Bundled inside the application |
-| Source | Operator-added **workload catalog** Git repos | The Helm-based **application catalog** |
+| **Runtimes** | A blank environment you upload your own code into | PHP, Node.js, Python, Go, … |
+| **Databases / services** | Data stores a site can use | MariaDB, PostgreSQL, Redis, … |
+| **Applications** | Complete, self-contained products deployed as one unit | WordPress, Nextcloud, Jitsi |
 
-No catalog is pre-loaded. An operator adds a workload catalog repository before
-tenants can deploy anything. Tenants who need a one-off image can also
-bring their own container or `docker-compose` file.
+A default **Official Catalog** is enabled out of the box, so tenants can deploy
+immediately. You can remove it, and you can add your own catalog repositories.
+Tenants who need a one-off image can also bring their own container or
+`docker-compose` file.
 
-Read more in [Workloads and catalogs](workloads-and-catalogs.md).
+Read more in [The catalog](catalog.md).
 
 ## 4. Domains flow into routes, then TLS
 

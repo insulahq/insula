@@ -208,10 +208,9 @@ These services are managed by **separate projects** — this platform consumes t
 - **DNS:** PowerDNS REST API (ADR-022)
 - **VPN Mesh:** NetBird (ADR-022)
 - **IAM/Auth:** Dex OIDC provider (ADR-022)
-- **Workload Catalog:** Composable runtimes/databases/services via `manifest.json` (ADR-025) — no catalog is pre-registered; operators add a workload catalog repo via Settings → Catalog Repos
-- **Application Catalog:** Managed app stacks via Helm charts (ADR-026, Phase 2) — `https://github.com/insulahq/application-catalog`
+- **Catalog:** A single unified catalog (ADR-025/026) of entries via `manifest.json` + Helm charts — spans composable runtimes/databases/services (generic PHP, Node.js, MariaDB) AND self-contained app stacks (WordPress, Nextcloud, Jitsi). Fed by one or more **catalog repositories** (`catalog_repositories` table). A default **Official Catalog** (`github.com/insulahq/application-catalog`) is seeded **active** by `backend/src/db/seed.ts` and is removable; admins add/remove repos via **Applications → Repositories**. Entries merge into one list, separated by a `type` filter (Applications/Runtimes/Static/Databases/Services).
 
-**Two catalogs (ADR-026):** Workloads = composable building blocks (generic PHP, Node.js, MariaDB). Applications = self-contained managed stacks (WordPress, Nextcloud, Jitsi). Workloads share databases; applications bundle their own.
+**One catalog, not two.** The earlier "workloads vs applications = two separate catalogs" framing is retired — it's one catalog of mixed entry types. Custom containers (ADR-036, bring-your-own image/compose) remain a separate, non-catalog deployment path.
 
 ## Key Documentation
 

@@ -9,10 +9,12 @@ verified: 2026.6.7
 | **Tenant** | One isolated customer account: websites, databases, mailboxes, files, backups — plus the people who may log in to manage them |
 | **Plan** | A reusable bundle of limits and features assigned to tenants; individual values can be overridden per tenant |
 | **Subscription** | The link between a tenant and a plan, with an expiry date and renewal state |
-| **Workload** | One running service for a tenant — a PHP runtime, a Node.js app, a database — instantiated from a catalog image |
-| **Workload catalog** | A Git repository of composable building-block images (runtimes, databases) that an operator registers with the platform |
-| **Application** | A self-contained managed stack (e.g. WordPress) from the separate application catalog — bundles its own components |
-| **Custom container** | A tenant-supplied container image or compose stack, run under the same isolation rules as catalog workloads |
+| **Catalog** | The single library tenants deploy from — one set of entries spanning runtimes, databases/services, and full applications, fed by one or more catalog repositories |
+| **Catalog repository** | A Git repo of catalog entries (manifests + images) registered with the platform. The **Official Catalog** is registered by default; operators can remove it and add their own |
+| **Catalog entry** | One deployable item in the catalog — a runtime, a database/service, or a complete application |
+| **Deployment** | One running instance of a catalog entry (or a custom container) for a tenant |
+| **Application** | A catalog entry that is a complete, self-contained product (e.g. WordPress) bundling its own database, cache, and ingress |
+| **Custom container** | A tenant-supplied container image or compose stack, run under the same isolation rules as catalog entries |
 | **Route** | The rule that maps a hostname (+ path) to a workload, including TLS and WAF settings |
 | **DNS mode** | How a domain's DNS is handled: managed by the platform's nameservers, or externally with a CNAME/records you set yourself |
 | **Node** | One Linux server in the cluster. *Server* nodes can run the control plane; *worker* nodes run tenant workloads |

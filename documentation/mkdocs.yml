@@ -76,7 +76,7 @@ nav:
   - Concepts:
       - concepts/index.md
       - Tenants & plans: concepts/tenants-and-plans.md
-      - Workloads & catalogs: concepts/workloads-and-catalogs.md
+      - The catalog: concepts/catalog.md
       - Domains, routing & TLS: concepts/domains-routing-tls.md
       - Email: concepts/email.md
       - Storage & backups: concepts/storage-and-backups.md

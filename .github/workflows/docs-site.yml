@@ -1,9 +1,12 @@
 name: Documentation Site
 
-# Strict build gate only. The manual is PUBLISHED by the separate
-# `insulahq/insulahq.github.io` repo, which pulls this repo's `documentation/`
-# on a schedule and deploys to the org-root Pages site
-# (https://insulahq.github.io/). This repo no longer hosts its own Pages.
+# Builds the manual (strict) on every docs PR, and on push to main also
+# publishes it to THIS repo's Pages as a fast review mirror at
+# https://insulahq.github.io/insula/ (updates immediately on merge).
+#
+# The canonical site at the org root (https://insulahq.github.io/) is published
+# separately by the insulahq/insulahq.github.io repo, which pulls this repo's
+# documentation/ on a schedule. Both serve the same content.
 on:
   pull_request:
     branches: [main]
@@ -41,3 +44,22 @@ jobs:
         run: python3 documentation/gen/changelog.py
       - name: Build (broken nav/links fail)
         run: mkdocs build --strict -f documentation/mkdocs.yml
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'push'
+        with:
+          path: documentation/site
+
+  deploy:
+    name: Deploy review mirror (/insula/)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

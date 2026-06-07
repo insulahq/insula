@@ -37,7 +37,7 @@ The first install is roughly a 15-minute path on a fresh server:
    platform, and prints your first admin login. See
    [Install a single node](install.md).
 3. **Log in** to the admin panel and verify the install.
-4. **Add a workload catalog repo and a plan** — nothing is pre-loaded.
+4. **Create a plan** — the catalog is already enabled by default.
 5. **Create your first tenant**, add a domain, and deploy a site from the
    catalog. See [Your first tenant](first-tenant.md).
 
