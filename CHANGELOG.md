@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.5] - 2026-06-07
+
 ### Fixed
 - **DKIM rotation now generates RSA-2048 keys** (was Ed25519). The rotation
   path was triply broken: Gmail/Microsoft 365 don't support RFC 8463
