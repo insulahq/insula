@@ -86,14 +86,12 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
         );
       }
 
-      const encryptionKey = process.env.ENCRYPTION_KEY;
-      if (!encryptionKey) {
-        throw new ApiError(
-          'INTERNAL_SERVER_ERROR',
-          'ENCRYPTION_KEY env var is not set',
-          500,
-        );
-      }
+      // DNS-provider credentials are encrypted with PLATFORM_ENCRYPTION_KEY
+      // (same pattern as dns-records/service.ts; dev fallback is the zero
+      // key). The previous code read the nonexistent ENCRYPTION_KEY var and
+      // made every rotation 500 unconditionally.
+      const encryptionKey =
+        process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
       try {
         const result = await rotateDkimKey(app.db, domainId, encryptionKey);

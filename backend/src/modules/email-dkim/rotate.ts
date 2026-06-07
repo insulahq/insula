@@ -23,8 +23,8 @@
  *      support it (with proper `k=ed25519` raw-key DNS formatting).
  *   2. Pick a new selector name `default-<yyyymmddHHmm>` so we never
  *      reuse selectors and key history is auditable from DNS.
- *   3. Create the new DkimSignature in Stalwart's config store via
- *      the mgmt API, leaving the existing signature ACTIVE
+ *   3. Create the new DkimSignature in Stalwart via JMAP
+ *      x:DkimSignature/set, leaving the existing signature ACTIVE
  *      (dual-signing window) so already-delivered messages continue
  *      to verify until the old DNS TXT TTL expires.
  *   4. Publish the new public key as a TXT record at
@@ -48,7 +48,13 @@ import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { emailDomains, dnsRecords, domains } from '../../db/schema.js';
-import { proxyStalwartRequest } from '../mail-admin/service.js';
+import {
+  getJmapSession,
+  dkimSignatureSet,
+  type JmapAccountId,
+  type JmapSetResponse,
+  type StalwartDkimSignatureRow,
+} from '../stalwart-jmap/client.js';
 import { generateDkimKeyPair, formatDkimDnsValue } from '../email-domains/dkim.js';
 import { syncRecordToProviders } from '../email-domains/dns-provisioning.js';
 
@@ -62,7 +68,6 @@ export interface RotateDkimResult {
 }
 
 export interface RotateDkimDeps {
-  readonly kubeconfigPath?: string;
   /** Override the default Date.now()-based selector for tests. */
   readonly nowMs?: number;
 }
@@ -90,69 +95,70 @@ export function newDkimSelector(nowMs: number = Date.now()): string {
 }
 
 /**
- * Apply a DkimSignature `create` plan to Stalwart's mgmt API.
+ * Create the new DkimSignature in Stalwart via JMAP `x:DkimSignature/set`.
  *
- * Plan format (NDJSON, one create per line):
- *   {"@type":"create","object":"DkimSignature","value":{"<id>":{...}}}
- *
- * Stalwart 0.16's apply endpoint accepts NDJSON via the `apply`
- * sub-API at POST /api/store/import (per stalwart-cli wire format,
- * verified empirically). We POST a single-line plan; Stalwart
- * persists it and the new signature is immediately available for
- * the next outgoing message.
+ * WIRE NOTE (2026-06-07): the previous implementation POSTed an NDJSON
+ * plan to `/api/store/import` — that endpoint does not exist on
+ * Stalwart v0.16.5 (404), so rotation never actually created the
+ * signature. Registry objects are managed over the SAME JMAP surface
+ * the platform already uses for principals (capability
+ * urn:stalwart:jmap), which is also what stalwart-cli does internally.
  */
-async function postDkimCreatePlan(
-  kubeconfigPath: string | undefined,
-  signatureId: string,
+async function createDkimSignatureViaJmap(
+  signatureTempId: string,
   domainId: string,
   selector: string,
   privateKeyPem: string,
-): Promise<void> {
-  const planLine = JSON.stringify({
-    '@type': 'create',
-    object: 'DkimSignature',
-    value: {
-      [signatureId]: {
-        '@type': 'Dkim1RsaSha256',
-        domainId,
-        selector,
-        canonicalization: 'relaxed/relaxed',
-        headers: { From: true, To: true, Date: true, Subject: true, 'Message-ID': true },
-        privateKey: { '@type': 'Text', secret: privateKeyPem },
-        report: false,
-        stage: 'active',
-        thirdParty: null,
-        thirdPartyHash: null,
-        auid: null,
-        expire: null,
-        memberTenantId: null,
-        nextTransitionAt: null,
+): Promise<string> {
+  const session = await getJmapSession(process.env.STALWART_MGMT_URL);
+  const accountId: JmapAccountId =
+    (session.primaryAccounts['urn:ietf:params:jmap:principals'] as JmapAccountId | undefined) ??
+    (Object.keys(session.accounts)[0] as JmapAccountId);
+
+  let res: JmapSetResponse<StalwartDkimSignatureRow>;
+  try {
+    res = await dkimSignatureSet({
+      accountId,
+      baseUrl: process.env.STALWART_MGMT_URL,
+      create: {
+        [signatureTempId]: {
+          '@type': 'Dkim1RsaSha256',
+          domainId,
+          selector,
+          canonicalization: 'relaxed/relaxed',
+          headers: { From: true, To: true, Date: true, Subject: true, 'Message-ID': true },
+          privateKey: { '@type': 'Text', secret: privateKeyPem },
+          report: false,
+          stage: 'active',
+          thirdParty: null,
+          thirdPartyHash: null,
+          auid: null,
+          expire: null,
+          memberTenantId: null,
+          nextTransitionAt: null,
+        },
       },
-    },
-  });
-
-  const result = await proxyStalwartRequest(
-    kubeconfigPath,
-    'POST',
-    '/api/store/import',
-    planLine + '\n',
-    'application/x-ndjson',
-  );
-
-  if (result.status < 200 || result.status >= 300) {
-    // SECURITY (CRITICAL): the request body included the PEM-encoded
-    // private key, and Stalwart's error response can echo back the
-    // submitted plan or a portion of it. Sanitise the response body
-    // before surfacing to ensure the private key cannot leak into
-    // platform-api logs / audit-log / error messages. Never include
-    // raw response bytes that contain BEGIN PRIVATE KEY.
-    const safeBody = redactPemBlocks(result.body).slice(0, 500);
+    });
+  } catch (err) {
+    // SECURITY (CRITICAL): the request carried the PEM-encoded private
+    // key and a JMAP error can echo parts of the submitted value back.
+    // Scrub PEM blocks before surfacing anything to logs/audit/errors.
+    const safe = redactPemBlocks(err instanceof Error ? err.message : String(err)).slice(0, 500);
     throw new DkimRotationError(
-      `Stalwart rejected DkimSignature create (status ${result.status}): ${safeBody}`,
+      `Stalwart DkimSignature create failed: ${safe}`,
       'STALWART_API_ERROR',
-      result.status,
     );
   }
+
+  const created = res.created?.[signatureTempId];
+  if (!created) {
+    const reason = redactPemBlocks(JSON.stringify(res.notCreated ?? {})).slice(0, 500);
+    throw new DkimRotationError(
+      `Stalwart rejected DkimSignature create: ${reason}`,
+      'STALWART_API_ERROR',
+    );
+  }
+  return created.id;
 }
 
 /**
@@ -207,12 +213,11 @@ export async function rotateDkimKey(
 
   const { privateKey, publicKey } = generateDkimKeyPair();
   const selector = newDkimSelector(deps.nowMs);
-  const signatureId = `dkim-${selector}`;
+  const signatureTempId = `dkim-${selector}`;
 
-  // 1. Create the DkimSignature in Stalwart
-  await postDkimCreatePlan(
-    deps.kubeconfigPath,
-    signatureId,
+  // 1. Create the DkimSignature in Stalwart (JMAP x:DkimSignature/set)
+  const signatureId = await createDkimSignatureViaJmap(
+    signatureTempId,
     emailDomain.stalwartDomainId,
     selector,
     privateKey,

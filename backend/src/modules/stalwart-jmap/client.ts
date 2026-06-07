@@ -432,6 +432,69 @@ export async function accountGet(params: {
   );
 }
 
+// ── DkimSignature registry objects (x:DkimSignature/*) ────────────────────
+//
+// Stalwart 0.16 manages DKIM keys as registry objects reachable over the
+// same JMAP surface as principals (capability urn:stalwart:jmap). The
+// platform uses these to (a) create RSA rotation keys (email-dkim/rotate)
+// and (b) destroy the Ed25519 signature Stalwart auto-creates on every
+// new domain principal — Gmail/M365 don't support RFC 8463, so we keep
+// tenant domains RSA-only (see ADR-046-adjacent DKIM notes + PR #207).
+// NOTE: there is NO REST /api/object or /api/store/import endpoint for
+// these in v0.16.5 — JMAP set/get is the only wire that works.
+
+/** Minimal row shape for a Stalwart DkimSignature registry object. */
+export interface StalwartDkimSignatureRow {
+  readonly id: string;
+  readonly '@type': string;
+  readonly domainId: string;
+  readonly selector: string;
+  readonly stage?: string;
+}
+
+interface XDkimGetResponse {
+  readonly accountId: JmapAccountId;
+  readonly list?: readonly StalwartDkimSignatureRow[];
+}
+
+/** `x:DkimSignature/get` — pass `ids: null` to list all signatures. */
+export async function dkimSignatureGet(params: {
+  accountId: JmapAccountId;
+  ids?: readonly string[] | null;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<readonly StalwartDkimSignatureRow[]> {
+  const { accountId, ids, baseUrl, env } = params;
+  const res = await _xCall<XDkimGetResponse>(
+    JMAP_STALWART,
+    'x:DkimSignature/get',
+    { accountId, ids: ids ?? null },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+/** `x:DkimSignature/set` — create and/or destroy signature objects. */
+export async function dkimSignatureSet(params: {
+  accountId: JmapAccountId;
+  create?: Record<string, Record<string, unknown>>;
+  destroy?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartDkimSignatureRow>> {
+  const { accountId, create, destroy, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartDkimSignatureRow>>(
+    JMAP_STALWART,
+    'x:DkimSignature/set',
+    {
+      accountId,
+      ...(create ? { create } : {}),
+      ...(destroy ? { destroy } : {}),
+    },
+    baseUrl, env,
+  );
+}
+
 /**
  * `x:Account/query` — search accounts by filter.
  * Stalwart accepts `{ name }`, `{ domainId }`, etc. on the filter.
