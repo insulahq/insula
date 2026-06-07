@@ -1289,15 +1289,14 @@ configure_node_net_tuning() {
     log "Skipping node net-tuning (--skip-hardening)."
     return 0
   fi
+  # ── UDP rcvbuf / netdev backlog (marker: node-net-tuning) ──
   if marker_exists "node-net-tuning"; then
     log "Node net-tuning already configured, skipping."
-    return 0
-  fi
+  else
+    log "Configuring node net-tuning (UDP rcvbuf / netdev backlog)..."
 
-  log "Configuring node net-tuning (UDP rcvbuf / netdev backlog)..."
-
-  install -d -m 0755 /etc/sysctl.d
-  cat > /etc/sysctl.d/99-cluster-net-tune.conf <<'EOF'
+    install -d -m 0755 /etc/sysctl.d
+    cat > /etc/sysctl.d/99-cluster-net-tune.conf <<'EOF'
 # Cluster network tuning — prevents UDP rcvbuf overflow under bursts.
 # Set by bootstrap.sh (configure_node_net_tuning). See that function
 # for the why; override by editing this file if a host genuinely
@@ -1308,10 +1307,81 @@ net.core.wmem_max = 16777216
 net.core.wmem_default = 4194304
 net.core.netdev_max_backlog = 10000
 EOF
-  sysctl --system >/dev/null
+    sysctl --system >/dev/null 2>&1 || warn "sysctl --system reported errors after net-tuning; check 'sysctl --system'."
 
-  marker_set "node-net-tuning"
-  log "Node net-tuning configured (rmem_max=16M, rmem_default=4M, backlog=10000)."
+    marker_set "node-net-tuning"
+    log "Node net-tuning configured (rmem_max=16M, rmem_default=4M, backlog=10000)."
+  fi
+
+  # ── TCP BBR congestion control + fq qdisc (marker: node-net-tuning-bbr) ──
+  # Separate marker from the UDP block above on purpose: nodes bootstrapped
+  # before BBR shipped already hold the node-net-tuning marker, so the only
+  # way they pick BBR up on a re-run is an independently-gated step. (The
+  # buffer half of this tuning landed earlier; the congestion-control half
+  # did not — this closes that gap.)
+  configure_tcp_bbr
+}
+
+configure_tcp_bbr() {
+  # CUBIC (the Linux default) ramps slowly on high-RTT links and backs off
+  # hard on a single loss, capping single-stream WAN throughput well below
+  # the available bandwidth. BBR is dramatically better for sustained
+  # transfers — file-manager uploads, backups, and Longhorn replica sync
+  # between nodes. Requires net.core.default_qdisc=fq for pacing.
+  #
+  #   net.ipv4.tcp_rmem/tcp_wmem    — TCP autotune ranges up to the 16 MiB
+  #                                   ceiling already set in 99-cluster-net-tune
+  #   net.ipv4.tcp_congestion_control = bbr  (falls back to cubic if the
+  #                                   kernel lacks BBR, so sysctl never errors)
+  #   net.core.default_qdisc = fq   — BBR's required pacing qdisc
+  if marker_exists "node-net-tuning-bbr"; then
+    log "TCP BBR tuning already configured, skipping."
+    return 0
+  fi
+  log "Configuring TCP BBR congestion control + fq qdisc..."
+
+  # tcp_bbr ships as a module on Debian/Ubuntu/RHEL; load it FIRST so it shows
+  # up in tcp_available_congestion_control below. No-op if built-in (newer
+  # kernels) or already loaded.
+  if ! lsmod 2>/dev/null | grep -q '^tcp_bbr '; then
+    modprobe tcp_bbr 2>/dev/null || warn "modprobe tcp_bbr failed — kernel may lack BBR; falling back to cubic."
+  fi
+
+  # Only enable bbr if the running kernel actually offers it (the modprobe
+  # above makes it appear when available); otherwise keep cubic so
+  # `sysctl --system` doesn't error and abort the bootstrap.
+  local cc="bbr"
+  if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+    warn "BBR unavailable in this kernel — keeping cubic, not persisting tcp_bbr."
+    cc="cubic"
+  fi
+
+  # Persist the module load across reboots — but ONLY when bbr is usable, so a
+  # no-BBR kernel isn't asked to load a missing module on every boot.
+  if [[ "$cc" == "bbr" ]]; then
+    install -d -m 0755 /etc/modules-load.d
+    cat > /etc/modules-load.d/platform-bbr.conf <<'EOF'
+# Loaded by bootstrap.sh (configure_tcp_bbr) — required for
+# net.ipv4.tcp_congestion_control=bbr in /etc/sysctl.d/99-platform-bbr.conf
+tcp_bbr
+EOF
+  fi
+
+  install -d -m 0755 /etc/sysctl.d
+  cat > /etc/sysctl.d/99-platform-bbr.conf <<EOF
+# Managed by bootstrap.sh (configure_tcp_bbr).
+# Lifts the single-stream WAN throughput cap CUBIC + default buffers impose
+# on high-RTT links. Pairs with the core buffer ceilings in
+# 99-cluster-net-tune.conf. Edit to override per host.
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_congestion_control = ${cc}
+net.core.default_qdisc = fq
+EOF
+  sysctl --system >/dev/null 2>&1 || warn "sysctl --system reported errors after BBR tuning; check 'sysctl --system'."
+
+  marker_set "node-net-tuning-bbr"
+  log "TCP BBR tuning configured (cc=${cc}, qdisc=fq, tcp_rmem/wmem ceil=16M)."
 }
 
 install_packages() {
