@@ -73,11 +73,47 @@ done
 
 log() { [ "$QUIET" = "1" ] || echo "[generate-stalwart-secret] $*" >&2; }
 
+# Ensure mail/stalwart-admin-creds exists (idempotent — never overwrites).
+#
+# Stalwart 0.16's Deployment reads exactly ONE credential env:
+# STALWART_RECOVERY_ADMIN from this Secret (key recoveryAdmin, format
+# "admin:<password>"). On real installs bootstrap.sh creates it BEFORE
+# applying the overlay; local.sh never did, so local Stalwart started
+# with no admin credential at all and every management/JMAP call 401'd
+# (found during the 2026-06-07 app-password spike). Keys mirror
+# bootstrap.sh's create_mail_secrets: adminPassword + recoveryPassword +
+# recoveryAdmin.
+ensure_admin_creds() {
+  admin_pw=$1
+  if $KUBECTL get secret stalwart-admin-creds -n "$MAIL_NS" >/dev/null 2>&1; then
+    log "$MAIL_NS/stalwart-admin-creds already exists — leaving untouched."
+    return 0
+  fi
+  [ -n "$admin_pw" ] || { echo "ERROR: cannot seed stalwart-admin-creds with an empty password" >&2; exit 1; }
+  $KUBECTL create secret generic stalwart-admin-creds -n "$MAIL_NS" \
+    --from-literal=adminPassword="$admin_pw" \
+    --from-literal=recoveryPassword="$admin_pw" \
+    --from-literal=recoveryAdmin="admin:${admin_pw}" >/dev/null
+  log "$MAIL_NS/stalwart-admin-creds created (recovery admin for Stalwart 0.16)."
+}
+
 # Idempotency check — skip if Secret already exists.
 if $KUBECTL get secret "$SECRET_NAME" -n "$MAIL_NS" >/dev/null 2>&1; then
   if [ "$FORCE" != "1" ]; then
     log "$MAIL_NS/$SECRET_NAME already exists — skipping. Use --force to overwrite."
     log "Retrieve creds via the admin panel's 'Show Stalwart Credentials' button."
+    # Heal-forward (2026-06-07): clusters created before stalwart-admin-creds
+    # seeding existed have stalwart-secrets but not stalwart-admin-creds —
+    # without it Stalwart 0.16 starts with NO admin credential (the
+    # Deployment's only credential env is STALWART_RECOVERY_ADMIN from that
+    # Secret) and every JMAP/management call 401s. Derive it from the
+    # existing ADMIN_SECRET_PLAIN so platform-api's mounted mirror matches.
+    # `|| true`: a malformed stored value would make base64 abort the
+    # whole script with an opaque pipefail error — let the explicit
+    # empty-password guard in ensure_admin_creds report it instead.
+    existing_pw=$($KUBECTL get secret "$SECRET_NAME" -n "$MAIL_NS" \
+      -o jsonpath='{.data.ADMIN_SECRET_PLAIN}' | base64 -d || true)
+    ensure_admin_creds "$existing_pw"
     exit 0
   fi
   log "$MAIL_NS/$SECRET_NAME exists; --force set → overwriting."
@@ -136,6 +172,9 @@ $KUBECTL create secret generic "$SECRET_NAME" -n "$MAIL_NS" \
 $KUBECTL create secret generic "$MIRROR_NAME" -n "$PLATFORM_NS" \
   --from-literal=ADMIN_SECRET_PLAIN="$ADMIN_PW" \
   --dry-run=client -o yaml | $KUBECTL apply -f - >/dev/null
+
+# ─── Write mail/stalwart-admin-creds (Stalwart 0.16 recovery admin) ──────
+ensure_admin_creds "$ADMIN_PW"
 
 # ─── Print once (stderr) so operators can save the creds ─────────────────
 if [ "$QUIET" != "1" ]; then

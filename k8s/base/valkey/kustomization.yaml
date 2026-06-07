@@ -10,6 +10,7 @@ resources:
   - service.yaml
   - service-headless.yaml
   - networkpolicy.yaml
+  - limitrange.yaml
   # secret.example.yaml is NOT listed here — overlays must provide
   # the real Secret. Including the example would push a placeholder
   # password to every cluster.

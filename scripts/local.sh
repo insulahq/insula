@@ -521,7 +521,24 @@ _apply_dev_overlay() {
   local staged="${PROJECT_DIR}/.local.k8s-rendered.yaml"
   echo "$rendered" > "$staged"
   docker cp "$staged" "${K3S_CONTAINER}:/tmp/k8s-rendered.yaml"
-  k3s_exec kubectl apply -f /tmp/k8s-rendered.yaml 2>&1 | grep -v "^$" | sed 's/^/  /'
+  # Cold-start CRD ordering: the rendered manifest contains CRs (e.g. the
+  # barman-cloud ObjectStore) whose CRDs are registered by operator pods
+  # that are still pulling images during the first apply. One bounded
+  # retry after a short wait absorbs that race instead of aborting `up`
+  # before migrations + seed ever run (observed 2026-06-07).
+  #
+  # Capture-then-print so the retry decision rides on KUBECTL's exit
+  # status alone — a display pipeline (`| grep -v "^$"`) would substitute
+  # grep's status under pipefail and could mislabel an all-blank success
+  # as a failure (code-review note, 2026-06-07).
+  local apply_log
+  if ! apply_log=$(k3s_exec kubectl apply -f /tmp/k8s-rendered.yaml 2>&1); then
+    printf '%s\n' "$apply_log" | grep -v "^$" | sed 's/^/  /' || true
+    echo "  apply failed — likely CRD registration still in flight on cold start; retrying once in 15s..."
+    sleep 15
+    apply_log=$(k3s_exec kubectl apply -f /tmp/k8s-rendered.yaml 2>&1)  # set -e: 2nd failure aborts
+  fi
+  printf '%s\n' "$apply_log" | grep -v "^$" | sed 's/^/  /' || true
 }
 
 _wait_for_cnpg_cluster() {
@@ -998,10 +1015,53 @@ cmd_mail_test() {
 
 # ─── Webmail commands (Roundcube) ────────────────────────────────────────────
 
+# Create the roundcube Postgres role + database on the CNPG primary,
+# idempotently, with the password Roundcube actually uses (read from the
+# applied mail-secrets so the two can never drift). This is the local
+# equivalent of bootstrap.sh's create_roundcube_db(): post the M14 CNPG
+# migration there is otherwise NO deterministic path that seeds this role
+# locally — the old postgres-initdb script only ran against the retired
+# standalone Postgres, and the in-cluster roundcube-db-reconciler only
+# converges on a 5-min tick (and only once mail-secrets exists), so a
+# fresh `webmail-up` + immediate login raced to a "password
+# authentication failed" 500. Found during the 2026-06-07 app-pw spike.
+_ensure_roundcube_db() {
+  local pw
+  pw=$(k3s_exec kubectl -n mail get secret mail-secrets \
+    -o jsonpath='{.data.ROUNDCUBEMAIL_DB_PASSWORD}' 2>/dev/null | base64 -d || true)
+  if [ -z "$pw" ]; then
+    echo "  ⚠ mail-secrets.ROUNDCUBEMAIL_DB_PASSWORD not found — run mail-up first; skipping roundcube DB seed."
+    return 0
+  fi
+  local psql="kubectl -n platform exec system-db-1 -c postgres -- psql -U postgres -tAX"
+  # Role: create-or-realign password (idempotent). The dev password has
+  # no single quotes, so a single-quoted SQL literal is safe here.
+  if ! k3s_exec $psql -c "DO \$do\$ BEGIN
+      IF EXISTS (SELECT FROM pg_roles WHERE rolname='roundcube') THEN
+        ALTER ROLE roundcube LOGIN PASSWORD '${pw}';
+      ELSE
+        CREATE ROLE roundcube LOGIN PASSWORD '${pw}';
+      END IF;
+    END \$do\$;" >/dev/null 2>&1; then
+    echo "  ⚠ roundcube role seed failed (non-fatal — the in-cluster reconciler retries)."
+    return 0
+  fi
+  # Database: CREATE DATABASE can't run in a transaction or with IF NOT
+  # EXISTS, so gate it on a separate existence probe.
+  if ! k3s_exec $psql -c "SELECT 1 FROM pg_database WHERE datname='roundcube'" 2>/dev/null | grep -q 1; then
+    k3s_exec $psql -c "CREATE DATABASE roundcube OWNER roundcube" >/dev/null 2>&1 || true
+  fi
+  k3s_exec $psql -c "GRANT ALL PRIVILEGES ON DATABASE roundcube TO roundcube" >/dev/null 2>&1 || true
+  echo "  ✓ roundcube Postgres role + database ensured."
+}
+
 cmd_webmail_up() {
   echo "Deploying Roundcube webmail..."
   _ensure_k3s_running
   _sync_manifests
+  # Seed the roundcube role/db BEFORE the pod waits — the password auth
+  # path must be ready the moment Roundcube serves its first request.
+  _ensure_roundcube_db
   k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/roundcube
   echo ""
   echo "Waiting for Roundcube pod (up to 3 minutes)..."
