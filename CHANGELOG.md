@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **DKIM selectors are now a fixed alternating pair — `dkim-1` / `dkim-2`**
+  ([ADR-047](docs/architecture/adr/ADR-047-dkim-ab-selectors.md), the Microsoft 365
+  `selector1`/`selector2` pattern, replacing per-rotation timestamped
+  selectors). Rotation flips signing to the other selector with a fresh
+  RSA-2048 key; the previous selector's key + TXT record stay live, so mail
+  in receivers' retry queues keeps verifying and **no retirement step exists
+  anymore** (the rotate response no longer returns `recommendedRetireOldAt`;
+  it now returns `previousSelector` + `destroyedSelectors`). Tenants on
+  external DNS configure two TXT records once and never touch DNS on
+  rotation. Enable + drift-repair now replace Stalwart's auto-created
+  `v1-rsa-<date>`/`v1-ed25519-<date>` signature pair with one platform
+  RSA-2048 signature under `dkim-1` and publish its TXT record inline
+  (previously first published by the next dns-sync cycle). Migration 0051
+  adds `email_domains.dkim_active_selector`; existing domains converge onto
+  the pair at their first rotation or re-enable.
+
 ### Fixed
 - **DKIM/DNS hygiene follow-ups** (2026-06-07 E2E findings): the email-domain
   enable flow no longer inserts a junk `._domainkey.<domain>` TXT record with
