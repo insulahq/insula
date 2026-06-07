@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { Loader2, Globe, Shield, Fingerprint } from 'lucide-react';
+import { Loader2, Shield, Fingerprint } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { usePasskey } from '@/hooks/use-passkey';
 import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
@@ -137,7 +137,7 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-linear-to-br from-brand-500 to-accent-500 dark:from-gray-900 dark:to-gray-800 p-4">
       <div className="w-full max-w-sm rounded-2xl bg-white dark:bg-gray-800 p-8 shadow-xl">
         <div className="mb-6 flex flex-col items-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-500 text-white"><Globe size={24} /></div>
+          <img src="/insula-mark.svg" alt="Insula" className="h-14 w-14" />
           <h1 className="mt-4 text-xl font-bold text-gray-900 dark:text-gray-100">Tenant Portal</h1>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">Sign in to manage your hosting</p>
         </div>

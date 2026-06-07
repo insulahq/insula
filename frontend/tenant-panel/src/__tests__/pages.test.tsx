@@ -79,9 +79,9 @@ describe('Layout', () => {
     expect(screen.getByText('Settings')).toBeInTheDocument();
   });
 
-  it('shows Tenant Portal brand name', () => {
+  it('shows brand name', () => {
     renderWithProviders(<Layout />);
-    expect(screen.getByText('Tenant Portal')).toBeInTheDocument();
+    expect(screen.getByText('Insula')).toBeInTheDocument();
   });
 
   it('renders the layout container', () => {
