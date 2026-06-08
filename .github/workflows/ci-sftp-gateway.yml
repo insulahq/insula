@@ -97,7 +97,7 @@ jobs:
             "${{ env.IMAGE }}@${DIGEST}"
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           # docker/metadata-action tags with type=sha,prefix= use the
           # short (7-char) sha by default, but github.sha is the full
