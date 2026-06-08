@@ -931,7 +931,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // email_domain mirror rows against Stalwart's JMAP principal store.
       // Disabled by STALWART_PRINCIPALS_SYNC_DISABLE=true.
       if (process.env.STALWART_PRINCIPALS_SYNC_DISABLE !== 'true') {
-        const principalsSyncHandle = createPrincipalsSyncScheduler(app.db);
+        // Provide a CoreV1Api so the sync can read the master-user FQDN from
+        // mail-secrets (the webmail master-user drift detector). Best-effort —
+        // without a kubeconfig the detector simply skips (no false alarm).
+        let syncCore: import('@kubernetes/client-node').CoreV1Api | null = null;
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const kubePath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+          syncCore = createK8sClients(kubePath).core;
+        } catch (err) {
+          app.log.warn({ err: err instanceof Error ? err.message : String(err) },
+            'principals-sync: k8s client init failed — webmail master-user detector disabled');
+        }
+        const principalsSyncHandle = createPrincipalsSyncScheduler(app.db, { core: syncCore });
         principalsSyncHandle.start();
         app.addHook('onClose', () => { principalsSyncHandle.stop(); });
       }

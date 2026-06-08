@@ -32,17 +32,26 @@ import {
   type JmapAccountId,
   type StalwartPrincipal,
 } from './client.js';
+import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
+import { readStalwartMasterUser, MASTER_USER_FALLBACK } from '../mail-admin/stalwart-master-user.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
+// Stable synthetic platform_row_id for the (single) webmail master-user drift
+// item — it is not a platform DB row, so it needs a fixed natural key so
+// reconcileDriftItems upserts/resolves the one row instead of inserting dupes.
+const MASTER_DRIFT_ROW_ID = '__webmail_master_user__';
+
 export interface PrincipalsSyncOptions {
   readonly intervalMs?: number;
   readonly baseUrl?: string;
   readonly env?: NodeJS.ProcessEnv;
+  /** k8s CoreV1Api for reading the master-user FQDN from mail-secrets (master detector). */
+  readonly core?: CoreV1Api | null;
 }
 
 export interface PrincipalsSyncHandle {
@@ -69,6 +78,7 @@ export function createPrincipalsSyncScheduler(
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const baseUrl = options.baseUrl;
   const env = options.env ?? process.env;
+  const core = options.core ?? null;
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let running = false;
@@ -85,7 +95,7 @@ export function createPrincipalsSyncScheduler(
     }
     running = true;
     try {
-      return await syncPrincipals({ db, baseUrl, env });
+      return await syncPrincipals({ db, baseUrl, env, core });
     } finally {
       running = false;
     }
@@ -138,8 +148,9 @@ async function syncPrincipals(params: {
   db: Database;
   baseUrl?: string;
   env: NodeJS.ProcessEnv;
+  core?: CoreV1Api | null;
 }): Promise<SyncResult> {
-  const { db, baseUrl, env } = params;
+  const { db, baseUrl, env, core } = params;
 
   const errors: string[] = [];
 
@@ -178,6 +189,14 @@ async function syncPrincipals(params: {
   for (const p of allPrincipals) {
     if (!p.id) continue;
     if (p.type === 'individual') {
+      // Stalwart (v0.16.x) returns an individual's address in `name` and does
+      // NOT populate the `emails` array on Principal/get — so the prior
+      // `p.emails`-only mapping was ALWAYS empty, falsely flagging every
+      // mailbox as "missing from Stalwart" (drift false-positive). Map by
+      // `name` (the canonical address, exactly as domains map by name one
+      // branch down); keep `emails` for forward-compat if a future Stalwart
+      // starts returning it.
+      if (p.name) stalwartMailboxByEmail.set(p.name.toLowerCase(), p.id);
       for (const email of p.emails ?? []) {
         stalwartMailboxByEmail.set(email.toLowerCase(), p.id);
       }
@@ -196,11 +215,46 @@ async function syncPrincipals(params: {
   // they're no longer in drift, (c) detect NEW items for admin alert
   // fan-out. Each item: kind + platform_row_id is the natural key.
   const driftThisTick: Array<{
-    kind: 'mailbox' | 'domain';
+    kind: 'mailbox' | 'domain' | 'master-user';
     expectedName: string;
     expectedStalwartId: string;
     platformRowId: string;
+    notes?: string;
   }> = [];
+
+  // ── C: webmail master-user detector ──────────────────────────────────────
+  // The Stalwart master user (`master@mail.<domain>`) is what Bulwark +
+  // Roundcube authenticate as to impersonate tenant mailboxes. If it goes
+  // missing, ALL webmail login/impersonation silently breaks (the rest of
+  // Stalwart is fine, so nothing else alerts). It is NOT a platform DB row, so
+  // it's invisible to the mailbox/domain reconcile below — detect it here and
+  // raise an ACTIONABLE drift item (one stable row, fixed platformRowId).
+  // NB: MUST run after `stalwartMailboxByEmail` is populated above (it looks
+  // the master up in that map) — do not hoist this block above the principal loop.
+  try {
+    const masterFqdn = (await readStalwartMasterUser(core ?? null)).trim().toLowerCase();
+    // Skip when we only have the compiled-in fallback (no k8s/secret) — we
+    // can't know the real master FQDN, so don't false-alarm.
+    if (masterFqdn && masterFqdn !== MASTER_USER_FALLBACK.toLowerCase()) {
+      if (!stalwartMailboxByEmail.has(masterFqdn)) {
+        driftThisTick.push({
+          kind: 'master-user',
+          expectedName: masterFqdn,
+          expectedStalwartId: '',
+          platformRowId: MASTER_DRIFT_ROW_ID,
+          notes:
+            'Webmail master user is missing from Stalwart — Bulwark/Roundcube '
+            + 'login + impersonation are broken for ALL mailboxes until it is '
+            + 'recreated. Remediate: POST /api/v1/admin/mail/rotate-webmail-master '
+            + '(super_admin) — it recreates the master principal and re-syncs '
+            + 'mail-secrets. No tenant data is affected.',
+        });
+        log.warn({ masterFqdn }, 'webmail master user missing from Stalwart — drift recorded (impersonation broken)');
+      }
+    }
+  } catch (err) {
+    errors.push(`master-user check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   // 3. Reconcile mailboxes
   try {
@@ -333,10 +387,11 @@ async function syncPrincipals(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DriftTickItem {
-  readonly kind: 'mailbox' | 'domain';
+  readonly kind: 'mailbox' | 'domain' | 'master-user';
   readonly expectedName: string;
   readonly expectedStalwartId: string;
   readonly platformRowId: string;
+  readonly notes?: string;
 }
 
 /**
@@ -391,6 +446,7 @@ async function reconcileDriftItems(
         expectedName: item.expectedName,
         expectedStalwartId: item.expectedStalwartId,
         platformRowId: item.platformRowId,
+        notes: item.notes ?? null,
       });
       newItems.push(item);
     }
@@ -426,27 +482,47 @@ async function emitDriftNotification(
     .where(inArray(users.roleName, ['super_admin', 'admin']));
   if (admins.length === 0) return;
 
+  const masterItem = newItems.find((i) => i.kind === 'master-user');
   const mailboxCount = newItems.filter((i) => i.kind === 'mailbox').length;
   const domainCount = newItems.filter((i) => i.kind === 'domain').length;
-  const parts: string[] = [];
-  if (domainCount > 0) parts.push(`${domainCount} tenant Stalwart Domain${domainCount === 1 ? '' : 's'}`);
-  if (mailboxCount > 0) parts.push(`${mailboxCount} mailbox principal${mailboxCount === 1 ? '' : 's'}`);
-  const summary = parts.join(' + ');
 
-  const sample = newItems.slice(0, 3).map((i) => i.expectedName).join(', ');
-  const more = newItems.length > 3 ? ` (+${newItems.length - 3} more)` : '';
-
-  const title = `Mail data drift detected: ${summary} missing from Stalwart`;
-  const message =
-    `The principals-sync reconciler found platform DB rows referencing ` +
-    `Stalwart entries that no longer exist. Likely cause: a failed mail-stack ` +
-    `failover (the silent-loss path was patched 2026-05-27; this alert exists ` +
-    `to surface PRE-EXISTING drift from before that fix).\n\n` +
-    `New drift this cycle: ${sample}${more}\n\n` +
-    `Inspect via Admin UI → Email → Data Drift. Each item offers two ` +
-    `remediation options: restore the entire Stalwart datastore from a ` +
-    `snapshot (preserves DKIM + mailbox contents), or recreate the missing ` +
-    `entry empty (new DKIM, no messages — last resort).`;
+  // The master-user is a platform-wide outage (ALL webmail login/impersonation
+  // broken), so it gets its own urgent, single-action notification rather than
+  // being folded into the per-mailbox/domain drift summary.
+  let title: string;
+  let message: string;
+  if (masterItem) {
+    title = 'Webmail master user missing — ALL webmail login/impersonation is broken';
+    message =
+      `The Stalwart master user (${masterItem.expectedName}) — which Bulwark + `
+      + `Roundcube authenticate as to open every tenant mailbox — is missing from `
+      + `Stalwart. Until it is recreated, NO mailbox can log into webmail or be `
+      + `impersonated (other mail functions are unaffected).\n\n`
+      + `Remediate: Admin UI → Email → Data Drift → "Recreate webmail master", or `
+      + `POST /api/v1/admin/mail/rotate-webmail-master (super_admin). No tenant `
+      + `mail data is affected.`;
+    if (mailboxCount > 0 || domainCount > 0) {
+      message += `\n\n(Also new this cycle: ${mailboxCount} mailbox + ${domainCount} domain drift item(s).)`;
+    }
+  } else {
+    const parts: string[] = [];
+    if (domainCount > 0) parts.push(`${domainCount} tenant Stalwart Domain${domainCount === 1 ? '' : 's'}`);
+    if (mailboxCount > 0) parts.push(`${mailboxCount} mailbox principal${mailboxCount === 1 ? '' : 's'}`);
+    const summary = parts.join(' + ');
+    const sample = newItems.slice(0, 3).map((i) => i.expectedName).join(', ');
+    const more = newItems.length > 3 ? ` (+${newItems.length - 3} more)` : '';
+    title = `Mail data drift detected: ${summary} missing from Stalwart`;
+    message =
+      `The principals-sync reconciler found platform DB rows referencing ` +
+      `Stalwart entries that no longer exist. Likely cause: a failed mail-stack ` +
+      `failover (the silent-loss path was patched 2026-05-27; this alert exists ` +
+      `to surface PRE-EXISTING drift from before that fix).\n\n` +
+      `New drift this cycle: ${sample}${more}\n\n` +
+      `Inspect via Admin UI → Email → Data Drift. Each item offers two ` +
+      `remediation options: restore the entire Stalwart datastore from a ` +
+      `snapshot (preserves DKIM + mailbox contents), or recreate the missing ` +
+      `entry empty (new DKIM, no messages — last resort).`;
+  }
 
   for (const a of admins) {
     try {

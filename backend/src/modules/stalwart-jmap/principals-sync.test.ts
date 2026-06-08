@@ -49,6 +49,14 @@ vi.mock('./client.js', () => ({
   principalGet: (...args: unknown[]) => mockPrincipalGet(...args),
 }));
 
+// master-user detector dependency. Default → the compiled-in fallback so the
+// detector SKIPS in tests that don't exercise it (no false alarm, no throw).
+const mockReadMaster = vi.fn(async () => 'master@master.local');
+vi.mock('../mail-admin/stalwart-master-user.js', () => ({
+  readStalwartMasterUser: (...args: unknown[]) => mockReadMaster(...args),
+  MASTER_USER_FALLBACK: 'master@master.local',
+}));
+
 const ACCOUNT_ID = 'account-123';
 
 function makeSession() {
@@ -139,6 +147,7 @@ function createMockDb(
 describe('createPrincipalsSyncScheduler — runOnce', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReadMaster.mockResolvedValue('master@master.local'); // default: detector skips
   });
 
   it('returns early with error when JMAP session fails', async () => {
@@ -243,5 +252,69 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect(result.mailboxesBackfilled).toBe(0);
     expect(result.mailboxOrphansMarked).toBe(0);
     expect((db as unknown as { _updateFn: ReturnType<typeof vi.fn> })._updateFn).not.toHaveBeenCalled();
+  });
+
+  // ── fix A: map individuals by `name` (Stalwart returns the address there;
+  //          `emails` is never populated on v0.16.x) ──────────────────────────
+  it('does NOT flag a synced mailbox as drift when Stalwart returns the address in `name` (no emails array)', () => {
+    return (async () => {
+      mockGetJmapSession.mockResolvedValueOnce(makeSession());
+      // Real Stalwart v0.16.x shape: name = full address, NO `emails`.
+      mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+        { id: 'sp-d', type: 'individual', name: 'kjh@staging.example.net' },
+      ]));
+      const db = createMockDb(
+        [{ id: 'mb-kjh', fullAddress: 'kjh@staging.example.net', stalwartPrincipalId: 'sp-d' }],
+        [],
+      );
+      const result = await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+      expect(result.mailboxOrphansMarked).toBe(0); // pre-fix this was 1 (false drift)
+      const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
+      expect(inserts.some((c) => (c[0] as { kind?: string })?.kind === 'mailbox')).toBe(false);
+    })();
+  });
+
+  // ── C: webmail master-user detector ────────────────────────────────────────
+  it('records an ACTIONABLE master-user drift item when the master is missing from Stalwart', async () => {
+    mockReadMaster.mockResolvedValue('master@mail.staging.example.net');
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-d', type: 'individual', name: 'kjh@staging.example.net' }, // a tenant mailbox, NOT the master
+    ]));
+    const db = createMockDb([], []);
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
+    const masterInsert = inserts.find((c) => (c[0] as { kind?: string })?.kind === 'master-user');
+    expect(masterInsert).toBeDefined();
+    const row = masterInsert![0] as { expectedName: string; notes: string };
+    expect(row.expectedName).toBe('master@mail.staging.example.net');
+    expect(row.notes).toContain('rotate-webmail-master'); // the actionable remediation
+  });
+
+  it('does NOT record master drift when the master principal is present in Stalwart', async () => {
+    mockReadMaster.mockResolvedValue('master@mail.staging.example.net');
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'b', type: 'individual', name: 'master@mail.staging.example.net' },
+    ]));
+    const db = createMockDb([], []);
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
+    expect(inserts.some((c) => (c[0] as { kind?: string })?.kind === 'master-user')).toBe(false);
+  });
+
+  it('skips the master-user check when only the compiled-in fallback FQDN is known', async () => {
+    // default mockReadMaster → 'master@master.local' (fallback) → skip, no false alarm
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([]));
+    const db = createMockDb([], []);
+    const result = await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+
+    const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
+    expect(inserts.some((c) => (c[0] as { kind?: string })?.kind === 'master-user')).toBe(false);
+    expect(result.errors).toHaveLength(0);
   });
 });
