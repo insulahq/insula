@@ -2,9 +2,10 @@
 set -e
 
 # Prepare SFTP chroot jail at /jail (emptyDir volume, NOT on the customer PVC).
-# The SFTP gateway bind-mounts the customer PVC at /jail/home/ and chroots
-# here, so the user's SFTP root (/home/) contains only their files — zero
-# platform artifacts are visible.
+# The pod spec mounts the tenant PVC at /jail/home (the kubelet mounts it before
+# this entrypoint runs), so the user's SFTP root (/home/) contains only their
+# files — zero platform artifacts. sftp-chroot performs NO runtime mount, so the
+# pod needs no CAP_SYS_ADMIN.
 #
 # The sftp-server binary was patched at build time (patchelf) to set its ELF
 # interpreter and rpath to /.platform/lib/, so after chroot the dynamic
@@ -40,10 +41,13 @@ if [ -f "$SFTP_PATCHED" ] && [ -d "$JAIL" ]; then
   echo "root:x:0:" > "$JAIL/etc/group"
   echo "nobody:x:65534:" >> "$JAIL/etc/group"
 
-  # /home — bind mount target (populated at session start by the gateway)
+  # /home — the tenant PVC, mounted here by the pod spec (kubelet). We do NOT
+  # mount it ourselves and MUST NOT chmod it: its contents + permissions are the
+  # tenant's. The chrooted sftp-server reaches it via ambient DAC_OVERRIDE
+  # regardless of the on-disk ownership. mkdir is a harmless no-op on the mount.
   mkdir -p "$JAIL/home"
 
-  # Set permissions so non-root sftp-server can't list jail internals.
+  # Set permissions so the non-root sftp-server can't list jail internals.
   # The gateway drops to uid 65534 (nobody) after chroot — these dirs
   # become invisible because nobody can't readdir on mode-711 dirs.
   chmod 711 "$JAIL"              # traverse but not list root
@@ -51,7 +55,6 @@ if [ -f "$SFTP_PATCHED" ] && [ -d "$JAIL" ]; then
   chmod 711 "$JAIL/.platform/lib" 2>/dev/null || true  # same for lib dir
   chmod 711 "$JAIL/dev"          # traverse to /dev/null but can't list
   chmod 711 "$JAIL/etc"          # traverse to /etc/passwd but can't list
-  chmod 777 "$JAIL/home"         # full access for all users
 
   # Clean up any legacy platform artifacts from the PVC root
   rm -rf /data/.platform /data/dev /data/etc 2>/dev/null || true

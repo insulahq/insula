@@ -211,15 +211,15 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 
 	switch protocol {
 	case "sftp":
-		// sftp-chroot (static Go binary) does bind-mount + chroot + uid drop
-		// + exec in a single binary — no shell interpolation, no injection.
-		// The user sees only /home/ (their PVC data). Platform dirs have
-		// mode 711/700 and are invisible to the nobody uid.
+		// sftp-chroot (static Go binary) chroots into /jail + drops to nobody
+		// (keeping DAC_OVERRIDE ambient) + exec — no shell interpolation, no
+		// injection. The tenant PVC is mounted at /jail/home by the file-manager
+		// pod spec (no runtime bind mount → no CAP_SYS_ADMIN). The user sees only
+		// /home/ (their PVC data); platform dirs are mode 711/700 and invisible.
 		chrootHome := confineHome(homePath)
 		return []string{
 			"sftp-chroot",
 			"--root", "/jail",
-			"--bind", "/data:/home",
 			"/.platform/sftp-server", "-e", "-d", chrootHome,
 		}
 	case "scp":
@@ -238,9 +238,10 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 	}
 }
 
-// confineHome computes the SFTP start directory inside the chroot. After
-// sftp-chroot bind-mounts the PVC at /home and chroots, the user's data lives
-// under /home; this returns "/home" plus the user's configured home sub-path.
+// confineHome computes the SFTP start directory inside the chroot. The tenant
+// PVC is mounted at /home by the file-manager pod spec (not a runtime bind
+// mount); after sftp-chroot chroots, the user's data lives under /home, so this
+// returns "/home" plus the user's configured home sub-path.
 //
 // homePath comes from the trusted sftp-user record (e.g. "/" or "/public_html"),
 // but we sanitize defensively so the start directory can never point outside the

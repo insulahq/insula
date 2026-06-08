@@ -33,10 +33,15 @@ func TestBuildCommand_SFTP(t *testing.T) {
 			if got[0] != "sftp-chroot" {
 				t.Fatalf("expected sftp-chroot, got %q", got[0])
 			}
-			// Check --root, --bind flags
+			// Chroot into /jail; the PVC is mounted at /jail/home by the pod
+			// spec, so there is NO runtime --bind (that needed CAP_SYS_ADMIN).
 			assertContains(t, got, "--root")
-			assertContains(t, got, "--bind")
-			assertContains(t, got, "/data:/home")
+			assertContains(t, got, "/jail")
+			for _, a := range got {
+				if a == "--bind" {
+					t.Error("sftp command must not use --bind (no runtime mount)")
+				}
+			}
 			// Check -d flag value
 			for i, arg := range got {
 				if arg == "-d" && i+1 < len(got) {
