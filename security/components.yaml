@@ -310,7 +310,7 @@ components:
     scan: trivy+govulncheck
     deps: [images/sftp-gateway/go.mod]
     owner: platform
-    notes: First-party (Go 1.23). Internet-facing SSH/SFTP into tenant volumes. Deps gliderlabs/ssh, golang.org/x/crypto, k8s client.
+    notes: First-party (Go 1.25). Internet-facing SSH/SFTP into tenant volumes. Deps gliderlabs/ssh, golang.org/x/crypto, k8s client.
 
   # ───────────────────────────── Tier 1 — High ─────────────────────────────
   - id: longhorn
@@ -352,7 +352,7 @@ components:
     scan: trivy+govulncheck
     deps: [images/firewall-reconciler/go.mod]
     owner: platform
-    notes: First-party (Go 1.22, distroless). Privileged host nft writes. Deps google/nftables, k8s client.
+    notes: First-party (Go 1.25, distroless). Privileged host nft writes. Deps google/nftables, k8s client.
 
   - id: host-config-reconciler
     name: host-config-reconciler DaemonSet (sysctl/limits/modules)
@@ -366,7 +366,7 @@ components:
     scan: trivy+govulncheck
     deps: [images/host-config-reconciler/go.mod]
     owner: platform
-    notes: First-party (Go 1.22, distroless). Writes host sysctl/limits/modprobe.
+    notes: First-party (Go 1.25, distroless). Writes host sysctl/limits/modprobe.
 
   - id: security-probe
     name: security-probe DaemonSet (read-only host posture)
@@ -380,7 +380,7 @@ components:
     scan: trivy+govulncheck
     deps: [images/security-probe/go.mod]
     owner: platform
-    notes: First-party (Go 1.22, distroless, drops ALL caps). Read-only host mounts → ConfigMaps. Dep modernc.org/sqlite.
+    notes: First-party (Go 1.25, distroless, drops ALL caps). Read-only host mounts → ConfigMaps. Dep modernc.org/sqlite.
 
   - id: node-terminal
     name: node-terminal image (privileged nsenter into host)
@@ -702,7 +702,7 @@ components:
     owner: platform
     notes: >-
       FROM bases for first-party images, covered transitively by per-image Trivy:
-      node:22-alpine, nginx:1.27-alpine, golang:1.22-alpine, golang:1.23-alpine,
+      node:22-alpine, nginx:1.27-alpine, golang:1.25-alpine,
       rust:1.95-bookworm, debian:trixie-slim, gcr.io/distroless/static,
       gcr.io/distroless/cc-debian12, busybox:1.37, tini, age, openssl, openssh-client.
 
