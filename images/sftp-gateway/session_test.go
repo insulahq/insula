@@ -13,10 +13,15 @@ func TestBuildCommand_SFTP(t *testing.T) {
 	}{
 		{"root homePath", "/", "/home"},
 		{"subdirectory homePath", "/public_html", "/home/public_html"},
+		{"nested subdirectory homePath", "/public_html/uploads", "/home/public_html/uploads"},
 		{"empty homePath defaults to root", "", "/home"},
-		{"traversal into .platform sanitized", "/../.platform", "/home"},
-		{"double traversal sanitized", "/../../etc", "/home"},
-		{"relative traversal sanitized", "../../etc/passwd", "/home/etc/passwd"},
+		{"trailing slash trimmed", "/public_html/", "/home/public_html"},
+		{"leading-dot dir is valid", "/.well-known", "/home/.well-known"},
+		{"traversal into .platform clamped", "/../.platform", "/home"},
+		{"double traversal clamped", "/../../etc", "/home"},
+		{"relative traversal clamped", "../../etc/passwd", "/home"},
+		{"embedded traversal clamped", "/public_html/../../etc", "/home"},
+		{"null byte clamped", "/pub\x00lic", "/home"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -42,6 +47,43 @@ func TestBuildCommand_SFTP(t *testing.T) {
 				}
 			}
 			t.Error("missing -d flag in command")
+		})
+	}
+}
+
+func TestConfineHome(t *testing.T) {
+	tests := []struct {
+		name     string
+		homePath string
+		want     string
+	}{
+		{"root", "/", "/home"},
+		{"empty", "", "/home"},
+		{"subdir", "/public_html", "/home/public_html"},
+		{"subdir no leading slash", "public_html", "/home/public_html"},
+		{"nested", "/public_html/uploads", "/home/public_html/uploads"},
+		{"trailing slash", "/public_html/", "/home/public_html"},
+		{"dot component collapsed", "/public_html/./img", "/home/public_html/img"},
+		{"double slash collapsed", "/public_html//img", "/home/public_html/img"},
+		{"leading-dot dir kept", "/.well-known", "/home/.well-known"},
+		{"triple-dot dir kept", "/.../weird", "/home/.../weird"},
+		{"leading traversal clamped", "/../.platform", "/home"},
+		{"double traversal clamped", "/../../etc", "/home"},
+		{"relative traversal clamped", "../../etc/passwd", "/home"},
+		{"embedded traversal clamped", "/public_html/../../etc", "/home"},
+		{"lone dotdot clamped", "..", "/home"},
+		{"null byte clamped", "/pub\x00lic", "/home"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := confineHome(tt.homePath)
+			if got != tt.want {
+				t.Errorf("confineHome(%q) = %q, want %q", tt.homePath, got, tt.want)
+			}
+			// Invariant: the start dir can never escape the PVC mount at /home.
+			if got != "/home" && !strings.HasPrefix(got, "/home/") {
+				t.Errorf("confineHome(%q) = %q escapes /home", tt.homePath, got)
+			}
 		})
 	}
 }

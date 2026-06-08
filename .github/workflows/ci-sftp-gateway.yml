@@ -19,6 +19,23 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}/sftp-gateway
 
 jobs:
+  test:
+    name: Go unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: images/sftp-gateway/go.mod
+      - name: go vet
+        working-directory: images/sftp-gateway
+        run: go vet ./...
+      - name: go test (race)
+        working-directory: images/sftp-gateway
+        # Covers confineHome()/buildCommand() chroot path confinement
+        # (session_test.go) — the SFTP start-directory contract.
+        run: go test -race ./...
+
   build:
     name: Build + Scan + Push
     runs-on: ubuntu-latest
