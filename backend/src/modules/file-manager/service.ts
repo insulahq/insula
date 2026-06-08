@@ -1,6 +1,7 @@
 import * as k8s from '@kubernetes/client-node';
 import { ensureFileManagerRunning, getFileManagerStatus } from './k8s-lifecycle.js';
 import { getFileManagerImage } from './image.js';
+import { deriveFmSecret } from './internal-secret.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@insula/api-contracts';
 
@@ -295,17 +296,20 @@ async function proxyDirect(
     contentType?: string;
     platformInternal?: boolean;
   },
+  namespace: string,
 ): Promise<ProxyResult> {
   const headers: Record<string, string> = {};
   if (options.contentType) headers['Content-Type'] = options.contentType;
   if (options.platformInternal) {
-    const secret = process.env.PLATFORM_INTERNAL_SECRET;
-    if (!secret) {
+    const master = process.env.PLATFORM_INTERNAL_SECRET;
+    if (!master) {
       throw new Error(
         'PLATFORM_INTERNAL_SECRET is required for platform-internal file-manager requests',
       );
     }
-    headers['X-Platform-Internal'] = secret;
+    // Per-tenant derived secret (F5) — never send the global master to a
+    // tenant-namespace pod.
+    headers['X-Platform-Internal'] = deriveFmSecret(master, namespace);
   }
   if (options.body) {
     const bodyLen = Buffer.isBuffer(options.body) ? options.body.length : Buffer.byteLength(options.body);
@@ -385,7 +389,7 @@ export async function proxyToFileManager(
 
   // Phase 2: fast direct path via ClusterIP DNS — no apiserver proxy.
   if (options.directUrl) {
-    return proxyDirect(options.directUrl, sidecarPath + queryStr, options);
+    return proxyDirect(options.directUrl, sidecarPath + queryStr, options, namespace);
   }
 
   // Slow path: kubeconfig + apiserver service-proxy. Used when
@@ -401,13 +405,15 @@ export async function proxyToFileManager(
   const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
   if (options.platformInternal) {
-    const secret = process.env.PLATFORM_INTERNAL_SECRET;
-    if (!secret) {
+    const master = process.env.PLATFORM_INTERNAL_SECRET;
+    if (!master) {
       throw new Error(
         'PLATFORM_INTERNAL_SECRET is required for platform-internal file-manager requests',
       );
     }
-    headers['X-Platform-Internal'] = secret;
+    // Per-tenant derived secret (F5) — never send the global master to a
+    // tenant-namespace pod.
+    headers['X-Platform-Internal'] = deriveFmSecret(master, namespace);
   }
 
   // Set Content-Length for bodies to avoid chunked encoding issues

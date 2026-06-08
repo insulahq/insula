@@ -4,12 +4,14 @@
 
 import { createServer } from 'node:http';
 import * as fs from 'node:fs';
-import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsChown } from 'node:fs/promises';
+import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsChown, realpath } from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve, basename, extname, dirname, relative } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isIP } from 'node:net';
+import { lookup as dnsLookup } from 'node:dns';
 
 const execFileAsync = promisify(execFile);
 
@@ -56,7 +58,9 @@ if (!uidNameCache.has(999)) uidNameCache.set(999, 'mysql');
 if (!gidNameCache.has(999)) gidNameCache.set(999, 'mysql');
 if (!uidNameCache.has(70)) uidNameCache.set(70, 'postgres');
 if (!gidNameCache.has(70)) gidNameCache.set(70, 'postgres');
-const BASE = '/data';
+// The PVC mount root. Overridable only for unit tests (FM_BASE); production
+// always uses the hard-coded /data mount.
+const BASE = process.env.FM_BASE || '/data';
 
 const MIME_TYPES = {
   '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
@@ -118,21 +122,60 @@ function isHidden(relPath) {
 
 // ─── Security: path traversal prevention ─────────────────────────────────────
 
-function safePath(userPath, opts = {}) {
+function withinBase(p) {
+  // A path is inside BASE only if it IS BASE or sits under "BASE/". The
+  // naive `startsWith(BASE)` is wrong — it also matches sibling dirs whose
+  // name merely begins with "data" (e.g. "/data-evil"), so "../data-evil/x"
+  // would escape. (F3)
+  return p === BASE || p.startsWith(BASE + '/');
+}
+
+// Resolve symlinks along `resolved` and confine the *real* target to BASE.
+//
+// `resolve()` is purely lexical, so it cannot see symlinks: a symlink planted
+// inside the PVC (via SFTP, the tenant's app, or an extracted archive) that
+// points outside /data would let the root file-manager read/write the host
+// filesystem. We realpath the longest EXISTING ancestor of the path (the leaf
+// may not exist yet for writes/mkdir), verify it stays inside BASE, then
+// re-append the not-yet-existing trailing components. Any symlink that escapes
+// BASE makes this return null. Symlinks that stay within BASE resolve normally.
+async function confineRealpath(resolved) {
+  const suffix = [];
+  let cur = resolved;
+  for (;;) {
+    try {
+      const real = await realpath(cur); // eslint-disable-line no-await-in-loop
+      if (!withinBase(real)) return null; // a symlink escaped BASE
+      return suffix.length ? join(real, ...suffix) : real;
+    } catch (err) {
+      if (err.code !== 'ENOENT') return null;
+      const parent = dirname(cur);
+      if (parent === cur || cur.length <= BASE.length) return null; // walked to / or above BASE
+      suffix.unshift(basename(cur));
+      cur = parent;
+    }
+  }
+}
+
+async function safePath(userPath, opts = {}) {
   // Strip leading slash — user paths are relative to BASE
   const cleaned = (userPath || '.').replace(/^\/+/, '') || '.';
   const resolved = resolve(BASE, cleaned);
-  if (!resolved.startsWith(BASE)) {
-    return null; // Traversal attempt
+  if (!withinBase(resolved)) {
+    return null; // Lexical traversal attempt (F3)
   }
   // Hidden-path enforcement. The platform-internal bypass header lets
   // the platform backend read/write these paths while keeping them
   // invisible to the customer's UI.
-  if (!opts.allowHidden) {
-    const rel = relToBase(resolved);
-    if (isHidden(rel)) return null;
-  }
-  return resolved;
+  if (!opts.allowHidden && isHidden(relToBase(resolved))) return null;
+
+  // Symlink confinement (F2): the lexically-clean path may still traverse a
+  // symlink out of BASE. Resolve real targets and re-check.
+  const confined = await confineRealpath(resolved);
+  if (confined === null) return null;
+  // Re-check hidden on the REAL target so a symlink can't alias a .platform path.
+  if (!opts.allowHidden && isHidden(relToBase(confined))) return null;
+  return confined;
 }
 
 // Shared-secret gate for the platform-internal bypass. The backend
@@ -196,7 +239,7 @@ async function parseMultipart(_req) {
 async function handleLs(req, res) {
   const { path: p = '/', recursive } = getQuery(req.url);
   const bypass = isPlatformBypass(req);
-  const full = safePath(p, { allowHidden: bypass });
+  const full = await safePath(p, { allowHidden: bypass });
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
@@ -257,7 +300,7 @@ async function handleLs(req, res) {
 async function handleRead(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path required');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'File not found');
 
   try {
@@ -277,7 +320,7 @@ async function handleRead(req, res) {
 async function handleDownload(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path required');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'File not found');
 
   try {
@@ -305,7 +348,7 @@ async function handleMkdir(req, res) {
   const body = await readBody(req);
   const { path: p } = body;
   if (!p) return sendError(res, 400, 'path required');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
@@ -329,7 +372,7 @@ async function handleWrite(req, res) {
   const { path: p, content } = body;
   if (!p) return sendError(res, 400, 'path required');
   if (content === undefined) return sendError(res, 400, 'content required');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
@@ -349,8 +392,8 @@ async function handleRename(req, res) {
   const { oldPath, newPath } = body;
   if (!oldPath || !newPath) return sendError(res, 400, 'oldPath and newPath required');
   const bypass = isPlatformBypass(req);
-  const fullOld = safePath(oldPath, { allowHidden: bypass });
-  const fullNew = safePath(newPath, { allowHidden: bypass });
+  const fullOld = await safePath(oldPath, { allowHidden: bypass });
+  const fullNew = await safePath(newPath, { allowHidden: bypass });
   if (!fullOld || !fullNew) return sendError(res, 404, 'Not found');
 
   try {
@@ -368,7 +411,7 @@ async function handleRm(req, res) {
   const { path: p } = body;
   if (!p) return sendError(res, 400, 'path required');
   if (p === '/' || p === '.') return sendError(res, 403, 'Cannot delete root');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
   if (full === BASE) return sendError(res, 403, 'Cannot delete root');
 
@@ -387,8 +430,8 @@ async function handleCopy(req, res) {
   const { sourcePath, destPath } = body;
   if (!sourcePath || !destPath) return sendError(res, 400, 'sourcePath and destPath required');
   const bypass = isPlatformBypass(req);
-  const fullSrc = safePath(sourcePath, { allowHidden: bypass });
-  const fullDest = safePath(destPath, { allowHidden: bypass });
+  const fullSrc = await safePath(sourcePath, { allowHidden: bypass });
+  const fullDest = await safePath(destPath, { allowHidden: bypass });
   if (!fullSrc || !fullDest) return sendError(res, 404, 'Not found');
 
   try {
@@ -410,7 +453,7 @@ async function handleArchive(req, res) {
   if (!destPath) return sendError(res, 400, 'destPath required');
 
   const bypass = isPlatformBypass(req);
-  const fullDest = safePath(destPath, { allowHidden: bypass });
+  const fullDest = await safePath(destPath, { allowHidden: bypass });
   if (!fullDest) return sendError(res, 404, 'Not found');
 
   // Validate all source paths. Archiving a hidden path would let a
@@ -418,7 +461,7 @@ async function handleArchive(req, res) {
   // invisible unless the platform backend is the caller.
   const safePaths = [];
   for (const p of paths) {
-    const full = safePath(p, { allowHidden: bypass });
+    const full = await safePath(p, { allowHidden: bypass });
     if (!full) return sendError(res, 404, `Not found: ${p}`);
     safePaths.push(full);
   }
@@ -454,8 +497,8 @@ async function handleExtract(req, res) {
   if (!archivePath) return sendError(res, 400, 'path required');
 
   const bypass = isPlatformBypass(req);
-  const fullArchive = safePath(archivePath, { allowHidden: bypass });
-  const fullDest = safePath(destPath, { allowHidden: bypass });
+  const fullArchive = await safePath(archivePath, { allowHidden: bypass });
+  const fullDest = await safePath(destPath, { allowHidden: bypass });
   if (!fullArchive || !fullDest) return sendError(res, 404, 'Not found');
 
   try {
@@ -483,7 +526,7 @@ async function handleExtract(req, res) {
 async function handleWriteRaw(req, res) {
   const { path: p, offset: offsetParam } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
 
   // Chunked-upload mode: when ?offset=N is supplied, write the
@@ -563,15 +606,26 @@ async function handleGitClone(req, res) {
   if (!/^https:\/\//i.test(url)) {
     return sendError(res, 400, 'Only https protocol URLs are allowed');
   }
+  // SSRF: refuse git remotes that resolve to internal/metadata addresses.
+  let gitHost;
+  try { gitHost = new URL(url).hostname; } catch { return sendError(res, 400, 'Invalid URL'); }
+  try {
+    await assertPublicHostname(gitHost);
+  } catch (err) {
+    if (err.code === 'EBLOCKEDADDR') return sendError(res, 403, 'URL not allowed (internal/local address)');
+    return sendError(res, 400, `Could not resolve host: ${gitHost}`);
+  }
 
-  const fullDest = safePath(destPath, { allowHidden: isPlatformBypass(req) });
+  const fullDest = await safePath(destPath, { allowHidden: isPlatformBypass(req) });
   if (!fullDest) return sendError(res, 404, 'Not found');
 
   try {
     await mkdir(dirname(fullDest), { recursive: true });
-    await execFileAsync('git', ['clone', '--depth', '1', url, fullDest], {
+    await execFileAsync('git', ['clone', '--depth', '1', '--', url, fullDest], {
       timeout: 300_000, // 5 min for large repos
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }, // Prevent auth prompts
+      // GIT_TERMINAL_PROMPT=0 blocks auth prompts; GIT_ALLOW_PROTOCOL=https
+      // restricts git to the https transport (no ext::/file:: smuggling).
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_ALLOW_PROTOCOL: 'https' },
     });
     sendJson(res, 201, { url, destPath, cloned: true });
   } catch (err) {
@@ -620,7 +674,7 @@ async function handleDiskUsage(req, res) {
 async function handleFolderSize(req, res) {
   const { path: p } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
 
   try {
@@ -667,7 +721,7 @@ async function handleChmod(req, res) {
   const { path: p, mode, recursive } = body;
   if (!p) return sendError(res, 400, 'path is required');
   if (!mode || !/^[0-7]{3,4}$/.test(String(mode))) return sendError(res, 400, 'mode must be an octal string (e.g. "755")');
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
@@ -719,7 +773,7 @@ async function handleChown(req, res) {
   const ownerSpec = `${resolvedUid ?? ''}:${resolvedGid ?? ''}`;
   if (ownerSpec === ':') return sendError(res, 400, 'uid/owner or gid/group is required');
 
-  const full = safePath(p, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
@@ -737,18 +791,74 @@ async function handleChown(req, res) {
   }
 }
 
-// ─── Fetch URL (download from internet) ─────────────────────────────────────
+// ─── SSRF prevention (shared by fetch-url, clone-site, git-clone) ────────────
+//
+// The file-manager runs in a tenant namespace with UNRESTRICTED egress, so any
+// outbound fetch it performs is an SSRF pivot into the cluster's internal
+// network and the cloud metadata endpoint. A regex blocklist on the URL string
+// is not enough — it misses 169.254.169.254 (metadata), IPv6, alternate IP
+// encodings, and DNS names that resolve to internal IPs (DNS rebinding), and it
+// is not re-checked on redirects. We instead validate the ACTUAL resolved IP at
+// connect time via a custom `lookup`, which is re-run on every redirect hop and
+// closes the rebind gap (the connection uses the same IP we validated).
 
-const BLOCKED_URL_PATTERNS = [
-  /^file:/i,
-  /^ftp:/i,
-  /localhost/i,
-  /127\.0\.0\./,
-  /\[::1\]/,
-  /10\.\d+\.\d+\.\d+/,
-  /172\.(1[6-9]|2\d|3[01])\.\d+\.\d+/,
-  /192\.168\.\d+\.\d+/,
-];
+function ipIsInternal(ip) {
+  const v = isIP(ip);
+  if (v === 4) {
+    const o = ip.split('.').map(Number);
+    if (o[0] === 0) return true;                                   // 0.0.0.0/8 "this host"
+    if (o[0] === 127) return true;                                 // loopback
+    if (o[0] === 10) return true;                                  // private
+    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true;     // private
+    if (o[0] === 192 && o[1] === 168) return true;                 // private
+    if (o[0] === 169 && o[1] === 254) return true;                 // link-local + cloud metadata
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true;    // CGNAT (k8s/cloud)
+    return false;
+  }
+  if (v === 6) {
+    const lo = ip.toLowerCase().replace(/^\[|\]$/g, '');
+    if (lo === '::1' || lo === '::') return true;                  // loopback / unspecified
+    if (lo.startsWith('::ffff:')) return ipIsInternal(lo.slice(7)); // v4-mapped
+    const h0 = parseInt(lo.split(':')[0] || '0', 16);
+    if (h0 >= 0xfe80 && h0 <= 0xfebf) return true;                 // link-local fe80::/10
+    if ((h0 & 0xfe00) === 0xfc00) return true;                     // unique-local fc00::/7
+    if (h0 === 0x2002) return true;                                // 6to4 (RFC 3056) can embed internal v4
+    return false;
+  }
+  return true; // not a literal IP after lookup → fail closed
+}
+
+// Custom DNS lookup that REFUSES to resolve to an internal address. Passed to
+// http(s).get so the validated IP is the one actually connected to (no rebind).
+function safeLookup(hostname, options, callback) {
+  if (typeof options === 'function') { callback = options; options = {}; }
+  const opts = typeof options === 'object' && options ? options : {};
+  dnsLookup(hostname, { ...opts, all: true }, (err, addresses) => {
+    if (err) return callback(err);
+    const list = Array.isArray(addresses) ? addresses : [addresses];
+    for (const a of list) {
+      if (ipIsInternal(a.address)) {
+        return callback(Object.assign(new Error(`Blocked internal address ${a.address} for ${hostname}`), { code: 'EBLOCKEDADDR' }));
+      }
+    }
+    const first = list[0];
+    if (opts.all) return callback(null, list);
+    callback(null, first.address, first.family);
+  });
+}
+
+// For tools we can't inject a lookup into (git): resolve up front and reject if
+// any address is internal. Residual rebind window is acceptable for git (https
+// only, lower value than the streaming fetchers).
+async function assertPublicHostname(hostname) {
+  const { lookup } = await import('node:dns/promises');
+  const addrs = await lookup(hostname, { all: true });
+  for (const a of addrs) {
+    if (ipIsInternal(a.address)) {
+      throw Object.assign(new Error(`Refusing to connect to internal address ${a.address} (${hostname})`), { code: 'EBLOCKEDADDR' });
+    }
+  }
+}
 
 async function handleFetchUrl(req, res) {
   const { statfs } = await import('node:fs/promises');
@@ -757,15 +867,13 @@ async function handleFetchUrl(req, res) {
   if (!url) return sendError(res, 400, 'url required');
   if (!destPath) return sendError(res, 400, 'path required');
 
-  // Security: block internal/local URLs (SSRF prevention)
-  if (BLOCKED_URL_PATTERNS.some((p) => p.test(url))) {
-    return sendError(res, 403, 'URL not allowed (internal/local addresses blocked)');
-  }
+  // Security: only http(s); SSRF to internal/metadata addresses is blocked at
+  // connect time by `safeLookup` (below), which is re-applied on every redirect.
   if (!/^https?:\/\//i.test(url)) {
     return sendError(res, 400, 'Only http:// and https:// URLs are supported');
   }
 
-  const full = safePath(destPath, { allowHidden: isPlatformBypass(req) });
+  const full = await safePath(destPath, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Destination path not allowed');
 
   try {
@@ -776,13 +884,18 @@ async function handleFetchUrl(req, res) {
     const freeBytes = fsStats.bsize * fsStats.bavail;
 
     async function fetchWithRedirects(fetchUrl, maxRedirects = 5) {
+      if (!/^https?:\/\//i.test(fetchUrl)) { throw new Error('redirect to non-http(s) scheme blocked'); }
       const fetchProto = fetchUrl.startsWith('https') ? await import('node:https') : await import('node:http');
       return new Promise((resolve, reject) => {
-        fetchProto.default.get(fetchUrl, { timeout: 60000 }, (response) => {
+        // lookup: safeLookup → the resolved IP is validated as non-internal on
+        // EVERY hop (initial + each redirect), closing the redirect-SSRF and
+        // DNS-rebind gaps.
+        fetchProto.default.get(fetchUrl, { timeout: 60000, lookup: safeLookup }, (response) => {
           if ([301, 302, 303, 307, 308].includes(response.statusCode) && response.headers.location) {
             if (maxRedirects <= 0) { reject(new Error('Too many redirects')); return; }
             response.resume();
-            resolve(fetchWithRedirects(response.headers.location, maxRedirects - 1));
+            const next = new URL(response.headers.location, fetchUrl).href; // resolve relative redirects
+            resolve(fetchWithRedirects(next, maxRedirects - 1));
             return;
           }
           resolve(response);
@@ -978,7 +1091,7 @@ async function handleCloneSite(req, res) {
   if (!destPath) return sendError(res, 400, 'path required');
   if (!/^https?:\/\//i.test(url)) return sendError(res, 400, 'Only http/https URLs supported');
 
-  const full = safePath(destPath, { allowHidden: false });
+  const full = await safePath(destPath, { allowHidden: false });
   if (!full) return sendError(res, 404, 'Destination path not allowed');
 
   const clampedMaxPages = Math.min(Math.max(1, maxPages), 500);
@@ -1011,13 +1124,15 @@ async function handleCloneSite(req, res) {
     const assetQueue = [];
 
     // Fetch helper with redirect following
-    async function fetchUrl(fetchUrl) {
-      const proto = fetchUrl.startsWith('https') ? await import('node:https') : await import('node:http');
+    function fetchUrl(fetchUrl) {
       return new Promise((resolve, reject) => {
         const doFetch = (u, redirects = 0) => {
-          const p = u.startsWith('https') ? proto.default : (import('node:http')).then(m => m.default);
-          Promise.resolve(p).then(mod => {
-            mod.get(u, { timeout: 15000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SiteCloner/1.0)' } }, (r) => {
+          if (!/^https?:\/\//i.test(u)) { reject(new Error('non-http(s) scheme blocked')); return; }
+          // Pick the module matching THIS url's scheme (a redirect can switch
+          // http↔https), not the initial one.
+          const p = u.startsWith('https') ? import('node:https') : import('node:http');
+          Promise.resolve(p).then(mod => mod.default).then(mod => {
+            mod.get(u, { timeout: 15000, lookup: safeLookup, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SiteCloner/1.0)' } }, (r) => {
               if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location && redirects < 5) {
                 r.resume();
                 const loc = new URL(r.headers.location, u).href;
@@ -1264,6 +1379,13 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`File manager sidecar listening on :${PORT}`);
-});
+// Don't bind a port when imported by the unit tests (FM_NO_LISTEN=1).
+if (process.env.FM_NO_LISTEN !== '1') {
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`File manager sidecar listening on :${PORT}`);
+  });
+}
+
+// Exported for unit tests (node --test). These are pure helpers — importing
+// the module with FM_NO_LISTEN=1 does not start the server.
+export { withinBase, confineRealpath, safePath, ipIsInternal, isHidden, relToBase, BASE };

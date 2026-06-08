@@ -10,6 +10,7 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@insula/api-contracts';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { deriveFmSecret } from './internal-secret.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
 const FM_NAME = 'file-manager';
@@ -57,25 +58,50 @@ export async function ensureFileManagerRunning(
     if (!isK8s404(err)) throw err;
   }
 
-  // Ensure the platform-internal Secret exists in this namespace
+  // Ensure the platform-internal Secret exists in this namespace, holding the
+  // PER-TENANT derived secret (F5) — NOT the global master. The global master
+  // lives only on platform-api + the sftp-gateway and must never be placed in a
+  // tenant-namespace pod, or a tenant could read it out of their own (root)
+  // file-manager and reach the platform-api internal endpoints cross-tenant.
   const INTERNAL_SECRET_NAME = 'platform-internal';
-  try {
-    await k8s.core.readNamespacedSecret({ name: INTERNAL_SECRET_NAME, namespace });
-  } catch (err: unknown) {
-    if (!isK8s404(err)) throw err;
-    if (process.env.PLATFORM_INTERNAL_SECRET) {
+  if (process.env.PLATFORM_INTERNAL_SECRET) {
+    const derived = deriveFmSecret(process.env.PLATFORM_INTERNAL_SECRET, namespace);
+    let existing: { metadata?: { resourceVersion?: string }; data?: Record<string, string> } | null = null;
+    try {
+      existing = await k8s.core.readNamespacedSecret({ name: INTERNAL_SECRET_NAME, namespace });
+    } catch (err: unknown) {
+      if (!isK8s404(err)) throw err;
+    }
+    if (!existing) {
       // backup-coverage: excluded:reconciler-rebuilds-from-env
-      // (platform-internal HMAC secret mirrored from platform-api env
-      // into tenant ns by this reconciler; restore re-runs the
-      // reconciler so the secret repopulates without bundle capture.)
+      // (derived per-tenant secret recomputed from platform-api env by this
+      // reconciler; restore re-runs it so the secret repopulates.)
       await k8s.core.createNamespacedSecret({
         namespace,
         body: {
           metadata: { name: INTERNAL_SECRET_NAME, namespace },
           type: 'Opaque',
-          stringData: { PLATFORM_INTERNAL_SECRET: process.env.PLATFORM_INTERNAL_SECRET },
+          stringData: { PLATFORM_INTERNAL_SECRET: derived },
         },
       });
+    } else {
+      // Heal clusters provisioned before F5: if the stored value is the old
+      // global master (or anything ≠ derived), replace it in place. Running FM
+      // pods refresh the env on their next recreate (imagePullPolicy: Always).
+      const current = existing.data?.PLATFORM_INTERNAL_SECRET
+        ? Buffer.from(existing.data.PLATFORM_INTERNAL_SECRET, 'base64').toString('utf8')
+        : '';
+      if (current !== derived) {
+        await k8s.core.replaceNamespacedSecret({
+          name: INTERNAL_SECRET_NAME,
+          namespace,
+          body: {
+            metadata: { name: INTERNAL_SECRET_NAME, namespace, resourceVersion: existing.metadata?.resourceVersion },
+            type: 'Opaque',
+            stringData: { PLATFORM_INTERNAL_SECRET: derived },
+          },
+        });
+      }
     }
   }
 

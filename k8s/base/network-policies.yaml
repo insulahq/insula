@@ -98,15 +98,30 @@ spec:
   policyTypes:
     - Ingress
   ingress:
+    # platform-api :3000 — Traefik ONLY.
+    #
+    # Traefik runs as a DaemonSet with hostPort (NOT hostNetwork), so the
+    # source IP the destination pod sees IS the Traefik pod's pod-network IP;
+    # the `traefik` namespaceSelector reliably matches it (Calico preserves the
+    # inner pod source IP across the VXLAN overlay, cross-node included). The
+    # broad `10.42.0.0/16` ipBlock that used to sit here ALSO matched every
+    # other pod in the cluster, so any tenant workload pod could reach
+    # platform-api:3000 — including the `/api/v1/internal/*` endpoints, which are
+    # then gated only by the X-Internal-Auth secret (F4). Intra-platform callers
+    # (panels → api) are allowed by `allow-platform-internal`; tenant
+    # backup/restore Jobs by `allow-backup-files-jobs-to-platform-api`. So :3000
+    # does not need the pod-CIDR fallback.
     - from:
-        # Traefik (replacing nginx-ingress) runs as DaemonSet with
-        # hostPort=80/443, NOT hostNetwork=true. With hostPort, the
-        # source IP seen by the destination pod IS the Traefik pod's
-        # pod-network IP (10.42.x.x), so the namespaceSelector on
-        # `traefik` reliably matches and the ipBlock fallback is no
-        # longer load-bearing for cross-node routing. We keep the
-        # 10.42.0.0/16 ipBlock as defence-in-depth (covers Calico's
-        # vxlan re-source on the rare cross-node tunnel path).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 3000  # platform-api
+    # Panels / oauth2-proxy / dex — non-sensitive HTTP front ends. Keep the
+    # permissive pod-CIDR fallback for cross-node VXLAN re-source robustness;
+    # reaching these from a tenant pod yields nothing (static SPA / OIDC issuer).
+    - from:
         - ipBlock:
             cidr: 10.42.0.0/16
         - namespaceSelector:
@@ -114,15 +129,11 @@ spec:
               kubernetes.io/metadata.name: traefik
       ports:
         - protocol: TCP
-          port: 3000  # platform-api
-        - protocol: TCP
           port: 80    # admin-panel / tenant-panel
         - protocol: TCP
           port: 4180  # oauth2-proxy
         - protocol: TCP
           port: 5556  # dex (OIDC issuer behind dex.<base> Ingress)
-        - protocol: TCP
-          port: 4180
 ---
 # Allow intra-platform-namespace traffic to the data-plane + API pods.
 # Without this, platform-api can't reach postgres/redis (all DB/cache
