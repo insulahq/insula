@@ -77,7 +77,7 @@ func (a *ftpsAuth) CheckPasswd(ctx *ftpserver.Context, username, password string
 		go func() {
 			_ = ReportAuditEvent(AuditEvent{
 				SftpUserID:   result.SftpUserID,
-				ClientID:     result.ClientID,
+				TenantID:     result.TenantID,
 				Event:        "FAILED_AUTH",
 				SourceIP:     sourceIP,
 				Protocol:     "ftps",
@@ -101,7 +101,7 @@ func (a *ftpsAuth) CheckPasswd(ctx *ftpserver.Context, username, password string
 		ID:                    fmt.Sprintf("%x", ftpsSessID),
 		Username:              username,
 		SftpUserID:            result.SftpUserID,
-		ClientID:              result.ClientID,
+		TenantID:              result.TenantID,
 		Namespace:             result.Namespace,
 		Protocol:              "ftps",
 		SourceIP:              sourceIP,
@@ -126,7 +126,7 @@ func (a *ftpsAuth) CheckPasswd(ctx *ftpserver.Context, username, password string
 	go func() {
 		_ = ReportAuditEvent(AuditEvent{
 			SftpUserID: sess.SftpUserID,
-			ClientID:   sess.ClientID,
+			TenantID:   sess.TenantID,
 			Event:      "CONNECT",
 			SourceIP:   sourceIP,
 			Protocol:   "ftps",
@@ -402,7 +402,7 @@ func (d *ftpsDriver) BeforeLogout(ctx *ftpserver.Context) error {
 		go func() {
 			_ = ReportAuditEvent(AuditEvent{
 				SftpUserID: ar.SftpUserID,
-				ClientID:   ar.ClientID,
+				TenantID:   ar.TenantID,
 				Event:      "DISCONNECT",
 				SourceIP:   sourceIP,
 				Protocol:   "ftps",

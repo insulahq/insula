@@ -170,3 +170,16 @@ Open follow-ups carried by the registry's "known hygiene items": pin Flux to a
 release; align the `pg_dump` client image to PG 18; consolidate the duplicate
 `alpine/k8s` + `busybox` tags; drop the legacy `roundcube:latest-fpm` reference.
 The in-cluster Trivy scanning UI stays deferred under [R11](#r11--security-hardening-phase-2).
+
+## R16 — Decouple INGRESS_DOMAIN from PLATFORM_DOMAIN + turnkey apex rename
+
+Scoped 2026-06-08 (planning) — see
+[INGRESS_PLATFORM_DOMAIN_DECOUPLE.md](INGRESS_PLATFORM_DOMAIN_DECOUPLE.md). Split
+the overloaded `ingress_base_domain` (today *both* the tenant CNAME-target *and*
+the platform apex) into a new `platform_domain` (apex/brand) + the existing
+`ingress_base_domain` (CNAME target), defaulting equal for a zero-change upgrade.
+Then make every platform-owned hostname + TLS cert + DNS record follow
+`platform_domain` so an apex rename is a single turnkey action (removing the
+static `${DOMAIN}` dependency for renameable surfaces). Phasing: PR-1 settings
+split (no behaviour change) → PR-2 repoint consumers → PR-3 (3a–3g) full turnkey
+rename. Key design risk: GitOps-owned `${DOMAIN}` vs a runtime rename (doc §5).

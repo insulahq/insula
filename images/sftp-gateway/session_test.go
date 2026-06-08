@@ -137,6 +137,77 @@ func TestBuildCommand_Rsync(t *testing.T) {
 	}
 }
 
+// TestRewriteRsyncCommand_NoDotSeparator is the regression test for the
+// confinement gap where rsync paths were only sanitized AFTER a literal "."
+// token. A crafted server command that omits "." must still have every
+// path argument confined under dataRoot — rsync runs unchrooted as root, so
+// this rewrite is the only boundary.
+func TestRewriteRsyncCommand_NoDotSeparator(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		// a path that MUST appear (confined) and one that MUST NOT (raw escape)
+		mustContain string
+		mustNotHave string
+	}{
+		{
+			name:        "no dot, absolute escape",
+			cmd:         "rsync --server --sender -e.LsfxC /etc/shadow",
+			mustContain: "/data/etc/shadow",
+			mustNotHave: "/etc/shadow",
+		},
+		{
+			name:        "no dot, traversal",
+			cmd:         "rsync --server -logDtpre.iLsfxC ../../etc/passwd",
+			mustContain: "/data/etc/passwd",
+			mustNotHave: "../../etc/passwd",
+		},
+		{
+			name:        "with dot still confined",
+			cmd:         "rsync --server -logDtpre.iLsfxCIvu . /some/path",
+			mustContain: "/data/some/path",
+			mustNotHave: "",
+		},
+		{
+			name:        "embedded path in --files-from= flag",
+			cmd:         "rsync --server --files-from=/etc/shadow . /dest",
+			mustContain: "--files-from=/data/etc/shadow",
+			mustNotHave: "--files-from=/etc/shadow",
+		},
+		{
+			name:        "embedded path in --log-file= flag",
+			cmd:         "rsync --server --log-file=../../var/log/x -e.LsfxC . /dest",
+			mustContain: "--log-file=/data/var/log/x",
+			mustNotHave: "--log-file=../../var/log/x",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rewriteRsyncCommand(tt.cmd, "/data")
+			joined := strings.Join(got, " ")
+			if tt.mustContain != "" && !contains(got, tt.mustContain) {
+				t.Errorf("expected confined path %q in %v", tt.mustContain, got)
+			}
+			if tt.mustNotHave != "" && contains(got, tt.mustNotHave) {
+				t.Errorf("raw unconfined path %q leaked through: %v", tt.mustNotHave, got)
+			}
+			// flags must be left intact (bundled "." inside flags is not a separator)
+			if !strings.Contains(joined, "--server") {
+				t.Errorf("rsync flags were corrupted: %v", got)
+			}
+		})
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildCommand_Unknown(t *testing.T) {
 	got := buildCommand("unknown", nil, "/")
 	if got != nil {

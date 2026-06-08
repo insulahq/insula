@@ -1317,8 +1317,10 @@ export const sftpAuditLog = pgTable('sftp_audit_log', {
   id: varchar('id', { length: 36 }).primaryKey(),
   sftpUserId: varchar('sftp_user_id', { length: 36 })
     .references(() => sftpUsers.id, { onDelete: 'set null' }),
+  // Nullable: FAILED_AUTH events fire before a user/tenant resolves, so
+  // there is no tenant to attribute them to. Session + transfer events
+  // always carry one.
   tenantId: varchar('tenant_id', { length: 36 })
-    .notNull()
     .references(() => tenants.id, { onDelete: 'cascade' }),
   event: varchar('event', { length: 50 }).notNull(), // CONNECT, DISCONNECT, FAILED_AUTH
   sourceIp: varchar('source_ip', { length: 45 }).notNull(),
