@@ -172,7 +172,13 @@ async function syncPrincipals(params: {
     const result = await principalGet({
       accountId,
       ids: null,
-      properties: ['id', 'name', 'type', 'emails'],
+      // `emailAddress` is REQUIRED: Stalwart honours the JMAP `properties`
+      // projection and strips any field not listed. The individual's full
+      // address lives in `emailAddress` (the `name` is only the local part),
+      // and client.ts:_accountToPrincipal surfaces it into `emails`. Omitting
+      // it here makes the drift detector match nothing → false drift on every
+      // mailbox. `type` is also requested so the account/domain split works.
+      properties: ['id', 'name', 'type', 'emails', 'emailAddress'],
       baseUrl,
       env,
     });
@@ -189,14 +195,14 @@ async function syncPrincipals(params: {
   for (const p of allPrincipals) {
     if (!p.id) continue;
     if (p.type === 'individual') {
-      // Stalwart (v0.16.x) returns an individual's address in `name` and does
-      // NOT populate the `emails` array on Principal/get — so the prior
-      // `p.emails`-only mapping was ALWAYS empty, falsely flagging every
-      // mailbox as "missing from Stalwart" (drift false-positive). Map by
-      // `name` (the canonical address, exactly as domains map by name one
-      // branch down); keep `emails` for forward-compat if a future Stalwart
-      // starts returning it.
-      if (p.name) stalwartMailboxByEmail.set(p.name.toLowerCase(), p.id);
+      // Map by the individual's full email address(es). Stalwart's
+      // x:Account `name` is only the LOCAL login part (e.g. "kjh"), so it
+      // must NOT be used as a key here — the platform looks up by the full
+      // `fullAddress` (kjh@domain). `client.ts:_accountToPrincipal` now
+      // surfaces the full primary address (from x:Account `emailAddress`)
+      // plus any aliases into `emails`, so this loop populates the map with
+      // the real addresses. (Before that client fix, `emails` was empty and
+      // every synced mailbox was falsely flagged as drift.)
       for (const email of p.emails ?? []) {
         stalwartMailboxByEmail.set(email.toLowerCase(), p.id);
       }

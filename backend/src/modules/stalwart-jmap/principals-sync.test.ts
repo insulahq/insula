@@ -254,14 +254,16 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect((db as unknown as { _updateFn: ReturnType<typeof vi.fn> })._updateFn).not.toHaveBeenCalled();
   });
 
-  // ── fix A: map individuals by `name` (Stalwart returns the address there;
-  //          `emails` is never populated on v0.16.x) ──────────────────────────
-  it('does NOT flag a synced mailbox as drift when Stalwart returns the address in `name` (no emails array)', () => {
+  // ── fix A: match individuals by their full email address ────────────────────
+  //   Stalwart's x:Account `name` is only the LOCAL part ("kjh"); the full
+  //   address comes from x:Account `emailAddress`, which client.ts now surfaces
+  //   into `emails`. The reconciler keys the map on `emails`, never `name`.
+  it('does NOT flag a synced mailbox as drift when matched by full email (name is only the local part)', () => {
     return (async () => {
       mockGetJmapSession.mockResolvedValueOnce(makeSession());
-      // Real Stalwart v0.16.x shape: name = full address, NO `emails`.
+      // Real (post-fix) client shape: name = local part, emails = [full address].
       mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
-        { id: 'sp-d', type: 'individual', name: 'kjh@staging.example.net' },
+        { id: 'sp-d', type: 'individual', name: 'kjh', emails: ['kjh@staging.example.net'] },
       ]));
       const db = createMockDb(
         [{ id: 'mb-kjh', fullAddress: 'kjh@staging.example.net', stalwartPrincipalId: 'sp-d' }],
@@ -272,6 +274,12 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
       expect(result.mailboxOrphansMarked).toBe(0); // pre-fix this was 1 (false drift)
       const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
       expect(inserts.some((c) => (c[0] as { kind?: string })?.kind === 'mailbox')).toBe(false);
+
+      // Regression guard: the sync MUST project `emailAddress` or Stalwart
+      // strips it and the full-address match silently fails (false drift).
+      expect(mockPrincipalGet).toHaveBeenCalledWith(
+        expect.objectContaining({ properties: expect.arrayContaining(['emailAddress']) }),
+      );
     })();
   });
 
@@ -280,7 +288,7 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     mockReadMaster.mockResolvedValue('master@mail.staging.example.net');
     mockGetJmapSession.mockResolvedValueOnce(makeSession());
     mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
-      { id: 'sp-d', type: 'individual', name: 'kjh@staging.example.net' }, // a tenant mailbox, NOT the master
+      { id: 'sp-d', type: 'individual', name: 'kjh', emails: ['kjh@staging.example.net'] }, // a tenant mailbox, NOT the master
     ]));
     const db = createMockDb([], []);
     await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
@@ -297,7 +305,7 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     mockReadMaster.mockResolvedValue('master@mail.staging.example.net');
     mockGetJmapSession.mockResolvedValueOnce(makeSession());
     mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
-      { id: 'b', type: 'individual', name: 'master@mail.staging.example.net' },
+      { id: 'b', type: 'individual', name: 'master', emails: ['master@mail.staging.example.net'] },
     ]));
     const db = createMockDb([], []);
     await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();

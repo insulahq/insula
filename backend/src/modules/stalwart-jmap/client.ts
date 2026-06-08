@@ -672,14 +672,27 @@ function _accountToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
   const id = typeof raw.id === 'string' ? raw.id : undefined;
   const name = typeof raw.name === 'string' ? raw.name : '';
   const description = typeof raw.description === 'string' ? raw.description : null;
-  // x:Account binds to a single domainId; the platform-side legacy
-  // shape stores email addresses. Synthesize the email from the
-  // emails array if present, else leave undefined and let the caller
-  // backfill via domainGet if needed.
-  const emails = Array.isArray(raw.emails)
-    ? (raw.emails as string[]).filter((e) => typeof e === 'string')
-    : undefined;
-  return { id, type: 'individual', name, description, emails };
+  // CRITICAL: Stalwart's x:Account `name` is only the LOCAL login part
+  // (e.g. "kjh"), NOT the full address. The full primary address is in
+  // `emailAddress` (verified on Stalwart v0.16.x). Surface it via
+  // `emails` so callers that match on the full address (principals-sync
+  // drift detection, the webmail master-user detector) work — without
+  // this, `emails` was almost always empty and every synced mailbox was
+  // falsely flagged as "missing from Stalwart". Include any additional
+  // `emails`/alias addresses too, de-duplicated, primary first.
+  const primary = typeof raw.emailAddress === 'string' ? raw.emailAddress : undefined;
+  const extra = Array.isArray(raw.emails)
+    ? (raw.emails as unknown[]).filter((e): e is string => typeof e === 'string')
+    : [];
+  const merged = [...(primary ? [primary] : []), ...extra];
+  const seen = new Set<string>();
+  const emails = merged.filter((e) => {
+    const key = e.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { id, type: 'individual', name, description, emails: emails.length > 0 ? emails : undefined };
 }
 
 function _domainToPrincipal(raw: Record<string, unknown>): StalwartPrincipal {
@@ -1219,16 +1232,17 @@ export async function findMailboxByEmail(params: {
   const getRes = await accountGet({
     accountId,
     ids: null,
-    properties: ['id', 'name', 'description', 'emails'],
+    // `emailAddress` carries the full primary address (Stalwart's `name` is
+    // only the local login part and `emails` is empty for primaries). It MUST
+    // be projected or Stalwart strips it — without it this filter matched
+    // nothing. `_accountToPrincipal` merges emailAddress + alias `emails`.
+    properties: ['id', 'name', 'description', 'emails', 'emailAddress'],
     baseUrl,
     env,
   });
   const target = email.toLowerCase();
-  const match = getRes.list.find((r) => {
-    const emails = Array.isArray(r.emails)
-      ? (r.emails as string[]).map((e) => e.toLowerCase())
-      : [];
-    return emails.includes(target);
-  });
-  return match ? _accountToPrincipal(match) : null;
+  const match = getRes.list
+    .map(_accountToPrincipal)
+    .find((p) => (p.emails ?? []).some((e) => e.toLowerCase() === target));
+  return match ?? null;
 }

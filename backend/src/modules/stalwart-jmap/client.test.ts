@@ -227,6 +227,92 @@ describe.skip('principalGet', () => {
   });
 });
 
+// ── principalGet: x:Account → StalwartPrincipal mapping (emailAddress) ─────────
+// Regression guard for the drift false-positive: Stalwart's x:Account `name`
+// is only the LOCAL login part; the full address lives in `emailAddress`.
+// _accountToPrincipal MUST surface that into `emails` or principals-sync (and
+// the webmail master-user detector) can never match a mailbox by its full
+// address and falsely flags every account as drift.
+describe('principalGet — account emailAddress mapping', () => {
+  it('surfaces x:Account `emailAddress` into `emails` (name stays the local part)', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 'state-001',
+      list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net', description: 'tenant mailbox' }],
+      notFound: [],
+    }));
+    const result = await principalGet({ accountId: ACCOUNT_ID, ids: ['d'], baseUrl: BASE_URL, env: TEST_ENV });
+    expect(result.list).toHaveLength(1);
+    expect(result.list[0].name).toBe('kjh');
+    expect(result.list[0].emails).toEqual(['kjh@staging.example.net']);
+  });
+
+  it('merges emailAddress + alias `emails` and de-duplicates (primary first)', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 'state-001',
+      list: [{
+        id: 'e',
+        name: 'master',
+        emailAddress: 'master@mail.example.net',
+        emails: ['master@mail.example.net', 'alias@mail.example.net'],
+      }],
+      notFound: [],
+    }));
+    const result = await principalGet({ accountId: ACCOUNT_ID, ids: ['e'], baseUrl: BASE_URL, env: TEST_ENV });
+    expect(result.list[0].emails).toEqual(['master@mail.example.net', 'alias@mail.example.net']);
+  });
+
+  it('leaves `emails` undefined when the account has no addresses', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 'state-001',
+      list: [{ id: 'f', name: 'svc', description: 'service account' }],
+      notFound: [],
+    }));
+    const result = await principalGet({ accountId: ACCOUNT_ID, ids: ['f'], baseUrl: BASE_URL, env: TEST_ENV });
+    expect(result.list[0].emails).toBeUndefined();
+  });
+});
+
+// ── findMailboxByEmail: must project `emailAddress` and match on it ────────────
+// Stalwart honours the JMAP `properties` projection and strips any unlisted
+// field. The full primary address is in `emailAddress`, so it MUST be requested
+// or the filter matches nothing (silent restore/provisioning bug).
+describe('findMailboxByEmail — emailAddress projection + match', () => {
+  it('requests `emailAddress` in the projection and matches the account on it', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 'state-001',
+      list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net' }],
+      notFound: [],
+    }));
+    const result = await findMailboxByEmail({
+      accountId: ACCOUNT_ID, email: 'KJH@staging.example.net', baseUrl: BASE_URL, env: TEST_ENV,
+    });
+    expect(result?.id).toBe('d');
+    expect(result?.emails).toEqual(['kjh@staging.example.net']);
+
+    // Regression guard: the outgoing request MUST project emailAddress.
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const props = body.methodCalls[0][1].properties as string[];
+    expect(props).toContain('emailAddress');
+  });
+
+  it('returns null when no account address matches', async () => {
+    mockFetch(200, makeJmapResponse('x:Account/get', {
+      accountId: ACCOUNT_ID,
+      state: 'state-001',
+      list: [{ id: 'd', name: 'kjh', emailAddress: 'kjh@staging.example.net' }],
+      notFound: [],
+    }));
+    const result = await findMailboxByEmail({
+      accountId: ACCOUNT_ID, email: 'nobody@staging.example.net', baseUrl: BASE_URL, env: TEST_ENV,
+    });
+    expect(result).toBeNull();
+  });
+});
+
 // ── principalGetOne ───────────────────────────────────────────────────────────
 
 describe.skip("principalGetOne", () => {
