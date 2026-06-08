@@ -169,6 +169,17 @@ export async function recreateDriftItemEmpty(
     );
   }
 
+  // The webmail master-user is not a tenant principal — recreating it "empty"
+  // here would make a roleless account that still can't impersonate. It must be
+  // recreated via the dedicated rotation, which also re-syncs mail-secrets.
+  if (item.kind === 'master-user') {
+    throw new ApiError(
+      'INVALID_DRIFT_ACTION',
+      'The webmail master user cannot be recreated empty. Use POST /admin/mail/rotate-webmail-master-password (Admin UI → Email → Data Drift → "Recreate webmail master").',
+      400,
+    );
+  }
+
   let newStalwartId: string;
   let followUp: string;
   if (item.kind === 'domain') {

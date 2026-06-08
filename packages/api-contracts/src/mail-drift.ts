@@ -15,7 +15,11 @@ import { z } from 'zod';
  *     not yet built).
  */
 
-export const mailDriftKindSchema = z.enum(['domain', 'mailbox']);
+// 'master-user' (2026-06-08): the webmail master principal that Bulwark +
+// Roundcube authenticate as to impersonate every mailbox. If missing, ALL
+// webmail login breaks — its remediation is recreate-via-rotate, not the
+// per-mailbox recreate-empty/restore flow (see EmailDriftPage).
+export const mailDriftKindSchema = z.enum(['domain', 'mailbox', 'master-user']);
 export type MailDriftKind = z.infer<typeof mailDriftKindSchema>;
 
 export const mailDriftResolutionSchema = z.enum(['recreated', 'restored', 'dismissed', 'reappeared']);

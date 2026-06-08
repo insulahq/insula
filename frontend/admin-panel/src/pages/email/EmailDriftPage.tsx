@@ -3,6 +3,7 @@ import { AlertTriangle, RotateCcw, X, Loader2, CheckCircle2, ChevronDown, Extern
 import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
 import { useMailDrift, useDismissMailDrift, useRecreateMailDriftEmpty } from '@/hooks/use-mail-drift';
+import { useRotateWebmailMasterPassword } from '@/hooks/use-stalwart';
 import type { MailDriftItem } from '@insula/api-contracts';
 
 /**
@@ -89,44 +90,65 @@ export default function EmailDriftPage() {
 function DriftRow({ item }: { readonly item: MailDriftItem }) {
   const [showRecreate, setShowRecreate] = useState(false);
   const dismiss = useDismissMailDrift();
+  const rotateMaster = useRotateWebmailMasterPassword();
 
-  const kindLabel = item.kind === 'domain' ? 'Stalwart Domain' : 'Stalwart mailbox';
+  const isMaster = item.kind === 'master-user';
+  const kindLabel = isMaster
+    ? 'Webmail master user'
+    : item.kind === 'domain' ? 'Stalwart Domain' : 'Stalwart mailbox';
 
   return (
-    <div className="px-3 py-3 space-y-2">
+    <div className={`px-3 py-3 space-y-2 ${isMaster ? 'bg-red-50/40 dark:bg-red-900/10' : ''}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-amber-600 dark:text-amber-400">
-            <AlertTriangle size={12} /> {kindLabel} missing
+          <div className={`flex items-center gap-2 text-xs font-medium uppercase tracking-wider ${isMaster ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>
+            <AlertTriangle size={12} /> {kindLabel} missing{isMaster ? ' — webmail login broken' : ''}
           </div>
           <div className="mt-1 font-mono text-sm text-gray-900 dark:text-gray-100">
             {item.expectedName}
           </div>
           <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Stale Stalwart id: <code className="font-mono">{item.expectedStalwartId ?? '—'}</code>
-            {' • '}
+            {!isMaster && (<>Stale Stalwart id: <code className="font-mono">{item.expectedStalwartId ?? '—'}</code>{' • '}</>)}
             First seen: {new Date(item.firstDetectedAt).toLocaleString()}
           </div>
+          {item.notes && (
+            <div className="mt-1.5 text-xs text-gray-600 dark:text-gray-300">{item.notes}</div>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            disabled
-            title="Stalwart snapshot-restore wizard is not built yet. To preserve DKIM + mailbox messages, restore Stalwart from a snapshot manually using scripts/mail-stack-consolidate.sh — see docs/history/02-operations/MAIL_STACK_CONSOLIDATION.md."
-            className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-2.5 py-1 text-xs font-medium text-gray-400 cursor-not-allowed"
-            data-testid={`drift-restore-snapshot-${item.id}`}
-          >
-            <RotateCcw size={12} /> Restore from snapshot
-            <ExternalLink size={10} className="opacity-50" />
-          </button>
-          <button
-            type="button"
-            onClick={() => setShowRecreate(true)}
-            className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40"
-            data-testid={`drift-recreate-${item.id}`}
-          >
-            <AlertTriangle size={12} /> Recreate empty
-          </button>
+          {isMaster ? (
+            <button
+              type="button"
+              onClick={() => rotateMaster.mutate()}
+              disabled={rotateMaster.isPending}
+              className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40 disabled:opacity-50"
+              data-testid={`drift-recreate-master-${item.id}`}
+            >
+              {rotateMaster.isPending ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+              Recreate webmail master
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled
+                title="Stalwart snapshot-restore wizard is not built yet. To preserve DKIM + mailbox messages, restore Stalwart from a snapshot manually using scripts/mail-stack-consolidate.sh — see docs/history/02-operations/MAIL_STACK_CONSOLIDATION.md."
+                className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-2.5 py-1 text-xs font-medium text-gray-400 cursor-not-allowed"
+                data-testid={`drift-restore-snapshot-${item.id}`}
+              >
+                <RotateCcw size={12} /> Restore from snapshot
+                <ExternalLink size={10} className="opacity-50" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowRecreate(true)}
+                className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40"
+                data-testid={`drift-recreate-${item.id}`}
+              >
+                <AlertTriangle size={12} /> Recreate empty
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => dismiss.mutate(item.id)}
@@ -138,6 +160,12 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
           </button>
         </div>
       </div>
+
+      {rotateMaster.isError && (
+        <div className="text-xs text-rose-600 dark:text-rose-400">
+          {rotateMaster.error instanceof Error ? rotateMaster.error.message : 'Recreate failed'}
+        </div>
+      )}
 
       {showRecreate && (
         <RecreateEmptyModal item={item} onClose={() => setShowRecreate(false)} />
