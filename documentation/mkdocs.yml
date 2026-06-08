@@ -97,6 +97,7 @@ nav:
       - Tenant backups: operator/tenant-backups.md
       - Mail operations: operator/mail-operations.md
       - Security hardening: operator/security-hardening.md
+      - Dependency & CVE watch: operator/dependency-cve-watch.md
       - Web defense (WAF & bans): operator/web-defense.md
       - Monitoring & health: operator/monitoring.md
       - Troubleshooting: operator/troubleshooting.md
