@@ -24,11 +24,74 @@ import type { Database } from '../../db/index.js';
 import { MERGE_PATCH, JSON_PATCH } from '../../shared/k8s-patch.js';
 import {
   getDefaultWebmailEngine,
+  getDefaultWebmailUrl,
   type WebmailEngine,
 } from '../webmail-settings/service.js';
 
 export const WEBMAIL_IR_NAME = 'platform-webmail-ingress';
 export const WEBMAIL_IR_NAMESPACE = 'mail';
+
+// The Traefik CORS Middleware (k8s/base/stalwart-mail/stalwart/ingress-mgmt.yaml)
+// that supplies Bulwark webmail's cross-origin JMAP headers. Its
+// Access-Control-Allow-Origin MUST equal the origin the SPA is served from
+// (= the platform-webmail-ingress Host), so this reconciler keeps both in
+// sync from the single source of truth, `default_webmail_url`.
+export const STALWART_CORS_MW_NAME = 'stalwart-jmap-cors';
+export const STALWART_CORS_MW_NAMESPACE = 'mail';
+const TRAEFIK_MW_PLURAL = 'middlewares';
+const ACAO_HEADER = 'Access-Control-Allow-Origin';
+
+// RFC-1123 DNS hostname guard. The resolved webmail host is interpolated
+// into a Traefik `Host(`<host>`)` match rule, so a crafted value with
+// backticks/parentheses (e.g. `` x`)||Host(`evil.com ``) could otherwise
+// inject/widen the route. The write-boundary Zod schema enforces the same
+// constraint; this is defence-in-depth at the reconciler (legacy rows,
+// direct SQL edits). Mirrors mail-admin/mail-acme-override-route.ts.
+const WEBMAIL_HOSTNAME_RE =
+  /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+
+export function isValidWebmailHostname(host: string): boolean {
+  return WEBMAIL_HOSTNAME_RE.test(host);
+}
+
+/**
+ * Resolve the webmail `{ host, origin }` from `default_webmail_url`.
+ * Returns `null` (caller leaves the live value untouched) when the URL is
+ * unparseable, not http(s), or the hostname fails the RFC-1123 guard — we
+ * never interpolate an unvalidated host into a Traefik match rule or an
+ * ACAO header.
+ */
+export async function resolveWebmailHostOrigin(
+  db: Database,
+  log: Pick<Logger, 'warn'>,
+): Promise<{ readonly host: string; readonly origin: string } | null> {
+  let raw: string;
+  try {
+    raw = await getDefaultWebmailUrl(db);
+  } catch (err) {
+    log.warn({ err }, 'webmail-router: could not read default_webmail_url');
+    return null;
+  }
+  let u: URL;
+  try {
+    u = new URL(raw.endsWith('/') ? raw : `${raw}/`);
+  } catch {
+    log.warn({ raw }, 'webmail-router: default_webmail_url is not a valid URL — skipping host/CORS reconcile');
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
+    log.warn({ raw }, 'webmail-router: default_webmail_url is not http(s) — skipping host/CORS reconcile');
+    return null;
+  }
+  const host = u.hostname.toLowerCase();
+  if (!isValidWebmailHostname(host)) {
+    log.warn({ host }, 'webmail-router: webmail hostname failed RFC-1123 guard — skipping host/CORS reconcile');
+    return null;
+  }
+  // `u.origin` is scheme://host[:port] with no trailing slash — exactly the
+  // value a browser sends in the Origin header for the SPA's fetches.
+  return { host, origin: u.origin };
+}
 export const BULWARK_DEPLOY_NAME = 'bulwark';
 export const BULWARK_DEPLOY_NAMESPACE = 'mail';
 export const ROUNDCUBE_DEPLOY_NAME = 'roundcube';
@@ -75,6 +138,7 @@ interface IngressRoute {
   };
   readonly spec?: {
     readonly routes?: ReadonlyArray<{
+      readonly match?: string;
       readonly services?: ReadonlyArray<{ readonly name: string; readonly port?: number | string }>;
     }>;
   };
@@ -92,15 +156,22 @@ export interface ReconcileResult {
   readonly engine: WebmailEngine;
   readonly expectedService: string;
   readonly previousService: string | null;
+  /** The `Host(...)` match the route should carry, derived from default_webmail_url (null = couldn't resolve, left untouched). */
+  readonly expectedMatch: string | null;
+  readonly previousMatch: string | null;
   readonly patched: boolean;
 }
 
 /**
- * Inspect the IngressRoute and patch services[0].name when it doesn't
- * already match the active engine. Failure to find the IR (e.g. fresh
- * cluster before the static YAML applies, or running in CI without
- * Traefik installed) is non-fatal — the reconciler logs and returns
- * an unpatched result.
+ * Inspect the IngressRoute and patch services[0].name (active engine) AND
+ * routes[0].match (the `Host(`<webmailHost>`)` derived from
+ * `default_webmail_url`) when either drifts. Keeping the Host here — rather
+ * than baking it statically — lets an operator rename the webmail hostname
+ * and have routing follow (the matching CORS origin is updated by
+ * `reconcileStalwartCorsOrigin`). Failure to find the IR (e.g. fresh
+ * cluster before the static YAML applies, or running in CI without Traefik
+ * installed) is non-fatal — the reconciler logs and returns an unpatched
+ * result.
  */
 export async function reconcileWebmailIngress(
   db: Database,
@@ -109,6 +180,8 @@ export async function reconcileWebmailIngress(
 ): Promise<ReconcileResult | null> {
   const engine = await getDefaultWebmailEngine(db);
   const expectedService = serviceNameForEngine(engine);
+  const resolved = await resolveWebmailHostOrigin(db, log);
+  const expectedMatch = resolved ? `Host(\`${resolved.host}\`)` : null;
 
   let current: IngressRoute;
   try {
@@ -129,19 +202,26 @@ export async function reconcileWebmailIngress(
 
   const firstRoute = current.spec?.routes?.[0];
   const previousService = firstRoute?.services?.[0]?.name ?? null;
+  const previousMatch = firstRoute?.match ?? null;
   const currentAnnotations = current.metadata?.annotations ?? {};
   const annotationMissing =
     currentAnnotations['kustomize.toolkit.fluxcd.io/reconcile'] !== 'disabled';
 
-  if (previousService === expectedService && !annotationMissing) {
-    return { engine, expectedService, previousService, patched: false };
+  const serviceDrift = previousService !== expectedService;
+  // Only treat the host as drifted when we resolved a safe value; a null
+  // `expectedMatch` (unparseable/invalid URL) leaves the live match alone.
+  const matchDrift = expectedMatch !== null && expectedMatch !== previousMatch;
+
+  if (!serviceDrift && !matchDrift && !annotationMissing) {
+    return { engine, expectedService, previousService, expectedMatch, previousMatch, patched: false };
   }
 
-  // Patch the first route's services array. We replace the entire
-  // services list to clear any stale entries; the IR only has a single
-  // route (Host=`webmail.<apex>`) and a single backend Service. Also
-  // re-stamp the Flux `reconcile: disabled` annotation so a future
-  // YAML change can't accidentally hand ownership back to Flux.
+  // Patch the first route's services array AND its Host match. We replace
+  // the entire services list to clear any stale entries; the IR only has a
+  // single route and a single backend Service. The match is updated only
+  // when a safe host resolved (else the spread keeps the live match). Also
+  // re-stamp the Flux `reconcile: disabled` annotation so a future YAML
+  // change can't accidentally hand ownership back to Flux.
   const port = firstRoute?.services?.[0]?.port ?? 80;
   const body = {
     metadata: { annotations: FLUX_RECONCILE_DISABLED },
@@ -149,6 +229,7 @@ export async function reconcileWebmailIngress(
       routes: [
         {
           ...firstRoute,
+          ...(expectedMatch ? { match: expectedMatch } : {}),
           services: [{ name: expectedService, port }],
         },
       ],
@@ -168,11 +249,96 @@ export async function reconcileWebmailIngress(
   );
 
   log.info(
-    { engine, previousService, newService: expectedService },
-    'webmail-router: IngressRoute flipped to match active engine',
+    { engine, previousService, newService: expectedService, previousMatch, newMatch: expectedMatch ?? previousMatch },
+    'webmail-router: IngressRoute reconciled (engine + webmail host)',
   );
 
-  return { engine, expectedService, previousService, patched: true };
+  return { engine, expectedService, previousService, expectedMatch, previousMatch, patched: true };
+}
+
+/**
+ * Keep the `stalwart-jmap-cors` Traefik Middleware's
+ * Access-Control-Allow-Origin in lockstep with the webmail host, so a
+ * webmail-hostname rename doesn't break Bulwark's cross-origin JMAP calls
+ * (the browser Origin must exactly match the ACAO for the SPA's
+ * credentialed fetch). Sourced from the same `default_webmail_url` as the
+ * ingress Host. Best-effort + idempotent; never throws fatally. Returns
+ * null when the Middleware is absent (e.g. CI without Traefik) or the host
+ * couldn't be resolved.
+ */
+export interface CorsReconcileResult {
+  readonly expectedOrigin: string;
+  readonly previousOrigin: string | null;
+  readonly patched: boolean;
+}
+
+interface CorsMiddleware {
+  readonly metadata?: { readonly annotations?: Record<string, string> };
+  readonly spec?: {
+    readonly headers?: { readonly customResponseHeaders?: Record<string, string> };
+  };
+}
+
+export async function reconcileStalwartCorsOrigin(
+  db: Database,
+  custom: k8s.CustomObjectsApi,
+  log: Pick<Logger, 'info' | 'warn' | 'error'>,
+): Promise<CorsReconcileResult | null> {
+  const resolved = await resolveWebmailHostOrigin(db, log);
+  if (!resolved) return null;
+  const expectedOrigin = resolved.origin;
+
+  let current: CorsMiddleware;
+  try {
+    current = (await custom.getNamespacedCustomObject({
+      group: TRAEFIK_GROUP,
+      version: TRAEFIK_VERSION,
+      namespace: STALWART_CORS_MW_NAMESPACE,
+      plural: TRAEFIK_MW_PLURAL,
+      name: STALWART_CORS_MW_NAME,
+    } as unknown as Parameters<typeof custom.getNamespacedCustomObject>[0])) as CorsMiddleware;
+  } catch (err) {
+    log.warn(
+      { err, name: STALWART_CORS_MW_NAME, namespace: STALWART_CORS_MW_NAMESPACE },
+      'webmail-router: stalwart-jmap-cors Middleware not found — skipping CORS reconcile',
+    );
+    return null;
+  }
+
+  const previousOrigin = current.spec?.headers?.customResponseHeaders?.[ACAO_HEADER] ?? null;
+  const annotationMissing =
+    (current.metadata?.annotations ?? {})['kustomize.toolkit.fluxcd.io/reconcile'] !== 'disabled';
+
+  if (previousOrigin === expectedOrigin && !annotationMissing) {
+    return { expectedOrigin, previousOrigin, patched: false };
+  }
+
+  // RFC 7386 merge-patch merges nested objects, so this sets ONLY the ACAO
+  // key and leaves the other CORS headers (methods/headers/max-age/vary)
+  // intact. Re-stamp reconcile:disabled so Flux can't revert the origin.
+  const body = {
+    metadata: { annotations: FLUX_RECONCILE_DISABLED },
+    spec: { headers: { customResponseHeaders: { [ACAO_HEADER]: expectedOrigin } } },
+  };
+
+  await custom.patchNamespacedCustomObject(
+    {
+      group: TRAEFIK_GROUP,
+      version: TRAEFIK_VERSION,
+      namespace: STALWART_CORS_MW_NAMESPACE,
+      plural: TRAEFIK_MW_PLURAL,
+      name: STALWART_CORS_MW_NAME,
+      body,
+    } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
+    MERGE_PATCH,
+  );
+
+  log.info(
+    { previousOrigin, newOrigin: expectedOrigin },
+    'webmail-router: stalwart-jmap-cors ACAO reconciled to webmail origin',
+  );
+
+  return { expectedOrigin, previousOrigin, patched: true };
 }
 
 export interface EngineDeploymentReconcileResult {

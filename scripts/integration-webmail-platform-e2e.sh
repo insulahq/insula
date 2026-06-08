@@ -71,9 +71,16 @@ set -euo pipefail
 
 # ── Args ─────────────────────────────────────────────────────────────
 ENGINE_LOOP=0
+HOSTNAME_RENAME=0
 for arg in "$@"; do
   case "$arg" in
     --engine-loop) ENGINE_LOOP=1 ;;
+    # Verify a webmail-hostname rename (default_webmail_url) propagates to
+    # BOTH the platform-webmail-ingress Host() AND the stalwart-jmap-cors
+    # ACAO, then restores. Requires kubectl (KUBECONFIG to the target
+    # cluster). WARNING: briefly repoints the webmail host — don't run
+    # casually against production. Restores on exit (even on failure).
+    --hostname-rename) HOSTNAME_RENAME=1 ;;
     -h|--help)
       sed -n '1,/^set -eu/p' "$0" | sed 's/^# \?//'
       exit 0 ;;
@@ -87,6 +94,9 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:?ADMIN_PASSWORD env var required}"
 TEST_DOMAIN="${TEST_DOMAIN:-harness-$(date +%s)-${RANDOM}.example.test}"
 SKIP_WEBMAIL_HIT="${SKIP_WEBMAIL_HIT:-0}"
 ENGINE_FLIP_SETTLE_S="${ENGINE_FLIP_SETTLE_S:-15}"
+# --hostname-rename knobs.
+MAIL_NS="${MAIL_NS:-mail}"
+RENAME_SETTLE_S="${RENAME_SETTLE_S:-40}"
 
 CURL_OPTS=(-sS -m 30)
 [[ "${CURL_INSECURE:-0}" == "1" ]] && CURL_OPTS+=(-k)
@@ -101,10 +111,26 @@ phase() { printf '\n\033[36m── %s ──\033[0m\n' "$*"; }
 TENANT_ID=""
 INITIAL_ENGINE=""           # populated in --engine-loop mode for restore
 ENGINE_RESTORE_NEEDED=0
+ORIG_WEBMAIL_URL=""             # populated in --hostname-rename mode
+WEBMAIL_URL_RESTORE_NEEDED=0
 trap 'cleanup_on_exit' EXIT
 
 cleanup_on_exit() {
-  # Restore initial engine first — it's the operator-visible state.
+  # Restore the webmail URL FIRST — a non-default value left behind would
+  # point the tenant panel at a host the ingress no longer serves.
+  if [[ "$WEBMAIL_URL_RESTORE_NEEDED" == "1" && -n "$ORIG_WEBMAIL_URL" && -n "${ADMIN_TOKEN:-}" ]]; then
+    local opts=(-sS -m 30) restore_body
+    [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
+    # jq-build the body so a URL with special chars can't malform the JSON
+    # (this is the safety net — it must never silently no-op).
+    restore_body=$(jq -n --arg url "$ORIG_WEBMAIL_URL" '{defaultWebmailUrl:$url}')
+    curl "${opts[@]}" -X PATCH "${API_BASE}/api/v1/admin/webmail-settings" \
+      -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+      -H 'content-type: application/json' \
+      -d "$restore_body" \
+      -o /dev/null -w 'cleanup: webmail URL restore → %{http_code}\n' || true
+  fi
+  # Restore initial engine — it's the operator-visible state.
   if [[ "$ENGINE_RESTORE_NEEDED" == "1" && -n "$INITIAL_ENGINE" && -n "${ADMIN_TOKEN:-}" ]]; then
     local opts=(-sS -m 30)
     [[ "${CURL_INSECURE:-0}" == "1" ]] && opts+=(-k)
@@ -152,6 +178,64 @@ api() {
       -H "Authorization: Bearer ${ADMIN_TOKEN}"
   fi
 }
+
+# ── --hostname-rename: verify default_webmail_url propagates to the
+#    ingress Host() + the stalwart-jmap-cors ACAO, then restores ──────
+run_hostname_rename() {
+  phase "R1. Webmail hostname rename → ingress Host + CORS propagation"
+  command -v kubectl >/dev/null 2>&1 || { fail "R1.0 kubectl required for --hostname-rename"; return 1; }
+  local IR=platform-webmail-ingress MW=stalwart-jmap-cors
+  get_host() { kubectl get ingressroute "$IR" -n "$MAIL_NS" -o jsonpath='{.spec.routes[0].match}' 2>/dev/null; }
+  get_acao() { kubectl get middleware "$MW" -n "$MAIL_NS" -o "jsonpath={.spec.headers.customResponseHeaders['Access-Control-Allow-Origin']}" 2>/dev/null; }
+  if ! kubectl get ingressroute "$IR" -n "$MAIL_NS" >/dev/null 2>&1; then
+    fail "R1.0 cannot read IngressRoute ${IR} in ns ${MAIL_NS} (kubectl context / RBAC?)"; return 1
+  fi
+
+  ORIG_WEBMAIL_URL=$(api GET /api/v1/admin/webmail-settings | jq -r '.data.defaultWebmailUrl // empty')
+  [[ -z "$ORIG_WEBMAIL_URL" ]] && { fail "R1.0 could not read current defaultWebmailUrl"; return 1; }
+  local orig_host orig_origin apex test_host test_url
+  orig_host=$(echo "$ORIG_WEBMAIL_URL"   | sed -E 's#^https?://([^/:]+).*#\1#')
+  orig_origin=$(echo "$ORIG_WEBMAIL_URL" | sed -E 's#^(https?://[^/]+).*#\1#')
+  apex=$(echo "$orig_host" | sed -E 's#^[^.]+\.##')
+  test_host="webmail-rename-test.${apex}"
+  test_url="https://${test_host}/"
+  pass "R1.1 baseline url=${ORIG_WEBMAIL_URL} host=$(get_host) acao=$(get_acao)"
+
+  # Rename. The trap restores ORIG_WEBMAIL_URL even if we die mid-way.
+  WEBMAIL_URL_RESTORE_NEEDED=1
+  api PATCH /api/v1/admin/webmail-settings "$(jq -n --arg url "$test_url" '{defaultWebmailUrl:$url}')" >/dev/null
+  local want_host="Host(\`${test_host}\`)" want_acao="https://${test_host}" i
+  for ((i=0; i<RENAME_SETTLE_S; i+=2)); do
+    [[ "$(get_host)" == "$want_host" && "$(get_acao)" == "$want_acao" ]] && break
+    sleep 2
+  done
+  [[ "$(get_host)" == "$want_host" ]] && pass "R1.2 ingress Host → ${want_host}" \
+    || fail "R1.2 ingress Host not updated: got '$(get_host)' want '${want_host}'"
+  [[ "$(get_acao)" == "$want_acao" ]] && pass "R1.3 CORS ACAO → ${want_acao}" \
+    || fail "R1.3 CORS ACAO not updated: got '$(get_acao)' want '${want_acao}'"
+
+  # Restore + verify both surfaces return to baseline.
+  api PATCH /api/v1/admin/webmail-settings "$(jq -n --arg url "$ORIG_WEBMAIL_URL" '{defaultWebmailUrl:$url}')" >/dev/null
+  local rhost="Host(\`${orig_host}\`)"
+  for ((i=0; i<RENAME_SETTLE_S; i+=2)); do
+    [[ "$(get_host)" == "$rhost" && "$(get_acao)" == "$orig_origin" ]] && break
+    sleep 2
+  done
+  [[ "$(get_host)" == "$rhost" ]] && pass "R1.4 ingress Host restored → ${rhost}" \
+    || fail "R1.4 ingress Host not restored: got '$(get_host)'"
+  [[ "$(get_acao)" == "$orig_origin" ]] && pass "R1.5 CORS ACAO restored → ${orig_origin}" \
+    || fail "R1.5 CORS ACAO not restored: got '$(get_acao)'"
+  WEBMAIL_URL_RESTORE_NEEDED=0
+}
+
+if [[ "$HOSTNAME_RENAME" == "1" ]]; then
+  run_hostname_rename || true
+  echo
+  echo "════════════════════════════════════════════════"
+  printf "  PASS: \033[32m%d\033[0m   FAIL: \033[31m%d\033[0m\n" "$PASS" "$FAIL"
+  echo "════════════════════════════════════════════════"
+  [[ "$FAIL" -gt 0 ]] && exit 1 || exit 0
+fi
 
 # ── Phase 2: create test client ─────────────────────────────────────
 phase "2. Create client"
