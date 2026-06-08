@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 // Mock external dependencies that internal-routes imports
 vi.mock('../file-manager/k8s-lifecycle.js', () => ({
   ensureFileManagerRunning: vi.fn().mockResolvedValue(undefined),
+  getReadyFileManagerPodName: vi.fn().mockResolvedValue('file-manager-744d8486c6-cnmtj'),
 }));
 
 vi.mock('../file-manager/idle-cleanup.js', () => ({
@@ -249,7 +250,8 @@ describe('sftp internal routes', () => {
 
       expect(res.statusCode).toBe(200);
       const body = res.json();
-      expect(body.data.pod_name).toBe('file-manager');
+      // The real (Deployment-hashed) pod name, not the literal "file-manager".
+      expect(body.data.pod_name).toBe('file-manager-744d8486c6-cnmtj');
     });
 
     it('should return 403 for unknown namespace', async () => {

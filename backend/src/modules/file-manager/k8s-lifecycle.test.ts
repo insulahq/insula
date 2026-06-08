@@ -179,4 +179,42 @@ describe('File Manager K8s Lifecycle', () => {
       expect(status.ready).toBe(false);
     });
   });
+
+  describe('getReadyFileManagerPodName', () => {
+    it('returns the actual Deployment-hashed pod name when Ready', async () => {
+      (mockK8s.core.listNamespacedPod as ReturnType<typeof vi.fn>).mockResolvedValue({
+        items: [{
+          metadata: { name: 'file-manager-744d8486c6-cnmtj' },
+          status: { conditions: [{ type: 'Ready', status: 'True' }] },
+        }],
+      });
+      const { getReadyFileManagerPodName } = await import('./k8s-lifecycle.js');
+      expect(await getReadyFileManagerPodName(mockK8s, 'tenant-test-ns'))
+        .toBe('file-manager-744d8486c6-cnmtj');
+    });
+
+    it('returns "" when no pod is Ready (gateway then falls back)', async () => {
+      (mockK8s.core.listNamespacedPod as ReturnType<typeof vi.fn>).mockResolvedValue({
+        items: [{ metadata: { name: 'file-manager-x' }, status: { conditions: [{ type: 'Ready', status: 'False' }] } }],
+      });
+      const { getReadyFileManagerPodName } = await import('./k8s-lifecycle.js');
+      expect(await getReadyFileManagerPodName(mockK8s, 'tenant-test-ns')).toBe('');
+    });
+
+    it('skips a terminating pod even if still Ready=True', async () => {
+      (mockK8s.core.listNamespacedPod as ReturnType<typeof vi.fn>).mockResolvedValue({
+        items: [{
+          metadata: { name: 'file-manager-old', deletionTimestamp: '2026-06-08T00:00:00Z' },
+          status: { conditions: [{ type: 'Ready', status: 'True' }] },
+        }],
+      });
+      const { getReadyFileManagerPodName } = await import('./k8s-lifecycle.js');
+      expect(await getReadyFileManagerPodName(mockK8s, 'tenant-test-ns')).toBe('');
+    });
+
+    it('returns "" when there are no pods', async () => {
+      const { getReadyFileManagerPodName } = await import('./k8s-lifecycle.js');
+      expect(await getReadyFileManagerPodName(mockK8s, 'tenant-test-ns')).toBe('');
+    });
+  });
 });
