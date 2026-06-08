@@ -73,10 +73,10 @@ SLAs are encoded in `security/components.yaml: slas` and enforced by the guard f
    *"🔭 Component watch — week of YYYY-MM-DD"* listing: new CVEs, components behind
    upstream, and open ledger items past SLA. Triage that issue.
 2. **Per-PR (automated)** — Infrastructure CI runs the guard (schema/drift/
-   coverage; SLA is report-only for now); the dep-scan gate fails on an
-   **untracked** HIGH/CRITICAL — i.e. one with **no** ledger entry at all.
-   Triaging it into the ledger (even `open` with a remediation) unblocks CI;
-   the SLA mechanism then enforces remediation.
+   coverage/SLA — all enforcing); the dep-scan gate fails on an **untracked**
+   HIGH/CRITICAL (no ledger entry at all). Triaging it into the ledger (even
+   `open` with a remediation) unblocks the dep-scan gate; the SLA check then
+   fails CI if an open KEV/critical sits past its tier window with no mitigation.
 3. **Event-driven** — a KEV addition or a critical disclosure for a Tier 0/1
    component starts the SLA clock immediately; don't wait for the weekly issue.
 4. **Quarterly (human)** — re-review tiers (§Quarterly tier review).
@@ -147,12 +147,12 @@ remediation owed:
 The guard treats a `mitigated` entry as satisfying the SLA, but it stays on the
 weekly issue until `status: fixed`. `accepted` requires a `review_by` date.
 
-> **Initial backlog (seeded 2026-06-08):** the first OSV scan surfaced 9
-> pre-existing HIGH/CRITICAL dependency CVEs (incl. `fast-jwt` 9.1,
-> `react-router` 8.1, `golang.org/x/crypto` 7.5). They're recorded `open` in the
-> ledger with remediation notes — mostly Dependabot npm bumps + a Go
-> module/toolchain bump. Burn these down, then flip the SLA check from
-> report-only to enforcing (one-line change in `ci-component-watch-check.sh`).
+> **Initial backlog (2026-06-08):** the first OSV scan surfaced 9 pre-existing
+> HIGH/CRITICAL dependency CVEs (`fast-jwt` 9.1, `fast-uri`, `fast-xml-parser`,
+> `react-router`, `golang.org/x/oauth2`, `x/crypto`, `moby/spdystream`). All
+> **fixed the same day** (PRs #251 npm + #253 Go), and the SLA check was then
+> flipped from report-only to **enforcing**. The ledger keeps the fixed entries
+> for audit history.
 
 ## Add / remove a component
 

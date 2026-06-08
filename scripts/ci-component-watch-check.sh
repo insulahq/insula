@@ -224,11 +224,12 @@ for i, e in enumerate(entries):
             except Exception:
                 warn(f"{eid}: unparseable discovered '{disc}'")
         if (days is not None and overdue) and not e.get("mitigation"):
-            # REPORT-ONLY for now (matches the repo's report-only→enforce convention,
-            # e.g. ci-manual-impact-check). Flip to err() once the initial CVE backlog
-            # seeded 2026-06-08 is burned down, so a stale open critical can't merge.
-            warn(f"{eid}: open {('KEV' if e.get('kev') else 'critical')} on tier-{tier} "
-                 f"past {days}d SLA with no mitigation (report-only)")
+            # ENFORCING since 2026-06-08 (the seeded backlog was cleared the same
+            # day — PRs #251/#253). An open KEV/critical past its tier SLA with no
+            # mitigation now fails CI. To unblock: ship the fix, add a `mitigation:`,
+            # or re-triage the entry (not_affected/accepted with review_by).
+            err(f"{eid}: open {('KEV' if e.get('kev') else 'critical')} on tier-{tier} "
+                f"past {days}d SLA with no mitigation")
 
 # ── report ──────────────────────────────────────────────────────────────────────
 for w in warnings:
