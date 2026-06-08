@@ -215,10 +215,7 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 		// + exec in a single binary — no shell interpolation, no injection.
 		// The user sees only /home/ (their PVC data). Platform dirs have
 		// mode 711/700 and are invisible to the nobody uid.
-		chrootHome := "/home" + sanitizePath(strings.TrimPrefix(homePath, "/"), "/")
-		if chrootHome == "/home/" {
-			chrootHome = "/home"
-		}
+		chrootHome := confineHome(homePath)
 		return []string{
 			"sftp-chroot",
 			"--root", "/jail",
@@ -239,6 +236,35 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 		// Reject unrecognised commands — only sftp/scp/rsync are allowed.
 		return nil
 	}
+}
+
+// confineHome computes the SFTP start directory inside the chroot. After
+// sftp-chroot bind-mounts the PVC at /home and chroots, the user's data lives
+// under /home; this returns "/home" plus the user's configured home sub-path.
+//
+// homePath comes from the trusted sftp-user record (e.g. "/" or "/public_html"),
+// but we sanitize defensively so the start directory can never point outside the
+// PVC mount: any ".." path component, a null byte, or a result that would escape
+// /home falls back to "/home" (the PVC root). A valid sub-path (e.g.
+// "/public_html") resolves to "/home/public_html".
+func confineHome(homePath string) string {
+	if strings.ContainsRune(homePath, 0) {
+		return "/home"
+	}
+	sub := strings.Trim(homePath, "/")
+	if sub == "" {
+		return "/home"
+	}
+	for _, part := range strings.Split(sub, "/") {
+		if part == ".." {
+			return "/home"
+		}
+	}
+	candidate := filepath.Clean("/home/" + sub)
+	if candidate == "/home" || strings.HasPrefix(candidate, "/home/") {
+		return candidate
+	}
+	return "/home"
 }
 
 // sanitizePath cleans a path argument and confines it under dataRoot.
