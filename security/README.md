@@ -18,7 +18,7 @@ release — lives in the runbook: **[docs/operations/COMPONENT_WATCH.md](../docs
 1. **Schema** — missing/invalid fields in either file; a ledger `component` with no registry entry.
 2. **Drift** — a `pin_check: true` component whose `pinned` literal is no longer present in `pin_source`.
 3. **Coverage** — an `image:`/`imageName:` under `k8s/` or a chart/binary pin in `scripts/bootstrap.sh` that maps to no registry component.
-4. **SLA** — an `open` KEV/critical ledger entry past its tier SLA with no `mitigation` (report-only until the seeded backlog clears, then enforcing).
+4. **SLA** — an `open` KEV/critical ledger entry past its tier SLA with no `mitigation` (enforcing since 2026-06-08).
 
 So the registry cannot silently drift from reality, and a new component cannot
 ship untracked.
