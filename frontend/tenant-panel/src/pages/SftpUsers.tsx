@@ -1,9 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import {
   HardDrive, Plus, Trash2, Loader2, AlertCircle, X, Copy, Check,
-  Shield, Clock, KeyRound, ChevronDown, ChevronUp, RefreshCw,
+  Shield, Clock, KeyRound, ChevronDown, ChevronUp, RefreshCw, FolderOpen,
 } from 'lucide-react';
 import clsx from 'clsx';
+import FolderPickerDialog from '@/components/FolderPickerDialog';
+import { useCreateDirectory } from '@/hooks/use-file-manager';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import {
@@ -222,6 +224,7 @@ export default function SftpUsers() {
   const { data, isLoading } = useSftpUsers(tenantId ?? undefined);
   const createUser = useCreateSftpUser(tenantId ?? undefined);
   const updateUser = useUpdateSftpUser(tenantId ?? undefined);
+  const createDir = useCreateDirectory();
   const deleteUser = useDeleteSftpUser(tenantId ?? undefined);
 
   const sshKeysQuery = useSshKeys(tenantId ?? undefined);
@@ -231,6 +234,8 @@ export default function SftpUsers() {
   const [description, setDescription] = useState('');
   const [authMethod, setAuthMethod] = useState<'password' | 'ssh_key'>('password');
   const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
+  const [homePath, setHomePath] = useState('/');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState<{ password: string; username: string } | null>(null);
   const [newSshKeyUser, setNewSshKeyUser] = useState<{ username: string } | null>(null);
@@ -241,6 +246,8 @@ export default function SftpUsers() {
   const [editKeyIds, setEditKeyIds] = useState<string[]>([]);
   const [editDescription, setEditDescription] = useState('');
   const [editEnabled, setEditEnabled] = useState(true);
+  const [editHomePath, setEditHomePath] = useState('/');
+  const [editPickerOpen, setEditPickerOpen] = useState(false);
   const [editResult, setEditResult] = useState<{ password?: string } | null>(null);
   // Inline regenerated password shown in the table row
   const [regenPassword, setRegenPassword] = useState<{ userId: string; password: string } | null>(null);
@@ -259,10 +266,17 @@ export default function SftpUsers() {
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
+      // Auto-create the home folder if it doesn't exist yet, so the user always
+      // lands in a valid directory. Best-effort — ignore "already exists".
+      if (homePath !== '/') {
+        try { await createDir.mutateAsync(homePath); }
+        catch (err) { if (!/exist/i.test((err as Error).message)) throw err; }
+      }
       const result = await createUser.mutateAsync({
         auth_method: authMethod,
         ssh_key_ids: authMethod === 'ssh_key' ? selectedKeyIds : undefined,
         description: description.trim(),
+        home_path: homePath,
       });
       const created = result.data as SftpUser & { password?: string };
       if (authMethod === 'password') {
@@ -273,6 +287,7 @@ export default function SftpUsers() {
       setDescription('');
       setAuthMethod('password');
       setSelectedKeyIds([]);
+      setHomePath('/');
       setShowForm(false);
     } catch { /* surfaced via createUser.error */ }
   };
@@ -299,6 +314,7 @@ export default function SftpUsers() {
     setEditKeyIds(user.linkedSshKeys?.map(k => k.id) ?? []);
     setEditDescription(user.description || '');
     setEditEnabled(user.enabled);
+    setEditHomePath(user.homePath || '/');
     setEditResult(null);
   };
 
@@ -308,7 +324,13 @@ export default function SftpUsers() {
       const input: Record<string, unknown> = {
         description: editDescription,
         enabled: editEnabled,
+        home_path: editHomePath,
       };
+      // Auto-create the home folder if missing (best-effort; ignore "exists").
+      if (editHomePath !== '/') {
+        try { await createDir.mutateAsync(editHomePath); }
+        catch (err) { if (!/exist/i.test((err as Error).message)) throw err; }
+      }
       // Only send auth_method if it changed
       const currentMethod = editUser.linkedSshKeys && editUser.linkedSshKeys.length > 0 ? 'ssh_key' : 'password';
       if (editAuthMethod !== currentMethod || editAuthMethod === 'ssh_key') {
@@ -417,6 +439,19 @@ export default function SftpUsers() {
               className={INPUT_CLASS}
               required
             />
+          </div>
+
+          {/* Home folder */}
+          <div>
+            <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Home folder</label>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0 flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100">
+                <FolderOpen size={14} className="text-amber-500 shrink-0" />
+                <span className="truncate">{homePath === '/' ? 'Entire storage (default)' : homePath}</span>
+              </div>
+              <button type="button" onClick={() => setPickerOpen(true)} className="shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">Browse…</button>
+            </div>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">The user is locked to this folder and its subfolders.</p>
           </div>
 
           {/* Auth method selector */}
@@ -529,7 +564,13 @@ export default function SftpUsers() {
                     className="hover:bg-gray-50 dark:hover:bg-gray-800/50 cursor-pointer"
                     onClick={() => openEdit(user)}
                   >
-                    <td className="px-4 py-3 text-gray-900 dark:text-gray-100">{user.description || '\u2014'}</td>
+                    <td className="px-4 py-3 text-gray-900 dark:text-gray-100">
+                      <div>{user.description || '\u2014'}</div>
+                      <div className="mt-0.5 flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+                        <FolderOpen size={11} className="text-amber-500 shrink-0" />
+                        <span className="truncate">{!user.homePath || user.homePath === '/' ? 'Entire storage' : user.homePath}</span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3"><StatusBadge enabled={user.enabled} expiresAt={user.expiresAt} /></td>
                     <td className="px-4 py-3 font-mono text-gray-900 dark:text-gray-100">
                       <span className="flex items-center gap-1">
@@ -655,6 +696,19 @@ export default function SftpUsers() {
               </label>
             </div>
 
+            {/* Home folder */}
+            <div>
+              <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Home folder</label>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 min-w-0 flex items-center gap-2 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100">
+                  <FolderOpen size={14} className="text-amber-500 shrink-0" />
+                  <span className="truncate">{editHomePath === '/' ? 'Entire storage (default)' : editHomePath}</span>
+                </div>
+                <button type="button" onClick={() => setEditPickerOpen(true)} className="shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">Browse…</button>
+              </div>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Changing this moves where the user lands on their next connection.</p>
+            </div>
+
             {/* Auth Method radio */}
             <div>
               <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-2">Authentication Method</label>
@@ -751,6 +805,29 @@ export default function SftpUsers() {
             </div>
           </div>
         </div>
+      )}
+
+      {pickerOpen && (
+        <FolderPickerDialog
+          title="Select home folder"
+          description="The SFTP user will be locked to this folder and its subfolders."
+          initialPath={homePath}
+          confirmLabel="Use this folder"
+          isPending={false}
+          onClose={() => setPickerOpen(false)}
+          onConfirm={(p) => { setHomePath(p); setPickerOpen(false); }}
+        />
+      )}
+      {editPickerOpen && (
+        <FolderPickerDialog
+          title="Select home folder"
+          description="The SFTP user will be locked to this folder and its subfolders."
+          initialPath={editHomePath}
+          confirmLabel="Use this folder"
+          isPending={false}
+          onClose={() => setEditPickerOpen(false)}
+          onConfirm={(p) => { setEditHomePath(p); setEditPickerOpen(false); }}
+        />
       )}
     </div>
   );
