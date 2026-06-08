@@ -26,7 +26,7 @@ writeFileSync(join(OUTSIDE, 'secret.txt'), 'TOP_SECRET_OUTSIDE');
 symlinkSync(join(BASE, 'ok'), join(BASE, 'inlink'));
 symlinkSync(OUTSIDE, join(BASE, 'escape'));
 
-const { safePath, withinBase, ipIsInternal } = await import('./server.mjs');
+const { safePath, withinBase, ipIsInternal, urlHostIsInternalLiteral } = await import('./server.mjs');
 
 after(() => { rmSync(BASE, { recursive: true, force: true }); rmSync(OUTSIDE, { recursive: true, force: true }); });
 
@@ -51,6 +51,29 @@ test('ipIsInternal allows public addresses', () => {
 test('ipIsInternal fails closed on non-IP input', () => {
   assert.equal(ipIsInternal('not-an-ip'), true);
   assert.equal(ipIsInternal(''), true);
+});
+
+// Regression for the live-E2E miss: node's http.get skips `lookup` for a
+// LITERAL-IP host, so a literal internal IP in the URL must be caught by this
+// pre-check (safeLookup only fires for hostnames).
+test('urlHostIsInternalLiteral blocks literal internal IPs in the URL', () => {
+  for (const u of [
+    'http://169.254.169.254/latest/meta-data/', 'http://127.0.0.1/x', 'https://10.43.0.1/',
+    'http://192.168.1.1/', 'http://[::1]/', 'http://[fd00::1]/', 'http://0.0.0.0/',
+  ]) {
+    assert.equal(urlHostIsInternalLiteral(u), true, `${u} should be blocked`);
+  }
+});
+
+test('urlHostIsInternalLiteral does NOT block public literal IPs or hostnames', () => {
+  // hostnames are left for safeLookup (resolved-IP check) — not pre-blocked here
+  assert.equal(urlHostIsInternalLiteral('http://example.com/'), false);
+  assert.equal(urlHostIsInternalLiteral('https://1.1.1.1/'), false);
+  assert.equal(urlHostIsInternalLiteral('http://93.184.216.34/'), false);
+});
+
+test('urlHostIsInternalLiteral blocks unparseable URLs (fail closed)', () => {
+  assert.equal(urlHostIsInternalLiteral('not a url'), true);
 });
 
 // ─── F3: withinBase prefix check ──────────────────────────────────────────────
