@@ -1,27 +1,48 @@
-// sftp-chroot — bind-mount + chroot + drop privileges + exec.
-// Compiled as a static binary. The SFTP gateway calls this with safe
-// argument arrays (no shell interpolation) to eliminate injection vectors.
+// sftp-chroot — chroot + drop privileges (keeping DAC_OVERRIDE ambient) + exec.
+// Compiled as a static binary. The SFTP gateway calls this with safe argument
+// arrays (no shell interpolation) to eliminate injection vectors.
 //
-// Usage: sftp-chroot --root <jail> --bind <src>:<dst> <cmd> [args...]
+// The tenant PVC is mounted into the jail at <root>/home by the POD SPEC (the
+// kubelet), so this binary performs NO mount itself — it only chroots and drops
+// to nobody. That keeps the file-manager pod free of CAP_SYS_ADMIN (which is not
+// permitted by the Pod Security "baseline" enforced on tenant namespaces); the
+// only capabilities needed are SYS_CHROOT (chroot), SETUID/SETGID (drop to
+// nobody) and DAC_OVERRIDE (read/write the tenant's files regardless of which
+// UID owns them — website files are owned by the runtime's user, e.g. webuser).
+// DAC_OVERRIDE is preserved across the UID drop as an AMBIENT capability so the
+// unprivileged sftp-server keeps it. Trade-off: DAC_OVERRIDE also lets the user
+// read/write the minimal jail scaffolding (a 2-line stub /etc/passwd, /dev/null,
+// and the public sftp-server binary in /.platform) — it bypasses the mode-711
+// "hidden" trick. That is acceptable: the chroot is the real boundary (it is NOT
+// bypassed by DAC_OVERRIDE), nothing in the jail is secret, and the jail is
+// per-tenant (an emptyDir in this tenant's own file-manager pod, over this
+// tenant's own PVC). The only ambient cap is DAC_OVERRIDE — not FOWNER/CHOWN —
+// so the user cannot change ownership or modes, only read/write within the jail.
+//
+// Usage: sftp-chroot --root <jail> <cmd> [args...]
 //
 // Example:
-//   sftp-chroot --root /jail --bind /data:/home /.platform/sftp-server -e -d /home
+//
+//	sftp-chroot --root /jail /.platform/sftp-server -e -d /home/public_html
 package main
 
 import (
-	"crypto/rand"
 	"fmt"
 	"os"
 	osexec "os/exec"
-	"strings"
 	"syscall"
 )
 
+// capDACOverride bypasses file read/write/execute permission checks. Kept as an
+// ambient capability so the post-setuid sftp-server can access the tenant's
+// files whatever UID owns them. Value from <linux/capability.h>.
+const capDACOverride = 1
+
 func main() {
-	var root, bindSrc, bindDst string
+	var root string
 	var cmdIdx int
 
-	// Parse flags (before the command)
+	// Parse flags (before the command).
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "--root":
@@ -30,16 +51,6 @@ func main() {
 			}
 			i++
 			root = os.Args[i]
-		case "--bind":
-			if i+1 >= len(os.Args) {
-				fatal("--bind requires src:dst argument")
-			}
-			i++
-			parts := strings.SplitN(os.Args[i], ":", 2)
-			if len(parts) != 2 {
-				fatal("--bind format: src:dst")
-			}
-			bindSrc, bindDst = parts[0], parts[1]
 		default:
 			cmdIdx = i
 			goto done
@@ -47,32 +58,18 @@ func main() {
 	}
 done:
 	if root == "" || cmdIdx == 0 || cmdIdx >= len(os.Args) {
-		fmt.Fprintf(os.Stderr, "usage: sftp-chroot --root <jail> [--bind src:dst] <cmd> [args...]\n")
+		fmt.Fprintf(os.Stderr, "usage: sftp-chroot --root <jail> <cmd> [args...]\n")
 		os.Exit(1)
 	}
 
-	// Validate root and bind paths — only safe characters allowed.
-	// This is defense-in-depth against any upstream injection.
+	// Validate root path — only safe characters allowed (defense-in-depth
+	// against any upstream injection).
 	if !isSafePath(root) {
 		fatal("root path contains unsafe characters: " + root)
 	}
-	if bindSrc != "" && (!isSafePath(bindSrc) || !isSafePath(bindDst)) {
-		fatal("bind path contains unsafe characters")
-	}
 
-	// Bind mount (runs as root, before chroot)
-	if bindSrc != "" {
-		target := root + bindDst
-		if err := syscall.Mount(bindSrc, target, "", syscall.MS_BIND, ""); err != nil {
-			fatal(fmt.Sprintf("mount --bind %s %s: %v", bindSrc, target, err))
-		}
-		// Defer unmount on any exit path
-		defer func() {
-			_ = syscall.Unmount(target, 0)
-		}()
-	}
-
-	// Chroot
+	// Chroot into the jail. The tenant PVC is already mounted at <root>/home by
+	// the pod spec, so no mount is performed here.
 	if err := syscall.Chroot(root); err != nil {
 		fatal(fmt.Sprintf("chroot %s: %v", root, err))
 	}
@@ -80,22 +77,26 @@ done:
 		fatal(fmt.Sprintf("chdir /: %v", err))
 	}
 
-	// Fork child process as nobody:nobody (65534) instead of exec, so the
-	// parent's deferred unmount fires after the child exits.
+	// Run the command as nobody:nobody (65534), keeping DAC_OVERRIDE ambient so
+	// the unprivileged process can still read/write the tenant's files. A child
+	// process (not exec) keeps a clean parent for exit-code propagation.
 	cmd := os.Args[cmdIdx]
-	childEnv := []string{"HOME=/", "PATH=/.platform"}
-
 	child := osexec.Command(cmd, os.Args[cmdIdx+1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
-	child.Env = childEnv
+	child.Env = []string{"HOME=/", "PATH=/.platform"}
 	child.SysProcAttr = &syscall.SysProcAttr{
 		Credential: &syscall.Credential{
 			Uid:    65534,
 			Gid:    65534,
 			Groups: []uint32{65534},
 		},
+		// Preserve DAC_OVERRIDE across the UID transition. The Go runtime puts
+		// it into the inheritable set and raises it in the ambient set after
+		// setuid — permitted under no_new_privs because it grants no capability
+		// the process did not already hold in its permitted set.
+		AmbientCaps: []uintptr{capDACOverride},
 	}
 
 	exitCode := 0
@@ -107,7 +108,6 @@ done:
 			exitCode = 1
 		}
 	}
-	// Deferred unmount fires here — clean up bind mount
 	os.Exit(exitCode)
 }
 
@@ -128,12 +128,4 @@ func isSafePath(p string) bool {
 func fatal(msg string) {
 	fmt.Fprintf(os.Stderr, "sftp-chroot: %s\n", msg)
 	os.Exit(1)
-}
-
-// sessionID returns a random hex string for session identification.
-// Exported for use by the gateway if needed.
-func sessionID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x", b)
 }
