@@ -828,6 +828,19 @@ function ipIsInternal(ip) {
   return true; // not a literal IP after lookup → fail closed
 }
 
+// Reject a URL whose host is a LITERAL internal IP. Necessary because node's
+// http(s).get skips the `lookup` callback entirely when the host is already an
+// IP literal — so `safeLookup` alone would never see `http://169.254.169.254/`
+// or `http://127.0.0.1/`. Must be re-checked on every redirect hop.
+// (Hostnames that RESOLVE to internal IPs are handled by safeLookup at connect.)
+function urlHostIsInternalLiteral(urlStr) {
+  let host;
+  try { host = new URL(urlStr).hostname; } catch { return true; } // unparseable → block
+  // URL keeps the brackets on IPv6 literals ("[::1]") — strip them for isIP.
+  host = host.replace(/^\[|\]$/g, '');
+  return isIP(host) !== 0 && ipIsInternal(host);
+}
+
 // Custom DNS lookup that REFUSES to resolve to an internal address. Passed to
 // http(s).get so the validated IP is the one actually connected to (no rebind).
 function safeLookup(hostname, options, callback) {
@@ -867,10 +880,14 @@ async function handleFetchUrl(req, res) {
   if (!url) return sendError(res, 400, 'url required');
   if (!destPath) return sendError(res, 400, 'path required');
 
-  // Security: only http(s); SSRF to internal/metadata addresses is blocked at
-  // connect time by `safeLookup` (below), which is re-applied on every redirect.
+  // Security: only http(s); SSRF to internal/metadata addresses is blocked by a
+  // literal-IP pre-check (below) plus `safeLookup` for hostnames — both
+  // re-applied on every redirect hop inside fetchWithRedirects.
   if (!/^https?:\/\//i.test(url)) {
     return sendError(res, 400, 'Only http:// and https:// URLs are supported');
+  }
+  if (urlHostIsInternalLiteral(url)) {
+    return sendError(res, 403, 'URL not allowed (internal/local address)');
   }
 
   const full = await safePath(destPath, { allowHidden: isPlatformBypass(req) });
@@ -885,6 +902,7 @@ async function handleFetchUrl(req, res) {
 
     async function fetchWithRedirects(fetchUrl, maxRedirects = 5) {
       if (!/^https?:\/\//i.test(fetchUrl)) { throw new Error('redirect to non-http(s) scheme blocked'); }
+      if (urlHostIsInternalLiteral(fetchUrl)) { throw new Error(`Blocked internal address ${new URL(fetchUrl).hostname}`); }
       const fetchProto = fetchUrl.startsWith('https') ? await import('node:https') : await import('node:http');
       return new Promise((resolve, reject) => {
         // lookup: safeLookup → the resolved IP is validated as non-internal on
@@ -1128,6 +1146,7 @@ async function handleCloneSite(req, res) {
       return new Promise((resolve, reject) => {
         const doFetch = (u, redirects = 0) => {
           if (!/^https?:\/\//i.test(u)) { reject(new Error('non-http(s) scheme blocked')); return; }
+          if (urlHostIsInternalLiteral(u)) { reject(new Error('blocked internal address')); return; }
           // Pick the module matching THIS url's scheme (a redirect can switch
           // http↔https), not the initial one.
           const p = u.startsWith('https') ? import('node:https') : import('node:http');
@@ -1388,4 +1407,4 @@ if (process.env.FM_NO_LISTEN !== '1') {
 
 // Exported for unit tests (node --test). These are pure helpers — importing
 // the module with FM_NO_LISTEN=1 does not start the server.
-export { withinBase, confineRealpath, safePath, ipIsInternal, isHidden, relToBase, BASE };
+export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE };
