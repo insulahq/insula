@@ -149,7 +149,7 @@ images:
   - name: ghcr.io/insulahq/insula/admin-panel
     newTag: "20260608154939-674d28e" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20260608154929-674d28e" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260608183121-d00a774" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
