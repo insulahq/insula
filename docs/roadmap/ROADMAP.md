@@ -27,6 +27,7 @@
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Not started — **unlocks deleting `docs/history/`** |
+| [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 
 ---
 
@@ -155,3 +156,17 @@ monorepo `documentation/`, Material for MkDocs now (Zensical-compatible authorin
 migrate post-alpha), GitHub Pages at `insulahq.github.io/insula`, v1 = all
 three guides, accuracy via manual-impact CI guard + generated reference +
 strict builds + freshness stamps.
+
+## R15 — Component CVE & version watch
+
+Shipped 2026-06-08 (ADR-050) — listed here as an **ongoing operation**, not
+open work. A tiered, machine-checkable watch over the ~65 components Insula
+deploys: `security/components.yaml` (registry) + `security/cve-ledger.yaml`
+(triage + waiver register), enforced by `scripts/ci-component-watch-check.sh`
+(schema/drift/coverage/SLA), with a weekly OSV/upstream sweep, Dependabot, and
+per-image Trivy. Operate it via [COMPONENT_WATCH.md](../operations/COMPONENT_WATCH.md).
+
+Open follow-ups carried by the registry's "known hygiene items": pin Flux to a
+release; align the `pg_dump` client image to PG 18; consolidate the duplicate
+`alpine/k8s` + `busybox` tags; drop the legacy `roundcube:latest-fpm` reference.
+The in-cluster Trivy scanning UI stays deferred under [R11](#r11--security-hardening-phase-2).

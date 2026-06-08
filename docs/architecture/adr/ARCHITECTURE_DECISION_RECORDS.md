@@ -2438,6 +2438,28 @@ Storage at 100 tenants drops from ~18 TiB to ~640 GiB (~28×). Object-
 level restore via `restic restore --include` (files) and JMAP
 `Email/import` (mail) becomes a first-class operation.
 
+## ADR-049: Login passwords (app passwords) as the mailbox credential system
+
+See [ADR-049-login-passwords.md](ADR-049-login-passwords.md).
+
+Summary (2026-06-07): Make Stalwart app passwords the human-facing mailbox
+credential. The operator-typed primary password becomes internal (random,
+stored nowhere platform-side; `password_hash` nullable), and per-device
+"login passwords" are created/revoked individually via JMAP `x:AppPassword/*`.
+
+## ADR-050: Tiered component CVE & version watch
+
+See [ADR-050-component-cve-watch.md](ADR-050-component-cve-watch.md).
+
+Summary (2026-06-08): A tiered, machine-checkable watch for ~65 components.
+`security/components.yaml` (registry, drift+coverage-guarded) +
+`security/cve-ledger.yaml` (triage + waiver register) +
+`scripts/ci-component-watch-check.sh` (CI gate) + a weekly OSV/upstream sweep,
+Dependabot, and Trivy-gap closure. A 5-axis rubric maps each component to tiers
+0/1/2/3/C/X with per-tier remediation SLAs. Fixes flow out through the ADR-045
+version spine. Does not revive the in-cluster Trivy UI (R11 stays deferred).
+Runbook: docs/operations/COMPONENT_WATCH.md.
+
 ---
 
 ## References

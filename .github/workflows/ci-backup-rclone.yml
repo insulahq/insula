@@ -80,6 +80,7 @@ jobs:
       contents: read
       packages: write       # push to GHCR
       id-token: write       # cosign keyless OIDC
+      security-events: write # Trivy SARIF upload
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
@@ -151,6 +152,20 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: true
           sbom: true
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: backup-rclone
 
       # ---- step 3: sign (only after smoke + push succeed) ----
       - uses: sigstore/cosign-installer@v3

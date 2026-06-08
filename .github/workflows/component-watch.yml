@@ -1,0 +1,95 @@
+name: Component Watch
+
+# Component CVE & version watch (ADR-050).
+#   * PR gate  — registry guard + OSV dep-scan that fails on a new HIGH/CRITICAL
+#                not waived in security/cve-ledger.yaml.
+#   * Weekly   — OSV + upstream-behind sweep → rolling tracking issue.
+# Registry: security/components.yaml   Ledger: security/cve-ledger.yaml
+# Runbook:  docs/operations/COMPONENT_WATCH.md
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'security/**'
+      - 'package-lock.json'
+      - '**/package.json'
+      - 'images/**/go.mod'
+      - 'images/**/go.sum'
+      - 'images/**/Cargo.toml'
+  schedule:
+    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # osv-scanner is installed via `go install` so the version resolves through the
+  # Go module proxy (no fragile release-asset name guessing). v2 module path.
+  OSV_VERSION: v2.0.2
+
+jobs:
+  registry-guard:
+    name: Registry schema + drift + coverage + SLA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --user pyyaml
+      - run: ./scripts/ci-component-watch-check.sh
+
+  dep-scan:
+    name: OSV dependency scan (gate on new HIGH/CRITICAL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --user pyyaml
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install osv-scanner
+        run: |
+          go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@${OSV_VERSION}"
+          osv-scanner --version
+      - name: Scan lockfiles
+        run: osv-scanner scan source --recursive --format json --output osv.json . || true
+      - name: Gate on non-waived HIGH/CRITICAL
+        run: python3 .github/scripts/component-watch-gate.py osv.json security/cve-ledger.yaml
+
+  sweep:
+    name: Weekly sweep → tracking issue
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install --user pyyaml
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Install osv-scanner
+        run: go install "github.com/google/osv-scanner/v2/cmd/osv-scanner@${OSV_VERSION}"
+      - name: Scan
+        run: osv-scanner scan source --recursive --format json --output osv.json . || true
+      - name: Upstream-behind check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/component-watch.sh --latest --json > latest.json || true
+      - name: Build issue body
+        run: python3 .github/scripts/component-watch-sweep.py osv.json latest.json security/components.yaml security/cve-ledger.yaml > issue-body.md
+      - name: Open or update rolling issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          title="🔭 Component watch — open items"
+          num=$(gh issue list --label component-watch --state open --limit 1 --json number --jq '.[0].number' || true)
+          if [[ -n "${num:-}" && "${num}" != "null" ]]; then
+            gh issue edit "$num" --body-file issue-body.md
+            echo "updated #$num"
+          else
+            gh label create component-watch --color 0E8A16 --description "ADR-050 component CVE/version watch" 2>/dev/null || true
+            gh issue create --title "$title" --label component-watch --body-file issue-body.md
+          fi

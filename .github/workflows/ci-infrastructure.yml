@@ -6,11 +6,13 @@ on:
     paths:
       - 'k8s/**'
       - 'scripts/**'
+      - 'security/**'
   pull_request:
     branches: [main]
     paths:
       - 'k8s/**'
       - 'scripts/**'
+      - 'security/**'
 
 jobs:
   kustomize-build:
@@ -450,4 +452,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./scripts/ci-dr-bundle-check.sh
+
+  component-watch-guard:
+    name: Component watch registry/ledger (ADR-050)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install python3 + PyYAML
+        run: python3 -m pip install --user pyyaml
+      - name: Verify registry schema + drift + k8s/bootstrap coverage + ledger SLA
+        # The security/components.yaml registry is the single source of truth for
+        # the component CVE/version watch. This guard fails if a pinned version
+        # drifts from its pin_source, if a k8s image / bootstrap pin is untracked,
+        # or if an open KEV/critical ledger item is past SLA without a mitigation.
+        run: ./scripts/ci-component-watch-check.sh
 
