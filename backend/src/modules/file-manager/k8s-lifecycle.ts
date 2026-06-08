@@ -377,6 +377,32 @@ export async function stopFileManager(
 }
 
 /**
+ * Return the name of a live (non-terminating), Ready file-manager pod, or '' if
+ * none is Ready yet. The file-manager is a Deployment, so its pod name is
+ * dynamic (file-manager-<hash>); the SFTP gateway needs the real name to exec
+ * into the right pod.
+ */
+export async function getReadyFileManagerPodName(
+  k8s: K8sClients,
+  namespace: string,
+): Promise<string> {
+  const pods = await k8s.core.listNamespacedPod({
+    namespace,
+    labelSelector: `app=${FM_NAME}`,
+  });
+  const items = (pods as { items?: Array<{
+    metadata?: { name?: string; deletionTimestamp?: string };
+    status?: { conditions?: Array<{ type?: string; status?: string }> };
+  }> }).items ?? [];
+  const ready = items.find(
+    (p) =>
+      !p.metadata?.deletionTimestamp &&
+      (p.status?.conditions?.some((c) => c.type === 'Ready' && c.status === 'True') ?? false),
+  );
+  return ready?.metadata?.name ?? '';
+}
+
+/**
  * Check if the file-manager pod is ready.
  */
 export async function getFileManagerStatus(

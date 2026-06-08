@@ -6,7 +6,7 @@ import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { sftpUsers, sftpAuditLog, sftpUserSshKeys, tenants, sshKeys } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
+import { ensureFileManagerRunning, getReadyFileManagerPodName } from '../file-manager/k8s-lifecycle.js';
 import { recordFileManagerAccess } from '../file-manager/idle-cleanup.js';
 import { getFileManagerImage } from '../file-manager/image.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -351,7 +351,20 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     await ensureFileManagerRunning(k8s, namespace, image);
     recordFileManagerAccess(namespace);
 
-    return success({ pod_name: `file-manager` });
+    // Return the ACTUAL ready pod name. The file-manager is a Deployment, so its
+    // pod is named file-manager-<hash> — the gateway must exec into that, not the
+    // literal "file-manager" (which is not a pod). On a cold start the pod may not
+    // be Ready yet; poll briefly within the gateway's call timeout. If it never
+    // becomes ready in time we return '' and the gateway falls back to its own
+    // label-based pod lookup.
+    let podName = '';
+    for (let attempt = 0; attempt < 8; attempt++) {
+      podName = await getReadyFileManagerPodName(k8s, namespace);
+      if (podName) break;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+
+    return success({ pod_name: podName });
   });
 
   // POST /internal/sftp/update-login — Record last login
