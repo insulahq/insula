@@ -176,7 +176,7 @@ func buildSSHServer(cfg Config, sessionMgr *SessionManager) *ssh.Server {
 				log.Printf("auth error for %s@%s: %v", ctx.User(), ip, err)
 				go func() {
 					_ = ReportAuditEvent(AuditEvent{
-						ClientID:     "",
+						TenantID:     "",
 						Event:        "FAILED_AUTH",
 						SourceIP:     ip,
 						Protocol:     "ssh",
@@ -190,7 +190,7 @@ func buildSSHServer(cfg Config, sessionMgr *SessionManager) *ssh.Server {
 				go func() {
 					_ = ReportAuditEvent(AuditEvent{
 						SftpUserID: result.SftpUserID,
-						ClientID:   result.ClientID,
+						TenantID:   result.TenantID,
 						Event:      "FAILED_AUTH",
 						SourceIP:   ip,
 						Protocol:   "ssh",
@@ -212,7 +212,7 @@ func buildSSHServer(cfg Config, sessionMgr *SessionManager) *ssh.Server {
 				log.Printf("key auth error for %s@%s: %v", ctx.User(), ip, err)
 				go func() {
 					_ = ReportAuditEvent(AuditEvent{
-						ClientID:     "",
+						TenantID:     "",
 						Event:        "FAILED_AUTH",
 						SourceIP:     ip,
 						Protocol:     "ssh",
@@ -226,7 +226,7 @@ func buildSSHServer(cfg Config, sessionMgr *SessionManager) *ssh.Server {
 				go func() {
 					_ = ReportAuditEvent(AuditEvent{
 						SftpUserID: result.SftpUserID,
-						ClientID:   result.ClientID,
+						TenantID:   result.TenantID,
 						Event:      "FAILED_AUTH",
 						SourceIP:   ip,
 						Protocol:   "ssh",

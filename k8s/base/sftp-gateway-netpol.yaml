@@ -19,9 +19,21 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # Allow sftp-gateway → backend (internal SFTP auth)
+    # Allow sftp-gateway → backend (internal SFTP auth).
+    # The gateway runs in the `platform-system` namespace, so the peer
+    # MUST scope by namespaceSelector AND podSelector together. A bare
+    # podSelector (no namespaceSelector) only matches pods in the policy's
+    # OWN namespace (`platform`), where no sftp-gateway pod ever runs — so
+    # this rule previously matched nothing and the gateway reached the
+    # backend only via the broader intra-platform allow, leaving the
+    # internal SFTP endpoints unscoped at the network layer (the
+    # X-Internal-Auth header was the only gate). Scoping it correctly
+    # restores defense-in-depth.
     - from:
-        - podSelector:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform-system
+          podSelector:
             matchLabels:
               app: sftp-gateway
       ports:

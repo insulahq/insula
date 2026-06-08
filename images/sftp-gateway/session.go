@@ -20,7 +20,7 @@ type Session struct {
 	ID                    string
 	Username              string
 	SftpUserID            string
-	ClientID              string
+	TenantID              string
 	Namespace             string
 	Protocol              string // "sftp", "scp", "rsync", "exec"
 	SourceIP              string
@@ -115,7 +115,7 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 		ID:                    fmt.Sprintf("%x", sessIDBytes),
 		Username:              sshSess.User(),
 		SftpUserID:            authResult.SftpUserID,
-		ClientID:              authResult.ClientID,
+		TenantID:              authResult.TenantID,
 		Namespace:             authResult.Namespace,
 		Protocol:              protocol,
 		SourceIP:              sourceIP,
@@ -139,7 +139,7 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 	go func() {
 		_ = ReportAuditEvent(AuditEvent{
 			SftpUserID: sess.SftpUserID,
-			ClientID:   sess.ClientID,
+			TenantID:   sess.TenantID,
 			Event:      "CONNECT",
 			SourceIP:   sourceIP,
 			Protocol:   sess.Protocol,
@@ -175,7 +175,7 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 	go func() {
 		_ = ReportAuditEvent(AuditEvent{
 			SftpUserID:      sess.SftpUserID,
-			ClientID:        sess.ClientID,
+			TenantID:        sess.TenantID,
 			Event:           "DISCONNECT",
 			SourceIP:        sourceIP,
 			Protocol:        sess.Protocol,
@@ -300,27 +300,50 @@ func rewriteSCPCommand(cmd, dataRoot string) []string {
 	return rewritten
 }
 
-// rewriteRsyncCommand rewrites rsync paths. rsync over SSH sends the rsync
-// binary path and arguments; we prefix path arguments with dataRoot.
-// Typical: rsync --server -logDtpre.iLsfxCIvu . /some/path
+// rewriteRsyncCommand rewrites rsync paths so they are confined under
+// dataRoot. rsync over SSH runs UNCHROOTED in the file-manager pod (as
+// root), so this rewrite is the ONLY confinement boundary — it must be
+// robust against any client-supplied argument vector.
+//
+// Typical server invocation: rsync --server -logDtpre.iLsfxCIvu . /some/path
+// where "." is the source placeholder and the trailing token(s) are paths.
+//
+// Earlier this only sanitized arguments AFTER a literal "." token, so a
+// crafted command that omitted "." (e.g. `rsync --server --sender -e.LsfxC
+// /etc/shadow`) slipped its path through completely unsanitized and ran as
+// root with no chroot. We now sanitize EVERY non-flag, non-"." token (the
+// same shape as rewriteSCPCommand) regardless of whether a "." appears, so
+// there is no argument position that escapes confinement.
 func rewriteRsyncCommand(cmd, dataRoot string) []string {
 	parts := strings.Fields(cmd)
 	rewritten := make([]string, len(parts))
 	copy(rewritten, parts)
 
-	// The last argument(s) of an rsync --server command are paths.
-	// A "." argument separates options from paths.
-	dotSeen := false
 	for i := 1; i < len(rewritten); i++ {
 		arg := rewritten[i]
+		if strings.HasPrefix(arg, "-") {
+			// Flags. Most are pure options (incl. bundled short flags like
+			// "-logDtpre.iLsfxC", which contain a "." but are not the source
+			// placeholder). But long flags can embed a filesystem path after
+			// "=" — e.g. --files-from=, --exclude-from=, --include-from=,
+			// --log-file=. Those paths must be confined too, or they escape
+			// the dataRoot boundary just like a positional arg would. Sanitize
+			// the value portion in place, leaving the flag name intact.
+			if eqIdx := strings.Index(arg, "="); eqIdx != -1 {
+				val := arg[eqIdx+1:]
+				if val != "" && !strings.HasPrefix(val, "-") {
+					rewritten[i] = arg[:eqIdx+1] + sanitizePath(val, dataRoot)
+				}
+			}
+			continue
+		}
+		// The lone "." source placeholder is harmless (it's the rsync
+		// reference dir, not a filesystem target) — leave it intact so the
+		// rsync wire protocol still parses.
 		if arg == "." {
-			dotSeen = true
 			continue
 		}
-		if !dotSeen {
-			continue
-		}
-		// After ".", everything is a path — sanitize to prevent traversal.
+		// Everything else is a path — confine it under dataRoot.
 		rewritten[i] = sanitizePath(arg, dataRoot)
 	}
 	return rewritten

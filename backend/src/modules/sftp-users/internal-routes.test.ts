@@ -228,6 +228,31 @@ describe('sftp internal routes', () => {
       expect(body).toHaveProperty('data');
       expect(body.data).toHaveProperty('inserted');
     });
+
+    // HIGH-4 regression: FAILED_AUTH events fire before a tenant resolves,
+    // so they carry no tenant_id. They MUST be accepted (and stored with a
+    // null tenant) rather than rejected — otherwise brute-force attempts
+    // leave no audit trail.
+    it('should accept a tenant-less FAILED_AUTH event', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/internal/sftp/audit',
+        headers: { 'x-internal-auth': INTERNAL_SECRET },
+        payload: {
+          events: [
+            {
+              event: 'FAILED_AUTH',
+              source_ip: '203.0.113.7',
+              protocol: 'ssh',
+              error_message: 'password auth rejected for baduser',
+            },
+          ],
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.json().data.inserted).toBe(1);
+    });
   });
 
   // ─── Ensure File Manager ────────────────────────────────────────────────

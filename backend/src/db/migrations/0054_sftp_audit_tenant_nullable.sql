@@ -1,0 +1,14 @@
+-- 0054: sftp_audit_log.tenant_id → nullable
+--
+-- FAILED_AUTH events fire before a username resolves to a tenant, so they
+-- have no tenant to attribute. Previously tenant_id was NOT NULL, so the
+-- gateway's audit POSTs for tenant-less events failed Zod validation
+-- (tenant_id was also mis-keyed as `client_id`, which never matched, so
+-- EVERY audit batch was rejected — there was effectively no SFTP audit
+-- trail). The gateway now sends the correct `tenant_id`; session and
+-- transfer events always carry one, FAILED_AUTH events omit it and land
+-- here as NULL.
+--
+-- The FK (tenant_id → tenants.id ON DELETE CASCADE) is unchanged and
+-- still applies to non-NULL values. No backfill.
+ALTER TABLE sftp_audit_log ALTER COLUMN tenant_id DROP NOT NULL;

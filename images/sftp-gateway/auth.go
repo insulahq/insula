@@ -14,7 +14,7 @@ import (
 type AuthResult struct {
 	Allowed              bool   `json:"allowed"`
 	SftpUserID           string `json:"sftp_user_id"`
-	ClientID             string `json:"client_id"`
+	TenantID             string `json:"tenant_id"`
 	Namespace            string `json:"namespace"`
 	HomePath             string `json:"home_path"`
 	AllowWrite           bool   `json:"allow_write"`
@@ -23,9 +23,17 @@ type AuthResult struct {
 }
 
 // AuditEvent represents a session audit log entry sent to the backend.
+//
+// TenantID carries the tenant the event belongs to; the backend audit
+// endpoint keys rows on it. It is `omitempty` because tenant-less events
+// (e.g. FAILED_AUTH before a user resolves) legitimately have none — the
+// backend stores those with a null tenant. (Historically this field was
+// `client_id`, which never matched the backend's `tenant_id` response key,
+// so it was always empty and every audit batch failed validation and was
+// silently dropped — i.e. there was no SFTP audit trail at all.)
 type AuditEvent struct {
 	SftpUserID       string `json:"sftp_user_id,omitempty"`
-	ClientID         string `json:"client_id"`
+	TenantID         string `json:"tenant_id,omitempty"`
 	Event            string `json:"event"`
 	SourceIP         string `json:"source_ip"`
 	Protocol         string `json:"protocol"`

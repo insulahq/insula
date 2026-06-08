@@ -28,7 +28,9 @@ const keyAuthSchema = z.object({
 
 const auditEventSchema = z.object({
   sftp_user_id: z.string().optional(),
-  tenant_id: z.string().min(1),
+  // Optional: FAILED_AUTH events have no tenant yet (the user/tenant has
+  // not resolved). Session + transfer events always include one.
+  tenant_id: z.string().optional(),
   event: z.string().min(1),
   source_ip: z.string().min(1),
   protocol: z.string().optional(),
@@ -318,7 +320,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     const rows = events.map((e) => ({
       id: crypto.randomUUID(),
       sftpUserId: e.sftp_user_id ?? null,
-      tenantId: e.tenant_id,
+      tenantId: e.tenant_id ?? null,
       event: e.event,
       sourceIp: e.source_ip,
       protocol: e.protocol ?? 'sftp',
