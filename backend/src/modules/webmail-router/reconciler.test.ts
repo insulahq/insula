@@ -2,24 +2,29 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   reconcileWebmailIngress,
   reconcileEngineDeployments,
+  reconcileStalwartCorsOrigin,
   serviceNameForEngine,
+  isValidWebmailHostname,
   WEBMAIL_ENGINE_DISABLED_ANNOTATION,
 } from './reconciler.js';
 import type { Database } from '../../db/index.js';
 
 vi.mock('../webmail-settings/service.js', () => ({
   getDefaultWebmailEngine: vi.fn(),
+  getDefaultWebmailUrl: vi.fn(),
 }));
 
-import { getDefaultWebmailEngine } from '../webmail-settings/service.js';
+import { getDefaultWebmailEngine, getDefaultWebmailUrl } from '../webmail-settings/service.js';
 
-function makeCustom(currentService: string | null, fluxAnnotated = true) {
+const DEFAULT_MATCH = 'Host(`webmail.example.com`)';
+
+function makeCustom(currentService: string | null, fluxAnnotated = true, match: string = DEFAULT_MATCH) {
   const metadata = fluxAnnotated
     ? { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } }
     : { annotations: {} };
   const irBody = currentService === null
-    ? { metadata, spec: { routes: [{ services: [] }] } }
-    : { metadata, spec: { routes: [{ services: [{ name: currentService, port: 80 }] }] } };
+    ? { metadata, spec: { routes: [{ match, services: [] }] } }
+    : { metadata, spec: { routes: [{ match, services: [{ name: currentService, port: 80 }] }] } };
   return {
     getNamespacedCustomObject: vi.fn().mockResolvedValue(irBody),
     patchNamespacedCustomObject: vi.fn().mockResolvedValue({}),
@@ -44,6 +49,10 @@ describe('serviceNameForEngine', () => {
 describe('reconcileWebmailIngress', () => {
   beforeEach(() => {
     vi.mocked(getDefaultWebmailEngine).mockReset();
+    vi.mocked(getDefaultWebmailUrl).mockReset();
+    // Default: host matches the fixture's DEFAULT_MATCH so the Host doesn't
+    // drift in engine-flip tests (isolates the service-flip behaviour).
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://webmail.example.com/');
   });
 
   it('patches the IR when engine=bulwark and current target is roundcube', async () => {
@@ -57,6 +66,8 @@ describe('reconcileWebmailIngress', () => {
       engine: 'bulwark',
       expectedService: 'bulwark',
       previousService: 'roundcube',
+      expectedMatch: DEFAULT_MATCH,
+      previousMatch: DEFAULT_MATCH,
       patched: true,
     });
     expect(custom.patchNamespacedCustomObject).toHaveBeenCalledOnce();
@@ -78,6 +89,8 @@ describe('reconcileWebmailIngress', () => {
       engine: 'bulwark',
       expectedService: 'bulwark',
       previousService: 'bulwark',
+      expectedMatch: DEFAULT_MATCH,
+      previousMatch: DEFAULT_MATCH,
       patched: false,
     });
     expect(custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
@@ -171,6 +184,116 @@ describe('reconcileWebmailIngress', () => {
       { name: 'compress', namespace: 'traefik' },
     ]);
     expect(body.body.spec.routes[0].services[0].name).toBe('bulwark');
+  });
+
+  it('patches the Host when default_webmail_url renames the webmail subdomain', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://abc.example.com/');
+    const custom = makeCustom('bulwark'); // service already correct; only the host drifts
+    const log = makeLog();
+
+    const result = await reconcileWebmailIngress(db, custom as never, log);
+
+    expect(result?.patched).toBe(true);
+    expect(result?.expectedMatch).toBe('Host(`abc.example.com`)');
+    expect(result?.previousMatch).toBe(DEFAULT_MATCH);
+    const body = custom.patchNamespacedCustomObject.mock.calls[0][0] as {
+      body: { spec: { routes: Array<{ match: string; services: Array<{ name: string }> }> } };
+    };
+    expect(body.body.spec.routes[0].match).toBe('Host(`abc.example.com`)');
+    expect(body.body.spec.routes[0].services[0].name).toBe('bulwark');
+  });
+
+  it('leaves the live match untouched when default_webmail_url is an injection payload', async () => {
+    vi.mocked(getDefaultWebmailEngine).mockResolvedValue('bulwark');
+    // Not a parseable URL host → resolveWebmailHostOrigin returns null.
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://x`)||Host(`evil.com/');
+    const custom = makeCustom('bulwark'); // service correct, annotation present
+    const log = makeLog();
+
+    const result = await reconcileWebmailIngress(db, custom as never, log);
+
+    // No service drift, no (safe) match resolved → nothing to patch.
+    expect(result?.patched).toBe(false);
+    expect(result?.expectedMatch).toBeNull();
+    expect(custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalled();
+  });
+});
+
+describe('isValidWebmailHostname', () => {
+  it('accepts valid FQDNs', () => {
+    expect(isValidWebmailHostname('webmail.example.com')).toBe(true);
+    expect(isValidWebmailHostname('abc.staging.example.net')).toBe(true);
+  });
+  it('rejects single-label hosts, empties, and injection payloads', () => {
+    expect(isValidWebmailHostname('localhost')).toBe(false);
+    expect(isValidWebmailHostname('')).toBe(false);
+    expect(isValidWebmailHostname('x`)||host(`evil.com')).toBe(false);
+    expect(isValidWebmailHostname('a..b.com')).toBe(false);
+  });
+});
+
+describe('reconcileStalwartCorsOrigin', () => {
+  beforeEach(() => {
+    vi.mocked(getDefaultWebmailUrl).mockReset();
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('https://webmail.example.com/');
+  });
+
+  function makeCorsMw(currentOrigin: string | null, fluxAnnotated = true) {
+    const metadata = fluxAnnotated
+      ? { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } }
+      : { annotations: {} };
+    const headers = currentOrigin === null
+      ? {}
+      : { customResponseHeaders: { 'Access-Control-Allow-Origin': currentOrigin } };
+    return {
+      getNamespacedCustomObject: vi.fn().mockResolvedValue({ metadata, spec: { headers } }),
+      patchNamespacedCustomObject: vi.fn().mockResolvedValue({}),
+    };
+  }
+
+  it('patches ACAO when it drifts from the webmail origin', async () => {
+    const custom = makeCorsMw('https://OLD.example.com');
+    const log = makeLog();
+    const result = await reconcileStalwartCorsOrigin(db, custom as never, log);
+    expect(result?.patched).toBe(true);
+    expect(result?.expectedOrigin).toBe('https://webmail.example.com');
+    const body = custom.patchNamespacedCustomObject.mock.calls[0][0] as {
+      body: { spec: { headers: { customResponseHeaders: Record<string, string> } } };
+    };
+    expect(body.body.spec.headers.customResponseHeaders['Access-Control-Allow-Origin'])
+      .toBe('https://webmail.example.com');
+  });
+
+  it('no-ops when ACAO already matches', async () => {
+    const custom = makeCorsMw('https://webmail.example.com');
+    const log = makeLog();
+    const result = await reconcileStalwartCorsOrigin(db, custom as never, log);
+    expect(result?.patched).toBe(false);
+    expect(custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it('returns null when the Middleware is absent (non-fatal)', async () => {
+    const custom = {
+      getNamespacedCustomObject: vi.fn().mockRejectedValue(
+        Object.assign(new Error('not found'), { statusCode: 404 }),
+      ),
+      patchNamespacedCustomObject: vi.fn(),
+    };
+    const log = makeLog();
+    const result = await reconcileStalwartCorsOrigin(db, custom as never, log);
+    expect(result).toBeNull();
+    expect(custom.patchNamespacedCustomObject).not.toHaveBeenCalled();
+  });
+
+  it('skips (returns null) when default_webmail_url is invalid', async () => {
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValue('not a url');
+    const custom = makeCorsMw('https://webmail.example.com');
+    const log = makeLog();
+    const result = await reconcileStalwartCorsOrigin(db, custom as never, log);
+    expect(result).toBeNull();
+    expect(custom.getNamespacedCustomObject).not.toHaveBeenCalled();
   });
 });
 

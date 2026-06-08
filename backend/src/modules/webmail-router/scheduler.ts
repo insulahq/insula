@@ -31,7 +31,11 @@
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
-import { reconcileWebmailIngress, reconcileEngineDeployments } from './reconciler.js';
+import {
+  reconcileWebmailIngress,
+  reconcileEngineDeployments,
+  reconcileStalwartCorsOrigin,
+} from './reconciler.js';
 
 const DEFAULT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -69,6 +73,15 @@ export function startWebmailRouterReconciler(
       log.warn(
         { err: err instanceof Error ? err.message : String(err) },
         'webmail-router-scheduler: reconcileEngineDeployments threw',
+      );
+    }
+    if (cancelled) return;
+    try {
+      await reconcileStalwartCorsOrigin(db, clients.custom, log);
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'webmail-router-scheduler: reconcileStalwartCorsOrigin threw',
       );
     }
   };

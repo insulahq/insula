@@ -1,11 +1,37 @@
 import { z } from 'zod';
 import { webmailEngineSchema } from './mailboxes.js';
 
-// Accept any URL the operator types — we intentionally don't force
-// https:// or a .com TLD so local dev and corporate intranets can use
-// internal hostnames. At least one character prevents "save empty".
+// RFC-1123 DNS hostname, shared by the URL-host check below and the
+// mailServerHostname field. Dot-separated labels, ≥2 labels (FQDN).
+const DNS_HOSTNAME_RE =
+  /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+
+// Accept an http(s) URL with a valid DNS hostname. We don't force a
+// particular TLD so corporate intranets can use internal FQDNs, but the
+// host MUST be a clean DNS name: the webmail-router reconciler interpolates
+// it into a Traefik `Host(`<host>`)` match rule AND the stalwart-jmap-cors
+// Access-Control-Allow-Origin, so a crafted value with backticks/parens
+// (match-rule injection) must be rejected here. The reconciler
+// (resolveWebmailHostOrigin) re-validates as defence-in-depth.
+const webmailUrlSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .url()
+  .refine((v) => {
+    try {
+      const u = new URL(v);
+      return (
+        (u.protocol === 'http:' || u.protocol === 'https:') &&
+        DNS_HOSTNAME_RE.test(u.hostname)
+      );
+    } catch {
+      return false;
+    }
+  }, 'must be an http(s) URL with a valid DNS hostname');
+
 export const updateWebmailSettingsSchema = z.object({
-  defaultWebmailUrl: z.string().min(1).max(255).url().optional(),
+  defaultWebmailUrl: webmailUrlSchema.optional(),
   // Phase 3.A.1: the platform-wide mail server hostname Stalwart
   // advertises on SMTP/IMAP banners and in its TLS certificate.
   // All customer `mail.<domain>` records CNAME to this hostname.

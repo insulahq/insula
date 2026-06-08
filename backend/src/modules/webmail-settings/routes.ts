@@ -13,6 +13,7 @@ import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import {
   reconcileWebmailIngress,
   reconcileEngineDeployments,
+  reconcileStalwartCorsOrigin,
   waitForActiveEngineReady,
 } from '../webmail-router/reconciler.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -274,6 +275,24 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
         app.log.warn(
           { err: err instanceof Error ? err.message : String(err) },
           'webmail-feature-css: PATCH-triggered reconcile failed (5-min scheduler will retry)',
+        );
+      }
+    }
+
+    // Webmail hostname rename: when default_webmail_url changes, propagate
+    // the new host to BOTH the platform-webmail-ingress `Host()` match AND
+    // the stalwart-jmap-cors ACAO, from the single source of truth. Without
+    // this the SPA's origin (= ingress Host) and the CORS header would
+    // drift and webmail login would break. Idempotent + best-effort; the
+    // 5-min webmail-router scheduler also re-converges.
+    if (k8s && parsed.data.defaultWebmailUrl !== undefined) {
+      try {
+        await reconcileWebmailIngress(app.db, k8s.custom, app.log);
+        await reconcileStalwartCorsOrigin(app.db, k8s.custom, app.log);
+      } catch (err) {
+        app.log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'webmail-settings: webmail-host/CORS reconcile failed (5-min scheduler will retry)',
         );
       }
     }

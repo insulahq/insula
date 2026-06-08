@@ -50,3 +50,36 @@ describe('mailServerHostname DNS-hostname validation (api-contracts)', () => {
     });
   });
 });
+
+/**
+ * default_webmail_url's hostname is interpolated into a Traefik
+ * `Host(`<host>`)` match rule AND the stalwart-jmap-cors ACAO by the
+ * webmail-router reconciler, so the write boundary must reject anything
+ * that isn't an http(s) URL with a clean RFC-1123 hostname.
+ */
+describe('defaultWebmailUrl URL+hostname validation (api-contracts)', () => {
+  it('accepts a normal https webmail URL', () => {
+    const r = updateWebmailSettingsSchema.safeParse({ defaultWebmailUrl: 'https://webmail.example.com/' });
+    expect(r.success).toBe(true);
+  });
+  it('accepts http + internal FQDN (no TLD restriction)', () => {
+    const r = updateWebmailSettingsSchema.safeParse({ defaultWebmailUrl: 'http://webmail.corp.internal/' });
+    expect(r.success).toBe(true);
+  });
+  it('rejects a Traefik match-injection payload in the host', () => {
+    const r = updateWebmailSettingsSchema.safeParse({ defaultWebmailUrl: 'https://x`)||Host(`evil.com/' });
+    expect(r.success).toBe(false);
+  });
+  it('rejects a non-http(s) scheme', () => {
+    const r = updateWebmailSettingsSchema.safeParse({ defaultWebmailUrl: 'ftp://webmail.example.com/' });
+    expect(r.success).toBe(false);
+  });
+  it('rejects a single-label host', () => {
+    const r = updateWebmailSettingsSchema.safeParse({ defaultWebmailUrl: 'https://localhost/' });
+    expect(r.success).toBe(false);
+  });
+  it('still allows the field to be omitted', () => {
+    const r = updateWebmailSettingsSchema.safeParse({});
+    expect(r.success).toBe(true);
+  });
+});

@@ -110,6 +110,16 @@ metadata:
     app: stalwart-mail
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
+  annotations:
+    # platform-api's webmail-router reconciler owns the
+    # Access-Control-Allow-Origin value, keeping it in lockstep with the
+    # platform-webmail-ingress Host (both derived from
+    # default_webmail_url). `reconcile: disabled` tells Flux to skip this
+    # resource after creation so the reconciled origin isn't reverted on
+    # the next git sync — mirrors platform-webmail-ingress. The value
+    # below is the fresh-install default (= webmail.<apex>); the
+    # reconciler updates it if the operator renames the webmail host.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   headers:
     customResponseHeaders:
