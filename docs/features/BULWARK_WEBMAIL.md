@@ -106,10 +106,24 @@ Bulwark depends on three pieces of Stalwart 0.16 configuration that
    `downloadUrl`, etc.). If unset, Stalwart falls back to its kernel
    hostname (= pod name) which the browser can't resolve. Set via
    `configure_stalwart_full()`.
-2. **`x:Http.usePermissiveCors = true`** — Stalwart 0.16 emits CORS
-   headers only on OPTIONS preflights by default; permissive mode
-   extends them to every response. Required for the browser-direct
-   `/.well-known/jmap` fetch the SPA makes after login.
+2. **Browser CORS for the SPA's direct JMAP fetch** — after the
+   impersonation handoff, Bulwark's SPA (origin `webmail.<apex>`) fetches
+   `stalwart.<apex>/.well-known/jmap` → `/jmap/session` cross-origin.
+   Stalwart 0.16 emits CORS only on OPTIONS preflights by default (and
+   only `*`, which is not valid for the SPA's credentialed fetch), so
+   without a fix the browser blocks the call → *"Failed to restore
+   account: CORS_ERROR"* → silent fallback to the login screen.
+   **Authoritative fix (durable): a Traefik `Middleware`
+   (`stalwart-jmap-cors`, in `k8s/base/stalwart-mail/stalwart/ingress-mgmt.yaml`)
+   attached to the JMAP route sets a single specific-origin
+   `Access-Control-Allow-Origin: https://webmail.${DOMAIN}` +
+   `Access-Control-Allow-Credentials: true` on every response (incl. the
+   307 redirect and POST `/jmap/`).** Because this lives at the ingress it
+   is independent of Stalwart's datastore — a Stalwart wipe/re-bootstrap
+   cannot silently break webmail. `bootstrap.sh` also sets the runtime
+   `x:Http.usePermissiveCors = true` on fresh installs as defense-in-depth,
+   but that setting is lost on a datastore wipe and needs a Stalwart
+   restart to apply, so the ingress middleware is the load-bearing piece.
 3. **`master@<apex>`** Account with the `System Administrator`
    role (or any role that has the `impersonate` permission). Cleartext
    password lives in `mail-secrets.STALWART_MASTER_PASSWORD` (shared

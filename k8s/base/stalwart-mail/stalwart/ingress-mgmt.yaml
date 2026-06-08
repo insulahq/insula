@@ -57,6 +57,22 @@ spec:
     - match: "Host(`stalwart.${DOMAIN}`) && (PathPrefix(`/jmap`) || Path(`/.well-known/jmap`))"
       kind: Rule
       middlewares:
+        # Browser CORS for Bulwark webmail's client-side JMAP calls.
+        # Bulwark's SPA (served from webmail.${DOMAIN}) fetches
+        # ${stalwart}/.well-known/jmap → /jmap/session cross-origin after
+        # the impersonation handoff. Stalwart 0.16 emits CORS only on
+        # OPTIONS preflights by default (and `*`, which is not valid for
+        # the SPA's credentialed fetch), so the browser blocks the JMAP
+        # call → "Failed to restore account: CORS_ERROR" → webmail login
+        # silently falls back to the sign-in screen. This middleware sets
+        # a single specific-origin ACAO + Allow-Credentials on EVERY
+        # response (incl. the 307 redirect and POST /jmap/), at the
+        # ingress — so it works regardless of Stalwart's datastore state.
+        # That makes it durable: a Stalwart wipe/re-bootstrap (which loses
+        # the runtime `usePermissiveCors` setting) can no longer silently
+        # break webmail. See docs/features/BULWARK_WEBMAIL.md.
+        - name: stalwart-jmap-cors
+          namespace: mail
         - name: compress
           namespace: traefik
       services:
@@ -75,6 +91,36 @@ spec:
           port: 8080
   tls:
     secretName: stalwart-webadmin-tls
+---
+# Traefik CORS middleware for Bulwark webmail's cross-origin JMAP calls
+# (attached to Route 1 above). `customResponseHeaders` SETS (adds when
+# absent, overwrites when present) the header on EVERY response Traefik
+# forwards — including Stalwart's 307 `/.well-known/jmap` → `/jmap/session`
+# redirect and POST `/jmap/` — so CORS is supplied at the ingress and does
+# NOT depend on Stalwart's runtime `usePermissiveCors` setting (which is
+# lost on a datastore wipe). A single specific-origin ACAO + Allow-Credentials
+# is credentials-safe (the SPA's fetch); the wildcard `*` Stalwart emits is
+# not. Verified end-to-end on staging.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: stalwart-jmap-cors
+  namespace: mail
+  labels:
+    app: stalwart-mail
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: mail-server
+spec:
+  headers:
+    customResponseHeaders:
+      Access-Control-Allow-Origin: "https://webmail.${DOMAIN}"
+      Access-Control-Allow-Credentials: "true"
+      Access-Control-Allow-Methods: "GET, POST, PATCH, PUT, DELETE, HEAD, OPTIONS"
+      Access-Control-Allow-Headers: "Authorization, Content-Type, Accept, X-Requested-With"
+      # Cache the preflight 10 min so the hot JMAP path doesn't re-OPTIONS
+      # on every request (matches the dev stalwart-rewriter).
+      Access-Control-Max-Age: "600"
+      Vary: "Origin"
 ---
 # cert-manager Certificate for the Stalwart web-admin TLS endpoint.
 # Overlays can patch issuerRef to use a DNS-01 ClusterIssuer if preferred.
