@@ -52,6 +52,12 @@ and the external services this platform only consumes (PowerDNS, NetBird, Dex â€
 ADR-022). Misconfigurations of your own deployment are your responsibility, but
 we welcome reports of insecure defaults.
 
+> Maintainers: how we track and remediate CVEs in the upstream components we
+> *deploy* (k3s, Traefik, Stalwart, CNPG, etc.) is documented separately â€” the
+> tiered registry + ledger in [`security/`](security/) and the runbook
+> [`docs/operations/COMPONENT_WATCH.md`](docs/operations/COMPONENT_WATCH.md)
+> (ADR-050). That is distinct from this external-reporter policy.
+
 ## A note on AGPL-3.0
 
 Insula is AGPL-3.0. If you run a modified network service, you must offer its

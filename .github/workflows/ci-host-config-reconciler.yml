@@ -29,6 +29,7 @@ jobs:
       contents: read
       packages: write
       id-token: write   # cosign keyless image signing (sign step gated to main, non-PR)
+      security-events: write   # Trivy SARIF upload
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
@@ -86,6 +87,22 @@ jobs:
           # PR build fails. On main (push: true) they attach to the pushed image.
           provenance: ${{ github.event_name != 'pull_request' }}
           sbom: ${{ github.event_name != 'pull_request' }}
+
+      - name: Trivy vulnerability scan
+        if: github.event_name != 'pull_request'
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+      - name: Upload Trivy scan results
+        if: github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: host-config-reconciler
 
       # Cosign keyless-sign the pushed image by digest (main only). Mirrors
       # ci-backup-rclone.yml — a transparency-log attestation for the internal

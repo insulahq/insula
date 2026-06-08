@@ -1,0 +1,896 @@
+# Insula component watch registry — SINGLE SOURCE OF TRUTH for the CVE/version watch.
+#
+# Guarded by scripts/ci-component-watch-check.sh (wired into Infrastructure CI):
+#   * schema     — every entry has the required fields with valid enum values
+#   * drift      — for pin_check:true entries the `pinned` literal MUST be present
+#                  in `pin_source` (so this file can never silently rot)
+#   * coverage   — every distinct image:/imageName: under k8s/ AND every chart/
+#                  binary pin in scripts/bootstrap.sh maps to a component here
+#                  (a new component can't be added without registering it)
+#   * SLA        — open KEV/critical ledger items past their tier SLA must carry
+#                  a mitigation (see security/cve-ledger.yaml)
+#
+# Process, tiering rubric, and how a fix flows to a release:
+#   docs/operations/COMPONENT_WATCH.md   (ADR-050)
+#
+# Field reference:
+#   id          stable kebab-case key (used by the ledger `component` field)
+#   tier        "0" critical | "1" high | "2" moderate | "3" low | "C" catalog | "X" external
+#   kind        chart | image | binary | plugin | npm | go | rust | external
+#   pinned      the exact version/tag/digest we run (drift-checked against pin_source)
+#   app_version (optional) upstream app version when `pinned` is a chart version
+#   pin_source  file that holds the pin (path only — guard greps the file, no line nums)
+#   pin_check   true = drift-guard the literal; false = first-party/floating (scan instead)
+#   watch       {type, repo, advisories} — where to look for new versions + advisories
+#   scan        how CVEs surface: trivy | osv | govulncheck | cargo-audit | manual | none
+#   deps        (first-party) lockfiles/modules the dep scanners read
+#   owner       platform | catalog | external
+#   dev_only    true = dev/test fixture, not part of a production install
+#   notes       free text
+
+meta:
+  schema_version: 1
+  updated: "2026-06-08"
+  adr: ADR-050
+  runbook: docs/operations/COMPONENT_WATCH.md
+
+tiers:
+  "0": "Critical — internet-facing AND (auth/crypto/secret/data OR platform-wide blast)"
+  "1": "High — privileged/host or platform-wide, OR internet-facing single subsystem"
+  "2": "Moderate — cluster-internal, namespaced, authenticated"
+  "3": "Low — build-time toolchain / base + utility images (covered transitively by image scan)"
+  "C": "Catalog — tenant-facing runtime images, per-tenant blast (rebuild + tenant redeploy)"
+  "X": "External — consumed, not patched by us; watch advisories, coordinate, document"
+
+# Time-to-remediate a confirmed, reachable CVE (also encoded in the SLA guard).
+slas:
+  "0": { critical_kev: "48h", high: "7d", medium: "next-release" }
+  "1": { critical_kev: "7d",  high: "30d", medium: "next-release" }
+  "2": { critical_kev: "30d", high: "next-release", medium: "best-effort" }
+  "3": { critical_kev: "next-release", high: "best-effort", medium: "best-effort" }
+  "C": { critical_kev: "7d",  high: "30d", medium: "best-effort" }
+  "X": { critical_kev: "notify+document", high: "notify", medium: "-" }
+
+components:
+  # ───────────────────────────── Tier 0 — Critical ─────────────────────────────
+  - id: k3s
+    name: k3s (Kubernetes distribution / kube-apiserver, kubelet, etcd, kube-proxy)
+    tier: "0"
+    kind: binary
+    pinned: "v1.33.10+k3s1"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: k3s-io/k3s, advisories: kubernetes/kubernetes }
+    scan: manual
+    owner: platform
+    notes: >-
+      Control plane + node runtime. Bundles CoreDNS, metrics-server, kube-proxy,
+      local-path (disabled), Traefik (we replace via Helm). Upgrades are SEQUENTIAL
+      (one minor at a time) via system-upgrade-controller Plans. Track k8s CVEs +
+      the embedded containerd/runc.
+
+  - id: calico
+    name: Calico CNI (network policy + WireGuard)
+    tier: "0"
+    kind: binary
+    pinned: "v3.31.5"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: projectcalico/calico, advisories: projectcalico/calico }
+    scan: manual
+    owner: platform
+    notes: Enforces NetworkPolicy segmentation + WireGuard pod-to-pod encryption. Compromise = segmentation loss.
+
+  - id: traefik
+    name: Traefik (ingress / TLS termination / WAF plugin host)
+    tier: "0"
+    kind: chart
+    pinned: "40.2.0"
+    app_version: "v3.7.1"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: traefik/traefik-helm-chart, advisories: traefik/traefik }
+    scan: manual
+    owner: platform
+    notes: Internet-facing edge. Terminates TLS, hosts the CrowdSec + ModSecurity middleware plugins. TRAEFIK_CHART_VERSION.
+
+  - id: cert-manager
+    name: cert-manager (ACME / all platform TLS)
+    tier: "0"
+    kind: chart
+    pinned: "v1.20.2"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: cert-manager/cert-manager, advisories: cert-manager/cert-manager }
+    scan: manual
+    owner: platform
+    notes: Issues every cert in the cluster. CERT_MANAGER_CHART_VERSION.
+
+  - id: cnpg-operator
+    name: CloudNativePG operator (platform Postgres lifecycle)
+    tier: "0"
+    kind: chart
+    pinned: "0.28.2"
+    app_version: "v1.29.1"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: cloudnative-pg/cloudnative-pg, advisories: cloudnative-pg/cloudnative-pg }
+    scan: manual
+    owner: platform
+    notes: Manages the platform Postgres cluster (HA, PITR, failover). CNPG_CHART_VERSION.
+
+  - id: postgresql
+    name: PostgreSQL (platform DB — CNPG-managed)
+    tier: "0"
+    kind: image
+    pinned: "18.3-minimal-trixie"
+    pin_source: k8s/base/database.yaml
+    pin_check: true
+    repos: [cloudnative-pg/postgresql]
+    watch: { type: github_releases, repo: cloudnative-pg/postgres-containers, advisories: postgres/postgres }
+    scan: trivy
+    owner: platform
+    notes: >-
+      System DB at rest (all platform data, hashed creds). imageName: in the CNPG
+      Cluster CR. PG major upgrades are an explicit runbook (PG_MAJOR_UPGRADE.md).
+
+  - id: stalwart
+    name: Stalwart mail server (SMTP/IMAP/JMAP)
+    tier: "0"
+    kind: image
+    pinned: "v0.16.5"
+    pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
+    pin_check: true
+    repos: [stalwartlabs/stalwart]
+    watch: { type: github_releases, repo: stalwartlabs/stalwart, advisories: stalwartlabs/stalwart }
+    scan: trivy
+    owner: platform
+    notes: Internet-facing mail (ports 25/465/587/993/JMAP). Handles mailbox creds + mail data. RocksDB store (see rocksdb-secondary-checkpoint).
+
+  - id: sealed-secrets
+    name: Sealed Secrets controller (secret-at-rest decryption)
+    tier: "0"
+    kind: chart
+    pinned: "2.17.4"
+    app_version: "v0.36.6"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: bitnami-labs/sealed-secrets, advisories: bitnami-labs/sealed-secrets }
+    scan: manual
+    owner: platform
+    notes: Holds the private key that decrypts all SealedSecrets. SEALED_SECRETS_CHART_VERSION.
+
+  - id: oauth2-proxy
+    name: oauth2-proxy (admin-UI auth gate)
+    tier: "0"
+    kind: image
+    pinned: "v7.15.2"
+    pin_source: k8s/base/oauth2-proxy/deployment.yaml
+    pin_check: true
+    repos: [oauth2-proxy/oauth2-proxy]
+    watch: { type: github_releases, repo: oauth2-proxy/oauth2-proxy, advisories: oauth2-proxy/oauth2-proxy }
+    scan: trivy
+    owner: platform
+    notes: One of the two admin-UI gates (oauth2 mode). Sits in front of Longhorn/Stalwart admin UIs.
+
+  - id: crowdsec
+    name: CrowdSec LAPI (IPS / behavioural bouncer)
+    tier: "0"
+    kind: image
+    pinned: "v1.7.8"
+    pin_source: k8s/base/crowdsec/deployment.yaml
+    pin_check: true
+    repos: [crowdsecurity/crowdsec]
+    watch: { type: github_releases, repo: crowdsecurity/crowdsec, advisories: crowdsecurity/crowdsec }
+    scan: trivy
+    owner: platform
+    notes: Edge defense — decides which IPs Traefik blocks. Part of the security control plane.
+
+  - id: modsecurity-crs
+    name: OWASP ModSecurity Core Rule Set (WAF sidecar)
+    tier: "0"
+    kind: image
+    pinned: "4.25.0-nginx-alpine-202604040104"
+    pin_source: k8s/base/modsecurity-crs/deployment.yaml
+    pin_check: true
+    repos: [owasp/modsecurity-crs]
+    watch: { type: github_releases, repo: coreruleset/coreruleset, advisories: coreruleset/coreruleset }
+    scan: trivy
+    owner: platform
+    notes: The active WAF verdict engine (Coraza WASM path is disabled). Internet-facing request inspection.
+
+  - id: crowdsec-traefik-plugin
+    name: CrowdSec bouncer Traefik plugin
+    tier: "0"
+    kind: plugin
+    pinned: "v1.6.0"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: maxlerebourg/crowdsec-bouncer-traefik-plugin, advisories: maxlerebourg/crowdsec-bouncer-traefik-plugin }
+    scan: manual
+    owner: platform
+    notes: Yaegi plugin loaded into Traefik. CROWDSEC_PLUGIN_VERSION.
+
+  - id: modsecurity-traefik-plugin
+    name: Traefik ModSecurity plugin (forwards to CRS sidecar)
+    tier: "0"
+    kind: plugin
+    pinned: "v1.6.0"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: madebymode/traefik-modsecurity-plugin, advisories: madebymode/traefik-modsecurity-plugin }
+    scan: manual
+    owner: platform
+    notes: MODSECURITY_PLUGIN_VERSION. Bridges Traefik → modsecurity-crs.
+
+  - id: backend-platform-api
+    name: platform-api (management API — Fastify/Node 22)
+    tier: "0"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/backend-deployment.yaml
+    pin_check: false
+    repos: [insulahq/insula/backend]
+    watch: { type: first_party }
+    scan: trivy+osv
+    deps: [package-lock.json, backend/package.json]
+    owner: platform
+    notes: >-
+      First-party. Auth (JWT/passkey), all tenant data, k8s RBAC client. Tag CI-pinned
+      by build-deploy.yml. Security-sensitive deps to watch: fastify, @fastify/jwt,
+      bcrypt, @simplewebauthn/server, ssh2, @kubernetes/client-node, pg, drizzle-orm,
+      pg-boss, nodemailer, archiver, handlebars, js-yaml.
+
+  - id: admin-panel
+    name: admin-panel (React 19 SPA + nginx)
+    tier: "0"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/admin-deployment.yaml
+    pin_check: false
+    repos: [insulahq/insula/admin-panel]
+    watch: { type: first_party }
+    scan: trivy+osv
+    deps: [frontend/admin-panel/package.json]
+    owner: platform
+    notes: First-party. Internet-facing login; XSS/supply-chain → super_admin session theft = platform-wide. React 19 / Vite 8 / nginx:1.27-alpine runtime.
+
+  - id: tenant-panel
+    name: tenant-panel (React 19 SPA + nginx)
+    tier: "0"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/tenant-deployment.yaml
+    pin_check: false
+    repos: [insulahq/insula/tenant-panel]
+    watch: { type: first_party }
+    scan: trivy+osv
+    deps: [frontend/tenant-panel/package.json]
+    owner: platform
+    notes: First-party. Internet-facing tenant login + Monaco/xterm. React 19 / Vite 8.
+
+  - id: bulwark
+    name: Bulwark webmail (JMAP-native SPA)
+    tier: "0"
+    kind: image
+    pinned: "sha256:4ee0f0b505287555f814654fec12bd07c8bde098ee80a92b2dc13d556f576431"
+    pin_source: k8s/base/bulwark/deployment.yaml
+    pin_check: true
+    repos: [bulwarkmail/webmail]
+    watch: { type: github_releases, repo: bulwarkmail/webmail, advisories: bulwarkmail/webmail }
+    scan: trivy
+    owner: platform
+    notes: Internet-facing webmail, handles mail creds/content. Digest-pinned (good). Upstream advisories sparse → also watch manually.
+
+  - id: roundcube
+    name: Roundcube webmail
+    tier: "0"
+    kind: image
+    pinned: "sha256:6e98656e6a6f27ab827a727b68010622186d369f4527186a06f306136c924bdb"
+    pin_source: k8s/base/roundcube/deployment.yaml
+    pin_check: true
+    repos: [roundcube/roundcubemail]
+    watch: { type: github_releases, repo: roundcube/roundcubemail, advisories: roundcube/roundcubemail }
+    scan: trivy
+    owner: platform
+    notes: >-
+      Internet-facing webmail (frequent XSS CVEs upstream — watch closely). Active
+      deployment is digest-pinned. NOTE: legacy k8s/base/roundcube-deployment.yaml
+      still references roundcube/roundcubemail:latest-fpm (floating) — consolidate.
+
+  - id: sftp-gateway
+    name: SFTP gateway (chroot jail, k8s-exec into tenant storage)
+    tier: "0"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/sftp-gateway.yaml
+    pin_check: false
+    repos: [insulahq/insula/sftp-gateway]
+    watch: { type: first_party }
+    scan: trivy+govulncheck
+    deps: [images/sftp-gateway/go.mod]
+    owner: platform
+    notes: First-party (Go 1.23). Internet-facing SSH/SFTP into tenant volumes. Deps gliderlabs/ssh, golang.org/x/crypto, k8s client.
+
+  # ───────────────────────────── Tier 1 — High ─────────────────────────────
+  - id: longhorn
+    name: Longhorn (distributed block storage — all PVs)
+    tier: "1"
+    kind: chart
+    pinned: "v1.11.1"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: longhorn/longhorn, advisories: longhorn/longhorn }
+    scan: manual
+    owner: platform
+    notes: Backs every PVC (DB, mail, tenant storage). LONGHORN_VERSION.
+
+  - id: flux
+    name: Flux v2 (GitOps reconciler — supply chain)
+    tier: "1"
+    kind: binary
+    pinned: latest-cli
+    pin_source: scripts/bootstrap.sh
+    pin_check: false
+    watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }
+    scan: manual
+    owner: platform
+    notes: >-
+      Installed via `flux install` (CLI latest, UNPINNED) — see install_flux(). Can deploy
+      anything to the cluster. CONSIDER pinning the Flux version. Watch source-controller/
+      kustomize-controller CVEs.
+
+  - id: firewall-reconciler
+    name: firewall-reconciler DaemonSet (nft on host)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/firewall-reconciler/daemonset.yaml
+    pin_check: false
+    repos: [insulahq/insula/firewall-reconciler]
+    watch: { type: first_party }
+    scan: trivy+govulncheck
+    deps: [images/firewall-reconciler/go.mod]
+    owner: platform
+    notes: First-party (Go 1.22, distroless). Privileged host nft writes. Deps google/nftables, k8s client.
+
+  - id: host-config-reconciler
+    name: host-config-reconciler DaemonSet (sysctl/limits/modules)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/host-config-reconciler/daemonset.yaml
+    pin_check: false
+    repos: [insulahq/insula/host-config-reconciler]
+    watch: { type: first_party }
+    scan: trivy+govulncheck
+    deps: [images/host-config-reconciler/go.mod]
+    owner: platform
+    notes: First-party (Go 1.22, distroless). Writes host sysctl/limits/modprobe.
+
+  - id: security-probe
+    name: security-probe DaemonSet (read-only host posture)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/security-probe/daemonset.yaml
+    pin_check: false
+    repos: [insulahq/insula/security-probe]
+    watch: { type: first_party }
+    scan: trivy+govulncheck
+    deps: [images/security-probe/go.mod]
+    owner: platform
+    notes: First-party (Go 1.22, distroless, drops ALL caps). Read-only host mounts → ConfigMaps. Dep modernc.org/sqlite.
+
+  - id: node-terminal
+    name: node-terminal image (privileged nsenter into host)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: false
+    watch: { type: first_party }
+    scan: trivy
+    owner: platform
+    notes: First-party (alpine:3.20 + util-linux). super_admin-gated one-shot privileged pod; nsenter to PID1. Extreme blast radius if abused.
+
+  - id: private-worker-agent
+    name: private-worker-agent (frp tunnel client)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: false
+    watch: { type: first_party }
+    scan: trivy
+    owner: platform
+    notes: First-party (alpine + frp 0.62.1, SHA-verified). Bridges private worker nodes across a trust boundary.
+
+  - id: frp
+    name: frp / frps (reverse-tunnel server + client binary)
+    tier: "1"
+    kind: image
+    pinned: "v0.62.1"
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: true
+    watch: { type: github_releases, repo: fatedier/frp, advisories: fatedier/frp }
+    scan: trivy
+    owner: platform
+    notes: fatedier/frps server image + frp client baked into private-worker-agent. Crosses trust boundaries → watch.
+
+  - id: backup-rclone
+    name: backup-rclone shim (rclone DaemonSet for backup targets)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/backup-rclone-shim/daemonset.yaml
+    pin_check: false
+    repos: [insulahq/insula/backup-rclone]
+    watch: { type: first_party }
+    scan: trivy
+    owner: platform
+    notes: First-party (alpine@digest + rclone 1.74.1 SHA-verified). Data egress to backup targets; holds target creds.
+
+  - id: rclone
+    name: rclone (upstream binary/image)
+    tier: "1"
+    kind: image
+    pinned: "1.74.1"
+    pin_source: k8s/base/backup/etcd-snap-via-shim-cronjob.yaml
+    pin_check: true
+    repos: [rclone/rclone]
+    watch: { type: github_releases, repo: rclone/rclone, advisories: rclone/rclone }
+    scan: trivy
+    owner: platform
+    notes: rclone/rclone image (etcd-snapshot-via-shim CronJob) + the SHA-verified binary baked into backup-rclone. Backup data path.
+
+  - id: mail-backup-tools
+    name: mail-backup-tools (restic + JMAP backup)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: false
+    repos: [insulahq/insula/mail-backup-tools]
+    watch: { type: first_party }
+    scan: trivy
+    owner: platform
+    notes: First-party (debian:trixie-slim + restic). Mail backup data path; SSH keys. Watch restic CVEs (Debian pkg).
+
+  - id: rocksdb-secondary-checkpoint
+    name: rocksdb-secondary-checkpoint (mail-archive checkpoint Job)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: false
+    watch: { type: first_party }
+    scan: trivy+cargo-audit
+    deps: [images/rocksdb-secondary-checkpoint/Cargo.toml]
+    owner: platform
+    notes: First-party (Rust 1.95, distroless/cc). librocksdb-sys =0.17.3 pinned to Stalwart's rocksdb 10.4.2.
+
+  - id: coraza-plugin
+    name: traefik-plugin-coraza (WASM WAF — currently disabled)
+    tier: "1"
+    kind: image
+    pinned: "v0.3.0"
+    app_version: "v0.3.0"
+    pin_source: docker/traefik-plugin-coraza/Dockerfile
+    pin_check: true
+    watch: { type: github_releases, repo: corazawaf/coraza-http-wasm, advisories: corazawaf/coraza-http-wasm }
+    scan: trivy
+    owner: platform
+    notes: CORAZA_WASM_VERSION. Built but NOT wired (CORAZA_PLUGIN_VERSION="" in bootstrap; ModSecurity-CRS is the active WAF). Watch in case re-enabled.
+
+  - id: system-upgrade-controller
+    name: Rancher system-upgrade-controller (k3s upgrade Plans)
+    tier: "1"
+    kind: image
+    pinned: "v0.19.2"
+    pin_source: k8s/base/system-upgrade-controller/controller.yaml
+    pin_check: true
+    repos: [rancher/system-upgrade-controller]
+    watch: { type: github_releases, repo: rancher/system-upgrade-controller, advisories: rancher/system-upgrade-controller }
+    scan: trivy
+    owner: platform
+    notes: Runs privileged upgrade jobs on nodes. Drives sequential k3s upgrades.
+
+  - id: external-snapshotter
+    name: external-snapshotter (CSI VolumeSnapshot CRDs + controller)
+    tier: "1"
+    kind: binary
+    pinned: "v6.3.0"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: kubernetes-csi/external-snapshotter, advisories: kubernetes-csi/external-snapshotter }
+    scan: manual
+    owner: platform
+    notes: snap_ver in install step. CNPG PITR + Longhorn VolumeSnapshotClass dependency.
+
+  - id: barman-cloud-plugin
+    name: CNPG Barman Cloud plugin (Postgres backups)
+    tier: "1"
+    kind: image
+    pinned: "v0.12.0"
+    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.12.0.yaml
+    pin_check: true
+    repos: [cloudnative-pg/plugin-barman-cloud]
+    watch: { type: github_releases, repo: cloudnative-pg/plugin-barman-cloud, advisories: cloudnative-pg/plugin-barman-cloud }
+    scan: trivy
+    owner: platform
+    notes: Postgres backup data path (WAL/base backups to object storage).
+
+  - id: valkey
+    name: Valkey (cache)
+    tier: "1"
+    kind: image
+    pinned: "8.0-alpine"
+    pin_source: k8s/base/valkey/statefulset.yaml
+    pin_check: true
+    repos: [valkey/valkey]
+    watch: { type: github_releases, repo: valkey-io/valkey, advisories: valkey-io/valkey }
+    scan: trivy
+    owner: platform
+    notes: Redis-compatible cache (Redis removed M14). Tier 1 if it holds session/token material.
+
+  - id: file-manager
+    name: file-manager (tenant web file browser sidecar)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: false
+    watch: { type: first_party }
+    scan: trivy+osv
+    deps: [images/file-manager/Dockerfile]
+    owner: platform
+    notes: First-party (Node 22 + patched SFTP + chroot). Operates on tenant storage.
+
+  - id: claim-validator
+    name: claim-validator (admission/claim check)
+    tier: "1"
+    kind: image
+    pinned: ci-pinned
+    pin_source: k8s/base/platform-config.yaml
+    pin_check: false
+    watch: { type: first_party }
+    scan: trivy+osv
+    deps: [images/claim-validator/Dockerfile]
+    owner: platform
+    notes: First-party (Node 22-alpine3.20).
+
+  - id: age
+    name: age (secrets-bundle encryption tool)
+    tier: "1"
+    kind: binary
+    pinned: "v1.2.1"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    watch: { type: github_releases, repo: FiloSottile/age, advisories: FiloSottile/age }
+    scan: manual
+    owner: platform
+    notes: age_ver in bootstrap. Encrypts the Tier-1 secrets bundle (SECRETS_LIFECYCLE.md). Also baked into the backend image.
+
+  # ───────────────────────────── Tier 2 — Moderate ─────────────────────────────
+  - id: reloader
+    name: Stakater Reloader (rollout on ConfigMap/Secret change)
+    tier: "2"
+    kind: image
+    pinned: "v1.4.0"
+    pin_source: k8s/base/reloader/reloader.yaml
+    pin_check: true
+    repos: [stakater/reloader]
+    watch: { type: github_releases, repo: stakater/Reloader, advisories: stakater/Reloader }
+    scan: trivy
+    owner: platform
+    notes: Watches ConfigMaps/Secrets and triggers rolling restarts.
+
+  - id: nginx-standalone
+    name: nginx (suspended-tenant + error pages)
+    tier: "2"
+    kind: image
+    pinned: "1.30-alpine"
+    pin_source: k8s/base/platform-suspended.yaml
+    pin_check: true
+    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx }
+    scan: trivy
+    owner: platform
+    notes: Static-page nginx for suspended tenants + custom error pages. (Frontend panels embed nginx:1.27-alpine separately, see base-images.)
+
+  - id: postgres-client-backup
+    name: postgres client image (pg_dump CronJob)
+    tier: "2"
+    kind: image
+    pinned: "17-alpine"
+    pin_source: k8s/base/backup/postgres-dump-cronjob.yaml
+    pin_check: true
+    watch: { type: github_releases, repo: postgres/postgres, advisories: postgres/postgres }
+    scan: trivy
+    owner: platform
+    notes: >-
+      pg_dump client for logical backups. HYGIENE: this is 17 while the server is 18
+      (postgresql component) — bump to 18-alpine so pg_dump major matches the server.
+
+  - id: alpine-k8s
+    name: alpine/k8s (kubectl utility image for CronJobs)
+    tier: "2"
+    kind: image
+    pinned: "1.33.3"
+    pin_source: k8s/base/job-gc-cronjob.yaml
+    pin_check: true
+    repos: [alpine/k8s]
+    watch: { type: dockerhub, repo: alpine/k8s, advisories: kubernetes/kubernetes }
+    scan: trivy
+    owner: platform
+    notes: kubectl-in-a-pod for GC/update-checker/backup/cluster-state CronJobs. Two tags in use (1.33.3 dominant + 1.33.4 in ingress-external-ips/cronjob.yaml) — consolidate.
+
+  # ───────────────────────────── Tier 3 — Low / utility / base ─────────────────────────────
+  - id: busybox
+    name: busybox (init/utility containers)
+    tier: "3"
+    kind: image
+    pinned: "1.37"
+    pin_source: k8s/base/valkey/statefulset.yaml
+    pin_check: true
+    repos: [busybox]
+    watch: { type: dockerhub, repo: busybox, advisories: mirror/busybox }
+    scan: trivy
+    owner: platform
+    notes: initContainers/janitors. Two tags in use (1.37 in valkey/dex + 1.36 in mail standby-janitor) — consolidate.
+
+  - id: curl
+    name: curlimages/curl (probe/init utility)
+    tier: "3"
+    kind: image
+    pinned: "8.10.1"
+    pin_source: k8s/base
+    pin_check: false
+    repos: [curlimages/curl]
+    watch: { type: github_releases, repo: curl/curl, advisories: curl/curl }
+    scan: trivy
+    owner: platform
+    notes: HTTP probe init container. pin_check off (multiple manifests) — covered by image scan.
+
+  - id: alpine-util
+    name: alpine (utility/init base in manifests)
+    tier: "3"
+    kind: image
+    pinned: "3.20"
+    pin_source: k8s/base
+    pin_check: false
+    watch: { type: alpine_secdb, repo: alpinelinux/alpine, advisories: alpinelinux/alpine }
+    scan: trivy
+    owner: platform
+    notes: Bare alpine init/utility containers + the FROM base for most first-party images.
+
+  - id: rsync-ssh
+    name: instrumentisto/rsync-ssh (mail standby replication)
+    tier: "3"
+    kind: image
+    pinned: "alpine3.23-r3"
+    pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
+    pin_check: true
+    repos: [instrumentisto/rsync-ssh]
+    watch: { type: dockerhub, repo: instrumentisto/rsync-ssh, advisories: WayneD/rsync }
+    scan: trivy
+    owner: platform
+    notes: rsync over SSH for mail HA standby replication.
+
+  - id: traefik-whoami
+    name: traefik/whoami (WAF test stub)
+    tier: "3"
+    kind: image
+    pinned: "v1.11.0"
+    pin_source: k8s/base/modsecurity-crs/deployment-stub.yaml
+    pin_check: true
+    repos: [traefik/whoami]
+    watch: { type: github_releases, repo: traefik/whoami, advisories: traefik/whoami }
+    scan: trivy
+    owner: platform
+    notes: Test backend for the ModSecurity-CRS verdict path. Internal-only.
+
+  - id: base-images
+    name: Build-time base images (node/nginx/golang/rust/debian/distroless)
+    tier: "3"
+    kind: image
+    pinned: multiple
+    pin_source: backend/Dockerfile
+    pin_check: false
+    watch: { type: manual }
+    scan: trivy
+    owner: platform
+    notes: >-
+      FROM bases for first-party images, covered transitively by per-image Trivy:
+      node:22-alpine, nginx:1.27-alpine, golang:1.22-alpine, golang:1.23-alpine,
+      rust:1.95-bookworm, debian:trixie-slim, gcr.io/distroless/static,
+      gcr.io/distroless/cc-debian12, busybox:1.37, tini, age, openssl, openssh-client.
+
+  - id: ci-toolchain
+    name: CI toolchain (GitHub Actions + cosign + osv-scanner)
+    tier: "3"
+    kind: external
+    pinned: multiple
+    pin_source: .github/workflows
+    pin_check: false
+    watch: { type: github_releases, repo: actions/checkout }
+    scan: dependabot
+    owner: platform
+    notes: >-
+      Pinned action versions (actions/checkout@v4, setup-node@v4, setup-go@v5,
+      docker/build-push-action@v6, sigstore/cosign-installer@v3,
+      aquasecurity/trivy-action@0.35.0, codeql-action@v3). Bumped via Dependabot
+      github-actions ecosystem.
+
+  # ───────────────────────────── Tier C — Catalog (tenant runtimes) ─────────────────────────────
+  - id: catalog-node22
+    name: catalog/node22 (tenant Node.js runtime)
+    tier: "C"
+    kind: image
+    pinned: "node:22-alpine"
+    pin_source: catalog-images/node22/Dockerfile
+    pin_check: true
+    watch: { type: github_releases, repo: nodejs/node, advisories: nodejs/node }
+    scan: trivy
+    owner: catalog
+    notes: Tenant-facing runtime. Per-tenant blast radius. Rebuild + tenant redeploy to remediate.
+
+  - id: catalog-static-nginx
+    name: catalog/static-nginx (tenant static site runtime)
+    tier: "C"
+    kind: image
+    pinned: "nginx:1.30-alpine"
+    pin_source: catalog-images/static-nginx/Dockerfile
+    pin_check: true
+    watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx }
+    scan: trivy
+    owner: catalog
+    notes: Tenant static hosting runtime.
+
+  - id: catalog-nginx-php84
+    name: catalog/nginx-php84 (PHP-FPM 8.4 runtime)
+    tier: "C"
+    kind: image
+    pinned: "php:8.4-fpm-alpine"
+    pin_source: catalog-images/nginx-php84/Dockerfile
+    pin_check: true
+    watch: { type: github_releases, repo: php/php-src, advisories: php/php-src }
+    scan: trivy
+    owner: catalog
+    notes: Tenant PHP runtime (FPM). PHP CVE cadence is frequent — watch closely.
+
+  - id: catalog-apache-php84
+    name: catalog/apache-php84 (PHP 8.4 + Apache)
+    tier: "C"
+    kind: image
+    pinned: "php:8.4-apache-bookworm"
+    pin_source: catalog-images/apache-php84/Dockerfile
+    pin_check: true
+    watch: { type: github_releases, repo: php/php-src, advisories: php/php-src }
+    scan: trivy
+    owner: catalog
+    notes: Tenant PHP+Apache runtime.
+
+  - id: catalog-wordpress-php84
+    name: catalog/wordpress-php84 (managed WordPress)
+    tier: "C"
+    kind: image
+    pinned: "wordpress:php8.4-apache"
+    pin_source: catalog-images/wordpress-php84/Dockerfile
+    pin_check: true
+    watch: { type: github_releases, repo: WordPress/WordPress, advisories: WordPress/WordPress }
+    scan: trivy
+    owner: catalog
+    notes: >-
+      Tenant WordPress runtime. Highest catalog CVE surface (core + the floating
+      `wordpress:` base). Watch WordPress core + PHP advisories.
+
+  # ───────────────────────────── Tier X — External (consumed) ─────────────────────────────
+  - id: dex
+    name: Dex OIDC (IdP — dev/staging only)
+    tier: "X"
+    kind: external
+    pinned: "v2.45.1"
+    pin_source: k8s/overlays/dev/dex/deployment.yaml
+    pin_check: true
+    repos: [dexidp/dex]
+    watch: { type: github_releases, repo: dexidp/dex, advisories: dexidp/dex }
+    scan: trivy
+    owner: external
+    dev_only: true
+    notes: Auth IdP for dev/staging ONLY (never production — ADR-022). Production IAM is operator-supplied. Auth-critical → watch despite external.
+
+  - id: powerdns
+    name: PowerDNS (authoritative DNS — external service)
+    tier: "X"
+    kind: external
+    pinned: external
+    pin_source: docs/architecture/adr
+    pin_check: false
+    watch: { type: github_releases, repo: PowerDNS/pdns, advisories: PowerDNS/pdns }
+    scan: manual
+    owner: external
+    notes: Consumed via REST API (ADR-022). We do not deploy it; watch advisories + coordinate with the DNS project.
+
+  - id: netbird
+    name: NetBird (VPN mesh underlay — external/optional)
+    tier: "X"
+    kind: external
+    pinned: external
+    pin_source: docs/operations/CHOOSING_YOUR_UNDERLAY.md
+    pin_check: false
+    watch: { type: github_releases, repo: netbirdio/netbird, advisories: netbirdio/netbird }
+    scan: manual
+    owner: external
+    notes: One optional mesh underlay (ADR-022; not a hard dep). Watch advisories; operator owns deployment.
+
+  # ───────────────────────────── Dev-only fixtures (not in production installs) ─────────────────────────────
+  - id: dev-minio
+    name: MinIO (dev S3 fixture)
+    tier: "3"
+    kind: image
+    pinned: "RELEASE.2025-01-20T14-49-07Z"
+    pin_source: k8s/dev/minio/minio.yaml
+    pin_check: true
+    repos: [minio/minio]
+    watch: { type: github_releases, repo: minio/minio, advisories: minio/minio }
+    scan: trivy
+    owner: platform
+    dev_only: true
+    notes: Local-dev S3 endpoint for backup-target testing. Never deployed to real clusters.
+
+  - id: dev-minio-mc
+    name: MinIO client mc (dev fixture)
+    tier: "3"
+    kind: image
+    pinned: "RELEASE.2025-01-17T23-25-50Z"
+    pin_source: k8s/dev/minio/minio.yaml
+    pin_check: true
+    repos: [minio/mc]
+    watch: { type: github_releases, repo: minio/mc, advisories: minio/mc }
+    scan: trivy
+    owner: platform
+    dev_only: true
+    notes: Dev-only MinIO client.
+
+  - id: dev-samba
+    name: dperson/samba (dev CIFS fixture)
+    tier: "3"
+    kind: image
+    pinned: "latest"
+    pin_source: k8s/dev/samba/samba.yaml
+    pin_check: false
+    repos: [dperson/samba]
+    watch: { type: dockerhub, repo: dperson/samba, advisories: samba-team/samba }
+    scan: trivy
+    owner: platform
+    dev_only: true
+    notes: Dev-only CIFS endpoint for blob-store/backup testing. Floating :latest (dev acceptable).
+
+  - id: dev-atmoz-sftp
+    name: atmoz/sftp (dev SFTP fixture)
+    tier: "3"
+    kind: image
+    pinned: "alpine-3.7"
+    pin_source: k8s/dev/sftp/sftp.yaml
+    pin_check: true
+    repos: [atmoz/sftp]
+    watch: { type: dockerhub, repo: atmoz/sftp, advisories: openssh/openssh-portable }
+    scan: trivy
+    owner: platform
+    dev_only: true
+    notes: Dev-only SFTP endpoint. Production SFTP is the first-party sftp-gateway.
+
+  - id: dev-socat
+    name: alpine/socat (dev oauth patch fixture)
+    tier: "3"
+    kind: image
+    pinned: "1.8.0.0"
+    pin_source: k8s/overlays/dev/bulwark/oauth-patch.yaml
+    pin_check: true
+    repos: [alpine/socat]
+    watch: { type: dockerhub, repo: alpine/socat, advisories: alpine/socat }
+    scan: trivy
+    owner: platform
+    dev_only: true
+    notes: Dev-only socat shim for the Bulwark oauth patch.

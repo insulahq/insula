@@ -1,0 +1,57 @@
+# Dependabot — proposes dependency-bump PRs (security + version updates).
+#
+# Complements, does not replace, the component watch (ADR-050): the registry
+# (security/components.yaml) + ledger (security/cve-ledger.yaml) remain the
+# source of truth for tiering and CVE waivers; Dependabot is the automation
+# that opens the actual bump PRs for application dependencies. Security updates
+# are always on; version updates are grouped weekly to keep PR noise low.
+version: 2
+
+updates:
+  # ── npm (single root workspace: backend, both panels, packages/*) ──
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    labels: ["dependencies", "security-watch"]
+
+  # ── Go modules (first-party reconcilers + sftp-gateway) ──
+  - package-ecosystem: gomod
+    directory: /images/firewall-reconciler
+    schedule: { interval: weekly }
+    groups: { gomod: { update-types: [minor, patch] } }
+    labels: ["dependencies", "security-watch"]
+  - package-ecosystem: gomod
+    directory: /images/host-config-reconciler
+    schedule: { interval: weekly }
+    groups: { gomod: { update-types: [minor, patch] } }
+    labels: ["dependencies", "security-watch"]
+  - package-ecosystem: gomod
+    directory: /images/security-probe
+    schedule: { interval: weekly }
+    groups: { gomod: { update-types: [minor, patch] } }
+    labels: ["dependencies", "security-watch"]
+  - package-ecosystem: gomod
+    directory: /images/sftp-gateway
+    schedule: { interval: weekly }
+    groups: { gomod: { update-types: [minor, patch] } }
+    labels: ["dependencies", "security-watch"]
+
+  # ── Rust (RocksDB checkpoint helper) ──
+  - package-ecosystem: cargo
+    directory: /images/rocksdb-secondary-checkpoint
+    schedule: { interval: weekly }
+    # librocksdb-sys is intentionally pinned (=0.17.3) to Stalwart's RocksDB
+    # version — Dependabot may propose, but review against ADR-046 before merge.
+    labels: ["dependencies", "security-watch"]
+
+  # ── GitHub Actions (CI toolchain) ──
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+    groups: { actions: { update-types: [minor, patch] } }
+    labels: ["dependencies", "ci"]
