@@ -21,13 +21,13 @@
   "peerDependencies": {
     "@tanstack/react-query": "^5.0.0",
     "lucide-react": "*",
-    "react": "^19.0.0"
+    "react": "^19.2.7"
   },
   "devDependencies": {
-    "@tanstack/react-query": "^5.99.2",
-    "@types/react": "^19.0.0",
-    "lucide-react": "1.8",
-    "react": "^19.0.0",
+    "@tanstack/react-query": "^5.101.0",
+    "@types/react": "^19.2.17",
+    "lucide-react": "1.17",
+    "react": "^19.2.7",
     "typescript": "^6.0.3"
   }
 }

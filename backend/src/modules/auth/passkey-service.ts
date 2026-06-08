@@ -12,7 +12,7 @@ import type {
   PublicKeyCredentialCreationOptionsJSON,
   PublicKeyCredentialRequestOptionsJSON,
   AuthenticatorTransportFuture,
-} from '@simplewebauthn/types';
+} from '@simplewebauthn/server';
 import type { Database } from '../../db/index.js';
 import { ApiError } from '../../shared/errors.js';
 import {
@@ -291,7 +291,9 @@ export async function beginRegistration(
   const options = await generateRegistrationOptions({
     rpName: config.rpName,
     rpID: config.rpId,
-    userID: userHandle,
+    // @simplewebauthn v13 + @types/node 25 type userID as Uint8Array<ArrayBuffer>;
+    // a Node Buffer is Buffer<ArrayBufferLike>, so copy into a plain Uint8Array.
+    userID: Uint8Array.from(userHandle),
     userName: user.email,
     userDisplayName: user.fullName,
     attestationType: 'none', // Don't require a specific authenticator vendor.
@@ -513,7 +515,7 @@ export async function completeAuthentication(
     requireUserVerification: true,
     credential: {
       id: passkeyRow.credentialId.toString('base64url'),
-      publicKey: passkeyRow.publicKey,
+      publicKey: Uint8Array.from(passkeyRow.publicKey),
       counter: passkeyRow.signCount,
       transports: (passkeyRow.transports as AuthenticatorTransportFuture[] | undefined),
     },

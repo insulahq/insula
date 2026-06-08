@@ -721,9 +721,12 @@ export interface StreamZipExportArgs {
 export async function streamZipExport(args: StreamZipExportArgs): Promise<Readable> {
   const { store, handle, components } = args;
 
-  // archiver is CommonJS; tsconfig esModuleInterop is on, so the
-  // default-export form works.
-  const { default: archiverFactory } = await import('archiver');
+  // archiver's runtime is CommonJS (`module.exports = archiver`), so the
+  // dynamic import resolves the factory under `.default` (esModuleInterop).
+  // Read it through a cast so this typechecks across @types/archiver majors
+  // (v7 used `export =`; v8 changed the namespace shape).
+  const archiverImport = await import('archiver');
+  const archiverFactory = (archiverImport as { default?: unknown }).default ?? archiverImport;
 
   // Per-entry `store: true` (compression method 0, no zlib framing)
   // skips recompression — every component artifact we ship is already
