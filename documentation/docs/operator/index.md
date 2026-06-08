@@ -45,6 +45,7 @@ read-out and a recovery action for it.
 | [Tenant backups](tenant-backups.md) | Schedules, retention, bundle status, partial failures |
 | [Mail operations](mail-operations.md) | Mail node placement, port exposure, TLS, deliverability |
 | [Security hardening](security-hardening.md) | SSH lockdown, mesh, firewall, the Posture page |
+| [Dependency & CVE watch](dependency-cve-watch.md) | The component watch list, CVE scanning, the weekly digest, Dependabot |
 | [Web defense](web-defense.md) | WAF, CrowdSec bans, trusted proxies |
 | [Monitoring & health](monitoring.md) | What observability ships in the box (and what does not) |
 | [Troubleshooting](troubleshooting.md) | First-response steps for the most common incidents |
