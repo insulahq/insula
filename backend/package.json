@@ -20,10 +20,10 @@
     "db:seed": "tsx src/db/seed.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.102.0",
-    "@aws-sdk/client-s3": "^3.1063.0",
-    "@aws-sdk/lib-storage": "^3.1063.0",
-    "@aws-sdk/s3-request-presigner": "^3.1063.0",
+    "@anthropic-ai/sdk": "^0.104.0",
+    "@aws-sdk/client-s3": "^3.1065.0",
+    "@aws-sdk/lib-storage": "^3.1065.0",
+    "@aws-sdk/s3-request-presigner": "^3.1065.0",
     "@fastify/compress": "^8.3.1",
     "@fastify/cors": "^11.2.0",
     "@fastify/jwt": "^10.1.0",
@@ -72,7 +72,7 @@
     "postject": "^1.0.0-alpha.6",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.60.1",
+    "typescript-eslint": "^8.61.0",
     "vitest": "^4.1.4"
   }
 }
