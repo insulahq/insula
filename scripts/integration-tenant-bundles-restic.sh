@@ -61,12 +61,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034  # ROOT used for path construction by future variants of this script
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Config profile (real cluster + creds) from gitignored scripts/integration.env.
+source "$SCRIPT_DIR/lib/integration-env.sh"
+load_integration_env
+
 API_BASE="${API_BASE:-https://admin.testing.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@testing.example.test}"
-ADMIN_PASSWORD="${ADMIN_PASSWORD:-REDACTED_ADMIN_PASSWORD}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 TESTING_HOST="${TESTING_HOST:-root@testing.example.test}"
 SERVERS_TXT="${SERVERS_TXT:-$HOME/k8s-staging/servers.txt}"
+require_env ADMIN_PASSWORD
+
 RESTIC="${SPIKE_RESTIC:-/tmp/restic}"
 if ! [ -x "$RESTIC" ]; then RESTIC="$(command -v restic 2>/dev/null || true)"; fi
 [ -n "$RESTIC" ] || { echo "ERROR: restic not found; set SPIKE_RESTIC" >&2; exit 2; }

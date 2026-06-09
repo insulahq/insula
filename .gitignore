@@ -12,6 +12,11 @@ build/
 !.env.example
 !.env.local.example
 
+# Integration test profile — operator's real cluster coordinates + confidential
+# external-target credentials. NEVER commit. The committed template is
+# scripts/integration.env.example (placeholders only).
+scripts/integration.env
+
 # Vite
 frontend/*/dist/
 
