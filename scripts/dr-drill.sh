@@ -8,9 +8,10 @@
 #   --mode validate   (default)  static integrity: decrypt + structure only.
 #                                 No cluster. Safe for a frequent private cron.
 #   --mode dind                  validate + run the REAL restore tooling
-#                                 (apply-secrets-bundle.sh) on the bundle +
-#                                 assert every restored Secret is accepted by a
-#                                 live local-cluster API (server-side dry-run).
+#                                 (apply-secrets-bundle.sh) on the bundle; if a
+#                                 cluster is reachable, also server-side dry-run
+#                                 every restored Secret against the live API
+#                                 (skipped, not failed, when no cluster is up).
 #                                 Workstation. (Does NOT boot a full platform —
 #                                 a staging/prod bundle's creds won't match a
 #                                 local dev Postgres; that proof is 'bootstrap'.)
@@ -59,7 +60,7 @@ META_TEST="${DR_DRILL_META_TEST:-0}"
 TIMEOUT="${DR_DRILL_TIMEOUT:-1800}"
 RUNNER="${DR_DRILL_RUNNER:-$(hostname)/dr-drill@$(date -u +%s)}"
 
-usage() { sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 while [[ $# -gt 0 ]]; do case "$1" in
   --mode) MODE="$2"; shift 2 ;;
   --bundle) BUNDLE="$2"; shift 2 ;;
@@ -168,23 +169,26 @@ if [[ "$MODE" == dind && "$STATUS" != failed ]]; then
     fail "restore library failed on bundle (see log)"; append_phase dind-restore-lib failed $(( $(date +%s)-PT )) "$(tail -c 300 "$TMPDIR/dind.log")"
   fi
   if [[ "$STATUS" != failed ]]; then
+    # Server-side dry-run ONLY runs against a reachable cluster. A client-side
+    # dry-run is NOT a usable offline fallback: `kubectl apply --dry-run=client`
+    # must download the cluster's OpenAPI to validate, so with no reachable
+    # cluster it FALSE-fails ("failed to download openapi"). When no cluster is
+    # reachable we therefore SKIP this check (not fail) — the restore-library
+    # phase above already proved the bundle restores. Bring a cluster up
+    # (./scripts/local.sh up, or point KUBECONFIG at any cluster) for the full
+    # server-side acceptance check.
     if command -v kubectl >/dev/null 2>&1 && timeout 15 kubectl cluster-info >/dev/null 2>&1; then
-      DRY_MODE=server; CLUSTER_NOTE="server-side dry-run (live cluster)"
-    elif command -v kubectl >/dev/null 2>&1; then
-      DRY_MODE=client; CLUSTER_NOTE="client-side only (no cluster reachable — run ./scripts/local.sh up first)"
-    else
-      DRY_MODE=none; CLUSTER_NOTE="skipped (kubectl not installed)"
-    fi
-    if [[ "$DRY_MODE" == none ]]; then
-      log "dind: kubectl absent — skipping cluster validation"; append_smoke cluster-accepts-secrets true "$CLUSTER_NOTE"
-    else
       PT=$(date +%s); BAD=0
       for f in "${RESTORED_SECRETS[@]}"; do
-        kubectl apply --dry-run="$DRY_MODE" -f "$f" >>"$TMPDIR/dryrun.log" 2>&1 || BAD=$((BAD+1))
+        kubectl apply --dry-run=server -f "$f" >>"$TMPDIR/dryrun.log" 2>&1 || BAD=$((BAD+1))
       done
-      if [[ "$BAD" -gt 0 ]]; then fail "$BAD restored Secret(s) rejected ($DRY_MODE dry-run)"; append_smoke cluster-accepts-secrets false "$BAD rejected"
-      else append_smoke cluster-accepts-secrets true "$CLUSTER_NOTE"; fi
-      append_phase dind-cluster-dryrun "$([[ "$STATUS" == failed ]] && echo failed || echo success)" $(( $(date +%s)-PT )) "$CLUSTER_NOTE"
+      if [[ "$BAD" -gt 0 ]]; then fail "$BAD restored Secret(s) rejected by the cluster API (server dry-run)"; append_smoke cluster-accepts-secrets false "$BAD rejected"
+      else append_smoke cluster-accepts-secrets true "server-side dry-run (live cluster)"; fi
+      append_phase dind-cluster-dryrun "$([[ "$STATUS" == failed ]] && echo failed || echo success)" $(( $(date +%s)-PT )) "$BAD rejected"
+    else
+      log "dind: no reachable cluster — skipping server-side dry-run (restore-library check already passed)"
+      append_smoke cluster-accepts-secrets true "skipped — no reachable cluster (run ./scripts/local.sh up for the full check)"
+      append_phase dind-cluster-dryrun skipped 0 "no reachable cluster"
     fi
   fi
 fi
