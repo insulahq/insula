@@ -21,7 +21,7 @@ chmod 600 scripts/dr-drill.env                         # fill in BUNDLE + AGE_KE
 $EDITOR scripts/dr-drill.env
 
 ./scripts/dr-drill.sh                      # --mode validate (default): static, fast, no cluster
-./scripts/dr-drill.sh --mode dind          # + real restore library + live local-cluster API check
+./scripts/dr-drill.sh --mode dind          # + real restore library (+ live-cluster API check if a cluster is up)
 ./scripts/dr-drill.sh --mode bootstrap     # + REAL recovery onto a throwaway VM (gold standard)
 ```
 
@@ -36,7 +36,7 @@ need vs how much time/infra you can spend.
 | Mode | What it proves | Needs | Time |
 |------|----------------|-------|------|
 | `validate` (default) | The bundle **decrypts** with your age key and is **well-formed** — ≥5 Secret YAMLs, valid structure, `MANIFEST.txt` present. | age key only | seconds |
-| `dind` | All of `validate`, **plus** the production restore *tooling* (`scripts/lib/apply-secrets-bundle.sh`: `MANIFEST.json` parse, profile gating, `skipAtRestore`) runs clean on **this** bundle, **and** every restored Secret is accepted by a real Kubernetes API (server-side dry-run). | age key + a reachable local cluster (`./scripts/local.sh up`) for the server-side check | ~½–1 min |
+| `dind` | All of `validate`, **plus** the production restore *tooling* (`scripts/lib/apply-secrets-bundle.sh`: `MANIFEST.json` parse, profile gating, `skipAtRestore`) runs clean on **this** bundle. **If** a cluster is reachable, it *also* server-side dry-runs every restored Secret against the real Kubernetes API; if not, that one sub-check is **skipped** (not failed) and the restore-library result stands. | age key (a reachable cluster — `./scripts/local.sh up` — adds the server-side check) | ~½–1 min |
 | `bootstrap` | All of `validate`, **plus** the **real** recovery path — `bootstrap.sh --secrets-bundle` provisions a throwaway VM *from the bundle* and the recovered `platform-api` actually reaches `Available`. | age key + a throwaway VM + SSH key + a drill domain | minutes |
 
 **Why `dind` does not boot a full platform off the bundle:** a drill bundle comes
