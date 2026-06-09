@@ -241,7 +241,7 @@ describe('processDelivery', () => {
         authUsername: null,
         authPasswordEncrypted: null,
         fromAddress: 'notifications@apex.test',
-        fromName: 'Phoenix Notifications',
+        fromName: 'Insula Notifications',
       };
       getDefaultProviderRowMock.mockResolvedValue(stalwartProvider);
       const { db } = buildDb({

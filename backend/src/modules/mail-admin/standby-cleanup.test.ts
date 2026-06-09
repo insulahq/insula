@@ -120,7 +120,7 @@ describe('spawnStandbyDeelectionCleanupJob', () => {
 
   it('sanitises an awkward node name into a DNS-1123-safe Job name', async () => {
     mockCreateNamespacedJob.mockResolvedValue({});
-    await spawnStandbyDeelectionCleanupJob(makeBatch(), 'Worker.Phoenix-Host.Net');
+    await spawnStandbyDeelectionCleanupJob(makeBatch(), 'Worker.Example.Test');
     const arg = mockCreateNamespacedJob.mock.calls[0][0] as { body: { metadata: { name: string } } };
     // DNS-1123: lowercase, only [a-z0-9-]
     expect(arg.body.metadata.name).toMatch(/^[a-z0-9-]+$/);

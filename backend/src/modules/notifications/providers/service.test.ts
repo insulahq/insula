@@ -69,7 +69,7 @@ function row(overrides: Partial<Row> = {}): Row {
     authUsername: 'user',
     authPasswordEncrypted: 'enc:secret',
     fromAddress: 'noreply@example.test',
-    fromName: 'Phoenix',
+    fromName: 'Insula',
     region: null,
     lastTestedAt: null,
     lastTestStatus: null,

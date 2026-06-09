@@ -58,7 +58,7 @@ Future work: a `plan.cpuMode = 'burstable' | 'reserved'` column for a paid tier 
 | Per-namespace cgroup ceilings | Defer | Kubelet `NodeQOSLevels` is alpha; complexity not justified in Phase 1. |
 | Split N components evenly (no weights) | Reject as default | Wrong defaults — cache deserves 5%, not 33%. Used as fallback only when manifest declares no weights. |
 | Apply user's CPU to "main" component, fixed defaults for sidecars | Reject | "Main" is ambiguous for symmetric stacks (Jitsi: prosody/jicofo/jvb). Hides cluster cost when sidecars are sized hard. |
-| Expose per-component CPU sliders in the UI | Defer | Phoenix-Tech operator confirmed: tenant should see one number. Per-component overrides may ship as a Phase-5 advanced option. |
+| Expose per-component CPU sliders in the UI | Defer | the operator confirmed: tenant should see one number. Per-component overrides may ship as a Phase-5 advanced option. |
 
 ## Implementation
 

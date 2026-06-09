@@ -17,8 +17,10 @@ set -uo pipefail
 # Secret material is covered separately by the gitleaks job (.gitleaks.toml).
 #
 # What it checks (repo-wide, tracked files only):
-#   1. OPERATOR DOMAINS — phoenix-host.net / phoenix-tech.net / success.com.na.
-#      Zero tolerance: these are never legitimate, in any file class.
+#   1. OPERATOR IDENTIFIERS — the maintainer's domains AND the bare operator name
+#      (phoenix-host / phoenix-tech / phoenix-platform / "Phoenix Tech|Hosting|
+#      Platform" / phoenixtechnam) and success.com.na. Zero tolerance, any file
+#      class. (The Phoenix/Elixir framework — "phoenix/…" — is NOT matched.)
 #   2. PUBLIC IPv4 — (a) the operator's known node netblocks, flagged anywhere;
 #      (b) any non-reserved public IP under scripts/ (the SSH-host-default leak
 #      vector). Backend/frontend/docs use illustrative IPs legitimately, so the
@@ -40,11 +42,12 @@ mapfile -t ALL < <(git ls-files \
   | grep -vE 'package-lock\.json$' \
   | grep -vE "$GUARD_SKIP_RE")
 
-# ── 1. operator domains (every file class) ───────────────────────────────────
-# `\\?` before each `\.` also catches the regex-escaped literal form
-# (phoenix-host\.net) used in test assertions / jsonpath selectors.
-DOMAIN_RE='phoenix-host\\?\.net|phoenix-tech\\?\.net|success\\?\.com\\?\.na'
-dom_hits=$(printf '%s\0' "${ALL[@]}" | xargs -0 -r grep -InE "$DOMAIN_RE" 2>/dev/null || true)
+# ── 1. operator identifiers (every file class, case-insensitive) ─────────────
+# The bare hyphenated name (phoenix-host) subsumes the domain and its
+# regex-escaped form (phoenix-host\.net); the spaced forms catch the brand.
+# "phoenix/…" (the Phoenix/Elixir framework) is deliberately NOT matched.
+DOMAIN_RE='phoenix-host|phoenix-tech|phoenix-platform|phoenixtech|phoenixnam|phoenix hosting|phoenix platform|success\\?\.com\\?\.na'
+dom_hits=$(printf '%s\0' "${ALL[@]}" | xargs -0 -r grep -IinE "$DOMAIN_RE" 2>/dev/null || true)
 if [[ -n "$dom_hits" ]]; then
   echo "── operator domain literal(s):"
   echo "$dom_hits" | sed 's|^|        |' | head -40
