@@ -1,13 +1,14 @@
 /**
  * DR drill runs CRUD + summary (DR-bundle roadmap, Phase 1).
  *
- * CI (the GitHub Actions workflow at `.github/workflows/dr-drill.yml`)
+ * The DR-drill harness (`scripts/dr-drill.sh`, run locally or on a
+ * private host — NEVER in public CI; see docs/operations/DR_DRILL.md)
  * posts to `POST /admin/system-backup/dr-drill/runs` to record each
  * drill execution. The admin DR Drill tab reads history via
  * `GET .../runs` and a small summary via `GET .../runs/summary`.
  *
  * The webhook auth is the same super_admin gate as the rest of the
- * system-backup routes — CI uses a long-lived JWT minted for a
+ * system-backup routes — the runner uses a long-lived JWT minted for a
  * dedicated service account. No new auth surface.
  *
  * Persistence keeps the last N runs (no automatic prune yet — drill

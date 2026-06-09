@@ -17,6 +17,12 @@ build/
 # scripts/integration.env.example (placeholders only).
 scripts/integration.env
 
+# DR-drill profile — age private key path, drill target host, report webhook
+# token. Far too sensitive for a public-repo Actions secret, which is exactly
+# why the drill runs locally / on a private host, never in public CI. Template
+# is scripts/dr-drill.env.example (placeholders only).
+scripts/dr-drill.env
+
 # Vite
 frontend/*/dist/
 

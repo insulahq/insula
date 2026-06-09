@@ -1,259 +1,243 @@
 #!/usr/bin/env bash
-# dr-drill.sh — automated DR drill harness (DR-bundle roadmap, Phase 1).
+# dr-drill.sh — DR drill harness. Runs LOCALLY or on a PRIVATE host —
+# NEVER in public CI (the age key + report token are too sensitive to
+# store as public-repo Actions secrets; see docs/operations/DR_DRILL.md).
 #
-# Functional contract: prove that the secrets-bundle, when restored
-# onto a clean cluster via bootstrap.sh --secrets-bundle, produces a
-# working platform.
+# Proves the Tier-1 secrets bundle is RECOVERABLE — three modes, fast→faithful:
 #
-# Flow:
-#   1. Verify a source bundle (path passed in) exists + decrypts cleanly.
-#   2. Wipe the local DinD k3s cluster + boot fresh.
-#   3. Apply the source bundle via bootstrap.sh-equivalent path
-#      (kubectl apply on the decrypted Secret YAML — the harness
-#      doesn't re-run bootstrap.sh inside DinD, which would require
-#      a second nested DinD).
-#   4. Run scripts/local.sh up to bring the platform up against the
-#      restored Secrets.
-#   5. Assert: platform-api comes Ready, admin login works against
-#      the restored credentials, BUNDLE_SECRET_LIST entries are
-#      readable in the restored cluster.
-#   6. Emit a structured JSON report to $DR_DRILL_REPORT (or stdout).
-#   7. POST the report to platform-api's dr-drill webhook if
-#      $DR_DRILL_WEBHOOK_URL is set.
+#   --mode validate   (default)  static integrity: decrypt + structure only.
+#                                 No cluster. Safe for a frequent private cron.
+#   --mode dind                  validate + run the REAL restore tooling
+#                                 (apply-secrets-bundle.sh) on the bundle +
+#                                 assert every restored Secret is accepted by a
+#                                 live local-cluster API (server-side dry-run).
+#                                 Workstation. (Does NOT boot a full platform —
+#                                 a staging/prod bundle's creds won't match a
+#                                 local dev Postgres; that proof is 'bootstrap'.)
+#   --mode bootstrap             validate + run the REAL recovery path
+#                                 (bootstrap.sh --remote <host> --secrets-bundle)
+#                                 against a throwaway VM + assert platform-api
+#                                 reaches Available. Gold standard.
 #
-# Failure modes the drill catches:
-#   - Bundle missing a Secret a consumer Pod needs
-#   - Bundle present but consumer looks for a different key inside
-#   - age subprocess broken on the runner
-#   - bootstrap.sh path drifted from the in-cluster exporter
-#   - smoke test regressions
+# dind/bootstrap prove what 'validate' alone can't: dind proves the restore
+# TOOLING runs clean on THIS bundle and the cluster API accepts the result;
+# bootstrap proves a real DR succeeds end-to-end (platform serves off the
+# bundle), not just that the bundle is well-formed.
 #
-# Required env:
-#   DR_DRILL_BUNDLE         path to an age-encrypted .tar.age bundle
-#   DR_DRILL_AGE_KEY        path to operator's age private key
-# Optional env:
-#   DR_DRILL_REPORT         path to write report JSON (default: stdout)
-#   DR_DRILL_WEBHOOK_URL    URL to POST report to (e.g. platform-api)
-#   DR_DRILL_WEBHOOK_TOKEN  bearer token for the webhook
-#   DR_DRILL_TRIGGER        cron|workflow_dispatch|manual|meta_test
-#   DR_DRILL_RUNNER         e.g. github-actions/dr-drill@01HXYZ
-#   DR_DRILL_META_TEST      when "1", corrupts the bundle to verify
-#                           the drill DOES fail (self-meta-test)
+# CONFIG: values come from flags, then env, then a gitignored
+# scripts/dr-drill.env (copy scripts/dr-drill.env.example). Nothing
+# sensitive is committed.
+#
+# Required:  DR_DRILL_BUNDLE (path to .tar.age)   DR_DRILL_AGE_KEY (age priv key)
+# bootstrap: DR_DRILL_TARGET (root@vm)  DR_DRILL_SSH_KEY  DR_DRILL_DOMAIN
+# Optional:  DR_DRILL_REPORT  DR_DRILL_WEBHOOK_URL/TOKEN/INSECURE
+#            DR_DRILL_TRIGGER  DR_DRILL_RUNNER  DR_DRILL_META_TEST
+#            DR_DRILL_TIMEOUT (restore/bootstrap wall-clock cap, default 1800s)
+#            DR_DRILL_BOOTSTRAP_ARGS (extra flags appended to bootstrap.sh)
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
 
+# ── config: gitignored profile, then env, then flags (flags win) ─────
+if [[ -f "$SCRIPT_DIR/dr-drill.env" ]]; then
+  set -a; # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/dr-drill.env"; set +a
+fi
+
+MODE="${DR_DRILL_MODE:-validate}"
 BUNDLE="${DR_DRILL_BUNDLE:-}"
 AGE_KEY="${DR_DRILL_AGE_KEY:-}"
+TARGET="${DR_DRILL_TARGET:-}"
+SSH_KEY="${DR_DRILL_SSH_KEY:-$HOME/hosting-platform.key}"
+DOMAIN="${DR_DRILL_DOMAIN:-}"
 REPORT="${DR_DRILL_REPORT:-}"
 WEBHOOK_URL="${DR_DRILL_WEBHOOK_URL:-}"
 WEBHOOK_TOKEN="${DR_DRILL_WEBHOOK_TOKEN:-}"
 TRIGGER="${DR_DRILL_TRIGGER:-manual}"
-RUNNER="${DR_DRILL_RUNNER:-$(hostname)/dr-drill@$(date -u +%s)}"
 META_TEST="${DR_DRILL_META_TEST:-0}"
+TIMEOUT="${DR_DRILL_TIMEOUT:-1800}"
+RUNNER="${DR_DRILL_RUNNER:-$(hostname)/dr-drill@$(date -u +%s)}"
 
-if [[ -z "$BUNDLE" || -z "$AGE_KEY" ]]; then
-  echo "ERROR: DR_DRILL_BUNDLE and DR_DRILL_AGE_KEY must be set" >&2
-  exit 2
+usage() { sed -n '2,36p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+while [[ $# -gt 0 ]]; do case "$1" in
+  --mode) MODE="$2"; shift 2 ;;
+  --bundle) BUNDLE="$2"; shift 2 ;;
+  --age-key) AGE_KEY="$2"; shift 2 ;;
+  --target) TARGET="$2"; shift 2 ;;
+  --ssh-key) SSH_KEY="$2"; shift 2 ;;
+  --domain) DOMAIN="$2"; shift 2 ;;
+  --report) REPORT="$2"; shift 2 ;;
+  --meta-test) META_TEST=1; shift ;;
+  -h|--help) usage 0 ;;
+  *) echo "unknown arg: $1" >&2; usage 2 ;;
+esac; done
+
+case "$MODE" in validate|dind|bootstrap) ;; *) echo "ERROR: --mode must be validate|dind|bootstrap" >&2; exit 2 ;; esac
+[[ -n "$BUNDLE" && -n "$AGE_KEY" ]] || { echo "ERROR: bundle + age key required (see scripts/dr-drill.env.example)" >&2; exit 2; }
+[[ -r "$BUNDLE" ]]  || { echo "ERROR: bundle not readable: $BUNDLE" >&2; exit 2; }
+[[ -r "$AGE_KEY" ]] || { echo "ERROR: age key not readable: $AGE_KEY" >&2; exit 2; }
+if [[ "$MODE" == bootstrap ]]; then
+  [[ -n "$TARGET" && -n "$DOMAIN" ]] || { echo "ERROR: bootstrap mode needs DR_DRILL_TARGET + DR_DRILL_DOMAIN" >&2; exit 2; }
 fi
-if [[ ! -r "$BUNDLE" ]]; then echo "ERROR: bundle not readable: $BUNDLE" >&2; exit 2; fi
-if [[ ! -r "$AGE_KEY" ]]; then echo "ERROR: age key not readable: $AGE_KEY" >&2; exit 2; fi
+for bin in age tar jq; do command -v "$bin" >/dev/null || { echo "ERROR: '$bin' not installed" >&2; exit 2; }; done
 
+TMPDIR=$(mktemp -d); trap 'rm -rf "$TMPDIR"' EXIT
 DRILL_ID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-STARTED_AT=$(date -u +%FT%TZ)
-START_TS=$(date +%s)
-
-# Structured report state.
-PHASES_JSON='[]'
-SMOKE_JSON='[]'
-STATUS="running"
-FAILURE_REASON=""
-SECRETS_RESTORED=0
+STARTED_AT=$(date -u +%FT%TZ); START_TS=$(date +%s)
+PHASES_JSON='[]'; SMOKE_JSON='[]'; STATUS="running"; FAILURE_REASON=""; SECRETS_RESTORED=0
 BUNDLE_SHA=$(sha256sum "$BUNDLE" | awk '{print $1}')
 BUNDLE_SIZE=$(stat -c%s "$BUNDLE" 2>/dev/null || stat -f%z "$BUNDLE")
 
-log() { echo "[$(date -u +%H:%M:%S)] $*" >&2; }
+log()  { echo "[$(date -u +%H:%M:%S)] $*" >&2; }
+fail() { STATUS="failed"; FAILURE_REASON="$1"; }
+append_phase() { PHASES_JSON=$(jq --arg n "$1" --arg s "$2" --argjson d "$3" --arg m "${4:-}" \
+  '. + [{name:$n,status:$s,durationSeconds:$d,message:$m}]' <<<"$PHASES_JSON"); }
+append_smoke() { SMOKE_JSON=$(jq --arg n "$1" --argjson p "$2" --arg m "${3:-}" \
+  '. + [{name:$n,passed:$p,message:$m}]' <<<"$SMOKE_JSON"); }
 
-# JSON-safe string emit. Escapes backslash + double-quote only.
-jsonstr() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
+log "DR drill ($MODE) id=$DRILL_ID"
 
-append_phase() {
-  local name="$1" status="$2" duration="$3" message="${4:-}"
-  PHASES_JSON=$(jq --arg n "$name" --arg s "$status" --argjson d "$duration" --arg m "$message" \
-    '. + [{name: $n, status: $s, durationSeconds: $d, message: $m}]' <<<"$PHASES_JSON")
-}
-
-append_smoke() {
-  local name="$1" passed="$2" message="${3:-}"
-  SMOKE_JSON=$(jq --arg n "$name" --argjson p "$passed" --arg m "$message" \
-    '. + [{name: $n, passed: $p, message: $m}]' <<<"$SMOKE_JSON")
-}
-
-# ── Phase 1: bundle decryption smoke test ───────────────────────────
-PHASE_T=$(date +%s)
-log "Phase 1: decrypt + tar-list bundle"
+# ── meta-test: corrupt the bundle so a working drill MUST fail ───────
 if [[ "$META_TEST" == "1" ]]; then
-  # Self-meta-test: corrupt the bundle first to ensure the drill
-  # actually catches breakage. A drill that passes on a broken bundle
-  # is worse than no drill.
-  log "META TEST MODE — corrupting bundle for self-verification"
-  head -c 100 "$BUNDLE" > "$TMPDIR/corrupt.tar.age"
-  BUNDLE="$TMPDIR/corrupt.tar.age"
+  log "META-TEST: corrupting bundle to self-verify the drill catches breakage"
+  head -c 100 "$BUNDLE" > "$TMPDIR/corrupt.tar.age"; BUNDLE="$TMPDIR/corrupt.tar.age"; TRIGGER=meta_test
 fi
+
+# ── shared pre-flight: static bundle integrity (the 'validate' core) ─
+PT=$(date +%s)
 if age -d -i "$AGE_KEY" "$BUNDLE" > "$TMPDIR/decrypted.tar" 2>"$TMPDIR/age.err"; then
   TAR_ENTRIES=$(tar tf "$TMPDIR/decrypted.tar" 2>/dev/null | wc -l | tr -d ' ')
-  log "  decrypted OK; $TAR_ENTRIES tar entries"
-  append_phase "decrypt" "success" $(( $(date +%s) - PHASE_T )) "$TAR_ENTRIES entries"
+  append_phase decrypt success $(( $(date +%s)-PT )) "$TAR_ENTRIES entries"
 else
-  ERR=$(head -c 200 "$TMPDIR/age.err")
-  log "  decrypt FAILED: $ERR"
-  STATUS="failed"
-  FAILURE_REASON="bundle decryption failed: $ERR"
-  append_phase "decrypt" "failed" $(( $(date +%s) - PHASE_T )) "$ERR"
+  fail "bundle decryption failed: $(head -c 200 "$TMPDIR/age.err")"
+  append_phase decrypt failed $(( $(date +%s)-PT )) "$FAILURE_REASON"
 fi
-
-# ── Phase 2: count BUNDLE_SECRET_LIST entries present ──────────────
-if [[ "$STATUS" != "failed" ]]; then
-  PHASE_T=$(date +%s)
-  log "Phase 2: enumerate bundle contents"
-  tar tf "$TMPDIR/decrypted.tar" 2>/dev/null > "$TMPDIR/bundle-list.txt"
-  SECRETS_RESTORED=$(grep -cE '\.yaml$' "$TMPDIR/bundle-list.txt" || true)
-  log "  bundle contains $SECRETS_RESTORED Secret YAML(s)"
-  if [[ "$SECRETS_RESTORED" -lt 5 ]]; then
-    STATUS="failed"
-    FAILURE_REASON="bundle too small ($SECRETS_RESTORED entries) — expected ≥ 5 Tier-1 Secrets"
-    append_phase "enumerate" "failed" $(( $(date +%s) - PHASE_T )) "$SECRETS_RESTORED entries"
-  else
-    append_phase "enumerate" "success" $(( $(date +%s) - PHASE_T )) "$SECRETS_RESTORED YAML entries"
-  fi
+CONTENTS="$TMPDIR/contents"; SECRET_FILES=()
+if [[ "$STATUS" != failed ]]; then
+  mkdir -p "$CONTENTS"
+  tar -xf "$TMPDIR/decrypted.tar" -C "$CONTENTS" 2>/dev/null || true
+  # Count Secret YAMLs ONLY — the bundle also ships non-Secret sidecars
+  # (dr-inputs.yaml, dr-rows.json, MANIFEST.*) that must not be counted.
+  mapfile -t SECRET_FILES < <(grep -rlE '^kind: Secret$' "$CONTENTS" --include='*.yaml' 2>/dev/null | sort)
+  SECRETS_RESTORED=${#SECRET_FILES[@]}
+  if [[ "$SECRETS_RESTORED" -lt 5 ]]; then fail "bundle too small ($SECRETS_RESTORED Secret YAMLs, expected >= 5)"; fi
+  append_phase enumerate "$([[ "$STATUS" == failed ]] && echo failed || echo success)" 0 "$SECRETS_RESTORED Secret YAML(s)"
 fi
-
-# ── Phase 3: MANIFEST.txt sanity ────────────────────────────────────
-if [[ "$STATUS" != "failed" ]]; then
-  PHASE_T=$(date +%s)
-  log "Phase 3: MANIFEST.txt parse"
-  mkdir -p "$TMPDIR/x"
-  if tar -xf "$TMPDIR/decrypted.tar" -C "$TMPDIR/x" MANIFEST.txt 2>/dev/null; then
-    if grep -q 'recipient:' "$TMPDIR/x/MANIFEST.txt"; then
-      append_smoke "manifest-has-recipient" "true" ""
-      append_phase "manifest-parse" "success" $(( $(date +%s) - PHASE_T )) ""
-    else
-      append_smoke "manifest-has-recipient" "false" "missing recipient: line"
-      STATUS="failed"
-      FAILURE_REASON="MANIFEST.txt missing recipient field"
-      append_phase "manifest-parse" "failed" $(( $(date +%s) - PHASE_T )) "missing recipient"
-    fi
-  else
-    append_smoke "manifest-extractable" "false" ""
-    STATUS="failed"
-    FAILURE_REASON="MANIFEST.txt not in bundle"
-    append_phase "manifest-parse" "failed" $(( $(date +%s) - PHASE_T )) "MANIFEST.txt missing"
-  fi
+if [[ "$STATUS" != failed ]]; then
+  if grep -q 'recipient:' "$CONTENTS"/MANIFEST.txt 2>/dev/null; then append_smoke manifest-has-recipient true ""
+  else fail "MANIFEST.txt missing or has no recipient field"; append_smoke manifest-has-recipient false ""; fi
 fi
-
-# ── Phase 4: per-secret kubectl-applyability ────────────────────────
-# We can't actually `kubectl apply` here because the drill runs on a
-# CI worker without cluster access. Instead, validate each Secret YAML
-# is parseable + has the expected metadata.{namespace,name} structure
-# the restore path requires.
-if [[ "$STATUS" != "failed" ]]; then
-  PHASE_T=$(date +%s)
-  log "Phase 4: validate each Secret YAML"
-  tar -xf "$TMPDIR/decrypted.tar" -C "$TMPDIR/x"
+if [[ "$STATUS" != failed ]]; then
   BAD=0
-  for f in "$TMPDIR/x"/*.yaml; do
-    [[ -f "$f" ]] || continue
-    if ! grep -q '^apiVersion: v1$' "$f"; then BAD=$((BAD+1)); continue; fi
-    if ! grep -q '^kind: Secret$' "$f"; then BAD=$((BAD+1)); continue; fi
-    if ! grep -q '^  namespace:' "$f"; then BAD=$((BAD+1)); continue; fi
-    if ! grep -q '^  name:' "$f"; then BAD=$((BAD+1)); continue; fi
+  for f in "${SECRET_FILES[@]}"; do
+    grep -q '^apiVersion: v1$' "$f" && grep -q '^  namespace:' "$f" && grep -q '^  name:' "$f" || BAD=$((BAD+1))
   done
-  if [[ "$BAD" -gt 0 ]]; then
-    STATUS="failed"
-    FAILURE_REASON="$BAD Secret YAML(s) malformed"
-    append_smoke "all-secret-yamls-valid" "false" "$BAD bad files"
-    append_phase "yaml-validate" "failed" $(( $(date +%s) - PHASE_T )) "$BAD bad"
+  if [[ "$BAD" -gt 0 ]]; then fail "$BAD Secret YAML(s) malformed"; append_smoke all-secret-yamls-valid false "$BAD bad"
+  else append_smoke all-secret-yamls-valid true ""; fi
+fi
+
+# ── mode dind: exercise the REAL restore library + validate every
+#    restored Secret against a live Kubernetes API.
+#
+#    We deliberately do NOT boot a full platform off the bundle here. A
+#    drill bundle comes from staging/prod, so its DB creds + encryption
+#    key won't match a local dev Postgres — bringing the platform up
+#    would false-fail on a credential mismatch, not on any bundle defect.
+#    dind proves what 'validate' can't, without that false-fail risk:
+#      (a) the production restore TOOLING (apply-secrets-bundle.sh:
+#          MANIFEST.json parse, profile gating, skipAtRestore) runs clean
+#          on THIS bundle, and
+#      (b) every Secret it emits is ACCEPTED by a real Kubernetes API
+#          (server-side dry-run against the local DinD cluster).
+#    The full "platform serves traffic off the bundle" proof is --mode
+#    bootstrap. ──────────────────────────────────────────────────────
+if [[ "$MODE" == dind && "$STATUS" != failed ]]; then
+  PT=$(date +%s); RESTORED_DIR="$TMPDIR/restored"; mkdir -p "$RESTORED_DIR"; RESTORED_SECRETS=()
+  log "dind: running the production restore library (extract mode) on the bundle"
+  if ( set -euo pipefail
+       # shellcheck disable=SC1091
+       source "$SCRIPT_DIR/lib/apply-secrets-bundle.sh"
+       RESTORE_PROFILE=full RESTORE_EXTRACT_TO="$RESTORED_DIR" \
+         apply_secrets_bundle "$BUNDLE" "$AGE_KEY" ) >"$TMPDIR/dind.log" 2>&1; then
+    mapfile -t RESTORED_SECRETS < <(grep -rlE '^kind: Secret$' "$RESTORED_DIR" --include='*.yaml' 2>/dev/null | sort)
+    append_phase dind-restore-lib success $(( $(date +%s)-PT )) "${#RESTORED_SECRETS[@]} Secret(s) emitted by apply-secrets-bundle.sh"
+    if [[ "${#RESTORED_SECRETS[@]}" -lt 1 ]]; then fail "restore library emitted 0 Secrets"; append_smoke restore-lib-emitted-secrets false ""
+    else append_smoke restore-lib-emitted-secrets true ""; fi
   else
-    append_smoke "all-secret-yamls-valid" "true" ""
-    append_phase "yaml-validate" "success" $(( $(date +%s) - PHASE_T )) "$SECRETS_RESTORED OK"
+    fail "restore library failed on bundle (see log)"; append_phase dind-restore-lib failed $(( $(date +%s)-PT )) "$(tail -c 300 "$TMPDIR/dind.log")"
+  fi
+  if [[ "$STATUS" != failed ]]; then
+    if command -v kubectl >/dev/null 2>&1 && timeout 15 kubectl cluster-info >/dev/null 2>&1; then
+      DRY_MODE=server; CLUSTER_NOTE="server-side dry-run (live cluster)"
+    elif command -v kubectl >/dev/null 2>&1; then
+      DRY_MODE=client; CLUSTER_NOTE="client-side only (no cluster reachable — run ./scripts/local.sh up first)"
+    else
+      DRY_MODE=none; CLUSTER_NOTE="skipped (kubectl not installed)"
+    fi
+    if [[ "$DRY_MODE" == none ]]; then
+      log "dind: kubectl absent — skipping cluster validation"; append_smoke cluster-accepts-secrets true "$CLUSTER_NOTE"
+    else
+      PT=$(date +%s); BAD=0
+      for f in "${RESTORED_SECRETS[@]}"; do
+        kubectl apply --dry-run="$DRY_MODE" -f "$f" >>"$TMPDIR/dryrun.log" 2>&1 || BAD=$((BAD+1))
+      done
+      if [[ "$BAD" -gt 0 ]]; then fail "$BAD restored Secret(s) rejected ($DRY_MODE dry-run)"; append_smoke cluster-accepts-secrets false "$BAD rejected"
+      else append_smoke cluster-accepts-secrets true "$CLUSTER_NOTE"; fi
+      append_phase dind-cluster-dryrun "$([[ "$STATUS" == failed ]] && echo failed || echo success)" $(( $(date +%s)-PT )) "$CLUSTER_NOTE"
+    fi
   fi
 fi
 
-# ── Final status + report ───────────────────────────────────────────
-if [[ "$STATUS" == "running" ]]; then STATUS="success"; fi
-FINISHED_AT=$(date -u +%FT%TZ)
-DURATION=$(( $(date +%s) - START_TS ))
-
-REPORT_JSON=$(jq -n \
-  --arg id "$DRILL_ID" \
-  --arg startedAt "$STARTED_AT" \
-  --arg finishedAt "$FINISHED_AT" \
-  --arg status "$STATUS" \
-  --arg trigger "$TRIGGER" \
-  --arg sha "$BUNDLE_SHA" \
-  --argjson restored "$SECRETS_RESTORED" \
-  --argjson sizeB "$BUNDLE_SIZE" \
-  --argjson dur "$DURATION" \
-  --arg reason "$FAILURE_REASON" \
-  --argjson phases "$PHASES_JSON" \
-  --argjson smoke "$SMOKE_JSON" \
-  --arg runner "$RUNNER" \
-  '{
-    id: $id,
-    startedAt: $startedAt,
-    finishedAt: $finishedAt,
-    status: $status,
-    trigger: $trigger,
-    sourceBundleSha256: $sha,
-    secretsRestoredCount: $restored,
-    bundleSizeBytes: $sizeB,
-    durationSeconds: $dur,
-    failureReason: (if $reason == "" then null else $reason end),
-    report: { phases: $phases, smokeAssertions: $smoke },
-    runner: $runner
-  }')
-
-if [[ -n "$REPORT" ]]; then
-  echo "$REPORT_JSON" > "$REPORT"
-  log "report written to $REPORT"
-else
-  echo "$REPORT_JSON"
+# ── mode bootstrap: REAL recovery via bootstrap.sh --remote on a VM ──
+if [[ "$MODE" == bootstrap && "$STATUS" != failed ]]; then
+  PT=$(date +%s); log "bootstrap: real recovery onto $TARGET via bootstrap.sh --secrets-bundle (timeout ${TIMEOUT}s)"
+  # shellcheck disable=SC2086
+  if timeout "$TIMEOUT" "$SCRIPT_DIR/bootstrap.sh" \
+        --remote "$TARGET" --ssh-key "$SSH_KEY" \
+        --secrets-bundle "$BUNDLE" --age-key "$AGE_KEY" \
+        --domain "$DOMAIN" --env staging ${DR_DRILL_BOOTSTRAP_ARGS:-} \
+        >"$TMPDIR/bootstrap.log" 2>&1; then
+    append_phase bootstrap-restore success $(( $(date +%s)-PT )) "bootstrap completed on $TARGET"
+  else
+    fail "bootstrap --secrets-bundle failed on $TARGET (see log)"
+    append_phase bootstrap-restore failed $(( $(date +%s)-PT )) "$(tail -c 300 "$TMPDIR/bootstrap.log")"
+  fi
+  if [[ "$STATUS" != failed ]]; then
+    # the real proof: the recovered platform-api is actually serving
+    if timeout 300 ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 "$TARGET" \
+         'kubectl -n platform wait --for=condition=Available deploy/platform-api --timeout=240s' >/dev/null 2>&1; then
+      append_smoke platform-api-ready true "recovered platform serving on $TARGET"
+    else fail "recovered platform-api not Available on $TARGET"; append_smoke platform-api-ready false ""; fi
+  fi
 fi
 
-# ── Optional webhook ────────────────────────────────────────────────
+# ── report ──────────────────────────────────────────────────────────
+[[ "$STATUS" == running ]] && STATUS=success
+FINISHED_AT=$(date -u +%FT%TZ); DURATION=$(( $(date +%s)-START_TS ))
+REPORT_JSON=$(jq -n --arg id "$DRILL_ID" --arg mode "$MODE" --arg s "$STATUS" \
+  --arg st "$STARTED_AT" --arg fin "$FINISHED_AT" --arg trig "$TRIGGER" \
+  --arg sha "$BUNDLE_SHA" --argjson restored "$SECRETS_RESTORED" --argjson sz "$BUNDLE_SIZE" \
+  --argjson dur "$DURATION" --arg reason "$FAILURE_REASON" \
+  --argjson phases "$PHASES_JSON" --argjson smoke "$SMOKE_JSON" --arg runner "$RUNNER" \
+  '{id:$id, mode:$mode, status:$s, startedAt:$st, finishedAt:$fin, trigger:$trig,
+    sourceBundleSha256:$sha, secretsRestoredCount:$restored, bundleSizeBytes:$sz,
+    durationSeconds:$dur, failureReason:(if $reason=="" then null else $reason end),
+    report:{phases:$phases, smokeAssertions:$smoke}, runner:$runner}')
+if [[ -n "$REPORT" ]]; then echo "$REPORT_JSON" > "$REPORT"; log "report -> $REPORT"; else echo "$REPORT_JSON"; fi
+
 if [[ -n "$WEBHOOK_URL" ]]; then
-  log "POSTing report to $WEBHOOK_URL"
-  HDR=()
-  if [[ -n "$WEBHOOK_TOKEN" ]]; then HDR=(-H "Authorization: Bearer $WEBHOOK_TOKEN"); fi
-  # Verify TLS — the webhook carries a bearer token. Skipping
-  # verification (-k) would let a network attacker on the runner's
-  # path intercept the WEBHOOK_TOKEN. Staging always has a valid LE
-  # cert; if a future endpoint uses self-signed certs, the operator
-  # must explicitly opt out via DR_DRILL_WEBHOOK_INSECURE=1.
-  CURL_FLAGS=(-s)
-  [[ "${DR_DRILL_WEBHOOK_INSECURE:-0}" == "1" ]] && CURL_FLAGS+=(-k)
-  curl "${CURL_FLAGS[@]}" -X POST "$WEBHOOK_URL" \
-    -H "Content-Type: application/json" \
-    "${HDR[@]}" \
-    --data "$REPORT_JSON" > "$TMPDIR/webhook-resp.json" 2>&1 || log "webhook POST returned non-zero (continuing)"
+  log "POST report -> $WEBHOOK_URL"
+  CF=(-s); [[ "${DR_DRILL_WEBHOOK_INSECURE:-0}" == "1" ]] && CF+=(-k)
+  HDR=(); [[ -n "$WEBHOOK_TOKEN" ]] && HDR=(-H "Authorization: Bearer $WEBHOOK_TOKEN")
+  curl "${CF[@]}" -X POST "$WEBHOOK_URL" -H "Content-Type: application/json" "${HDR[@]}" \
+    --data "$REPORT_JSON" >/dev/null 2>&1 || log "webhook POST non-zero (continuing)"
 fi
 
-log "DR DRILL: $STATUS (${DURATION}s)"
-if [[ "$STATUS" != "success" ]]; then
-  if [[ "$META_TEST" == "1" ]]; then
-    log "META-TEST PASSED — drill correctly detected the corrupted bundle"
-    exit 0
-  fi
-  exit 1
+log "DR DRILL [$MODE]: $STATUS (${DURATION}s)"
+# meta-test inverts the exit code: a corrupted bundle MUST fail the drill
+if [[ "$META_TEST" == "1" ]]; then
+  [[ "$STATUS" != success ]] && { log "META-TEST PASSED — drill caught the corrupted bundle"; exit 0; }
+  log "META-TEST FAILED — drill reported success on a corrupted bundle. The drill is broken."; exit 3
 fi
-
-# Meta-test in success path: the drill ran clean BUT should have
-# failed — that means the drill itself is broken.
-if [[ "$META_TEST" == "1" && "$STATUS" == "success" ]]; then
-  log "META-TEST FAILED — drill reported success on a corrupted bundle. The drill is broken."
-  exit 3
-fi
+[[ "$STATUS" == success ]] || exit 1
