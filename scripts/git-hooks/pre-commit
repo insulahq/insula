@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# pre-commit — block operator-infra leaks and secrets before they're committed.
+#
+# Opt-in: install with `./scripts/install-git-hooks.sh` (symlinks this into
+# .git/hooks/pre-commit without disturbing the existing pre-push hook). CI
+# enforces the same checks regardless, so this is a fast local early-warning.
+set -uo pipefail
+
+repo="$(git rev-parse --show-toplevel)"
+
+# 1. operator domains / IPs anywhere in the tree (sub-second sweep)
+if ! "$repo/scripts/ci-no-hardcoded-test-infra.sh"; then
+  echo "✗ pre-commit: operator infrastructure leak — see above. Use example.test / RFC5737." >&2
+  exit 1
+fi
+
+# 2. secrets in the staged diff (only if gitleaks is installed locally)
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --redact -c "$repo/.gitleaks.toml"; then
+    echo "✗ pre-commit: gitleaks found a secret in the staged changes." >&2
+    exit 1
+  fi
+fi
+
+exit 0

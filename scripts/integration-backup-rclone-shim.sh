@@ -235,7 +235,7 @@ if [[ -n "$TARGET_ID" ]]; then
   fi
 
   # C5: DaemonSet annotation bump.
-  ch=$(kubectl -n platform get ds backup-rclone-shim -o jsonpath='{.spec.template.metadata.annotations.platform\.example-host\.net/config-hash}' 2>/dev/null || echo "")
+  ch=$(kubectl -n platform get ds backup-rclone-shim -o jsonpath='{.spec.template.metadata.annotations.insula\.host/config-hash}' 2>/dev/null || echo "")
   if [[ -n "$ch" ]]; then
     pass "C5: DaemonSet config-hash annotation set: ${ch:0:12}…"
   else

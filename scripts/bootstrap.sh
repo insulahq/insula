@@ -4023,8 +4023,7 @@ install_longhorn() {
 # No Cluster CR is applied here; the existing platform Postgres
 # StatefulSet keeps running unchanged. Activation is a manual
 # operator step with pre-reqs (existing-PVC import, failover plan,
-# monitoring review) — see
-# docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md.
+# monitoring review).
 #
 # Installed in its own namespace (cnpg-system) so a later
 # `helm uninstall` reverts cleanly without touching other platform
@@ -4092,7 +4091,6 @@ install_cnpg() {
     --timeout 600s
 
   log "CloudNative-PG operator at chart ${CNPG_CHART_VERSION}."
-  log "  Activation runbook: docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md"
 }
 
 install_monitoring() {
@@ -4482,7 +4480,7 @@ generate_platform_secrets() {
   fi
 
   # backup-target-key — the SINGLE root of all backup encryption.
-  # See docs/history/04-deployment/BACKUP_ARCHITECTURE_RFC.md §13b.
+  # See ADR-043 §13b.
   #
   # 32 cryptographically-random bytes, base64-encoded for storage. Used by:
   #   - rclone `crypt` backends in the backup-rclone-shim DaemonSet
@@ -7385,8 +7383,8 @@ main() {
     install_longhorn
     # M10: CNPG operator (passive — no Cluster CR applied). Installs
     # alongside Longhorn so the Postgres replication activation flow
-    # in docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md is a single-CR
-    # step rather than a multi-phase upgrade when the time comes.
+    # is a single-CR step rather than a multi-phase upgrade when the
+    # time comes.
     install_cnpg
     install_monitoring
     # CRITICAL ORDERING (Cut 3 staging-cutover lesson, 2026-05-04):

@@ -38,7 +38,7 @@ if [[ -z "${HOSTS:-}" ]]; then
     # followed by an IPv4 address (\d+\.\d+\.\d+\.\d+). That filter
     # excludes the DNS round-robin entries ("staging.example.test
     # 3 A records: ...") and section headers.
-    HOSTS=$(awk '/^[a-zA-Z0-9_.-]+\.example-host\.net[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/{print "root@"$1}' \
+    HOSTS=$(awk '/^[a-zA-Z0-9_.-]+\.example\.test[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/{print "root@"$1}' \
       "$HOME/k8s-staging/servers.txt" | tr '\n' ' ')
   else
     echo "ERROR: set HOSTS='root@h1 root@h2 ...' or provide ~/k8s-staging/servers.txt" >&2

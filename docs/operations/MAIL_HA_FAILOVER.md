@@ -576,7 +576,6 @@ disk — clean up manually: `ssh <old-node> "rm -rf /var/lib/mail-stack-standby/
 
 - `[[scripts/mail-stack-consolidate.sh]]` — one-time legacy-to-consolidated
   PVC migration.
-- `[[docs/history/02-operations/MAIL_STACK_CONSOLIDATION.md]]` — PVC consolidation runbook.
 - `[[backend/src/modules/mail-admin/migration.ts]]` — state machine.
 - `[[backend/src/modules/mail-admin/dr-watcher.ts]]` — auto-failover trigger.
 - `[[backend/src/modules/mail-admin/placement.ts]]` — placement reconciler

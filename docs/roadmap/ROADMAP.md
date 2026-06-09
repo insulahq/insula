@@ -2,8 +2,7 @@
 
 > **This file is the single tracking register for planned-but-unbuilt work**
 > (decision 2026-06-07: no GitHub issues are pre-created; open one when an item
-> actually starts and link it here). Detailed legacy specifications live in
-> [`docs/history/`](../history/README.md) — frozen but readable; pointers below.
+> actually starts and link it here).
 >
 > Descoped on 2026-06-07 (will NOT be built — do not re-add without operator
 > decision): PHP Composer support · AI no-code website editor · bespoke
@@ -26,7 +25,7 @@
 | [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Phase 1 shipped |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
-| [R14](#r14--user-manual-website) | User-manual website | P2 | Not started — **unlocks deleting `docs/history/`** |
+| [R14](#r14--user-manual-website) | User-manual website | P2 | Not started |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 
 ---
@@ -38,9 +37,10 @@ Extract domains, sites, databases, mailboxes, cron jobs, and DNS from a Plesk
 server and import them as platform tenants. The existing `tenant-migration`
 module is worker re-pinning — unrelated.
 
-- Spec material: [history/07-reference/MIGRATION_PLAN.md](../history/07-reference/MIGRATION_PLAN.md)
-  (per-client checklist, Plesk/cPanel/Virtualmin extraction details, rollback plan),
-  cron extraction details in the migration sections of [CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
+- Spec material: the original migration plan (per-client checklist,
+  Plesk/cPanel/Virtualmin extraction details, rollback plan) — see the git
+  history; cron extraction details in the migration sections of
+  [CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
 - Building blocks already shipped: `mail-imapsync` (mailbox import), tenant
   bundles restore cart (import path), DNS zone import.
 - Acceptance: one real Plesk subscription migrated end-to-end onto a test
@@ -71,9 +71,9 @@ Feedback-loop ingestion (ARF parsing) with complaint-rate thresholds and
 automatic throttle/suspend of offending tenants. Required before operating
 mail-sending tenants at scale.
 
-- Spec: [history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md](../history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md)
-  (FBL sections; note: the spec's `email_messages` per-message tracking table
-  is **descoped** — design complaint handling without it).
+- Spec: the original email sending-limits & monitoring spec (FBL sections; see
+  the git history). Note: its `email_messages` per-message tracking table is
+  **descoped** — design complaint handling without it.
 
 ## R5 — DMARC aggregate-report ingestion
 
@@ -81,7 +81,7 @@ Parse aggregate reports (Gmail/Outlook/Yahoo), compute per-domain pass rates,
 surface in the email UI, and recommend policy tightening (p=none →
 quarantine → reject) once pass-rate thresholds hold.
 
-- Spec: [history/06-features/EMAIL_DELIVERABILITY.md](../history/06-features/EMAIL_DELIVERABILITY.md) (DMARC sections).
+- Spec: the original email-deliverability spec (DMARC sections; see the git history).
 
 ## R6 — Rolling sending-quota enforcement
 
@@ -89,15 +89,15 @@ Per-tenant hourly/daily send quotas with rolling windows. Today only static
 Stalwart throttles + the `emailSendRateLimit` field exist; there is no
 rolling accounting or enforcement pipeline.
 
-- Spec: [history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md](../history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md)
-  (quota sections; ignore the Postfix policy-daemon mechanics — we run Stalwart).
+- Spec: the original email sending-limits & monitoring spec (quota sections;
+  see the git history). Ignore the Postfix policy-daemon mechanics — we run Stalwart.
 
 ## R7 — IP warm-up, pools, and per-domain relay
 
 IP warm-up schedule tracking, tiered IP pools, and per-domain external relay
 (SendGrid/Mailgun transport maps) for tenants with deliverability needs.
 
-- Spec: [history/06-features/EMAIL_DELIVERABILITY.md](../history/06-features/EMAIL_DELIVERABILITY.md).
+- Spec: the original email-deliverability spec (see the git history).
 
 ## R8 — Notification channels: Slack / Webhook / SMS
 
@@ -106,8 +106,8 @@ preferences, rate limiting, retention) is shipped with `email`,
 `email-stalwart-master`, and `in-app` channels. Add Slack, generic webhook
 (HMAC-signed), and SMS/Telegram as demand surfaces.
 
-- Spec: [history/04-deployment/NOTIFICATION_ROADMAP.md](../history/04-deployment/NOTIFICATION_ROADMAP.md)
-  (phases 4–6; phases 1–3 are delivered).
+- Spec: the original notification roadmap (phases 4–6; phases 1–3 are
+  delivered) — see the git history.
 
 ## R9 — Staff-role email access
 
@@ -115,8 +115,8 @@ Role-scoped admin access to tenant mailboxes with approval workflows and
 audit (`staff_roles` / approval-request model). Distinct from the shipped
 master-user impersonation, which is all-or-nothing super-admin.
 
-- Spec: [history/06-features/WEBMAIL_ACCESS_SPECIFICATION.md](../history/06-features/WEBMAIL_ACCESS_SPECIFICATION.md)
-  ("Admin Email Access & Staff Role Management" sections).
+- Spec: the original webmail-access spec ("Admin Email Access & Staff Role
+  Management" sections) — see the git history.
 
 ## R10 — Bulwark deferred work
 
@@ -131,7 +131,7 @@ auth/audit metrics tab, NetworkPolicy templates + bulk apply, plus the
 deferred denied-connection → trusted-range bridge (P2.3.1). Trivy CVE
 scanning stays deferred until operator demand surfaces.
 
-- Spec: [history/04-deployment/SECURITY_HARDENING_ROADMAP.md](../history/04-deployment/SECURITY_HARDENING_ROADMAP.md) (§Phase 2).
+- Spec: the original security-hardening roadmap (§Phase 2) — see the git history.
 
 ## R12 — Service-to-service mTLS
 
@@ -147,9 +147,8 @@ Requirements doc: [roadmap/IPV4_IPV6_REQUIREMENTS.md](IPV4_IPV6_REQUIREMENTS.md)
 ## R14 — User-manual website
 
 Build the operator/tenant/admin manual website from `docs/architecture/`,
-`docs/operations/`, and `docs/features/`, mining the frozen requirement specs
-in `docs/history/` where useful. **Completing this unlocks deletion of
-`docs/history/`** (see its README).
+`docs/operations/`, and `docs/features/`, mining the requirement specs in the
+git history where useful.
 
 **Plan locked 2026-06-07** — see [USER_MANUAL_WEBSITE.md](USER_MANUAL_WEBSITE.md):
 monorepo `documentation/`, Material for MkDocs now (Zensical-compatible authoring,

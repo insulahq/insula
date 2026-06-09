@@ -250,7 +250,7 @@ describe('auth routes', () => {
         expect(header).toMatch(/SameSite=None/i);
         expect(header).not.toMatch(/SameSite=Lax/i);
         expect(header).toMatch(/Secure/i);
-        expect(header).toMatch(/Domain=\.staging\.example-host\.net/);
+        expect(header).toMatch(/Domain=\.staging\.example\.test/);
       } finally {
         if (prev === undefined) delete process.env.SESSION_COOKIE_DOMAIN;
         else process.env.SESSION_COOKIE_DOMAIN = prev;

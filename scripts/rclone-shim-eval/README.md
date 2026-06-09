@@ -41,12 +41,14 @@ The driver script:
 2. Probes `testing.example.test` SSH connectivity.
 3. Syncs `remote/runner.sh` + `remote/aggregate.sh` + the SSH key for SFTP auth to the remote host.
 4. Runs the evaluation, with all secrets passed via env vars and the SMB password fed via stdin (not argv).
-5. Pulls back `docs/history/04-deployment/RCLONE_SHIM_EVALUATION.md` and `RCLONE_SHIM_EVALUATION.results.jsonl`.
+5. Pulls back the report + raw measurements into `docs/diagnostics/` (`RCLONE_SHIM_EVALUATION.md` + `.results.jsonl`).
 
 ## Outputs
 
-- `docs/history/04-deployment/RCLONE_SHIM_EVALUATION.md` -- the committed report.
-- `docs/history/04-deployment/RCLONE_SHIM_EVALUATION.results.jsonl` -- raw measurements (committed alongside for reproducibility).
+Written under `docs/diagnostics/`:
+
+- `RCLONE_SHIM_EVALUATION.md` -- the committed report.
+- `RCLONE_SHIM_EVALUATION.results.jsonl` -- raw measurements (committed alongside for reproducibility).
 - `/root/rclone-shim-eval/logs/` on the remote host -- per-process rclone logs (not committed).
 
 ## Safety

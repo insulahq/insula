@@ -62,7 +62,7 @@ SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/nul
 # last resort is the historical staging1 IP. Strip user@ prefix if present.
 if [[ -z "${STAGING_SSH_HOST:-}" ]]; then
   if [[ -r "$HOME/k8s-staging/servers.txt" ]]; then
-    STAGING_SSH_HOST=$(awk '/^staging[0-9]+\.example-host\.net/ {print $2; exit}' \
+    STAGING_SSH_HOST=$(awk '/^staging[0-9]+\.example\.test/ {print $2; exit}' \
       "$HOME/k8s-staging/servers.txt" 2>/dev/null || true)
   fi
   STAGING_SSH_HOST="${STAGING_SSH_HOST:-192.0.2.58}"

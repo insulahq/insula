@@ -195,7 +195,6 @@ Two-layer guard at every restore-executor entry:
 ## References
 
 - `docs/operations/TENANT_BACKUP.md` — operator runbook (replaced section by section as phases ship)
-- `docs/history/02-operations/TENANT_BACKUP_V2_ROADMAP.md` — phase progress tracker
 - ADR-032 — legacy bundle format (now historical for the daily path)
 - ADR-034 — restore cart, amended
 - ADR-035 — coverage contract, unchanged

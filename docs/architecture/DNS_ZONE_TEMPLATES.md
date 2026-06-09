@@ -858,11 +858,8 @@ Both endpoints must be served by the Management API or a dedicated autodiscovery
 
 ## Related Documents
 
-- [`./POWERDNS_INTEGRATION.md`](../history/archived/POWERDNS_INTEGRATION.md) — Zone creation workflow (see "Template Application" step)
-- [`./DISPERSED_DNS_ARCHITECTURE.md`](../history/archived/DISPERSED_DNS_ARCHITECTURE.md) — Multi-region DNS architecture
 - [`./DNS_MODE_SELECTION.md`](./DNS_MODE_SELECTION.md) — Primary / CNAME / Secondary mode selection
 - [`../06-features/EMAIL_SERVICES.md`](../features/EMAIL_SERVICES.md) — Email stack (Postfix, Dovecot, OpenDKIM)
-- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../history/02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Admin panel DNS template management UI
 
 ---
 

@@ -3,7 +3,7 @@
  *
  * Locked invariants from Phase 0 spike:
  *   - HKDF-SHA256 derivation is deterministic and matches the byte-level
- *     test vector recorded in docs/history/02-operations/TENANT_BACKUP_V2_ROADMAP.md.
+ *     test vector recorded during the Phase 0 spike.
  *   - The repo URI builder produces the canonical `restic-{component}/<tenantId>/`
  *     prefix for each backend (s3 / sftp / hostpath).
  *   - The semaphore caps concurrency at the configured limit.

@@ -3,7 +3,7 @@
 > **Canonical agent instructions.** This is the single source of truth for any AI coding
 > agent working in this repo (Claude Code, Codex, Cursor, Copilot, …). `CLAUDE.md` is a
 > symlink to this file. It holds **durable rules + architecture only** — point-in-time work
-> logs and changelog-style history live elsewhere (`CHANGELOG.md`, `docs/history/`, git log).
+> logs and changelog-style history live elsewhere (`CHANGELOG.md`, git log).
 
 ## Project Overview
 
@@ -125,7 +125,7 @@ k8s/
   components/             # reusable Kustomize components (auth gates, …)
 scripts/                  # Utility + bootstrap + integration scripts
 docs/                     # architecture/ + operations/ + features/ + development/ (current),
-                          # roadmap/ (planned), history/ (frozen)
+                          # roadmap/ (planned)
 ```
 
 **File organization:** feature/module-based (`backend/src/modules/<feature>/`). Prefer many small,
@@ -322,4 +322,4 @@ EOL/unsupported. Matrix harness: `scripts/test-bootstrap-os-matrix.sh`.
 - Operations runbooks: `docs/operations/` (tenant backup, secrets, cluster network, node terminal, security hardening, …)
 
 > **Where history lives:** this file is durable rules + architecture. Dated, PR-by-PR work history is
-> not kept here — see `CHANGELOG.md`, `docs/history/`, and the git log.
+> not kept here — see `CHANGELOG.md` and the git log.

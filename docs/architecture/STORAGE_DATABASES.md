@@ -62,7 +62,6 @@ PostgreSQL 16 will be available as an alternative database type in Phase 2, usin
 
 > **Authoritative backup docs:**
 > - [../06-features/BACKUP_COMPONENT_MODEL.md](BACKUP_COMPONENT_MODEL.md) — bundle format
-> - [BACKUP_STRATEGY.md](../history/02-operations/BACKUP_STRATEGY.md) — tiered initiators, destinations
 > - [../07-reference/ADR-028-backup-architecture.md](adr/ADR-028-backup-architecture.md) — architectural decisions
 >
 > The table below is a quick reference. Where it conflicts with the docs above, those take precedence.

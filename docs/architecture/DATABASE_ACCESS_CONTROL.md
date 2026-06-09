@@ -623,7 +623,6 @@ SELECT * FROM information_schema.role_table_grants
 ## Related Documents
 
 - [`../03-security/SECURITY_ARCHITECTURE.md`](SECURITY_ARCHITECTURE.md) — Overall security framework
-- [`../02-operations/BACKUP_STRATEGY.md`](../history/02-operations/BACKUP_STRATEGY.md) — Backup procedures
 - [`./INCIDENT_RESPONSE_RUNBOOK.md`](../operations/INCIDENT_RESPONSE_RUNBOOK.md) — Response to credential compromise
 
 ---

@@ -21,7 +21,7 @@ const MAIL_NAMESPACE = 'mail';
 // BOTH Stalwart RocksDB AND Bulwark config under subPaths
 // (stalwart/, bulwark/). Default size 30Gi (legacy was 20Gi
 // Stalwart-only). Legacy stalwart-rocksdb-data PVC kept in cluster
-// for 48-72h safety period (see docs/history/02-operations/MAIL_STACK_CONSOLIDATION.md).
+// for 48-72h safety period.
 // (Pre-2026-05-12 the mail namespace ran a CNPG PostgreSQL cluster
 // backing Stalwart; migrated to RocksDB then consolidated 2026-05-25.)
 const MAIL_PVC_NAME = 'mail-stack-data';

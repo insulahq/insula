@@ -2,8 +2,8 @@
 
 **Status:** Accepted · 2026-04-20
 **Supersedes:** earlier ad-hoc references to per-database `mysqldump`/`pg_dump`
-CronJobs in `docs/history/02-operations/BACKUP_INFRASTRUCTURE_IMPLEMENTATION.md`, and
-the implicit assumption that a PVC tarball alone suffices as a client backup.
+CronJobs, and the implicit assumption that a PVC tarball alone suffices as a
+client backup.
 **Follow-ups:** See "Deferred / out of scope" section.
 
 ---
@@ -170,8 +170,7 @@ Per-client bundles and cluster DR have different failure modes,
 different restore sequences, and different operators.
 
 **Status for this ADR:** specified as deferred work, no implementation
-commitment. See `docs/history/02-operations/BACKUP_STRATEGY.md` Tier 4 for the
-future shape.
+commitment.
 
 ---
 

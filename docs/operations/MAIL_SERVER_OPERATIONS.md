@@ -2,7 +2,6 @@
 
 **Phase:** 1 (MVP) — Stalwart Mail Server on k3s
 **Audience:** DevOps / platform operators
-**Companion doc:** [MAIL_SERVER_IMPLEMENTATION_STATUS.md](../history/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md)
 
 > This runbook covers day-0 bring-up, day-1 operations, and known migration procedures for the Stalwart mail stack. It is intentionally terse — each section is a cookbook you copy from, not a tutorial.
 

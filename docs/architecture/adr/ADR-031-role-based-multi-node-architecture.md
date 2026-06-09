@@ -195,8 +195,7 @@ resource) needs at least two server nodes AND manual failover review
 for every primary change. At the 1-server stage it's overhead without
 benefit; at the 3-server stage it's worth turning on. Pre-installing
 the operator lets us flip the switch without a migration — just apply
-a Cluster CR pointing at the existing Postgres data directory. See
-`docs/history/02-operations/CNPG_ACTIVATION_RUNBOOK.md` (to be written in M10).
+a Cluster CR pointing at the existing Postgres data directory.
 
 ### 8. Load balancer is opt-in, provider-abstracted, gated on 3+ servers
 

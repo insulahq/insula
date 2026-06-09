@@ -47,7 +47,7 @@ hdr "DR FAILOVER LIVE TEST"
 ACTIVE_NODE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\" 2>/dev/null | head -1")
 echo "active_mail_node=$ACTIVE_NODE"
 
-if [ "$ACTIVE_NODE" = "$(echo $BASTION_HOST | sed 's/root@//;s/\.example-host\.net//')" ]; then
+if [ "$ACTIVE_NODE" = "$(echo $BASTION_HOST | sed 's/root@//;s/\.example\.test//')" ]; then
   amber "active is the bastion ($ACTIVE_NODE) — switching bastion to another server-role node"
   for try in staging1 staging2 staging3; do
     if [ "$try" != "$ACTIVE_NODE" ]; then

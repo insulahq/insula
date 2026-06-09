@@ -1426,7 +1426,6 @@ Data directory: /var/lib/rancher/k3s/
 ## Related Documents
 
 - [`../05-advanced/DISASTER_RECOVERY.md`](DISASTER_RECOVERY.md) — High availability and disaster recovery
-- [`./BACKUP_STRATEGY.md`](../history/02-operations/BACKUP_STRATEGY.md) — Customer data backup procedures
 - [`../02-operations/INFRASTRUCTURE_SIZING.md`](INFRASTRUCTURE_SIZING.md) — Cluster sizing and node allocation
 - [`../01-core/PLATFORM_ARCHITECTURE.md`](../architecture/PLATFORM_ARCHITECTURE.md) — k3s architecture decisions
 

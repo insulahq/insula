@@ -730,7 +730,7 @@ spec:
             # A2.5 (2026-05-25): consolidated PVC. Stalwart subtree at
             # subPath=stalwart on the volumeMounts above. Legacy PVC
             # stalwart-rocksdb-data is kept in the cluster for 48-72h
-            # safety period (see docs/history/02-operations/MAIL_STACK_CONSOLIDATION.md).
+            # safety period.
             claimName: mail-stack-data
         # A5 (2026-05-25): rsyncd config for the sidecar above.
         - name: rsyncd-config

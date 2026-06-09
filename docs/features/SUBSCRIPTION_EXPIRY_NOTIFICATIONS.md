@@ -599,9 +599,7 @@ kubectl exec -it deployment/management-api -- \
 ## Related Documents
 
 - [`../01-core/EXTERNAL_BILLING_INTEGRATION.md`](../architecture/EXTERNAL_BILLING_INTEGRATION.md) — Gateway integration, webhook handlers, manual and once-off payment flows
-- [`../01-core/BILLING_MODEL_CHANGES.md`](../history/01-core/BILLING_MODEL_CHANGES.md) — Billing model overview and changes
 - [`./MANAGEMENT_API_SPEC.md`](../architecture/MANAGEMENT_API_SPEC.md) — Subscription update API
-- [`../02-operations/ADMIN_PANEL_REQUIREMENTS.md`](../history/02-operations/ADMIN_PANEL_REQUIREMENTS.md) — Manual renewal UI, send payment link, gateway management
 - [`../02-operations/MONITORING_OBSERVABILITY.md`](../operations/MONITORING_OBSERVABILITY.md) — CronJob health monitoring
 - [`../04-deployment/INCIDENT_RESPONSE_RUNBOOK.md`](../operations/INCIDENT_RESPONSE_RUNBOOK.md) — Handling billing system issues
 

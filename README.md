@@ -141,7 +141,6 @@ Nextcloud, …) come from the
 | Platform architecture | `docs/architecture/PLATFORM_ARCHITECTURE.md` |
 | Database schema | `docs/architecture/DATABASE_SCHEMA.md` |
 | Management API spec | `docs/architecture/MANAGEMENT_API_SPEC.md` |
-| Release & upgrade plan | `docs/history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md` |
 | Fork & deploy | `docs/development/FORK-AND-DEPLOY.md` |
 | Architecture decisions | `docs/architecture/adr/` |
 

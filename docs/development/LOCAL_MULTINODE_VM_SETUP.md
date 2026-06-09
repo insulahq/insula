@@ -5,7 +5,6 @@
 > **Last updated:** 2026-04-21
 > **Related:**
 > - [`STAGING_DEPLOYMENT.md`](../operations/STAGING_DEPLOYMENT.md) — the remote-first setup to use until this is built
-> - [`MULTI_NODE_ROADMAP.md`](../history/05-infrastructure/MULTI_NODE_ROADMAP.md) — Phase 3 distributed storage
 > - `scripts/bootstrap.sh` — will be reused verbatim inside each VM
 
 ---
