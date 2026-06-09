@@ -27,9 +27,10 @@ set -euo pipefail
 set +e
 FOUND=0
 
-# The literals to forbid (canonical apex values that have leaked before)
+# The literals to forbid (apex values that must not be pinned in manifests).
+# The operator's real apex is caught repo-wide by ci-no-hardcoded-test-infra.sh;
+# this guard enforces the ${DOMAIN}-placeholder discipline in the k8s/ tree.
 PATTERNS=(
-  "staging\\.example-host\\.net"
   "k8s-platform\\.test"
   "example\\.com"
 )
@@ -49,7 +50,7 @@ for pattern in "${PATTERNS[@]}"; do
       `# Comments` \
       | grep -vE '^[^:]+:[0-9]+:\s*#' \
       `# K8s annotation/label keys — project identifier, not the cluster apex.` \
-      | grep -vE 'platform\.example-host\.net/[a-zA-Z]' \
+      | grep -vE 'insula\.host/[a-zA-Z]' \
       `# The placeholder itself is allowed (this is what we WANT in overlays).` \
       | grep -vE '\$\{DOMAIN\}' \
       `# Cert-manager ClusterIssuer email — operator@example.com is the documented` \

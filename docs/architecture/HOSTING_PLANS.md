@@ -82,7 +82,7 @@ These are the **starting templates with recommended pricing** for premium positi
 
 > **Note on cron jobs:** Cron jobs are **unlimited on all plans**. Resource limits per job execution (CPU, memory, timeout) are configurable per-customer. See `CUSTOMER_CRON_JOBS.md`.
 
-> **Note on AI-assisted editing:** The platform ships AI-assisted **file editing** in the tenant File Manager (`backend/src/modules/ai-editor/` — provider adapters for Anthropic/OpenAI, weekly per-plan budget via `hosting_plans.weekly_ai_budget_cents`, per-tenant token-usage tracking, output scanning). The full no-code "AI Website Editor" described in earlier plans was **descoped on 2026-06-07** — see `../history/06-features/AI_WEBSITE_EDITOR.md` and `../roadmap/ROADMAP.md`.
+> **Note on AI-assisted editing:** The platform ships AI-assisted **file editing** in the tenant File Manager (`backend/src/modules/ai-editor/` — provider adapters for Anthropic/OpenAI, weekly per-plan budget via `hosting_plans.weekly_ai_budget_cents`, per-tenant token-usage tracking, output scanning). The full no-code "AI Website Editor" described in earlier plans was **descoped on 2026-06-07** — see `../roadmap/ROADMAP.md`.
 
 ### Pricing Rationale
 
@@ -229,8 +229,6 @@ Since all clients now have dedicated pods, switching capabilities are uniform:
 > **Note:** Admins can restrict available catalog images per plan via `allowed_catalog_images`.
 > For example, Starter clients could be limited to PHP runtimes only, while Business/Premium
 > clients have access to the full catalog.
-
-**Related Document:** See [`WEB_SERVER_PHP_VERSION_SWITCHING.md`](../history/01-core/WEB_SERVER_PHP_VERSION_SWITCHING.md) for complete switching specifications.
 
 ## Related Documentation
 

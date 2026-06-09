@@ -97,7 +97,6 @@ Have these commands/URLs ready to run the second bootstrap finishes:
 
 ## After the fact
 
-- [ ] Record bootstrap runtime in `docs/history/05-infrastructure/MULTI_NODE_ROADMAP.md` benchmarks section
 - [ ] Note any deviations from this checklist in the runbook/session-summary
 - [ ] Flip TLS to LE-prod in `k8s/overlays/development/ingress-patch.yaml` once the setup is proven stable
 - [ ] Delete `/etc/platform/admin-credentials` after creating real admin users

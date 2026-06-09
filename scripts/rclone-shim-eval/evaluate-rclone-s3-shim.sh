@@ -14,7 +14,7 @@
 #       # don't re-run scenarios; just re-aggregate existing JSONL
 #
 # Output:
-#   docs/history/04-deployment/RCLONE_SHIM_EVALUATION.md   (committed)
+#   docs/diagnostics/ — RCLONE_SHIM_EVALUATION report (committed)
 
 set -Eeuo pipefail
 
@@ -25,7 +25,7 @@ SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 HOST="${TESTING_HOST:-testing.example.test}"
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_DIR="${REMOTE_DIR:-/root/rclone-shim-eval}"
-REPORT_OUT="$REPO_ROOT/docs/history/04-deployment/RCLONE_SHIM_EVALUATION.md"
+REPORT_OUT="$REPO_ROOT/docs/diagnostics/RCLONE_SHIM_EVALUATION.md"
 
 SMOKE=0
 REPORT_ONLY=0
@@ -142,9 +142,9 @@ ssh -i "$SSH_KEY" "$REMOTE_USER@$HOST" \
 
 mkdir -p "$(dirname "$REPORT_OUT")"
 scp -i "$SSH_KEY" -q "$REMOTE_USER@$HOST:$REMOTE_DIR/RCLONE_SHIM_EVALUATION.md" "$REPORT_OUT"
-scp -i "$SSH_KEY" -q "$REMOTE_USER@$HOST:$REMOTE_DIR/results.jsonl" "$REPO_ROOT/docs/history/04-deployment/RCLONE_SHIM_EVALUATION.results.jsonl"
+scp -i "$SSH_KEY" -q "$REMOTE_USER@$HOST:$REMOTE_DIR/results.jsonl" "$REPO_ROOT/docs/diagnostics/RCLONE_SHIM_EVALUATION.results.jsonl"
 
 echo
 echo "Done."
 echo "  Report:  $REPORT_OUT"
-echo "  Raw:     $REPO_ROOT/docs/history/04-deployment/RCLONE_SHIM_EVALUATION.results.jsonl"
+echo "  Raw:     $REPO_ROOT/docs/diagnostics/RCLONE_SHIM_EVALUATION.results.jsonl"

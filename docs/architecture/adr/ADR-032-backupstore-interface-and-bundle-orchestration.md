@@ -9,7 +9,6 @@ production code path constructs a `LocalHostPathBackupStore`.
 - ADR-028 — backup architecture (component model, tiered initiators, multi-target storage)
 - `docs/architecture/BACKUP_COMPONENT_MODEL.md` — bundle layout + `meta.json` schema
 - `docs/features/RESTORE_SPECIFICATION.md` — restore API + granularity (downstream consumer)
-- `docs/history/02-operations/BACKUP_STRATEGY.md` — tier policy + retention defaults
 
 **Supersedes:** the placeholder `backups` table schema in `backend/src/db/schema.ts`
 (read-only after migration 0066; new code targets `backup_jobs` + `backup_components`).

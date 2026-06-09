@@ -5,9 +5,8 @@ How to run the platform from your own fork. Covers container-image fork-safety
 the broader fork on-ramp are documented separately (`CONTRIBUTING.md`,
 `LICENSE`).
 
-> **Status:** image-org fork-safety landed in the W2 PR of the
-> [Holistic Release & Upgrade Plan](../history/04-deployment/HOLISTIC_RELEASE_AND_UPGRADE_PLAN.md).
-> The remaining surface (§4) is tracked as a follow-up.
+> **Status:** image-org fork-safety landed in the W2 PR of the holistic release
+> & upgrade plan. The remaining surface (§4) is tracked as a follow-up.
 
 ## 1. Local development — nothing to do
 

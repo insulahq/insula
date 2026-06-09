@@ -8,7 +8,7 @@
  * decryption, HTML formatting) is preserved verbatim. This channel only
  * adds the availability gate and the typed DeliveryResult.
  *
- * Roadmap (docs/history/04-deployment/NOTIFICATION_ROADMAP.md, phases 2-3 (delivered)):
+ * Roadmap (phases 2-3, delivered):
  *  - Phase 2: replace fire-and-forget with `notification_deliveries`
  *    audit + retry reconciler
  *  - Phase 3: consult per-user preferences before deliver() is called

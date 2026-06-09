@@ -1,0 +1,45 @@
+# .gitleaks.toml — secret-scanning config for this PUBLIC repo.
+#
+# Runs in CI (secret-scan job in ci-infrastructure.yml) over the working tree,
+# and locally via the opt-in pre-commit hook (scripts/install-git-hooks.sh →
+# `gitleaks protect --staged`). Builds on gitleaks' default ruleset and allows
+# the intentional, non-secret placeholders this repo uses.
+#
+# Context: an OAuth client secret and an admin password were once committed here.
+# This guard exists so that can never recur silently.
+
+title = "insula secret scan"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentional placeholders, dev/test fixtures, and doc values — not real secrets."
+regexes = [
+  # Placeholder identifiers used throughout committed files.
+  '''example\.test''',
+  '''(192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}''',   # RFC 5737 doc IPs
+  '''CHANGE[_-]?ME|REPLACE_WITH|<[a-z-]+>|your-[a-z-]+''',
+  # Dev/staging-only fixtures that MUST match committed config (Dex static
+  # clients, local-dev secrets, the unit-test JWT secret). Never used in prod.
+  '''local-dev-[a-z-]+''',
+  '''staging-secret-(admin|tenant)''',
+  '''test-secret-key-for-testing-only''',
+  '''roundcube-local-dev-password''',
+  '''0123456789abcdef''',                # the dummy 64-hex local-dev key
+  '''whsec_[A-Za-z0-9]+''',              # webhook-secret placeholder in API docs
+  # rclone's well-known PUBLIC obscure key (shipped in rclone's own source).
+  '''9c935b48730a554d6bfd7c63c886a92bd390198eb8128afbf4de162b8b95f638''',
+]
+paths = [
+  '''.*\.example(\.\w+)?$''',           # *.example, *.example.yaml, …
+  '''scripts/integration\.env\.example''',
+  '''.*\.(test|spec)\.[jt]sx?$''',      # unit/spec test fixtures
+  '''.*/__tests__/.*''',
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)CHANGELOG\.md$''',
+  '''k8s/overlays/dev/.*''',            # local-dev-only secrets (DinD), never prod
+  '''k8s/base/cnpg-system/.*''',        # vendored upstream (Barman Cloud Plugin)
+  '''scripts/local\.sh''',              # local DinD setup; prints dummy dev creds
+  '''scripts/spike-.*\.sh''',           # throwaway spike fixtures
+]

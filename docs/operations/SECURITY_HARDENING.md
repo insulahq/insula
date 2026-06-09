@@ -1,7 +1,7 @@
 # Security / Firewall / Node Hardening — Operator Runbook
 
 **Audience:** Platform operators with super_admin role.
-**Related:** [SECURITY_HARDENING_ROADMAP.md](../history/04-deployment/SECURITY_HARDENING_ROADMAP.md) (design + phase plan), [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md), [SECRETS_LIFECYCLE.md](SECRETS_LIFECYCLE.md).
+**Related:** [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md), [SECRETS_LIFECYCLE.md](SECRETS_LIFECYCLE.md).
 
 ## Page tour
 

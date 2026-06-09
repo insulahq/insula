@@ -17,8 +17,6 @@
  *                      (`client-*` namespace pattern).
  *   - unclassified    → in bundle, applied by `full` profile
  *                      (third-party / operator-installed namespaces).
- *
- * See docs/history/04-deployment/DR_BUNDLE_ROADMAP.md.
  */
 
 import { z } from 'zod';

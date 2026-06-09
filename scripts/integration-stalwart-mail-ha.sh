@@ -1697,7 +1697,7 @@ phase_i_flux_ownership() {
     # I2. DS carries the platform-api managed-by label.
     local managed_by
     managed_by=$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy \
-      -o jsonpath='{.metadata.labels.platform\.example-host\.net/managed-by}' 2>/dev/null || echo '')
+      -o jsonpath='{.metadata.labels.insula\.host/managed-by}' 2>/dev/null || echo '')
     if [[ "$managed_by" == "platform-api" ]]; then
       note_pass "I2. haproxy DS labelled managed-by=platform-api"
     else

@@ -1,7 +1,7 @@
 # Insula Platform Documentation
 
-> **Last restructured:** 2026-06-07 — documentation split into current-state docs,
-> a forward-looking roadmap, and frozen historical artifacts.
+> **Last restructured:** 2026-06-07 — documentation split into current-state docs
+> and a forward-looking roadmap.
 
 ## Taxonomy — where does a document go?
 
@@ -12,13 +12,12 @@
 | **[`features/`](features/)** | "What does feature X do?" — per-feature behavior reference | Yes — source for the tenant/admin manual |
 | **[`development/`](development/)** | "How do I contribute?" — local dev, testing, CI/CD, fork-and-deploy | Yes |
 | **[`roadmap/`](roadmap/ROADMAP.md)** | "What is planned but not built?" — the R1–R14 follow-up register + future specs | Yes |
-| **[`history/`](history/README.md)** | Planning-era artifacts: initial plans, requirement specs for shipped features, descoped features, spikes, logs | **No — frozen.** Deleted once the user manual ships |
 
 **Rules:**
-1. New docs go into one of the maintained buckets — never into `history/`.
+1. New docs go into one of the maintained buckets.
 2. A doc that describes *intent* belongs in `roadmap/`; once shipped, rewrite it as
-   current-state in `architecture/`/`features/` and move the planning version to `history/`.
-3. Anything referenced from code, scripts, or CI must live outside `history/`
+   current-state in `architecture/`/`features/`.
+3. Every referenced `docs/…` path must resolve to a tracked file
    (enforced by `scripts/ci-docs-link-check.sh`).
 
 ## Key entry points
@@ -34,7 +33,6 @@
 - **Mail:** [operations/MAIL_SERVER_OPERATIONS.md](operations/MAIL_SERVER_OPERATIONS.md) · [features/EMAIL_SERVICES.md](features/EMAIL_SERVICES.md)
 - **Security:** [architecture/SECURITY_ARCHITECTURE.md](architecture/SECURITY_ARCHITECTURE.md) · [operations/SECURITY_HARDENING.md](operations/SECURITY_HARDENING.md)
 - **Roadmap:** [roadmap/ROADMAP.md](roadmap/ROADMAP.md)
-- **Historical archive:** [history/README.md](history/README.md)
 
 > **Note (ADR-022, ADR-025):** DNS (PowerDNS), VPN mesh (NetBird), and IAM (Dex/OIDC)
 > are external services provided by a separate infrastructure project; workload catalog

@@ -1,0 +1,30 @@
+# .gitleaksignore — baseline of pre-existing gitleaks false positives.
+#
+# Every entry below was reviewed and is NOT a secret: code variable/field names
+# (secretKey/s3SecretKey/password = <expr>), Kubernetes secretKeyRef key *names*,
+# API-doc placeholder examples, a suite label, and curl examples that pass a
+# $TOKEN variable (not a literal). New (unbaselined) findings still fail CI.
+# Regenerate after intentional moves: gitleaks detect --no-git (fingerprints
+# are file:rule:line).
+
+backend/src/modules/ai-editor/service.ts:generic-api-key:53
+backend/src/modules/backup-restore/shared.ts:generic-api-key:115
+backend/src/modules/backup-rclone-shim/service.ts:generic-api-key:392
+backend/src/modules/tenant-bundles/cluster-concurrency.ts:generic-api-key:78
+backend/src/modules/tenant-bundles/internal-download-route.ts:generic-api-key:161
+backend/src/modules/tenant-bundles/resolve-store.ts:generic-api-key:59
+backend/src/modules/tenant-bundles/schedule.ts:generic-api-key:54
+backend/src/modules/system-backup/dr-sidecars.ts:generic-api-key:287
+backend/src/modules/tenant-bundles/retention.ts:generic-api-key:243
+backend/src/modules/tenant-bundles/tenant-routes.ts:generic-api-key:240
+backend/src/modules/tenant-bundles/internal-upload-route.ts:generic-api-key:464
+backend/src/modules/tenant-bundles/restic-driver.ts:generic-api-key:159
+backend/src/modules/tenant-bundles/routes.ts:generic-api-key:1637
+docs/features/FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md:generic-api-key:529
+docs/features/FILE_TRANSFER_FTP_SFTP_SPECIFICATION.md:generic-api-key:617
+docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1868
+docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1963
+docs/features/PASSWORD_PROTECTED_DIRECTORIES.md:curl-auth-user:1085
+k8s/base/backend-deployment.yaml:generic-api-key:294
+scripts/integration-all.sh:generic-api-key:135
+scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:277

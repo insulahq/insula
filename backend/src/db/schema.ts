@@ -1517,8 +1517,7 @@ export const emailAliases = pgTable('email_aliases', {
 
 // Phase 2b shipped a per-tenant custom webmail_domains table + CRUD. Phase
 // 2c reverted it in favour of a derived convention: every enabled email
-// domain gets webmail.<domain> automatically. See migration 0006 and
-// docs/history/06-features/MAIL_SERVER_IMPLEMENTATION_STATUS.md (Phase 2c section).
+// domain gets webmail.<domain> automatically. See migration 0006.
 
 // Phase 3 T1.1 (B.2): DKIM key rotation with grace period.
 // Status lifecycle: pending → active → retired → (deleted)

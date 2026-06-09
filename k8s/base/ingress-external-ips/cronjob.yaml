@@ -98,7 +98,7 @@ spec:
                   # Service externalIPs cover it — required for ACME
                   # HTTP-01 challenges when mail (or any TLS-anchored
                   # workload) ends up on the worker.
-                  IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address,INGRESS:.metadata.labels.platform\.example-host\.net/ingress-mode,EXPOSURE:.metadata.labels.platform\.example-host\.net/exposure' --no-headers \
+                  IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address,INGRESS:.metadata.labels.insula\.host/ingress-mode,EXPOSURE:.metadata.labels.insula\.host/exposure' --no-headers \
                     | awk '$2=="True" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4!="none" && $5!="private" {print $3}' \
                     | sort -u)
                   if [ -z "$IPS" ]; then

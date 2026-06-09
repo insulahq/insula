@@ -248,18 +248,37 @@ jobs:
         run: ./scripts/ci-no-hardcoded-ips.sh
 
   no-hardcoded-test-infra:
-    name: No operator IPs/domains in committed scripts
+    name: No operator IPs/domains in committed files
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Scan scripts/ for operator IPs and domains
-        # Integration/utility scripts must not bake one operator's cluster
-        # (node IPs, apex domain) or confidential credentials into committed
-        # defaults. Real values come from the gitignored scripts/integration.env
-        # profile (scripts/lib/integration-env.sh). Companion to the two guards
-        # above, which scan the k8s/ manifest tree; this one covers scripts/.
-        # See docs/development/INTEGRATION_TESTS.md.
+      - name: Scan the repo for operator domains and node IPs
+        # Repo-wide: no committed file may bake one operator's cluster (apex
+        # domain anywhere; node-netblock IPs anywhere; any public IP under
+        # scripts/). Real values come from the gitignored scripts/integration.env
+        # profile (scripts/lib/integration-env.sh). Companion to the two k8s/-only
+        # guards above. See docs/development/INTEGRATION_TESTS.md.
         run: ./scripts/ci-no-hardcoded-test-infra.sh
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install gitleaks (latest stable)
+        run: |
+          ver=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+                  | grep -oE '"tag_name": *"v[^"]+"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+          [ -n "$ver" ] || { echo "could not resolve gitleaks version"; exit 1; }
+          echo "gitleaks v$ver"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan working tree for secrets
+        # --no-git scans the current file contents (what merges to main), not
+        # historical commits — so already-rotated leaks in history don't block
+        # the build while new secrets are still caught.
+        run: gitleaks detect --no-git --source . --redact -c .gitleaks.toml -v
 
   k8s-patch-check:
     name: K8s client patchNamespaced* Content-Type guard

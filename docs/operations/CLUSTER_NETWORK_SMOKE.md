@@ -21,7 +21,7 @@ KUBECONFIG=... make verdict     # → "PASS=36 FAIL=9"
 # Test 1 only — no kubeconfig needed (probes public DNS hostnames)
 make smoke-public
 
-# Forensic dump (creates docs/history/diagnostics/<utc-stamp>/ with nodes/pods/Felix logs + smoke.log)
+# Forensic dump (creates docs/diagnostics/<utc-stamp>/ with nodes/pods/Felix logs + smoke.log)
 KUBECONFIG=... make diagnose
 
 # Induced-failure drills (DESTRUCTIVE — schedule a maintenance window)
@@ -89,7 +89,7 @@ The drills are sequential and stateful — D3 leaves the node briefly NotReady, 
 
 | Symptom | Likely cause | Reference |
 |---------|--------------|-----------|
-| Test 4 (hostNetwork→pod cross-node) all-FAIL | NetworkPolicy `ipBlock` references the wrong CIDR (underlay instead of pod CIDR) | [verdict](../../docs/history/diagnostics/2026-04-26-post-fix/verdict.md), [k8s/base/network-policies.yaml](../../k8s/base/network-policies.yaml) |
+| Test 4 (hostNetwork→pod cross-node) all-FAIL | NetworkPolicy `ipBlock` references the wrong CIDR (underlay instead of pod CIDR) | [k8s/base/network-policies.yaml](../../k8s/base/network-policies.yaml) |
 | Test 1 mostly-OK but with 5.5s spikes | Cross-node host→pod broken; nginx upstream-retry hides total failure | Same as Test 4 |
 | Test 3 FAIL but Test 4 PASS | Calico VXLAN data plane is broken (rare) | tcpdump on `vxlan.calico` of source + dest |
 | Test 5 (Longhorn) FAIL with "degraded" | Replica out of sync after a node restart | `kubectl get volumes.longhorn.io -n longhorn-system` |
@@ -100,12 +100,12 @@ The drills are sequential and stateful — D3 leaves the node briefly NotReady, 
 
 ## Forensic record
 
-Successful + failed runs should be committed to `docs/history/diagnostics/<utc-stamp>/` for future A/B comparison. Use:
+Successful + failed runs should be committed to `docs/diagnostics/<utc-stamp>/` for future A/B comparison. Use:
 
 ```bash
 KUBECONFIG=... make diagnose
-git add docs/history/diagnostics/<the new dir>/
+git add docs/diagnostics/<the new dir>/
 git commit -m "diagnostics: <short reason for capture>"
 ```
 
-The 2026-04-26 `pre-wipe`/`post-wipe`/`post-fix` triplet is the canonical example — it captured a clean re-bootstrap A/B that ruled out cumulative drift before chasing the real root cause.
+Capturing a `pre-wipe`/`post-wipe`/`post-fix` triplet around a clean re-bootstrap is the canonical pattern — it rules out cumulative drift before chasing the real root cause.

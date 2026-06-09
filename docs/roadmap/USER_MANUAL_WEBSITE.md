@@ -1,7 +1,6 @@
 # R14 — User-Manual Website (plan locked 2026-06-07)
 
 > Roadmap detail for [ROADMAP.md R14](ROADMAP.md#r14--user-manual-website).
-> Completing this item **unlocks deletion of `docs/history/`**.
 
 ## Locked decisions (operator, 2026-06-07)
 
@@ -36,8 +35,8 @@ documentation/
 
 **Content stance:** the manual is *rewritten user-facing content*, not a mirror.
 `docs/architecture|operations|features` remain the engineering truth and source
-material; the manual adapts per audience. `docs/history/` requirement specs are
-mined for the admin/tenant guides, then the directory is deleted (tombstone policy).
+material; the manual adapts per audience. Where the admin/tenant guides need the
+original requirement specs, mine them from the git history.
 
 ## Accuracy system (in leverage order)
 
@@ -70,4 +69,4 @@ mined for the admin/tenant guides, then the directory is deleted (tombstone poli
 | E | Admin guide | 1–2 d |
 | F | Tenant guide (+ screenshots, history-mining) | 1–2 d |
 | G | Freshness automation (guard → enforcing, screenshot job, stamps) | 1 d |
-| H | Announce v1 + **delete `docs/history/`** | 0.5 d |
+| H | Announce v1 | 0.5 d |

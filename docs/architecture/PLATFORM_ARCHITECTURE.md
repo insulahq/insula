@@ -592,7 +592,6 @@ These are the **platform-level** services that power the hosting infrastructure.
 ---
 
 **See Also:**
-- [QUICKSTART.md](../history/QUICKSTART.md) — Navigation guide by role and topic
 - [HOSTING_PLANS.md](HOSTING_PLANS.md) — Plan tier definitions
 - [WORKLOAD_DEPLOYMENT.md](WORKLOAD_DEPLOYMENT.md) — Deployment models details
 - [FRONTEND_DEPLOYMENT_ARCHITECTURE.md](FRONTEND_DEPLOYMENT_ARCHITECTURE.md) — Admin/tenant panel deployment

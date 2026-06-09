@@ -7,8 +7,7 @@ WireGuard direct). This document walks through which to pick, the
 tradeoffs, configuration, and what you can and cannot mix.
 
 For the firewall mechanics + nft set design that all three modes share,
-see [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md). For migration between
-modes, see [CLUSTER_NETWORK_MIGRATION.md](../history/04-deployment/CLUSTER_NETWORK_MIGRATION.md).
+see [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md).
 
 ## TL;DR — pick one
 
@@ -486,8 +485,6 @@ When you're about to bootstrap a new cluster, answer these in order:
 
 - [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md) — firewall + nft set design,
   CRDs, mode mechanics
-- [CLUSTER_NETWORK_MIGRATION.md](../history/04-deployment/CLUSTER_NETWORK_MIGRATION.md) — moving
-  an existing cluster from one mode to another
 - [PRIVATE_WORKER.md](PRIVATE_WORKER.md) — when you want a tenant
   service exposed through the platform without making the host a node
 - `K3S_DEPLOYMENT_GUIDE.md` — bootstrap walk-through

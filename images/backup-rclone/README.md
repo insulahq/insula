@@ -2,9 +2,8 @@
 
 Universal backup mediator image used by the platform's `backup-rclone-shim`
 DaemonSet and all backup CronJob clients. See
-[BACKUP_ARCHITECTURE_RFC §13a](../../docs/history/04-deployment/BACKUP_ARCHITECTURE_RFC.md)
-for the architecture and [ADR-043](../../docs/architecture/adr/ADR-043-rclone-s3-shim.md)
-for the design decision.
+[ADR-043](../../docs/architecture/adr/ADR-043-rclone-s3-shim.md) for the
+architecture and design decision (RFC §13a).
 
 ## Two roles, one image
 

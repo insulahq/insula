@@ -1,10 +1,6 @@
 # Email & Webmail Services
 
 > **Related email documentation:**
-> - [EMAIL_ENHANCEMENTS_SPECIFICATION.md](../history/06-features/EMAIL_ENHANCEMENTS_SPECIFICATION.md) — DKIM, autodiscover, SRV records, sendmail
-> - [EMAIL_SENDING_LIMITS_AND_MONITORING.md](../history/06-features/EMAIL_SENDING_LIMITS_AND_MONITORING.md) — Rate limiting, delivery monitoring
-> - [EMAIL_DELIVERABILITY.md](../history/06-features/EMAIL_DELIVERABILITY.md) — IP pools, PTR, warm-up, reputation
-> - [WEBMAIL_ACCESS_SPECIFICATION.md](../history/06-features/WEBMAIL_ACCESS_SPECIFICATION.md) — Roundcube multi-domain access
 > - [MAILBOX_IMPORT_EXPORT_SPECIFICATION.md](MAILBOX_IMPORT_EXPORT_SPECIFICATION.md) — Mailbox migration
 
 ## Overview

@@ -45,7 +45,7 @@ Consolidated here from earlier drafts — see [ADR-028](../architecture/adr/ADR-
 - Harbor registry images
 - Platform-wide TLS certificates (`*.<apex>` wildcards)
 - System DNS zones shared across tenants
-- Full-platform disaster recovery — owned by operator tooling (Velero). See [BACKUP_STRATEGY.md Tier 4](../history/02-operations/BACKUP_STRATEGY.md).
+- Full-platform disaster recovery — owned by operator tooling (Velero).
 
 ---
 
