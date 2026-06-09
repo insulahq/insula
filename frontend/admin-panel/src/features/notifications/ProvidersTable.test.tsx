@@ -35,7 +35,7 @@ function provider(overrides: Partial<NotificationProviderResponse> = {}): Notifi
     authUsername: 'apikey',
     authPasswordSet: true,
     fromAddress: 'noreply@example.test',
-    fromName: 'Phoenix',
+    fromName: 'Insula',
     region: 'eu',
     lastTestedAt: '2026-05-28T10:00:00.000Z',
     lastTestStatus: 'success',

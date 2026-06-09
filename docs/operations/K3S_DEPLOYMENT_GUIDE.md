@@ -29,7 +29,7 @@ This document describes how to provision k3s on admin1 and deploy the management
 
 2. **SSH key loaded** — admin1 must be reachable:
    ```bash
-   ssh -i ~/example-host.key root@192.0.2.58 "hostname"
+   ssh -i ~/cluster.key root@192.0.2.58 "hostname"
    # Should return: admin1
    ```
 
@@ -87,7 +87,7 @@ On admin1, check the k3s cluster:
 
 ```bash
 # Via SSH
-ssh -i ~/example-host.key root@192.0.2.58
+ssh -i ~/cluster.key root@192.0.2.58
 
 # On admin1:
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -113,7 +113,7 @@ To test from outside the cluster, use a port-forward:
 
 ```bash
 # From your workstation, SSH to admin1 with port-forward
-ssh -i ~/example-host.key -L 3000:127.0.0.1:3000 root@192.0.2.58
+ssh -i ~/cluster.key -L 3000:127.0.0.1:3000 root@192.0.2.58
 
 # In another terminal:
 curl http://127.0.0.1:3000/api/v1/admin/status

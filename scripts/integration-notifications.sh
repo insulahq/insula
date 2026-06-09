@@ -173,7 +173,7 @@ phase_b() {
   tpl_id=$(psql_ro "SELECT id FROM notification_templates WHERE category_id='tenant.suspended' AND channel='in_app' AND is_active=TRUE LIMIT 1;" | tr -d ' \r')
   if [[ -n "$tpl_id" ]]; then
     local preview
-    preview=$(api POST "/api/v1/admin/notifications/templates/${tpl_id}/preview" '{"variables":{"tenantName":"Acme Corp","platformName":"Phoenix"}}')
+    preview=$(api POST "/api/v1/admin/notifications/templates/${tpl_id}/preview" '{"variables":{"tenantName":"Acme Corp","platformName":"Insula"}}')
     if printf %s "$preview" | grep -q '"body"'; then
       pass "B3 preview endpoint rendered template"
     else

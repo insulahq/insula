@@ -4534,8 +4534,8 @@ generate_platform_secrets() {
   # ALWAYS recomputed from the current PLATFORM_DOMAIN — earlier
   # versions of this code skipped the whole secret if it existed,
   # leaving stale env-prefixed hostnames in place when an operator
-  # re-bootstrapped after a domain change. Caught on testing.phoenix-
-  # host.net 2026-05-01 (oauth2-proxy crashlooped because the secret
+  # re-bootstrapped after a domain change. Caught on the
+  # testing cluster 2026-05-01 (oauth2-proxy crashlooped because the secret
   # still pointed at dex.staging.testing.example.test).
   local oidc_client_secret="" cookie_secret=""
   if kctl get secret -n platform oauth2-proxy-config &>/dev/null 2>&1; then
@@ -6500,8 +6500,8 @@ apply_platform_manifests() {
   # in the platform overlay (Longhorn-class PVCs, the Postgres Cluster
   # CR), so applying before they're ready triggers
   # "no endpoints available for service longhorn-admission-webhook"
-  # and aborts under set -e. Caught fresh-install on testing.phoenix-
-  # host.net 2026-04-30 — same race on staging during initial
+  # and aborts under set -e. Caught fresh-install on the
+  # testing cluster 2026-04-30 — same race on staging during initial
   # bootstrap (worked there only because operator re-ran bootstrap
   # after Longhorn settled).
   wait_for_admission_webhooks

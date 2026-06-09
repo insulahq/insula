@@ -28,7 +28,7 @@ log() { printf '[seed-nfs-target] %s\n' "$*" >&2; }
 # DB writes hit. The insula.host/environment label is
 # applied to the platform namespace by the staging overlay.
 CLUSTER_CONTEXT=$($SSH "kubectl config current-context" || echo "")
-CLUSTER_LABEL=$($SSH "kubectl get ns platform -o jsonpath='{.metadata.labels.platform\\.example-host\\.net/environment}'" 2>/dev/null || echo "")
+CLUSTER_LABEL=$($SSH "kubectl get ns platform -o jsonpath='{.metadata.labels.insula\\.host/environment}'" 2>/dev/null || echo "")
 if [[ "$CLUSTER_CONTEXT" != *staging* && "$CLUSTER_LABEL" != "staging" ]]; then
   log "FATAL: cluster context '$CLUSTER_CONTEXT' / label '$CLUSTER_LABEL' is not staging — refusing to seed NFS test target"
   exit 2
