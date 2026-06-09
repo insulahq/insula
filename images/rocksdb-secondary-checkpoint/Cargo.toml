@@ -17,7 +17,7 @@ path = "src/main.rs"
 #   gh api -H 'Accept: application/vnd.github.raw' \
 #     /repos/stalwartlabs/stalwart/contents/Cargo.lock \
 #     | grep -A2 librocksdb-sys
-librocksdb-sys = "=0.17.3"
+librocksdb-sys = "=6.20.3"
 
 # c_char support for FFI string handling.
 libc = "0.2"
