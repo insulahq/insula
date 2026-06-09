@@ -25,6 +25,11 @@
 
 set -uo pipefail
 
+# Config profile: load the operator's gitignored scripts/integration.env (real
+# cluster + IdP credentials) before applying defaults. See integration.env.example.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+load_integration_env
+
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
@@ -34,14 +39,14 @@ SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/nul
 HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-staging.example.test}"
 
 OIDC_ISSUER="${OIDC_ISSUER:-https://auth.example.test/}"
-OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-REDACTED_OAUTH_CLIENT_ID}"
-OIDC_CLIENT_SECRET="${OIDC_CLIENT_SECRET:-REDACTED_OAUTH_CLIENT_SECRET}"
+# IdP client credentials are confidential + operator-specific — no committed
+# default. Supply them via scripts/integration.env; the suite SKIPs without them.
+OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-}"
+OIDC_CLIENT_SECRET="${OIDC_CLIENT_SECRET:-}"
 CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"
 
-if [[ -z "$ADMIN_PASSWORD" ]]; then
-  echo "ERROR: ADMIN_PASSWORD must be set" >&2
-  exit 2
-fi
+require_env ADMIN_PASSWORD
+require_or_skip "per-ingress OAuth2/OIDC flow" OIDC_ISSUER OIDC_CLIENT_ID OIDC_CLIENT_SECRET
 
 SCENARIO="${1:-all}"
 PASSED=0
@@ -305,8 +310,12 @@ scenario_configmap_shape() {
   cfg=$(ssh_run "kubectl -n $NAMESPACE get cm oauth2-proxy-config -o jsonpath='{.data.oauth2_proxy\\.cfg}'" 2>/dev/null)
   echo "$cfg" | grep -q '^pass_authorization_header=true$' && ok "TOML booleans unquoted" \
     || { fail "boolean still quoted"; return 1; }
-  echo "$cfg" | grep -q '^oidc_issuer_url="https://auth.example.test"$' && ok "issuer trailing slash stripped" \
-    || { fail "issuer URL not normalised"; return 1; }
+  # OIDC_ISSUER (config) is the IdP; assert oauth2-proxy stored it normalised
+  # (trailing slash stripped). Derive the expected value so this holds for any
+  # configured issuer, not just the default.
+  local want_issuer="${OIDC_ISSUER%/}"
+  echo "$cfg" | grep -qF "oidc_issuer_url=\"${want_issuer}\"" && ok "issuer trailing slash stripped" \
+    || { fail "issuer URL not normalised (want ${want_issuer})"; return 1; }
   echo "$cfg" | grep -q '^code_challenge_method="S256"$' && ok "PKCE S256 active" \
     || { fail "PKCE missing"; return 1; }
   local rules
@@ -340,7 +349,8 @@ scenario_redirect_to_idp() {
     || { fail "expected 302, got $code"; return 1; }
   local final
   final=$(curl -sk -o /dev/null -w '%{url_effective}' -L --max-redirs 3 "https://${HOSTNAME}/" 2>/dev/null)
-  echo "$final" | grep -q "auth.example.test" && ok "redirect chain lands at IdP" \
+  local issuer_host="${OIDC_ISSUER#*://}"; issuer_host="${issuer_host%%/*}"
+  echo "$final" | grep -qF "$issuer_host" && ok "redirect chain lands at IdP" \
     || fail "redirect chain did not reach IdP: $final"
   return 0
 }

@@ -33,8 +33,15 @@
 
 set -uo pipefail
 
+# Config profile: load the operator's gitignored scripts/integration.env (real
+# cluster coordinates + any confidential external-target creds) and EXPORT every
+# value, so the sub-scripts launched below inherit it without a committed default.
+# See scripts/integration.env.example.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+load_integration_env
+
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
-[[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD must be set" >&2; exit 2; }
+require_env ADMIN_PASSWORD
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 

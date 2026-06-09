@@ -247,6 +247,20 @@ jobs:
         # regression. See scripts/ci-no-hardcoded-ips.sh header.
         run: ./scripts/ci-no-hardcoded-ips.sh
 
+  no-hardcoded-test-infra:
+    name: No operator IPs/domains in committed scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan scripts/ for operator IPs and domains
+        # Integration/utility scripts must not bake one operator's cluster
+        # (node IPs, apex domain) or confidential credentials into committed
+        # defaults. Real values come from the gitignored scripts/integration.env
+        # profile (scripts/lib/integration-env.sh). Companion to the two guards
+        # above, which scan the k8s/ manifest tree; this one covers scripts/.
+        # See docs/development/INTEGRATION_TESTS.md.
+        run: ./scripts/ci-no-hardcoded-test-infra.sh
+
   k8s-patch-check:
     name: K8s client patchNamespaced* Content-Type guard
     runs-on: ubuntu-latest
