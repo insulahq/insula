@@ -68,7 +68,12 @@ non-PR events (fork PRs build + scan but never push).
   fork-safety, system-tenant, mail-arch, backup-shim, …).
 - `ci-pin-lag-check.yml` — verifies the development pin isn't orphaned behind the
   last code commit.
-- `dr-drill.yml` — scheduled disaster-recovery rehearsal.
+
+> **No DR drill in public CI.** The disaster-recovery rehearsal runs **locally or
+> on a private host** via `scripts/dr-drill.sh`, never in GitHub Actions — its
+> inputs (the operator's age private key + a super_admin report token) are far too
+> sensitive to store as public-repo Actions secrets. See
+> [DR_DRILL.md](../operations/DR_DRILL.md).
 
 ## 4. The version spine
 
@@ -135,9 +140,10 @@ MariaDB/Redis containers).
 
 - Image-build + release workflows use only `secrets.GITHUB_TOKEN` (GHCR push via
   `packages: write`; Releases via `contents: write`). **No long-lived cluster
-  credentials live in CI.** (Scheduled workflows like `dr-drill.yml` carry their
-  own scoped operational secrets — an age key + a webhook token — which are not
-  cluster credentials and are never exposed to fork PRs.)
+  credentials, age keys, or report tokens live in public CI.** The DR drill — the
+  one job that would need them — was deliberately moved out of GitHub Actions to a
+  local/private runner (`scripts/dr-drill.sh`, [DR_DRILL.md](../operations/DR_DRILL.md))
+  precisely so those secrets never sit in a public repo.
 - No `pull_request_target` triggers — fork PRs run with a read-only token and no
   secret access; image-push steps are gated on non-PR events.
 - In-cluster secrets are Sealed Secrets (GitOps) / age-encrypted bundles
