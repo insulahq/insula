@@ -2130,13 +2130,23 @@ print(lp.get('secret',''))" 2>/dev/null)
   # this probe runs a one-shot login + INBOX select. (Step 8 also does
   # full receive, but step 6b runs early so a wire-level provisioning
   # failure surfaces before SMTP/IMAP tester pod spin-up.)
-  local imap_probe
-  imap_probe=$(ssh_cp "kubectl run mail-imap-probe-${stamp} -n mail \
-      --rm -i --restart=Never --image=python:3.12-alpine --timeout=20s -- \
-      python3 -c 'import imaplib,ssl,sys;
+  # One retry: `kubectl run --rm -i` one-shot pods occasionally lose the
+  # attach race ("If you don't see a command prompt…" with the python
+  # output dropped) — the login actually succeeded but stdout never
+  # reached us. A flake here used to fail the suite while the SMTP/IMAP
+  # steps seconds later passed with the same credential (testing
+  # 2026-06-10).
+  local imap_probe imap_attempt
+  for imap_attempt in 1 2; do
+    imap_probe=$(ssh_cp "kubectl run mail-imap-probe-${stamp}-${imap_attempt} -n mail \
+        --rm -i --restart=Never --image=python:3.12-alpine --timeout=20s -- \
+        python3 -c 'import imaplib,ssl,sys;
 ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE;
 M=imaplib.IMAP4_SSL(\"stalwart-mail.mail.svc.cluster.local\",993,ssl_context=ctx);
 M.login(\"${mail_box_user}\",\"${mail_box_pass}\"); M.select(\"INBOX\"); print(\"IMAP_LOGIN_OK\"); M.logout()'" 2>&1)
+    echo "$imap_probe" | grep -qF "IMAP_LOGIN_OK" && break
+    [[ "$imap_attempt" == "1" ]] && log "mail/jmap: IMAP probe attempt 1 inconclusive — retrying (kubectl attach flake?)"
+  done
   if echo "$imap_probe" | grep -qF "IMAP_LOGIN_OK"; then
     ok "mail/jmap: Stalwart-side account provisioned (IMAP LOGIN ok for $mail_box_user)"
   else
@@ -2541,9 +2551,16 @@ PY
   # endpoint at /api/v1/admin/mail/sso?to= depends on. MUST run while
   # the tester pod is still up.
   if [[ "$tester_spawned" == "1" ]]; then
-    local master_user_secret_cmd="kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d"
-    local master_pw
-    master_pw=$(ssh_cp "$master_user_secret_cmd" 2>/dev/null || echo "")
+    local master_pw master_user
+    master_pw=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null || echo "")
+    # The master principal's FQDN lives in the Secret too — modern
+    # bootstraps provision `master@mail.<apex>`; only legacy clusters
+    # still use the synthetic `master@master.local`. Hardcoding the
+    # legacy name made this probe fail AUTHENTICATIONFAILED on every
+    # current cluster (caught on testing 2026-06-10; mirrors the
+    # fallback order in rotate-webmail-master.ts).
+    master_user=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_USER}' | base64 -d" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$master_user" ]] || master_user="master@master.local"
     if [[ -n "$master_pw" ]]; then
       local master_probe
       master_probe=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
@@ -2552,7 +2569,7 @@ ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode 
 try:
     M = imaplib.IMAP4_SSL(\"${smtp_target}\", 993, ssl_context=ctx)
     # Stalwart 0.16 master-auth: <target>%<master_user> with master_pw
-    M.login(\"${mail_box_user}%master@master.local\", \"${master_pw}\")
+    M.login(\"${mail_box_user}%${master_user}\", \"${master_pw}\")
     M.select(\"INBOX\")
     print(\"MASTER_LOGIN_OK\")
     M.logout()
@@ -2561,9 +2578,9 @@ except Exception as e:
     sys.exit(1)
 '" 2>&1)
       if echo "$master_probe" | grep -qF "MASTER_LOGIN_OK"; then
-        ok "mail/master-auth: <target>%master@master.local login succeeded for $mail_box_user"
+        ok "mail/master-auth: <target>%${master_user} login succeeded for $mail_box_user"
       else
-        fail "mail/master-auth: master-auth IMAP login FAILED — Roundcube SSO won't work. tail: $(echo "$master_probe" | tail -3 | tr '\n' ' ')"
+        fail "mail/master-auth: master-auth IMAP login FAILED (master=${master_user}) — webmail SSO won't work. tail: $(echo "$master_probe" | tail -3 | tr '\n' ' ')"
       fi
     else
       log "mail/master-auth: STALWART_MASTER_PASSWORD secret missing — skipping (provision via bootstrap.sh:provision_stalwart_master_user)"
@@ -2586,12 +2603,37 @@ except Exception as e:
     fail "mail/webmail: expected 200/302 from $webmail_url, got $wm_http"
   fi
 
-  # Step 9b — functional login probe. Drives Roundcube's normal login
-  # form: GET / to acquire session cookie + _token, POST /?_task=login
-  # &_action=login with our test mailbox credentials, then check for
-  # the `roundcube_sessauth` cookie (Roundcube ≥ 1.3 default — if a
-  # future Roundcube version or Snappymail rebrand renames it, the
-  # error message dumps cookie names so the divergence is obvious).
+  # Step 9b — functional login probe, ENGINE-AWARE. Roundcube has the
+  # classic _token form flow; Bulwark is a JMAP-native Next.js SPA with
+  # no such form (asserting `_token` against it fails on every cluster
+  # whose default_webmail_engine=bulwark — caught on testing
+  # 2026-06-10). Branch on the live engine setting.
+  local wm_engine
+  wm_engine=$(api GET "/admin/webmail-settings" \
+    | python3 -c "import json,sys;print((json.load(sys.stdin).get('data') or {}).get('defaultWebmailEngine','roundcube'))" 2>/dev/null)
+  if [[ "$wm_engine" == "bulwark" ]]; then
+    # Bulwark authenticates users by JMAP basic-auth against Stalwart
+    # (its /api/auth/* routes proxy to the JMAP session endpoint).
+    # Functional equivalent of "the webmail engine can log this user
+    # in": fetch the JMAP session resource with the mailbox creds the
+    # way Bulwark's server side does. Loopback inside the Stalwart pod
+    # bypasses the PROXY-v2 sniff (same pattern as _stalwart_jmap).
+    # -L: /.well-known/jmap 307-redirects to the session resource; auth
+    # is only evaluated on the redirect target.
+    local jmap_code
+    jmap_code=$(ssh_cp "kubectl exec -n mail \$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}') -c stalwart -- curl -sL -o /dev/null -w '%{http_code}' --max-time 10 -u '${mail_box_user}:${mail_box_pass}' http://127.0.0.1:8080/.well-known/jmap" 2>/dev/null | tr -d '[:space:]')
+    if [[ "$jmap_code" == "200" ]]; then
+      ok "mail/webmail-login: JMAP session auth succeeded for $mail_box_user (engine=bulwark)"
+    else
+      fail "mail/webmail-login: JMAP session auth returned HTTP ${jmap_code:-none} for $mail_box_user (engine=bulwark; Bulwark logins would fail)"
+    fi
+  else
+  # Roundcube: drive the normal login form. GET / to acquire session
+  # cookie + _token, POST /?_task=login&_action=login with our test
+  # mailbox credentials, then check for the `roundcube_sessauth`
+  # cookie (Roundcube ≥ 1.3 default — if a future Roundcube version or
+  # Snappymail rebrand renames it, the error message dumps cookie
+  # names so the divergence is obvious).
   local wm_jar; wm_jar=$(mktemp)
   # Single explicit cleanup. (Earlier code used `trap RETURN` which
   # only fires when `set -T` is enabled — silently a no-op here.)
@@ -2636,6 +2678,7 @@ except Exception as e:
     fi
   fi
   _wm_cleanup
+  fi  # engine branch (bulwark vs roundcube)
 
   # ── Step 10: quota notifier trigger ─────────────────────────────
   # Push used_mb to 80% of quota (100 MB quota → 80 MB used) via the
