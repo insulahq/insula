@@ -3329,9 +3329,18 @@ scenario_mail_hostname_rename() {
     ssh_cp "curl -s --max-time 8 -u admin:'${mgmt_pw}' -X POST http://${mgmt_ip}:8080/jmap -H 'Content-Type: application/json' -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":${calls}}'"
   }
 
-  local ss_json sw_hn
-  ss_json=$(jmap_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["defaultHostname"]},"a"]]')
-  sw_hn=$(printf '%s' "$ss_json" | python3 -c "
+  # The PATCH may trigger a Stalwart pod rollout (rolloutTriggered in
+  # applyMailServerHostnameToStalwart). JMAP reads during the roll hit a
+  # Service with no Ready endpoints and return empty — the run then
+  # fails with "defaultHostname=empty (raw JMAP: )" / "domain-not-found"
+  # against a perfectly healthy rename (caught on testing 2026-06-10).
+  # Settle the rollout first, then retry the read briefly.
+  ssh_cp "kubectl -n mail rollout status deploy/stalwart-mail --timeout=240s" >/dev/null 2>&1 \
+    || warn "hostname: stalwart-mail rollout not settled within 240s (continuing — reads below may catch up)"
+  local ss_json sw_hn _hn_try
+  for _hn_try in 1 2 3 4 5 6; do
+    ss_json=$(jmap_call '[["x:SystemSettings/get",{"ids":["singleton"],"properties":["defaultHostname"]},"a"]]')
+    sw_hn=$(printf '%s' "$ss_json" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -3339,17 +3348,31 @@ try:
 except Exception:
     pass
 " 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$sw_hn" ]] && break
+    sleep 10
+  done
   if [[ "$sw_hn" == "$test_host" ]]; then
     ok "hostname: Stalwart SystemSettings.defaultHostname = ${sw_hn}"
   else
     fail "hostname: Stalwart has defaultHostname=${sw_hn:-empty}, expected ${test_host} (raw JMAP: $(printf '%s' "$ss_json" | head -c 200))"
   fi
 
-  # ── Verify Domain SAN map contains the new prefix ──
+  # ── Verify the new hostname is covered by some Domain row's SAN map ──
+  # Backend contract (2026-06-10): when the rename target has no
+  # pre-existing Domain row, applyMailServerHostnameToStalwart creates a
+  # cert-anchor row NAMED the full hostname, and the post-rename
+  # reconciler tick flips it to Automatic cert management with the SAN
+  # keyed '@' (or the full name — Stalwart normalises both ways). When
+  # a suffix-matching row DOES exist (e.g. a tenant email-domain or the
+  # apex), the SAN lands there keyed by host-prefix. Accept any of these
+  # shapes, and POLL: the reconcile runs in the background after the
+  # Stalwart rollout settles (Longhorn re-attach can take minutes).
   local san_prefix="${test_host%.${apex}}"
-  local domains_json domain_ids
-  domains_json=$(jmap_call '[["x:Domain/query",{},"q"]]')
-  domain_ids=$(printf '%s' "$domains_json" | python3 -c "
+  local san_present="pending" _san_try
+  for _san_try in $(seq 1 36); do
+    local domains_json domain_ids
+    domains_json=$(jmap_call '[["x:Domain/query",{},"q"]]')
+    domain_ids=$(printf '%s' "$domains_json" | python3 -c "
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -3358,30 +3381,40 @@ try:
 except Exception:
     pass
 ")
-  local san_present="domain-not-found"
-  if [[ -n "$domain_ids" ]]; then
-    local domain_get_json
-    domain_get_json=$(jmap_call "[[\"x:Domain/get\",{\"ids\":[${domain_ids}]},\"g\"]]")
-    san_present=$(APEX="$apex" SAN_PREFIX="$san_prefix" printf '%s' "$domain_get_json" | python3 -c "
+    if [[ -n "$domain_ids" ]]; then
+      local domain_get_json
+      domain_get_json=$(jmap_call "[[\"x:Domain/get\",{\"ids\":[${domain_ids}]},\"g\"]]")
+      san_present=$(APEX="$apex" SAN_PREFIX="$san_prefix" TEST_HOST="$test_host" \
+        printf '%s' "$domain_get_json" | python3 -c "
 import sys, json, os
-apex = os.environ['APEX']; needle = os.environ['SAN_PREFIX']
+apex = os.environ['APEX']; needle = os.environ['SAN_PREFIX']; host = os.environ['TEST_HOST']
+seen = []
 try:
     d = json.load(sys.stdin)
     for row in d['methodResponses'][0][1].get('list', []):
-        if row.get('name') == apex:
-            sans = ((row.get('certificateManagement') or {}).get('subjectAlternativeNames') or {})
-            print('yes' if needle in sans else 'no:' + ','.join(sans.keys()))
-            break
+        name = row.get('name', '')
+        sans = ((row.get('certificateManagement') or {}).get('subjectAlternativeNames') or {})
+        seen.append(name + ':' + ','.join(sans.keys()))
+        # apex/suffix row keyed by prefix, or anchor row keyed '@'/full name
+        if name == apex and needle in sans:
+            print('yes'); break
+        if name == host and ('@' in sans or host in sans):
+            print('yes'); break
+        if host in sans:
+            print('yes'); break
     else:
-        print('domain-not-found')
+        print('no:' + '|'.join(seen)[:160])
 except Exception as e:
     print('parse-error:' + str(e)[:80])
 ")
-  fi
+    fi
+    [[ "$san_present" == "yes" ]] && break
+    sleep 10
+  done
   if [[ "$san_present" == "yes" ]]; then
-    ok "hostname: Domain '${apex}' subjectAlternativeNames contains '${san_prefix}'"
+    ok "hostname: a Stalwart Domain row's subjectAlternativeNames covers '${test_host}' (after $((_san_try * 10))s)"
   else
-    fail "hostname: Domain '${apex}' SAN does not contain '${san_prefix}' (got: ${san_present})"
+    fail "hostname: no Domain row SAN covers '${test_host}' after $((_san_try * 10))s (got: ${san_present})"
   fi
 
   # ── Verify the deployment was rolled (a NEW ReplicaSet appeared) ──
@@ -3414,10 +3447,14 @@ except Exception as e:
     fail "hostname: SMTP banner is ${banner_host:-empty}, expected ${test_host}"
   fi
 
-  # ── Wait up to 120s for cert to include the new hostname as SAN ──
+  # ── Wait up to 300s for cert to include the new hostname as SAN ──
+  # ACME issuance starts only after the background reconcile (rollout
+  # settle → tick → AcmeRenewal) flips the anchor Domain to Automatic
+  # management — the SAN poll above already absorbed most of that, but
+  # the LE order itself adds ~15-60s on top.
   attempt=0
   local cert_san=""
-  while [[ $attempt -lt 24 ]]; do
+  while [[ $attempt -lt 60 ]]; do
     cert_san=$(echo | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -servername "$test_host" 2>/dev/null \
       | openssl x509 -noout -ext subjectAltName 2>/dev/null \
       | grep -oE "DNS:[^,]+" | sed 's/DNS://g' | tr -d '[:space:]')
@@ -3428,7 +3465,7 @@ except Exception as e:
   if echo "$cert_san" | grep -q "$test_host"; then
     ok "hostname: cert SAN now covers ${test_host} (full SAN: ${cert_san})"
   else
-    fail "hostname: cert SAN still missing ${test_host} after 120s (got: ${cert_san})"
+    fail "hostname: cert SAN still missing ${test_host} after 300s (got: ${cert_san})"
   fi
 
   # ── Cleanup: restore original hostname ──
@@ -3550,15 +3587,21 @@ scenario_mail_migration_fixes() {
   fi
   ok "PART A: PATCH accepted (200)"
 
-  # Wait 5s for the apiserver to settle, then re-read.
-  sleep 5
-  local now_sched
-  now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  # Poll up to 60s for the SSA apply to land on the CronJob. A single
+  # fixed 5s sleep flaked when platform-api's apply path was busy
+  # mid-suite (standalone the apply lands in <5s — observed on testing
+  # 2026-06-10) — poll instead of widening a blind sleep.
+  local now_sched="" _sa_try
+  for _sa_try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    sleep 5
+    now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    [[ "$now_sched" == "$probe_sched" ]] && break
+  done
   if [[ "$now_sched" != "$probe_sched" ]]; then
-    fail "PART A: live schedule after PATCH = '${now_sched}', expected '${probe_sched}' — applyPatch did not take effect"
+    fail "PART A: live schedule after PATCH = '${now_sched}', expected '${probe_sched}' — applyPatch did not take effect within 60s"
     return 1
   fi
-  ok "PART A: live CronJob.spec.schedule = ${now_sched}"
+  ok "PART A: live CronJob.spec.schedule = ${now_sched} (after $((_sa_try * 5))s)"
 
   # Confirm SSA ownership has actually transferred to platform-api
   # (force:true). Without this assertion, the next Flux reconcile
