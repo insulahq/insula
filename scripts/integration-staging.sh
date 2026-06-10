@@ -118,7 +118,12 @@ if [[ -z "$ADMIN_PASSWORD" ]]; then
   exit 2
 fi
 
-SCENARIO="${1:-all}"
+# One or more scenarios, run in order; "all" expands to the canonical
+# sequence. Scenario state flows in-process (lifecycle writes
+# /tmp/integration.cid that fm/https/reprovision consume), so e.g.
+# `integration-staging.sh lifecycle https` reproduces a single dependent
+# scenario without paying for the full run.
+SCENARIOS=("${@:-all}")
 PASSED=0
 FAILED=0
 FAILURES=()
@@ -715,6 +720,114 @@ _assert_smtp_banner_matches() {
       fail "${tag}: EHLO 250 line names '${ehlo_host}' but greeting was '${banner_host}' / expected '${expected}'"
     fi
   fi
+}
+
+# ── Harness self-ban protection ─────────────────────────────────────
+#
+# The external mail probes (banner asserts on 25/587/465, TLS probes on
+# 465/993, deliverability checks) connect to several mail ports in rapid
+# succession without authenticating — exactly the pattern Stalwart 0.16's
+# `portScanning` detector bans (permanent BlockedIp, accept-then-drop:
+# TCP connects but no banner/ServerHello ever arrives). A full suite run
+# bans its own source IP partway through and every later mail assertion
+# fails with misleading symptoms (535s, "no peer certificate").
+#
+# Fix: before the mail scenarios, register the harness's public IP in
+# Stalwart's x:AllowedIp via JMAP (exec'd inside the Stalwart pod against
+# 127.0.0.1:8080 — loopback bypasses the PROXY-v2 sniff, same pattern as
+# backend/src/modules/mail-admin/purge-blocked-ips.ts). If the IP is
+# ALREADY banned, destroy the entry and recycle the Stalwart pod —
+# BlockedIp entries are read from RocksDB at startup and cached, so a
+# destroy alone does not lift an active ban (verified on testing
+# 2026-06-10).
+#
+# Entirely advisory: any failure here logs a warning and returns 0 — the
+# real mail assertions stay the source of truth.
+_MAIL_HARNESS_ALLOWLISTED=0
+_stalwart_jmap() {
+  # $1 = JMAP request body. Auth is sent as the first stdin line so the
+  # admin password never appears in argv (visible in `ps` on the node).
+  local body="$1"
+  local pod
+  pod=$(ssh_cp "kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null | tr -d '\r[:space:]')
+  [[ -n "$pod" ]] || return 1
+  local pw
+  pw=$(ssh_cp "kubectl get secret -n mail stalwart-admin-creds -o jsonpath='{.data.adminPassword}'" 2>/dev/null | tr -d '\r[:space:]' | base64 -d 2>/dev/null)
+  [[ -n "$pw" ]] || return 1
+  local auth; auth=$(printf 'admin:%s' "$pw" | base64 | tr -d '\n')
+  { printf '%s\n' "$auth"; printf '%s' "$body"; } \
+    | ssh_cp "kubectl exec -i -n mail $pod -c stalwart -- sh -c 'read -r B; cat > /tmp/.harness-jmap; curl -s --max-time 10 -H \"Authorization: Basic \$B\" -H \"Content-Type: application/json\" -X POST --data-binary @/tmp/.harness-jmap http://127.0.0.1:8080/jmap/; rm -f /tmp/.harness-jmap'" 2>/dev/null
+}
+
+_mail_allowlist_harness_ip() {
+  [[ "$_MAIL_HARNESS_ALLOWLISTED" == "1" ]] && return 0
+  if [[ "${MAIL_HARNESS_ALLOWLIST:-1}" != "1" ]]; then
+    log "mail/allowlist: disabled via MAIL_HARNESS_ALLOWLIST=0"
+    return 0
+  fi
+  # Public IP of this harness as the cluster sees it: SSH_CLIENT on the
+  # control host is authoritative when the suite drives a remote cluster
+  # over ssh. When the harness runs ON the control host itself (ssh_cp's
+  # local-exec fallback) the probes are node-local — skip; cluster-
+  # internal sources are covered by the platform's own purge-blocked-ips
+  # rotation hook.
+  local hip=""
+  if [[ -r "$SSH_KEY" ]]; then
+    hip=$(ssh_cp 'echo ${SSH_CLIENT%% *}' 2>/dev/null | tr -d '\r[:space:]')
+  fi
+  if [[ -z "$hip" ]]; then
+    log "mail/allowlist: harness public IP not determinable (local run?) — skipping"
+    return 0
+  fi
+
+  local using='"using":["urn:ietf:params:jmap:core","urn:stalwart:jmap"]'
+  # 1) Already banned? Destroy + recycle the Stalwart pod (ban cache is
+  #    only rebuilt at startup).
+  local blocked
+  blocked=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:BlockedIp/get\",{\"accountId\":\"d333333\",\"ids\":null},\"c0\"]]}")
+  local ban_id
+  ban_id=$(printf '%s' "$blocked" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    for e in d["methodResponses"][0][1].get("list",[]):
+        if e.get("address")==sys.argv[1]:
+            print(e["id"]); break
+except Exception: pass' "$hip" 2>/dev/null)
+  if [[ -n "$ban_id" ]]; then
+    warn "mail/allowlist: harness IP $hip is BANNED by Stalwart (portScanning) — unbanning + recycling pod"
+    _stalwart_jmap "{${using},\"methodCalls\":[[\"x:BlockedIp/set\",{\"accountId\":\"d333333\",\"destroy\":[\"$ban_id\"]},\"c0\"]]}" >/dev/null
+    ssh_cp "kubectl delete pod -n mail -l app=stalwart-mail --wait=false" >/dev/null 2>&1
+    # Advisory wait (no PASS/FAIL accounting — the real mail assertions
+    # downstream are the source of truth).
+    local _w=0
+    while (( _w < 180 )); do
+      if ssh_cp "kubectl get pods -n mail -l app=stalwart-mail" 2>/dev/null | grep -qE '2/2[[:space:]]+Running'; then
+        log "mail/allowlist: stalwart pod back after unban recycle (${_w}s)"
+        break
+      fi
+      sleep 5; _w=$((_w + 5))
+    done
+    (( _w >= 180 )) && warn "mail/allowlist: stalwart pod not back within 180s after recycle"
+  fi
+
+  # 2) Idempotent AllowedIp registration (additions take effect live; no
+  #    restart needed — only ban REMOVAL requires the recycle above).
+  local allowed
+  allowed=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:AllowedIp/get\",{\"accountId\":\"d333333\",\"ids\":null},\"c0\"]]}")
+  if printf '%s' "$allowed" | grep -q "\"address\":\"$hip\""; then
+    log "mail/allowlist: harness IP $hip already in x:AllowedIp"
+  else
+    local created
+    created=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:AllowedIp/set\",{\"accountId\":\"d333333\",\"create\":{\"h1\":{\"address\":\"$hip\",\"reason\":\"integration harness source — exempt from portScanning autoban\"}}},\"c0\"]]}")
+    if printf '%s' "$created" | grep -q '"created"'; then
+      log "mail/allowlist: harness IP $hip registered in x:AllowedIp"
+    else
+      warn "mail/allowlist: could not register $hip (advisory): $(printf '%s' "$created" | head -c 200)"
+    fi
+  fi
+  _MAIL_HARNESS_ALLOWLISTED=1
+  return 0
 }
 
 # Wait until $cmd produces output matching $expect or timeout in $1 s.
@@ -1846,6 +1959,7 @@ scenario_mail() {
     fail "mail/resolve: could not auto-resolve mail host (DNS of mail.<apex> + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
     return 1
   fi
+  _mail_allowlist_harness_ip
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.staging.example.test}"
   local admin_ui_url="${ADMIN_UI_URL:-https://stalwart.staging.example.test}"
@@ -2716,6 +2830,7 @@ scenario_mail_tls() {
     fail "mail-tls/resolve: could not auto-resolve mail host (DNS of ${mail_hostname} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
     return 1
   fi
+  _mail_allowlist_harness_ip
   log "mail-tls: probing ${mail_hostname} via ${mail_host}"
 
   # ── 0. DNS / PTR / DNSBL hygiene — these checks run BEFORE the TLS
@@ -3496,33 +3611,31 @@ else:
   fi
 }
 
-case "$SCENARIO" in
-  all)
+ALL_SCENARIOS=(lifecycle fm https reprovision drain reaper bundle restore
+  mail mail_tls webmail webmail_url_change mail_hostname_rename
+  system_backup redis mail_migration_fixes)
+
+# Expand "all" and build the ordered run list.
+RUN_LIST=()
+for s in "${SCENARIOS[@]}"; do
+  if [[ "$s" == "all" ]]; then
+    RUN_LIST+=("${ALL_SCENARIOS[@]}")
+  else
+    RUN_LIST+=("$s")
+  fi
+done
+
+# DNS prereq once, iff any requested scenario needs the wildcard.
+for s in "${RUN_LIST[@]}"; do
+  if [[ "$s" == "https" ]]; then
     prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
-    run_scenario lifecycle
-    run_scenario fm
-    run_scenario https
-    run_scenario reprovision
-    run_scenario drain
-    run_scenario reaper
-    run_scenario bundle
-    run_scenario restore
-    run_scenario mail
-    run_scenario mail_tls
-    run_scenario webmail
-    run_scenario webmail_url_change
-    run_scenario mail_hostname_rename
-    run_scenario system_backup
-    run_scenario redis
-    run_scenario mail_migration_fixes
-    ;;
-  *)
-    if [[ "$SCENARIO" == "https" || "$SCENARIO" == "all" ]]; then
-      prereq_dns || { echo "DNS prereq failed; aborting"; exit 1; }
-    fi
-    run_scenario "$SCENARIO"
-    ;;
-esac
+    break
+  fi
+done
+
+for s in "${RUN_LIST[@]}"; do
+  run_scenario "$s"
+done
 
 echo
 log "── results ──"
