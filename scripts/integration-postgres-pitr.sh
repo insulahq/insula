@@ -172,10 +172,64 @@ dump_diagnostics() {
   $KUBECTL get cluster -n platform system-db -o yaml 2>/dev/null | head -80 || true
   echo "── pods in platform ns ──"
   $KUBECTL get pod -n platform -l cnpg.io/cluster=system-db -o wide 2>/dev/null || true
+  # An Init-stuck snapshot-recovery pod is the known single-node failure
+  # signature (Longhorn volume-from-snapshot never attaching) — describe
+  # any non-Running cluster pod so the RCA is in the log, not lost with
+  # the cluster state.
+  for p in $($KUBECTL get pod -n platform -l cnpg.io/cluster=system-db \
+      --field-selector=status.phase!=Running -o name 2>/dev/null); do
+    echo "── describe $p (non-Running) ──"
+    $KUBECTL describe -n platform "$p" 2>/dev/null | tail -30 || true
+  done
   echo "── recent events ──"
   $KUBECTL get events -n platform --sort-by='.lastTimestamp' 2>/dev/null | tail -20 || true
   echo "── postgres-restore status ──"
   curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" 2>/dev/null | head -50 || true
+  echo ""
+}
+
+# Best-effort un-brick when the orchestration fails mid-flight. fail()
+# exits immediately, which used to skip BOTH the Flux-resume assertion
+# (step 13) and the temp-cluster/snapshot cleanup (step 11) — leaving the
+# cluster in suspended-Flux limbo with orphaned PITR resources on top of
+# whatever broke. This does NOT touch the system-db cluster itself
+# (recreating/dropping a system DB is an operator decision — see
+# 'STOP before any DROP on a system PVC'); it only restores GitOps flow
+# and removes the orchestrator's scratch resources.
+recover_best_effort() {
+  echo ""
+  echo "── best-effort recovery (orchestration failed mid-flight) ──"
+  # 1. Resume Flux so manifest changes propagate again. If platform-api
+  #    is down (system-db dead) recoverInterruptedRestore can never run,
+  #    so this is the only resume path.
+  local fs
+  fs=$($KUBECTL get kustomization -n flux-system platform -o jsonpath='{.spec.suspend}' 2>/dev/null || echo "missing")
+  if [[ "$fs" = "true" ]]; then
+    $KUBECTL patch kustomization -n flux-system platform --type=merge -p "'{\"spec\":{\"suspend\":false}}'" >/dev/null 2>&1 \
+      && echo "  resumed Flux Kustomization platform/flux-system" \
+      || echo "  WARN: could not resume Flux Kustomization (do it manually!)"
+  else
+    echo "  Flux Kustomization suspend=$fs (no resume needed)"
+  fi
+  # 2. Remove temp PITR clusters + leaked snapshot scratch (fire-and-forget).
+  for c in $($KUBECTL get cluster -n platform -l insula.host/pitr-restore=true -o name 2>/dev/null); do
+    echo "  deleting leftover temp cluster $c"
+    $KUBECTL delete -n platform "$c" --wait=false --timeout=30s 2>&1 | tail -1
+  done
+  for vs in $($KUBECTL get volumesnapshot -n platform -o name 2>/dev/null | grep "pitr-vs-"); do
+    $KUBECTL delete -n platform "$vs" --wait=false --timeout=30s 2>&1 | tail -1
+  done
+  for vsc in $($KUBECTL get volumesnapshotcontent -o name 2>/dev/null | grep "pitr-content-"); do
+    $KUBECTL delete "$vsc" --wait=false --timeout=30s 2>&1 | tail -1
+  done
+  for lh in $($KUBECTL get snapshot.longhorn.io -n longhorn-system -o name 2>/dev/null | grep "pitr-handoff-"); do
+    $KUBECTL delete -n longhorn-system "$lh" --wait=false --timeout=30s 2>&1 | tail -1
+  done
+  echo "  NOTE: system-db itself was NOT touched. If it is unhealthy/missing,"
+  echo "  recover via the tenant-backup/DR runbooks (docs/operations/) or, on a"
+  echo "  disposable cluster, a clean re-bootstrap. Check the describe output"
+  echo "  above for the Init-stuck snapshot-recovery signature (Longhorn"
+  echo "  volume-from-snapshot not attaching)."
   echo ""
 }
 
@@ -200,11 +254,13 @@ while :; do
   if [[ $ELAPSED_POLL -ge $HARD_BUDGET ]]; then
     echo "  [${ELAPSED_POLL}s] HARD-TIMEOUT reached"
     dump_diagnostics
+    recover_best_effort
     fail "PITR hard-timeout: ${ELAPSED_POLL}s elapsed without completion (inProgress=$IN_PROGRESS phase=$CLUSTER_PHASE)"
   fi
   if [[ $STALL -ge $STALL_BUDGET ]]; then
     echo "  [${ELAPSED_POLL}s] STALL: phase $CLUSTER_PHASE held ${STALL}s"
     dump_diagnostics
+    recover_best_effort
     fail "PITR stuck: cluster.phase=$CLUSTER_PHASE held for ${STALL}s with no change (inProgress=$IN_PROGRESS)"
   fi
   sleep 10
@@ -214,7 +270,12 @@ ELAPSED=$TOTAL_ELAPSED  # for final log line
 
 log "8) Confirm source healthy (already verified by status poll above)"
 PHASE_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
-[[ "$PHASE_AFTER" = "Cluster in healthy state" ]] && pass "source healthy: $PHASE_AFTER" || fail "source not healthy: $PHASE_AFTER"
+if [[ "$PHASE_AFTER" != "Cluster in healthy state" ]]; then
+  dump_diagnostics
+  recover_best_effort
+  fail "source not healthy: $PHASE_AFTER"
+fi
+pass "source healthy: $PHASE_AFTER"
 
 log "9) Round-trip assertion: post-snapshot row MUST be gone, pre-snapshot row MUST remain"
 ROW_PRE=$(psql_pg "SELECT label FROM e2e_pitr_marker WHERE id=1;" 2>/dev/null || echo "")
@@ -287,7 +348,9 @@ log "13) Flux Kustomization MUST NOT be left suspended"
 FLUX_SUSPEND=$($KUBECTL get kustomization -n flux-system platform -o jsonpath='{.spec.suspend}' 2>/dev/null || echo "missing")
 if [[ "$FLUX_SUSPEND" = "true" ]]; then
   warn "Flux Kustomization platform/flux-system is suspended — auto-resume failed; forcing resume"
-  $KUBECTL patch kustomization -n flux-system platform --type=merge -p '{"spec":{"suspend":false}}' >/dev/null
+  # NOTE: $KUBECTL goes through ssh — the remote shell re-parses the argv,
+  # so the JSON needs an extra quoting layer or its double quotes get eaten.
+  $KUBECTL patch kustomization -n flux-system platform --type=merge -p "'{\"spec\":{\"suspend\":false}}'" >/dev/null
   fail "PITR left Flux suspended; orchestrator's resume path is broken"
 elif [[ "$FLUX_SUSPEND" = "missing" ]]; then
   warn "Flux Kustomization platform/flux-system not found — skipping suspend assertion"
