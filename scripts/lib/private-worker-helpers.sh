@@ -80,16 +80,26 @@ ssh_cp() {
 
 # ─── polling helpers ──────────────────────────────────────────────────
 
-# wait_for <timeout_seconds> <description> <expected_regex> <command>
+# wait_for <timeout_seconds> <description> <expected_regex> <command> [fail_regex]
 # Re-runs <command> every 4s until its stdout matches <expected_regex>.
 # Calls ok() on success / fail() on timeout. Returns 0/1 accordingly.
+# Optional [fail_regex]: if the command's stdout matches it, ABORT the wait
+# IMMEDIATELY as a terminal failure (return 2) instead of burning the whole
+# timeout — e.g. 'CrashLoopBackOff|Error|ReplicaFailure' so a pod that has
+# clearly died fails the test at second 4, not second 300. Backward
+# compatible: omit it and behaviour is unchanged.
 wait_for() {
-  local timeout="$1" desc="$2" expect="$3" cmd="$4"
-  local i=0
+  local timeout="$1" desc="$2" expect="$3" cmd="$4" fail_rx="${5:-}"
+  local i=0 out
   while (( i < timeout )); do
-    if eval "$cmd" 2>/dev/null | grep -qE "$expect"; then
+    out=$(eval "$cmd" 2>/dev/null)
+    if grep -qE "$expect" <<<"$out"; then
       ok "$desc (after ${i}s)"
       return 0
+    fi
+    if [[ -n "$fail_rx" ]] && grep -qE "$fail_rx" <<<"$out"; then
+      fail "$desc — TERMINAL failure after ${i}s (matched /$fail_rx/)"
+      return 2
     fi
     sleep 4
     i=$((i + 4))
@@ -98,11 +108,12 @@ wait_for() {
   return 1
 }
 
-# wait_for_http <timeout_seconds> <url> <expected_status>
+# wait_for_http <timeout_seconds> <url> <expected_status> [fail_status_regex]
 # Polls curl every 5s until the HTTP status matches. Honours -k for
-# self-signed certs during cert issuance windows.
+# self-signed certs during cert issuance windows. Optional [fail_status_regex]
+# aborts early on a terminal status (e.g. '^4' to bail on any 4xx).
 wait_for_http() {
-  local timeout="$1" url="$2" expected="$3"
+  local timeout="$1" url="$2" expected="$3" fail_rx="${4:-}"
   local i=0
   local code
   while (( i < timeout )); do
@@ -110,6 +121,10 @@ wait_for_http() {
     if [[ "$code" == "$expected" ]]; then
       ok "GET $url returned HTTP $code (after ${i}s)"
       return 0
+    fi
+    if [[ -n "$fail_rx" && "$code" =~ $fail_rx ]]; then
+      fail "GET $url returned HTTP $code (terminal, after ${i}s)"
+      return 2
     fi
     sleep 5
     i=$((i + 5))
