@@ -39,9 +39,51 @@ set -uo pipefail
 # See scripts/integration.env.example.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 load_integration_env
+# shellcheck source=scripts/lib/integration-lib.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-lib.sh"
+
+# ─── runner options (P3 selection + per-suite hard timeout · P4 report) ─
+# Backward-compatible: with no flags the run behaves exactly as before
+# (smoke gate + every suite). Flags let you slice the suite and bound
+# wall-clock per suite so one hung harness can't stall the whole run.
+TIER_FILTER=""        # comma list of suite tiers to include: core,slow,external (empty = all)
+ONLY=""               # comma list of suite names — overrides tiers
+EXCLUDE=""            # comma list of suite names to drop
+LIST=0                # --list: print the resolved selection and exit
+RUN_SMOKE=1           # run smoke-test.sh first and abort on red
+DEFAULT_SUITE_TIMEOUT="${INTEGRATION_SUITE_TIMEOUT:-1800}"  # per-suite hard cap (s)
+REPORT_JSON="${INTEGRATION_REPORT_JSON:-}"                  # machine-readable run report path
+RUN_STARTED_TS=$(date +%s)
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --tier)        TIER_FILTER="$2"; shift 2 ;;
+    --only)        ONLY="$2"; shift 2 ;;
+    --exclude)     EXCLUDE="$2"; shift 2 ;;
+    --timeout)     DEFAULT_SUITE_TIMEOUT="$2"; shift 2 ;;
+    --report-json) REPORT_JSON="$2"; shift 2 ;;
+    --no-smoke)    RUN_SMOKE=0; shift ;;
+    --list)        LIST=1; shift ;;
+    -h|--help)
+      sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      cat <<'USAGE'
+
+Runner flags:
+  --tier <t[,t...]>      run only suites in tiers: core | slow | external
+                         (special: --tier smoke runs ONLY the smoke gate)
+  --only <name[,...]>    run only the named suites (overrides --tier)
+  --exclude <name[,...]> skip the named suites
+  --timeout <seconds>    per-suite hard timeout (default 1800; per-suite overrides apply)
+  --no-smoke             skip the smoke-test.sh pre-gate
+  --report-json <path>   write a machine-readable JSON run report
+  --list                 print the resolved suite selection and exit
+USAGE
+      exit 0 ;;
+    *) echo "unknown arg: $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
 
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
-require_env ADMIN_PASSWORD
+[[ "$LIST" == 1 ]] || require_env ADMIN_PASSWORD
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 
@@ -94,11 +136,13 @@ mint_token() {
     -d "$body" \
     | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null
 }
-reset_admin_password
-INTEGRATION_TOKEN="$(mint_token)"
-[[ -n "$INTEGRATION_TOKEN" ]] || { echo "ERROR: initial login failed" >&2; exit 2; }
-export INTEGRATION_TOKEN
-log "Cached INTEGRATION_TOKEN (sub-scripts will skip per-suite login)"
+if [[ "$LIST" == 0 ]]; then
+  reset_admin_password
+  INTEGRATION_TOKEN="$(mint_token)"
+  [[ -n "$INTEGRATION_TOKEN" ]] || { echo "ERROR: initial login failed" >&2; exit 2; }
+  export INTEGRATION_TOKEN
+  log "Cached INTEGRATION_TOKEN (sub-scripts will skip per-suite login)"
+fi
 
 # Suite layout: SERIAL groups + PARALLEL groups. Layout chosen to keep
 # global-state-mutating suites (staging-all, oidc-dex, postgres-pitr)
@@ -219,10 +263,57 @@ if [[ "${INTEGRATION_INCLUDE_SNAPSHOTS:-}" != "1" ]]; then
   export SKIP_RESTORE_SCENARIO="${SKIP_RESTORE_SCENARIO:-1}"
 fi
 
+# ─── tiering + per-suite timeout metadata (P3) ───────────────────────
+# Tier defaults to 'core'. 'slow' = the long poles (bias them out for a
+# quick sweep); 'external' = needs confidential off-cluster targets (those
+# suites also require_or_skip internally, so they self-skip when unconfigured).
+declare -A SUITE_TIER=(
+  [staging-all]=slow [postgres-pitr]=slow [system-snapshots]=slow
+  [waf-failure]=slow [wal-archive-failure]=slow
+  [backup-rclone-shim]=external [dr-drill-shim]=external
+)
+# Per-suite hard-timeout overrides (seconds). Set comfortably ABOVE the
+# expected max so the timeout catches HANGS, never a legitimately long run.
+declare -A SUITE_TIMEOUT=(
+  [staging-all]=3000 [postgres-pitr]=2400 [system-snapshots]=2400
+)
+suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
+suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }
+_csv_has() { local IFS=','; local x; for x in $1; do [[ "$x" == "$2" ]] && return 0; done; return 1; }
+suite_selected() {
+  local name="$1" tier; tier="$(suite_tier_of "$name")"
+  if [[ -n "$ONLY" ]]; then _csv_has "$ONLY" "$name"; return; fi
+  if [[ -n "$EXCLUDE" ]] && _csv_has "$EXCLUDE" "$name"; then return 1; fi
+  if [[ -n "$TIER_FILTER" && "$TIER_FILTER" != "smoke" ]]; then _csv_has "$TIER_FILTER" "$tier"; return; fi
+  return 0
+}
+filter_group() { local -n _arr="$1"; local e; for e in "${_arr[@]:-}"; do [[ -z "$e" ]] && continue; suite_selected "${e%%:*}" && printf '%s\n' "$e"; done; }
+
+# --tier smoke = ONLY the smoke gate, no suites.
+if [[ "$TIER_FILTER" == "smoke" ]]; then
+  SERIAL_PRE=(); PARALLEL=(); SERIAL_POST=(); RUN_SMOKE=1
+else
+  mapfile -t SERIAL_PRE  < <(filter_group SERIAL_PRE)
+  mapfile -t PARALLEL    < <(filter_group PARALLEL)
+  mapfile -t SERIAL_POST < <(filter_group SERIAL_POST)
+fi
+
+if [[ "$LIST" == 1 ]]; then
+  printf 'Resolved selection (tier_filter=%s only=%s exclude=%s smoke_gate=%s):\n' \
+    "${TIER_FILTER:-<all>}" "${ONLY:-<none>}" "${EXCLUDE:-<none>}" "$RUN_SMOKE"
+  for grp in SERIAL_PRE PARALLEL SERIAL_POST; do
+    declare -n _g="$grp"; printf '  [%s]\n' "$grp"
+    for e in "${_g[@]:-}"; do [[ -z "$e" ]] && continue; n="${e%%:*}"; printf '    %-22s tier=%-8s timeout=%ss\n' "$n" "$(suite_tier_of "$n")" "$(suite_timeout_of "$n")"; done
+  done
+  exit 0
+fi
+
 passed_suites=()
 failed_suites=()
 skipped_suites=()
 reachability_breaks=()
+declare -A SUITE_SECS=()    # name → wall-clock seconds (P4 timing)
+declare -A SUITE_RC=()      # name → exit code
 
 # After every suite, assert the admin panel is still reachable. A
 # suite that errors mid-flight and leaves protect_admin_via_proxy=true
@@ -269,11 +360,13 @@ run_serial_group() {
     read -r -a parts <<< "$cmd"
     local script="${parts[0]}"
     local args=("${parts[@]:1}")
-    log "Suite: $name"
+    local to start; to="$(suite_timeout_of "$name")"; start=$(date +%s)
+    log "Suite: $name (tier=$(suite_tier_of "$name"), hard-timeout ${to}s)"
     set +e
-    ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/$script" "${args[@]}"
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
     set -e
+    SUITE_SECS["$name"]=$(( $(date +%s) - start )); SUITE_RC["$name"]=$rc
     classify_rc "$name" "$rc"
     assert_admin_reachable "$name" || true
   done
@@ -301,9 +394,13 @@ run_parallel_group() {
     read -r -a parts <<< "$cmd"
     local script="${parts[0]}"
     local args=("${parts[@]:1}")
+    local to; to="$(suite_timeout_of "$name")"
     (
-      ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
-      echo $? > "$rcf"
+      _s=$(date +%s)
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
+      _rc=$?
+      echo "$_rc" > "$rcf"
+      echo $(( $(date +%s) - _s )) > "$rcf.secs"
     ) &
     pids+=("$!")
     names+=("$name")
@@ -327,8 +424,10 @@ run_parallel_group() {
     [[ $rc -eq 0 || $rc -eq $SKIP_RC ]] && order+=("$i")
   done
   for i in "${order[@]}"; do
-    local name="${names[$i]}" rc; rc=$(cat "${rcfiles[$i]}" 2>/dev/null || echo 1)
-    log "── output: $name (rc=$rc) ──"
+    local name="${names[$i]}" rc secs; rc=$(cat "${rcfiles[$i]}" 2>/dev/null || echo 1)
+    secs=$(cat "${rcfiles[$i]}.secs" 2>/dev/null || echo 0)
+    SUITE_SECS["$name"]=$secs; SUITE_RC["$name"]=$rc
+    log "── output: $name (rc=$rc, ${secs}s) ──"
     cat "${logfiles[$i]}" 2>/dev/null || echo "  (no output captured)"
     classify_rc "$name" "$rc"
   done
@@ -349,14 +448,48 @@ classify_rc() {
   elif [[ $rc -eq $SKIP_RC ]]; then
     warn "suite $name SKIPPED (precondition not met on this cluster)"
     skipped_suites+=("$name")
+  elif [[ $rc -eq 124 || $rc -eq 137 ]]; then
+    fail "suite $name TIMED OUT (rc=$rc) — exceeded its hard timeout and was killed"
+    failed_suites+=("$name")
   else
     fail "suite $name FAILED (rc=$rc)"
     failed_suites+=("$name")
   fi
 }
 
+# emit_report_json — machine-readable run report (P4). Suite names are
+# slugs and rc/seconds are integers, so direct interpolation is JSON-safe.
+emit_report_json() {
+  local first=1 name
+  printf '{\n  "startedTs": %s,\n  "durationSeconds": %s,\n' \
+    "$RUN_STARTED_TS" "$(( $(date +%s) - RUN_STARTED_TS ))"
+  printf '  "counts": {"passed": %d, "skipped": %d, "failed": %d},\n' \
+    "${#passed_suites[@]}" "${#skipped_suites[@]}" "${#failed_suites[@]}"
+  printf '  "suites": ['
+  for name in "${!SUITE_RC[@]}"; do
+    [[ $first == 1 ]] || printf ','; first=0
+    printf '\n    {"name": "%s", "tier": "%s", "rc": %s, "seconds": %s}' \
+      "$name" "$(suite_tier_of "$name")" "${SUITE_RC[$name]:-0}" "${SUITE_SECS[$name]:-0}"
+  done
+  printf '\n  ],\n  "reachabilityBreaks": %d\n}\n' "${#reachability_breaks[@]}"
+}
+
 # ─── Execute ──────────────────────────────────────────────────────
-run_serial_group "PRE (sequential, mutates global state)" "${SERIAL_PRE[@]}"
+# Smoke gate (P3): a fast health check BEFORE the long suites — fail in
+# seconds, not 40 minutes, if the platform is already broken. --no-smoke skips.
+if [[ "$RUN_SMOKE" == 1 ]]; then
+  log "Smoke gate: scripts/smoke-test.sh (abort on red; --no-smoke to skip)"
+  smoke_rc=0
+  ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=15s 300s "$SCRIPT_DIR/smoke-test.sh" || smoke_rc=$?
+  SUITE_SECS["smoke-gate"]=0; SUITE_RC["smoke-gate"]=$smoke_rc
+  if [[ $smoke_rc -ne 0 && $smoke_rc -ne $SKIP_RC ]]; then
+    fail "smoke gate FAILED (rc=$smoke_rc) — aborting before the suite. Re-run with --no-smoke to bypass."
+    [[ -n "$REPORT_JSON" ]] && emit_report_json > "$REPORT_JSON"
+    exit 1
+  fi
+fi
+
+[[ ${#SERIAL_PRE[@]} -gt 0 ]] && run_serial_group "PRE (sequential, mutates global state)" "${SERIAL_PRE[@]}"
 
 # Refresh the cached token before the parallel batch — group PRE
 # can run 10-15 min on a slow cluster, and the parallel batch then
@@ -367,16 +500,20 @@ INTEGRATION_TOKEN="$(mint_token)"
 [[ -n "$INTEGRATION_TOKEN" ]] || { fail "mid-run re-login failed — aborting"; exit 1; }
 export INTEGRATION_TOKEN
 
-if [[ "$INTEGRATION_PARALLEL" == "1" ]]; then
-  run_parallel_group "PARALLEL (independent tenants)" "${PARALLEL[@]}"
-else
-  warn "INTEGRATION_PARALLEL=0 — running parallel group sequentially"
-  run_serial_group "PARALLEL→serial (override)" "${PARALLEL[@]}"
+if [[ ${#PARALLEL[@]} -gt 0 ]]; then
+  if [[ "$INTEGRATION_PARALLEL" == "1" ]]; then
+    run_parallel_group "PARALLEL (independent tenants)" "${PARALLEL[@]}"
+  else
+    warn "INTEGRATION_PARALLEL=0 — running parallel group sequentially"
+    run_serial_group "PARALLEL→serial (override)" "${PARALLEL[@]}"
+  fi
 fi
 
 # Final refresh + serial post-group.
-INTEGRATION_TOKEN="$(mint_token)" && export INTEGRATION_TOKEN || warn "post-group re-login failed"
-run_serial_group "POST (destructive, terminal)" "${SERIAL_POST[@]}"
+if [[ ${#SERIAL_POST[@]} -gt 0 ]]; then
+  INTEGRATION_TOKEN="$(mint_token)" && export INTEGRATION_TOKEN || warn "post-group re-login failed"
+  run_serial_group "POST (destructive, terminal)" "${SERIAL_POST[@]}"
+fi
 
 log "Final results"
 printf '  %bpassed:%b  %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"
@@ -385,6 +522,14 @@ printf '  %bfailed:%b  %s\n' "$RED" "$RESET" "${#failed_suites[@]}"
 for s in "${passed_suites[@]}";  do printf '    %b✓%b %s\n'  "$GREEN"  "$RESET" "$s"; done
 for s in "${skipped_suites[@]}"; do printf '    %b⊝%b %s\n'  "$YELLOW" "$RESET" "$s"; done
 for s in "${failed_suites[@]}";  do printf '    %b✗%b %s\n'  "$RED"    "$RESET" "$s"; done
+
+# Per-suite wall time (P4) — surface the long poles for future tiering.
+if [[ ${#SUITE_SECS[@]} -gt 0 ]]; then
+  log "Per-suite wall time (slowest first)"
+  for name in "${!SUITE_SECS[@]}"; do printf '%s\t%s\n' "${SUITE_SECS[$name]}" "$name"; done \
+    | sort -rn | awk -v g="$CYAN" -v x="$RESET" '{printf "    %s%5ds%s  %s\n", g, $1, x, $2}'
+  printf '  %btotal wall:%b %ss\n' "$CYAN" "$RESET" "$(( $(date +%s) - RUN_STARTED_TS ))"
+fi
 
 if [[ ${#reachability_breaks[@]} -gt 0 ]]; then
   fail "admin panel was unreachable after ${#reachability_breaks[@]} suite(s):"
@@ -419,6 +564,11 @@ if [[ $leak_rc -eq 1 ]]; then
   failed_suites+=("leak-guard")
 elif [[ $leak_rc -eq 2 ]]; then
   warn "leak guard could not run (no cluster access) — re-check manually"
+fi
+
+# Machine-readable run report (P4) — for the morning report / CI dashboards.
+if [[ -n "$REPORT_JSON" ]]; then
+  emit_report_json > "$REPORT_JSON" && log "JSON report → $REPORT_JSON"
 fi
 
 # Real failures + reachability breaks both fatal.
