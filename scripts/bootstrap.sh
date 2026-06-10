@@ -4272,21 +4272,16 @@ spec:
         name: platform-cluster-config
         optional: false
   patches:
-    # NOTE: largely redundant since k8s/base/database.yaml stopped
-    # declaring spec.instances (CNPG defaults 1; Apply HA patches it
-    # imperatively and the `ssa: merge` annotation keeps Flux off
-    # fields absent from the manifest). Kept as belt-and-suspenders
-    # against the field ever being reintroduced. Target was the stale
-    # pre-PG18 name `postgres` until 2026-06-05 — dead config since the
-    # system-db rename.
-    - patch: |
-        - op: remove
-          path: /spec/instances
-      target:
-        group: postgresql.cnpg.io
-        version: v1
-        kind: Cluster
-        name: system-db
+    # NOTE (2026-06-10): the former `op: remove /spec/instances` patch on the
+    # system-db Cluster was DELETED. k8s/base/database.yaml intentionally OMITS
+    # spec.instances (CNPG defaults 1; Apply HA patches it imperatively and the
+    # `ssa: merge` annotation already keeps Flux off fields absent from the
+    # manifest), so the patch was redundant — AND a JSON6902 `op: remove` on a
+    # field that isn't there FAILS the whole `kustomize build`, which silently
+    # broke Flux reconcile on every fresh cluster ("error in remove for path:
+    # '/spec/instances': Unable to remove nonexistent key"). The patch became
+    # fatal on 2026-06-05 when its target was corrected from the stale
+    # `postgres` name to `system-db` (which exists, but has no instances field).
     # 2026-05-29: strip spec.schedule from Flux's view of the
     # stalwart-snapshot CronJob so Flux never tries to apply it. The
     # field is operator-owned via the /backups/mail?tab=routing UI which
