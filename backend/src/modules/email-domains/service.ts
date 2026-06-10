@@ -249,6 +249,94 @@ export async function enableEmailForDomain(
   return { ...created, domainName: domain.domainName };
 }
 
+/**
+ * Destroy ALL Stalwart-side artifacts for one email domain, in
+ * dependency order: mailbox principals → DkimSignature rows → the
+ * Domain principal itself.
+ *
+ * Why the ordering matters: Stalwart refuses `Domain` destroys with
+ * `objectIsLinked` while member principals or DkimSignatures still
+ * reference the row. Skipping either step doesn't error the caller —
+ * it silently strands the Domain forever (verified live on testing
+ * 2026-06-10: every integration tenant left a `mail-e2e-*` Domain +
+ * DKIM pair behind because the FK-cascade delete paths never invoked
+ * any Stalwart cleanup at all).
+ *
+ * MUST be called while the platform DB rows still exist (it reads
+ * `mailboxes.stalwart_principal_id` for the email domain). Entirely
+ * best-effort: every failure is logged and swallowed — Stalwart
+ * orphans are inert and principals-sync flags them; mail cleanup must
+ * never block a tenant/domain deletion.
+ *
+ * Deliberately NOT a periodic "sweep anything without a platform row"
+ * reconciler: after a PITR restore of the platform DB, Stalwart
+ * domains with real mailboxes would look orphaned and a sweep would
+ * destroy user mail. Deletion intent must come from an explicit
+ * operator action — which is exactly what the three callers are
+ * (email-domain disable, domain delete, tenant delete).
+ */
+export async function destroyStalwartArtifactsForEmailDomain(
+  db: Database,
+  emailDomain: { readonly id: string; readonly stalwartDomainId: string | null },
+): Promise<void> {
+  if (!emailDomain.stalwartDomainId) return;
+  const accountId = await getDomainJmapAccountId();
+  if (!accountId) return;
+
+  // 1. Mailbox principals — Stalwart links them to the Domain and
+  //    refuses the Domain destroy while any remain.
+  const mbRows = await db
+    .select({ id: mailboxes.id, principalId: mailboxes.stalwartPrincipalId })
+    .from(mailboxes)
+    .where(eq(mailboxes.emailDomainId, emailDomain.id));
+  for (const mb of mbRows) {
+    if (!mb.principalId) continue;
+    try {
+      await jmapDestroyPrincipal({
+        accountId,
+        id: mb.principalId,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+    } catch (err) {
+      log.warn(
+        { mailboxId: mb.id, principalId: mb.principalId, err: err instanceof Error ? err.message : String(err) },
+        'Stalwart mailbox principal destroy failed — principal will orphan (principals-sync flags it)',
+      );
+    }
+  }
+
+  // 2. DkimSignature rows — destroying the Domain principal alone
+  //    strands them as registry orphans (observed in the 2026-06-07
+  //    DKIM E2E), and Stalwart refuses the Domain destroy with
+  //    objectIsLinked while they exist.
+  try {
+    await removeAllDkimSignaturesForDomain({
+      accountId,
+      stalwartDomainId: emailDomain.stalwartDomainId,
+      baseUrl: process.env.STALWART_MGMT_URL,
+    });
+  } catch (err) {
+    log.warn(
+      { stalwartDomainId: emailDomain.stalwartDomainId, err: err instanceof Error ? err.message : String(err) },
+      'DkimSignature cleanup failed — rows will orphan',
+    );
+  }
+
+  // 3. The Domain principal itself.
+  try {
+    await jmapDestroyPrincipal({
+      accountId,
+      id: emailDomain.stalwartDomainId,
+      baseUrl: process.env.STALWART_MGMT_URL,
+    });
+  } catch (err) {
+    log.warn(
+      { stalwartDomainId: emailDomain.stalwartDomainId, err: err instanceof Error ? err.message : String(err) },
+      'Stalwart Domain destroy failed (platform row removal proceeds; principals-sync will flag orphan)',
+    );
+  }
+}
+
 export async function disableEmailForDomain(
   db: Database,
   tenantId: string,
@@ -265,40 +353,9 @@ export async function disableEmailForDomain(
     throw new ApiError('EMAIL_DOMAIN_NOT_FOUND', `Email is not enabled for domain '${domainId}'`, 404);
   }
 
-  // Best-effort JMAP domain destroy — failure is not fatal.
-  if (existing.stalwartDomainId) {
-    const accountId = await getDomainJmapAccountId();
-    if (accountId) {
-      try {
-        // Destroy the domain's DkimSignature rows FIRST — destroying the
-        // principal alone strands them as registry orphans (observed in
-        // the 2026-06-07 DKIM E2E). Soft-fail: orphans are inert.
-        try {
-          await removeAllDkimSignaturesForDomain({
-            accountId,
-            stalwartDomainId: existing.stalwartDomainId,
-            baseUrl: process.env.STALWART_MGMT_URL,
-          });
-        } catch (err) {
-          log.warn(
-            { err, stalwartDomainId: existing.stalwartDomainId },
-            'DkimSignature cleanup on disable failed — rows will orphan',
-          );
-        }
-        await jmapDestroyPrincipal({
-          accountId,
-          id: existing.stalwartDomainId,
-          baseUrl: process.env.STALWART_MGMT_URL,
-        });
-      } catch (err) {
-        log.warn({
-          domainId,
-          stalwartDomainId: existing.stalwartDomainId,
-          err: err instanceof Error ? err.message : String(err),
-        }, 'disableEmailForDomain: JMAP destroy failed (platform row deleted; principals-sync will flag orphan)');
-      }
-    }
-  }
+  // Best-effort Stalwart cleanup (mailbox principals → DKIM → Domain)
+  // BEFORE the DB rows vanish — the helper reads mailbox principal ids.
+  await destroyStalwartArtifactsForEmailDomain(db, existing);
 
   await db.delete(emailDomains).where(eq(emailDomains.id, existing.id));
   await deprovisionEmailDns(db, domainId);
