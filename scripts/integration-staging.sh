@@ -134,6 +134,21 @@ fail() { echo -e "  \033[31m✗\033[0m $*"; FAILURES+=("$*"); FAILED=$((FAILED+1
 # fail via DNSBL_STRICT=1 (handled at the call site).
 warn() { echo -e "  \033[33m⚠\033[0m $*"; }
 
+# Mail-deliverability assertion (forward DNS / reverse-PTR FCrDNS). These
+# require provider-side DNS the platform doesn't own (A/AAAA + a PTR record
+# pointing at the mail hostname). On a cluster where that DNS isn't set up
+# (e.g. a fresh testing cluster whose node PTR is still the provider default),
+# set MAIL_DELIVERABILITY_ADVISORY=1 to downgrade these to warnings instead of
+# failing the suite — the deliverability prerequisite is genuinely unmet, not
+# a platform regression. Defaults to FAIL (real deliverability gate).
+mdfail() {
+  if [[ "${MAIL_DELIVERABILITY_ADVISORY:-0}" == "1" ]]; then
+    warn "$* — ADVISORY (MAIL_DELIVERABILITY_ADVISORY=1; provider DNS/PTR not configured)"
+  else
+    fail "$*"
+  fi
+}
+
 login_token() {
   # Honour INTEGRATION_TOKEN (set by integration-all.sh) to skip the
   # redundant per-suite /auth/login round-trip. Standalone runs fall
@@ -507,7 +522,7 @@ _assert_mail_forward_dns() {
   cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   if [[ -z "$dns_all" ]]; then
-    fail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"
+    mdfail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"
     return 1
   fi
   if [[ -z "$cluster_ips" ]]; then
@@ -523,7 +538,7 @@ _assert_mail_forward_dns() {
     fi
   done <<<"$cluster_ips"
   if [[ -n "$missing" ]]; then
-    fail "mail-dns/forward: ${hostname} A/AAAA missing cluster IPs:${missing} (cluster:${cluster_ips//$'\n'/,} dns:${dns_all//$'\n'/,})"
+    mdfail "mail-dns/forward: ${hostname} A/AAAA missing cluster IPs:${missing} (cluster:${cluster_ips//$'\n'/,} dns:${dns_all//$'\n'/,})"
   else
     ok "mail-dns/forward: ${hostname} → ${dns_all//$'\n'/, } (covers every server-role node IP)"
   fi
@@ -554,7 +569,7 @@ _assert_mail_reverse_dns() {
   local hostname; hostname=$(_resolve_mail_hostname)
   local ips; ips=$(_resolve_mail_ips "$hostname")
   if [[ -z "$ips" ]]; then
-    fail "mail-dns/reverse: no mail IPs resolvable (DNS + kubectl both empty); cannot run PTR checks"
+    mdfail "mail-dns/reverse: no mail IPs resolvable (DNS + kubectl both empty); cannot run PTR checks"
     return 1
   fi
   local checked=0
@@ -564,7 +579,7 @@ _assert_mail_reverse_dns() {
     local ptr
     ptr=$(_ws_resolve_ptr "$ip" | head -1 | sed 's/\.$//' || true)
     if [[ -z "$ptr" ]]; then
-      fail "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)"
+      mdfail "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)"
       continue
     fi
     if [[ "$ptr" == "$hostname" ]]; then
@@ -578,7 +593,7 @@ _assert_mail_reverse_dns() {
       if [[ -n "$apex" && "$ptr" == *".${apex}" ]]; then
         warn "mail-dns/reverse: ${ip} → ${ptr} (under .${apex} but NOT exactly ${hostname} — set explicit PTR for best deliverability)"
       else
-        fail "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)"
+        mdfail "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)"
       fi
     fi
   done <<<"$ips"
