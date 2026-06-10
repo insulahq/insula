@@ -17,6 +17,7 @@ import { registerPrivateWorkersLifecycleHook } from './db-private-workers.js';
 import { registerTenantsStatusStampHook } from './db-tenants-stamp.js';
 import { registerIngressHooks } from './k8s-ingress.js';
 import { registerDnsZoneCleanupHook } from './dns-zone-cleanup.js';
+import { registerStalwartEmailCleanupHook } from './stalwart-email-cleanup.js';
 import { registerTenantBundlesBundleCleanupHook } from './tenant-bundles-cleanup.js';
 import { registerClusterScopedRefsCleanupHook } from './cluster-scoped-refs.js';
 import { registerCustomDeploymentsScaleHook } from './k8s-custom-deployments.js';
@@ -59,6 +60,7 @@ export function registerAllLifecycleHooks(): void {
   // — set when a provider outage is causing every delete to slow-fail
   // through retries.
   registerDnsZoneCleanupHook();
+  registerStalwartEmailCleanupHook();
   registerTenantBundlesBundleCleanupHook();
   registerClusterScopedRefsCleanupHook();
 
