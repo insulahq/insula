@@ -1,4 +1,5 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify';
+import { ZodError } from 'zod';
 import { ApiError } from '../shared/errors.js';
 import { errorResponse } from '../shared/response.js';
 import { translateOperatorError } from '../shared/operator-error.js';
@@ -19,6 +20,27 @@ export function errorHandler(
         requestId,
         error.details,
         error.remediation,
+      ),
+    );
+    return;
+  }
+
+  // Raw ZodError from a handler calling `schema.parse()` on request input
+  // (params/body/query). A ZodError reaching here is a client validation
+  // failure — a 400, never a 500. Fastify's own schema validation is handled
+  // below via `error.validation`; this covers the manual-.parse() path that
+  // several routes use (e.g. backup-rclone-shim assignments), which otherwise
+  // fell through to INTERNAL_SERVER_ERROR.
+  if (error instanceof ZodError) {
+    reply.status(400).send(
+      errorResponse(
+        'VALIDATION_ERROR',
+        error.issues
+          .map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`)
+          .join('; '),
+        400,
+        requestId,
+        { validation: error.issues },
       ),
     );
     return;
