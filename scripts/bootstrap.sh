@@ -3839,6 +3839,20 @@ spec:
           # Caught on testing.example.test 2026-05-01.
           podTemplate:
             spec:
+              # Quota exemption: cert-manager creates the solver Pod in
+              # the namespace of the Ingress being challenged — i.e. the
+              # TENANT namespace for per-tenant certs. Tenant
+              # ResourceQuotas are scoped to PriorityClass=tenant-default
+              # (the globalDefault), so without an explicit class the
+              # solver counts against the tenant's plan quota; a tenant
+              # already at 100% of its memory quota can then never issue
+              # or renew a certificate ("exceeded quota" PresentError,
+              # challenge stuck pending). platform-tenant-overhead is
+              # excluded by the quota scopeSelector — same pattern as
+              # file-manager / snapshot / restore Pods. Mirrors
+              # k8s/base/cert-manager/clusterissuer-letsencrypt-http01.yaml.
+              # Caught on the testing cluster 2026-06-10 HTTPS scenario.
+              priorityClassName: platform-tenant-overhead
               tolerations:
                 - key: insula.host/server-only
                   operator: Equal
@@ -3884,6 +3898,20 @@ spec:
           # Caught on testing.example.test 2026-05-01.
           podTemplate:
             spec:
+              # Quota exemption: cert-manager creates the solver Pod in
+              # the namespace of the Ingress being challenged — i.e. the
+              # TENANT namespace for per-tenant certs. Tenant
+              # ResourceQuotas are scoped to PriorityClass=tenant-default
+              # (the globalDefault), so without an explicit class the
+              # solver counts against the tenant's plan quota; a tenant
+              # already at 100% of its memory quota can then never issue
+              # or renew a certificate ("exceeded quota" PresentError,
+              # challenge stuck pending). platform-tenant-overhead is
+              # excluded by the quota scopeSelector — same pattern as
+              # file-manager / snapshot / restore Pods. Mirrors
+              # k8s/base/cert-manager/clusterissuer-letsencrypt-http01.yaml.
+              # Caught on the testing cluster 2026-06-10 HTTPS scenario.
+              priorityClassName: platform-tenant-overhead
               tolerations:
                 - key: insula.host/server-only
                   operator: Equal
