@@ -49,6 +49,13 @@ if [[ -n "$REMOTE_HOST" ]]; then
   echo "Copying bootstrap script to $REMOTE_HOST..."
   scp "${SSH_OPTS[@]}" "$0" "${SSH_USER}@${REMOTE_HOST}:/tmp/bootstrap.sh"
 
+  # Clean stale staging dirs from a PRIOR --remote bootstrap of this node.
+  # `scp -r lib host:/tmp/lib` NESTS into /tmp/lib/lib/ when /tmp/lib already
+  # exists, so the remote bootstrap then fails with "phase library missing at
+  # /tmp/lib/bootstrap-phases.sh". Removing them first guarantees scp recreates
+  # them at the expected paths. (Observed on a clean re-bootstrap 2026-06-10.)
+  ssh "${SSH_OPTS[@]}" "${SSH_USER}@${REMOTE_HOST}" 'rm -rf /tmp/lib /tmp/platform' || true
+
   # Also copy the lib/ sibling dir so resources the script reads at
   # runtime (e.g. lib/secrets-denylist.jq used by the Tier-1 bundle
   # generator) resolve as `${dirname $0}/lib/...` on the remote. Without
@@ -6506,15 +6513,30 @@ apply_platform_manifests() {
   # after Longhorn settled).
   wait_for_admission_webhooks
 
-  # Clone repo if not already in it
+  # Clone repo if not already in it.
   local repo_dir=""
   if [[ -f "k8s/base/kustomization.yaml" ]]; then
     repo_dir="."
-  elif [[ -f "/opt/insula/k8s/base/kustomization.yaml" ]]; then
-    repo_dir="/opt/insula"
   else
-    log "Cloning platform repository..."
-    git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+    # Not running from a repo checkout → ensure a FRESH /opt/insula. Do NOT
+    # blindly reuse an existing checkout: a stale one from a prior bootstrap
+    # can be missing newer overlays (observed 2026-06-10 — an old /opt/insula
+    # lacked k8s/overlays/development/kustomization.yaml → "Overlay development
+    # not found"). Refresh an existing git clone to the default-branch tip, or
+    # (re-)clone from scratch.
+    if [[ -d "/opt/insula/.git" ]]; then
+      log "Refreshing existing /opt/insula clone to origin HEAD..."
+      if ! { git -C /opt/insula fetch --depth 1 origin HEAD 2>/dev/null \
+             && git -C /opt/insula reset --hard FETCH_HEAD 2>/dev/null; }; then
+        log "  refresh failed — re-cloning"
+        rm -rf /opt/insula
+        git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+      fi
+    else
+      log "Cloning platform repository..."
+      rm -rf /opt/insula
+      git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+    fi
     repo_dir="/opt/insula"
   fi
 

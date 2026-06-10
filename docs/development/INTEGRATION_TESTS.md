@@ -71,3 +71,54 @@ apex, and the RFC 5737 documentation IP ranges (`192.0.2.x`, `198.51.100.x`,
 2. In the harness, gate the dependent work with
    `require_or_skip "<what it does>" VAR1 VAR2 …`.
 3. Never commit the real value — it goes in your local `scripts/integration.env`.
+
+## Running the suite: tiers, timeouts, fail-fast, timing
+
+The runner (`integration-all.sh`) is fast-by-default and slice-able. With no flags
+it behaves exactly as before (smoke gate + every suite); the flags let you scope a
+run and bound its wall-clock.
+
+```bash
+./scripts/integration-all.sh --list                 # show the resolved selection (no cluster needed)
+./scripts/integration-all.sh --tier core             # skip the slow + external suites
+./scripts/integration-all.sh --only pvc,grow         # just these suites
+./scripts/integration-all.sh --exclude postgres-pitr # everything but this
+./scripts/integration-all.sh --tier smoke            # only the smoke gate
+./scripts/integration-all.sh --report-json out.json  # machine-readable run report
+./scripts/integration-all.sh --no-smoke              # skip the pre-gate
+```
+
+- **Tiers.** Each suite is `core` (default), `slow` (the long poles — `staging-all`,
+  `postgres-pitr`, …), or `external` (needs confidential off-cluster targets; those
+  also `require_or_skip` internally). `--tier`, `--only`, `--exclude` filter the run.
+- **Smoke gate.** `smoke-test.sh` runs first and the run **aborts on red** — fail in
+  seconds, not 40 minutes, when the platform is already broken (`--no-smoke` skips).
+- **Per-suite hard timeout.** Every suite runs under `timeout` (default 1800s,
+  per-suite overrides via `SUITE_TIMEOUT`/`--timeout`). A hung harness is **killed
+  and reported as `TIMED OUT`** instead of stalling the whole run forever.
+- **Timing + JSON.** The run prints a per-suite "slowest first" table and, with
+  `--report-json`, emits `{counts, suites:[{name,tier,rc,seconds}], …}`.
+
+### Fail-fast polling in a harness (stop waiting the full deadline)
+
+The chronic time-sink inside harnesses is a poll loop that waits the **entire**
+deadline even after the thing it waits on has already entered a terminal failure
+(`CrashLoopBackOff`, `task=failed`, `ReplicaFailure`). Two helpers fix this with a
+`FAIL_RX` lever — match it and the wait aborts immediately:
+
+```bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-lib.sh"
+
+# il_wait_for <deadline_s> <desc> <ok_rx> <fail_rx|-> <cmd-string>
+il_wait_for 300 "tenant pod Ready" 'Running' 'CrashLoopBackOff|Error' \
+  "kubectl -n $ns get pod -l app=$app -o wide"      # fails at ~4s if it crashes
+
+il_wait_http 600 "https://$host/" 200 '^4'           # bail on any 4xx
+```
+
+`lib/private-worker-helpers.sh`'s `wait_for`/`wait_for_http` take the same optional
+`fail_rx` as a trailing arg (backward compatible). **Prefer these over a hand-rolled
+`while … sleep N` loop**: a fixed `sleep 300` both slows the happy path and hides a
+failure until the deadline. `lib/integration-lib.sh` also provides counters
+(`il_ok/il_fail/il_skip/il_summary`), per-phase timing (`il_phase_begin/_end`), and
+cleanup-trap registration (`il_on_cleanup` + `trap il_run_cleanups EXIT`).
