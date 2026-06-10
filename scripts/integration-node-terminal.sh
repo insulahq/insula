@@ -296,18 +296,30 @@ if [[ $NEG_ONLY -eq 0 ]]; then
         // /proc/1/comm shows the HOST PID 1 (k3s, kubelet, init, etc.)
         // — never our container's 'sleep'. Universally available; no
         // dependency on machine-id which Alpine variants omit.
-        send({ type: 'stdin', data: 'whoami; hostname; cat /proc/1/comm\\n' });
-        // Give the host shell ~5s to execute + return output before
-        // closing. (Using a marker fails because the TTY echoes the
-        // command back including the marker, racing the real output.)
-        // 5s — comfortable headroom for slow nodes / busy clusters.
+        //
+        // The host shell is a tmux session on an alternate screen: it floods
+        // the stream with init/cursor sequences and (on a slow/contended
+        // single node) isn't ready for input immediately. So settle first,
+        // then send the probe, then POLL the stream for the literal 'root'
+        // (the whoami output and/or a root@ prompt — either proves a root
+        // host shell) up to 25s. A single fixed-5s read raced the init flood
+        // and missed the command output entirely on single-node clusters.
         setTimeout(() => {
-          const lines = buffer.split('\\n')
-            .map(l => l.replace(/\\r$/, ''))
-            .filter(l => l.length > 0 && !l.includes('whoami;') && !l.includes('# '));
-          console.log('LINES ' + JSON.stringify(lines));
-          ws.close();
-        }, 5000);
+          send({ type: 'stdin', data: 'whoami; hostname; cat /proc/1/comm\\n' });
+          let waited = 0;
+          const iv = setInterval(() => {
+            waited += 500;
+            if (buffer.includes('root') || waited >= 25000) {
+              clearInterval(iv);
+              if (buffer.includes('root')) console.log('B3_ROOT_OK');
+              const lines = buffer.split('\\n')
+                .map(l => l.replace(/\\r$/, ''))
+                .filter(l => l.length > 0 && !l.includes('whoami;') && !l.includes('# '));
+              console.log('LINES ' + JSON.stringify(lines));
+              ws.close();
+            }
+          }, 500);
+        }, 2500);
       }
     });
   " 2>&1 || true)"
@@ -321,15 +333,13 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   LINES_JSON="$(echo "$WS_OUT" | grep '^LINES ' | tail -1 | sed 's/^LINES //')"
   if [[ -n "$LINES_JSON" ]]; then
     ALL_LINES="$(echo "$LINES_JSON" | jq -r '.[]')"
-    # The PTY emits terminal init/escape sequences (tmux, DEC private modes,
-    # OSC) interleaved with the command output, so the `whoami` result lands
-    # on the same line as escape bytes. Strip ANSI/OSC/control bytes before
-    # matching — B3's documented intent is "stdout CONTAINS root".
-    ALL_LINES_CLEAN="$(printf '%s' "$ALL_LINES" \
-      | sed -E 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g; s/\x1b\][^\x07\x1b]*(\x07|\x1b\\)//g; s/\x1b[=>NO()][0-9A-Za-z]?//g' \
-      | tr -d '[:cntrl:]')"
-    if echo "$ALL_LINES_CLEAN" | grep -qw 'root'; then
-      pass "B3 whoami → root"
+    # B3: a root host shell. The tmux alternate-screen rendering makes
+    # line-by-line parsing of the result unreliable (the whoami output lands
+    # among cursor/init escape sequences), so the presence check happens in
+    # the node poller, which watches the raw stream for the literal 'root'
+    # (whoami output and/or a root@ prompt) and emits B3_ROOT_OK.
+    if echo "$WS_OUT" | grep -q '^B3_ROOT_OK$'; then
+      pass "B3 whoami → root (root host shell confirmed)"
     else
       fail "B3 whoami did not return root: $ALL_LINES"
     fi
@@ -450,7 +460,11 @@ if [[ $NEG_ONLY -eq 0 && -n "${SESSION_ID:-}" ]]; then
   # DinD that's `docker exec hosting-platform-k3s-server-1 kubectl`;
   # for staging it's just `kubectl` with the right context.
   KUBECTL_CMD="${KUBECTL:-kubectl}"
-  EMAIL="${ADMIN_EMAIL_OVERRIDE:-admin@k8s-platform.test}"
+  # The user whose step-up we stale MUST be the admin we authenticate as,
+  # otherwise the NULL UPDATE hits a different (or non-existent) row and the
+  # real token stays fresh → no STEP_UP_REQUIRED. Default to ADMIN_EMAIL (the
+  # account the suite logs in with), not the local-dev placeholder.
+  EMAIL="${ADMIN_EMAIL_OVERRIDE:-${ADMIN_EMAIL:-admin@k8s-platform.test}}"
   # Inline-test that the kubectl bridge actually reaches our database.
   if $KUBECTL_CMD --namespace="$NAMESPACE" exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "SELECT 1" >/dev/null 2>&1; then
     SAVED_AT="$($KUBECTL_CMD --namespace=$NAMESPACE exec system-db-1 -c postgres -- psql -U postgres -d platform -t -A -c "SELECT to_char(last_step_up_at,'YYYY-MM-DD HH24:MI:SS.US') FROM users WHERE email='$EMAIL'" 2>/dev/null | head -1)"
