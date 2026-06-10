@@ -3384,10 +3384,14 @@ except Exception:
     if [[ -n "$domain_ids" ]]; then
       local domain_get_json
       domain_get_json=$(jmap_call "[[\"x:Domain/get\",{\"ids\":[${domain_ids}]},\"g\"]]")
-      san_present=$(APEX="$apex" SAN_PREFIX="$san_prefix" TEST_HOST="$test_host" \
-        printf '%s' "$domain_get_json" | python3 -c "
-import sys, json, os
-apex = os.environ['APEX']; needle = os.environ['SAN_PREFIX']; host = os.environ['TEST_HOST']
+      # NB: pass dynamic values via sys.argv, NEVER via env prefixes on a
+      # pipeline — `VAR=x printf … | python3` binds the env to printf,
+      # not python, and the resulting KeyError fires OUTSIDE the try
+      # (stdout empty, failure reads as `got: `). Caught live 2026-06-10;
+      # matches the workstation-probe convention in this file.
+      san_present=$(printf '%s' "$domain_get_json" | python3 -c "
+import sys, json
+apex, needle, host = sys.argv[1], sys.argv[2], sys.argv[3]
 seen = []
 try:
     d = json.load(sys.stdin)
@@ -3406,7 +3410,7 @@ try:
         print('no:' + '|'.join(seen)[:160])
 except Exception as e:
     print('parse-error:' + str(e)[:80])
-")
+" "$apex" "$san_prefix" "$test_host")
     fi
     [[ "$san_present" == "yes" ]] && break
     sleep 10
@@ -3616,14 +3620,37 @@ scenario_mail_migration_fixes() {
   fi
 
   # Force a Flux reconcile RIGHT NOW so we don't have to wait the natural 5-10m.
+  #
+  # Contract (corrected 2026-06-10): spec.schedule is REQUIRED on
+  # create, so it cannot be stripped from Flux's apply, and no valid
+  # `kustomize.toolkit.fluxcd.io/ssa` policy protects a manifest-present
+  # field (the previously-asserted `IgnoreConflicts` is not a valid
+  # policy — Flux silently treated it as Override, so the old
+  # "schedule SURVIVED forced Flux reconcile" assertion was testing a
+  # mechanism that never worked; it only ever passed when the
+  # reconciler's 5-min tick happened to land inside the 10s sleep).
+  # The real contract is EVENTUAL consistency: Flux reverts to the
+  # manifest default, and the snapshot-cronjob scheduler re-asserts the
+  # operator value within its 5-minute interval. Assert exactly that.
   ssh_cp "flux reconcile kustomization platform -n flux-system --with-source --timeout=60s" >/dev/null 2>&1 || true
   sleep 10
   local post_flux
   post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   if [[ "$post_flux" == "$probe_sched" ]]; then
-    ok "PART A: schedule SURVIVED forced Flux reconcile (= ${post_flux})"
+    ok "PART A: schedule survived the forced Flux reconcile directly (= ${post_flux})"
   else
-    fail "PART A: Flux reconcile reverted schedule to '${post_flux}' (regression of SSA-ownership fix)"
+    log "PART A: Flux reverted schedule to '${post_flux}' (expected — manifest-present required field); waiting for the 5-min reconciler to re-assert the operator value"
+    local _ec_try
+    for _ec_try in $(seq 1 42); do
+      sleep 10
+      post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      [[ "$post_flux" == "$probe_sched" ]] && break
+    done
+    if [[ "$post_flux" == "$probe_sched" ]]; then
+      ok "PART A: reconciler re-asserted operator schedule after Flux revert (= ${post_flux}, within $((_ec_try * 10))s)"
+    else
+      fail "PART A: operator schedule NOT re-asserted within $((_ec_try * 10))s of Flux revert (live='${post_flux}', expected '${probe_sched}') — the 5-min snapshot-cronjob scheduler self-heal is broken"
+    fi
   fi
 
   # Restore original schedule via the same UI-facing endpoint.

@@ -17,16 +17,21 @@
  *      same column applyMailSnapshotRetention reads, NOT the legacy
  *      system_settings.mailSnapshotSchedule)
  *      under the SAME field manager the operator PATCH uses
- *      (platform-api.snapshot-settings). This CLAIMS SSA ownership of
- *      the field on startup so that the Flux Kustomization-CR patch
- *      removing /spec/schedule leaves a valid live value — without an
- *      owner, a FRESH bootstrap's stripped (schedule-less) apply fails
- *      the apiserver's required-field validation and the `platform`
- *      Kustomization never goes Ready.
+ *      (platform-api.snapshot-settings).
  *
- * Flux strips BOTH /spec/schedule and /spec/suspend from its apply
- * (scripts/bootstrap.sh Kustomization CR), so it never reverts either
- * field. This reconciler + the operator PATCH are the sole owners.
+ * Ownership reality (corrected 2026-06-10): Flux strips ONLY
+ * /spec/suspend from its apply (scripts/bootstrap.sh Kustomization CR).
+ * /spec/schedule CANNOT be stripped — it is required on create, and a
+ * schedule-less apply pins the platform Kustomization at Ready=False on
+ * fresh bootstrap. The CronJob's `kustomize.toolkit.fluxcd.io/ssa`
+ * annotation cannot protect a manifest-present field either (Merge
+ * still asserts manifest values; the previously-used `IgnoreConflicts`
+ * is not a valid policy at all and silently meant Override). So every
+ * Flux reconcile reverts spec.schedule to the manifest default, and
+ * THIS reconciler's 5-minute tick is what re-asserts the operator
+ * value — eventual consistency with a ≤5-min revert window per Flux
+ * pass, verified live on testing 2026-06-10. For /spec/suspend the
+ * strip works and this reconciler + operator PATCH are the sole owners.
  */
 
 import { eq } from 'drizzle-orm';
