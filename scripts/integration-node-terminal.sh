@@ -321,7 +321,14 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   LINES_JSON="$(echo "$WS_OUT" | grep '^LINES ' | tail -1 | sed 's/^LINES //')"
   if [[ -n "$LINES_JSON" ]]; then
     ALL_LINES="$(echo "$LINES_JSON" | jq -r '.[]')"
-    if echo "$ALL_LINES" | grep -qx 'root'; then
+    # The PTY emits terminal init/escape sequences (tmux, DEC private modes,
+    # OSC) interleaved with the command output, so the `whoami` result lands
+    # on the same line as escape bytes. Strip ANSI/OSC/control bytes before
+    # matching — B3's documented intent is "stdout CONTAINS root".
+    ALL_LINES_CLEAN="$(printf '%s' "$ALL_LINES" \
+      | sed -E 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g; s/\x1b\][^\x07\x1b]*(\x07|\x1b\\)//g; s/\x1b[=>NO()][0-9A-Za-z]?//g' \
+      | tr -d '[:cntrl:]')"
+    if echo "$ALL_LINES_CLEAN" | grep -qw 'root'; then
       pass "B3 whoami → root"
     else
       fail "B3 whoami did not return root: $ALL_LINES"
