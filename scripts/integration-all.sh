@@ -187,7 +187,7 @@ PARALLEL=(
   # (reconnect contract). Requires NODE_TERMINAL_ENABLED=true on the
   # target platform-api and step-up freshness — pass --bump-freshness
   # via env or pre-bump via INTEGRATION_TOKEN. ~90s.
-  "node-terminal:integration-node-terminal.sh"
+  "node-terminal:integration-node-terminal.sh --bump-freshness"
   # R-X5: universal backup-rclone-shim drain orchestration. Exercises
   # list / status / assign / drain-now plus 4 negative paths. Uses a
   # disposable backup_configurations row pointing at dev minio (or a
