@@ -1110,19 +1110,28 @@ scenario_reprovision() {
   # Wait up to 90s for the cascade cleanup to drain orphan PVs.
   # The cascade runs in the background after DELETE returns
   # (polls up to 60s for PVCs to release). Adding a 30s margin.
+  #
+  # Scope: ONLY PVs claimed by tenant-* namespaces. A cluster-wide
+  # Released count also trips on PVs this scenario has nothing to do
+  # with — e.g. the old platform/system-db PV that a postgres-pitr run
+  # deliberately leaves Released with reclaimPolicy=Retain (system PVs
+  # are excluded from the Released-PV janitor by design; 'STOP before
+  # any DROP on a system PVC'). Caught in the 2026-06-10 full pass:
+  # the suite ran after postgres-pitr for the first time and failed on
+  # the PITR artifact, not on its own tenant.
   local i=0 stranded=999
   while (( i < 90 )); do
-    stranded=$(ssh_cp "kubectl get pv 2>&1 | grep -c Released" 2>/dev/null || echo 0)
+    stranded=$(ssh_cp "kubectl get pv -o jsonpath='{range .items[?(@.status.phase==\"Released\")]}{.spec.claimRef.namespace}{\"\n\"}{end}'" 2>/dev/null | grep -c '^tenant-' || echo 0)
     stranded=$(echo "$stranded" | head -n1 | tr -d '[:space:]')
     [[ "${stranded:-0}" -eq 0 ]] && break
     sleep 4; i=$((i + 4))
   done
   if [[ "${stranded:-0}" -gt 0 ]]; then
-    fail "$stranded Released PVs still around after 90s — re-provisioning will conflict"
+    fail "$stranded tenant Released PVs still around after 90s — re-provisioning will conflict"
     ssh_cp "kubectl get pv | grep Released" | head -3
     return 1
   fi
-  ok "no stranded Released PVs (after ${i}s)"
+  ok "no stranded tenant Released PVs (after ${i}s)"
 
   # Re-create with a fresh client name (same email is fine post-delete).
   scenario_lifecycle
