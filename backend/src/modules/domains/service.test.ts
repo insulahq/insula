@@ -35,7 +35,10 @@ vi.mock('../../db/schema.js', () => ({
 vi.mock('./k8s-ingress.js', () => ({ reconcileIngress: vi.fn() }));
 vi.mock('../certificates/service.js', () => ({ deleteDomainCertificate: vi.fn(), ensureDomainCertificate: vi.fn() }));
 vi.mock('../ingress-routes/service.js', () => ({ createRoute: vi.fn(), getIngressSettings: vi.fn() }));
-vi.mock('../email-domains/service.js', () => ({ removeWebmailIngress: vi.fn() }));
+vi.mock('../email-domains/service.js', () => ({
+  removeWebmailIngress: vi.fn(),
+  destroyStalwartArtifactsForEmailDomain: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock('../dns-servers/service.js', () => ({
   getActiveServersForDomain: vi.fn().mockResolvedValue([]),
   getProviderForServer: vi.fn(),

@@ -9,7 +9,7 @@ import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomai
 import { reconcileIngress } from './k8s-ingress.js';
 import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
-import { removeWebmailIngress } from '../email-domains/service.js';
+import { removeWebmailIngress, destroyStalwartArtifactsForEmailDomain } from '../email-domains/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDomainInput, UpdateDomainInput } from './schema.js';
@@ -523,7 +523,7 @@ export async function deleteDomain(
   // The FK cascades from migration 0020 handle the actual row removal
   // atomically when we delete the domains row below.
   const edRows = await db
-    .select({ id: emailDomains.id })
+    .select({ id: emailDomains.id, stalwartDomainId: emailDomains.stalwartDomainId })
     .from(emailDomains)
     .where(eq(emailDomains.domainId, domainId));
   const edIds = edRows.map((r) => r.id);
@@ -582,6 +582,16 @@ export async function deleteDomain(
     } catch {
       // Non-blocking — logged inside the cert module
     }
+  }
+
+  // Stalwart-side cleanup (mailbox principals → DKIM → Domain
+  // principal) BEFORE the FK cascade removes the rows the helper
+  // reads. The SQL cascade only ever touched the platform DB — every
+  // deleted domain used to strand its Stalwart Domain + DKIM rows
+  // forever (caught on testing 2026-06-10). Best-effort: failures are
+  // logged inside the helper and never block the delete.
+  for (const ed of edRows) {
+    await destroyStalwartArtifactsForEmailDomain(db, ed);
   }
 
   // Delete domain from DB. Migration 0020 added ON DELETE CASCADE for

@@ -182,3 +182,37 @@ Then make every platform-owned hostname + TLS cert + DNS record follow
 static `${DOMAIN}` dependency for renameable surfaces). Phasing: PR-1 settings
 split (no behaviour change) → PR-2 repoint consumers → PR-3 (3a–3g) full turnkey
 rename. Key design risk: GitOps-owned `${DOMAIN}` vs a runtime rename (doc §5).
+
+## R17 — Mail housekeeping follow-ups (2026-06-10 single-node green-up)
+
+Three small items deferred from the 2026-06-10 integration green-up
+(PRs #22–#28 + the Stalwart orphan-cleanup PR):
+
+1. **Snapshot-schedule true ownership split.** `spec.schedule` on the
+   `stalwart-snapshot` CronJob cannot be protected from Flux: it is
+   required-on-create (cannot be stripped from the apply) and no valid
+   `kustomize.toolkit.fluxcd.io/ssa` policy preserves a manifest-present
+   field (`IgnoreConflicts`, shipped 2026-05-29, is not a valid policy at
+   all — Flux silently used Override). Current mitigation: the 5-minute
+   reconciler plus a 30-second drift fast path re-assert the operator
+   value, so the revert window is ≤~30 s. The structural fix is a
+   create-vs-update split (e.g. platform-api owns the whole CronJob and
+   Flux only seeds it, or `IfNotPresent` plus reconciler-owned template
+   updates) so Flux never asserts the field in the first place.
+
+2. **Rename-away cert-anchor cleanup.** Each mail-hostname rename to a
+   fresh host creates a platform-owned cert-anchor Domain row (+ DKIM
+   pair) in Stalwart; renaming away leaves the old anchor behind
+   forever. Auto-deletion is deliberately out (a Domain row may carry
+   real mailboxes after a platform-DB PITR rollback) — the right shape
+   is mail-drift surfacing: a `kind=orphan-domain` drift finding with an
+   operator-confirmed delete action, mirroring the missing-master
+   pattern (mig 0053). Tenant/domain-delete leaks are already fixed
+   deterministically (destroyStalwartArtifactsForEmailDomain).
+
+3. **PITR Released-PV accumulation.** Every postgres-pitr auto-promote
+   leaves the previous `system-db` PV `Released` with
+   `reclaimPolicy=Retain` (deliberate safety net — excluded from the
+   Released-PV janitor by design). Repeated runs accumulate 20 Gi each.
+   Needs an operator-facing surface (storage page badge + delete action
+   after N days / after a verified restore) rather than silent growth.
