@@ -735,11 +735,12 @@ _assert_smtp_banner_matches() {
 # Fix: before the mail scenarios, register the harness's public IP in
 # Stalwart's x:AllowedIp via JMAP (exec'd inside the Stalwart pod against
 # 127.0.0.1:8080 — loopback bypasses the PROXY-v2 sniff, same pattern as
-# backend/src/modules/mail-admin/purge-blocked-ips.ts). If the IP is
-# ALREADY banned, destroy the entry and recycle the Stalwart pod —
-# BlockedIp entries are read from RocksDB at startup and cached, so a
-# destroy alone does not lift an active ban (verified on testing
-# 2026-06-10).
+# backend/src/modules/mail-admin/purge-blocked-ips.ts). BOTH the allow
+# and the ban list are read from RocksDB at Stalwart startup and cached
+# — a destroy doesn't lift an active ban and a fresh allow entry is
+# invisible to the running process (both verified live on testing
+# 2026-06-10) — so the helper recycles the Stalwart pod whenever it
+# changed either list.
 #
 # Entirely advisory: any failure here logs a warning and returns 0 — the
 # real mail assertions stay the source of truth.
@@ -781,8 +782,32 @@ _mail_allowlist_harness_ip() {
   fi
 
   local using='"using":["urn:ietf:params:jmap:core","urn:stalwart:jmap"]'
-  # 1) Already banned? Destroy + recycle the Stalwart pod (ban cache is
-  #    only rebuilt at startup).
+
+  # 1) Idempotent AllowedIp registration FIRST. Like the ban list, the
+  #    allow list is read from RocksDB at Stalwart startup and cached —
+  #    an entry created after pod start is invisible to the running
+  #    process (verified live 2026-06-10: the autoban re-fired on an IP
+  #    registered post-start). Registering before the ban check means
+  #    the recycle below (or any later restart) loads it.
+  local allow_created=0
+  local allowed
+  allowed=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:AllowedIp/get\",{\"accountId\":\"d333333\",\"ids\":null},\"c0\"]]}")
+  if printf '%s' "$allowed" | grep -q "\"address\":\"$hip\""; then
+    log "mail/allowlist: harness IP $hip already in x:AllowedIp"
+  else
+    local created
+    created=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:AllowedIp/set\",{\"accountId\":\"d333333\",\"create\":{\"h1\":{\"address\":\"$hip\",\"reason\":\"integration harness source — exempt from portScanning autoban\"}}},\"c0\"]]}")
+    if printf '%s' "$created" | grep -q '"created"'; then
+      log "mail/allowlist: harness IP $hip registered in x:AllowedIp"
+      allow_created=1
+    else
+      warn "mail/allowlist: could not register $hip (advisory): $(printf '%s' "$created" | head -c 200)"
+    fi
+  fi
+
+  # 2) Already banned? Destroy the entry. Either condition — an active
+  #    ban OR a freshly created allow entry — requires a pod recycle for
+  #    the running process to see it (both lists are startup-cached).
   local blocked
   blocked=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:BlockedIp/get\",{\"accountId\":\"d333333\",\"ids\":null},\"c0\"]]}")
   local ban_id
@@ -795,36 +820,24 @@ try:
             print(e["id"]); break
 except Exception: pass' "$hip" 2>/dev/null)
   if [[ -n "$ban_id" ]]; then
-    warn "mail/allowlist: harness IP $hip is BANNED by Stalwart (portScanning) — unbanning + recycling pod"
+    warn "mail/allowlist: harness IP $hip is BANNED by Stalwart (portScanning) — unbanning"
     _stalwart_jmap "{${using},\"methodCalls\":[[\"x:BlockedIp/set\",{\"accountId\":\"d333333\",\"destroy\":[\"$ban_id\"]},\"c0\"]]}" >/dev/null
+  fi
+
+  if [[ -n "$ban_id" || "$allow_created" == "1" ]]; then
+    log "mail/allowlist: recycling stalwart pod so the startup-cached allow/ban lists reload"
     ssh_cp "kubectl delete pod -n mail -l app=stalwart-mail --wait=false" >/dev/null 2>&1
     # Advisory wait (no PASS/FAIL accounting — the real mail assertions
     # downstream are the source of truth).
     local _w=0
     while (( _w < 180 )); do
       if ssh_cp "kubectl get pods -n mail -l app=stalwart-mail" 2>/dev/null | grep -qE '2/2[[:space:]]+Running'; then
-        log "mail/allowlist: stalwart pod back after unban recycle (${_w}s)"
+        log "mail/allowlist: stalwart pod back after recycle (${_w}s)"
         break
       fi
       sleep 5; _w=$((_w + 5))
     done
     (( _w >= 180 )) && warn "mail/allowlist: stalwart pod not back within 180s after recycle"
-  fi
-
-  # 2) Idempotent AllowedIp registration (additions take effect live; no
-  #    restart needed — only ban REMOVAL requires the recycle above).
-  local allowed
-  allowed=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:AllowedIp/get\",{\"accountId\":\"d333333\",\"ids\":null},\"c0\"]]}")
-  if printf '%s' "$allowed" | grep -q "\"address\":\"$hip\""; then
-    log "mail/allowlist: harness IP $hip already in x:AllowedIp"
-  else
-    local created
-    created=$(_stalwart_jmap "{${using},\"methodCalls\":[[\"x:AllowedIp/set\",{\"accountId\":\"d333333\",\"create\":{\"h1\":{\"address\":\"$hip\",\"reason\":\"integration harness source — exempt from portScanning autoban\"}}},\"c0\"]]}")
-    if printf '%s' "$created" | grep -q '"created"'; then
-      log "mail/allowlist: harness IP $hip registered in x:AllowedIp"
-    else
-      warn "mail/allowlist: could not register $hip (advisory): $(printf '%s' "$created" | head -c 200)"
-    fi
   fi
   _MAIL_HARNESS_ALLOWLISTED=1
   return 0
@@ -1961,8 +1974,12 @@ scenario_mail() {
   fi
   _mail_allowlist_harness_ip
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
-  local webmail_url="${WEBMAIL_URL:-https://webmail.staging.example.test}"
-  local admin_ui_url="${ADMIN_UI_URL:-https://stalwart.staging.example.test}"
+  # Derive defaults from the apex under test (matches scenario_webmail's
+  # convention) — a hardcoded example-host default silently probes a
+  # nonexistent vhost (curl 000) whenever the operator sets
+  # MAIL_DOMAIN_APEX but not WEBMAIL_URL/ADMIN_UI_URL.
+  local webmail_url="${WEBMAIL_URL:-https://webmail.${mail_domain_apex}}"
+  local admin_ui_url="${ADMIN_UI_URL:-https://stalwart.${mail_domain_apex}}"
 
   # Convenience: track test client so the EXIT trap can clean it up.
   local mail_cid=""
@@ -2071,13 +2088,30 @@ scenario_mail() {
   fi
 
   # ── Step 6: create a test mailbox ───────────────────────────────
+  # ADR-049 (login passwords): the typed `password` field is retired —
+  # mailbox credentials are Stalwart app passwords. Create auto-issues
+  # the first one and returns its cleartext `secret` exactly once as
+  # `initialLoginPassword` in the create response; every IMAP/SMTP/
+  # webmail login below MUST use that secret. (The old typed-password
+  # body made every auth probe fail 535 against a healthy Stalwart —
+  # caught on testing 2026-06-10.)
   local mb_local="e2e${stamp}"
   local mb_resp; mb_resp=$(api POST "/tenants/$mail_cid/email/domains/$mail_edid/mailboxes" \
-    "{\"local_part\":\"$mb_local\",\"password\":\"$mail_box_pass\",\"quota_mb\":100}")
+    "{\"local_part\":\"$mb_local\",\"quota_mb\":100}")
   mail_mbid=$(echo "$mb_resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$mail_mbid" ]] || { fail "mail/mailbox: create failed: $(echo "$mb_resp" | head -c 400)"; cleanup_mail; return 1; }
   mail_box_user="${mb_local}@${test_domain}"
-  ok "mail/mailbox: created mbid=$mail_mbid addr=$mail_box_user"
+  local initial_lp; initial_lp=$(echo "$mb_resp" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+lp=(d.get('data') or {}).get('initialLoginPassword') or {}
+print(lp.get('secret',''))" 2>/dev/null)
+  if [[ -n "$initial_lp" ]]; then
+    mail_box_pass="$initial_lp"
+    ok "mail/mailbox: created mbid=$mail_mbid addr=$mail_box_user (initial login password issued)"
+  else
+    fail "mail/mailbox: create returned no initialLoginPassword.secret — auth probes below cannot authenticate: $(echo "$mb_resp" | head -c 300)"
+  fi
 
   # Wait for status=active (Stalwart writes the account on provision)
   wait_for 60 "mail/mailbox: status=active" '"status":"active"' \
