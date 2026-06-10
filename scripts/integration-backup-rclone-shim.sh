@@ -74,6 +74,10 @@ done
 API_BASE="${API_BASE:-https://admin.k8s-platform.test:2011}"
 ADMIN_HOST="${ADMIN_HOST:-$API_BASE}"
 CURL_INSECURE="${CURL_INSECURE:-1}"
+# kubectl command — point KUBECTL at scripts/lib/kubectl-remote.sh (SSH wrapper)
+# when running from a workstation against a remote cluster whose API :6443 is
+# firewall-scoped. Bare `kubectl` only works on a node with a live context.
+KUBECTL="${KUBECTL:-kubectl}"
 
 source "$(dirname "$0")/lib/integration-token.sh"
 
@@ -153,14 +157,14 @@ fi
 skip "A2: drain_timeout_seconds default — covered by integration DB test"
 
 # A3: shim DaemonSet exists.
-if kubectl -n platform get daemonset backup-rclone-shim >/dev/null 2>&1; then
+if $KUBECTL -n platform get daemonset backup-rclone-shim >/dev/null 2>&1; then
   pass "A3: shim DaemonSet found in platform namespace"
 else
   skip "A3: kubectl unavailable or DaemonSet missing — shim not yet deployed"
 fi
 
 # A4: backup-target-key Secret reachable.
-if kubectl -n platform get secret backup-target-key >/dev/null 2>&1; then
+if $KUBECTL -n platform get secret backup-target-key >/dev/null 2>&1; then
   pass "A4: backup-target-key Secret found"
 else
   skip "A4: backup-target-key Secret missing — bootstrap.sh must run first"
@@ -224,7 +228,7 @@ if [[ -n "$TARGET_ID" ]]; then
 
   # C4: Status CM should converge within 30s.
   for _ in $(seq 1 15); do
-    sc=$(kubectl -n platform get cm backup-rclone-shim-status -o jsonpath='{.data.state}' 2>/dev/null || echo "")
+    sc=$($KUBECTL -n platform get cm backup-rclone-shim-status -o jsonpath='{.data.state}' 2>/dev/null || echo "")
     if [[ "$sc" == "STATE_OK" ]]; then break; fi
     sleep 2
   done
@@ -235,7 +239,7 @@ if [[ -n "$TARGET_ID" ]]; then
   fi
 
   # C5: DaemonSet annotation bump.
-  ch=$(kubectl -n platform get ds backup-rclone-shim -o jsonpath='{.spec.template.metadata.annotations.insula\.host/config-hash}' 2>/dev/null || echo "")
+  ch=$($KUBECTL -n platform get ds backup-rclone-shim -o jsonpath='{.spec.template.metadata.annotations.insula\.host/config-hash}' 2>/dev/null || echo "")
   if [[ -n "$ch" ]]; then
     pass "C5: DaemonSet config-hash annotation set: ${ch:0:12}…"
   else

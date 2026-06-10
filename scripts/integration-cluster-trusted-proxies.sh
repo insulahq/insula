@@ -105,10 +105,15 @@ api() {
         "kubectl run -n default --rm -i --restart=Never --image=curlimages/curl:latest $pod_name -- curl -sk -X $method -H 'Authorization: Bearer $TOKEN' -w '\nHTTP_STATUS=%{http_code}' $API_BASE$path" 2>&1
     fi
   else
+    # --retry absorbs the brief TLS/connection outage when a trusted-proxy
+    # change rolls the Traefik DaemonSet. On a single-node cluster there's
+    # one Traefik pod, so the roll is a short full outage (curl 35) rather
+    # than the rolling-with-quorum behaviour on multi-node — retry rides it out.
+    local retry=(--retry 6 --retry-all-errors --retry-delay 3 --retry-connrefused --connect-timeout 10 --max-time 60)
     if [[ -n "$body" ]]; then
-      curl -s -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body" -w '\nHTTP_STATUS=%{http_code}'
+      curl -s "${retry[@]}" -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d "$body" -w '\nHTTP_STATUS=%{http_code}'
     else
-      curl -s -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN" -w '\nHTTP_STATUS=%{http_code}'
+      curl -s "${retry[@]}" -X "$method" "$API_BASE$path" -H "Authorization: Bearer $TOKEN" -w '\nHTTP_STATUS=%{http_code}'
     fi
   fi
 }
