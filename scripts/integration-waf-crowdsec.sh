@@ -181,25 +181,54 @@ JSEOF
   return 0
 }
 
-# Issue an API call via curl from inside the cluster (so harness works
-# even if the admin Ingress hostname isn't resolvable from outside).
-api_internal() {
-  local method="$1" path="$2" body="${3:-}"
-  local rnd; rnd=$(next_nonce)
-  if [[ -z "$body" ]]; then
-    kubectl_run "run waf-cs-h-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -X $method -H 'Authorization: Bearer $TOKEN' http://platform-api.platform.svc:3000/api/v1$path" 2>&1 | tail -1
-  else
-    # Use --data-binary to preserve newlines / quotes (passes body via
-    # stdin to avoid nested shell-quoting hell).
-    local tmpfile
-    tmpfile=$(mktemp)
-    printf '%s' "$body" > "$tmpfile"
-    scp -i "$SSH_KEY" -q "$tmpfile" "$SSH_HOST:/tmp/.harness-body-$rnd" >/dev/null
+# Issue an API call from INSIDE the platform-api pod, against localhost:3000.
+#
+# Why not an ad-hoc curl pod: platform-api's NetworkPolicy only admits :3000
+# from labelled backup/restore Job pods in tenant/mail namespaces, so a generic
+# `waf-cs-*` curl pod is denied (connection times out). Running the request from
+# WITHIN platform-api hits its own loopback (not subject to the ingress netpol),
+# and — crucially for the J-series X-Real-IP / trusted-proxy assertions — the
+# request still does NOT originate from a trusted proxy, so the header-trust
+# semantics are identical to the old in-cluster-pod approach.
+#
+# platform-api's container ('api') has no curl/wget, but it runs node 22 (which
+# has fetch). We exec `node` there (the same trick api_login already uses to
+# mint a JWT). The body + every header value travel via ENV (and the body via a
+# file when it contains a single quote) so injection payloads like `; rm -rf /`
+# can't break out of the shell quoting.
+_PA_POD=""
+_pa_pod() {
+  [[ -n "$_PA_POD" ]] || _PA_POD=$(kubectl_run "get pods -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null | tr -d '\r')
+  printf '%s' "$_PA_POD"
+}
+
+# _api_exec WANT METHOD PATH [BODY] [XRI]
+#   WANT = body | status. Returns the response body or the HTTP status code.
+_api_exec() {
+  local want="$1" method="$2" path="$3" body="${4:-}" xri="${5:-}"
+  local pod; pod=$(_pa_pod)
+  [[ -n "$pod" ]] || { echo "NO_PLATFORM_API_POD"; return 1; }
+  local js='const e=process.env;const o={method:e.M,headers:{Authorization:"Bearer "+e.TOK}};if(e.HASBODY==="1"){o.headers["Content-Type"]="application/json";o.body=require("fs").readFileSync("/tmp/.wcs-body","utf8");}if(e.XRI)o.headers["X-Real-IP"]=e.XRI;fetch("http://localhost:3000/api/v1"+e.P,o).then(async r=>{const t=await r.text();process.stdout.write(e.W==="status"?String(r.status):t);}).catch(x=>{process.stderr.write(String(x));process.exit(1);});'
+  local hasbody=0
+  if [[ -n "$body" ]]; then
+    hasbody=1
+    local tmpfile; tmpfile=$(mktemp); printf '%s' "$body" > "$tmpfile"
+    scp -i "$SSH_KEY" -q "$tmpfile" "$SSH_HOST:/tmp/.wcs-body-src" >/dev/null 2>&1
     rm -f "$tmpfile"
-    kubectl_run "run waf-cs-h-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- sh -c 'curl -sk -X $method -H \"Authorization: Bearer $TOKEN\" -H \"Content-Type: application/json\" --data-binary @- http://platform-api.platform.svc:3000/api/v1$path' < /tmp/.harness-body-$rnd" 2>&1 | tail -1
-    ssh_run "rm -f /tmp/.harness-body-$rnd"
+    kubectl_run "cp /tmp/.wcs-body-src platform/$pod:/tmp/.wcs-body" >/dev/null 2>&1
+  fi
+  # Header/body values go through env (single-quoted for the remote shell); the
+  # JS itself contains no untrusted data. Values here (method, path, token, xri)
+  # are harness-controlled and validated, never raw request payloads.
+  ssh_run "kubectl exec -n platform $pod -c api -- env M='$method' P='$path' TOK='$TOKEN' XRI='$xri' HASBODY='$hasbody' W='$want' node -e '$js'" 2>/dev/null
+  if [[ "$hasbody" == 1 ]]; then
+    kubectl_run "exec -n platform $pod -c api -- rm -f /tmp/.wcs-body" >/dev/null 2>&1 || true
+    ssh_run "rm -f /tmp/.wcs-body-src" >/dev/null 2>&1 || true
   fi
 }
+
+api_internal()        { _api_exec body   "$1" "$2" "${3:-}" "${4:-}"; }
+api_internal_status() { _api_exec status "$1" "$2" "${3:-}" "${4:-}"; }
 
 # Probe a Traefik pod by its pod IP via an ephemeral curl pod pinned to
 # the same node (so the curl→Traefik hop stays node-local and the source
@@ -694,7 +723,7 @@ else
 fi
 
 # Allowlist — invalid value (rm-rf shell-injection shape) → 400
-inv_rc=$(kubectl_run "run waf-cs-h-invalid-allow-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"value\":\"; rm -rf /\",\"scope\":\"Ip\",\"comment\":\"shell injection attempt\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/allowlist" 2>&1 | tail -1)
+inv_rc=$(api_internal_status POST /admin/security/crowdsec/allowlist '{"value":"; rm -rf /","scope":"Ip","comment":"shell injection attempt"}')
 if [[ "$inv_rc" == "400" ]]; then
   ok "invalid allowlist value rejected (400)"
 else
@@ -984,7 +1013,7 @@ fi
 # still accepts ONLY 409, so a genuine 200/4xx still fails.
 dupe_rc=""
 for _i in 1 2 3 4 5; do
-  dupe_rc=$(kubectl_run "run waf-cs-h-dupe-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+  dupe_rc=$(api_internal_status POST /admin/security/waf-rule-exclusions "{\"ruleId\":\"$F4_RULE_ID\",\"hostnameRegex\":\"$F4_HOST_REGEX\",\"scope\":\"args_names_only\",\"reason\":\"dup test\"}")
   if [[ "$dupe_rc" =~ ^[0-9]{3}$ ]]; then
     break
   fi
@@ -997,7 +1026,7 @@ else
 fi
 
 # H9: Invalid regex (unbalanced paren) → 400
-inv_rc=$(kubectl_run "run waf-cs-h-invalid-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"930120\",\"hostnameRegex\":\"^bad(regex\",\"scope\":\"args_names_only\",\"reason\":\"invalid regex\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+inv_rc=$(api_internal_status POST /admin/security/waf-rule-exclusions '{"ruleId":"930120","hostnameRegex":"^bad(regex","scope":"args_names_only","reason":"invalid regex"}')
 if [[ "$inv_rc" == "400" ]]; then
   ok "F4: invalid regex rejected (400)"
 else
@@ -1005,7 +1034,7 @@ else
 fi
 
 # H10: Quote-injection blocked at validator
-qi_rc=$(kubectl_run "run waf-cs-h-inj-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"930120\",\"hostnameRegex\":\"^evil\\\".*\",\"scope\":\"args_names_only\",\"reason\":\"injection\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+qi_rc=$(api_internal_status POST /admin/security/waf-rule-exclusions '{"ruleId":"930120","hostnameRegex":"^evil\\".*","scope":"args_names_only","reason":"injection"}')
 if [[ "$qi_rc" == "400" ]]; then
   ok "F4: quote-injection regex rejected (400)"
 else
@@ -1014,7 +1043,7 @@ fi
 
 # H10b: Trailing-backslash (CRITICAL — would CrashLoopBackOff modsec-crs)
 # Caught by Zod's .refine(regexParseable) since `new RegExp('foo\\')` throws.
-tb_rc=$(kubectl_run "run waf-cs-h-tb-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X POST -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -d '{\"ruleId\":\"930120\",\"hostnameRegex\":\"api\\\\.example\\\\.com\\\\\",\"scope\":\"args_names_only\",\"reason\":\"trailing backslash test\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/waf-rule-exclusions" 2>&1 | tail -1)
+tb_rc=$(api_internal_status POST /admin/security/waf-rule-exclusions '{"ruleId":"930120","hostnameRegex":"api\\.example\\.com\\","scope":"args_names_only","reason":"trailing backslash test"}')
 if [[ "$tb_rc" == "400" ]]; then
   ok "F4: trailing-backslash regex rejected (400)"
 else
@@ -1600,7 +1629,7 @@ phase "Phase J — L4 operator-IP-trust guard"
 # repeat doesn't muddy state.
 untrusted_rc=""
 for _i in 1 2 3; do
-  untrusted_rc=$(kubectl_run "run waf-cs-j-untrusted-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.7' -d '{\"mode\":\"enforce\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1 | tail -1)
+  untrusted_rc=$(api_internal_status PATCH /admin/security/crowdsec/l4-enforcement '{"mode":"enforce"}' 198.51.100.7)
   if [[ -n "$untrusted_rc" && "$untrusted_rc" =~ ^[0-9]{3}$ ]]; then break; fi
   sleep 2
 done
@@ -1611,7 +1640,7 @@ else
 fi
 
 # Verify the rejection message body explicitly mentions OPERATOR_IP_NOT_TRUSTED.
-untrusted_body=$(kubectl_run "run waf-cs-j-body-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.8' -d '{\"mode\":\"enforce\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1)
+untrusted_body=$(api_internal PATCH /admin/security/crowdsec/l4-enforcement '{"mode":"enforce"}' 198.51.100.8)
 if echo "$untrusted_body" | grep -q '"OPERATOR_IP_NOT_TRUSTED"'; then
   ok "L4: rejection body carries error code OPERATOR_IP_NOT_TRUSTED"
 else
@@ -1620,7 +1649,7 @@ fi
 
 # Even when target is dryrun, untrusted-IP PATCH should succeed
 # (dryrun is always allowed — no kernel writes).
-dryrun_rc=$(kubectl_run "run waf-cs-j-dr-$(next_nonce) -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -X PATCH -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json' -H 'X-Real-IP: 198.51.100.9' -d '{\"mode\":\"dryrun\"}' http://platform-api.platform.svc:3000/api/v1/admin/security/crowdsec/l4-enforcement" 2>&1 | tail -1)
+dryrun_rc=$(api_internal_status PATCH /admin/security/crowdsec/l4-enforcement '{"mode":"dryrun"}' 198.51.100.9)
 if [[ "$dryrun_rc" == "200" ]]; then
   ok "L4: untrusted-IP PATCH to dryrun allowed (200) — dryrun is always safe"
 else
