@@ -208,33 +208,59 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
     }
 
     // Stalwart Domain + Listener self-heal — runs after every hostname
-    // save so the operator doesn't have to wait for the 60s reconciler
-    // tick. Idempotent: ensures the x:Domain entry, AcmeProvider,
-    // Automatic certificateManagement with the new SAN, the three
-    // required listeners (http-acme/submission/imap), and fires
-    // AcmeRenewal. Non-blocking — any failure is logged and the
-    // scheduled tick will retry. Skips silently if k8s isn't wired
-    // (test/dev contexts).
+    // save so the operator doesn't have to wait for the scheduled
+    // 30-min reconciler tick. Idempotent: ensures the x:Domain entry,
+    // AcmeProvider, Automatic certificateManagement with the new SAN,
+    // the three required listeners (http-acme/submission/imap), and
+    // fires AcmeRenewal. Skips silently if k8s isn't wired (test/dev
+    // contexts).
+    //
+    // MUST run AFTER the rollout the rename itself triggered has
+    // settled: the tick exec's into the Stalwart pod, and during the
+    // roll there is no Ready pod, so the tick used to bail without
+    // ever flipping the fresh cert-anchor Domain to Automatic cert
+    // management — leaving the renamed hostname without TLS until the
+    // 30-min scheduler tick (caught live on testing 2026-06-10: rename
+    // logged sanAdded=true, but Stalwart silently drops the SAN merge
+    // on a Manual-management row, and the inline tick raced the
+    // rollout and no-op'd). Fire-and-forget so the PATCH response
+    // doesn't block 1-4 min on the Longhorn volume re-attach.
     if (k8s && parsed.data.mailServerHostname !== undefined) {
-      try {
-        const { runStalwartDomainReconcilerTick } = await import(
-          '../mail-admin/stalwart-domain-reconciler.js'
-        );
-        await runStalwartDomainReconcilerTick({
-          core: k8s.core,
-          custom: k8s.custom,
-          db: app.db,
-          logger: {
-            warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
-            info: (...args: unknown[]) => app.log.info(args.join(' ')),
-          },
-        });
-      } catch (err) {
-        app.log.warn(
-          { err },
-          'webmail-settings: inline Stalwart domain reconcile failed (scheduler will retry)',
-        );
-      }
+      const k8sClients = k8s;
+      void (async () => {
+        try {
+          const { waitForStalwartRollout } = await import(
+            '../mail-admin/rollout-wait.js'
+          );
+          // 300s: covers Longhorn RWO detach/re-attach on single-node
+          // (observed up to ~4.5 min under churn).
+          await waitForStalwartRollout(k8sClients.apps, { timeoutMs: 300_000 });
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'webmail-settings: Stalwart rollout not settled before inline reconcile — running tick anyway (it self-skips without a Ready pod; scheduler will retry)',
+          );
+        }
+        try {
+          const { runStalwartDomainReconcilerTick } = await import(
+            '../mail-admin/stalwart-domain-reconciler.js'
+          );
+          await runStalwartDomainReconcilerTick({
+            core: k8sClients.core,
+            custom: k8sClients.custom,
+            db: app.db,
+            logger: {
+              warn: (...args: unknown[]) => app.log.warn(args.join(' ')),
+              info: (...args: unknown[]) => app.log.info(args.join(' ')),
+            },
+          });
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'webmail-settings: inline Stalwart domain reconcile failed (scheduler will retry)',
+          );
+        }
+      })();
     }
 
     // Phase 3.B.3: if the global rate limit default was changed,
