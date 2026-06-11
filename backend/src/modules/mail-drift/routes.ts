@@ -11,9 +11,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   mailDriftRecreateRequestSchema,
+  mailDriftDeleteOrphanRequestSchema,
   type MailDriftListResponse,
   type MailDriftDismissResponse,
   type MailDriftRecreateResponse,
+  type MailDriftDeleteOrphanResponse,
 } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
@@ -22,6 +24,7 @@ import {
   listDriftItems,
   dismissDriftItem,
   recreateDriftItemEmpty,
+  deleteOrphanDomain,
 } from './service.js';
 
 const idParamSchema = z.object({ id: z.string().uuid() });
@@ -78,6 +81,38 @@ export async function registerMailDriftRoutes(app: FastifyInstance): Promise<voi
         'mail-drift: operator-triggered RECREATE EMPTY (destructive)',
       );
       const result = await recreateDriftItemEmpty(
+        app.db,
+        parsedParams.data.id,
+        parsedBody.data.confirmName,
+      );
+      return success(result);
+    },
+  );
+
+  // POST /admin/mail/drift/:id/delete-orphan — DESTRUCTIVE (R17.2).
+  //   Deletes an orphaned Stalwart Domain principal + its DkimSignature
+  //   rows. kind='orphan-domain' only; type-to-confirm guarded; the
+  //   service REFUSES domains that still have member principals
+  //   (ORPHAN_HAS_PRINCIPALS) — see deleteOrphanDomain for the safety
+  //   rationale (PITR-rollback false orphans).
+  app.post(
+    '/admin/mail/drift/:id/delete-orphan',
+    { preHandler: requireRole('super_admin') },
+    async (req): Promise<{ data: MailDriftDeleteOrphanResponse }> => {
+      const parsedParams = idParamSchema.safeParse(req.params);
+      if (!parsedParams.success) {
+        throw new ApiError('VALIDATION_ERROR', `Invalid drift item id: ${parsedParams.error.message}`, 400);
+      }
+      const parsedBody = mailDriftDeleteOrphanRequestSchema.safeParse(req.body);
+      if (!parsedBody.success) {
+        throw new ApiError('VALIDATION_ERROR', `Invalid delete-orphan request: ${parsedBody.error.message}`, 400);
+      }
+      const userId = (req as { user?: { sub?: string } }).user?.sub ?? 'unknown';
+      app.log.warn(
+        { userId, driftItemId: parsedParams.data.id, confirmName: parsedBody.data.confirmName },
+        'mail-drift: operator-triggered ORPHAN DOMAIN DELETE (destructive)',
+      );
+      const result = await deleteOrphanDomain(
         app.db,
         parsedParams.data.id,
         parsedBody.data.confirmName,
