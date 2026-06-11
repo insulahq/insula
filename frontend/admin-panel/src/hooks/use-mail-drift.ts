@@ -4,11 +4,13 @@ import type {
   MailDriftListResponse,
   MailDriftDismissResponse,
   MailDriftRecreateResponse,
+  MailDriftDeleteOrphanResponse,
 } from '@insula/api-contracts';
 
 interface ListEnvelope { readonly data: MailDriftListResponse }
 interface DismissEnvelope { readonly data: MailDriftDismissResponse }
 interface RecreateEnvelope { readonly data: MailDriftRecreateResponse }
+interface DeleteOrphanEnvelope { readonly data: MailDriftDeleteOrphanResponse }
 
 const QUERY_KEY = ['mail', 'drift'] as const;
 
@@ -48,6 +50,27 @@ export function useRecreateMailDriftEmpty() {
       void qc.invalidateQueries({ queryKey: QUERY_KEY });
       // Mail health may reflect the new entry; also invalidate.
       void qc.invalidateQueries({ queryKey: ['mail', 'health'] });
+    },
+  });
+}
+
+/**
+ * delete-orphan (R17.2): destroy an orphaned Stalwart Domain principal
+ * (kind='orphan-domain') + its DKIM rows. Type-to-confirm enforced by
+ * the modal; the server backstops with CONFIRM_NAME_MISMATCH and
+ * refuses domains that still carry member principals
+ * (ORPHAN_HAS_PRINCIPALS — possible PITR-rollback false orphan).
+ */
+export function useDeleteOrphanDomain() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, confirmName }: { id: string; confirmName: string }) =>
+      apiFetch<DeleteOrphanEnvelope>(`/api/v1/admin/mail/drift/${id}/delete-orphan`, {
+        method: 'POST',
+        body: JSON.stringify({ confirmName }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: QUERY_KEY });
     },
   });
 }

@@ -432,3 +432,132 @@ export async function recreateDriftItemEmpty(
     followUp,
   };
 }
+
+/**
+ * delete-orphan (R17.2): destroy an orphaned Stalwart Domain principal
+ * (kind='orphan-domain') and its DkimSignature rows.
+ *
+ * Safety model:
+ *   - Type-to-confirm: caller supplies the domain name; mismatch → 400.
+ *   - Only the 'orphan-domain' kind is deletable here — the other kinds
+ *     describe MISSING Stalwart entries (nothing to delete).
+ *   - DkimSignature rows are destroyed FIRST (Stalwart refuses linked
+ *     Domain destroys with objectIsLinked) — but member PRINCIPALS are
+ *     deliberately NOT touched: a Domain still carrying mailbox
+ *     principals fails the final destroy and surfaces
+ *     ORPHAN_HAS_PRINCIPALS. That is the safety net against deleting a
+ *     domain that only LOOKS orphaned (e.g. after a platform-DB PITR
+ *     rollback) but holds real user mail.
+ */
+export async function deleteOrphanDomain(
+  db: Database,
+  id: string,
+  confirmName: string,
+): Promise<{ item: MailDriftItem; dkimSignaturesDeleted: number }> {
+  const [item] = await db
+    .select()
+    .from(mailDriftItems)
+    .where(and(eq(mailDriftItems.id, id), isNull(mailDriftItems.resolvedAt)));
+  if (!item) {
+    throw new ApiError('DRIFT_ITEM_NOT_FOUND', `No unresolved drift item with id '${id}'`, 404);
+  }
+  if (item.kind !== 'orphan-domain') {
+    throw new ApiError(
+      'INVALID_DRIFT_ACTION',
+      `delete-orphan only applies to kind='orphan-domain' (this item is '${item.kind}' — its Stalwart entry is MISSING, there is nothing to delete)`,
+      400,
+    );
+  }
+  if (confirmName.trim().toLowerCase() !== item.expectedName.toLowerCase()) {
+    throw new ApiError(
+      'CONFIRM_NAME_MISMATCH',
+      `Confirmation token did not match. Expected '${item.expectedName}'.`,
+      400,
+    );
+  }
+  const stalwartDomainId = item.expectedStalwartId;
+  if (!stalwartDomainId) {
+    throw new ApiError('DRIFT_ITEM_INVALID', 'orphan-domain item carries no Stalwart id', 409);
+  }
+
+  const { getJmapSession, destroyPrincipal } = await import('../stalwart-jmap/client.js');
+  const { removeAllDkimSignaturesForDomain } = await import('../email-dkim/cleanup.js');
+  const baseUrl = process.env.STALWART_MGMT_URL;
+  const session = await getJmapSession(baseUrl, process.env);
+  const accountId = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+  if (!accountId) {
+    throw new ApiError(
+      'STALWART_UNREACHABLE',
+      'Stalwart admin account ID could not be resolved (mail stack down?)',
+      503,
+    );
+  }
+
+  let dkimSignaturesDeleted = 0;
+  try {
+    const dkim = await removeAllDkimSignaturesForDomain({
+      accountId,
+      stalwartDomainId,
+      baseUrl,
+    });
+    dkimSignaturesDeleted = dkim.destroyed.length;
+    if (dkim.failed.length > 0) {
+      throw new Error(`DkimSignature destroy failed for: ${dkim.failed.join(', ')}`);
+    }
+  } catch (err) {
+    // DKIM cleanup failure is surfaced (the Domain destroy below would
+    // objectIsLinked-fail anyway) — clearer to name the real step.
+    throw new ApiError(
+      'ORPHAN_DKIM_CLEANUP_FAILED',
+      `Could not destroy the domain's DkimSignature rows: ${err instanceof Error ? err.message : String(err)}`,
+      502,
+    );
+  }
+
+  try {
+    await destroyPrincipal({ accountId, id: stalwartDomainId, baseUrl });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/objectIsLinked|linked/i.test(msg)) {
+      throw new ApiError(
+        'ORPHAN_HAS_PRINCIPALS',
+        `Stalwart refused the Domain destroy — it still has member principals linked. ` +
+        `This domain may NOT be a true orphan (e.g. the platform DB was restored to an earlier ` +
+        `point while Stalwart kept newer mailboxes). Investigate the mailboxes under ` +
+        `'${item.expectedName}' before deleting anything.`,
+        409,
+      );
+    }
+    throw new ApiError('ORPHAN_DELETE_FAILED', `Stalwart Domain destroy failed: ${msg}`, 502);
+  }
+
+  await db
+    .update(mailDriftItems)
+    .set({ resolvedAt: sql`now()`, resolvedVia: 'deleted' })
+    .where(eq(mailDriftItems.id, id));
+
+  log.warn(
+    { driftItemId: id, domainName: item.expectedName, stalwartDomainId, dkimSignaturesDeleted },
+    'mail-drift: operator-confirmed orphan Domain DELETED from Stalwart',
+  );
+
+  const [updated] = await db
+    .select()
+    .from(mailDriftItems)
+    .where(eq(mailDriftItems.id, id));
+  return {
+    item: {
+      id: updated.id,
+      kind: updated.kind as MailDriftKind,
+      expectedName: updated.expectedName,
+      expectedStalwartId: updated.expectedStalwartId,
+      platformRowId: updated.platformRowId,
+      firstDetectedAt: updated.firstDetectedAt.toISOString(),
+      lastSeenAt: updated.lastSeenAt.toISOString(),
+      resolvedAt: updated.resolvedAt?.toISOString() ?? null,
+      resolvedVia: (updated.resolvedVia as MailDriftItem['resolvedVia']) ?? null,
+      notes: updated.notes,
+    },
+    dkimSignaturesDeleted,
+  };
+}

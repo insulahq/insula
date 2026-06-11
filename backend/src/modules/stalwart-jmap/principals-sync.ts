@@ -36,6 +36,7 @@ import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { readStalwartMasterUser, MASTER_USER_FALLBACK } from '../mail-admin/stalwart-master-user.js';
+import { getMailServerHostname } from '../webmail-settings/service.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
 
@@ -221,7 +222,7 @@ async function syncPrincipals(params: {
   // they're no longer in drift, (c) detect NEW items for admin alert
   // fan-out. Each item: kind + platform_row_id is the natural key.
   const driftThisTick: Array<{
-    kind: 'mailbox' | 'domain' | 'master-user';
+    kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain';
     expectedName: string;
     expectedStalwartId: string;
     platformRowId: string;
@@ -314,6 +315,10 @@ async function syncPrincipals(params: {
   }
 
   // 4. Reconcile email_domains
+  // Hoisted: names of every platform-known email domain, consumed by the
+  // 4b orphan detector below (reuses this query instead of re-fetching).
+  const platformKnownNames = new Set<string>();
+  let platformDomainsFetched = false;
   try {
     const platformDomains = await db
       .select({
@@ -324,6 +329,8 @@ async function syncPrincipals(params: {
       })
       .from(emailDomains)
       .innerJoin(domains, eq(domains.id, emailDomains.domainId));
+    platformDomainsFetched = true;
+    for (const row of platformDomains) platformKnownNames.add(row.domainName.toLowerCase());
 
     for (const row of platformDomains) {
       const stalwartId = stalwartDomainByName.get(row.domainName.toLowerCase());
@@ -356,6 +363,48 @@ async function syncPrincipals(params: {
     }
   } catch (err) {
     errors.push(`Domain reconcile failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 4b (R17.2): INVERSE check — Stalwart Domain principals that no
+  // platform email_domains row references. Sources: mail-hostname
+  // renames-away (the previous cert-anchor Domain stays behind forever)
+  // and pre-#29 tenant/domain FK-cascade deletions that never invoked
+  // any Stalwart cleanup. These rows are inert but accumulate (one full
+  // integration day left 11 of them) and each carries DkimSignature
+  // rows that block manual deletion with objectIsLinked.
+  //
+  // DETECT + SURFACE ONLY — never auto-delete: after a platform-DB PITR
+  // rollback, a Stalwart domain with real mailboxes legitimately has no
+  // platform row, and auto-deletion would destroy user mail. The
+  // operator confirms deletion from the drift UI (delete-orphan action,
+  // which itself refuses domains that still have member principals).
+  // Skip the orphan check entirely when the platform-domain fetch above
+  // failed — an empty known-names set would flag EVERY Stalwart domain.
+  if (platformDomainsFetched) try {
+    // The current mail hostname's cert-anchor Domain is platform-owned
+    // and expected to have no email_domains row — never an orphan.
+    let currentMailHostname = '';
+    try {
+      currentMailHostname = (await getMailServerHostname(db)).toLowerCase();
+    } catch { /* unreadable settings → no anchor exclusion this tick */ }
+
+    for (const [name, stalwartId] of stalwartDomainByName) {
+      if (platformKnownNames.has(name)) continue;
+      if (currentMailHostname && name === currentMailHostname) continue;
+      driftThisTick.push({
+        kind: 'orphan-domain',
+        expectedName: name,
+        expectedStalwartId: stalwartId,
+        // Synthetic stable natural key — there IS no platform row.
+        platformRowId: `orphan:${stalwartId}`,
+        notes:
+          'Stalwart Domain with no platform email_domains row and not the current mail hostname. ' +
+          'Typical sources: a hostname rename-away (old cert anchor) or a pre-2026-06-11 tenant/domain ' +
+          'deletion. Verify it carries no live mailboxes, then delete it from the drift UI.',
+      });
+    }
+  } catch (err) {
+    errors.push(`orphan-domain check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   // 5. Persist drift state + alert admins on NEW items.
@@ -393,7 +442,7 @@ async function syncPrincipals(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DriftTickItem {
-  readonly kind: 'mailbox' | 'domain' | 'master-user';
+  readonly kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain';
   readonly expectedName: string;
   readonly expectedStalwartId: string;
   readonly platformRowId: string;
