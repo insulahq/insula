@@ -22,7 +22,7 @@ import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { systemSettings, backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { applyPatch } from '../../shared/k8s-patch.js';
+// (applyPatch import removed in R17.1 — spec.schedule is never patched anymore)
 
 // Stable fieldManager — claims SSA ownership of spec.schedule so that
 // Flux's `kustomize.toolkit.fluxcd.io/ssa: merge` reconciler stops
@@ -30,7 +30,7 @@ import { applyPatch } from '../../shared/k8s-patch.js';
 // (2026-05-29 — the operator-set "*/10" silently regressed to "*/2"
 // on every Flux reconcile because the manifest declares the field
 // and STRATEGIC_MERGE_PATCH does not claim SSA ownership).
-const CRON_SCHEDULE_FIELD_MANAGER = 'platform-api.snapshot-settings';
+// CRON_SCHEDULE_FIELD_MANAGER removed in R17.1 — no schedule SSA writes remain.
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { DEFAULT_MAIL_SNAPSHOT_SCHEDULE } from './snapshot-cronjob-reconciler.js';
 import {
@@ -136,34 +136,24 @@ export async function getMailSnapshotSchedule(
 export async function updateMailSnapshotSchedule(
   update: MailSnapshotScheduleUpdate,
   db: Database,
-  opts: SnapshotSettingsOptions,
+  _opts: SnapshotSettingsOptions,
 ): Promise<MailSnapshotScheduleResponse> {
-  const { batch } = await loadK8sTenants(opts.kubeconfigPath);
-
-  try {
-    await batch.patchNamespacedCronJob(
-      {
-        namespace: MAIL_NAMESPACE,
-        name: SNAPSHOT_CRONJOB_NAME,
-        // Apply-patch body must include apiVersion + kind so the
-        // apiserver can resolve the GVK during SSA.
-        body: {
-          apiVersion: 'batch/v1',
-          kind: 'CronJob',
-          metadata: { name: SNAPSHOT_CRONJOB_NAME, namespace: MAIL_NAMESPACE },
-          spec: { schedule: update.scheduleExpression },
-        },
-      } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
-      applyPatch(CRON_SCHEDULE_FIELD_MANAGER, { force: true }),
-    );
-  } catch (err) {
-    throw new ApiError(
-      'SNAPSHOT_SCHEDULE_PATCH_FAILED',
-      `Failed to patch CronJob schedule: ${(err as Error).message ?? String(err)}`,
-      500,
-    );
-  }
-
+  // R17.1 (2026-06-11): spec.schedule is NEVER patched anymore — Flux
+  // owns it unopposed. The operator cadence is persisted to
+  // backup_schedules.mail.cron_expression (the canonical column
+  // resolveDesiredSchedule reads); when it differs from the manifest
+  // default, the reconciler force-suspends the CronJob and the
+  // scheduler's firing engine creates Jobs on this cron instead.
+  // The legacy system_settings.mailSnapshotSchedule column is updated
+  // for backwards-compat readers only.
+  const { backupSchedules } = await import('../../db/schema.js');
+  await db
+    .insert(backupSchedules)
+    .values({ subsystem: 'mail', cronExpression: update.scheduleExpression })
+    .onConflictDoUpdate({
+      target: backupSchedules.subsystem,
+      set: { cronExpression: update.scheduleExpression },
+    });
   await db.update(systemSettings)
     .set({ mailSnapshotSchedule: update.scheduleExpression })
     .where(eq(systemSettings.id, SETTINGS_ID));
@@ -438,32 +428,11 @@ export async function applyMailSnapshotRetention(
     }
   }
 
-  // Reconcile CronJob schedule from backup_schedules.cron_expression.
-  // Skipped when no cron value set (DB row absent) — the manifest
-  // default takes over. NEVER throws — schedule sync is best-effort
-  // so retention reconcile still wins.
-  if (cronExpression) {
-    try {
-      await batch.patchNamespacedCronJob(
-        {
-          namespace: MAIL_NAMESPACE,
-          name: SNAPSHOT_CRONJOB_NAME,
-          body: {
-            apiVersion: 'batch/v1',
-            kind: 'CronJob',
-            metadata: { name: SNAPSHOT_CRONJOB_NAME, namespace: MAIL_NAMESPACE },
-            spec: { schedule: cronExpression },
-          },
-        } as unknown as Parameters<typeof batch.patchNamespacedCronJob>[0],
-        applyPatch(CRON_SCHEDULE_FIELD_MANAGER, { force: true }),
-      );
-    } catch (err) {
-      // Don't fail the whole reconcile if the schedule patch fails —
-      // retention still applied. Operator gets the warning in logs.
-      // eslint-disable-next-line no-console
-      console.warn('[snapshot-settings] failed to patch CronJob schedule:', err);
-    }
-  }
+  // R17.1 (2026-06-11): spec.schedule is NEVER patched anymore — Flux
+  // owns it unopposed. A custom backup_schedules.cron_expression flips
+  // the snapshot-cronjob reconciler into platform-fired mode (CronJob
+  // force-suspended; the scheduler's firing engine creates Jobs on the
+  // operator's cron). Nothing to do here beyond retention.
 
   return { retentionDays, retentionCount, patched: true, cronExpression };
 }

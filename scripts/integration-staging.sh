@@ -3578,102 +3578,132 @@ scenario_webmail_url_change() {
 #   SCENARIO=mail_migration_fixes ./scripts/integration-staging.sh
 scenario_mail_migration_fixes() {
   # ── Part A: CronJob schedule survives a Flux reconcile cycle ──────
-  log "mail-migration-fixes: PART A — CronJob schedule SSA ownership"
+  log "mail-migration-fixes: PART A — operator cadence via platform-fired mode (R17.1)"
 
-  # NB: strip only LEADING/TRAILING whitespace, not interior spaces.
-  # The cron string itself contains spaces between fields; a naive
-  # `tr -d '[:space:]'` would collapse `*/7 * * * *` to `*/7****` and
-  # break the equality check against the expected value below.
+  # R17.1 contract (2026-06-11): platform-api NEVER patches
+  # CronJob.spec.schedule — Flux owns it unopposed. An operator cadence
+  # different from the manifest default flips the reconciler into
+  # PLATFORM mode: the CronJob is force-suspended (pure Job-template
+  # holder) and platform-api's firing engine creates Jobs on the
+  # operator's cron with deterministic names
+  # (stalwart-snapshot-cron-<YYYYMMDDHHmm>). This scenario asserts that
+  # contract end-to-end: PATCH a custom cadence → CronJob suspends +
+  # spec.schedule UNCHANGED → a platform-fired Job appears at the next
+  # matching minute → restore default → CronJob unsuspends (target
+  # bound) and firing stops.
   local orig_sched
   orig_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  log "PART A: live schedule before = ${orig_sched}"
+  local orig_db_sched
+  orig_db_sched=$(api GET /admin/backups/schedules/mail \
+    | python3 -c "import json,sys;print((json.load(sys.stdin).get('data') or {}).get('cronExpression') or '')" 2>/dev/null)
+  log "PART A: live schedule=${orig_sched} db cadence=${orig_db_sched:-<default>}"
 
-  # Pick a DIFFERENT schedule from the manifest default `*/2 * * * *`
-  # so the assertion can't false-pass if Flux happens to reapply
-  # something semantically equivalent.
-  local probe_sched='*/7 * * * *'
-
-  # 2026-05-29 fix: use the SAME endpoint the UI at /backups/mail?tab=routing
-  # actually uses (PATCH /admin/backups/schedules/mail), NOT the legacy
-  # /admin/mail/snapshot-schedule which writes to a DIFFERENT DB column
-  # (system_settings.mailSnapshotSchedule vs backup_schedules.cron_expression).
-  # The two write paths can disagree, and the startup reconciler reads only
-  # the latter — so testing the former passes locally but breaks the
-  # operator's UI experience because the next platform-api restart
-  # silently reverts the operator's setting to backup_schedules' value.
-  local patch_status
-  patch_status=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\"}" 2>&1 | tail -1)
+  # */2: fires within ≤2 min — keeps the platform-fire wait short.
+  local probe_sched='*/2 * * * *'
+  local patch_resp patch_status gate_ok
+  patch_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${probe_sched}\"}" 2>&1)
+  patch_status=$(printf '%s' "$patch_resp" | tail -1)
   if [[ "$patch_status" != "200" ]]; then
     fail "PART A: PATCH /admin/backups/schedules/mail returned ${patch_status}"
     return 1
   fi
-  ok "PART A: PATCH accepted (200)"
+  # The firing engine (and NATIVE-mode unsuspend) are gated on a bound
+  # mail backup target. Branch the assertions on the live gate state so
+  # the scenario is honest on clusters without a target.
+  gate_ok=$(printf '%s' "$patch_resp" | sed '$d' | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('gateSatisfied'))" 2>/dev/null)
+  ok "PART A: PATCH accepted (200, gateSatisfied=${gate_ok})"
 
-  # Poll up to 60s for the SSA apply to land on the CronJob. A single
-  # fixed 5s sleep flaked when platform-api's apply path was busy
-  # mid-suite (standalone the apply lands in <5s — observed on testing
-  # 2026-06-10) — poll instead of widening a blind sleep.
-  local now_sched="" _sa_try
-  for _sa_try in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  # 1. CronJob force-suspends within the reconciler's drift window
+  #    (≤30s drift check + apply), while spec.schedule stays UNCHANGED.
+  local now_susp="" _sa_try
+  for _sa_try in $(seq 1 12); do
     sleep 5
-    now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    [[ "$now_sched" == "$probe_sched" ]] && break
+    now_susp=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.suspend}'" | tr -d '[:space:]')
+    [[ "$now_susp" == "true" ]] && break
   done
-  if [[ "$now_sched" != "$probe_sched" ]]; then
-    fail "PART A: live schedule after PATCH = '${now_sched}', expected '${probe_sched}' — applyPatch did not take effect within 60s"
+  if [[ "$now_susp" != "true" ]]; then
+    fail "PART A: CronJob not force-suspended within 60s of custom-cadence PATCH (suspend='${now_susp}')"
     return 1
   fi
-  ok "PART A: live CronJob.spec.schedule = ${now_sched} (after $((_sa_try * 5))s)"
+  ok "PART A: CronJob force-suspended (platform-fired mode) after $((_sa_try * 5))s"
 
-  # Confirm SSA ownership has actually transferred to platform-api
-  # (force:true). Without this assertion, the next Flux reconcile
-  # would silently revert and we'd never know until the operator
-  # noticed the manifest default `*/2` coming back hours later.
-  local owner
-  owner=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.metadata.managedFields[?(@.fieldsType==\"FieldsV1\")].manager}'" 2>/dev/null | tr ' ' '\n' | grep -F 'platform-api.snapshot-settings' || true)
-  if [[ -n "$owner" ]]; then
-    ok "PART A: spec.schedule managed-by 'platform-api.snapshot-settings' (Flux will not revert)"
+  local now_sched
+  now_sched=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  if [[ "$now_sched" == "$orig_sched" ]]; then
+    ok "PART A: spec.schedule UNCHANGED (=${now_sched}) — Flux ownership unchallenged"
   else
-    fail "PART A: managedFields does not list platform-api.snapshot-settings as a manager — SSA ownership did NOT transfer; the next Flux reconcile WILL revert spec.schedule"
+    fail "PART A: spec.schedule changed to '${now_sched}' — something still patches the Flux-owned field"
   fi
 
-  # Force a Flux reconcile RIGHT NOW so we don't have to wait the natural 5-10m.
-  #
-  # Contract (corrected 2026-06-10): spec.schedule is REQUIRED on
-  # create, so it cannot be stripped from Flux's apply, and no valid
-  # `kustomize.toolkit.fluxcd.io/ssa` policy protects a manifest-present
-  # field (the previously-asserted `IgnoreConflicts` is not a valid
-  # policy — Flux silently treated it as Override, so the old
-  # "schedule SURVIVED forced Flux reconcile" assertion was testing a
-  # mechanism that never worked; it only ever passed when the
-  # reconciler's 5-min tick happened to land inside the 10s sleep).
-  # The real contract is EVENTUAL consistency: Flux reverts to the
-  # manifest default, and the snapshot-cronjob scheduler re-asserts the
-  # operator value within its 5-minute interval. Assert exactly that.
-  ssh_cp "flux reconcile kustomization platform -n flux-system --with-source --timeout=60s" >/dev/null 2>&1 || true
-  sleep 10
-  local post_flux
-  post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  if [[ "$post_flux" == "$probe_sched" ]]; then
-    ok "PART A: schedule survived the forced Flux reconcile directly (= ${post_flux})"
-  else
-    log "PART A: Flux reverted schedule to '${post_flux}' (expected — manifest-present required field); waiting for the 5-min reconciler to re-assert the operator value"
-    local _ec_try
-    for _ec_try in $(seq 1 42); do
+  # 2. Firing engine: with a bound target, a platform-fired Job appears
+  #    at the next */2 matching minute (budget: 2 min to the match +
+  #    30s tick + create latency → 240s). WITHOUT a bound target the
+  #    engine must stay silent — assert the negative over 150s.
+  local fired_job="" _pf_try
+  if [[ "$gate_ok" == "True" ]]; then
+    for _pf_try in $(seq 1 24); do
       sleep 10
-      post_flux=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.schedule}'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-      [[ "$post_flux" == "$probe_sched" ]] && break
+      fired_job=$(ssh_cp "kubectl -n mail get jobs -o name" 2>/dev/null | grep -o 'stalwart-snapshot-cron-[0-9]*' | head -1)
+      [[ -n "$fired_job" ]] && break
     done
-    if [[ "$post_flux" == "$probe_sched" ]]; then
-      ok "PART A: reconciler re-asserted operator schedule after Flux revert (= ${post_flux}, within $((_ec_try * 10))s)"
+    if [[ -n "$fired_job" ]]; then
+      ok "PART A: platform-fired Job ${fired_job} created (after $((_pf_try * 10))s)"
     else
-      fail "PART A: operator schedule NOT re-asserted within $((_ec_try * 10))s of Flux revert (live='${post_flux}', expected '${probe_sched}') — the 5-min snapshot-cronjob scheduler self-heal is broken"
+      fail "PART A: no platform-fired Job (stalwart-snapshot-cron-*) within $((_pf_try * 10))s of the custom cadence"
+    fi
+  else
+    sleep 150
+    fired_job=$(ssh_cp "kubectl -n mail get jobs -o name" 2>/dev/null | grep -o 'stalwart-snapshot-cron-[0-9]*' | head -1)
+    if [[ -z "$fired_job" ]]; then
+      ok "PART A: firing engine correctly SILENT with no mail backup target bound (150s observed)"
+    else
+      fail "PART A: firing engine created ${fired_job} despite no bound mail backup target — the gate is broken"
     fi
   fi
 
-  # Restore original schedule via the same UI-facing endpoint.
-  api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${orig_sched}\"}" >/dev/null 2>&1 || true
-  ok "PART A: original schedule '${orig_sched}' restored"
+  # 3. Forced Flux reconcile is a NO-OP for the cadence now: schedule is
+  #    Flux's own manifest value and suspend is stripped from its apply.
+  ssh_cp "flux reconcile kustomization platform -n flux-system --with-source --timeout=60s" >/dev/null 2>&1 || true
+  sleep 10
+  local post_flux_susp
+  post_flux_susp=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.suspend}'" | tr -d '[:space:]')
+  if [[ "$post_flux_susp" == "true" ]]; then
+    ok "PART A: still platform-fired after forced Flux reconcile (suspend=true held)"
+  else
+    fail "PART A: Flux reconcile flipped suspend to '${post_flux_susp}' — platform-fired mode did not hold"
+  fi
+
+  # 4. Restore the original cadence (or clear back to default). The
+  #    reconciler should return to NATIVE mode: unsuspend (target bound).
+  local restore_expr="${orig_db_sched:-*/30 * * * *}"
+  api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" >/dev/null 2>&1 || true
+  if [[ "$gate_ok" == "True" ]]; then
+    # Bound target: NATIVE mode unsuspends the CronJob.
+    local back_susp="" _rs_try
+    for _rs_try in $(seq 1 12); do
+      sleep 5
+      back_susp=$(ssh_cp "kubectl -n mail get cronjob stalwart-snapshot -o jsonpath='{.spec.suspend}'" | tr -d '[:space:]')
+      [[ "$back_susp" == "false" ]] && break
+    done
+    if [[ "$back_susp" == "false" ]]; then
+      ok "PART A: restored '${restore_expr}' → NATIVE mode (CronJob unsuspended) after $((_rs_try * 5))s"
+    else
+      fail "PART A: CronJob still suspended $((_rs_try * 5))s after restoring the default cadence"
+    fi
+  else
+    # No target: suspend stays true in BOTH modes — just confirm the
+    # restore round-tripped in the DB.
+    local db_now
+    db_now=$(api GET /admin/backups/schedules/mail \
+      | python3 -c "import json,sys;print((json.load(sys.stdin).get('data') or {}).get('cronExpression') or '')" 2>/dev/null)
+    if [[ "$db_now" == "$restore_expr" ]]; then
+      ok "PART A: cadence restored to '${restore_expr}' (CronJob stays suspended — no target bound, correct)"
+    else
+      fail "PART A: cadence restore did not round-trip (db='${db_now}', expected '${restore_expr}')"
+    fi
+  fi
+  # Clean up the platform-fired Job so repeated runs stay tidy.
+  ssh_cp "kubectl -n mail delete jobs -l stalwart-snapshot-trigger=manual --wait=false" >/dev/null 2>&1 || true
 
   # ── Part B: Stalwart starts cleanly post-migration (subPath guard) ──
   log "mail-migration-fixes: PART B — silent-loss guard does NOT brick a healthy migration"
