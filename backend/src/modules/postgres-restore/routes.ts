@@ -11,6 +11,7 @@ import {
   getPlatformApiImage,
   runPitrPrechecks,
 } from './service.js';
+import { listSupersededSystemPvs, reclaimSupersededSystemPv } from './released-pvs.js';
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 function validateName(s: string, kind: string): void {
@@ -233,5 +234,41 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
       pollUrl: '/api/v1/admin/postgres-restore/status',
       message: `PITR Job ${job.jobName} created in namespace ${job.namespace}. Orchestration runs in a dedicated pod (~5-10 min). Poll status for progress; tail logs via: kubectl logs -n ${job.namespace} job/${job.jobName} -f.`,
     });
+  });
+
+  // GET /api/v1/admin/postgres-restore/released-pvs  (R17 item 3)
+  // Superseded pre-restore system-db PVs left Released/Retain by prior
+  // PITRs. Each one pins its full size of Longhorn scheduling budget;
+  // on a small node ONE retained copy makes the next PITR fail its
+  // budget preflight. Surface them so the operator can reclaim once a
+  // restore has been verified.
+  app.get('/admin/postgres-restore/released-pvs', async () => {
+    const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kc);
+    const pvs = await listSupersededSystemPvs(k8s);
+    return success({ pvs });
+  });
+
+  // POST /api/v1/admin/postgres-restore/released-pvs/:name/reclaim
+  // DESTRUCTIVE — deletes the PV object AND its volumes.longhorn.io CR
+  // (the budget pin lives on the Longhorn volume). Type-to-confirm
+  // backstopped server-side; the handler re-verifies the PV is a
+  // Released platform/system-db-* volume at delete time.
+  app.post('/admin/postgres-restore/released-pvs/:name/reclaim', async (req) => {
+    const { name } = req.params as { name: string };
+    validateName(name, 'persistentVolume');
+    const body = (req.body ?? {}) as { confirmName?: string };
+    if (!body.confirmName || typeof body.confirmName !== 'string') {
+      throw new ApiError('VALIDATION_ERROR', 'confirmName is required', 400);
+    }
+    const userId = (req as { user?: { sub?: string } }).user?.sub ?? 'unknown';
+    app.log.warn(
+      { userId, pvName: name },
+      'postgres-restore: operator-triggered RECLAIM of superseded system-db PV (destructive)',
+    );
+    const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kc);
+    const result = await reclaimSupersededSystemPv(k8s, name, body.confirmName);
+    return success(result);
   });
 }
