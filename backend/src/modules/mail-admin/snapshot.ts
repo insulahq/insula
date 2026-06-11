@@ -31,6 +31,7 @@
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { systemSettings } from '../../db/schema.js';
+import { getMailSnapshotBackupTarget } from './snapshot-settings.js';
 import type { Database } from '../../db/index.js';
 import {
   type MailSnapshotStatusResponse,
@@ -229,21 +230,25 @@ export async function getMailSnapshotStatus(
       secondsSinceLastSnapshot < SNAPSHOT_STALE_THRESHOLD_SECONDS)
   );
 
-  // Read persisted stats + backup store from system_settings (best-effort).
+  // Read persisted stats from system_settings + the bound backup store
+  // via the canonical assignments-based getter (best-effort).
+  // 2026-06-11: the legacy system_settings.mail_snapshot_backup_store_id
+  // column is no longer written by the setter — see migration.ts /
+  // archive.ts same-day fixes.
   let backupStoreId: string | null = null;
   let totalSnapshotSizeBytes: number | null = null;
   let resticSnapshotCount: number | null = null;
   if (opts.db) {
     try {
       const [row] = await opts.db.select({
-        backupStoreId: systemSettings.mailSnapshotBackupStoreId,
         lastRunStats: systemSettings.mailSnapshotLastRunStats,
       }).from(systemSettings).where(eq(systemSettings.id, SETTINGS_ID));
-      backupStoreId = row?.backupStoreId ?? null;
       if (row?.lastRunStats) {
         totalSnapshotSizeBytes = row.lastRunStats.totalSnapshotSizeBytes ?? null;
         resticSnapshotCount = row.lastRunStats.snapshotCount ?? null;
       }
+      const mailTarget = await getMailSnapshotBackupTarget(opts.db);
+      backupStoreId = mailTarget.backupStoreId;
     } catch {
       // Non-fatal — fall back to nulls.
     }

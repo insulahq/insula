@@ -213,6 +213,31 @@ ssh_cp() {
   ssh -i "$SSH_KEY" $SSH_OPTS "root@$CONTROL_HOST" "$@"
 }
 
+# ssh_node <node-name> <cmd…> — run a command on the SPECIFIC cluster
+# node hosting a workload (resolved to its InternalIP via the kube API).
+# Needed by node-local probes like `crictl images`: on a multi-node
+# cluster the pod may land on ANY node, and running crictl on the
+# control host false-fails the check (first hit: reaper scenario,
+# staging 4-node rebuild 2026-06-11 — pod on `worker`, crictl ran on
+# staging1). All platform nodes share the operator SSH key, so the
+# workstation can reach each node directly. Errors loudly (rc≠0, empty
+# stdout) when the node IP can't be resolved — callers treat that as
+# their own failure rather than silently probing the wrong host.
+ssh_node() {
+  local node="$1"; shift
+  local ip
+  ip=$(ssh_cp "kubectl get node $node -o wide --no-headers" 2>/dev/null | awk '{print $6}')
+  if [[ -z "$ip" || "$ip" == "<none>" ]]; then
+    echo "ssh_node: could not resolve InternalIP for node '$node'" >&2
+    return 1
+  fi
+  if [[ ! -r "$SSH_KEY" ]]; then
+    echo "ssh_node: SSH_KEY '$SSH_KEY' not readable — cannot reach node '$node' ($ip) for a node-local probe" >&2
+    return 1
+  fi
+  ssh -i "$SSH_KEY" $SSH_OPTS "root@$ip" "$@"
+}
+
 # ─── mail TLS / SMTP probe helpers ─────────────────────────────────────
 #
 # Three helpers shared by the `mail`, `mail_tls`, and `mail_hostname_rename`
@@ -1230,8 +1255,10 @@ scenario_reaper() {
   [[ -n "$image_ref" ]] || { fail "reaper: could not determine image ref"; return 1; }
   ok "reaper: image ref = $image_ref"
 
-  # Assert image IS present on the node before deletion
-  if ssh_cp "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
+  # Assert image IS present on the node THE POD LANDED ON (multi-node:
+  # ssh_node, not ssh_cp — crictl on the control host false-fails when
+  # the scheduler picked another node; see ssh_node header).
+  if ssh_node "$node_name" "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
     ok "reaper: image confirmed present on node $node_name before delete"
   else
     fail "reaper: image not found on node $node_name before delete — pull may have failed"
@@ -1249,8 +1276,9 @@ scenario_reaper() {
   log "reaper: waiting 330s for reaper grace period + job to complete…"
   sleep 330
 
-  # Assert image is GONE from the node
-  if ssh_cp "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
+  # Assert image is GONE from the node the pod ran on (same multi-node
+  # fix as the presence check above).
+  if ssh_node "$node_name" "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
     fail "reaper: image STILL present on node $node_name after 330s — reaper did not fire"
   else
     ok "reaper: image successfully reaped from node $node_name"
@@ -3675,8 +3703,27 @@ scenario_mail_migration_fixes() {
 
   # 4. Restore the original cadence (or clear back to default). The
   #    reconciler should return to NATIVE mode: unsuspend (target bound).
+  #
+  #    LOAD-BEARING + CHECKED + RETRIED (2026-06-11): this PATCH used to
+  #    be fire-and-forget (>/dev/null || true). A single transient 502
+  #    swallowed the restore, every downstream assert failed, and —
+  #    worse — the suite left the CLUSTER in platform-fired */2 mode,
+  #    creating a snapshot Job every 2 minutes indefinitely (observed
+  #    live: 22:22→22:32 runaway until a manual restore). A failed
+  #    restore must be loud, and retried before giving up.
   local restore_expr="${orig_db_sched:-*/30 * * * *}"
-  api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" >/dev/null 2>&1 || true
+  local _restore_ok=0 _restore_try _restore_resp _restore_code
+  for _restore_try in 1 2 3; do
+    _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" 2>&1)
+    _restore_code=$(printf '%s' "$_restore_resp" | tail -1)
+    [[ "$_restore_code" == "200" ]] && { _restore_ok=1; break; }
+    log "PART A: restore PATCH attempt ${_restore_try} returned '${_restore_code}' — retrying in 5s"
+    sleep 5
+  done
+  if [[ "$_restore_ok" != "1" ]]; then
+    fail "PART A: restore PATCH never returned 200 after 3 attempts (last=${_restore_code}) — CLUSTER LEFT IN PLATFORM-FIRED '${probe_sched}' MODE, restore manually: PATCH /admin/backups/schedules/mail {\"cronExpression\":\"${restore_expr}\"}"
+    return 1
+  fi
   if [[ "$gate_ok" == "True" ]]; then
     # Bound target: NATIVE mode unsuspends the CronJob.
     local back_susp="" _rs_try
