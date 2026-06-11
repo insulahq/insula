@@ -2062,14 +2062,23 @@ scenario_mail() {
   # then grep tenant-side for the expected name. The kubectl run
   # output may include kubelet bookkeeping lines after the JMAP
   # response, so we just grep for the literal domain name.
-  local x_domain_blob
-  x_domain_blob=$(ssh_cp "kubectl run mail-jmap-probe-${stamp} -n mail \
-      --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
-      curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
-      -o jsonpath='{.data.adminPassword}' | base64 -d) \
-      -X POST http://stalwart-mgmt:8080/jmap \
-      -H Content-Type:application/json \
-      -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"accountId\":\"d333333\",\"ids\":null,\"properties\":[\"id\",\"name\"]},\"r0\"]]}'" 2>&1)
+  # One retry, same rationale as the step-6b IMAP probe: `kubectl run
+  # --rm -i` one-shot pods occasionally lose the attach race and drop
+  # the curl output (pass-4 full run failed exactly here while the
+  # very next assertions — DKIM status reading the SAME Stalwart
+  # domain — passed, proving the domain WAS provisioned).
+  local x_domain_blob _xd_try
+  for _xd_try in 1 2; do
+    x_domain_blob=$(ssh_cp "kubectl run mail-jmap-probe-${stamp}-${_xd_try} -n mail \
+        --rm -i --restart=Never --image=curlimages/curl:latest --timeout=20s -- \
+        curl -sS -u admin:\$(kubectl get secret -n mail stalwart-admin-creds \
+        -o jsonpath='{.data.adminPassword}' | base64 -d) \
+        -X POST http://stalwart-mgmt:8080/jmap \
+        -H Content-Type:application/json \
+        -d '{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"accountId\":\"d333333\",\"ids\":null,\"properties\":[\"id\",\"name\"]},\"r0\"]]}'" 2>&1)
+    echo "$x_domain_blob" | grep -qF "\"name\":\"$test_domain\"" && break
+    [[ "$_xd_try" == "1" ]] && { log "mail/jmap: Domain/get attempt 1 inconclusive — retrying (kubectl attach flake?)"; sleep 5; }
+  done
   if echo "$x_domain_blob" | grep -qF "\"name\":\"$test_domain\""; then
     ok "mail/jmap: x:Domain/get returned a row with name=$test_domain"
   else
