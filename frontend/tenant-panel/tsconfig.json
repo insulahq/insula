@@ -13,7 +13,14 @@
     "resolveJsonModule": true,
     "noEmit": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      // Resolve shared contracts from THIS checkout's sibling packages/
+      // dist, not node_modules — git worktrees symlink node_modules from
+      // the main checkout, so default resolution silently typechecks
+      // against the MAIN checkout's api-contracts (same fix as
+      // backend/tsconfig.json, PR #33). Requires contracts built via
+      // tsc --build --force (see AGENTS.md).
+      "@insula/api-contracts": ["../../packages/api-contracts/dist/index.d.ts"]
     }
   },
   "include": ["src"]

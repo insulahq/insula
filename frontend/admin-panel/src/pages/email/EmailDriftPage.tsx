@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, RotateCcw, X, Loader2, CheckCircle2, ChevronDown, ExternalLink, Info } from 'lucide-react';
 import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
-import { useMailDrift, useDismissMailDrift, useRecreateMailDriftEmpty } from '@/hooks/use-mail-drift';
+import { useMailDrift, useDismissMailDrift, useRecreateMailDriftEmpty , useDeleteOrphanDomain } from '@/hooks/use-mail-drift';
 import { useRotateWebmailMasterPassword } from '@/hooks/use-stalwart';
 import type { MailDriftItem } from '@insula/api-contracts';
 
@@ -89,12 +89,15 @@ export default function EmailDriftPage() {
 
 function DriftRow({ item }: { readonly item: MailDriftItem }) {
   const [showRecreate, setShowRecreate] = useState(false);
+  const [showDeleteOrphan, setShowDeleteOrphan] = useState(false);
   const dismiss = useDismissMailDrift();
   const rotateMaster = useRotateWebmailMasterPassword();
 
   const isMaster = item.kind === 'master-user';
+  const isOrphan = item.kind === 'orphan-domain';
   const kindLabel = isMaster
     ? 'Webmail master user'
+    : isOrphan ? 'Orphaned Stalwart Domain'
     : item.kind === 'domain' ? 'Stalwart Domain' : 'Stalwart mailbox';
 
   return (
@@ -102,7 +105,7 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className={`flex items-center gap-2 text-xs font-medium uppercase tracking-wider ${isMaster ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>
-            <AlertTriangle size={12} /> {kindLabel} missing{isMaster ? ' — webmail login broken' : ''}
+            <AlertTriangle size={12} /> {kindLabel}{isOrphan ? ' — no platform owner' : ' missing'}{isMaster ? ' — webmail login broken' : ''}
           </div>
           <div className="mt-1 font-mono text-sm text-gray-900 dark:text-gray-100">
             {item.expectedName}
@@ -116,7 +119,16 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
           )}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
-          {isMaster ? (
+          {isOrphan ? (
+            <button
+              type="button"
+              onClick={() => setShowDeleteOrphan(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40"
+              data-testid={`drift-delete-orphan-${item.id}`}
+            >
+              <AlertTriangle size={12} /> Delete from Stalwart
+            </button>
+          ) : isMaster ? (
             <button
               type="button"
               onClick={() => rotateMaster.mutate()}
@@ -170,6 +182,124 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
       {showRecreate && (
         <RecreateEmptyModal item={item} onClose={() => setShowRecreate(false)} />
       )}
+      {showDeleteOrphan && (
+        <DeleteOrphanModal item={item} onClose={() => setShowDeleteOrphan(false)} />
+      )}
+    </div>
+  );
+}
+
+function DeleteOrphanModal({ item, onClose }: {
+  readonly item: MailDriftItem;
+  readonly onClose: () => void;
+}) {
+  const [typed, setTyped] = useState('');
+  const [deletedDkim, setDeletedDkim] = useState<number | null>(null);
+  const del = useDeleteOrphanDomain();
+
+  const handleRun = async () => {
+    try {
+      const r = await del.mutateAsync({ id: item.id, confirmName: typed });
+      setDeletedDkim(r.data.dkimSignaturesDeleted);
+    } catch {
+      // surfaced via del.isError
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+      data-testid={`drift-delete-orphan-modal-${item.id}`}
+    >
+      <div
+        className="w-full max-w-xl rounded-xl bg-white dark:bg-gray-800 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <AlertTriangle size={18} className="text-red-500" />
+            Delete orphaned Stalwart Domain
+          </h3>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          {deletedDkim === null && (
+            <>
+              <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5 text-sm text-red-800 dark:text-red-200 flex items-start gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <div>
+                  <strong>This permanently deletes the Domain and its DKIM keys from Stalwart.</strong>
+                  <p className="mt-1 text-xs">
+                    Only do this when the domain is a true leftover (a renamed-away
+                    mail hostname&apos;s cert anchor, or a deleted tenant&apos;s domain).
+                    Stalwart will refuse if the Domain still has mailboxes attached —
+                    if it does, the platform DB may have been restored to an earlier
+                    point and this domain holds REAL user mail: investigate before
+                    deleting anything.
+                  </p>
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
+                  Type <code className="font-mono text-red-600 dark:text-red-400">{item.expectedName}</code> to confirm
+                </label>
+                <input
+                  type="text"
+                  value={typed}
+                  onChange={(e) => setTyped(e.target.value)}
+                  className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100"
+                  data-testid={`drift-delete-orphan-confirm-input-${item.id}`}
+                />
+              </div>
+              {del.isError && (
+                <div className="text-xs text-rose-600 dark:text-rose-400">
+                  {del.error instanceof Error ? del.error.message : 'Delete failed'}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-md border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleRun}
+                  disabled={typed.trim().toLowerCase() !== item.expectedName.toLowerCase() || del.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                  data-testid={`drift-delete-orphan-run-${item.id}`}
+                >
+                  {del.isPending && <Loader2 size={14} className="animate-spin" />}
+                  Delete from Stalwart
+                </button>
+              </div>
+            </>
+          )}
+          {deletedDkim !== null && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-sm text-emerald-800 dark:text-emerald-200">
+                Domain <span className="font-mono">{item.expectedName}</span> deleted from
+                Stalwart ({deletedDkim} DKIM signature{deletedDkim === 1 ? '' : 's'} removed with it).
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-md border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

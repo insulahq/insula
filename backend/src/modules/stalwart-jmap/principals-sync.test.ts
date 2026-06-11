@@ -10,6 +10,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn((_col: unknown, _val: unknown) => ({ _type: 'eq' })),
   isNull: vi.fn((_col: unknown) => ({ _type: 'isNull' })),
+  // Reached once a drift item actually flows into reconcileDriftItems
+  // (the orphan-domain tests do) — the upsert path uses and/inArray/sql.
+  and: vi.fn((..._args: unknown[]) => ({ _type: 'and' })),
+  inArray: vi.fn((_col: unknown, _vals: unknown) => ({ _type: 'inArray' })),
+  sql: vi.fn((_strings: TemplateStringsArray, ..._vals: unknown[]) => ({ _type: 'sql' })),
 }));
 
 vi.mock('../../db/schema.js', () => ({
@@ -55,6 +60,13 @@ const mockReadMaster = vi.fn(async () => 'master@master.local');
 vi.mock('../mail-admin/stalwart-master-user.js', () => ({
   readStalwartMasterUser: (...args: unknown[]) => mockReadMaster(...args),
   MASTER_USER_FALLBACK: 'master@master.local',
+}));
+
+// orphan-domain detector dependency (R17.2): the current mail hostname's
+// cert-anchor Domain is excluded from orphan flagging.
+const mockMailHostname = vi.fn(async () => 'mail.example.test');
+vi.mock('../webmail-settings/service.js', () => ({
+  getMailServerHostname: (...args: unknown[]) => mockMailHostname(...args),
 }));
 
 const ACCOUNT_ID = 'account-123';
@@ -200,6 +212,55 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect(result.domainsBackfilled).toBe(1);
     expect(result.mailboxesBackfilled).toBe(0);
     expect(result.errors).toHaveLength(0);
+  });
+
+  it('flags a Stalwart domain with no platform row as orphan-domain (R17.2)', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'dp-anchor', type: 'domain', name: 'mail.example.test' },   // current hostname anchor — excluded
+      { id: 'dp-known', type: 'domain', name: 'example.com' },          // platform-known — excluded
+      { id: 'dp-orphan', type: 'domain', name: 'mail-e2e-1.example.test' }, // ORPHAN
+    ]));
+
+    const db = createMockDb(
+      [],
+      [{ id: 'ed-1', domainId: 'd-1', stalwartDomainId: 'dp-known', domainName: 'example.com' }],
+    );
+
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    // The orphan flows through reconcileDriftItems → INSERT (mock insert).
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'orphan-domain');
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].expectedName).toBe('mail-e2e-1.example.test');
+    expect(inserted[0].expectedStalwartId).toBe('dp-orphan');
+    expect(inserted[0].platformRowId).toBe('orphan:dp-orphan');
+  });
+
+  it('does not flag the mail-hostname anchor or platform-known domains as orphans', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'dp-anchor', type: 'domain', name: 'mail.example.test' },
+      { id: 'dp-known', type: 'domain', name: 'example.com' },
+    ]));
+
+    const db = createMockDb(
+      [],
+      [{ id: 'ed-1', domainId: 'd-1', stalwartDomainId: 'dp-known', domainName: 'example.com' }],
+    );
+
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'orphan-domain');
+    expect(inserted).toHaveLength(0);
   });
 
   it('does not backfill when stalwartPrincipalId already set', async () => {
