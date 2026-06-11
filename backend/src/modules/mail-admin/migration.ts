@@ -1101,9 +1101,10 @@ async function runMigrationStateMachine(
     // we're recovering). Strict-verify in recover mode also blocked
     // the resumeSnapshotCronJob cleanup at step 7b, leaving the
     // snapshot pipeline suspended for hours.
+    const runStartedAt = await getRunStartedAt(db, runId);
     const verify = opts.recoverFromBrokenState
-      ? await verifyRecoveryMinimal(podName, kubeconfigPath, log)
-      : await verifyRestoreContent(db, podName, kubeconfigPath, log);
+      ? await verifyRecoveryMinimal(podName, kubeconfigPath, log, runStartedAt)
+      : await verifyRestoreContent(db, podName, kubeconfigPath, log, runStartedAt);
     if (!verify.ok) {
       // Mark mailDrState=degraded so the operator UI surfaces the
       // problem; the migration's 'failed' state alone is too easy to
@@ -1883,29 +1884,89 @@ async function findStalwartPod(core: CoreV1Api): Promise<string | null> {
  * and the admin task-center, so write it operator-friendly.
  */
 /**
+ * True when the .fresh-started-at sentinel provably predates this
+ * migration/recovery run (with a 60s clock-skew grace).
+ *
+ * 2026-06-11 FIX (false-positive verify, first multi-node staging
+ * migration): the init container writes the sentinel on every
+ * LEGITIMATE fresh bootstrap (`reason=no-restic` /
+ * `reason=allow-restore-not-set` — see stalwart deployment.yaml) and
+ * nothing ever deletes it, so it lives in the dataset forever and is
+ * carried VERBATIM by the FAST-PATH PVC copy + restic restore. Both
+ * verifiers treated ANY presence as "restore silently failed", so
+ * every migration on a cluster bootstrapped before its backup target
+ * existed hard-failed at the verify step — while the pod was provably
+ * serving the restored RocksDB content (LE cert, Domains intact).
+ *
+ * A sentinel only proves data loss when Stalwart fresh-started DURING
+ * this run — i.e. its embedded timestamp is at/after the run started.
+ * Older sentinel = bootstrap archaeology, tolerated (logged).
+ * Unparseable timestamp = NOT provably stale → keep failing closed
+ * (this guard exists to catch silent data loss).
+ *
+ * Exported for unit coverage.
+ */
+export function freshStartSentinelIsStale(
+  sentinelText: string,
+  runStartedAt: Date,
+): boolean {
+  const firstToken = sentinelText.trim().split(/\s+/)[0] ?? '';
+  const ts = new Date(firstToken);
+  if (Number.isNaN(ts.getTime())) return false;
+  return ts.getTime() < runStartedAt.getTime() - 60_000;
+}
+
+/**
+ * Resolve the run's started_at for sentinel staleness comparison.
+ * Falls back to epoch(0) when unreadable — which makes EVERY sentinel
+ * non-stale and preserves the original fail-closed behaviour.
+ */
+async function getRunStartedAt(db: Database, runId: string): Promise<Date> {
+  try {
+    const rows = await db.execute(sql`
+      SELECT started_at FROM mail_migration_runs WHERE id = ${runId}
+    `);
+    const raw = (rows as unknown as { rows: Array<{ started_at: Date | string }> }).rows?.[0]?.started_at;
+    const d = raw instanceof Date ? raw : new Date(String(raw ?? ''));
+    if (!Number.isNaN(d.getTime())) return d;
+  } catch {
+    // fall through to epoch
+  }
+  return new Date(0);
+}
+
+/**
  * Recovery-mode verifier — minimum viable check. Only confirms a real
- * restore ran (no .fresh-started-at sentinel). Does NOT cross-check
- * tenant Domain or principal counts against the platform DB because
- * recovery is operator-acknowledged restore from a broken state — the
- * platform DB likely references entities Stalwart lost before recovery
- * even started. That drift is independently surfaced via /email/drift,
+ * restore ran (no .fresh-started-at sentinel FROM THIS RUN — a stale
+ * sentinel from the cluster's original bootstrap is tolerated, see
+ * freshStartSentinelIsStale). Does NOT cross-check tenant Domain or
+ * principal counts against the platform DB because recovery is
+ * operator-acknowledged restore from a broken state — the platform DB
+ * likely references entities Stalwart lost before recovery even
+ * started. That drift is independently surfaced via /email/drift,
  * not double-flagged here.
  */
 async function verifyRecoveryMinimal(
   podName: string,
   kubeconfigPath: string | undefined,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+  runStartedAt: Date,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
     const freshStarted = await podHasFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
     if (freshStarted) {
       const reason = await readPodFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
-      return {
-        ok: false,
-        reason: `Stalwart fresh-started instead of restoring (.fresh-started-at sentinel found: ${reason.trim().slice(0, 160) || 'reason unrecorded'}). Restic restore or FAST PATH copy silently failed — no data was restored. Investigate init container logs + backup-rclone-shim reachability from the target node.`,
-      };
+      if (freshStartSentinelIsStale(reason, runStartedAt)) {
+        log.info(`[recovery] verify minimal: stale .fresh-started-at sentinel (${reason.trim().slice(0, 80)}) predates this run — tolerated (bootstrap-era marker carried by the restore).`);
+      } else {
+        return {
+          ok: false,
+          reason: `Stalwart fresh-started instead of restoring (.fresh-started-at sentinel found: ${reason.trim().slice(0, 160) || 'reason unrecorded'}). Restic restore or FAST PATH copy silently failed — no data was restored. Investigate init container logs + backup-rclone-shim reachability from the target node.`,
+        };
+      }
+    } else {
+      log.info('[recovery] verify minimal: .fresh-started-at absent → restore ran. Drift checks skipped in recovery mode (see /email/drift).');
     }
-    log.info('[recovery] verify minimal: .fresh-started-at absent → restore ran. Drift checks skipped in recovery mode (see /email/drift).');
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: `failed to probe Stalwart pod for fresh-start sentinel: ${err instanceof Error ? err.message : String(err)}` };
@@ -1917,17 +1978,25 @@ async function verifyRestoreContent(
   podName: string,
   kubeconfigPath: string | undefined,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+  runStartedAt: Date,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  // (a) Reject if the init container's fresh-start sentinel exists —
-  // proves restic restore (or FAST PATH copy) failed silently.
+  // (a) Reject if the init container's fresh-start sentinel exists AND
+  // dates from THIS run — proves restic restore (or FAST PATH copy)
+  // failed silently. A stale sentinel from the cluster's original
+  // bootstrap is carried verbatim by any restore and is tolerated —
+  // see freshStartSentinelIsStale.
   try {
     const freshStarted = await podHasFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
     if (freshStarted) {
       const reason = await readPodFile(podName, '/var/lib/stalwart/data/.fresh-started-at', kubeconfigPath);
-      return {
-        ok: false,
-        reason: `Stalwart fresh-started instead of restoring (.fresh-started-at sentinel found: ${reason.trim().slice(0, 160) || 'reason unrecorded'}). Restic restore or FAST PATH copy silently failed — tenant Domains and mailboxes are GONE. Do NOT mark this migration done. Investigate the init container logs and the backup target reachability.`,
-      };
+      if (freshStartSentinelIsStale(reason, runStartedAt)) {
+        log.info(`[migration] verify: stale .fresh-started-at sentinel (${reason.trim().slice(0, 80)}) predates this run — tolerated (bootstrap-era marker carried by the restore); content checks (b)+(c) still apply.`);
+      } else {
+        return {
+          ok: false,
+          reason: `Stalwart fresh-started instead of restoring (.fresh-started-at sentinel found: ${reason.trim().slice(0, 160) || 'reason unrecorded'}). Restic restore or FAST PATH copy silently failed — tenant Domains and mailboxes are GONE. Do NOT mark this migration done. Investigate the init container logs and the backup target reachability.`,
+        };
+      }
     }
   } catch (err) {
     // Exec timeout / pod gone — treat as verification failure (safer
