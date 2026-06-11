@@ -40,7 +40,7 @@ import type { Logger } from 'pino';
 
 import { backupConfigurations, backupTargetAssignments, backupSchedules } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { JSON_PATCH, applyPatch } from '../../shared/k8s-patch.js';
+import { JSON_PATCH } from '../../shared/k8s-patch.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,7 +53,7 @@ export const MAIL_SNAPSHOT_CRONJOB_NAME = 'stalwart-snapshot';
 export const DEFAULT_MAIL_SNAPSHOT_SCHEDULE = '*/30 * * * *';
 
 /** Same SSA field manager the operator PATCH uses for spec.schedule. */
-const CRON_SCHEDULE_FIELD_MANAGER = 'platform-api.snapshot-settings';
+// CRON_SCHEDULE_FIELD_MANAGER removed in R17.1 — spec.schedule is Flux-owned, never patched.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,6 +68,12 @@ export interface MailSnapshotCronJobResult {
   readonly errorMessage: string;
   readonly suspended: boolean;
   readonly schedule: string;
+  /**
+   * R17.1: true when the operator cadence differs from the manifest
+   * default — the CronJob is force-suspended and the scheduler's
+   * firing engine creates Jobs on `schedule` instead of k8s cron.
+   */
+  readonly platformFired?: boolean;
   /** Whether any apiserver write was issued this pass. */
   readonly patched: boolean;
 }
@@ -96,9 +102,24 @@ export async function reconcileMailSnapshotCronJob(
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<MailSnapshotCronJobResult> {
   // ─── 1. Desired state from the DB ──────────────────────────────
+  // R17.1 firing-mode split (2026-06-11):
+  //   - desired == manifest default → NATIVE mode: the k8s CronJob
+  //     fires on the manifest schedule; suspend follows the
+  //     target-bound gate. spec.schedule is NEVER patched (the old SSA
+  //     assert fought Flux on every reconcile — no valid ssa policy
+  //     protects a manifest-present field, see PR #28).
+  //   - desired != default → PLATFORM mode: the CronJob is force-
+  //     suspended (pure Job-template holder) and the scheduler's
+  //     firing engine creates Jobs on the operator's cron via
+  //     triggerMailSnapshot with deterministic per-minute names.
+  // Net effect: nobody patches spec.schedule, Flux owns it unopposed,
+  // and the operator cadence is honored exactly with zero revert
+  // window. suspend stays conflict-free (bootstrap's Kustomization
+  // patch strips /spec/suspend from Flux's apply).
   const bound = await isMailTargetBound(db);
-  const desiredSuspend = !bound;
   const desiredSchedule = await resolveDesiredSchedule(db);
+  const platformFired = desiredSchedule !== DEFAULT_MAIL_SNAPSHOT_SCHEDULE;
+  const desiredSuspend = platformFired ? true : !bound;
 
   // ─── 2. Read the live CronJob ──────────────────────────────────
   let live: CronJobView;
@@ -120,12 +141,13 @@ export async function reconcileMailSnapshotCronJob(
         errorMessage: '',
         suspended: true,
         schedule: desiredSchedule,
+        platformFired,
         patched: false,
       };
     }
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err: msg }, 'mail-snapshot-cronjob: read failed');
-    return { state: 'STATE_ERROR', errorMessage: msg, suspended: desiredSuspend, schedule: desiredSchedule, patched: false };
+    return { state: 'STATE_ERROR', errorMessage: msg, suspended: desiredSuspend, schedule: desiredSchedule, platformFired, patched: false };
   }
 
   // The manifest ships `suspend: true`, so the field is always present
@@ -135,36 +157,12 @@ export async function reconcileMailSnapshotCronJob(
   const liveSchedule = live.spec?.schedule ?? '';
   let patched = false;
 
-  // ─── 3a. Claim/refresh schedule ownership (SSA) ────────────────
-  // Always SSA-apply on first divergence: this is what establishes the
-  // platform-api.snapshot-settings ownership the Flux schedule-strip
-  // depends on. Skipped only when the live value already matches.
-  if (liveSchedule !== desiredSchedule) {
-    try {
-      await clients.batch.patchNamespacedCronJob(
-        {
-          name: MAIL_SNAPSHOT_CRONJOB_NAME,
-          namespace: MAIL_SNAPSHOT_CRONJOB_NAMESPACE,
-          body: {
-            apiVersion: 'batch/v1',
-            kind: 'CronJob',
-            metadata: { name: MAIL_SNAPSHOT_CRONJOB_NAME, namespace: MAIL_SNAPSHOT_CRONJOB_NAMESPACE },
-            spec: { schedule: desiredSchedule },
-          },
-        } as unknown as Parameters<typeof clients.batch.patchNamespacedCronJob>[0],
-        applyPatch(CRON_SCHEDULE_FIELD_MANAGER, { force: true }),
-      );
-      patched = true;
-      log.info(
-        { name: MAIL_SNAPSHOT_CRONJOB_NAME, previous: liveSchedule, next: desiredSchedule },
-        'mail-snapshot-cronjob: spec.schedule asserted (SSA ownership)',
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error({ err: msg }, 'mail-snapshot-cronjob: schedule apply failed');
-      return { state: 'STATE_ERROR', errorMessage: msg, suspended: liveSuspend, schedule: liveSchedule, patched };
-    }
-  }
+  // ─── 3a. spec.schedule is deliberately NEVER patched (R17.1) ───
+  // NATIVE mode runs on the manifest value (live == desired == default
+  // by definition); PLATFORM mode ignores the live value entirely (the
+  // CronJob is suspended; the firing engine owns cadence). Flux owns
+  // the field unopposed — the SSA tug-of-war (#28/#34 lineage) is gone.
+  void liveSchedule;
 
   // ─── 3b. Toggle suspend (JSON-patch) ───────────────────────────
   // `replace` is safe because the manifest always ships `suspend: true`
@@ -190,13 +188,14 @@ export async function reconcileMailSnapshotCronJob(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, 'mail-snapshot-cronjob: suspend patch failed');
-      return { state: 'STATE_ERROR', errorMessage: msg, suspended: liveSuspend, schedule: desiredSchedule, patched };
+      return { state: 'STATE_ERROR', errorMessage: msg, suspended: liveSuspend, schedule: desiredSchedule, platformFired, patched };
     }
   }
 
   return {
     state: bound ? 'STATE_OK' : 'STATE_NO_MAIL_TARGET',
     errorMessage: '',
+    platformFired,
     suspended: desiredSuspend,
     schedule: desiredSchedule,
     patched,

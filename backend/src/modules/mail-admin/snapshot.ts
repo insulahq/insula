@@ -278,6 +278,16 @@ export interface SnapshotPurposeOptions {
   readonly purpose?: string;
   /** Migration run id for cross-referencing in the UI. */
   readonly runId?: string;
+  /**
+   * Caller-supplied Job name (R17.1 platform-fired snapshots). The
+   * firing engine passes a DETERMINISTIC per-minute name so a tick
+   * retry / pod restart inside the same minute cannot double-fire:
+   * the second create collides on the name. Combine with
+   * `tolerateExisting` so the collision reads as success.
+   */
+  readonly jobName?: string;
+  /** Treat 409 AlreadyExists on Job create as success (idempotent fire). */
+  readonly tolerateExisting?: boolean;
 }
 
 /**
@@ -367,7 +377,7 @@ export async function triggerMailSnapshot(
     throw err;
   }
 
-  const jobName = `${SNAPSHOT_JOB_MANUAL_PREFIX}${randomShort()}`;
+  const jobName = opts.jobName ?? `${SNAPSHOT_JOB_MANUAL_PREFIX}${randomShort()}`;
   const startedAt = new Date().toISOString();
 
   const jobManifest = renderManualSnapshotJob(jobName, cronJob, {
@@ -381,6 +391,13 @@ export async function triggerMailSnapshot(
       body: jobManifest as unknown as object,
     });
   } catch (err) {
+    const code = (err as { statusCode?: number; code?: number }).statusCode
+      ?? (err as { code?: number }).code;
+    if (code === 409 && opts.tolerateExisting) {
+      // Deterministic-name collision — this minute's fire already
+      // exists (tick retry or a second platform-api replica). Success.
+      return mailSnapshotTriggerResponseSchema.parse({ jobName, startedAt });
+    }
     throw new ApiError(
       'SNAPSHOT_JOB_CREATE_FAILED',
       `failed to create snapshot Job: ${(err as Error).message ?? String(err)}`,

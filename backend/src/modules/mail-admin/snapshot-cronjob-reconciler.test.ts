@@ -84,26 +84,33 @@ describe('reconcileMailSnapshotCronJob', () => {
     expect(r.suspended).toBe(true);
   });
 
-  it('schedule drift (live */2, no override) → SSA-asserts default */30', async () => {
+  it('R17.1: spec.schedule is NEVER patched — even when live diverges', async () => {
+    // Live drifted to */2; no operator override → native mode. The old
+    // behavior SSA-asserted the default back; the new contract leaves
+    // spec.schedule to Flux unconditionally (Flux re-asserts the
+    // manifest on its next reconcile; nobody fights it).
     const db = fakeDb([{ enabled: 1 }], [{ v: null }]);
     const batch = fakeBatch({ liveSuspend: false, liveSchedule: '*/2 * * * *' });
     const r = await reconcileMailSnapshotCronJob(db, { batch } as never, log());
 
     expect(r.schedule).toBe(DEFAULT_MAIL_SNAPSHOT_SCHEDULE);
-    expect(scheduleCalls(batch)).toHaveLength(1);
-    const body = (scheduleCalls(batch)[0][0] as { body: { spec: { schedule: string } } }).body;
-    expect(body.spec.schedule).toBe(DEFAULT_MAIL_SNAPSHOT_SCHEDULE);
+    expect(r.platformFired).toBe(false);
+    expect(scheduleCalls(batch)).toHaveLength(0);
     expect(suspendCalls(batch)).toHaveLength(0); // already running
   });
 
-  it('operator override is honoured (backup_schedules.mail.cron_expression)', async () => {
+  it('operator override → PLATFORM mode: CronJob force-suspended, schedule untouched', async () => {
     const db = fakeDb([{ enabled: 1 }], [{ v: '*/10 * * * *' }]);
     const batch = fakeBatch({ liveSuspend: false, liveSchedule: DEFAULT_MAIL_SNAPSHOT_SCHEDULE });
     const r = await reconcileMailSnapshotCronJob(db, { batch } as never, log());
 
     expect(r.schedule).toBe('*/10 * * * *');
-    const body = (scheduleCalls(batch)[0][0] as { body: { spec: { schedule: string } } }).body;
-    expect(body.spec.schedule).toBe('*/10 * * * *');
+    expect(r.platformFired).toBe(true);
+    expect(scheduleCalls(batch)).toHaveLength(0);
+    // Bound target + platform mode → suspend forced TRUE (the firing
+    // engine owns cadence; k8s cron must not also fire on the default).
+    expect(suspendCalls(batch)).toHaveLength(1);
+    expect((suspendCalls(batch)[0][0] as { body: Array<{ value: boolean }> }).body[0].value).toBe(true);
   });
 
   it('idempotent: bound + running + schedule matches → no writes', async () => {
@@ -140,13 +147,13 @@ describe('reconcileMailSnapshotCronJob', () => {
     expect(batch.patchNamespacedCronJob).toHaveBeenCalledTimes(1); // schedule only; suspend not reached
   });
 
-  it('schedule drift + suspended + bound → BOTH writes in one pass', async () => {
+  it('schedule drift + suspended + bound → ONLY the suspend write (R17.1)', async () => {
     const db = fakeDb([{ enabled: 1 }], [{ v: null }]);
     const batch = fakeBatch({ liveSuspend: true, liveSchedule: '*/2 * * * *' });
     const r = await reconcileMailSnapshotCronJob(db, { batch } as never, log());
     expect(r.state).toBe('STATE_OK');
     expect(r.patched).toBe(true);
-    expect(scheduleCalls(batch)).toHaveLength(1);
+    expect(scheduleCalls(batch)).toHaveLength(0);
     expect(suspendCalls(batch)).toHaveLength(1);
     expect((suspendCalls(batch)[0][0] as { body: Array<{ value: boolean }> }).body[0].value).toBe(false);
   });

@@ -1126,6 +1126,9 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             app.db,
             { batch: k8sForImapsync.batch },
             app.log,
+            // R17.1: the firing engine spawns snapshot Jobs via
+            // triggerMailSnapshot, which builds its own k8s clients.
+            { kubeconfigPath: kubePath },
           );
           app.addHook('onClose', () => mailSnapHandle.stop());
         } catch (err) {
