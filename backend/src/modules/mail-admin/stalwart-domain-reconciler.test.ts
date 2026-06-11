@@ -67,6 +67,10 @@ interface JmapMockBehavior {
   defaultHostname?: string;
   defaultDomainId?: string;
   newAcmeProviderId?: string;
+  /** Pre-existing Stalwart task queue (x:Task/query + x:Task/get). */
+  tasks?: ReadonlyArray<Record<string, unknown>>;
+  /** Stored x:Certificate objects (issued certs). */
+  certificates?: ReadonlyArray<Record<string, unknown>>;
 }
 
 function buildJmapMock(behavior: JmapMockBehavior) {
@@ -77,6 +81,11 @@ function buildJmapMock(behavior: JmapMockBehavior) {
   const liveDomains: Array<{ id: string; name: string; certificateManagement?: Record<string, unknown> }>
     = behavior.domains ? [...behavior.domains] : [];
   let nextDomainSerial = 1;
+  // Live task queue — x:Task/set APPENDS here so a created AcmeRenewal
+  // is visible to subsequent x:Task/query within the same tick, exactly
+  // like real Stalwart (this is what the storm-fix dedup gate reads).
+  const liveTasks: Array<Record<string, unknown>> = behavior.tasks ? [...behavior.tasks] : [];
+  let nextTaskSerial = 1;
 
   const transport = async (_auth: string, body: unknown) => {
     const req = body as { methodCalls: ReadonlyArray<[string, Record<string, unknown>, string]> };
@@ -136,7 +145,22 @@ function buildJmapMock(behavior: JmapMockBehavior) {
       return wrap({ created, notCreated: null });
     }
     if (method === 'x:Task/set') {
-      return wrap({ created: { r: { id: 'task1' } }, notCreated: null });
+      const create = args.create as Record<string, Record<string, unknown>> | undefined;
+      const id = `task${nextTaskSerial++}`;
+      if (create?.r) {
+        liveTasks.push({ ...create.r, id, status: { '@type': 'Pending' } });
+      }
+      return wrap({ created: { r: { id } }, notCreated: null });
+    }
+    if (method === 'x:Task/query') {
+      return wrap({ ids: liveTasks.map((t) => t.id as string) });
+    }
+    if (method === 'x:Task/get') {
+      const ids = args.ids as string[] | null;
+      return wrap({ list: liveTasks.filter((t) => ids === null || ids.includes(t.id as string)) });
+    }
+    if (method === 'x:Certificate/get') {
+      return wrap({ list: behavior.certificates ? [...behavior.certificates] : [] });
     }
     return wrap({});
   };
@@ -468,10 +492,15 @@ describe('issuerIsSelfSigned predicate', () => {
 
 describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () => {
   // A fully-wired, fully-configured cluster (Domain + AcmeProvider +
-  // Automatic certMgmt + all listeners). Steps 3-7 are all no-ops, so
-  // the ONLY thing that can flip noOp/acmeOrderForced is the step-9
-  // served-cert self-heal — isolating it cleanly.
-  const fullyConfigured = () => buildJmapMock({
+  // Automatic certMgmt + all listeners) WITH a stored x:Certificate.
+  // Steps 3-7 are all no-ops and step-8 skips (stored cert ⇒ renewals
+  // are Stalwart-scheduled), so the ONLY thing that can flip
+  // noOp/acmeOrderForced is the step-9 served-cert self-heal —
+  // isolating it cleanly. The stored-cert-but-served-self-signed shape
+  // is also the REAL wedge the self-heal exists for (post-restore /
+  // post-Pending-recovery: store has a cert, the listener never loaded
+  // it / Stalwart's order state died).
+  const fullyConfigured = (extra: { tasks?: ReadonlyArray<Record<string, unknown>> } = {}) => buildJmapMock({
     domains: [{
       id: 'd1',
       name: 'mail.example.net',
@@ -485,6 +514,8 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
     defaultHostname: 'mail.example.net',
     defaultDomainId: 'd1',
+    certificates: [{ id: 'cert1', subjectAlternativeNames: { 'mail.example.net': true } }],
+    tasks: extra.tasks,
   });
 
   const selfSignedProbe = (): ServedCertResult => ({
@@ -531,10 +562,13 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     expect(cm.subjectAlternativeNames).toEqual({ 'mail.example.net': true });
 
     // The force's second half fires AcmeRenewal via the PROVEN x:Task/set
-    // primitive (fireAcmeRenewal). AcmeRenewal therefore fires TWICE here:
-    // step-8 (always) + the force.
+    // primitive (fireAcmeRenewal). Exactly ONCE: step-8 skipped (stored
+    // cert ⇒ Stalwart-scheduled renewals), so the force is the only fire.
+    // (Pre-2026-06-11 this fired TWICE per tick — the unconditional
+    // step-8 + the force — which, multiplied by replicas and ticks,
+    // tripped LE's duplicate-certificate limit. See step-8 comment.)
     const renew = calls.filter((c) => c.method === 'x:Task/set');
-    expect(renew.length).toBe(2);
+    expect(renew.length).toBe(1);
 
     const note = result.notes.find((n) => /forced a fresh ACME order/.test(n));
     expect(note).toBeDefined();
@@ -555,8 +589,9 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     expect(result.noOp).toBe(true); // steady state — zero LE traffic
     // No Domain/set update (step-6 no-op'd AND no force re-assert).
     expect(calls.filter((c) => c.method === 'x:Domain/set' && c.args.update !== undefined)).toEqual([]);
-    // Not forced ⇒ only the step-8 AcmeRenewal fires (no force second-half).
-    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
+    // ZERO AcmeRenewal fires: step-8 skips on the stored cert and there
+    // is no force — true steady state issues no LE orders at all.
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
   });
 
   it('(c) self-signed but backoff not elapsed ⇒ no second force', async () => {
@@ -585,7 +620,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
       logger,
     });
     expect(r2.acmeOrderForced).toBe(false);
-    expect(second.calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
+    expect(second.calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     expect(r2.notes.find((n) => /backoff not elapsed/.test(n))).toBeDefined();
   });
 
@@ -622,7 +657,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
         logger,
       });
       expect(rCap.acmeOrderForced).toBe(false);
-      expect(capped.calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
+      expect(capped.calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
       expect(rCap.notes.find((n) => /still self-signed after 5 forced ACME orders/.test(n))).toBeDefined();
     } finally {
       (Date.now as unknown as { mockRestore?: () => void }).mockRestore?.();
@@ -683,7 +718,131 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
     });
     expect(result.acmeOrderForced).toBe(false);
     expect(result.noOp).toBe(true);
-    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
     expect(result.notes.find((n) => /served-cert probe inconclusive/.test(n))).toBeDefined();
+  });
+
+  it('(f) self-signed but an AcmeRenewal task already pending ⇒ defer, no duplicate order', async () => {
+    // The 2026-06-11 storm shape: Stalwart already has a queued/retrying
+    // AcmeRenewal (e.g. rate-limited, due later). Forcing another order
+    // only stacks duplicate LE orders — the self-heal must defer.
+    const { transport, calls } = fullyConfigured({
+      tasks: [{
+        id: 'queued1',
+        '@type': 'AcmeRenewal',
+        domainId: 'd1',
+        status: { '@type': 'Retry', failureReason: 'Rate limited. Retry after 12903 seconds' },
+      }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      servedCertProbe: async () => selfSignedProbe(),
+      logger,
+    });
+    expect(result.acmeOrderForced).toBe(false);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    // No force re-assert either — the WHOLE force defers.
+    expect(calls.filter((c) => c.method === 'x:Domain/set' && c.args.update !== undefined)).toEqual([]);
+    expect(result.notes.find((n) => /AcmeRenewal task is already pending\/retrying/.test(n))).toBeDefined();
+  });
+});
+
+describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step 8)', () => {
+  const base = {
+    domains: [{
+      id: 'd1',
+      name: 'mail.example.net',
+      certificateManagement: {
+        '@type': 'Automatic',
+        acmeProviderId: 'ap1',
+        subjectAlternativeNames: { 'mail.example.net': true },
+      },
+    }],
+    acmeProviders: [{ id: 'ap1' }],
+    listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+    defaultHostname: 'mail.example.net',
+    defaultDomainId: 'd1',
+  } as const;
+
+  it('skips the fire when a stored certificate already covers the hostname', async () => {
+    const { transport, calls } = buildJmapMock({
+      ...base,
+      certificates: [{ id: 'cert1', subjectAlternativeNames: { 'mail.example.net': true } }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(false);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    expect(result.notes.find((n) => /stored certificate already covers/.test(n))).toBeDefined();
+  });
+
+  it('does NOT skip on a stored certificate for a DIFFERENT hostname', async () => {
+    const { transport, calls } = buildJmapMock({
+      ...base,
+      certificates: [{ id: 'cert1', subjectAlternativeNames: { 'mail.other.net': true } }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(true);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
+  });
+
+  it('skips the fire when an AcmeRenewal task is already pending/retrying for the domain', async () => {
+    const { transport, calls } = buildJmapMock({
+      ...base,
+      tasks: [{
+        id: 'queued1',
+        '@type': 'AcmeRenewal',
+        domainId: 'd1',
+        status: { '@type': 'Retry', failureReason: 'Rate limited. Retry after 12903 seconds' },
+      }],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(false);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(0);
+    expect(result.notes.find((n) => /already pending\/retrying/.test(n))).toBeDefined();
+  });
+
+  it('ignores pending AcmeRenewal tasks for OTHER domains and unrelated task types', async () => {
+    const { transport, calls } = buildJmapMock({
+      ...base,
+      tasks: [
+        { id: 't1', '@type': 'AcmeRenewal', domainId: 'd-other', status: { '@type': 'Retry' } },
+        { id: 't2', '@type': 'DnsVerify', domainId: 'd1', status: { '@type': 'Pending' } },
+      ],
+    });
+    const result = await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(result.acmeRenewalFired).toBe(true);
+    expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
   });
 });
