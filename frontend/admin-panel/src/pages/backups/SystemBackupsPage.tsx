@@ -28,6 +28,7 @@ import { Link } from 'react-router-dom';
 import { KeyRound, RotateCw, PlayCircle, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import BackupClassPage from './BackupClassPage';
 import SystemSnapshotsSection from '@/components/SystemSnapshotsSection';
+import ReleasedSystemPvsCard from '@/components/backups/ReleasedSystemPvsCard';
 import { CnpgBackupHealthCard } from '@/components/CnpgBackupHealthCard';
 import SystemBackupListSection from '@/components/system-backup/SystemBackupListSection';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
@@ -52,6 +53,10 @@ export default function SystemBackupsPage() {
               snapshots.
             </p>
             <SystemSnapshotsSection />
+            {/* R17 item 3 (2026-06-11): superseded pre-restore system-db
+                PVs pin Longhorn scheduling budget; renders only when
+                any exist. */}
+            <ReleasedSystemPvsCard />
           </div>
         }
         backupsTab={
