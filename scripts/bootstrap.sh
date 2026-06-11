@@ -666,9 +666,11 @@ FIREWALL TRUST (always-on set mode):
                          underlays can't carry Calico's WG endpoint
                          reliably. Set false to scope to trusted_ranges.
   --calico-mtu <bytes>   Pin Calico's pod-network MTU. Default: auto-
-                         detect — picks the smallest of the local
-                         node's viable underlays (mesh first via
-                         wt0/tailscale0/wg0, else default-route iface)
+                         detect — follows the node-ip underlay
+                         decision (mesh ifaces wt0/tailscale0/wg0 only
+                         when --cluster-network-cidr pins into the
+                         mesh; default-route iface otherwise — a mesh
+                         that is merely UP no longer shrinks the MTU)
                          and subtracts 110 (Calico WG 60 + VXLAN 50).
                          Override on mixed-underlay clusters where
                          the smallest expected underlay is on a node
@@ -3152,13 +3154,20 @@ install_k3s_worker() {
 #
 # When the operator passes --calico-mtu N, that wins and we just
 # echo N (validated upstream in parse_args / install_calico). When
-# unset, we walk a priority list of mesh interfaces (wt0 = NetBird,
-# tailscale0, wg0) and use the first one that's UP. Mesh-first
-# matters because operators with both a mesh and a public NIC almost
-# always intend pod traffic to traverse the mesh, and the mesh's
-# MTU is the smaller of the two — pinning to public would fragment.
-# If no mesh iface, fall back to the default-route iface (typically
-# eth0).
+# unset, the walk FOLLOWS THE NODE-IP UNDERLAY DECISION (2026-06-11
+# fix — found on the staging rebuild):
+#   * --cluster-network-cidr set (NODEIP_PIN_CIDR non-empty) → pod
+#     traffic rides the mesh/private underlay, so walk the mesh
+#     interfaces (wt0 = NetBird, tailscale0, wg0) first and use the
+#     first one that's UP — its MTU is the smaller one and pinning
+#     to public would fragment.
+#   * no pin (public-underlay mode) → k3s advertises the public IP
+#     and Calico's VXLAN/WG peers connect node-IP↔node-IP over the
+#     default-route iface, so a mesh that is MERELY UP must not
+#     shrink the MTU. (A NetBird wt0 at 1280 used to drag a
+#     1500-byte public underlay down to calico mtu=1280 — losing
+#     ~8% of every frame for a path pod traffic never takes.)
+# Fall back to the default-route iface (typically eth0) either way.
 #
 # Subtracts 110 bytes for Calico's encapsulation overhead:
 #   60 bytes — Calico-managed WireGuard (UDP/51821)
@@ -3179,12 +3188,17 @@ detect_calico_mtu() {
 
   local underlay_iface=""
   local underlay_mtu=""
-  for iface in wt0 wt1 tailscale0 wg0; do
-    if ip link show "$iface" up >/dev/null 2>&1; then
-      underlay_iface=$iface
-      break
-    fi
-  done
+  # Mesh-iface walk ONLY when node-ip is pinned into the mesh CIDR —
+  # otherwise pod traffic rides the default-route iface and the mesh
+  # MTU is irrelevant (see header).
+  if [[ -n "${NODEIP_PIN_CIDR:-}" ]]; then
+    for iface in wt0 wt1 tailscale0 wg0; do
+      if ip link show "$iface" up >/dev/null 2>&1; then
+        underlay_iface=$iface
+        break
+      fi
+    done
+  fi
 
   if [[ -z "$underlay_iface" ]]; then
     underlay_iface=$(ip -4 route show default 2>/dev/null \
