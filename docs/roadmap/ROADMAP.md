@@ -210,9 +210,22 @@ Three small items deferred from the 2026-06-10 integration green-up
    pattern (mig 0053). Tenant/domain-delete leaks are already fixed
    deterministically (destroyStalwartArtifactsForEmailDomain).
 
-3. **PITR Released-PV accumulation.** Every postgres-pitr auto-promote
-   leaves the previous `system-db` PV `Released` with
+3. **PITR Released-PV accumulation — BLOCKS the next PITR on small
+   nodes (severity upgraded 2026-06-11).** Every postgres-pitr
+   auto-promote leaves the previous `system-db` PV `Released` with
    `reclaimPolicy=Retain` (deliberate safety net — excluded from the
-   Released-PV janitor by design). Repeated runs accumulate 20 Gi each.
-   Needs an operator-facing surface (storage page badge + delete action
-   after N days / after a verified restore) rather than silent growth.
+   Released-PV janitor by design), and its replica keeps pinning 20 Gi
+   of Longhorn *scheduling budget*. Reproduced live on testing: with
+   one prior Retained copy on a 75 GB node, the next PITR's
+   recovery volume could not schedule a replica ("insufficient
+   storage" precheck), the snapshot-recovery pod stuck at
+   Init/FailedAttachVolume, and the orchestration stalled with
+   system-db down. Recovery lever: temporarily raise Longhorn
+   `storage-over-provisioning-percentage` (100→200) → volume attaches
+   and CNPG + recoverInterruptedRestore self-heal end-to-end — then
+   delete the superseded Released PVs (PV object + volumes.longhorn.io
+   CR) and revert the setting. Fix needs BOTH an operator-facing
+   surface (storage page badge + delete action after a verified
+   restore) AND a PITR preflight that checks Longhorn schedulable
+   budget ≥ the recovery volume size, failing fast with an actionable
+   error instead of stalling mid-cutover.
