@@ -189,9 +189,18 @@ if [[ -n "$PLAN_ID" && -n "$REGION_ID" ]]; then
     STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${TENANT_ID}")
     check_status "GET /tenants/:id (read)" "200" "$STATUS"
 
-    # Delete WITHOUT Content-Type header (same as fixed frontend)
-    STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE -H "$AUTH_HEADER" "${API_URL}/api/v1/tenants/${TENANT_ID}")
-    check_status "DELETE /tenants/:id (no Content-Type)" "204" "$STATUS"
+    # Delete WITHOUT Content-Type header (same as fixed frontend).
+    # ADR-033 lifecycle transitions: the route returns 200 with
+    # { transitionId } (NOT 204) so the UI can open the progress modal
+    # immediately — see backend/src/modules/tenants/routes.ts.
+    DELETE_BODY=$(curl -s -X DELETE -H "$AUTH_HEADER" -w "\n%{http_code}" "${API_URL}/api/v1/tenants/${TENANT_ID}")
+    STATUS=$(echo "$DELETE_BODY" | tail -1)
+    check_status "DELETE /tenants/:id (no Content-Type)" "200" "$STATUS"
+    if echo "$DELETE_BODY" | head -1 | grep -q '"transitionId"'; then
+      pass "DELETE /tenants/:id returns transitionId"
+    else
+      fail "DELETE /tenants/:id returns transitionId" "missing in body: $(echo "$DELETE_BODY" | head -1 | head -c 120)"
+    fi
 
     # Delete WITH Content-Type: known Fastify limitation (empty JSON body rejected)
     # Our frontend avoids this by not sending Content-Type on bodyless requests
@@ -361,7 +370,13 @@ probe_banner_host() {
 
 if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   log "── Mail Server (Stalwart) — probe mode: $MAIL_PROBE_MODE ──"
-  if [[ "$MAIL_PROBE_MODE" == "k3s" ]]; then
+  # The k3s probe mode docker-execs into the local-dev DinD container.
+  # Against a remote cluster (API_URL=https://…) that container doesn't
+  # exist — skip instead of failing 4 probes with "No such container"
+  # (run with MAIL_PROBE_MODE=host MAIL_HOST=<node> to probe remotely).
+  if [[ "$MAIL_PROBE_MODE" == "k3s" ]] && ! docker inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
+    echo "  ⊘ Mail probes skipped — DinD container '$K3S_CONTAINER' not found (remote cluster?). Use MAIL_PROBE_MODE=host MAIL_HOST=<node-ip> to probe remote mail ports."
+  elif [[ "$MAIL_PROBE_MODE" == "k3s" ]]; then
     probe_tcp_inside_k3s 30025 "SMTP"
     probe_tcp_inside_k3s 30587 "Submission"
     probe_tcp_inside_k3s 30143 "IMAP"

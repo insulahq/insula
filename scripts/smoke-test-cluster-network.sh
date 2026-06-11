@@ -8,22 +8,29 @@
 # Coverage:
 #   1) External IP × hostname matrix (round-robin DNS hides ingress
 #      issues; this probes each IP individually).
-#   2) ingress controller pod → backend pod (every ingress × every backend).
-#      THIS is the canary for the host→pod cross-node failure mode.
-#      Traefik migration (2026-05-15): namespace `ingress-nginx` →
-#      `traefik`, selector `app.kubernetes.io/component=controller` →
-#      `app.kubernetes.io/name=traefik`.
+#   2) ingress-namespace pod → backend pod (every Traefik node × every
+#      backend pod × its REAL port: panels :80, platform-api :3000).
+#      Probes run in the `traefik` namespace so the F4 netpol
+#      (allow-ingress-to-platform, :3000 = traefik-ns only) treats them
+#      exactly like Traefik. Canary for cross-node VXLAN/WG breakage on
+#      the actual serving path.
 #   3) pod → pod cross-node matrix (control: should pass even when #2
-#      fails, proving the issue is hostNetwork-source-specific).
-#   4) hostNetwork-source → pod cross-node (direct repro of #2 without
-#      the ingress controller in the mix).
+#      fails, isolating ingress-path-specific breakage).
+#   4) hostNetwork-source → platform-api:3000 is BLOCKED (negative
+#      test, inverted 2026-06-11: nothing host-sourced is in the
+#      serving path any more, and the :3000 traefik-ns-only netpol rule
+#      must reject every host source — an HTTP response here means
+#      policy enforcement is broken). Panels :80 deliberately excluded
+#      (permissive pod-CIDR ipBlock admits VXLAN tunnel-IP sources).
 #   5) Longhorn replica health on platform StatefulSets.
 #   6) Calico Felix log scrape — fail on MTU/XDP/fatal patterns.
 #   7) cert-manager Certificate readiness — every Certificate in
 #      platform/mail/longhorn-system must report Ready=True. LE
-#      issuance failures often cascade from cross-node host→pod
-#      breakage (the ingress→solver-pod hop is host-source) so
-#      this is the canary for the same class of bug as Test 4.
+#      issuance failures often cascade from the same ingress-path
+#      breakage Test 2 probes (Traefik → solver pod is pod→pod since
+#      the hostPort migration), or from DNS round-robin entries that
+#      point at nodes with no live Traefik (LE gets connection-refused
+#      from ONE dead A-record IP and fails the whole authorization).
 #   8) Stateless platform Deployments meet HA replica/spread
 #      requirements when policy.systemTier=ha (≥3 ready pods, on
 #      ≥2 nodes). Caught regression: Apply HA scales spec.replicas
@@ -177,15 +184,26 @@ test_1_external_ips() {
 test_2_ingress_to_backend() {
   if skipped 2; then emit "test2.ingress_to_backend" SKIP "skipped"; return; fi
 
+  # Backends Traefik actually proxies to, with their REAL listen ports:
+  # admin-panel nginx :80 and platform-api :3000. The old probe used
+  # admin-panel:3000 — a port nothing listens on (stale pre-Traefik panel
+  # port) — so every combination failed with 000 regardless of network
+  # health. platform-api:3000 is additionally netpol-gated to the
+  # `traefik` NAMESPACE only (F4 hardening, allow-ingress-to-platform),
+  # which is why the probe pods below run in `traefik`, not $PROBE_NS:
+  # same source-namespace as the real ingress hop, so the netpol treats
+  # the probe exactly like Traefik itself.
   local ingress_pods backend_pods
   ingress_pods=$(kubectl -n traefik get pods -l app.kubernetes.io/name=traefik \
     -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{"\n"}{end}' 2>/dev/null) \
     || { emit "test2.ingress_to_backend" FAIL "list traefik pods failed"; return; }
-  backend_pods=$(kubectl -n platform get pods -l app=admin-panel \
-    -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}{"\n"}{end}' 2>/dev/null) \
-    || { emit "test2.ingress_to_backend" FAIL "list admin-panel pods failed"; return; }
+  backend_pods=$( { kubectl -n platform get pods -l app=admin-panel \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}=80{"\n"}{end}' 2>/dev/null; \
+    kubectl -n platform get pods -l app=platform-api \
+      -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}=3000{"\n"}{end}' 2>/dev/null; } ) \
+    || { emit "test2.ingress_to_backend" FAIL "list backend pods failed"; return; }
   [[ -z "$ingress_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no traefik pods found"; return; }
-  [[ -z "$backend_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no admin-panel pods found"; return; }
+  [[ -z "$backend_pods" ]] && { emit "test2.ingress_to_backend" FAIL "no backend pods found"; return; }
 
   local total=0 ok=0
   while IFS= read -r ip; do
@@ -204,31 +222,36 @@ test_2_ingress_to_backend() {
     fi
     while IFS= read -r bp; do
       [[ -z "$bp" ]] && continue
-      local bnode bip
+      local bnode bip bport
       bnode=$(echo "$bp" | cut -d= -f2)
       bip=$(echo "$bp" | cut -d= -f3)
+      bport=$(echo "$bp" | cut -d= -f4)
       total=$((total+1))
       local same="cross"
       [[ "$inode" == "$bnode" ]] && same="same"
       # Traefik image is distroless — no curl binary. We can't `kubectl exec
-      # traefik -- curl ...`. Use the standard host→pod probe via a transient
-      # curl container on the same node (hostNetwork off — we want to verify
-      # the SAME cross-node path Traefik would take, but stop calling Traefik
-      # itself the probe). Test 4 covers the hostNetwork path explicitly.
-      local probe="smoke-t2-${ipod}-${bnode}-$$-$RANDOM"
-      local out code
-      out=$(kubectl run "$probe" \
-        --image=curlimages/curl:8.10.1 --restart=Never -n "$PROBE_NS" \
-        --overrides='{"spec":{"nodeName":"'"$inode"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
-        --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
-      code="${out:-000}"
-      code="${code: -3}"
-      kubectl -n "$PROBE_NS" delete pod "$probe" --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+      # traefik -- curl ...`. Spawn a transient curl pod IN THE TRAEFIK
+      # NAMESPACE on the same node: identical source-namespace + identical
+      # cross-node path as the real ingress hop, and netpol-valid for the
+      # traefik-only :3000 rule. kubectl-run --attach races occasionally
+      # (returns empty without an HTTP code) — retry once before failing.
+      local probe out code attempt
+      for attempt in 1 2; do
+        probe="smoke-t2-${ipod}-${bnode}-$$-$RANDOM"
+        out=$(kubectl run "$probe" \
+          --image=curlimages/curl:8.10.1 --restart=Never -n traefik \
+          --overrides='{"spec":{"nodeName":"'"$inode"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':'"$bport"'/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
+          --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
+        code="${out:-000}"
+        code="${code: -3}"
+        kubectl -n traefik delete pod "$probe" --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+        [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]] && break
+      done
       if [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]]; then
         ok=$((ok+1))
-        emit "test2.${ipod}@${inode}->${bip}@${bnode}[${same}]" PASS "http=$code"
+        emit "test2.${ipod}@${inode}->${bip}:${bport}@${bnode}[${same}]" PASS "http=$code"
       else
-        emit "test2.${ipod}@${inode}->${bip}@${bnode}[${same}]" FAIL "http=$code (cross-node host→pod broken)"
+        emit "test2.${ipod}@${inode}->${bip}:${bport}@${bnode}[${same}]" FAIL "http=$code (ingress-ns → backend pod broken)"
       fi
     done <<< "$backend_pods"
   done <<< "$ingress_pods"
@@ -309,15 +332,33 @@ test_3_pod_to_pod() {
   fi
 }
 
-# ─ test 4: hostNetwork-source → pod cross-node ─────────────────────
+# ─ test 4: hostNetwork-source → platform-api:3000 must be BLOCKED ───
+# INVERTED 2026-06-11. Historically this asserted that hostNetwork
+# sources could reach platform pods (the old ingress-nginx-hostNetwork
+# serving path). Today nothing in the serving path is host-sourced:
+# Traefik is a hostPort pod (pod-network source) and the LE solver hop
+# is pod→pod. The F4 netpol (allow-ingress-to-platform) gates
+# platform-api:3000 with a `traefik` namespaceSelector ONLY — no
+# ipBlock — so EVERY host-sourced packet must be dropped, same-node and
+# cross-node alike (empirically verified on staging 2026-06-11: 000
+# from all four nodes). An HTTP response here means the namespace-
+# scoped rule is not being enforced (Calico policy not programmed, or
+# someone re-added a pod-CIDR ipBlock to :3000 — see the F4 rationale
+# in k8s/base/network-policies.yaml).
+#
+# NOTE deliberately NOT probed: panels on :80. That rule keeps a
+# permissive 10.42.0.0/16 ipBlock, and host-sourced cross-node traffic
+# arrives from the node's VXLAN tunnel IP — which lives INSIDE the pod
+# CIDR — so it is reachable by design (non-sensitive static SPA).
 test_4_hostnetwork_to_pod() {
   if skipped 4; then emit "test4.hostnetwork_to_pod" SKIP "skipped"; return; fi
 
   local backend_pods nodes
-  backend_pods=$(kubectl -n platform get pods -l app=admin-panel \
-    -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}{"\n"}{end}' 2>/dev/null)
+  # One backend pod is enough — we assert policy, not a path matrix.
+  backend_pods=$(kubectl -n platform get pods -l app=platform-api \
+    -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}={.status.podIP}{"\n"}{end}' 2>/dev/null | head -1)
   nodes=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null)
-  [[ -z "$backend_pods" ]] && { emit "test4.hostnetwork_to_pod" FAIL "no admin-panel pods"; return; }
+  [[ -z "$backend_pods" ]] && { emit "test4.hostnetwork_to_pod" FAIL "no platform-api pods"; return; }
   [[ -z "$nodes" ]] && { emit "test4.hostnetwork_to_pod" FAIL "no nodes"; return; }
 
   local total=0 ok=0
@@ -328,37 +369,47 @@ test_4_hostnetwork_to_pod() {
       local bnode bip
       bnode=$(echo "$bp" | cut -d= -f2)
       bip=$(echo "$bp" | cut -d= -f3)
+      # Same-node combos are EXCLUDED: Calico hard-allows traffic from
+      # the host a pod runs on (kubelet liveness/readiness probes) and
+      # NetworkPolicy cannot override that — observed live 2026-06-11
+      # (same-node 404, all cross-node 000). Only cross-node host
+      # sources are a policy assertion.
+      if [[ "$node" == "$bnode" ]]; then
+        emit "test4.host@${node}->${bip}:3000@${bnode}[same]" SKIP "same-node host→pod is Calico's built-in kubelet-probe allow"
+        continue
+      fi
       total=$((total+1))
-      local same="cross"
-      [[ "$node" == "$bnode" ]] && same="same"
-      # spawn a transient hostNetwork pod on $node, curl pod IP
-      local probe="smoke-hn-${node}-${bnode}-$$-$RANDOM"
-      local out
-      out=$(kubectl run "$probe" \
-        --image=curlimages/curl:8.10.1 --restart=Never -n "$PROBE_NS" \
-        --overrides='{"spec":{"hostNetwork":true,"nodeName":"'"$node"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
-        --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
-      local code="${out:-000}"
-      code="${code: -3}"
-      kubectl -n "$PROBE_NS" delete pod "$probe" --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
-      # admin-panel listens on :3000 with no auth gate on /, returns 200 from /
-      # routes that don't require auth. Any HTTP response (2|3|4xx) proves the
-      # hostNetwork→pod cross-node path works at L7 — what 4xx really proves
-      # is that the L7 connection completed and the backend returned a status.
-      # The smoke check here is connectivity, not authorization.
-      if [[ "$code" =~ ^(2|3|4)[0-9][0-9]$ ]]; then
+      # spawn a transient hostNetwork pod on $node, curl platform-api
+      # :3000. A kubectl-run --attach race can return an empty result
+      # that looks like 000 ("blocked") — for a NEGATIVE assertion that
+      # false-000 would mask a real leak, so confirm 000 with a second
+      # probe before counting it as blocked.
+      local out code attempt
+      for attempt in 1 2; do
+        local probe="smoke-hn-${node}-${bnode}-$$-$RANDOM"
+        out=$(kubectl run "$probe" \
+          --image=curlimages/curl:8.10.1 --restart=Never -n "$PROBE_NS" \
+          --overrides='{"spec":{"hostNetwork":true,"nodeName":"'"$node"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
+          --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
+        code="${out:-000}"
+        code="${code: -3}"
+        kubectl -n "$PROBE_NS" delete pod "$probe" --ignore-not-found --grace-period=0 --force >/dev/null 2>&1 || true
+        # An HTTP code is definitive (a race can't fabricate one) — stop.
+        [[ "$code" != "000" ]] && break
+      done
+      if [[ "$code" == "000" ]]; then
         ok=$((ok+1))
-        emit "test4.host@${node}->${bip}@${bnode}[${same}]" PASS "http=$code"
+        emit "test4.host@${node}->${bip}:3000@${bnode}[cross]" PASS "blocked (netpol enforced, double-probed)"
       else
-        emit "test4.host@${node}->${bip}@${bnode}[${same}]" FAIL "http=$code (canary: hostNetwork→pod cross-node broken)"
+        emit "test4.host@${node}->${bip}:3000@${bnode}[cross]" FAIL "http=$code — host-sourced traffic REACHED platform-api:3000 (traefik-ns-only netpol rule not enforced?)"
       fi
     done <<< "$backend_pods"
   done <<< "$nodes"
 
   if [[ $ok -eq $total ]]; then
-    emit "test4.summary" PASS "$ok/$total OK"
+    emit "test4.summary" PASS "$ok/$total blocked"
   else
-    emit "test4.summary" FAIL "$ok/$total OK"
+    emit "test4.summary" FAIL "$ok/$total blocked (host sources must NOT reach platform-api:3000)"
   fi
 }
 
