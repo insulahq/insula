@@ -913,12 +913,16 @@ fi
 # before patching, so a busy cluster can take longer than the old ~30s
 # budget — the reconciler IS working (proven in the same run: the
 # Deployment annotation hash DID update in H5, and H13's post-delete
-# empty-body assertion passes). Widened the poll to up to ~40s and we
-# do ONE final re-fetch after the loop so the assertion reads the
-# freshest CM state, not a stale capture. The assertion itself is
-# unchanged — still requires the rendered SecRule marker.
+# empty-body assertion passes). 2026-06-11: ~44s was STILL too tight at
+# the tail of a full serial pass (modsec-crs rollout settle takes
+# minutes on a churned single node; same-run H13 passed again, proving
+# slow-not-broken) — widened to ~3 min. The loop exits on first match,
+# so a healthy cluster pays nothing extra. We do ONE final re-fetch
+# after the loop so the assertion reads the freshest CM state, not a
+# stale capture. The assertion itself is unchanged — still requires
+# the rendered SecRule marker.
 h_cm_data=""
-for _i in $(seq 1 20); do
+for _i in $(seq 1 90); do
   sleep 2
   h_cm_data=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
   if echo "$h_cm_data" | grep -qE "ctl:ruleRemoveTargetById=$F4_RULE_ID;ARGS_NAMES"; then

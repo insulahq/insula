@@ -59,7 +59,13 @@ TEST_CIDS=$(python3 <<'EOF'
 import json, re
 d = json.load(open('/tmp/cleanup-clients.json'))
 items = d.get('data', []) or []
-patt = re.compile(r'^(Reaper|Bundle|Ingress|Mail|Drain|Tier|Grow|Lifecycle|Pvc|Provision)\s+Test\s+\d+', re.I)
+# 2026-06-11: added Integration — the staging-all lifecycle scenario
+# names its tenants "Integration Test <ts>", and three of them from
+# crashed runs sat in status=pending for a day, invisible to this
+# matcher; the k8s-provisioner kept faithfully recreating their
+# namespaces after every manual `kubectl delete ns`, tripping the
+# runner's leak guard on every pass.
+patt = re.compile(r'^(Reaper|Bundle|Ingress|Mail|Drain|Tier|Grow|Lifecycle|Pvc|Provision|Integration)\s+Test\s+\d+', re.I)
 hits = [c for c in items if patt.match(c.get('name', '') or '')]
 for c in hits:
     print(f"{c['id']}\t{c['name']}")
