@@ -74,7 +74,7 @@ import json, sys
 try:
     d = json.load(sys.stdin)
     nodes = d.get('data') or []
-    print(sum(1 for n in nodes if n.get('canHostClientWorkloads')))
+    print(sum(1 for n in nodes if n.get('canHostTenantWorkloads')))
 except Exception:
     print(0)
 " 2>/dev/null)
