@@ -15,7 +15,16 @@
     "declarationMap": true,
     "sourceMap": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      // Resolve the shared contracts from THIS checkout's sibling
+      // packages/ dist, not via node_modules. Git worktrees symlink
+      // node_modules from the main checkout, so default resolution
+      // silently typechecks worktree backend code against the MAIN
+      // checkout's api-contracts — a contracts change made in a
+      // worktree was invisible to typecheck until CI. Requires the
+      // contracts to be built (`tsc --build --force` — see AGENTS.md),
+      // which the project-reference below already implies.
+      "@insula/api-contracts": ["../packages/api-contracts/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*"],

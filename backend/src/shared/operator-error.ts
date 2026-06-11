@@ -77,8 +77,34 @@ export function translateOperatorError(
     };
   }
 
+  // ─── Admission control ─────────────────────────────────────────
+  // MUST come before the workload image-pull branch: webhook denials
+  // contain the word "denied", which the image-pull regex used to
+  // swallow — every Longhorn validator rejection (e.g. refusing a PVC
+  // expansion while the volume is degraded) surfaced as "Image pull
+  // failed" at the resize step, which is maximally misleading (caught
+  // on testing 2026-06-11: two full-pass grow failures reported
+  // WORKLOAD_IMAGE_PULL at progress 10% "Patching PVC", where no image
+  // is ever pulled).
+  if (text.match(/admission webhook .* denied the request/i)) {
+    return {
+      code: OPERATOR_ERROR_CODES.ADMISSION_WEBHOOK_DENIED,
+      title: 'Rejected by an admission webhook',
+      detail: 'A validating webhook refused this change. The webhook\'s own message (in diagnostics) names the exact rule — common sources: Longhorn refusing volume changes while a volume is degraded/attached, CNPG validating Cluster spec changes.',
+      remediation: [
+        'Read the webhook message in the diagnostics — it states the precise reason.',
+        'For Longhorn volume changes: check the volume\'s state/robustness on the Storage page and retry once it is healthy/detached as required.',
+        'Retry after the underlying condition clears; webhook denials are stateless.',
+      ],
+      retryable: true,
+      diagnostics: { raw },
+    };
+  }
+
   // ─── Workload ──────────────────────────────────────────────────
-  if (text.match(/(ImagePull|ErrImagePull|manifest unknown|denied)/i)) {
+  // NB: keep the `denied` alternatives registry-scoped (see the
+  // admission-control branch above for why a bare /denied/ is wrong).
+  if (text.match(/(ImagePull|ErrImagePull|manifest unknown|pull access denied|denied: requested access)/i)) {
     return {
       code: OPERATOR_ERROR_CODES.WORKLOAD_IMAGE_PULL,
       title: 'Image pull failed',
