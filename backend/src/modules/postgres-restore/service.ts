@@ -1,4 +1,6 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { checkLonghornBudgetForRecovery } from './longhorn-budget-preflight.js';
+import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import { MERGE_PATCH, JSON_PATCH } from '../../shared/k8s-patch.js';
 import { execInPod, type ExecResult } from '../../shared/k8s-exec.js';
@@ -1507,6 +1509,29 @@ export async function promotePostgresFromSnapshot(
     const t0 = nowMs();
     pre = await preflight(deps.k8s, deps.kubeconfigPath, inputs, steps);
     recordStep({ step: 'preflight', ok: true, elapsedMs: nowMs() - t0, detail: `primary=${pre.primaryPvc}` });
+
+    // 1b. Longhorn scheduling-budget preflight (R17 item 3). The
+    // recovery clone needs a brand-new replica of the full volume size;
+    // prior PITRs' Retained PVs keep pinning budget, and starting the
+    // cutover without headroom stalls mid-restore WITH THE DATABASE
+    // DOWN (snapshot-recovery Init/FailedAttachVolume — reproduced
+    // twice on testing 2026-06-10/11). Fail fast HERE, before anything
+    // destructive, with the reclaim candidates named. Skips cleanly on
+    // non-Longhorn storage (local-path DinD) or unreadable state.
+    const tB = nowMs();
+    const budget = await checkLonghornBudgetForRecovery(deps.k8s, {
+      namespace: inputs.clusterNamespace,
+      pvcName: pre.primaryPvc,
+    });
+    recordStep({
+      step: 'preflight-longhorn-budget',
+      ok: budget.state !== 'insufficient',
+      elapsedMs: nowMs() - tB,
+      detail: budget.detail,
+    });
+    if (budget.state === 'insufficient') {
+      throw new ApiError('PITR_INSUFFICIENT_STORAGE_BUDGET', budget.detail, 422);
+    }
 
     // 2. Wrap snapshot. The Longhorn volume name == the PV name backing
     // the source PVC; preflight already resolved this via the snap CR's
