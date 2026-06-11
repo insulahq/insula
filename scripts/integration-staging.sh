@@ -50,6 +50,19 @@ for _tool in openssl ncat python3 curl jq; do
 done
 unset _tool
 
+# Config profile (2026-06-11): standalone invocations (`./scripts/
+# integration-staging.sh <scenario>`) used to rely ENTIRELY on inherited
+# env vars — only integration-all.sh loaded scripts/integration.env, so
+# a direct scenario re-run silently fell back to the example.test
+# defaults and died with "ADMIN_PASSWORD must be set" (or worse, probed
+# the wrong cluster). Load the same gitignored profile here. NOTE
+# precedence: the profile file WINS over inherited env (same semantics
+# as integration-all.sh) — to target a different cluster ad hoc, point
+# INTEGRATION_ENV=/path/to/other.env rather than overriding single vars.
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+load_integration_env
+
 # dnspython bootstrap — SRV / TXT / DNSBL / autodiscover probes need a
 # real resolver library (getent only does A/AAAA). Try to import it;
 # if absent, attempt a best-effort --user pip install, then re-check.

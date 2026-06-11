@@ -63,6 +63,24 @@ ssh_cluster() {
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "$SSH_HOST" "$@"
 }
 
+# ssh_node <node-name> <cmd…> — run a command on the SPECIFIC node a pod
+# landed on (InternalIP resolved via the kube API, same operator key).
+# Multi-node correctness (2026-06-11): the nft tenant_ports probe used to
+# try `ssh <node-name>` FROM the control host (no key, bare node name) and
+# then silently fall back to the CONTROL host's nft — wrong machine
+# whenever the scheduler picked another node. Same pattern as
+# integration-staging.sh's ssh_node.
+ssh_node() {
+  local node="$1"; shift
+  local ip
+  ip=$(ssh_cluster "kubectl get node $node -o wide --no-headers" 2>/dev/null | awk '{print $6}')
+  if [[ -z "$ip" || "$ip" == "<none>" ]]; then
+    echo "ssh_node: could not resolve InternalIP for node '$node'" >&2
+    return 1
+  fi
+  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$ip" "$@"
+}
+
 # ─── Login ──────────────────────────────────────────────────────────────────
 if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
   log "using cached INTEGRATION_TOKEN"
@@ -210,20 +228,22 @@ else
   fail "udp ports annotation missing or wrong: '$ANNOT_UDP'"
 fi
 
-# ─── Phase 4: nft set on the host has the ports ────────────────────────────
-log "── waiting up to 60s for firewall-reconciler to converge ──"
+# ─── Phase 4: nft set on the POD'S host has the ports ──────────────────────
+# 2026-06-11: probe the node the pod actually landed on via ssh_node —
+# the reconciler programs tenant_ports on THAT host. This is now a hard
+# assertion (was a warning while the probe could silently hit the wrong
+# machine).
+log "── waiting up to 60s for firewall-reconciler to converge on $POD_NODE ──"
 NFT_TCP=""
 for _ in $(seq 1 12); do
-  NFT_TCP=$(ssh_cluster "ssh -o StrictHostKeyChecking=no $POD_NODE 'nft list set inet filter tenant_ports_tcp 2>/dev/null'" 2>/dev/null || \
-            ssh_cluster "nft list set inet filter tenant_ports_tcp 2>/dev/null" || echo "")
+  NFT_TCP=$(ssh_node "$POD_NODE" "nft list set inet filter tenant_ports_tcp 2>/dev/null" 2>/dev/null || echo "")
   if [[ "$NFT_TCP" == *"3478"* && "$NFT_TCP" == *"5349"* ]]; then break; fi
   sleep 5
 done
 if [[ "$NFT_TCP" == *"3478"* && "$NFT_TCP" == *"5349"* ]]; then
-  ok "host nft set tenant_ports_tcp contains 3478 and 5349"
+  ok "host nft set tenant_ports_tcp on $POD_NODE contains 3478 and 5349"
 else
-  warn "nft set check skipped/failed (this only works when the test runner can SSH to the pod's node):"
-  warn "  current set: $(echo "$NFT_TCP" | tr '\n' ' ' | head -c 200)"
+  fail "nft set tenant_ports_tcp on $POD_NODE missing 3478/5349 after 60s — current set: $(echo "$NFT_TCP" | tr '\n' ' ' | head -c 200)"
 fi
 
 # ─── Phase 4b: actually reach the server from outside ─────────────────────
@@ -317,17 +337,21 @@ for _ in $(seq 1 30); do
   sleep 2
 done
 
+# 2026-06-11: same ssh_node fix as Phase 4 — and a NOTE on the old
+# behaviour: this negative check used to "pass" vacuously because the
+# fallback probed the CONTROL host, where the ports were never added in
+# the first place. Probing the pod's real node makes it meaningful, and
+# a failure is now a hard fail (the reconciler must remove the ports).
 NFT_AFTER=""
 for _ in $(seq 1 12); do
-  NFT_AFTER=$(ssh_cluster "ssh -o StrictHostKeyChecking=no $POD_NODE 'nft list set inet filter tenant_ports_tcp 2>/dev/null'" 2>/dev/null || \
-              ssh_cluster "nft list set inet filter tenant_ports_tcp 2>/dev/null" || echo "")
+  NFT_AFTER=$(ssh_node "$POD_NODE" "nft list set inet filter tenant_ports_tcp 2>/dev/null" 2>/dev/null || echo "")
   if [[ "$NFT_AFTER" != *"3478"* ]]; then break; fi
   sleep 5
 done
 if [[ "$NFT_AFTER" != *"3478"* ]]; then
-  ok "tenant_ports_tcp no longer contains the deleted deployment's ports"
+  ok "tenant_ports_tcp on $POD_NODE no longer contains the deleted deployment's ports"
 else
-  warn "ports still present after 60s — reconciler may not be deployed yet on this node"
+  fail "ports still present in tenant_ports_tcp on $POD_NODE 60s after deployment delete — reconciler did not remove them"
 fi
 
 # ─── Summary ───────────────────────────────────────────────────────────────
