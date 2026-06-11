@@ -188,17 +188,20 @@ rename. Key design risk: GitOps-owned `${DOMAIN}` vs a runtime rename (doc §5).
 Three small items deferred from the 2026-06-10 integration green-up
 (PRs #22–#28 + the Stalwart orphan-cleanup PR):
 
-1. **Snapshot-schedule true ownership split.** `spec.schedule` on the
-   `stalwart-snapshot` CronJob cannot be protected from Flux: it is
-   required-on-create (cannot be stripped from the apply) and no valid
-   `kustomize.toolkit.fluxcd.io/ssa` policy preserves a manifest-present
-   field (`IgnoreConflicts`, shipped 2026-05-29, is not a valid policy at
-   all — Flux silently used Override). Current mitigation: the 5-minute
-   reconciler plus a 30-second drift fast path re-assert the operator
-   value, so the revert window is ≤~30 s. The structural fix is a
-   create-vs-update split (e.g. platform-api owns the whole CronJob and
-   Flux only seeds it, or `IfNotPresent` plus reconciler-owned template
-   updates) so Flux never asserts the field in the first place.
+1. **Snapshot-schedule true ownership split — SHIPPED 2026-06-11**
+   (firing-mode split): `spec.schedule` is now FULLY Flux-owned and
+   platform-api never patches it. An operator cadence equal to the
+   manifest default runs via k8s cron (NATIVE mode; suspend follows the
+   backup-target gate as before). A custom cadence flips the reconciler
+   into PLATFORM mode: the CronJob is force-suspended (pure Job-template
+   holder) and platform-api's firing engine creates Jobs on the
+   operator's cron — ±5-min catch-up window, replica-safe claim via a
+   conditional `backup_schedules.last_fired_at` update, plus
+   deterministic per-minute Job names
+   (`stalwart-snapshot-cron-<YYYYMMDDHHmm>`) with 409-tolerant create as
+   the second dedup layer (mirrors the tenant-bundle global scheduler's
+   convention). The SSA tug-of-war (PRs #28/#34 lineage) is gone; zero
+   revert window.
 
 2. **Rename-away cert-anchor cleanup — SHIPPED 2026-06-11** (PRs #36 +
    #37, validated E2E on testing: 7 real orphans detected, canonical

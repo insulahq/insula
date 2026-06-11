@@ -44,34 +44,29 @@ metadata:
   annotations:
     # backup-coverage: excluded:cluster-infrastructure
     ttlSecondsAfterFinished: "3600"
-    # 2026-06-10 (re-verified live on a v1.8.5 kustomize-controller):
-    # the previous value `IgnoreConflicts` is NOT a valid ssa policy —
-    # Flux's documented set is Override | Merge | IfNotPresent | Ignore,
-    # and an unknown value silently falls back to Override, which is
-    # exactly the "Flux steals spec.schedule back every reconcile"
-    # behaviour this annotation was supposed to prevent (the 2026-05-29
-    # "E2E confirmed" claim was a false positive). `Merge` is the
-    # strongest valid policy here, but per the Flux docs fields present
-    # in the manifest STILL override under Merge — and spec.schedule is
-    # REQUIRED on create, so it cannot be removed from the manifest
-    # (a schedule-less apply pins the platform Kustomization at
-    # Ready=False on fresh bootstrap; see the /spec/suspend strip in
-    # bootstrap.sh for the field that CAN be removed).
-    #
-    # The operative contract is therefore EVENTUAL consistency:
-    # every Flux reconcile reverts spec.schedule to the manifest
-    # default below, and the 5-minute snapshot-cronjob scheduler
-    # (snapshot-cronjob-scheduler.ts) re-asserts the operator value
-    # from backup_schedules.mail.cron_expression. Operator overrides
-    # win within ≤5 min of any Flux pass. A structural fix (moving
-    # schedule fully out of Flux's apply) needs a create-vs-update
-    # split and is tracked as a roadmap follow-up.
+    # R17.1 (2026-06-11) — spec.schedule is FULLY Flux-owned now;
+    # platform-api never patches it (the SSA tug-of-war chronicled in
+    # PRs #28/#34 is over). The cadence contract:
+    #   - Operator cadence == the default below → NATIVE mode: this
+    #     CronJob fires via k8s cron; spec.suspend follows the
+    #     backup-target gate (reconciler-owned — bootstrap's
+    #     Kustomization patch strips /spec/suspend from Flux's apply).
+    #   - Operator cadence != default (backup_schedules.mail.
+    #     cron_expression) → PLATFORM mode: the reconciler force-
+    #     suspends this CronJob (pure Job-template holder) and
+    #     platform-api's firing engine creates Jobs on the operator's
+    #     cron with deterministic per-minute names
+    #     (stalwart-snapshot-cron-<YYYYMMDDHHmm>).
+    # `Merge` is kept as the strongest valid ssa policy (the previous
+    # `IgnoreConflicts` was not a valid value at all — silently
+    # Override).
     kustomize.toolkit.fluxcd.io/ssa: Merge
 spec:
-  # Default cadence 30min — Flux re-asserts this on every reconcile;
-  # operator overrides (PATCH /admin/backups/schedules/mail, SSA-owned
-  # by platform-api.snapshot-settings) are re-applied within ≤5 min by
-  # the snapshot-cronjob scheduler. See the annotation comment above.
+  # Default cadence 30min — the NATIVE-mode schedule, and the mode
+  # discriminator: an operator cadence equal to this value runs via
+  # k8s cron; anything else flips to platform-fired Jobs (see the
+  # annotation comment above). MUST stay in sync with
+  # DEFAULT_MAIL_SNAPSHOT_SCHEDULE in snapshot-cronjob-reconciler.ts.
   schedule: "*/30 * * * *"
   # Ships SUSPENDED. A restic backup with no target is pointless churn —
   # the mail-snapshot reconciler (snapshot-cronjob-reconciler.ts) flips
