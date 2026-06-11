@@ -41,6 +41,7 @@ import { ApiError } from '../../shared/errors.js';
 import { MERGE_PATCH, strategicMergePatch } from '../../shared/k8s-patch.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { waitForStalwartReplicaCount } from './rollout-wait.js';
+import { getMailSnapshotBackupTarget } from './snapshot-settings.js';
 import { systemSettings, emailDomains, mailboxes, platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 // snapshot.js is dynamic-imported below in the snapshotting step
@@ -234,12 +235,26 @@ export async function startMailMigration(
   // recovering from a broken state where the safety backup is moot
   // (source data may already be lost). The snapshot step is also
   // implicitly skipped via skipFreshSnapshot=true (enforced below).
-  if (!opts.recoverFromBrokenState && !row?.mailSnapshotBackupStoreId) {
-    throw new ApiError(
-      'MAIL_MIGRATION_NO_BACKUP_TARGET',
-      'Mail migration requires a configured backup target. Go to Settings → Backups to add a CIFS / S3 / Hetzner-Storage-Box BackupStore, then Email Management → Operations → Backups to select it.',
-      412, // Precondition Failed
-    );
+  //
+  // 2026-06-11 FIX: read the bound mail target from
+  // backup_target_assignments (backup_class='mail') via the canonical
+  // getter — the PATCH /admin/mail/snapshot-backup-target setter has
+  // written ONLY that table since the R-X shim migration, so the
+  // legacy system_settings.mail_snapshot_backup_store_id column this
+  // check used to read is never populated any more. Result: every
+  // migration on a current-UI-configured cluster failed with
+  // MAIL_MIGRATION_NO_BACKUP_TARGET despite a bound, tested target
+  // (first hit live on the staging multi-node rebuild — single-node
+  // clusters skipped the migration path before reaching this check).
+  if (!opts.recoverFromBrokenState) {
+    const mailTarget = await getMailSnapshotBackupTarget(db);
+    if (!mailTarget.backupStoreId) {
+      throw new ApiError(
+        'MAIL_MIGRATION_NO_BACKUP_TARGET',
+        'Mail migration requires a configured backup target. Go to Settings → Backups to add a CIFS / S3 / Hetzner-Storage-Box BackupStore, then Email Management → Operations → Backups to select it.',
+        412, // Precondition Failed
+      );
+    }
   }
 
   // Recovery mode always implies skipFreshSnapshot=true. Caller may

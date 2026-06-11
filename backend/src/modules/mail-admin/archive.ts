@@ -61,7 +61,8 @@ import { sql } from 'drizzle-orm';
 import { eq } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { JSON_PATCH } from '../../shared/k8s-patch.js';
-import { backupConfigurations, systemSettings } from '../../db/schema.js';
+import { systemSettings } from '../../db/schema.js';
+import { getMailSnapshotBackupTarget } from './snapshot-settings.js';
 import type { Database } from '../../db/index.js';
 import {
   type MailArchiveListResponse,
@@ -370,23 +371,18 @@ export async function getMailArchiveStatus(deps: ArchiveDeps): Promise<MailArchi
   const lastRow = (lastRows as unknown as { rows: ArchiveRunRow[] }).rows?.[0] ?? null;
   const currentRow = (currentRows as unknown as { rows: ArchiveRunRow[] }).rows?.[0] ?? null;
 
-  // Read backup target from system_settings + join with backup_configurations
-  // for the human-readable name.
-  const [sysRow] = await deps.db
-    .select({ id: systemSettings.mailSnapshotBackupStoreId })
-    .from(systemSettings)
-    .where(eq(systemSettings.id, SETTINGS_ID));
-  const backupStoreId = sysRow?.id ?? null;
-  let backupStoreName: string | null = null;
-  let storageType: string | null = null;
-  if (backupStoreId) {
-    const [cfg] = await deps.db
-      .select({ name: backupConfigurations.name, storageType: backupConfigurations.storageType })
-      .from(backupConfigurations)
-      .where(eq(backupConfigurations.id, backupStoreId));
-    backupStoreName = cfg?.name ?? null;
-    storageType = cfg?.storageType ?? null;
-  }
+  // Read the bound mail backup target via the canonical assignments-
+  // based getter. 2026-06-11: the legacy
+  // system_settings.mail_snapshot_backup_store_id column this used to
+  // read is no longer written by the snapshot-backup-target setter
+  // (it writes backup_target_assignments[backup_class='mail'] only),
+  // so the archive status showed "no backup target" on every
+  // current-UI-configured cluster. Same-day sibling fix in
+  // migration.ts (hard 412) and snapshot.ts (status display).
+  const mailTarget = await getMailSnapshotBackupTarget(deps.db);
+  const backupStoreId = mailTarget.backupStoreId;
+  const backupStoreName = mailTarget.backupStoreName;
+  const storageType = mailTarget.storageType;
 
   // Scheduled archiving is available — the in-process scheduler in
   // archive-schedule.ts ticks every 60s and fires startMailArchive()

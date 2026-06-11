@@ -529,7 +529,7 @@ export async function buildDrainImpact(
     tenantName: string;
     namespace: string;
     storageTier: 'local' | 'ha';
-    currentWorkerNodeName: string | null;
+    currentNodeName: string | null;
     workloads: Array<{
       kind: 'Deployment' | 'StatefulSet';
       name: string;
@@ -884,7 +884,7 @@ export async function buildDrainImpact(
     tenantName: string;
     namespace: string;
     storageTier: 'local' | 'ha';
-    currentWorkerNodeName: string | null;
+    currentNodeName: string | null;
     workloads: Array<{
       kind: 'Deployment' | 'StatefulSet';
       name: string;
@@ -911,7 +911,7 @@ export async function buildDrainImpact(
       tenantName: c.name,
       namespace: ns,
       storageTier: c.tier,
-      currentWorkerNodeName: c.pin,
+      currentNodeName: c.pin,
       workloads: [],
       pvcs: [],
     };
