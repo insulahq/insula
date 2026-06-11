@@ -513,10 +513,46 @@ export async function runStalwartDomainReconcilerTick(
     log.warn('Stalwart NetworkListener ensure failed:', err);
   }
 
-  // 8. Fire AcmeRenewal (Stalwart-side idempotent on cert freshness).
+  // 8. Fire AcmeRenewal — ONLY when actually needed.
+  //
+  //    2026-06-11 FIX (LE rate-limit storm): the old comment claimed the
+  //    fire was "Stalwart-side idempotent on cert freshness". It is NOT:
+  //    upstream `acme_renew` → `AcmeRequestBuilder::renew()` (v0.16.x,
+  //    crates/common/src/network/acme/{renew,order}.rs) places a REAL
+  //    new-order on every task execution — there is no freshness gate
+  //    anywhere in that path. Firing unconditionally each 30-min tick,
+  //    twice per tick (step 8 + the step-9 force), times N api replicas,
+  //    meant every cluster issued duplicate LE certs until it tripped
+  //    LE's duplicate-certificate limit (5/week per exact SAN set) and
+  //    then sat rate-limited — observed live on staging 2026-06-11
+  //    ("too many certificates (5) already issued for this exact set of
+  //    identifiers in the last 168h"), with 41 queued AcmeRenewal retry
+  //    tasks set to re-burn the window the moment it slid open.
+  //
+  //    Two gates, both fail-OPEN on probe errors (an unreadable gate
+  //    must not break first-issuance on fresh installs):
+  //      (a) a stored x:Certificate already covers the mail hostname —
+  //          issuance is done; RENEWALS are Stalwart's own job
+  //          (AcmeProvider.renewBefore), not ours.
+  //      (b) an AcmeRenewal task for this domain is already pending or
+  //          retrying — firing again only queues a duplicate order.
+  //          This also collapses the cross-replica race: replica B's
+  //          tick sees replica A's freshly-created task and skips.
   let acmeRenewalFired = false;
   try {
-    acmeRenewalFired = await fireAcmeRenewal(jmapCall, auth, matchedDomain.id, log);
+    if (await hasStoredCertificateFor(jmapCall, auth, matchedDomain.name, log)) {
+      notes.push(
+        `AcmeRenewal skipped — stored certificate already covers ${matchedDomain.name} `
+        + `(renewals are Stalwart-scheduled via AcmeProvider.renewBefore)`,
+      );
+    } else if (await hasPendingAcmeRenewalTask(jmapCall, auth, matchedDomain.id, log)) {
+      notes.push(
+        'AcmeRenewal skipped — an AcmeRenewal task for this domain is already pending/retrying '
+        + '(firing again would queue a duplicate LE order)',
+      );
+    } else {
+      acmeRenewalFired = await fireAcmeRenewal(jmapCall, auth, matchedDomain.id, log);
+    }
   } catch (err) {
     notes.push(`AcmeRenewal fire failed: ${err instanceof Error ? err.message : String(err)}`);
     log.warn('Stalwart AcmeRenewal fire failed:', err);
@@ -813,6 +849,102 @@ async function ensureDomainCertManagement(
  * picks up the task and acquires/renews the cert. Idempotent
  * Stalwart-side (skips LE round-trip when cert is fresh).
  */
+/**
+ * Task states that mean "an order attempt is already queued/running
+ * inside Stalwart". Completed/failed-terminal tasks don't count.
+ * Observed live on 0.16.5: '@type':'Retry' (with failureReason + due);
+ * 'Pending'/'Running'/'Scheduled' included defensively for other
+ * in-flight spellings across 0.16.x.
+ */
+const PENDING_TASK_STATES = new Set(['Pending', 'Retry', 'Running', 'Scheduled']);
+
+/**
+ * True when an AcmeRenewal task for `domainId` is already pending or
+ * retrying in Stalwart's task queue (x:Task/query + x:Task/get — both
+ * proven against live 0.16.5). Fail-OPEN: any transport/JMAP error ⇒
+ * false (callers then behave exactly as before this gate existed), so
+ * an old Stalwart without these methods can't brick first-issuance.
+ */
+async function hasPendingAcmeRenewalTask(
+  jmapCall: JmapCall,
+  auth: string,
+  domainId: string,
+  log: { warn: (...args: unknown[]) => void },
+): Promise<boolean> {
+  try {
+    const qRes = await jmapCall(auth, {
+      using: [JMAP_CORE, JMAP_STALWART],
+      methodCalls: [['x:Task/query', { accountId: ADMIN_ACCOUNT_ID }, 'c0']],
+    });
+    const qArgs = qRes.methodResponses[0]?.[1] as { ids?: ReadonlyArray<string> } | undefined;
+    const ids = Array.isArray(qArgs?.ids) ? qArgs.ids : [];
+    if (ids.length === 0) return false;
+    const gRes = await jmapCall(auth, {
+      using: [JMAP_CORE, JMAP_STALWART],
+      // Cap the read: a queue large enough to truncate here is already
+      // pathological and any AcmeRenewal in the first 500 still gates.
+      methodCalls: [['x:Task/get', { accountId: ADMIN_ACCOUNT_ID, ids: ids.slice(0, 500) }, 'c0']],
+    });
+    const gArgs = gRes.methodResponses[0]?.[1] as
+      | { list?: ReadonlyArray<Record<string, unknown>> }
+      | undefined;
+    const list = Array.isArray(gArgs?.list) ? gArgs.list : [];
+    return list.some((t) => {
+      if (t['@type'] !== 'AcmeRenewal' || t['domainId'] !== domainId) return false;
+      const statusType = (t['status'] as Record<string, unknown> | undefined)?.['@type'];
+      return typeof statusType === 'string' && PENDING_TASK_STATES.has(statusType);
+    });
+  } catch (err) {
+    log.warn(
+      'Stalwart pending-AcmeRenewal-task check failed (fail-open, treating as none):',
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
+/**
+ * True when a stored x:Certificate already covers `mailHostname` — i.e.
+ * first issuance is DONE and renewals are Stalwart's own scheduled job
+ * (AcmeProvider.renewBefore), not the reconciler's. SANs arrive as a
+ * `{name: true}` map (registry Map serialization, same shape as
+ * Domain.certificateManagement.subjectAlternativeNames); an array form
+ * is tolerated defensively. Fail-OPEN: errors ⇒ false (treat as "no
+ * cert") so a probe failure can't block first issuance on fresh
+ * installs.
+ */
+async function hasStoredCertificateFor(
+  jmapCall: JmapCall,
+  auth: string,
+  mailHostname: string,
+  log: { warn: (...args: unknown[]) => void },
+): Promise<boolean> {
+  try {
+    const res = await jmapCall(auth, {
+      using: [JMAP_CORE, JMAP_STALWART],
+      methodCalls: [['x:Certificate/get', { accountId: ADMIN_ACCOUNT_ID }, 'c0']],
+    });
+    const args = res.methodResponses[0]?.[1] as
+      | { list?: ReadonlyArray<Record<string, unknown>> }
+      | undefined;
+    const list = Array.isArray(args?.list) ? args.list : [];
+    return list.some((cert) => {
+      const sans: unknown = cert['subjectAlternativeNames'];
+      if (Array.isArray(sans)) return sans.includes(mailHostname);
+      if (sans && typeof sans === 'object') {
+        return (sans as Record<string, unknown>)[mailHostname] === true;
+      }
+      return false;
+    });
+  } catch (err) {
+    log.warn(
+      'Stalwart stored-certificate check failed (fail-open, treating as missing):',
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
 async function fireAcmeRenewal(
   jmapCall: JmapCall,
   auth: string,
@@ -952,6 +1084,21 @@ async function maybeForceFreshAcmeOrder(args: ForceArgs): Promise<boolean> {
     args.notes.push(
       `served cert self-signed but self-heal backoff not elapsed `
       + `(${Math.round(sinceLast / 1000)}s of ${Math.round(MIN_FORCE_INTERVAL_MS / 1000)}s) — deferring force`,
+    );
+    return false;
+  }
+
+  // 2026-06-11 FIX (LE rate-limit storm): a pending/retrying AcmeRenewal
+  // task means an order attempt is ALREADY queued inside Stalwart —
+  // forcing another only stacks duplicate LE orders (each task execution
+  // is a real new-order upstream; see step-8 comment). The reassert in
+  // forceFreshAcmeOrder is only useful WITH a fresh fire, so defer the
+  // whole force. Fail-open: an unreadable task queue must not disable
+  // the self-heal.
+  if (await hasPendingAcmeRenewalTask(args.jmapCall, args.auth, args.domainId, args.log)) {
+    args.notes.push(
+      'served cert self-signed but an AcmeRenewal task is already pending/retrying — '
+      + 'deferring force (Stalwart will execute the queued order)',
     );
     return false;
   }
