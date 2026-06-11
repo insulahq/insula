@@ -235,7 +235,7 @@ async function isMailTargetBound(db: Database): Promise<boolean> {
  * source (the unified Backups → Mail schedule editor); the legacy
  * system_settings.mailSnapshotSchedule column is NOT authoritative.
  */
-async function resolveDesiredSchedule(db: Database): Promise<string> {
+export async function resolveDesiredSchedule(db: Database): Promise<string> {
   const [row] = await db
     .select({ v: backupSchedules.cronExpression })
     .from(backupSchedules)
