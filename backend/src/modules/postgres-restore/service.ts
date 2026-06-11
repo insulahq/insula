@@ -2098,6 +2098,44 @@ export async function promotePostgresFromSnapshot(
     (e as Error & { steps?: PitrStep[] }).steps = steps;
     throw e;
   } finally {
+    // Best-effort bootstrap normalization on the FAILURE path (the
+    // success path already ran step 8b). When the orchestration dies
+    // between recreate-source and normalize-bootstrap (e.g. the
+    // snapshot-recovery volume can't schedule — caught live on testing
+    // 2026-06-11 with Longhorn "insufficient storage"), the rebuilt
+    // Cluster CR keeps spec.bootstrap.recovery. This finally also
+    // clears the persisted lock below, so recoverInterruptedRestore at
+    // the next platform-api start finds NOTHING to recover — and every
+    // subsequent Flux apply merges git's bootstrap.initdb into the
+    // live recovery stanza and is rejected by CNPG's webhook ("Only
+    // one bootstrap method"), wedging the entire platform Kustomization
+    // until an operator hand-patches the CR. Normalize here, BEFORE the
+    // Flux resume, so the first post-resume apply already validates.
+    if (sourceDeleted && pre?.cluster.spec?.bootstrap?.initdb) {
+      try {
+        const liveSrc = await getCustom<CnpgCluster>(deps.k8s, {
+          group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace,
+          plural: 'clusters', name: inputs.clusterName,
+        }).catch(() => null);
+        if (liveSrc && liveSrc.spec?.bootstrap?.recovery !== undefined) {
+          await patchCustomJson(deps.k8s, {
+            group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName,
+            body: [
+              { op: 'remove', path: '/spec/bootstrap/recovery' },
+              { op: 'add', path: '/spec/bootstrap/initdb', value: pre.cluster.spec.bootstrap.initdb },
+            ],
+          });
+          recordStep({ step: 'normalize-bootstrap', ok: true, detail: 'normalized in failure-path finally (recovery → initdb)' });
+        }
+      } catch (nerr) {
+        recordStep({
+          step: 'normalize-bootstrap', ok: false,
+          detail: `failure-path normalize failed: ${(nerr as Error).message}. ` +
+            `Flux applies will be rejected by CNPG ("Only one bootstrap method") until the CR is patched: ` +
+            `kubectl patch cluster ${inputs.clusterName} -n ${inputs.clusterNamespace} --type=json -p '[{"op":"remove","path":"/spec/bootstrap/recovery"}]'`,
+        });
+      }
+    }
     // Always resume Flux if we suspended it, even on the failure path.
     // Without this, a thrown error before the success-path `finally`
     // would leave Flux suspended forever — no manifest changes propagate
