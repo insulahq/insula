@@ -15,7 +15,11 @@ build/
 # Integration test profile — operator's real cluster coordinates + confidential
 # external-target credentials. NEVER commit. The committed template is
 # scripts/integration.env.example (placeholders only).
+# Any local profile variant (integration.env, integration.env.testing-backup, …)
+# — these hold REAL cluster creds. The committed example stays tracked.
 scripts/integration.env
+scripts/integration.env.*
+!scripts/integration.env.example
 
 # DR-drill profile — age private key path, drill target host, report webhook
 # token. Far too sensitive for a public-repo Actions secret, which is exactly

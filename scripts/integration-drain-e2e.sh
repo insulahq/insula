@@ -6,7 +6,7 @@
 # off the drained node:
 #
 #   Setup
-#     1. Pick a worker node W (canHostClientWorkloads=true, role=worker)
+#     1. Pick a worker node W (canHostTenantWorkloads=true, role=worker)
 #        from /api/v1/admin/nodes. Skip cleanly if no such node exists.
 #     2. Create two tenants:
 #         - LOCAL tier client → strict pin to W (single-replica RWO PVC,
@@ -23,11 +23,11 @@
 #
 #   Drain preview (impact endpoint)
 #     5. GET /admin/nodes/W/drain-impact:
-#         - pinnedClients[] contains both tenants (each with nested
+#         - pinnedTenants[] contains both tenants (each with nested
 #           workloads[] + pvcs[]).
 #         - For LOCAL client: pvcs[0].isLastReplica=true (1 replica).
 #         - For HA    client: pvcs[0].isLastReplica=false (2 replicas).
-#         - currentWorkerNodeName=W on both clients.
+#         - currentNodeName=W on both clients.
 #         - alreadyCordoned=false.
 #
 #   Drain execution
@@ -36,9 +36,9 @@
 #         - clientPlacement = {} (empty — exercises the server-side
 #           auto-fill that defaults every pinned client to "" / auto)
 #        Asserts response: cordoned=true, evicted ≥ 4,
-#        rePinnedClients ≥ 2 (one per tenant), rePinnedWorkloads + PVCs
+#        rePinnedTenants ≥ 2 (one per tenant), rePinnedWorkloads + PVCs
 #        ≥ the per-client sums observed in step 5.
-#     7. GET drain-impact again → alreadyCordoned=true, pinnedClients
+#     7. GET drain-impact again → alreadyCordoned=true, pinnedTenants
 #        empty (every workload + PVC has left W).
 #
 #   Live verification
@@ -56,7 +56,7 @@
 #
 #   Recovery (mandatory cleanup)
 #     13. Uncordon W via PATCH /admin/nodes/W { cordoned:false,
-#         canHostClientWorkloads:true }. Drain leaves W cordoned + with
+#         canHostTenantWorkloads:true }. Drain leaves W cordoned + with
 #         taints; if the harness exits without this step the next test
 #         that needs W will silently fail to schedule.
 #     14. DELETE both clients (cascade through orchestrator). Trap on
@@ -110,7 +110,7 @@ api() {
 cleanup() {
   log "── cleanup ──"
   if [[ -n "$WORKER_NODE" && "$HARNESS_CORDONED_NODE" == "true" ]]; then
-    api PATCH "/admin/nodes/$WORKER_NODE" '{"cordoned":false,"canHostClientWorkloads":true}' >/dev/null 2>&1 || true
+    api PATCH "/admin/nodes/$WORKER_NODE" '{"cordoned":false,"canHostTenantWorkloads":true}' >/dev/null 2>&1 || true
     log "  uncordoned $WORKER_NODE + canHost=true"
   fi
   for cid in "$LOCAL_CID" "$HA_CID"; do
@@ -139,10 +139,10 @@ WORKER_NODE=$(echo "$NODES_JSON" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 nodes = d.get('data') or []
-# Eligible: role=worker, canHostClientWorkloads=true, not cordoned, not drained.
+# Eligible: role=worker, canHostTenantWorkloads=true, not cordoned, not drained.
 for n in nodes:
     if (n.get('role') == 'worker'
-        and n.get('canHostClientWorkloads')
+        and n.get('canHostTenantWorkloads')
         and not n.get('cordoned')
         and not n.get('drained')):
         print(n['name']); break
@@ -155,7 +155,7 @@ TENANT_NODE_COUNT=$(echo "$NODES_JSON" | python3 -c "
 import json, sys
 try:
     nodes = json.load(sys.stdin).get('data') or []
-    print(sum(1 for n in nodes if n.get('canHostClientWorkloads') and not n.get('cordoned')))
+    print(sum(1 for n in nodes if n.get('canHostTenantWorkloads') and not n.get('cordoned')))
 except Exception:
     print(0)
 " 2>/dev/null)
@@ -228,7 +228,7 @@ except: print('')" 2>/dev/null)
     # Try to undo
     curl -sk -X PATCH "$ADMIN_HOST/api/v1/admin/nodes/$LONE_NODE" \
       -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-      -d '{"cordoned":false,"canHostClientWorkloads":true}' >/dev/null 2>&1 || true
+      -d '{"cordoned":false,"canHostTenantWorkloads":true}' >/dev/null 2>&1 || true
     trap - EXIT
     exit 1
   else
@@ -350,27 +350,27 @@ H_FM_NODE=$(pods_on_node "$HA_NS" "app=file-manager" | head -1)
 
 # ─── Drain impact preview ────────────────────────────────────────────
 # Pinning is now a CLIENT-LEVEL property, so the impact endpoint
-# returns a single `pinnedClients[]` collection (each client carries
+# returns a single `pinnedTenants[]` collection (each client carries
 # its workloads + PVCs nested for the modal's expand view). We assert
 # both tenants are present, capture their per-client workload + PVC
 # counts, and verify isLastReplica per tier.
 log "── GET /admin/nodes/$WORKER_NODE/drain-impact (preview) ──"
 IMPACT=$(api GET "/admin/nodes/$WORKER_NODE/drain-impact")
 ALREADY_CORDONED=$(echo "$IMPACT" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['alreadyCordoned'])" 2>/dev/null)
-CLIENTS_PINNED=$(echo "$IMPACT" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
-SUM_WORKLOADS=$(echo "$IMPACT" | python3 -c "import json,sys;print(sum(len(c['workloads']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
-SUM_PVCS=$(echo "$IMPACT" | python3 -c "import json,sys;print(sum(len(c['pvcs']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+CLIENTS_PINNED=$(echo "$IMPACT" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedTenants']))" 2>/dev/null)
+SUM_WORKLOADS=$(echo "$IMPACT" | python3 -c "import json,sys;print(sum(len(c['workloads']) for c in json.load(sys.stdin)['data']['pinnedTenants']))" 2>/dev/null)
+SUM_PVCS=$(echo "$IMPACT" | python3 -c "import json,sys;print(sum(len(c['pvcs']) for c in json.load(sys.stdin)['data']['pinnedTenants']))" 2>/dev/null)
 [[ "$ALREADY_CORDONED" == "False" ]] && ok "alreadyCordoned=false" || fail "alreadyCordoned=$ALREADY_CORDONED (expected false)"
-[[ "$CLIENTS_PINNED"   -ge 2     ]]    && ok "pinnedClients=$CLIENTS_PINNED (≥2 — LOCAL + HA)" || fail "pinnedClients=$CLIENTS_PINNED (expected ≥2)"
-[[ "$SUM_WORKLOADS"    -ge 1     ]]    && ok "Σ workloads across pinnedClients = $SUM_WORKLOADS" || fail "no pinned workloads (expected ≥1 from LOCAL tenant)"
-[[ "$SUM_PVCS"         -ge 2     ]]    && ok "Σ pvcs across pinnedClients = $SUM_PVCS"          || fail "Σ pvcs=$SUM_PVCS (expected ≥2 — both tenants have storage)"
+[[ "$CLIENTS_PINNED"   -ge 2     ]]    && ok "pinnedTenants=$CLIENTS_PINNED (≥2 — LOCAL + HA)" || fail "pinnedTenants=$CLIENTS_PINNED (expected ≥2)"
+[[ "$SUM_WORKLOADS"    -ge 1     ]]    && ok "Σ workloads across pinnedTenants = $SUM_WORKLOADS" || fail "no pinned workloads (expected ≥1 from LOCAL tenant)"
+[[ "$SUM_PVCS"         -ge 2     ]]    && ok "Σ pvcs across pinnedTenants = $SUM_PVCS"          || fail "Σ pvcs=$SUM_PVCS (expected ≥2 — both tenants have storage)"
 
 # LOCAL client's PVC isLastReplica=true (1 replica, single tier);
 # HA client's PVC isLastReplica=false (2 replicas).
 LOCAL_LAST_REPL=$(echo "$IMPACT" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
-for c in d['pinnedClients']:
+for c in d['pinnedTenants']:
     if c['tenantId'] == '$LOCAL_CID':
         for p in c['pvcs']:
             if p['volumeName'] == '$LOCAL_PV': print(p['isLastReplica']); break
@@ -379,7 +379,7 @@ for c in d['pinnedClients']:
 HA_LAST_REPL=$(echo "$IMPACT" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)['data']
-for c in d['pinnedClients']:
+for c in d['pinnedTenants']:
     if c['tenantId'] == '$HA_CID':
         for p in c['pvcs']:
             if p['volumeName'] == '$HA_PV': print(p['isLastReplica']); break
@@ -388,14 +388,14 @@ for c in d['pinnedClients']:
 [[ "$LOCAL_LAST_REPL" == "True"  ]] && ok "LOCAL client's volume isLastReplica=true"  || fail "LOCAL isLastReplica=$LOCAL_LAST_REPL (expected true — single replica tier)"
 [[ "$HA_LAST_REPL"    == "False" ]] && ok "HA client's volume isLastReplica=false"   || fail "HA isLastReplica=$HA_LAST_REPL (expected false — 2 replicas)"
 
-# Each client's currentWorkerNodeName should equal W (we pinned them on create).
+# Each client's currentNodeName should equal W (we pinned them on create).
 LOCAL_CUR_PIN=$(echo "$IMPACT" | python3 -c "
 import json, sys
-for c in json.load(sys.stdin)['data']['pinnedClients']:
-    if c['tenantId'] == '$LOCAL_CID': print(c['currentWorkerNodeName']); break
+for c in json.load(sys.stdin)['data']['pinnedTenants']:
+    if c['tenantId'] == '$LOCAL_CID': print(c['currentNodeName']); break
 " 2>/dev/null)
-[[ "$LOCAL_CUR_PIN" == "$WORKER_NODE" ]] && ok "LOCAL client's currentWorkerNodeName=$LOCAL_CUR_PIN" \
-  || fail "LOCAL currentWorkerNodeName=$LOCAL_CUR_PIN (expected $WORKER_NODE)"
+[[ "$LOCAL_CUR_PIN" == "$WORKER_NODE" ]] && ok "LOCAL client's currentNodeName=$LOCAL_CUR_PIN" \
+  || fail "LOCAL currentNodeName=$LOCAL_CUR_PIN (expected $WORKER_NODE)"
 
 # ─── Drain ───────────────────────────────────────────────────────────
 # Empty clientPlacement on purpose: this exercises the server-side
@@ -406,14 +406,22 @@ log "── POST /admin/nodes/$WORKER_NODE/drain (empty clientPlacement, force) 
 DRAIN_RESP=$(api POST "/admin/nodes/$WORKER_NODE/drain" '{"forceLastReplica":true}')
 DRAIN_CORDONED=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['cordoned'])" 2>/dev/null)
 DRAIN_EVICTED=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['evicted'])" 2>/dev/null)
-DRAIN_REPIN_C=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedClients'])" 2>/dev/null)
+DRAIN_REPIN_C=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedTenants'])" 2>/dev/null)
 DRAIN_REPIN_W=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedWorkloads'])" 2>/dev/null)
 DRAIN_REPIN_P=$(echo "$DRAIN_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['rePinnedPvcs'])" 2>/dev/null)
+# Empty parse must FAIL, not vacuously pass: bash [[ "" -ge "" ]] is
+# TRUE (both sides coerce to 0), which silently masked a response-field
+# rename on 2026-06-11. Default unparsed values to -1 so the numeric
+# assertions below go red instead.
+DRAIN_EVICTED=${DRAIN_EVICTED:--1}
+DRAIN_REPIN_C=${DRAIN_REPIN_C:--1}
+DRAIN_REPIN_W=${DRAIN_REPIN_W:--1}
+DRAIN_REPIN_P=${DRAIN_REPIN_P:--1}
 HARNESS_CORDONED_NODE="true"
 
 [[ "$DRAIN_CORDONED" == "True" ]] && ok "drain.cordoned=true" || fail "drain.cordoned=$DRAIN_CORDONED"
 [[ "$DRAIN_EVICTED"  -ge 4    ]] && ok "drain.evicted=$DRAIN_EVICTED (≥4)" || fail "drain.evicted=$DRAIN_EVICTED (expected ≥4 — 2 tenants + 2 FMs)"
-[[ "$DRAIN_REPIN_C"  -ge "$CLIENTS_PINNED" ]] && ok "drain.rePinnedClients=$DRAIN_REPIN_C covers preview's $CLIENTS_PINNED pinned client(s)" || fail "drain.rePinnedClients=$DRAIN_REPIN_C < preview pinnedClients=$CLIENTS_PINNED (server-side auto-fill missed)"
+[[ "$DRAIN_REPIN_C"  -ge "$CLIENTS_PINNED" ]] && ok "drain.rePinnedTenants=$DRAIN_REPIN_C covers preview's $CLIENTS_PINNED pinned client(s)" || fail "drain.rePinnedTenants=$DRAIN_REPIN_C < preview pinnedTenants=$CLIENTS_PINNED (server-side auto-fill missed)"
 [[ "$DRAIN_REPIN_W"  -ge "$SUM_WORKLOADS" ]] && ok "drain.rePinnedWorkloads=$DRAIN_REPIN_W covers preview's $SUM_WORKLOADS workload(s)"   || fail "drain.rePinnedWorkloads=$DRAIN_REPIN_W < preview Σ workloads=$SUM_WORKLOADS"
 [[ "$DRAIN_REPIN_P"  -ge "$SUM_PVCS"      ]] && ok "drain.rePinnedPvcs=$DRAIN_REPIN_P covers preview's $SUM_PVCS PVC(s)"                  || fail "drain.rePinnedPvcs=$DRAIN_REPIN_P < preview Σ pvcs=$SUM_PVCS"
 
@@ -490,9 +498,9 @@ ALREADY_CORDONED2=""; CLIENTS2=""; SUM_W2=""; SUM_P2=""
 for _ in $(seq 1 60); do
   IMPACT2=$(api GET "/admin/nodes/$WORKER_NODE/drain-impact")
   ALREADY_CORDONED2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['alreadyCordoned'])" 2>/dev/null)
-  CLIENTS2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
-  SUM_W2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(sum(len(c['workloads']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
-  SUM_P2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(sum(len(c['pvcs']) for c in json.load(sys.stdin)['data']['pinnedClients']))" 2>/dev/null)
+  CLIENTS2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['pinnedTenants']))" 2>/dev/null)
+  SUM_W2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(sum(len(c['workloads']) for c in json.load(sys.stdin)['data']['pinnedTenants']))" 2>/dev/null)
+  SUM_P2=$(echo "$IMPACT2" | python3 -c "import json,sys;print(sum(len(c['pvcs']) for c in json.load(sys.stdin)['data']['pinnedTenants']))" 2>/dev/null)
   [[ "$SUM_W2" -eq 0 && "$SUM_P2" -eq 0 ]] && break
   sleep 3
 done
@@ -501,14 +509,14 @@ done
 # Accept up to 1 PVC still showing 3 minutes after drain — Longhorn
 # replica record GC is best-effort and can stall under load.
 if [[ "$SUM_P2" -eq 0 ]]; then
-  ok "Σ pvcs on W = 0 after drain (Longhorn replica GC complete) — pinnedClients=$CLIENTS2"
+  ok "Σ pvcs on W = 0 after drain (Longhorn replica GC complete) — pinnedTenants=$CLIENTS2"
 elif [[ "$SUM_P2" -le 1 ]]; then
   warn "Σ pvcs=$SUM_P2 after drain — Longhorn replica record GC still pending after 180 s; the active replicas DID move (verified above)"
 else
   fail "Σ pvcs=$SUM_P2 after drain (expected ≤1 — replica cleanup stalled)"
 fi
 
-# ─── Delete-gate readiness: drained === alreadyCordoned + 0 nonSystem pods + 0 pinnedClients ─
+# ─── Delete-gate readiness: drained === alreadyCordoned + 0 nonSystem pods + 0 pinnedTenants ─
 # This mirrors the modal's `drained` calculation; if all three hold,
 # the Delete button enables. Asserting this from the harness keeps
 # the gate honest end-to-end.
@@ -518,11 +526,11 @@ if [[ "$ALREADY_CORDONED2" == "True" && "$SUM_W2" -eq 0 && "$CLIENTS2" -eq 0 ]];
 fi
 NONSYS=$(echo "$IMPACT2" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['data']['nonSystemPods']))" 2>/dev/null)
 if [[ "$DELETE_READY" == "true" ]]; then
-  ok "Delete gate satisfied (cordoned + 0 nonSystemPods + 0 pinnedClients)"
+  ok "Delete gate satisfied (cordoned + 0 nonSystemPods + 0 pinnedTenants)"
 elif [[ "$NONSYS" -eq 0 && "$CLIENTS2" -eq 0 ]]; then
-  ok "Delete gate satisfied via primary check (cordoned + 0 nonSystem + 0 pinnedClients)"
+  ok "Delete gate satisfied via primary check (cordoned + 0 nonSystem + 0 pinnedTenants)"
 else
-  warn "Delete gate not satisfied yet: nonSystemPods=$NONSYS pinnedClients=$CLIENTS2 — operator-visible drain-incomplete banner should render"
+  warn "Delete gate not satisfied yet: nonSystemPods=$NONSYS pinnedTenants=$CLIENTS2 — operator-visible drain-incomplete banner should render"
 fi
 
 # ─── Client-level pin: DB row reflects new state ─────────────────────
@@ -554,7 +562,7 @@ fi
 
 # ─── Uncordon (also exercises the API path) ──────────────────────────
 log "── PATCH uncordon $WORKER_NODE ──"
-UNCORDON=$(api PATCH "/admin/nodes/$WORKER_NODE" '{"cordoned":false,"canHostClientWorkloads":true}')
+UNCORDON=$(api PATCH "/admin/nodes/$WORKER_NODE" '{"cordoned":false,"canHostTenantWorkloads":true}')
 NEW_CORDONED=$(echo "$UNCORDON" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('cordoned'))" 2>/dev/null)
 [[ "$NEW_CORDONED" == "False" ]] && { ok "node uncordoned via API"; HARNESS_CORDONED_NODE="false"; } \
   || fail "uncordon failed: cordoned=$NEW_CORDONED — body: $(echo "$UNCORDON" | head -c 200)"
