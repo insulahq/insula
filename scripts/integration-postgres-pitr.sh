@@ -211,25 +211,34 @@ recover_best_effort() {
   else
     echo "  Flux Kustomization suspend=$fs (no resume needed)"
   fi
-  # 2. Remove temp PITR clusters + leaked snapshot scratch (fire-and-forget).
+  # 2. Remove leftover temp PITR clusters (fire-and-forget). Temp
+  #    clusters are pure scratch by this point — the orchestrator only
+  #    deletes the source AFTER the handoff out of the temp completed.
   for c in $($KUBECTL get cluster -n platform -l insula.host/pitr-restore=true -o name 2>/dev/null); do
     echo "  deleting leftover temp cluster $c"
     $KUBECTL delete -n platform "$c" --wait=false --timeout=30s 2>&1 | tail -1
   done
-  for vs in $($KUBECTL get volumesnapshot -n platform -o name 2>/dev/null | grep "pitr-vs-"); do
-    $KUBECTL delete -n platform "$vs" --wait=false --timeout=30s 2>&1 | tail -1
-  done
-  for vsc in $($KUBECTL get volumesnapshotcontent -o name 2>/dev/null | grep "pitr-content-"); do
-    $KUBECTL delete "$vsc" --wait=false --timeout=30s 2>&1 | tail -1
-  done
-  for lh in $($KUBECTL get snapshot.longhorn.io -n longhorn-system -o name 2>/dev/null | grep "pitr-handoff-"); do
-    $KUBECTL delete -n longhorn-system "$lh" --wait=false --timeout=30s 2>&1 | tail -1
-  done
-  echo "  NOTE: system-db itself was NOT touched. If it is unhealthy/missing,"
-  echo "  recover via the tenant-backup/DR runbooks (docs/operations/) or, on a"
-  echo "  disposable cluster, a clean re-bootstrap. Check the describe output"
-  echo "  above for the Init-stuck snapshot-recovery signature (Longhorn"
-  echo "  volume-from-snapshot not attaching)."
+  # 3. Deliberately DO NOT delete pitr-vs-* VolumeSnapshots /
+  #    pitr-content-* VolumeSnapshotContents / pitr-handoff-* Longhorn
+  #    snapshots on the FAILURE path. When the orchestration stalls
+  #    mid-recreate, CNPG keeps retrying the snapshot-recovery from the
+  #    pitr-vs-* VolumeSnapshot — deleting it converts a recoverable
+  #    stall (e.g. transient Longhorn scheduling pressure) into a LOST
+  #    RECOVERY SOURCE: the recreated PVC can never clone, and the only
+  #    remaining copy is the Retained pre-restore PV (manual DR:
+  #    clear claimRef → re-create PVC system-db-1 with the cnpg.io
+  #    labels/annotations → delete + Flux-recreate the Cluster CR →
+  #    CNPG adopts the PGDATA). Learned the hard way on testing
+  #    2026-06-11. Scratch snapshots are cleaned by step 11 on the
+  #    SUCCESS path only; on failure they are the operator's safety
+  #    net, not litter.
+  echo "  NOTE: system-db itself and all pitr-* snapshots were NOT touched."
+  echo "  If system-db is unhealthy/missing: CNPG may still self-recover from"
+  echo "  the pitr-vs-* VolumeSnapshot once the underlying blocker clears"
+  echo "  (e.g. Longhorn 'insufficient storage' → temporarily raise"
+  echo "  storage-over-provisioning-percentage). Otherwise recover via the"
+  echo "  Retained pre-restore PV per docs/operations/ DR runbooks. Check the"
+  echo "  describe output above for the Init-stuck snapshot-recovery signature."
   echo ""
 }
 
@@ -328,6 +337,35 @@ if [[ "$LEAKED_VS" -gt 0 || "$LEAKED_VSC" -gt 0 || "$LEAKED_LH" -gt 0 ]]; then
   done
 else
   pass "no leaked VolumeSnapshots / VolumeSnapshotContents / longhorn snapshots"
+fi
+
+log "11b) Reclaim the superseded pre-restore system-db PV (Longhorn budget)"
+# Every auto-promote leaves the PREVIOUS system-db PV Released with
+# reclaimPolicy=Retain (deliberate operator safety net — see ROADMAP
+# R17 item 3). Its replica keeps pinning the full volume size of
+# Longhorn SCHEDULING budget, so on a small single node the NEXT
+# PITR's recovery volume fails Longhorn's "insufficient storage"
+# precheck and the orchestration stalls mid-cutover with system-db
+# down (reproduced twice on testing, 2026-06-10/11 — every second
+# full pass). On a TEST cluster the Retained copy's purpose is served
+# the moment step 9 verified the round-trip, so reclaim it here: PV
+# object AND the volumes.longhorn.io CR (deleting only the PV leaves
+# the Longhorn volume — and its budget pin — behind). Production
+# operators keep the confirmed-delete flow (R17).
+RECLAIMED=0
+for PV in $($KUBECTL get pv -o jsonpath="'{range .items[?(@.status.phase==\"Released\")]}{.metadata.name}={.spec.claimRef.namespace}/{.spec.claimRef.name} {end}'" 2>/dev/null); do
+  PV_NAME="${PV%%=*}"
+  PV_CLAIM="${PV#*=}"
+  [[ "$PV_CLAIM" == platform/system-db-* ]] || continue
+  echo "  reclaiming superseded $PV_NAME (claim was $PV_CLAIM)"
+  $KUBECTL delete pv "$PV_NAME" --wait=false --timeout=30s 2>&1 | tail -1
+  $KUBECTL delete -n longhorn-system "volumes.longhorn.io/$PV_NAME" --wait=false --timeout=30s 2>&1 | tail -1
+  RECLAIMED=$((RECLAIMED + 1))
+done
+if [[ "$RECLAIMED" -gt 0 ]]; then
+  pass "reclaimed $RECLAIMED superseded system-db PV(s) — Longhorn budget freed for the next run"
+else
+  pass "no superseded system-db Released PVs to reclaim"
 fi
 
 log "12) Write-lock smoke: status endpoint reports idle"

@@ -47,6 +47,14 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // Resolve the shared contracts from THIS checkout, not via
+      // node_modules. Git worktrees symlink node_modules from the main
+      // checkout (empty-node_modules gotcha), so the default resolution
+      // silently typechecks/tests worktree backend code against the
+      // MAIN checkout's api-contracts — any contracts change made in a
+      // worktree is invisible until CI. The alias keeps backend tests
+      // coherent with the sibling packages/ they ship with.
+      '@insula/api-contracts': path.resolve(__dirname, '../packages/api-contracts/src/index.ts'),
     },
   },
 });
