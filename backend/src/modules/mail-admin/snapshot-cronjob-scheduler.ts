@@ -28,6 +28,7 @@ import type { Logger } from 'pino';
 import type { Database } from '../../db/index.js';
 import {
   reconcileMailSnapshotCronJob,
+  resolveDesiredSchedule,
   MAIL_SNAPSHOT_CRONJOB_NAMESPACE,
   MAIL_SNAPSHOT_CRONJOB_NAME,
   type MailSnapshotCronJobClients,
@@ -84,15 +85,28 @@ export function startMailSnapshotCronJobReconciler(
       };
       const liveSchedule = live.spec?.schedule ?? '';
       const liveSuspend = live.spec?.suspend === true;
-      if (liveSchedule !== lastDesired.schedule || liveSuspend !== lastDesired.suspended) {
+      // Schedule comparison reads the DB-authoritative desired value,
+      // NOT the cached lastDesired. The cache has a lost-update
+      // blindspot (caught live on testing 2026-06-11): a full tick that
+      // started BEFORE an operator PATCH can SSA-apply the stale
+      // schedule AFTER the route's apply — live and cache then AGREE on
+      // the stale value, no drift is seen, and the operator's setting
+      // stays reverted until the next 5-minute tick. One tiny indexed
+      // read per 30s closes the window: the DB is where the route's
+      // write landed first, so the mismatch is always visible here.
+      // Suspend keeps the cached comparison — its desired value depends
+      // on backup-target binding state, which only the full tick
+      // computes.
+      const desiredSchedule = await resolveDesiredSchedule(db);
+      if (liveSchedule !== desiredSchedule || liveSuspend !== lastDesired.suspended) {
         log.info(
           {
             liveSchedule,
-            desiredSchedule: lastDesired.schedule,
+            desiredSchedule,
             liveSuspend,
             desiredSuspend: lastDesired.suspended,
           },
-          'mail-snapshot-cronjob-scheduler: drift detected (Flux revert?) — re-asserting',
+          'mail-snapshot-cronjob-scheduler: drift detected (Flux revert or stale-tick overwrite) — re-asserting',
         );
         await tick();
       }

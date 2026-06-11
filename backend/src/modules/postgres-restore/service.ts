@@ -1451,6 +1451,9 @@ export async function promotePostgresFromSnapshot(
   let tempSnapName: string | null = null;
   let sourceDeleted = false;
   let fluxSuspended = false;
+  // Outcome flag for the finally's chip finalization. Stays null on
+  // the success path; the top-level catch records the failure message.
+  let orchestrationError: string | null = null;
 
   // P4b: append-only step recorder that persists to the DB lock so the
   // wizard's live progress modal can read /admin/postgres-restore/status
@@ -2029,6 +2032,7 @@ export async function promotePostgresFromSnapshot(
     };
   } catch (err) {
     const errMsg = (err as Error).message;
+    orchestrationError = errMsg;
     recordStep({ step: 'orchestration-failed', ok: false, detail: errMsg });
 
     // Auto-recovery: if we already deleted the source, try to recreate
@@ -2161,9 +2165,21 @@ export async function promotePostgresFromSnapshot(
         ).catch(() => undefined);
       }
     }
-    // Always release both locks, even on success path.
-    activeRestore = null;
-    await clearPersistedLock(deps.db).catch(() => undefined);
+    // Always release both locks AND finalize the task chip, even on
+    // the success path. This MUST go through releasePitrLock (not bare
+    // clearPersistedLock): the bare clear left the `postgres.pitr`
+    // tasks row stuck `running` forever whenever the orchestration
+    // failed — the watchdog can't repair it either once
+    // ttlSecondsAfterFinished reaps the Failed Job CR (caught live on
+    // testing 2026-06-11: a stale running chip from a failed PITR
+    // blocked every subsequent backup-target drain with
+    // inflightSampleKinds=["postgres.pitr"]). releasePitrLock's chip
+    // update targets `status='running'` only, so a path that already
+    // finalized is a harmless no-op.
+    await releasePitrLock(deps.db, {
+      failed: orchestrationError !== null,
+      error: orchestrationError,
+    }).catch(() => undefined);
   }
 }
 

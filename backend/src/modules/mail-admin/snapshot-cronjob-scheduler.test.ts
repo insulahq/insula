@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { reconcileSpy } = vi.hoisted(() => ({
+const { reconcileSpy, desiredSpy } = vi.hoisted(() => ({
   reconcileSpy: vi.fn(),
+  desiredSpy: vi.fn(),
 }));
 
 vi.mock('./snapshot-cronjob-reconciler.js', async () => {
@@ -11,6 +12,7 @@ vi.mock('./snapshot-cronjob-reconciler.js', async () => {
   return {
     ...actual,
     reconcileMailSnapshotCronJob: reconcileSpy,
+    resolveDesiredSchedule: desiredSpy,
   };
 });
 
@@ -34,6 +36,7 @@ describe('mail-snapshot-cronjob-scheduler drift fast path', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     reconcileSpy.mockReset().mockResolvedValue(okResult('*/7 * * * *'));
+    desiredSpy.mockReset().mockResolvedValue('*/7 * * * *');
     readSpy = vi.fn();
   });
 
@@ -120,6 +123,28 @@ describe('mail-snapshot-cronjob-scheduler drift fast path', () => {
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(30_000);
     expect(reconcileSpy).toHaveBeenCalledTimes(1); // only the cold-start tick
+
+    handle.stop();
+  });
+
+  it('catches a stale-tick overwrite: DB-desired wins over a matching live+cache pair', async () => {
+    // Lost-update shape (testing 2026-06-11): a tick that started
+    // before an operator PATCH re-applied the OLD schedule after the
+    // route's apply — live AND the scheduler cache both say the stale
+    // value, only the DB has the operator's new one. The drift check
+    // must compare against the DB, not the cache.
+    reconcileSpy.mockResolvedValue(okResult('*/30 * * * *')); // stale tick result → cache=*/30
+    readSpy.mockResolvedValue({ spec: { schedule: '*/30 * * * *', suspend: false } }); // live=*/30
+    desiredSpy.mockResolvedValue('*/7 * * * *'); // operator's PATCH landed in the DB
+
+    const handle = start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcileSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    // Cache (*/30) == live (*/30) — the OLD comparison would see no
+    // drift; the DB read (*/7) forces the re-assert.
+    expect(reconcileSpy).toHaveBeenCalledTimes(2);
 
     handle.stop();
   });
