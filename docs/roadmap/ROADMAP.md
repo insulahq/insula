@@ -200,15 +200,16 @@ Three small items deferred from the 2026-06-10 integration green-up
    Flux only seeds it, or `IfNotPresent` plus reconciler-owned template
    updates) so Flux never asserts the field in the first place.
 
-2. **Rename-away cert-anchor cleanup.** Each mail-hostname rename to a
-   fresh host creates a platform-owned cert-anchor Domain row (+ DKIM
-   pair) in Stalwart; renaming away leaves the old anchor behind
-   forever. Auto-deletion is deliberately out (a Domain row may carry
-   real mailboxes after a platform-DB PITR rollback) — the right shape
-   is mail-drift surfacing: a `kind=orphan-domain` drift finding with an
-   operator-confirmed delete action, mirroring the missing-master
-   pattern (mig 0053). Tenant/domain-delete leaks are already fixed
-   deterministically (destroyStalwartArtifactsForEmailDomain).
+2. **Rename-away cert-anchor cleanup — SHIPPED 2026-06-11** (PRs #36 +
+   #37, validated E2E on testing: 7 real orphans detected, canonical
+   anchor excluded, operator-confirmed delete-orphan removed all 7,
+   Stalwart left with only the canonical row). principals-sync step 4b
+   raises `kind=orphan-domain` drift items;
+   `POST /admin/mail/drift/:id/delete-orphan` destroys DKIM + Domain
+   with type-to-confirm, refusing domains that still carry member
+   principals (`ORPHAN_HAS_PRINCIPALS` — the PITR-false-orphan guard).
+   Tenant/domain-delete leaks were already fixed deterministically
+   (destroyStalwartArtifactsForEmailDomain, #29).
 
 3. **PITR Released-PV accumulation — BLOCKS the next PITR on small
    nodes (severity upgraded 2026-06-11).** Every postgres-pitr
@@ -229,3 +230,9 @@ Three small items deferred from the 2026-06-10 integration green-up
    restore) AND a PITR preflight that checks Longhorn schedulable
    budget ≥ the recovery volume size, failing fast with an actionable
    error instead of stalling mid-cutover.
+   **Preflight half SHIPPED 2026-06-11** (PR #35:
+   `preflight-longhorn-budget` step, `PITR_INSUFFICIENT_STORAGE_BUDGET`
+   names the reclaimable PVs + the over-provisioning lever; the
+   integration harness also reclaims superseded Released PVs after each
+   VERIFIED round-trip, PR #33). Open: the operator-facing Released-PV
+   surface (storage page badge + confirmed delete action).
