@@ -53,8 +53,10 @@ scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
    allow for `namespaceSelector kubernetes.io/metadata.name: monitoring`
    scoped to the metrics port only (example: the :9187 rule in
    `k8s/base/network-policies.yaml`).
-3. vmsingle picks up the ConfigMap change within ~1 min of kubelet sync
-   (or delete the pod). Verify at `https://metrics.<apex>/targets`.
+3. vmsingle re-reads the config every minute
+   (`-promscrape.configCheckInterval=1m`) once the kubelet has synced
+   the ConfigMap (worst case ~2 min total; or delete the pod). Verify
+   at `https://metrics.<apex>/targets`.
 
 ## Alerting (platform-api `monitoring` module)
 
