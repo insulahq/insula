@@ -80,9 +80,10 @@ export interface DesiredSendLimitObjects {
 const SAFE_DOMAIN = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
 
 function domainMatch(domain: string): StalwartExpression {
-  // Boolean expressions go in `else` (the match list is the if/then
-  // chain; an empty chain falls through to `else`).
-  return { match: [], else: `sender_domain = '${domain}'` };
+  // Boolean expressions go in `else` (the match chain is empty and
+  // falls through). The chain is a List<T> on the wire: an OBJECT
+  // with integer-string keys — `[]` is rejected (live-E2E 2026-06-12).
+  return { match: {}, else: `sender_domain = '${domain}'` };
 }
 
 /**
