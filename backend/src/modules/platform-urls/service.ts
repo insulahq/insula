@@ -56,10 +56,17 @@ export function computeDefaults(apex: string): {
 } {
   const normalised = apex.trim().replace(/\.+$/, '');
   if (!normalised) {
-    return { longhornUrl: '', stalwartAdminUrl: '', webmailUrl: '', mailServerHostname: '' };
+    // The Longhorn default is a PATH on the admin host (see below), so
+    // it survives even without a configured apex.
+    return { longhornUrl: '/longhorn/', stalwartAdminUrl: '', webmailUrl: '', mailServerHostname: '' };
   }
   return {
-    longhornUrl: `https://longhorn.${normalised}/`,
+    // 2026-06-12: the Longhorn UI rides the admin host as a path route
+    // (k8s/base/longhorn/ui-ingress.yaml) — the longhorn.<apex>
+    // subdomain + its certificate were removed. A same-origin relative
+    // path works for both the StorageSettings iframe and the new-tab
+    // link; operators can still override via the longhorn_url setting.
+    longhornUrl: '/longhorn/',
     // Stalwart 0.16 web UI lives at `/admin/` — `/` returns 404 and `/admin`
     // 302-redirects to `/admin/`. The trailing slash matters because the
     // SPA's bundled assets are root-relative under that path.

@@ -238,11 +238,11 @@ function LonghornIframeModal({ url, onClose }: { url: string; onClose: () => voi
           src={url}
           title="Longhorn Dashboard"
           className="flex-1 w-full border-0 bg-white"
-          // Longhorn's SPA is served by its own ingress which was rendered
-          // by the admin-auth-gate-cookie component — the platform_session
-          // cookie travels along with the iframe request because its
-          // Domain=.<apex> attribute includes the longhorn subdomain and
-          // SameSite=None (set when SESSION_COOKIE_DOMAIN is configured).
+          // Longhorn's SPA is the cookie-gated /longhorn/ path route on
+          // the SAME origin as the admin panel (2026-06-12 — was a
+          // longhorn.<apex> subdomain), so the platform_session cookie
+          // rides along as a plain same-origin request; no cross-
+          // subdomain cookie-Domain gymnastics needed anymore.
         />
       </div>
     </div>
