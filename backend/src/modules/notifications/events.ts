@@ -481,3 +481,50 @@ export async function notifyAdminSloAlertResolved(
 ): Promise<void> {
   await dispatchSafe(db, 'admin.slo_alert_resolved', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
+
+// ── R4/R6 PR 4: outbound-mail protection ───────────────────────────────────
+
+export interface TenantEmailQuotaPayload {
+  readonly window: 'hour' | 'day';
+  readonly percent: string;
+  readonly used: string;
+  readonly limit: string;
+}
+/** 80% crossing — the mail-events threshold evaluator owns dedupe. */
+export async function notifyTenantEmailQuotaWarning(
+  db: Database,
+  tenantId: string,
+  payload: TenantEmailQuotaPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.email_quota_warning', { kind: 'tenant', tenantId }, payload, tenantId);
+}
+/** 100% crossing. */
+export async function notifyTenantEmailQuotaExceeded(
+  db: Database,
+  tenantId: string,
+  payload: TenantEmailQuotaPayload,
+): Promise<void> {
+  await dispatchSafe(db, 'tenant.email_quota_exceeded', { kind: 'tenant', tenantId }, payload, tenantId);
+}
+
+export interface AdminEmailComplaintPayload {
+  readonly domain: string;
+  readonly tenantLabel: string;
+  readonly ratePercent: string;
+  readonly complaints: string;
+  readonly sends: string;
+  readonly recommendedAction: string;
+  /** Filled when enforcement mode is `auto` and an action was applied. */
+  readonly actionTaken?: string;
+}
+/** FBL complaint-rate threshold crossings (evaluator owns dedupe). */
+export async function notifyAdminEmailComplaint(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminEmailComplaintPayload,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'admin.email_complaint_critical'
+    : 'admin.email_complaint_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload);
+}
