@@ -1,0 +1,61 @@
+# R1 PR 1: discovery/sync Jobs reach the OPERATOR'S external Plesk box
+# (a public IP) over SSH. They must NOT be able to reach cluster-internal
+# services or RFC1918 infrastructure — so egress is public-internet-only
+# (+ DNS). Default-deny ingress (the Jobs serve nothing).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: plesk-migration-default-deny-ingress
+  namespace: plesk-migration
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress: []
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: plesk-migration-egress-public-only
+  namespace: plesk-migration
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Public internet only (SSH to the external Plesk source). Excludes
+    # the cluster pod/svc CIDRs, all RFC1918, CGNAT and link-local so a
+    # discovery Job can never reach internal infrastructure.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+        # IPv6 (dual-stack clusters): public only — exclude ULA, loopback,
+        # link-local, NAT64 so a Job can't reach internal infra over v6.
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - fc00::/7
+              - ::1/128
+              - fe80::/10
+              - 64:ff9b::/96

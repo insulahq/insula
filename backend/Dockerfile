@@ -66,6 +66,7 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
 
 COPY --from=builder /app/dist/ dist/
 COPY backend/src/db/migrations/ dist/db/migrations/
+COPY backend/src/modules/plesk-migration/scripts/ dist/modules/plesk-migration/scripts/
 COPY backend/docker-entrypoint.sh ./
 # Pinned cosign public key — the trust anchor for the W11 version-poller
 # (backend/src/cli/version-poll-job.ts reads /app/platform/cosign.pub). Baked
