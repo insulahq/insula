@@ -16,7 +16,6 @@
 
 import { eq, and, inArray, lt, sql } from 'drizzle-orm';
 import { pleskSources, pleskDiscoveries } from '../../db/schema.js';
-import { tailJobLog } from '../storage-lifecycle/job-log-tail.js';
 import { decryptSourceKey } from './service.js';
 import {
   REMOTE_DISCOVER_SH,
@@ -48,6 +47,21 @@ interface CoreApi {
   createNamespacedConfigMap: (a: { namespace: string; body: unknown }) => Promise<unknown>;
   deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
   deleteNamespacedConfigMap: (a: { name: string; namespace: string }) => Promise<unknown>;
+  listNamespacedPod: (a: { namespace: string; labelSelector: string; limit?: number }) => Promise<{ items?: Array<{ metadata?: { name?: string } }> }>;
+  readNamespacedPodLog: (a: { name: string; namespace: string; container?: string }) => Promise<string>;
+}
+
+/**
+ * Read the FULL stdout of a Job's pod. (tailJobLog returns only the
+ * last line — wrong here: the inventory JSON sits between sentinels and
+ * we need the whole block. The discovery pod's stdout is just the
+ * assembler's 3 lines, so reading it whole is cheap.)
+ */
+async function readFullJobLog(core: CoreApi, namespace: string, jobName: string): Promise<string | null> {
+  const pods = await core.listNamespacedPod({ namespace, labelSelector: `job-name=${jobName}`, limit: 1 }).catch(() => ({ items: [] }));
+  const podName = pods.items?.[0]?.metadata?.name;
+  if (!podName) return null;
+  return core.readNamespacedPodLog({ name: podName, namespace }).catch(() => null);
 }
 interface BatchApi {
   createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
@@ -141,7 +155,7 @@ async function runDiscovery(
       if (st.status?.failed && st.status.failed > 0) break;
     }
 
-    const log = await tailJobLog(k8s, PLESK_MIGRATION_NAMESPACE, jobName, { tailLines: 4000 });
+    const log = await readFullJobLog(core, PLESK_MIGRATION_NAMESPACE, jobName);
     const logTail = (log ?? '').slice(-8000);
 
     if (!succeeded) {
