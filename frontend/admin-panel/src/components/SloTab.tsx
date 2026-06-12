@@ -22,7 +22,7 @@ const PANELS: ReadonlyArray<{ id: string; label: string; format: (v: number) => 
   { id: 'longhorn-usage-ratio', label: 'Longhorn usage (max node)', format: (v) => `${(v * 100).toFixed(0)}%`, higherIsBad: true },
   { id: 'node-memory-ratio', label: 'Node memory (max)', format: (v) => `${(v * 100).toFixed(0)}%`, higherIsBad: true },
   { id: 'cnpg-up', label: 'system-db instances up', format: (v) => `${v.toFixed(0)}`, higherIsBad: false },
-  { id: 'flux-errors-15m', label: 'Flux reconcile errors (15m)', format: (v) => `${v.toFixed(0)}`, higherIsBad: true },
+  { id: 'flux-errors-15m', label: 'Flux unready resources', format: (v) => `${v.toFixed(0)}`, higherIsBad: true },
   { id: 'acme-renewals-1h', label: 'ACME renewals fired (1h)', format: (v) => `${v.toFixed(0)}`, higherIsBad: true },
 ];
 
