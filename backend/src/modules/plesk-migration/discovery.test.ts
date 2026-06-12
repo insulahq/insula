@@ -102,6 +102,12 @@ describe('discovery scripts', () => {
     expect(sh).toContain('plesk db -Ne');
   });
 
+  it('remote-discover.sh reads mailbox quota from mail.mbox_quota (mail_aux table does not exist)', () => {
+    const sh = readFileSync(join(here, 'scripts', 'remote-discover.sh'), 'utf8');
+    expect(sh).toContain('m.mbox_quota');
+    expect(sh).not.toContain('mail_aux');
+  });
+
   it('remote-discover.sh validates interpolated identifiers before SQL (injection guard)', () => {
     const sh = readFileSync(join(here, 'scripts', 'remote-discover.sh'), 'utf8');
     expect(sh).toContain('is_int "${SUBID:-}" || continue');
