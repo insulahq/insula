@@ -33,6 +33,7 @@ import {
   mtaOutboundThrottleSet,
   mtaQueueQuotaGet,
   mtaQueueQuotaSet,
+  actionReloadSettings,
   type StalwartExpression,
 } from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
@@ -42,6 +43,13 @@ export const DESCRIPTION_PREFIX = 'platform:send-limit:';
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
+
+// Suspension lever: Stalwart validates messages >= 1 (a messages=0
+// quota is rejected with MinValue), so a block is a 1-BYTE size quota
+// — every real message exceeds it and submission is rejected at DATA
+// with "452 4.3.1 Mail system full" (JMAP: forbiddenToSend). Proven
+// live on v0.16.5 (2026-06-12 E2E).
+export const BLOCK_SIZE_BYTES = 1;
 
 export interface DomainSendLimit {
   readonly tenantId: string;
@@ -65,7 +73,9 @@ export interface DesiredQueueQuota {
   readonly enable: true;
   readonly key: { senderDomain: true };
   readonly match: StalwartExpression;
-  readonly messages: number;
+  readonly messages: number | null;
+  /** Bytes. Only set on :block quotas (see BLOCK_SIZE_BYTES). */
+  readonly size: number | null;
 }
 
 export interface DesiredSendLimitObjects {
@@ -109,7 +119,8 @@ export function buildDesiredSendLimitObjects(
         enable: true,
         key: { senderDomain: true },
         match: domainMatch(row.domain),
-        messages: 0,
+        messages: null,
+        size: BLOCK_SIZE_BYTES,
       });
       continue;
     }
@@ -139,6 +150,7 @@ export function buildDesiredSendLimitObjects(
       key: { senderDomain: true },
       match: domainMatch(row.domain),
       messages: row.daily,
+      size: null,
     });
   }
 
@@ -215,12 +227,13 @@ function throttleNeedsUpdate(
 }
 
 function quotaNeedsUpdate(
-  existing: { enable: boolean; match: StalwartExpression; messages: number | null },
+  existing: { enable: boolean; match: StalwartExpression; messages: number | null; size: number | null },
   desired: DesiredQueueQuota,
 ): boolean {
   return (
     existing.enable !== desired.enable
     || (existing.messages ?? null) !== desired.messages
+    || (existing.size ?? null) !== desired.size
     || existing.match.else !== desired.match.else
   );
 }
@@ -344,6 +357,18 @@ export async function reconcileStalwartSendLimits(
     // failing the caller's request.
     logger.warn({ err }, 'send-limit reconcile: Stalwart JMAP unreachable, skipped');
     return { skipped: true, reason: 'stalwart unreachable', created: 0, updated: 0, destroyed: 0 };
+  }
+
+  // Stalwart reads MTA throttle/quota config at boot — without this
+  // reload the running server keeps enforcing the OLD limits until the
+  // next pod restart (live-proven 2026-06-12). Cheap no-op when
+  // nothing changed.
+  if (created + updated + destroyed > 0) {
+    try {
+      await actionReloadSettings(opts);
+    } catch (err) {
+      logger.error({ err }, 'send-limit reconcile: ReloadSettings failed — changes apply on next Stalwart restart');
+    }
   }
 
   logger.info(

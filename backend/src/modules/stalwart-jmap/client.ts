@@ -613,6 +613,94 @@ export async function mtaQueueQuotaSet(params: {
   );
 }
 
+// ── Actions (R6 PR 2) ──────────────────────────────────────────────────────
+//
+// Stalwart loads most registry config (MTA throttles/quotas, report
+// settings, webhooks) at boot only; `x:Action/set` with
+// {"@type":"ReloadSettings"} re-reads it into the live server and
+// cluster-broadcasts the reload — proven live on v0.16.5 (2026-06-12):
+// a throttle rate change applied immediately after the action, with
+// no pod restart.
+
+export async function actionReloadSettings(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<void> {
+  const { baseUrl, env } = params;
+  const res = await _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:Action/set',
+    { create: { reload: { '@type': 'ReloadSettings' } } },
+    baseUrl, env,
+  );
+  if (res.notCreated && Object.keys(res.notCreated).length > 0) {
+    throw new Error(`Stalwart ReloadSettings rejected: ${JSON.stringify(res.notCreated)}`);
+  }
+}
+
+// ── WebHooks (R6 PR 2) ─────────────────────────────────────────────────────
+//
+// Telemetry webhooks as registry objects. CRITICAL: eventsPolicy
+// defaults to "exclude" — a webhook created with only an `events` map
+// firehoses everything EXCEPT those events (including frames that leak
+// Authorization headers). Always set eventsPolicy: "include".
+// Config is loaded at Stalwart boot only — creates/updates need a pod
+// roll (see mail-events/webhook-reconciler.ts).
+
+export interface StalwartWebHookRow {
+  readonly id: string;
+  readonly description?: string;
+  readonly url?: string;
+  readonly enable?: boolean;
+  readonly lossy?: boolean;
+  readonly eventsPolicy?: string;
+  readonly events?: Record<string, boolean>;
+  readonly throttle?: number;
+  readonly timeout?: number;
+  readonly discardAfter?: number;
+  /** Masked ("****") on get when set. */
+  readonly signatureKey?: { '@type': string; secret?: string };
+}
+
+interface XWebHookGetResponse {
+  readonly list?: readonly StalwartWebHookRow[];
+}
+
+export async function webHookGet(params: {
+  ids?: readonly string[] | null;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartWebHookRow[]> {
+  const { ids, baseUrl, env } = params;
+  const res = await _xCall<XWebHookGetResponse>(
+    JMAP_STALWART,
+    'x:WebHook/get',
+    { ids: ids ?? null },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+export async function webHookSet(params: {
+  create?: Record<string, Record<string, unknown>>;
+  update?: Record<string, Record<string, unknown>>;
+  destroy?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartWebHookRow>> {
+  const { create, update, destroy, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartWebHookRow>>(
+    JMAP_STALWART,
+    'x:WebHook/set',
+    {
+      ...(create ? { create } : {}),
+      ...(update ? { update } : {}),
+      ...(destroy ? { destroy } : {}),
+    },
+    baseUrl, env,
+  );
+}
+
 // ── App passwords (a.k.a. "login passwords") ──────────────────────────────────
 //
 // Stalwart "AppPassword" registry objects are per-account secondary

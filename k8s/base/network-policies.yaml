@@ -348,6 +348,40 @@ spec:
         - protocol: TCP
           port: 3000
 
+# Stalwart -> platform-api webhook ingest (R6 PR 2). The mail server
+# POSTs telemetry batches to /api/v1/internal/mail/events; each request
+# is HMAC-signed (X-Signature, key derived from
+# PLATFORM_INTERNAL_SECRET), this policy is the L3/L4 boundary so only
+# the stalwart pod — not arbitrary mail-ns or tenant pods — can reach
+# :3000. The egress half already exists in
+# k8s/base/stalwart-mail/stalwart/networkpolicy.yaml (platform-api:3000,
+# added for the data-expectation guard).
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-stalwart-webhook-to-platform-api
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+          podSelector:
+            matchLabels:
+              app: stalwart-mail
+      ports:
+        - protocol: TCP
+          port: 3000
+
 # vmsingle (monitoring ns) scrapes platform-api's Prometheus
 # exposition on :9090 (ADR-051 phase 2). A dedicated policy + port so
 # the F4 hardening on :3000 (traefik-ns only) is never widened — the

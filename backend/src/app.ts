@@ -134,6 +134,7 @@ import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
+import { mailEventsWebhookRoutes, mailUsageRoutes } from './modules/mail-events/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
 import { platformUrlsRoutes } from './modules/platform-urls/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
@@ -550,6 +551,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailSubmitRoutes, { prefix: '/api/v1' });
   await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   await app.register(mailAdminRoutes, { prefix: '/api/v1' });
+  // R6 PR 2: Stalwart webhook ingest (HMAC-authed, netpol-scoped) +
+  // tenant mail usage. The webhook plugin carries its own raw-body
+  // JSON parser — keep it isolated in its own register call.
+  await app.register(mailEventsWebhookRoutes, { prefix: '/api/v1' });
+  await app.register(mailUsageRoutes, { prefix: '/api/v1' });
   await app.register(registerMailDriftRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
   // Email tenants hit these BEFORE auth, at well-known paths on
@@ -857,17 +863,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // chain re-arms itself.
       app.addHook('onClose', () => stopMailStatsScheduler(mailStatsTimer));
 
-      // R6 PR 1: send-limit self-heal — re-asserts the plan-based
-      // Stalwart throttle/quota objects every 5 min (and once shortly
-      // after boot) so a Stalwart restore/restart or a missed trigger
-      // can't leave limits drifted. The reconcile no-ops (0/0/0) when
-      // nothing changed and degrades to a logged skip when the mail
-      // stack is absent (local dev).
+      // R6 PR 1+2: mail self-heal — re-asserts the plan-based Stalwart
+      // throttle/quota objects AND the mail-events webhook every 5 min
+      // (and once shortly after boot) so a Stalwart restore/restart or
+      // a missed trigger can't leave them drifted. Both no-op when in
+      // sync and degrade to a logged skip when the mail stack is
+      // absent (local dev). The webhook ensure only rolls the stalwart
+      // pod when the object was actually created or drifted.
       {
         const { reconcileStalwartSendLimits } = await import('./modules/email-outbound/stalwart-throttles.js');
+        const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        let mailK8s: import('./modules/k8s-provisioner/k8s-client.js').K8sClients | undefined;
+        try {
+          mailK8s = createK8sClients(process.env.KUBECONFIG_PATH);
+        } catch { /* local dev without kubeconfig — webhook ensure skips the pod roll */ }
         const run = () => {
           reconcileStalwartSendLimits(app.db, app.log).catch((err) => {
             app.log.warn({ err }, 'send-limit periodic reconcile failed');
+          });
+          ensureMailEventsWebhook(mailK8s, app.log).catch((err) => {
+            app.log.warn({ err }, 'mail-events webhook ensure failed');
           });
         };
         const bootKick = setTimeout(run, 30_000);

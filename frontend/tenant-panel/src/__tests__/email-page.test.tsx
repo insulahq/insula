@@ -55,6 +55,10 @@ vi.mock('../hooks/use-email', () => ({
     data: { data: { limitPerHour: 100, source: 'hardcoded_default', suspended: false } },
     isLoading: false,
   })),
+  useMailUsage: vi.fn(() => ({
+    data: { data: { hour: { used: 3, limit: 50 }, day: { used: 10, limit: 100, recipients: 12, rateLimited: 0, quotaRejected: 0 }, suspended: false, outboundSuspended: false } },
+    isLoading: false,
+  })),
   useMailboxUsage: vi.fn(() => ({
     data: { data: { limit: 50, current: 0, remaining: 50, source: 'plan' } },
     isLoading: false,
