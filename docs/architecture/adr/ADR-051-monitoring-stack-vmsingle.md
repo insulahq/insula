@@ -57,11 +57,18 @@ platform-api:
    conditional-DB-claim HA dedup pattern. Zero additional pods. A
    synthetic `monitoring-unreachable` alert (raised after consecutive
    query failures, via a path independent of VM) watches the watcher.
-4. **VMUI is exposed admin-gated** at `metrics.${DOMAIN}` behind the
-   `admin-auth-cookie` middleware (`insula.host/admin-ui` label — CI
-   enforced). The admin panel gets an SLO tab fed by a panel-ID-keyed
-   query proxy (no arbitrary PromQL from the browser; VMUI is the ad-hoc
-   surface).
+4. **VMUI is exposed admin-gated** as a PATH on the admin host —
+   `admin.${DOMAIN}/metrics/` (vmsingle runs with
+   `-http.pathPrefix=/metrics`; amended 2026-06-12 from the original
+   `metrics.${DOMAIN}` subdomain to drop the extra public hostname +
+   LE certificate) — behind the `admin-auth-cookie` middleware
+   (`insula.host/admin-ui` label — CI enforced). The Longhorn UI moved
+   to `admin.${DOMAIN}/longhorn/` the same day for the same reason
+   (longhorn-ui needs a stripPrefix route + a `/v1` API carve-out —
+   its SPA hardcodes absolute /v1 paths; see
+   k8s/base/longhorn/ui-ingress.yaml). The admin panel gets an SLO tab
+   fed by a panel-ID-keyed query proxy (no arbitrary PromQL from the
+   browser; VMUI is the ad-hoc surface).
 5. **Version pin: latest stable OSS release.** The original intent was
    the v1.136.x LTS line (≥12 months of fixes, matching the ADR-050
    watch cadence) — but VictoriaMetrics ships LTS **container images

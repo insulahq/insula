@@ -7252,7 +7252,9 @@ print_summary() {
   log "    kubectl get nodes"
   log ""
   log "  Metrics UI (VictoriaMetrics VMUI, admin-gated):"
-  log "    https://metrics.${PLATFORM_DOMAIN}"
+  log "    https://admin.${PLATFORM_DOMAIN}/metrics/vmui/"
+  log "  Longhorn dashboard (admin-gated):"
+  log "    https://admin.${PLATFORM_DOMAIN}/longhorn/"
   log ""
   log "════════════════════════════════════════════════"
 }

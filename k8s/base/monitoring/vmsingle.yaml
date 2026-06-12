@@ -73,6 +73,23 @@ spec:
             - -memory.allowedBytes=192MiB
             - -search.maxConcurrentRequests=4
             - -storage.minFreeDiskSpaceBytes=209715200
+            # Serve EVERYTHING (VMUI, /api/v1/query*, /health, own
+            # /metrics) under /metrics so the UI rides the admin host
+            # as a path (Host(admin.<apex>) && PathPrefix(/metrics) —
+            # see vmui-ingressroute.yaml) instead of a dedicated
+            # subdomain + certificate. Consumers that changed with it:
+            # backend vm-client DEFAULT_VM_BASE_URL, the self-scrape
+            # job's metrics_path, and the probes below.
+            - -http.pathPrefix=/metrics
+            # Batch in-memory parts to disk every 10 min (default 5s).
+            # In-memory parts stay fully queryable; the cost is up to
+            # 10 min of metrics lost on an UNCLEAN shutdown (graceful
+            # stops flush) — acceptable for recreatable monitoring
+            # data, and it cuts steady-state write load ~100× so the
+            # HA-replicated Longhorn volume (platform-storage-policy
+            # scales it 1↔3 with the system tier) isn't replicating a
+            # constant small-write stream across nodes.
+            - -inmemoryDataFlushInterval=10m
           ports:
             - name: http
               containerPort: 8428
@@ -90,13 +107,14 @@ spec:
               readOnly: true
           readinessProbe:
             httpGet:
-              path: /health
+              # -http.pathPrefix moves every endpoint under /metrics.
+              path: /metrics/health
               port: 8428
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /health
+              path: /metrics/health
               port: 8428
             initialDelaySeconds: 30
             periodSeconds: 30

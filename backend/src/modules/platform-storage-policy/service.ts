@@ -39,6 +39,12 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
   // creation-time numberOfReplicas=3 → volume permanently `degraded`
   // (observed on testing; staging's 3-node copy was healthy by luck).
   { namespace: 'crowdsec', pvcPrefix: 'crowdsec-data' },
+  // vmsingle's metrics TSDB (also a Deployment PVC). Added 2026-06-12
+  // so the HA tier replicates it like the other system volumes — on a
+  // node loss the Deployment reschedules AND the data follows. Write
+  // amplification is kept negligible by vmsingle's 10-min
+  // -inmemoryDataFlushInterval (see k8s/base/monitoring/vmsingle.yaml).
+  { namespace: 'monitoring', pvcPrefix: 'vmsingle-storage' },
 ];
 
 // HA tier replicates a system volume to one server up to MAX_HA_REPLICAS.

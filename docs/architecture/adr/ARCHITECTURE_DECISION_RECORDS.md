@@ -2477,7 +2477,9 @@ Summary (2026-06-12): Resolves R2. One Flux-managed `vmsingle` pod
 already exist (kubelet/Traefik/cert-manager/Longhorn/Flux/CNPG/CoreDNS,
 later platform-api). Alert evaluation lives INSIDE platform-api
 (`modules/monitoring`) reusing the notification system + HA claim
-patterns — zero alerting pods. VMUI admin-gated at `metrics.<apex>`.
+patterns — zero alerting pods. VMUI admin-gated at `admin.<apex>/metrics/`
+(amended 2026-06-12 from a `metrics.<apex>` subdomain; Longhorn UI moved
+to `admin.<apex>/longhorn/` the same day).
 VictoriaMetrics pinned to the LTS line (deliberate latest-stable
 exception, ADR-050 cadence). The legacy `--with-monitoring`
 kube-prometheus-stack+Loki helm path is removed; logs (Loki/VictoriaLogs)

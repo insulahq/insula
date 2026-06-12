@@ -4,7 +4,7 @@
  * SLI cards + hand-rolled SVG sparklines (repo convention — no chart
  * library) fed by the panel-ID-keyed series proxy. Rule states come
  * from the in-API evaluator; ad-hoc PromQL exploration lives in the
- * admin-gated VMUI (metrics.<apex>) — deliberately not here.
+ * admin-gated VMUI (admin.<apex>/metrics/vmui/) — deliberately not here.
  */
 import { useQuery } from '@tanstack/react-query';
 import { Loader2, AlertTriangle, CheckCircle, Activity, ExternalLink } from 'lucide-react';
@@ -108,7 +108,7 @@ export default function SloTab() {
           )}
         </div>
         <a
-          href={`https://metrics.${window.location.hostname.replace(/^admin\./, '')}`}
+          href="/metrics/vmui/"
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-1 text-sm text-blue-600 hover:underline dark:text-blue-400"
