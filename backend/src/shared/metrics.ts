@@ -83,3 +83,30 @@ export const stalwartAcmeTaskQueueDepth = new Gauge({
   help: 'Pending/retrying AcmeRenewal tasks in the Stalwart task queue (-1 = probe failed)',
   registers: [metricsRegistry],
 });
+
+/**
+ * Count of Flux resources whose Ready condition is False, by kind.
+ * Refreshed every 60s by modules/monitoring/flux-status-collector.ts on
+ * EVERY replica (the vmsingle scrape is per-pod), each computing the
+ * same cluster-wide count; the alert rule aggregates with max by (kind)
+ * so replica skew between refreshes is harmless.
+ *
+ * Why a platform-side gauge: Flux v2.1+ exposes NO per-resource failure
+ * metric (gotk_reconcile_condition was removed upstream), and
+ * controller_runtime_reconcile_errors_total counts only UNHANDLED
+ * reconciler errors — Flux records real build/apply failures in status
+ * conditions and requeues, so that counter stays 0 through genuine
+ * failures (proven live on staging 2026-06-12: an 82-retry
+ * path-not-found Kustomization moved it by exactly 0).
+ *
+ * -1 = listing that kind failed (clamped to 0 by the alert expression
+ * so a collector outage can never false-fire). Suspended resources are
+ * excluded — they keep their last Ready condition forever and an
+ * operator suspension is not a Flux failure.
+ */
+export const fluxUnreadyResources = new Gauge({
+  name: 'platform_flux_unready_resources',
+  help: 'Flux resources with Ready=False by kind (-1 = probe failed; suspended excluded)',
+  labelNames: ['kind'] as const,
+  registers: [metricsRegistry],
+});

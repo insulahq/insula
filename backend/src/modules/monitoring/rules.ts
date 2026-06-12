@@ -140,10 +140,18 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   },
   {
     id: 'flux-reconcile-errors',
-    name: 'Flux reconcile errors',
-    description: 'A Flux controller reported reconcile errors in the last 15m.',
+    name: 'Flux resources not ready',
+    description: 'One or more Flux resources (Kustomization / GitRepository) have been Ready=False for 15m+.',
     severity: 'warning',
-    expr: 'sum(increase(controller_runtime_reconcile_errors_total[15m])) > $T',
+    // Platform-side gauge, NOT controller_runtime_reconcile_errors_total:
+    // Flux handles build/apply failures via status conditions + requeue
+    // (never a returned reconciler error), so that counter stays 0 through
+    // real failures — proven live on staging 2026-06-12 with an 82-retry
+    // failing Kustomization — and v2.1+ exposes no per-resource failure
+    // metric. max by (kind) dedupes the per-replica export; clamp_min
+    // folds the -1 "probe failed" sentinel to 0 so a collector outage
+    // cannot false-fire.
+    expr: '(sum(max by (kind) (clamp_min(platform_flux_unready_resources, 0))) or vector(0)) > $T',
     threshold: 0,
     forSeconds: 900,
   },
