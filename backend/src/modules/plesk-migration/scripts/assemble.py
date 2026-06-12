@@ -50,7 +50,8 @@ for raw in sys.stdin:
             })
         elif tag == "MBOX":
             qbytes = to_int(parts[3])
-            quota_mb = (qbytes // (1024 * 1024)) if qbytes else None
+            # mbox_quota is bytes; -1/0 = unlimited/unset -> null.
+            quota_mb = (qbytes // (1024 * 1024)) if (qbytes and qbytes > 0) else None
             sub(parts[1])["mailboxes"].append({
                 "address": parts[2], "quotaMb": quota_mb, "passwordType": parts[4] or None,
             })
