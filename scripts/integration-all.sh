@@ -203,6 +203,14 @@ PARALLEL=(
   # Trusted Proxies). Adds + verifies + deletes a test CIDR; checks
   # ConfigMap, Traefik DS args, and admin-panel pod mount. ~30s.
   "trusted-proxies:integration-cluster-trusted-proxies.sh"
+  # ADR-051 monitoring stack: VMUI auth gate + scrape health, SLO admin
+  # API, the admin.slo_alert_* notification sources (#56), and an
+  # induced cnpg-down fire→notify→resolve lifecycle incl. the #57
+  # email-row no-silent-loss contract. Non-disruptive (threshold
+  # override only, cleared via trap) but the alert leg waits out
+  # cnpg-down's forSeconds=300 → ~9-12 min wall; self-skips (77) on
+  # overlays without k8s/base/monitoring (e.g. local DinD).
+  "monitoring-slo:integration-monitoring-slo.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).
@@ -276,6 +284,9 @@ declare -A SUITE_TIER=(
 # expected max so the timeout catches HANGS, never a legitimately long run.
 declare -A SUITE_TIMEOUT=(
   [staging-all]=3000 [postgres-pitr]=2400 [system-snapshots]=2400
+  # monitoring-slo's alert leg legitimately waits out cnpg-down's
+  # forSeconds=300 twice (fire + resolve) plus evaluator ticks.
+  [monitoring-slo]=1500
 )
 suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
 suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }
