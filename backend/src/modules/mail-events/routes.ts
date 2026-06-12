@@ -18,12 +18,16 @@
  * raw buffer is required for signature verification.
  */
 
+import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
+import { ApiError } from '../../shared/errors.js';
 import { deriveMailWebhookKey, verifyWebhookSignature } from './hmac.js';
 import { ingestMailEvents, type StalwartWebhookEvent } from './ingest.js';
 import { getTenantMailUsage } from './usage.js';
+import { schedulePollSoon } from './fbl.js';
+import { listComplaints, complaintSummary } from './complaints.js';
 
 export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<void> {
   // Encapsulated: raw-buffer JSON so the HMAC covers exactly the bytes
@@ -61,9 +65,46 @@ export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<voi
     if (summary.counted > 0) {
       request.log.debug(summary, 'mail-events: ingested webhook batch');
     }
+
+    // R4 PR 3: an incoming-report.* event means Stalwart just parsed
+    // and stored a report — pull it within seconds instead of waiting
+    // for the 5-min tick.
+    if (events.some((e) => typeof e.type === 'string' && e.type.startsWith('incoming-report.'))) {
+      schedulePollSoon(app.db, request.log);
+    }
     // Always 200 — a non-2xx makes non-lossy Stalwart retry the batch
     // until discardAfter, which can only duplicate work.
     return reply.status(200).send({ data: summary });
+  });
+}
+
+const complaintQuerySchema = z.object({
+  tenantId: z.string().uuid().optional(),
+  domain: z.string().min(1).max(255).optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  cursor: z.string().max(2048).optional(),
+});
+
+export async function mailComplaintRoutes(app: FastifyInstance): Promise<void> {
+  app.addHook('onRequest', authenticate);
+  // Complaint rows carry PII (original sender/recipient addresses,
+  // source IPs) — deliberately NOT exposed to billing/read_only roles.
+  app.addHook('onRequest', requireRole('super_admin', 'admin', 'support'));
+
+  // GET /api/v1/admin/mail/complaints?tenantId=&domain=&limit=&cursor=
+  app.get('/admin/mail/complaints', async (request) => {
+    const parsed = complaintQuerySchema.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new ApiError('INVALID_FIELD_VALUE', `Validation error: ${first.message} (${first.path.join('.')})`, 400, { field: first.path.join('.') });
+    }
+    return listComplaints(app.db, parsed.data);
+  });
+
+  // GET /api/v1/admin/mail/complaints/summary — per-domain 7d/30d
+  // complaint counts + send denominators + rates.
+  app.get('/admin/mail/complaints/summary', async () => {
+    return success(await complaintSummary(app.db));
   });
 }
 

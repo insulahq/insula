@@ -28,9 +28,10 @@ import { deriveMailWebhookKey } from './hmac.js';
 import type { OutboundReconcileLogger } from '../email-outbound/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
-export const WEBHOOK_DESCRIPTION = 'platform:mail-events';
-
-const INGEST_URL =
+// WebHook objects have NO description field (live-proven: create with
+// one is rejected `invalidPatch description`) — the ingest URL is the
+// identity key instead.
+export const INGEST_URL =
   process.env.MAIL_EVENTS_WEBHOOK_URL
   ?? 'http://platform-api.platform.svc.cluster.local:3000/api/v1/internal/mail/events';
 
@@ -50,7 +51,6 @@ export const SUBSCRIBED_EVENTS: readonly string[] = [
 
 export function desiredWebhookObject(masterSecret: string): Record<string, unknown> {
   return {
-    description: WEBHOOK_DESCRIPTION,
     url: INGEST_URL,
     enable: true,
     lossy: false,
@@ -119,7 +119,7 @@ export async function ensureMailEventsWebhook(
   }
 
   const desired = desiredWebhookObject(master);
-  const existing = live.find((w) => w.description === WEBHOOK_DESCRIPTION);
+  const existing = live.find((w) => w.url === INGEST_URL);
 
   try {
     if (!existing) {
@@ -145,7 +145,6 @@ export async function ensureMailEventsWebhook(
 
     const drifted =
       forceUpdate
-      || existing.url !== INGEST_URL
       || existing.enable !== true
       || existing.lossy !== false
       || String(existing.eventsPolicy).toLowerCase() !== 'include'

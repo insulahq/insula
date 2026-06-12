@@ -134,7 +134,7 @@ import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
-import { mailEventsWebhookRoutes, mailUsageRoutes } from './modules/mail-events/routes.js';
+import { mailEventsWebhookRoutes, mailUsageRoutes, mailComplaintRoutes } from './modules/mail-events/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
 import { platformUrlsRoutes } from './modules/platform-urls/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
@@ -556,6 +556,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   // JSON parser — keep it isolated in its own register call.
   await app.register(mailEventsWebhookRoutes, { prefix: '/api/v1' });
   await app.register(mailUsageRoutes, { prefix: '/api/v1' });
+  await app.register(mailComplaintRoutes, { prefix: '/api/v1' });
   await app.register(registerMailDriftRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
   // Email tenants hit these BEFORE auth, at well-known paths on
@@ -873,6 +874,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       {
         const { reconcileStalwartSendLimits } = await import('./modules/email-outbound/stalwart-throttles.js');
         const { ensureMailEventsWebhook } = await import('./modules/mail-events/webhook-reconciler.js');
+        const { ensureReportIntake } = await import('./modules/mail-events/report-intake-reconciler.js');
+        const { pollFblComplaints } = await import('./modules/mail-events/fbl.js');
         const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
         let mailK8s: import('./modules/k8s-provisioner/k8s-client.js').K8sClients | undefined;
         try {
@@ -884,6 +887,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           });
           ensureMailEventsWebhook(mailK8s, app.log).catch((err) => {
             app.log.warn({ err }, 'mail-events webhook ensure failed');
+          });
+          ensureReportIntake(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'report intake ensure failed');
+          });
+          pollFblComplaints(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'fbl poll failed');
           });
         };
         const bootKick = setTimeout(run, 30_000);

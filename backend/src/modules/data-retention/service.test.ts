@@ -12,6 +12,7 @@ import {
   storageOperations,
   provisioningTasks,
   emailSendCounters,
+  emailFblComplaints,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -36,7 +37,7 @@ function makeDb(rowsByTable: Map<unknown, Array<{ id: string }>>) {
 const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
 
 describe('data-retention runDataRetention', () => {
-  it('prunes all five unbounded tables and reports per-table counts', async () => {
+  it('prunes all six unbounded tables and reports per-table counts', async () => {
     const { db, deletedTables } = makeDb(
       new Map<unknown, Array<{ id: string }>>([
         [auditLogs, rows(5)],
@@ -44,6 +45,7 @@ describe('data-retention runDataRetention', () => {
         [storageOperations, rows(2)],
         [provisioningTasks, rows(1)],
         [emailSendCounters, rows(4)],
+        [emailFblComplaints, rows(2)],
       ]),
     );
 
@@ -55,14 +57,16 @@ describe('data-retention runDataRetention', () => {
       storageOperations: 2,
       provisioningTasks: 1,
       emailSendCounters: 4,
+      fblComplaints: 2,
     });
-    // Exactly the five target tables, each deleted once.
+    // Exactly the six target tables, each deleted once.
     expect(deletedTables).toEqual([
       auditLogs,
       tenantLifecycleTransitions,
       storageOperations,
       provisioningTasks,
       emailSendCounters,
+      emailFblComplaints,
     ]);
   });
 
@@ -75,6 +79,7 @@ describe('data-retention runDataRetention', () => {
       storageOperations: 0,
       provisioningTasks: 0,
       emailSendCounters: 0,
+      fblComplaints: 0,
     });
   });
 
