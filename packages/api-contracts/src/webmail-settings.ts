@@ -52,6 +52,10 @@ export const updateWebmailSettingsSchema = z.object({
     .optional(),
   // (R6 PR 1) the old `emailSendRateLimitDefault` field is retired —
   // send limits resolve through hosting_plans now.
+  // (R4 PR 4) sending-protection enforcement mode: off = evaluator
+  // disabled; notify (default) = threshold notifications only; auto =
+  // notifications + automatic throttle/suspend on complaint thresholds.
+  mailEnforcementMode: z.enum(['off', 'notify', 'auto']).optional(),
   // ADR-039 Phase 10: which webmail UI the platform mints handoff
   // tokens for. The backend already maps `roundcube` → `?_task=login&_jwt=`
   // and `bulwark` → `/_impersonate?token=` in generateWebmailToken.
@@ -72,6 +76,7 @@ export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSch
 export const webmailSettingsResponseSchema = z.object({
   defaultWebmailUrl: z.string(),
   mailServerHostname: z.string().optional(),
+  mailEnforcementMode: z.enum(['off', 'notify', 'auto']),
   defaultWebmailEngine: webmailEngineSchema,
   // 2026-05-18 (see updateWebmailSettingsSchema). Always present in
   // the response so the admin UI can render the toggle state

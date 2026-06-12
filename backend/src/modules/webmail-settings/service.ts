@@ -246,9 +246,12 @@ export async function getWebmailSettings(db: Database) {
   const defaultWebmailUrlStored = await getSetting(db, 'default_webmail_url');
   const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
   const visibility = await getWebmailFeatureVisibility(db);
+  const enforcementRaw = await getSetting(db, 'mail_enforcement_mode');
+  const mailEnforcementMode = enforcementRaw === 'off' || enforcementRaw === 'auto' ? enforcementRaw : 'notify';
   return {
     defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
     mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
+    mailEnforcementMode,
     defaultWebmailEngine: await getDefaultWebmailEngine(db),
     ...visibility,
   };
@@ -259,6 +262,7 @@ export async function updateWebmailSettings(
   input: {
     defaultWebmailUrl?: string;
     mailServerHostname?: string;
+    mailEnforcementMode?: 'off' | 'notify' | 'auto';
     defaultWebmailEngine?: WebmailEngine;
     webmailShowContacts?: boolean;
     webmailShowCalendar?: boolean;
@@ -273,6 +277,11 @@ export async function updateWebmailSettings(
   }
   // R6 PR 1: the platform-wide `email_send_rate_limit_default` setting
   // is retired — send limits resolve through hosting_plans now.
+  // R4 PR 4: sending-protection enforcement mode (off|notify|auto);
+  // consumed by the mail-events threshold evaluator each 5-min tick.
+  if (input.mailEnforcementMode !== undefined) {
+    await setSetting(db, 'mail_enforcement_mode', input.mailEnforcementMode);
+  }
   if (input.defaultWebmailEngine !== undefined) {
     if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {
       throw new Error(`Invalid webmail engine: ${input.defaultWebmailEngine}`);

@@ -357,6 +357,74 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     bodyFormat: 'plaintext',
     variablesSchema: COMMON_VARS,
   },
+  // ── R4/R6 PR 4: send-quota notifications ──
+  {
+    categoryId: 'tenant.email_quota_warning',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Email sending at {{percent}}% of your {{window}} limit',
+    bodyTemplate: emailMjml(
+      'Email usage at {{percent}}%',
+      'You have sent {{used}} of {{limit}} messages in the current {{window}} window. '
+      + 'Messages beyond the limit are deferred until the window rolls over.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'window', type: 'string', required: true },
+      { name: 'percent', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.email_quota_warning',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Email sending at {{percent}}% of the {{window}} limit',
+    bodyTemplate: '{{used}} of {{limit}} messages sent this {{window}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'window', type: 'string', required: true },
+      { name: 'percent', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.email_quota_exceeded',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Email sending limit reached ({{window}})',
+    bodyTemplate: emailMjml(
+      'Sending limit reached',
+      'You have sent {{used}} of {{limit}} messages in the current {{window}} window. '
+      + 'Further messages are deferred until the window rolls over. Contact support if you '
+      + 'regularly need a higher limit.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'window', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'tenant.email_quota_exceeded',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Email sending limit reached ({{window}})',
+    bodyTemplate: '{{used}} of {{limit}} messages sent — further messages are deferred this {{window}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'window', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+    ],
+  },
 ];
 
 const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
@@ -689,6 +757,89 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     variablesSchema: [
       ...COMMON_VARS,
       { name: 'clusterName', type: 'string', required: true },
+    ],
+  },
+  // ── R4 PR 4: FBL complaint-rate alerts ──
+  {
+    categoryId: 'admin.email_complaint_warning',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[MAIL] Complaint rate elevated: {{domain}}',
+    bodyTemplate: emailMjml(
+      'Complaint rate elevated: {{domain}}',
+      'Domain {{domain}} ({{tenantLabel}}) has a 7-day complaint rate of {{ratePercent}}% '
+      + '({{complaints}} complaints / {{sends}} sends). Recommended action: '
+      + '{{recommendedAction}}.{{#if actionTaken}} {{actionTaken}}{{/if}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: true },
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'ratePercent', type: 'string', required: true },
+      { name: 'complaints', type: 'string', required: true },
+      { name: 'sends', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+      { name: 'actionTaken', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.email_complaint_warning',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[MAIL] Complaint rate elevated: {{domain}}',
+    bodyTemplate: '{{domain}} ({{tenantLabel}}): {{ratePercent}}% 7d complaint rate ({{complaints}}/{{sends}}). {{recommendedAction}}.{{#if actionTaken}} {{actionTaken}}{{/if}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: true },
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'ratePercent', type: 'string', required: true },
+      { name: 'complaints', type: 'string', required: true },
+      { name: 'sends', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+      { name: 'actionTaken', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.email_complaint_critical',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[MAIL CRITICAL] Complaint rate: {{domain}}',
+    bodyTemplate: emailMjml(
+      'CRITICAL complaint rate: {{domain}}',
+      'Domain {{domain}} ({{tenantLabel}}) has a 7-day complaint rate of {{ratePercent}}% '
+      + '({{complaints}} complaints / {{sends}} sends) — mailbox providers will start blocking. '
+      + 'Recommended action: {{recommendedAction}}.{{#if actionTaken}} {{actionTaken}}{{/if}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: true },
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'ratePercent', type: 'string', required: true },
+      { name: 'complaints', type: 'string', required: true },
+      { name: 'sends', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+      { name: 'actionTaken', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.email_complaint_critical',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[MAIL CRITICAL] Complaint rate: {{domain}}',
+    bodyTemplate: '{{domain}} ({{tenantLabel}}): {{ratePercent}}% 7d complaint rate ({{complaints}}/{{sends}}). {{recommendedAction}}.{{#if actionTaken}} {{actionTaken}}{{/if}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'domain', type: 'string', required: true },
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'ratePercent', type: 'string', required: true },
+      { name: 'complaints', type: 'string', required: true },
+      { name: 'sends', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+      { name: 'actionTaken', type: 'string', required: false },
     ],
   },
 ];
