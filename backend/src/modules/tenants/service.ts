@@ -904,6 +904,8 @@ export async function updateTenant(
   if (input.max_mailboxes_override !== undefined) updateValues.maxMailboxesOverride = input.max_mailboxes_override;
   if (input.monthly_price_override !== undefined) updateValues.monthlyPriceOverride = input.monthly_price_override === null ? null : String(input.monthly_price_override);
   if (input.email_send_rate_limit !== undefined) updateValues.emailSendRateLimit = input.email_send_rate_limit;
+  if (input.email_send_rate_limit_daily !== undefined) updateValues.emailSendRateLimitDaily = input.email_send_rate_limit_daily;
+  if (input.email_outbound_suspended !== undefined) updateValues.emailOutboundSuspended = input.email_outbound_suspended;
   // Phase A.1 of backup UI consolidation: per-tenant include override.
   // null = inherit plan default; true/false = explicit override.
   if (input.include_in_scheduled_bundles_override !== undefined) {
@@ -1150,19 +1152,27 @@ export async function updateTenant(
     }
   }
 
-  // Phase 3.B.3: reconcile Stalwart outbound config when:
-  //   - tenant status changed (suspend → rate=0 in throttle)
-  //   - email send rate limit changed
-  // Non-blocking — throttle reconcile failures shouldn't fail the
-  // tenant update API call.
-  if (input.status !== undefined || input.email_send_rate_limit !== undefined) {
+  // R6 PR 1 (was Phase 3.B.3): re-sync the Stalwart throttle/quota
+  // objects when any field feeding the send-limit resolver changed.
+  // Non-blocking — the DB is the durable record and the periodic
+  // reconcile self-heals; Stalwart-unreachable degrades to a logged
+  // skip inside the reconciler.
+  if (
+    input.status !== undefined
+    || input.plan_id !== undefined
+    || input.email_send_rate_limit !== undefined
+    || input.email_send_rate_limit_daily !== undefined
+    || input.email_outbound_suspended !== undefined
+  ) {
     try {
-      const { reconcileOutboundConfig } = await import('../email-outbound/service.js');
-      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-      const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
-      await reconcileOutboundConfig(db, k8s);
+      const { reconcileStalwartSendLimits } = await import('../email-outbound/stalwart-throttles.js');
+      await reconcileStalwartSendLimits(db, {
+        info: () => {},
+        warn: (o, m) => console.warn('[tenants] send-limit reconcile:', m ?? '', o),
+        error: (o, m) => console.error('[tenants] send-limit reconcile:', m ?? '', o),
+      });
     } catch (err) {
-      console.warn('[tenants] Failed to reconcile outbound config after status/rate change:', err instanceof Error ? err.message : String(err));
+      console.warn('[tenants] send-limit reconcile failed:', err instanceof Error ? err.message : String(err));
     }
   }
 

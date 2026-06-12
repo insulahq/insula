@@ -19,6 +19,8 @@ interface PlanRow {
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
   readonly maxMailboxes: number;
+  readonly emailHourlySendLimit: number;
+  readonly emailDailySendLimit: number;
   readonly status: string;
 }
 
@@ -72,6 +74,8 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     storage_limit: initial?.storageLimit ?? '10.00', monthly_price_usd: initial?.monthlyPriceUsd ?? '5.00',
     max_sub_users: String(initial?.maxSubUsers ?? 3),
     max_mailboxes: String(initial?.maxMailboxes ?? 50),
+    email_hourly_send_limit: String(initial?.emailHourlySendLimit ?? 50),
+    email_daily_send_limit: String(initial?.emailDailySendLimit ?? 100),
     weekly_ai_budget_cents: String((initial as unknown as Record<string, unknown>)?.weeklyAiBudgetCents ?? 100),
   });
 
@@ -81,6 +85,8 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       ...form,
       max_sub_users: Number(form.max_sub_users),
       max_mailboxes: Number(form.max_mailboxes),
+      email_hourly_send_limit: Number(form.email_hourly_send_limit),
+      email_daily_send_limit: Number(form.email_daily_send_limit),
       weekly_ai_budget_cents: Number(form.weekly_ai_budget_cents),
     };
     try {
@@ -117,6 +123,31 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
             value={form.max_mailboxes}
             onChange={(e) => setForm({ ...form, max_mailboxes: e.target.value })}
             data-testid="plan-max-mailboxes-input"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Email Sends / Hour</label>
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            min={0}
+            max={1000000}
+            value={form.email_hourly_send_limit}
+            onChange={(e) => setForm({ ...form, email_hourly_send_limit: e.target.value })}
+            data-testid="plan-email-hourly-input"
+          />
+          <p className="text-[10px] text-gray-400 mt-0.5">0 blocks sending; per-tenant overrides win</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Email Sends / Day</label>
+          <input
+            type="number"
+            className={INPUT_CLASS}
+            min={0}
+            max={10000000}
+            value={form.email_daily_send_limit}
+            onChange={(e) => setForm({ ...form, email_daily_send_limit: e.target.value })}
+            data-testid="plan-email-daily-input"
           />
         </div>
         <div>
@@ -171,6 +202,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           <span>{plan.storageLimit}GB disk</span>
           <span>{plan.maxSubUsers} users</span>
           <span>{plan.maxMailboxes} mailboxes</span>
+          <span>{plan.emailHourlySendLimit}/h · {plan.emailDailySendLimit}/d mail</span>
           <span>{formatCurrency(((plan as unknown as Record<string, unknown>).weeklyAiBudgetCents as number ?? 0) / 100, currency)}/wk AI</span>
           <div className="flex items-center gap-1">
             <button type="button" onClick={() => setEditing(true)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50" data-testid={`edit-plan-${plan.id}`}><Edit size={12} /></button>

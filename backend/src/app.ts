@@ -857,6 +857,29 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // chain re-arms itself.
       app.addHook('onClose', () => stopMailStatsScheduler(mailStatsTimer));
 
+      // R6 PR 1: send-limit self-heal — re-asserts the plan-based
+      // Stalwart throttle/quota objects every 5 min (and once shortly
+      // after boot) so a Stalwart restore/restart or a missed trigger
+      // can't leave limits drifted. The reconcile no-ops (0/0/0) when
+      // nothing changed and degrades to a logged skip when the mail
+      // stack is absent (local dev).
+      {
+        const { reconcileStalwartSendLimits } = await import('./modules/email-outbound/stalwart-throttles.js');
+        const run = () => {
+          reconcileStalwartSendLimits(app.db, app.log).catch((err) => {
+            app.log.warn({ err }, 'send-limit periodic reconcile failed');
+          });
+        };
+        const bootKick = setTimeout(run, 30_000);
+        bootKick.unref();
+        const sendLimitTimer = setInterval(run, 5 * 60_000);
+        sendLimitTimer.unref();
+        app.addHook('onClose', () => {
+          clearTimeout(bootKick);
+          clearInterval(sendLimitTimer);
+        });
+      }
+
       // Mail archive scheduler — ticks every 60s, fires
       // startMailArchive({ mode: 'no_downtime' }) when the
       // operator-configured interval (system_settings.mail_archive_
