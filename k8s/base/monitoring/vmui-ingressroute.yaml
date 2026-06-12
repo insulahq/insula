@@ -7,7 +7,13 @@
 # Why a path instead of metrics.<apex> (operator decision 2026-06-12):
 # one fewer public hostname + LE certificate + DNS name; TLS rides the
 # admin host's existing certificate (Traefik picks it by SNI from the
-# platform-ingress router's store — `tls: {}` just enables TLS here).
+# platform-ingress router's store). NO spec.tls here: the websecure
+# entrypoint carries `http.tls=true`, so every router on it is TLS
+# already — and an empty `tls: {}` gets normalised to null somewhere in
+# the Flux kustomize→SSA pipeline, which the Traefik CRD rejects
+# (caught live 2026-06-12: the platform Kustomization sat Ready=False
+# on exactly that dry-run error while local `kubectl kustomize`
+# rendered the empty map fine).
 #
 # The match assumes the DEFAULT admin host `admin.${DOMAIN}` (the same
 # assumption the dev overlay's ingress-upload carve-out makes). An
@@ -48,4 +54,3 @@ spec:
         - name: vmsingle
           namespace: monitoring
           port: 8428
-  tls: {}
