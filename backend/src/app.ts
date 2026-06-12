@@ -688,6 +688,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
 
+      // Prometheus exposition (ADR-051 phase 2): HTTP-histogram hook on
+      // the main app + a bare node:http server on :9090 serving GET
+      // /metrics only — a dedicated port so the F4 ":3000 = traefik-ns
+      // only" invariant stays untouched. NetworkPolicy
+      // allow-monitoring-to-platform-api-metrics scopes :9090 to the
+      // monitoring namespace.
+      {
+        const { registerHttpMetricsHook, startMetricsServer } = await import('./plugins/metrics-server.js');
+        registerHttpMetricsHook(app);
+        const stopMetricsServer = startMetricsServer(app.log);
+        app.addHook('onClose', async () => { await stopMetricsServer(); });
+      }
+
       // Node-terminal scheduler: idle-session sweep + orphan-Pod reap.
       // Same feature flag as the routes — when disabled, there are no
       // sessions or labelled Pods to sweep anyway.
