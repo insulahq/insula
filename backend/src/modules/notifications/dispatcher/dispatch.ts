@@ -248,6 +248,28 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
       }
     }
 
+    // Per-recipient render context. Pre-seed every COMMON_VARS key:
+    // the renderer compiles in Handlebars STRICT mode, which throws on
+    // ABSENT keys (present-but-undefined renders ''). Without this,
+    // any template referencing the shared {{platformName}} footer —
+    // i.e. every seeded email template — threw TEMPLATE_RENDER_ERROR
+    // and the email silently vanished (caught live 2026-06-12 by the
+    // SLO-alert E2E: zero email delivery rows cluster-wide).
+    // Caller-supplied variables win over the defaults. undefined
+    // values are normalised to null: strict mode tolerates both, but
+    // undefined keys would be DROPPED by the JSONB round-trip through
+    // notification_deliveries.event_variables and the queue worker's
+    // re-render would then throw on the absent key.
+    const recipientEmail = await getUserEmail(db, userId);
+    const renderVars: Record<string, unknown> = Object.fromEntries(
+      Object.entries({
+        platformName: 'Hosting Platform',
+        userName: recipientEmail ? recipientEmail.split('@')[0] : userId,
+        tenantName: null,
+        ...opts.variables,
+      }).map(([k, v]) => [k, v === undefined ? null : v]),
+    );
+
     for (const channel of category.defaultChannels) {
       // 3a. Preference gate.
       const allowed = await isCategoryAllowedForUser(db, userId, category.id, channel);
@@ -294,11 +316,11 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         continue;
       }
 
-      // 3c. Resolve recipient address up-front for channels that
-      // require one. Doing it BEFORE the rate-limit check means a
-      // user with no email doesn't waste their rate-limit budget
-      // every time a notification fires for them.
-      const recipientEmail = channel === 'email' ? await getUserEmail(db, userId) : null;
+      // 3c. Recipient address check for channels that require one
+      // (resolved once per recipient above, also feeds {{userName}}).
+      // Doing it BEFORE the rate-limit check means a user with no
+      // email doesn't waste their rate-limit budget every time a
+      // notification fires for them.
       if (channel === 'email' && !recipientEmail) {
         const contentHash = sha256(`${category.id}::no-recipient`, hashSalt);
         await writeDelivery(db, {
@@ -351,9 +373,31 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         }
       }
 
-      // 3e. Template lookup.
+      // 3e. Template lookup. Persist the miss — these used to be
+      // status-array-only (dispatchSafe discards the array), which made
+      // template/render problems completely invisible. `skipped` (not
+      // `failed`) keeps them out of the queue worker's retry scan —
+      // re-rendering the same template with the same variables is
+      // deterministic, a retry can never succeed.
       const tpl = await getActiveTemplate(db, category.id, channel, locale);
       if (!tpl) {
+        const contentHash = sha256(`${category.id}::no-template`, hashSalt);
+        await writeDelivery(db, {
+          notificationId: null,
+          eventId,
+          userId,
+          tenantId: opts.tenantId ?? null,
+          categoryId: category.id,
+          channel,
+          templateId: null,
+          templateVersion: 0,
+          locale,
+          status: 'skipped',
+          recipientHash: null,
+          contentHash,
+          dedupeKey: opts.dedupeKey,
+          lastError: 'template_not_found',
+        });
         statuses.push({ userId, channel, status: 'skipped', error: 'template_not_found' });
         continue;
       }
@@ -361,14 +405,27 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
       // 3e. Render.
       let rendered;
       try {
-        rendered = await renderTemplateAsync(tpl, opts.variables);
+        rendered = await renderTemplateAsync(tpl, renderVars);
       } catch (err) {
-        statuses.push({
+        const msg = err instanceof Error ? err.message : String(err);
+        const contentHash = sha256(`${category.id}::render-error`, hashSalt);
+        await writeDelivery(db, {
+          notificationId: null,
+          eventId,
           userId,
+          tenantId: opts.tenantId ?? null,
+          categoryId: category.id,
           channel,
-          status: 'failed',
-          error: err instanceof Error ? err.message : String(err),
+          templateId: tpl.id,
+          templateVersion: tpl.version,
+          locale,
+          status: 'skipped',
+          recipientHash: null,
+          contentHash,
+          dedupeKey: opts.dedupeKey,
+          lastError: `render_failed: ${msg}`.slice(0, 1000),
         });
+        statuses.push({ userId, channel, status: 'skipped', error: msg });
         continue;
       }
 
@@ -432,7 +489,10 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         recipientHash,
         contentHash,
         dedupeKey: opts.dedupeKey,
-        eventVariables: opts.variables,
+        // Persist the MERGED variables (defaults + caller) — the queue
+        // worker re-renders from this column at send time and must see
+        // the exact context the dispatcher validated here.
+        eventVariables: renderVars,
       });
 
       try {

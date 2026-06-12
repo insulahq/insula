@@ -296,19 +296,68 @@ describe('emitEvent', () => {
     ).rejects.toThrow(/PLATFORM_ENCRYPTION_KEY/);
   });
 
-  it('captures template render errors per-channel without aborting fan-out', async () => {
+  it('captures template render errors per-channel without aborting fan-out, persisting visible rows', async () => {
+    // Render failures are deterministic (same template + same vars),
+    // so they persist as status='skipped' (NOT 'failed' — the queue
+    // worker's retry scan picks up 'failed' rows and a retry can never
+    // succeed) with lastError for the Delivery Log. Before 2026-06-12
+    // these were status-array-only and completely invisible.
     getCategoryMock.mockResolvedValue(baseCategory);
     resolveRecipientsMock.mockResolvedValue(['u1']);
     isAllowedMock.mockResolvedValue(true);
     getActiveTemplateMock.mockResolvedValue(baseTemplate);
     renderTemplateMock.mockRejectedValue(new Error('hbs blew up'));
-    const r = await emitEvent(mockDb(), {
+    const db = mockDb();
+    const r = await emitEvent(db, {
       categoryId: 'tenant.suspended',
       scope: { kind: 'tenant', tenantId: 't1' },
       variables: {},
       encryptionKey: 'KEY',
     });
-    expect(r.perChannelStatuses.every((s) => s.status === 'failed')).toBe(true);
+    expect(r.perChannelStatuses.every((s) => s.status === 'skipped')).toBe(true);
+    const inserted = (db.insert as ReturnType<typeof vi.fn>)().values.mock.calls.map((c: unknown[]) => c[0]);
+    expect(inserted.some((v: Record<string, unknown>) =>
+      v.status === 'skipped' && String(v.lastError).startsWith('render_failed:'))).toBe(true);
+  });
+
+  it('persists a skipped delivery row when no template exists', async () => {
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    getActiveTemplateMock.mockResolvedValue(null);
+    const db = mockDb();
+    await emitEvent(db, {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: {},
+      encryptionKey: 'KEY',
+    });
+    const inserted = (db.insert as ReturnType<typeof vi.fn>)().values.mock.calls.map((c: unknown[]) => c[0]);
+    expect(inserted.some((v: Record<string, unknown>) =>
+      v.status === 'skipped' && v.lastError === 'template_not_found')).toBe(true);
+  });
+
+  it('injects strict-mode-safe COMMON_VARS defaults; caller variables win; undefined → null', async () => {
+    // Regression for the 2026-06-12 silent email loss: every emailMjml
+    // seed template references {{platformName}}, which no dispatcher
+    // call-site supplied — strict-mode Handlebars threw on the absent
+    // key and the email vanished without a delivery row.
+    getCategoryMock.mockResolvedValue(baseCategory);
+    resolveRecipientsMock.mockResolvedValue(['u1']);
+    isAllowedMock.mockResolvedValue(true);
+    getActiveTemplateMock.mockResolvedValue(baseTemplate);
+    await emitEvent(mockDb({ userEmail: 'alice@example.com' }), {
+      categoryId: 'tenant.suspended',
+      scope: { kind: 'tenant', tenantId: 't1' },
+      variables: { tenantName: 'Acme', custom: undefined },
+      encryptionKey: 'KEY',
+    });
+    expect(renderTemplateMock).toHaveBeenCalled();
+    const vars = renderTemplateMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(vars.platformName).toBe('Hosting Platform'); // default injected
+    expect(vars.userName).toBe('alice');                // email local part
+    expect(vars.tenantName).toBe('Acme');               // caller wins
+    expect(vars.custom).toBeNull();                     // undefined normalised (JSONB-safe)
   });
 
   it('dedupeKey: skips every channel for a user with an existing notifications row in the window', async () => {
