@@ -6,7 +6,7 @@ Single-button operation that takes the platform from "any-node-failure causes ou
 
 | Component | Local tier | HA tier | Reversible? |
 |---|---|---|---|
-| Longhorn volumes (postgres + stalwart) | 1 replica | 3 replicas, spread across nodes | ✓ (extra replicas deleted) |
+| Longhorn volumes (postgres + stalwart + crowdsec + vmsingle metrics) | 1 replica | 3 replicas, spread across nodes | ✓ (extra replicas deleted) |
 | Postgres CNPG `Cluster` `spec.instances` | 1 | 3 (sync replication) | ✓ (replicas removed; primary keeps data) |
 | `admin-panel`, `tenant-panel`, `platform-api`, `oauth2-proxy`, `dex` Deployments | 2 replicas | 3 replicas + `topologySpreadConstraints` (one per node) | ✓ (replica count) |
 

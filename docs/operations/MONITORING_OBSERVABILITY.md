@@ -8,7 +8,7 @@ around **one pod** plus the platform's own modules:
 | Metrics (scrape + TSDB + query + UI) | **VictoriaMetrics vmsingle** (`k8s/base/monitoring/`) | 128Mi req / 384Mi limit | Built-in scraper — no vmagent |
 | Alerting | **platform-api `monitoring` module** | 0 (in-process) | 60s evaluator → existing notification channels (email + in-app) |
 | Object/state health | Built-in `node-health` / `cluster-health` modules | 0 (existing) | K8s-API-driven; node DiskPressure alerts live HERE, not in PromQL |
-| Ad-hoc exploration | **VMUI** at `https://metrics.<apex>` | 0 (inside vmsingle) | Admin-cookie gated (`insula.host/admin-ui` label, CI-enforced) |
+| Ad-hoc exploration | **VMUI** at `https://admin.<apex>/metrics/vmui/` | 0 (inside vmsingle) | Path route on the admin host (no own subdomain/cert); admin-cookie gated (`insula.host/admin-ui` label, CI-enforced) |
 | Dashboards | Admin panel → Monitoring → SLOs tab | 0 (existing panel) | Panel-ID-keyed query proxy; no arbitrary PromQL from the browser |
 | Logs | **none (deferred)** | — | journald capped at 2G/node + kubelet rotation + `kubectl logs`; revisit on concrete need (ADR-051) |
 
@@ -56,7 +56,7 @@ scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
 3. vmsingle re-reads the config every minute
    (`-promscrape.configCheckInterval=1m`) once the kubelet has synced
    the ConfigMap (worst case ~2 min total; or delete the pod). Verify
-   at `https://metrics.<apex>/targets`.
+   at `https://admin.<apex>/metrics/targets`.
 
 ## Alerting (platform-api `monitoring` module)
 
