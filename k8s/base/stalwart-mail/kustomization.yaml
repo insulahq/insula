@@ -4,8 +4,13 @@ kind: Kustomization
 # Stalwart 0.16 deployment layer — Phase 1 (RocksDB migration).
 #
 # mail-db/ (CNPG PostgreSQL cluster) has been removed. Stalwart now
-# uses an embedded RocksDB DataStore on a local-path PVC
-# (stalwart-rocksdb-data, 20Gi). See stalwart/pvc.yaml.
+# uses an embedded RocksDB DataStore on the consolidated local-path PVC
+# (mail-stack-data, A2.5 2026-05-25 — Stalwart subtree at subPath=
+# stalwart). See stalwart/pvc-mail-stack.yaml. The legacy single-purpose
+# stalwart-rocksdb-data PVC was removed 2026-06-12: its 48-72h
+# post-consolidation safety window is long past, and on every FRESH
+# cluster it just sat Pending (WaitForFirstConsumer) forever, spamming
+# the event log — observed on both staging and testing rebuilds.
 #
 # haproxy/ ships the static support objects (ConfigMap + NetworkPolicy)
 # for the haproxy DaemonSet. The DaemonSet ITSELF is created and
