@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { notifyUsersSpy, resolveRecipientsSpy } = vi.hoisted(() => ({
-  notifyUsersSpy: vi.fn().mockResolvedValue(undefined),
-  resolveRecipientsSpy: vi.fn().mockResolvedValue(['admin-1']),
+const { notifyFiringSpy, notifyResolvedSpy } = vi.hoisted(() => ({
+  notifyFiringSpy: vi.fn().mockResolvedValue(undefined),
+  notifyResolvedSpy: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock('../notifications/service.js', () => ({ notifyUsers: notifyUsersSpy }));
-vi.mock('../notifications/recipients.js', () => ({ resolveRecipients: resolveRecipientsSpy }));
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminSloAlertFiring: notifyFiringSpy,
+  notifyAdminSloAlertResolved: notifyResolvedSpy,
+}));
 
 import { evaluateOnce, __resetEvaluatorStateForTest, VM_FAILURE_THRESHOLD } from './evaluator.js';
 import { SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, ruleById } from './rules.js';
@@ -89,8 +91,8 @@ function vmFetchStub(behavior: Record<string, number[] | 'fail'>) {
 
 beforeEach(() => {
   __resetEvaluatorStateForTest();
-  notifyUsersSpy.mockClear();
-  resolveRecipientsSpy.mockClear();
+  notifyFiringSpy.mockClear();
+  notifyResolvedSpy.mockClear();
 });
 
 describe('monitoring rules pack', () => {
@@ -119,12 +121,17 @@ describe('monitoring evaluator', () => {
     await evaluateOnce(db as never, logger, { fetchFn, baseUrl: 'http://vm' });
     const row = db._rows.get('acme-order-rate');
     expect(row?.state).toBe('firing');
-    expect(notifyUsersSpy).toHaveBeenCalledTimes(1);
-    expect(notifyUsersSpy.mock.calls[0][2].title).toContain('ACME renewal activity');
+    expect(notifyFiringSpy).toHaveBeenCalledTimes(1);
+    expect(notifyFiringSpy.mock.calls[0][1]).toMatchObject({
+      ruleId: 'acme-order-rate',
+      severity: 'warning',
+      value: '7',
+    });
+    expect(notifyFiringSpy.mock.calls[0][1].ruleName).toContain('ACME renewal activity');
 
     // Second tick, still violated → throttled (no second notification).
     await evaluateOnce(db as never, logger, { fetchFn, baseUrl: 'http://vm' });
-    expect(notifyUsersSpy).toHaveBeenCalledTimes(1);
+    expect(notifyFiringSpy).toHaveBeenCalledTimes(1);
   });
 
   it('holds for forSeconds before firing, then resolves with a notification', async () => {
@@ -137,16 +144,19 @@ describe('monitoring evaluator', () => {
     const t1 = new Date(t0.getTime() + 6 * 60_000);
     await evaluateOnce(db as never, logger, { fetchFn, baseUrl: 'http://vm' }, t1);
     expect(db._rows.get('cnpg-down')?.state).toBe('firing');
-    const fireCalls = notifyUsersSpy.mock.calls.length;
-    expect(fireCalls).toBeGreaterThanOrEqual(1);
+    expect(notifyFiringSpy.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(notifyFiringSpy.mock.calls.at(-1)![1]).toMatchObject({
+      ruleId: 'cnpg-down',
+      severity: 'critical',
+    });
 
-    // Recovery → resolved + success notification.
+    // Recovery → resolved + resolved-category notification.
     const healthy = vmFetchStub({});
     const t2 = new Date(t1.getTime() + 60_000);
     await evaluateOnce(db as never, logger, { fetchFn: healthy, baseUrl: 'http://vm' }, t2);
     expect(db._rows.get('cnpg-down')?.state).toBe('resolved');
-    const lastCall = notifyUsersSpy.mock.calls.at(-1)!;
-    expect(lastCall[2].type).toBe('success');
+    expect(notifyResolvedSpy).toHaveBeenCalledTimes(1);
+    expect(notifyResolvedSpy.mock.calls[0][1]).toMatchObject({ ruleId: 'cnpg-down' });
   });
 
   it('fires on ZERO-VALUED comparison passes (vector(0) > -1 shape)', async () => {
@@ -164,7 +174,7 @@ describe('monitoring evaluator', () => {
     const fetchFn = vmFetchStub({ platform_acme_renewals_total: [99] });
     await evaluateOnce(db as never, logger, { fetchFn, baseUrl: 'http://vm' });
     expect(db._rows.has('acme-order-rate')).toBe(false);
-    expect(notifyUsersSpy).not.toHaveBeenCalled();
+    expect(notifyFiringSpy).not.toHaveBeenCalled();
   });
 
   it('threshold override re-parameterises the expression', async () => {
@@ -184,7 +194,9 @@ describe('monitoring evaluator', () => {
     }
     const row = db._rows.get(MONITORING_UNREACHABLE_RULE_ID);
     expect(row?.state).toBe('firing');
-    expect(notifyUsersSpy.mock.calls.some((c) => c[2].title.includes('Monitoring unreachable'))).toBe(true);
+    expect(notifyFiringSpy.mock.calls.some(
+      (c) => c[1].ruleId === MONITORING_UNREACHABLE_RULE_ID && c[1].severity === 'critical',
+    )).toBe(true);
 
     // One healthy tick clears the streak and resolves.
     const healthy = vmFetchStub({});
