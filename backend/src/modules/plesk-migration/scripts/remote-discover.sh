@@ -48,7 +48,7 @@ plesk db -Ne "SELECT name FROM domains WHERE webspace_id = 0 ORDER BY name" 2>/d
       # mailboxes + maildir size per domain
       for dn in $(plesk db -Ne "SELECT name FROM domains WHERE id=${SUBID} OR webspace_id=${SUBID}" 2>/dev/null); do
         is_name "$dn" || continue
-        plesk db -Ne "SELECT CONCAT(m.mail_name,'@','${dn}'), a.type, mb.value FROM mail m JOIN domains d ON d.id=m.dom_id LEFT JOIN accounts a ON a.id=m.account_id LEFT JOIN mail_aux mb ON mb.mn_id=m.id AND mb.type='mbox_quota' WHERE d.name='${dn}'" 2>/dev/null \
+        plesk db -Ne "SELECT CONCAT(m.mail_name,'@','${dn}'), a.type, m.mbox_quota FROM mail m JOIN domains d ON d.id=m.dom_id LEFT JOIN accounts a ON a.id=m.account_id WHERE d.name='${dn}'" 2>/dev/null \
           | while IFS=$'\t' read -r addr atype quota; do emit "MBOX	${sub}	${addr}	${quota:-}	${atype:-}"; done
         MD="/var/qmail/mailnames/${dn}"
         if [ -d "$MD" ]; then SZ=$(du -sb "$MD" 2>/dev/null | awk '{print $1}'); emit "MAILSIZE	${sub}	${SZ:-}"; fi
