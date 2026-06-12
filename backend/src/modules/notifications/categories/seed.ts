@@ -280,6 +280,52 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: true, // safety-critical — operators cannot opt out
     gdprBasis: 'legitimate_interest',
   },
+  // ── R4/R6 PR 4: outbound-mail protection (send quotas + FBL complaints) ──
+  {
+    id: 'tenant.email_quota_warning',
+    displayName: 'Email sending quota at 80%',
+    description: 'Your outbound email usage crossed 80% of the hourly or daily limit. '
+      + 'Further messages may be deferred once the limit is reached.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tenant.email_quota_exceeded',
+    displayName: 'Email sending quota reached',
+    description: 'Your outbound email usage reached the hourly or daily limit. '
+      + 'Additional messages are deferred until the window rolls over.',
+    audience: 'tenant',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'admin.email_complaint_warning',
+    displayName: 'Spam complaint rate elevated',
+    description: 'A sender domain crossed the 0.1% 7-day complaint-rate threshold (FBL reports / '
+      + 'sends). Throttle territory — investigate the sender. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.email_complaint_critical',
+    displayName: 'Spam complaint rate critical',
+    description: 'A sender domain crossed the 0.3% 7-day complaint-rate threshold. Mailbox '
+      + 'providers will start blocking — suspend outbound for the tenant unless clearly false. '
+      + 'See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
 ];
 
 /**

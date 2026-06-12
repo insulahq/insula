@@ -1427,6 +1427,27 @@ export const emailFblComplaints = pgTable('email_fbl_complaints', {
   index('email_fbl_complaints_received_idx').on(table.receivedAt),
 ]);
 
+// R4/R6 PR 4 (mig 0060): threshold-evaluator dedupe state.
+export const emailQuotaEvents = pgTable('email_quota_events', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  windowKind: varchar('window_kind', { length: 8 }).notNull(),
+  threshold: integer('threshold').notNull(),
+  windowStart: timestamp('window_start', { withTimezone: true }).notNull(),
+  firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.windowKind, table.threshold, table.windowStart] }),
+]);
+
+export const emailComplaintEvents = pgTable('email_complaint_events', {
+  domain: varchar('domain', { length: 255 }).notNull(),
+  level: varchar('level', { length: 16 }).notNull(),
+  firedAt: timestamp('fired_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  primaryKey({ columns: [table.domain, table.level] }),
+]);
+
 // R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
 // (tenant, sender-domain) fed by the Stalwart webhook ingest
 // (modules/mail-events). Counters, not per-message rows (descoped).

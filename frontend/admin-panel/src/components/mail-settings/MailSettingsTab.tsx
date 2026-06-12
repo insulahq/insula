@@ -30,11 +30,15 @@ export default function MailSettingsTab() {
 
   const [mailServerHostname, setMailServerHostname] = useState('');
   const [stalwartAdminUrl, setStalwartAdminUrl] = useState('');
+  const [enforcementMode, setEnforcementMode] = useState<'off' | 'notify' | 'auto'>('notify');
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (settings) setMailServerHostname(settings.mailServerHostname ?? '');
+    if (settings) {
+      setMailServerHostname(settings.mailServerHostname ?? '');
+      setEnforcementMode(settings.mailEnforcementMode ?? 'notify');
+    }
   }, [settings]);
 
   useEffect(() => {
@@ -48,6 +52,8 @@ export default function MailSettingsTab() {
 
   const stalwartUrlChanged =
     (stalwartUrl?.source === 'db' ? stalwartUrl.value : '') !== stalwartAdminUrl;
+  const enforcementChanged =
+    enforcementMode !== (settings?.mailEnforcementMode ?? 'notify');
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -66,6 +72,11 @@ export default function MailSettingsTab() {
     if (hostnameChanged) {
       tasks.push(
         updateWebmail.mutateAsync({ mailServerHostname: trimmedHostname }),
+      );
+    }
+    if (enforcementChanged) {
+      tasks.push(
+        updateWebmail.mutateAsync({ mailEnforcementMode: enforcementMode }),
       );
     }
     if (stalwartUrlChanged) {
@@ -141,6 +152,43 @@ export default function MailSettingsTab() {
         &ldquo;Stalwart admin UI&rdquo; card below for direct access to the
         upstream admin.
       </p>
+
+      {/* R4 PR 4 — Sending Protection: the auto-enforcement control
+          surface. Thresholds: tenant quota warnings at 80%/100% of the
+          hourly/daily send limits; FBL complaint alerts at >0.1%
+          (warning) and >0.3% (critical) 7-day rates. */}
+      <fieldset className="rounded-lg border border-gray-200 dark:border-gray-700 p-4 space-y-3" data-testid="sending-protection-section">
+        <legend className="px-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Sending Protection</legend>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Governs the outbound-mail threshold evaluator: tenant quota warnings
+          (80% / 100% of send limits) and FBL spam-complaint alerts
+          (&gt;0.1% warning, &gt;0.3% critical 7-day rate). Complaint data
+          appears under Monitoring → Mail.
+        </p>
+        <div className="space-y-2">
+          {([
+            ['notify', 'Notify only (recommended)', 'Send notifications on threshold crossings; admins act manually via the tenant levers.'],
+            ['auto', 'Automatic enforcement', 'Notifications plus automatic action on complaint thresholds: warning halves the tenant\u2019s hourly limit, critical suspends outbound mail. Every action is audited and reversible.'],
+            ['off', 'Off', 'No threshold evaluation at all. Stalwart still enforces the configured send limits.'],
+          ] as const).map(([value, label, help]) => (
+            <label key={value} className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="mail-enforcement-mode"
+                value={value}
+                checked={enforcementMode === value}
+                onChange={() => setEnforcementMode(value)}
+                className="mt-1 accent-brand-500"
+                data-testid={`enforcement-${value}`}
+              />
+              <span>
+                <span className="block text-sm font-medium text-gray-900 dark:text-gray-100">{label}</span>
+                <span className="block text-xs text-gray-500 dark:text-gray-400">{help}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </fieldset>
 
       <div>
         <label
