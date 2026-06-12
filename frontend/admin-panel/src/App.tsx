@@ -47,6 +47,7 @@ import LimitsPage from '@/pages/platform/LimitsPage';
 import IntegrationsPage from '@/pages/platform/IntegrationsPage';
 import DnsProvidersPage from '@/pages/platform/DnsProvidersPage';
 import PlansPage from '@/pages/platform/PlansPage';
+import PleskMigrationPage from '@/pages/platform/PleskMigrationPage';
 import AiPage from '@/pages/platform/AiPage';
 import LifecycleHooksPage from '@/pages/platform/LifecycleHooksPage';
 import NotificationsPage from '@/pages/platform/NotificationsPage';
@@ -163,6 +164,7 @@ export default function App() {
             <Route path="platform/upgrades" element={<ProtectedRoute allowedRoles={['super_admin']}><UpgradesPage /></ProtectedRoute>} />
             <Route path="platform/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityPage /></ProtectedRoute>} />
             <Route path="platform/plans" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PlansPage /></ProtectedRoute>} />
+            <Route path="platform/plesk-migration" element={<ProtectedRoute allowedRoles={['super_admin']}><PleskMigrationPage /></ProtectedRoute>} />
             <Route path="platform/limits" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><LimitsPage /></ProtectedRoute>} />
             <Route path="platform/dns" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><DnsProvidersPage /></ProtectedRoute>} />
             <Route path="platform/integrations" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IntegrationsPage /></ProtectedRoute>} />

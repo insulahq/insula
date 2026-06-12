@@ -1,0 +1,11 @@
+# R1 PR 1: namespace for Plesk migration discovery/sync Jobs.
+# Restricted PSS — the Jobs run non-root, drop ALL caps, readOnlyRootFS,
+# RuntimeDefault seccomp (see backend plesk-migration/discovery.ts).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plesk-migration
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

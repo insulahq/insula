@@ -2485,3 +2485,40 @@ exception, ADR-050 cadence). The legacy `--with-monitoring`
 kube-prometheus-stack+Loki helm path is removed; logs (Loki/VictoriaLogs)
 explicitly deferred; Grafana/KSM/node-exporter are a documented opt-in
 recipe, not deployed.
+
+## ADR-052: Plesk migration — agentless, maildir-reuse, operator-driven
+
+Summary (2026-06-12): Resolves R1 (the original mission gate). Migrate
+a Plesk subscription — domains, sites, databases, mailboxes, cron, DNS —
+onto the platform as a tenant.
+
+Decisions:
+- **Operator-driven, `super_admin`-gated** for credential/cutover steps
+  (read-only discovery may be `admin`). Per-subscription granularity
+  (migrate → watch → next). It is NOT tenant-driven: the target tenant
+  doesn't exist until the migration creates it; the source credentials
+  are the operator's; source enumeration is inherently cross-customer.
+- **Agentless** — SSH/rsync/mysqldump only, nothing installed on the
+  Plesk box, no Plesk config touched. The source SSH key is encrypted at
+  rest (AES-256-GCM, `oidc/crypto.ts`) and delivered to Jobs via a
+  per-job Secret; never returned to clients.
+- **Mail = maildir-reuse** (spike-proven 2026-06-12,
+  [[project-plesk-migration-spike-2026-06-12]]): rsync the Plesk maildir
+  → reshape Maildir++ → the existing `jmap-restore.py` importer. No
+  imapsync, no source IMAP auth, no dependency on the source password
+  storage mode. imapsync remains a fallback for no-filesystem sources.
+- **Deltas are rsync-incremental, not whole-tree re-import** — the
+  importer's Message-ID dedup is best-effort (fails on no-Message-ID
+  mail + index lag); rsync-incremental imports only newly-arrived files.
+- **Preview before cutover** via the CNAME chain; rollback = don't
+  repoint DNS.
+
+PR sequence: PR 1 source registry + agentless discovery (this ADR; jobs
+run on the existing mail-backup-tools image, scripts via per-job
+ConfigMap, in a dedicated `plesk-migration` namespace with
+public-internet-only egress). PR 2 provision + content/DB sync. PR 3
+mail leg + verification report. PR 4 cutover + runbook.
+
+v1 scope: WordPress/plain-PHP web, MariaDB target, password continuity
+opt-in where the source stores reversibly (`accounts.type=sym`). Runbook
+(later PR): `docs/operations/PLESK_MIGRATION.md`.
