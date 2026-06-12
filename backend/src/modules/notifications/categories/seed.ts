@@ -224,6 +224,38 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'legitimate_interest',
   },
   {
+    id: 'admin.slo_alert_critical',
+    displayName: 'SLO alert firing (critical)',
+    description: 'A critical SLO monitoring rule is firing (ADR-051 evaluator). Immediate operator '
+      + 'attention required — see Monitoring → SLOs.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.slo_alert_resolved',
+    displayName: 'SLO alert resolved',
+    description: 'A previously-firing SLO monitoring rule has recovered.',
+    audience: 'admin',
+    defaultSeverity: 'info',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.slo_alert_warning',
+    displayName: 'SLO alert firing (warning)',
+    description: 'A warning-level SLO monitoring rule is firing (ADR-051 evaluator). '
+      + 'See Monitoring → SLOs.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
     id: 'admin.wal_archive_failing',
     displayName: 'Database WAL archiving failing',
     description: 'PostgreSQL continuous WAL archiving to the configured backup target is failing. '
