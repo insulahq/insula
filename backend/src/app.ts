@@ -436,6 +436,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     };
   });
 
+  // Prometheus HTTP-histogram hook (ADR-051 phase 2) — MUST register
+  // before the app boots: Fastify rejects request-lifecycle hooks once
+  // the root plugin is loaded (AVV_ERR_ROOT_PLG_BOOTED — caught live on
+  // the first #52 rollout when this sat in the post-boot scheduler
+  // block). The exposition SERVER starts later with the schedulers.
+  {
+    const { registerHttpMetricsHook } = await import('./plugins/metrics-server.js');
+    registerHttpMetricsHook(app);
+  }
+
   // Routes
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(passkeyRoutes, { prefix: '/api/v1' });
@@ -697,8 +707,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // allow-monitoring-to-platform-api-metrics scopes :9090 to the
       // monitoring namespace.
       {
-        const { registerHttpMetricsHook, startMetricsServer } = await import('./plugins/metrics-server.js');
-        registerHttpMetricsHook(app);
+        const { startMetricsServer } = await import('./plugins/metrics-server.js');
         const stopMetricsServer = startMetricsServer(app.log);
         app.addHook('onClose', async () => { await stopMetricsServer(); });
       }
