@@ -46,9 +46,10 @@ vi.mock('../../db/schema.js', () => ({
 const { getPlatformUrls, updatePlatformUrls, computeDefaults } = await import('./service.js');
 
 describe('computeDefaults', () => {
-  it('derives standard subdomains from an apex', () => {
+  it('derives standard defaults from an apex (longhorn = admin-host path)', () => {
     expect(computeDefaults('staging.example.test')).toEqual({
-      longhornUrl: 'https://longhorn.staging.example.test/',
+      // 2026-06-12: path route on the admin host — no longhorn subdomain.
+      longhornUrl: '/longhorn/',
       // Stalwart 0.16's web UI lives at /admin/, not at root — root 404s.
       stalwartAdminUrl: 'https://stalwart.staging.example.test/admin/',
       webmailUrl: 'https://webmail.staging.example.test/',
@@ -56,9 +57,9 @@ describe('computeDefaults', () => {
     });
   });
 
-  it('returns empty-string defaults when apex is empty', () => {
+  it('returns empty-string defaults when apex is empty (longhorn path survives)', () => {
     expect(computeDefaults('')).toEqual({
-      longhornUrl: '',
+      longhornUrl: '/longhorn/',
       stalwartAdminUrl: '',
       webmailUrl: '',
       mailServerHostname: '',
@@ -69,7 +70,7 @@ describe('computeDefaults', () => {
     // ingressBaseDomain.Seed.ts sometimes produces a trailing dot depending
     // on the source — normalise here so consumers don't see a double-dot.
     expect(computeDefaults('example.com.')).toEqual({
-      longhornUrl: 'https://longhorn.example.com/',
+      longhornUrl: '/longhorn/',
       stalwartAdminUrl: 'https://stalwart.example.com/admin/',
       webmailUrl: 'https://webmail.example.com/',
       mailServerHostname: 'mail.example.com',
@@ -97,7 +98,7 @@ describe('getPlatformUrls', () => {
   it('falls back to apex-derived defaults when DB rows are missing', async () => {
     const { db } = createMockDb({ ingress_base_domain: 'staging.example.test' });
     const result = await getPlatformUrls(db);
-    expect(result.longhornUrl.value).toBe('https://longhorn.staging.example.test/');
+    expect(result.longhornUrl.value).toBe('/longhorn/');
     expect(result.longhornUrl.source).toBe('default');
     expect(result.stalwartAdminUrl.value).toBe('https://stalwart.staging.example.test/admin/');
     expect(result.webmailUrl.value).toBe('https://webmail.staging.example.test/');
@@ -114,15 +115,15 @@ describe('getPlatformUrls', () => {
     });
     const result = await getPlatformUrls(db);
     expect(result.longhornUrl.value).toBe('https://longhorn.custom/');
-    expect(result.longhornUrl.default).toBe('https://longhorn.staging.example.test/');
+    expect(result.longhornUrl.default).toBe('/longhorn/');
   });
 
-  it('returns empty defaults when apex is missing', async () => {
+  it('returns empty defaults when apex is missing (longhorn path survives)', async () => {
     const { db } = createMockDb({});
     const result = await getPlatformUrls(db);
-    expect(result.longhornUrl.value).toBe('');
+    expect(result.longhornUrl.value).toBe('/longhorn/');
     expect(result.longhornUrl.source).toBe('default');
-    expect(result.longhornUrl.default).toBe('');
+    expect(result.longhornUrl.default).toBe('/longhorn/');
   });
 });
 

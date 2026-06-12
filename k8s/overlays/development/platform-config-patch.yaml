@@ -25,7 +25,9 @@ data:
   private-worker-frps-image: "fatedier/frps:v0.62.1"
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
   # Longhorn dashboard URL for the Storage Configuration iframe.
-  longhorn-url: "https://longhorn.${DOMAIN}/"
+  # 2026-06-12: path route on the admin host (same-origin) — the
+  # longhorn.<apex> subdomain was removed.
+  longhorn-url: "/longhorn/"
   # platform_session cookie Domain attribute. Shares the cookie across
   # all admin-only subdomains (longhorn, stalwart, future ones) so
   # admin-panel iframes carry the auth automatically. Without this the
