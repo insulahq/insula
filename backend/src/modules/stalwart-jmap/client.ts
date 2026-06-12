@@ -717,6 +717,44 @@ export async function reportSettingsUpdate(params: {
   );
 }
 
+// ── Outbound queue inspection (PR 5 Monitoring Mail tab) ──────────────────
+
+export interface StalwartQueuedMessage {
+  readonly id: string;
+  readonly createdAt?: string;
+  readonly nextRetry?: string | null;
+  readonly returnPath?: string;
+  /** Integer-keyed map (registry VecMap) of recipients. */
+  readonly recipients?: Record<string, { address?: string; status?: unknown }>;
+  readonly size?: number;
+}
+
+interface XQueuedGetResponse {
+  readonly list?: readonly StalwartQueuedMessage[];
+}
+
+/** List up to `limit` queued messages (query+get back-reference). */
+export async function queuedMessageList(params: {
+  limit?: number;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartQueuedMessage[]> {
+  const { limit = 50, baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:QueuedMessage/query', { limit }, 'q'],
+      ['x:QueuedMessage/get', {
+        '#ids': { resultOf: 'q', name: 'x:QueuedMessage/query', path: '/ids' },
+      }, 'g'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const get = extractResponse<XQueuedGetResponse>(res, 'x:QueuedMessage/get', 'g');
+  return get.list ?? [];
+}
+
 // ── Actions (R6 PR 2) ──────────────────────────────────────────────────────
 //
 // Stalwart loads most registry config (MTA throttles/quotas, report

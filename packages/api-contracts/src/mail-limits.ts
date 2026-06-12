@@ -102,3 +102,40 @@ export const complaintSummaryEntrySchema = z.object({
 
 export type FblComplaint = z.infer<typeof fblComplaintSchema>;
 export type ComplaintSummaryEntry = z.infer<typeof complaintSummaryEntrySchema>;
+
+// PR 5 — Monitoring -> Mail tab aggregate.
+export const mailOverviewResponseSchema = z.object({
+  totals: z.object({
+    sentToday: z.number().int().min(0),
+    sent7d: z.number().int().min(0),
+    recipients7d: z.number().int().min(0),
+    rateLimited7d: z.number().int().min(0),
+    quotaRejected7d: z.number().int().min(0),
+  }),
+  topSenders: z.array(z.object({
+    tenantId: z.string(),
+    tenantName: z.string().nullable(),
+    domain: z.string(),
+    sent24h: z.number().int().min(0),
+    sent7d: z.number().int().min(0),
+    rateLimited7d: z.number().int().min(0),
+    quotaRejected7d: z.number().int().min(0),
+  })),
+  queue: z.object({
+    reachable: z.boolean(),
+    depth: z.number().int().min(0),
+    entries: z.array(z.object({
+      id: z.string(),
+      from: z.string(),
+      recipients: z.array(z.string()),
+      createdAt: z.string().nullable(),
+      nextRetry: z.string().nullable(),
+      size: z.number().nullable(),
+    })),
+  }),
+  protection: z.object({
+    mode: z.enum(['off', 'notify', 'auto']),
+  }),
+});
+
+export type MailOverviewResponse = z.infer<typeof mailOverviewResponseSchema>;
