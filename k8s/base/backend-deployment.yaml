@@ -37,6 +37,13 @@ spec:
           ports:
             - containerPort: 3000
               protocol: TCP
+            # Prometheus exposition (ADR-051 phase 2) — bare node:http
+            # server, GET /metrics only; scoped by NetworkPolicy to the
+            # monitoring namespace. Deliberately NOT :3000 so the F4
+            # traefik-ns-only invariant on the API port is untouched.
+            - containerPort: 9090
+              name: metrics
+              protocol: TCP
           env:
             - name: NODE_ENV
               value: production

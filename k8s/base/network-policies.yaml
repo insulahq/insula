@@ -347,3 +347,31 @@ spec:
       ports:
         - protocol: TCP
           port: 3000
+
+# vmsingle (monitoring ns) scrapes platform-api's Prometheus
+# exposition on :9090 (ADR-051 phase 2). A dedicated policy + port so
+# the F4 hardening on :3000 (traefik-ns only) is never widened — the
+# metrics listener is a separate in-process http server with no auth
+# stack and MUST stay unreachable from tenant pods.
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-monitoring-to-platform-api-metrics
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: platform-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
