@@ -9,10 +9,12 @@
 # disk fills (queries keep working, scrape-target alerts surface it)
 # instead of crash-looping.
 #
-# Version pin: v1.136.x is the LTS line (≥12 months of fixes) — chosen
-# over the latest fast-moving release line ON PURPOSE so version bumps
-# flow through the ADR-050 component-watch cadence instead of monthly
-# churn. Registry entry: security/components.yaml `victoria-metrics`
+# Version pin: latest stable OSS release (golden rule). The original
+# ADR-051 intent was the v1.136.x LTS line, but VictoriaMetrics ships
+# LTS images for ENTERPRISE only — the OSS image has just the rolling
+# line (discovered live 2026-06-12: v1.136.11 = ImagePullBackOff, only
+# -enterprise tags exist). Bumps flow through the ADR-050 component
+# watch. Registry entry: security/components.yaml `victoria-metrics`
 # (pin_check enforces this file matches).
 apiVersion: apps/v1
 kind: Deployment
@@ -57,7 +59,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: vmsingle
-          image: victoriametrics/victoria-metrics:v1.136.11
+          image: victoriametrics/victoria-metrics:v1.145.0
           args:
             - -promscrape.config=/config/prometheus.yml
             - -storageDataPath=/storage

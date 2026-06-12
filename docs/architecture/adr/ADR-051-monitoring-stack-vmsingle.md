@@ -62,10 +62,14 @@ platform-api:
    enforced). The admin panel gets an SLO tab fed by a panel-ID-keyed
    query proxy (no arbitrary PromQL from the browser; VMUI is the ad-hoc
    surface).
-5. **Version pin: the VictoriaMetrics LTS line (v1.136.x).** This is a
-   deliberate exception to the "latest stable upstream" rule: LTS lines
-   get ≥12 months of fixes, which matches the ADR-050 component-watch
-   cadence instead of monthly fast-line churn. Tracked in
+5. **Version pin: latest stable OSS release.** The original intent was
+   the v1.136.x LTS line (≥12 months of fixes, matching the ADR-050
+   watch cadence) — but VictoriaMetrics ships LTS **container images
+   for Enterprise only**; the OSS image has just the rolling release
+   line (verified live 2026-06-12: `v1.136.11` exists solely as
+   `-enterprise` tags → ImagePullBackOff). So the pin follows the
+   golden rule after all (latest stable OSS, `v1.145.0` at adoption),
+   with bumps flowing through the ADR-050 component watch. Tracked in
    `security/components.yaml` with `pin_check: true`.
 6. **The legacy `--with-monitoring` helm path is removed** from
    bootstrap.sh (flags remain as deprecation no-ops). Clusters that ever
