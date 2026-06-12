@@ -22,8 +22,7 @@
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { alertState, monitoringRuleOverrides } from '../../db/schema.js';
-import { notifyUsers } from '../notifications/service.js';
-import { resolveRecipients } from '../notifications/recipients.js';
+import { notifyAdminSloAlertFiring, notifyAdminSloAlertResolved } from '../notifications/events.js';
 import { queryInstant, type VmClientOptions } from './vm-client.js';
 import { SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, type SloRule } from './rules.js';
 
@@ -115,16 +114,16 @@ async function applyRuleState(
     }
 
     if (shouldNotify) {
-      const recipients = await resolveRecipients(db, { kind: 'admin' });
-      if (recipients.length > 0) {
-        await notifyUsers(db, [...recipients], {
-          type: rule.severity === 'critical' ? 'error' : 'warning',
-          title: `[SLO ${rule.severity.toUpperCase()}] ${rule.name}`,
-          message: `${rule.description}${value != null ? ` Current value: ${value}.` : ''} See Monitoring → SLOs.`,
-          resourceType: 'monitoring-rule',
-          resourceId: rule.id,
-        });
-      }
+      // Categorised dispatch (admin.slo_alert_<severity>) — recipient
+      // resolution, channel prefs, quiet hours, and templates are the
+      // dispatcher's job; it never throws (fire-and-forget contract).
+      await notifyAdminSloAlertFiring(db, {
+        ruleId: rule.id,
+        ruleName: rule.name,
+        severity: rule.severity,
+        description: rule.description,
+        value: value != null ? String(value) : undefined,
+      });
       log.warn(`monitoring: alert FIRING — ${rule.id} (value=${value ?? 'n/a'})`);
     }
     return;
@@ -136,16 +135,11 @@ async function applyRuleState(
     await db.update(alertState)
       .set({ state: 'resolved', since: now, lastValue: value, lastEvaluatedAt: now })
       .where(eq(alertState.ruleId, rule.id));
-    const recipients = await resolveRecipients(db, { kind: 'admin' });
-    if (recipients.length > 0) {
-      await notifyUsers(db, [...recipients], {
-        type: 'success',
-        title: `[SLO RESOLVED] ${rule.name}`,
-        message: `${rule.name} recovered.`,
-        resourceType: 'monitoring-rule',
-        resourceId: rule.id,
-      });
-    }
+    await notifyAdminSloAlertResolved(db, {
+      ruleId: rule.id,
+      ruleName: rule.name,
+      severity: rule.severity,
+    });
     log.info(`monitoring: alert RESOLVED — ${rule.id}`);
   } else if (existing) {
     await db.update(alertState)

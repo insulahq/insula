@@ -448,3 +448,36 @@ export async function notifyAdminSecurityHardeningDrift(
 ): Promise<void> {
   await dispatchSafe(db, 'admin.security_hardening_drift', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
+
+export interface AdminSloAlertPayload {
+  readonly ruleId: string;
+  readonly ruleName: string;
+  /** Maps to the admin.slo_alert_<severity> category on firing. */
+  readonly severity: 'critical' | 'warning';
+  readonly description?: string;
+  readonly value?: string;
+}
+/**
+ * Fire when an SLO monitoring rule (ADR-051 evaluator) transitions to
+ * firing. The evaluator owns the 24h re-notify throttle via
+ * alert_state.lastNotifiedAt, so callers normally omit dedupeKey.
+ */
+export async function notifyAdminSloAlertFiring(
+  db: Database,
+  payload: AdminSloAlertPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = payload.severity === 'critical'
+    ? 'admin.slo_alert_critical'
+    : 'admin.slo_alert_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+/** Fire when a previously-firing SLO monitoring rule recovers. */
+export async function notifyAdminSloAlertResolved(
+  db: Database,
+  payload: AdminSloAlertPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.slo_alert_resolved', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
