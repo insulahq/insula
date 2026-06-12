@@ -50,3 +50,36 @@ spec:
       ports:
         - protocol: TCP
           port: 8428
+---
+# Allow Traefik → cm-acme-http-solver pods on :8089 — the same rule the
+# platform namespace carries. Without it, the monitoring default-deny
+# sinks LE's HTTP-01 validation for metrics.${DOMAIN} and the
+# vmsingle-ui certificate never issues.
+#
+# Found BY the monitoring stack itself on its first day: the
+# `cert-not-ready` SLO alert fired over exactly this gap (the
+# vmsingle-ui Certificate sat DoesNotExist for 100+ min) — the alert's
+# first real catch was a bug in its own namespace's netpol.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-acme-solver
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: 10.42.0.0/16
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - protocol: TCP
+          port: 8089
