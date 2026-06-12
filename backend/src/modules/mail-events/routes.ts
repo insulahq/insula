@@ -28,6 +28,7 @@ import { ingestMailEvents, type StalwartWebhookEvent } from './ingest.js';
 import { getTenantMailUsage } from './usage.js';
 import { schedulePollSoon } from './fbl.js';
 import { listComplaints, complaintSummary } from './complaints.js';
+import { getMailOverview } from './overview.js';
 
 export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<void> {
   // Encapsulated: raw-buffer JSON so the HMAC covers exactly the bytes
@@ -105,6 +106,12 @@ export async function mailComplaintRoutes(app: FastifyInstance): Promise<void> {
   // complaint counts + send denominators + rates.
   app.get('/admin/mail/complaints/summary', async () => {
     return success(await complaintSummary(app.db));
+  });
+
+  // GET /api/v1/admin/mail/overview — Monitoring -> Mail tab aggregate
+  // (send totals, top senders, live queue, protection mode).
+  app.get('/admin/mail/overview', async () => {
+    return success(await getMailOverview(app.db));
   });
 }
 

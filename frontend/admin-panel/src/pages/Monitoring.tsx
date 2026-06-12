@@ -15,11 +15,12 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import StorageUsageTab from '@/components/StorageUsageTab';
 import NodeHealthPanel from '@/components/NodeHealthPanel';
 import SloTab from '@/components/SloTab';
+import MailTab from '@/components/monitoring/MailTab';
 
-type Tab = 'active-alerts' | 'alert-history' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos';
+type Tab = 'active-alerts' | 'alert-history' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos' | 'mail';
 
 const VALID_TABS: ReadonlySet<Tab> = new Set([
-  'active-alerts', 'alert-history', 'health', 'storage', 'pods', 'node-health', 'slos',
+  'active-alerts', 'alert-history', 'health', 'storage', 'pods', 'node-health', 'slos', 'mail',
 ]);
 
 interface Alert {
@@ -87,6 +88,7 @@ function splitAlerts(entries: readonly AuditLogEntry[]): {
 
 const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
   { key: 'slos', label: 'SLOs' },
+  { key: 'mail', label: 'Mail' },
   { key: 'active-alerts', label: 'Active Alerts' },
   { key: 'alert-history', label: 'Alert History' },
   { key: 'health', label: 'Health' },
@@ -363,6 +365,7 @@ export default function Monitoring() {
         )}
         {activeTab === 'health' && <HealthTab />}
         {activeTab === 'slos' && <SloTab />}
+        {activeTab === 'mail' && <MailTab />}
         {activeTab === 'storage' && <StorageUsageTab />}
         {activeTab === 'node-health' && <NodeHealthPanel />}
         {activeTab === 'pods' && (
