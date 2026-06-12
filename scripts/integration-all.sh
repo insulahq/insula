@@ -556,7 +556,7 @@ yes y | ADMIN_PASSWORD="$ADMIN_PASSWORD" "$SCRIPT_DIR/integration-cleanup.sh" 2>
 # system-db is down (the chicken-and-egg scenario observed on
 # testing.example.test 2026-05-17). This guard talks directly to
 # the apiserver so it catches that case. CI_LEAK_GUARD=0 disables.
-log "Leak guard (assert no test-tenant namespaces or Released test-PVs survived)"
+log "Leak guard (assert no test-tenant namespaces, Released test-PVs, or orphaned Longhorn volume CRs survived)"
 leak_rc=0
 "$SCRIPT_DIR/ci-no-leaked-test-tenants.sh" || leak_rc=$?
 if [[ $leak_rc -eq 1 ]]; then
