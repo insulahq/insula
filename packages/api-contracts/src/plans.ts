@@ -10,6 +10,11 @@ export const createPlanSchema = z.object({
   monthly_price_usd: z.string().min(1).max(20),
   max_sub_users: z.number().int().min(0).max(100).optional(),
   max_mailboxes: z.number().int().min(0).max(10000).optional(),
+  // R6 PR 1: plan-level outbound send limits (messages/hour and
+  // messages/day). Omitted on create -> DB defaults 50/h + 100/d.
+  // Per-tenant overrides: tenants.email_send_rate_limit(_daily).
+  email_hourly_send_limit: z.number().int().min(0).max(1000000).optional(),
+  email_daily_send_limit: z.number().int().min(0).max(10000000).optional(),
   weekly_ai_budget_cents: z.number().int().min(0).max(100000).optional(),
   features: z.record(z.string(), z.unknown()).optional().default({}),
 });

@@ -609,10 +609,16 @@ export function useUpdateImapSyncJob(tenantId: string) {
 
 // ─── Rate limit inspection (Round B) ─────────────────────────────
 
+// R6 PR 1: superset response — hourly/daily windows resolve through
+// the hosting plan; legacy limitPerHour/source keys are kept by the API.
 export interface RateLimitInfo {
   readonly limitPerHour: number;
   readonly source: 'tenant_override' | 'platform_default' | 'hardcoded_default' | 'suspended';
   readonly suspended: boolean;
+  readonly hourly?: { readonly limit: number; readonly source: string };
+  readonly daily?: { readonly limit: number; readonly source: string };
+  readonly outboundSuspended?: boolean;
+  readonly planCode?: string | null;
 }
 
 export function useMailRateLimit(tenantId?: string) {

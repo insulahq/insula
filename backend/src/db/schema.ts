@@ -286,6 +286,11 @@ export const hostingPlans = pgTable('hosting_plans', {
   // email domains. Can be overridden per-tenant via
   // tenants.max_mailboxes_override.
   maxMailboxes: integer('max_mailboxes').notNull().default(50),
+  // R6 PR 1 (mig 0057): plan-level outbound send limits. NOT NULL so
+  // every tenant resolves a limit through its plan; per-tenant
+  // overrides live on tenants.email_send_rate_limit(_daily).
+  emailHourlySendLimit: integer('email_hourly_send_limit').notNull().default(50),
+  emailDailySendLimit: integer('email_daily_send_limit').notNull().default(100),
   weeklyAiBudgetCents: integer('weekly_ai_budget_cents').notNull().default(100),
   // Backup quota — see migration 0066 / ADR-032.
   defaultBackupRetentionDays: integer('default_backup_retention_days').notNull().default(30),
@@ -353,11 +358,19 @@ export const tenants = pgTable('tenants', {
   // mailbox count override. null = inherit from the plan's
   // max_mailboxes. Used by the limit check in mailboxes/service.ts.
   maxMailboxesOverride: integer('max_mailboxes_override'),
-  // Phase 3.B.3: per-customer email send rate limit (messages/hour).
-  // null = inherit the global default from platform_settings key
-  // `email_send_rate_limit_default`. Suspended tenant are forced to
-  // rate=0 at the Stalwart level regardless of this value.
+  // Per-customer email send rate limit override (messages/hour).
+  // null = inherit from the plan's email_hourly_send_limit (R6 PR 1;
+  // the old platform_settings global default is retired). Suspended
+  // tenants are forced to rate=0 at the Stalwart level regardless.
   emailSendRateLimit: integer('email_send_rate_limit'),
+  // R6 PR 1 (mig 0057): daily override. null = inherit from the
+  // plan's email_daily_send_limit.
+  emailSendRateLimitDaily: integer('email_send_rate_limit_daily'),
+  // R6 PR 1 (mig 0057): outbound-mail suspension — narrower than
+  // tenant suspension (receiving/webmail keep working). The manual
+  // admin lever behind complaint alerts; enforced as a Stalwart
+  // queue quota of 0 messages for the tenant's sender domains.
+  emailOutboundSuspended: boolean('email_outbound_suspended').notNull().default(false),
   timezone: varchar('timezone', { length: 50 }),
   // M5: per-tenant worker pinning. NULL = default scheduler picks a
   // node that matches the (implicit) worker constraints (anti-affinity

@@ -1646,6 +1646,11 @@ function ResourceLimitsCard({
   const [subUsersCustom, setSubUsersCustom] = useState(false);
   const [mailboxesCustom, setMailboxesCustom] = useState(false);
   const [priceCustom, setPriceCustom] = useState(false);
+  const [mailHourlyOverride, setMailHourlyOverride] = useState<string>('');
+  const [mailDailyOverride, setMailDailyOverride] = useState<string>('');
+  const [mailHourlyCustom, setMailHourlyCustom] = useState(false);
+  const [mailDailyCustom, setMailDailyCustom] = useState(false);
+  const [confirmOutbound, setConfirmOutbound] = useState(false);
   // When PATCH /tenants/:id auto-triggers an online-grow, the response
   // includes storageGrowOperationId. Open the shared progress modal so
   // the operator can watch growing_pvc → growing_filesystem → idle live.
@@ -1668,6 +1673,8 @@ function ResourceLimitsCard({
   const effectiveSubUsers = tenant.maxSubUsersOverride ?? plan?.maxSubUsers ?? '—';
   const effectiveMailboxes = tenant.maxMailboxesOverride ?? plan?.maxMailboxes ?? '—';
   const effectivePrice = tenant.monthlyPriceOverride ?? plan?.monthlyPriceUsd ?? '—';
+  const effectiveMailHourly = tenant.emailSendRateLimit ?? plan?.emailHourlySendLimit ?? '—';
+  const effectiveMailDaily = tenant.emailSendRateLimitDaily ?? plan?.emailDailySendLimit ?? '—';
 
   const startEditing = () => {
     const hasCpu = tenant.cpuLimitOverride != null;
@@ -1688,6 +1695,12 @@ function ResourceLimitsCard({
     setSubUsersOverride(hasSubUsers ? String(tenant.maxSubUsersOverride) : String(plan?.maxSubUsers ?? ''));
     setMailboxesOverride(hasMailboxes ? String(tenant.maxMailboxesOverride) : String(plan?.maxMailboxes ?? ''));
     setPriceOverride(hasPrice ? String(tenant.monthlyPriceOverride) : (plan?.monthlyPriceUsd ?? ''));
+    const hasMailHourly = tenant.emailSendRateLimit != null;
+    const hasMailDaily = tenant.emailSendRateLimitDaily != null;
+    setMailHourlyCustom(hasMailHourly);
+    setMailDailyCustom(hasMailDaily);
+    setMailHourlyOverride(hasMailHourly ? String(tenant.emailSendRateLimit) : String(plan?.emailHourlySendLimit ?? ''));
+    setMailDailyOverride(hasMailDaily ? String(tenant.emailSendRateLimitDaily) : String(plan?.emailDailySendLimit ?? ''));
     setEditing(true);
   };
 
@@ -1701,6 +1714,8 @@ function ResourceLimitsCard({
         max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
+        email_send_rate_limit: mailHourlyCustom ? Number(mailHourlyOverride) : null,
+        email_send_rate_limit_daily: mailDailyCustom ? Number(mailDailyOverride) : null,
       });
       // If the PATCH grew storage online, the backend kicked off a
       // storage-lifecycle op and surfaces its id here.
@@ -1837,6 +1852,8 @@ function ResourceLimitsCard({
           {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, 'number', '1')}
           {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, 'number', '1')}
           {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, 'number', '0.01')}
+          {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, 'number', '1')}
+          {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, 'number', '1')}
         </div>
 
         {updateTenant.error && editing && (
@@ -1866,6 +1883,65 @@ function ResourceLimitsCard({
           </div>
         )}
       </form>
+
+      {/* R6 PR 1: outbound-mail suspension — narrower than tenant
+          suspension (receiving + webmail keep working). Immediate
+          PATCH with confirm; enforced as a Stalwart queue quota of 0. */}
+      <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4 flex items-center justify-between" data-testid="outbound-mail-section">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">Outbound Mail</h3>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+            {tenant.emailOutboundSuspended
+              ? 'Suspended — all outbound submissions are rejected. Receiving and webmail keep working.'
+              : 'Active — sending is limited by the rates above.'}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {tenant.emailOutboundSuspended && (
+            <span className="inline-flex rounded-full bg-red-50 dark:bg-red-900/20 px-2 py-0.5 text-xs text-red-600 dark:text-red-400">suspended</span>
+          )}
+          {confirmOutbound ? (
+            <>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await updateTenant.mutateAsync({ email_outbound_suspended: !tenant.emailOutboundSuspended });
+                  } finally {
+                    setConfirmOutbound(false);
+                  }
+                }}
+                disabled={updateTenant.isPending}
+                className={tenant.emailOutboundSuspended
+                  ? 'inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50'
+                  : 'inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50'}
+                data-testid="confirm-outbound-toggle"
+              >
+                {updateTenant.isPending && <Loader2 size={12} className="animate-spin" />}
+                {tenant.emailOutboundSuspended ? 'Confirm resume' : 'Confirm suspend'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmOutbound(false)}
+                className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmOutbound(true)}
+              className={tenant.emailOutboundSuspended
+                ? 'rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50'
+                : 'rounded-lg border border-red-200 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20'}
+              data-testid="toggle-outbound-suspend"
+            >
+              {tenant.emailOutboundSuspended ? 'Resume sending' : 'Suspend sending'}
+            </button>
+          )}
+        </div>
+      </div>
 
       {/* Current Metrics */}
       <div className="mt-5 border-t border-gray-200 dark:border-gray-700 pt-4" data-testid="current-metrics-section">

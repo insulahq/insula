@@ -495,6 +495,119 @@ export async function dkimSignatureSet(params: {
   );
 }
 
+// ── MTA outbound throttles + queue quotas (R6 PR 1) ───────────────────────
+//
+// Stalwart 0.16 models queue rate limiting as registry objects, NOT the
+// legacy [queue.throttle] TOML (which v0.16 no longer reads — the old
+// stalwart-outbound-config ConfigMap was dead config). The platform's
+// send-limit reconciler (email-outbound/stalwart-throttles.ts) manages:
+//   - x:MtaOutboundThrottle  — paces delivery (rate = count/period)
+//   - x:MtaQueueQuota        — caps queued backlog; messages=0 rejects
+//                              every submission (the suspension lever)
+// Registry objects are account-agnostic: no accountId argument needed
+// (verified live on v0.16.5, 2026-06-12 spike).
+
+/** Boolean match expression: `{match: [], else: "<condition>"}`. */
+export interface StalwartExpression {
+  readonly match: readonly { if: string; then: string }[];
+  readonly else: string;
+}
+
+export interface StalwartMtaThrottleRow {
+  readonly id: string;
+  readonly enable: boolean;
+  readonly description: string;
+  /** Bucket key map, e.g. `{senderDomain: true}`. */
+  readonly key: Record<string, boolean>;
+  readonly match: StalwartExpression;
+  /** `period` is milliseconds. */
+  readonly rate: { count: number; period: number };
+}
+
+export interface StalwartMtaQueueQuotaRow {
+  readonly id: string;
+  readonly enable: boolean;
+  readonly description: string | null;
+  readonly key: Record<string, boolean>;
+  readonly match: StalwartExpression;
+  readonly messages: number | null;
+  readonly size: number | null;
+}
+
+interface XListResponse<T> {
+  readonly list?: readonly T[];
+}
+
+export async function mtaOutboundThrottleGet(params: {
+  ids?: readonly string[] | null;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartMtaThrottleRow[]> {
+  const { ids, baseUrl, env } = params;
+  const res = await _xCall<XListResponse<StalwartMtaThrottleRow>>(
+    JMAP_STALWART,
+    'x:MtaOutboundThrottle/get',
+    { ids: ids ?? null },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+export async function mtaOutboundThrottleSet(params: {
+  create?: Record<string, Record<string, unknown>>;
+  update?: Record<string, Record<string, unknown>>;
+  destroy?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartMtaThrottleRow>> {
+  const { create, update, destroy, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartMtaThrottleRow>>(
+    JMAP_STALWART,
+    'x:MtaOutboundThrottle/set',
+    {
+      ...(create ? { create } : {}),
+      ...(update ? { update } : {}),
+      ...(destroy ? { destroy } : {}),
+    },
+    baseUrl, env,
+  );
+}
+
+export async function mtaQueueQuotaGet(params: {
+  ids?: readonly string[] | null;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartMtaQueueQuotaRow[]> {
+  const { ids, baseUrl, env } = params;
+  const res = await _xCall<XListResponse<StalwartMtaQueueQuotaRow>>(
+    JMAP_STALWART,
+    'x:MtaQueueQuota/get',
+    { ids: ids ?? null },
+    baseUrl, env,
+  );
+  return res.list ?? [];
+}
+
+export async function mtaQueueQuotaSet(params: {
+  create?: Record<string, Record<string, unknown>>;
+  update?: Record<string, Record<string, unknown>>;
+  destroy?: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartMtaQueueQuotaRow>> {
+  const { create, update, destroy, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartMtaQueueQuotaRow>>(
+    JMAP_STALWART,
+    'x:MtaQueueQuota/set',
+    {
+      ...(create ? { create } : {}),
+      ...(update ? { update } : {}),
+      ...(destroy ? { destroy } : {}),
+    },
+    baseUrl, env,
+  );
+}
+
 // ── App passwords (a.k.a. "login passwords") ──────────────────────────────────
 //
 // Stalwart "AppPassword" registry objects are per-account secondary

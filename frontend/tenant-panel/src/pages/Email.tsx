@@ -1764,10 +1764,14 @@ function RateLimitCard({ tenantId }: { readonly tenantId: string }) {
   const info = data?.data;
   const sourceLabels: Record<string, string> = {
     tenant_override: 'Account-specific override',
-    platform_default: 'Platform default',
+    platform_default: 'Plan default',
     hardcoded_default: 'Default',
     suspended: 'Suspended',
+    plan: 'Plan default',
+    outbound_suspended: 'Sending suspended',
+    fallback_default: 'Default',
   };
+  const blocked = Boolean(info?.suspended || info?.outboundSuspended);
 
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3" data-testid="rate-limit-card">
@@ -1783,13 +1787,25 @@ function RateLimitCard({ tenantId }: { readonly tenantId: string }) {
           <span className="text-gray-500 dark:text-gray-400">Messages/hour</span>
           <span className={clsx(
             'font-semibold',
-            info.suspended ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100',
+            blocked ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100',
           )}>
-            {info.limitPerHour}
+            {info.hourly?.limit ?? info.limitPerHour}
             {info.suspended && ' (account suspended)'}
+            {!info.suspended && info.outboundSuspended && ' (sending suspended)'}
           </span>
+          {info.daily && (
+            <>
+              <span className="text-gray-500 dark:text-gray-400">Messages/day</span>
+              <span className={clsx(
+                'font-semibold',
+                blocked ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100',
+              )}>
+                {info.daily.limit}
+              </span>
+            </>
+          )}
           <span className="text-gray-500 dark:text-gray-400">Source</span>
-          <span className="text-gray-700 dark:text-gray-300">{sourceLabels[info.source] ?? info.source}</span>
+          <span className="text-gray-700 dark:text-gray-300">{sourceLabels[(info.hourly?.source ?? info.source)] ?? info.source}</span>
         </div>
       )}
     </div>

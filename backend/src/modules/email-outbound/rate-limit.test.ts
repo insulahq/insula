@@ -1,89 +1,129 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  buildEffectiveSendLimits,
+  getEffectiveSendLimits,
+  FALLBACK_HOURLY_LIMIT,
+  FALLBACK_DAILY_LIMIT,
+  type SendLimitRow,
+} from './rate-limit.js';
 
-let selectResults: unknown[][];
-let selectCallIndex: number;
-
-function createMockDb() {
-  selectCallIndex = 0;
-  const whereFn = vi.fn().mockImplementation(() => {
-    const result = selectResults[selectCallIndex] ?? [];
-    selectCallIndex += 1;
-    return Promise.resolve(result);
-  });
-  const fromFn = vi.fn().mockReturnValue({ where: whereFn });
-  const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+function row(overrides: Partial<SendLimitRow> = {}): SendLimitRow {
   return {
-    select: selectFn,
-  } as unknown as ReturnType<typeof createMockDb>;
+    status: 'active',
+    planId: 'plan-1',
+    emailSendRateLimit: null,
+    emailSendRateLimitDaily: null,
+    emailOutboundSuspended: false,
+    planCode: 'starter',
+    planHourly: 50,
+    planDaily: 100,
+    ...overrides,
+  };
 }
 
-const rl = await import('./rate-limit.js');
+describe('buildEffectiveSendLimits', () => {
+  it('resolves plan values when no overrides exist', () => {
+    const r = buildEffectiveSendLimits(row({ planHourly: 80, planDaily: 400 }));
+    expect(r.hourly).toEqual({ limit: 80, source: 'plan' });
+    expect(r.daily).toEqual({ limit: 400, source: 'plan' });
+    expect(r.suspended).toBe(false);
+    expect(r.outboundSuspended).toBe(false);
+    // legacy keys
+    expect(r.limitPerHour).toBe(80);
+    expect(r.source).toBe('platform_default');
+  });
 
-beforeEach(() => {
-  selectResults = [];
-  selectCallIndex = 0;
+  it('tenant override beats the plan, per window independently', () => {
+    const r = buildEffectiveSendLimits(row({ emailSendRateLimit: 500 }));
+    expect(r.hourly).toEqual({ limit: 500, source: 'tenant_override' });
+    expect(r.daily).toEqual({ limit: 100, source: 'plan' });
+    expect(r.limitPerHour).toBe(500);
+    expect(r.source).toBe('tenant_override');
+  });
+
+  it('daily override works independently of hourly', () => {
+    const r = buildEffectiveSendLimits(row({ emailSendRateLimitDaily: 5000 }));
+    expect(r.hourly).toEqual({ limit: 50, source: 'plan' });
+    expect(r.daily).toEqual({ limit: 5000, source: 'tenant_override' });
+  });
+
+  it('an override of 0 means blocked, not inherit', () => {
+    const r = buildEffectiveSendLimits(row({ emailSendRateLimit: 0 }));
+    expect(r.hourly).toEqual({ limit: 0, source: 'tenant_override' });
+  });
+
+  it('falls back to hardcoded defaults when the plan row is missing', () => {
+    const r = buildEffectiveSendLimits(
+      row({ planId: null, planCode: null, planHourly: null, planDaily: null }),
+    );
+    expect(r.hourly).toEqual({ limit: FALLBACK_HOURLY_LIMIT, source: 'fallback_default' });
+    expect(r.daily).toEqual({ limit: FALLBACK_DAILY_LIMIT, source: 'fallback_default' });
+    expect(r.source).toBe('hardcoded_default');
+  });
+
+  it('lifecycle suspension forces both windows to 0 and beats overrides', () => {
+    const r = buildEffectiveSendLimits(
+      row({ status: 'suspended', emailSendRateLimit: 500, emailSendRateLimitDaily: 5000 }),
+    );
+    expect(r.hourly).toEqual({ limit: 0, source: 'suspended' });
+    expect(r.daily).toEqual({ limit: 0, source: 'suspended' });
+    expect(r.suspended).toBe(true);
+    expect(r.outboundSuspended).toBe(false);
+    expect(r.limitPerHour).toBe(0);
+    expect(r.source).toBe('suspended');
+  });
+
+  it('outbound suspension forces 0 with its own source', () => {
+    const r = buildEffectiveSendLimits(
+      row({ emailOutboundSuspended: true, emailSendRateLimit: 500 }),
+    );
+    expect(r.hourly).toEqual({ limit: 0, source: 'outbound_suspended' });
+    expect(r.daily).toEqual({ limit: 0, source: 'outbound_suspended' });
+    expect(r.outboundSuspended).toBe(true);
+    expect(r.suspended).toBe(false);
+    // legacy consumers see it as suspended
+    expect(r.source).toBe('suspended');
+  });
+
+  it('exposes plan identity for the inspection endpoints', () => {
+    const r = buildEffectiveSendLimits(row({ planId: 'p-9', planCode: 'business' }));
+    expect(r.planId).toBe('p-9');
+    expect(r.planCode).toBe('business');
+  });
 });
 
-describe('getEffectiveRateLimit', () => {
-  it('returns the per-customer override when set', async () => {
-    selectResults = [
-      [{ status: 'active', emailSendRateLimit: 200 }],
-      [{ value: '500' }],
-    ];
-    const db = createMockDb();
+describe('getEffectiveSendLimits (DB path)', () => {
+  function mockDb(rows: unknown[]) {
+    return {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          leftJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      }),
+    } as never;
+  }
 
-    const result = await rl.getEffectiveRateLimit(db as never, 'c1');
-
-    expect(result.limitPerHour).toBe(200);
-    expect(result.source).toBe('tenant_override');
-    expect(result.suspended).toBe(false);
+  it('throws TENANT_NOT_FOUND for an unknown tenant', async () => {
+    await expect(getEffectiveSendLimits(mockDb([]), 'nope')).rejects.toMatchObject({
+      code: 'TENANT_NOT_FOUND',
+      status: 404,
+    });
   });
 
-  it('falls back to the platform default when no override is set', async () => {
-    selectResults = [
-      [{ status: 'active', emailSendRateLimit: null }],
-      [{ value: '500' }],
-    ];
-    const db = createMockDb();
-
-    const result = await rl.getEffectiveRateLimit(db as never, 'c1');
-
-    expect(result.limitPerHour).toBe(500);
-    expect(result.source).toBe('platform_default');
-  });
-
-  it('falls back to the hard-coded default when neither override nor platform setting exists', async () => {
-    selectResults = [
-      [{ status: 'active', emailSendRateLimit: null }],
-      [],
-    ];
-    const db = createMockDb();
-
-    const result = await rl.getEffectiveRateLimit(db as never, 'c1');
-
-    expect(result.limitPerHour).toBe(rl.HARDCODED_DEFAULT_LIMIT_PER_HOUR);
-    expect(result.source).toBe('hardcoded_default');
-  });
-
-  it('forces limit=0 and suspended=true for a suspended tenant', async () => {
-    selectResults = [
-      [{ status: 'suspended', emailSendRateLimit: 200 }],
-      [{ value: '500' }],
-    ];
-    const db = createMockDb();
-
-    const result = await rl.getEffectiveRateLimit(db as never, 'c1');
-
-    expect(result.limitPerHour).toBe(0);
-    expect(result.suspended).toBe(true);
-    expect(result.source).toBe('suspended');
-  });
-
-  it('throws TENANT_NOT_FOUND when the tenant does not exist', async () => {
-    selectResults = [[]];
-    const db = createMockDb();
-
-    await expect(rl.getEffectiveRateLimit(db as never, 'ghost'))
-      .rejects.toMatchObject({ code: 'TENANT_NOT_FOUND', status: 404 });
+  it('resolves through the joined plan row', async () => {
+    const r = await getEffectiveSendLimits(
+      mockDb([{
+        status: 'active', planId: 'p1',
+        emailSendRateLimit: null, emailSendRateLimitDaily: null,
+        emailOutboundSuspended: false,
+        planCode: 'biz', planHourly: 500, planDaily: 5000,
+      }]),
+      't1',
+    );
+    expect(r.hourly).toEqual({ limit: 500, source: 'plan' });
+    expect(r.daily).toEqual({ limit: 5000, source: 'plan' });
+    expect(r.planCode).toBe('biz');
   });
 });
