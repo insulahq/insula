@@ -1404,6 +1404,39 @@ export const resourceQuotas = pgTable('resource_quotas', {
 // R4 PR 3 (mig 0059): FBL complaints — one row per parsed ARF report
 // from Stalwart's report-analysis store. Rates are computed on read
 // vs email_send_counters. Pruned at 90 days.
+// ── R1 PR 1: Plesk migration (mig 0061) ──────────────────────────────────
+export const pleskSources = pgTable('plesk_sources', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  name: varchar('name', { length: 255 }).notNull(),
+  hostname: varchar('hostname', { length: 255 }).notNull(),
+  sshPort: integer('ssh_port').notNull().default(22),
+  sshUser: varchar('ssh_user', { length: 64 }).notNull().default('root'),
+  // AES-256-GCM (oidc/crypto.ts) of the SSH private key.
+  sshKeyEncrypted: text('ssh_key_encrypted').notNull(),
+  pleskVersion: varchar('plesk_version', { length: 64 }),
+  // 'sym' (reversible) | 'crypt' (hashed) | 'mixed' | null.
+  passwordStorage: varchar('password_storage', { length: 16 }),
+  lastDiscoveredAt: timestamp('last_discovered_at', { withTimezone: true }),
+  status: varchar('status', { length: 24 }).notNull().default('registered'),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const pleskDiscoveries = pgTable('plesk_discoveries', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  sourceId: varchar('source_id', { length: 36 })
+    .notNull()
+    .references(() => pleskSources.id, { onDelete: 'cascade' }),
+  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  inventory: jsonb('inventory').$type<Record<string, unknown>>(),
+  error: text('error'),
+  logTail: text('log_tail'),
+}, (table) => [
+  index('plesk_discoveries_source_idx').on(table.sourceId, table.startedAt),
+]);
+
 export const emailFblComplaints = pgTable('email_fbl_complaints', {
   id: varchar('id', { length: 36 }).primaryKey(),
   stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),

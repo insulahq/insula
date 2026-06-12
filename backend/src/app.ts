@@ -135,6 +135,7 @@ import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
 import { mailEventsWebhookRoutes, mailUsageRoutes, mailComplaintRoutes } from './modules/mail-events/routes.js';
+import { pleskMigrationRoutes } from './modules/plesk-migration/routes.js';
 import { webmailSettingsRoutes } from './modules/webmail-settings/routes.js';
 import { platformUrlsRoutes } from './modules/platform-urls/routes.js';
 import { platformUpdateRoutes } from './modules/platform-updates/routes.js';
@@ -557,6 +558,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailEventsWebhookRoutes, { prefix: '/api/v1' });
   await app.register(mailUsageRoutes, { prefix: '/api/v1' });
   await app.register(mailComplaintRoutes, { prefix: '/api/v1' });
+  await app.register(pleskMigrationRoutes, { prefix: '/api/v1' });
   await app.register(registerMailDriftRoutes, { prefix: '/api/v1' });
   // Phase 3.C.1: public autodiscover routes — no /api/v1 prefix.
   // Email tenants hit these BEFORE auth, at well-known paths on
@@ -858,6 +860,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // Phase 3.D.2: mailbox used_mb reconciliation (15 min default,
       // configurable via platform_settings key
       // `mailbox_usage_sync_interval_minutes`)
+      // R1 PR 1: fail any Plesk discoveries orphaned by a restart mid-poll.
+      (async () => {
+        try {
+          const { failStaleDiscoveries } = await import('./modules/plesk-migration/discovery.js');
+          const n = await failStaleDiscoveries(app.db);
+          if (n > 0) app.log.info({ n }, 'plesk discovery: failed stale running rows on startup');
+        } catch (err) {
+          app.log.warn({ err }, 'plesk discovery: stale-sweep failed');
+        }
+      })();
+
       const mailStatsTimer = startMailStatsScheduler(app.db);
       // Phase 3 T5.3: stop function halts the self-rescheduling
       // chain — plain clearInterval is not enough because the

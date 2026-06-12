@@ -84,6 +84,7 @@ export * from './mail-imapsync.js';
 export * from './sub-users.js';
 export * from './plans.js';
 export * from './mail-limits.js';
+export * from './plesk-migration.js';
 export * from './ai-editor.js';
 export * from './oidc-settings.js';
 export * from './cluster-nodes.js';
