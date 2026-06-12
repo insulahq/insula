@@ -245,13 +245,10 @@ export async function getWebmailFeatureVisibility(
 export async function getWebmailSettings(db: Database) {
   const defaultWebmailUrlStored = await getSetting(db, 'default_webmail_url');
   const mailServerHostnameStored = await getSetting(db, 'mail_server_hostname');
-  const rateLimitRaw = await getSetting(db, 'email_send_rate_limit_default');
-  const emailSendRateLimitDefault = rateLimitRaw ? parseInt(rateLimitRaw, 10) : null;
   const visibility = await getWebmailFeatureVisibility(db);
   return {
     defaultWebmailUrl: defaultWebmailUrlStored ?? (await defaultWebmailUrl(db)),
     mailServerHostname: mailServerHostnameStored ?? (await defaultMailHostname(db)),
-    emailSendRateLimitDefault: Number.isFinite(emailSendRateLimitDefault) ? emailSendRateLimitDefault : null,
     defaultWebmailEngine: await getDefaultWebmailEngine(db),
     ...visibility,
   };
@@ -262,7 +259,6 @@ export async function updateWebmailSettings(
   input: {
     defaultWebmailUrl?: string;
     mailServerHostname?: string;
-    emailSendRateLimitDefault?: number | null;
     defaultWebmailEngine?: WebmailEngine;
     webmailShowContacts?: boolean;
     webmailShowCalendar?: boolean;
@@ -275,14 +271,8 @@ export async function updateWebmailSettings(
   if (input.mailServerHostname !== undefined) {
     await setSetting(db, 'mail_server_hostname', input.mailServerHostname);
   }
-  if (input.emailSendRateLimitDefault !== undefined) {
-    if (input.emailSendRateLimitDefault === null) {
-      // Clear the setting (Stalwart will have no global throttle rule)
-      await setSetting(db, 'email_send_rate_limit_default', '');
-    } else {
-      await setSetting(db, 'email_send_rate_limit_default', String(input.emailSendRateLimitDefault));
-    }
-  }
+  // R6 PR 1: the platform-wide `email_send_rate_limit_default` setting
+  // is retired — send limits resolve through hosting_plans now.
   if (input.defaultWebmailEngine !== undefined) {
     if (input.defaultWebmailEngine !== 'roundcube' && input.defaultWebmailEngine !== 'bulwark') {
       throw new Error(`Invalid webmail engine: ${input.defaultWebmailEngine}`);

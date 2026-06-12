@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   renderQueueOutboundToml,
-  renderQueueThrottleToml,
   type RenderQueueOutboundInput,
-  type RenderQueueThrottleInput,
 } from './renderer.js';
 
 describe('renderQueueOutboundToml', () => {
@@ -139,66 +137,5 @@ describe('renderQueueOutboundToml', () => {
     const toml = renderQueueOutboundToml(input);
     // Password with embedded quotes must be escaped or single-quoted
     expect(toml).not.toMatch(/password = "p"w"/);
-  });
-});
-
-describe('renderQueueThrottleToml', () => {
-  it('returns empty when no tenants have limits set', () => {
-    const input: RenderQueueThrottleInput = {
-      defaultRateLimit: null,
-      tenantOverrides: [],
-    };
-    const toml = renderQueueThrottleToml(input);
-    // Still emits a [queue.throttle] block header for stability
-    expect(toml).toContain('[queue.throttle]');
-  });
-
-  it('renders the global default throttle rule', () => {
-    const input: RenderQueueThrottleInput = {
-      defaultRateLimit: 100, // 100/hour global default
-      tenantOverrides: [],
-    };
-    const toml = renderQueueThrottleToml(input);
-    expect(toml).toContain('100');
-    expect(toml).toContain('1h');
-  });
-
-  it('renders per-customer overrides alongside the default', () => {
-    const input: RenderQueueThrottleInput = {
-      defaultRateLimit: 100,
-      tenantOverrides: [
-        { tenantId: 'c1', rateLimit: 500, suspended: false },
-        { tenantId: 'c2', rateLimit: 50, suspended: false },
-      ],
-    };
-    const toml = renderQueueThrottleToml(input);
-    expect(toml).toContain('c1');
-    expect(toml).toContain('500');
-    expect(toml).toContain('c2');
-    expect(toml).toContain('50');
-  });
-
-  it('sets rate=0 for suspended tenants (blocks sending)', () => {
-    const input: RenderQueueThrottleInput = {
-      defaultRateLimit: 100,
-      tenantOverrides: [
-        { tenantId: 'suspended-tenant', rateLimit: null, suspended: true },
-      ],
-    };
-    const toml = renderQueueThrottleToml(input);
-    expect(toml).toContain('suspended-tenant');
-    expect(toml).toMatch(/rate = 0\b|rate\s*=\s*"0/);
-  });
-
-  it('suspended override beats any explicit rate_limit', () => {
-    const input: RenderQueueThrottleInput = {
-      defaultRateLimit: 100,
-      tenantOverrides: [
-        { tenantId: 'c1', rateLimit: 500, suspended: true },
-      ],
-    };
-    const toml = renderQueueThrottleToml(input);
-    // When suspended, rate must be 0 not 500
-    expect(toml).toMatch(/rate = 0/);
   });
 });

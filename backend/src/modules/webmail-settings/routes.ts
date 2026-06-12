@@ -9,7 +9,6 @@ import {
   withMailHostnameLock,
 } from './service.js';
 import { updateWebmailSettingsSchema } from '@insula/api-contracts';
-import { reconcileOutboundConfig } from '../email-outbound/service.js';
 import {
   reconcileWebmailIngress,
   reconcileEngineDeployments,
@@ -137,8 +136,8 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
 
     // Hostname change path is locked end-to-end (advisory xact lock)
     // so concurrent PATCHes serialize. The non-hostname path stays
-    // unlocked — defaultWebmailUrl + emailSendRateLimitDefault are
-    // independent rows where last-write-wins is acceptable.
+    // unlocked — defaultWebmailUrl etc. are independent rows where
+    // last-write-wins is acceptable.
     const settings = await withMailHostnameLock(app.db, async () => {
       if (parsed.data.mailServerHostname !== undefined) {
         try {
@@ -263,18 +262,9 @@ export async function webmailSettingsRoutes(app: FastifyInstance): Promise<void>
       })();
     }
 
-    // Phase 3.B.3: if the global rate limit default was changed,
-    // reconcile the Stalwart outbound config.
-    if (k8s && parsed.data.emailSendRateLimitDefault !== undefined) {
-      try {
-        await reconcileOutboundConfig(app.db, k8s, app.log);
-      } catch (err) {
-        app.log.warn(
-          { err },
-          'webmail-settings: outbound reconcile failed (non-blocking)',
-        );
-      }
-    }
+    // R6 PR 1: the global rate-limit default is retired — send limits
+    // resolve through hosting_plans and reconcile from the plan/tenant
+    // update paths instead.
 
     // 2026-05-18: if any webmail feature-visibility flag was changed,
     // re-render the override CSS ConfigMap + stamp the Deployments so

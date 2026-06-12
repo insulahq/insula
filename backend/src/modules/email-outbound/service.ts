@@ -1,29 +1,31 @@
 /**
- * Outbound email reconciler — Phase 3.B.1 + B.3.
+ * Outbound email reconciler — Phase 3.B.1 + R6 PR 1.
  *
- * Reads smtp_relay_configs + per-tenant rate limits from the DB and
- * writes a Stalwart TOML fragment into a Kubernetes ConfigMap in the
- * `mail` namespace. Triggers Stalwart to reload via a config-change
- * annotation on the StatefulSet pod template (which causes a
- * controlled rolling update).
+ * Two halves:
+ *   1. Relays: reads smtp_relay_configs and writes a Stalwart TOML
+ *      fragment into a ConfigMap in the `mail` namespace (legacy
+ *      Phase 3.B.1 path, unchanged here).
+ *   2. Send limits: reconciles plan-based per-tenant limits into
+ *      Stalwart MtaOutboundThrottle / MtaQueueQuota registry objects
+ *      via JMAP (stalwart-throttles.ts). The old [queue.throttle]
+ *      TOML rendering was dead config on Stalwart v0.16 (nothing
+ *      mounted the ConfigMap and v0.16 doesn't read those keys) and
+ *      was removed in R6 PR 1.
  *
  * Called:
  *   - on smtp_relay_configs CRUD (create / update / delete)
  *   - on tenant status change (suspend / unsuspend)
- *   - on tenant rate-limit update
- *   - on platform-settings default rate limit change
+ *   - on tenant rate-limit / outbound-suspension update
+ *   - on hosting-plan limit update
+ *   - on email-domain enable/disable
+ *   - periodically (startup + interval) as a self-heal safety net
  *   - manually via POST /api/v1/admin/mail/outbound/reconcile
  */
 
-import { eq } from 'drizzle-orm';
-import { tenants, smtpRelayConfigs, platformSettings } from '../../db/schema.js';
+import { smtpRelayConfigs } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
-import {
-  renderQueueOutboundToml,
-  renderQueueThrottleToml,
-  type OutboundRelay,
-  type TenantThrottleOverride,
-} from './renderer.js';
+import { renderQueueOutboundToml, type OutboundRelay } from './renderer.js';
+import { reconcileStalwartSendLimits } from './stalwart-throttles.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -47,15 +49,16 @@ export interface ReconcileOutboundResult {
   readonly reason?: string;
   readonly configMapName?: string;
   readonly relaysConfigured?: number;
-  readonly overridesConfigured?: number;
+  /** Summary of the Stalwart throttle/quota reconcile (R6 PR 1). */
+  readonly sendLimits?: import('./stalwart-throttles.js').ThrottleReconcileResult;
 }
 
 /**
- * Build the outbound+throttle TOML from the current DB state.
+ * Build the outbound relay TOML from the current DB state.
  */
 export async function renderCurrentOutboundConfig(
   db: Database,
-): Promise<{ outbound: string; throttle: string }> {
+): Promise<{ outbound: string }> {
   const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 
   // Load and decrypt relays
@@ -89,31 +92,7 @@ export async function renderCurrentOutboundConfig(
     };
   });
 
-  // Load default rate limit from platform settings
-  const [defaultRow] = await db
-    .select()
-    .from(platformSettings)
-    .where(eq(platformSettings.key, 'email_send_rate_limit_default'));
-  const defaultRateLimit = defaultRow?.value ? parseInt(defaultRow.value, 10) : null;
-
-  // Load tenant overrides (any tenant with non-null email_send_rate_limit
-  // OR status='suspended')
-  const tenantRows = await db.select().from(tenants);
-  const overrides: TenantThrottleOverride[] = tenantRows
-    .filter((c) => c.emailSendRateLimit !== null || c.status === 'suspended')
-    .map((c) => ({
-      tenantId: c.id,
-      rateLimit: c.emailSendRateLimit ?? null,
-      suspended: c.status === 'suspended',
-    }));
-
-  const outbound = renderQueueOutboundToml({ relays });
-  const throttle = renderQueueThrottleToml({
-    defaultRateLimit: Number.isFinite(defaultRateLimit) ? defaultRateLimit : null,
-    tenantOverrides: overrides,
-  });
-
-  return { outbound, throttle };
+  return { outbound: renderQueueOutboundToml({ relays }) };
 }
 
 function k8sStatusCode(err: unknown): number | undefined {
@@ -140,13 +119,21 @@ export async function reconcileOutboundConfig(
   k8s: K8sClients | undefined,
   logger: OutboundReconcileLogger = noopLogger,
 ): Promise<ReconcileOutboundResult> {
+  // Send limits go over JMAP directly — no k8s client needed, so they
+  // reconcile even when the ConfigMap half is skipped below.
+  const limits = await reconcileStalwartSendLimits(db, logger);
+
   if (!k8s) {
-    logger.warn({}, 'reconcileOutboundConfig: no k8s tenant, skipping');
-    return { skipped: true, reason: 'no k8s tenant' };
+    logger.warn({}, 'reconcileOutboundConfig: no k8s client, ConfigMap half skipped');
+    return {
+      skipped: true,
+      reason: 'no k8s client',
+      sendLimits: limits,
+    };
   }
 
-  const { outbound, throttle } = await renderCurrentOutboundConfig(db);
-  const combinedToml = `${outbound}\n${throttle}\n`;
+  const { outbound } = await renderCurrentOutboundConfig(db);
+  const combinedToml = `${outbound}\n`;
 
   const body = {
     metadata: {
@@ -184,16 +171,12 @@ export async function reconcileOutboundConfig(
     }
   }
 
-  // Count enabled relays and overrides for the return value
+  // Count enabled relays for the return value
   const relayRows = await db.select().from(smtpRelayConfigs);
   const enabledRelays = relayRows.filter((r) => r.enabled === 1).length;
-  const tenantRows = await db.select().from(tenants);
-  const overrideCount = tenantRows.filter(
-    (c) => c.emailSendRateLimit !== null || c.status === 'suspended',
-  ).length;
 
   logger.info(
-    { relays: enabledRelays, overrides: overrideCount },
+    { relays: enabledRelays, sendLimits: limits },
     'reconcileOutboundConfig: Stalwart outbound ConfigMap updated',
   );
 
@@ -201,6 +184,6 @@ export async function reconcileOutboundConfig(
     skipped: false,
     configMapName: OUTBOUND_CONFIGMAP_NAME,
     relaysConfigured: enabledRelays,
-    overridesConfigured: overrideCount,
+    sendLimits: limits,
   };
 }

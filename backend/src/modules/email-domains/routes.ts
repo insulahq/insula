@@ -71,6 +71,16 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // R6 PR 1: a new sender domain needs its throttle/quota objects in
+    // Stalwart before the first mailbox submits. Non-blocking; the
+    // periodic reconcile self-heals on failure.
+    try {
+      const { reconcileStalwartSendLimits } = await import('../email-outbound/stalwart-throttles.js');
+      await reconcileStalwartSendLimits(app.db, app.log);
+    } catch (err) {
+      app.log.warn({ err }, 'email-domains: send-limit reconcile failed (non-blocking)');
+    }
+
     // IMPORTANT: return the reply so Fastify does not attempt a second
     // implicit send with an undefined payload.
     return reply.status(201).send(success(result));
@@ -96,6 +106,15 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await service.disableEmailForDomain(app.db, tenantId, domainId);
+
+    // R6 PR 1: drop the domain's throttle/quota objects from Stalwart.
+    try {
+      const { reconcileStalwartSendLimits } = await import('../email-outbound/stalwart-throttles.js');
+      await reconcileStalwartSendLimits(app.db, app.log);
+    } catch (err) {
+      app.log.warn({ err }, 'email-domains: send-limit reconcile failed (non-blocking)');
+    }
+
     reply.status(204).send();
   });
 

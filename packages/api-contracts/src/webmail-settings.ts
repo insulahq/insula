@@ -50,10 +50,8 @@ export const updateWebmailSettingsSchema = z.object({
       'must be a valid DNS hostname',
     )
     .optional(),
-  // Phase 3.B.3: global default per-customer email send rate limit
-  // (messages per hour). null = no default (Stalwart uses its built-in
-  // defaults). 0 = all customers blocked unless an override allows.
-  emailSendRateLimitDefault: z.number().int().min(0).max(1000000).nullable().optional(),
+  // (R6 PR 1) the old `emailSendRateLimitDefault` field is retired —
+  // send limits resolve through hosting_plans now.
   // ADR-039 Phase 10: which webmail UI the platform mints handoff
   // tokens for. The backend already maps `roundcube` → `?_task=login&_jwt=`
   // and `bulwark` → `/_impersonate?token=` in generateWebmailToken.
@@ -74,7 +72,6 @@ export type UpdateWebmailSettingsInput = z.infer<typeof updateWebmailSettingsSch
 export const webmailSettingsResponseSchema = z.object({
   defaultWebmailUrl: z.string(),
   mailServerHostname: z.string().optional(),
-  emailSendRateLimitDefault: z.number().nullable().optional(),
   defaultWebmailEngine: webmailEngineSchema,
   // 2026-05-18 (see updateWebmailSettingsSchema). Always present in
   // the response so the admin UI can render the toggle state

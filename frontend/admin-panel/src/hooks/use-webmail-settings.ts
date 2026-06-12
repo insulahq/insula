@@ -26,7 +26,6 @@ export function useWebmailSettings() {
 interface UpdateWebmailSettingsInput {
   readonly defaultWebmailUrl?: string;
   readonly mailServerHostname?: string;
-  readonly emailSendRateLimitDefault?: number | null;
   readonly defaultWebmailEngine?: 'roundcube' | 'bulwark';
   // 2026-05-18: feature-visibility toggles. All default to false
   // (hidden) on a fresh install. Flipping any of these triggers a

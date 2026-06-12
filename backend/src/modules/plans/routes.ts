@@ -42,6 +42,13 @@ export async function planRoutes(app: FastifyInstance) {
       monthlyPriceUsd: parsed.data.monthly_price_usd,
       maxSubUsers: (body.max_sub_users as number) ?? 3,
       maxMailboxes: (body.max_mailboxes as number) ?? 50,
+      // R6 PR 1: omitted -> DB defaults (50/h, 100/d)
+      ...(parsed.data.email_hourly_send_limit !== undefined
+        ? { emailHourlySendLimit: parsed.data.email_hourly_send_limit }
+        : {}),
+      ...(parsed.data.email_daily_send_limit !== undefined
+        ? { emailDailySendLimit: parsed.data.email_daily_send_limit }
+        : {}),
       features: parsed.data.features ?? null,
       status: 'active',
     });
@@ -80,6 +87,8 @@ export async function planRoutes(app: FastifyInstance) {
     if (parsed.data.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = parsed.data.monthly_price_usd;
     if (body.max_sub_users !== undefined) updateValues.maxSubUsers = body.max_sub_users;
     if (body.max_mailboxes !== undefined) updateValues.maxMailboxes = body.max_mailboxes;
+    if (parsed.data.email_hourly_send_limit !== undefined) updateValues.emailHourlySendLimit = parsed.data.email_hourly_send_limit;
+    if (parsed.data.email_daily_send_limit !== undefined) updateValues.emailDailySendLimit = parsed.data.email_daily_send_limit;
     if (parsed.data.features !== undefined) updateValues.features = parsed.data.features;
     if (body.status !== undefined) updateValues.status = body.status;
 
@@ -119,6 +128,20 @@ export async function planRoutes(app: FastifyInstance) {
         console.log(`[plans] Synced ResourceQuota for ${affectedTenants.length} tenants on plan ${id}`);
       } catch (err) {
         console.warn('[plans] Failed to cascade quota update:', err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    // R6 PR 1: plan send-limit changes affect every tenant on the plan
+    // without overrides — re-sync the Stalwart throttle/quota objects.
+    if (
+      parsed.data.email_hourly_send_limit !== undefined
+      || parsed.data.email_daily_send_limit !== undefined
+    ) {
+      try {
+        const { reconcileStalwartSendLimits } = await import('../email-outbound/stalwart-throttles.js');
+        await reconcileStalwartSendLimits(app.db, app.log);
+      } catch (err) {
+        app.log.warn({ err }, '[plans] send-limit reconcile failed (non-blocking)');
       }
     }
 

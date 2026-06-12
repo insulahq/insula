@@ -31,16 +31,11 @@ export interface RenderQueueOutboundInput {
   readonly relays: readonly OutboundRelay[];
 }
 
-export interface TenantThrottleOverride {
-  readonly tenantId: string;
-  readonly rateLimit: number | null; // messages / hour; null = inherit default
-  readonly suspended: boolean;
-}
-
-export interface RenderQueueThrottleInput {
-  readonly defaultRateLimit: number | null;
-  readonly tenantOverrides: readonly TenantThrottleOverride[];
-}
+// NOTE (R6 PR 1): the [queue.throttle] renderer that used to live here
+// was removed — Stalwart v0.16 doesn't read those TOML keys (and the
+// ConfigMap carrying them was never mounted). Send limits are now
+// reconciled as MtaOutboundThrottle / MtaQueueQuota registry objects in
+// stalwart-throttles.ts.
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
@@ -126,54 +121,3 @@ export function renderQueueOutboundToml(input: RenderQueueOutboundInput): string
   return lines.join('\n');
 }
 
-// ─── Throttle renderer ────────────────────────────────────────────────────
-
-export function renderQueueThrottleToml(input: RenderQueueThrottleInput): string {
-  const lines: string[] = [];
-
-  lines.push('# ─── Outbound throttle (Phase 3.B.3) ───────────────────────────────');
-  lines.push('# Per-customer send rate limits rendered from:');
-  lines.push('#   - platform_settings.email_send_rate_limit_default (global default)');
-  lines.push('#   - tenants.email_send_rate_limit (per-customer override)');
-  lines.push('#   - tenants.status (suspended → rate = 0)');
-  lines.push('');
-
-  lines.push('[queue.throttle]');
-  lines.push('');
-
-  // Global default rule (applies to any sender that doesn't match a
-  // more specific rule below).
-  if (input.defaultRateLimit !== null && input.defaultRateLimit > 0) {
-    lines.push('[queue.throttle.default]');
-    lines.push('key = ["sender-domain"]');
-    lines.push(`rate = "${input.defaultRateLimit}/1h"`);
-    lines.push('');
-  } else {
-    lines.push('# No global default rate limit configured.');
-    lines.push('');
-  }
-
-  // Per-customer overrides
-  for (const override of input.tenantOverrides) {
-    const key = sanitizeKey(`tenant-${override.tenantId}`);
-    lines.push(`[queue.throttle.${key}]`);
-    lines.push(`key = ["sender-domain"]`);
-    lines.push(`match = "authenticated-as = '${override.tenantId}'"`);
-
-    if (override.suspended) {
-      // Suspended tenants get rate=0 — blocks all outbound.
-      lines.push('rate = 0');
-      lines.push('enable = true');
-    } else if (override.rateLimit !== null && override.rateLimit > 0) {
-      lines.push(`rate = "${override.rateLimit}/1h"`);
-      lines.push('enable = true');
-    } else {
-      // Inherit the default — don't emit a rule, Stalwart's default
-      // rule applies.
-      lines.push('enable = false');
-    }
-    lines.push('');
-  }
-
-  return lines.join('\n');
-}

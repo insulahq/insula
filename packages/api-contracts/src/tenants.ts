@@ -94,9 +94,16 @@ export const updateTenantSchema = z.object({
   // max_mailboxes. Min 1 (blocking via 0 is handled by tenant.status).
   max_mailboxes_override: z.number().int().min(1).max(10000).nullable().optional(),
   monthly_price_override: z.number().min(0).max(99999).nullable().optional(),
-  // Per-tenant email send rate limit (messages/hour).
-  // null = inherit the global default. 0 = blocked.
+  // Per-tenant email send rate limit override (messages/hour).
+  // null = inherit from the plan's email_hourly_send_limit. 0 = blocked.
   email_send_rate_limit: z.number().int().min(0).max(1000000).nullable().optional(),
+  // Per-tenant daily send limit override (messages/day).
+  // null = inherit from the plan's email_daily_send_limit. 0 = blocked.
+  email_send_rate_limit_daily: z.number().int().min(0).max(10000000).nullable().optional(),
+  // Outbound-mail suspension (narrower than tenant suspension —
+  // receiving and webmail keep working). Manual admin lever behind
+  // complaint alerts (R4 notify-only).
+  email_outbound_suspended: z.boolean().optional(),
   timezone: z.string().min(1).max(50).nullable().optional(),
   // M5: re-assign the tenant to a different worker. A subsequent
   // deployment revision (M6 migration flow) actually moves the pods.
@@ -165,6 +172,9 @@ export const tenantResponseSchema = z.object({
   maxMailboxesOverride: z.number().nullable().optional(),
   monthlyPriceOverride: z.string().nullable(),
   emailSendRateLimit: z.number().nullable().optional(),
+  // R6 PR 1: daily send-limit override + outbound-mail suspension lever.
+  emailSendRateLimitDaily: z.number().nullable().optional(),
+  emailOutboundSuspended: z.boolean().optional(),
   // M5: current worker pin (k8s node name) or null for default scheduler.
   // Renamed from workerNodeName → nodeName as part of the tenant rename.
   nodeName: z.string().nullable().optional(),
