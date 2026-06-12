@@ -1401,6 +1401,32 @@ export const resourceQuotas = pgTable('resource_quotas', {
 
 // ─── Email System ───
 
+// R4 PR 3 (mig 0059): FBL complaints — one row per parsed ARF report
+// from Stalwart's report-analysis store. Rates are computed on read
+// vs email_send_counters. Pruned at 90 days.
+export const emailFblComplaints = pgTable('email_fbl_complaints', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  domain: varchar('domain', { length: 255 }),
+  feedbackType: varchar('feedback_type', { length: 32 }).notNull(),
+  originalMailFrom: varchar('original_mail_from', { length: 320 }),
+  originalRcptTo: varchar('original_rcpt_to', { length: 320 }),
+  sourceIp: varchar('source_ip', { length: 64 }),
+  reportingMta: varchar('reporting_mta', { length: 255 }),
+  reporter: varchar('reporter', { length: 320 }),
+  incidents: integer('incidents').notNull().default(1),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+  raw: jsonb('raw').$type<Record<string, unknown>>(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex('email_fbl_complaints_report_unique').on(table.stalwartReportId),
+  index('email_fbl_complaints_tenant_idx').on(table.tenantId, table.receivedAt),
+  index('email_fbl_complaints_domain_idx').on(table.domain, table.receivedAt),
+  index('email_fbl_complaints_received_idx').on(table.receivedAt),
+]);
+
 // R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
 // (tenant, sender-domain) fed by the Stalwart webhook ingest
 // (modules/mail-events). Counters, not per-message rows (descoped).

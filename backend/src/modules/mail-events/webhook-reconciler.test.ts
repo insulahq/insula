@@ -9,7 +9,7 @@ import {
   ensureMailEventsWebhook,
   desiredWebhookObject,
   SUBSCRIBED_EVENTS,
-  WEBHOOK_DESCRIPTION,
+  INGEST_URL,
 } from './webhook-reconciler.js';
 import * as jmap from '../stalwart-jmap/client.js';
 
@@ -37,7 +37,6 @@ function liveInSync() {
   const want = desiredWebhookObject('master');
   return {
     id: 'wh1',
-    description: WEBHOOK_DESCRIPTION,
     url: want.url as string,
     enable: true,
     lossy: false,
@@ -56,6 +55,8 @@ describe('desiredWebhookObject', () => {
   it('always uses include policy and a Value signature key', () => {
     const d = desiredWebhookObject('master');
     expect(d.eventsPolicy).toBe('include');
+    expect(d.description).toBeUndefined(); // WebHook has no description field
+    expect(d.url).toBe(INGEST_URL);
     expect((d.signatureKey as { '@type': string })['@type']).toBe('Value');
     expect(Object.keys(d.events as Record<string, boolean>).sort()).toEqual([...SUBSCRIBED_EVENTS].sort());
     expect(d.lossy).toBe(false);

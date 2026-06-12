@@ -26,6 +26,7 @@ import {
   storageOperations,
   provisioningTasks,
   emailSendCounters,
+  emailFblComplaints,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -38,6 +39,8 @@ export const PROVISIONING_TASK_RETENTION_DAYS = 90;
 // Send-accounting buckets (R6 PR 2) — 35 days so rolling 30-day
 // complaint rates (R4) always have a full month of denominator.
 export const EMAIL_SEND_COUNTER_RETENTION_DAYS = 35;
+// FBL complaints (R4 PR 3) — 90 days covers any threshold review.
+export const FBL_COMPLAINT_RETENTION_DAYS = 90;
 
 export interface DataRetentionResult {
   readonly auditLogs: number;
@@ -46,6 +49,7 @@ export interface DataRetentionResult {
   readonly storageOperations: number;
   readonly provisioningTasks: number;
   readonly emailSendCounters: number;
+  readonly fblComplaints: number;
 }
 
 /**
@@ -109,11 +113,20 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     )
     .returning({ bucketStart: emailSendCounters.bucketStart });
 
+  // 6. email_fbl_complaints — complaint history (R4 PR 3).
+  const complaints = await db
+    .delete(emailFblComplaints)
+    .where(
+      sql`${emailFblComplaints.receivedAt} < NOW() - INTERVAL '${sql.raw(String(FBL_COMPLAINT_RETENTION_DAYS))} days'`,
+    )
+    .returning({ id: emailFblComplaints.id });
+
   return {
     auditLogs: audit.length,
     lifecycleTransitions: transitions.length,
     storageOperations: storage.length,
     provisioningTasks: provisioning.length,
     emailSendCounters: sendCounters.length,
+    fblComplaints: complaints.length,
   };
 }
