@@ -149,6 +149,16 @@ describe('monitoring evaluator', () => {
     expect(lastCall[2].type).toBe('success');
   });
 
+  it('fires on ZERO-VALUED comparison passes (vector(0) > -1 shape)', async () => {
+    // Regression for the live 2026-06-12 induce: `(count(...) or
+    // vector(0)) > -1` passes with sample value 0 — the evaluator must
+    // treat ANY surviving sample as a violation, not just value>0.
+    const db = dbStub({ overrides: [{ ruleId: 'acme-order-rate', enabled: true, threshold: -1 }] });
+    const fetchFn = vmFetchStub({ platform_acme_renewals_total: [0] });
+    await evaluateOnce(db as never, logger, { fetchFn, baseUrl: 'http://vm' });
+    expect(db._rows.get('acme-order-rate')?.state).toBe('firing');
+  });
+
   it('disabled override suppresses evaluation', async () => {
     const db = dbStub({ overrides: [{ ruleId: 'acme-order-rate', enabled: false, threshold: null }] });
     const fetchFn = vmFetchStub({ platform_acme_renewals_total: [99] });

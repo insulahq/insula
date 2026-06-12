@@ -174,9 +174,13 @@ export async function evaluateOnce(
     try {
       const samples = await queryInstant(expr, vmOpts);
       anyQuerySucceeded = true;
-      // Convention: expression yields samples only when violated (>,
-      // comparison operators drop non-matching samples). Value = max.
-      const violated = samples.length > 0 && samples.some((s) => s.value > 0);
+      // PromQL comparison semantics: `expr > $T` FILTERS — when the
+      // condition holds, the sample survives carrying the LHS VALUE
+      // (which can legitimately be 0, e.g. `(count(...) or vector(0))
+      // > -1`). So violated = "any sample survived", full stop — an
+      // additional value>0 check silently un-fires zero-valued passes
+      // (caught live 2026-06-12 on the induced cnpg-down E2E).
+      const violated = samples.length > 0;
       const value = samples.length > 0 ? Math.max(...samples.map((s) => s.value)) : null;
       await applyRuleState(db, { rule, violated, value, now, forSeconds: rule.forSeconds }, log);
     } catch (err) {
