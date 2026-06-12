@@ -16,6 +16,7 @@ import {
   uniqueIndex,
   index,
   primaryKey,
+  doublePrecision,
 } from 'drizzle-orm/pg-core';
 import { sql, isNotNull } from 'drizzle-orm';
 
@@ -3596,3 +3597,39 @@ export const platformUpgradeSnapshots = pgTable('platform_upgrade_snapshots', {
 
 export type PlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inferSelect;
 export type NewPlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inferInsert;
+
+// ─── Monitoring / SLO alerting (ADR-051 phase 3) ──────────────────────────────
+
+// Live alert state per rule — the evaluator (modules/monitoring) is the
+// only writer. Severity-transition semantics + the 24h re-fire throttle
+// mirror node_health_state.
+export const alertState = pgTable('alert_state', {
+  ruleId: varchar('rule_id', { length: 100 }).primaryKey(),
+  state: varchar('state', { length: 16 }).notNull(), // firing | resolved
+  severity: varchar('severity', { length: 16 }).notNull(), // warning | critical
+  since: timestamp('since', { withTimezone: true }).notNull().defaultNow(),
+  lastValue: doublePrecision('last_value'),
+  lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
+  lastEvaluatedAt: timestamp('last_evaluated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+export type AlertStateRow = typeof alertState.$inferSelect;
+
+// Single-row lease for the 60s evaluator — conditional-UPDATE claim so
+// exactly ONE of the HA platform-api replicas evaluates per minute
+// (same pattern as backup_schedules.last_fired_at).
+export const monitoringEvaluatorLease = pgTable('monitoring_evaluator_lease', {
+  id: varchar('id', { length: 16 }).primaryKey(), // always 'evaluator'
+  lastRunAt: timestamp('last_run_at', { withTimezone: true }),
+});
+
+// Operator overrides for the in-code rule pack: threshold tweak and/or
+// disable. The pack itself ships with each release (modules/monitoring/
+// rules.ts) — overrides deliberately can't add NEW rules.
+export const monitoringRuleOverrides = pgTable('monitoring_rule_overrides', {
+  ruleId: varchar('rule_id', { length: 100 }).primaryKey(),
+  threshold: doublePrecision('threshold'),
+  enabled: boolean('enabled').notNull().default(true),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedBy: varchar('updated_by', { length: 36 }),
+});
+export type MonitoringRuleOverrideRow = typeof monitoringRuleOverrides.$inferSelect;

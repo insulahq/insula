@@ -68,6 +68,7 @@ import { loadBalancerRoutes } from './modules/load-balancer/routes.js';
 import { tenantMigrationRoutes } from './modules/tenant-migration/routes.js';
 import { clusterHealthRoutes } from './modules/cluster-health/routes.js';
 import { nodeHealthRoutes } from './modules/node-health/routes.js';
+import { monitoringRoutes } from './modules/monitoring/routes.js';
 import { platformStoragePolicyRoutes } from './modules/platform-storage-policy/routes.js';
 import { namespaceIntegrityRoutes } from './modules/namespace-integrity/routes.js';
 import { orphanedVolumesRoutes } from './modules/orphaned-volumes/routes.js';
@@ -435,6 +436,16 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     };
   });
 
+  // Prometheus HTTP-histogram hook (ADR-051 phase 2) — MUST register
+  // before the app boots: Fastify rejects request-lifecycle hooks once
+  // the root plugin is loaded (AVV_ERR_ROOT_PLG_BOOTED — caught live on
+  // the first #52 rollout when this sat in the post-boot scheduler
+  // block). The exposition SERVER starts later with the schedulers.
+  {
+    const { registerHttpMetricsHook } = await import('./plugins/metrics-server.js');
+    registerHttpMetricsHook(app);
+  }
+
   // Routes
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(passkeyRoutes, { prefix: '/api/v1' });
@@ -498,6 +509,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(tenantMigrationRoutes, { prefix: '/api/v1' });
   await app.register(clusterHealthRoutes, { prefix: '/api/v1' });
   await app.register(nodeHealthRoutes, { prefix: '/api/v1' });
+  await app.register(monitoringRoutes, { prefix: '/api/v1' });
   await app.register(platformStoragePolicyRoutes, { prefix: '/api/v1' });
   await app.register(namespaceIntegrityRoutes, { prefix: '/api/v1' });
   await app.register(orphanedVolumesRoutes, { prefix: '/api/v1' });
@@ -695,8 +707,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // allow-monitoring-to-platform-api-metrics scopes :9090 to the
       // monitoring namespace.
       {
-        const { registerHttpMetricsHook, startMetricsServer } = await import('./plugins/metrics-server.js');
-        registerHttpMetricsHook(app);
+        const { startMetricsServer } = await import('./plugins/metrics-server.js');
         const stopMetricsServer = startMetricsServer(app.log);
         app.addHook('onClose', async () => { await stopMetricsServer(); });
       }
@@ -1222,6 +1233,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         // silently drops a CSI driver registration. Persists state in
         // node_health_state so transitions (not every tick) drive
         // notifications. See modules/node-health/.
+        // SLO alert evaluator (ADR-051 phase 3): 60s lease-deduped tick
+        // querying vmsingle; transitions notify via the notification
+        // system. Zero extra pods — see modules/monitoring/.
+        {
+          const { startMonitoringEvaluator } = await import('./modules/monitoring/scheduler.js');
+          const monitoringHandle = startMonitoringEvaluator(app.db, app.log);
+          app.addHook('onClose', () => monitoringHandle.stop());
+        }
+
         const { startNodeHealthScheduler } = await import('./modules/node-health/scheduler.js');
         const nodeHealthMonitorHandle = startNodeHealthScheduler(app.db, k8sForImapsync);
         app.addHook('onClose', () => nodeHealthMonitorHandle.stop());

@@ -62,6 +62,12 @@ spec:
           image: victoriametrics/victoria-metrics:v1.145.0
           args:
             - -promscrape.config=/config/prometheus.yml
+            # Re-read the scrape config every minute — without this VM
+            # NEVER reloads it (default configCheckInterval=0), so
+            # ConfigMap-delivered job changes only land on pod restart
+            # (caught live 2026-06-12: the platform-api job sat unloaded
+            # after the PR #52 rollout).
+            - -promscrape.configCheckInterval=1m
             - -storageDataPath=/storage
             - -retentionPeriod=30d
             - -memory.allowedBytes=192MiB
