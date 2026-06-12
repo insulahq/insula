@@ -22,9 +22,11 @@
 # Both IngressRoutes carry the `admin-ui=true` label so the overlay's
 # admin-auth-gate component provides the `admin-auth-cookie` Middleware
 # (ci-admin-auth-check.sh enforces gate coverage on every labelled
-# route). TLS rides the admin host's certificate via SNI (`tls: {}`).
-# The match assumes the DEFAULT admin host `admin.${DOMAIN}` — same
-# caveat as vmsingle-ui.
+# route). TLS rides the admin host's certificate via SNI; NO spec.tls —
+# the websecure entrypoint carries http.tls=true, and an empty tls: {}
+# is normalised to null by the Flux pipeline and rejected by the CRD
+# (see vmui-ingressroute.yaml for the full story). The match assumes
+# the DEFAULT admin host `admin.${DOMAIN}` — same caveat as vmsingle-ui.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
@@ -79,7 +81,6 @@ spec:
         - name: longhorn-frontend
           namespace: longhorn-system
           port: 80
-  tls: {}
 ---
 # The SPA's hardcoded absolute /v1 API + websocket surface (see header).
 apiVersion: traefik.io/v1alpha1
@@ -104,4 +105,3 @@ spec:
         - name: longhorn-frontend
           namespace: longhorn-system
           port: 80
-  tls: {}
