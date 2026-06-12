@@ -48,6 +48,7 @@ import { eq } from 'drizzle-orm';
 import { readStalwartCredentials } from './credentials.js';
 import { ensureMailAcmeOverrideRoute, resolveDefaultMailHost } from './mail-acme-override-route.js';
 import { platformSettings } from '../../db/schema.js';
+import { acmeRenewalsTotal, mailTlsCertExpirySeconds, mailTlsCertSelfSigned, stalwartAcmeTaskQueueDepth } from '../../shared/metrics.js';
 import type { Database } from '../../db/index.js';
 
 /**
@@ -988,6 +989,12 @@ export interface ServedCertResult {
   readonly issuer: string | null;
   /** Set when the probe could not determine the served cert (treated as "do not force"). */
   readonly error: string | null;
+  /**
+   * Cert notAfter as epoch seconds when the probe could parse it
+   * (feeds platform_mail_tls_cert_expiry_seconds). Optional — injected
+   * test probes and older callers may omit it.
+   */
+  readonly notAfterEpoch?: number | null;
 }
 
 /**
@@ -1233,7 +1240,7 @@ async function defaultServedCertProbe(
       'sh', '-c',
       `echo | timeout ${Math.floor(SELF_HEAL_PROBE_TIMEOUT_MS / 1000)} openssl s_client `
       + `-connect 127.0.0.1:${SELF_HEAL_PROBE_PORT} 2>/dev/null `
-      + `| openssl x509 -noout -issuer -subject 2>&1 || echo "ERROR: cert probe failed"`,
+      + `| openssl x509 -noout -issuer -subject -enddate 2>&1 || echo "ERROR: cert probe failed"`,
     ];
 
     const { PassThrough, Writable } = await import('node:stream');
@@ -1280,7 +1287,18 @@ async function defaultServedCertProbe(
       return { selfSigned: false, issuer: null, error: `no issuer line in openssl output: ${out.slice(0, 120)}` };
     }
     const issuer = issuerLine.slice(issuerLine.indexOf('=') + 1).trim();
-    return { selfSigned: issuerIsSelfSigned(issuer), issuer, error: null };
+    // `notAfter=Sep  9 19:47:42 2026 GMT` — openssl's date form parses
+    // directly via Date(). Absent/unparseable ⇒ null (gauge shows -1).
+    const notAfterLine = out
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.toLowerCase().startsWith('notafter='));
+    let notAfterEpoch: number | null = null;
+    if (notAfterLine) {
+      const d = new Date(notAfterLine.slice(notAfterLine.indexOf('=') + 1).trim());
+      if (!Number.isNaN(d.getTime())) notAfterEpoch = Math.floor(d.getTime() / 1000);
+    }
+    return { selfSigned: issuerIsSelfSigned(issuer), issuer, error: null, notAfterEpoch };
   } catch (err) {
     return {
       selfSigned: false,

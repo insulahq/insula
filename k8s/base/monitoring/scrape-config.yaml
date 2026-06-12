@@ -156,6 +156,27 @@ data:
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
 
+      # ── platform-api (:9090 — ADR-051 phase 2) ───────────────────
+      # First-party metrics: HTTP histogram, ACME order/renewal
+      # counters (the #43 LE-storm canary), mail TLS expiry, Stalwart
+      # task-queue depth. Dedicated port; netpol
+      # allow-monitoring-to-platform-api-metrics scopes it to us.
+      - job_name: platform-api
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [platform]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            regex: platform-api
+            action: keep
+          - source_labels: [__address__]
+            regex: '([^:]+)(?::\d+)?'
+            replacement: '$1:9090'
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
       # ── CoreDNS (:9153) ──────────────────────────────────────────
       - job_name: coredns
         kubernetes_sd_configs:
