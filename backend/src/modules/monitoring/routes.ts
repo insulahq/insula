@@ -49,8 +49,8 @@ const SERIES_PANELS: Record<string, { expr: string; unit: string }> = {
     unit: 'instances',
   },
   'flux-errors-15m': {
-    expr: 'sum(increase(controller_runtime_reconcile_errors_total[15m]))',
-    unit: 'errors',
+    expr: 'sum(max by (kind) (clamp_min(platform_flux_unready_resources, 0)))',
+    unit: 'resources',
   },
   'acme-renewals-1h': {
     expr: 'sum(increase(platform_acme_renewals_total{result=~"fired|forced|error"}[1h]))',

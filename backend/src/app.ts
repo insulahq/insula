@@ -712,6 +712,24 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', async () => { await stopMetricsServer(); });
       }
 
+      // Flux readiness gauge (feeds the flux-reconcile-errors rule).
+      // Every replica refreshes platform_flux_unready_resources from the
+      // kube API — Flux controllers expose no scrapeable failure signal
+      // (see modules/monitoring/flux-status-collector.ts).
+      {
+        const { startFluxStatusCollector } = await import('./modules/monitoring/flux-status-collector.js');
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const kubePath =
+          ((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined)
+            ?? process.env.KUBECONFIG;
+        const stopFluxCollector = startFluxStatusCollector(
+          () => createK8sClients(kubePath).custom as unknown as
+            import('./modules/monitoring/flux-status-collector.js').FluxCustomLister,
+          app.log,
+        );
+        app.addHook('onClose', () => stopFluxCollector());
+      }
+
       // Node-terminal scheduler: idle-session sweep + orphan-Pod reap.
       // Same feature flag as the routes — when disabled, there are no
       // sessions or labelled Pods to sweep anyway.

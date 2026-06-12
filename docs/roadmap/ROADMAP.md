@@ -65,9 +65,13 @@ are deprecation no-ops).
   where it disagrees with the shipped rule pack, ADR-051 is authoritative.
 - E2E: `scripts/integration-monitoring-slo.sh` (registered in
   `integration-all.sh`).
-- Deferred: log aggregation (decide separately if a need emerges); the
-  Flux-failure alert rule has not yet been exercised against a real Flux
-  failure.
+- Deferred: log aggregation (decide separately if a need emerges).
+- 2026-06-12 live exercise of the Flux-failure rule found it could never
+  fire: Flux records failures in status conditions and requeues, so
+  `controller_runtime_reconcile_errors_total` stays 0 through real failures
+  (82 retries moved it by exactly 0). Replaced by the platform-side
+  `platform_flux_unready_resources` gauge (Ready=False count from the kube
+  API, suspended excluded).
 
 ## R3 — Load testing in CI
 
