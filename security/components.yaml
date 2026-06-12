@@ -329,16 +329,18 @@ components:
     name: Flux v2 (GitOps reconciler — supply chain)
     tier: "1"
     kind: binary
-    pinned: latest-cli
+    pinned: "2.8.8"
     pin_source: scripts/bootstrap.sh
-    pin_check: false
+    pin_check: true
     watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }
     scan: manual
     owner: platform
     notes: >-
-      Installed via `flux install` (CLI latest, UNPINNED) — see install_flux(). Can deploy
-      anything to the cluster. CONSIDER pinning the Flux version. Watch source-controller/
-      kustomize-controller CVEs.
+      Pinned 2026-06-12 (was CLI-latest, the last unpinned core component).
+      FLUX_VERSION in bootstrap.sh (bare semver — the official installer wants it
+      without the 'v'); `flux install` deploys controllers matching the CLI, so the
+      one pin covers both. Can deploy anything to the cluster. Watch
+      source-controller/kustomize-controller CVEs.
 
   - id: firewall-reconciler
     name: firewall-reconciler DaemonSet (nft on host)

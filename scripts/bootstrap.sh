@@ -346,6 +346,14 @@ DRY_RUN=false
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
 LONGHORN_VERSION="v1.11.1"               # 2026-03-13
+# Flux CLI + controllers (flux install deploys controller versions
+# matching the CLI). Pinned 2026-06-12 — the GitOps engine was the
+# LAST unpinned core component: every bootstrap silently took whatever
+# fluxcd.io/install.sh shipped that day, so two nodes bootstrapped a
+# week apart could run different reconciler behaviour (R15 lesson —
+# unpinned drift is how the ssa-policy surprise class happens).
+# Latest stable at pin time: v2.8.8 (2026-05-20).
+FLUX_VERSION="2.8.8"
 TRAEFIK_CHART_VERSION="40.2.0"           # app v3.7.1 "Langres"; verify: helm search repo traefik/traefik
 # Traefik plugin catalog refs. install_traefik wires these into the
 # `experimental.plugins.<name>.{moduleName,version}` helm values so the
@@ -3469,13 +3477,22 @@ install_flux_cli() {
   if [[ "$SKIP_FLUX" == true ]]; then return 0; fi
 
   if command -v flux &>/dev/null; then
-    log "Flux CLI already installed."
-    return 0
+    local have
+    have=$(flux version --client 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    if [[ "$have" == "$FLUX_VERSION" ]]; then
+      log "Flux CLI v${FLUX_VERSION} already installed."
+      return 0
+    fi
+    # A different CLI version would deploy different controller versions
+    # on `flux install` — reinstall at the pin rather than silently using
+    # whatever happens to be on the node (e.g. from an older bootstrap).
+    log "Flux CLI v${have:-unknown} present but pin is v${FLUX_VERSION} — reinstalling at the pin..."
+  else
+    log "Installing Flux CLI v${FLUX_VERSION}..."
   fi
-
-  log "Installing Flux CLI..."
-  curl -fsSL https://fluxcd.io/install.sh | bash
-  log "Flux CLI installed."
+  # The official installer honours FLUX_VERSION (bare semver, no 'v').
+  curl -fsSL https://fluxcd.io/install.sh | FLUX_VERSION="$FLUX_VERSION" bash
+  log "Flux CLI v${FLUX_VERSION} installed."
 }
 
 helm_cmd() {
