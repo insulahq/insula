@@ -17,7 +17,7 @@ import {
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
-import { alertState, monitoringRuleOverrides } from '../../db/schema.js';
+import { alertState, monitoringRuleOverrides, monitoringEvaluatorLease } from '../../db/schema.js';
 import { SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, ruleById } from './rules.js';
 import { vmReachable } from './evaluator.js';
 import { queryRange } from './vm-client.js';
@@ -65,9 +65,10 @@ export async function monitoringRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/admin/monitoring/slo — rule pack + live state.
   app.get('/admin/monitoring/slo', async () => {
-    const [states, overrides] = await Promise.all([
+    const [states, overrides, [lease]] = await Promise.all([
       app.db.select().from(alertState),
       app.db.select().from(monitoringRuleOverrides),
+      app.db.select().from(monitoringEvaluatorLease),
     ]);
     const stateById = new Map(states.map((s) => [s.ruleId, s]));
     const ovById = new Map(overrides.map((o) => [o.ruleId, o]));
@@ -109,10 +110,11 @@ export async function monitoringRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const lastEval = states.reduce<Date | null>((acc, s) => {
-      if (!s.lastEvaluatedAt) return acc;
-      return !acc || s.lastEvaluatedAt > acc ? s.lastEvaluatedAt : acc;
-    }, null);
+    // Heartbeat comes from the LEASE, not alert_state: a fully healthy
+    // cluster writes no alert rows at all, which left the panel saying
+    // "not yet run" while the evaluator ticked happily (seen on the
+    // first live deploy).
+    const lastEval = lease?.lastRunAt ?? null;
 
     return success(sloStatusResponseSchema.parse({
       rules,
