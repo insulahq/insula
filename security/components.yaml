@@ -346,7 +346,7 @@ components:
     name: VictoriaMetrics vmsingle (metrics TSDB + scraper + VMUI)
     tier: "1"
     kind: image
-    pinned: "v1.136.11"
+    pinned: "v1.145.0"
     pin_source: k8s/base/monitoring/vmsingle.yaml
     pin_check: true
     repos: [victoriametrics/victoria-metrics]
@@ -354,10 +354,10 @@ components:
     scan: trivy
     owner: platform
     notes: >-
-      ADR-051. LTS line v1.136.x ONLY (≥12-month support) — bump within the LTS
-      line; moving to a newer LTS line is a deliberate upgrade, not a routine
-      patch. Serves the admin-gated metrics.<apex> VMUI; reads kube API
-      (read-only scrape RBAC) and kubelet metrics.
+      ADR-051. Latest stable OSS release — VictoriaMetrics LTS lines are
+      ENTERPRISE-image-only (no OSS v1.136.x tags exist), so the rolling line
+      is the only OSS option. Serves the admin-gated metrics.<apex> VMUI;
+      reads kube API (read-only scrape RBAC) and kubelet metrics.
 
   - id: firewall-reconciler
     name: firewall-reconciler DaemonSet (nft on host)
