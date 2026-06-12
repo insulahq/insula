@@ -5,6 +5,7 @@ vi.mock('../stalwart-jmap/client.js', () => ({
   mtaOutboundThrottleSet: vi.fn(),
   mtaQueueQuotaGet: vi.fn(),
   mtaQueueQuotaSet: vi.fn(),
+  actionReloadSettings: vi.fn(),
 }));
 
 import {
@@ -14,6 +15,8 @@ import {
   type DomainSendLimit,
 } from './stalwart-throttles.js';
 import * as jmap from '../stalwart-jmap/client.js';
+
+const reload = vi.mocked(jmap.actionReloadSettings);
 
 const silentLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
@@ -41,13 +44,16 @@ describe('buildDesiredSendLimitObjects', () => {
     expect(quotas.size).toBe(1);
   });
 
-  it('renders a single messages=0 block quota for suspended domains', () => {
+  it('renders a single 1-byte size block quota for suspended domains', () => {
     const { throttles, quotas } = buildDesiredSendLimitObjects([
       { tenantId: 't1', domain: 'b.example.com', hourly: 0, daily: 0, blocked: true },
     ]);
     expect(throttles.size).toBe(0);
     const block = quotas.get(`${DESCRIPTION_PREFIX}b.example.com:block`);
-    expect(block?.messages).toBe(0);
+    // Stalwart rejects messages=0 (MinValue 1) — the block is a 1-byte
+    // size quota instead; messages stays null.
+    expect(block?.messages).toBeNull();
+    expect(block?.size).toBe(1);
     expect(block?.match.else).toBe("sender_domain = 'b.example.com'");
     expect(quotas.size).toBe(1);
   });
@@ -67,7 +73,7 @@ describe('buildDesiredSendLimitObjects', () => {
       { tenantId: 't1', domain: 'c.example.com', hourly: 0, daily: 100, blocked: false },
     ]);
     expect(throttles.size).toBe(0);
-    expect(quotas.get(`${DESCRIPTION_PREFIX}c.example.com:block`)?.messages).toBe(0);
+    expect(quotas.get(`${DESCRIPTION_PREFIX}c.example.com:block`)?.size).toBe(1);
   });
 });
 
@@ -124,6 +130,9 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     expect(res.skipped).toBe(false);
     expect(res.created).toBe(3); // hourly + daily + backlog
     expect(res.destroyed).toBe(0);
+    // Stalwart only reads this config at boot — changes must be
+    // followed by a ReloadSettings action.
+    expect(reload).toHaveBeenCalledTimes(1);
 
     const createArg = set.mock.calls[0][0].create as Record<string, { description: string }>;
     const descs = Object.values(createArg).map((c) => c.description).sort();
@@ -176,7 +185,8 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     const qCreateArg = qSet.mock.calls[0][0].create as Record<string, { description: string; messages: number }>;
     expect(Object.values(qCreateArg)[0]).toMatchObject({
       description: `${DESCRIPTION_PREFIX}old.example.com:block`,
-      messages: 0,
+      messages: null,
+      size: 1,
     });
   });
 
@@ -218,6 +228,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     expect(res.created).toBe(0);
     expect(res.updated).toBe(1);
     expect(res.destroyed).toBe(0);
+    expect(reload).toHaveBeenCalledTimes(1);
 
     const updateArg = set.mock.calls[0][0].update as Record<string, unknown>;
     expect(Object.keys(updateArg)).toEqual(['drift']);
@@ -248,5 +259,37 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
     const res = await reconcileStalwartSendLimits(db, silentLogger);
     expect(res.skipped).toBe(true);
     expect(res.reason).toBe('stalwart unreachable');
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('does not fire ReloadSettings when nothing changed', async () => {
+    get.mockResolvedValue([
+      {
+        id: 'h', enable: true,
+        description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
+        key: { senderDomain: true },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        rate: { count: 50, period: 3_600_000 },
+      },
+      {
+        id: 'd', enable: true,
+        description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`,
+        key: { senderDomain: true },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        rate: { count: 100, period: 86_400_000 },
+      },
+    ]);
+    qGet.mockResolvedValue([
+      {
+        id: 'q', enable: true,
+        description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
+        key: { senderDomain: true },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
+        messages: 100, size: null,
+      },
+    ]);
+    const res = await reconcileStalwartSendLimits(db, silentLogger);
+    expect(res.created + res.updated + res.destroyed).toBe(0);
+    expect(reload).not.toHaveBeenCalled();
   });
 });

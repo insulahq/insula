@@ -25,6 +25,7 @@ import {
   tenantLifecycleTransitions,
   storageOperations,
   provisioningTasks,
+  emailSendCounters,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -34,6 +35,9 @@ export const AUDIT_LOG_RETENTION_DAYS = 180;
 export const LIFECYCLE_TRANSITION_RETENTION_DAYS = 90;
 export const STORAGE_OPERATION_RETENTION_DAYS = 90;
 export const PROVISIONING_TASK_RETENTION_DAYS = 90;
+// Send-accounting buckets (R6 PR 2) — 35 days so rolling 30-day
+// complaint rates (R4) always have a full month of denominator.
+export const EMAIL_SEND_COUNTER_RETENTION_DAYS = 35;
 
 export interface DataRetentionResult {
   readonly auditLogs: number;
@@ -41,6 +45,7 @@ export interface DataRetentionResult {
   readonly lifecycleTransitions: number;
   readonly storageOperations: number;
   readonly provisioningTasks: number;
+  readonly emailSendCounters: number;
 }
 
 /**
@@ -95,10 +100,20 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     )
     .returning({ id: provisioningTasks.id });
 
+  // 5. email_send_counters — hourly accounting buckets (R6 PR 2);
+  //    aged buckets are pure history, never read after 35 days.
+  const sendCounters = await db
+    .delete(emailSendCounters)
+    .where(
+      sql`${emailSendCounters.bucketStart} < NOW() - INTERVAL '${sql.raw(String(EMAIL_SEND_COUNTER_RETENTION_DAYS))} days'`,
+    )
+    .returning({ bucketStart: emailSendCounters.bucketStart });
+
   return {
     auditLogs: audit.length,
     lifecycleTransitions: transitions.length,
     storageOperations: storage.length,
     provisioningTasks: provisioning.length,
+    emailSendCounters: sendCounters.length,
   };
 }
