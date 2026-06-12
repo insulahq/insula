@@ -1,199 +1,128 @@
 # Monitoring & Observability
 
-## Observability Stack
+The deployed observability stack (ADR-051, resolves roadmap R2) is built
+around **one pod** plus the platform's own modules:
 
-The platform implements a complete observability system for metrics, logs, dashboards, and alerting.
-
-> **Reality note (2026-06-07):** This document describes the **target** design.
-> The Prometheus / Loki / Grafana / Alertmanager stack is **not deployed**; the
-> shipped observability surface is the built-in `metrics`, `node-health`,
-> `cluster-health` modules, the admin Monitoring page, and the notifications
-> system. Deploying the full stack vs. formally adopting the built-ins is an
-> open decision — `docs/roadmap/ROADMAP.md` R2.
-
-| Pillar | Tool | Purpose |
-| --- | --- | --- |
-| **Metrics** | **Prometheus** (via kube-prometheus-stack) | Cluster, node, pod, and app metrics |
-| **Logs** | **Loki** + **Promtail** | Centralized log aggregation |
-| **Dashboards** | **Grafana** | Platform ops + per-tenant dashboards |
-| **Alerting** | **Alertmanager** | Integrated with Prometheus |
-| **Traces** | **Tempo** (Phase 2 — planned post-MVP) | Low resource usage, Loki integration, deferred for Phase 2 |
-
-## What Gets Monitored
-
-### System & Infrastructure
-
-| Category | Metrics / Signals |
-| --- | --- |
-| **Cluster health** | Node status, CPU/mem/disk per node, pod restarts, OOM kills |
-| **Ingress** | Request rate, error rate (4xx/5xx), latency per host, TLS cert expiry |
-| **Storage** | PVC utilization, Longhorn replication lag, backup size |
-
-### Per-Client & Workload
-
-| Category | Metrics / Signals |
-| --- | --- |
-| **Per-client** | CPU/mem usage vs. quota, storage usage, HTTP errors, response time |
-| **Shared databases** | Connections per client, query latency, replication lag, total storage |
-| **Shared Redis** | Total memory used vs. `maxmemory` (alert at >80%), eviction rate (alert if non-zero sustained), hit/miss ratio, connections per client prefix, key count per prefix (alert if any prefix >10,000 keys — indicates misbehaving client) |
-| **Catalog images** | Clients per image version, deprecated image usage count |
-| **Scale-to-zero** | Cold start latency, idle client count, wake-up success rate |
-
-### Security & Operations
-
-| Category | Metrics / Signals |
-| --- | --- |
-| **Email** | Queue length, delivery success/failure, spam score |
-| **Security** | fail2ban triggers, WAF blocks, auth failures, suspicious patterns |
-| **Admin VPN (NetBird)** | Mesh peer count, management API reachability (external service health check) |
-| **DNS (PowerDNS)** | External API reachability, zone operation success rate, query latency (via external API health endpoint) |
-| **Backups** | Last successful backup time, backup size, restore test results |
-| **Certificates** | Days until expiry, renewal failures |
-
-## Alerting
-
-| Parameter | Value |
-| --- | --- |
-| Alerting tool | Alertmanager (with Prometheus rules) |
-| Notification channels | **Email + SMS** (PagerDuty integration in Phase 2) |
-| Critical alerts | Node down, cluster unhealthy, shared DB down, backup failure, cert expiry < 7d, disk > 90%, external PowerDNS API unreachable, external OIDC provider unreachable |
-| Warning alerts | Client near quota, high error rate, deprecated image still in use, DB connection saturation |
-| On-call support | **Business hours only (MVP)** — no 24/7 on-call initially |
-| Escalation policy | **Single level: immediately page primary engineer** (direct escalation, minimal delay) |
-
-### External Service Health Checks (ADR-022)
-
-The platform depends on three external services. The Management API must implement health checks and graceful degradation for each.
-
-| External Service | Health Check | Degradation Behavior | Alert |
-|-----------------|-------------|---------------------|-------|
-| **PowerDNS API** | `GET /api/v1/servers/localhost` every 60s | DNS zone/record operations queued; existing domains continue working | `ExternalDNSAPIUnreachable` (CRITICAL after 5 min) |
-| **OIDC Provider** | Fetch `/.well-known/openid-configuration` every 60s | Existing valid tokens continue working; new logins fail; JWKS cache used (1hr TTL) | `ExternalOIDCUnreachable` (CRITICAL after 5 min) |
-| **NetBird Mesh** | Ping management API every 60s (if configured) | Admin access unaffected if mesh peers are cached; new peer enrollment fails | `ExternalNetBirdUnreachable` (WARNING after 5 min) |
-
-**Circuit breaker pattern:** After 3 consecutive failures, mark the external service as "degraded" in the admin panel health dashboard. Queue non-critical operations (DNS record updates, new domain provisioning). Continue serving existing traffic. Alert the admin. Resume automatically when health check passes.
-
-## SLOs & SLIs
-
-The platform commits to specific availability and performance targets:
-
-| Service | SLI (Indicator) | SLO (Objective) | Error Budget (per month) |
+| Pillar | Tool | Memory | Notes |
 | --- | --- | --- | --- |
-| Client web hosting | Availability (uptime) | **99.5%** (~4.3 hours downtime) | 3.6 hours |
-| Client web hosting | Latency (p95) | **< 1000ms** (relaxed, admin tools acceptable) | N/A |
-| Management panel | Availability | **99.5%** (~4.3 hours downtime) | 3.6 hours |
-| Shared MariaDB | Availability | **99.5%** (no HA initially; upgrade later) | 3.6 hours |
-| Shared PostgreSQL | Availability | **99.5%** (no HA initially; upgrade later) | 3.6 hours |
-| Email delivery | Delivery success rate | **99%** (acceptable, some mail loss tolerated) | 4.3 hours equivalent |
-| DNS resolution | Query success rate | **99.5%** (external PowerDNS) | 3.6 hours |
+| Metrics (scrape + TSDB + query + UI) | **VictoriaMetrics vmsingle** (`k8s/base/monitoring/`) | 128Mi req / 384Mi limit | Built-in scraper — no vmagent |
+| Alerting | **platform-api `monitoring` module** | 0 (in-process) | 60s evaluator → existing notification channels (email + in-app) |
+| Object/state health | Built-in `node-health` / `cluster-health` modules | 0 (existing) | K8s-API-driven; node DiskPressure alerts live HERE, not in PromQL |
+| Ad-hoc exploration | **VMUI** at `https://metrics.<apex>` | 0 (inside vmsingle) | Admin-cookie gated (`insula.host/admin-ui` label, CI-enforced) |
+| Dashboards | Admin panel → Monitoring → SLOs tab | 0 (existing panel) | Panel-ID-keyed query proxy; no arbitrary PromQL from the browser |
+| Logs | **none (deferred)** | — | journald capped at 2G/node + kubelet rotation + `kubectl logs`; revisit on concrete need (ADR-051) |
 
-## Log Retention
+The kube-prometheus-stack + Loki helm path that used to hide behind
+`--with-monitoring` was removed 2026-06-12 (the flag is now a deprecation
+no-op). If a cluster ever ran it: `helm uninstall kube-prometheus -n
+monitoring && helm uninstall loki -n monitoring` — do **not** delete the
+`monitoring` namespace; it now hosts vmsingle.
 
-| Environment / Source | Retention Period |
-| --- | --- |
-| Client access logs | 30 days |
-| Platform service logs | 90 days |
-| Security / audit logs | 1 year |
-| Backup logs | 90 days |
+## Scrape targets
 
-## Client-Facing Metrics
+All targets are endpoints that already exist — no exporter sidecars, no
+node-exporter, no kube-state-metrics:
 
-Clients see basic metrics in their control panel:
+| Job | Target | Feeds |
+| --- | --- | --- |
+| `kubelet-cadvisor` | every node :10250 (SA bearer token) | node/container CPU + memory (hard `keep` allowlist — see below) |
+| `kubelet-resource` | every node :10250 | per-pod resource usage |
+| `traefik` | traefik pods :9100 | request rate / 5xx ratio / latency (availability + p95 SLOs) |
+| `cert-manager` | controller :9402 | certificate expiry + readiness |
+| `longhorn` | longhorn-manager :9500 | per-node storage capacity/usage (headroom SLO) |
+| `flux` | controllers :8080 | reconcile errors |
+| `cnpg` | system-db pods :9187 | postgres up / replication lag (PodMonitor CRD deliberately unused) |
+| `coredns` | kube-system :9153 | DNS health |
+| `platform-api` | :9090 (phase 2) | HTTP histogram, ACME order/renewal counters, mail TLS expiry, Stalwart task-queue depth |
 
-- **Bandwidth usage** (monthly)
-- **Storage usage** (files + DB)
-- **CPU / memory utilization** vs. plan limits
-- **Recent HTTP error rates**
-- **Last backup timestamp**
-- **Current container image version** (with upgrade available indicator)
+**Cardinality rule:** `kubelet-cadvisor` is the only job whose series
+count grows with tenant count. Its `metric_relabel_configs` keep-regex in
+`k8s/base/monitoring/scrape-config.yaml` is a hard allowlist — extend it
+deliberately per-metric, never wholesale. Check the live series count via
+VMUI → `/api/v1/status/tsdb` after changes.
 
-## Notification System
+**envsubst warning:** Flux postBuild runs envsubst over the rendered
+scrape config. Relabel `replacement` fields must use `$1`, never `${1}`
+(`ci-flux-envsubst-check.sh` guards the class).
 
-The management panel sends configurable email notifications to admins and clients for all relevant events.
+## Adding a scrape job
 
-### Architecture
+1. Add the job to `k8s/base/monitoring/scrape-config.yaml` (pod-role SD +
+   label `keep` + `__address__` port rewrite — copy an existing job).
+2. If the target namespace has a default-deny ingress netpol, add an
+   allow for `namespaceSelector kubernetes.io/metadata.name: monitoring`
+   scoped to the metrics port only (example: the :9187 rule in
+   `k8s/base/network-policies.yaml`).
+3. vmsingle picks up the ConfigMap change within ~1 min of kubelet sync
+   (or delete the pod). Verify at `https://metrics.<apex>/targets`.
 
-| Component | Description |
-| --- | --- |
-| **Notification Service** | Platform microservice that processes events and dispatches emails |
-| **Event bus** | Internal event stream — all platform services emit events (K8s events, API actions, metric thresholds) |
-| **Template engine** | Renders email content from configurable templates (subject, body, variables) |
-| **SMTP delivery** | Sends via platform mail stack (Docker-Mailserver) or external SMTP relay (SendGrid, Mailgun, etc.) |
-| **Notification log** | All sent notifications logged in DB for audit trail |
-| **Digest mode** | Option to batch low-priority notifications into a daily/weekly digest instead of individual emails |
+## Alerting (platform-api `monitoring` module)
 
-### Event Categories
+- The default SLO rule pack lives in code
+  (`backend/src/modules/monitoring/rules.ts`), derived from
+  `docs/roadmap/SLI_SLO_DEFINITION.md`: availability burn rates, p95
+  latency, cert expiry (<14d), Longhorn headroom (80/90%), node memory
+  (90/95%), CNPG up + replication lag, Flux reconcile errors,
+  scrape-target down, ACME order failures.
+- A 60s evaluator (HA-deduped across the 3 platform-api replicas via a
+  single-row DB lease claim) queries vmsingle; alert-state transitions
+  persist to `alert_state` and notify admins through the standard
+  notification channels with the node-health 24h re-fire throttle.
+- **Who watches the watcher:** after 3 consecutive query failures the
+  evaluator raises a synthetic `monitoring-unreachable` critical through
+  the same (VM-independent) notification path.
+- Per-rule threshold overrides / disables: `monitoring_rule_overrides`
+  (admin API) — the pack itself ships with each release.
+- Node **disk** is intentionally absent from the PromQL pack: kubelet
+  `DiskPressure` alerts come from the node-health module; the Longhorn
+  headroom rule covers data disks. Don't add node-exporter to "fix" this.
 
-Every event can be **individually enabled/disabled** per recipient in the admin panel.
+## External service health checks (ADR-022)
 
-**Client Account Events:**
-- `client.created` — New client account provisioned
-- `client.deleted` — Client account removed
-- `client.plan_changed` — Client switched plans or overrides changed
-- `client.plan_expiry_warning` — Plan expiry approaching (configurable: 30/14/7/1 days before)
-- `client.plan_expired` — Plan has expired
-- `client.suspended` — Client account suspended (non-payment, abuse, etc.)
-- `client.reactivated` — Client account reactivated after suspension
-- `client.login` — Client logged into management panel (optional)
-- `client.password_reset` — OIDC password/account recovery triggered
+Unchanged — these live in platform-api, not PromQL, because they degrade
+gracefully and gate platform behavior:
 
-**Resource & Quota Events:**
-- `resource.storage_warning` — Storage usage approaching limit (configurable: 80%/90%/95%)
-- `resource.storage_full` — Storage at 100% — writes may fail
-- `resource.cpu_sustained` — CPU usage sustained above limit
-- `resource.memory_sustained` — Memory usage sustained above limit
-- `resource.db_storage_warning` — Database storage approaching limit
-- `resource.db_connections_high` — Database connections near max for client
-- `resource.bandwidth_warning` — Monthly bandwidth approaching limit (if metered)
-- `resource.bandwidth_exceeded` — Monthly bandwidth limit exceeded
+| External Service | Health Check | Degradation Behavior |
+|-----------------|-------------|---------------------|
+| **PowerDNS API** | reachability probe | DNS zone/record ops queue; existing domains keep working |
+| **OIDC Provider** | `/.well-known/openid-configuration` | existing tokens keep working; new logins fail; JWKS cache (1h TTL) |
+| **NetBird Mesh** | management API probe (if configured) | admin access unaffected; new peer enrollment fails |
 
-**Email Sending Events:**
-- `email.sending_limit_warning` — Client approaching daily/hourly email sending limit
-- `email.sending_limit_reached` — Client hit email sending limit
-- `email.bounce_rate_high` — Bounce rate exceeds threshold
-- `email.spam_report` — Client's emails flagged as spam
-- `email.queue_stalled` — Mail queue not draining (system-wide)
-- `email.blacklist_detected` — Server IP detected on email blacklist
+## Storage & retention
 
-**Security Events:**
-- `security.fail2ban_ban` — IP banned by fail2ban (any layer)
-- `security.brute_force` — Brute force attack detected
-- `security.waf_block` — WAF blocked a malicious request
-- `security.waf_attack_surge` — WAF blocks exceed threshold (possible attack)
-- `security.unauthorized_access` — Unauthorized API call or kubectl access attempt
-- `security.client_compromise` — Suspected client site compromise (malware, defacement)
-- `security.ssl_cert_expiry` — TLS certificate expiring within 7 days (renewal failed)
+- PVC `vmsingle-storage`: **2Gi**, `longhorn-system-local` (1 replica —
+  metric history is recreatable; alert state lives in the platform DB).
+- `-retentionPeriod=30d`; expected usage 0.5–1GB at current series count
+  (~10–15k series @60s ≈ 15–30MB/day compressed).
+- `-storage.minFreeDiskSpaceBytes=200MB`: vmsingle flips ingestion
+  read-only (queries keep working) instead of crashing on a full disk;
+  the scrape/ingestion alerts surface it.
+- Reset/recovery: delete the PVC and the pod — vmsingle re-scrapes from
+  scratch. You lose charts, never platform state.
 
-**System & Infrastructure Events:**
-- `system.node_down` — K8s node unreachable
-- `system.node_disk_pressure` — Node disk usage > 85%
-- `system.pod_crash_loop` — Platform service pod in CrashLoopBackOff
+## Deep-dive recipe (opt-in, NOT deployed)
 
-## Grafana Dashboards
+For heavy debugging, point throwaway tooling at vmsingle's
+Prometheus-compatible API (`http://vmsingle.monitoring:8428`): a local
+Grafana container via `kubectl port-forward svc/vmsingle -n monitoring
+8428` costs zero cluster memory; kube-state-metrics / node-exporter can
+be `kubectl apply`'d temporarily if an investigation truly needs them.
+They are deliberately not part of any overlay — see ADR-051.
 
-**Platform Operations Dashboards:**
-- Cluster health (nodes, pods, resources)
-- Ingress and routing (request rates, errors, latency)
-- Database health (connections, storage, query performance)
-- Email queue and delivery stats
-- Backup status and sizes
-- Storage utilization and growth trends
+## Built-in modules (unchanged)
 
-**Per-Client Dashboards:**
-- Client resource usage (CPU, memory, storage)
-- Client HTTP traffic (requests, errors, latency)
-- Client backup history
-- Email account usage and sending limits
+- `metrics` — per-tenant resource usage vs plan limits (metrics.k8s.io);
+  also feeds the tenant panel's client-facing usage view.
+- `node-health` — 5-min reconciler: pressures, CSI presence, evictions;
+  severity transitions notify; recovery actions in the admin panel
+  (runbook: `docs/operations/NODE_HEALTH_MONITORING.md`).
+- `cluster-health` — deployment/daemonset readiness via the K8s API.
+- `notifications` — channel fan-out (email + in-app) with per-category
+  recipient configuration; the alert evaluator publishes through it.
 
-## Metrics Retention
+## Related documentation
 
-- **Local Prometheus:** 15 days (configurable)
-- **Long-term storage:** Optional — export to offsite backup server for compliance/audit
-- **Custom metrics:** Prometheus supports any custom application metrics emitted by client workloads
-
-## Related Documentation
-
-- **BACKUP_STRATEGY.md**: Backup monitoring and alerting
-- **INFRASTRUCTURE_SIZING.md**: Resource monitoring and capacity planning
-- **SECURITY_ARCHITECTURE.md**: Security event monitoring and logging
-- **EMAIL_SERVICES.md**: Email system monitoring and metrics
+- ADR-051 (`docs/architecture/adr/ADR-051-monitoring-stack-vmsingle.md`)
+- SLI/SLO definitions (`docs/roadmap/SLI_SLO_DEFINITION.md`)
+- Node health runbook (`docs/operations/NODE_HEALTH_MONITORING.md`)
+- Component watch / version pins (`docs/operations/COMPONENT_WATCH.md`)

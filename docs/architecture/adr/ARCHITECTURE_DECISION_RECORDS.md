@@ -2466,3 +2466,20 @@ Runbook: docs/operations/COMPONENT_WATCH.md.
 - Example ADRs: https://github.com/joelparkerhenderson/architecture_decision_record
 - AWS Architecture Patterns: https://aws.amazon.com/architecture/
 - CQRS & Event Sourcing: https://martinfowler.com/bliki/CQRS.html
+
+## ADR-051: Monitoring stack — VictoriaMetrics single-node + in-API alerting
+
+See [ADR-051-monitoring-stack-vmsingle.md](ADR-051-monitoring-stack-vmsingle.md).
+
+Summary (2026-06-12): Resolves R2. One Flux-managed `vmsingle` pod
+(scrape + TSDB + query + VMUI, requests 128Mi / limit 384Mi, 2Gi PVC,
+30d retention) in `k8s/base/monitoring/`, scraping only endpoints that
+already exist (kubelet/Traefik/cert-manager/Longhorn/Flux/CNPG/CoreDNS,
+later platform-api). Alert evaluation lives INSIDE platform-api
+(`modules/monitoring`) reusing the notification system + HA claim
+patterns — zero alerting pods. VMUI admin-gated at `metrics.<apex>`.
+VictoriaMetrics pinned to the LTS line (deliberate latest-stable
+exception, ADR-050 cadence). The legacy `--with-monitoring`
+kube-prometheus-stack+Loki helm path is removed; logs (Loki/VictoriaLogs)
+explicitly deferred; Grafana/KSM/node-exporter are a documented opt-in
+recipe, not deployed.

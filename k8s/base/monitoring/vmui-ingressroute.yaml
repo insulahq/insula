@@ -1,0 +1,62 @@
+# VMUI / query-API IngressRoute — admin-only web UI (same pattern as
+# k8s/base/longhorn/ui-ingress.yaml).
+#
+# The IngressRoute carries the `admin-ui=true` label so the overlay's
+# admin-auth-gate component provides the `admin-auth-cookie` Middleware.
+# This gates BOTH the VMUI explorer and the raw /api/v1/query* surface —
+# metrics can leak tenant hostnames and traffic shapes, so the whole
+# vhost sits behind the platform_session cookie.
+#
+# Hostname + issuer resolve via Flux postBuild ${DOMAIN} /
+# ${CLUSTER_ISSUER_NAME} substitution, like every other admin UI.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: vmsingle-ui
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    insula.host/admin-ui: "true"
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: "Host(`metrics.${DOMAIN}`)"
+      kind: Rule
+      middlewares:
+        - name: admin-auth-cookie
+          namespace: traefik
+        - name: compress
+          namespace: traefik
+      services:
+        - name: vmsingle
+          namespace: monitoring
+          port: 8428
+  tls:
+    secretName: vmsingle-ui-tls
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: vmsingle-ui
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  secretName: vmsingle-ui-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  dnsNames:
+    - metrics.${DOMAIN}
+  issuerRef:
+    name: "${CLUSTER_ISSUER_NAME}"
+    kind: ClusterIssuer
+    group: cert-manager.io

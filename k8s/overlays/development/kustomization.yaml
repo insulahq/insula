@@ -11,6 +11,10 @@ kind: Kustomization
 resources:
   - ../../base
   - ../../base/longhorn
+  # VictoriaMetrics vmsingle monitoring stack (ADR-051) — single
+  # ~128Mi pod: scrape + TSDB + VMUI at metrics.${DOMAIN} (admin-gated).
+  # Not in the dev/DinD overlay (no Longhorn, no real nodes there).
+  - ../../base/monitoring
   - ../../base/backup
   - dex/
   # Stalwart 0.16 mail server (Cut 3 cutover, 2026-05-04). Replaces the
