@@ -2520,5 +2520,5 @@ public-internet-only egress). PR 2 provision + content/DB sync. PR 3
 mail leg + verification report. PR 4 cutover + runbook.
 
 v1 scope: WordPress/plain-PHP web, MariaDB target, password continuity
-opt-in where the source stores reversibly (`accounts.type=sym`). Runbook
-(later PR): `docs/operations/PLESK_MIGRATION.md`.
+opt-in where the source stores reversibly (`accounts.type=sym`). The
+operations runbook ships with PR 4.
