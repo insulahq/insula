@@ -386,7 +386,6 @@ SEALED_SECRETS_CHART_VERSION="2.17.4"    # controller v0.36.6
 CNPG_CHART_VERSION="0.28.2"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
-ENABLE_MONITORING=false
 SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_LONGHORN=false
@@ -482,7 +481,7 @@ OPTIONS:
   --release-tag <vYYYY.M.PATCH> Production only: release tag for the Flux source
                          (default: v<platform/VERSION> of this checkout)
   --k3s-version <ver>    k3s version (default: v1.31.4+k3s1)
-  --with-monitoring      Install Prometheus + Loki
+  --with-monitoring      DEPRECATED no-op — monitoring is Flux-managed (ADR-051)
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
   --skip-longhorn        Skip Longhorn storage (use local-path)
@@ -898,8 +897,8 @@ parse_args() {
       --ssh-via-mesh)    SSH_VIA_MESH_IFACE="$2"; shift 2 ;;
       --calico-wg-public) CALICO_WG_PUBLIC="$2"; shift 2 ;;
       --calico-mtu)      CALICO_MTU="$2"; shift 2 ;;
-      --with-monitoring) ENABLE_MONITORING=true; shift ;;
-      --skip-monitoring) shift ;; # Deprecated — monitoring is now opt-in via --with-monitoring
+      --with-monitoring) warn "Deprecated flag '--with-monitoring' ignored — monitoring is Flux-managed now (k8s/base/monitoring, ADR-051). See docs/operations/MONITORING_OBSERVABILITY.md."; shift ;;
+      --skip-monitoring) shift ;; # Deprecated no-op — monitoring is Flux-managed (ADR-051)
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
@@ -4159,54 +4158,13 @@ install_cnpg() {
   log "CloudNative-PG operator at chart ${CNPG_CHART_VERSION}."
 }
 
-install_monitoring() {
-  if [[ "$ENABLE_MONITORING" != true ]]; then
-    log "Skipping monitoring stack (use --with-monitoring to install)."
-    return 0
-  fi
-
-  if kctl get statefulset -n monitoring prometheus-kube-prometheus-prometheus &>/dev/null 2>&1; then
-    log "Prometheus already installed, skipping."
-  else
-    log "Installing kube-prometheus-stack..."
-    helm_cmd repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
-    helm_cmd repo update
-
-    helm_cmd upgrade --install kube-prometheus prometheus-community/kube-prometheus-stack \
-      --namespace monitoring \
-      --create-namespace \
-      --set prometheus.prometheusSpec.retention=7d \
-      --set prometheus.prometheusSpec.resources.requests.memory=512Mi \
-      --set prometheus.prometheusSpec.resources.requests.cpu=250m \
-      --set prometheus.prometheusSpec.resources.limits.memory=1Gi \
-      --set grafana.enabled=true \
-      --set grafana.adminPassword=change-me \
-      --set alertmanager.enabled=true \
-      --wait \
-      --timeout 600s
-
-    log "kube-prometheus-stack installed."
-  fi
-
-  if kctl get statefulset -n monitoring loki &>/dev/null 2>&1; then
-    log "Loki already installed, skipping."
-  else
-    log "Installing Loki..."
-    helm_cmd repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-    helm_cmd repo update
-
-    helm_cmd upgrade --install loki grafana/loki-stack \
-      --namespace monitoring \
-      --create-namespace \
-      --set loki.persistence.enabled=true \
-      --set loki.persistence.size=5Gi \
-      --set promtail.enabled=true \
-      --wait \
-      --timeout 300s
-
-    log "Loki + Promtail installed."
-  fi
-}
+# install_monitoring() removed 2026-06-12 (ADR-051). The metrics stack
+# is now Flux-managed: k8s/base/monitoring/ ships a single VictoriaMetrics
+# vmsingle pod (scrape + TSDB + query + VMUI, ~128Mi) included by the
+# development/production overlays — no helm step, nothing to do here.
+# The previous kube-prometheus-stack + Loki helm path (~1.5-2.5Gi, not
+# GitOps-managed) is gone; see docs/operations/MONITORING_OBSERVABILITY.md
+# (incl. the uninstall note for clusters that ever ran --with-monitoring).
 
 install_flux() {
   if [[ "$SKIP_FLUX" == true ]]; then
@@ -7284,7 +7242,6 @@ print_summary() {
   log "    - Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
   log "    - cert-manager (Let's Encrypt staging + production)"
   log "    - Sealed Secrets"
-  [[ "$ENABLE_MONITORING" == true ]] && log "    - Prometheus + Grafana + Loki"
   [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
   log "    - Platform namespaces + RBAC + network policies"
   log ""
@@ -7294,9 +7251,8 @@ print_summary() {
   log "    export KUBECONFIG=./kubeconfig.yaml"
   log "    kubectl get nodes"
   log ""
-  log "  Grafana (if monitoring enabled):"
-  log "    kubectl port-forward -n monitoring svc/kube-prometheus-grafana 3000:80"
-  log "    User: admin / Password: change-me"
+  log "  Metrics UI (VictoriaMetrics VMUI, admin-gated):"
+  log "    https://metrics.${PLATFORM_DOMAIN}"
   log ""
   log "════════════════════════════════════════════════"
 }
@@ -7462,7 +7418,6 @@ main() {
     # is a single-CR step rather than a multi-phase upgrade when the
     # time comes.
     install_cnpg
-    install_monitoring
     # CRITICAL ORDERING (Cut 3 staging-cutover lesson, 2026-05-04):
     # generate_platform_secrets MUST run BEFORE install_flux. Flux's
     # Kustomization starts reconciling within seconds of creation; if

@@ -1,0 +1,42 @@
+# RBAC for vmsingle's built-in Prometheus-compatible service discovery
+# and kubelet scraping (ADR-051).
+#
+# kubernetes_sd_configs needs list/watch on the discovery objects;
+# `nodes/metrics` + `nodes/proxy` cover the kubelet scrape paths —
+# /metrics/cadvisor and /metrics/resource directly on :10250, plus the
+# apiserver-proxy fallback path (/api/v1/nodes/<n>/proxy/...) should the
+# node-direct route ever be firewalled. Read-only throughout — vmsingle
+# never mutates cluster state.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vmsingle
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vmsingle-scrape
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics", "nodes/proxy", "pods", "services", "endpoints"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vmsingle-scrape
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vmsingle-scrape
+subjects:
+  - kind: ServiceAccount
+    name: vmsingle
+    namespace: monitoring

@@ -342,6 +342,23 @@ components:
       one pin covers both. Can deploy anything to the cluster. Watch
       source-controller/kustomize-controller CVEs.
 
+  - id: victoria-metrics
+    name: VictoriaMetrics vmsingle (metrics TSDB + scraper + VMUI)
+    tier: "1"
+    kind: image
+    pinned: "v1.136.11"
+    pin_source: k8s/base/monitoring/vmsingle.yaml
+    pin_check: true
+    repos: [victoriametrics/victoria-metrics]
+    watch: { type: github_releases, repo: VictoriaMetrics/VictoriaMetrics, advisories: VictoriaMetrics/VictoriaMetrics }
+    scan: trivy
+    owner: platform
+    notes: >-
+      ADR-051. LTS line v1.136.x ONLY (≥12-month support) — bump within the LTS
+      line; moving to a newer LTS line is a deliberate upgrade, not a routine
+      patch. Serves the admin-gated metrics.<apex> VMUI; reads kube API
+      (read-only scrape RBAC) and kubelet metrics.
+
   - id: firewall-reconciler
     name: firewall-reconciler DaemonSet (nft on host)
     tier: "1"

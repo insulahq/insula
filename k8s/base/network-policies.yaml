@@ -228,6 +228,17 @@ spec:
           port: 8000   # instance manager status (HTTPS)
         - protocol: TCP
           port: 9187   # postgres-exporter metrics
+    # vmsingle (monitoring ns) scrapes the postgres-exporter directly
+    # on 9187 (ADR-051 — PodMonitor CRD intentionally unused, no
+    # prometheus-operator). Scoped to 9187 ONLY: the instance-manager
+    # status port 8000 stays cnpg-system-exclusive.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9187   # postgres-exporter metrics (vmsingle scrape)
     # Streaming replication: standby instances connect to the
     # primary on 5432. Both peer rule sides use Exists so any
     # cnpg-managed pod can replicate from any other cnpg-managed

@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Monitoring stack — VictoriaMetrics single-node (ADR-051).
+#
+# ONE pod does everything: scraping (built-in -promscrape.config — no
+# vmagent), TSDB storage, the PromQL/MetricsQL query API, and the VMUI
+# web UI. Requests 128Mi / limit 384Mi TOTAL — chosen over
+# kube-prometheus-stack (~1.5-2.5Gi) for the lean-budget node sizes.
+# Alert evaluation deliberately lives in platform-api (zero extra pods,
+# reuses the existing notification system) — see
+# backend/src/modules/monitoring/ and ADR-051 for the full decision.
+#
+# Like k8s/base/longhorn, this directory is NOT in k8s/base/
+# kustomization.yaml — the dev/DinD overlay has no Longhorn and no real
+# nodes; the development + production overlays opt in.
+#
+# The `monitoring` namespace itself is declared in k8s/base/namespaces.yaml.
+
+resources:
+  - rbac.yaml
+  - scrape-config.yaml
+  - vmsingle.yaml
+  - vmui-ingressroute.yaml
+  - netpol.yaml
