@@ -25,7 +25,10 @@ data:
 
     scrape_configs:
       # ── vmsingle self ────────────────────────────────────────────
+      # -http.pathPrefix=/metrics moves vmsingle's own exposition
+      # endpoint from /metrics to /metrics/metrics.
       - job_name: vmsingle
+        metrics_path: /metrics/metrics
         static_configs:
           - targets: ['localhost:8428']
 

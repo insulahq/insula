@@ -4,7 +4,7 @@
  * The series endpoint is a PANEL-ID-KEYED proxy: the browser names a
  * predefined panel, the PromQL lives server-side. Arbitrary expressions
  * never cross the API boundary — ad-hoc exploration is what the
- * admin-gated VMUI at metrics.<apex> is for.
+ * admin-gated VMUI at admin.<apex>/metrics/vmui/ is for.
  */
 import type { FastifyInstance } from 'fastify';
 import { sql, eq } from 'drizzle-orm';

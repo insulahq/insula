@@ -4,11 +4,17 @@
 # evaluator, and the categorised SLO alert notifications (#56 + #57).
 #
 # Phases:
-#   A — VMUI auth gate + scrape health (through the user-facing endpoint)
-#     A1. anonymous GET https://metrics.<apex>/ → denied (401/403/302)
+#   A — admin-host path-route auth gates + scrape health (2026-06-12:
+#       both UIs ride admin.<apex> as paths — no metrics./longhorn.
+#       subdomains, no extra LE certs)
+#     A1. anonymous GET <admin>/metrics/ → denied (401/403/302)
 #     A2. same URL with the platform_session cookie → 200 (VMUI serves)
-#     A3. /api/v1/query `min by (job) (up)` through the gate: every
-#         scrape job up==1, and at least MIN_SCRAPE_JOBS jobs present
+#     A3. <admin>/metrics/api/v1/query `min by (job) (up)` through the
+#         gate: every scrape job up==1, ≥ MIN_SCRAPE_JOBS jobs present
+#     A4. anonymous <admin>/longhorn/ → denied; with cookie → 200 and
+#         the page references RELATIVE assets (the stripPrefix model)
+#     A5. <admin>/v1 (longhorn API carve-out for the SPA's hardcoded
+#         absolute paths) — anonymous denied, cookie-authenticated 200
 #   B — SLO admin API
 #     B1. GET /admin/monitoring/slo → vmReachable=true, evaluator
 #         heartbeat (lastEvaluationAt) fresh, full rule pack listed
@@ -29,6 +35,11 @@
 #         provider, but the ROW must exist)
 #     D3. clear the override → alert resolves; admin.slo_alert_resolved
 #         delivery rows written (same in_app + email-presence contract)
+#   E — HA metrics-storage replication (needs $KUBECTL; skipped on
+#       systemTier=local): the platform-storage-policy includes the
+#       vmsingle-storage volume, so on an HA-tier cluster its Longhorn
+#       volume must converge to numberOfReplicas ≥ 2 (advisor ticks
+#       every 5 min — the wait covers a fresh deploy)
 #
 #   Induce-rule choice: cnpg-down is the only deterministic live induce —
 #   acme-order-rate (forSeconds=0) has no `or vector(0)` arm, so with zero
@@ -45,10 +56,10 @@
 #   API_URL          required — https://admin.<apex>
 #   ADMIN_EMAIL      required
 #   ADMIN_PASSWORD   required
-#   PLATFORM_DOMAIN  apex override (default: derived from API_URL host)
-#   METRICS_HOST     default: metrics.<apex>
+#   METRICS_BASE     default: $API_URL/metrics (the admin-host path route)
 #   KUBECTL          optional — kubectl command for the vmsingle-absent
-#                    probe (lib/kubectl-remote.sh on staging)
+#                    probe + the HA replica phase (lib/kubectl-remote.sh
+#                    on staging)
 #   SKIP_ALERT_SCENARIO=1   skip phase D (the slow leg)
 #   MIN_SCRAPE_JOBS  default 8
 
@@ -61,11 +72,7 @@ source "$SCRIPT_DIR/lib/integration-lib.sh"
 
 require_env API_URL ADMIN_EMAIL ADMIN_PASSWORD
 
-APEX="${PLATFORM_DOMAIN:-}"
-if [[ -z "$APEX" ]]; then
-  APEX="$(sed -E 's#^https?://[^./]+\.##; s#/.*$##' <<<"$API_URL")"
-fi
-METRICS_HOST="${METRICS_HOST:-metrics.$APEX}"
+METRICS_BASE="${METRICS_BASE:-$API_URL/metrics}"
 MIN_SCRAPE_JOBS="${MIN_SCRAPE_JOBS:-8}"
 KUBECTL="${KUBECTL:-}"
 
@@ -132,30 +139,54 @@ elif [[ "$(jq -r '.data.vmReachable' <<<"$SLO_BODY")" != "true" ]]; then
   exit "$INTEGRATION_SKIP_RC"
 fi
 
-# ── Phase A: VMUI gate + scrape health ───────────────────────────────
-il_phase_begin "A: VMUI auth gate + scrape health"
-ANON_CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "https://$METRICS_HOST/" || echo 000)"
+# ── Phase A: admin-host path gates + scrape health ───────────────────
+il_phase_begin "A: path-route auth gates + scrape health"
+ANON_CODE="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$METRICS_BASE/vmui/" || echo 000)"
 if [[ "$ANON_CODE" =~ ^(401|403|302)$ ]]; then
-  il_ok "A1 anonymous metrics UI denied ($ANON_CODE)"
+  il_ok "A1 anonymous /metrics denied ($ANON_CODE)"
 else
-  il_fail "A1 anonymous metrics UI returned $ANON_CODE (expected 401/403/302)"
+  il_fail "A1 anonymous /metrics returned $ANON_CODE (expected 401/403/302)"
 fi
 
-AUTH_CODE="$(curl -sk -b "$COOKIE_JAR" -o /dev/null -w '%{http_code}' --max-time 15 "https://$METRICS_HOST/" || echo 000)"
+AUTH_CODE="$(curl -sk -b "$COOKIE_JAR" -o /dev/null -w '%{http_code}' --max-time 15 "$METRICS_BASE/vmui/" || echo 000)"
 if [[ "$AUTH_CODE" == "200" ]]; then
-  il_ok "A2 metrics UI serves with platform_session cookie"
+  il_ok "A2 VMUI serves at /metrics/vmui/ with platform_session cookie"
 else
-  il_fail "A2 metrics UI with cookie returned $AUTH_CODE (expected 200)"
+  il_fail "A2 /metrics/vmui/ with cookie returned $AUTH_CODE (expected 200)"
 fi
 
 UP_JSON="$(curl -sk -b "$COOKIE_JAR" --max-time 15 \
-  "https://$METRICS_HOST/api/v1/query" --data-urlencode 'query=min by (job) (up)' -G || echo '{}')"
+  "$METRICS_BASE/api/v1/query" --data-urlencode 'query=min by (job) (up)' -G || echo '{}')"
 JOB_COUNT="$(jq -r '.data.result | length' <<<"$UP_JSON" 2>/dev/null || echo 0)"
 DOWN_JOBS="$(jq -r '[.data.result[] | select(.value[1] != "1") | .metric.job] | join(",")' <<<"$UP_JSON" 2>/dev/null || echo parse-error)"
 if [[ "$JOB_COUNT" -ge "$MIN_SCRAPE_JOBS" && -z "$DOWN_JOBS" ]]; then
   il_ok "A3 all $JOB_COUNT scrape jobs up==1"
 else
   il_fail "A3 scrape health: jobs=$JOB_COUNT (need ≥$MIN_SCRAPE_JOBS), down=[${DOWN_JOBS:-?}]"
+fi
+
+# Longhorn UI path route (stripPrefix model — assets must be RELATIVE).
+LH_ANON="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$API_URL/longhorn/" || echo 000)"
+LH_AUTH_BODY="$(curl -sk -b "$COOKIE_JAR" --max-time 15 "$API_URL/longhorn/" || true)"
+LH_AUTH="$(curl -sk -b "$COOKIE_JAR" -o /dev/null -w '%{http_code}' --max-time 15 "$API_URL/longhorn/" || echo 000)"
+if [[ "$LH_ANON" =~ ^(401|403|302)$ && "$LH_AUTH" == "200" ]]; then
+  il_ok "A4 /longhorn/ gate (anon $LH_ANON, cookie 200)"
+else
+  il_fail "A4 /longhorn/ gate: anon=$LH_ANON (want 401/403/302), cookie=$LH_AUTH (want 200)"
+fi
+if grep -q 'src="\./' <<<"$LH_AUTH_BODY"; then
+  il_ok "A4 longhorn-ui page uses relative asset paths (subpath-safe)"
+else
+  il_fail "A4 longhorn-ui page has NO relative asset refs — upstream regressed to absolute paths?"
+fi
+
+# The /v1 carve-out (longhorn-ui SPA hardcodes absolute /v1 API paths).
+V1_ANON="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 "$API_URL/v1/settings" || echo 000)"
+V1_AUTH="$(curl -sk -b "$COOKIE_JAR" -o /dev/null -w '%{http_code}' --max-time 15 "$API_URL/v1/settings" || echo 000)"
+if [[ "$V1_ANON" =~ ^(401|403|302)$ && "$V1_AUTH" == "200" ]]; then
+  il_ok "A5 /v1 longhorn-API carve-out gated (anon $V1_ANON, cookie 200)"
+else
+  il_fail "A5 /v1 carve-out: anon=$V1_ANON (want denied), cookie=$V1_AUTH (want 200)"
 fi
 il_phase_end
 
@@ -271,6 +302,28 @@ else
   [[ "$R_EMAIL" != "absent" ]] \
     && il_ok "D3 resolved email delivery row present (status=$R_EMAIL)" \
     || il_fail "D3 resolved email delivery row ABSENT"
+  il_phase_end
+fi
+
+# ── Phase E: HA metrics-storage replication ──────────────────────────
+TIER="$(api GET '/admin/platform-storage-policy' | jq -r '.data.policy.systemTier // "unknown"')"
+if [[ -z "$KUBECTL" ]]; then
+  il_skip "E: HA replica check (no \$KUBECTL configured)"
+elif [[ "$TIER" != "ha" ]]; then
+  il_skip "E: HA replica check (systemTier=$TIER — only meaningful on ha)"
+else
+  il_phase_begin "E: vmsingle volume replicated on HA tier"
+  LH_VOL="$($KUBECTL get pvc vmsingle-storage -n monitoring -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)"
+  if [[ -z "$LH_VOL" ]]; then
+    il_fail "E1 could not resolve vmsingle-storage PV name"
+  else
+    # The storage-policy advisor reconciles drift every 5 min — the
+    # wait covers a freshly-deployed policy that includes the volume.
+    il_wait_for 420 "E1 vmsingle Longhorn volume numberOfReplicas ≥ 2 (vol=$LH_VOL)" \
+      '^(2|3)$' '-' \
+      "$KUBECTL get volumes.longhorn.io -n longhorn-system $LH_VOL -o jsonpath='{.spec.numberOfReplicas}'" \
+      || true
+  fi
   il_phase_end
 fi
 

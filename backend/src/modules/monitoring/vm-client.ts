@@ -8,7 +8,10 @@
  * failure accounting (consecutive-failure → monitoring-unreachable).
  */
 
-export const DEFAULT_VM_BASE_URL = 'http://vmsingle.monitoring:8428';
+// vmsingle serves under -http.pathPrefix=/metrics (so its UI/API can
+// ride the admin host as a path route) — the prefix applies to the
+// in-cluster API surface too.
+export const DEFAULT_VM_BASE_URL = 'http://vmsingle.monitoring:8428/metrics';
 
 const QUERY_TIMEOUT_MS = 5_000;
 

@@ -1,14 +1,29 @@
-# VMUI / query-API IngressRoute — admin-only web UI (same pattern as
-# k8s/base/longhorn/ui-ingress.yaml).
+# VMUI / query-API path route on the ADMIN host (no dedicated subdomain).
+#
+# https://admin.<apex>/metrics/…  →  vmsingle:8428 (which serves
+# everything under /metrics via -http.pathPrefix — no stripPrefix here,
+# so VMUI's asset and API paths line up without rewriting).
+#
+# Why a path instead of metrics.<apex> (operator decision 2026-06-12):
+# one fewer public hostname + LE certificate + DNS name; TLS rides the
+# admin host's existing certificate (Traefik picks it by SNI from the
+# platform-ingress router's store — `tls: {}` just enables TLS here).
+#
+# The match assumes the DEFAULT admin host `admin.${DOMAIN}` (the same
+# assumption the dev overlay's ingress-upload carve-out makes). An
+# operator who relocates the admin panel via system-settings
+# adminPanelUrl must adjust this route too.
+#
+# Priority 100 (explicit, matching the ingress-upload precedent) wins
+# over the reconciler-managed catch-all `Host(admin.<apex>)` route.
+# The two-part match is segment-safe: a bare PathPrefix(`/metrics`)
+# would also swallow e.g. /metricsfoo.
 #
 # The IngressRoute carries the `admin-ui=true` label so the overlay's
 # admin-auth-gate component provides the `admin-auth-cookie` Middleware.
 # This gates BOTH the VMUI explorer and the raw /api/v1/query* surface —
 # metrics can leak tenant hostnames and traffic shapes, so the whole
-# vhost sits behind the platform_session cookie.
-#
-# Hostname + issuer resolve via Flux postBuild ${DOMAIN} /
-# ${CLUSTER_ISSUER_NAME} substitution, like every other admin UI.
+# prefix sits behind the platform_session cookie.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
@@ -21,8 +36,9 @@ spec:
   entryPoints:
     - websecure
   routes:
-    - match: "Host(`metrics.${DOMAIN}`)"
+    - match: "Host(`admin.${DOMAIN}`) && (Path(`/metrics`) || PathPrefix(`/metrics/`))"
       kind: Rule
+      priority: 100
       middlewares:
         - name: admin-auth-cookie
           namespace: traefik
@@ -32,31 +48,4 @@ spec:
         - name: vmsingle
           namespace: monitoring
           port: 8428
-  tls:
-    secretName: vmsingle-ui-tls
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: vmsingle-ui
-  namespace: monitoring
-  labels:
-    app.kubernetes.io/part-of: hosting-platform
-spec:
-  secretName: vmsingle-ui-tls
-  duration: 2160h
-  renewBefore: 720h
-  privateKey:
-    algorithm: ECDSA
-    size: 256
-    rotationPolicy: Always
-  usages:
-    - digital signature
-    - key encipherment
-    - server auth
-  dnsNames:
-    - metrics.${DOMAIN}
-  issuerRef:
-    name: "${CLUSTER_ISSUER_NAME}"
-    kind: ClusterIssuer
-    group: cert-manager.io
+  tls: {}

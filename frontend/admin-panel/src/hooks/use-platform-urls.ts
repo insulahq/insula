@@ -51,10 +51,12 @@ export function useUpdatePlatformUrls() {
  * Best-effort URL getter. Used in places where the page renders before
  * the query resolves (e.g. the StorageSettings iframe button). Prefers
  * the DB-resolved value, falls back to the runtime-config window global,
- * then to an empty string.
+ * then to the platform default `/longhorn/` — the cookie-gated path
+ * route every cluster ships on the admin host (2026-06-12; replaced
+ * the longhorn.<apex> subdomain).
  */
 export function resolveLonghornUrl(data: PlatformUrlsResponse | undefined): string {
-  return data?.longhornUrl?.value || runtimeConfig.LONGHORN_URL || '';
+  return data?.longhornUrl?.value || runtimeConfig.LONGHORN_URL || '/longhorn/';
 }
 export function resolveStalwartAdminUrl(data: PlatformUrlsResponse | undefined): string {
   return data?.stalwartAdminUrl?.value || runtimeConfig.STALWART_ADMIN_URL || '';

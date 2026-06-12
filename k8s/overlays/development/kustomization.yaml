@@ -113,7 +113,9 @@ patches:
   # ingress-reconciler.ts creates the IngressRoute from system_settings on
   # startup). Per-environment TLS settings flow through the reconciler
   # via the platform-cluster-config ConfigMap (Phase 2).
-  - path: longhorn-ui-patch.yaml
+  # longhorn-ui-patch.yaml was REMOVED 2026-06-12: the Longhorn UI now
+  # rides the admin host as /longhorn (path route, no own Certificate),
+  # so there is no issuerRef to override anymore.
   # Staging-only: system-db at 10Gi (existing cluster from pre-Phase-1
   # 10Gi base default). Base now defaults to 5Gi for fresh installs.
   - path: system-db-storage-patch.yaml
