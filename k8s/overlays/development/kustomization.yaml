@@ -149,7 +149,7 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20260611231112-30e7e27" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260612020113-6c4a4a1" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
     newTag: "20260611103311-82aa6ce" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
