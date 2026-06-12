@@ -1,0 +1,52 @@
+# NetworkPolicies for the monitoring namespace (ADR-051).
+#
+# Ingress-only, matching the repo-wide convention (no egress policies
+# exist anywhere in k8s/base — vmsingle's outbound scraping is
+# unrestricted by design, like every other namespace's egress).
+#
+# Allowed paths INTO vmsingle:8428:
+#   * traefik ns      — the admin-gated VMUI IngressRoute
+#   * platform-api    — the in-API alert evaluator + panel query proxy
+#                       (backend/src/modules/monitoring), lands with the
+#                       PR3 backend work but the allow is shaped now so
+#                       the netpol never needs another touch.
+# Everything else (tenant pods included) is denied by the default-deny.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-vmsingle
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app: vmsingle
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app: platform-api
+      ports:
+        - protocol: TCP
+          port: 8428

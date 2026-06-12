@@ -15,6 +15,9 @@ resources:
   # mail-pg) require `longhorn-system-local` SC. Without this include
   # the postgres-1 PVC stays Pending forever on a fresh bootstrap.
   - ../../base/longhorn
+  # VictoriaMetrics vmsingle monitoring stack (ADR-051) — single
+  # ~128Mi pod: scrape + TSDB + VMUI at metrics.${DOMAIN} (admin-gated).
+  - ../../base/monitoring
   # DR backup CronJobs (etcd/postgres/cluster-state/secrets/hostpath/audit).
   # Included in production + staging only — dev DinD has no real etcd and
   # backups-against-local-path would be noise.

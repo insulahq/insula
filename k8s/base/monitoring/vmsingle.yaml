@@ -1,0 +1,142 @@
+# VictoriaMetrics single-node — the entire metrics stack in one pod
+# (ADR-051): scraper (-promscrape.config), TSDB, query API, VMUI.
+#
+# Memory is the design constraint: requests 128Mi / limit 384Mi with
+# -memory.allowedBytes capping VM's caches well under the limit. The
+# PVC is 2Gi on purpose — ~10-15k series at 60s is ~15-30MB/day at
+# VM's sub-byte/sample compression, so 30d retention fits in <1GB;
+# -storage.minFreeDiskSpaceBytes flips ingestion read-only before the
+# disk fills (queries keep working, scrape-target alerts surface it)
+# instead of crash-looping.
+#
+# Version pin: v1.136.x is the LTS line (≥12 months of fixes) — chosen
+# over the latest fast-moving release line ON PURPOSE so version bumps
+# flow through the ADR-050 component-watch cadence instead of monthly
+# churn. Registry entry: security/components.yaml `victoria-metrics`
+# (pin_check enforces this file matches).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmsingle
+  namespace: monitoring
+  labels:
+    app: vmsingle
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  replicas: 1
+  # RWO PVC — never two pods against the same volume during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vmsingle
+  template:
+    metadata:
+      labels:
+        app: vmsingle
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      serviceAccountName: vmsingle
+      # Needed for kubernetes_sd_configs + kubelet bearer-token scrape.
+      automountServiceAccountToken: true
+      # Pin to server nodes: the system-node-affinity component only
+      # patches the platform/platform-system/mail namespaces, so this
+      # Deployment carries its own selector + toleration inline.
+      nodeSelector:
+        insula.host/node-role: server
+      tolerations:
+        - key: insula.host/server-only
+          operator: Exists
+          effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vmsingle
+          image: victoriametrics/victoria-metrics:v1.136.11
+          args:
+            - -promscrape.config=/config/prometheus.yml
+            - -storageDataPath=/storage
+            - -retentionPeriod=30d
+            - -memory.allowedBytes=192MiB
+            - -search.maxConcurrentRequests=4
+            - -storage.minFreeDiskSpaceBytes=209715200
+          ports:
+            - name: http
+              containerPort: 8428
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+          volumeMounts:
+            - name: storage
+              mountPath: /storage
+            - name: scrape-config
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8428
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8428
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: storage
+          persistentVolumeClaim:
+            claimName: vmsingle-storage
+        - name: scrape-config
+          configMap:
+            name: vmsingle-scrape-config
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vmsingle-storage
+  namespace: monitoring
+  labels:
+    app: vmsingle
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  accessModes:
+    - ReadWriteOnce
+  # Single Longhorn replica: metric history is recreatable by design —
+  # losing the disk costs at most 30d of charts, never platform state
+  # (alert state lives in the platform DB). Saves the 2× replication
+  # RAM/disk/network a -ha class volume would cost (ADR-051).
+  storageClassName: longhorn-system-local
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmsingle
+  namespace: monitoring
+  labels:
+    app: vmsingle
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  selector:
+    app: vmsingle
+  ports:
+    - name: http
+      port: 8428
+      targetPort: 8428

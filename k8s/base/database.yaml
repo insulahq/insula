@@ -182,10 +182,13 @@ spec:
     podAntiAffinityType: preferred
     topologyKey: kubernetes.io/hostname
 
-  # Monitoring: CNPG exposes Postgres metrics on a sidecar that
-  # ServiceMonitor (when monitoring is enabled) scrapes.
+  # Monitoring: CNPG instance pods ALWAYS serve Postgres metrics on
+  # :9187; vmsingle (k8s/base/monitoring, ADR-051) scrapes them
+  # directly via pod discovery. enablePodMonitor stays false on
+  # purpose — PodMonitor is a prometheus-operator CRD and that
+  # operator is deliberately not installed.
   monitoring:
-    enablePodMonitor: false  # set true when prometheus is enabled
+    enablePodMonitor: false
 
   # Backup integration: when backup-credentials Secret has S3
   # creds, the CNPG operator picks them up via barman-cloud +
