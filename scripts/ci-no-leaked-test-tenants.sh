@@ -25,7 +25,8 @@
 #   LOCAL_KUBECTL=1 ./scripts/ci-no-leaked-test-tenants.sh
 #
 # EXIT CODES
-#   0 — clean: no leaked test-tenant namespaces, no Released test-pattern PVs
+#   0 — clean: no leaked test-tenant namespaces, Released test-pattern
+#       PVs, or orphaned Longhorn volume CRs from test namespaces
 #   1 — leak detected; output names + counts; CI fails the run
 #   2 — couldn't run (no kubectl access, no SSH key); CI WARN
 #
@@ -99,9 +100,38 @@ for pv in d.get('items', []):
 pv_count=0
 [[ -n "$leftover_pv" ]] && pv_count=$(echo "$leftover_pv" | grep -c .)
 
+# ── Check 3: orphaned Longhorn volume CRs from test namespaces ─────
+# (2026-06-12, found in the post-green-up audit: deleting a tenant
+# namespace mid-detach can race the CSI delete — the PVC and PV go
+# away but the volumes.longhorn.io CR survives, silently pinning
+# replica disk space. 4 such CRs from the 06-10 integration runs sat
+# on testing at 2Gi each; checks 1+2 are blind to them because both
+# the namespace AND the PV are already gone. The volume CR remembers
+# its origin in status.kubernetesStatus.namespace — match THAT against
+# the test pattern. Platform-owned orphans of the same shape (e.g.
+# superseded system-db replicas) are deliberately NOT a leak-guard
+# concern — the orphaned-volumes admin module surfaces those.)
+leftover_lhv=$(kc get volumes.longhorn.io -n longhorn-system -o json 2>/dev/null \
+  | python3 -c "
+import json, sys, re
+patt = re.compile(r'$TEST_NAMESPACE_REGEX', re.I)
+d = json.load(sys.stdin)
+for v in d.get('items', []):
+    ks = (v.get('status', {}) or {}).get('kubernetesStatus', {}) or {}
+    ns = ks.get('namespace') or ''
+    if not patt.match(ns): continue
+    name = v.get('metadata', {}).get('name', '?')
+    size = v.get('spec', {}).get('size', '?')
+    pvc = ks.get('pvcName') or '?'
+    print(f\"  {name}\\tns={ns}\\tpvc={pvc}\\tsize={size}\")
+" 2>/dev/null || true)
+
+lhv_count=0
+[[ -n "$leftover_lhv" ]] && lhv_count=$(echo "$leftover_lhv" | grep -c .)
+
 # ── Report ─────────────────────────────────────────────────────────
-if [[ $ns_count -eq 0 && $pv_count -eq 0 ]]; then
-  ok "no leaked test-tenant namespaces or Released test-PVs"
+if [[ $ns_count -eq 0 && $pv_count -eq 0 && $lhv_count -eq 0 ]]; then
+  ok "no leaked test-tenant namespaces, Released test-PVs, or orphaned Longhorn volume CRs"
   exit 0
 fi
 
@@ -115,6 +145,13 @@ fi
 if [[ $pv_count -gt 0 ]]; then
   printf '  %d Released PV(s) in test namespaces:\n' "$pv_count"
   echo "$leftover_pv" | sed 's/^/  /'
+  echo
+fi
+if [[ $lhv_count -gt 0 ]]; then
+  printf '  %d orphaned Longhorn volume CR(s) from test namespaces (PVC/PV already gone — these pin replica disk):\n' "$lhv_count"
+  echo "$leftover_lhv" | sed 's/^/  /'
+  echo "    Reclaim via the platform module (detects them as longhorn_volume_unbound):"
+  echo "      DELETE /api/v1/admin/orphaned-volumes/<volumeName>   (admin panel → Storage → Orphaned Volumes)"
   echo
 fi
 
