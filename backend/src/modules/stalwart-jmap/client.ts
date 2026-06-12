@@ -613,6 +613,110 @@ export async function mtaQueueQuotaSet(params: {
   );
 }
 
+// ── Incoming report analysis (R4 PR 3) ────────────────────────────────────
+//
+// Stalwart parses ARF complaints / DMARC aggregates / TLS reports sent
+// to the ReportSettings inboundReportAddresses and stores them as
+// typed registry objects (default retention 30d). The platform polls
+// x:ArfExternalReport, persists rows into email_fbl_complaints, and
+// destroys the consumed objects.
+
+export interface StalwartArfReportRow {
+  readonly id: string;
+  readonly from?: string;
+  readonly subject?: string;
+  readonly to?: Record<string, boolean>;
+  readonly receivedAt?: string;
+  readonly expiresAt?: string;
+  readonly report?: {
+    readonly feedbackType?: string;
+    readonly arrivalDate?: string | null;
+    readonly incidents?: number;
+    readonly originalMailFrom?: string | null;
+    readonly originalRcptTo?: string | null;
+    readonly reportedDomains?: Record<string, boolean>;
+    readonly reportingMta?: string | null;
+    readonly sourceIp?: string | null;
+    readonly userAgent?: string | null;
+    readonly authenticationResults?: Record<string, boolean>;
+  };
+}
+
+interface XArfGetResponse {
+  readonly list?: readonly StalwartArfReportRow[];
+}
+
+/** List + fetch all stored ARF reports (query/get with a back-reference). */
+export async function arfExternalReportList(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<readonly StalwartArfReportRow[]> {
+  const { baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      // Cap each poll at 200 reports — a large backlog drains across
+      // ticks instead of producing one unbounded fetch + insert loop.
+      ['x:ArfExternalReport/query', { limit: 200 }, 'q'],
+      ['x:ArfExternalReport/get', {
+        '#ids': { resultOf: 'q', name: 'x:ArfExternalReport/query', path: '/ids' },
+      }, 'g'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const get = extractResponse<XArfGetResponse>(res, 'x:ArfExternalReport/get', 'g');
+  return get.list ?? [];
+}
+
+export async function arfExternalReportDestroy(params: {
+  ids: readonly string[];
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<{ id: string }>> {
+  const { ids, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<{ id: string }>>(
+    JMAP_STALWART,
+    'x:ArfExternalReport/set',
+    { destroy: ids },
+    baseUrl, env,
+  );
+}
+
+export interface StalwartReportSettingsRow {
+  readonly id: string;
+  readonly inboundReportAddresses?: Record<string, boolean>;
+  readonly inboundReportForwarding?: boolean;
+}
+
+export async function reportSettingsGet(params: {
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<StalwartReportSettingsRow | null> {
+  const { baseUrl, env } = params;
+  const res = await _xCall<{ list?: readonly StalwartReportSettingsRow[] }>(
+    JMAP_STALWART,
+    'x:ReportSettings/get',
+    {},
+    baseUrl, env,
+  );
+  return res.list?.[0] ?? null;
+}
+
+export async function reportSettingsUpdate(params: {
+  patch: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<JmapSetResponse<StalwartReportSettingsRow>> {
+  const { patch, baseUrl, env } = params;
+  return _xCall<JmapSetResponse<StalwartReportSettingsRow>>(
+    JMAP_STALWART,
+    'x:ReportSettings/set',
+    { update: { singleton: patch } },
+    baseUrl, env,
+  );
+}
+
 // ── Actions (R6 PR 2) ──────────────────────────────────────────────────────
 //
 // Stalwart loads most registry config (MTA throttles/quotas, report

@@ -68,3 +68,37 @@ export const mailUsageResponseSchema = z.object({
 });
 
 export type MailUsageResponse = z.infer<typeof mailUsageResponseSchema>;
+
+// R4 PR 3 — FBL complaints.
+export const fblComplaintSchema = z.object({
+  id: z.string(),
+  stalwartReportId: z.string(),
+  tenantId: z.string().nullable(),
+  domain: z.string().nullable(),
+  feedbackType: z.string(),
+  originalMailFrom: z.string().nullable(),
+  originalRcptTo: z.string().nullable(),
+  sourceIp: z.string().nullable(),
+  reportingMta: z.string().nullable(),
+  reporter: z.string().nullable(),
+  incidents: z.number().int().min(1),
+  receivedAt: z.union([z.string(), z.date()]),
+  createdAt: z.union([z.string(), z.date()]),
+});
+
+export const complaintSummaryEntrySchema = z.object({
+  tenantId: z.string().nullable(),
+  tenantName: z.string().nullable(),
+  domain: z.string().nullable(),
+  sent7d: z.number().int().min(0),
+  sent30d: z.number().int().min(0),
+  complaints7d: z.number().int().min(0),
+  complaints30d: z.number().int().min(0),
+  /** complaints / sends; 1 when complaints exist with no recorded sends. */
+  complaintRate7d: z.number().min(0),
+  complaintRate30d: z.number().min(0),
+  lastComplaintAt: z.union([z.string(), z.date()]).nullable(),
+});
+
+export type FblComplaint = z.infer<typeof fblComplaintSchema>;
+export type ComplaintSummaryEntry = z.infer<typeof complaintSummaryEntrySchema>;
