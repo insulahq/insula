@@ -1,7 +1,11 @@
 # Service Level Indicators & Objectives (SLI/SLO)
 
-**Status:** Pre-Phase 1 Planning  
-**Last Updated:** March 3, 2026  
+**Status:** Implemented — see
+[ADR-051](../architecture/adr/ADR-051-monitoring-stack-vmsingle.md) for the
+as-built stack (VictoriaMetrics `vmsingle` + the in-API SLO evaluator). This
+document holds the original target definitions; where the shipped rule pack
+(`backend/src/modules/monitoring/rules.ts`) differs, ADR-051 is authoritative.  
+**Last Updated:** June 12, 2026  
 **Owner:** DevOps & Reliability Team
 
 ## Overview

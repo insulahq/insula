@@ -13,7 +13,7 @@
 | # | Item | Priority | Status |
 |---|------|----------|--------|
 | [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Not started |
-| [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Not started |
+| [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051) — logs deferred |
 | [R3](#r3--load-testing-in-ci) | Load testing in CI | P2 | Framework exists, unwired |
 | [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Not started |
 | [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | Not started |
@@ -25,7 +25,7 @@
 | [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Phase 1 shipped |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
-| [R14](#r14--user-manual-website) | User-manual website | P2 | Not started |
+| [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 
 ---
@@ -48,16 +48,26 @@ module is worker re-pinning — unrelated.
 
 ## R2 — Monitoring stack decision + SLI/SLO
 
-Decide once: deploy a Prometheus/Alertmanager(/Grafana) stack, or formally
-adopt the built-in `metrics`/`node-health`/`cluster-health` modules as the
-platform's observability answer and right-size the docs. Today SLOs, burn-rate
-alerts, and cert-expiry alert rules exist only on paper.
+**Shipped 2026-06-12** (ADR-051, PRs #50–#61): VictoriaMetrics single-node
+(`vmsingle`, one pod, 128Mi requests, 30-day retention) scrapes the
+pre-existing exporter endpoints, and a 14-rule SLO evaluator runs inside
+platform-api — zero dedicated alerting pods. Alerts dispatch through the
+categorised notification sources (`admin.slo_alert_*`); VMUI and the Longhorn
+UI are served from admin-host path routes (`/metrics/`, `/longhorn/`). The
+legacy `--with-monitoring` kube-prometheus/Loki path is removed (the flags
+are deprecation no-ops).
 
-- Target SLOs and alert rules: [roadmap/SLI_SLO_DEFINITION.md](SLI_SLO_DEFINITION.md)
-  (moved here — unmeasurable until this item lands).
-- If "built-in" wins: implement cert-expiry + SLO-breach alerts through the
-  existing notifications system, and rewrite `MONITORING_OBSERVABILITY.md`
-  to describe reality.
+- As-built decision record:
+  [ADR-051](../architecture/adr/ADR-051-monitoring-stack-vmsingle.md); rule
+  pack in `backend/src/modules/monitoring/rules.ts` (tweak/disable via
+  `monitoring_rule_overrides`).
+- Original planning targets: [SLI_SLO_DEFINITION.md](SLI_SLO_DEFINITION.md) —
+  where it disagrees with the shipped rule pack, ADR-051 is authoritative.
+- E2E: `scripts/integration-monitoring-slo.sh` (registered in
+  `integration-all.sh`).
+- Deferred: log aggregation (decide separately if a need emerges); the
+  Flux-failure alert rule has not yet been exercised against a real Flux
+  failure.
 
 ## R3 — Load testing in CI
 
@@ -155,6 +165,12 @@ monorepo `documentation/`, Material for MkDocs now (Zensical-compatible authorin
 migrate post-alpha), GitHub Pages at `insulahq.github.io/insula`, v1 = all
 three guides, accuracy via manual-impact CI guard + generated reference +
 strict builds + freshness stamps.
+
+**Shipped 2026-06-07** — live at <https://insulahq.github.io/> (moved to the
+org root rather than `/insula`). Source lives in monorepo `documentation/`;
+the separate `insulahq.github.io` repo pulls and publishes it on a 15-minute
+schedule. Residual: the manual-impact CI guard runs report-only until
+~2026-06-21, then flips to enforcing.
 
 ## R15 — Component CVE & version watch
 
