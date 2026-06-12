@@ -107,6 +107,9 @@ async function runDiscovery(
 
   try {
     // 1. Secret (SSH key) + 2. ConfigMap (scripts), then the Job.
+    // backup-coverage: excluded:transient-discovery-job
+    // (operator SSH key for a short-lived read-only Job; deleted in the
+    //  finally block — no tenant data, nothing to back up.)
     await core.createNamespacedSecret({
       namespace: PLESK_MIGRATION_NAMESPACE,
       body: {

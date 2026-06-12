@@ -2503,7 +2503,7 @@ Decisions:
   rest (AES-256-GCM, `oidc/crypto.ts`) and delivered to Jobs via a
   per-job Secret; never returned to clients.
 - **Mail = maildir-reuse** (spike-proven 2026-06-12,
-  [[project-plesk-migration-spike-2026-06-12]]): rsync the Plesk maildir
+  the maildir-import spike (2026-06-12)): rsync the Plesk maildir
   → reshape Maildir++ → the existing `jmap-restore.py` importer. No
   imapsync, no source IMAP auth, no dependency on the source password
   storage mode. imapsync remains a fallback for no-filesystem sources.
