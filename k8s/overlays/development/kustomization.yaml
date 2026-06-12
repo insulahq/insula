@@ -151,9 +151,9 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20260612081723-7e3ed2e" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260612104103-e9de6ae" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20260612081733-7e3ed2e" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260612104105-e9de6ae" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
     newTag: "20260612022337-af62684" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
