@@ -46,6 +46,7 @@ import {
   useResyncImapSyncJob,
   useUpdateImapSyncJob,
   useMailRateLimit,
+  useMailUsage,
   useMailboxUsage,
   type Mailbox,
   type EmailDomain,
@@ -1759,8 +1760,35 @@ function SendmailCredentialCard({ tenantId }: { readonly tenantId: string }) {
 
 // ─── Rate limit card ──────────────────────────────────────────────────
 
+function UsageBar({ label, used, limit, blocked }: {
+  readonly label: string;
+  readonly used: number;
+  readonly limit: number;
+  readonly blocked: boolean;
+}) {
+  const pct = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : (used > 0 ? 100 : 0);
+  const barColor = blocked || pct >= 100
+    ? 'bg-red-500 dark:bg-red-600'
+    : pct >= 80
+      ? 'bg-amber-500 dark:bg-amber-600'
+      : 'bg-brand-500 dark:bg-brand-600';
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-gray-500 dark:text-gray-400">{label}</span>
+        <span className="font-medium text-gray-700 dark:text-gray-300">{used} / {limit}</span>
+      </div>
+      <div className="mt-1 h-1.5 w-full rounded-full bg-gray-100 dark:bg-gray-700">
+        <div className={`h-1.5 rounded-full ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function RateLimitCard({ tenantId }: { readonly tenantId: string }) {
   const { data, isLoading } = useMailRateLimit(tenantId);
+  const { data: usageData } = useMailUsage(tenantId);
+  const usage = usageData?.data;
   const info = data?.data;
   const sourceLabels: Record<string, string> = {
     tenant_override: 'Account-specific override',
@@ -1806,6 +1834,19 @@ function RateLimitCard({ tenantId }: { readonly tenantId: string }) {
           )}
           <span className="text-gray-500 dark:text-gray-400">Source</span>
           <span className="text-gray-700 dark:text-gray-300">{sourceLabels[(info.hourly?.source ?? info.source)] ?? info.source}</span>
+        </div>
+      )}
+
+      {usage && (
+        <div className="space-y-2 border-t border-gray-100 dark:border-gray-700 pt-3" data-testid="mail-usage-bars">
+          <UsageBar label="Sent this hour" used={usage.hour.used} limit={usage.hour.limit} blocked={blocked} />
+          <UsageBar label="Sent today" used={usage.day.used} limit={usage.day.limit} blocked={blocked} />
+          {(usage.day.rateLimited > 0 || usage.day.quotaRejected > 0) && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              {usage.day.rateLimited > 0 && `${usage.day.rateLimited} deferred by the hourly/daily rate today. `}
+              {usage.day.quotaRejected > 0 && `${usage.day.quotaRejected} rejected over quota today.`}
+            </p>
+          )}
         </div>
       )}
     </div>

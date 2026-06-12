@@ -49,3 +49,22 @@ export const effectiveSendLimitsSchema = z.object({
 
 export type SendLimitSource = z.infer<typeof sendLimitSourceEnum>;
 export type EffectiveSendLimits = z.infer<typeof effectiveSendLimitsSchema>;
+
+// R6 PR 2 — tenant mail usage (current hour / day vs effective limits).
+const usageWindowSchema = z.object({
+  used: z.number().int().min(0),
+  limit: z.number().int().min(0),
+});
+
+export const mailUsageResponseSchema = z.object({
+  hour: usageWindowSchema,
+  day: usageWindowSchema.extend({
+    recipients: z.number().int().min(0),
+    rateLimited: z.number().int().min(0),
+    quotaRejected: z.number().int().min(0),
+  }),
+  suspended: z.boolean(),
+  outboundSuspended: z.boolean(),
+});
+
+export type MailUsageResponse = z.infer<typeof mailUsageResponseSchema>;

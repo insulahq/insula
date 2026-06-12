@@ -1,3 +1,4 @@
+import type { MailUsageResponse } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -627,6 +628,20 @@ export function useMailRateLimit(tenantId?: string) {
     queryFn: () =>
       apiFetch<{ data: RateLimitInfo }>(`/api/v1/tenants/${tenantId}/mail/rate-limit`),
     enabled: !!tenantId,
+  });
+}
+
+// R6 PR 2: current-hour/day send usage vs the effective limits.
+// Shape lives in @insula/api-contracts (single source of truth).
+export type MailUsageInfo = MailUsageResponse;
+
+export function useMailUsage(tenantId?: string) {
+  return useQuery({
+    queryKey: ['mail-usage', tenantId],
+    queryFn: () =>
+      apiFetch<{ data: MailUsageResponse }>(`/api/v1/tenants/${tenantId}/mail/usage`),
+    enabled: !!tenantId,
+    refetchInterval: 60_000,
   });
 }
 

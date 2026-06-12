@@ -1401,6 +1401,26 @@ export const resourceQuotas = pgTable('resource_quotas', {
 
 // ─── Email System ───
 
+// R6 PR 2 (mig 0058): outbound send accounting — hourly buckets per
+// (tenant, sender-domain) fed by the Stalwart webhook ingest
+// (modules/mail-events). Counters, not per-message rows (descoped).
+// Pruned at 35 days by data-retention.
+export const emailSendCounters = pgTable('email_send_counters', {
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  domain: varchar('domain', { length: 255 }).notNull(),
+  bucketStart: timestamp('bucket_start', { withTimezone: true }).notNull(),
+  sentCount: integer('sent_count').notNull().default(0),
+  recipientCount: integer('recipient_count').notNull().default(0),
+  bytesTotal: bigint('bytes_total', { mode: 'number' }).notNull().default(0),
+  rateLimitedCount: integer('rate_limited_count').notNull().default(0),
+  quotaRejectedCount: integer('quota_rejected_count').notNull().default(0),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.domain, table.bucketStart] }),
+  index('email_send_counters_bucket_idx').on(table.bucketStart),
+]);
+
 export const emailDomains = pgTable('email_domains', {
   id: varchar('id', { length: 36 }).primaryKey(),
   // Migration 0020 — FK + CASCADE from domains so email config is
