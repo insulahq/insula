@@ -507,9 +507,14 @@ export async function dkimSignatureSet(params: {
 // Registry objects are account-agnostic: no accountId argument needed
 // (verified live on v0.16.5, 2026-06-12 spike).
 
-/** Boolean match expression: `{match: [], else: "<condition>"}`. */
+/**
+ * Boolean match expression: `{match: {}, else: "<condition>"}`.
+ * `match` is the if/then chain serialized as Stalwart's registry
+ * List<T> — a JSON OBJECT with integer-string keys ("0", "1", …),
+ * NOT an array (an array is rejected with invalidPatch match/match).
+ */
 export interface StalwartExpression {
-  readonly match: readonly { if: string; then: string }[];
+  readonly match: Readonly<Record<string, { if: string; then: string }>>;
   readonly else: string;
 }
 
