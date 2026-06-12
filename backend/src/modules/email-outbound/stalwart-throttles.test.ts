@@ -30,7 +30,7 @@ describe('buildDesiredSendLimitObjects', () => {
     expect(hourly?.rate).toEqual({ count: 80, period: 3_600_000 });
     expect(hourly?.key).toEqual({ senderDomain: true });
     expect(hourly?.match.else).toBe("sender_domain = 'alpha.example.com'");
-    expect(hourly?.match.match).toEqual([]);
+    expect(hourly?.match.match).toEqual({});
 
     const daily = throttles.get(`${DESCRIPTION_PREFIX}alpha.example.com:daily`);
     expect(daily?.rate).toEqual({ count: 400, period: 86_400_000 });
@@ -186,21 +186,21 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'keep', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: [], else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
         rate: { count: 50, period: 3_600_000 },
       },
       {
         id: 'drift', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:daily`,
         key: { senderDomain: true },
-        match: { match: [], else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
         rate: { count: 999, period: 86_400_000 },
       },
       {
         id: 'foreign', enable: true,
         description: 'operator: my own throttle',
         key: { mx: true },
-        match: { match: [], else: 'true' },
+        match: { match: {}, else: 'true' },
         rate: { count: 1, period: 1000 },
       },
     ]);
@@ -209,7 +209,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'q1', enable: true,
         description: `${DESCRIPTION_PREFIX}alpha.example.com:backlog`,
         key: { senderDomain: true },
-        match: { match: [], else: "sender_domain = 'alpha.example.com'" },
+        match: { match: {}, else: "sender_domain = 'alpha.example.com'" },
         messages: 100, size: null,
       },
     ]);
@@ -231,7 +231,7 @@ describe('reconcileStalwartSendLimits (diff + apply)', () => {
         id: 'stale', enable: true,
         description: `${DESCRIPTION_PREFIX}gone.example.com:hourly`,
         key: { senderDomain: true },
-        match: { match: [], else: "sender_domain = 'gone.example.com'" },
+        match: { match: {}, else: "sender_domain = 'gone.example.com'" },
         rate: { count: 50, period: 3_600_000 },
       },
     ]);
