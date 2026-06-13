@@ -66,6 +66,44 @@ describe('computeTenantMailboxLimit', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// computeTenantMailboxSizeLimit — pure function (per-mailbox size cap, MB)
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('computeTenantMailboxSizeLimit', () => {
+  it('returns the plan limit when override is null', () => {
+    expect(limit.computeTenantMailboxSizeLimit({ planLimit: 1024, override: null })).toEqual({
+      limit: 1024,
+      source: 'plan',
+    });
+  });
+
+  it('returns the override when it is a positive integer', () => {
+    expect(limit.computeTenantMailboxSizeLimit({ planLimit: 1024, override: 8192 })).toEqual({
+      limit: 8192,
+      source: 'tenant_override',
+    });
+  });
+
+  it('falls back to the plan limit when override is zero or negative', () => {
+    expect(limit.computeTenantMailboxSizeLimit({ planLimit: 2048, override: 0 })).toEqual({
+      limit: 2048,
+      source: 'plan',
+    });
+    expect(limit.computeTenantMailboxSizeLimit({ planLimit: 2048, override: -1 })).toEqual({
+      limit: 2048,
+      source: 'plan',
+    });
+  });
+
+  it('allows an override below the plan limit', () => {
+    expect(limit.computeTenantMailboxSizeLimit({ planLimit: 5120, override: 512 })).toEqual({
+      limit: 512,
+      source: 'tenant_override',
+    });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // getTenantMailboxCount
 // ═══════════════════════════════════════════════════════════════════════
 

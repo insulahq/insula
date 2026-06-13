@@ -902,6 +902,7 @@ export async function updateTenant(
   if (input.storage_limit_override !== undefined) updateValues.storageLimitOverride = input.storage_limit_override === null ? null : String(input.storage_limit_override);
   if (input.max_sub_users_override !== undefined) updateValues.maxSubUsersOverride = input.max_sub_users_override;
   if (input.max_mailboxes_override !== undefined) updateValues.maxMailboxesOverride = input.max_mailboxes_override;
+  if (input.max_mailbox_size_mb_override !== undefined) updateValues.maxMailboxSizeMbOverride = input.max_mailbox_size_mb_override;
   if (input.monthly_price_override !== undefined) updateValues.monthlyPriceOverride = input.monthly_price_override === null ? null : String(input.monthly_price_override);
   if (input.email_send_rate_limit !== undefined) updateValues.emailSendRateLimit = input.email_send_rate_limit;
   if (input.email_send_rate_limit_daily !== undefined) updateValues.emailSendRateLimitDaily = input.email_send_rate_limit_daily;
