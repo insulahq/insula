@@ -2538,6 +2538,14 @@ export const systemSettings = pgTable('system_settings', {
   supportEmail: varchar('support_email', { length: 255 }),
   supportUrl: varchar('support_url', { length: 500 }),
   ingressBaseDomain: varchar('ingress_base_domain', { length: 255 }),
+  // R16 (migration 0066): the platform APEX / brand domain, distinct from the
+  // ingress/CNAME-target role of ingress_base_domain. Platform-owned hostnames
+  // (admin|tenant|webmail|mail|stalwart.<platform_domain>) + their TLS certs
+  // follow this; tenant CNAME targets stay on ingress_base_domain. Seeds equal
+  // to ingress_base_domain (zero behaviour change) and is mirrored to
+  // platform_settings.platform_domain for KV consumers, like ingress_base_domain.
+  // PR-1 = plumbing only; apex consumers repoint in PR-2.
+  platformDomain: varchar('platform_domain', { length: 255 }),
   // NOTE: the canonical mail hostname is platform_settings.mail_server_hostname
   // (Admin → Email → Server). The former system_settings.mail_hostname column
   // was vestigial (backend ignored writes, nothing read it) and is retired

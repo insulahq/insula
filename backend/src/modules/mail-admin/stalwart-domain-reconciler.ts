@@ -50,6 +50,7 @@ import { ensureMailAcmeOverrideRoute, resolveDefaultMailHost } from './mail-acme
 import { platformSettings } from '../../db/schema.js';
 import { acmeRenewalsTotal, mailTlsCertExpirySeconds, mailTlsCertSelfSigned, stalwartAcmeTaskQueueDepth } from '../../shared/metrics.js';
 import type { Database } from '../../db/index.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 
 /**
  * Resolve the mail hostname the reconciler should operate on, matching
@@ -99,13 +100,10 @@ export async function getExplicitMailHostname(db: Database): Promise<string | nu
   const envMail = process.env.MAIL_SERVER_HOSTNAME?.trim();
   if (envMail && envMail.length > 0) return envMail;
 
-  // 4. Default: mail.<ingress_base_domain>. Guards: refuse to act when
-  //    apex is unset (would yield bogus mail.example.com fallback).
-  const [apexRow] = await db
-    .select()
-    .from(platformSettings)
-    .where(eq(platformSettings.key, 'ingress_base_domain'));
-  const apex = apexRow?.value?.trim().replace(/\.+$/, '').toLowerCase();
+  // 4. Default: mail.<platform apex> (R16: platform_domain, falling back to
+  //    ingress_base_domain). Guards: refuse to act when apex is unset (would
+  //    yield bogus mail.example.com fallback).
+  const apex = (await getPlatformApex(db))?.toLowerCase();
   if (!apex || apex.length === 0) return null;
   return `mail.${apex}`;
 }

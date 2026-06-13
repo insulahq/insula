@@ -20,6 +20,7 @@
 import { eq, sql } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 import { readStalwartCredentials } from '../mail-admin/credentials.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
@@ -157,19 +158,20 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
 // Precedence:
 //   1. explicit DB row (operator edited via admin panel)
 //   2. legacy env var (WEBMAIL_URL / STALWART_HOSTNAME / MAIL_SERVER_HOSTNAME)
-//   3. webmail.<apex> / mail.<apex> derived from platform_settings.ingress_base_domain
+//   3. webmail.<apex> / mail.<apex> derived from the platform apex
+//      (platform_domain, falling back to ingress_base_domain — R16)
 //   4. placeholder literal — only reached on a fresh install before the
 //      apex has been configured
 async function defaultWebmailUrl(db: Database): Promise<string> {
   if (process.env.WEBMAIL_URL) return process.env.WEBMAIL_URL;
-  const apex = (await getSetting(db, 'ingress_base_domain'))?.trim().replace(/\.+$/, '');
+  const apex = await getPlatformApex(db);
   return apex ? `https://webmail.${apex}/` : 'https://webmail.example.com';
 }
 
 async function defaultMailHostname(db: Database): Promise<string> {
   if (process.env.STALWART_HOSTNAME) return process.env.STALWART_HOSTNAME;
   if (process.env.MAIL_SERVER_HOSTNAME) return process.env.MAIL_SERVER_HOSTNAME;
-  const apex = (await getSetting(db, 'ingress_base_domain'))?.trim().replace(/\.+$/, '');
+  const apex = await getPlatformApex(db);
   return apex ? `mail.${apex}` : 'mail.example.com';
 }
 

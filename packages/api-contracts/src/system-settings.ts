@@ -31,6 +31,9 @@ export const updateSystemSettingsSchema = z.object({
   supportEmail: z.string().email().max(255).nullable().optional(),
   supportUrl: z.string().url().max(500).nullable().optional(),
   ingressBaseDomain: z.string().max(255).nullable().optional(),
+  // R16: platform APEX / brand domain (distinct from the ingress/CNAME-target
+  // role of ingressBaseDomain). Seeds equal; consumers repoint in PR-2.
+  platformDomain: z.string().max(255).nullable().optional(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   timezone: z.string().min(1).max(50).optional(),
   currency: currencyCodeSchema.optional(),

@@ -41,6 +41,9 @@ const updateSchema = z.object({
   supportEmail: z.string().email().max(255).optional().nullable(),
   supportUrl: z.string().url().max(500).optional().nullable(),
   ingressBaseDomain: z.string().max(255).optional().nullable(),
+  // R16: platform APEX / brand domain (distinct from ingressBaseDomain's
+  // CNAME-target role). PR-1 plumbing — apex consumers repoint in PR-2.
+  platformDomain: z.string().max(255).optional().nullable(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   // IANA timezone string. Used as the fallback on new tenants that don't
   // specify their own timezone, and as the global default for UI date

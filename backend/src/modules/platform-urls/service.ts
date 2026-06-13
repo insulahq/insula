@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 
 /**
  * Platform URL settings — Longhorn dashboard, Stalwart web-admin, webmail,
@@ -98,7 +99,9 @@ function resolveField(stored: string | null, fallback: string): UrlField {
 }
 
 export async function getPlatformUrls(db: Database): Promise<PlatformUrls> {
-  const apex = (await getSetting(db, KEYS.apex)) ?? '';
+  // R16: platform-service URLs derive from the platform apex (platform_domain,
+  // falling back to ingress_base_domain).
+  const apex = (await getPlatformApex(db)) ?? '';
   const defaults = computeDefaults(apex);
   const [longhorn, stalwart, webmail, mailHost] = await Promise.all([
     getSetting(db, KEYS.longhorn),

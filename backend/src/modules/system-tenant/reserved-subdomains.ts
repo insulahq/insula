@@ -35,8 +35,8 @@
  * see a larger reserved set.
  */
 
-import { eq, inArray } from 'drizzle-orm';
-import { platformSettings, systemSettings } from '../../db/schema.js';
+import { inArray } from 'drizzle-orm';
+import { platformSettings } from '../../db/schema.js';
 import {
   adminHost,
   tenantHost,
@@ -47,6 +47,7 @@ import {
   resolveBaseDomain,
 } from '../../config/domains.js';
 import type { Database } from '../../db/index.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 
 /** Returned by getReservedPlatformHostnames. Keys are normalized
  *  (lowercase, no trailing dot). The `apex` field carries the
@@ -130,19 +131,9 @@ export async function getReservedPlatformHostnames(db: Database): Promise<Reserv
     return cached;
   }
 
-  // Resolve apex: prefer system_settings.ingress_base_domain (canonical
-  // post-bootstrap), fall back to env (pre-bootstrap install).
-  // No .limit(1) — system_settings.id is the primary key, so at most
-  // one row matches. Keeps the Drizzle chain compatible with the
-  // existing dns-records unit-test mocks that don't proxy .limit().
-  const [settingsRow] = await db
-    .select({ ingressBaseDomain: systemSettings.ingressBaseDomain })
-    .from(systemSettings)
-    .where(eq(systemSettings.id, 'system'));
-  const apex = normalize(
-    (settingsRow?.ingressBaseDomain && settingsRow.ingressBaseDomain.trim())
-      || resolveBaseDomain(process.env),
-  );
+  // Resolve apex: R16 — prefer the platform apex (platform_domain, falling
+  // back to ingress_base_domain), then env (pre-bootstrap install).
+  const apex = normalize((await getPlatformApex(db)) || resolveBaseDomain(process.env));
 
   const fqdns = new Map<string, string>();
 
