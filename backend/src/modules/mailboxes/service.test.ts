@@ -47,6 +47,16 @@ vi.mock('../stalwart-jmap/client.js', () => ({
   createMailbox: vi.fn().mockResolvedValue({ id: 'sp-test-123', type: 'individual', name: 'test' }),
   destroyPrincipal: vi.fn().mockResolvedValue(undefined),
   updatePrincipal: vi.fn().mockResolvedValue(undefined),
+  // x:Account/set create — only reached when getJmapSession resolves (i.e.
+  // when a test opts into the provisioned path). Default: one created id.
+  accountSet: vi.fn().mockResolvedValue({ created: { 'new-mailbox': { id: 'sp-new-1' } } }),
+}));
+
+// The auto-issued "Initial" login password is best-effort and irrelevant to
+// these service tests; stub it so the provisioned-path tests stay
+// deterministic (no real Stalwart round-trip).
+vi.mock('../login-passwords/service.js', () => ({
+  issueLoginPasswordForPrincipal: vi.fn().mockResolvedValue(null),
 }));
 
 // Track select call results per test
@@ -217,6 +227,47 @@ describe('createMailbox', () => {
       code: 'EMAIL_DOMAIN_NOT_FOUND',
       status: 404,
     });
+  });
+
+  it('sets the storage quota in Stalwart on create (quota/storage in bytes) when provisioned', async () => {
+    // Opt into the provisioned path: the email domain has a Stalwart id
+    // AND the JMAP session resolves, so the account is really created.
+    const jmap = await import('../stalwart-jmap/client.js');
+    (jmap.getJmapSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      primaryAccounts: { 'urn:ietf:params:jmap:principals': 'acct-1' },
+    });
+    (jmap.accountSet as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      created: { 'new-mailbox': { id: 'sp-new-1' } },
+    });
+
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1', stalwartDomainId: 'sd-1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
+    const countResult = { count: 0 };
+    const created = {
+      id: 'mb1', emailDomainId: 'ed1', tenantId: 'c1', localPart: 'info',
+      fullAddress: 'info@example.com', displayName: null, quotaMb: 2048,
+      usedMb: 0, status: 'active', mailboxType: 'mailbox', autoReply: 0,
+    };
+    selectResults = [[emailDomain], [domain], [planRow], [countResult], [], [created]];
+    const db = createMockDb();
+
+    await createMailbox(
+      db as never,
+      'c1',
+      'ed1',
+      { local_part: 'info', quota_mb: 2048, mailbox_type: 'mailbox' },
+    );
+
+    // The brand-new principal gets its storage quota patched in bytes
+    // (MB × 1024²) immediately — enforced from the first byte, not only
+    // after a later quota edit.
+    expect(jmap.updatePrincipal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'sp-new-1',
+        patch: { 'quota/storage': 2048 * 1024 * 1024 },
+      }),
+    );
   });
 });
 
