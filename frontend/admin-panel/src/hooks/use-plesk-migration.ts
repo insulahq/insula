@@ -4,6 +4,8 @@ import type {
   PleskSourceResponse,
   PleskDiscoveryResponse,
   CreatePleskSourceInput,
+  CreatePleskMigrationInput,
+  PleskMigrationResponse,
 } from '@insula/api-contracts';
 
 export function usePleskSources() {
@@ -62,5 +64,47 @@ export function useLatestDiscovery(sourceId: string | null) {
       const latest = query.state.data?.data?.[0];
       return latest && (latest.status === 'pending' || latest.status === 'running') ? 3000 : false;
     },
+  });
+}
+
+/**
+ * Migrations for a source, polled while any is pending/running so the
+ * per-leg provisioning progress streams into the UI.
+ */
+export function useMigrations(sourceId: string | null) {
+  return useQuery({
+    queryKey: ['plesk-migrations', sourceId],
+    queryFn: () => {
+      // `enabled` gates execution, but guard the URL too so a stray
+      // invocation can't send ?sourceId=null and silently get [].
+      if (!sourceId) throw new Error('sourceId required');
+      return apiFetch<{ data: PleskMigrationResponse[] }>(`/api/v1/admin/plesk/migrations?sourceId=${encodeURIComponent(sourceId)}`);
+    },
+    enabled: !!sourceId,
+    refetchInterval: (query) => {
+      const rows = query.state.data?.data ?? [];
+      return rows.some((m) => m.status === 'pending' || m.status === 'running') ? 3000 : false;
+    },
+  });
+}
+
+export function useCreateMigration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreatePleskMigrationInput) =>
+      apiFetch<{ data: PleskMigrationResponse }>('/api/v1/admin/plesk/migrations', {
+        method: 'POST',
+        body: JSON.stringify(input),
+      }),
+    onSuccess: (_d, input) => qc.invalidateQueries({ queryKey: ['plesk-migrations', input.source_id] }),
+  });
+}
+
+export function useRetryMigration(sourceId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: PleskMigrationResponse }>(`/api/v1/admin/plesk/migrations/${id}/retry`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['plesk-migrations', sourceId] }),
   });
 }
