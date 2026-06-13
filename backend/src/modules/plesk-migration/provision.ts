@@ -252,16 +252,22 @@ async function preflightTenant(
   snapshot: PleskSubscription,
 ): Promise<{ problems: CapacityProblem[]; detail: string }> {
   const [tenant] = await db
-    .select({ id: tenants.id, isSystem: tenants.isSystem, status: tenants.status, planId: tenants.planId, storageLimitOverride: tenants.storageLimitOverride })
+    .select({ id: tenants.id, isSystem: tenants.isSystem, status: tenants.status, provisioningStatus: tenants.provisioningStatus, planId: tenants.planId, storageLimitOverride: tenants.storageLimitOverride })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `target tenant '${tenantId}' no longer exists`, 404);
   if (tenant.isSystem) throw new ApiError('TENANT_IS_SYSTEM', 'the SYSTEM tenant cannot be a migration target', 400);
-  // Only an ACTIVE (provisioned) tenant is a valid target: a 'pending' tenant
-  // has no namespace yet (domains/email legs would fail downstream), and
-  // 'suspended'/'archived' tenants must not receive new resources.
-  if (tenant.status !== 'active') {
-    throw new ApiError('TENANT_NOT_AVAILABLE', `target tenant is '${tenant.status}' — only an active, provisioned tenant can be a migration target`, 400);
+  // A valid target must have a usable namespace and not be in a withdrawn
+  // lifecycle state. The readiness signal is provisioningStatus='provisioned'
+  // — a freshly-created tenant sits at lifecycle status 'pending' until it's
+  // explicitly activated, but it IS usable once provisioned (its namespace +
+  // quota exist), so 'pending|provisioned' is a fine target. We only refuse
+  // suspended/archived tenants and not-yet-provisioned ones.
+  if (tenant.status === 'suspended' || tenant.status === 'archived') {
+    throw new ApiError('TENANT_NOT_AVAILABLE', `target tenant is '${tenant.status}' — suspended/archived tenants can't receive a migration`, 400);
+  }
+  if (tenant.provisioningStatus !== 'provisioned') {
+    throw new ApiError('TENANT_NOT_PROVISIONED', `target tenant is not provisioned yet (${tenant.provisioningStatus}) — wait until provisioning completes, then retry`, 409);
   }
 
   const { limit: mailboxLimit } = await getTenantMailboxLimit(db, tenantId);
