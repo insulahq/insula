@@ -1,6 +1,29 @@
 # R16 — Decouple INGRESS_DOMAIN from PLATFORM_DOMAIN + turnkey apex rename
 
-**Status:** Scoped 2026-06-08 (planning). Not started.
+**Status:** PR-1 + PR-2 + PR-3-core **shipped 2026-06-13** and **E2E-proven on
+testing** (renamed `testing.<apex>` → `testing-rename.<apex>` and back: panels +
+LE certs followed, served with a trusted cert, `ingress_base_domain` stayed put).
+
+**Shipped 2026-06-13:**
+- **PR-1** `system_settings.platform_domain` (migration 0066, seeds = ingress_base_domain,
+  KV-mirrored) + `getPlatformApex()` resolver.
+- **PR-2** apex consumers repointed (webmail/mail hostnames, reserved subdomains,
+  platform-URLs, mail-host reconcilers). Tenant CNAME consumers stay on ingress_base_domain.
+- **PR-3 (core)** `POST /admin/platform-domain/rename` (super_admin): rewrites
+  platform_domain + admin/tenant/webmail/mail settings and triggers the existing
+  reconcilers so the Traefik Ingress hosts + cert-manager Certificate dnsNames
+  follow; cert-manager issued a real LE cert for the new apex in ~1 min. GET
+  `/admin/platform-domain` returns the current apex + hostnames.
+
+**Remaining (PR-3b/3d — static `${DOMAIN}` surfaces, see §3a-3d/§5):** make the
+stalwart web-admin UI IngressRoute+Certificate and the private-worker tunnel
+anchor reconciler-driven from platform_domain (still baked as static `${DOMAIN}`),
+the platform-apex DNS automation (§3e — today the operator creates the records;
+no platform DNS provider was configured on testing), an admin-panel rename UI,
+and the `admin-domain-rewrite.sh --platform-domain` / `bootstrap.sh` both-equal +
+integration-test cross-cutting items.
+
+**Original plan (2026-06-08) follows.**
 **Decisions locked (operator, 2026-06-08):**
 1. **Naming** — keep `ingress_base_domain` meaning the **INGRESS / CNAME-target**
    domain (its current behaviour); add a **new `platform_domain`** setting for

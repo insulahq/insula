@@ -196,6 +196,15 @@ The in-cluster Trivy scanning UI stays deferred under [R11](#r11--security-harde
 
 ## R16 — Decouple INGRESS_DOMAIN from PLATFORM_DOMAIN + turnkey apex rename
 
+**PR-1 + PR-2 + PR-3-core shipped 2026-06-13, E2E-proven on testing** (renamed
+the apex and back: panels + LE certs followed, served with a trusted cert,
+`ingress_base_domain` stayed put): `platform_domain` split (migration 0066) +
+`getPlatformApex()`, apex consumers repointed, and a `POST
+/admin/platform-domain/rename` action that moves the reconciler-driven surfaces.
+**Remaining:** the static-`${DOMAIN}` surfaces (stalwart web-admin UI +
+private-worker tunnel anchor → reconciler-driven), platform-apex DNS automation
+(§3e), a rename UI, and the cross-cutting bootstrap/script/integration items.
+
 Scoped 2026-06-08 (planning) — see
 [INGRESS_PLATFORM_DOMAIN_DECOUPLE.md](INGRESS_PLATFORM_DOMAIN_DECOUPLE.md). Split
 the overloaded `ingress_base_domain` (today *both* the tenant CNAME-target *and*
