@@ -21,6 +21,11 @@ cd "$ROOT"
 # immediately followed by an interpolation that mentions ingressBaseDomain /
 # ingress_base_domain. e.g.  `mail.${ingressBaseDomain}`  or
 # `webmail.${...getSetting('ingress_base_domain')...}`
+#
+# KNOWN BLIND SPOT: a text guard can't follow data flow — if the value is first
+# aliased (`const apex = settings.ingressBaseDomain; ... `mail.${apex}``) this
+# won't catch it. It catches the common direct-interpolation form; treat a green
+# result as "no obvious conflation", not a proof.
 PAT='(mail|webmail|stalwart|admin|tenant)\.\$\{[^}]*(ingressBaseDomain|ingress_base_domain)'
 
 # Search backend TS, excluding tests and the legitimate back-compat resolver.

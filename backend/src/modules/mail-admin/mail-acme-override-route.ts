@@ -20,7 +20,7 @@
  * `routes` array (Flux re-applies the base manifest on every git
  * sync), the platform-api owns a SEPARATE IngressRoute named
  * `stalwart-mail-acme-override`. It is created only when the mail
- * hostname differs from the default `mail.<ingress_base_domain>`, and
+ * hostname differs from the default `mail.<apex>` (R16: the platform apex,
  * deleted (absence-reconciled) when the hostname is empty OR equals
  * the default — so a rename back to default cleans itself up.
  *
@@ -77,7 +77,8 @@ export function isValidMailHostname(host: string): boolean {
 }
 
 /**
- * Resolve the default mail hostname (`mail.<ingress_base_domain>`).
+ * Resolve the default mail hostname (`mail.<apex>` — R16: platform_domain,
+ * falling back to ingress_base_domain).
  * Mirrors getExplicitMailHostname's apex normalisation: strip
  * trailing dots, lowercase. Returns null when the apex is unset (the
  * platform isn't fully bootstrapped — the override route can't be

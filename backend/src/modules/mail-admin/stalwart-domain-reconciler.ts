@@ -63,7 +63,8 @@ import { getPlatformApex } from '../system-settings/platform-domain.js';
  *   1. platform_settings.mail_server_hostname (operator explicit value)
  *   2. env STALWART_HOSTNAME
  *   3. env MAIL_SERVER_HOSTNAME
- *   4. mail.<ingress_base_domain> (the documented default for a
+ *   4. mail.<apex> (R16: platform_domain, falling back to ingress_base_domain;
+ *      the documented default for a
  *      platform-as-mail-server install — what every Plesk-style
  *      deployment uses)
  *
