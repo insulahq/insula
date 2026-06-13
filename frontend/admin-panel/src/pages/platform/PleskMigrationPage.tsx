@@ -288,7 +288,7 @@ function StatusBadge({ status, spin }: { readonly status: string; readonly spin?
 
 function MigrationLegs({ migration }: { readonly migration: PleskMigrationResponse }) {
   const legs = migration.legs ?? {};
-  const order = ['preflight', 'domains', 'email'];
+  const order = ['preflight', 'domains', 'email', 'databases'];
   const keys = [...order.filter((k) => k in legs), ...Object.keys(legs).filter((k) => !order.includes(k))];
   if (keys.length === 0) {
     return <p className="text-xs text-gray-500 dark:text-gray-400">Provisioning queued…</p>;
@@ -363,7 +363,7 @@ function MigrateDialog({ sub, sourceId, onClose }: {
         <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={14} /></button>
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        Maps this subscription onto an <strong>existing tenant</strong> you create and size first (plan, storage, mailbox limits). The migration validates capacity, then provisions {sub.domains.length} domain{sub.domains.length === 1 ? '' : 's'} and email for the domains hosting its {sub.mailboxes.length} mailbox{sub.mailboxes.length === 1 ? '' : 'es'} ({fmtBytes(sub.mailBytes)} mail, {sub.databases.length} database{sub.databases.length === 1 ? '' : 's'}). Content, databases, and mail data follow in later steps.
+        Maps this subscription onto an <strong>existing tenant</strong> you create and size first (plan, storage, mailbox limits). The migration validates capacity, then provisions {sub.domains.length} domain{sub.domains.length === 1 ? '' : 's'} and email for the domains hosting its {sub.mailboxes.length} mailbox{sub.mailboxes.length === 1 ? '' : 'es'} ({fmtBytes(sub.mailBytes)} mail) and imports its {sub.databases.length} database{sub.databases.length === 1 ? '' : 's'} into a MariaDB deployment. Website content and mail data follow in later steps.
       </p>
       <div>
         <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Target tenant</label>
