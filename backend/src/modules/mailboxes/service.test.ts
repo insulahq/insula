@@ -291,6 +291,22 @@ describe('createMailbox', () => {
     });
   });
 
+  it('allows a requested quota exactly equal to the max (boundary)', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
+    const countResult = { count: 0 };
+    const created = { id: 'mb1', fullAddress: 'edge@example.com', quotaMb: 2048 };
+    // size-limit plan caps at 2048; request is exactly 2048 → allowed
+    selectResults = [[emailDomain], [domain], [planRow], [countResult], [], [{ planLimit: 2048, override: null }], [created]];
+    const db = createMockDb();
+
+    await createMailbox(db as never, 'c1', 'ed1', { local_part: 'edge', quota_mb: 2048, mailbox_type: 'mailbox' });
+
+    const insertedRow = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0][0];
+    expect(insertedRow.quotaMb).toBe(2048);
+  });
+
   it('defaults a new mailbox quota to the effective max when none is given', async () => {
     const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
     const domain = { domainName: 'example.com' };
