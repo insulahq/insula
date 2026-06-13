@@ -25,7 +25,7 @@ import { tenants, deployments as deploymentsTable, domains as domainsTable } fro
 import { getCatalogEntryByCode } from '../catalog/service.js';
 import { createDeployment, getDeploymentById } from '../deployments/service.js';
 import { updateDomain } from '../domains/service.js';
-import { decryptSourceKey, normalizePrivateKey } from './service.js';
+import { sourceAuthSecretData, sourceAuthEnv, sourceAuthKeyVolume } from './ssh-auth.js';
 import type { PleskSubscription, PleskDomain } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -270,7 +270,7 @@ async function spawnContentSyncJob(args: SyncArgs): Promise<ContentOutcome> {
       body: {
         metadata: { name: secretName, namespace, labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'app.kubernetes.io/name': 'plesk-content-sync' } },
         type: 'Opaque',
-        stringData: { 'id_rsa': normalizePrivateKey(decryptSourceKey(source)) },
+        stringData: sourceAuthSecretData(source),
       },
     });
     await batch.createNamespacedJob({ namespace, body: buildContentSyncJob({ jobName, secretName, namespace, pvcName, source, srcPath, destSubPath, domain, nodeName }) });
@@ -343,7 +343,9 @@ export function buildContentSyncJob({ jobName, secretName, namespace, pvcName, s
           containers: [{
             name: 'content-sync',
             image: MIGRATION_TOOLS_IMAGE,
-            imagePullPolicy: 'IfNotPresent',
+            // Always-pull: the :latest tag must not serve a stale cached layer
+            // on a node that ran an earlier migration Job.
+            imagePullPolicy: 'Always',
             command: ['bash', '/usr/local/bin/plesk-content-sync.sh'],
             env: [
               { name: 'PLESK_HOST', value: source.hostname },
@@ -353,9 +355,10 @@ export function buildContentSyncJob({ jobName, secretName, namespace, pvcName, s
               { name: 'DEST_PATH', value: `/data/${destSubPath}` },
               { name: 'VHOST_DOMAIN', value: domain },
               { name: 'HOME', value: '/tmp' },
+              ...sourceAuthEnv(source, secretName),
             ],
             volumeMounts: [
-              { name: 'plesk-key', mountPath: '/etc/plesk-key', readOnly: true },
+              ...sourceAuthKeyVolume(source, secretName).volumeMounts,
               { name: 'data', mountPath: '/data' },
               { name: 'tmp', mountPath: '/tmp' },
             ],
@@ -363,7 +366,7 @@ export function buildContentSyncJob({ jobName, secretName, namespace, pvcName, s
             securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
           }],
           volumes: [
-            { name: 'plesk-key', secret: { secretName, items: [{ key: 'id_rsa', path: 'id_rsa', mode: 0o600 }] } },
+            ...sourceAuthKeyVolume(source, secretName).volumes,
             { name: 'data', persistentVolumeClaim: { claimName: pvcName } },
             { name: 'tmp', emptyDir: {} },
           ],

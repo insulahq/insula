@@ -16,7 +16,7 @@
 
 import { eq, and, inArray, lt, sql } from 'drizzle-orm';
 import { pleskSources, pleskDiscoveries } from '../../db/schema.js';
-import { decryptSourceKey, normalizePrivateKey } from './service.js';
+import { sourceAuthSecretData, sourceAuthEnv, sourceAuthKeyVolume } from './ssh-auth.js';
 import {
   REMOTE_DISCOVER_SH,
   ASSEMBLE_PY,
@@ -129,10 +129,9 @@ async function runDiscovery(
       body: {
         metadata: { name: secretName, namespace: PLESK_MIGRATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'platform.io/discovery-id': discoveryId } },
         type: 'Opaque',
-        // Normalize on delivery too (not just on store) so keys saved
-        // before the normalization fix — or without a trailing newline —
-        // still parse: OpenSSH rejects a key with no trailing newline.
-        stringData: { 'id_rsa': normalizePrivateKey(decryptSourceKey(source)) },
+        // Key auth → id_rsa (normalized so OpenSSH accepts it); password
+        // auth → ssh_password (injected to the Job as the SSHPASS env).
+        stringData: sourceAuthSecretData(source),
       },
     });
     await core.createNamespacedConfigMap({
@@ -242,16 +241,19 @@ export function buildDiscoveryJob({ jobName, secretName, cmName, source }: Build
           containers: [{
             name: 'discover',
             image: DISCOVERY_IMAGE,
-            imagePullPolicy: 'IfNotPresent',
+            // Always-pull: the :latest tag must not serve a stale cached layer
+            // on a node that ran an earlier migration Job.
+            imagePullPolicy: 'Always',
             command: ['sh', '/etc/plesk-scripts/runner.sh'],
             env: [
               { name: 'PLESK_HOST', value: source.hostname },
               { name: 'PLESK_PORT', value: String(source.sshPort) },
               { name: 'PLESK_USER', value: source.sshUser },
               { name: 'HOME', value: '/tmp' },
+              ...sourceAuthEnv(source, secretName),
             ],
             volumeMounts: [
-              { name: 'plesk-key', mountPath: '/etc/plesk-key', readOnly: true },
+              ...sourceAuthKeyVolume(source, secretName).volumeMounts,
               { name: 'plesk-scripts', mountPath: '/etc/plesk-scripts', readOnly: true },
               { name: 'tmp', mountPath: '/tmp' },
             ],
@@ -259,7 +261,7 @@ export function buildDiscoveryJob({ jobName, secretName, cmName, source }: Build
             securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
           }],
           volumes: [
-            { name: 'plesk-key', secret: { secretName, defaultMode: 0o600 } },
+            ...sourceAuthKeyVolume(source, secretName).volumes,
             { name: 'plesk-scripts', configMap: { name: cmName } },
             { name: 'tmp', emptyDir: {} },
           ],
