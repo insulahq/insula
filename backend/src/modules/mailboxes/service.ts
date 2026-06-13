@@ -5,7 +5,7 @@ import { mailLogger } from '../../shared/mail-logger.js';
 const log = mailLogger().child({ module: 'mailboxes' });
 import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { getTenantMailboxLimit, getTenantMailboxCount } from './limit.js';
+import { getTenantMailboxLimit, getTenantMailboxCount, getTenantMailboxSizeLimit } from './limit.js';
 import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
 import {
   getJmapSession,
@@ -193,6 +193,21 @@ export async function createMailbox(
     );
   }
 
+  // 4b. Resolve the per-mailbox size cap (plan + optional override). When
+  // no quota is requested we default to the effective max; a requested
+  // quota above the max is rejected (visible, like the count cap above).
+  const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
+  if (input.quota_mb !== undefined && input.quota_mb > sizeLimit.limit) {
+    throw new ApiError(
+      'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+      `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
+      409,
+      { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
+      'Choose a smaller size or ask your administrator to raise the plan limit',
+    );
+  }
+  const effectiveQuotaMb = input.quota_mb ?? sizeLimit.limit;
+
   // 5. Mint a hidden primary secret (ADR-049 "generate-and-forget"):
   // the account needs a valid primary credential in Stalwart, but no
   // human ever sees or types it and we store NOTHING platform-side
@@ -294,7 +309,7 @@ export async function createMailbox(
       // the limit is enforced at the mail server from the first byte rather
       // than only after a later quota edit. Best-effort (see helper).
       if (stalwartPrincipalId) {
-        await syncMailboxStorageQuota(accountId, stalwartPrincipalId, input.quota_mb, {
+        await syncMailboxStorageQuota(accountId, stalwartPrincipalId, effectiveQuotaMb, {
           fullAddress,
           op: 'createMailbox',
         });
@@ -315,7 +330,7 @@ export async function createMailbox(
       // ADR-049: generate-and-forget — no platform-side primary hash.
       passwordHash: null,
       displayName: input.display_name ?? null,
-      quotaMb: input.quota_mb,
+      quotaMb: effectiveQuotaMb,
       mailboxType: input.mailbox_type,
       status: 'active',
       stalwartPrincipalId,
@@ -410,6 +425,22 @@ export async function updateMailbox(
   // Verify mailbox exists and belongs to client. Capture for later JMAP
   // sync so we don't burn a second SELECT on stalwartPrincipalId.
   const existingMailbox = await getMailbox(db, tenantId, mailboxId);
+
+  // Enforce the per-mailbox size cap on quota edits — a quota above the
+  // tenant's effective max (plan + optional override) is rejected
+  // visibly, mirroring create.
+  if (input.quota_mb !== undefined) {
+    const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
+    if (input.quota_mb > sizeLimit.limit) {
+      throw new ApiError(
+        'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+        `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
+        409,
+        { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
+        'Choose a smaller size or ask your administrator to raise the plan limit',
+      );
+    }
+  }
 
   const updateData: Record<string, unknown> = {};
 

@@ -93,6 +93,9 @@ export const updateTenantSchema = z.object({
   // Per-tenant mailbox count override. null = inherit from the plan's
   // max_mailboxes. Min 1 (blocking via 0 is handled by tenant.status).
   max_mailboxes_override: z.number().int().min(1).max(10000).nullable().optional(),
+  // Per-tenant max mailbox SIZE override (MB). null = inherit from the
+  // plan's max_mailbox_size_mb.
+  max_mailbox_size_mb_override: z.number().int().min(50).max(102400).nullable().optional(),
   monthly_price_override: z.number().min(0).max(99999).nullable().optional(),
   // Per-tenant email send rate limit override (messages/hour).
   // null = inherit from the plan's email_hourly_send_limit. 0 = blocked.
@@ -170,6 +173,7 @@ export const tenantResponseSchema = z.object({
   storageLimitOverride: z.string().nullable(),
   maxSubUsersOverride: z.number().nullable(),
   maxMailboxesOverride: z.number().nullable().optional(),
+  maxMailboxSizeMbOverride: z.number().nullable().optional(),
   monthlyPriceOverride: z.string().nullable(),
   emailSendRateLimit: z.number().nullable().optional(),
   // R6 PR 1: daily send-limit override + outbound-mail suspension lever.
