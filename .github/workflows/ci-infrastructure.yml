@@ -161,6 +161,14 @@ jobs:
       - name: Verify SYSTEM tenant scheduler filters + DB invariants
         run: ./scripts/ci-system-tenant-check.sh
 
+  platform-apex-conflation-guard:
+    name: Platform apex / ingress-domain conflation (R16)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify platform subdomains derive from the apex, not ingress_base_domain
+        run: ./scripts/ci-platform-apex-conflation.sh
+
   platform-migration-guard:
     name: Platform-migration registry discipline (ADR-045 W9)
     runs-on: ubuntu-latest
