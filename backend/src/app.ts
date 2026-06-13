@@ -861,6 +861,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // configurable via platform_settings key
       // `mailbox_usage_sync_interval_minutes`)
       // R1 PR 1: fail any Plesk discoveries orphaned by a restart mid-poll.
+      // R1 PR 2: same for migrations orphaned mid-provision (Retry resumes).
       (async () => {
         try {
           const { failStaleDiscoveries } = await import('./modules/plesk-migration/discovery.js');
@@ -868,6 +869,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (n > 0) app.log.info({ n }, 'plesk discovery: failed stale running rows on startup');
         } catch (err) {
           app.log.warn({ err }, 'plesk discovery: stale-sweep failed');
+        }
+        try {
+          const { failStaleMigrations } = await import('./modules/plesk-migration/migrations.js');
+          const n = await failStaleMigrations(app.db);
+          if (n > 0) app.log.info({ n }, 'plesk migration: failed stale in-flight rows on startup');
+        } catch (err) {
+          app.log.warn({ err }, 'plesk migration: stale-sweep failed');
         }
       })();
 

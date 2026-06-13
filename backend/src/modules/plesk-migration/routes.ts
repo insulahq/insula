@@ -16,10 +16,23 @@ import type { z } from 'zod';
 import {
   createPleskSourceSchema,
   updatePleskSourceSchema,
+  createPleskMigrationSchema,
 } from '@insula/api-contracts';
 import * as service from './service.js';
 import { startDiscovery } from './discovery.js';
+import * as migrations from './migrations.js';
+import { startMigration } from './provision.js';
 import { pleskDiscoveries } from '../../db/schema.js';
+
+/** Build k8s clients for a provisioning Job, or undefined if unavailable. */
+async function tryK8sClients() {
+  try {
+    const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+    return createK8sClients(process.env.KUBECONFIG_PATH);
+  } catch {
+    return undefined;
+  }
+}
 
 function parseOr400<S extends z.ZodTypeAny>(schema: S, body: unknown): z.infer<S> {
   const parsed = schema.safeParse(body);
@@ -68,13 +81,7 @@ export async function pleskMigrationRoutes(app: FastifyInstance): Promise<void> 
     const discoveryId = randomUUID();
     await app.db.insert(pleskDiscoveries).values({ id: discoveryId, sourceId: id, status: 'pending' });
 
-    let k8s;
-    try {
-      const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
-      k8s = createK8sClients(process.env.KUBECONFIG_PATH);
-    } catch {
-      k8s = undefined;
-    }
+    const k8s = await tryK8sClients();
     await startDiscovery(app.db, k8s, id, discoveryId, app.log);
 
     reply.status(202).send(success({ discoveryId, status: 'pending' }));
@@ -99,5 +106,44 @@ export async function pleskMigrationRoutes(app: FastifyInstance): Promise<void> 
       startedAt: r.startedAt, completedAt: r.completedAt,
       inventory: r.inventory ?? null, error: r.error ?? null,
     });
+  });
+
+  // ── Migrations (provision a discovered subscription) ──
+  app.post('/admin/plesk/migrations', async (request, reply) => {
+    const input = parseOr400(createPleskMigrationSchema, request.body);
+    const { id } = await migrations.createMigration(app.db, input, request.user?.sub ?? null);
+    const k8s = await tryK8sClients();
+    await startMigration(app.db, k8s, id, app.log);
+    const row = await migrations.getMigration(app.db, id);
+    reply.status(202).send(success(migrations.toMigrationResponse(row)));
+  });
+
+  app.get('/admin/plesk/migrations', async (request) => {
+    const { sourceId } = request.query as { sourceId?: string };
+    const rows = await migrations.listMigrations(app.db, sourceId);
+    return success(rows.map(migrations.toMigrationResponse));
+  });
+
+  app.get('/admin/plesk/migrations/:id', async (request) => {
+    const { id } = request.params as { id: string };
+    const row = await migrations.getMigration(app.db, id);
+    return success(migrations.toMigrationResponse(row));
+  });
+
+  // Re-run an idempotent provisioning pass on the SAME row (resume after
+  // a failure / backend restart). The claim is atomic: only the request
+  // that flips the row out of its terminal state spawns a runner, so two
+  // concurrent Retry clicks can't race on the legs jsonb.
+  app.post('/admin/plesk/migrations/:id/retry', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    await migrations.getMigration(app.db, id); // 404 if missing
+    const claimed = await migrations.claimMigrationForRetry(app.db, id);
+    if (!claimed) {
+      throw new ApiError('MIGRATION_ALREADY_RUNNING', 'This migration is already in progress', 409);
+    }
+    const k8s = await tryK8sClients();
+    await startMigration(app.db, k8s, id, app.log);
+    const fresh = await migrations.getMigration(app.db, id);
+    reply.status(202).send(success(migrations.toMigrationResponse(fresh)));
   });
 }

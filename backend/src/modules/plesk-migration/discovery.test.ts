@@ -16,10 +16,10 @@ const validInv = {
   osVersion: 'Debian 12',
   passwordStorage: 'sym',
   subscriptions: [{
-    name: 'kayec.org.na', sysUser: 'kayec', cronCount: 2, mailBytes: 9_500_000,
-    domains: [{ name: 'kayec.org.na', docRoot: '/var/www/vhosts/kayec.org.na', phpVersion: 'php8.2' }],
-    databases: [{ name: 'wp_kayec', type: 'mysql', sizeBytes: 12_000_000 }],
-    mailboxes: [{ address: 'reception@kayec.org.na', quotaMb: 1024, passwordType: 'sym' }],
+    name: 'acme.example', sysUser: 'acme', cronCount: 2, mailBytes: 9_500_000,
+    domains: [{ name: 'acme.example', docRoot: '/var/www/vhosts/acme.example', phpVersion: 'php8.2' }],
+    databases: [{ name: 'wp_acme', type: 'mysql', sizeBytes: 12_000_000 }],
+    mailboxes: [{ address: 'reception@acme.example', quotaMb: 1024, passwordType: 'sym' }],
   }],
 };
 
@@ -27,7 +27,7 @@ describe('parseInventory', () => {
   it('extracts and validates the inventory between sentinels', () => {
     const inv = parseInventory(wrap(validInv));
     expect(inv).not.toBeNull();
-    expect(inv?.subscriptions[0].name).toBe('kayec.org.na');
+    expect(inv?.subscriptions[0].name).toBe('acme.example');
     expect(inv?.passwordStorage).toBe('sym');
   });
 
