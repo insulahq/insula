@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finalizeItemLeg, mailDomainsOf } from './provision.js';
+import { finalizeItemLeg, mailDomainsOf, checkCapacity } from './provision.js';
 import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
@@ -66,5 +66,52 @@ describe('mailDomainsOf', () => {
     expect(mailDomainsOf(sub([
       { address: 'broken-no-at', quotaMb: null, passwordType: null },
     ]))).toEqual([]);
+  });
+});
+
+describe('checkCapacity (tenant-first preflight)', () => {
+  const GIB = 1_073_741_824; // platform sizes storage in GiB
+
+  it('passes when the subscription fits the plan', () => {
+    expect(checkCapacity({
+      mailboxesNeeded: 46, mailboxesExisting: 0, mailboxLimit: 50,
+      bytesNeeded: 2 * GIB, storageBytesAvailable: 5 * GIB,
+    })).toEqual([]);
+  });
+
+  it('flags too many mailboxes (count + existing exceeds the plan limit)', () => {
+    const problems = checkCapacity({
+      mailboxesNeeded: 46, mailboxesExisting: 6, mailboxLimit: 50,
+      bytesNeeded: 0, storageBytesAvailable: 5 * GIB,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0].resource).toBe('mailboxes');
+    expect(problems[0].needed).toBe(52); // 46 + 6
+    expect(problems[0].message).toContain('plus 6 already');
+  });
+
+  it('flags insufficient storage (mail + DB bytes exceed the plan)', () => {
+    const problems = checkCapacity({
+      mailboxesNeeded: 5, mailboxesExisting: 0, mailboxLimit: 50,
+      bytesNeeded: 8 * GIB, storageBytesAvailable: 5 * GIB,
+    });
+    expect(problems).toHaveLength(1);
+    expect(problems[0].resource).toBe('storage');
+    expect(problems[0].message).toContain('GiB');
+  });
+
+  it('reports BOTH problems when the tenant is under-sized on each axis', () => {
+    const problems = checkCapacity({
+      mailboxesNeeded: 100, mailboxesExisting: 0, mailboxLimit: 10,
+      bytesNeeded: 20 * GIB, storageBytesAvailable: 2 * GIB,
+    });
+    expect(problems.map((p) => p.resource).sort()).toEqual(['mailboxes', 'storage']);
+  });
+
+  it('treats an exactly-fitting subscription as OK (boundary)', () => {
+    expect(checkCapacity({
+      mailboxesNeeded: 50, mailboxesExisting: 0, mailboxLimit: 50,
+      bytesNeeded: 5 * GIB, storageBytesAvailable: 5 * GIB,
+    })).toEqual([]);
   });
 });

@@ -1,0 +1,11 @@
+-- R1 PR 2 follow-up: tenant-first mapping.
+--
+-- A migration now targets an EXISTING, operator-sized tenant instead of
+-- creating one. The operator creates + sizes the tenant first (plan, PVC,
+-- CPU/memory, mailbox count/size) via the normal tenant flow, then maps the
+-- discovered subscription onto it — so the many sizing pitfalls are handled
+-- and validated up front (a capacity preflight) rather than failing
+-- mid-migration. `target_plan_id` is therefore no longer required at create
+-- (the plan is derived from the mapped tenant); it's kept, nullable, as an
+-- audit of which plan the tenant had at migration time.
+ALTER TABLE plesk_migrations ALTER COLUMN target_plan_id DROP NOT NULL;
