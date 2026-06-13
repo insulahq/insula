@@ -157,6 +157,16 @@ RUN chmod 755 /usr/local/bin/standby-replicate.sh
 COPY archive-export.sh /usr/local/bin/archive-export.sh
 RUN chmod 755 /usr/local/bin/archive-export.sh
 
+# Plesk migration mail-data leg (R1): reshape a Plesk Maildir++ tree into the
+# importer layout, then import into Stalwart over IMAP via imap-restore.py (the
+# same MULTIAPPEND/multi-worker engine the tenant-bundle restore uses).
+# plesk-mail-sync.sh orchestrates ssh+rsync → reshape → imap-restore per
+# mailbox. Both ship here because the IMAP engine + ssh/rsync already live here.
+COPY plesk-maildir-reshape.py /usr/local/bin/plesk-maildir-reshape.py
+RUN chmod 755 /usr/local/bin/plesk-maildir-reshape.py
+COPY plesk-mail-sync.sh /usr/local/bin/plesk-mail-sync.sh
+RUN chmod 755 /usr/local/bin/plesk-mail-sync.sh
+
 # Default to a no-op so `docker run …` doesn't error; the orchestrator
 # always overrides command/args.
 CMD ["sh", "-c", "echo tenant-backup-tools image ready; sleep 1"]
