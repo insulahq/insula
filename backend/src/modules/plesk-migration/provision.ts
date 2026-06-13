@@ -26,10 +26,11 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { pleskMigrations, domains as domainsTable, tenants, hostingPlans } from '../../db/schema.js';
+import { pleskMigrations, domains as domainsTable, tenants, hostingPlans, pleskSources } from '../../db/schema.js';
 import { createDomain } from '../domains/service.js';
 import { enableEmailForDomain } from '../email-domains/service.js';
 import { getTenantMailboxLimit, getTenantMailboxCount } from '../mailboxes/limit.js';
+import { runDatabaseLeg } from './db-sync.js';
 import { ApiError } from '../../shared/errors.js';
 import { pleskSubscriptionSchema, createDomainSchema } from '@insula/api-contracts';
 import type { PleskSubscription } from '@insula/api-contracts';
@@ -48,8 +49,8 @@ export interface MigrationLogger {
   error: (obj: unknown, msg?: string) => void;
 }
 
-type ItemStatus = 'completed' | 'failed' | 'skipped';
-interface LegItem { name: string; status: ItemStatus; message?: string }
+export type ItemStatus = 'completed' | 'failed' | 'skipped';
+export interface LegItem { name: string; status: ItemStatus; message?: string }
 interface LegState {
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'partial';
   startedAt?: string;
@@ -159,6 +160,16 @@ async function runMigration(
   await persistLegs(db, migrationId, legs);
   const emailItems = await provisionEmail(db, tenantId, snapshot, logger);
   legs.email = finalizeItemLeg(legs.email, emailItems, 'mailbox domains');
+  await persistLegs(db, migrationId, legs);
+
+  // ── Leg 4: databases ──
+  legs.databases = { status: 'running', startedAt: nowIso() };
+  await persistLegs(db, migrationId, legs);
+  const [sourceRow] = await db.select().from(pleskSources).where(eq(pleskSources.id, row.sourceId));
+  const dbItems = sourceRow
+    ? await runDatabaseLeg(db, k8s, process.env.KUBECONFIG_PATH, tenantId, sourceRow, snapshot, logger)
+    : [];
+  legs.databases = finalizeItemLeg(legs.databases, dbItems, 'databases');
   await persistLegs(db, migrationId, legs);
 
   // ── Overall status ──

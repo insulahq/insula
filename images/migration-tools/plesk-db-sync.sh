@@ -34,6 +34,8 @@ if [ ! -r "$KEY" ] || [ ! -r "$ROOTPW_FILE" ]; then
 fi
 ROOTPW=$(cat "$ROOTPW_FILE")
 
+# accept-new = trust-on-first-use (same bounded posture as the discovery Job);
+# host-fingerprint pinning captured at discovery is an ADR-052 follow-up.
 SSH="ssh -i $KEY -p ${PLESK_PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 ${PLESK_USER}@${PLESK_HOST}"
 
 # Fail fast (before the sentinel block) if we can't even reach the box —
@@ -52,9 +54,18 @@ for db in $DB_NAMES; do
   fi
   # mysqldump on the Plesk box as the Plesk MySQL admin ('admin', whose
   # password is /etc/psa/.psa.shadow — root-readable). MYSQL_PWD keeps it
-  # out of argv. --single-transaction = consistent InnoDB snapshot without
-  # locking; --no-tablespaces avoids needing the PROCESS privilege.
-  remote="MYSQL_PWD=\$(cat /etc/psa/.psa.shadow) exec mysqldump --single-transaction --quick --no-tablespaces --routines --triggers -uadmin -- '${db}'"
+  # out of argv (it IS briefly visible in /proc/<pid>/environ on the Plesk
+  # box, readable only by root there — acceptable for an operator-owned box).
+  # --single-transaction = consistent InnoDB snapshot without locking;
+  # --no-tablespaces avoids needing the PROCESS privilege.
+  # --add-drop-table makes RE-IMPORT idempotent: this leg is retryable, and
+  # without DROP TABLE a re-run would CREATE-IF-NOT-EXISTS (skip) then INSERT
+  # again → DUPLICATE ROWS. DROP+CREATE+INSERT is clean on every run (matches
+  # Plesk's own backup tooling).
+  # printf %q shell-quotes the (already allowlist-validated) db name as
+  # defence-in-depth for the remote shell evaluation.
+  db_q=$(printf '%q' "$db")
+  remote="MYSQL_PWD=\$(cat /etc/psa/.psa.shadow) exec mysqldump --single-transaction --quick --no-tablespaces --routines --triggers --add-drop-table -uadmin -- ${db_q}"
   if $SSH "$remote" 2>/tmp/dumperr | MYSQL_PWD="$ROOTPW" mariadb --protocol=TCP -h "$DB_HOST" -P "$DB_PORT" -uroot "$db" 2>/tmp/imperr; then
     echo "DBRESULT ${db} ok imported"
   else
