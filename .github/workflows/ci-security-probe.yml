@@ -33,7 +33,7 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v5
         with:
@@ -142,7 +142,7 @@ jobs:
       group: pin-development-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: main
           fetch-depth: 0

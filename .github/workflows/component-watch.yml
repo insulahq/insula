@@ -34,7 +34,7 @@ jobs:
     name: Registry schema + drift + coverage + SLA
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: python3 -m pip install --user pyyaml
       - run: ./scripts/ci-component-watch-check.sh
 
@@ -42,7 +42,7 @@ jobs:
     name: OSV dependency scan (gate on new HIGH/CRITICAL)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: python3 -m pip install --user pyyaml
       - uses: actions/setup-go@v5
         with:
@@ -64,7 +64,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - run: python3 -m pip install --user pyyaml
       - uses: actions/setup-go@v5
         with:

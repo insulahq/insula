@@ -106,7 +106,7 @@ jobs:
       !contains(github.event.head_commit.message, '[ci-skip-staging-sync]')
     steps:
       - name: Checkout development
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: development
           fetch-depth: 0
