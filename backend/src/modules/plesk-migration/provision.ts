@@ -32,6 +32,7 @@ import { enableEmailForDomain } from '../email-domains/service.js';
 import { getTenantMailboxLimit, getTenantMailboxCount } from '../mailboxes/limit.js';
 import { runDatabaseLeg } from './db-sync.js';
 import { runContentLeg } from './content-sync.js';
+import { runMailLeg } from './mail-sync.js';
 import { ApiError } from '../../shared/errors.js';
 import { pleskSubscriptionSchema, createDomainSchema } from '@insula/api-contracts';
 import type { PleskSubscription } from '@insula/api-contracts';
@@ -180,6 +181,15 @@ async function runMigration(
     ? await runContentLeg(db, k8s, process.env.KUBECONFIG_PATH, tenantId, sourceRow, snapshot, logger)
     : [];
   legs.content = finalizeItemLeg(legs.content, contentItems, 'websites');
+  await persistLegs(db, migrationId, legs);
+
+  // ── Leg 6: mail data (IMAP MULTIAPPEND import) ──
+  legs.mail = { status: 'running', startedAt: nowIso() };
+  await persistLegs(db, migrationId, legs);
+  const mailItems = sourceRow
+    ? await runMailLeg(db, k8s, tenantId, sourceRow, snapshot, logger)
+    : [];
+  legs.mail = finalizeItemLeg(legs.mail, mailItems, 'mailboxes');
   await persistLegs(db, migrationId, legs);
 
   // ── Overall status ──
