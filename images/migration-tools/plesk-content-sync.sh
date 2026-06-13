@@ -53,10 +53,20 @@ if [ -n "$VHOST_DOMAIN" ]; then
   fi
 fi
 
-# --safe-links: refuse symlinks whose target escapes the source tree (a Plesk
-# docroot could contain ../../../etc/... links) — copy them as nothing rather
-# than faithfully reproducing an escape on the tenant PVC.
-if rsync -a --safe-links --no-owner --no-group --info=stats2 -e "$RSH" \
+# -a archive, minus the ownership/dir-time bits we can't (and shouldn't) set on
+# the tenant PVC:
+#   --no-owner --no-group : the PVC is a single uid; we don't own the source uids
+#   --omit-dir-times      : the docroot's root dir is created+owned by the web
+#                           deployment's container uid, NOT this Job's uid (65534),
+#                           so chtimes on it fails with EPERM and rsync would exit
+#                           non-zero even though every FILE copied fine. File mtimes
+#                           are still preserved; only directory mtimes are skipped.
+#   --no-perms            : likewise, don't try to chmod entries we don't own; new
+#                           files land with the umask (0644 → world-readable, which
+#                           is what the web server needs).
+#   --safe-links          : refuse symlinks whose target escapes the source tree
+#                           (a Plesk docroot could contain ../../../etc/... links).
+if rsync -a --omit-dir-times --no-perms --no-owner --no-group --safe-links --info=stats2 -e "$RSH" \
      "${PLESK_USER}@${PLESK_HOST}:${SRC_PATH%/}/" "${DEST_PATH%/}/"; then
   echo "CONTENTRESULT ok synced ${SRC_PATH} -> ${DEST_PATH}"
 else
