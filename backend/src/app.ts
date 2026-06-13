@@ -574,6 +574,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(smtpRelayTenantRoutes, { prefix: '/api/v1' });
   await app.register(webmailSettingsRoutes, { prefix: '/api/v1' });
   await app.register(platformUrlsRoutes, { prefix: '/api/v1' });
+  const { platformDomainRoutes } = await import('./modules/platform-domain/routes.js');
+  await app.register(platformDomainRoutes, { prefix: '/api/v1' });
   await app.register(platformUpdateRoutes, { prefix: '/api/v1' });
   await app.register(platformUpgradeRoutes, { prefix: '/api/v1' });
   await app.register(sslCertRoutes, { prefix: '/api/v1' });
