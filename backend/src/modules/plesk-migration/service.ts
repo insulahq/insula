@@ -25,6 +25,19 @@ function encryptionKey(): string {
   return process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64);
 }
 
+/**
+ * OpenSSH rejects a private key that lacks a trailing newline with a
+ * cryptic `error in libcrypto` → `Permission denied (publickey)`, which
+ * surfaces to the operator only as an empty/failed discovery. Operators
+ * pasting a key into the UI textarea — and shells that strip the final
+ * newline — routinely drop it. Normalize on store: CRLF→LF and exactly
+ * one trailing newline, so every delivered key parses.
+ */
+export function normalizePrivateKey(pem: string): string {
+  const body = pem.replace(/\r\n?/g, '\n').replace(/\n+$/, '');
+  return body.length > 0 ? `${body}\n` : body;
+}
+
 type SourceRow = typeof pleskSources.$inferSelect;
 
 /** Strip the encrypted key — responses never carry it. */
@@ -55,7 +68,7 @@ export async function createSource(
     hostname: input.hostname,
     sshPort: input.ssh_port ?? 22,
     sshUser: input.ssh_user ?? 'root',
-    sshKeyEncrypted: encrypt(input.ssh_private_key, encryptionKey()),
+    sshKeyEncrypted: encrypt(normalizePrivateKey(input.ssh_private_key), encryptionKey()),
     createdBy,
   });
   const [row] = await db.select().from(pleskSources).where(eq(pleskSources.id, id));
@@ -90,7 +103,7 @@ export async function updateSource(
   if (input.ssh_port !== undefined) values.sshPort = input.ssh_port;
   if (input.ssh_user !== undefined) values.sshUser = input.ssh_user;
   if (input.ssh_private_key !== undefined) {
-    values.sshKeyEncrypted = encrypt(input.ssh_private_key, encryptionKey());
+    values.sshKeyEncrypted = encrypt(normalizePrivateKey(input.ssh_private_key), encryptionKey());
   }
   if (Object.keys(values).length > 0) {
     await db.update(pleskSources).set(values).where(eq(pleskSources.id, id));

@@ -300,8 +300,18 @@ async function provisionEmail(
         items.push({ name: dn, status: 'skipped', message: 'domain not provisioned' });
         continue;
       }
-      await enableEmailForDomain(db, tenantId, domainRow.id, { webmail_enabled: false }, encryptionKey());
-      items.push({ name: dn, status: 'completed' });
+      // enableEmailForDomain degrades gracefully when the mail stack is
+      // unreachable: it creates the email_domains row but leaves
+      // stalwartDomainId null (no throw). Reflect that honestly — a null
+      // id means the Stalwart x:Domain wasn't created yet, so mark it
+      // skipped (a Retry re-attempts the JMAP step idempotently) instead
+      // of falsely reporting completed.
+      const ed = await enableEmailForDomain(db, tenantId, domainRow.id, { webmail_enabled: false }, encryptionKey());
+      if (ed?.stalwartDomainId) {
+        items.push({ name: dn, status: 'completed' });
+      } else {
+        items.push({ name: dn, status: 'skipped', message: 'mail stack unreachable — Stalwart domain pending; retry to finish' });
+      }
     } catch (err) {
       logger.warn({ err, domain: dn, tenantId }, 'plesk migration: email enable failed');
       items.push({ name: dn, status: 'failed', message: errMessage(err) });
