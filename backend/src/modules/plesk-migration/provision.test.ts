@@ -1,0 +1,70 @@
+import { describe, it, expect } from 'vitest';
+import { finalizeItemLeg, mailDomainsOf } from './provision.js';
+import type { PleskSubscription } from '@insula/api-contracts';
+
+function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
+  return {
+    name: 'acme.example', sysUser: 'acme', cronCount: 0, mailBytes: 0,
+    domains: [], databases: [], mailboxes,
+  };
+}
+
+describe('finalizeItemLeg', () => {
+  const prev = { status: 'running' as const, startedAt: '2026-06-13T00:00:00.000Z' };
+
+  it('marks an empty leg skipped (no work to do)', () => {
+    const leg = finalizeItemLeg(prev, [], 'domains');
+    expect(leg.status).toBe('skipped');
+    expect(leg.detail).toBe('no domains');
+    expect(leg.startedAt).toBe(prev.startedAt); // carries prev fields
+  });
+
+  it('marks completed when every item succeeded', () => {
+    const leg = finalizeItemLeg(prev, [
+      { name: 'a.com', status: 'completed' },
+      { name: 'b.com', status: 'completed' },
+    ], 'domains');
+    expect(leg.status).toBe('completed');
+    expect(leg.detail).toBe('2/2 domains');
+    expect(leg.items).toHaveLength(2);
+  });
+
+  it('counts skipped items as non-failures (still completed)', () => {
+    const leg = finalizeItemLeg(prev, [
+      { name: 'a.com', status: 'completed' },
+      { name: 'b.com', status: 'skipped', message: 'already exists' },
+    ], 'domains');
+    expect(leg.status).toBe('completed');
+    expect(leg.detail).toBe('2/2 domains');
+  });
+
+  it('marks partial (not failed) when any item failed — the tenant still exists', () => {
+    const leg = finalizeItemLeg(prev, [
+      { name: 'a.com', status: 'completed' },
+      { name: 'bad_domain', status: 'failed', message: 'invalid' },
+    ], 'domains');
+    expect(leg.status).toBe('partial');
+    expect(leg.detail).toBe('1/2 domains'); // 1 ok of 2
+  });
+});
+
+describe('mailDomainsOf', () => {
+  it('returns the distinct, lower-cased domains that host mailboxes', () => {
+    const result = mailDomainsOf(sub([
+      { address: 'reception@acme.example', quotaMb: null, passwordType: 'sym' },
+      { address: 'info@ACME.EXAMPLE', quotaMb: null, passwordType: 'sym' },
+      { address: 'sales@shop.acme.example', quotaMb: null, passwordType: 'sym' },
+    ]));
+    expect(result.sort()).toEqual(['acme.example', 'shop.acme.example']);
+  });
+
+  it('is empty when the subscription has no mailboxes', () => {
+    expect(mailDomainsOf(sub([]))).toEqual([]);
+  });
+
+  it('ignores malformed addresses with no domain part', () => {
+    expect(mailDomainsOf(sub([
+      { address: 'broken-no-at', quotaMb: null, passwordType: null },
+    ]))).toEqual([]);
+  });
+});

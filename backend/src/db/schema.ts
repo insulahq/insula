@@ -1437,6 +1437,36 @@ export const pleskDiscoveries = pgTable('plesk_discoveries', {
   index('plesk_discoveries_source_idx').on(table.sourceId, table.startedAt),
 ]);
 
+// R1 PR 2 — provisioning one discovered subscription onto the platform.
+export const pleskMigrations = pgTable('plesk_migrations', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  sourceId: varchar('source_id', { length: 36 })
+    .notNull()
+    .references(() => pleskSources.id, { onDelete: 'cascade' }),
+  discoveryId: varchar('discovery_id', { length: 36 })
+    .references(() => pleskDiscoveries.id, { onDelete: 'set null' }),
+  subscriptionName: varchar('subscription_name', { length: 255 }).notNull(),
+  // Frozen PleskSubscription inventory at create-time (authoritative).
+  subscriptionSnapshot: jsonb('subscription_snapshot').$type<Record<string, unknown>>().notNull(),
+  targetPlanId: varchar('target_plan_id', { length: 36 })
+    .notNull()
+    .references(() => hostingPlans.id),
+  // NULL → defaults to admin@<subscription_name> at provision time.
+  contactEmail: varchar('contact_email', { length: 320 }),
+  targetTenantId: varchar('target_tenant_id', { length: 36 })
+    .references(() => tenants.id, { onDelete: 'set null' }),
+  // pending | running | completed | failed | partial
+  status: varchar('status', { length: 16 }).notNull().default('pending'),
+  // Per-leg state map: { tenant: {...}, domains: {...}, email: {...} }.
+  legs: jsonb('legs').$type<Record<string, unknown>>().notNull().default({}),
+  error: text('error'),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  index('plesk_migrations_source_idx').on(table.sourceId, table.createdAt),
+]);
+
 export const emailFblComplaints = pgTable('email_fbl_complaints', {
   id: varchar('id', { length: 36 }).primaryKey(),
   stalwartReportId: varchar('stalwart_report_id', { length: 64 }).notNull(),

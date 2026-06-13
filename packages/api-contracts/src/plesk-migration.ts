@@ -85,9 +85,80 @@ export const pleskDiscoveryResponseSchema = z.object({
   error: z.string().nullable(),
 });
 
+// ── R1 PR 2 — provision a discovered subscription onto the platform ──
+//
+// A `plesk_migration` provisions ONE Plesk subscription (the snapshot
+// frozen at create-time) into a platform tenant: the tenant itself, its
+// domains, and email for the domains that host mailboxes. Content/DB and
+// mail-data legs land in later PRs as additional entries in `legs`.
+
+export const createPleskMigrationSchema = z.object({
+  source_id: z.string().min(1),
+  // Pin to a specific completed discovery's snapshot; omit to use the
+  // source's most recent completed discovery.
+  discovery_id: z.string().min(1).optional(),
+  // The Plesk subscription (its main domain name) to migrate.
+  subscription_name: z.string().min(1).max(255),
+  // Target platform plan (hosting_plans.id) — operator picks; there is
+  // no automatic plan mapping (Plesk service plans don't map 1:1).
+  target_plan_id: z.string().min(1),
+  // Contact email for the new tenant's admin user. Defaults to
+  // admin@<subscription_name> when omitted.
+  contact_email: z.string().email().optional(),
+});
+
+const legStatus = z.enum(['pending', 'running', 'completed', 'failed', 'skipped', 'partial']);
+
+export const pleskMigrationLegItemSchema = z.object({
+  name: z.string(),
+  status: z.enum(['completed', 'failed', 'skipped']),
+  message: z.string().nullable().optional(),
+});
+
+export const pleskMigrationLegSchema = z.object({
+  status: legStatus,
+  startedAt: z.union([z.string(), z.date()]).nullable().optional(),
+  completedAt: z.union([z.string(), z.date()]).nullable().optional(),
+  detail: z.string().nullable().optional(),
+  error: z.string().nullable().optional(),
+  // Per-item outcomes (one per domain / database / mailbox …).
+  items: z.array(pleskMigrationLegItemSchema).optional(),
+});
+
+// Known legs are optional (a migration in flight has only some populated);
+// catchall lets later PRs add content/db/mail legs without a contract bump.
+export const pleskMigrationLegsSchema = z
+  .object({
+    tenant: pleskMigrationLegSchema.optional(),
+    domains: pleskMigrationLegSchema.optional(),
+    email: pleskMigrationLegSchema.optional(),
+  })
+  .catchall(pleskMigrationLegSchema);
+
+export const pleskMigrationResponseSchema = z.object({
+  id: z.string(),
+  sourceId: z.string(),
+  discoveryId: z.string().nullable(),
+  subscriptionName: z.string(),
+  targetPlanId: z.string(),
+  targetTenantId: z.string().nullable(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'partial']),
+  legs: pleskMigrationLegsSchema.nullable(),
+  error: z.string().nullable(),
+  createdAt: z.union([z.string(), z.date()]),
+  updatedAt: z.union([z.string(), z.date()]).nullable(),
+});
+
 export type CreatePleskSourceInput = z.infer<typeof createPleskSourceSchema>;
 export type UpdatePleskSourceInput = z.infer<typeof updatePleskSourceSchema>;
 export type PleskInventory = z.infer<typeof pleskInventorySchema>;
 export type PleskSubscription = z.infer<typeof pleskSubscriptionSchema>;
+export type PleskMailbox = z.infer<typeof pleskMailboxSchema>;
+export type PleskDomain = z.infer<typeof pleskDomainSchema>;
+export type PleskDatabase = z.infer<typeof pleskDatabaseSchema>;
 export type PleskSourceResponse = z.infer<typeof pleskSourceResponseSchema>;
 export type PleskDiscoveryResponse = z.infer<typeof pleskDiscoveryResponseSchema>;
+export type CreatePleskMigrationInput = z.infer<typeof createPleskMigrationSchema>;
+export type PleskMigrationLeg = z.infer<typeof pleskMigrationLegSchema>;
+export type PleskMigrationLegs = z.infer<typeof pleskMigrationLegsSchema>;
+export type PleskMigrationResponse = z.infer<typeof pleskMigrationResponseSchema>;
