@@ -162,7 +162,7 @@ async function runDiscovery(
 
     if (!succeeded) {
       await db.update(pleskDiscoveries)
-        .set({ status: 'failed', error: 'discovery job did not complete (timeout or ssh failure)', logTail, completedAt: new Date() })
+        .set({ status: 'failed', error: discoveryFailureReason(logTail), logTail, completedAt: new Date() })
         .where(eq(pleskDiscoveries.id, discoveryId));
       return;
     }
@@ -194,6 +194,29 @@ async function runDiscovery(
     await core.deleteNamespacedSecret({ name: secretName, namespace: PLESK_MIGRATION_NAMESPACE }).catch(() => {});
     await core.deleteNamespacedConfigMap({ name: cmName, namespace: PLESK_MIGRATION_NAMESPACE }).catch(() => {});
   }
+}
+
+/**
+ * A concrete, operator-facing failure reason derived from the Job log — the
+ * discovery response only exposes `error` (not the raw logTail), so surface
+ * WHY here instead of a generic "did not complete". Especially important for
+ * password auth, where a typo must read as an auth failure, not "empty".
+ */
+export function discoveryFailureReason(logTail: string): string {
+  const t = logTail || '';
+  if (/Permission denied|Authentication failed|sshpass:/i.test(t)) {
+    return 'SSH authentication failed — check the key or password (and that the user may log in)';
+  }
+  if (/Connection timed out|Connection refused|No route to host|Could not resolve|Name or service not known/i.test(t)) {
+    return 'could not reach the host — check the hostname/IP and SSH port';
+  }
+  if (/plesk version.*empty|plesk db.*unreachable|not a Plesk box/i.test(t)) {
+    return 'connected, but this host is not a usable Plesk server (the plesk CLI/DB was unreachable)';
+  }
+  if (/ssh\/remote command failed/i.test(t)) {
+    return 'the remote discovery command failed — wrong credential, unreachable host, or not a Plesk box';
+  }
+  return 'discovery job did not complete (timeout or ssh failure)';
 }
 
 /** Extract + validate the inventory JSON from the Job log. */

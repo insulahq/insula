@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseInventory, buildDiscoveryJob, PLESK_MIGRATION_NAMESPACE } from './discovery.js';
+import { parseInventory, buildDiscoveryJob, discoveryFailureReason, PLESK_MIGRATION_NAMESPACE } from './discovery.js';
 import { INVENTORY_BEGIN, INVENTORY_END } from './discovery-scripts.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -22,6 +22,21 @@ const validInv = {
     mailboxes: [{ address: 'reception@acme.example', quotaMb: 1024, passwordType: 'sym' }],
   }],
 };
+
+describe('discoveryFailureReason', () => {
+  it('maps an auth failure (wrong key/password)', () => {
+    expect(discoveryFailureReason('...\nPermission denied, please try again.\nFATAL: ...')).toMatch(/authentication failed/i);
+  });
+  it('maps an unreachable host', () => {
+    expect(discoveryFailureReason('ssh: connect to host x port 22: Connection timed out')).toMatch(/could not reach the host/i);
+  });
+  it('maps a connected-but-not-Plesk box', () => {
+    expect(discoveryFailureReason("FATAL: 'plesk version' empty and 'plesk db' unreachable")).toMatch(/not a usable Plesk server/i);
+  });
+  it('falls back to a generic reason for an empty log', () => {
+    expect(discoveryFailureReason('')).toMatch(/did not complete/i);
+  });
+});
 
 describe('parseInventory', () => {
   it('extracts and validates the inventory between sentinels', () => {
