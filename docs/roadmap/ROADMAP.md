@@ -81,13 +81,14 @@ the documented p95 < 500 ms target on core endpoints.
 
 ## R4 — FBL complaint processing
 
-Feedback-loop ingestion (ARF parsing) with complaint-rate thresholds and
-automatic throttle/suspend of offending tenants. Required before operating
-mail-sending tenants at scale.
-
-- Spec: the original email sending-limits & monitoring spec (FBL sections; see
-  the git history). Note: its `email_messages` per-message tracking table is
-  **descoped** — design complaint handling without it.
+**Shipped 2026-06-12** (PRs #64–#69): feedback-loop ingestion via Stalwart
+webhooks + `x:ArfExternalReport` / `report.analysis` — a `fbl@<apex>` SYSTEM
+mailbox + JMAP poller writing `email_fbl_complaints` (per-domain complaint
+rates over the send counters), complaint-rate thresholds (warning/critical),
+and notify/auto enforcement (one-click or automatic throttle + outbound-mail
+suspension), all surfaced in the Monitoring → Mail tab. The `email_messages`
+per-message table stayed descoped. Auto-suspension closed loop proven live.
+Runbook: [MAIL_FBL.md](../operations/MAIL_FBL.md).
 
 ## R5 — DMARC aggregate-report ingestion
 
@@ -99,12 +100,15 @@ quarantine → reject) once pass-rate thresholds hold.
 
 ## R6 — Rolling sending-quota enforcement
 
-Per-tenant hourly/daily send quotas with rolling windows. Today only static
-Stalwart throttles + the `emailSendRateLimit` field exist; there is no
-rolling accounting or enforcement pipeline.
-
-- Spec: the original email sending-limits & monitoring spec (quota sections;
-  see the git history). Ignore the Postfix policy-daemon mechanics — we run Stalwart.
+**Shipped 2026-06-12** (PRs #64–#69): per-tenant plan-based hourly/daily send
+limits enforced through the Stalwart JMAP registry (`x:MtaOutboundThrottle`
+hourly+daily keyed by sender domain + `x:MtaQueueQuota`, applied with a
+`ReloadSettings` action; suspension forces a byte-quota block), with rolling
+per-hour send accounting (`email_send_counters` fed by send webhooks), 80/100%
+usage notifications + a usage UI, and a Sending-Protection control
+(off / notify / auto). Replaced the dead static `[queue.throttle]` TOML that
+Stalwart 0.16 never read. Plan/tenant limit model + the per-plan **max mailbox
+size** cap land in the hosting-plan settings.
 
 ## R7 — IP warm-up, pools, and per-domain relay
 
