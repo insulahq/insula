@@ -357,7 +357,16 @@ async function preflightTenant(
   return { problems, detail };
 }
 
-/** Create each Plesk domain as a platform domain (dns_mode=cname). */
+/** The platform dns_mode a migrated Plesk domain should use: a Plesk-hosted
+ *  master zone means Plesk was the authoritative DNS, so the platform takes
+ *  over as PRIMARY. Everything else (slave/external) stays cname (the tenant
+ *  keeps pointing DNS at us via a CNAME). */
+export function dnsModeForDomain(d: { dnsZoneType?: 'master' | 'slave' | null }): 'primary' | 'cname' {
+  return d.dnsZoneType === 'master' ? 'primary' : 'cname';
+}
+
+/** Create each Plesk domain as a platform domain, preserving PRIMARY DNS for
+ *  domains Plesk was authoritative for (dns_zone.type='master'). */
 async function provisionDomains(
   db: Database,
   k8s: K8sClients | undefined,
@@ -380,13 +389,17 @@ async function provisionDomains(
       // Validate the name through the same contract the HTTP route uses
       // (FQDN, alpha-only TLD) so a malformed Plesk domain fails cleanly
       // per-item instead of poisoning the K8s reconcile downstream.
-      const parsed = createDomainSchema.safeParse({ domain_name: d.name, dns_mode: 'cname' });
+      const dnsMode = dnsModeForDomain(d);
+      const parsed = createDomainSchema.safeParse({ domain_name: d.name, dns_mode: dnsMode });
       if (!parsed.success) {
         items.push({ name: d.name, status: 'failed', message: `invalid domain name: ${parsed.error.issues[0]?.message ?? 'format'}` });
         continue;
       }
       await createDomain(db, tenantId, parsed.data, k8s);
-      items.push({ name: d.name, status: 'completed' });
+      items.push({
+        name: d.name, status: 'completed',
+        message: dnsMode === 'primary' ? 'PRIMARY DNS (Plesk was authoritative — review the DNS provider group + records)' : undefined,
+      });
     } catch (err) {
       logger.warn({ err, domain: d.name, tenantId }, 'plesk migration: domain provisioning failed');
       items.push({ name: d.name, status: 'failed', message: errMessage(err) });

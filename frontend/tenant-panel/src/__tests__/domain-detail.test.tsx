@@ -93,13 +93,13 @@ function setupMocks() {
 beforeEach(() => vi.clearAllMocks());
 
 describe('Tenant DomainDetail page', () => {
-  it('renders domain name and tabs (CNAME mode hides DNS tab)', async () => {
+  it('renders domain name and tabs (DNS tab visible even in CNAME mode)', async () => {
     setupMocks();
     render(<DomainDetail />, { wrapper: createWrapper() });
     await waitFor(() => expect(screen.getByTestId('domain-name-heading')).toHaveTextContent('example.com'));
     expect(screen.getByTestId('tab-routing')).toBeInTheDocument();
-    // DNS tab is hidden for CNAME mode domains
-    expect(screen.queryByTestId('tab-dns')).not.toBeInTheDocument();
+    // DNS Records tab is available in every mode, including CNAME.
+    expect(screen.getByTestId('tab-dns')).toBeInTheDocument();
     expect(screen.getByTestId('tab-ssl')).toBeInTheDocument();
     // DNS mode badge should be visible
     expect(screen.getByTestId('domain-dns-mode-badge')).toHaveTextContent('CNAME Mode');

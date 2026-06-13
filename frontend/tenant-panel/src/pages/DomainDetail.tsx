@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, type FormEvent } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
@@ -52,14 +52,6 @@ export default function DomainDetail() {
   const { data: domainsData, isLoading } = useDomains(tenantId ?? undefined);
   const domain = domainsData?.data?.find((d) => d.id === domainId);
 
-  // If the user was on the DNS tab and the domain switches to CNAME mode
-  // (e.g. after a migration), fall back to the routing tab.
-  useEffect(() => {
-    if (domain && activeTab === 'dns' && domain.dnsMode === 'cname') {
-      setActiveTab('routing');
-    }
-  }, [activeTab, domain?.dnsMode, domain]);
-
   // Auto-verify dropped: cron re-verifies every 24h; page-mount auto-fire caused
   // duplicate DNS calls and delayed page render on every visit.
 
@@ -82,9 +74,10 @@ export default function DomainDetail() {
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: 'routing', label: 'Ingress Routes', icon: <Network size={14} /> },
-    // DNS Records tab is only relevant for primary/secondary modes — CNAME
-    // domains delegate DNS entirely so there is nothing to manage here.
-    ...(domain.dnsMode !== 'cname' ? [{ key: 'dns' as Tab, label: 'DNS Records', icon: <Globe size={14} /> }] : []),
+    // DNS Records are shown in every mode — even in CNAME mode the records
+    // (the CNAME target the tenant points at, plus any apex / MX / TXT they
+    // manage) are useful to view, so the tab is always available.
+    { key: 'dns', label: 'DNS Records', icon: <Globe size={14} /> },
     { key: 'ssl', label: 'SSL/TLS', icon: <ShieldCheck size={14} /> },
   ];
 

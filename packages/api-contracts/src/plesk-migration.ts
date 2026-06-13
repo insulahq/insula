@@ -56,6 +56,10 @@ export const pleskDomainSchema = z.object({
   name: z.string(),
   docRoot: z.string().nullable(),
   phpVersion: z.string().nullable(),
+  // Plesk DNS zone type for the domain: 'master' = Plesk is the primary
+  // (authoritative) DNS, 'slave' = secondary, null = external DNS. Drives the
+  // migrated domain's dns_mode. Default null so pre-this-change snapshots parse.
+  dnsZoneType: z.enum(['master', 'slave']).nullable().default(null),
 });
 
 export const pleskSubscriptionSchema = z.object({
