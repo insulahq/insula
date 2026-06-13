@@ -94,6 +94,13 @@ export async function updateSettings(
     await db.insert(platformSettings).values({ key: 'ingress_base_domain', value: input.ingressBaseDomain ?? '' })
       .onConflictDoUpdate({ target: platformSettings.key, set: { value: input.ingressBaseDomain ?? '' } });
   }
+  // R16: mirror the platform apex into the KV table the same way, so the
+  // apex consumers (webmail/mail/reserved-subdomains; repointed in PR-2) can
+  // read it via getSetting(db, 'platform_domain').
+  if (input.platformDomain !== undefined) {
+    await db.insert(platformSettings).values({ key: 'platform_domain', value: input.platformDomain ?? '' })
+      .onConflictDoUpdate({ target: platformSettings.key, set: { value: input.platformDomain ?? '' } });
+  }
 
   // Invalidate cache
   cachedSettings = null;

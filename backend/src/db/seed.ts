@@ -25,6 +25,9 @@ const tenantPanelUrl = process.env.TENANT_PANEL_URL ?? null;
 const supportEmail = process.env.SUPPORT_EMAIL ?? null;
 const supportUrl = process.env.SUPPORT_URL ?? null;
 const ingressBaseDomain = process.env.INGRESS_BASE_DOMAIN ?? null;
+// R16: platform apex. Bootstrap sets PLATFORM_BASE_DOMAIN equal to the ingress
+// domain by default, so the apex seeds equal (zero behaviour change).
+const platformDomain = process.env.PLATFORM_BASE_DOMAIN ?? ingressBaseDomain;
 const platformName = process.env.PLATFORM_NAME ?? 'Hosting Platform';
 const platformTimezone = process.env.PLATFORM_TIMEZONE ?? 'UTC';
 const apiRateLimit = process.env.API_RATE_LIMIT ? parseInt(process.env.API_RATE_LIMIT, 10) : 100;
@@ -37,6 +40,7 @@ await db.insert(systemSettings).values({
   supportEmail,
   supportUrl,
   ingressBaseDomain,
+  platformDomain,
   apiRateLimit,
   timezone: platformTimezone,
 }).onConflictDoUpdate({
@@ -49,6 +53,7 @@ await db.insert(systemSettings).values({
     supportEmail: sql`COALESCE(${systemSettings.supportEmail}, ${supportEmail})`,
     supportUrl: sql`COALESCE(${systemSettings.supportUrl}, ${supportUrl})`,
     ingressBaseDomain: sql`COALESCE(${systemSettings.ingressBaseDomain}, ${ingressBaseDomain})`,
+    platformDomain: sql`COALESCE(${systemSettings.platformDomain}, ${platformDomain})`,
   },
 });
 // Also mirror ingressBaseDomain into the platform_settings kv table so
@@ -58,6 +63,13 @@ if (ingressBaseDomain) {
   await db.execute(sql`
     INSERT INTO platform_settings (setting_key, setting_value, updated_at)
     VALUES ('ingress_base_domain', ${ingressBaseDomain}, NOW())
+    ON CONFLICT (setting_key) DO UPDATE
+    SET setting_value = COALESCE(NULLIF(platform_settings.setting_value, ''), EXCLUDED.setting_value)
+  `);
+  // R16: mirror the platform apex into the KV table the same way.
+  await db.execute(sql`
+    INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+    VALUES ('platform_domain', ${platformDomain ?? ingressBaseDomain}, NOW())
     ON CONFLICT (setting_key) DO UPDATE
     SET setting_value = COALESCE(NULLIF(platform_settings.setting_value, ''), EXCLUDED.setting_value)
   `);

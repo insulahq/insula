@@ -34,12 +34,11 @@
 
 import type { CustomObjectsApi } from '@kubernetes/client-node';
 
-import { eq } from 'drizzle-orm';
 
 import { applyIngressRoute, deleteIngressRoute } from '../ingress-routes/traefik-apply.js';
 import type { IngressRouteBody } from '../ingress-routes/traefik-types.js';
-import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 
 /** Namespace + name of the platform-api-owned override IngressRoute. */
 export const MAIL_ACME_OVERRIDE_NAMESPACE = 'mail';
@@ -86,11 +85,9 @@ export function isValidMailHostname(host: string): boolean {
  */
 export async function resolveDefaultMailHost(db: Database): Promise<string | null> {
   try {
-    const [apexRow] = await db
-      .select()
-      .from(platformSettings)
-      .where(eq(platformSettings.key, 'ingress_base_domain'));
-    const apex = apexRow?.value?.trim().replace(/\.+$/, '').toLowerCase();
+    // R16: derive mail.<apex> from the platform apex (platform_domain, falling
+    // back to ingress_base_domain) so an apex rename moves the mail host.
+    const apex = (await getPlatformApex(db))?.toLowerCase();
     if (!apex || apex.length === 0) return null;
     return `mail.${apex}`;
   } catch {
