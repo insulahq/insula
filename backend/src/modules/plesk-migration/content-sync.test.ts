@@ -3,7 +3,7 @@ import { webDeploymentName, webDomainsOf, runtimeCodeFor, parseContentResult, bu
 import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(domains: PleskSubscription['domains']): PleskSubscription {
-  return { name: 'acme.example', sysUser: 'acme', cronCount: 0, mailBytes: 0, domains, databases: [], mailboxes: [] };
+  return { name: 'acme.example', sysUser: 'acme', cronCount: 0, cronLines: [], mailBytes: 0, domains, databases: [], mailboxes: [] };
 }
 
 describe('webDeploymentName', () => {

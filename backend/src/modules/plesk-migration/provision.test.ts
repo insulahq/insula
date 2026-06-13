@@ -4,7 +4,7 @@ import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
   return {
-    name: 'acme.example', sysUser: 'acme', cronCount: 0, mailBytes: 0,
+    name: 'acme.example', sysUser: 'acme', cronCount: 0, cronLines: [], mailBytes: 0,
     domains: [], databases: [], mailboxes,
   };
 }

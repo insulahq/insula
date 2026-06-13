@@ -3,7 +3,7 @@ import { isValidDbName, mysqlDatabasesOf, parseDbResults, buildDbSyncJob } from 
 import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(databases: PleskSubscription['databases']): PleskSubscription {
-  return { name: 'acme.example', sysUser: 'acme', cronCount: 0, mailBytes: 0, domains: [], databases, mailboxes: [] };
+  return { name: 'acme.example', sysUser: 'acme', cronCount: 0, cronLines: [], mailBytes: 0, domains: [], databases, mailboxes: [] };
 }
 
 describe('isValidDbName', () => {

@@ -54,12 +54,21 @@ plesk db -Ne "SELECT name FROM domains WHERE webspace_id = 0 ORDER BY name" 2>/d
         if [ -d "$MD" ]; then SZ=$(du -sb "$MD" 2>/dev/null | awk '{print $1}'); emit "MAILSIZE	${sub}	${SZ:-}"; fi
       done
 
-      # subscription sysuser + cron line count
+      # subscription sysuser + cron jobs (count + each active line)
       SYSUSER=$(plesk db -Ne "SELECT s.login FROM sys_users s JOIN hosting h ON h.sys_user_id=s.id WHERE h.dom_id=${SUBID}" 2>/dev/null)
       if [ -n "${SYSUSER:-}" ] && is_name "$SYSUSER"; then
         emit "SUBMETA	${sub}	sysuser	${SYSUSER}"
-        CN=$(crontab -u "$SYSUSER" -l 2>/dev/null | grep -vcE '^[[:space:]]*(#|$)')
+        CRONTXT=$(crontab -u "$SYSUSER" -l 2>/dev/null)
+        CN=$(printf '%s\n' "$CRONTXT" | grep -vcE '^[[:space:]]*(#|$)')
         emit "SUBMETA	${sub}	cron	${CN:-0}"
+        # Each active crontab line, base64-encoded so arbitrary commands
+        # (spaces/tabs/quotes) survive the TSV transport intact; the importer
+        # parses schedule + command and recreates it as a platform cron job.
+        printf '%s\n' "$CRONTXT" | grep -vE '^[[:space:]]*(#|$)' \
+          | while IFS= read -r cl; do
+              [ -z "$cl" ] && continue
+              emit "CRONLINE	${sub}	$(printf '%s' "$cl" | base64 | tr -d '\n')"
+            done
       fi
     done
 emit "DONE"
