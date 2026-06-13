@@ -26,7 +26,7 @@ import { tenants, deployments as deploymentsTable, pleskSources } from '../../db
 import { getCatalogEntryByCode } from '../catalog/service.js';
 import { createDeployment, getDeploymentById } from '../deployments/service.js';
 import { buildDbContext, createDatabase } from '../deployments/db-manager.js';
-import { decryptSourceKey, normalizePrivateKey } from './service.js';
+import { sourceAuthSecretData, sourceAuthEnv, sourceAuthKeyVolume } from './ssh-auth.js';
 import type { PleskSubscription } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -255,7 +255,7 @@ async function spawnDbSyncJob(args: SpawnArgs): Promise<Map<string, { ok: boolea
       body: {
         metadata: { name: secretName, namespace, labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'app.kubernetes.io/name': 'plesk-db-sync' } },
         type: 'Opaque',
-        stringData: { 'id_rsa': normalizePrivateKey(decryptSourceKey(source)), 'root-password': rootPassword },
+        stringData: { ...sourceAuthSecretData(source), 'root-password': rootPassword },
       },
     });
     await batch.createNamespacedJob({ namespace, body: buildDbSyncJob({ jobName, secretName, namespace, source, dbHost, dbNames }) });
@@ -314,7 +314,9 @@ export function buildDbSyncJob({ jobName, secretName, namespace, source, dbHost,
           containers: [{
             name: 'db-sync',
             image: MIGRATION_TOOLS_IMAGE,
-            imagePullPolicy: 'IfNotPresent',
+            // Always-pull: the :latest tag must not serve a stale cached layer
+            // on a node that ran an earlier migration Job.
+            imagePullPolicy: 'Always',
             command: ['bash', '/usr/local/bin/plesk-db-sync.sh'],
             env: [
               { name: 'PLESK_HOST', value: source.hostname },
@@ -324,9 +326,10 @@ export function buildDbSyncJob({ jobName, secretName, namespace, source, dbHost,
               { name: 'DB_PORT', value: '3306' },
               { name: 'DB_NAMES', value: dbNames.join(' ') },
               { name: 'HOME', value: '/tmp' },
+              ...sourceAuthEnv(source, secretName),
             ],
             volumeMounts: [
-              { name: 'plesk-key', mountPath: '/etc/plesk-key', readOnly: true },
+              ...sourceAuthKeyVolume(source, secretName).volumeMounts,
               { name: 'db-creds', mountPath: '/etc/db-creds', readOnly: true },
               { name: 'tmp', mountPath: '/tmp' },
             ],
@@ -334,7 +337,7 @@ export function buildDbSyncJob({ jobName, secretName, namespace, source, dbHost,
             securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
           }],
           volumes: [
-            { name: 'plesk-key', secret: { secretName, items: [{ key: 'id_rsa', path: 'id_rsa', mode: 0o600 }] } },
+            ...sourceAuthKeyVolume(source, secretName).volumes,
             { name: 'db-creds', secret: { secretName, items: [{ key: 'root-password', path: 'root-password' }] } },
             { name: 'tmp', emptyDir: {} },
           ],

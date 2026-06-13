@@ -26,17 +26,23 @@ END='===MAILSYNC-END==='
 
 : "${PLESK_HOST:?}" "${PLESK_PORT:=22}" "${PLESK_USER:=root}" "${IMAP_HOST:?}" "${IMAP_PORT:=993}" \
   "${STALWART_MASTER_USER:?}" "${MAILBOXES:?}" "${WORKERS:=4}" "${MODE:=merge-skip-duplicates}"
-KEY=/etc/plesk-key/id_rsa
-[ -r "$KEY" ] || { echo "FATAL: missing ssh key mount" >&2; exit 2; }
 [ -n "${STALWART_MASTER_PASSWORD:-}" ] || { echo "FATAL: STALWART_MASTER_PASSWORD not set" >&2; exit 2; }
 
 # Clean the tmpfs scratch on ANY exit (incl. SIGTERM from activeDeadline /
 # job delete) — tmpfs leftovers pin node RAM.
 trap 'rm -rf /tmp/raw /tmp/reshaped /tmp/rerr /tmp/rsout /tmp/ierr 2>/dev/null' EXIT
 
-# accept-new = trust-on-first-use (same bounded posture as the other migration
-# Jobs); host-fingerprint pinning is an ADR-052 follow-up.
-RSH="ssh -i $KEY -p ${PLESK_PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20"
+# SSH transport: key (-i) or password (sshpass -e, SSHPASS env). accept-new =
+# trust-on-first-use (same bounded posture as the other migration Jobs);
+# host-fingerprint pinning is an ADR-052 follow-up.
+if [ "${PLESK_AUTH_METHOD:-key}" = "password" ]; then
+  [ -n "${SSHPASS:-}" ] || { echo "FATAL: SSHPASS not set (password auth)" >&2; exit 2; }
+  RSH="sshpass -e ssh -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p ${PLESK_PORT}"
+else
+  KEY=/etc/plesk-key/id_rsa
+  [ -r "$KEY" ] || { echo "FATAL: missing ssh key mount" >&2; exit 2; }
+  RSH="ssh -i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 -p ${PLESK_PORT}"
+fi
 
 # Validate an address before it reaches the remote shell / a path.
 valid_addr() { printf '%s' "$1" | grep -Eqx '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+'; }

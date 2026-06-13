@@ -1420,8 +1420,12 @@ export const pleskSources = pgTable('plesk_sources', {
   hostname: varchar('hostname', { length: 255 }).notNull(),
   sshPort: integer('ssh_port').notNull().default(22),
   sshUser: varchar('ssh_user', { length: 64 }).notNull().default('root'),
-  // AES-256-GCM (oidc/crypto.ts) of the SSH private key.
-  sshKeyEncrypted: text('ssh_key_encrypted').notNull(),
+  // 'key' | 'password' — which credential below is populated.
+  authMethod: varchar('auth_method', { length: 16 }).notNull().default('key'),
+  // AES-256-GCM (oidc/crypto.ts) of the SSH private key (auth_method='key').
+  sshKeyEncrypted: text('ssh_key_encrypted'),
+  // AES-256-GCM of the SSH password (auth_method='password').
+  sshPasswordEncrypted: text('ssh_password_encrypted'),
   pleskVersion: varchar('plesk_version', { length: 64 }),
   // 'sym' (reversible) | 'crypt' (hashed) | 'mixed' | null.
   passwordStorage: varchar('password_storage', { length: 16 }),

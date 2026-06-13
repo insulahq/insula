@@ -60,6 +60,7 @@ RUN apt-get update \
       ca-certificates \
       rsync \
       openssh-client \
+      sshpass \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* \
            /usr/share/doc/* /usr/share/man/*

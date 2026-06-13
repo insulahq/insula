@@ -17,8 +17,16 @@
 set -uo pipefail
 
 : "${PLESK_HOST:?}" "${PLESK_PORT:=22}" "${PLESK_USER:=root}" "${SRC_PATH:?}" "${DEST_PATH:?}" "${VHOST_DOMAIN:=}"
-KEY=/etc/plesk-key/id_rsa
-[ -r "$KEY" ] || { echo "FATAL: missing ssh key mount" >&2; exit 2; }
+
+# SSH transport: key (-i) or password (sshpass -e, SSHPASS env).
+if [ "${PLESK_AUTH_METHOD:-key}" = "password" ]; then
+  [ -n "${SSHPASS:-}" ] || { echo "FATAL: SSHPASS not set (password auth)" >&2; exit 2; }
+  SSH_BASE="sshpass -e ssh -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p ${PLESK_PORT}"
+else
+  KEY=/etc/plesk-key/id_rsa
+  [ -r "$KEY" ] || { echo "FATAL: missing ssh key mount" >&2; exit 2; }
+  SSH_BASE="ssh -i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 -p ${PLESK_PORT}"
+fi
 
 # Both SRC_PATH and VHOST_DOMAIN flow into commands that the REMOTE shell on
 # the Plesk box evaluates — validate them strictly before any interpolation
@@ -31,8 +39,8 @@ mkdir -p "$DEST_PATH" || { echo "FATAL: cannot create $DEST_PATH" >&2; exit 2; }
 # -a archive (perms/times/symlinks), --no-owner/--no-group (the tenant PVC
 # is a single uid), trailing slash on SRC copies CONTENTS into DEST. No
 # --delete: never destroy whatever is already in the docroot.
-RSH="ssh -i $KEY -p ${PLESK_PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20"
-SSH="ssh -i $KEY -p ${PLESK_PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 ${PLESK_USER}@${PLESK_HOST}"
+RSH="$SSH_BASE"
+SSH="$SSH_BASE ${PLESK_USER}@${PLESK_HOST}"
 
 echo "===CONTENTSYNC-BEGIN==="
 

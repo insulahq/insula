@@ -18,7 +18,7 @@ import { eq, and } from 'drizzle-orm';
 import { emailDomains, domains as domainsTable, mailboxes as mailboxesTable } from '../../db/schema.js';
 import { createMailbox } from '../mailboxes/service.js';
 import { readStalwartMasterUser } from '../mail-admin/stalwart-master-user.js';
-import { decryptSourceKey, normalizePrivateKey } from './service.js';
+import { sourceAuthSecretData, sourceAuthEnv, sourceAuthKeyVolume } from './ssh-auth.js';
 import type { PleskSubscription, PleskMailbox } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -170,7 +170,7 @@ async function spawnMailSyncJob(args: SpawnArgs): Promise<Map<string, { ok: bool
       body: {
         metadata: { name: secretName, namespace: MAIL_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'app.kubernetes.io/name': 'plesk-mail-sync' } },
         type: 'Opaque',
-        stringData: { 'id_rsa': normalizePrivateKey(decryptSourceKey(source)) },
+        stringData: sourceAuthSecretData(source),
       },
     });
     await batch.createNamespacedJob({ namespace: MAIL_NAMESPACE, body: buildMailSyncJob({ jobName, secretName, source, masterUser, addresses }) });
@@ -230,7 +230,9 @@ export function buildMailSyncJob({ jobName, secretName, source, masterUser, addr
           containers: [{
             name: 'mail-sync',
             image: MAIL_TOOLS_IMAGE,
-            imagePullPolicy: 'IfNotPresent',
+            // Always-pull: the :latest tag must not serve a stale cached layer
+            // on a node that ran an earlier migration Job.
+            imagePullPolicy: 'Always',
             command: ['bash', '/usr/local/bin/plesk-mail-sync.sh'],
             env: [
               { name: 'PLESK_HOST', value: source.hostname },
@@ -244,16 +246,17 @@ export function buildMailSyncJob({ jobName, secretName, source, masterUser, addr
               { name: 'WORKERS', value: IMPORT_WORKERS },
               { name: 'MODE', value: 'merge-skip-duplicates' },
               { name: 'HOME', value: '/tmp' },
+              ...sourceAuthEnv(source, secretName),
             ],
             volumeMounts: [
-              { name: 'plesk-key', mountPath: '/etc/plesk-key', readOnly: true },
+              ...sourceAuthKeyVolume(source, secretName).volumeMounts,
               { name: 'scratch', mountPath: '/tmp' },
             ],
             resources: { requests: { cpu: '200m', memory: '512Mi' }, limits: { cpu: '2', memory: '2Gi' } },
             securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } },
           }],
           volumes: [
-            { name: 'plesk-key', secret: { secretName, items: [{ key: 'id_rsa', path: 'id_rsa', mode: 0o600 }] } },
+            ...sourceAuthKeyVolume(source, secretName).volumes,
             { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
           ],
         },
