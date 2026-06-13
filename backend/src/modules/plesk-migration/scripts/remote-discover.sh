@@ -34,9 +34,13 @@ plesk db -Ne "SELECT name FROM domains WHERE webspace_id = 0 ORDER BY name" 2>/d
       SUBID=$(plesk db -Ne "SELECT id FROM domains WHERE name='${sub}'" 2>/dev/null)
       is_int "${SUBID:-}" || continue
 
-      # domains of the subscription (main + addon) with docroot + php handler
-      plesk db -Ne "SELECT d.name, h.www_root, h.php_handler_id FROM domains d LEFT JOIN hosting h ON h.dom_id=d.id WHERE d.id=${SUBID} OR d.webspace_id=${SUBID}" 2>/dev/null \
-        | while IFS=$'\t' read -r dn root php; do emit "DOMAIN	${sub}	${dn}	${root:-}	${php:-}"; done
+      # domains of the subscription (main + addon) with docroot + php handler +
+      # DNS zone type. dns_zone.type = 'master' means Plesk is the PRIMARY
+      # (authoritative) DNS for the domain; COALESCE → empty when there's no
+      # zone (external DNS). `plesk db -N` renders a bare NULL as the literal
+      # string "NULL", so coalesce in SQL rather than relying on the shell.
+      plesk db -Ne "SELECT d.name, h.www_root, h.php_handler_id, COALESCE(z.type,'') FROM domains d LEFT JOIN hosting h ON h.dom_id=d.id LEFT JOIN dns_zone z ON z.id=d.dns_zone_id WHERE d.id=${SUBID} OR d.webspace_id=${SUBID}" 2>/dev/null \
+        | while IFS=$'\t' read -r dn root php dnstype; do emit "DOMAIN	${sub}	${dn}	${root:-}	${php:-}	${dnstype:-}"; done
 
       # databases of the subscription
       plesk db -Ne "SELECT db.name, db.type FROM data_bases db WHERE db.dom_id=${SUBID} OR db.dom_id IN (SELECT id FROM domains WHERE webspace_id=${SUBID})" 2>/dev/null \

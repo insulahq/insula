@@ -21,8 +21,8 @@ describe('webDeploymentName', () => {
 describe('webDomainsOf', () => {
   it('keeps only domains that have a docroot', () => {
     const result = webDomainsOf(sub([
-      { name: 'acme.example', docRoot: '/var/www/vhosts/acme.example/httpdocs', phpVersion: 'php8.2' },
-      { name: 'parked.example', docRoot: null, phpVersion: null },
+      { name: 'acme.example', docRoot: '/var/www/vhosts/acme.example/httpdocs', phpVersion: 'php8.2', dnsZoneType: null },
+      { name: 'parked.example', docRoot: null, phpVersion: null, dnsZoneType: null },
     ]));
     expect(result.map((d) => d.name)).toEqual(['acme.example']);
   });
@@ -48,8 +48,8 @@ describe('isSafeHostname / isSafeDocRoot (remote-shell injection guards)', () =>
 
 describe('runtimeCodeFor', () => {
   it('uses apache-php when the domain ran PHP, static-apache otherwise', () => {
-    expect(runtimeCodeFor({ name: 'a', docRoot: '/x', phpVersion: 'php8.2' })).toBe('apache-php');
-    expect(runtimeCodeFor({ name: 'b', docRoot: '/x', phpVersion: null })).toBe('static-apache');
+    expect(runtimeCodeFor({ name: 'a', docRoot: '/x', phpVersion: 'php8.2', dnsZoneType: null })).toBe('apache-php');
+    expect(runtimeCodeFor({ name: 'b', docRoot: '/x', phpVersion: null, dnsZoneType: null })).toBe('static-apache');
   });
 });
 

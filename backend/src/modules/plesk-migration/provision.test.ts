@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finalizeItemLeg, mailDomainsOf, checkCapacity, netNewMailboxCount } from './provision.js';
+import { finalizeItemLeg, mailDomainsOf, checkCapacity, netNewMailboxCount, dnsModeForDomain } from './provision.js';
 import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
@@ -8,6 +8,17 @@ function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
     domains: [], databases: [], mailboxes,
   };
 }
+
+describe('dnsModeForDomain (Plesk-primary-DNS → PRIMARY)', () => {
+  it('maps a Plesk master zone to primary DNS mode', () => {
+    expect(dnsModeForDomain({ dnsZoneType: 'master' })).toBe('primary');
+  });
+  it('keeps slave / external / unknown on cname', () => {
+    expect(dnsModeForDomain({ dnsZoneType: 'slave' })).toBe('cname');
+    expect(dnsModeForDomain({ dnsZoneType: null })).toBe('cname');
+    expect(dnsModeForDomain({})).toBe('cname');
+  });
+});
 
 describe('netNewMailboxCount (idempotent-retry capacity)', () => {
   it('counts all on a first run (none exist yet)', () => {
