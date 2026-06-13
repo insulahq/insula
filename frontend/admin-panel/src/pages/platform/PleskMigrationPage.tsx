@@ -68,15 +68,19 @@ export default function PleskMigrationPage() {
 
 function AddSourceForm({ onClose }: { readonly onClose: () => void }) {
   const create = useCreatePleskSource();
-  const [form, setForm] = useState({ name: '', hostname: '', ssh_port: '22', ssh_user: 'root', ssh_private_key: '' });
+  const [form, setForm] = useState({ name: '', hostname: '', ssh_port: '22', ssh_user: 'root', ssh_private_key: '', ssh_password: '', auth_method: 'key' as 'key' | 'password' });
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     try {
+      // Send EITHER the key or the password — the API requires exactly one.
+      const credential = form.auth_method === 'password'
+        ? { ssh_password: form.ssh_password }
+        : { ssh_private_key: form.ssh_private_key };
       await create.mutateAsync({
         name: form.name, hostname: form.hostname,
         ssh_port: Number(form.ssh_port) || 22, ssh_user: form.ssh_user || 'root',
-        ssh_private_key: form.ssh_private_key,
+        ...credential,
       });
       onClose();
     } catch { /* error rendered below */ }
@@ -93,10 +97,29 @@ function AddSourceForm({ onClose }: { readonly onClose: () => void }) {
         </div>
       </div>
       <div>
-        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">SSH private key (PEM)</label>
-        <textarea className={`${INPUT} font-mono text-xs`} rows={5} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={form.ssh_private_key} onChange={(e) => setForm({ ...form, ssh_private_key: e.target.value })} required data-testid="source-key-input" />
-        <p className="mt-0.5 text-[10px] text-gray-400">Stored encrypted at rest; never displayed again.</p>
+        <span className="block text-xs font-medium text-gray-700 dark:text-gray-300">Authentication</span>
+        <div className="mt-1 flex gap-4 text-sm text-gray-700 dark:text-gray-300">
+          <label className="inline-flex items-center gap-1.5">
+            <input type="radio" name="auth_method" checked={form.auth_method === 'key'} onChange={() => setForm({ ...form, auth_method: 'key' })} data-testid="auth-method-key" /> SSH key
+          </label>
+          <label className="inline-flex items-center gap-1.5">
+            <input type="radio" name="auth_method" checked={form.auth_method === 'password'} onChange={() => setForm({ ...form, auth_method: 'password' })} data-testid="auth-method-password" /> Password
+          </label>
+        </div>
       </div>
+      {form.auth_method === 'key' ? (
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">SSH private key (PEM)</label>
+          <textarea className={`${INPUT} font-mono text-xs`} rows={5} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----" value={form.ssh_private_key} onChange={(e) => setForm({ ...form, ssh_private_key: e.target.value })} required data-testid="source-key-input" />
+          <p className="mt-0.5 text-[10px] text-gray-400">Stored encrypted at rest; never displayed again.</p>
+        </div>
+      ) : (
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">SSH password</label>
+          <input type="password" className={INPUT} autoComplete="new-password" value={form.ssh_password} onChange={(e) => setForm({ ...form, ssh_password: e.target.value })} required data-testid="source-password-input" />
+          <p className="mt-0.5 text-[10px] text-gray-400">Stored encrypted at rest; never displayed again.</p>
+        </div>
+      )}
       {create.error && (
         <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{create.error instanceof Error ? create.error.message : 'Failed to add source'}</div>
       )}

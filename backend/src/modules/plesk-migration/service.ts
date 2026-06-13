@@ -40,7 +40,12 @@ export function normalizePrivateKey(pem: string): string {
 
 type SourceRow = typeof pleskSources.$inferSelect;
 
-/** Strip the encrypted key — responses never carry it. */
+/** 'key' | 'password' — which credential the source authenticates with. */
+export function sourceAuthMethod(row: SourceRow): 'key' | 'password' {
+  return row.authMethod === 'password' ? 'password' : 'key';
+}
+
+/** Strip the encrypted credentials — responses never carry them. */
 export function toSourceResponse(row: SourceRow): PleskSourceResponse {
   return {
     id: row.id,
@@ -48,6 +53,7 @@ export function toSourceResponse(row: SourceRow): PleskSourceResponse {
     hostname: row.hostname,
     sshPort: row.sshPort,
     sshUser: row.sshUser,
+    authMethod: sourceAuthMethod(row),
     pleskVersion: row.pleskVersion,
     passwordStorage: row.passwordStorage,
     lastDiscoveredAt: row.lastDiscoveredAt,
@@ -62,13 +68,17 @@ export async function createSource(
   createdBy: string | null,
 ): Promise<PleskSourceResponse> {
   const id = randomUUID();
+  // The contract guarantees exactly one of key/password is present.
+  const usePassword = !!input.ssh_password;
   await db.insert(pleskSources).values({
     id,
     name: input.name,
     hostname: input.hostname,
     sshPort: input.ssh_port ?? 22,
     sshUser: input.ssh_user ?? 'root',
-    sshKeyEncrypted: encrypt(normalizePrivateKey(input.ssh_private_key), encryptionKey()),
+    authMethod: usePassword ? 'password' : 'key',
+    sshKeyEncrypted: usePassword ? null : encrypt(normalizePrivateKey(input.ssh_private_key as string), encryptionKey()),
+    sshPasswordEncrypted: usePassword ? encrypt(input.ssh_password as string, encryptionKey()) : null,
     createdBy,
   });
   const [row] = await db.select().from(pleskSources).where(eq(pleskSources.id, id));
@@ -88,7 +98,14 @@ export async function getSourceRow(db: Database, id: string): Promise<SourceRow>
 
 /** In-process only — decrypt the SSH key for a discovery/sync Job. */
 export function decryptSourceKey(row: SourceRow): string {
+  if (!row.sshKeyEncrypted) throw new ApiError('PLESK_SOURCE_NO_KEY', `Plesk source '${row.id}' has no SSH key (password auth?)`, 500);
   return decrypt(row.sshKeyEncrypted, encryptionKey());
+}
+
+/** In-process only — decrypt the SSH password for a discovery/sync Job. */
+export function decryptSourcePassword(row: SourceRow): string {
+  if (!row.sshPasswordEncrypted) throw new ApiError('PLESK_SOURCE_NO_PASSWORD', `Plesk source '${row.id}' has no SSH password (key auth?)`, 500);
+  return decrypt(row.sshPasswordEncrypted, encryptionKey());
 }
 
 export async function updateSource(
@@ -102,8 +119,16 @@ export async function updateSource(
   if (input.hostname !== undefined) values.hostname = input.hostname;
   if (input.ssh_port !== undefined) values.sshPort = input.ssh_port;
   if (input.ssh_user !== undefined) values.sshUser = input.ssh_user;
+  // Supplying either credential switches the source's auth method and
+  // replaces the stored secret (the contract rejects supplying both).
   if (input.ssh_private_key !== undefined) {
+    values.authMethod = 'key';
     values.sshKeyEncrypted = encrypt(normalizePrivateKey(input.ssh_private_key), encryptionKey());
+    values.sshPasswordEncrypted = null;
+  } else if (input.ssh_password !== undefined) {
+    values.authMethod = 'password';
+    values.sshPasswordEncrypted = encrypt(input.ssh_password, encryptionKey());
+    values.sshKeyEncrypted = null;
   }
   if (Object.keys(values).length > 0) {
     await db.update(pleskSources).set(values).where(eq(pleskSources.id, id));

@@ -7,22 +7,36 @@ const hostnameField = z.string().min(1).max(255).regex(
   'Invalid hostname or IP',
 );
 
+// Auth: a source authenticates over SSH with EITHER a private key OR a
+// password. Exactly one must be supplied on create. Both are write-only,
+// stored AES-encrypted, and never returned.
 export const createPleskSourceSchema = z.object({
   name: z.string().min(1).max(255),
   hostname: hostnameField,
   ssh_port: z.number().int().min(1).max(65535).optional(),
   ssh_user: z.string().min(1).max(64).optional(),
   // PEM private key — write-only; never returned. Stored AES-encrypted.
-  ssh_private_key: z.string().min(1).max(32768),
-});
+  ssh_private_key: z.string().min(1).max(32768).optional(),
+  // SSH password — write-only; never returned. Stored AES-encrypted.
+  ssh_password: z.string().min(1).max(1024).optional(),
+}).refine(
+  (d) => (d.ssh_private_key ? 1 : 0) + (d.ssh_password ? 1 : 0) === 1,
+  { message: 'Provide exactly one of ssh_private_key or ssh_password' },
+);
 
 export const updatePleskSourceSchema = z.object({
   name: z.string().min(1).max(255).optional(),
   hostname: hostnameField.optional(),
   ssh_port: z.number().int().min(1).max(65535).optional(),
   ssh_user: z.string().min(1).max(64).optional(),
+  // Supplying either credential switches the source's auth method and
+  // replaces the stored secret. Supplying both is rejected.
   ssh_private_key: z.string().min(1).max(32768).optional(),
-}).strict();
+  ssh_password: z.string().min(1).max(1024).optional(),
+}).strict().refine(
+  (d) => !(d.ssh_private_key && d.ssh_password),
+  { message: 'Provide at most one of ssh_private_key or ssh_password' },
+);
 
 // ── Discovery inventory shape (assembled by the discovery Job) ──
 export const pleskMailboxSchema = z.object({
@@ -71,6 +85,9 @@ export const pleskSourceResponseSchema = z.object({
   hostname: z.string(),
   sshPort: z.number(),
   sshUser: z.string(),
+  // Which credential the source authenticates with (the secret itself is
+  // never returned).
+  authMethod: z.enum(['key', 'password']),
   pleskVersion: z.string().nullable(),
   passwordStorage: z.string().nullable(),
   lastDiscoveredAt: z.union([z.string(), z.date()]).nullable(),

@@ -66,5 +66,23 @@ describe('buildMailSyncJob (IMAP reuse + hardening)', () => {
     expect(pw.valueFrom.secretKeyRef).toMatchObject({ name: 'mail-secrets', key: 'STALWART_MASTER_PASSWORD' });
     expect(c.securityContext).toMatchObject({ allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ['ALL'] } });
     expect(job.spec.backoffLimit).toBe(0);
+    // Always-pull defeats a stale cached :latest on a node that ran a prior Job.
+    expect(c.imagePullPolicy).toBe('Always');
+    // key auth → the id_rsa Secret is mounted, no SSHPASS env.
+    expect(c.volumes ?? job.spec.template.spec.volumes).toBeDefined();
+    expect(job.spec.template.spec.volumes.some((v: { name: string }) => v.name === 'plesk-key')).toBe(true);
+    expect(c.env.some((e: { name: string }) => e.name === 'SSHPASS')).toBe(false);
+    expect(c.env).toEqual(expect.arrayContaining([{ name: 'PLESK_AUTH_METHOD', value: 'key' }]));
+  });
+
+  it('password auth → SSHPASS env from the Secret, no key volume', () => {
+    const pwSource = { ...source, authMethod: 'password', sshKeyEncrypted: null, sshPasswordEncrypted: 'enc' } as typeof source;
+    const job = buildMailSyncJob({ jobName: 'j', secretName: 'sec', source: pwSource, masterUser: 'master@apex.example', addresses: ['a@acme.example'] }) as any;
+    const c = job.spec.template.spec.containers[0];
+    expect(c.env).toEqual(expect.arrayContaining([{ name: 'PLESK_AUTH_METHOD', value: 'password' }]));
+    const sshpass = c.env.find((e: { name: string }) => e.name === 'SSHPASS');
+    expect(sshpass.valueFrom.secretKeyRef).toMatchObject({ name: 'sec', key: 'ssh_password' });
+    // no SSH key mounted in password mode
+    expect(job.spec.template.spec.volumes.some((v: { name: string }) => v.name === 'plesk-key')).toBe(false);
   });
 });

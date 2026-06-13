@@ -67,16 +67,28 @@ describe('buildDiscoveryJob', () => {
     const vols = job.spec.template.spec.volumes;
     const keyVol = vols.find((v: any) => v.name === 'plesk-key');
     expect(keyVol.secret.secretName).toBe('sec');
-    expect(keyVol.secret.defaultMode).toBe(0o600);
+    expect(keyVol.secret.items.find((i: any) => i.key === 'id_rsa').mode).toBe(0o600);
     expect(vols.find((v: any) => v.name === 'plesk-scripts').configMap.name).toBe('cm');
   });
 
-  it('passes host/port/user as plain env (not the key)', () => {
+  it('passes host/port/user + auth method as plain env, never the key material', () => {
     const job = buildDiscoveryJob({ jobName: 'j', secretName: 'sec', cmName: 'cm', source }) as any;
     const env = job.spec.template.spec.containers[0].env;
     expect(env.find((e: any) => e.name === 'PLESK_HOST').value).toBe('plesk.example.com');
     expect(env.find((e: any) => e.name === 'PLESK_PORT').value).toBe('2222');
-    expect(env.some((e: any) => /key|secret/i.test(JSON.stringify(e)))).toBe(false);
+    expect(env.find((e: any) => e.name === 'PLESK_AUTH_METHOD').value).toBe('key');
+    // the key is delivered as a mounted Secret, never inline in env
+    expect(env.some((e: any) => typeof e.value === 'string' && /BEGIN|PRIVATE|id_rsa/.test(e.value))).toBe(false);
+    expect(env.some((e: any) => e.name === 'SSHPASS')).toBe(false);
+  });
+
+  it('password auth → SSHPASS env from the Secret, no key volume mounted', () => {
+    const pwSource = { ...source, authMethod: 'password', sshKeyEncrypted: null, sshPasswordEncrypted: 'enc' };
+    const job = buildDiscoveryJob({ jobName: 'j', secretName: 'sec', cmName: 'cm', source: pwSource }) as any;
+    const podSpec = job.spec.template.spec;
+    expect(podSpec.volumes.some((v: any) => v.name === 'plesk-key')).toBe(false);
+    const sshpass = podSpec.containers[0].env.find((e: any) => e.name === 'SSHPASS');
+    expect(sshpass.valueFrom.secretKeyRef).toMatchObject({ name: 'sec', key: 'ssh_password' });
   });
 
   it('auto-cleans (ttl + activeDeadline) and never retries', () => {

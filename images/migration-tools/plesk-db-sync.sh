@@ -23,20 +23,25 @@ BEGIN='===DBSYNC-BEGIN==='
 END='===DBSYNC-END==='
 
 : "${PLESK_HOST:?}" "${PLESK_PORT:=22}" "${PLESK_USER:=root}" "${DB_HOST:?}" "${DB_PORT:=3306}"
-KEY=/etc/plesk-key/id_rsa
 ROOTPW_FILE=/etc/db-creds/root-password
 
 is_name() { printf '%s' "$1" | grep -Eqx '[A-Za-z0-9_][A-Za-z0-9_-]*'; }
 
-if [ ! -r "$KEY" ] || [ ! -r "$ROOTPW_FILE" ]; then
-  echo "FATAL: missing ssh key or db root-password mount" >&2
-  exit 2
-fi
+[ -r "$ROOTPW_FILE" ] || { echo "FATAL: missing db root-password mount" >&2; exit 2; }
 ROOTPW=$(cat "$ROOTPW_FILE")
 
-# accept-new = trust-on-first-use (same bounded posture as the discovery Job);
+# SSH transport: key (-i) or password (sshpass -e, SSHPASS env). accept-new =
+# trust-on-first-use (same bounded posture as the discovery Job);
 # host-fingerprint pinning captured at discovery is an ADR-052 follow-up.
-SSH="ssh -i $KEY -p ${PLESK_PORT} -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 ${PLESK_USER}@${PLESK_HOST}"
+if [ "${PLESK_AUTH_METHOD:-key}" = "password" ]; then
+  [ -n "${SSHPASS:-}" ] || { echo "FATAL: SSHPASS not set (password auth)" >&2; exit 2; }
+  SSH_BASE="sshpass -e ssh -o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -p ${PLESK_PORT}"
+else
+  KEY=/etc/plesk-key/id_rsa
+  [ -r "$KEY" ] || { echo "FATAL: missing ssh key mount" >&2; exit 2; }
+  SSH_BASE="ssh -i $KEY -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o ConnectTimeout=20 -p ${PLESK_PORT}"
+fi
+SSH="$SSH_BASE ${PLESK_USER}@${PLESK_HOST}"
 
 # Fail fast (before the sentinel block) if we can't even reach the box —
 # that's a setup error, not a per-database failure.
