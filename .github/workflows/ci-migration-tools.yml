@@ -1,0 +1,94 @@
+name: Migration-Tools CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['images/migration-tools/**', '.github/workflows/ci-migration-tools.yml']
+  pull_request:
+    branches: [main]
+    paths: ['images/migration-tools/**', '.github/workflows/ci-migration-tools.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  security-events: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository }}/migration-tools
+
+jobs:
+  build:
+    name: Build + Scan + Push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write   # Trivy SARIF upload
+      id-token: write          # cosign keyless signing (main, non-PR)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: images/migration-tools
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Attestations are incompatible with the PR `load: true` path.
+          provenance: ${{ github.event_name != 'pull_request' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
+
+      - uses: sigstore/cosign-installer@v3
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - name: Sign image (keyless, OCI 1.1 referrers)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes \
+            --registry-referrers-mode=oci-1-1 \
+            "${{ env.IMAGE }}@${DIGEST}"
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true   # unfixable trixie-slim base CVEs (see ci-mail-backup-tools.yml)
+          exit-code: '1'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name != 'pull_request'
+        with:
+          sarif_file: trivy-results.sarif
+          category: migration-tools
+
+  # No `pin` job: migration-tools is not referenced by any Deployment
+  # manifest — the backend spawns it as a one-shot Job by `:latest` (env
+  # PLESK_MIGRATION_TOOLS_IMAGE overridable), like the discovery Job.
