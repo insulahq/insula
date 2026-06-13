@@ -33,6 +33,7 @@ import { getTenantMailboxLimit, getTenantMailboxCount } from '../mailboxes/limit
 import { runDatabaseLeg } from './db-sync.js';
 import { runContentLeg } from './content-sync.js';
 import { runMailLeg } from './mail-sync.js';
+import { runCronLeg } from './cron-sync.js';
 import { ApiError } from '../../shared/errors.js';
 import { pleskSubscriptionSchema, createDomainSchema } from '@insula/api-contracts';
 import type { PleskSubscription } from '@insula/api-contracts';
@@ -190,6 +191,13 @@ async function runMigration(
     ? await runMailLeg(db, k8s, tenantId, sourceRow, snapshot, logger)
     : [];
   legs.mail = finalizeItemLeg(legs.mail, mailItems, 'mailboxes');
+  await persistLegs(db, migrationId, legs);
+
+  // ── Leg 7: scheduled tasks (cron) — pure DB inserts, no Job ──
+  legs.cron = { status: 'running', startedAt: nowIso() };
+  await persistLegs(db, migrationId, legs);
+  const cronItems = await runCronLeg(db, tenantId, snapshot, logger);
+  legs.cron = finalizeItemLeg(legs.cron, cronItems, 'scheduled tasks');
   await persistLegs(db, migrationId, legs);
 
   // ── Overall status ──

@@ -2,7 +2,7 @@
 # discovery Job (mail-backup-tools python3). Reads the tab-tagged lines
 # from remote-discover.sh on stdin and prints the inventory JSON between
 # sentinels for the backend (plesk-migration/discovery.ts) to parse.
-import sys, json
+import sys, json, base64
 
 INVENTORY_BEGIN = "===INVENTORY-JSON-BEGIN==="
 INVENTORY_END = "===INVENTORY-JSON-END==="
@@ -14,7 +14,7 @@ subs = {}
 def sub(name):
     return subs.setdefault(name, {
         "name": name, "sysUser": None, "domains": [], "databases": [],
-        "mailboxes": [], "cronCount": 0, "mailBytes": None,
+        "mailboxes": [], "cronCount": 0, "cronLines": [], "mailBytes": None,
     })
 
 def to_int(v):
@@ -64,6 +64,13 @@ for raw in sys.stdin:
                 s["sysUser"] = parts[3] or None
             elif parts[2] == "cron":
                 s["cronCount"] = to_int(parts[3]) or 0
+        elif tag == "CRONLINE":
+            try:
+                decoded = base64.b64decode(parts[2]).decode("utf-8", "replace").strip()
+            except Exception:
+                decoded = None
+            if decoded:
+                sub(parts[1])["cronLines"].append(decoded)
     except IndexError:
         continue
 

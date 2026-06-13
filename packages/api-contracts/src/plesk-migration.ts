@@ -51,6 +51,9 @@ export const pleskSubscriptionSchema = z.object({
   databases: z.array(pleskDatabaseSchema),
   mailboxes: z.array(pleskMailboxSchema),
   cronCount: z.number(),
+  // Raw active crontab lines (comments/blanks stripped) for the subscription's
+  // system user. Default [] so snapshots taken before the cron leg still parse.
+  cronLines: z.array(z.string()).default([]),
   mailBytes: z.number().nullable(),
 });
 
@@ -137,6 +140,7 @@ export const pleskMigrationLegsSchema = z
     databases: pleskMigrationLegSchema.optional(),
     content: pleskMigrationLegSchema.optional(),
     mail: pleskMigrationLegSchema.optional(),
+    cron: pleskMigrationLegSchema.optional(),
   })
   .catchall(pleskMigrationLegSchema);
 

@@ -288,7 +288,7 @@ function StatusBadge({ status, spin }: { readonly status: string; readonly spin?
 
 function MigrationLegs({ migration }: { readonly migration: PleskMigrationResponse }) {
   const legs = migration.legs ?? {};
-  const order = ['preflight', 'domains', 'email', 'databases', 'content', 'mail'];
+  const order = ['preflight', 'domains', 'email', 'databases', 'content', 'mail', 'cron'];
   const keys = [...order.filter((k) => k in legs), ...Object.keys(legs).filter((k) => !order.includes(k))];
   if (keys.length === 0) {
     return <p className="text-xs text-gray-500 dark:text-gray-400">Provisioning queued…</p>;
