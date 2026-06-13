@@ -92,15 +92,20 @@ export async function createMigration(
 
   // Map onto an EXISTING tenant the operator already created and sized.
   const [tenant] = await db
-    .select({ id: tenants.id, isSystem: tenants.isSystem, status: tenants.status, planId: tenants.planId })
+    .select({ id: tenants.id, isSystem: tenants.isSystem, status: tenants.status, provisioningStatus: tenants.provisioningStatus, planId: tenants.planId })
     .from(tenants)
     .where(eq(tenants.id, input.target_tenant_id));
   if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Target tenant '${input.target_tenant_id}' not found`, 404);
   if (tenant.isSystem) throw new ApiError('TENANT_IS_SYSTEM', 'The SYSTEM tenant cannot be a migration target', 400);
-  // Only an active, provisioned tenant is a valid target (a 'pending' tenant
-  // has no namespace yet; 'suspended'/'archived' must not receive resources).
-  if (tenant.status !== 'active') {
-    throw new ApiError('TENANT_NOT_AVAILABLE', `Target tenant is '${tenant.status}' — pick an active, provisioned tenant`, 400);
+  // A valid target must have a usable namespace (provisioningStatus=provisioned)
+  // and not be withdrawn. A freshly-created tenant sits at lifecycle status
+  // 'pending' until activated but is usable once provisioned, so refuse only
+  // suspended/archived and not-yet-provisioned tenants.
+  if (tenant.status === 'suspended' || tenant.status === 'archived') {
+    throw new ApiError('TENANT_NOT_AVAILABLE', `Target tenant is '${tenant.status}' — pick a tenant that isn't suspended or archived`, 400);
+  }
+  if (tenant.provisioningStatus !== 'provisioned') {
+    throw new ApiError('TENANT_NOT_PROVISIONED', `Target tenant is not provisioned yet (${tenant.provisioningStatus}) — wait until provisioning completes`, 409);
   }
 
   const id = randomUUID();

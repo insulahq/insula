@@ -332,9 +332,13 @@ function MigrateDialog({ sub, sourceId, onClose }: {
   readonly onClose: () => void;
 }) {
   const { data: tenantsData } = useTenants({ limit: 100 });
-  // Only active, provisioned, non-system tenants are valid targets (matches the
-  // backend preflight). A pending tenant has no namespace yet.
-  const tenants = (tenantsData?.data ?? []).filter((t) => t.status === 'active' && !t.isSystem);
+  // A valid target is provisioned (has a namespace) and not withdrawn — matches
+  // the backend preflight. A freshly-created tenant sits at lifecycle status
+  // 'pending' until activated but is usable once provisioned, so we gate on
+  // provisioningStatus, not status === 'active'.
+  const tenants = (tenantsData?.data ?? []).filter(
+    (t) => t.provisioningStatus === 'provisioned' && t.status !== 'suspended' && t.status !== 'archived' && !t.isSystem,
+  );
   const truncated = (tenantsData?.pagination?.total_count ?? tenants.length) > 100;
   const create = useCreateMigration();
   const [tenantId, setTenantId] = useState('');
