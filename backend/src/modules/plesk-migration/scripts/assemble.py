@@ -41,8 +41,12 @@ for raw in sys.stdin:
         elif tag == "SUB":
             sub(parts[1])
         elif tag == "DOMAIN":
+            # parts[5] = Plesk DNS zone type ('master'|'slave'|''); 'master' →
+            # Plesk is the primary/authoritative DNS for the domain.
+            zone_type = parts[5] if len(parts) > 5 and parts[5] else None
             sub(parts[1])["domains"].append({
                 "name": parts[2], "docRoot": parts[3] or None, "phpVersion": parts[4] or None,
+                "dnsZoneType": zone_type,
             })
         elif tag == "DB":
             sub(parts[1])["databases"].append({

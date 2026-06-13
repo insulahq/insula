@@ -1187,7 +1187,16 @@ export async function updateTenant(
   let storageGrowOperationId: string | null = null;
   let storageShrinkOperationId: string | null = null;
   const pendingResizeMib = pendingGrowMib ?? pendingShrinkMib;
-  if (pendingResizeMib != null) {
+  // Only resize when the tenant is fully provisioned. Firing a resize while
+  // provisioning is in flight tries to expand a PVC/Longhorn volume that
+  // doesn't exist yet (or is still attaching) — Longhorn's admission webhook
+  // rejects it, the op lands in `failed`, and that failed state then BLOCKS
+  // every later grow. The override is already persisted, and provisioning
+  // sizes the new PVC to the effective storage, so skipping here is safe; the
+  // operator can re-trigger a grow once provisioned.
+  if (pendingResizeMib != null && existing.provisioningStatus !== 'provisioned') {
+    console.warn(`[tenants] storage resize deferred — tenant ${id} is '${existing.provisioningStatus}', not provisioned; PVC will be sized at provision time`);
+  } else if (pendingResizeMib != null) {
     try {
       const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
       const { resizeTenant } = await import('../storage-lifecycle/service.js');

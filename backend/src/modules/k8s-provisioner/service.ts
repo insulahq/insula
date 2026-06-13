@@ -999,7 +999,14 @@ export async function runProvisionNamespace(
     // Step 4: Create shared PVC (all components use Deployment + subPath on this PVC)
     if (!(await guardTenantExists())) return;
     await updateProgress('Create PVC', 'running');
-    const sharedPvcSize = Math.min(10, Number(storageLimit) || 10);
+    // Size the shared PVC to the tenant's EFFECTIVE storage (override ?? plan),
+    // matching the ResourceQuota's requests.storage. A previous `Math.min(10, …)`
+    // cap silently held the PVC at 10Gi for any tenant sized larger — so a
+    // 20Gi-sized tenant got a 10Gi volume that then overflowed (e.g. a large
+    // migrated docroot, rsync ENOSPC). applyPVC never resizes an existing PVC,
+    // so the cap could only be undone by a fragile online-grow; create it at
+    // the right size up front instead.
+    const sharedPvcSize = Number(storageLimit) || 10;
     await applyPVC(k8s, namespace, String(sharedPvcSize), storageClass);
 
     // Patch the freshly-bound Volume CR to the tier-specific replica
