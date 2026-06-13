@@ -42,8 +42,10 @@ export async function planRoutes(app: FastifyInstance) {
       monthlyPriceUsd: parsed.data.monthly_price_usd,
       maxSubUsers: (body.max_sub_users as number) ?? 3,
       maxMailboxes: (body.max_mailboxes as number) ?? 50,
-      // Omitted -> DB default (1024 MB / 1 GiB)
-      maxMailboxSizeMb: (body.max_mailbox_size_mb as number) ?? 1024,
+      // Omitted -> DB default (1024 MB / 1 GiB). Use the Zod-parsed value so
+      // the min(50)/max(102400) bounds are enforced (a sub-50 value would
+      // otherwise disable mailbox creation for every tenant on the plan).
+      maxMailboxSizeMb: parsed.data.max_mailbox_size_mb ?? 1024,
       // R6 PR 1: omitted -> DB defaults (50/h, 100/d)
       ...(parsed.data.email_hourly_send_limit !== undefined
         ? { emailHourlySendLimit: parsed.data.email_hourly_send_limit }
@@ -89,7 +91,7 @@ export async function planRoutes(app: FastifyInstance) {
     if (parsed.data.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = parsed.data.monthly_price_usd;
     if (body.max_sub_users !== undefined) updateValues.maxSubUsers = body.max_sub_users;
     if (body.max_mailboxes !== undefined) updateValues.maxMailboxes = body.max_mailboxes;
-    if (body.max_mailbox_size_mb !== undefined) updateValues.maxMailboxSizeMb = body.max_mailbox_size_mb;
+    if (parsed.data.max_mailbox_size_mb !== undefined) updateValues.maxMailboxSizeMb = parsed.data.max_mailbox_size_mb;
     if (parsed.data.email_hourly_send_limit !== undefined) updateValues.emailHourlySendLimit = parsed.data.email_hourly_send_limit;
     if (parsed.data.email_daily_send_limit !== undefined) updateValues.emailDailySendLimit = parsed.data.email_daily_send_limit;
     if (parsed.data.features !== undefined) updateValues.features = parsed.data.features;
