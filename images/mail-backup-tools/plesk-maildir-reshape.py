@@ -28,19 +28,36 @@ SPECIAL = {
 
 
 def move_messages(src_folder: str, dst_folder: str) -> int:
-    """Move cur/ + new/ message files from a Maildir folder into dst."""
+    """Move a Maildir folder's cur/ + new/ messages into dst/cur.
+
+    imap-restore.py reads ONLY <folder>/cur, so new/ (unread) messages MUST be
+    placed in cur/ or they are silently dropped — exactly the bug where a
+    freshly-migrated mailbox imported 0 of its unread INBOX messages.
+
+    A Maildir new/ filename has no `:2,<flags>` info suffix; we append an empty
+    one (`:2,`) so imap-restore reads it as UNSEEN (no \\Seen flag),
+    preserving the unread state. cur/ messages keep their existing
+    `:2,<flags>` suffix (Seen / Answered / Flagged / …).
+    """
     moved = 0
+    dst_cur = os.path.join(dst_folder, 'cur')
     for sub in ('cur', 'new'):
         s = os.path.join(src_folder, sub)
         if not os.path.isdir(s):
             continue
-        d = os.path.join(dst_folder, sub)
-        os.makedirs(d, exist_ok=True)
+        os.makedirs(dst_cur, exist_ok=True)
         for fn in os.listdir(s):
             sp = os.path.join(s, fn)
-            if os.path.isfile(sp):
-                shutil.move(sp, os.path.join(d, fn))
-                moved += 1
+            if not os.path.isfile(sp):
+                continue
+            # new/ files (and any cur/ file lacking the info suffix) get a
+            # `:2,` so they parse as a valid, unseen cur entry.
+            dst_name = fn if ':2,' in fn else fn + ':2,'
+            dp = os.path.join(dst_cur, dst_name)
+            if os.path.exists(dp):  # guard the theoretical cur/new name clash
+                dp = os.path.join(dst_cur, f'{dst_name}_{sub}')
+            shutil.move(sp, dp)
+            moved += 1
     return moved
 
 
