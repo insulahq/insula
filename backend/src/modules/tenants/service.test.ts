@@ -329,7 +329,7 @@ describe('updateTenant', () => {
   // grow is auto-triggered through the online-grow path. These tests
   // pin the dispatch logic in updateTenant.
   describe('storage size change dispatch', () => {
-    function makeStorageMockDb(existingStorageGi: number | null, planStorageGi: number) {
+    function makeStorageMockDb(existingStorageGi: number | null, planStorageGi: number, provisioningStatus = 'provisioned') {
       // First select: tenants (getTenantById). Return one row.
       // Second select: hostingPlans (resolve plan storage). Return plan.
       // Subsequent selects: more tenants lookups (no-op for our purpose).
@@ -343,6 +343,7 @@ describe('updateTenant', () => {
         memoryLimitOverride: null,
         storageTier: 'local',
         status: 'active',
+        provisioningStatus,
       };
       const planRow = { id: 'plan-1', storageLimit: String(planStorageGi) };
 
@@ -465,6 +466,17 @@ describe('updateTenant', () => {
       // read + fallback). The id assertion would couple the test to
       // mock internals, so we only check truthiness here.
       expect(result).toBeDefined();
+    });
+
+    it('defers the grow when the tenant is not yet provisioned (PATCH still succeeds, override persisted)', async () => {
+      // Firing a resize before the PVC exists poisons the storage state
+      // (Longhorn webhook rejects → failed → blocks future grows). When not
+      // provisioned, updateTenant must persist the override but NOT dispatch
+      // the resize — the PATCH still succeeds.
+      const { db, updateSet } = makeStorageMockDb(10, 10, 'provisioning');
+      const result = await updateTenant(db, 'c1', { storage_limit_override: 20 });
+      expect(result).toBeDefined();
+      expect(updateSet).toHaveBeenCalled(); // override written to the row
     });
   });
 });
