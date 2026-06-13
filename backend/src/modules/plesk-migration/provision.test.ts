@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { finalizeItemLeg, mailDomainsOf, checkCapacity } from './provision.js';
+import { finalizeItemLeg, mailDomainsOf, checkCapacity, netNewMailboxCount } from './provision.js';
 import type { PleskSubscription } from '@insula/api-contracts';
 
 function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
@@ -8,6 +8,21 @@ function sub(mailboxes: PleskSubscription['mailboxes']): PleskSubscription {
     domains: [], databases: [], mailboxes,
   };
 }
+
+describe('netNewMailboxCount (idempotent-retry capacity)', () => {
+  it('counts all on a first run (none exist yet)', () => {
+    expect(netNewMailboxCount(['a@x.test', 'b@x.test'], [])).toBe(2);
+  });
+  it('counts zero when every subscription mailbox already exists (a retry)', () => {
+    expect(netNewMailboxCount(['a@x.test', 'b@x.test'], ['a@x.test', 'b@x.test'])).toBe(0);
+  });
+  it('counts only the missing ones on a partial retry, case-insensitively', () => {
+    expect(netNewMailboxCount(['A@x.test', 'b@x.test', 'c@x.test'], ['a@x.test'])).toBe(2);
+  });
+  it('ignores unrelated mailboxes already on the tenant', () => {
+    expect(netNewMailboxCount(['a@x.test'], ['other@y.test'])).toBe(1);
+  });
+});
 
 describe('finalizeItemLeg', () => {
   const prev = { status: 'running' as const, startedAt: '2026-06-13T00:00:00.000Z' };
