@@ -1639,12 +1639,14 @@ function ResourceLimitsCard({
   const [storageOverride, setStorageOverride] = useState<string>('');
   const [subUsersOverride, setSubUsersOverride] = useState<string>('');
   const [mailboxesOverride, setMailboxesOverride] = useState<string>('');
+  const [mailboxSizeOverride, setMailboxSizeOverride] = useState<string>('');
   const [priceOverride, setPriceOverride] = useState<string>('');
   const [cpuCustom, setCpuCustom] = useState(false);
   const [memCustom, setMemCustom] = useState(false);
   const [storageCustom, setStorageCustom] = useState(false);
   const [subUsersCustom, setSubUsersCustom] = useState(false);
   const [mailboxesCustom, setMailboxesCustom] = useState(false);
+  const [mailboxSizeCustom, setMailboxSizeCustom] = useState(false);
   const [priceCustom, setPriceCustom] = useState(false);
   const [mailHourlyOverride, setMailHourlyOverride] = useState<string>('');
   const [mailDailyOverride, setMailDailyOverride] = useState<string>('');
@@ -1672,6 +1674,7 @@ function ResourceLimitsCard({
   const effectiveStorage = tenant.storageLimitOverride ?? plan?.storageLimit ?? '—';
   const effectiveSubUsers = tenant.maxSubUsersOverride ?? plan?.maxSubUsers ?? '—';
   const effectiveMailboxes = tenant.maxMailboxesOverride ?? plan?.maxMailboxes ?? '—';
+  const effectiveMailboxSize = tenant.maxMailboxSizeMbOverride ?? plan?.maxMailboxSizeMb ?? '—';
   const effectivePrice = tenant.monthlyPriceOverride ?? plan?.monthlyPriceUsd ?? '—';
   const effectiveMailHourly = tenant.emailSendRateLimit ?? plan?.emailHourlySendLimit ?? '—';
   const effectiveMailDaily = tenant.emailSendRateLimitDaily ?? plan?.emailDailySendLimit ?? '—';
@@ -1682,18 +1685,21 @@ function ResourceLimitsCard({
     const hasStorage = tenant.storageLimitOverride != null;
     const hasSubUsers = tenant.maxSubUsersOverride != null;
     const hasMailboxes = tenant.maxMailboxesOverride != null;
+    const hasMailboxSize = tenant.maxMailboxSizeMbOverride != null;
     const hasPrice = tenant.monthlyPriceOverride != null;
     setCpuCustom(hasCpu);
     setMemCustom(hasMem);
     setStorageCustom(hasStorage);
     setSubUsersCustom(hasSubUsers);
     setMailboxesCustom(hasMailboxes);
+    setMailboxSizeCustom(hasMailboxSize);
     setPriceCustom(hasPrice);
     setCpuOverride(hasCpu ? String(tenant.cpuLimitOverride) : (plan?.cpuLimit ?? ''));
     setMemOverride(hasMem ? String(tenant.memoryLimitOverride) : (plan?.memoryLimit ?? ''));
     setStorageOverride(hasStorage ? String(tenant.storageLimitOverride) : (plan?.storageLimit ?? ''));
     setSubUsersOverride(hasSubUsers ? String(tenant.maxSubUsersOverride) : String(plan?.maxSubUsers ?? ''));
     setMailboxesOverride(hasMailboxes ? String(tenant.maxMailboxesOverride) : String(plan?.maxMailboxes ?? ''));
+    setMailboxSizeOverride(hasMailboxSize ? String(tenant.maxMailboxSizeMbOverride) : String(plan?.maxMailboxSizeMb ?? ''));
     setPriceOverride(hasPrice ? String(tenant.monthlyPriceOverride) : (plan?.monthlyPriceUsd ?? ''));
     const hasMailHourly = tenant.emailSendRateLimit != null;
     const hasMailDaily = tenant.emailSendRateLimitDaily != null;
@@ -1713,6 +1719,7 @@ function ResourceLimitsCard({
         storage_limit_override: storageCustom ? Number(storageOverride) : null,
         max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
+        max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
         email_send_rate_limit: mailHourlyCustom ? Number(mailHourlyOverride) : null,
         email_send_rate_limit_daily: mailDailyCustom ? Number(mailDailyOverride) : null,
@@ -1754,6 +1761,7 @@ function ResourceLimitsCard({
         storage_limit_override: storageCustom ? Number(storageOverride) : null,
         max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
+        max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
         confirm_destructive_shrink: true,
       });
@@ -1851,6 +1859,7 @@ function ResourceLimitsCard({
           {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, 'number', '1')}
           {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, 'number', '1')}
           {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, 'number', '1')}
+          {renderField('Max Mailbox Size', 'MB', effectiveMailboxSize, mailboxSizeCustom, setMailboxSizeCustom, mailboxSizeOverride, setMailboxSizeOverride, tenant.maxMailboxSizeMbOverride != null, 'number', '1')}
           {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, 'number', '0.01')}
           {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, 'number', '1')}
           {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, 'number', '1')}

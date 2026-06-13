@@ -286,6 +286,11 @@ export const hostingPlans = pgTable('hosting_plans', {
   // email domains. Can be overridden per-tenant via
   // tenants.max_mailboxes_override.
   maxMailboxes: integer('max_mailboxes').notNull().default(50),
+  // Plan-level ceiling on an INDIVIDUAL mailbox's size (MB). Defaults the
+  // quota of new mailboxes and caps quota edits (mailboxes/limit.ts +
+  // mailboxes/service.ts). Per-tenant override via
+  // tenants.max_mailbox_size_mb_override. Migration 0064.
+  maxMailboxSizeMb: integer('max_mailbox_size_mb').notNull().default(1024),
   // R6 PR 1 (mig 0057): plan-level outbound send limits. NOT NULL so
   // every tenant resolves a limit through its plan; per-tenant
   // overrides live on tenants.email_send_rate_limit(_daily).
@@ -358,6 +363,10 @@ export const tenants = pgTable('tenants', {
   // mailbox count override. null = inherit from the plan's
   // max_mailboxes. Used by the limit check in mailboxes/service.ts.
   maxMailboxesOverride: integer('max_mailboxes_override'),
+  // Per-customer max mailbox SIZE override (MB). null = inherit from the
+  // plan's max_mailbox_size_mb. Used by the size cap in
+  // mailboxes/service.ts (limit.ts:getTenantMailboxSizeLimit). Migration 0064.
+  maxMailboxSizeMbOverride: integer('max_mailbox_size_mb_override'),
   // Per-customer email send rate limit override (messages/hour).
   // null = inherit from the plan's email_hourly_send_limit (R6 PR 1;
   // the old platform_settings global default is retired). Suspended

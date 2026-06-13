@@ -12,6 +12,7 @@ export interface Plan {
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
   readonly maxMailboxes: number;
+  readonly maxMailboxSizeMb: number;
   readonly emailHourlySendLimit: number;
   readonly emailDailySendLimit: number;
   readonly status: string;

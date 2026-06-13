@@ -627,7 +627,12 @@ function MailboxesTab({
   // Login-passwords modal target. `initial` carries the one-time secret
   // to reveal straight after a mailbox is created.
   const [pwTarget, setPwTarget] = useState<{ mailbox: Mailbox; initial?: CreateLoginPasswordResult | null } | null>(null);
-  const [form, setForm] = useState({ local_part: '', display_name: '', quota_mb: '1024' });
+  // Empty quota = use the plan max (the backend defaults it). The max is
+  // shown to the user and bounds the input (Q1: default to plan, allow
+  // smaller, show the max available size).
+  const [form, setForm] = useState({ local_part: '', display_name: '', quota_mb: '' });
+  const { data: usageData } = useMailboxUsage(tenantId);
+  const maxSizeMb = usageData?.data?.maxMailboxSizeMb;
 
   const mailboxesRaw = res?.data ?? [];
   const { sortedData: mailboxes, sortKey, sortDirection, onSort } = useSortable(mailboxesRaw, 'fullAddress');
@@ -636,8 +641,8 @@ function MailboxesTab({
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
-      const res = await createMailbox.mutateAsync({ local_part: form.local_part, display_name: form.display_name || undefined, quota_mb: Number(form.quota_mb) });
-      setForm({ local_part: '', display_name: '', quota_mb: '1024' });
+      const res = await createMailbox.mutateAsync({ local_part: form.local_part, display_name: form.display_name || undefined, quota_mb: form.quota_mb ? Number(form.quota_mb) : undefined });
+      setForm({ local_part: '', display_name: '', quota_mb: '' });
       setShowForm(false);
       // Open the Login passwords modal straight onto the "Initial"
       // password reveal so the operator can hand it to the user.
@@ -716,7 +721,8 @@ function MailboxesTab({
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Quota (MB)</label>
-              <input type="number" className={INPUT_CLASS + ' mt-1'} value={form.quota_mb} onChange={e => setForm({ ...form, quota_mb: e.target.value })} data-testid="mailbox-quota" />
+              <input type="number" className={INPUT_CLASS + ' mt-1'} value={form.quota_mb} onChange={e => setForm({ ...form, quota_mb: e.target.value })} min={50} max={maxSizeMb} placeholder={maxSizeMb ? String(maxSizeMb) : undefined} data-testid="mailbox-quota" />
+              {maxSizeMb != null && <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Max {maxSizeMb} MB (plan limit). Leave blank to use the maximum.</p>}
             </div>
           </div>
           <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
@@ -855,6 +861,8 @@ function EditMailboxModal({
   readonly onClose: () => void;
 }) {
   const updateMailbox = useUpdateMailbox(tenantId);
+  const { data: usageData } = useMailboxUsage(tenantId);
+  const maxSizeMb = usageData?.data?.maxMailboxSizeMb;
   const [displayName, setDisplayName] = useState(mailbox.displayName ?? '');
   const [quotaMb, setQuotaMb] = useState(String(mailbox.quotaMb));
   const [status, setStatus] = useState<'active' | 'disabled'>(
@@ -943,11 +951,13 @@ function EditMailboxModal({
               <input
                 type="number"
                 min={50}
+                max={maxSizeMb}
                 className={INPUT_CLASS + ' mt-1'}
                 value={quotaMb}
                 onChange={(e) => setQuotaMb(e.target.value)}
                 data-testid="edit-mailbox-quota"
               />
+              {maxSizeMb != null && <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Max {maxSizeMb} MB (plan limit)</p>}
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>

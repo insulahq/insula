@@ -652,6 +652,9 @@ export interface MailboxUsageInfo {
   readonly current: number;
   readonly remaining: number;
   readonly source: 'plan' | 'tenant_override';
+  // Per-mailbox size cap (MB) — defaults + bounds the quota field.
+  readonly maxMailboxSizeMb: number;
+  readonly maxMailboxSizeSource: 'plan' | 'tenant_override';
 }
 
 export function useMailboxUsage(tenantId?: string) {

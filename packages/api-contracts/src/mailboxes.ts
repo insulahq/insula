@@ -9,7 +9,11 @@ import { createLoginPasswordResultSchema } from './login-passwords.js';
 export const createMailboxSchema = z.object({
   local_part: z.string().min(1).max(64).regex(/^[a-zA-Z0-9._-]+$/, 'Invalid mailbox name'),
   display_name: z.string().max(255).optional(),
-  quota_mb: z.number().int().min(50).max(102400).default(1024),
+  // Optional: when omitted the backend defaults it to the tenant's effective
+  // max mailbox size (plan limit / per-tenant override). A supplied value
+  // must not exceed that max — the backend rejects with
+  // MAILBOX_QUOTA_EXCEEDS_LIMIT. The absolute ceiling here is a sanity bound.
+  quota_mb: z.number().int().min(50).max(102400).optional(),
   mailbox_type: z.enum(['mailbox', 'forward_only']).default('mailbox'),
 });
 

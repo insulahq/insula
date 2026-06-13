@@ -188,14 +188,19 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
       onRequest: [requireRole('super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user')],
     }, async (request) => {
       const { tenantId } = request.params as { tenantId: string };
-      const { getTenantMailboxLimit, getTenantMailboxCount } = await import('./limit.js');
+      const { getTenantMailboxLimit, getTenantMailboxCount, getTenantMailboxSizeLimit } = await import('./limit.js');
       const limit = await getTenantMailboxLimit(app.db, tenantId);
       const current = await getTenantMailboxCount(app.db, tenantId);
+      const sizeLimit = await getTenantMailboxSizeLimit(app.db, tenantId);
       return success({
         limit: limit.limit,
         current,
         source: limit.source,
         remaining: Math.max(0, limit.limit - current),
+        // Per-mailbox size cap (MB) so the UI can default + bound the
+        // quota field on the create/edit dialogs.
+        maxMailboxSizeMb: sizeLimit.limit,
+        maxMailboxSizeSource: sizeLimit.source,
       });
     });
 

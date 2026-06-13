@@ -176,6 +176,11 @@ PARALLEL=(
   "pvc:integration-pvc.sh"
   "tier-flip:integration-tier-flip-e2e.sh"
   "grow:integration-grow-e2e.sh"
+  # Per-mailbox quota + per-plan max mailbox size: default-to-max on
+  # create, reject-over-max on create/update, per-tenant override, usage
+  # endpoint. Creates a disposable tenant + email domain, cleans up via
+  # trap. ~1-2 min.
+  "mailbox-quota:integration-mailbox-quota-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
   "firewall:integration-firewall-e2e.sh"
   "drain:integration-drain-e2e.sh"

@@ -86,3 +86,62 @@ export async function getTenantMailboxLimit(
     override: row.override,
   });
 }
+
+// ── Per-mailbox SIZE cap ─────────────────────────────────────────────
+//
+// Sibling of the count cap above. The platform caps an INDIVIDUAL
+// mailbox's size (quota_mb) via the hosting plan
+// (hosting_plans.max_mailbox_size_mb), with an optional per-tenant
+// override (tenants.max_mailbox_size_mb_override). Same precedence:
+//
+//   null or <= 0 override → inherit from plan
+//   numeric override > 0  → use override (may be higher or lower)
+//
+// This bounds each mailbox individually; it does NOT make total mail
+// storage count against the subscription storage_limit.
+
+export type MailboxSizeLimitSource = 'plan' | 'tenant_override';
+
+export interface EffectiveMailboxSizeLimit {
+  /** Max size of one mailbox, in MB. */
+  readonly limit: number;
+  readonly source: MailboxSizeLimitSource;
+}
+
+/**
+ * Pure function — decide the effective per-mailbox size limit (MB) given
+ * the plan limit and an optional per-tenant override. Zero, negative, and
+ * null overrides fall through to the plan limit.
+ */
+export function computeTenantMailboxSizeLimit(input: ComputeLimitInput): EffectiveMailboxSizeLimit {
+  if (typeof input.override === 'number' && input.override > 0) {
+    return { limit: input.override, source: 'tenant_override' };
+  }
+  return { limit: input.planLimit, source: 'plan' };
+}
+
+/**
+ * Fetch the plan size cap + per-tenant override and compute the effective
+ * per-mailbox size limit. Throws TENANT_NOT_FOUND if the tenant row
+ * doesn't exist.
+ */
+export async function getTenantMailboxSizeLimit(
+  db: Database,
+  tenantId: string,
+): Promise<EffectiveMailboxSizeLimit> {
+  const [row] = await db
+    .select({
+      planLimit: hostingPlans.maxMailboxSizeMb,
+      override: tenants.maxMailboxSizeMbOverride,
+    })
+    .from(tenants)
+    .innerJoin(hostingPlans, eq(tenants.planId, hostingPlans.id))
+    .where(eq(tenants.id, tenantId));
+  if (!row) {
+    throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404);
+  }
+  return computeTenantMailboxSizeLimit({
+    planLimit: row.planLimit,
+    override: row.override,
+  });
+}

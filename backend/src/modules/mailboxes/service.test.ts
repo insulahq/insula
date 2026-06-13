@@ -47,6 +47,16 @@ vi.mock('../stalwart-jmap/client.js', () => ({
   createMailbox: vi.fn().mockResolvedValue({ id: 'sp-test-123', type: 'individual', name: 'test' }),
   destroyPrincipal: vi.fn().mockResolvedValue(undefined),
   updatePrincipal: vi.fn().mockResolvedValue(undefined),
+  // x:Account/set create — only reached when getJmapSession resolves (i.e.
+  // when a test opts into the provisioned path). Default: one created id.
+  accountSet: vi.fn().mockResolvedValue({ created: { 'new-mailbox': { id: 'sp-new-1' } } }),
+}));
+
+// The auto-issued "Initial" login password is best-effort and irrelevant to
+// these service tests; stub it so the provisioned-path tests stay
+// deterministic (no real Stalwart round-trip).
+vi.mock('../login-passwords/service.js', () => ({
+  issueLoginPasswordForPrincipal: vi.fn().mockResolvedValue(null),
 }));
 
 // Track select call results per test
@@ -119,13 +129,15 @@ describe('createMailbox', () => {
 
     // Select calls: 1) emailDomain, 2) domain, 3) tenants+hostingPlans for
     //   getTenantMailboxLimit, 4) count for getTenantMailboxCount,
-    //   5) existing check, 6) return created
+    //   5) existing check, 6) tenants+hostingPlans for
+    //   getTenantMailboxSizeLimit, 7) return created
     selectResults = [
       [emailDomain],
       [domain],
       [planRow],
       [countResult],
       [],
+      [{ planLimit: 5120, override: null }],
       [created],
     ];
     const db = createMockDb();
@@ -218,6 +230,98 @@ describe('createMailbox', () => {
       status: 404,
     });
   });
+
+  it('sets the storage quota in Stalwart on create (quota/storage in bytes) when provisioned', async () => {
+    // Opt into the provisioned path: the email domain has a Stalwart id
+    // AND the JMAP session resolves, so the account is really created.
+    const jmap = await import('../stalwart-jmap/client.js');
+    (jmap.getJmapSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      primaryAccounts: { 'urn:ietf:params:jmap:principals': 'acct-1' },
+    });
+    (jmap.accountSet as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      created: { 'new-mailbox': { id: 'sp-new-1' } },
+    });
+
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1', stalwartDomainId: 'sd-1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
+    const countResult = { count: 0 };
+    const created = {
+      id: 'mb1', emailDomainId: 'ed1', tenantId: 'c1', localPart: 'info',
+      fullAddress: 'info@example.com', displayName: null, quotaMb: 2048,
+      usedMb: 0, status: 'active', mailboxType: 'mailbox', autoReply: 0,
+    };
+    // ...,5) existing, 6) size-limit (planLimit >= requested), 7) created
+    selectResults = [[emailDomain], [domain], [planRow], [countResult], [], [{ planLimit: 5120, override: null }], [created]];
+    const db = createMockDb();
+
+    await createMailbox(
+      db as never,
+      'c1',
+      'ed1',
+      { local_part: 'info', quota_mb: 2048, mailbox_type: 'mailbox' },
+    );
+
+    // The brand-new principal gets its storage quota patched in bytes
+    // (MB × 1024²) immediately — enforced from the first byte, not only
+    // after a later quota edit.
+    expect(jmap.updatePrincipal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'sp-new-1',
+        patch: { 'quota/storage': 2048 * 1024 * 1024 },
+      }),
+    );
+  });
+
+  it('rejects a requested quota that exceeds the plan max mailbox size', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
+    const countResult = { count: 0 };
+    // ...,5) existing (none), 6) size-limit: plan caps at 1024 MB
+    selectResults = [[emailDomain], [domain], [planRow], [countResult], [], [{ planLimit: 1024, override: null }]];
+    const db = createMockDb();
+
+    await expect(
+      createMailbox(db as never, 'c1', 'ed1', { local_part: 'big', quota_mb: 2048, mailbox_type: 'mailbox' }),
+    ).rejects.toMatchObject({
+      code: 'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+      status: 409,
+      details: { requested: 2048, limit: 1024, source: 'plan' },
+    });
+  });
+
+  it('allows a requested quota exactly equal to the max (boundary)', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
+    const countResult = { count: 0 };
+    const created = { id: 'mb1', fullAddress: 'edge@example.com', quotaMb: 2048 };
+    // size-limit plan caps at 2048; request is exactly 2048 → allowed
+    selectResults = [[emailDomain], [domain], [planRow], [countResult], [], [{ planLimit: 2048, override: null }], [created]];
+    const db = createMockDb();
+
+    await createMailbox(db as never, 'c1', 'ed1', { local_part: 'edge', quota_mb: 2048, mailbox_type: 'mailbox' });
+
+    const insertedRow = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0][0];
+    expect(insertedRow.quotaMb).toBe(2048);
+  });
+
+  it('defaults a new mailbox quota to the effective max when none is given', async () => {
+    const emailDomain = { id: 'ed1', tenantId: 'c1', domainId: 'd1' };
+    const domain = { domainName: 'example.com' };
+    const planRow = { planLimit: 50, override: null };
+    const countResult = { count: 0 };
+    const created = { id: 'mb1', fullAddress: 'info@example.com', quotaMb: 2048 };
+    // size-limit plan caps at 2048 MB; no quota_mb in the request
+    selectResults = [[emailDomain], [domain], [planRow], [countResult], [], [{ planLimit: 2048, override: null }], [created]];
+    const db = createMockDb();
+
+    await createMailbox(db as never, 'c1', 'ed1', { local_part: 'info', mailbox_type: 'mailbox' });
+
+    const insertedRow = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0][0];
+    expect(insertedRow.quotaMb).toBe(2048);
+  });
 });
 
 describe('listMailboxes', () => {
@@ -277,7 +381,8 @@ describe('updateMailbox', () => {
     const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
     const updated = { ...mailbox, quotaMb: 2048 };
 
-    selectResults = [[mailbox], [updated]];
+    // getMailbox, size-limit (planLimit >= requested), return updated
+    selectResults = [[mailbox], [{ planLimit: 5120, override: null }], [updated]];
     const db = createMockDb();
 
     const result = await updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 2048 });
@@ -296,7 +401,8 @@ describe('updateMailbox', () => {
     });
     const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
     const updated = { ...mailbox, quotaMb: 2048 };
-    selectResults = [[mailbox], [updated]];
+    // getMailbox, size-limit (planLimit >= requested), return updated
+    selectResults = [[mailbox], [{ planLimit: 5120, override: null }], [updated]];
     const db = createMockDb();
 
     await updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 2048 });
@@ -307,6 +413,21 @@ describe('updateMailbox', () => {
         patch: { 'quota/storage': 2048 * 1024 * 1024 },
       }),
     );
+  });
+
+  it('rejects a quota update that exceeds the plan max mailbox size', async () => {
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', stalwartPrincipalId: 'sp-existing-1' };
+    // getMailbox, then size-limit: plan caps at 2048 MB
+    selectResults = [[mailbox], [{ planLimit: 2048, override: null }]];
+    const db = createMockDb();
+
+    await expect(
+      updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 5000 }),
+    ).rejects.toMatchObject({
+      code: 'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+      status: 409,
+      details: { requested: 5000, limit: 2048, source: 'plan' },
+    });
   });
 });
 

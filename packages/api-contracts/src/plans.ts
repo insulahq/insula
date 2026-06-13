@@ -10,6 +10,11 @@ export const createPlanSchema = z.object({
   monthly_price_usd: z.string().min(1).max(20),
   max_sub_users: z.number().int().min(0).max(100).optional(),
   max_mailboxes: z.number().int().min(0).max(10000).optional(),
+  // Per-plan ceiling on an INDIVIDUAL mailbox's size (MB). Defaults the
+  // quota of new mailboxes and caps quota edits. Omitted on create -> DB
+  // default 1024 (1 GiB). Per-tenant override:
+  // tenants.max_mailbox_size_mb_override.
+  max_mailbox_size_mb: z.number().int().min(50).max(102400).optional(),
   // R6 PR 1: plan-level outbound send limits (messages/hour and
   // messages/day). Omitted on create -> DB defaults 50/h + 100/d.
   // Per-tenant overrides: tenants.email_send_rate_limit(_daily).

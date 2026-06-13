@@ -5,7 +5,7 @@ import { mailLogger } from '../../shared/mail-logger.js';
 const log = mailLogger().child({ module: 'mailboxes' });
 import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { getTenantMailboxLimit, getTenantMailboxCount } from './limit.js';
+import { getTenantMailboxLimit, getTenantMailboxCount, getTenantMailboxSizeLimit } from './limit.js';
 import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
 import {
   getJmapSession,
@@ -52,6 +52,42 @@ async function getJmapAccountId(): Promise<JmapAccountId | null> {
     return id ?? null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Push a mailbox's storage quota to Stalwart so the mail server enforces it.
+ * Stalwart `quota.storage` is bytes; the platform stores MB. Used on BOTH
+ * create (so a new mailbox is capped from its first byte) and update (so
+ * quota edits propagate).
+ *
+ * We deliberately set the quota via this `quota/storage` patch rather than
+ * inline on the `x:Account/set` create payload: the patch is the only
+ * quota-write shape proven against Stalwart 0.16, whereas no code path has
+ * ever sent `quota` on create (the legacy createMailbox shim silently drops
+ * it). Doing it as an immediate post-create patch reuses the proven mechanic.
+ *
+ * Best-effort: the platform DB is authoritative and principals-sync
+ * reconciles later if Stalwart is unreachable.
+ */
+async function syncMailboxStorageQuota(
+  accountId: JmapAccountId,
+  principalId: string,
+  quotaMb: number,
+  logCtx: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await jmapUpdatePrincipal({
+      accountId,
+      id: principalId,
+      patch: { 'quota/storage': quotaMb * 1024 * 1024 },
+      baseUrl: process.env.STALWART_MGMT_URL,
+    });
+  } catch (err) {
+    log.warn({
+      ...logCtx,
+      err: err instanceof Error ? err.message : String(err),
+    }, 'JMAP quota patch failed (platform DB authoritative; principals-sync will reconcile)');
   }
 }
 
@@ -157,6 +193,21 @@ export async function createMailbox(
     );
   }
 
+  // 4b. Resolve the per-mailbox size cap (plan + optional override). When
+  // no quota is requested we default to the effective max; a requested
+  // quota above the max is rejected (visible, like the count cap above).
+  const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
+  if (input.quota_mb !== undefined && input.quota_mb > sizeLimit.limit) {
+    throw new ApiError(
+      'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+      `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
+      409,
+      { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
+      'Choose a smaller size or ask your administrator to raise the plan limit',
+    );
+  }
+  const effectiveQuotaMb = input.quota_mb ?? sizeLimit.limit;
+
   // 5. Mint a hidden primary secret (ADR-049 "generate-and-forget"):
   // the account needs a valid primary credential in Stalwart, but no
   // human ever sees or types it and we store NOTHING platform-side
@@ -251,6 +302,18 @@ export async function createMailbox(
           'Check Stalwart JMAP API reachability and logs',
         );
       }
+
+      // 5c. Cap the brand-new mailbox at its quota immediately. The create
+      // payload above intentionally omits `quota` (unproven create shape);
+      // we apply the storage quota via the proven `quota/storage` patch so
+      // the limit is enforced at the mail server from the first byte rather
+      // than only after a later quota edit. Best-effort (see helper).
+      if (stalwartPrincipalId) {
+        await syncMailboxStorageQuota(accountId, stalwartPrincipalId, effectiveQuotaMb, {
+          fullAddress,
+          op: 'createMailbox',
+        });
+      }
     }
   }
 
@@ -267,7 +330,7 @@ export async function createMailbox(
       // ADR-049: generate-and-forget — no platform-side primary hash.
       passwordHash: null,
       displayName: input.display_name ?? null,
-      quotaMb: input.quota_mb,
+      quotaMb: effectiveQuotaMb,
       mailboxType: input.mailbox_type,
       status: 'active',
       stalwartPrincipalId,
@@ -363,6 +426,22 @@ export async function updateMailbox(
   // sync so we don't burn a second SELECT on stalwartPrincipalId.
   const existingMailbox = await getMailbox(db, tenantId, mailboxId);
 
+  // Enforce the per-mailbox size cap on quota edits — a quota above the
+  // tenant's effective max (plan + optional override) is rejected
+  // visibly, mirroring create.
+  if (input.quota_mb !== undefined) {
+    const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
+    if (input.quota_mb > sizeLimit.limit) {
+      throw new ApiError(
+        'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+        `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
+        409,
+        { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
+        'Choose a smaller size or ask your administrator to raise the plan limit',
+      );
+    }
+  }
+
   const updateData: Record<string, unknown> = {};
 
   // Password is no longer settable here — credentials are managed via
@@ -399,20 +478,10 @@ export async function updateMailbox(
   if (input.quota_mb !== undefined && existingMailbox.stalwartPrincipalId) {
     const accountId = await getJmapAccountId();
     if (accountId) {
-      try {
-        await jmapUpdatePrincipal({
-          accountId,
-          id: existingMailbox.stalwartPrincipalId,
-          // Stalwart `quota.storage` is bytes; the platform stores MB.
-          patch: { 'quota/storage': input.quota_mb * 1024 * 1024 },
-          baseUrl: process.env.STALWART_MGMT_URL,
-        });
-      } catch (err) {
-        log.warn({
-          mailboxId,
-          err: err instanceof Error ? err.message : String(err),
-        }, 'updateMailbox: JMAP quota patch failed (platform DB authoritative; principals-sync will reconcile)');
-      }
+      await syncMailboxStorageQuota(accountId, existingMailbox.stalwartPrincipalId, input.quota_mb, {
+        mailboxId,
+        op: 'updateMailbox',
+      });
     }
   }
 
