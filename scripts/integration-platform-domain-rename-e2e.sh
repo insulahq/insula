@@ -42,7 +42,11 @@ skip() { printf '  %b•%b SKIP %s\n' "$YEL" "$RESET" "$*"; }
 passed=0; failed=0
 
 ssh_q() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 -q "$SSH_HOST" "$@"; }
-psql_t() { ssh_q "kubectl -n platform exec system-db-1 -c postgres -- psql -U postgres -d platform -tAc \"$1\"" 2>/dev/null; }
+# Target the CNPG primary by label (survives failover; falls back to the
+# legacy 'postgres' cluster name on pre-PG18 clusters).
+psql_t() {
+  ssh_q "P=\$(kubectl -n platform get pods -l cnpg.io/cluster=system-db,role=primary -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); [ -z \"\$P\" ] && P=\$(kubectl -n platform get pods -l cnpg.io/cluster=postgres,role=primary -o jsonpath='{.items[0].metadata.name}' 2>/dev/null); kubectl -n platform exec \"\$P\" -c postgres -- psql -U postgres -d platform -tAc \"$1\"" 2>/dev/null
+}
 api() {
   local m="$1" p="$2" b="${3:-}" host="${4:-$ADMIN_HOST}"
   if [[ -z "$b" ]]; then
@@ -72,7 +76,10 @@ if [[ -z "$RENAME_TARGET" ]]; then
   [[ "$failed" -eq 0 ]] || exit 1; exit 0
 fi
 
-restore() { api POST /admin/platform-domain/rename "{\"newApex\":\"$ORIG_APEX\"}" "" "https://admin.$RENAME_TARGET" >/dev/null 2>&1 || \
+# Revert MUST target the new host (admin.testing rename moved the admin
+# IngressRoute away). The Bearer token is host-independent. Try the new host
+# first, then the original (in case the rename didn't take).
+restore() { api POST /admin/platform-domain/rename "{\"newApex\":\"$ORIG_APEX\"}" "https://admin.$RENAME_TARGET" >/dev/null 2>&1 || \
             api POST /admin/platform-domain/rename "{\"newApex\":\"$ORIG_APEX\"}" >/dev/null 2>&1 || true; }
 trap restore EXIT
 
@@ -110,8 +117,8 @@ else
 fi
 
 # 4. Revert + verify restored.
-log "── revert -> $ORIG_APEX ──"
-api POST /admin/platform-domain/rename "{\"newApex\":\"$ORIG_APEX\"}" "" "https://admin.$RENAME_TARGET" >/dev/null 2>&1
+log "── revert -> $ORIG_APEX (via the new host) ──"
+api POST /admin/platform-domain/rename "{\"newApex\":\"$ORIG_APEX\"}" "https://admin.$RENAME_TARGET" >/dev/null 2>&1
 sleep 5
 echo "$(ir_host)" | grep -q "admin.$ORIG_APEX" && ok "reverted: IngressRoute Host back to admin.$ORIG_APEX" \
   || fail "revert did not restore the host: $(ir_host)"

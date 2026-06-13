@@ -81,6 +81,19 @@ export async function renamePlatformDomain(
     mail: `mail.${newApex}`,
   };
 
+  // No-op short-circuit: renaming to the current apex would still fire every
+  // reconciler + write an audit row. Skip the cluster churn.
+  if (previousApex === newApex) {
+    return {
+      previousApex,
+      newApex,
+      hostnames,
+      reconciled: { panels: 'no-change', webmail: 'no-change', mail: 'no-change' },
+      dnsRequired: [],
+      mailNote: 'apex unchanged — no reconcile performed.',
+    };
+  }
+
   // 1. Rewrite the canonical settings. ingress_base_domain is deliberately
   //    NOT touched — tenant CNAME targets must not move.
   const updated = await updateSettings(db, {

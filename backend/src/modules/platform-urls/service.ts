@@ -18,7 +18,9 @@ import { getPlatformApex } from '../system-settings/platform-domain.js';
  */
 
 const KEYS = {
-  apex: 'ingress_base_domain',
+  // R16: the apex is no longer read from here — getPlatformUrls() resolves it
+  // via getPlatformApex(db) (platform_domain). The old `apex` key was removed
+  // to avoid implying ingress_base_domain is still the apex source.
   longhorn: 'longhorn_url',
   stalwart: 'stalwart_admin_url',
   // These two keys predate this module (webmail-settings owns them).
