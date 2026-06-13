@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react';
 import { Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
+import { apiFetch } from '@/lib/api-client';
+
+interface PlatformDomainResponse {
+  data: { platformDomain: string | null; hostnames: { admin: string; tenant: string; webmail: string; mail: string } | null };
+}
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -22,6 +27,50 @@ export default function NetworkingPage() {
   const [allowHostPortsWorker, setAllowHostPortsWorker] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // R16 — platform apex (brand) + turnkey rename.
+  const [platformApex, setPlatformApex] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState('');
+  const [renaming, setRenaming] = useState(false);
+  const [renameMsg, setRenameMsg] = useState<string | null>(null);
+
+  const loadPlatformDomain = () => {
+    apiFetch<PlatformDomainResponse>('/api/v1/admin/platform-domain')
+      .then((r) => setPlatformApex(r.data.platformDomain))
+      .catch(() => setPlatformApex(null));
+  };
+  useEffect(loadPlatformDomain, []);
+
+  const handleRename = async () => {
+    const target = renameTarget.trim().toLowerCase();
+    if (!target) return;
+    const ok = window.confirm(
+      `Rename the platform apex to "${target}"?\n\n` +
+        `This moves every platform-owned hostname + TLS cert — admin, tenant, ` +
+        `webmail, and mail — to the new apex (admin.${target}, …). The tenant ` +
+        `CNAME-target domain (ingress base domain) is NOT changed.\n\n` +
+        `DNS for the new hostnames must resolve to this cluster, and ` +
+        `Let's Encrypt must be able to issue certs for them, before the new ` +
+        `URLs serve. Until then the admin panel is reachable only at the new ` +
+        `host. Proceed?`,
+    );
+    if (!ok) return;
+    setRenaming(true);
+    setRenameMsg(null);
+    try {
+      const r = await apiFetch<{ data: { newApex: string; reconciled: Record<string, string> } }>(
+        '/api/v1/admin/platform-domain/rename',
+        { method: 'POST', body: JSON.stringify({ newApex: target }) },
+      );
+      setRenameMsg(`Renamed to ${r.data.newApex} — reconciled: ${JSON.stringify(r.data.reconciled)}. Ensure DNS + certs for the new hostnames.`);
+      setRenameTarget('');
+      loadPlatformDomain();
+    } catch (err) {
+      setRenameMsg(err instanceof Error ? err.message : 'Rename failed');
+    } finally {
+      setRenaming(false);
+    }
+  };
 
   useEffect(() => {
     if (settings) {
@@ -125,6 +174,46 @@ export default function NetworkingPage() {
             Base domain used for CNAME routing targets (e.g., slug.ingress.example.com).
           </p>
         </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5" data-testid="platform-domain-card">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-1">Platform Domain (apex / brand)</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          The apex your platform hostnames hang off — <code>admin</code>, <code>tenant</code>,
+          <code>webmail</code>, and <code>mail</code>. Distinct from the ingress base domain
+          (the tenant CNAME target above). Renaming it is a turnkey action that moves those
+          hostnames + their TLS certs; tenant domains are unaffected.
+        </p>
+        <div className="mb-3 text-sm text-gray-700 dark:text-gray-300">
+          Current apex: <code className="rounded bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5">{platformApex ?? '—'}</code>
+        </div>
+        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Rename platform apex to</label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={renameTarget}
+            onChange={(e) => setRenameTarget(e.target.value)}
+            className={INPUT_CLASS}
+            placeholder="brand.example.com"
+            data-testid="platform-domain-rename-input"
+          />
+          <button
+            type="button"
+            onClick={handleRename}
+            disabled={renaming || !renameTarget.trim()}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+            data-testid="platform-domain-rename-button"
+          >
+            {renaming ? <Loader2 size={14} className="animate-spin" /> : null} Rename
+          </button>
+        </div>
+        <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+          ⚠ DNS for the new hostnames must resolve to this cluster (so Let&apos;s Encrypt can issue certs)
+          before the new URLs serve. Until then the admin panel is reachable only at the new host.
+        </p>
+        {renameMsg && (
+          <p className="mt-2 text-xs text-gray-700 dark:text-gray-300 break-words" data-testid="platform-domain-rename-msg">{renameMsg}</p>
+        )}
       </div>
 
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5" data-testid="host-network-ports-card">

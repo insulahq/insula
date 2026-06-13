@@ -79,7 +79,10 @@ if (ingressBaseDomain) {
   // surfaced in Admin → Email → Server (mailServerHostname) and consumed by
   // the Stalwart cert-anchor reconciler. Only fills when unset — never
   // clobbers an operator-chosen hostname.
-  const mailServerHostname = `mail.${ingressBaseDomain.replace(/\.+$/, '')}`;
+  // R16: the mail host follows the platform apex (platform_domain), not the
+  // ingress/CNAME domain. They seed equal, so this is identical on bootstrap.
+  const apexForMail = (platformDomain ?? ingressBaseDomain).replace(/\.+$/, '');
+  const mailServerHostname = `mail.${apexForMail}`;
   await db.execute(sql`
     INSERT INTO platform_settings (setting_key, setting_value, updated_at)
     VALUES ('mail_server_hostname', ${mailServerHostname}, NOW())

@@ -32,12 +32,16 @@
 set -uo pipefail
 
 DOMAIN=""
+PLATFORM_DOMAIN_ARG=""
 KUBECONFIG_OVERRIDE=""
 NAMESPACE="platform"
 
 while (( $# > 0 )); do
   case "$1" in
-    --domain)     DOMAIN="$2"; shift 2 ;;
+    --domain)          DOMAIN="$2"; shift 2 ;;
+    # R16: the platform APEX (brand) — admin|tenant|webmail|mail.<apex>. When
+    # omitted it defaults to --domain (apex == ingress domain, the common case).
+    --platform-domain) PLATFORM_DOMAIN_ARG="$2"; shift 2 ;;
     --kubeconfig) KUBECONFIG_OVERRIDE="$2"; shift 2 ;;
     --namespace)  NAMESPACE="$2"; shift 2 ;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
@@ -58,6 +62,13 @@ fi
 if [[ "$DOMAIN" != *.* ]]; then
   echo "ERROR: --domain must contain at least one dot (got '$DOMAIN')" >&2
   exit 2
+fi
+# R16: validate --platform-domain the same way when provided.
+if [[ -n "$PLATFORM_DOMAIN_ARG" ]]; then
+  if ! [[ "$PLATFORM_DOMAIN_ARG" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] || [[ "$PLATFORM_DOMAIN_ARG" != *.* ]]; then
+    echo "ERROR: --platform-domain must be a valid DNS apex with a dot (got '$PLATFORM_DOMAIN_ARG')" >&2
+    exit 2
+  fi
 fi
 
 if [[ -n "$KUBECONFIG_OVERRIDE" ]]; then
@@ -84,10 +95,13 @@ fi
 # inside the postgres pod. Using cluster superuser ('postgres') so we
 # don't need the platform user's password — same convention as
 # admin-password-reset.sh.
-ADMIN_URL="https://admin.${DOMAIN}"
-TENANT_URL="https://tenant.${DOMAIN}"
-WEBMAIL_URL="https://webmail.${DOMAIN}"
-MAIL_HOST="mail.${DOMAIN}"
+# R16: platform-owned hostnames derive from the APEX (platform_domain);
+# ingress_base_domain stays the tenant CNAME target. Default apex == --domain.
+APEX="${PLATFORM_DOMAIN_ARG:-$DOMAIN}"
+ADMIN_URL="https://admin.${APEX}"
+TENANT_URL="https://tenant.${APEX}"
+WEBMAIL_URL="https://webmail.${APEX}"
+MAIL_HOST="mail.${APEX}"
 
 kubectl -n "$NAMESPACE" exec -i "$POD" -c postgres -- psql -v ON_ERROR_STOP=1 platform <<SQL
 BEGIN;
@@ -95,13 +109,25 @@ UPDATE system_settings
    SET admin_panel_url     = '${ADMIN_URL}',
        tenant_panel_url    = '${TENANT_URL}',
        ingress_base_domain = '${DOMAIN}',
+       platform_domain     = '${APEX}',
        webmail_url         = COALESCE(NULLIF(webmail_url, ''), '${WEBMAIL_URL}'),
        mail_hostname       = COALESCE(NULLIF(mail_hostname, ''), '${MAIL_HOST}');
+-- KV mirrors (the cross-module sources). ingress_base_domain = CNAME target;
+-- platform_domain / default_webmail_url / mail_server_hostname = the apex.
 UPDATE platform_settings SET setting_value = '${DOMAIN}', updated_at = NOW()
  WHERE setting_key = 'ingress_base_domain';
 INSERT INTO platform_settings (setting_key, setting_value, updated_at)
 SELECT 'ingress_base_domain', '${DOMAIN}', NOW()
  WHERE NOT EXISTS (SELECT 1 FROM platform_settings WHERE setting_key='ingress_base_domain');
+INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+VALUES ('platform_domain', '${APEX}', NOW())
+ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW();
+INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+VALUES ('default_webmail_url', '${WEBMAIL_URL}/', NOW())
+ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW();
+INSERT INTO platform_settings (setting_key, setting_value, updated_at)
+VALUES ('mail_server_hostname', '${MAIL_HOST}', NOW())
+ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW();
 COMMIT;
 SQL
 
