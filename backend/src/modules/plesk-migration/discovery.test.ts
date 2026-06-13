@@ -129,8 +129,16 @@ describe('discovery scripts', () => {
     expect(sh).toContain('exit 3');
   });
 
-  it('runner.sh traps /tmp key cleanup on exit', () => {
+  it('runner.sh traps /tmp cleanup on exit', () => {
     const sh = readFileSync(join(here, 'scripts', 'runner.sh'), 'utf8');
-    expect(sh).toContain("trap 'rm -f /tmp/id_rsa' EXIT");
+    expect(sh).toContain("trap 'rm -f /tmp/id_rsa /tmp/discover.out' EXIT");
+  });
+
+  it('runner.sh fails visibly on ssh/remote failure (no false empty inventory)', () => {
+    const sh = readFileSync(join(here, 'scripts', 'runner.sh'), 'utf8');
+    // capture-then-check, not a pipe that masks the ssh exit code
+    expect(sh).toMatch(/if ! \$SSH .* > \/tmp\/discover\.out; then/);
+    expect(sh).toContain('exit 1');
+    expect(sh).toContain('python3 /etc/plesk-scripts/assemble.py < /tmp/discover.out');
   });
 });
