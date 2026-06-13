@@ -55,6 +55,42 @@ async function getJmapAccountId(): Promise<JmapAccountId | null> {
   }
 }
 
+/**
+ * Push a mailbox's storage quota to Stalwart so the mail server enforces it.
+ * Stalwart `quota.storage` is bytes; the platform stores MB. Used on BOTH
+ * create (so a new mailbox is capped from its first byte) and update (so
+ * quota edits propagate).
+ *
+ * We deliberately set the quota via this `quota/storage` patch rather than
+ * inline on the `x:Account/set` create payload: the patch is the only
+ * quota-write shape proven against Stalwart 0.16, whereas no code path has
+ * ever sent `quota` on create (the legacy createMailbox shim silently drops
+ * it). Doing it as an immediate post-create patch reuses the proven mechanic.
+ *
+ * Best-effort: the platform DB is authoritative and principals-sync
+ * reconciles later if Stalwart is unreachable.
+ */
+async function syncMailboxStorageQuota(
+  accountId: JmapAccountId,
+  principalId: string,
+  quotaMb: number,
+  logCtx: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await jmapUpdatePrincipal({
+      accountId,
+      id: principalId,
+      patch: { 'quota/storage': quotaMb * 1024 * 1024 },
+      baseUrl: process.env.STALWART_MGMT_URL,
+    });
+  } catch (err) {
+    log.warn({
+      ...logCtx,
+      err: err instanceof Error ? err.message : String(err),
+    }, 'JMAP quota patch failed (platform DB authoritative; principals-sync will reconcile)');
+  }
+}
+
 function mailboxNotFound(id: string): ApiError {
   return new ApiError('MAILBOX_NOT_FOUND', `Mailbox '${id}' not found`, 404, { mailbox_id: id }, 'Verify mailbox exists');
 }
@@ -251,6 +287,18 @@ export async function createMailbox(
           'Check Stalwart JMAP API reachability and logs',
         );
       }
+
+      // 5c. Cap the brand-new mailbox at its quota immediately. The create
+      // payload above intentionally omits `quota` (unproven create shape);
+      // we apply the storage quota via the proven `quota/storage` patch so
+      // the limit is enforced at the mail server from the first byte rather
+      // than only after a later quota edit. Best-effort (see helper).
+      if (stalwartPrincipalId) {
+        await syncMailboxStorageQuota(accountId, stalwartPrincipalId, input.quota_mb, {
+          fullAddress,
+          op: 'createMailbox',
+        });
+      }
     }
   }
 
@@ -399,20 +447,10 @@ export async function updateMailbox(
   if (input.quota_mb !== undefined && existingMailbox.stalwartPrincipalId) {
     const accountId = await getJmapAccountId();
     if (accountId) {
-      try {
-        await jmapUpdatePrincipal({
-          accountId,
-          id: existingMailbox.stalwartPrincipalId,
-          // Stalwart `quota.storage` is bytes; the platform stores MB.
-          patch: { 'quota/storage': input.quota_mb * 1024 * 1024 },
-          baseUrl: process.env.STALWART_MGMT_URL,
-        });
-      } catch (err) {
-        log.warn({
-          mailboxId,
-          err: err instanceof Error ? err.message : String(err),
-        }, 'updateMailbox: JMAP quota patch failed (platform DB authoritative; principals-sync will reconcile)');
-      }
+      await syncMailboxStorageQuota(accountId, existingMailbox.stalwartPrincipalId, input.quota_mb, {
+        mailboxId,
+        op: 'updateMailbox',
+      });
     }
   }
 
