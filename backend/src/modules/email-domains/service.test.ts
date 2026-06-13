@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { enableEmailForDomain, disableEmailForDomain, getEmailDomain, listEmailDomains, updateEmailDomain, getEmailDomainDisablePreview } from './service.js';
+import { enableEmailForDomain, disableEmailForDomain, getEmailDomain, listEmailDomains, updateEmailDomain, getEmailDomainDisablePreview, isMailStackUnconfigured } from './service.js';
 
 // Mock DKIM generation
 vi.mock('./dkim.js', () => ({
@@ -187,6 +187,18 @@ describe('enableEmailForDomain', () => {
     });
   });
 
+  // The test env has no Stalwart admin creds, so getJmapSession throws the
+  // "admin password is not configured" error → isMailStackUnconfigured ⇒
+  // graceful skip (no mail stack). This is the ONLY case where enable
+  // succeeds without a Stalwart domain — and it's why the 11 tests above
+  // pass without a live Stalwart. A configured-but-unreachable Stalwart
+  // instead throws MAIL_SERVER_ERROR (proven by the integration harness).
+  it('skips Stalwart provisioning (no throw) when the mail stack is unconfigured', async () => {
+    const db = createMockDb();
+    const result = await enableEmailForDomain(db, 'c1', 'd1', {}, '0'.repeat(64));
+    expect(result).toBeDefined(); // returns the row; stalwartDomainId stays null
+  });
+
   // 2026-05-18: per-tenant webmail.<clientdomain> now defaults OFF.
   // Verify the insert + DNS provisioning both honour the flag in
   // both directions (omitted → 0, explicit true → 1).
@@ -228,6 +240,27 @@ describe('enableEmailForDomain', () => {
 
     const lastArg = provisionSpy.mock.calls.at(-1)?.[7];
     expect(lastArg).toEqual({ webmailEnabled: true });
+  });
+});
+
+describe('isMailStackUnconfigured', () => {
+  // The gate that decides skip-vs-throw: ONLY a genuinely-absent mail
+  // stack (admin creds unset) is a legitimate skip; everything else is a
+  // real failure the operator must see.
+  it('is TRUE only for the "admin password is not configured" error (no mail stack)', () => {
+    expect(isMailStackUnconfigured(new Error('Stalwart admin password is not configured (env...)'))).toBe(true);
+  });
+
+  it('is FALSE for a reachable-but-failing Stalwart (these must surface as errors)', () => {
+    expect(isMailStackUnconfigured(new Error('JMAP session fetch failed: HTTP 503'))).toBe(false);
+    expect(isMailStackUnconfigured(new Error('fetch failed'))).toBe(false); // connection refused
+    expect(isMailStackUnconfigured(new Error('JMAP session did not match the protocol shape'))).toBe(false);
+    expect(isMailStackUnconfigured(new Error('Stalwart JMAP session advertises no principals account'))).toBe(false);
+  });
+
+  it('is FALSE for non-Error throwables', () => {
+    expect(isMailStackUnconfigured('some string')).toBe(false);
+    expect(isMailStackUnconfigured(null)).toBe(false);
   });
 });
 

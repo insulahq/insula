@@ -36,22 +36,45 @@ const JMAP_ACCOUNT_ID_CACHE_TTL_MS = 5 * 60 * 1000;
 let _jmapAccountIdCache: JmapAccountId | null = null;
 let _jmapAccountIdCachedAt = 0;
 
+/**
+ * The ONE failure mode where skipping Stalwart provisioning is
+ * legitimate: the cluster has no mail stack at all, so the admin
+ * credentials aren't configured (local dev / mail-less install). Any
+ * OTHER failure (server unreachable, HTTP error, malformed session,
+ * missing principals account) means mail IS expected but broken — the
+ * caller must surface it, not silently strand the email domain.
+ */
+export function isMailStackUnconfigured(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /admin password is not configured/i.test(msg);
+}
+
+/**
+ * Resolve the JMAP principals account id. Returns null ONLY when the
+ * mail stack is genuinely unconfigured (see isMailStackUnconfigured);
+ * THROWS on every other failure so a configured-but-unreachable Stalwart
+ * is visible to the operator instead of silently skipped (which left the
+ * email domain with stalwartDomainId=null and HTTP 200 — "looks enabled,
+ * no mail flows").
+ */
 async function getDomainJmapAccountId(): Promise<JmapAccountId | null> {
   if (_jmapAccountIdCache && Date.now() - _jmapAccountIdCachedAt < JMAP_ACCOUNT_ID_CACHE_TTL_MS) {
     return _jmapAccountIdCache;
   }
+  let session;
   try {
-    const baseUrl = process.env.STALWART_MGMT_URL;
-    const session = await getJmapSession(baseUrl, process.env);
-    const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
-    if (id) {
-      _jmapAccountIdCache = id;
-      _jmapAccountIdCachedAt = Date.now();
-    }
-    return id ?? null;
-  } catch {
-    return null;
+    session = await getJmapSession(process.env.STALWART_MGMT_URL, process.env);
+  } catch (err) {
+    if (isMailStackUnconfigured(err)) return null; // no mail stack → legitimate skip
+    throw err; // configured but failing → propagate (caller throws MAIL_SERVER_ERROR)
   }
+  const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+  if (!id) {
+    throw new Error('Stalwart JMAP session advertises no principals account — mail stack misconfigured');
+  }
+  _jmapAccountIdCache = id;
+  _jmapAccountIdCachedAt = Date.now();
+  return id;
 }
 
 async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
@@ -148,10 +171,23 @@ export async function enableEmailForDomain(
   );
 
   // Provision the domain principal in Stalwart 0.16 via JMAP.
-  // Fatal: if Stalwart is reachable and fails, we throw MAIL_SERVER_ERROR
-  // so the operator sees it immediately. If Stalwart is unreachable
-  // (no mail stack), we skip gracefully (stalwartDomainId = null).
-  const domainAccountId = await getDomainJmapAccountId();
+  // Fatal: if Stalwart is CONFIGURED and fails, we throw MAIL_SERVER_ERROR
+  // so the operator sees it immediately. We skip gracefully (stalwartDomainId
+  // = null) ONLY when there is genuinely no mail stack (creds unconfigured —
+  // local dev / mail-less install). A configured-but-unreachable Stalwart is
+  // a hard error, not a silent skip.
+  let domainAccountId: JmapAccountId | null;
+  try {
+    domainAccountId = await getDomainJmapAccountId();
+  } catch (err) {
+    throw new ApiError(
+      'MAIL_SERVER_ERROR',
+      `Email could not be enabled for '${domain.domainName}': the mail server (Stalwart) is configured but unreachable — ${err instanceof Error ? err.message : String(err)}`,
+      502,
+      {},
+      'Check Stalwart JMAP API reachability and logs, then retry enabling email for this domain',
+    );
+  }
   if (domainAccountId) {
     try {
       // Idempotency: check if Stalwart already has this domain principal

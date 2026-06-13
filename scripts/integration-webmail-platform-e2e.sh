@@ -282,7 +282,17 @@ if [[ -z "$EMAIL_DOMAIN_ID" ]]; then
   fail "4.1 enable email failed: $(echo "$ENABLE_RESP" | head -c 300)"
   exit 1
 fi
-pass "4.1 email enabled (email_domain_id=${EMAIL_DOMAIN_ID})"
+# The Stalwart x:Domain MUST be created — enableEmailForDomain now throws a
+# visible MAIL_SERVER_ERROR when the (configured) mail server is unreachable,
+# instead of silently returning a row with stalwartDomainId=null. Assert the
+# id is present so a future silent-skip regression fails here, loudly, rather
+# than as a confusing mailbox-create failure two phases later.
+STALWART_DOMAIN_ID=$(echo "$ENABLE_RESP" | jq -r '.data.stalwartDomainId // empty')
+if [[ -z "$STALWART_DOMAIN_ID" ]]; then
+  fail "4.1 email enabled but NO Stalwart x:Domain was created (stalwartDomainId is null) — mail would not flow: $(echo "$ENABLE_RESP" | head -c 300)"
+  exit 1
+fi
+pass "4.1 email enabled (email_domain_id=${EMAIL_DOMAIN_ID}, stalwart_domain_id=${STALWART_DOMAIN_ID})"
 
 # ── Phase 5: create mailbox ─────────────────────────────────────────
 phase "5. Create mailbox"
