@@ -26,7 +26,7 @@
  */
 
 import { eq, and } from 'drizzle-orm';
-import { pleskMigrations, domains as domainsTable, tenants, hostingPlans, pleskSources } from '../../db/schema.js';
+import { pleskMigrations, domains as domainsTable, tenants, hostingPlans, pleskSources, emailDomains, mailboxes as mailboxesTable } from '../../db/schema.js';
 import { createDomain } from '../domains/service.js';
 import { enableEmailForDomain } from '../email-domains/service.js';
 import { getTenantMailboxLimit, getTenantMailboxCount } from '../mailboxes/limit.js';
@@ -281,6 +281,29 @@ export function checkCapacity(input: {
 }
 
 /**
+ * Net-new mailboxes a migration would CREATE: the subscription's addresses
+ * that don't already exist on the tenant. The mail leg's createMailbox is
+ * idempotent (skips existing), so a re-run (Retry) of an already-migrated
+ * subscription needs zero new mailboxes — counting all of them again would
+ * double-count against the plan limit and falsely fail the capacity preflight.
+ */
+export function netNewMailboxCount(snapshotAddresses: string[], existingAddresses: string[]): number {
+  const existing = new Set(existingAddresses.map((a) => a.toLowerCase()));
+  return snapshotAddresses.filter((a) => !existing.has(a.toLowerCase())).length;
+}
+
+/** Addresses already present on the tenant (any domain it owns). */
+async function tenantMailboxAddresses(db: Database, tenantId: string): Promise<string[]> {
+  const rows = await db
+    .select({ localPart: mailboxesTable.localPart, domainName: domainsTable.domainName })
+    .from(mailboxesTable)
+    .innerJoin(emailDomains, eq(emailDomains.id, mailboxesTable.emailDomainId))
+    .innerJoin(domainsTable, eq(domainsTable.id, emailDomains.domainId))
+    .where(eq(domainsTable.tenantId, tenantId));
+  return rows.map((r) => `${r.localPart}@${r.domainName}`);
+}
+
+/**
  * Validate the mapped tenant and capacity-check the subscription against its
  * plan. Throws (caught by the orchestrator) if the tenant is gone / system /
  * unavailable; returns the capacity problems otherwise.
@@ -317,7 +340,11 @@ async function preflightTenant(
   const storageGib = Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 0);
   const storageBytesAvailable = storageGib * GIB;
 
-  const mailboxesNeeded = snapshot.mailboxes.length;
+  // Net-new only: subscription mailboxes already on the tenant (e.g. from a
+  // prior run of THIS migration) aren't re-created, so they don't consume
+  // additional capacity. Without this, an idempotent Retry double-counts them.
+  const existingAddresses = await tenantMailboxAddresses(db, tenantId);
+  const mailboxesNeeded = netNewMailboxCount(snapshot.mailboxes.map((m) => m.address), existingAddresses);
   const dbBytes = snapshot.databases.reduce((sum, d) => sum + (d.sizeBytes ?? 0), 0);
   // Best-effort: covers mail + DB bytes (the discovery captures those). Vhost
   // content size and the tenant's already-used bytes are NOT counted — this is
@@ -325,7 +352,8 @@ async function preflightTenant(
   const bytesNeeded = (snapshot.mailBytes ?? 0) + dbBytes;
 
   const problems = checkCapacity({ mailboxesNeeded, mailboxesExisting, mailboxLimit, bytesNeeded, storageBytesAvailable });
-  const detail = `${mailboxesNeeded} mailbox(es) (limit ${mailboxLimit}${mailboxesExisting > 0 ? `, ${mailboxesExisting} existing` : ''}), ~${fmtBytesBin(bytesNeeded)} mail+DB (storage ${storageGib} GiB)`;
+  const alreadyMigrated = snapshot.mailboxes.length - mailboxesNeeded;
+  const detail = `${snapshot.mailboxes.length} mailbox(es) (limit ${mailboxLimit}${mailboxesExisting > 0 ? `, ${mailboxesExisting} existing` : ''}${alreadyMigrated > 0 ? `, ${mailboxesNeeded} new` : ''}), ~${fmtBytesBin(bytesNeeded)} mail+DB (storage ${storageGib} GiB)`;
   return { problems, detail };
 }
 
