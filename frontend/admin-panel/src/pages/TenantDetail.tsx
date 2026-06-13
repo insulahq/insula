@@ -2504,7 +2504,13 @@ function StorageLifecycleCard({ tenantId, tenant }: { readonly tenantId: string;
         </div>
       )}
 
-      {!activeOp && recentOp && recentOp.state === 'failed' && (() => {
+      {/* Show the failed-op banner only while the tenant is actually STUCK
+          (lifecycleState='failed'). A failed op that rolled back cleanly
+          leaves the tenant 'idle' and operational — the operator already saw
+          the error when they triggered it, so a persistent, un-dismissable
+          banner just nags. Gating on lifecycleState also makes "Reset to idle"
+          below clear this banner (resetting the state hides it). */}
+      {!activeOp && lifecycleState === 'failed' && recentOp && recentOp.state === 'failed' && (() => {
         // Try to parse lastError as the structured OperatorError envelope.
         let envelope: import('@insula/api-contracts').OperatorError | null = null;
         let plainDetail = '';
