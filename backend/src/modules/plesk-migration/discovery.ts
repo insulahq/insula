@@ -16,7 +16,7 @@
 
 import { eq, and, inArray, lt, sql } from 'drizzle-orm';
 import { pleskSources, pleskDiscoveries } from '../../db/schema.js';
-import { decryptSourceKey } from './service.js';
+import { decryptSourceKey, normalizePrivateKey } from './service.js';
 import {
   REMOTE_DISCOVER_SH,
   ASSEMBLE_PY,
@@ -129,7 +129,10 @@ async function runDiscovery(
       body: {
         metadata: { name: secretName, namespace: PLESK_MIGRATION_NAMESPACE, labels: { 'app.kubernetes.io/managed-by': 'platform-api', 'platform.io/discovery-id': discoveryId } },
         type: 'Opaque',
-        stringData: { 'id_rsa': decryptSourceKey(source) },
+        // Normalize on delivery too (not just on store) so keys saved
+        // before the normalization fix — or without a trailing newline —
+        // still parse: OpenSSH rejects a key with no trailing newline.
+        stringData: { 'id_rsa': normalizePrivateKey(decryptSourceKey(source)) },
       },
     });
     await core.createNamespacedConfigMap({

@@ -300,8 +300,18 @@ async function provisionEmail(
         items.push({ name: dn, status: 'skipped', message: 'domain not provisioned' });
         continue;
       }
-      await enableEmailForDomain(db, tenantId, domainRow.id, { webmail_enabled: false }, encryptionKey());
-      items.push({ name: dn, status: 'completed' });
+      // enableEmailForDomain now THROWS (MAIL_SERVER_ERROR) when Stalwart
+      // is configured but unreachable — the catch below surfaces that as a
+      // failed item. A null stalwartDomainId can therefore only mean the
+      // cluster is genuinely mail-less; migrating a subscription's
+      // mailboxes onto a mail-less cluster is a real failure the operator
+      // must see, so we fail the item rather than silently "completing" it.
+      const ed = await enableEmailForDomain(db, tenantId, domainRow.id, { webmail_enabled: false }, encryptionKey());
+      if (ed?.stalwartDomainId) {
+        items.push({ name: dn, status: 'completed' });
+      } else {
+        items.push({ name: dn, status: 'failed', message: 'no Stalwart domain created — is a mail stack installed on this cluster?' });
+      }
     } catch (err) {
       logger.warn({ err, domain: dn, tenantId }, 'plesk migration: email enable failed');
       items.push({ name: dn, status: 'failed', message: errMessage(err) });
