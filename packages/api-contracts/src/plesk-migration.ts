@@ -135,6 +135,7 @@ export const pleskMigrationLegsSchema = z
     domains: pleskMigrationLegSchema.optional(),
     email: pleskMigrationLegSchema.optional(),
     databases: pleskMigrationLegSchema.optional(),
+    content: pleskMigrationLegSchema.optional(),
   })
   .catchall(pleskMigrationLegSchema);
 

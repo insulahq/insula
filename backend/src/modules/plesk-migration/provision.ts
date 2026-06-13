@@ -31,6 +31,7 @@ import { createDomain } from '../domains/service.js';
 import { enableEmailForDomain } from '../email-domains/service.js';
 import { getTenantMailboxLimit, getTenantMailboxCount } from '../mailboxes/limit.js';
 import { runDatabaseLeg } from './db-sync.js';
+import { runContentLeg } from './content-sync.js';
 import { ApiError } from '../../shared/errors.js';
 import { pleskSubscriptionSchema, createDomainSchema } from '@insula/api-contracts';
 import type { PleskSubscription } from '@insula/api-contracts';
@@ -170,6 +171,15 @@ async function runMigration(
     ? await runDatabaseLeg(db, k8s, process.env.KUBECONFIG_PATH, tenantId, sourceRow, snapshot, logger)
     : [];
   legs.databases = finalizeItemLeg(legs.databases, dbItems, 'databases');
+  await persistLegs(db, migrationId, legs);
+
+  // ── Leg 5: content (website files) ──
+  legs.content = { status: 'running', startedAt: nowIso() };
+  await persistLegs(db, migrationId, legs);
+  const contentItems = sourceRow
+    ? await runContentLeg(db, k8s, process.env.KUBECONFIG_PATH, tenantId, sourceRow, snapshot, logger)
+    : [];
+  legs.content = finalizeItemLeg(legs.content, contentItems, 'websites');
   await persistLegs(db, migrationId, legs);
 
   // ── Overall status ──
