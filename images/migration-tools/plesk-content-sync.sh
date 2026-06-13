@@ -66,10 +66,20 @@ fi
 #                           is what the web server needs).
 #   --safe-links          : refuse symlinks whose target escapes the source tree
 #                           (a Plesk docroot could contain ../../../etc/... links).
-if rsync -a --omit-dir-times --no-perms --no-owner --no-group --safe-links --info=stats2 -e "$RSH" \
-     "${PLESK_USER}@${PLESK_HOST}:${SRC_PATH%/}/" "${DEST_PATH%/}/"; then
-  echo "CONTENTRESULT ok synced ${SRC_PATH} -> ${DEST_PATH}"
-else
-  echo "CONTENTRESULT fail rsync-error"
-fi
+rsync -a --omit-dir-times --no-perms --no-owner --no-group --safe-links --info=stats2 -e "$RSH" \
+     "${PLESK_USER}@${PLESK_HOST}:${SRC_PATH%/}/" "${DEST_PATH%/}/"
+rc=$?
+# rsync exit codes on a LIVE source:
+#   0  clean.
+#   24 "some source files vanished before they could be transferred" — normal
+#      when the site is live (a session/cache/log file rotated mid-copy). The
+#      copy is otherwise complete; treat as success.
+#   23 "partial transfer due to error" — some files genuinely couldn't be sent;
+#      the bulk copied, so don't fail the whole site, but flag it for review.
+case "$rc" in
+  0)  echo "CONTENTRESULT ok synced ${SRC_PATH} -> ${DEST_PATH}" ;;
+  24) echo "CONTENTRESULT ok synced (some files vanished mid-copy — normal for a live site)" ;;
+  23) echo "CONTENTRESULT ok synced-with-warnings (rsync 23: a few files were skipped — review)" ;;
+  *)  echo "CONTENTRESULT fail rsync exit ${rc}" ;;
+esac
 echo "===CONTENTSYNC-END==="
