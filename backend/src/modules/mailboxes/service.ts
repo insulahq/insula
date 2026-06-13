@@ -57,18 +57,29 @@ async function getJmapAccountId(): Promise<JmapAccountId | null> {
 
 /**
  * Push a mailbox's storage quota to Stalwart so the mail server enforces it.
- * Stalwart `quota.storage` is bytes; the platform stores MB. Used on BOTH
- * create (so a new mailbox is capped from its first byte) and update (so
- * quota edits propagate).
+ * Stalwart quota is bytes; the platform stores MB. Called on BOTH create (so a
+ * new mailbox is capped from its first byte) and update (so quota edits
+ * propagate). Centralised here so a single fix lights up both paths.
  *
- * We deliberately set the quota via this `quota/storage` patch rather than
- * inline on the `x:Account/set` create payload: the patch is the only
- * quota-write shape proven against Stalwart 0.16, whereas no code path has
- * ever sent `quota` on create (the legacy createMailbox shim silently drops
- * it). Doing it as an immediate post-create patch reuses the proven mechanic.
+ * ⚠ KNOWN GAP (live E2E, 2026-06-13): the `quota/storage` JMAP patch below is
+ * REJECTED by Stalwart 0.16 with `invalidPatch: "Invalid property"`. The
+ * x:Account principal exposes a `quotas` (plural) map, but every write shape
+ * tried (quota, quota/storage, quotas/<k>, quotas:{...}) is rejected — the
+ * field reads as computed/read-only via x:Account/set. So per-mailbox STORAGE
+ * quota is NOT currently enforced at the mail server. This is pre-existing:
+ * the update path has always used this same (silently-swallowed) patch, so
+ * mailbox quotas were never actually pushed to Stalwart. The PLATFORM-level
+ * cap (plan max + per-tenant override, rejected over-max on create/update —
+ * see mailboxes/limit.ts) IS enforced and is the user-facing limit.
  *
- * Best-effort: the platform DB is authoritative and principals-sync
- * reconciles later if Stalwart is unreachable.
+ * TODO(mailbox-quota): determine the correct Stalwart 0.16 `quotas` JMAP write
+ * shape (needs the management Principal serde from stalwart source) and update
+ * the patch below — that one change enables real mail-server enforcement on
+ * both create and update.
+ *
+ * Best-effort: the platform DB is authoritative. Logged at debug because the
+ * invalidPatch failure is currently expected (see gap above) — a warn here
+ * would fire on every mailbox op.
  */
 async function syncMailboxStorageQuota(
   accountId: JmapAccountId,
@@ -84,10 +95,10 @@ async function syncMailboxStorageQuota(
       baseUrl: process.env.STALWART_MGMT_URL,
     });
   } catch (err) {
-    log.warn({
+    log.debug({
       ...logCtx,
       err: err instanceof Error ? err.message : String(err),
-    }, 'JMAP quota patch failed (platform DB authoritative; principals-sync will reconcile)');
+    }, 'JMAP mailbox quota patch not applied (Stalwart 0.16 quota write shape unresolved — platform-level cap still enforced)');
   }
 }
 
