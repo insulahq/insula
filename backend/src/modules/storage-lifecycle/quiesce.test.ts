@@ -5,7 +5,9 @@ import { quiesce, unquiesce, waitForQuiesced } from './quiesce.js';
 function mockK8s(opts: {
   deployments?: Array<{ name: string; replicas: number }>;
   cronJobs?: Array<{ name: string; suspend?: boolean }>;
-  pods?: Array<{ name: string }>;
+  // mountsPvc defaults true (these pods hold the tenant PVC lock); set false
+  // to model a pod that doesn't mount it (e.g. a cert-manager solver pod).
+  pods?: Array<{ name: string; mountsPvc?: boolean }>;
   podsAfterDrainCalls?: number;
 } = {}) {
   const scaleCalls: Array<{ name: string; replicas: number }> = [];
@@ -24,7 +26,10 @@ function mockK8s(opts: {
           if (opts.podsAfterDrainCalls !== undefined && listPodsCallCount >= opts.podsAfterDrainCalls) {
             podsRemaining = [];
           }
-          return { items: podsRemaining.map((p) => ({ metadata: { name: p.name } })) };
+          return { items: podsRemaining.map((p) => ({
+            metadata: { name: p.name },
+            spec: { volumes: (p.mountsPvc ?? true) ? [{ persistentVolumeClaim: { claimName: 'ns-storage' } }] : [] },
+          })) };
         }),
       },
       apps: {
@@ -130,6 +135,21 @@ describe('waitForQuiesced', () => {
   it('throws when timeout exceeded', async () => {
     const m = mockK8s({ pods: [{ name: 'stuck' }] });
     await expect(waitForQuiesced(m.tenant, 'ns', 50)).rejects.toThrow(/1 pod.* still running/);
+  });
+
+  it('ignores pods that do NOT mount the tenant PVC (e.g. a cert-manager solver pod)', async () => {
+    // A cm-acme-http-solver pod that can never pass HTTP-01 lingers forever but
+    // holds no PVC lock — quiesce must not wait on it.
+    const m = mockK8s({ pods: [{ name: 'cm-acme-http-solver-x', mountsPvc: false }] });
+    await expect(waitForQuiesced(m.tenant, 'ns', 50)).resolves.toBe(0);
+  });
+
+  it('still waits on a PVC-mounting pod even alongside a non-mounting one', async () => {
+    const m = mockK8s({ pods: [
+      { name: 'cm-acme-http-solver-x', mountsPvc: false },
+      { name: 'file-manager', mountsPvc: true },
+    ] });
+    await expect(waitForQuiesced(m.tenant, 'ns', 50)).rejects.toThrow(/1 pod.* still running.*file-manager/);
   });
 });
 

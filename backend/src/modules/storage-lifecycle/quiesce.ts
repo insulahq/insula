@@ -143,23 +143,29 @@ export async function waitForQuiesced(
   // "1 pod(s) still running" was useless when triaging the
   // 2026-05-18 staging shrink failure.
   type RemainingPod = { name: string; phase: string; owner: string | null };
+  // Only a pod that MOUNTS the tenant PVC can hold its RWO lock and block the
+  // snapshot/detach. The earlier label filter excluded the file-manager
+  // sidecar (which DOES mount the PVC), so it was broadened to "all pods" —
+  // but that over-corrected: it then waited on pods that don't touch the PVC
+  // at all, e.g. a cert-manager `cm-acme-http-solver` Challenge pod for a
+  // tenant domain that can't pass HTTP-01 (it lingers forever). Quiesce hung
+  // on it until the timeout and failed the whole resize. Filter by ACTUAL PVC
+  // mount instead: file-manager is kept, the solver pod is ignored.
+  const pvcName = `${namespace}-storage`;
   const listPods = async (): Promise<RemainingPod[]> => {
-    // Tenant namespaces are single-tenant dedicated — every non-Job
-    // pod here could hold the PVC's RWO lock. The earlier label
-    // filter (`platform.io/managed=true`) excluded system sidecars
-    // like file-manager, which made waitForQuiesced return 0 even
-    // with file-manager still running, triggering a PVC-delete while
-    // the mount was still bound. Include ALL non-succeeded,
-    // non-completed pods.
     const pods = await k8s.core.listNamespacedPod({ namespace });
     const items = (pods as { items?: Array<{
       metadata?: { name?: string; ownerReferences?: Array<{ kind?: string; name?: string }> };
       status?: { phase?: string };
+      spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> };
     }> }).items ?? [];
-    // Completed Jobs are a no-op for PVC lock — exclude them so we
-    // don't hang forever on finished snapshot/restore Jobs.
+    const mountsTenantPvc = (p: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> } }) =>
+      (p.spec?.volumes ?? []).some((v) => v.persistentVolumeClaim?.claimName === pvcName);
+    // Completed Jobs are a no-op for PVC lock — exclude them so we don't hang
+    // forever on finished snapshot/restore Jobs.
     return items
       .filter((p) => p.status?.phase !== 'Succeeded' && p.status?.phase !== 'Failed')
+      .filter(mountsTenantPvc)
       .map((p) => {
         const owner = p.metadata?.ownerReferences?.[0];
         return {
