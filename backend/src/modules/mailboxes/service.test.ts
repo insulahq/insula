@@ -268,7 +268,7 @@ describe('createMailbox', () => {
     expect(jmap.updatePrincipal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'sp-new-1',
-        patch: { 'quota/storage': 2048 * 1024 * 1024 },
+        patch: { 'quotas/maxDiskQuota': 2048 * 1024 * 1024 },
       }),
     );
   });
@@ -410,7 +410,7 @@ describe('updateMailbox', () => {
     expect(jmap.updatePrincipal as ReturnType<typeof vi.fn>).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'sp-existing-1',
-        patch: { 'quota/storage': 2048 * 1024 * 1024 },
+        patch: { 'quotas/maxDiskQuota': 2048 * 1024 * 1024 },
       }),
     );
   });
