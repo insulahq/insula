@@ -99,12 +99,12 @@ export const createPleskMigrationSchema = z.object({
   discovery_id: z.string().min(1).optional(),
   // The Plesk subscription (its main domain name) to migrate.
   subscription_name: z.string().min(1).max(255),
-  // Target platform plan (hosting_plans.id) — operator picks; there is
-  // no automatic plan mapping (Plesk service plans don't map 1:1).
-  target_plan_id: z.string().min(1),
-  // Contact email for the new tenant's admin user. Defaults to
-  // admin@<subscription_name> when omitted.
-  contact_email: z.string().email().optional(),
+  // Map onto an EXISTING, already-sized tenant. The operator creates and
+  // sizes the tenant first (plan / PVC / CPU / memory / mailbox limits) via
+  // the normal tenant flow; the migration then maps the subscription onto it
+  // and runs a capacity preflight. Plesk service plans don't map 1:1, so
+  // there is no auto-create — the operator owns sizing.
+  target_tenant_id: z.string().min(1),
 });
 
 const legStatus = z.enum(['pending', 'running', 'completed', 'failed', 'skipped', 'partial']);
@@ -129,7 +129,9 @@ export const pleskMigrationLegSchema = z.object({
 // catchall lets later PRs add content/db/mail legs without a contract bump.
 export const pleskMigrationLegsSchema = z
   .object({
-    tenant: pleskMigrationLegSchema.optional(),
+    // `preflight` = validate the mapped tenant + capacity-check. (Rows from
+    // before the tenant-first redesign used `tenant`; the catchall covers it.)
+    preflight: pleskMigrationLegSchema.optional(),
     domains: pleskMigrationLegSchema.optional(),
     email: pleskMigrationLegSchema.optional(),
   })
@@ -140,7 +142,7 @@ export const pleskMigrationResponseSchema = z.object({
   sourceId: z.string(),
   discoveryId: z.string().nullable(),
   subscriptionName: z.string(),
-  targetPlanId: z.string(),
+  targetPlanId: z.string().nullable(),
   targetTenantId: z.string().nullable(),
   status: z.enum(['pending', 'running', 'completed', 'failed', 'partial']),
   legs: pleskMigrationLegsSchema.nullable(),

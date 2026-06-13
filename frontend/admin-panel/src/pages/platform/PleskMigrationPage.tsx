@@ -10,7 +10,7 @@ import {
   useCreateMigration,
   useRetryMigration,
 } from '@/hooks/use-plesk-migration';
-import { usePlans } from '@/hooks/use-plans';
+import { useTenants } from '@/hooks/use-tenants';
 import type { PleskSourceResponse, PleskSubscription, PleskMigrationResponse, PleskMigrationLeg } from '@insula/api-contracts';
 
 const INPUT = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -288,7 +288,7 @@ function StatusBadge({ status, spin }: { readonly status: string; readonly spin?
 
 function MigrationLegs({ migration }: { readonly migration: PleskMigrationResponse }) {
   const legs = migration.legs ?? {};
-  const order = ['tenant', 'domains', 'email'];
+  const order = ['preflight', 'domains', 'email'];
   const keys = [...order.filter((k) => k in legs), ...Object.keys(legs).filter((k) => !order.includes(k))];
   if (keys.length === 0) {
     return <p className="text-xs text-gray-500 dark:text-gray-400">Provisioning queued…</p>;
@@ -331,21 +331,22 @@ function MigrateDialog({ sub, sourceId, onClose }: {
   readonly sourceId: string;
   readonly onClose: () => void;
 }) {
-  const { data: plansData } = usePlans();
-  const plans = (plansData?.data ?? []).filter((p) => p.status === 'active');
+  const { data: tenantsData } = useTenants({ limit: 100 });
+  // Only active, provisioned, non-system tenants are valid targets (matches the
+  // backend preflight). A pending tenant has no namespace yet.
+  const tenants = (tenantsData?.data ?? []).filter((t) => t.status === 'active' && !t.isSystem);
+  const truncated = (tenantsData?.pagination?.total_count ?? tenants.length) > 100;
   const create = useCreateMigration();
-  const [planId, setPlanId] = useState('');
-  const [email, setEmail] = useState('');
+  const [tenantId, setTenantId] = useState('');
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!planId) return;
+    if (!tenantId) return;
     try {
       await create.mutateAsync({
         source_id: sourceId,
         subscription_name: sub.name,
-        target_plan_id: planId,
-        ...(email.trim() ? { contact_email: email.trim() } : {}),
+        target_tenant_id: tenantId,
       });
       onClose();
     } catch { /* error rendered below */ }
@@ -358,28 +359,28 @@ function MigrateDialog({ sub, sourceId, onClose }: {
         <button type="button" onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><X size={14} /></button>
       </div>
       <p className="text-xs text-gray-500 dark:text-gray-400">
-        Provisions a tenant, {sub.domains.length} domain{sub.domains.length === 1 ? '' : 's'}, and email for the domains hosting its {sub.mailboxes.length} mailbox{sub.mailboxes.length === 1 ? '' : 'es'}. Content, databases, and mail data are migrated in later steps.
+        Maps this subscription onto an <strong>existing tenant</strong> you create and size first (plan, storage, mailbox limits). The migration validates capacity, then provisions {sub.domains.length} domain{sub.domains.length === 1 ? '' : 's'} and email for the domains hosting its {sub.mailboxes.length} mailbox{sub.mailboxes.length === 1 ? '' : 'es'} ({fmtBytes(sub.mailBytes)} mail, {sub.databases.length} database{sub.databases.length === 1 ? '' : 's'}). Content, databases, and mail data follow in later steps.
       </p>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Target plan</label>
-          <select className={INPUT} value={planId} onChange={(e) => setPlanId(e.target.value)} required data-testid="migrate-plan-select">
-            <option value="" disabled>Select a plan…</option>
-            {plans.map((p) => (
-              <option key={p.id} value={p.id}>{p.name} — {p.maxMailboxes} mailboxes, {p.storageLimit}GB</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Contact email <span className="text-gray-400">(optional)</span></label>
-          <input type="email" className={INPUT} placeholder={`admin@${sub.name}`} value={email} onChange={(e) => setEmail(e.target.value)} data-testid="migrate-email-input" />
-        </div>
+      <div>
+        <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Target tenant</label>
+        <select className={INPUT} value={tenantId} onChange={(e) => setTenantId(e.target.value)} required data-testid="migrate-tenant-select">
+          <option value="" disabled>Select an existing tenant…</option>
+          {tenants.map((t) => (
+            <option key={t.id} value={t.id}>{t.name} ({t.status})</option>
+          ))}
+        </select>
+        <p className="mt-1 text-[11px] text-gray-400">
+          Need a new tenant? Create and size it under <span className="font-medium">Tenants</span> first, then return here. The migration's preflight fails clearly if the tenant's plan can't fit {sub.mailboxes.length} mailboxes or the data.
+        </p>
+        {truncated && (
+          <p className="mt-1 text-[11px] text-amber-600 dark:text-amber-400">Showing the first 100 active tenants — if yours isn't listed, narrow it down in Tenants first.</p>
+        )}
       </div>
       {create.error && (
         <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{create.error instanceof Error ? create.error.message : 'Failed to start migration'}</div>
       )}
       <div className="flex justify-end">
-        <button type="submit" disabled={create.isPending || !planId} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="migrate-submit">
+        <button type="submit" disabled={create.isPending || !tenantId} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="migrate-submit">
           {create.isPending && <Loader2 size={14} className="animate-spin" />} Start Migration
         </button>
       </div>

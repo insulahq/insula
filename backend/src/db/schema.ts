@@ -1448,16 +1448,19 @@ export const pleskMigrations = pgTable('plesk_migrations', {
   subscriptionName: varchar('subscription_name', { length: 255 }).notNull(),
   // Frozen PleskSubscription inventory at create-time (authoritative).
   subscriptionSnapshot: jsonb('subscription_snapshot').$type<Record<string, unknown>>().notNull(),
+  // Derived from the mapped tenant (operator maps onto an existing tenant,
+  // not a plan). Nullable; kept for audit of the tenant's plan at migrate time.
   targetPlanId: varchar('target_plan_id', { length: 36 })
-    .notNull()
     .references(() => hostingPlans.id),
-  // NULL → defaults to admin@<subscription_name> at provision time.
+  // Legacy create-a-tenant field; unused under tenant-first mapping.
   contactEmail: varchar('contact_email', { length: 320 }),
+  // The pre-created, operator-sized tenant this subscription maps onto. Set
+  // at create now; SET NULL if the tenant is later deleted (audit survives).
   targetTenantId: varchar('target_tenant_id', { length: 36 })
     .references(() => tenants.id, { onDelete: 'set null' }),
   // pending | running | completed | failed | partial
   status: varchar('status', { length: 16 }).notNull().default('pending'),
-  // Per-leg state map: { tenant: {...}, domains: {...}, email: {...} }.
+  // Per-leg state map: { preflight: {...}, domains: {...}, email: {...} }.
   legs: jsonb('legs').$type<Record<string, unknown>>().notNull().default({}),
   error: text('error'),
   createdBy: varchar('created_by', { length: 36 }),

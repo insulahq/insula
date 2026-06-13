@@ -8,9 +8,10 @@ function row(extra: Partial<MigrationRow> = {}): MigrationRow {
     discoveryId: 'd1',
     subscriptionName: 'acme.example',
     subscriptionSnapshot: { name: 'acme.example' },
+    // tenant-first mapping: tenant is set at create, plan is derived (nullable).
     targetPlanId: 'plan-basic',
     contactEmail: null,
-    targetTenantId: null,
+    targetTenantId: 'tenant-1',
     status: 'pending',
     legs: {},
     error: null,
@@ -38,6 +39,12 @@ describe('toMigrationResponse', () => {
       subscriptionName: 'acme.example', targetPlanId: 'plan-basic',
       targetTenantId: 't1', status: 'running',
     });
+  });
+
+  it('tolerates a null targetPlanId (derived; nullable under tenant-first)', () => {
+    const resp = toMigrationResponse(row({ targetPlanId: null }));
+    expect(resp.targetPlanId).toBeNull();
+    expect(resp.targetTenantId).toBe('tenant-1');
   });
 
   it('passes the legs jsonb through, and null legs become null', () => {

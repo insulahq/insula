@@ -13,7 +13,7 @@ import {
   pleskMigrations,
   pleskSources,
   pleskDiscoveries,
-  hostingPlans,
+  tenants,
 } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { pleskInventorySchema } from '@insula/api-contracts';
@@ -90,8 +90,18 @@ export async function createMigration(
   const sub = inv.data.subscriptions.find((s) => s.name === input.subscription_name);
   if (!sub) throw new ApiError('SUBSCRIPTION_NOT_FOUND', `Subscription '${input.subscription_name}' is not in the discovery inventory`, 404);
 
-  const [plan] = await db.select({ id: hostingPlans.id }).from(hostingPlans).where(eq(hostingPlans.id, input.target_plan_id));
-  if (!plan) throw new ApiError('INVALID_PLAN_ID', `Hosting plan '${input.target_plan_id}' not found`, 400);
+  // Map onto an EXISTING tenant the operator already created and sized.
+  const [tenant] = await db
+    .select({ id: tenants.id, isSystem: tenants.isSystem, status: tenants.status, planId: tenants.planId })
+    .from(tenants)
+    .where(eq(tenants.id, input.target_tenant_id));
+  if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Target tenant '${input.target_tenant_id}' not found`, 404);
+  if (tenant.isSystem) throw new ApiError('TENANT_IS_SYSTEM', 'The SYSTEM tenant cannot be a migration target', 400);
+  // Only an active, provisioned tenant is a valid target (a 'pending' tenant
+  // has no namespace yet; 'suspended'/'archived' must not receive resources).
+  if (tenant.status !== 'active') {
+    throw new ApiError('TENANT_NOT_AVAILABLE', `Target tenant is '${tenant.status}' — pick an active, provisioned tenant`, 400);
+  }
 
   const id = randomUUID();
   try {
@@ -101,8 +111,9 @@ export async function createMigration(
       discoveryId: discoveryRow.id,
       subscriptionName: sub.name,
       subscriptionSnapshot: sub as unknown as Record<string, unknown>,
-      targetPlanId: input.target_plan_id,
-      contactEmail: input.contact_email ?? null,
+      targetTenantId: tenant.id,
+      // Audit: the plan the tenant had at migration time.
+      targetPlanId: tenant.planId,
       status: 'pending',
       legs: {},
       createdBy,
