@@ -131,7 +131,11 @@ export async function runDatabaseLeg(
   for (const name of dbNames) {
     if (!isValidDbName(name)) { items.push({ name, status: 'failed', message: 'invalid database name' }); continue; }
     try {
-      await createDatabase(ctx, name);
+      // Retry: a deployment reports 'running' once the pod is Ready, but
+      // MariaDB may still be running its first-boot init (creating the data
+      // dir, applying the root password) and reject the exec for ~10-30s. The
+      // first CREATE absorbs that window; the rest are immediate.
+      await createDatabaseWithRetry(ctx, name, logger);
       toSync.push(name);
     } catch (err) {
       items.push({ name, status: 'failed', message: `create database failed: ${err instanceof Error ? err.message : String(err)}` });
@@ -150,6 +154,27 @@ export async function runDatabaseLeg(
     else items.push({ name, status: 'failed', message: r?.message || 'sync job produced no result for this database' });
   }
   return items;
+}
+
+/** Create a database, retrying through the MariaDB first-boot init window. */
+async function createDatabaseWithRetry(
+  ctx: Parameters<typeof createDatabase>[0],
+  name: string,
+  logger: MigrationLogger,
+  attempts = 10,
+): Promise<void> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await createDatabase(ctx, name);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (i === 0) logger.info({ name }, 'plesk migration: MariaDB not ready for CREATE DATABASE yet — retrying');
+      await sleep(5000);
+    }
+  }
+  throw lastErr;
 }
 
 const RUNNING_TIMEOUT_MS = 6 * 60 * 1000; // mariadb pod pull + init
