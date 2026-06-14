@@ -58,6 +58,10 @@ Commands:
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
   dr restore             Restore from a DR bundle (partial rows | full recovery)
   dr rescue              Take Longhorn safety snapshots of the system volumes
+  dr restore-component etcd|mail|postgres [args]
+                         Restore one component from the backup-rclone-shim
+                         (postgres --latest|--pitr <T>; runs the embedded,
+                         proven restore script — DESTRUCTIVE break-glass)
   self-upgrade [--check] [--force] [--version X.Y.Z]
                          Update this binary: cosign-verified atomic replace
   host-config apply [--dry-run] | host-config status

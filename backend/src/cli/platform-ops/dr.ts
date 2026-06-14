@@ -273,7 +273,32 @@ async function rescueCommand(req: DrRescueRequest, json: boolean, deps: Deps): P
   return 0;
 }
 
+// Node-level component restores from the backup-rclone-shim. The proven bash
+// (scripts/restore-*-from-shim.sh) is embedded as a SEA asset and launched
+// verbatim — ONE source of truth, no TS re-port of complex/destructive CNPG/k3s
+// logic. The standalone scripts stay as break-glass. Args pass straight through.
+const DR_COMPONENT_ASSETS: Record<string, string> = {
+  etcd: 'dr/restore-etcd-from-shim.sh',
+  mail: 'dr/restore-mail-from-shim.sh',
+  postgres: 'dr/restore-postgres-from-shim.sh',
+};
+
+async function drRestoreComponent(args: string[], deps: Deps): Promise<number> {
+  const [component, ...rest] = args;
+  const asset = component ? DR_COMPONENT_ASSETS[component] : undefined;
+  if (!asset) {
+    deps.err(`dr restore-component: expected one of etcd|mail|postgres, got ${component ? `'${component}'` : 'none'}`);
+    deps.err('  e.g. platform-ops dr restore-component postgres --latest');
+    deps.err('       platform-ops dr restore-component postgres --pitr 2026-05-20T10:00:00Z');
+    return 2;
+  }
+  return deps.runEmbeddedScript(asset, rest);
+}
+
 export async function drCommand(args: string[], deps: Deps): Promise<number> {
+  // restore-component passes its args straight through to the embedded bash, so
+  // it bypasses the structured DR (verify/restore/rescue) arg parser.
+  if (args[0] === 'restore-component') return drRestoreComponent(args.slice(1), deps);
   const parsed = parseDrArgs(args);
   if (!parsed.ok) {
     deps.err(parsed.message);

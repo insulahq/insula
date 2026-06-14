@@ -43,6 +43,7 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     rollback: { run: vi.fn(async () => ({ ok: true, dataRestored: false, summary: 'nothing to roll back' })) },
     resetAdminPassword: vi.fn(async () => ({ ok: true, userId: 'u1' })),
     readStdin: vi.fn(async () => ''),
+    runEmbeddedScript: vi.fn(async () => 0),
     renameDomain: vi.fn(async () => ({
       ok: true,
       result: {
@@ -156,6 +157,27 @@ describe('dispatch', () => {
     const { deps, err } = fakeDeps();
     expect(await dispatch(['dr'], deps)).toBe(2);
     expect(err.join('\n')).toMatch(/subcommand|verify|restore/i);
+  });
+
+  it('dr restore-component postgres launches the embedded script with passthrough args', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['dr', 'restore-component', 'postgres', '--latest'], deps)).toBe(0);
+    expect(runEmbeddedScript).toHaveBeenCalledWith('dr/restore-postgres-from-shim.sh', ['--latest']);
+  });
+
+  it('dr restore-component returns the embedded script exit code', async () => {
+    const runEmbeddedScript = vi.fn(async () => 1);
+    const { deps } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['dr', 'restore-component', 'etcd', '--dry-run'], deps)).toBe(1);
+    expect(runEmbeddedScript).toHaveBeenCalledWith('dr/restore-etcd-from-shim.sh', ['--dry-run']);
+  });
+
+  it('dr restore-component with no/unknown component → exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['dr', 'restore-component'], deps)).toBe(2);
+    expect(await dispatch(['dr', 'restore-component', 'frobnicate'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/etcd.*mail.*postgres|postgres/i);
   });
 
   it('dr rescue routes through to dr.rescue', async () => {
