@@ -272,3 +272,25 @@ Three small items deferred from the 2026-06-10 integration green-up
    integration harness also reclaims superseded Released PVs after each
    VERIFIED round-trip, PR #33). Open: the operator-facing Released-PV
    surface (storage page badge + confirmed delete action).
+
+## R18 — Operator-script consolidation into the `platform-ops` CLI
+
+**Planning 2026-06-14** — see
+[PLATFORM_OPS_CLI_CONSOLIDATION.md](PLATFORM_OPS_CLI_CONSOLIDATION.md). `scripts/`
+has ~177 shell scripts; ~25 are genuine on-node operator actions
+(`admin-password-reset.sh`, `backup-target-key-rotate.sh`, the R16
+`platform-domain rename` which is still API-only, …) that each re-implement
+cluster plumbing (CNPG-primary resolution, bcrypt-in-pod, kubeconfig) in bash —
+where bugs live (the password-reset script's multi-container `kubectl exec` +
+leading-space quirks). ADR-045 already established the target: `platform-ops`
+subcommands that **import the backend `modules/` directly** (one tested code
+path), with DR already absorbed. This item finishes the migration **and draws the
+keep-as-bash line**: bootstrap (installs the CLI — chicken/egg), CI guards,
+test/integration harnesses, and deliberately dependency-light **break-glass**
+fallbacks stay bash. Tranches: T1 `admin reset-password` + `domain rename` (prove
+the pattern, both already have service modules) → T2 DR/secrets fold-in + retire
+the already-superseded `dr-restore.sh`/`make diagnose` → T3 housekeeping actions →
+T4 archive one-shot migrations. Adds an always-run `ci-operator-script-placement`
+guard so new operator actions land as subcommands, not new bash. Open decisions:
+secrets-fetch/restore (workstation→remote context) and delete-vs-archive for
+one-shots — both in the plan doc §7.
