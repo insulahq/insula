@@ -13,6 +13,11 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { getSnapshotStore, type SnapshotStore } from './snapshot-store.js';
 import { snapshotTenantPVC } from './snapshot.js';
 import { restoreTenantPVC } from './restore.js';
+import {
+  captureFilesOnlyBundle,
+  restoreFilesBundleIntoPvc,
+  reapPreResizeBundle,
+} from './prebundle.js';
 import { quiesce, unquiesce, waitForQuiesced, type QuiesceSnapshot } from './quiesce.js';
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
@@ -586,7 +591,6 @@ async function resizeDestructive(
 ): Promise<{ operationId: string }> {
   const opId = uuid();
   const snapId = uuid();
-  const archivePath = ctx.store.reservePath(tenantId, snapId);
   const pvcName = `${namespace}-storage`;
   const preResizeRetention = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
@@ -596,11 +600,15 @@ async function resizeDestructive(
       tenantId,
       kind: 'pre-resize',
       status: 'creating',
-      archivePath,
+      // The pre-resize snapshot is now a files-only `system` tenant
+      // bundle (restic, off-site, chunked → shim-safe), not a raw tar in
+      // the snapshot store. `archive_path` carries a `bundle:<id>`
+      // sentinel once the bundle is captured (filled by
+      // runResizeDestructive); a placeholder until then. This replaces
+      // the rclone-rcat single-giant-object path that OOMed the shim.
+      archivePath: 'bundle:pending',
       expiresAt: preResizeRetention,
       label: `Pre-resize ${currentMib}MiB → ${newMib}MiB`,
-      // Phase 3: pre-resize snapshots are tenant_snapshot class. They
-      // route to the same target as a manual snapshot would.
       backupClass: ctx.backupClass ?? 'tenant_snapshot',
       subsystem: 'tenant-pvc',
       targetId: ctx.targetId ?? null,
@@ -625,7 +633,7 @@ async function resizeDestructive(
   // that writes failures to storage_operations — the outer .catch only
   // fires on a *synchronous* throw before that runs (DB down, etc.). Log
   // noisily so those don't get eaten silently.
-  void runResizeDestructive(ctx, opId, snapId, namespace, pvcName, newMib, archivePath)
+  void runResizeDestructive(ctx, opId, snapId, namespace, pvcName, newMib)
     .catch((err) => { console.error(`[storage-lifecycle] runResizeDestructive pre-orchestrator throw for op ${opId}:`, err); });
   return { operationId: opId };
 }
@@ -833,9 +841,9 @@ async function runResizeDestructive(
   namespace: string,
   pvcName: string,
   newMib: number,
-  archivePath: string,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
+  let preResizeBundleId: string | null = null;
 
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
@@ -854,13 +862,34 @@ async function runResizeDestructive(
     await persistQuiesceSnapshot(ctx.db, opId, quiesceSnap);
     await waitForQuiesced(ctx.k8s, namespace);
 
-    await progress('snapshotting', 15, 'Creating pre-resize snapshot');
-    const snap = await snapshotTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId: (await currentTenantId(ctx.db, opId))!, snapshotId: snapId, store: ctx.store,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+    await progress('snapshotting', 15, 'Capturing pre-resize files bundle (off-site, restic)');
+    const tenantIdForBundle = (await currentTenantId(ctx.db, opId))!;
+    // Pre-resize snapshot = files-only `system` tenant bundle. The
+    // tenant-ns Job tars the PVC and streams it to platform-api's
+    // `restic backup --stdin`, which chunks into 64 MiB packs — no single
+    // large object ever hits the shim's gofakes3 (the OOM bug). Off-site,
+    // restic, standard bundle lifecycle.
+    const bundle = await captureFilesOnlyBundle({
+      db: ctx.db,
+      k8s: ctx.k8s,
+      tenantId: tenantIdForBundle,
+      label: `Pre-resize ${pvcName} → ${newMib}MiB`,
     });
+    // A `partial` bundle means the files component did not fully capture
+    // — refuse to delete the PVC without a complete rollback source.
+    if (bundle.status !== 'completed') {
+      throw new ApiError(
+        'SNAPSHOT_INCOMPLETE',
+        `Pre-resize files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to delete the PVC without a complete rollback snapshot.`,
+        500,
+      );
+    }
+    preResizeBundleId = bundle.bundleId;
     await ctx.db.update(storageSnapshots).set({
-      status: 'ready', sizeBytes: String(snap.sizeBytes), sha256: snap.sha256,
+      status: 'ready',
+      archivePath: `bundle:${bundle.bundleId}`,
+      sizeBytes: String(bundle.sizeBytes),
+      sha256: null,
     }).where(eq(storageSnapshots.id, snapId));
 
     const newSizeStr = newMib % 1024 === 0
@@ -882,13 +911,18 @@ async function runResizeDestructive(
     const storageClass = await getDefaultStorageClass(ctx.db);
     await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
 
-    await progress('restoring', 60, 'Restoring data from snapshot');
-    // Phase 5: per-target restore for new rows; legacy ctx.store for old.
-    const [snapRowForRestore] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
-    const restoreStoreForResize = snapRowForRestore ? await resolveRestoreStore(ctx, snapRowForRestore) : ctx.store;
-    await restoreTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId: (await currentTenantId(ctx.db, opId))!,
-      snapshotId: snapId, archivePath, store: restoreStoreForResize,
+    await progress('restoring', 60, 'Restoring data from pre-resize bundle');
+    // Restore the files bundle into the freshly recreated (smaller) PVC.
+    // A tenant-ns Job streams platform-api's `restic dump` of the files
+    // snapshot and untars it into the PVC — the file-level repack a
+    // block snapshot can't do when shrinking.
+    await restoreFilesBundleIntoPvc({
+      db: ctx.db,
+      k8s: ctx.k8s,
+      bundleId: preResizeBundleId,
+      tenantId: tenantIdForBundle,
+      namespace,
+      pvcName,
       onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
@@ -906,6 +940,18 @@ async function runResizeDestructive(
       }).where(eq(tenants.id, tenantId));
     }
 
+    // Resize confirmed — reap the pre-resize bundle. The off-site
+    // rollback source is no longer needed now that the new PVC is live
+    // and restored. Best-effort; never throws (the bundle's 7-day expiry
+    // is the backstop if this fails). Mark the snapshot row reaped so the
+    // UI/housekeeping don't treat a deleted bundle as restorable.
+    if (preResizeBundleId) {
+      await reapPreResizeBundle({ db: ctx.db, k8s: ctx.k8s, bundleId: preResizeBundleId });
+      await ctx.db.update(storageSnapshots)
+        .set({ status: 'expired', expiresAt: new Date() })
+        .where(eq(storageSnapshots.id, snapId));
+    }
+
     await updateOp(ctx.db, opId, {
       state: 'idle', progressPct: 100, progressMessage: 'Resize complete', completedAt: new Date(),
     });
@@ -917,6 +963,17 @@ async function runResizeDestructive(
     await updateOp(ctx.db, opId, {
       state: 'failed', lastError: persisted, completedAt: new Date(),
     });
+    // Settle the pre-resize snapshot row so it doesn't dangle in
+    // 'creating'/'bundle:pending' forever. If the bundle DID capture
+    // before the failure, point the row at it (it's retained as a
+    // 7-day rollback source — NOT reaped on failure); otherwise mark
+    // failed. Best-effort; the op is already marked failed.
+    await ctx.db.update(storageSnapshots)
+      .set(preResizeBundleId
+        ? { status: 'ready', archivePath: `bundle:${preResizeBundleId}` }
+        : { status: 'failed', lastError: persisted })
+      .where(eq(storageSnapshots.id, snapId))
+      .catch(() => {});
     // Best-effort unquiesce so the old workloads come back up.
     if (quiesceSnap) {
       await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});

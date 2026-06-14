@@ -930,6 +930,159 @@ export async function runResticRestore(args: RunResticRestoreArgs): Promise<void
   }
 }
 
+// ─── Dump a stored file as a stream (restore-into-PVC) ──────────────────────
+
+const DUMP_PATH_RE = /^\/?[A-Za-z0-9._/-]+$/;
+
+export interface RunResticDumpArgs {
+  readonly target: BackupTarget;
+  readonly tenantId: string;
+  readonly component: ResticComponent;
+  readonly snapshotId: string;
+  /** Path of the file inside the restic snapshot to stream out. The
+   *  files component stored its stdin under `--stdin-filename
+   *  archive.tar`, so the canonical value is `/archive.tar`. */
+  readonly dumpPath: string;
+  readonly passwordHex: string;
+  readonly semaphore?: ResticConcurrencySemaphore;
+}
+
+/**
+ * Stream `restic dump <snapshotId> <dumpPath>` to the caller as a
+ * Readable — the inverse of `runResticBackup --stdin --stdin-filename`.
+ * Reconstructs the original tar byte-for-byte from the per-tenant repo
+ * WITHOUT materialising it on disk (restic streams pack files as it
+ * walks the tree, so platform-api memory stays bounded regardless of
+ * archive size). Used by the files restore-into-PVC path: a tenant-
+ * namespace Job curls the platform-api endpoint that pipes this stream
+ * and untars it into the (freshly recreated) PVC.
+ *
+ * IMPORTANT: this is the repo-correct restore primitive for the shim/
+ * per-tenant restic layout. `buildResticRepoUriForRestore` deliberately
+ * drops the `restic-<component>/<tenantId>` subpath for shim targets, so
+ * we build the full per-tenant URI here via `buildResticRepoUri`.
+ *
+ * The per-pod restic semaphore is held for the whole dump and released
+ * when the child exits OR the consumer abandons the stream (HTTP client
+ * disconnect → reply stream 'close' → child killed). `--no-lock` because
+ * dump is read-only and we never want a stale lock from a prior crashed
+ * dump to block a restore.
+ */
+export async function runResticDump(args: RunResticDumpArgs): Promise<Readable> {
+  if (!SNAPSHOT_ID_RE.test(args.snapshotId)) {
+    throw new Error(`runResticDump: invalid snapshotId '${args.snapshotId}'`);
+  }
+  // Reject traversal explicitly — the char-class alone admits `..`
+  // segments. Today dumpPath is hardcoded '/archive.tar' server-side, but
+  // a future caller must not be able to dump an arbitrary tree path.
+  if (!DUMP_PATH_RE.test(args.dumpPath) || args.dumpPath.split('/').includes('..')) {
+    throw new Error(`runResticDump: invalid dumpPath '${args.dumpPath}'`);
+  }
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let released = false;
+  const releaseOnce = (): void => {
+    if (!released) {
+      released = true;
+      release();
+    }
+  };
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const repoUri = buildResticRepoUri(args.target, args.tenantId, args.component);
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    cliArgs.push('--no-lock');
+    cliArgs.push('dump', args.snapshotId, args.dumpPath);
+
+    const child = spawnRestic(cliArgs, env);
+    let stderrBuf = '';
+    child.stderr.on('data', (c: Buffer) => {
+      stderrBuf += c.toString('utf8');
+      // Bound the buffer — a runaway restic could otherwise grow it
+      // unbounded while the consumer drains stdout slowly.
+      if (stderrBuf.length > 64 * 1024) stderrBuf = stderrBuf.slice(-64 * 1024);
+    });
+    const stream = child.stdout;
+    // Guard listener: avoids an 'unhandled error' crash if we destroy the
+    // stream. The async-iterator/Fastify consumer attaches its OWN error
+    // listener, so it still observes the failure.
+    stream.on('error', () => { /* surfaced to the consumer's own listener */ });
+
+    // First-byte gate (CRITICAL for a destructive restore): a restic
+    // failure (repo unreachable, snapshot missing, wrong password) exits
+    // NON-ZERO with EMPTY stdout. If we returned the stream immediately,
+    // Fastify would send a clean 200 + empty body and the restore Job
+    // would untar NOTHING into the PVC — silent data loss on a shrink. So
+    // resolve only after the first byte; on an early non-zero exit,
+    // REJECT (→ route 5xx → the Job's curl fails loud). A clean exit(0)
+    // with no bytes is a genuinely empty archive → resolve empty.
+    let settled = false;
+    let resolveGate!: (s: Readable) => void;
+    let rejectGate!: (e: Error) => void;
+    const gate = new Promise<Readable>((res, rej) => { resolveGate = res; rejectGate = rej; });
+
+    const onData = (chunk: Buffer): void => {
+      if (settled) return;
+      settled = true;
+      stream.removeListener('data', onData);
+      stream.pause();
+      stream.unshift(chunk);
+      resolveGate(stream);
+    };
+    stream.on('data', onData);
+
+    let childExited = false;
+    child.on('exit', (code) => {
+      // Teardown: release the per-pod restic slot + ssh tmpfile.
+      childExited = true;
+      if (sftpCleanup) void sftpCleanup();
+      releaseOnce();
+      if (!settled) {
+        settled = true;
+        stream.removeListener('data', onData);
+        if (code === 0) resolveGate(stream); // clean, empty archive
+        else rejectGate(new Error(`restic dump exited ${code}: ${stderrBuf.trim()}`));
+      } else if (code !== 0 && !stream.destroyed) {
+        // Post-resolve mid-stream failure → surface to the consumer so
+        // the response truncates and curl (Job side) fails loud.
+        stream.destroy(new Error(`restic dump exited ${code}: ${stderrBuf.trim()}`));
+      }
+    });
+
+    // Stream closed. On a normal completion the child has already exited
+    // (handled above) — nothing to kill. Only when the consumer abandons
+    // the stream BEFORE the child exits (HTTP client disconnect) do we
+    // SIGKILL so a half-read dump doesn't pin a semaphore slot.
+    stream.on('close', () => {
+      if (!childExited) {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* raced with exit */
+        }
+      }
+      releaseOnce();
+    });
+
+    return await gate;
+  } catch (err) {
+    if (sftpCleanup) await sftpCleanup();
+    releaseOnce();
+    throw err;
+  }
+}
+
 // ─── Snapshot listing (Phase 1.5) ───────────────────────────────────────────
 
 export interface ResticSnapshotMeta {
