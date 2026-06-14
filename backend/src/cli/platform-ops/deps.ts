@@ -9,7 +9,9 @@
  * guaranteeing zero version-logic duplication.
  */
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, basename } from 'node:path';
 import { realDrOps } from './dr-ops.js';
 import { realSnapshotOps } from './snapshot-ops.js';
 import { realSelfUpgradeOps } from './self-upgrade/index.js';
@@ -417,6 +419,16 @@ export interface Deps {
   renameDomain: (opts: { newApex: string; kubeconfig?: string }) => Promise<DomainRenameOutcome>;
   /** Read all of this process's stdin to EOF (for piping a secret in without argv exposure). */
   readStdin: () => Promise<string>;
+  /**
+   * Extract a bash script embedded in this binary as a SEA asset (the same
+   * mechanism host-migrations use), write it to a private temp file, and run it
+   * with `bash <file> <args>` — stdio inherited so the operator sees its
+   * progress and can answer its prompts. Returns the script's exit code (70 when
+   * not running inside the SEA binary, or the asset is missing). Used for the
+   * node-level DR component restores, whose proven bash IS the single source of
+   * truth (no backend module to import).
+   */
+  runEmbeddedScript: (assetKey: string, args: string[]) => Promise<number>;
 }
 
 function realExec(
@@ -653,6 +665,40 @@ async function realRenameDomain(
   }
 }
 
+async function realRunEmbeddedScript(assetKey: string, args: string[]): Promise<number> {
+  let sea: typeof import('node:sea') | null = null;
+  try {
+    sea = await import('node:sea');
+  } catch {
+    sea = null;
+  }
+  if (!sea?.isSea()) {
+    process.stderr.write('platform-ops: embedded scripts are only available in the signed binary\n');
+    return 70; // EX_SOFTWARE
+  }
+  let body: string;
+  try {
+    body = sea.getAsset(assetKey, 'utf8') as string;
+  } catch {
+    process.stderr.write(`platform-ops: embedded asset '${assetKey}' not found in this build\n`);
+    return 70;
+  }
+  const dir = mkdtempSync(join(tmpdir(), 'po-dr-'));
+  const file = join(dir, basename(assetKey));
+  try {
+    writeFileSync(file, body, { mode: 0o700 });
+    return await new Promise<number>((resolve) => {
+      // Inherit stdio so the operator sees the restore's progress + can answer
+      // its confirmation prompts (these are destructive break-glass flows).
+      const child = spawn('bash', [file, ...args], { stdio: 'inherit', env: process.env });
+      child.on('error', () => resolve(127));
+      child.on('close', (code) => resolve(code ?? 0));
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true }); // never leave the script on disk
+  }
+}
+
 export function realDeps(): Deps {
   const env = process.env;
   return {
@@ -689,5 +735,6 @@ export function realDeps(): Deps {
       for await (const c of process.stdin) chunks.push(Buffer.from(c));
       return Buffer.concat(chunks).toString('utf8');
     },
+    runEmbeddedScript: (assetKey, args) => realRunEmbeddedScript(assetKey, args),
   };
 }

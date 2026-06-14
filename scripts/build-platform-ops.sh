@@ -126,9 +126,23 @@ scripts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivit
 const manifestPath = path.join(work, 'host-migrations-manifest.json');
 fs.writeFileSync(manifestPath, JSON.stringify({ scripts }));
 assets['host-migrations/manifest.json'] = manifestPath;
+// DR component restores (R18 T2): embed the proven bash restore scripts so
+// `platform-ops dr restore-component <etcd|mail|postgres>` launches the exact
+// same logic as the standalone break-glass scripts (one source of truth). Each
+// MUST be self-contained (no `source scripts/lib/...`) — it's extracted to a
+// temp file and run alone. Fail the build loudly if one goes missing.
+const drRestores = ['restore-etcd-from-shim.sh', 'restore-mail-from-shim.sh', 'restore-postgres-from-shim.sh'];
+for (const f of drRestores) {
+  const p = path.join(repoRoot, 'scripts', f);
+  if (!fs.existsSync(p)) {
+    console.error(`build-platform-ops: DR restore script missing: scripts/${f}`);
+    process.exit(1);
+  }
+  assets[`dr/${f}`] = p;
+}
 const cfg = { main: bundle, output: blob, disableExperimentalSEAWarning: true, assets };
 fs.writeFileSync(path.join(work, 'sea-config.json'), JSON.stringify(cfg));
-console.error(`build-platform-ops: embedding ${scripts.length} host-migration script(s)`);
+console.error(`build-platform-ops: embedding ${scripts.length} host-migration script(s) + ${drRestores.length} DR restore script(s)`);
 NODEGEN
 node --experimental-sea-config "${work}/sea-config.json"
 
