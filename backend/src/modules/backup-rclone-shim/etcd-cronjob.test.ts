@@ -63,11 +63,22 @@ function fakeBatch(
     /** When set, the live CronJob carries a `rclone` container with a
      *  SHIM_PREFIX env of this value (container 0, env 0). */
     prefixEnv?: string;
+    /** The live `reconcile` annotation. Defaults to 'disabled' (steady state,
+     *  so no re-stamp op fires); set to null to omit it (un-stamped CronJob). */
+    reconcileAnnotation?: string | null;
   } = {},
 ) {
+  const reconcileAnno =
+    opts.reconcileAnnotation === undefined ? 'disabled' : opts.reconcileAnnotation;
   return {
     readNamespacedCronJob: vi.fn(async () => {
       if (opts.read404) throw { statusCode: 404 };
+      const annotations: Record<string, string> = {
+        'insula.host/backup-display-name': 'etcd snapshot via shim',
+      };
+      if (reconcileAnno !== null) {
+        annotations['kustomize.toolkit.fluxcd.io/reconcile'] = reconcileAnno;
+      }
       const spec: Record<string, unknown> = { suspend: opts.live ?? true };
       if (opts.prefixEnv !== undefined) {
         spec.jobTemplate = {
@@ -82,7 +93,7 @@ function fakeBatch(
           },
         };
       }
-      return { spec };
+      return { metadata: { annotations }, spec };
     }),
     patchNamespacedCronJob: vi.fn(async () => {
       if (opts.patchFail) throw opts.patchFail;
@@ -92,6 +103,7 @@ function fakeBatch(
 }
 
 const SHIM_PREFIX_PATH = '/spec/jobTemplate/spec/template/spec/containers/0/env/0/value';
+const RECONCILE_ANNO_PATH = '/metadata/annotations/kustomize.toolkit.fluxcd.io~1reconcile';
 
 function silentLog() {
   return { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -222,6 +234,44 @@ describe('reconcileEtcdCronJob', () => {
     expect(body).toEqual([
       { op: 'replace', path: '/spec/suspend', value: false },
     ]);
+  });
+
+  it('re-stamps the Flux reconcile:disabled annotation when the live CronJob lacks it', async () => {
+    // Suspend + prefix already converged → the ONLY drift is the missing
+    // annotation (seed-then-disown: Flux skipped applying it).
+    const db = fakeDb([{ enabled: 1 }], 'cid-5');
+    const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-5', reconcileAnnotation: null });
+    const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
+
+    expect(r.patched).toBe(true);
+    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
+    expect(body).toEqual([
+      { op: 'add', path: RECONCILE_ANNO_PATH, value: 'disabled' },
+    ]);
+  });
+
+  it('on first reconcile patches suspend + prefix + annotation together', async () => {
+    // Fresh CronJob: suspended, legacy prefix, no reconcile annotation yet.
+    const db = fakeDb([{ enabled: 1 }], 'cid-1');
+    const batch = fakeBatch({ live: true, prefixEnv: 'etcd', reconcileAnnotation: null });
+    const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
+
+    expect(r.patched).toBe(true);
+    const body = (batch.patchNamespacedCronJob.mock.calls[0][0] as { body: unknown }).body;
+    expect(body).toEqual([
+      { op: 'replace', path: '/spec/suspend', value: false },
+      { op: 'replace', path: SHIM_PREFIX_PATH, value: 'etcd/cid-1' },
+      { op: 'add', path: RECONCILE_ANNO_PATH, value: 'disabled' },
+    ]);
+  });
+
+  it('fully converged (suspend + prefix + annotation) → no patch', async () => {
+    const db = fakeDb([{ enabled: 1 }], 'cid-1');
+    const batch = fakeBatch({ live: false, prefixEnv: 'etcd/cid-1' }); // anno defaults to disabled
+    const r = await reconcileEtcdCronJob(db, { batch } as never, silentLog());
+
+    expect(r.patched).toBe(false);
+    expect(batch.patchNamespacedCronJob).not.toHaveBeenCalled();
   });
 
   it('exports canonical CronJob name + namespace constants', () => {
