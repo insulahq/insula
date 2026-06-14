@@ -50,7 +50,19 @@ metadata:
     # cluster_id (SHIM_PREFIX → `etcd/<cluster_id>`) so two clusters sharing one
     # S3 target can never cross-contaminate (a `--latest` etcd restore pulling
     # ANOTHER cluster's snapshot would be catastrophic). Without this, Flux would
-    # revert both on every sync.
+    # revert both on every sync. We disown the whole object (vs the stalwart-
+    # snapshot `ssa: Merge` + strip-suspend pattern) because SHIM_PREFIX is a
+    # LIST-ELEMENT value the reconciler overrides — `ssa: Merge` is documented
+    # not to preserve such ownership (see bootstrap.sh's stalwart strip comment),
+    # and a single env-element value can't be cleanly stripped via JSON6902.
+    #
+    # TRADE-OFF: Flux creates this object on a FRESH cluster (with the full spec,
+    # incl. the /tmp emptyDir below) but SKIPS updating it once it exists. So a
+    # STRUCTURAL manifest change (e.g. the /tmp volume) does NOT auto-reach an
+    # already-running cluster via Flux — apply it once by hand:
+    #   kubectl -n platform patch cronjob etcd-snap-via-shim --type=strategic -p \
+    #     '{"spec":{"jobTemplate":{"spec":{"template":{"spec":{"volumes":[{"name":"tmp","emptyDir":{}}],"containers":[{"name":"rclone","volumeMounts":[{"name":"tmp","mountPath":"/tmp"}]}]}}}}}}'
+    # or delete the CronJob and let Flux recreate it from this manifest.
     kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   # Reconciler toggles off when SYSTEM target is bound.
@@ -198,6 +210,13 @@ spec:
                 - name: snapshots
                   mountPath: /snapshots
                   readOnly: true
+                # Writable scratch for the script's file lists ($TMP / $TMP_EV).
+                # readOnlyRootFilesystem:true makes the image's own /tmp read-only,
+                # so without this the `find … > /tmp/etcd-files` redirect fails and
+                # the job silently no-ops ("no snapshots <75min old") — etcd never
+                # actually uploads. An emptyDir keeps the root FS locked down.
+                - name: tmp
+                  mountPath: /tmp
               resources:
                 requests:
                   cpu: 50m
@@ -216,6 +235,8 @@ spec:
                 seccompProfile:
                   type: RuntimeDefault
           volumes:
+            - name: tmp
+              emptyDir: {}
             - name: snapshots
               hostPath:
                 path: /var/lib/rancher/k3s/server/db/snapshots
