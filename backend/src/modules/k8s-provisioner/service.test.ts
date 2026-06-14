@@ -84,6 +84,9 @@ describe('K8s Provisioner Service', () => {
               labels: expect.objectContaining({
                 platform: 'k8s-hosting',
                 tenant: 'tenant-123',
+                // Gate for the backup-rclone-shim ingress NetworkPolicy so
+                // in-namespace snapshot/backup Jobs can reach the shim :9000.
+                'insula.host/tenant-backup-allowed': 'true',
               }),
             }),
           }),
