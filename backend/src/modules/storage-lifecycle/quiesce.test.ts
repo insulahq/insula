@@ -39,13 +39,11 @@ function mockK8s(opts: {
             spec: { replicas: d.replicas },
           })),
         }),
-        readNamespacedDeploymentScale: vi.fn().mockImplementation(async ({ name }: { name: string }) => ({
-          metadata: { name },
-          spec: { replicas: deploymentMap.get(name)?.replicas ?? 0 },
-        })),
-        replaceNamespacedDeploymentScale: vi.fn().mockImplementation(async (args: {
+        // scale via strategic-merge PATCH on the Deployment (read-modify-
+        // replace on /scale silently no-ops under client-node v1.x).
+        patchNamespacedDeployment: vi.fn().mockImplementation(async (args: {
           name: string; body: { spec: { replicas: number } };
-        }) => {
+        }, _opts: unknown) => {
           scaleCalls.push({ name: args.name, replicas: args.body.spec.replicas });
         }),
       },
@@ -56,13 +54,9 @@ function mockK8s(opts: {
             spec: { suspend: cj.suspend ?? false },
           })),
         }),
-        readNamespacedCronJob: vi.fn().mockImplementation(async ({ name }: { name: string }) => ({
-          metadata: { name },
-          spec: { suspend: cronJobMap.get(name)?.suspend ?? false },
-        })),
-        replaceNamespacedCronJob: vi.fn().mockImplementation(async (args: {
+        patchNamespacedCronJob: vi.fn().mockImplementation(async (args: {
           name: string; body: { spec: { suspend: boolean } };
-        }) => {
+        }, _opts: unknown) => {
           cronPatchCalls.push({ name: args.name, suspend: args.body.spec.suspend });
         }),
         listNamespacedJob: vi.fn().mockResolvedValue({ items: [] }),
@@ -178,10 +172,10 @@ describe('unquiesce', () => {
 
   it('best-effort: a Deployment that 404s during restore does not block the rest', async () => {
     const m = mockK8s();
-    (m.tenant.apps as unknown as { readNamespacedDeploymentScale: ReturnType<typeof vi.fn> })
-      .readNamespacedDeploymentScale
+    (m.tenant.apps as unknown as { patchNamespacedDeployment: ReturnType<typeof vi.fn> })
+      .patchNamespacedDeployment
       .mockImplementationOnce(() => Promise.reject(Object.assign(new Error('404'), { statusCode: 404 })))
-      .mockResolvedValueOnce({ metadata: { name: 'alive' }, spec: { replicas: 2 } });
+      .mockResolvedValueOnce({});
     await expect(unquiesce(m.tenant, 'ns', {
       deployments: [{ name: 'gone', replicas: 1 }, { name: 'alive', replicas: 2 }],
       cronJobs: [],

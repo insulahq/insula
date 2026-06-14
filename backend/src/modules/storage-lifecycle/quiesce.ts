@@ -1,4 +1,29 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+
+// Scaling/suspending via a strategic-merge PATCH. The previous
+// read-modify-replace on the `/scale` subresource
+// (`replaceNamespacedDeploymentScale`) silently NO-OPs under
+// @kubernetes/client-node v1.x — the serialized body drops `spec.replicas`,
+// so the call returns 200 but the Deployment stays at its old replica count.
+// That meant quiesce never actually scaled anything to 0 and every
+// destructive resize hung at "Scaling workloads to zero" → waitForQuiesced
+// timeout. patchNamespacedDeployment with the strategic-merge content-type
+// (proven against the live cluster) applies correctly.
+type DeploymentPatcher = { patchNamespacedDeployment: (a: { name: string; namespace: string; body: unknown }, o: unknown) => Promise<unknown> };
+type CronJobPatcher = { patchNamespacedCronJob: (a: { name: string; namespace: string; body: unknown }, o: unknown) => Promise<unknown> };
+
+async function scaleDeployment(k8s: K8sClients, namespace: string, name: string, replicas: number): Promise<void> {
+  await (k8s.apps as unknown as DeploymentPatcher).patchNamespacedDeployment(
+    { name, namespace, body: { spec: { replicas } } }, STRATEGIC_MERGE_PATCH,
+  );
+}
+
+async function setCronJobSuspend(k8s: K8sClients, namespace: string, name: string, suspend: boolean): Promise<void> {
+  await (k8s.batch as unknown as CronJobPatcher).patchNamespacedCronJob(
+    { name, namespace, body: { spec: { suspend } } }, STRATEGIC_MERGE_PATCH,
+  );
+}
 
 /**
  * Quiesce / unquiesce helpers — scale every platform-managed workload
@@ -50,19 +75,7 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     const replicas = d.spec?.replicas ?? 0;
     deployments.push({ name, replicas });
     if (replicas > 0) {
-      // read-modify-replace instead of patch — some k8s tenants
-      // default to JSON-patch content-type which fails with merge-
-      // shaped bodies (400 "cannot unmarshal object into []jsonPatchOp").
-      const current = await (k8s.apps as unknown as {
-        readNamespacedDeploymentScale: (args: { name: string; namespace: string }) => Promise<Record<string, unknown>>;
-      }).readNamespacedDeploymentScale({ name, namespace });
-      const scale = current as { metadata?: Record<string, unknown>; spec?: Record<string, unknown> };
-      await (k8s.apps as unknown as {
-        replaceNamespacedDeploymentScale: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
-      }).replaceNamespacedDeploymentScale({
-        name, namespace,
-        body: { ...scale, spec: { ...scale.spec, replicas: 0 } },
-      });
+      await scaleDeployment(k8s, namespace, name, 0);
     }
   }
 
@@ -79,17 +92,7 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     const wasSuspended = cj.spec?.suspend ?? false;
     cronJobs.push({ name, wasSuspended });
     if (!wasSuspended) {
-      // Same read-modify-replace shape as for Deployments above.
-      const current = await (k8s.batch as unknown as {
-        readNamespacedCronJob: (args: { name: string; namespace: string }) => Promise<Record<string, unknown>>;
-      }).readNamespacedCronJob({ name, namespace });
-      const cj = current as { metadata?: Record<string, unknown>; spec?: Record<string, unknown> };
-      await (k8s.batch as unknown as {
-        replaceNamespacedCronJob: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
-      }).replaceNamespacedCronJob({
-        name, namespace,
-        body: { ...cj, spec: { ...cj.spec, suspend: true } },
-      });
+      await setCronJobSuspend(k8s, namespace, name, true);
     }
   }
 
@@ -208,31 +211,13 @@ export async function unquiesce(
   for (const d of snap.deployments) {
     if (d.replicas === 0) continue;
     try {
-      const current = await (k8s.apps as unknown as {
-        readNamespacedDeploymentScale: (args: { name: string; namespace: string }) => Promise<Record<string, unknown>>;
-      }).readNamespacedDeploymentScale({ name: d.name, namespace });
-      const scale = current as { metadata?: Record<string, unknown>; spec?: Record<string, unknown> };
-      await (k8s.apps as unknown as {
-        replaceNamespacedDeploymentScale: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
-      }).replaceNamespacedDeploymentScale({
-        name: d.name, namespace,
-        body: { ...scale, spec: { ...scale.spec, replicas: d.replicas } },
-      });
+      await scaleDeployment(k8s, namespace, d.name, d.replicas);
     } catch { /* gone — ignore */ }
   }
   for (const cj of snap.cronJobs) {
     if (cj.wasSuspended) continue;
     try {
-      const current = await (k8s.batch as unknown as {
-        readNamespacedCronJob: (args: { name: string; namespace: string }) => Promise<Record<string, unknown>>;
-      }).readNamespacedCronJob({ name: cj.name, namespace });
-      const obj = current as { metadata?: Record<string, unknown>; spec?: Record<string, unknown> };
-      await (k8s.batch as unknown as {
-        replaceNamespacedCronJob: (args: { name: string; namespace: string; body: unknown }) => Promise<unknown>;
-      }).replaceNamespacedCronJob({
-        name: cj.name, namespace,
-        body: { ...obj, spec: { ...obj.spec, suspend: false } },
-      });
+      await setCronJobSuspend(k8s, namespace, cj.name, false);
     } catch { /* gone — ignore */ }
   }
 }
