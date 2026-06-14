@@ -38,6 +38,7 @@ import {
   backupTargetAssignments,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { getClusterId } from '../system-settings/cluster-id.js';
 import {
   deriveResticPassword,
   deriveShimAccessKey,
@@ -98,9 +99,12 @@ export interface MailResticShimEnv {
  * can lock the output byte-equal across releases without spinning
  * up a real cluster.
  */
-export function buildMailResticShimEnv(rawKey: Buffer): MailResticShimEnv {
+export function buildMailResticShimEnv(rawKey: Buffer, clusterId: string): MailResticShimEnv {
   return {
-    RESTIC_REPOSITORY: `s3:${SHIM_S3_ENDPOINT_URL}/${MAIL_SHIM_BUCKET}/${MAIL_SHIM_PREFIX}`,
+    // Namespace mail snapshots by the stable cluster_id so two clusters sharing
+    // one S3 target never share a restic repo (mixed snapshots / lock contention).
+    // TENANT backups stay cluster-agnostic for cross-cluster migration.
+    RESTIC_REPOSITORY: `s3:${SHIM_S3_ENDPOINT_URL}/${MAIL_SHIM_BUCKET}/${MAIL_SHIM_PREFIX}/${clusterId}`,
     RESTIC_PASSWORD: deriveResticPassword(rawKey),
     AWS_ACCESS_KEY_ID: deriveShimAccessKey(rawKey),
     AWS_SECRET_ACCESS_KEY: deriveShimSecretKey(rawKey),
@@ -175,7 +179,7 @@ export async function reconcileMailResticShim(
     throw err;
   }
 
-  const env = buildMailResticShimEnv(rawKey);
+  const env = buildMailResticShimEnv(rawKey, await getClusterId(db));
   try {
     await applyMailResticSecret(clients.core, env);
   } catch (err) {

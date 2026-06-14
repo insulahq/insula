@@ -32,11 +32,13 @@ import type { Database } from '../../db/index.js';
 // Pure builder
 // ---------------------------------------------------------------------------
 
+const CID = 'cid-0000-test'; // fixed test cluster_id
+
 describe('buildMailResticShimEnv', () => {
-  it('emits a deterministic env map for a fixed key', () => {
-    const env = buildMailResticShimEnv(Buffer.alloc(32, 1));
+  it('emits a deterministic env map for a fixed key + cluster_id', () => {
+    const env = buildMailResticShimEnv(Buffer.alloc(32, 1), CID);
     expect(env.RESTIC_REPOSITORY).toBe(
-      `s3:${SHIM_S3_ENDPOINT_URL}/${MAIL_SHIM_BUCKET}/mail-snapshots`,
+      `s3:${SHIM_S3_ENDPOINT_URL}/${MAIL_SHIM_BUCKET}/mail-snapshots/${CID}`,
     );
     expect(env.RESTIC_PASSWORD).toMatch(/^[A-Za-z0-9+/]+=*$/);
     expect(env.AWS_ACCESS_KEY_ID.length).toBeGreaterThan(0);
@@ -45,21 +47,28 @@ describe('buildMailResticShimEnv', () => {
 
   it('returns the same output across calls (deterministic)', () => {
     const k = Buffer.alloc(32, 9);
-    expect(buildMailResticShimEnv(k)).toEqual(buildMailResticShimEnv(k));
+    expect(buildMailResticShimEnv(k, CID)).toEqual(buildMailResticShimEnv(k, CID));
+  });
+
+  it('namespaces the restic repo by cluster_id (collision-safe across clusters)', () => {
+    const k = Buffer.alloc(32, 1);
+    expect(buildMailResticShimEnv(k, 'cluster-a').RESTIC_REPOSITORY).not.toBe(
+      buildMailResticShimEnv(k, 'cluster-b').RESTIC_REPOSITORY,
+    );
   });
 
   it('routes through the mail bucket (R-X16 unified architecture)', () => {
-    const env = buildMailResticShimEnv(Buffer.alloc(32, 1));
+    const env = buildMailResticShimEnv(Buffer.alloc(32, 1), CID);
     // mail-raw was retired with the combine layer. The mail class
     // now goes through the same rclone-crypt remote as system/tenant;
     // restic double-encrypts (its own AES-CTR + rclone crypt) and
     // that's fine — AES-NI makes the second pass ~free.
-    expect(env.RESTIC_REPOSITORY).toMatch(/\/mail\/mail-snapshots$/);
+    expect(env.RESTIC_REPOSITORY).toMatch(new RegExp(`/mail/mail-snapshots/${CID}$`));
     expect(env.RESTIC_REPOSITORY).not.toContain('mail-raw');
   });
 
   it('points at the shim ClusterIP, not raw upstream', () => {
-    const env = buildMailResticShimEnv(Buffer.alloc(32, 1));
+    const env = buildMailResticShimEnv(Buffer.alloc(32, 1), CID);
     expect(env.RESTIC_REPOSITORY).toContain(
       'backup-rclone-shim.platform.svc.cluster.local:9000',
     );
@@ -98,6 +107,10 @@ function fakeDb(rows: { mail: boolean; legacy: boolean; mailEnabled?: boolean; l
   };
   return {
     select: vi.fn(() => chain),
+    // getClusterId() generate-once path (empty read → insert → fallback UUID).
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({ onConflictDoNothing: vi.fn(() => Promise.resolve()) })),
+    })),
   } as unknown as Database;
 }
 

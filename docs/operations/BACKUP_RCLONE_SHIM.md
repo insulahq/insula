@@ -65,11 +65,31 @@ What collides, worst-first, if prefixes are shared:
 | **etcd** | `…/system/etcd/<host>-<ts>.db` | Snapshot files don't overwrite (host+timestamp keyed), but they share one bucket and the "keep newest 24" prune evicts **across** clusters, and `--latest` may pick another cluster's snapshot. |
 | **mail** | `…/mail/…` (one restic repo) | Both clusters share one restic repository → mixed snapshots, retention churn, and repo-lock contention. |
 
-**Mitigation today:** operator discipline — one distinct `s3_prefix` per cluster
-(or a distinct bucket). **Recommended hardening (follow-up):** auto-namespace the
-prefix by a stable cluster identity (cluster UUID / apex), or reject a
-`PUT assignments` whose effective `bucket+prefix` is already claimed by a
-different cluster, so collision-safety doesn't depend on operator memory.
+**Automatic collision-resistance (`cluster_id`, 2026-06-14).** A stable
+`platform_settings.cluster_id` (UUID, generated once — `system-settings/cluster-id.ts`;
+NOT the apex, which can change on rename) is injected into the **system** and
+**mail** backup paths so two clusters that share one bucket+prefix never collide:
+
+| Class | Path now | Status |
+|---|---|---|
+| **postgres** | `…/system/<cluster_id>/postgres/system-db/…` | ✅ Done (ObjectStore `destinationPath`). Restore reads it automatically via the ObjectStore CR. |
+| **mail** | `…/mail/mail-snapshots/<cluster_id>/…` | ✅ Done (restic `RESTIC_REPOSITORY`). Restore reads it from the repo Secret. |
+| **etcd** | `…/system/etcd/<host>-<ts>.db` | ⚠️ **NOT yet** — `SHIM_PREFIX=etcd` is a static Flux-managed CronJob env. Namespacing it needs the seed-then-disown pattern (reconciler-patch + `reconcile: disabled`) + a `restore-etcd-from-shim` path update + a fatal-restore E2E. **HIGH priority follow-up** — until then, `--latest` could restore *another* cluster's etcd onto this one (catastrophic) if a bucket+prefix is shared. Keep distinct prefixes for etcd-sharing clusters. |
+| **tenant** | `<prefix>/<bundleId>/…` (keyed by `bundleId` UUID + `meta.json.tenantId`) | ✅ Intentionally **cluster-agnostic** — see below. |
+
+### Tenant backups are cluster-agnostic on purpose (cross-cluster migration)
+
+Tenant bundles are keyed by `bundleId` (UUID) with the tenant identity in
+`meta.json.tenantId` — **no cluster id in the path**. This is deliberate: it keeps
+a tenant's backup **globally addressable**, so a future **cross-cluster tenant
+migration** (move tenant X from cluster A to cluster B) can: read the bundle by
+`bundleId` from the shared store → restore its components (files, mailboxes,
+DB rows, per-tenant secrets in `components/secrets/`) on cluster B → no
+system/mail backup ever crosses clusters. Do NOT add `cluster_id` to tenant paths.
+
+Note: the **secrets-bundle** (`system-backup/secrets-bundle.ts`) is **system/
+platform secrets**, NOT the tenant-migration vehicle — per-tenant secrets travel
+inside the tenant *bundle's* `components/secrets/`, not the secrets-bundle.
 
 ### Memory tuning (v3-tuned per 2026-05-21 bench)
 

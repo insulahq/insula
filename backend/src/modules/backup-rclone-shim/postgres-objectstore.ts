@@ -44,6 +44,7 @@ import {
   systemWalArchiveState,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { getClusterId } from '../system-settings/cluster-id.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import {
   deriveShimAccessKey,
@@ -244,7 +245,7 @@ export async function reconcilePostgresObjectStore(
     );
   } else {
     try {
-      await materializeObjectStore(clients.custom, log);
+      await materializeObjectStore(clients.custom, log, await getClusterId(db));
       objectStoreApplied = true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -523,10 +524,15 @@ async function materializeShimCredsSecret(
 // ObjectStore CR
 // ---------------------------------------------------------------------------
 
-function buildObjectStoreSpec(): Record<string, unknown> {
+function buildObjectStoreSpec(clusterId: string): Record<string, unknown> {
   return {
     configuration: {
-      destinationPath: 's3://system/postgres',
+      // Namespace SYSTEM backups by the stable cluster_id so two clusters
+      // sharing one S3 target never collide (every cluster's CNPG is named
+      // `system-db` → identical barman serverName; without this their WAL/base
+      // backups would intermix → restore corruption). TENANT backups do NOT use
+      // this (they key by bundleId + tenantId for cross-cluster addressability).
+      destinationPath: `s3://system/${clusterId}/postgres`,
       endpointURL: SHIM_S3_ENDPOINT_URL,
       // The shim's HKDF-derived creds — host application reads them
       // from the Secret we just materialised.
@@ -585,8 +591,9 @@ function buildObjectStoreSpec(): Record<string, unknown> {
 async function materializeObjectStore(
   custom: k8s.CustomObjectsApi,
   log: Pick<Logger, 'info' | 'warn'>,
+  clusterId: string,
 ): Promise<void> {
-  const spec = buildObjectStoreSpec();
+  const spec = buildObjectStoreSpec(clusterId);
   const body = {
     apiVersion: `${OBJECTSTORE_API_GROUP}/${OBJECTSTORE_API_VERSION}`,
     kind: 'ObjectStore',
