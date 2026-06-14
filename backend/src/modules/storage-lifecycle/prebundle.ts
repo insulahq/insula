@@ -37,6 +37,7 @@ import {
   backupTargetAssignments,
   backupJobs,
   backupComponents,
+  tenants,
 } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
@@ -228,11 +229,51 @@ export async function captureFilesOnlyBundle(args: {
     ))
     .limit(1);
 
+  // CRITICAL for the destructive-shrink path: the files-capture Job's
+  // Completed pod still holds the PVC RO mount, and the pvc-protection
+  // finalizer blocks a PVC delete while ANY pod (even Completed) mounts
+  // it — so the resize's `waitForPvcGone` would time out (it leaves the
+  // Job for slow ttlSecondsAfterFinished GC). Delete the Job (+pod) now,
+  // mirroring snapshotTenantPVC's explicit Job delete. Background
+  // propagation so we don't block; the PVC-delete poll absorbs the brief
+  // pod-termination lag.
+  await deleteCaptureJob(db, k8s, tenantId, result.bundleId);
+
   return {
     bundleId: result.bundleId,
     status: result.status,
     sizeBytes: comp?.sizeBytes ?? 0,
   };
+}
+
+/**
+ * Delete the files-capture Job (`bk-files-<bundleId>`) for a finished
+ * pre-resize bundle so its Completed pod releases the tenant PVC mount
+ * before the destructive resize deletes the PVC. Best-effort: the Job's
+ * own ttlSecondsAfterFinished is the backstop, and a lingering capture
+ * pod only matters on the immediate-PVC-delete (shrink) path.
+ */
+async function deleteCaptureJob(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  bundleId: string,
+): Promise<void> {
+  try {
+    const [t] = await db
+      .select({ ns: tenants.kubernetesNamespace })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    if (!t?.ns) return;
+    // Job name mirrors components/files.ts: `bk-files-${bundleId}`.slice(0, 63).
+    const jobName = `bk-files-${bundleId}`.slice(0, 63);
+    await (k8s.batch as unknown as {
+      deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+    }).deleteNamespacedJob({ name: jobName, namespace: t.ns, propagationPolicy: 'Background' });
+  } catch {
+    /* best-effort — ttl GC is the backstop */
+  }
 }
 
 /**
