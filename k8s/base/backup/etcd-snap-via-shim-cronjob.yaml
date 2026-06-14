@@ -5,9 +5,14 @@
 #
 #   k3s etcd snapshots (hostPath RO) → rclone copy → shim ClusterIP:9000
 #                                                       ↓
-#                                            s3://system/etcd/<host>-<ts>.db.zst
+#                                  s3://system/etcd/<cluster_id>/<host>-<ts>.db
 #                                                       ↓
 #                                        upstream target (S3 / SFTP / CIFS / NFS)
+#
+# The SHIM_PREFIX below ships as the legacy `etcd` seed; platform-api's
+# etcd-cronjob reconciler rewrites it to `etcd/<cluster_id>` at runtime so two
+# clusters sharing one S3 target never cross-contaminate (seed-then-disown via
+# the reconcile:disabled annotation — see metadata.annotations).
 #
 # The shim's `s3://system` bucket is rclone-`crypt` wrapped — the
 # on-the-wire payload is encrypted with BACKUP_TARGET_KEY before it
@@ -38,6 +43,15 @@ metadata:
     insula.host/backup-severity: "critical"
   annotations:
     insula.host/backup-display-name: "etcd snapshot via shim"
+    # Seed-then-disown: Flux seeds this CronJob with the legacy `etcd` SHIM_PREFIX
+    # (line ~106) and `suspend: true`, then steps back so platform-api's
+    # etcd-cronjob reconciler owns both runtime fields — it toggles `suspend` on
+    # SYSTEM-target binding AND namespaces the upload prefix by the stable
+    # cluster_id (SHIM_PREFIX → `etcd/<cluster_id>`) so two clusters sharing one
+    # S3 target can never cross-contaminate (a `--latest` etcd restore pulling
+    # ANOTHER cluster's snapshot would be catastrophic). Without this, Flux would
+    # revert both on every sync.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   # Reconciler toggles off when SYSTEM target is bound.
   suspend: true
@@ -102,6 +116,10 @@ spec:
                       key: secret_key
                 - name: SHIM_BUCKET
                   value: system
+                # Legacy day-0 seed. The etcd-cronjob reconciler rewrites this
+                # to `etcd/<cluster_id>` at runtime (seed-then-disown) so two
+                # clusters on one S3 target never collide. Restore tooling reads
+                # the live value back, so upload + restore paths always match.
                 - name: SHIM_PREFIX
                   value: etcd
                 # 24-snap retention — matches k3s side. The shim's
