@@ -57,6 +57,15 @@ api() {
 }
 ir_host() { ssh_q "kubectl -n platform get ingressroute platform-ingress -o jsonpath='{.spec.routes[0].match}'" 2>/dev/null; }
 cert_sans() { ssh_q "kubectl -n platform get certificate platform-ingress -o jsonpath='{.spec.dnsNames}'" 2>/dev/null; }
+# Namespaced variants for the seed-then-disown surfaces (stalwart web-admin,
+# tunnel anchor). `{.spec.routes[*].match}` joins every route so multi-route
+# IngressRoutes (stalwart: JMAP + WebAdmin catch-all) are covered.
+ir_host_ns()   { ssh_q "kubectl -n $1 get ingressroute $2 -o jsonpath='{.spec.routes[*].match}'" 2>/dev/null; }
+cert_sans_ns() { ssh_q "kubectl -n $1 get certificate $2 -o jsonpath='{.spec.dnsNames}'" 2>/dev/null; }
+# Assert a platform-owned IngressRoute's Host follows `want`, skipping (not
+# failing) when the resource is absent — some overlays don't deploy tunnels.
+assert_ir_follows()   { local cur; cur=$(ir_host_ns "$1" "$2");   [[ -z "$cur" ]] && { skip "$4 (IngressRoute $1/$2 absent)"; return; }; echo "$cur" | grep -q "$3" && ok "$4 -> $3" || fail "$4 did not flip: $cur"; }
+assert_cert_follows() { local cur; cur=$(cert_sans_ns "$1" "$2"); [[ -z "$cur" ]] && { skip "$4 (Certificate $1/$2 absent)"; return; }; echo "$cur" | grep -q "$3" && ok "$4 -> $3" || fail "$4 did not flip: $cur"; }
 
 log "logging in"
 TOKEN=$(curl -sk --max-time 15 -X POST "$ADMIN_HOST/api/v1/auth/login" -H "Content-Type: application/json" \
@@ -95,6 +104,14 @@ echo "$(ir_host)" | grep -q "admin.$RENAME_TARGET" && ok "platform-ingress Ingre
 echo "$(cert_sans)" | grep -q "admin.$RENAME_TARGET" && ok "platform-ingress Certificate dnsNames -> admin.$RENAME_TARGET" \
   || fail "Certificate dnsNames did not flip: $(cert_sans)"
 
+# 2b. Seed-then-disown surfaces follow the apex too (stalwart web-admin in the
+#     mail ns; tunnel anchor in platform-system). These were static `${DOMAIN}`
+#     before R16's second pass — platform-api now owns their Host + cert.
+assert_ir_follows   mail            stalwart-webadmin        "stalwart.$RENAME_TARGET" "stalwart-webadmin IngressRoute Host"
+assert_cert_follows mail            stalwart-webadmin        "stalwart.$RENAME_TARGET" "stalwart-webadmin Certificate dnsNames"
+assert_ir_follows   platform-system tunnel-anchor            "tunnels.$RENAME_TARGET"  "tunnel-anchor IngressRoute Host"
+assert_cert_follows platform-system tunnels-platform-domain  "tunnels.$RENAME_TARGET"  "tunnels-platform-domain Certificate dnsNames"
+
 # 3. Settings rewritten; ingress_base_domain UNCHANGED.
 PD=$(psql_t "select platform_domain from system_settings where id='system'")
 IB=$(psql_t "select ingress_base_domain from system_settings where id='system'")
@@ -122,6 +139,8 @@ api POST /admin/platform-domain/rename "{\"newApex\":\"$ORIG_APEX\"}" "https://a
 sleep 5
 echo "$(ir_host)" | grep -q "admin.$ORIG_APEX" && ok "reverted: IngressRoute Host back to admin.$ORIG_APEX" \
   || fail "revert did not restore the host: $(ir_host)"
+assert_ir_follows mail            stalwart-webadmin "stalwart.$ORIG_APEX" "reverted: stalwart-webadmin Host"
+assert_ir_follows platform-system tunnel-anchor     "tunnels.$ORIG_APEX"  "reverted: tunnel-anchor Host"
 [[ "$(psql_t "select platform_domain from system_settings where id='system'")" == "$ORIG_APEX" ]] \
   && ok "reverted: platform_domain back to $ORIG_APEX" || fail "platform_domain not restored"
 

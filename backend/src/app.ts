@@ -686,6 +686,43 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'startup: ingress host reconcile skipped (k8s unavailable)');
       }
 
+      // R16 seed-then-disown: converge the platform-owned Traefik hostnames
+      // that follow the platform apex (stalwart web-admin UI in mail ns + the
+      // private-worker tunnel anchor in platform-system ns) on boot. Flux
+      // re-seeds the static `${DOMAIN}` default on every git sync; this re-owns
+      // the live Host + cert dnsNames from the DB apex so a prior rename sticks
+      // across restarts/redeploys. Best-effort — never blocks startup.
+      try {
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const { reconcileStalwartWebadminIngress } = await import(
+          './modules/mail-admin/stalwart-webadmin-ingress.js'
+        );
+        const { reconcileTunnelAnchorIngress } = await import(
+          './modules/private-workers/anchor-ingress-reconciler.js'
+        );
+        const cfg = app.config as Record<string, unknown>;
+        const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
+        const k8s = createK8sClients(kubeconfigPath);
+        const [sw, ta] = await Promise.all([
+          reconcileStalwartWebadminIngress(app.db, k8s.custom, app.log),
+          reconcileTunnelAnchorIngress(app.db, k8s.custom, app.log),
+        ]);
+        if (
+          sw.ingressRoute?.patched || sw.certificate?.patched ||
+          ta.ingressRoute?.patched || ta.certificate?.patched
+        ) {
+          app.log.info(
+            { stalwartWebadmin: sw.host, tunnelAnchor: ta.host },
+            'startup: platform-owned Traefik hosts reconciled from DB apex',
+          );
+        }
+      } catch (err) {
+        app.log.warn(
+          { err },
+          'startup: stalwart web-admin / tunnel anchor host reconcile skipped (k8s unavailable)',
+        );
+      }
+
       // PR 2 (network-access two-tier): re-reconcile every tenant
       // ResourceQuota on boot to ensure the new scopeSelector + plan-
       // exact limits are in place. Idempotent — quotas already in the

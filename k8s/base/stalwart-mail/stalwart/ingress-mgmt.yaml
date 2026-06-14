@@ -47,6 +47,13 @@ metadata:
     insula.host/admin-ui: "true"
   annotations:
     insula.host/admin-auth-gate: cookie
+    # R16 seed-then-disown: this manifest seeds the fresh-install default
+    # (Host `stalwart.${DOMAIN}`); platform-api's
+    # reconcileStalwartWebadminIngress owns the live Host afterwards so a
+    # platform-apex rename follows here. Without this, Flux would revert the
+    # rename on its next git sync. Mirrors platform-webmail-ingress +
+    # the stalwart-jmap-cors Middleware below.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   entryPoints:
     - websecure
@@ -142,6 +149,11 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: mail-server
+  annotations:
+    # R16 seed-then-disown (see the IngressRoute above): platform-api owns the
+    # live dnsNames so a platform-apex rename re-issues this cert for
+    # stalwart.<newApex>. Flux seeds stalwart.${DOMAIN} then steps back.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   secretName: stalwart-webadmin-tls
   duration: 2160h

@@ -73,6 +73,12 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: private-worker-tunnel
+  annotations:
+    # R16 seed-then-disown: Flux seeds the anchor Host `tunnels.${DOMAIN}`;
+    # platform-api's reconcileTunnelAnchorIngress owns the live Host afterwards
+    # so a platform-apex rename follows. (Per-worker `<slug>.tunnels.<apex>`
+    # routes stay env-driven — re-homing live workers is a separate follow-up.)
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   entryPoints:
     - websecure
