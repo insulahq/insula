@@ -606,6 +606,10 @@ async function materializeObjectStore(
         'app.kubernetes.io/component': 'backup',
         'app.kubernetes.io/managed-by': POSTGRES_FIELD_MANAGER,
       },
+      // Seed-then-disown: this reconciler owns the cluster_id-namespaced
+      // destinationPath; re-stamp the Flux skip-annotation so a git sync can't
+      // revert it back to the static `s3://system/postgres` default in database.yaml.
+      annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' },
     },
     spec,
   };
@@ -651,7 +655,9 @@ async function materializeObjectStore(
       namespace: POSTGRES_NAMESPACE,
       plural: OBJECTSTORE_PLURAL,
       name: POSTGRES_OBJECT_STORE_NAME,
-      body: { spec },
+      // Re-stamp reconcile:disabled alongside the spec so the cluster_id path
+      // sticks even if Flux re-seeds the static manifest's annotation away.
+      body: { metadata: { annotations: { 'kustomize.toolkit.fluxcd.io/reconcile': 'disabled' } }, spec },
     } as unknown as Parameters<typeof custom.patchNamespacedCustomObject>[0],
     MERGE_PATCH,
   );
