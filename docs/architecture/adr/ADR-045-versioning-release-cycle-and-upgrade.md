@@ -227,6 +227,30 @@ CI guards introduced along the way: `scripts/preflight-image-org.sh`,
 
 ---
 
+## Addendum (2026-06-14) — operator-script consolidation scope
+
+Item 18 ("the CLI imports the backend modules; the modules ARE the source of
+truth") makes `platform-ops` the canonical home for **on-node operator actions**,
+not just DR/upgrade. The remaining genuine operator scripts (`admin-password-reset.sh`,
+`admin-domain-rewrite.sh`, the R16 `platform-domain rename` which shipped API-only,
+`backup-target-key-rotate.sh`, `component-watch.sh`, the `restore-*-from-shim.sh`
+family, …) are tracked for migration to subcommands under
+[ROADMAP R18](../../roadmap/ROADMAP.md) /
+[PLATFORM_OPS_CLI_CONSOLIDATION.md](../../roadmap/PLATFORM_OPS_CLI_CONSOLIDATION.md).
+
+Two boundaries are **fixed by this addendum**:
+
+1. **Break-glass stays bash.** Any subcommand that recovers a broken platform
+   (password reset, DR/secret restore) keeps a thin, dependency-light bash fallback
+   needing only `kubectl` + in-cluster pods — never the signed binary. The CLI
+   subcommand is canonical (one tested path); the fallback covers the one case the
+   CLI can't (the binary itself missing/unverified). `admin-password-reset.sh`
+   becomes exactly this.
+2. **Bootstrap/CI/test stay bash.** `bootstrap.sh` installs + cosign-verifies the
+   CLI (chicken/egg). `ci-*`/`test-*`/`integration-*` are not operator surface.
+
+---
+
 ## References
 
 - `docs/development/CICD_PIPELINE_REQUIREMENTS.md` — to be rewritten (W7) to match the pull model
