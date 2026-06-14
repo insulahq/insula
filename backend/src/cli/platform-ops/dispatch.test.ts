@@ -250,7 +250,7 @@ describe('dispatch', () => {
     }));
     const { deps, out } = fakeDeps({ renameDomain });
     expect(await dispatch(['domain', 'rename', '--to', 'new.example.test'], deps)).toBe(0);
-    expect(renameDomain).toHaveBeenCalledWith({ newApex: 'new.example.test', kubeconfig: undefined, clusterIssuer: undefined });
+    expect(renameDomain).toHaveBeenCalledWith({ newApex: 'new.example.test', kubeconfig: undefined });
     expect(out.join('\n')).toMatch(/new\.example\.test/);
   });
 
@@ -261,7 +261,7 @@ describe('dispatch', () => {
     }));
     const { deps } = fakeDeps({ renameDomain });
     expect(await dispatch(['domain', 'rename', 'x.example.test'], deps)).toBe(0);
-    expect(renameDomain).toHaveBeenCalledWith({ newApex: 'x.example.test', kubeconfig: undefined, clusterIssuer: undefined });
+    expect(renameDomain).toHaveBeenCalledWith({ newApex: 'x.example.test', kubeconfig: undefined });
   });
 
   it('domain rename without an apex → exit 2', async () => {

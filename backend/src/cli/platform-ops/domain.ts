@@ -23,11 +23,7 @@ async function domainRename(args: string[], deps: Deps): Promise<number> {
     return 2;
   }
 
-  const out = await deps.renameDomain({
-    newApex,
-    kubeconfig: flagValue(args, '--kubeconfig'),
-    clusterIssuer: flagValue(args, '--cluster-issuer'),
-  });
+  const out = await deps.renameDomain({ newApex, kubeconfig: flagValue(args, '--kubeconfig') });
   if (!out.ok || !out.result) {
     deps.err(`domain rename: failed${out.errorCode ? ` (${out.errorCode})` : ''}: ${out.detail ?? ''}`);
     return 1;

@@ -49,9 +49,10 @@ Commands:
                          Reset a user's password (hashes in the platform-api
                          pod). --random prints a new password once; otherwise
                          pipe the password on stdin (never an argv flag)
-  domain rename --to <apex> [--cluster-issuer <name>] [--json]
-                         Rename the platform apex — moves every platform
-                         hostname + TLS cert; tenant CNAME target is untouched
+  domain rename --to <apex> [--json]
+                         Rename the platform apex (runs in the platform-api
+                         pod) — moves every platform hostname + TLS cert; the
+                         tenant CNAME target is untouched
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
   snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)

@@ -408,11 +408,13 @@ export interface Deps {
    */
   resetAdminPassword: (opts: { email: string; password: string; kubeconfig?: string }) => Promise<AdminResetOutcome>;
   /**
-   * Rename the platform apex IN-PROCESS via the backend `renamePlatformDomain`
-   * service (R16). Resolves DATABASE_URL from the platform-db-credentials secret
-   * + the CNPG -rw ClusterIP when unset. NEVER throws.
+   * Rename the platform apex by exec-ing the in-pod entrypoint
+   * (`node dist/cli/platform-domain-rename.js`) in the platform-api pod — it runs
+   * the same `renamePlatformDomain` service the API uses, with the pod's config +
+   * in-cluster k8s (the service's native-dep graph can't run in this SEA binary).
+   * NEVER throws.
    */
-  renameDomain: (opts: { newApex: string; kubeconfig?: string; clusterIssuer?: string }) => Promise<DomainRenameOutcome>;
+  renameDomain: (opts: { newApex: string; kubeconfig?: string }) => Promise<DomainRenameOutcome>;
   /** Read all of this process's stdin to EOF (for piping a secret in without argv exposure). */
   readStdin: () => Promise<string>;
 }
@@ -545,66 +547,39 @@ async function realApplyMigrations(
   }
 }
 
-/** Run kubectl + return trimmed stdout, or null on non-zero exit. */
-async function kubectlCapture(
-  env: NodeJS.ProcessEnv,
-  kubeconfig: string | undefined,
-  args: string[],
-): Promise<string | null> {
-  const kc = kubeconfig ?? env.KUBECONFIG;
-  const full = ['--kubeconfig', kc && kc.trim() ? kc : '/etc/rancher/k3s/k3s.yaml', ...args];
-  const r = await realExec('kubectl', full);
-  return r.code === 0 ? r.stdout.trim() : null;
+interface PodExecResult {
+  readonly code: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly timedOut: boolean;
 }
 
 /**
- * Resolve a host-reachable DATABASE_URL. Prefers env.DATABASE_URL; otherwise
- * derives one from the `platform-db-credentials` secret + the CNPG `-rw`
- * ClusterIP. NOTE: the secret's own `url` targets `<cluster>.svc.cluster.local`,
- * which does NOT resolve from a node host — so we substitute the ClusterIP
- * (kube-proxy makes ClusterIPs reachable from the host). Returns null when the
- * secret/service can't be read (cluster down / wrong context).
+ * Run `kubectl exec -i deploy/platform-api -c platform-api -- node <nodeArgs>`
+ * and capture its output, with a 60s hard cap. The in-pod node entrypoints
+ * (admin-reset-password.js, platform-domain-rename.js) run where native deps
+ * (bcrypt) + the pod's DATABASE_URL + in-cluster k8s all work — the SEA binary
+ * can't. `stdinData`, when set, is piped to the child's stdin (a secret stays
+ * off argv/env). NEVER throws.
  */
-async function resolveDatabaseUrl(env: NodeJS.ProcessEnv, kubeconfig?: string): Promise<string | null> {
-  if (env.DATABASE_URL && env.DATABASE_URL.trim()) return env.DATABASE_URL;
-  const readSecret = async (key: string): Promise<string | null> => {
-    const v = await kubectlCapture(env, kubeconfig, [
-      '-n', 'platform', 'get', 'secret', 'platform-db-credentials', '-o', `jsonpath={.data.${key}}`,
-    ]);
-    return v ? Buffer.from(v, 'base64').toString('utf8') : null;
-  };
-  const [user, pass] = await Promise.all([readSecret('username'), readSecret('password')]);
-  if (!user || !pass) return null;
-  // CNPG cluster was renamed postgres → system-db (PG18 migration); try the
-  // canonical -rw service first, then the legacy name.
-  let ip = await kubectlCapture(env, kubeconfig, [
-    '-n', 'platform', 'get', 'svc', 'system-db-rw', '-o', 'jsonpath={.spec.clusterIP}',
-  ]);
-  if (!ip) {
-    ip = await kubectlCapture(env, kubeconfig, [
-      '-n', 'platform', 'get', 'svc', 'postgres-rw', '-o', 'jsonpath={.spec.clusterIP}',
-    ]);
-  }
-  if (!ip) return null;
-  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${ip}:5432/platform`;
-}
-
-async function realResetAdminPassword(
+function execApiPodNode(
   env: NodeJS.ProcessEnv,
-  opts: { email: string; password: string; kubeconfig?: string },
-): Promise<AdminResetOutcome> {
-  const kc = opts.kubeconfig ?? env.KUBECONFIG;
+  kubeconfig: string | undefined,
+  nodeArgs: string[],
+  stdinData?: string,
+): Promise<PodExecResult> {
+  const kc = kubeconfig ?? env.KUBECONFIG;
   const args = [
     '--kubeconfig', kc && kc.trim() ? kc : '/etc/rancher/k3s/k3s.yaml',
     '-n', 'platform', 'exec', '-i', 'deploy/platform-api', '-c', 'platform-api', '--',
-    'node', 'dist/cli/admin-reset-password.js', '--email', opts.email,
+    'node', ...nodeArgs,
   ];
-  return new Promise<AdminResetOutcome>((resolve) => {
+  return new Promise<PodExecResult>((resolve) => {
     const child = spawn('kubectl', args, { stdio: ['pipe', 'pipe', 'pipe'], env });
     let stdout = '';
     let stderr = '';
     let done = false;
-    const finish = (r: AdminResetOutcome): void => {
+    const finish = (r: PodExecResult): void => {
       if (done) return;
       done = true;
       clearTimeout(timer);
@@ -614,77 +589,62 @@ async function realResetAdminPassword(
     // `kubectl exec -i` block on a not-ready container forever. Kill + fail.
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish({ ok: false, errorCode: 'TIMEOUT', detail: 'kubectl exec into platform-api timed out after 60s (pod not ready?)' });
+      finish({ code: null, stdout, stderr, timedOut: true });
     }, 60_000);
     child.stdout?.on('data', (d) => (stdout += d.toString()));
     child.stderr?.on('data', (d) => (stderr += d.toString()));
-    child.on('error', () => finish({ ok: false, errorCode: 'EXEC_ERROR', detail: 'failed to spawn kubectl' }));
-    child.on('close', (code) => {
-      if (code !== 0) {
-        finish({ ok: false, errorCode: 'RESET_FAILED', detail: scrubCreds((stderr || stdout).trim()) || `kubectl exec exited ${code}` });
-        return;
-      }
-      // The entrypoint prints one JSON line on stdout; ignore any kubectl noise.
-      const line = stdout.trim().split('\n').filter(Boolean).pop() ?? '';
-      try {
-        const j = JSON.parse(line) as { ok?: boolean; userId?: string };
-        finish(j.ok ? { ok: true, userId: j.userId } : { ok: false, errorCode: 'RESET_FAILED', detail: line });
-      } catch {
-        finish({ ok: false, errorCode: 'RESET_FAILED', detail: scrubCreds(stdout.trim() || stderr.trim()) });
-      }
-    });
-    // Password over stdin — never argv, never env (stays out of `ps`/exec logs).
-    child.stdin?.write(opts.password);
+    child.on('error', () => finish({ code: 127, stdout, stderr: stderr || 'failed to spawn kubectl', timedOut: false }));
+    child.on('close', (code) => finish({ code, stdout, stderr, timedOut: false }));
+    if (stdinData !== undefined) child.stdin?.write(stdinData);
     child.stdin?.end();
   });
 }
 
+/** Last non-empty line of stdout — the in-pod entrypoints print one JSON line. */
+function lastJsonLine(stdout: string): string {
+  return stdout.trim().split('\n').filter(Boolean).pop() ?? '';
+}
+
+async function realResetAdminPassword(
+  env: NodeJS.ProcessEnv,
+  opts: { email: string; password: string; kubeconfig?: string },
+): Promise<AdminResetOutcome> {
+  // Password over stdin — never argv, never env (stays out of `ps`/exec logs).
+  const r = await execApiPodNode(
+    env,
+    opts.kubeconfig,
+    ['dist/cli/admin-reset-password.js', '--email', opts.email],
+    opts.password,
+  );
+  if (r.timedOut) return { ok: false, errorCode: 'TIMEOUT', detail: 'kubectl exec into platform-api timed out after 60s (pod not ready?)' };
+  if (r.code !== 0) return { ok: false, errorCode: 'RESET_FAILED', detail: scrubCreds((r.stderr || r.stdout).trim()) || `kubectl exec exited ${r.code}` };
+  try {
+    const j = JSON.parse(lastJsonLine(r.stdout)) as { ok?: boolean; userId?: string };
+    return j.ok ? { ok: true, userId: j.userId } : { ok: false, errorCode: 'RESET_FAILED', detail: lastJsonLine(r.stdout) };
+  } catch {
+    return { ok: false, errorCode: 'RESET_FAILED', detail: scrubCreds(r.stdout.trim() || r.stderr.trim()) };
+  }
+}
+
 async function realRenameDomain(
   env: NodeJS.ProcessEnv,
-  opts: { newApex: string; kubeconfig?: string; clusterIssuer?: string },
+  opts: { newApex: string; kubeconfig?: string },
 ): Promise<DomainRenameOutcome> {
+  const r = await execApiPodNode(env, opts.kubeconfig, ['dist/cli/platform-domain-rename.js', '--to', opts.newApex]);
+  if (r.timedOut) return { ok: false, errorCode: 'TIMEOUT', detail: 'kubectl exec into platform-api timed out after 60s (pod not ready?)' };
+  // The entrypoint prints a JSON envelope on stdout even when the rename fails
+  // (exit 1), so parse first; fall back to the raw exec failure otherwise.
   try {
-    const url = await resolveDatabaseUrl(env, opts.kubeconfig);
-    if (!url) {
-      return {
-        ok: false,
-        errorCode: 'NO_DATABASE_URL',
-        detail: 'could not resolve DATABASE_URL (set it, or ensure the platform-db-credentials secret + the system-db-rw service are reachable from this host)',
-      };
-    }
-    const [{ getDb, closeDb }, { renamePlatformDomain }] = await Promise.all([
-      import('../../db/index.js'),
-      import('../../modules/platform-domain/service.js'),
-    ]);
-    const db = getDb(url);
-    try {
-      const result = await renamePlatformDomain(
-        {
-          db,
-          config: {
-            KUBECONFIG_PATH: opts.kubeconfig ?? env.KUBECONFIG,
-            CLUSTER_ISSUER_NAME: opts.clusterIssuer,
-            PLATFORM_TLS_SECRET_NAME: env.PLATFORM_TLS_SECRET_NAME,
-          },
-          log: {
-            info: (obj, msg) => process.stderr.write(`[rename] ${msg ?? (typeof obj === 'string' ? obj : '')}\n`),
-            warn: (obj, msg) => process.stderr.write(`[rename] WARN ${scrubCreds(msg ?? (typeof obj === 'string' ? obj : JSON.stringify(obj)))}\n`),
-          },
-        },
-        opts.newApex,
-      );
-      return { ok: true, result };
-    } finally {
-      await closeDb().catch(() => undefined);
-    }
-  } catch (err) {
-    // renamePlatformDomain throws ApiError(INVALID_FIELD_VALUE, 400) on a bad apex.
-    const code = (err as { code?: string } | null)?.code;
-    return {
-      ok: false,
-      errorCode: code === 'INVALID_FIELD_VALUE' ? 'INVALID_APEX' : 'RENAME_ERROR',
-      detail: scrubCreds(err instanceof Error ? err.message : String(err)),
+    const j = JSON.parse(lastJsonLine(r.stdout)) as {
+      ok?: boolean;
+      result?: RenamePlatformDomainResult;
+      errorCode?: string;
+      detail?: string;
     };
+    if (j.ok && j.result) return { ok: true, result: j.result };
+    return { ok: false, errorCode: j.errorCode ?? 'RENAME_ERROR', detail: scrubCreds(j.detail ?? lastJsonLine(r.stdout)) };
+  } catch {
+    return { ok: false, errorCode: 'RENAME_ERROR', detail: scrubCreds((r.stderr || r.stdout).trim()) || `kubectl exec exited ${r.code}` };
   }
 }
 
