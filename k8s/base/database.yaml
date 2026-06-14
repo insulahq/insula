@@ -258,8 +258,16 @@ metadata:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: backup
     app.kubernetes.io/managed-by: platform-api-postgres-objectstore
+  annotations:
+    # Seed-then-disown: Flux seeds this with the legacy `s3://system/postgres`
+    # default, then steps back so platform-api's postgres-objectstore reconciler
+    # owns the live destinationPath — which it namespaces by the stable
+    # cluster_id (s3://system/<cluster_id>/postgres) for cross-cluster collision
+    # safety. Without this, Flux would revert the reconciler's path on every sync.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   configuration:
+    # Legacy day-0 default — the reconciler rewrites this to include cluster_id.
     destinationPath: 's3://system/postgres'
     endpointURL: 'http://backup-rclone-shim.platform.svc.cluster.local:9000'
     s3Credentials:
