@@ -27,6 +27,7 @@ import {
   __resetResticSpawnForTest,
   runResticBackup,
   runResticRestore,
+  runResticDump,
   listResticSnapshots,
   addResticKey,
   type BackupTarget,
@@ -491,6 +492,121 @@ describe('runResticBackup', () => {
         stdin: Readable.from([]),
       }),
     ).rejects.toThrow(/tenantId/i);
+  });
+});
+
+describe('runResticDump', () => {
+  afterEach(() => {
+    __resetResticSpawnForTest();
+  });
+
+  const SNAP = 'abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234';
+
+  it('builds the per-tenant repo URI + dump argv and streams stdout', async () => {
+    const calls: Array<{ args: ReadonlyArray<string>; env: Record<string, string> }> = [];
+    __setResticSpawnForTest((_bin, args, opts) => {
+      calls.push({ args: [...args], env: { ...(opts.env ?? {}) } });
+      return {
+        stdout: Readable.from([Buffer.from('tar-bytes-here')]),
+        stderr: Readable.from([]),
+        stdin: { write: () => true, end: () => undefined, on: () => undefined },
+        on: (ev: string, cb: (code?: number) => void) => {
+          if (ev === 'exit') setImmediate(() => cb(0));
+          return undefined;
+        },
+        kill: () => undefined,
+      };
+    });
+
+    const target: BackupTarget = {
+      kind: 's3',
+      s3Endpoint: 'https://fsn1.your-objectstorage.com',
+      s3Bucket: 'k8s-staging',
+      s3AccessKey: 'AK',
+      s3SecretKey: 'SK',
+    };
+
+    const stream = await runResticDump({
+      target,
+      tenantId: 'tenant-abc',
+      component: 'files',
+      snapshotId: SNAP,
+      dumpPath: '/archive.tar',
+      passwordHex: FIXTURE_PASSWORD,
+    });
+
+    let body = '';
+    for await (const chunk of stream) body += chunk.toString();
+    expect(body).toBe('tar-bytes-here');
+
+    expect(calls.length).toBe(1);
+    const a = calls[0].args;
+    // MUST use the full per-tenant URI (buildResticRepoUri) — NOT the
+    // bucket-root URI that buildResticRepoUriForRestore returns for shim.
+    const repoIdx = a.indexOf('--repo');
+    expect(repoIdx).toBeGreaterThanOrEqual(0);
+    expect(a[repoIdx + 1]).toBe('s3:https://fsn1.your-objectstorage.com/k8s-staging/restic-files/tenant-abc');
+    expect(a).toContain('--no-lock');
+    // dump <snap> <path> at the tail, in order.
+    const dumpIdx = a.indexOf('dump');
+    expect(dumpIdx).toBeGreaterThanOrEqual(0);
+    expect(a[dumpIdx + 1]).toBe(SNAP);
+    expect(a[dumpIdx + 2]).toBe('/archive.tar');
+    // restic password passed via env, never argv.
+    expect(calls[0].env.RESTIC_PASSWORD).toBe(FIXTURE_PASSWORD);
+    expect(a).not.toContain(FIXTURE_PASSWORD);
+  });
+
+  it('rejects a malformed snapshot id before spawning', async () => {
+    let spawned = false;
+    __setResticSpawnForTest(() => {
+      spawned = true;
+      return {
+        stdout: Readable.from([]),
+        stderr: Readable.from([]),
+        stdin: { write: () => true, end: () => undefined, on: () => undefined },
+        on: () => undefined,
+        kill: () => undefined,
+      };
+    });
+    await expect(
+      runResticDump({
+        target: { kind: 's3', s3Endpoint: 'https://x', s3Bucket: 'b', s3AccessKey: 'AK', s3SecretKey: 'SK' },
+        tenantId: 'tenant-abc',
+        component: 'files',
+        snapshotId: '../etc/passwd',
+        dumpPath: '/archive.tar',
+        passwordHex: FIXTURE_PASSWORD,
+      }),
+    ).rejects.toThrow(/invalid snapshotId/i);
+    expect(spawned).toBe(false);
+  });
+
+  it('REJECTS (never returns an empty stream) when restic fails with empty stdout', async () => {
+    // The silent-data-loss guard: a non-zero exit with no bytes must
+    // reject so the route returns 5xx and the restore Job fails loud —
+    // NOT resolve a clean empty stream that untars nothing into the PVC.
+    __setResticSpawnForTest(() => ({
+      stdout: Readable.from([]),
+      stderr: Readable.from([Buffer.from('Fatal: repository does not exist\n')]),
+      stdin: { write: () => true, end: () => undefined, on: () => undefined },
+      on: (ev: string, cb: (code?: number) => void) => {
+        if (ev === 'exit') setImmediate(() => cb(1));
+        return undefined;
+      },
+      kill: () => undefined,
+    }));
+
+    await expect(
+      runResticDump({
+        target: { kind: 's3', s3Endpoint: 'https://x', s3Bucket: 'b', s3AccessKey: 'AK', s3SecretKey: 'SK' },
+        tenantId: 'tenant-abc',
+        component: 'files',
+        snapshotId: SNAP,
+        dumpPath: '/archive.tar',
+        passwordHex: FIXTURE_PASSWORD,
+      }),
+    ).rejects.toThrow(/restic dump exited 1/);
   });
 });
 

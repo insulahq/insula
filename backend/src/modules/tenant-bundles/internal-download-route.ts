@@ -24,17 +24,22 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
-import { backupJobs, backupConfigurations } from '../../db/schema.js';
+import { eq, and } from 'drizzle-orm';
+import { backupJobs, backupConfigurations, backupComponents } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { resolveShimFirstBackupStore } from './shim-backup-store.js';
+import { resolveShimBackupTarget } from './resolve-backup-target.js';
+import { runResticDump, deriveResticPassword } from './restic-driver.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { decrypt } from '../oidc/crypto.js';
 import { verifyUploadToken } from './upload-token.js';
 
 const ALLOWED_COMPONENTS = new Set(['files', 'mailboxes', 'config', 'secrets'] as const);
+const RESTIC_STREAM_ARTIFACT = 'restic-stream';
+const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 
 export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Promise<void> {
   const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
@@ -116,6 +121,82 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
     }
     reply.header('Cache-Control', 'no-store');
     return reply.send(body);
+  });
+
+  // ── GET /internal/bundles/:bundleId/files-restic-tar ───────────────
+  // Restore-into-PVC: stream the files component's restic snapshot as a
+  // raw (uncompressed) tar, reconstructed via `restic dump`. The files
+  // capture stored the PVC contents with `restic backup --stdin
+  // --stdin-filename archive.tar`; this is the exact inverse. A tenant-
+  // namespace restore Job curls this endpoint and untars the body into
+  // the (freshly recreated) PVC.
+  //
+  // This is the genuinely-missing files restore-into-PVC primitive: the
+  // legacy `files-paths` executor reads a raw `archive.tar.gz` from the
+  // bundle store, which the restic capture never writes. Restoring from
+  // a restic bundle MUST go through `restic dump`.
+  //
+  // Auth: same HMAC token bound to (bundleId, 'files', 'restic-stream')
+  // as the capture upload. restic + backup creds stay on platform-api —
+  // never materialised in the tenant Job (identical trust boundary to
+  // the capture path).
+  app.get('/internal/bundles/:bundleId/files-restic-tar', {
+    schema: { tags: ['TenantBundles-Internal'], summary: 'Stream a files restic snapshot as a tar to a restore Job' },
+  }, async (request, reply) => {
+    const { bundleId } = request.params as { bundleId: string };
+    const token = (request.query as { token?: string }).token ?? '';
+    if (!token) throw new ApiError('UNAUTHORIZED', 'missing download token', 401);
+
+    const verifyErr = verifyUploadToken(
+      token,
+      { bundleId, component: 'files', artifactName: RESTIC_STREAM_ARTIFACT },
+      secretsKeyHex,
+    );
+    if (verifyErr) {
+      app.log.warn({ verifyErr, bundleId }, 'tenant-bundles files-restic-tar: token rejected');
+      throw new ApiError('UNAUTHORIZED', 'download token invalid', 401);
+    }
+
+    const [job] = await app.db.select().from(backupJobs).where(eq(backupJobs.id, bundleId)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Bundle not found', 404);
+
+    // The files component records its restic snapshot id in
+    // backup_components.sha256. NOTE: the persisted row's artifact_name
+    // is the legacy `archive.tar.gz` (orchestrator.insertComponentRow),
+    // NOT the `restic-stream` the upload/download HMAC token binds to —
+    // so we filter by component, not artifact_name. There is exactly one
+    // files row per bundle (unique index on job+component+artifact).
+    const [comp] = await app.db.select()
+      .from(backupComponents)
+      .where(and(
+        eq(backupComponents.backupJobId, bundleId),
+        eq(backupComponents.component, 'files'),
+      ))
+      .limit(1);
+    if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) {
+      throw new ApiError('NOT_FOUND', `Bundle ${bundleId} has no files restic snapshot`, 404);
+    }
+
+    // Resolve the shim 'tenant' restic target + the per-tenant repo
+    // password. These never leave platform-api.
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+      ?? process.env.KUBECONFIG_PATH;
+    const k8s = createK8sClients(kubeconfigPath);
+    const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+    const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
+
+    const stream = await runResticDump({
+      target,
+      tenantId: job.tenantId,
+      component: 'files',
+      snapshotId: comp.sha256,
+      dumpPath: '/archive.tar',
+      passwordHex,
+    });
+
+    reply.header('Content-Type', 'application/x-tar');
+    reply.header('Cache-Control', 'no-store');
+    return reply.send(stream);
   });
 }
 

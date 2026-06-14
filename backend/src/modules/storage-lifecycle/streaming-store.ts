@@ -189,7 +189,14 @@ export class S3StreamingStore implements StreamingSnapshotStore {
       RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY: this.config.secretAccessKey,
     };
 
-    return { image: RCLONE_IMAGE, script: buildStreamingScript(), publicEnv, secretEnv, remoteUri, shaUri };
+    // Shim detection: the backup-rclone-shim's gofakes3 buffers whole
+    // objects in RAM, so cap single-object streams there. Real S3
+    // upstreams (Hetzner/minio/etc.) stream multipart fine — no cap.
+    const isShim = (this.config.endpoint ?? '').includes('rclone-shim');
+    const script = buildStreamingScript(
+      isShim ? { maxSourceBytes: 512 * 1024 * 1024 } : {},
+    );
+    return { image: RCLONE_IMAGE, script, publicEnv, secretEnv, remoteUri, shaUri };
   }
 
   /**
@@ -910,17 +917,45 @@ function shortId(s: string): string {
  * rclone S3 multipart buffer (16 MB chunk × 8 concurrent = ~130 MB).
  * Well within the 256 Mi container limit.
  */
-function buildStreamingScript(): string {
+function buildStreamingScript(opts: { maxSourceBytes?: number } = {}): string {
   // NOTE: we DON'T use `set -e` here because we want explicit error
   // handling at each step (busybox sh + named-pipe + background process
   // interactions are subtle, and silent abort makes debugging hard).
   // We capture each command's RC and exit explicitly with a clear message.
+  //
+  // Single-object guard (shim only): the backup-rclone-shim's
+  // `rclone serve s3` (gofakes3) buffers an ENTIRE object in RAM until
+  // CompleteMultipartUpload — a raw `rclone rcat` of one giant tar OOMs
+  // it past ~1 GiB (the bug that broke every destructive shrink). The
+  // pre-resize path now uses a chunked files-bundle (restic) instead, so
+  // this guard should never fire there; it remains as a hard backstop so
+  // ANY caller that still streams a single large object to the shim
+  // fails LOUD here instead of OOMing the shim mid-stream. Real S3/SFTP/
+  // SMB upstreams stream fine and pass `maxSourceBytes` undefined.
+  const guard = opts.maxSourceBytes && opts.maxSourceBytes > 0
+    ? [
+        `MAX_SRC_BYTES=${Math.floor(opts.maxSourceBytes)}`,
+        // Filesystem-used bytes via `df` (O(1)) rather than `du -sb` (a
+        // full tree walk that pins CPU for ~minutes on a PVC with many
+        // small files). /source is a dedicated PVC mount so df is
+        // accurate; it slightly over-reports vs the gzipped object, which
+        // only makes the backstop more conservative. busybox-portable:
+        // `df -kP` → Used in 1K blocks (col 3) × 1024 = bytes.
+        'SRC_BYTES=$(df -kP /source 2>/dev/null | awk \'NR==2{print $3*1024}\')',
+        'if [ -n "$SRC_BYTES" ] && [ "$SRC_BYTES" -gt "$MAX_SRC_BYTES" ]; then',
+        '  echo "[snapshot] ERROR: source $SRC_BYTES bytes exceeds the shim single-object guard $MAX_SRC_BYTES bytes."',
+        '  echo "[snapshot] A single rclone-rcat object this large would OOM the gofakes3 shim. Use the chunked files-bundle snapshot path (restic) instead."',
+        '  exit 1',
+        'fi',
+      ]
+    : [];
   return [
     '#!/bin/sh',
     '# Phase 4 streaming snapshot pipeline (busybox-sh compatible).',
     'echo "[snapshot] starting tar | gzip | tee | sha256+rclone pipeline"',
     'echo "[snapshot] source size estimate:"',
     'du -sh /source 2>&1 | head -1 || true',
+    ...guard,
     'echo "[snapshot] remote URI: $REMOTE_URI"',
     '# Create a named pipe so the byte stream can fan-out to sha256 AND rclone.',
     'mkfifo /tmp/tar-pipe || { echo "[snapshot] mkfifo failed"; exit 1; }',
