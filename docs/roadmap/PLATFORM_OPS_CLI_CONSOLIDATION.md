@@ -114,12 +114,27 @@ fallback — CLI only.
   Both already have backend service modules → thin CLI wrappers. Re-scope
   `admin-password-reset.sh` to break-glass; retire `admin-domain-rewrite.sh` into
   `domain`. Add the §6 guard.
-- **T2 — DR + secrets.** Fold `restore-*-from-shim.sh` under `dr restore --component`;
-  decide secrets-fetch/restore (§7); parity-check and delete `dr-restore.sh` + reconcile
-  `make diagnose`.
+- **T1 — SHIPPED 2026-06-14 (E2E 8/8).** `admin reset-password` + `domain rename`. KEY
+  finding: both run IN-POD (`kubectl exec node dist/cli/<entrypoint>.js`), NOT in the SEA
+  binary — the service graphs load native modules (bcrypt + node-gyp-build) that crash on
+  a bare host. The binary is a thin native-free orchestrator. Bash break-glass kept.
+- **T2 — DR + secrets (in progress 2026-06-14).** `secrets fetch/restore` STAY `make`
+  (workstation→remote context — can't be an on-node subcommand; §7.1 resolved). DR
+  component restores (`restore-{etcd,mail,postgres}-from-shim.sh`) become
+  `platform-ops dr restore-component <etcd|mail|postgres>` subcommands AND keep their bash
+  as break-glass fallback (per §4); destructive E2E on the disposable testing cluster
+  (rebootstrap if fatal). Parity-check `dr-restore.sh` vs `dr restore`; `make diagnose`
+  stays a local helper (writes Calico/Felix forensics to `docs/diagnostics/`).
 - **T3 — housekeeping actions.** `backup rotate-key/key-status`, `component-watch`,
   `cluster gc-namespaces`, `cluster upgrade-cnpg`, `node-terminal gc`.
-- **T4 — retire one-shots.** Move §5C migrations/backfills/spikes to `scripts/archive/`.
+- **T4 — retire one-shots (started 2026-06-14).** `scripts/archive/` created with a README
+  (§7.2 resolved). Only the **6 truly-unreferenced** one-shots were moved (spike-flux-repin-
+  validate, spike-restic-jmap, migrate-cluster-to-substituteFrom, migrate-stalwart-default-
+  hostname, migrate-stalwart-tls-bootstrap, storage-snapshot-backfill). The rest stay —
+  `migrate-valkey-bootstrap`, `cutover-stalwart-v015-to-v016`, `mail-stack-consolidate`,
+  `apply-backup-labels`, `backfill-tenant-namespace-pss`, `stalwart-016-spike` are still
+  referenced by bootstrap / CI / kustomize / backend code, so archiving them would break
+  those callers.
 
 ## 6. Guardrail (prevent regrowth)
 
@@ -130,18 +145,21 @@ A new CI guard (`ci-operator-script-placement.sh`, always-run) that **fails when
 forces new operator actions to land as `platform-ops` subcommands. Companion to the
 identifier guard added in this branch.
 
-## 7. Open decisions (need an answer before T2)
+## 7. Decisions (RESOLVED 2026-06-14)
 
-1. **`secrets fetch/restore`** run from the operator's **workstation against a remote
-   host over SSH** — not on-node. Options: (a) a `platform-ops secrets` subcommand that
-   SSHes (CLI grows a remote-exec mode); (b) keep as `make`/bash (different context, leave
-   it). *Recommendation: keep as `make` for now; revisit if the CLI gains a remote mode.*
-2. **Retire = delete vs `scripts/archive/`** for one-time migrations. *Recommendation:
-   `scripts/archive/` with a README, so the host-migration registry (ADR-045 W10c) can
-   reference prior migrations without `git log` spelunking.*
-3. **`destroy-cluster.sh`** (DESTRUCTIVE wipe): make it `cluster destroy --confirm` or
-   keep standalone? *Recommendation: keep standalone — it intentionally works on a
-   half-dead cluster, same logic as break-glass.*
+1. **`secrets fetch/restore` → stay `make`.** They run from the operator's **workstation
+   against a remote host over SSH** (pull bundles *to* the laptop, apply with a local age
+   key + KUBECONFIG). The `platform-ops` binary runs *on* a cluster node, so an on-node
+   subcommand is the wrong execution context. Revisit only if the CLI ever grows a
+   remote-exec mode.
+2. **Retire → `scripts/archive/` + README.** Done (§5C / T4). Discoverable; git history
+   preserved; only unreferenced one-shots moved.
+3. **`destroy-cluster.sh` → keep standalone.** It intentionally works on a half-dead
+   cluster — same rationale as break-glass; no subcommand.
+4. **DR component restores → subcommands + bash break-glass fallback.** Testing is a
+   disposable cluster, so the destructive restores are E2E-able there (rebootstrap if
+   fatal). The bash `restore-*-from-shim.sh` stay as the dependency-light break-glass
+   (per §4); the subcommands are the canonical convenience path.
 
 ## 8. Non-goals
 
