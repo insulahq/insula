@@ -298,4 +298,39 @@ describe('dispatch', () => {
     expect(await dispatch(['domain', 'rename', '--to', 'bad'], deps)).toBe(1);
     expect(err.join('\n')).toMatch(/INVALID_APEX|failed/i);
   });
+
+  // ── T3 housekeeping (embed-launch) ──
+  it('cluster gc-namespaces + upgrade-cnpg launch their embedded scripts', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['cluster', 'gc-namespaces'], deps)).toBe(0);
+    expect(await dispatch(['cluster', 'upgrade-cnpg'], deps)).toBe(0);
+    expect(runEmbeddedScript).toHaveBeenNthCalledWith(1, 'ops/cleanup-orphaned-namespaces.sh', []);
+    expect(runEmbeddedScript).toHaveBeenNthCalledWith(2, 'ops/upgrade-cnpg.sh', []);
+  });
+
+  it('component-watch launches its embedded script with passthrough args', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['component-watch', '--json'], deps)).toBe(0);
+    expect(runEmbeddedScript).toHaveBeenCalledWith('ops/component-watch.sh', ['--json']);
+  });
+
+  it('node-terminal gc launches its script; bad subcommand → exit 2', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps, err } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['node-terminal', 'gc'], deps)).toBe(0);
+    expect(runEmbeddedScript).toHaveBeenCalledWith('ops/node-terminal-cleanup-stale-artifacts.sh', []);
+    expect(await dispatch(['node-terminal'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/gc/);
+  });
+
+  it('backup rotate-key launches its script; bad subcommand → exit 2', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps, err } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['backup', 'rotate-key', '--confirm'], deps)).toBe(0);
+    expect(runEmbeddedScript).toHaveBeenCalledWith('ops/backup-target-key-rotate.sh', ['--confirm']);
+    expect(await dispatch(['backup'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/rotate-key/);
+  });
 });
