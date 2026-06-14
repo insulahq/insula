@@ -68,10 +68,16 @@ assert_ir_follows()   { local cur; cur=$(ir_host_ns "$1" "$2");   [[ -z "$cur" ]
 assert_cert_follows() { local cur; cur=$(cert_sans_ns "$1" "$2"); [[ -z "$cur" ]] && { skip "$4 (Certificate $1/$2 absent)"; return; }; echo "$cur" | grep -q "$3" && ok "$4 -> $3" || fail "$4 did not flip: $cur"; }
 
 log "logging in"
+# Build the login body with proper JSON encoding (via env, not argv) so a
+# password containing JSON/shell-special chars can't break the request or leak
+# into the process table. Tolerate an error envelope ({error:...}) rather than
+# KeyError-ing on a bad login.
+LOGIN_BODY=$(ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" python3 -c \
+  "import json,os;print(json.dumps({'email':os.environ['ADMIN_EMAIL'],'password':os.environ['ADMIN_PASSWORD']}))")
 TOKEN=$(curl -sk --max-time 15 -X POST "$ADMIN_HOST/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
-  | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])")
-[[ -n "$TOKEN" ]] || { echo "login failed" >&2; exit 1; }
+  --data-binary "$LOGIN_BODY" \
+  | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('data') or {}).get('token','') or '')" 2>/dev/null)
+[[ -n "$TOKEN" ]] || { echo "login failed (check ADMIN_PASSWORD/ADMIN_HOST)" >&2; exit 1; }
 
 # Current apex (to revert to). Strip the admin. prefix off ADMIN_HOST as a fallback.
 ORIG_APEX=$(api GET /admin/platform-domain | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['platformDomain'] or '')")
