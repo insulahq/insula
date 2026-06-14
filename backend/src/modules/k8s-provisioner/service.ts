@@ -257,6 +257,17 @@ export const TENANT_OVERHEAD_PRIORITY_CLASS = 'platform-tenant-overhead';
  */
 const TENANT_NAMESPACE_LABELS_BASE = {
   platform: 'k8s-hosting',
+  // Gate for the backup-rclone-shim ingress NetworkPolicy
+  // (k8s/base/backup-rclone-shim/networkpolicy.yaml): in-tenant-namespace
+  // backup/snapshot Jobs (tenant-bundle, pre-resize, pre-archive) push to the
+  // shim's S3 endpoint at backup-rclone-shim.platform.svc:9000. The shim policy
+  // only admits namespaces carrying this label — without it the Job's upload
+  // hangs on `dial tcp …:9000: i/o timeout` and the snapshot fails. The shim
+  // still enforces per-tenant bucket isolation, so labelling every tenant
+  // namespace is safe. (The netpol comment referenced a hook that was never
+  // implemented; applyNamespace is the single source of truth, so stamp it
+  // here — new namespaces get it at create, existing ones on the next touch.)
+  'insula.host/tenant-backup-allowed': 'true',
 } as const;
 
 /**
