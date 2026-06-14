@@ -62,7 +62,7 @@ What collides, worst-first, if prefixes are shared:
 | Class | Path key | Collision behaviour |
 |---|---|---|
 | **postgres** | `…/system/postgres/<serverName>/` where `serverName = system-db` on **every** cluster | **Worst.** Two clusters' WAL + base backups intermix under one barman server name. A restore replays *another cluster's* WALs → corruption / wrong data. There is no name-based separation. |
-| **etcd** | `…/system/etcd/<host>-<ts>.db` | Snapshot files don't overwrite (host+timestamp keyed), but they share one bucket and the "keep newest 24" prune evicts **across** clusters, and `--latest` may pick another cluster's snapshot. |
+| **etcd** | `…/system/etcd/<host>-<ts>.db` | Snapshot files don't overwrite (host+timestamp keyed), but they share one bucket and the "keep newest 24" prune evicts **across** clusters, and `--latest` may pick another cluster's snapshot — **restoring another cluster's etcd is catastrophic.** |
 | **mail** | `…/mail/…` (one restic repo) | Both clusters share one restic repository → mixed snapshots, retention churn, and repo-lock contention. |
 
 **Automatic collision-resistance (`cluster_id`, 2026-06-14).** A stable
@@ -74,7 +74,7 @@ NOT the apex, which can change on rename) is injected into the **system** and
 |---|---|---|
 | **postgres** | `…/system/<cluster_id>/postgres/system-db/…` | ✅ Done (ObjectStore `destinationPath`). Restore reads it automatically via the ObjectStore CR. |
 | **mail** | `…/mail/mail-snapshots/<cluster_id>/…` | ✅ Done (restic `RESTIC_REPOSITORY`). Restore reads it from the repo Secret. |
-| **etcd** | `…/system/etcd/<host>-<ts>.db` | ⚠️ **NOT yet** — `SHIM_PREFIX=etcd` is a static Flux-managed CronJob env. Namespacing it needs the seed-then-disown pattern (reconciler-patch + `reconcile: disabled`) + a `restore-etcd-from-shim` path update + a fatal-restore E2E. **HIGH priority follow-up** — until then, `--latest` could restore *another* cluster's etcd onto this one (catastrophic) if a bucket+prefix is shared. Keep distinct prefixes for etcd-sharing clusters. |
+| **etcd** | `…/system/etcd/<cluster_id>/<host>-<ts>.db` | ✅ Done (2026-06-14). The `etcd-cronjob` reconciler patches the CronJob's `SHIM_PREFIX` env `etcd` → `etcd/<cluster_id>` (seed-then-disown: the static manifest carries `reconcile: disabled` so Flux won't revert it). `restore-etcd-from-shim.sh` reads the prefix back from the live CronJob's `SHIM_PREFIX` (so upload + restore paths always match) and **refuses** an un-namespaced `etcd/` path; `--cluster-id <uuid>` is the override for a bare-metal rebuild. `--latest` is now always scoped to THIS cluster. |
 | **tenant** | `<prefix>/<bundleId>/…` (keyed by `bundleId` UUID + `meta.json.tenantId`) | ✅ Intentionally **cluster-agnostic** — see below. |
 
 ### Tenant backups are cluster-agnostic on purpose (cross-cluster migration)
@@ -203,18 +203,24 @@ sequence on a real cluster wipe.
 The CronJob `platform/etcd-snap-via-shim` runs hourly on a control-plane
 node. It reads k3s's auto-snapshots from `/var/lib/rancher/k3s/server/db/snapshots/`
 (hostPath read-only), uploads each fresh snapshot to the shim bucket
-`s3://system/etcd/<host>-<ts>.db`, writes a `.meta` sidecar with the
+`s3://system/etcd/<cluster_id>/<host>-<ts>.db`, writes a `.meta` sidecar with the
 sha256, and prunes to keep the newest 24 in the bucket.
 
-`spec.suspend` is owned by `platform-api`'s `etcd-cronjob` reconciler:
+Both `spec.suspend` and the `SHIM_PREFIX` env are owned by `platform-api`'s
+`etcd-cronjob` reconciler (the static manifest carries
+`kustomize.toolkit.fluxcd.io/reconcile: disabled` so Flux seeds it once then
+steps back — seed-then-disown):
 
 - SYSTEM target bound → `suspend: false` (cron fires every hour)
 - SYSTEM target unbound → `suspend: true` (no upload attempts; the
   shim has no bucket configured for an unassigned class, so noisy
   "bucket not found" failures are avoided)
+- `SHIM_PREFIX` is patched `etcd` → `etcd/<cluster_id>` so two clusters sharing
+  one bucket+prefix never cross-contaminate (a `--latest` restore must never pull
+  another cluster's etcd — catastrophic).
 
-5-min reconciler tick. Idempotent — patches only when the live
-`spec.suspend` doesn't match the desired state.
+5-min reconciler tick. Idempotent — patches only when the live `spec.suspend`
+or `SHIM_PREFIX` doesn't match the desired state (each op is independent).
 
 The legacy `etcd-snapshot-cronjob` (direct-to-S3 via aws-cli with the
 `backup-credentials` Secret) ships alongside in `k8s/base/backup/`
@@ -223,21 +229,29 @@ proven on staging.
 
 ### Recover from a shim-uploaded etcd snapshot
 
-(Full restore tooling lands in R-X11.) Until then:
+Use `scripts/restore-etcd-from-shim.sh` on the control-plane node (run as root —
+k3s etcd restore is a local operation). It resolves the cluster_id-namespaced
+prefix from the live CronJob's `SHIM_PREFIX` env (so it always reads the path the
+upload wrote to) and **refuses** an un-namespaced `etcd/` read:
 
 ```bash
-# Pick the newest etcd snapshot in the shim bucket.
-kubectl -n platform exec -it deploy/backup-rclone-shim -- \
-  rclone lsf :s3:system/etcd/ | tail -5
+# List THIS cluster's snapshots (prefix auto-resolved from the CronJob).
+sudo ./scripts/restore-etcd-from-shim.sh --list
 
-# Download it locally on the control-plane node.
-rclone copyto :s3:system/etcd/<host>-<ts>.db /var/lib/rancher/k3s/server/db/snapshots/restore.db
+# Restore the newest — scoped to this cluster, never another's.
+sudo ./scripts/restore-etcd-from-shim.sh --latest
 
-# Stop k3s, restore, restart.
-systemctl stop k3s
-k3s etcd-snapshot restore --name restore /var/lib/rancher/k3s/server/db/snapshots/restore.db
-systemctl start k3s
+# Restore a named snapshot, or dry-run first.
+sudo ./scripts/restore-etcd-from-shim.sh --name <host>-<ts>.db
+sudo ./scripts/restore-etcd-from-shim.sh --dry-run --latest
+
+# Bare-metal rebuild where the CronJob isn't applied yet → name the cluster.
+# The cluster_id is platform_settings.cluster_id (a stable UUID).
+sudo ./scripts/restore-etcd-from-shim.sh --cluster-id <uuid> --latest
 ```
+
+The same logic ships inside the operator CLI:
+`platform-ops dr restore-component etcd --latest`.
 
 ---
 

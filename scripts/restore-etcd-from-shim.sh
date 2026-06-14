@@ -2,8 +2,18 @@
 # restore-etcd-from-shim.sh — R-X11 restore tooling for SYSTEM.etcd.
 #
 # Pulls the newest (or operator-named) etcd snapshot from the
-# shim's `s3://system/etcd/` bucket and runs `k3s etcd-snapshot
-# restore` on the control-plane node.
+# shim's `s3://system/etcd/<cluster_id>/` bucket and runs `k3s
+# etcd-snapshot restore` on the control-plane node.
+#
+# CLUSTER-ID NAMESPACING (collision safety): etcd snapshots are
+# namespaced under the stable per-cluster `cluster_id` so that two
+# clusters sharing one upstream S3 target can never cross-restore.
+# Pulling ANOTHER cluster's etcd into this one is catastrophic —
+# the namespace makes `--latest` always scoped to THIS cluster.
+# The prefix is resolved from the live CronJob's SHIM_PREFIX env
+# (the exact value the upload writes, so paths always match);
+# `--cluster-id <id>` overrides when the CronJob isn't reachable
+# (e.g. a bare-metal rebuild before Flux has synced).
 #
 # RUN THIS ON A CONTROL-PLANE NODE — k3s etcd snapshot restore
 # is local: it stops the local k3s, replaces the local etcd
@@ -23,6 +33,7 @@
 #   sudo ./scripts/restore-etcd-from-shim.sh --name <host>-<ts>.db
 #   sudo ./scripts/restore-etcd-from-shim.sh --list
 #   sudo ./scripts/restore-etcd-from-shim.sh --dry-run --latest
+#   sudo ./scripts/restore-etcd-from-shim.sh --cluster-id <uuid> --latest
 #
 # Exit codes:
 #   0   success
@@ -35,14 +46,16 @@ set -euo pipefail
 MODE=""
 SNAP_NAME=""
 DRY_RUN=0
+CLUSTER_ID=""
 KUBECTL=${KUBECTL:-kubectl}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --latest)   MODE="latest"; shift ;;
-    --list)     MODE="list"; shift ;;
-    --name)     MODE="name"; SNAP_NAME="${2:?--name requires a snapshot filename}"; shift 2 ;;
-    --dry-run)  DRY_RUN=1; shift ;;
+    --latest)     MODE="latest"; shift ;;
+    --list)       MODE="list"; shift ;;
+    --name)       MODE="name"; SNAP_NAME="${2:?--name requires a snapshot filename}"; shift 2 ;;
+    --dry-run)    DRY_RUN=1; shift ;;
+    --cluster-id) CLUSTER_ID="${2:?--cluster-id requires a value}"; shift 2 ;;
     -h|--help)
       sed -n '1,/^set -euo/p' "$0" | sed 's/^# \?//'
       exit 0 ;;
@@ -101,10 +114,39 @@ RCLONE_FLAGS=(
   --s3-no-check-bucket
 )
 
+# ── Resolve the cluster_id-namespaced upload prefix ──────────────────
+# Order of precedence:
+#   1. --cluster-id <id> override → `etcd/<id>` (operator escape hatch
+#      for a bare-metal rebuild where the CronJob isn't applied yet).
+#   2. The live CronJob's SHIM_PREFIX env — the AUTHORITATIVE source:
+#      it is the exact value the upload writes to, so the restore path
+#      can never drift from where snapshots actually landed.
+# We deliberately do NOT fall back to a bare `etcd/` — a silent un-
+# namespaced read is the very cross-cluster footgun this prevents.
+ETCD_PREFIX=""
+if [[ -n "$CLUSTER_ID" ]]; then
+  ETCD_PREFIX="etcd/$CLUSTER_ID"
+  log "Using --cluster-id override → prefix $ETCD_PREFIX"
+else
+  ETCD_PREFIX=$($KUBECTL -n platform get cronjob etcd-snap-via-shim \
+    -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[?(@.name=="rclone")].env[?(@.name=="SHIM_PREFIX")].value}' \
+    2>/dev/null || true)
+  if [[ -z "$ETCD_PREFIX" ]]; then
+    fail "Could not read SHIM_PREFIX from the etcd-snap-via-shim CronJob (is it applied?). Pass --cluster-id <uuid> to target a cluster's snapshots explicitly. The cluster_id is platform_settings → cluster_id (SELECT setting_value FROM platform_settings WHERE setting_key='cluster_id')."
+  fi
+  log "Resolved upload prefix from CronJob SHIM_PREFIX → $ETCD_PREFIX"
+fi
+# Guard: the prefix MUST be cluster_id-namespaced (`etcd/<id>`), never a
+# bare `etcd`. A bare prefix means an un-upgraded cluster — restoring from
+# the shared root risks pulling another cluster's snapshot.
+if [[ "$ETCD_PREFIX" == "etcd" || "$ETCD_PREFIX" != etcd/* ]]; then
+  fail "Refusing to restore from un-namespaced prefix '$ETCD_PREFIX'. Expected 'etcd/<cluster_id>'. Pass --cluster-id <uuid> explicitly if you really mean to read a specific cluster's snapshots."
+fi
+
 # ── List ─────────────────────────────────────────────────────────────
 if [[ "$MODE" == "list" ]]; then
-  log "Available etcd snapshots in the shim bucket:"
-  rclone "${RCLONE_FLAGS[@]}" lsf ':s3:system/etcd/' \
+  log "Available etcd snapshots in :s3:system/$ETCD_PREFIX/:"
+  rclone "${RCLONE_FLAGS[@]}" lsf ":s3:system/$ETCD_PREFIX/" \
     | grep '\.db$' \
     | sort
   exit 0
@@ -112,17 +154,17 @@ fi
 
 # ── Resolve target snapshot ──────────────────────────────────────────
 if [[ "$MODE" == "latest" ]]; then
-  SNAP_NAME=$(rclone "${RCLONE_FLAGS[@]}" lsf ':s3:system/etcd/' \
+  SNAP_NAME=$(rclone "${RCLONE_FLAGS[@]}" lsf ":s3:system/$ETCD_PREFIX/" \
     | grep '\.db$' \
     | sort -r | head -1)
   if [[ -z "$SNAP_NAME" ]]; then
-    fail "No etcd snapshots found in :s3:system/etcd/. Has the etcd-snap-via-shim CronJob run yet? Check kubectl -n platform get cronjob etcd-snap-via-shim"
+    fail "No etcd snapshots found in :s3:system/$ETCD_PREFIX/. Has the etcd-snap-via-shim CronJob run yet? Check kubectl -n platform get cronjob etcd-snap-via-shim"
   fi
   log "Resolved --latest → $SNAP_NAME"
 fi
 
 DEST=/var/lib/rancher/k3s/server/db/snapshots/restore-from-shim-$(date -u +%Y%m%d-%H%M%S).db
-log "Will download :s3:system/etcd/$SNAP_NAME → $DEST"
+log "Will download :s3:system/$ETCD_PREFIX/$SNAP_NAME → $DEST"
 
 if [[ $DRY_RUN -eq 1 ]]; then
   log "DRY-RUN — skipping download + restore"
@@ -131,14 +173,14 @@ fi
 
 # ── Download ────────────────────────────────────────────────────────
 log "Downloading snapshot..."
-if ! rclone "${RCLONE_FLAGS[@]}" copyto ":s3:system/etcd/$SNAP_NAME" "$DEST"; then
+if ! rclone "${RCLONE_FLAGS[@]}" copyto ":s3:system/$ETCD_PREFIX/$SNAP_NAME" "$DEST"; then
   fail "rclone download failed"
 fi
 log "Downloaded $(du -h "$DEST" | cut -f1) to $DEST"
 
 # Optional: download + verify .meta sidecar
 META_DEST="$DEST.meta"
-if rclone "${RCLONE_FLAGS[@]}" copyto ":s3:system/etcd/$SNAP_NAME.meta" "$META_DEST" 2>/dev/null; then
+if rclone "${RCLONE_FLAGS[@]}" copyto ":s3:system/$ETCD_PREFIX/$SNAP_NAME.meta" "$META_DEST" 2>/dev/null; then
   log "Snapshot metadata: $(cat "$META_DEST")"
   EXPECTED_SHA=$(grep -oE '"sha256":"[a-f0-9]+"' "$META_DEST" | cut -d '"' -f 4 || true)
   if [[ -n "$EXPECTED_SHA" ]]; then
