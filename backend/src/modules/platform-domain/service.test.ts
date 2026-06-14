@@ -4,7 +4,7 @@ import { normalizeApexInput } from './service.js';
 describe('normalizeApexInput', () => {
   it('accepts and lowercases a valid FQDN, stripping trailing dots', () => {
     expect(normalizeApexInput('Brand.Example.COM')).toBe('brand.example.com');
-    expect(normalizeApexInput('testing-rename.phoenix-host.net.')).toBe('testing-rename.phoenix-host.net');
+    expect(normalizeApexInput('testing-rename.example.test.')).toBe('testing-rename.example.test');
     expect(normalizeApexInput('  a.b.example.org  ')).toBe('a.b.example.org');
   });
 

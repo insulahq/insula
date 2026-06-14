@@ -18,8 +18,11 @@
  * lists exactly which. The mail host reconciles on the stalwart-domain
  * reconciler's own tick (its TLS path is ACME-via-Traefik, not a panel cert).
  *
- * Out of scope (static ${DOMAIN}, tracked as PR-3b/3d): the stalwart
- * web-admin UI host and the private-worker tunnel anchor.
+ * Also moved (seed-then-disown, R16 second pass): the stalwart web-admin UI
+ * (`stalwart.<apex>`, mail ns) and the private-worker tunnel ANCHOR
+ * (`tunnels.<apex>`, platform-system ns). Still out of scope: re-homing LIVE
+ * per-worker tunnel subdomains (`<slug>.tunnels.<apex>`) — env-driven + a
+ * per-FQDN cert + agent reconnect per worker; a separate disruptive follow-up.
  */
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
@@ -29,6 +32,8 @@ import { reconcileIngressHosts } from '../system-settings/ingress-reconciler.js'
 import { reconcileWebmailIngress, reconcileStalwartCorsOrigin } from '../webmail-router/reconciler.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
+import { reconcileStalwartWebadminIngress } from '../mail-admin/stalwart-webadmin-ingress.js';
+import { reconcileTunnelAnchorIngress } from '../private-workers/anchor-ingress-reconciler.js';
 
 const APEX_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
@@ -41,7 +46,13 @@ export interface RenamePlatformDomainResult {
   readonly previousApex: string | null;
   readonly newApex: string;
   readonly hostnames: { admin: string; tenant: string; webmail: string; mail: string };
-  readonly reconciled: { panels: string; webmail: string; mail: string };
+  readonly reconciled: {
+    panels: string;
+    webmail: string;
+    mail: string;
+    stalwartWebadmin: string;
+    tunnelAnchor: string;
+  };
   readonly dnsRequired: ReadonlyArray<{ host: string; type: 'A/AAAA or CNAME -> ingress'; note: string }>;
   readonly mailNote: string;
 }
@@ -88,7 +99,13 @@ export async function renamePlatformDomain(
       previousApex,
       newApex,
       hostnames,
-      reconciled: { panels: 'no-change', webmail: 'no-change', mail: 'no-change' },
+      reconciled: {
+        panels: 'no-change',
+        webmail: 'no-change',
+        mail: 'no-change',
+        stalwartWebadmin: 'no-change',
+        tunnelAnchor: 'no-change',
+      },
       dnsRequired: [],
       mailNote: 'apex unchanged — no reconcile performed.',
     };
@@ -110,7 +127,13 @@ export async function renamePlatformDomain(
   //    the periodic reconcilers re-converge, and DB is authoritative.
   const kubeconfigPath = config.KUBECONFIG_PATH as string | undefined;
   const clusterIssuerName = config.CLUSTER_ISSUER_NAME as string | undefined;
-  const reconciled = { panels: 'pending', webmail: 'pending', mail: 'pending' };
+  const reconciled = {
+    panels: 'pending',
+    webmail: 'pending',
+    mail: 'pending',
+    stalwartWebadmin: 'pending',
+    tunnelAnchor: 'pending',
+  };
 
   try {
     const { getGlobalSettings } = await import('../oidc/service.js');
@@ -164,6 +187,31 @@ export async function renamePlatformDomain(
     log.warn({ err }, 'platform-domain rename: mail reconcile failed (non-blocking; 30-min tick retries)');
   }
 
+  // Stalwart web-admin UI (mail ns) + tunnel anchor (platform-system ns):
+  // seed-then-disown surfaces — platform-api owns the live Host + cert
+  // dnsNames, so the rename follows here too. NOT the mail TLS/port strategy.
+  try {
+    if (!k8s) k8s = createK8sClients(kubeconfigPath);
+    const r = await reconcileStalwartWebadminIngress(db, k8s.custom, log);
+    reconciled.stalwartWebadmin = r.host
+      ? `reconciled -> ${r.host}`
+      : 'skipped (no host resolved)';
+  } catch (err) {
+    reconciled.stalwartWebadmin = `error: ${err instanceof Error ? err.message : String(err)}`;
+    log.warn({ err }, 'platform-domain rename: stalwart web-admin reconcile failed (non-blocking)');
+  }
+
+  try {
+    if (!k8s) k8s = createK8sClients(kubeconfigPath);
+    const r = await reconcileTunnelAnchorIngress(db, k8s.custom, log);
+    reconciled.tunnelAnchor = r.host
+      ? `reconciled -> ${r.host}`
+      : 'skipped (no host resolved)';
+  } catch (err) {
+    reconciled.tunnelAnchor = `error: ${err instanceof Error ? err.message : String(err)}`;
+    log.warn({ err }, 'platform-domain rename: tunnel anchor reconcile failed (non-blocking)');
+  }
+
   log.info({ previousApex, newApex, reconciled }, 'platform-domain renamed');
 
   return {
@@ -176,6 +224,8 @@ export async function renamePlatformDomain(
       { host: hostnames.tenant, type: 'A/AAAA or CNAME -> ingress', note: 'tenant panel — needs DNS + cert (HTTP-01)' },
       { host: hostnames.webmail, type: 'A/AAAA or CNAME -> ingress', note: 'webmail — needs DNS + cert (HTTP-01)' },
       { host: hostnames.mail, type: 'A/AAAA or CNAME -> ingress', note: 'mail host — needs DNS; TLS via Stalwart ACME on the reconciler tick' },
+      { host: `stalwart.${newApex}`, type: 'A/AAAA or CNAME -> ingress', note: 'stalwart web-admin UI — needs DNS + cert (HTTP-01)' },
+      { host: `tunnels.${newApex}`, type: 'A/AAAA or CNAME -> ingress', note: 'private-worker tunnel anchor — needs DNS + cert (HTTP-01); only if private-worker tunnels are used' },
     ],
     mailNote:
       'mail_server_hostname rewritten; the stalwart-domain reconciler applies the mail host + ACME on its next tick.',

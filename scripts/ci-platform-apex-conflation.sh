@@ -26,7 +26,7 @@ cd "$ROOT"
 # aliased (`const apex = settings.ingressBaseDomain; ... `mail.${apex}``) this
 # won't catch it. It catches the common direct-interpolation form; treat a green
 # result as "no obvious conflation", not a proof.
-PAT='(mail|webmail|stalwart|admin|tenant)\.\$\{[^}]*(ingressBaseDomain|ingress_base_domain)'
+PAT='(mail|webmail|stalwart|tunnels|admin|tenant)\.\$\{[^}]*(ingressBaseDomain|ingress_base_domain)'
 
 # Search backend TS, excluding tests and the legitimate back-compat resolver.
 hits=$(grep -rnE "$PAT" backend/src --include='*.ts' 2>/dev/null \

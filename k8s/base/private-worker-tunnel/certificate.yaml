@@ -25,6 +25,11 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
     app.kubernetes.io/component: private-worker-tunnel
+  annotations:
+    # R16 seed-then-disown (see anchor-ingress.yaml): platform-api owns the live
+    # dnsNames so a platform-apex rename re-issues this cert for
+    # tunnels.<newApex>. Flux seeds tunnels.${DOMAIN} then steps back.
+    kustomize.toolkit.fluxcd.io/reconcile: disabled
 spec:
   secretName: tunnels-platform-domain-tls
   duration: 2160h    # 90d (Let's Encrypt max)
