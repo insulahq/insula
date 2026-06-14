@@ -825,13 +825,27 @@ export async function updateTenant(
       // grow vs shrink. Run the dryrun here so we throw the
       // RESIZE_UNSAFE envelope before mutating anything.
       try {
-        const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+        const { resolveSnapshotStoreForClass } = await import('../storage-lifecycle/snapshot-store.js');
         const { resizeDryRunMib } = await import('../storage-lifecycle/service.js');
         const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
         const k8s = opts.k8sTenants ?? createK8sClients(process.env.KUBECONFIG_PATH);
-        const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
         const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
-        const dry = await resizeDryRunMib({ db, k8s, store, platformNamespace }, id, targetMib);
+        // Resolve the per-class tenant_snapshot store (an assigned S3/CIFS
+        // target, staged through an emptyDir scratch — baseline-PodSecurity
+        // compatible) rather than the legacy LocalHostPathStore. This ALSO
+        // validates a target is assigned and throws NO_SNAPSHOT_TARGET HERE,
+        // before the override is written and before the namespace is quiesced:
+        // a destructive shrink whose pre-resize snapshot has nowhere
+        // baseline-safe to write must fail fast, not hang at "snapshotting"
+        // until the Job's activeDeadline (the tenant ns forbids the hostPath
+        // volume the legacy store mounts).
+        const bundle = await resolveSnapshotStoreForClass(
+          db,
+          process.env as Record<string, unknown>,
+          'tenant_snapshot',
+          { k8sCtx: { k8s, namespace: platformNamespace } },
+        );
+        const dry = await resizeDryRunMib({ db, k8s, store: bundle.store, platformNamespace }, id, targetMib);
         if (!dry.willFit) {
           const { ApiError } = await import('../../shared/errors.js');
           throw new ApiError('RESIZE_UNSAFE', dry.rejectReason ?? 'Shrink target too small for current usage', 400, { dryRun: dry });
@@ -1198,14 +1212,35 @@ export async function updateTenant(
     console.warn(`[tenants] storage resize deferred — tenant ${id} is '${existing.provisioningStatus}', not provisioned; PVC will be sized at provision time`);
   } else if (pendingResizeMib != null) {
     try {
-      const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
       const { resizeTenant } = await import('../storage-lifecycle/service.js');
       const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
       const k8s = opts.k8sTenants ?? createK8sClients(process.env.KUBECONFIG_PATH);
-      const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
       const platformNamespace = process.env.PLATFORM_NAMESPACE ?? 'platform';
+      // A destructive shrink takes a pre-resize snapshot that runs as a Job in
+      // the tenant namespace, which enforces `baseline` PodSecurity (hostPath
+      // forbidden). Build the ctx from the per-class tenant_snapshot store — an
+      // assigned target staged through an emptyDir scratch, which baseline
+      // permits — and stamp target_id so the restore reads the same archive.
+      // The legacy LocalHostPathStore mounts a hostPath the Job could never
+      // schedule against, hanging the op at "snapshotting". Grow is online (no
+      // snapshot Job) and needs no target, so it keeps the legacy resolver.
+      let resizeCtx: Parameters<typeof resizeTenant>[0];
+      if (pendingShrinkMib != null) {
+        const { resolveSnapshotStoreForClass } = await import('../storage-lifecycle/snapshot-store.js');
+        const bundle = await resolveSnapshotStoreForClass(
+          db,
+          process.env as Record<string, unknown>,
+          'tenant_snapshot',
+          { k8sCtx: { k8s, namespace: platformNamespace } },
+        );
+        resizeCtx = { db, k8s, store: bundle.store, platformNamespace, targetId: bundle.targetId, backupClass: 'tenant_snapshot' };
+      } else {
+        const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
+        const store = await resolveSnapshotStore(db, process.env as Record<string, unknown>);
+        resizeCtx = { db, k8s, store, platformNamespace };
+      }
       const { operationId } = await resizeTenant(
-        { db, k8s, store, platformNamespace },
+        resizeCtx,
         id,
         { newMib: pendingResizeMib, triggeredByUserId: opts.triggeredByUserId ?? null },
       );
@@ -1221,7 +1256,11 @@ export async function updateTenant(
       // best-effort behavior — the override is already persisted, the
       // ResourceQuota will reflect it, and the operator can retry.
       const code = (err as { code?: string }).code;
-      if (pendingShrinkMib != null && code === 'RESIZE_UNSAFE') {
+      // Surface destructive-shrink pre-conditions instead of swallowing them:
+      // RESIZE_UNSAFE (target too small for current usage) and
+      // NO_SNAPSHOT_TARGET (no tenant_snapshot backup target assigned — the
+      // pre-resize snapshot has nowhere baseline-safe to write).
+      if (pendingShrinkMib != null && (code === 'RESIZE_UNSAFE' || code === 'NO_SNAPSHOT_TARGET')) {
         throw err;
       }
       console.warn(
