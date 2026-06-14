@@ -23,6 +23,13 @@ import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
 import { adminCommand } from './admin.js';
 import { domainCommand } from './domain.js';
+import {
+  clusterGcNamespaces,
+  clusterUpgradeCnpg,
+  componentWatchCommand,
+  nodeTerminalCommand,
+  backupCommand,
+} from './housekeeping.js';
 
 const HELP = `platform-ops — Insula operator CLI
 
@@ -35,6 +42,8 @@ Commands:
   cluster upgrade --version vX.Y.Z+k3sN [--apply]
                          Generate SUC k3s upgrade Plans (skip-a-minor refused);
                          dry-run prints them, --apply creates them (SUC rolls nodes)
+  cluster gc-namespaces  Delete orphaned tenant-* namespaces
+  cluster upgrade-cnpg   Bump the CloudNativePG operator
   node cordon|uncordon <name>
                          Cordon / uncordon a node (operator maintenance)
   upgrade [--version X.Y.Z] [--apply]
@@ -53,6 +62,10 @@ Commands:
                          Rename the platform apex (runs in the platform-api
                          pod) — moves every platform hostname + TLS cert; the
                          tenant CNAME target is untouched
+  component-watch [args] Operator helper for the component CVE/version watch
+  node-terminal gc       Clean up stale node-terminal pods/artifacts
+  backup rotate-key      Rotate BACKUP_TARGET_KEY (DESTRUCTIVE — invalidates
+                         all remote backups)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
   snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
@@ -90,8 +103,12 @@ async function clusterCommand(args: string[], deps: Deps): Promise<number> {
       return clusterDiagnostics(rest, deps);
     case 'upgrade':
       return clusterUpgrade(rest, deps);
+    case 'gc-namespaces':
+      return clusterGcNamespaces(rest, deps);
+    case 'upgrade-cnpg':
+      return clusterUpgradeCnpg(rest, deps);
     default:
-      deps.err(`cluster: expected a subcommand (status | diagnostics | upgrade), got ${sub ? `'${sub}'` : 'none'}`);
+      deps.err(`cluster: expected a subcommand (status | diagnostics | upgrade | gc-namespaces | upgrade-cnpg), got ${sub ? `'${sub}'` : 'none'}`);
       return 2;
   }
 }
@@ -145,6 +162,12 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return adminCommand(rest, deps);
     case 'domain':
       return domainCommand(rest, deps);
+    case 'component-watch':
+      return componentWatchCommand(rest, deps);
+    case 'node-terminal':
+      return nodeTerminalCommand(rest, deps);
+    case 'backup':
+      return backupCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     default:

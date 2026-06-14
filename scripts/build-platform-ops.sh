@@ -140,9 +140,23 @@ for (const f of drRestores) {
   }
   assets[`dr/${f}`] = p;
 }
+// T3 housekeeping (R18): same embed-and-launch pattern — the proven scripts are
+// the single source of truth; the standalone scripts stay usable. Self-contained.
+const opsScripts = [
+  'cleanup-orphaned-namespaces.sh', 'upgrade-cnpg.sh', 'component-watch.sh',
+  'node-terminal-cleanup-stale-artifacts.sh', 'backup-target-key-rotate.sh',
+];
+for (const f of opsScripts) {
+  const p = path.join(repoRoot, 'scripts', f);
+  if (!fs.existsSync(p)) {
+    console.error(`build-platform-ops: housekeeping script missing: scripts/${f}`);
+    process.exit(1);
+  }
+  assets[`ops/${f}`] = p;
+}
 const cfg = { main: bundle, output: blob, disableExperimentalSEAWarning: true, assets };
 fs.writeFileSync(path.join(work, 'sea-config.json'), JSON.stringify(cfg));
-console.error(`build-platform-ops: embedding ${scripts.length} host-migration script(s) + ${drRestores.length} DR restore script(s)`);
+console.error(`build-platform-ops: embedding ${scripts.length} host-migration + ${drRestores.length} DR restore + ${opsScripts.length} housekeeping script(s)`);
 NODEGEN
 node --experimental-sea-config "${work}/sea-config.json"
 
