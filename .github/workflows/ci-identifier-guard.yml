@@ -1,0 +1,44 @@
+name: Identifier Guard
+
+# Always-run, path-filter-free guard against committing the operator's live
+# cluster coordinates (apex domain, node-netblock IPs) to this PUBLIC repo.
+#
+# WHY THIS EXISTS (the gap it closes): scripts/ci-no-hardcoded-test-infra.sh
+# scans ALL tracked files (git ls-files), but the workflow that ran it
+# (ci-infrastructure.yml) is path-filtered to k8s/** scripts/** security/** —
+# so a backend/frontend/docs-only change never triggered the guard. That is
+# exactly how a live operator domain reached a backend test fixture
+# (backend/src/modules/platform-domain/service.test.ts) undetected. This job
+# runs the same guard on EVERY push to main + EVERY PR regardless of path.
+#
+# Lightweight by design: checkout + one bash script. No build, no deps, no
+# cluster — typically a few seconds. The companion job inside
+# ci-infrastructure.yml stays (harmless double-run only when k8s/scripts/
+# security change) so any branch-protection check that references it is
+# unaffected.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: identifier-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  identifier-guard:
+    name: No operator IPs/domains in committed files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan every tracked file for operator domains and node IPs
+        # Repo-wide identifier guard. Real cluster values belong in the
+        # gitignored scripts/integration.env profile, never in committed
+        # files. See docs/development/INTEGRATION_TESTS.md.
+        run: ./scripts/ci-no-hardcoded-test-infra.sh
