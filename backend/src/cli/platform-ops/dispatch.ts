@@ -21,6 +21,8 @@ import {
 } from './commands.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
+import { adminCommand } from './admin.js';
+import { domainCommand } from './domain.js';
 
 const HELP = `platform-ops — Insula operator CLI
 
@@ -43,6 +45,13 @@ Commands:
                          also reverts Longhorn snapshots — DESTRUCTIVE)
   migrations list [--json] List platform-migrations + their applied status
   migrations apply [--dry-run] Apply pending platform-migrations (DB + cluster)
+  admin reset-password --email <addr> (--random | <password on stdin>)
+                         Reset a user's password (hashes in the platform-api
+                         pod). --random prints a new password once; otherwise
+                         pipe the password on stdin (never an argv flag)
+  domain rename --to <apex> [--cluster-issuer <name>] [--json]
+                         Rename the platform apex — moves every platform
+                         hostname + TLS cert; tenant CNAME target is untouched
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
   snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
@@ -127,6 +136,10 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return upgradeCommand(rest, deps);
     case 'rollback':
       return rollbackCommand(rest, deps);
+    case 'admin':
+      return adminCommand(rest, deps);
+    case 'domain':
+      return domainCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     default:

@@ -41,6 +41,19 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     node: { cordon: vi.fn(async () => {}) },
     upgrade: { run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })) },
     rollback: { run: vi.fn(async () => ({ ok: true, dataRestored: false, summary: 'nothing to roll back' })) },
+    resetAdminPassword: vi.fn(async () => ({ ok: true, userId: 'u1' })),
+    readStdin: vi.fn(async () => ''),
+    renameDomain: vi.fn(async () => ({
+      ok: true,
+      result: {
+        previousApex: 'old.example.test',
+        newApex: 'new.example.test',
+        hostnames: { admin: 'admin.new.example.test', tenant: 'tenant.new.example.test', webmail: 'webmail.new.example.test', mail: 'mail.new.example.test' },
+        reconciled: { panels: 'reconciled', webmail: 'reconciled', mail: 'reconciled', stalwartWebadmin: 'reconciled', tunnelAnchor: 'reconciled' },
+        dnsRequired: [],
+        mailNote: '',
+      },
+    })),
     ...over,
   };
   // A `hostConfig` override usually sets only `run`; keep default `packages` +
@@ -179,5 +192,88 @@ describe('dispatch', () => {
     const { deps } = fakeDeps({ hostConfig: { run } });
     expect(await dispatch(['host-config', 'apply'], deps)).toBe(0);
     expect(run).toHaveBeenCalled();
+  });
+
+  it('admin reset-password --random routes to resetAdminPassword + prints the pw on its own clean line', async () => {
+    const resetAdminPassword = vi.fn(async () => ({ ok: true, userId: 'u1' }));
+    const { deps, out } = fakeDeps({ resetAdminPassword });
+    expect(await dispatch(['admin', 'reset-password', '--email', 'a@example.test', '--random'], deps)).toBe(0);
+    expect(resetAdminPassword).toHaveBeenCalled();
+    const call = resetAdminPassword.mock.calls[0][0] as { email: string; password: string };
+    expect(call.email).toBe('a@example.test');
+    expect(call.password).toMatch(/^[A-Za-z0-9]{24}$/);
+    // generated password printed on its OWN final line, NO leading whitespace
+    const last = out[out.length - 1];
+    expect(last).toBe(call.password);
+    expect(last).not.toMatch(/^\s/);
+  });
+
+  it('admin reset-password without --email → exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['admin', 'reset-password', '--random'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/email/i);
+  });
+
+  it('admin reset-password without --random reads the password from stdin (never argv)', async () => {
+    const resetAdminPassword = vi.fn(async () => ({ ok: true, userId: 'u1' }));
+    const readStdin = vi.fn(async () => 'piped-secret\n');
+    const { deps } = fakeDeps({ resetAdminPassword, readStdin });
+    expect(await dispatch(['admin', 'reset-password', '--email', 'a@example.test'], deps)).toBe(0);
+    expect(readStdin).toHaveBeenCalled();
+    // trailing newline stripped; value came from stdin, not an argv flag
+    expect((resetAdminPassword.mock.calls[0][0] as { password: string }).password).toBe('piped-secret');
+  });
+
+  it('admin reset-password without --random and empty stdin → exit 2', async () => {
+    const { deps, err } = fakeDeps({ readStdin: vi.fn(async () => '') });
+    expect(await dispatch(['admin', 'reset-password', '--email', 'a@example.test'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/random|stdin/i);
+  });
+
+  it('admin with no subcommand → exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['admin'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/reset-password/i);
+  });
+
+  it('admin reset-password failure → exit 1', async () => {
+    const resetAdminPassword = vi.fn(async () => ({ ok: false, errorCode: 'RESET_FAILED', detail: 'no such user' }));
+    const { deps, err } = fakeDeps({ resetAdminPassword });
+    expect(await dispatch(['admin', 'reset-password', '--email', 'a@example.test', '--random'], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/RESET_FAILED|failed/i);
+  });
+
+  it('domain rename --to routes to renameDomain', async () => {
+    const renameDomain = vi.fn(async () => ({
+      ok: true,
+      result: { previousApex: 'old.example.test', newApex: 'new.example.test', hostnames: { admin: '', tenant: '', webmail: '', mail: '' }, reconciled: { panels: 'reconciled', webmail: 'reconciled', mail: 'reconciled', stalwartWebadmin: 'reconciled', tunnelAnchor: 'reconciled' }, dnsRequired: [], mailNote: '' },
+    }));
+    const { deps, out } = fakeDeps({ renameDomain });
+    expect(await dispatch(['domain', 'rename', '--to', 'new.example.test'], deps)).toBe(0);
+    expect(renameDomain).toHaveBeenCalledWith({ newApex: 'new.example.test', kubeconfig: undefined, clusterIssuer: undefined });
+    expect(out.join('\n')).toMatch(/new\.example\.test/);
+  });
+
+  it('domain rename accepts a bare positional apex', async () => {
+    const renameDomain = vi.fn(async () => ({
+      ok: true,
+      result: { previousApex: null, newApex: 'x.example.test', hostnames: { admin: '', tenant: '', webmail: '', mail: '' }, reconciled: { panels: 'no-change', webmail: 'no-change', mail: 'no-change', stalwartWebadmin: 'no-change', tunnelAnchor: 'no-change' }, dnsRequired: [], mailNote: '' },
+    }));
+    const { deps } = fakeDeps({ renameDomain });
+    expect(await dispatch(['domain', 'rename', 'x.example.test'], deps)).toBe(0);
+    expect(renameDomain).toHaveBeenCalledWith({ newApex: 'x.example.test', kubeconfig: undefined, clusterIssuer: undefined });
+  });
+
+  it('domain rename without an apex → exit 2', async () => {
+    const { deps, err } = fakeDeps();
+    expect(await dispatch(['domain', 'rename'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/apex|--to/i);
+  });
+
+  it('domain rename failure → exit 1', async () => {
+    const renameDomain = vi.fn(async () => ({ ok: false, errorCode: 'INVALID_APEX', detail: 'bad apex' }));
+    const { deps, err } = fakeDeps({ renameDomain });
+    expect(await dispatch(['domain', 'rename', '--to', 'bad'], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/INVALID_APEX|failed/i);
   });
 });

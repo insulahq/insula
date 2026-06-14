@@ -1,10 +1,23 @@
 import { eq } from 'drizzle-orm';
-import bcrypt from 'bcrypt';
 import type { Database } from '../../db/index.js';
 import { users, tenants } from '../../db/schema.js';
 import { invalidToken } from '../../shared/errors.js';
 
 const SALT_ROUNDS = 12;
+
+// bcrypt is a NATIVE module. An eager `import bcrypt from 'bcrypt'` loads the
+// .node binding at module-evaluation time — which crashes inside the
+// `platform-ops` SEA binary (no node_modules on a bare host) for ANY command
+// whose import graph transitively reaches this module, even one that never
+// hashes (e.g. `domain rename` → oidc/service → here). Load it lazily + cache
+// so the binding is required only when a hash/verify ACTUALLY runs. The backend
+// (always has node_modules) is unaffected; the CLI's domain-rename path imports
+// this module but never calls these functions. See ADR-045 / the R18 plan.
+let bcryptModule: typeof import('bcrypt') | null = null;
+async function bcryptLib(): Promise<typeof import('bcrypt')> {
+  if (!bcryptModule) bcryptModule = await import('bcrypt');
+  return bcryptModule;
+}
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
   // Support legacy SHA-256 hashes (64 char hex) for migration
@@ -12,11 +25,11 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
     const { createHash } = await import('crypto');
     return createHash('sha256').update(password).digest('hex') === hash;
   }
-  return bcrypt.compare(password, hash);
+  return (await bcryptLib()).compare(password, hash);
 }
 
 export async function hashNewPassword(password: string): Promise<string> {
-  return bcrypt.hash(password, SALT_ROUNDS);
+  return (await bcryptLib()).hash(password, SALT_ROUNDS);
 }
 
 export async function authenticateUser(
