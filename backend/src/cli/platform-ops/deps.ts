@@ -569,9 +569,14 @@ function execApiPodNode(
   stdinData?: string,
 ): Promise<PodExecResult> {
   const kc = kubeconfig ?? env.KUBECONFIG;
+  // No `-c <container>`: the platform-api pod is single-container, so kubectl
+  // targets it automatically (and stays correct if the container is renamed). A
+  // future sidecar would make kubectl pick the default/first container and emit
+  // a "Defaulted container" note to stderr — harmless, since result parsing
+  // reads the last stdout line.
   const args = [
     '--kubeconfig', kc && kc.trim() ? kc : '/etc/rancher/k3s/k3s.yaml',
-    '-n', 'platform', 'exec', '-i', 'deploy/platform-api', '-c', 'platform-api', '--',
+    '-n', 'platform', 'exec', '-i', 'deploy/platform-api', '--',
     'node', ...nodeArgs,
   ];
   return new Promise<PodExecResult>((resolve) => {
