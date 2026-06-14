@@ -15,8 +15,8 @@
  * Host source: `platform_settings.stalwart_admin_url` when the operator pinned
  * one, else the apex-derived default `https://stalwart.<platform_domain>/admin/`
  * (both surfaced by getPlatformUrls). An explicit override therefore wins and
- * does NOT follow a rename — operator intent is authoritative, mirroring
- * longhorn_url / mail_server_hostname.
+ * does NOT follow a rename — operator intent is authoritative, mirroring the
+ * other pinned-URL settings (e.g. mail_server_hostname).
  */
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';

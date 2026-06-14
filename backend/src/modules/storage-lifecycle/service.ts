@@ -100,6 +100,14 @@ async function markTenantState(
     .where(eq(tenants.id, tenantId));
 }
 
+/** Merge the pre-quiesce replica snapshot into the op's params jsonb so a
+ *  force-cancel can restore the workloads it scaled to 0. */
+async function persistQuiesceSnapshot(db: Database, opId: string, snap: QuiesceSnapshot): Promise<void> {
+  const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
+  const params = (op?.params as Record<string, unknown> | null) ?? {};
+  await db.update(storageOperations).set({ params: { ...params, quiesceSnapshot: snap } }).where(eq(storageOperations.id, opId));
+}
+
 async function updateOp(
   db: Database,
   opId: string,
@@ -839,6 +847,11 @@ async function runResizeDestructive(
   try {
     await progress('quiescing', 5, 'Scaling workloads to zero');
     quiesceSnap = await quiesce(ctx.k8s, namespace);
+    // Persist the pre-quiesce replica counts on the op so a force-cancel
+    // mid-flight can restore them — otherwise the tenant is left scaled to 0
+    // (DOWN). The in-memory quiesceSnap is only available to this op's own
+    // catch block.
+    await persistQuiesceSnapshot(ctx.db, opId, quiesceSnap);
     await waitForQuiesced(ctx.k8s, namespace);
 
     await progress('snapshotting', 15, 'Creating pre-resize snapshot');
@@ -1068,6 +1081,20 @@ export async function cancelStorageOperation(
         } catch { /* tolerate already-gone */ }
       }
     } catch { /* tolerate listing failures (RBAC, ns-missing) */ }
+  }
+
+  // Restore any workloads the cancelled op had quiesced (scaled to 0) — a
+  // destructive resize/fsck scales the tenant to 0 before its Job runs, so
+  // cancelling mid-flight would otherwise leave the tenant DOWN. The
+  // pre-quiesce replica counts were persisted on the op's params.
+  if (c.activeOpId && c.namespace) {
+    const [op] = await ctx.db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, c.activeOpId));
+    const snap = (op?.params as { quiesceSnapshot?: QuiesceSnapshot } | null)?.quiesceSnapshot;
+    if (snap) {
+      await unquiesce(ctx.k8s, c.namespace, snap).catch((err) => {
+        console.warn(`[storage-lifecycle] cancel unquiesce failed for ${tenantId}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
   }
 
   if (c.activeOpId) {
