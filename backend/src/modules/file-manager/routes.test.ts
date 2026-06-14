@@ -8,13 +8,19 @@ const mockTenant = {
   id: 'c1',
   provisioningStatus: 'provisioned',
   kubernetesNamespace: 'tenant-c1',
+  // notNull default 'idle' in the real schema — the storage-op guard reads it.
+  storageLifecycleState: 'idle',
 };
+
+// Mutable so individual tests can simulate an in-flight storage operation
+// (resize/snapshot/restore) by swapping the row the tenant lookup returns.
+let tenantRows: unknown[] = [mockTenant];
 
 const mockDb = {
   select: vi.fn().mockReturnValue({
     from: vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({
-        limit: vi.fn().mockResolvedValue([mockTenant]),
+        limit: vi.fn().mockImplementation(async () => tenantRows),
       }),
     }),
   }),
@@ -271,5 +277,66 @@ describe('file-manager routes', () => {
     expect(res.headers['content-type']).toBe('application/octet-stream');
     expect(res.headers['content-disposition']).toContain('attachment');
     expect(Buffer.from(res.rawPayload)).toEqual(binaryContent);
+  });
+
+  // ─── Storage-op guard ──────────────────────────────────────────────────
+  // While a destructive PVC resize is quiescing the namespace, file-manager
+  // start/access must be refused so the tenant-panel keepalive can't restart
+  // the sidecar and hang the resize. status + stop stay reachable.
+
+  describe('blocked while a storage operation is in progress', () => {
+    afterAll(() => { tenantRows = [mockTenant]; });
+
+    it('POST …/files/start returns 409 STORAGE_OP_IN_PROGRESS', async () => {
+      tenantRows = [{ ...mockTenant, storageLifecycleState: 'quiescing' }];
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/start',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe('STORAGE_OP_IN_PROGRESS');
+    });
+
+    it('GET …/files (list) returns 409 during a resize', async () => {
+      tenantRows = [{ ...mockTenant, storageLifecycleState: 'restoring' }];
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/tenants/c1/files',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe('STORAGE_OP_IN_PROGRESS');
+    });
+
+    it('GET …/files/status stays reachable (200) during a resize', async () => {
+      tenantRows = [{ ...mockTenant, storageLifecycleState: 'snapshotting' }];
+      const res = await app.inject({
+        method: 'GET',
+        url: '/api/v1/tenants/c1/files/status',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('POST …/files/stop stays reachable (200) during a resize', async () => {
+      tenantRows = [{ ...mockTenant, storageLifecycleState: 'quiescing' }];
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/stop',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('allows access again once the op has rolled back to failed', async () => {
+      tenantRows = [{ ...mockTenant, storageLifecycleState: 'failed' }];
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/start',
+        headers: { authorization: `Bearer ${adminToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
   });
 });

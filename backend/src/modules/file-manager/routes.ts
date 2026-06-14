@@ -10,11 +10,37 @@ import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFile
 import { getFileManagerImage } from './image.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
 
-async function resolveNamespace(app: FastifyInstance, tenantId: string): Promise<string> {
+async function resolveNamespace(
+  app: FastifyInstance,
+  tenantId: string,
+  // `allowDuringStorageOp` is for the two routes that MUST stay reachable while
+  // a destructive resize is in flight: GET …/files/status (read-only; lets the
+  // UI show "paused") and POST …/files/stop (idempotent down). Every other
+  // route either starts file-manager or talks to it, and must be blocked —
+  // see the storage-op guard below.
+  opts: { allowDuringStorageOp?: boolean } = {},
+): Promise<string> {
   const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404);
   if (tenant.provisioningStatus !== 'provisioned') {
     throw new ApiError('NOT_PROVISIONED', 'Tenant must be provisioned before accessing files', 409);
+  }
+  // A destructive PVC resize quiesces the whole namespace — including the
+  // file-manager sidecar — to 0 and waits for the PVC's RWO lock to release.
+  // The tenant-panel keepalive (use-file-manager-keepalive.ts) POSTs
+  // /files/start on mount, which would restart file-manager and re-grab that
+  // lock, hanging `waitForQuiesced` until it times out and failing the resize.
+  // Refuse file-manager start/access for the duration so the resize can
+  // complete. `failed` is intentionally NOT blocked: by then the op has
+  // rolled back (workloads unquiesced) and the tenant is usable again.
+  const state = tenant.storageLifecycleState;
+  if (!opts.allowDuringStorageOp && state !== 'idle' && state !== 'failed') {
+    throw new ApiError(
+      'STORAGE_OP_IN_PROGRESS',
+      'The file manager is paused while a storage operation (resize / snapshot / restore) is in progress. It will be available again when the operation completes.',
+      409,
+      { storageLifecycleState: state },
+    );
   }
   return tenant.kubernetesNamespace;
 }
@@ -58,7 +84,9 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['Files'], summary: 'Get file manager status', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    const namespace = await resolveNamespace(app, tenantId);
+    // Stays reachable during a resize so the UI can keep polling and show the
+    // file manager as paused rather than erroring.
+    const namespace = await resolveNamespace(app, tenantId, { allowDuringStorageOp: true });
     const { k8sTenants } = getK8s();
     // Status polling counts as activity — without this, a UI that
     // sits on the loading screen for ~10min would have its pod
@@ -91,7 +119,9 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     schema: { tags: ['Files'], summary: 'Stop file manager pod', security: [{ bearerAuth: [] }] },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    const namespace = await resolveNamespace(app, tenantId);
+    // Stopping is idempotent and harmless during a resize (quiesce already
+    // scaled it to 0), so it stays reachable.
+    const namespace = await resolveNamespace(app, tenantId, { allowDuringStorageOp: true });
     const { k8sTenants } = getK8s();
     await stopFileManager(k8sTenants, namespace);
     return success({ stopped: true });
