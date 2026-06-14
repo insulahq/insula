@@ -76,9 +76,24 @@ if [[ -z "$ACCESS_KEY" || -z "$SECRET_KEY" ]]; then
   fail "backup-rclone-shim-creds Secret missing or empty. Bind SYSTEM shim class first (PUT /api/v1/admin/backup-rclone-shim/assignments/system)."
 fi
 
+# Resolve the shim's S3 endpoint to its ClusterIP, NOT the
+# `.svc.cluster.local` DNS name. This script runs on a node HOST (k3s
+# etcd-snapshot restore is a local operation), and the host does NOT resolve
+# cluster DNS — that's pod-network only (and in a real etcd disaster CoreDNS is
+# down too). The ClusterIP is kube-proxy-routed and reachable from the host.
+# Fall back to the DNS name only if the ClusterIP can't be read.
+SHIM_IP=$($KUBECTL -n platform get svc backup-rclone-shim -o jsonpath='{.spec.clusterIP}' 2>/dev/null || true)
+if [[ -n "$SHIM_IP" && "$SHIM_IP" != "None" ]]; then
+  SHIM_ENDPOINT="http://${SHIM_IP}:9000"
+else
+  SHIM_ENDPOINT="http://backup-rclone-shim.platform.svc.cluster.local:9000"
+  log "WARN: could not read shim ClusterIP; using in-cluster DNS (likely unresolvable from a node host)"
+fi
+log "shim S3 endpoint: $SHIM_ENDPOINT"
+
 RCLONE_FLAGS=(
   --s3-provider=Other
-  --s3-endpoint=http://backup-rclone-shim.platform.svc.cluster.local:9000
+  --s3-endpoint="$SHIM_ENDPOINT"
   --s3-access-key-id="$ACCESS_KEY"
   --s3-secret-access-key="$SECRET_KEY"
   --s3-force-path-style

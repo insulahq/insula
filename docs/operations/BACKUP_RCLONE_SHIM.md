@@ -48,6 +48,29 @@ Operators do NOT need to pre-create buckets named `system`/`tenant`/
 `mail` on their S3 provider. One operator-managed bucket holds
 everything under the configured prefix.
 
+### Multi-cluster collision safety (IMPORTANT)
+
+The full backup path is `<s3_bucket>/<s3_prefix>/<class>/<component>/…`.
+**`s3_prefix` is the ONLY per-cluster namespace, and it is operator-set —
+there is no automatic cluster-id in the path.** So two clusters that point at
+the **same `s3_bucket` with the same `s3_prefix`** write to the **same paths**
+and collide. Always give each cluster a **distinct `s3_prefix`** (e.g. the
+cluster's name/region) when they share an upstream bucket.
+
+What collides, worst-first, if prefixes are shared:
+
+| Class | Path key | Collision behaviour |
+|---|---|---|
+| **postgres** | `…/system/postgres/<serverName>/` where `serverName = system-db` on **every** cluster | **Worst.** Two clusters' WAL + base backups intermix under one barman server name. A restore replays *another cluster's* WALs → corruption / wrong data. There is no name-based separation. |
+| **etcd** | `…/system/etcd/<host>-<ts>.db` | Snapshot files don't overwrite (host+timestamp keyed), but they share one bucket and the "keep newest 24" prune evicts **across** clusters, and `--latest` may pick another cluster's snapshot. |
+| **mail** | `…/mail/…` (one restic repo) | Both clusters share one restic repository → mixed snapshots, retention churn, and repo-lock contention. |
+
+**Mitigation today:** operator discipline — one distinct `s3_prefix` per cluster
+(or a distinct bucket). **Recommended hardening (follow-up):** auto-namespace the
+prefix by a stable cluster identity (cluster UUID / apex), or reject a
+`PUT assignments` whose effective `bucket+prefix` is already claimed by a
+different cluster, so collision-safety doesn't depend on operator memory.
+
 ### Memory tuning (v3-tuned per 2026-05-21 bench)
 
 | Setting | Value | Why |
