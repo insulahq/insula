@@ -142,6 +142,13 @@ function fakeDb(
   };
   return {
     select: vi.fn(() => newChain()),
+    // getClusterId() generate-once path: an empty platformSettings read → insert.
+    // The fakeDb's platformSettings reads return `breakerRows` (empty by default),
+    // so getClusterId falls through to a generated UUID — the destinationPath
+    // assertion matches it by regex.
+    insert: vi.fn(() => ({
+      values: vi.fn(() => ({ onConflictDoNothing: vi.fn(() => Promise.resolve()) })),
+    })),
   } as unknown as Database;
 }
 
@@ -334,7 +341,8 @@ describe('reconcilePostgresObjectStore — happy path', () => {
     expect(objectStoreCall).toBeDefined();
     const body = (objectStoreCall![0] as { body: Record<string, unknown> }).body;
     expect((body.spec as Record<string, unknown>).configuration).toMatchObject({
-      destinationPath: 's3://system/postgres',
+      // Namespaced by cluster_id (collision-safety): s3://system/<cluster-id>/postgres
+      destinationPath: expect.stringMatching(/^s3:\/\/system\/[0-9a-f-]{36}\/postgres$/),
       endpointURL: SHIM_S3_ENDPOINT_URL,
       s3Credentials: {
         accessKeyId: { name: SHIM_S3_CREDS_SECRET_NAME, key: 'access_key' },
