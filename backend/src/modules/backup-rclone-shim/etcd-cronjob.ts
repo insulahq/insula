@@ -47,6 +47,19 @@ export const ETCD_CRONJOB_NAME = 'etcd-snap-via-shim';
 /** Identifier on every reconciler-managed log entry. */
 export const ETCD_FIELD_MANAGER = 'platform-api-etcd-cronjob';
 
+/**
+ * Flux skip-annotation. The static manifest ships it (seed-then-disown), but
+ * Flux skips applying any source object that already carries it — so on an
+ * already-existing CronJob the annotation never reaches the live object from
+ * Flux. This reconciler re-stamps it onto the live object (same as the postgres
+ * ObjectStore reconciler) so Flux reliably disowns the CronJob and never reverts
+ * the reconciler-owned SHIM_PREFIX / suspend fields.
+ */
+export const FLUX_RECONCILE_ANNOTATION = 'kustomize.toolkit.fluxcd.io/reconcile';
+/** JSON-Pointer to the annotation; the `/` in the key is escaped as `~1`. */
+const FLUX_RECONCILE_ANNOTATION_POINTER =
+  '/metadata/annotations/kustomize.toolkit.fluxcd.io~1reconcile';
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -65,6 +78,9 @@ export interface EtcdCronJobResult {
 }
 
 interface CronJobView {
+  metadata?: {
+    annotations?: Record<string, string>;
+  };
   spec?: {
     suspend?: boolean;
     jobTemplate?: {
@@ -165,17 +181,25 @@ export async function reconcileEtcdCronJob(
 
   const liveSuspend = live.spec?.suspend ?? true;
 
-  // ─── 3. Build the patch — suspend toggle + cluster_id prefix ────
-  // Each is independent and patched only on drift (idempotent: a converged
-  // CronJob → empty ops → no apiserver call). The static manifest carries
-  // `reconcile: disabled`, so Flux won't revert these (seed-then-disown).
-  const ops: Array<{ op: 'replace'; path: string; value: unknown }> = [];
+  // ─── 3. Build the patch — suspend toggle + cluster_id prefix +
+  //         Flux skip-annotation re-stamp ─────────────────────────
+  // Each op is independent and added only on drift (idempotent: a fully
+  // converged CronJob → empty ops → no apiserver call). The re-stamp makes the
+  // live object carry `reconcile: disabled` so Flux disowns it and never reverts
+  // the SHIM_PREFIX / suspend fields this reconciler owns (seed-then-disown).
+  const ops: Array<{ op: 'replace' | 'add'; path: string; value: unknown }> = [];
   if (liveSuspend !== desiredSuspend) {
     ops.push({ op: 'replace', path: '/spec/suspend', value: desiredSuspend });
   }
   const prefixEnv = findShimPrefixEnv(live);
   if (prefixEnv && prefixEnv.current !== desiredPrefix) {
     ops.push({ op: 'replace', path: prefixEnv.path, value: desiredPrefix });
+  }
+  // `add` upserts the annotation (replaces if present, creates if not). The
+  // parent `/metadata/annotations` always exists — the manifest ships a
+  // backup-display-name annotation. Only stamped when not already disabled.
+  if (live.metadata?.annotations?.[FLUX_RECONCILE_ANNOTATION] !== 'disabled') {
+    ops.push({ op: 'add', path: FLUX_RECONCILE_ANNOTATION_POINTER, value: 'disabled' });
   }
 
   if (ops.length === 0) {
