@@ -17,6 +17,7 @@ export default function LimitsPage() {
   const settings = response?.data;
 
   const [apiRateLimit, setApiRateLimit] = useState(100);
+  const [snapshotExpiryHours, setSnapshotExpiryHours] = useState(48);
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
   const [saved, setSaved] = useState(false);
@@ -25,6 +26,7 @@ export default function LimitsPage() {
   useEffect(() => {
     if (settings) {
       setApiRateLimit(settings.apiRateLimit);
+      setSnapshotExpiryHours(settings.snapshotExpiryHours);
       setTimezone(settings.timezone ?? 'UTC');
       setCurrency(settings.currency ?? 'USD');
     }
@@ -34,7 +36,7 @@ export default function LimitsPage() {
     setSaved(false);
     setSaveError(null);
     updateSettings.mutate(
-      { apiRateLimit, timezone, currency },
+      { apiRateLimit, snapshotExpiryHours, timezone, currency },
       {
         onSuccess: () => {
           setSaved(true);
@@ -90,6 +92,24 @@ export default function LimitsPage() {
               />
               <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">req/min</span>
             </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Snapshot Retention</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={snapshotExpiryHours}
+                onChange={(e) => setSnapshotExpiryHours(Math.max(1, Math.min(720, Number(e.target.value) || 1)))}
+                className={INPUT_CLASS}
+                min={1}
+                max={720}
+                data-testid="snapshot-expiry-input"
+              />
+              <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">hours</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              How long on-server tenant volume snapshots are kept before auto-deletion. These are short-term PVC recovery points, not backups (1–720 h).
+            </p>
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">System Timezone</label>

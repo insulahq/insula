@@ -125,3 +125,4 @@ export * from './waf-rule-exclusions.js';
 export * from './backup-rclone-shim.js';
 export * from './login-passwords.js';
 export * from './monitoring-slo.js';
+export * from './tenant-snapshots.js';

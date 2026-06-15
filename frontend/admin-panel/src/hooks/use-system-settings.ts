@@ -11,6 +11,8 @@ export interface SystemSettings {
   readonly ingressBaseDomain: string | null;
   readonly webmailUrl: string | null;
   readonly apiRateLimit: number;
+  // On-server tenant volume-snapshot retention (hours). Admin-adjustable.
+  readonly snapshotExpiryHours: number;
   readonly timezone: string;
   readonly currencySymbol: string;
   // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat in
