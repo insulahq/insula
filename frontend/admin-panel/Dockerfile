@@ -24,7 +24,13 @@ RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:../ap
     && grep -q '"@insula/api-contracts": "file:../api-contracts"' packages/ui-restore-cart/package.json \
     || { echo "ERROR: sed rewrite of ui-restore-cart api-contracts ref failed — package.json formatting drifted"; exit 1; }
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps && npx tsc --build --force
+    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps && npx tsc --build --force \
+    && rm -rf node_modules/react node_modules/react-dom
+# ^ Drop the package's OWN react/react-dom after the tsc build (they were
+#   only needed as type/peer deps). Leaving them makes Vite bundle a SECOND
+#   React copy into the package chunk → null hooks dispatcher → the
+#   /backups/restore page crashed with "Cannot read properties of null
+#   (reading 'useState')". Belt-and-braces with vite resolve.dedupe.
 
 # Build admin panel
 COPY frontend/admin-panel/package.json ./package.json
