@@ -9,6 +9,7 @@
  * destructive — e.g. backup rotate-key invalidates all remote backups).
  */
 import type { Deps } from './deps.js';
+import { backupTargetCommand, backupKeyStatus } from './backup-ops.js';
 
 const OPS = {
   gcNamespaces: 'ops/cleanup-orphaned-namespaces.sh',
@@ -41,10 +42,21 @@ export async function nodeTerminalCommand(args: string[], deps: Deps): Promise<n
   return 2;
 }
 
-/** `backup rotate-key` — rotate BACKUP_TARGET_KEY (DESTRUCTIVE: invalidates remote backups). */
+/**
+ * `backup` — rotate-key (embedded script), target CRUD/bindings (in-pod).
+ * `rotate-key` is DESTRUCTIVE (invalidates remote backups).
+ */
 export async function backupCommand(args: string[], deps: Deps): Promise<number> {
   const [sub, ...rest] = args;
-  if (sub === 'rotate-key') return deps.runEmbeddedScript(OPS.backupRotateKey, rest);
-  deps.err(`backup: expected 'rotate-key', got ${sub ? `'${sub}'` : 'none'}`);
-  return 2;
+  switch (sub) {
+    case 'rotate-key':
+      return deps.runEmbeddedScript(OPS.backupRotateKey, rest);
+    case 'key-status':
+      return backupKeyStatus(rest, deps);
+    case 'target':
+      return backupTargetCommand(rest, deps);
+    default:
+      deps.err(`backup: expected 'rotate-key', 'key-status', or 'target', got ${sub ? `'${sub}'` : 'none'}`);
+      return 2;
+  }
 }

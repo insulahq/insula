@@ -80,6 +80,19 @@ export async function clusterDiagnostics(_args: string[], deps: Deps): Promise<n
       deps.err(`  (probe failed: ${r.stderr.trim().split('\n')[0] || 'unknown error'})`);
     }
   }
+  // On-node firewall posture (folds in firewall-probe.sh's intent from the node's
+  // OWN vantage — what this node enforces). Best-effort: nft is absent in non-nft
+  // firewall modes. EXTERNAL reachability (are control-plane ports actually closed
+  // from off-mesh?) is a different vantage — verify that with
+  // `scripts/firewall-probe.sh <host>` from an operator workstation.
+  deps.out('── Firewall (nft inet/filter input chain) ──');
+  const fw = await deps.exec('nft', ['list', 'chain', 'inet', 'filter', 'input'], {});
+  if (fw.code === 0) {
+    deps.out(fw.stdout.trimEnd() || '(empty)');
+  } else {
+    deps.out('(nft unavailable or no inet/filter table — non-nft firewall mode, or not root)');
+  }
+  deps.out('  (external port-exposure: verify with scripts/firewall-probe.sh <host> from off-mesh)');
   return 0;
 }
 

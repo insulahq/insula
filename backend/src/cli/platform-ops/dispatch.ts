@@ -19,10 +19,12 @@ import {
   upgradeCommand,
   rollbackCommand,
 } from './commands.js';
+import { clusterDoctor } from './doctor.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
 import { adminCommand } from './admin.js';
 import { domainCommand } from './domain.js';
+import { mailCommand } from './mail.js';
 import {
   clusterGcNamespaces,
   clusterUpgradeCnpg,
@@ -39,6 +41,9 @@ Commands:
   version [--json]        Show installed / running / available platform version
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
+  cluster doctor [--json] Per-node readiness/drift check (version, cosign anchor,
+                         host-config kubeconfig, cluster reachability, rclone,
+                         host-migration markers, nodes-ready). Exit 1 on any FAIL
   cluster upgrade --version vX.Y.Z+k3sN [--apply]
                          Generate SUC k3s upgrade Plans (skip-a-minor refused);
                          dry-run prints them, --apply creates them (SUC rolls nodes)
@@ -62,10 +67,21 @@ Commands:
                          Rename the platform apex (runs in the platform-api
                          pod) — moves every platform hostname + TLS cert; the
                          tenant CNAME target is untouched
+  mail rotate-master-password [--json]
+                         Rotate the Stalwart webmail master password (recovery;
+                         runs in the platform-api pod, rolls Roundcube)
   component-watch [args] Operator helper for the component CVE/version watch
   node-terminal gc       Clean up stale node-terminal pods/artifacts
   backup rotate-key      Rotate BACKUP_TARGET_KEY (DESTRUCTIVE — invalidates
                          all remote backups)
+  backup key-status [--json] Show BACKUP_TARGET_KEY fingerprint + rotation times
+  backup target list [--json]
+                         List backup targets + their class bindings (in-pod)
+  backup target add      Create a target (pipe createBackupConfig JSON on stdin)
+  backup target test <id>          Probe a target's connectivity
+  backup target delete <id>        Delete a target (refused if active/bound)
+  backup target bind <system|tenant|mail> <id> | unbind <class>
+                         Bind/clear a backup class → target (reconcilers converge)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
   snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
@@ -101,6 +117,8 @@ async function clusterCommand(args: string[], deps: Deps): Promise<number> {
       return clusterStatus(rest, deps);
     case 'diagnostics':
       return clusterDiagnostics(rest, deps);
+    case 'doctor':
+      return clusterDoctor(rest, deps);
     case 'upgrade':
       return clusterUpgrade(rest, deps);
     case 'gc-namespaces':
@@ -108,7 +126,7 @@ async function clusterCommand(args: string[], deps: Deps): Promise<number> {
     case 'upgrade-cnpg':
       return clusterUpgradeCnpg(rest, deps);
     default:
-      deps.err(`cluster: expected a subcommand (status | diagnostics | upgrade | gc-namespaces | upgrade-cnpg), got ${sub ? `'${sub}'` : 'none'}`);
+      deps.err(`cluster: expected a subcommand (status | diagnostics | doctor | upgrade | gc-namespaces | upgrade-cnpg), got ${sub ? `'${sub}'` : 'none'}`);
       return 2;
   }
 }
@@ -162,6 +180,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return adminCommand(rest, deps);
     case 'domain':
       return domainCommand(rest, deps);
+    case 'mail':
+      return mailCommand(rest, deps);
     case 'component-watch':
       return componentWatchCommand(rest, deps);
     case 'node-terminal':

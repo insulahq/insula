@@ -417,6 +417,21 @@ export interface Deps {
    * NEVER throws.
    */
   renameDomain: (opts: { newApex: string; kubeconfig?: string }) => Promise<DomainRenameOutcome>;
+  /**
+   * Run a `backup target` operation by exec-ing the in-pod entrypoint
+   * (`node dist/cli/backup-target.js <args>`) in the platform-api pod — it reuses
+   * the backup-config service with the pod's DATABASE_URL + PLATFORM_ENCRYPTION_KEY.
+   * `stdin` carries the `add` config JSON (secret stays out of argv). Returns the
+   * parsed JSON line on success, or a detail string. NEVER throws.
+   */
+  backupTarget: (args: string[], stdin?: string) => Promise<{ ok: boolean; json?: unknown; detail?: string }>;
+  /**
+   * Rotate the Stalwart webmail master password by exec-ing the in-pod entrypoint
+   * (`node dist/cli/mail-rotate-master.js`) — it runs the same
+   * `rotateWebmailMasterPassword` service the API uses (JMAP + in-cluster k8s).
+   * NEVER throws.
+   */
+  mailRotateMaster: (opts?: { kubeconfig?: string }) => Promise<{ ok: boolean; json?: unknown; detail?: string }>;
   /** Read all of this process's stdin to EOF (for piping a secret in without argv exposure). */
   readStdin: () => Promise<string>;
   /**
@@ -665,6 +680,35 @@ async function realRenameDomain(
   }
 }
 
+async function realBackupTarget(
+  env: NodeJS.ProcessEnv,
+  args: string[],
+  stdin?: string,
+): Promise<{ ok: boolean; json?: unknown; detail?: string }> {
+  const r = await execApiPodNode(env, undefined, ['dist/cli/backup-target.js', ...args], stdin);
+  if (r.timedOut) return { ok: false, detail: 'kubectl exec into platform-api timed out after 60s (pod not ready?)' };
+  if (r.code !== 0) return { ok: false, detail: scrubCreds((r.stderr || r.stdout).trim()) || `kubectl exec exited ${r.code}` };
+  try {
+    return { ok: true, json: JSON.parse(lastJsonLine(r.stdout)) };
+  } catch {
+    return { ok: false, detail: scrubCreds(r.stdout.trim() || r.stderr.trim()) };
+  }
+}
+
+async function realMailRotateMaster(
+  env: NodeJS.ProcessEnv,
+  opts?: { kubeconfig?: string },
+): Promise<{ ok: boolean; json?: unknown; detail?: string }> {
+  const r = await execApiPodNode(env, opts?.kubeconfig, ['dist/cli/mail-rotate-master.js']);
+  if (r.timedOut) return { ok: false, detail: 'kubectl exec into platform-api timed out after 60s (pod not ready?)' };
+  if (r.code !== 0) return { ok: false, detail: scrubCreds((r.stderr || r.stdout).trim()) || `kubectl exec exited ${r.code}` };
+  try {
+    return { ok: true, json: JSON.parse(lastJsonLine(r.stdout)) };
+  } catch {
+    return { ok: false, detail: scrubCreds(r.stdout.trim() || r.stderr.trim()) };
+  }
+}
+
 async function realRunEmbeddedScript(assetKey: string, args: string[]): Promise<number> {
   let sea: typeof import('node:sea') | null = null;
   try {
@@ -730,6 +774,8 @@ export function realDeps(): Deps {
     rollback: realRollbackOps(env),
     resetAdminPassword: (opts) => realResetAdminPassword(env, opts),
     renameDomain: (opts) => realRenameDomain(env, opts),
+    backupTarget: (args, stdin) => realBackupTarget(env, args, stdin),
+    mailRotateMaster: (opts) => realMailRotateMaster(env, opts),
     readStdin: async () => {
       const chunks: Buffer[] = [];
       for await (const c of process.stdin) chunks.push(Buffer.from(c));
