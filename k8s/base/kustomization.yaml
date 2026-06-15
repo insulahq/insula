@@ -66,6 +66,13 @@ resources:
   # security-probe's read-only posture). The desired policy is seeded by
   # platform-migration 0002 (W9).
   - host-config-reconciler/
+  # host-config-reader — least-privilege kubeconfig distributor for WORKER hosts.
+  # Worker nodes have no k3s admin kubeconfig, so `platform-ops host-config`
+  # couldn't read the desired-state CMs there (host-migrations never ran on
+  # workers). A tiny DaemonSet writes a scoped (get-on-5-CMs) kubeconfig to
+  # /etc/platform/host-config/kubeconfig on each worker; the converger falls back
+  # to it. Workers only — control-plane uses the admin k3s.yaml.
+  - host-config-reader/
   # system-upgrade-controller — no-SSH k3s/kernel/apt node upgrades via in-cluster
   # Plan CRs (ADR-045 W12, vendored rancher SUC v0.19.2). INERT until a Plan
   # exists; Plans are created only at runtime by `platform-ops cluster upgrade`
