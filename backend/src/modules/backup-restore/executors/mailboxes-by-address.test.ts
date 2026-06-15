@@ -8,7 +8,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
     tenantId: 'tenant-acme',
     cartId: 'rstr-1',
     itemId: 'item-1',
-    toolsImage: 'ghcr.io/insulahq/insula/mail-backup-tools:latest',
+    toolsImage: 'ghcr.io/insulahq/insula/tenant-backup-tools:latest',
     jmapEndpoint: 'http://stalwart-mgmt.mail.svc.cluster.local:8080',
     stalwartMasterUser: 'master@master.local',
     masterSecretName: 'mail-secrets',
@@ -91,7 +91,7 @@ describe('buildMailboxesByAddressJobSpec', () => {
       spec: { template: { spec: { containers: Array<{ command: string[]; image: string }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(spec.spec.template.spec.containers[0]!.image).toMatch(/mail-backup-tools/);
+    expect(spec.spec.template.spec.containers[0]!.image).toMatch(/tenant-backup-tools/);
     expect(cmd).toContain('curl --fail-with-body');
     expect(cmd).toContain('tar -xzf');
     expect(cmd).toContain('/usr/local/bin/jmap-restore.py');

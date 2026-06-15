@@ -68,7 +68,7 @@ on:
       - 'Host-Config-Reconciler CI'
       - 'Backup-rclone CI'
       - 'SFTP Gateway CI'
-      - 'Mail-Backup-Tools CI'
+      - 'Tenant-Backup-Tools CI'
     types: [completed]
     branches: [main]
 

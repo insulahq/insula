@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DinD smoke for the mail-backup-tools image.
+# DinD smoke for the tenant-backup-tools image.
 #
 # Runs locally with docker; no cluster needed. Exercises:
 #   1. Image builds clean + size < 50 MiB.
@@ -26,8 +26,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-IMAGE_DIR="$REPO_ROOT/images/mail-backup-tools"
-TAG="mail-backup-tools-dind:test"
+IMAGE_DIR="$REPO_ROOT/images/tenant-backup-tools"
+TAG="tenant-backup-tools-dind:test"
 
 NET="mbtools-dind-net"
 GREENMAIL_NAME="mbtools-greenmail"

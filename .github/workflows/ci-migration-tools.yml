@@ -79,7 +79,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          ignore-unfixed: true   # unfixable trixie-slim base CVEs (see ci-mail-backup-tools.yml)
+          ignore-unfixed: true   # unfixable trixie-slim base CVEs (see ci-tenant-backup-tools.yml)
           exit-code: '1'
 
       - name: Upload Trivy scan results

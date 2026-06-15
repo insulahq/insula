@@ -1727,11 +1727,11 @@ for c in (items if isinstance(items, list) else []):
       "api GET '/tenants/$cid/mailboxes/$mbid'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
     # ── Seed: APPEND a unique message via IMAP master-user proxy ─
-    # Spawns a one-shot pod in mail ns using mail-backup-tools image
+    # Spawns a one-shot pod in mail ns using tenant-backup-tools image
     # so we hit Stalwart through the same auth path the Job uses.
     # The seeded Message-ID is the canonical assertion target for
     # round-trip + idempotency.
-    local probe_image="ghcr.io/insulahq/insula/mail-backup-tools:latest"
+    local probe_image="ghcr.io/insulahq/insula/tenant-backup-tools:latest"
     local probe_msgid_local="harness-${stamp}-$RANDOM"
     local probe_msgid="<${probe_msgid_local}@example.test>"
 
@@ -1926,7 +1926,7 @@ except: print('  (parse error)')" 2>&1 | sed 's/^/  /'
       ok "restore/mbox: pre-restore Message-ID hits=0 (wipe confirmed)"
     fi
 
-    # Execute. The Job spawns in `mail` ns with mail-backup-tools
+    # Execute. The Job spawns in `mail` ns with tenant-backup-tools
     # image, downloads tarball, untars Maildir, runs restore-mailbox.py
     # with mode=merge-skip-duplicates (the default).
     local mexec_resp; mexec_resp=$(api POST "/admin/restores/carts/$mcart_id/execute" "{}")

@@ -30,7 +30,7 @@ const IMAP_PORT = '993';
 const IMPORT_WORKERS = process.env.PLESK_MAIL_IMPORT_WORKERS ?? '8';
 const MASTER_SECRET_NAME = 'mail-secrets';
 const MASTER_SECRET_KEY = 'STALWART_MASTER_PASSWORD';
-const MAIL_TOOLS_IMAGE = process.env.PLESK_MAIL_TOOLS_IMAGE ?? 'ghcr.io/insulahq/insula/mail-backup-tools:latest';
+const MAIL_TOOLS_IMAGE = process.env.PLESK_MAIL_TOOLS_IMAGE ?? 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
 // Quota for a Plesk mailbox whose source quota was unlimited (-1/0 → null).
 const DEFAULT_MAILBOX_QUOTA_MB = 2048;
 

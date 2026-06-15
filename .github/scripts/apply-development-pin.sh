@@ -54,7 +54,7 @@ fi
 # pinned via the kustomization `images:` newTag, so this annotation rolls them
 # on a VERSION change even when the IMAGE didn't (to pick up a new
 # platform-version ConfigMap value). The internal DaemonSet images
-# (firewall-reconciler, mail-backup-tools, …) are NO LONGER here — each is pinned
+# (firewall-reconciler, tenant-backup-tools, …) are NO LONGER here — each is pinned
 # to an immutable tag by its own ci-*.yml via pin-image-tag.sh, so it rolls
 # exactly when its image changes, with no `:latest` pull-race and no needless
 # per-push restart.

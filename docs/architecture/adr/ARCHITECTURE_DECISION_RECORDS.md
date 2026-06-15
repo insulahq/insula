@@ -2514,7 +2514,7 @@ Decisions:
   repoint DNS.
 
 PR sequence: PR 1 source registry + agentless discovery (this ADR; jobs
-run on the existing mail-backup-tools image, scripts via per-job
+run on the existing tenant-backup-tools image, scripts via per-job
 ConfigMap, in a dedicated `plesk-migration` namespace with
 public-internet-only egress). PR 2 provision + content/DB sync. PR 3
 mail leg + verification report. PR 4 cutover + runbook.

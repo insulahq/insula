@@ -127,7 +127,7 @@ spec:
   restartPolicy: Never
   containers:
   - name: c
-    image: ghcr.io/insulahq/insula/mail-backup-tools:latest
+    image: ghcr.io/insulahq/insula/tenant-backup-tools:latest
     imagePullPolicy: Always
     command: ["sh","-c","sleep 7200"]
     env:
@@ -308,7 +308,7 @@ TAR_FILE=$(find "$RESTORE_DIR" -name maildir.tar -type f | head -1)
 
 VERIFY_OUT="$WORK/verify-full.json"
 scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new \
-  /workspace/k8s-hosting-platform/.claude/worktrees/agent-tenant-backup-v2/images/mail-backup-tools/jmap-verify.py \
+  /workspace/k8s-hosting-platform/.claude/worktrees/agent-tenant-backup-v2/images/tenant-backup-tools/jmap-verify.py \
   "$STAGING_HOST:/tmp/jmap-verify.py" > /dev/null 2>&1 || true
 # jmap-verify.py hard-fails if markerMatches < expected_count. Each
 # Stage 5 run destroys 10 messages — some of which had markers — so
@@ -316,7 +316,7 @@ scp -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new \
 # 90%-of-EFFECTIVE_COUNT floor as the strict expectation; the strict
 # `==` invariant lives in EXPECT_COUNT_FLOOR.
 EXPECT_COUNT_FLOOR=$(( EFFECTIVE_COUNT * 90 / 100 ))
-python3 /workspace/k8s-hosting-platform/.claude/worktrees/agent-tenant-backup-v2/images/mail-backup-tools/jmap-verify.py \
+python3 /workspace/k8s-hosting-platform/.claude/worktrees/agent-tenant-backup-v2/images/tenant-backup-tools/jmap-verify.py \
   --tarball "$TAR_FILE" \
   --marker "$MARKER" \
   --expect-count $EXPECT_COUNT_FLOOR \

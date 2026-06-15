@@ -1,12 +1,12 @@
-name: Mail-Backup-Tools CI
+name: Tenant-Backup-Tools CI
 
 on:
   push:
     branches: [main]
-    paths: ['images/mail-backup-tools/**', '.github/workflows/ci-mail-backup-tools.yml']
+    paths: ['images/tenant-backup-tools/**', '.github/workflows/ci-tenant-backup-tools.yml']
   pull_request:
     branches: [main]
-    paths: ['images/mail-backup-tools/**', '.github/workflows/ci-mail-backup-tools.yml']
+    paths: ['images/tenant-backup-tools/**', '.github/workflows/ci-tenant-backup-tools.yml']
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/${{ github.repository }}/mail-backup-tools
+  IMAGE: ghcr.io/${{ github.repository }}/tenant-backup-tools
 
 jobs:
   build:
@@ -36,7 +36,7 @@ jobs:
       # Plesk-migration reshape regression where unread new/ messages were
       # dropped (imap-restore reads only cur/).
       - name: Reshape script tests
-        run: python3 images/mail-backup-tools/test-plesk-maildir-reshape.py
+        run: python3 images/tenant-backup-tools/test-plesk-maildir-reshape.py
 
       - uses: docker/setup-buildx-action@v3
 
@@ -59,7 +59,7 @@ jobs:
       - uses: docker/build-push-action@v6
         id: build
         with:
-          context: images/mail-backup-tools
+          context: images/tenant-backup-tools
           push: ${{ github.event_name != 'pull_request' }}
           load: ${{ github.event_name == 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -107,7 +107,7 @@ jobs:
         if: always() && github.event_name != 'pull_request'
         with:
           sarif_file: trivy-results.sarif
-          category: mail-backup-tools
+          category: tenant-backup-tools
 
       - id: tag
         name: Extract immutable timestamp tag (for the dev-overlay pin)
@@ -118,9 +118,9 @@ jobs:
           ts_tag=$(echo "$ALL_TAGS" | grep -oE ':[0-9]{14}-[0-9a-f]{7,}' | head -1 | sed 's/^://')
           [ -n "$ts_tag" ] || { echo "::error::no timestamp tag in $ALL_TAGS"; exit 1; }
           echo "timestamp_tag=$ts_tag" >> "$GITHUB_OUTPUT"
-          echo "mail-backup-tools → $ts_tag"
+          echo "tenant-backup-tools → $ts_tag"
 
-  # Pin the dev overlay to the immutable tag just pushed. mail-backup-tools is
+  # Pin the dev overlay to the immutable tag just pushed. tenant-backup-tools is
   # shared by bulwark + stalwart (deployment, snapshot-cronjob, standby-replicate
   # DaemonSet) — the single images: entry re-pins all of them at once, replacing
   # the standby-replicate deploy-rev bump (no `:latest` pull-race).
@@ -140,4 +140,4 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-      - run: .github/scripts/pin-image-tag.sh mail-backup-tools "${{ needs.build.outputs.timestamp_tag }}"
+      - run: .github/scripts/pin-image-tag.sh tenant-backup-tools "${{ needs.build.outputs.timestamp_tag }}"
