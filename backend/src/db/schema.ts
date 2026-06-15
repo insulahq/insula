@@ -2553,6 +2553,11 @@ export const systemSettings = pgTable('system_settings', {
   // follow-up migration (expand/contract — see migration 0046's note).
   webmailUrl: varchar('webmail_url', { length: 500 }),
   apiRateLimit: integer('api_rate_limit').notNull().default(100),
+  // On-server tenant volume snapshots (Longhorn VolumeSnapshot, type=snap)
+  // are short-term PVC recovery points — NOT off-site backups. They expire
+  // after this many hours so they don't accumulate Longhorn space. Admin-
+  // adjustable; the tenant panel surfaces the limit. Default 48h.
+  snapshotExpiryHours: integer('snapshot_expiry_hours').notNull().default(48),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
   // ISO 4217 currency code (USD, EUR, GBP, …). Drives Intl.NumberFormat
   // across both panels for any monetary amount display. The older
@@ -2832,6 +2837,46 @@ export const storageSnapshots = pgTable('storage_snapshots', {
   index('storage_snapshots_subsystem_idx').on(table.subsystem),
   index('storage_snapshots_target_idx').on(table.targetId),
 ]);
+
+/**
+ * On-server tenant volume snapshots (ADR: Longhorn CSI VolumeSnapshot,
+ * `type=snap` → in-cluster, NO off-site upload). Short-term PVC recovery
+ * points the tenant creates/restores from the tenant panel — distinct from
+ * the off-site tenant *bundles* (restic) which are the real backups. Each
+ * snapshot expires after `system_settings.snapshot_expiry_hours` and the
+ * storage-lifecycle reaper deletes both the VolumeSnapshot CR (Longhorn
+ * snapshot cascades via deletionPolicy=Delete) and this row.
+ */
+export const tenantVolumeSnapshots = pgTable('tenant_volume_snapshots', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  tenantId: varchar('tenant_id', { length: 36 }).notNull().references(() => tenants.id, { onDelete: 'cascade' }),
+  // Tenant namespace + the PVC the snapshot was taken of (`<ns>-storage`).
+  namespace: varchar('namespace', { length: 255 }).notNull(),
+  pvcName: varchar('pvc_name', { length: 253 }).notNull(),
+  // The Kubernetes VolumeSnapshot CR name (in the tenant namespace).
+  volumeSnapshotName: varchar('volume_snapshot_name', { length: 253 }).notNull(),
+  // Free-text label the tenant sets ("before plugin update", …).
+  label: text('label'),
+  // creating → ready (readyToUse) | error | deleting. Reconciled from the
+  // live VolumeSnapshot's status on list.
+  status: varchar('status', { length: 16 }).notNull().default('creating'),
+  // restoreSize from the VolumeSnapshot status once ready; 0 while creating.
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
+  lastError: text('last_error'),
+  // Who created it (tenant user or operator). null for system.
+  triggeredByUserId: varchar('triggered_by_user_id', { length: 36 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  readyAt: timestamp('ready_at'),
+  // When the reaper may delete it (createdAt + snapshot_expiry_hours).
+  expiresAt: timestamp('expires_at').notNull(),
+}, (table) => [
+  index('tenant_volume_snapshots_tenant_idx').on(table.tenantId),
+  index('tenant_volume_snapshots_expires_idx').on(table.expiresAt),
+  uniqueIndex('tenant_volume_snapshots_vs_name_unique').on(table.namespace, table.volumeSnapshotName),
+]);
+
+export type TenantVolumeSnapshot = typeof tenantVolumeSnapshots.$inferSelect;
+export type NewTenantVolumeSnapshot = typeof tenantVolumeSnapshots.$inferInsert;
 
 /**
  * An in-flight or completed lifecycle operation. The state machine is:
