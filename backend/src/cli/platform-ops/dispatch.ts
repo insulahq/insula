@@ -24,6 +24,7 @@ import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
 import { adminCommand } from './admin.js';
 import { domainCommand } from './domain.js';
+import { mailCommand } from './mail.js';
 import {
   clusterGcNamespaces,
   clusterUpgradeCnpg,
@@ -66,10 +67,14 @@ Commands:
                          Rename the platform apex (runs in the platform-api
                          pod) — moves every platform hostname + TLS cert; the
                          tenant CNAME target is untouched
+  mail rotate-master-password [--json]
+                         Rotate the Stalwart webmail master password (recovery;
+                         runs in the platform-api pod, rolls Roundcube)
   component-watch [args] Operator helper for the component CVE/version watch
   node-terminal gc       Clean up stale node-terminal pods/artifacts
   backup rotate-key      Rotate BACKUP_TARGET_KEY (DESTRUCTIVE — invalidates
                          all remote backups)
+  backup key-status [--json] Show BACKUP_TARGET_KEY fingerprint + rotation times
   backup target list [--json]
                          List backup targets + their class bindings (in-pod)
   backup target add      Create a target (pipe createBackupConfig JSON on stdin)
@@ -175,6 +180,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return adminCommand(rest, deps);
     case 'domain':
       return domainCommand(rest, deps);
+    case 'mail':
+      return mailCommand(rest, deps);
     case 'component-watch':
       return componentWatchCommand(rest, deps);
     case 'node-terminal':

@@ -1,6 +1,51 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Deps } from './deps.js';
-import { backupTargetCommand } from './backup-ops.js';
+import { backupTargetCommand, backupKeyStatus } from './backup-ops.js';
+
+const b64 = (s: string) => Buffer.from(s, 'utf8').toString('base64');
+
+/** fakeDeps for the in-binary key-status command (uses deps.exec + deps.env). */
+function keyStatusDeps(fields: Record<string, string> | null): { deps: Deps; out: string[]; err: string[] } {
+  const out: string[] = [];
+  const err: string[] = [];
+  const exec = vi.fn(async (_cmd: string, args: string[]) => {
+    if (fields === null) return { code: 1, stdout: '', stderr: 'unreachable' };
+    const m = args.join(' ').match(/jsonpath=\{\.data\.([a-z_]+)\}/);
+    const field = m?.[1] ?? '';
+    return { code: 0, stdout: field in fields ? b64(fields[field]) : '', stderr: '' };
+  });
+  const deps = { env: {}, out: (s: string) => out.push(s), err: (s: string) => err.push(s), exec } as unknown as Deps;
+  return { deps, out, err };
+}
+
+describe('backupKeyStatus', () => {
+  it('prints fingerprint + generated/rotated', async () => {
+    const { deps, out } = keyStatusDeps({ fingerprint: 'abc123def4567890', generated_at: '2026-06-01', rotated_at: '2026-06-14' });
+    expect(await backupKeyStatus([], deps)).toBe(0);
+    const text = out.join('\n');
+    expect(text).toMatch(/fingerprint: abc123def4567890/);
+    expect(text).toMatch(/generated: 2026-06-01/);
+    expect(text).toMatch(/rotated:\s+2026-06-14/);
+  });
+
+  it('--json emits the structured status', async () => {
+    const { deps, out } = keyStatusDeps({ fingerprint: 'fp', generated_at: 'g' });
+    expect(await backupKeyStatus(['--json'], deps)).toBe(0);
+    expect(JSON.parse(out.join(''))).toEqual({ ok: true, fingerprint: 'fp', generatedAt: 'g', rotatedAt: null });
+  });
+
+  it('cluster unreachable → exit 1', async () => {
+    const { deps, err } = keyStatusDeps(null);
+    expect(await backupKeyStatus([], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/could not reach the cluster/);
+  });
+
+  it('secret absent (empty fingerprint) → exit 1', async () => {
+    const { deps, err } = keyStatusDeps({}); // no fingerprint field
+    expect(await backupKeyStatus([], deps)).toBe(1);
+    expect(err.join('\n')).toMatch(/backup-target-key not found/);
+  });
+});
 
 type BackupTargetResult = { ok: boolean; json?: unknown; detail?: string };
 

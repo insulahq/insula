@@ -87,6 +87,53 @@ function usage(deps: Deps, form: string): number {
   return 2;
 }
 
+/**
+ * `backup key-status` — show the BACKUP_TARGET_KEY fingerprint + rotation times
+ * (the read-only companion to the destructive `backup rotate-key`). In-binary: a
+ * plain kubectl read of the platform/backup-target-key Secret (same fields the
+ * `make backup-target-key-status` target prints).
+ */
+export async function backupKeyStatus(args: string[], deps: Deps): Promise<number> {
+  const json = args.includes('--json');
+  const kc = deps.env.KUBECONFIG ? [] : ['--kubeconfig', '/etc/rancher/k3s/k3s.yaml'];
+  const getField = async (field: string): Promise<string | null> => {
+    const r = await deps.exec(
+      'kubectl',
+      [...kc, '-n', 'platform', 'get', 'secret', 'backup-target-key', '-o', `jsonpath={.data.${field}}`],
+      {},
+    );
+    if (r.code !== 0) return null; // cluster/secret unreachable
+    const b64 = r.stdout.trim();
+    if (!b64) return '';
+    try {
+      return Buffer.from(b64, 'base64').toString('utf8');
+    } catch {
+      return '';
+    }
+  };
+
+  const fingerprint = await getField('fingerprint');
+  if (fingerprint === null) {
+    deps.err('backup key-status: kubectl could not reach the cluster (KUBECONFIG unset, or cluster down?)');
+    return 1;
+  }
+  if (fingerprint === '') {
+    deps.err('backup key-status: platform/backup-target-key not found (is the cluster bootstrapped?)');
+    return 1;
+  }
+  const generatedAt = (await getField('generated_at')) || '';
+  const rotatedAt = (await getField('rotated_at')) || '';
+
+  if (json) {
+    deps.out(JSON.stringify({ ok: true, fingerprint, generatedAt: generatedAt || null, rotatedAt: rotatedAt || null }));
+    return 0;
+  }
+  deps.out(`BACKUP_TARGET_KEY fingerprint: ${fingerprint}`);
+  deps.out(`  generated: ${generatedAt || '(unknown)'}`);
+  deps.out(`  rotated:   ${rotatedAt || '(never rotated)'}`);
+  return 0;
+}
+
 export async function backupTargetCommand(args: string[], deps: Deps): Promise<number> {
   const [sub, ...rest] = args;
   const json = args.includes('--json');
