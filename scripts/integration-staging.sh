@@ -3866,9 +3866,51 @@ else:
   fi
 }
 
+# ─── scenario: platform-ops CLI (R18) ──────────────────────────────
+# Drives the cosign-signed platform-ops binary on a cluster node (the
+# real operator path) through its read-only / idempotent R18 surface —
+# version, cluster doctor, backup key-status, backup target list +
+# idempotent re-bind, and admin reset-password (the known password is
+# restored afterwards so later scenarios keep authenticating). The
+# external harness (integration-platform-ops-cli-e2e.sh) owns the
+# assertions; we pass the staging connection env through, surface its
+# per-check detail indented, and roll its pass/fail into the aggregate.
+#
+# The destructive domain-rename leg is OFF here by default (it moves the
+# admin host mid-suite) — set PLATFORM_OPS_RENAME_TARGET to opt in.
+# Requires SSH_HOST (the binary runs ON a node); skips cleanly without it.
+scenario_platform_ops() {
+  if [[ -z "$SSH_HOST" ]]; then
+    log "platform_ops: skipped — SSH_HOST unset (the signed binary runs ON a node)"
+    return 0
+  fi
+  local harness out rc summary sub_fail
+  harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/integration-platform-ops-cli-e2e.sh"
+  if [[ ! -f "$harness" ]]; then
+    fail "platform-ops: harness not found at $harness"
+    return 1
+  fi
+  out=$(
+    SSH_HOST="$SSH_HOST" SSH_KEY="$SSH_KEY" \
+    ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+    RENAME_TARGET="${PLATFORM_OPS_RENAME_TARGET:-}" \
+    bash "$harness" 2>&1
+  ); rc=$?
+  # Surface the child's per-check detail in the orchestrated log (indented).
+  echo "$out" | sed 's/^/    /'
+  # Roll the child's tally into the aggregate so a child failure fails the suite.
+  summary=$(echo "$out" | sed 's/\x1b\[[0-9;]*m//g' | grep -oE '[0-9]+ passed, [0-9]+ failed' | tail -1)
+  sub_fail=$(echo "$summary" | grep -oE '[0-9]+ failed' | grep -oE '^[0-9]+'); sub_fail=${sub_fail:-1}
+  if [[ "$rc" == "0" && "$sub_fail" == "0" ]]; then
+    ok "platform-ops CLI E2E passed on ${SSH_HOST#*@} (${summary:-0 passed})"
+  else
+    fail "platform-ops CLI E2E: rc=$rc ${summary:-no summary line} — see detail above"
+  fi
+}
+
 ALL_SCENARIOS=(lifecycle fm https reprovision drain reaper bundle restore
   mail mail_tls webmail webmail_url_change mail_hostname_rename
-  system_backup redis mail_migration_fixes)
+  system_backup redis mail_migration_fixes platform_ops)
 
 # Expand "all" and build the ordered run list.
 RUN_LIST=()

@@ -2,21 +2,33 @@
 # End-to-end test for the R18 platform-ops CLI subcommands, driven through the
 # signed `platform-ops` binary ON a cluster node (the real operator path).
 #
-# Covers:
+# Covers (R18 platform-ops surface):
 #   1. `platform-ops admin reset-password --email <addr> --random`
 #      → execs the in-pod entrypoint (native bcrypt in the platform-api pod),
-#        prints the new password on its own line; we then log in with it.
-#   2. `platform-ops domain rename --to <apex>`
+#        prints the new password on its own line; we then log in with it, then
+#        restore the KNOWN password (stdin path) so a suite stays authenticated.
+#   2. `platform-ops version --json`            → installed/running both present.
+#   3. `platform-ops cluster doctor --json`     → ≥6 checks incl the {cosign,
+#        kubeconfig,reachable} core; exit code matches the fails contract.
+#   4. `platform-ops backup key-status --json`  → ok + age-key fingerprint.
+#   5. `platform-ops backup target list --json` + idempotent re-bind round-trip
+#        (re-bind assignments[0] to its own target; assert the binding is
+#        unchanged — a CLI bind must be idempotent).
+#   6. `platform-ops domain rename --to <apex>` (only when RENAME_TARGET is set)
 #      → execs the in-pod entrypoint (same renamePlatformDomain the API uses);
 #        we assert the platform IngressRoute hosts flip, the tenant CNAME target
 #        (ingress_base_domain) does NOT, then revert.
 #
-# Both commands are thin host-side orchestrators that `kubectl exec` into the
-# platform-api pod — the SEA binary can't run the native-dep graph itself.
+# 1/6 and 6 are thin host-side orchestrators that `kubectl exec` into the
+# platform-api pod (native-dep graph); 2–5 run in-binary on the node. Tests
+# 2–5 are read-only / idempotent and safe inside an orchestrated suite; the
+# destructive rename (6) is opt-in via RENAME_TARGET.
 #
-# USAGE: ADMIN_PASSWORD is NOT needed (we reset it). Set:
+# USAGE: set ADMIN_PASSWORD to the known admin password (restored after the
+# --random reset so orchestrated runs keep authenticating; omit it for a
+# standalone run and the random reset password is left in place). Plus:
 #   SSH_HOST=root@<ip> SSH_KEY=~/key ADMIN_HOST=https://admin.<env>.example.test \
-#   ADMIN_EMAIL=admin@<env>.example.test RENAME_TARGET=<env>-rename.example.test \
+#   ADMIN_EMAIL=admin@<env>.example.test [RENAME_TARGET=<env>-rename.example.test] \
 #   [PLATFORM_OPS_BIN=/usr/local/bin/platform-ops] \
 #   ./scripts/integration-platform-ops-cli-e2e.sh
 
@@ -67,6 +79,61 @@ fi
 if [[ -n "$PW" ]]; then
   TOKEN=$(login_token "$PW")
   [[ -n "$TOKEN" ]] && ok "logged in with the CLI-reset password (token issued)" || fail "login with the CLI-reset password failed"
+fi
+# Suite-safety: restore the KNOWN password (via the stdin path — never argv) so
+# later scenarios in an orchestrated run keep authenticating. Also exercises the
+# non-random reset. Standalone runs (no ADMIN_PASSWORD) leave the random one.
+if [[ -n "${ADMIN_PASSWORD:-}" ]]; then
+  printf '%s' "$ADMIN_PASSWORD" | ssh_q "$PLATFORM_OPS_BIN admin reset-password --email $ADMIN_EMAIL 2>/dev/null" >/dev/null
+  RT=$(login_token "$ADMIN_PASSWORD")
+  [[ -n "$RT" ]] && ok "restored the known admin password (login works again)" || fail "could not restore the known admin password"
+else
+  skip "ADMIN_PASSWORD unset — leaving the random reset password (standalone mode)"
+fi
+
+# ─── Read-only / idempotent R18 subcommands (safe to run in an orchestrated suite) ─
+log "── version --json ──"
+VJ=$(on_node "version --json")
+echo "$VJ" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('installed') and d.get('running')" 2>/dev/null \
+  && ok "version --json: installed=$(echo "$VJ" | python3 -c "import json,sys;print(json.load(sys.stdin)['installed'])" 2>/dev/null)" \
+  || fail "version --json malformed: ${VJ:0:120}"
+
+log "── cluster doctor --json ──"
+DJ=$(on_node "cluster doctor --json"); DRC=$?
+if echo "$DJ" | python3 -c "import json,sys
+d=json.load(sys.stdin)
+assert isinstance(d.get('checks'),list) and len(d['checks'])>=6
+n={c['name'] for c in d['checks']}
+assert {'cosign trust anchor','host-config kubeconfig','cluster reachable'} <= n" 2>/dev/null; then
+  ok "cluster doctor --json: $(echo "$DJ" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{len(d['checks'])} checks, fails={d['fails']}, warns={d['warns']}\")" 2>/dev/null)"
+  EXP=$(echo "$DJ" | python3 -c "import json,sys;print(1 if json.load(sys.stdin)['fails']>0 else 0)" 2>/dev/null)
+  [[ "$DRC" == "$EXP" ]] && ok "doctor exit code ($DRC) matches the fails contract" || fail "doctor exit $DRC != expected $EXP"
+else
+  fail "cluster doctor --json malformed: ${DJ:0:160}"
+fi
+
+log "── backup key-status --json ──"
+KJ=$(on_node "backup key-status --json")
+echo "$KJ" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') and d.get('fingerprint')" 2>/dev/null \
+  && ok "backup key-status: fingerprint=$(echo "$KJ" | python3 -c "import json,sys;print(json.load(sys.stdin)['fingerprint'])" 2>/dev/null)" \
+  || fail "backup key-status --json malformed: ${KJ:0:120}"
+
+log "── backup target list + idempotent bind round-trip ──"
+TL=$(on_node "backup target list --json")
+if echo "$TL" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') and isinstance(d.get('configs'),list) and isinstance(d.get('assignments'),list)" 2>/dev/null; then
+  ok "backup target list: $(echo "$TL" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{len(d['configs'])} targets, {len(d['assignments'])} bindings\")" 2>/dev/null)"
+  RB=$(echo "$TL" | python3 -c "import json,sys;a=(json.load(sys.stdin).get('assignments') or []);print(f\"{a[0]['backupClass']} {a[0]['targetId']}\" if a else '')" 2>/dev/null)
+  if [[ -n "$RB" ]]; then
+    RC=${RB%% *}; RTID=${RB##* }
+    on_node "backup target bind $RC $RTID --json" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get('ok') and d.get('backupClass')=='$RC' and d.get('targetId')=='$RTID'" 2>/dev/null \
+      && ok "idempotent re-bind $RC → ${RTID:0:8}… ok" || fail "re-bind $RC failed"
+    on_node "backup target list --json" | python3 -c "import json,sys;d=json.load(sys.stdin);assert any(x['backupClass']=='$RC' and x['targetId']=='$RTID' for x in (d.get('assignments') or []))" 2>/dev/null \
+      && ok "binding $RC unchanged after re-bind (idempotent)" || fail "binding changed after re-bind"
+  else
+    skip "no existing class binding — idempotent re-bind skipped"
+  fi
+else
+  fail "backup target list --json malformed: ${TL:0:160}"
 fi
 
 # ─── Test 2: domain rename via the CLI binary ──────────────────────────────────
