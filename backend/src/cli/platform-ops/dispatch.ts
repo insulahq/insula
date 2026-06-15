@@ -70,6 +70,13 @@ Commands:
   node-terminal gc       Clean up stale node-terminal pods/artifacts
   backup rotate-key      Rotate BACKUP_TARGET_KEY (DESTRUCTIVE — invalidates
                          all remote backups)
+  backup target list [--json]
+                         List backup targets + their class bindings (in-pod)
+  backup target add      Create a target (pipe createBackupConfig JSON on stdin)
+  backup target test <id>          Probe a target's connectivity
+  backup target delete <id>        Delete a target (refused if active/bound)
+  backup target bind <system|tenant|mail> <id> | unbind <class>
+                         Bind/clear a backup class → target (reconcilers converge)
   snapshot capture       Create an on-demand CNPG base backup (Backup CR)
   snapshot list          List object-store backups via the backup-rclone-shim
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
