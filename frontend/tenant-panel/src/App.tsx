@@ -12,6 +12,7 @@ import Backups from '@/pages/Backups';
 import TenantRestoreCart from '@/pages/RestoreCart';
 import Email from '@/pages/Email';
 import Files from '@/pages/Files';
+import Snapshots from '@/pages/Snapshots';
 import Settings from '@/pages/Settings';
 import OidcProviders from '@/pages/settings/OidcProviders';
 import MtlsProviders from '@/pages/settings/MtlsProviders';
@@ -93,6 +94,7 @@ export default function App() {
             <Route path="applications" element={<LifecycleGate><Applications /></LifecycleGate>} />
             <Route path="cron-jobs" element={<LifecycleGate><CronJobs /></LifecycleGate>} />
             <Route path="files" element={<LifecycleGate><Files /></LifecycleGate>} />
+            <Route path="snapshots" element={<LifecycleGate><Snapshots /></LifecycleGate>} />
             <Route path="email" element={<LifecycleGate><Email /></LifecycleGate>} />
             <Route path="backups" element={<LifecycleGate><Backups /></LifecycleGate>} />
             <Route path="backups/restore/:bundleId" element={<LifecycleGate><TenantRestoreCart /></LifecycleGate>} />
