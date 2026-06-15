@@ -1,0 +1,142 @@
+# host-config-kubeconfig — distributes a least-privilege kubeconfig to WORKER
+# node hosts so `platform-ops host-config` can read the desired-state policy
+# ConfigMaps (and thus run host-migrations / converge packages) on workers.
+#
+# Why a DaemonSet: worker hosts have no kubeconfig (/etc/rancher/k3s/k3s.yaml is
+# server-only) and a host process can't easily mint a scoped token. A pod CAN —
+# kubelet projects this pod's `host-config-reader` SA token into the pod
+# automatically. The pod copies that token + the cluster CA into a kubeconfig on
+# the host (hostPath, root-owned 0600), refreshing it before the bound token
+# expires. The host-side converger then reads /etc/platform/host-config/kubeconfig.
+#
+# Workers ONLY: control-plane nodes already use the admin k3s.yaml (the converger
+# prefers it), so there's no reason to place even a scoped token there.
+#
+# The pod needs NO network of its own — it only reads its mounted token and
+# writes a host file (see networkpolicy.yaml: egress denied).
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: host-config-kubeconfig
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: host-config-kubeconfig
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: host-config
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: host-config-kubeconfig
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: host-config-kubeconfig
+        app.kubernetes.io/part-of: hosting-platform
+    spec:
+      serviceAccountName: host-config-reader
+      # SA defaults automount off; this pod is the one legitimate consumer.
+      automountServiceAccountToken: true
+      # Workers only — control-plane nodes use the admin k3s.yaml.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
+                  - key: node-role.kubernetes.io/master
+                    operator: DoesNotExist
+      # Run on every worker regardless of tenant/other taints.
+      tolerations:
+        - operator: Exists
+      priorityClassName: system-node-critical
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: writer
+          # Digest-pinned (the busybox:1.37 manifest-list digest) — UNLIKE the
+          # repo's other busybox:1.37 uses, because this pod's OUTPUT is a
+          # kubeconfig a root host process trusts; pinning the image is the
+          # cheapest way to close the only realistic compromise vector (a
+          # malicious image layer) for an otherwise no-network, no-caps pod.
+          # Bump the digest with the tag when busybox is rev'd (CVE-watch).
+          image: busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+          imagePullPolicy: IfNotPresent
+          # Write (and keep fresh) the scoped kubeconfig on the host. The
+          # projected SA token is kubelet-rotated; re-render every 10 min so the
+          # on-host token is always well within its TTL. Atomic write (tmp+mv)
+          # so the converger never reads a half-written file.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              SA=/var/run/secrets/kubernetes.io/serviceaccount
+              OUT=/host-config/kubeconfig
+              while :; do
+                if [ ! -r "$$SA/token" ] || [ ! -r "$$SA/ca.crt" ] || [ -z "$${KUBERNETES_SERVICE_HOST:-}" ]; then
+                  echo "[host-config-kubeconfig] SA token / CA / apiserver env not ready — retrying" >&2
+                  sleep 600; continue
+                fi
+                # The apiserver host/port are kubelet-injected and interpolated into
+                # the heredoc below. Defensively reject anything that isn't a bare
+                # IPv4/IPv6 literal host + numeric port, so a pathological env value
+                # can't break out of the heredoc / inject kubeconfig fields.
+                host=$${KUBERNETES_SERVICE_HOST}
+                port=$${KUBERNETES_SERVICE_PORT:-443}
+                case "$$host" in *[!0-9A-Fa-f.:]*|'') echo "[host-config-kubeconfig] unexpected apiserver host '$$host' — skipping" >&2; sleep 600; continue ;; esac
+                case "$$port" in *[!0-9]*|'') port=443 ;; esac
+                ca=$$(base64 "$$SA/ca.crt" | tr -d '\n')
+                tok=$$(cat "$$SA/token")
+                umask 077
+                cat > "$$OUT.tmp" <<EOF
+              apiVersion: v1
+              kind: Config
+              clusters:
+              - name: insula
+                cluster:
+                  server: https://$${host}:$${port}
+                  certificate-authority-data: $${ca}
+              users:
+              - name: host-config-reader
+                user:
+                  token: $${tok}
+              contexts:
+              - name: host-config
+                context:
+                  cluster: insula
+                  user: host-config-reader
+                  namespace: platform-system
+              current-context: host-config
+              EOF
+                mv -f "$$OUT.tmp" "$$OUT"
+                echo "[host-config-kubeconfig] wrote $$OUT (server=$${host}:$${port})"
+                sleep 600
+              done
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi
+          securityContext:
+            # uid 0 ONLY to write the root-owned host dir; no caps, no esc.
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            # Scoped to the host-config SUBDIR — the pod can never touch the rest
+            # of /etc/platform (e.g. the cosign.pub trust anchor lives one level up).
+            - name: host-config-dir
+              mountPath: /host-config
+      volumes:
+        - name: host-config-dir
+          hostPath:
+            path: /etc/platform/host-config
+            type: DirectoryOrCreate

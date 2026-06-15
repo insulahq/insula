@@ -12,6 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Worker nodes can now run host-config (host-migrations / package converge).**
+  Worker hosts have no k3s admin kubeconfig (`/etc/rancher/k3s/k3s.yaml` is
+  server-only), so `platform-ops host-config` was a permanent "cluster
+  unreachable" no-op there — host-migrations (e.g. the rclone backfill) never ran
+  on workers. A new `host-config-reader` ServiceAccount (RBAC: `get` on exactly
+  the 5 desired-state ConfigMaps, name-scoped, no list/write) plus a tiny
+  workers-only `host-config-kubeconfig` DaemonSet writes a least-privilege
+  kubeconfig to `/etc/platform/host-config/kubeconfig` on each worker host (the
+  DaemonSet has zero network, drops ALL caps, and can only write that subdir —
+  never the cosign trust anchor at `/etc/platform/cosign.pub`). The converger now
+  falls back to that kubeconfig after the k3s admin one. New CI guard pins the
+  least-privilege contract (`ci-host-config-check.sh`). Security-reviewed: no
+  critical/high; documented hardening follow-ups — an expected-apiserver anchor
+  to validate the kubeconfig `server` (defense-in-depth vs a compromised writer
+  pod) and `bootstrap.sh` ensuring `/etc/platform/host-config` is a real dir
+  (anti-symlink). The busybox writer image is digest-pinned.
+
 ## [2026.6.9] - 2026-06-15
 
 ### Added

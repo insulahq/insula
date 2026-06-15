@@ -58,6 +58,27 @@ const MODULES_CM = 'host-modules-desired';
 const DESIRED_NS = 'platform-system';
 const PROC_SYS = '/proc/sys';
 
+// Kubeconfigs the converger reads the desired-state CMs with, in order:
+//   1. /etc/rancher/k3s/k3s.yaml — the k3s admin kubeconfig. CONTROL-PLANE only;
+//      server nodes have it, k3s agents (workers) do not.
+//   2. /etc/platform/host-config/kubeconfig — the least-privilege (get on the 5
+//      desired-state CMs only) kubeconfig the host-config-kubeconfig DaemonSet
+//      writes onto WORKER hosts, so the converger reaches the cluster there too.
+//      Without it, host-config was a permanent "cluster unreachable" no-op on
+//      workers (host-migrations / packages never converged).
+// $KUBECONFIG overrides both. Returns undefined → createK8sClients() does its own
+// in-cluster/default resolution (and, off-cluster, fails closed = converge no-op).
+const HOST_CONFIG_KUBECONFIGS = [
+  '/etc/rancher/k3s/k3s.yaml',
+  '/etc/platform/host-config/kubeconfig',
+] as const;
+
+export function resolveHostConfigKubeconfig(env: NodeJS.ProcessEnv): string | undefined {
+  const explicit = env.KUBECONFIG?.trim();
+  if (explicit) return explicit;
+  return HOST_CONFIG_KUBECONFIGS.find((p) => existsSync(p));
+}
+
 // Managed drop-in / persistence paths. Each is a single platform-owned file —
 // the converger overwrites it wholesale, so an operator edit is reverted on the
 // next pass (the file header says so).
@@ -153,8 +174,8 @@ function persistSysctls(specs: readonly SysctlSpec[]): void {
 async function readDesired(env: NodeJS.ProcessEnv): Promise<{ sysctls: SysctlSpec[]; mode: string } | null> {
   try {
     const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
-    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
-    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig ? createK8sClients(kubeconfig) : createK8sClients();
     const cm = (await k8s.core.readNamespacedConfigMap({
       name: DESIRED_CM,
       namespace: DESIRED_NS,
@@ -279,8 +300,8 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): void {
 async function readDesiredPackages(env: NodeJS.ProcessEnv): Promise<{ packages: PackageSpec[]; mode: string } | null> {
   try {
     const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
-    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
-    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig ? createK8sClients(kubeconfig) : createK8sClients();
     const cm = (await k8s.core.readNamespacedConfigMap({
       name: PACKAGES_CM,
       namespace: DESIRED_NS,
@@ -430,8 +451,8 @@ async function loadHostMigrationCatalog(
 async function readHostMigrationMode(env: NodeJS.ProcessEnv): Promise<string | null> {
   try {
     const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
-    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
-    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig ? createK8sClients(kubeconfig) : createK8sClients();
     const cm = (await k8s.core.readNamespacedConfigMap({
       name: HOST_MIGRATIONS_CM,
       namespace: DESIRED_NS,
@@ -487,8 +508,8 @@ function writeUlimitDropIn(content: string): void {
 async function readDesiredUlimits(env: NodeJS.ProcessEnv): Promise<{ lines: string[]; mode: string } | null> {
   try {
     const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
-    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
-    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig ? createK8sClients(kubeconfig) : createK8sClients();
     const cm = (await k8s.core.readNamespacedConfigMap({
       name: ULIMITS_CM,
       namespace: DESIRED_NS,
@@ -589,8 +610,8 @@ function persistModule(name: string): void {
 async function readDesiredModules(env: NodeJS.ProcessEnv): Promise<{ modules: ModuleSpec[]; mode: string } | null> {
   try {
     const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
-    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
-    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig ? createK8sClients(kubeconfig) : createK8sClients();
     const cm = (await k8s.core.readNamespacedConfigMap({
       name: MODULES_CM,
       namespace: DESIRED_NS,

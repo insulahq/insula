@@ -164,6 +164,42 @@ if [[ -f "$INDEX_TS" ]]; then
     || fail "index.ts must invoke modprobe via the absolute /usr/sbin/modprobe path (MODPROBE_BIN)"
 fi
 
+# (6) host-config-reader — the scoped kubeconfig handed to WORKER hosts so the
+# host-side converger can read the desired-state CMs there. It is a security
+# boundary: a token placed on a worker host filesystem. Pin it least-privilege so
+# a later edit can't silently turn it into a cluster-write credential.
+READER_RBAC="$REPO_ROOT/k8s/base/host-config-reader/rbac.yaml"
+READER_DS="$REPO_ROOT/k8s/base/host-config-reader/daemonset.yaml"
+if [[ -f "$READER_RBAC" ]]; then
+  # get-only: any other verb on the worker token is a privilege-escalation regression.
+  if grep -qE '"(list|watch|create|update|patch|delete|deletecollection|\*)"' "$READER_RBAC"; then
+    fail "host-config-reader Role has a verb beyond 'get' — the worker kubeconfig must stay read-only"
+  fi
+  grep -q '"get"' "$READER_RBAC" || fail "host-config-reader Role must grant 'get'"
+  # name-scoped: never the whole namespace's ConfigMaps.
+  grep -q 'resourceNames:' "$READER_RBAC" \
+    || fail "host-config-reader Role must scope to named ConfigMaps (resourceNames), never the whole namespace"
+else
+  fail "k8s/base/host-config-reader/rbac.yaml is missing (worker host-config kubeconfig)"
+fi
+if [[ -f "$READER_DS" ]]; then
+  grep -q 'drop: \["ALL"\]' "$READER_DS" || fail "host-config-kubeconfig daemonset must drop ALL caps"
+  grep -q 'allowPrivilegeEscalation: false' "$READER_DS" \
+    || fail "host-config-kubeconfig daemonset must set allowPrivilegeEscalation: false"
+  if grep -q 'privileged: true' "$READER_DS"; then
+    fail "host-config-kubeconfig daemonset must NOT be privileged"
+  fi
+  # Writes ONLY the host-config subdir — never all of /etc/platform (the cosign.pub
+  # trust anchor lives one level up and must stay un-writable by this pod).
+  grep -q 'path: /etc/platform/host-config' "$READER_DS" \
+    || fail "host-config-kubeconfig daemonset hostPath must be the /etc/platform/host-config subdir"
+  if grep -qE 'path: /etc/platform$' "$READER_DS"; then
+    fail "host-config-kubeconfig daemonset must NOT mount all of /etc/platform (only the host-config subdir)"
+  fi
+else
+  fail "k8s/base/host-config-reader/daemonset.yaml is missing"
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "ci-host-config-check: FAILED" >&2
   exit 1

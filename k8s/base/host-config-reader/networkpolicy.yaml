@@ -1,0 +1,19 @@
+# The host-config-kubeconfig pod needs ZERO network: it only reads its
+# kubelet-projected SA token and writes a file to the host. Deny all ingress +
+# egress so a compromise of this (root, hostPath-writing) pod can't exfiltrate
+# the token or reach anything. The TOKEN it writes is used by the host-side
+# converger, not by this pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: host-config-kubeconfig-deny-all
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: host-config-kubeconfig
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: host-config-kubeconfig
+  policyTypes: [Ingress, Egress]
+  # No ingress/egress rules → default-deny both directions.

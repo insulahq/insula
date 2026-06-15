@@ -1,0 +1,60 @@
+# Least-privilege identity the host-config converger uses ON WORKER NODES.
+#
+# Control-plane nodes read the desired-state ConfigMaps via the k3s admin
+# kubeconfig (/etc/rancher/k3s/k3s.yaml). Worker nodes (k3s agents) have NO such
+# kubeconfig — so `platform-ops host-config` could never reach the cluster on a
+# worker and host-migrations / sysctls / packages never converged there.
+#
+# The host-config-kubeconfig DaemonSet (daemonset.yaml) writes a kubeconfig
+# bound to THIS ServiceAccount onto each worker host. Its only power is `get` on
+# the five named desired-state ConfigMaps — it can read the host-config policy
+# and nothing else (no list, no write, no other resources, no other namespace).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: host-config-reader
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: host-config-reader
+    app.kubernetes.io/part-of: hosting-platform
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: host-config-reader
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: host-config-reader
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  # get-by-NAME only — host-config reads each desired-state CM by name
+  # (readNamespacedConfigMap). resourceNames scopes this to exactly the five
+  # policy CMs; it grants no `list` (which can't be name-scoped) so the token
+  # can't enumerate other ConfigMaps in the namespace.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames:
+      - host-config-desired
+      - host-packages-desired
+      - host-migrations-desired
+      - host-ulimits-desired
+      - host-modules-desired
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: host-config-reader
+  namespace: platform-system
+  labels:
+    app.kubernetes.io/name: host-config-reader
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: host-config-reader
+subjects:
+  - kind: ServiceAccount
+    name: host-config-reader
+    namespace: platform-system
