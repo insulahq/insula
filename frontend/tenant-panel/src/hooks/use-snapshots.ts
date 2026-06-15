@@ -9,7 +9,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import { useAuth } from '@/hooks/use-auth';
-import type { TenantSnapshot, ListTenantSnapshotsResponse } from '@insula/api-contracts';
+import type {
+  TenantSnapshot,
+  ListTenantSnapshotsResponse,
+  StartSnapshotRestoreResponse,
+  SnapshotRestoreStatus,
+} from '@insula/api-contracts';
 
 interface ListResponse { readonly data: ListTenantSnapshotsResponse }
 interface CreateResponse { readonly data: TenantSnapshot }
@@ -58,5 +63,36 @@ export function useDeleteSnapshot() {
       });
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['tenant-snapshots', tenantId] }),
+  });
+}
+
+/** Start a DESTRUCTIVE restore. Resolves with the storage operation id to poll. */
+export function useRestoreSnapshot() {
+  const tenantId = useAuth((s) => s.user?.tenantId);
+  return useMutation({
+    mutationFn: (snapshotId: string) => {
+      if (!tenantId) throw new Error('No tenant id on session');
+      return apiFetch<{ data: StartSnapshotRestoreResponse }>(
+        `/api/v1/tenants/${tenantId}/snapshots/${snapshotId}/restore`,
+        { method: 'POST' },
+      );
+    },
+  });
+}
+
+/** Poll a restore operation. Stops polling once the op is idle/failed. */
+export function useRestoreStatus(operationId: string | null) {
+  const tenantId = useAuth((s) => s.user?.tenantId);
+  return useQuery({
+    queryKey: ['snapshot-restore', tenantId, operationId],
+    queryFn: () =>
+      apiFetch<{ data: SnapshotRestoreStatus }>(
+        `/api/v1/tenants/${tenantId}/snapshots/restore-status/${operationId}`,
+      ),
+    enabled: Boolean(tenantId && operationId),
+    refetchInterval: (query) => {
+      const st = query.state.data?.data?.state;
+      return st && st !== 'idle' && st !== 'failed' ? 2000 : false;
+    },
   });
 }

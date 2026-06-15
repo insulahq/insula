@@ -13,7 +13,7 @@ import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client
 import { createTenantSnapshotSchema } from '@insula/api-contracts';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
-import { createSnapshot, listSnapshots, deleteSnapshot } from './service.js';
+import { createSnapshot, listSnapshots, deleteSnapshot, restoreSnapshot, getRestoreOpStatus } from './service.js';
 
 export async function tenantSnapshotsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
@@ -57,5 +57,30 @@ export async function tenantSnapshotsRoutes(app: FastifyInstance): Promise<void>
     const { tenantId, snapshotId } = request.params as { tenantId: string; snapshotId: string };
     await deleteSnapshot({ db: app.db, k8s: k8sFor() }, tenantId, snapshotId);
     reply.status(204).send();
+  });
+
+  // ── POST /api/v1/tenants/:tenantId/snapshots/:snapshotId/restore ────
+  // DESTRUCTIVE: replaces the live volume with the snapshot's contents.
+  app.post('/tenants/:tenantId/snapshots/:snapshotId/restore', {
+    schema: { tags: ['TenantSnapshots'], summary: 'Restore the volume from a snapshot (destructive)', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId, snapshotId } = request.params as { tenantId: string; snapshotId: string };
+    const result = await restoreSnapshot(
+      { db: app.db, k8s: k8sFor() },
+      tenantId,
+      snapshotId,
+      { triggeredByUserId: request.user?.sub ?? null },
+    );
+    reply.status(202);
+    return success(result);
+  });
+
+  // ── GET /api/v1/tenants/:tenantId/snapshots/restore-status/:operationId ──
+  app.get('/tenants/:tenantId/snapshots/restore-status/:operationId', {
+    schema: { tags: ['TenantSnapshots'], summary: 'Poll a snapshot restore operation', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId, operationId } = request.params as { tenantId: string; operationId: string };
+    const status = await getRestoreOpStatus({ db: app.db, k8s: k8sFor() }, tenantId, operationId);
+    return success(status);
   });
 }
