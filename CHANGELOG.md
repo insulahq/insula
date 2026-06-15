@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.9] - 2026-06-15
+
 ### Added
 - **`rclone` is now a host dependency on every node.** The DR restore scripts
   (`restore-{etcd,mail,postgres}-from-shim.sh`, `platform-ops dr
