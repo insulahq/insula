@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.10] - 2026-06-15
+
 ### Added
 - **`platform-ops` operator-CLI additions (R18 consolidation).**
   - `cluster doctor` — per-node readiness/drift check (platform-ops version,
