@@ -19,6 +19,7 @@ import {
   upgradeCommand,
   rollbackCommand,
 } from './commands.js';
+import { clusterDoctor } from './doctor.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
 import { adminCommand } from './admin.js';
@@ -39,6 +40,9 @@ Commands:
   version [--json]        Show installed / running / available platform version
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
+  cluster doctor [--json] Per-node readiness/drift check (version, cosign anchor,
+                         host-config kubeconfig, cluster reachability, rclone,
+                         host-migration markers, nodes-ready). Exit 1 on any FAIL
   cluster upgrade --version vX.Y.Z+k3sN [--apply]
                          Generate SUC k3s upgrade Plans (skip-a-minor refused);
                          dry-run prints them, --apply creates them (SUC rolls nodes)
@@ -101,6 +105,8 @@ async function clusterCommand(args: string[], deps: Deps): Promise<number> {
       return clusterStatus(rest, deps);
     case 'diagnostics':
       return clusterDiagnostics(rest, deps);
+    case 'doctor':
+      return clusterDoctor(rest, deps);
     case 'upgrade':
       return clusterUpgrade(rest, deps);
     case 'gc-namespaces':
@@ -108,7 +114,7 @@ async function clusterCommand(args: string[], deps: Deps): Promise<number> {
     case 'upgrade-cnpg':
       return clusterUpgradeCnpg(rest, deps);
     default:
-      deps.err(`cluster: expected a subcommand (status | diagnostics | upgrade | gc-namespaces | upgrade-cnpg), got ${sub ? `'${sub}'` : 'none'}`);
+      deps.err(`cluster: expected a subcommand (status | diagnostics | doctor | upgrade | gc-namespaces | upgrade-cnpg), got ${sub ? `'${sub}'` : 'none'}`);
       return 2;
   }
 }

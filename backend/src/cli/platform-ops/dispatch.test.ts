@@ -110,11 +110,19 @@ describe('dispatch', () => {
     expect(exec).toHaveBeenCalled();
   });
 
+  it('cluster doctor routes through (runs checks, returns an exit code)', async () => {
+    const exec = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+    const { deps, out } = fakeDeps({ exec, readFile: () => null });
+    // no cosign.pub / kubeconfig on the fake host → at least one FAIL → exit 1
+    expect(await dispatch(['cluster', 'doctor'], deps)).toBe(1);
+    expect(out.join('\n')).toMatch(/cluster doctor/);
+  });
+
   it('cluster with no subcommand → error, exit 2', async () => {
     const { deps, err } = fakeDeps();
     const code = await dispatch(['cluster'], deps);
     expect(code).toBe(2);
-    expect(err.join('\n')).toMatch(/cluster|subcommand|status|diagnostics/i);
+    expect(err.join('\n')).toMatch(/cluster|subcommand|status|diagnostics|doctor/i);
   });
 
   it('migrations list routes to the list command', async () => {
