@@ -6,14 +6,17 @@ import Snapshots from '../pages/Snapshots';
 
 const createMutate = vi.fn();
 const deleteMutate = vi.fn();
+const restoreMutate = vi.fn();
 let listData: { data: { snapshots: unknown[]; expiryHours: number } } | undefined = {
   data: { snapshots: [], expiryHours: 48 },
 };
 
 vi.mock('../hooks/use-snapshots', () => ({
-  useSnapshots: vi.fn(() => ({ data: listData, isLoading: false, isError: false })),
+  useSnapshots: vi.fn(() => ({ data: listData, isLoading: false, isError: false, refetch: vi.fn() })),
   useCreateSnapshot: vi.fn(() => ({ mutate: createMutate, isPending: false, error: null })),
   useDeleteSnapshot: vi.fn(() => ({ mutate: deleteMutate, isPending: false, error: null })),
+  useRestoreSnapshot: vi.fn(() => ({ mutate: restoreMutate, isPending: false, error: null })),
+  useRestoreStatus: vi.fn(() => ({ data: { data: { operationId: 'op-1', state: 'restoring', progressPct: 70, progressMessage: 'Restoring…', lastError: null } } })),
 }));
 
 function wrapper({ children }: { children: React.ReactNode }) {
@@ -29,8 +32,15 @@ describe('Snapshots page', () => {
   beforeEach(() => {
     createMutate.mockClear();
     deleteMutate.mockClear();
+    restoreMutate.mockClear();
     listData = { data: { snapshots: [], expiryHours: 48 } };
   });
+
+  const readySnap = {
+    id: 'snap-1', tenantId: 't', label: 'nightly', status: 'ready', sizeBytes: 5368709120,
+    lastError: null, createdAt: new Date().toISOString(), readyAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 40 * 3600_000).toISOString(),
+  };
 
   it('renders the heading + the on-server / expiry notice', () => {
     render(<Snapshots />, { wrapper });
@@ -53,21 +63,28 @@ describe('Snapshots page', () => {
   });
 
   it('lists a ready snapshot with its expiry countdown + delete action', () => {
-    listData = {
-      data: {
-        expiryHours: 48,
-        snapshots: [{
-          id: 'snap-1', tenantId: 't', label: 'nightly', status: 'ready', sizeBytes: 5368709120,
-          lastError: null, createdAt: new Date().toISOString(), readyAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 40 * 3600_000).toISOString(),
-        }],
-      },
-    };
+    listData = { data: { expiryHours: 48, snapshots: [readySnap] } };
     render(<Snapshots />, { wrapper });
     expect(screen.getByTestId('snapshot-row-snap-1')).toBeInTheDocument();
     expect(screen.getByTestId('snapshot-row-snap-1').textContent).toMatch(/in 39h|in 40h/);
     fireEvent.click(screen.getByTestId('delete-snapshot-snap-1'));
     fireEvent.click(screen.getByTestId('confirm-delete-snapshot'));
     expect(deleteMutate).toHaveBeenCalledWith('snap-1', expect.anything());
+  });
+
+  it('restore goes through a destructive confirm before calling the hook', () => {
+    listData = { data: { expiryHours: 48, snapshots: [readySnap] } };
+    render(<Snapshots />, { wrapper });
+    // The Restore button only appears for ready snapshots.
+    fireEvent.click(screen.getByTestId('restore-snapshot-snap-1'));
+    // Destructive warning shown; confirm fires the mutation.
+    fireEvent.click(screen.getByTestId('confirm-restore-snapshot'));
+    expect(restoreMutate).toHaveBeenCalledWith('snap-1', expect.anything());
+  });
+
+  it('does NOT offer restore for a still-creating snapshot', () => {
+    listData = { data: { expiryHours: 48, snapshots: [{ ...readySnap, status: 'creating' }] } };
+    render(<Snapshots />, { wrapper });
+    expect(screen.queryByTestId('restore-snapshot-snap-1')).toBeNull();
   });
 });

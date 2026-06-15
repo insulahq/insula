@@ -16,7 +16,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { eq, and, ne, lt, desc } from 'drizzle-orm';
-import { tenants, tenantVolumeSnapshots, type TenantVolumeSnapshot } from '../../db/schema.js';
+import { tenants, tenantVolumeSnapshots, storageOperations, type TenantVolumeSnapshot } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { getSettings } from '../system-settings/service.js';
@@ -257,12 +257,84 @@ export async function listSnapshots(
   return { snapshots, expiryHours: settings.snapshotExpiryHours };
 }
 
+/**
+ * Restore the tenant PVC from a snapshot. DESTRUCTIVE: hands off to the
+ * storage-lifecycle orchestrator, which quiesces, swaps the PVC for one
+ * provisioned from the VolumeSnapshot, and unquiesces. Returns the storage
+ * operation id; poll {@link getRestoreOpStatus}. The snapshot row + CR are
+ * preserved (a dataSource isn't consumed), so the tenant can restore again.
+ */
+export async function restoreSnapshot(
+  deps: Deps,
+  tenantId: string,
+  snapshotId: string,
+  opts: { triggeredByUserId?: string | null },
+): Promise<{ operationId: string }> {
+  const { db, k8s } = deps;
+  const [row] = await db.select().from(tenantVolumeSnapshots)
+    .where(and(eq(tenantVolumeSnapshots.id, snapshotId), eq(tenantVolumeSnapshots.tenantId, tenantId)))
+    .limit(1);
+  if (!row) throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} not found`, 404);
+  if (row.status !== 'ready') {
+    throw new ApiError('SNAPSHOT_NOT_READY', `Snapshot is '${row.status}' — wait until it's ready before restoring.`, 409);
+  }
+  const { restoreTenantFromVolumeSnapshot } = await import('../storage-lifecycle/service.js');
+  return restoreTenantFromVolumeSnapshot(db, k8s, {
+    tenantId,
+    volumeSnapshotName: row.volumeSnapshotName,
+    restoreSizeBytes: row.sizeBytes,
+    snapshotLabel: row.label,
+    triggeredByUserId: opts.triggeredByUserId ?? null,
+  });
+}
+
+/** Tenant-scoped poll for a restore operation. Verifies the op belongs to the
+ *  tenant (an operator/tenant can only see their own op). */
+export async function getRestoreOpStatus(
+  deps: Deps,
+  tenantId: string,
+  operationId: string,
+): Promise<{ operationId: string; state: string; progressPct: number; progressMessage: string | null; lastError: string | null }> {
+  const [op] = await deps.db.select().from(storageOperations)
+    .where(and(eq(storageOperations.id, operationId), eq(storageOperations.tenantId, tenantId)))
+    .limit(1);
+  if (!op) throw new ApiError('OPERATION_NOT_FOUND', `Operation ${operationId} not found`, 404);
+  return {
+    operationId: op.id,
+    state: op.state,
+    progressPct: op.progressPct,
+    progressMessage: op.progressMessage,
+    lastError: op.lastError,
+  };
+}
+
+/** In-flight storage lifecycle states — a snapshot must not be deleted while
+ *  any of these is active, since a restore in progress is provisioning a new
+ *  PVC FROM a VolumeSnapshot (deleting its CR mid-provision aborts the restore
+ *  and strands the PVC). Reaper-only states ('idle','failed') are deletable. */
+const STORAGE_OP_ACTIVE_STATES = new Set([
+  'snapshotting', 'quiescing', 'resizing', 'replacing', 'restoring', 'unquiescing', 'archiving',
+]);
+
 export async function deleteSnapshot(deps: Deps, tenantId: string, snapshotId: string): Promise<void> {
   const { db, k8s } = deps;
   const [row] = await db.select().from(tenantVolumeSnapshots)
     .where(and(eq(tenantVolumeSnapshots.id, snapshotId), eq(tenantVolumeSnapshots.tenantId, tenantId)))
     .limit(1);
   if (!row) throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} not found`, 404);
+
+  // Refuse while a storage op is running — a restore-from-snapshot could be
+  // provisioning the PVC from this very snapshot; deleting its CR mid-flight
+  // strands the volume. (TOCTOU guard.)
+  const [tenant] = await db.select({ state: tenants.storageLifecycleState })
+    .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+  if (tenant && STORAGE_OP_ACTIVE_STATES.has(tenant.state)) {
+    throw new ApiError(
+      'STORAGE_OP_IN_PROGRESS',
+      `A storage operation (${tenant.state}) is in progress — wait for it to finish before deleting snapshots.`,
+      409,
+    );
+  }
 
   await deleteVolumeSnapshot(k8s, row.namespace, row.volumeSnapshotName);
   await db.delete(tenantVolumeSnapshots).where(eq(tenantVolumeSnapshots.id, snapshotId));

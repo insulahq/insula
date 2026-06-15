@@ -40,3 +40,23 @@ export const listTenantSnapshotsResponseSchema = z.object({
   expiryHours: z.number(),
 });
 export type ListTenantSnapshotsResponse = z.infer<typeof listTenantSnapshotsResponseSchema>;
+
+/** POST /tenants/:tenantId/snapshots/:snapshotId/restore — starts a DESTRUCTIVE
+ *  PVC swap (replaces live files with the snapshot's); returns the storage
+ *  operation id to poll. */
+export const startSnapshotRestoreResponseSchema = z.object({
+  operationId: z.string(),
+});
+export type StartSnapshotRestoreResponse = z.infer<typeof startSnapshotRestoreResponseSchema>;
+
+/** GET /tenants/:tenantId/snapshots/restore-status/:operationId — poll target
+ *  for the restore. `state` runs quiescing→replacing→restoring→unquiescing→idle
+ *  (or `failed`). */
+export const snapshotRestoreStatusSchema = z.object({
+  operationId: z.string(),
+  state: z.string(),
+  progressPct: z.number(),
+  progressMessage: z.string().nullable(),
+  lastError: z.string().nullable(),
+});
+export type SnapshotRestoreStatus = z.infer<typeof snapshotRestoreStatusSchema>;

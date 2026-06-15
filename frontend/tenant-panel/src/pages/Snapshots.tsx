@@ -1,6 +1,12 @@
 import { useState } from 'react';
-import { Camera, Loader2, Trash2, Plus, X, Info, Clock } from 'lucide-react';
-import { useSnapshots, useCreateSnapshot, useDeleteSnapshot } from '@/hooks/use-snapshots';
+import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle, CheckCircle } from 'lucide-react';
+import {
+  useSnapshots,
+  useCreateSnapshot,
+  useDeleteSnapshot,
+  useRestoreSnapshot,
+  useRestoreStatus,
+} from '@/hooks/use-snapshots';
 import type { TenantSnapshot } from '@insula/api-contracts';
 
 function formatBytes(bytes: number): string {
@@ -39,6 +45,7 @@ export default function Snapshots() {
   const snapsQ = useSnapshots();
   const createSnap = useCreateSnapshot();
   const deleteSnap = useDeleteSnapshot();
+  const restoreSnap = useRestoreSnapshot();
 
   const snapshots = snapsQ.data?.data?.snapshots ?? [];
   const expiryHours = snapsQ.data?.data?.expiryHours ?? 48;
@@ -47,6 +54,9 @@ export default function Snapshots() {
   const [label, setLabel] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<TenantSnapshot | null>(null);
+  const [confirmRestore, setConfirmRestore] = useState<TenantSnapshot | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const [restoreOpId, setRestoreOpId] = useState<string | null>(null);
 
   const onCreate = () => {
     setCreateError(null);
@@ -59,6 +69,18 @@ export default function Snapshots() {
   const onDelete = () => {
     if (!confirmDelete) return;
     deleteSnap.mutate(confirmDelete.id, { onSuccess: () => setConfirmDelete(null) });
+  };
+
+  const onRestore = () => {
+    if (!confirmRestore) return;
+    setRestoreError(null);
+    restoreSnap.mutate(confirmRestore.id, {
+      onSuccess: (res) => {
+        setConfirmRestore(null);
+        setRestoreOpId(res.data.operationId);
+      },
+      onError: (e) => setRestoreError(e instanceof Error ? e.message : 'Failed to start restore'),
+    });
   };
 
   return (
@@ -143,14 +165,27 @@ export default function Snapshots() {
                       <span className="inline-flex items-center gap-1"><Clock size={12} /> {expiresIn(s.expiresAt)}</span>
                     </td>
                     <td className="px-6 py-3">
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDelete(s)}
-                        className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
-                        data-testid={`delete-snapshot-${s.id}`}
-                      >
-                        <Trash2 size={12} /> Delete
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {s.status === 'ready' && (
+                          <button
+                            type="button"
+                            onClick={() => { setConfirmRestore(s); setRestoreError(null); }}
+                            className="inline-flex items-center gap-1 rounded-md border border-indigo-300 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                            data-testid={`restore-snapshot-${s.id}`}
+                            title="Replace your live files with this snapshot"
+                          >
+                            <RotateCcw size={12} /> Restore
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDelete(s)}
+                          className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
+                          data-testid={`delete-snapshot-${s.id}`}
+                        >
+                          <Trash2 size={12} /> Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -205,7 +240,77 @@ export default function Snapshots() {
           </div>
         </Modal>
       )}
+
+      {/* Restore confirm modal (destructive) */}
+      {confirmRestore && (
+        <Modal title="Restore this snapshot?" onClose={() => setConfirmRestore(null)}>
+          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-900/20 dark:text-amber-300">
+            <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+            <span>
+              This <strong>replaces all your current files</strong> with the snapshot
+              {confirmRestore.label ? ` “${confirmRestore.label}”` : ''} taken {new Date(confirmRestore.createdAt).toLocaleString()}.
+              Your site goes offline for a moment while it's restored, then restarts. Anything changed since the snapshot is lost.
+            </span>
+          </div>
+          {restoreError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{restoreError}</p>}
+          <div className="mt-5 flex justify-end gap-2">
+            <button type="button" onClick={() => setConfirmRestore(null)} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700">Cancel</button>
+            <button type="button" onClick={onRestore} disabled={restoreSnap.isPending} className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50" data-testid="confirm-restore-snapshot">
+              {restoreSnap.isPending ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />} Restore
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Restore progress modal — polls the storage operation */}
+      {restoreOpId && (
+        <RestoreProgressModal operationId={restoreOpId} onClose={() => { setRestoreOpId(null); snapsQ.refetch(); }} />
+      )}
     </div>
+  );
+}
+
+function RestoreProgressModal({ operationId, onClose }: { readonly operationId: string; readonly onClose: () => void }) {
+  const statusQ = useRestoreStatus(operationId);
+  const op = statusQ.data?.data;
+  const state = op?.state ?? 'quiescing';
+  const done = state === 'idle';
+  const failed = state === 'failed';
+  const inFlight = !done && !failed;
+
+  return (
+    <Modal title="Restoring from snapshot" onClose={inFlight ? () => {} : onClose}>
+      <div className="space-y-3">
+        {inFlight && (
+          <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <Loader2 size={16} className="animate-spin text-indigo-500" />
+            <span data-testid="restore-progress-msg">{op?.progressMessage || 'Working…'}</span>
+          </div>
+        )}
+        {inFlight && (
+          <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+            <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${op?.progressPct ?? 5}%` }} />
+          </div>
+        )}
+        {done && (
+          <div className="flex items-center gap-2 text-sm font-medium text-green-700 dark:text-green-400" data-testid="restore-done">
+            <CheckCircle size={18} /> Restore complete — your files are back to the snapshot.
+          </div>
+        )}
+        {failed && (
+          <div className="flex items-start gap-2 text-sm text-red-700 dark:text-red-400" data-testid="restore-failed">
+            <AlertTriangle size={18} className="mt-0.5 flex-shrink-0" />
+            <span>Restore failed: {op?.lastError || 'unknown error'}. Your previous files were left in place — contact support if this persists.</span>
+          </div>
+        )}
+        <p className="text-xs text-gray-400">{inFlight ? "Please keep this open — it's safe to leave the page; the restore continues on the server." : ''}</p>
+        <div className="flex justify-end">
+          <button type="button" onClick={onClose} disabled={inFlight} className="rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700" data-testid="restore-close">
+            {inFlight ? 'Restoring…' : 'Close'}
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

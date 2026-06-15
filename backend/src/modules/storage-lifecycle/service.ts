@@ -1057,6 +1057,225 @@ async function waitForPvcGone(k8s: K8sClients, namespace: string, pvcName: strin
   }
 }
 
+// ─── Restore from a tenant VolumeSnapshot (on-server) ───────────────────────
+
+/**
+ * Recreate the tenant PVC from an existing Longhorn VolumeSnapshot. A
+ * DESTRUCTIVE swap: quiesce → delete the live PVC → recreate it with
+ * `spec.dataSource` pointing at the VolumeSnapshot (Longhorn provisions the new
+ * volume from the snapshot) → unquiesce. The current contents are replaced by
+ * the snapshot's; the VolumeSnapshot itself is preserved (a dataSource is not
+ * consumed).
+ *
+ * Tracked in storage_operations (opType='restore') so the panel can poll. Like
+ * the destructive resize, the orchestration runs in-process — a platform-api
+ * rollout mid-op abandons it at its current state (the op stays non-idle; the
+ * `clear-failed` valve recovers it).
+ */
+export async function restoreTenantFromVolumeSnapshot(
+  db: Database,
+  k8s: K8sClients,
+  args: {
+    readonly tenantId: string;
+    readonly volumeSnapshotName: string;
+    readonly restoreSizeBytes: number;
+    readonly snapshotLabel?: string | null;
+    readonly triggeredByUserId?: string | null;
+  },
+): Promise<{ operationId: string }> {
+  const tenant = await mustGetTenant(db, args.tenantId);
+  await mustBeIdle(db, args.tenantId);
+  const namespace = tenant.kubernetesNamespace;
+  if (!namespace) throw new ApiError('CONFIG_INVALID', `Tenant ${args.tenantId} has no kubernetes namespace`, 400);
+  const pvcName = `${namespace}-storage`;
+
+  // The new PVC must be >= the snapshot's restoreSize. Keep the current PVC
+  // size (the tenant's quota) when it's large enough; refuse if the snapshot
+  // is bigger than the current volume (tenant shrank after taking it).
+  const currentBytes = await readPvcRequestBytes(k8s, namespace, pvcName);
+  const restoreBytes = args.restoreSizeBytes > 0 ? args.restoreSizeBytes : currentBytes;
+  if (currentBytes > 0 && restoreBytes > currentBytes) {
+    throw new ApiError(
+      'RESTORE_TOO_LARGE',
+      `This snapshot (${Math.ceil(restoreBytes / 1048576)} MiB) is larger than your current volume (${Math.ceil(currentBytes / 1048576)} MiB). Grow your storage first, then restore.`,
+      409,
+    );
+  }
+  const newMib = Math.max(1, Math.ceil(Math.max(currentBytes, restoreBytes) / 1048576));
+
+  const opId = uuid();
+  await db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId,
+      tenantId: args.tenantId,
+      opType: 'restore',
+      state: 'quiescing',
+      progressPct: 0,
+      progressMessage: 'Starting restore from snapshot',
+      params: { mode: 'snapshot_restore', volumeSnapshotName: args.volumeSnapshotName, label: args.snapshotLabel ?? null, sizeMib: newMib },
+      triggeredByUserId: args.triggeredByUserId ?? null,
+    });
+    await tx.update(tenants)
+      .set({ storageLifecycleState: 'quiescing', activeStorageOpId: opId })
+      .where(eq(tenants.id, args.tenantId));
+  });
+
+  void runRestoreFromSnapshot(db, k8s, opId, namespace, pvcName, args.volumeSnapshotName, newMib)
+    .catch((err) => { console.error(`[storage-lifecycle] runRestoreFromSnapshot pre-orchestrator throw for op ${opId}:`, err); });
+  return { operationId: opId };
+}
+
+async function runRestoreFromSnapshot(
+  db: Database,
+  k8s: K8sClients,
+  opId: string,
+  namespace: string,
+  pvcName: string,
+  volumeSnapshotName: string,
+  newMib: number,
+): Promise<void> {
+  let quiesceSnap: QuiesceSnapshot | null = null;
+  const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await updateOp(db, opId, { state, progressPct: pct, progressMessage: msg });
+    await db.update(tenants).set({ storageLifecycleState: state }).where(eq(tenants.activeStorageOpId, opId));
+  };
+
+  try {
+    await progress('quiescing', 5, 'Scaling workloads to zero');
+    quiesceSnap = await quiesce(k8s, namespace);
+    await persistQuiesceSnapshot(db, opId, quiesceSnap);
+    await waitForQuiesced(k8s, namespace);
+
+    await progress('replacing', 40, 'Recreating volume from snapshot');
+    try {
+      await k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+    } catch (err) {
+      if (!is404(err)) throw err;
+    }
+    await waitForPvcGone(k8s, namespace, pvcName);
+
+    const { getDefaultStorageClass } = await import('../storage-settings/service.js');
+    const storageClass = await getDefaultStorageClass(db);
+    await applyPVCFromSnapshot(k8s, namespace, newMib, storageClass, volumeSnapshotName);
+
+    await progress('restoring', 70, 'Longhorn restoring the volume from your snapshot');
+    await waitForPvcBound(k8s, namespace, pvcName, 600_000,
+      async (msg) => { await updateOp(db, opId, { progressMessage: msg }); });
+
+    await progress('unquiescing', 90, 'Scaling workloads back up');
+    if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap);
+
+    await updateOp(db, opId, { state: 'idle', progressPct: 100, progressMessage: 'Restore complete', completedAt: new Date() });
+    const cId = await currentTenantId(db, opId);
+    if (cId) await markTenantState(db, cId, 'idle', null);
+  } catch (err) {
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
+    // Best-effort unquiesce so the old workloads come back up (they remount
+    // whatever PVC currently exists — the restored one, or the old one if we
+    // failed before the swap).
+    if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap).catch(() => {});
+    const cId = await currentTenantId(db, opId);
+    if (cId) await markTenantState(db, cId, 'failed', null);
+  }
+}
+
+/** Create the canonical tenant PVC pre-populated from a VolumeSnapshot. Same
+ *  labels as applyPVCMib + a `dataSource` so Longhorn restores the snapshot
+ *  into the new volume. Swallows 409 (already exists). */
+async function applyPVCFromSnapshot(
+  k8s: K8sClients,
+  namespace: string,
+  sizeMib: number,
+  storageClass: string,
+  volumeSnapshotName: string,
+): Promise<void> {
+  const sizeStr = sizeMib % 1024 === 0 ? `${sizeMib / 1024}Gi` : `${sizeMib}Mi`;
+  try {
+    await k8s.core.createNamespacedPersistentVolumeClaim({
+      namespace,
+      body: {
+        metadata: {
+          name: `${namespace}-storage`,
+          namespace,
+          labels: {
+            'recurring-job-group.longhorn.io/default': 'enabled',
+            'app.kubernetes.io/part-of': 'hosting-platform',
+            'app.kubernetes.io/component': 'tenant-storage',
+            ...tenantStoragePvcLabelsFromNamespace(namespace),
+          },
+        },
+        spec: {
+          accessModes: ['ReadWriteOnce'],
+          storageClassName: storageClass,
+          resources: { requests: { storage: sizeStr } },
+          dataSource: {
+            apiGroup: 'snapshot.storage.k8s.io',
+            kind: 'VolumeSnapshot',
+            name: volumeSnapshotName,
+          },
+        },
+      },
+    });
+  } catch (err: unknown) {
+    const status = (err as { statusCode?: number; code?: number }).statusCode ?? (err as { code?: number }).code;
+    if (status !== 409) throw err;
+  }
+}
+
+/** Read the PVC's requested storage in bytes (falls back to status capacity),
+ *  0 if the PVC is gone / unreadable. */
+async function readPvcRequestBytes(k8s: K8sClients, namespace: string, pvcName: string): Promise<number> {
+  try {
+    const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    const p = pvc as { spec?: { resources?: { requests?: { storage?: string } } }; status?: { capacity?: { storage?: string } } };
+    const q = p.spec?.resources?.requests?.storage ?? p.status?.capacity?.storage;
+    return q ? parseQuantityToBytes(q) : 0;
+  } catch (err) {
+    // 404 = PVC genuinely absent (restore-to-repair path) → treat as 0. Any
+    // other error (RBAC, API down) shouldn't masquerade as "missing PVC" —
+    // log so the skipped size-validation is diagnosable.
+    if (!is404(err)) {
+      console.warn(`[storage-lifecycle] readPvcRequestBytes(${namespace}/${pvcName}) failed (treating as 0): ${(err as Error).message}`);
+    }
+    return 0;
+  }
+}
+
+/** Poll the PVC until it reaches phase=Bound (Longhorn finishes provisioning
+ *  the new volume from the snapshot). */
+async function waitForPvcBound(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+  timeoutMs: number,
+  onProgress?: (msg: string) => Promise<void> | void,
+): Promise<void> {
+  const start = Date.now();
+  while (true) {
+    let pvc;
+    try {
+      pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace });
+    } catch (err) {
+      throw new ApiError('LONGHORN_BUSY', `Could not read PVC ${pvcName}: ${(err as Error).message}`, 502);
+    }
+    const phase = (pvc as { status?: { phase?: string } }).status?.phase;
+    if (phase === 'Bound') return;
+    if (Date.now() - start > timeoutMs) {
+      throw new ApiError(
+        'RESTORE_TIMEOUT',
+        `PVC ${pvcName} did not reach Bound within ${timeoutMs}ms (Longhorn restore-from-snapshot may be busy or low on capacity).`,
+        504,
+      );
+    }
+    if (onProgress) {
+      const elapsed = Math.floor((Date.now() - start) / 1000);
+      await onProgress(`Restoring from snapshot — ${elapsed}s (Longhorn provisioning the volume)`);
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
+
 // ─── Operator recovery ─────────────────────────────────────────────────
 
 /**
