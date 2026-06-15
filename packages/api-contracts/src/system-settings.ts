@@ -35,6 +35,8 @@ export const updateSystemSettingsSchema = z.object({
   // role of ingressBaseDomain). Seeds equal; consumers repoint in PR-2.
   platformDomain: z.string().max(255).nullable().optional(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
+  // On-server tenant volume-snapshot retention (hours). 1h..720h (30d).
+  snapshotExpiryHours: z.number().int().min(1).max(720).optional(),
   timezone: z.string().min(1).max(50).optional(),
   currency: currencyCodeSchema.optional(),
   // Deprecated — moved to /admin/webmail-settings. Retained here so
@@ -85,6 +87,7 @@ export const systemSettingsResponseSchema = z.object({
   ingressBaseDomain: z.string().nullable(),
   webmailUrl: z.string().nullable(),
   apiRateLimit: z.number(),
+  snapshotExpiryHours: z.number(),
   currencySymbol: z.string(),
   currency: z.string(),
   timezone: z.string(),

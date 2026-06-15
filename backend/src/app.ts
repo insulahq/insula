@@ -86,6 +86,7 @@ import { clusterNetworkRoutes } from './modules/cluster-network/routes.js';
 import { buildSecurityHardeningRoutes } from './modules/security-hardening/routes.js';
 import { buildClusterTrustedProxiesRoutes } from './modules/cluster-trusted-proxies/routes.js';
 import { fileManagerRoutes } from './modules/file-manager/routes.js';
+import { tenantSnapshotsRoutes } from './modules/tenant-snapshots/routes.js';
 import { storageLifecycleRoutes } from './modules/storage-lifecycle/routes.js';
 import { backupRcloneShimRoutes } from './modules/backup-rclone-shim/routes.js';
 import { walArchiveHealthRoutes } from './modules/wal-archive-health/routes.js';
@@ -528,6 +529,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(buildSecurityHardeningRoutes({ db: deps.db }), { prefix: '/api/v1' });
   await app.register(buildClusterTrustedProxiesRoutes({ db: deps.db }), { prefix: '/api/v1' });
   await app.register(fileManagerRoutes, { prefix: '/api/v1' });
+  await app.register(tenantSnapshotsRoutes, { prefix: '/api/v1' });
   await app.register(notificationRoutes, { prefix: '/api/v1' });
   await app.register(notificationAdminRoutes, { prefix: '/api/v1' });
   await app.register(notificationUserRoutes, { prefix: '/api/v1' });
@@ -1024,6 +1026,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { startLifecycleHookRetryScheduler } = await import('./modules/tenant-lifecycle/scheduler.js');
         const lifecycleRetryStop = startLifecycleHookRetryScheduler(app.db, storageK8s);
         app.addHook('onClose', () => lifecycleRetryStop());
+
+        // Tenant on-server volume snapshots: reap any past their
+        // (admin-set) expiry. On-server only — deletes the VolumeSnapshot
+        // CR + the DB row; the Longhorn snapshot cascades.
+        const { startTenantSnapshotReaper } = await import('./modules/tenant-snapshots/scheduler.js');
+        const snapshotReaperHandle = startTenantSnapshotReaper(app.db, kubeconfigPath);
+        app.addHook('onClose', () => snapshotReaperHandle.stop());
       } catch (err) {
         app.log.warn({ err }, 'storage-lifecycle / lifecycle-retry scheduler: startup skipped');
       }

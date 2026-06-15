@@ -45,6 +45,8 @@ const updateSchema = z.object({
   // CNAME-target role). PR-1 plumbing — apex consumers repoint in PR-2.
   platformDomain: z.string().max(255).optional().nullable(),
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
+  // On-server tenant volume-snapshot retention (hours). 1h..720h (30d).
+  snapshotExpiryHours: z.number().int().min(1).max(720).optional(),
   // IANA timezone string. Used as the fallback on new tenants that don't
   // specify their own timezone, and as the global default for UI date
   // rendering when a user has no per-user override.
