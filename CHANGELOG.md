@@ -20,9 +20,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   installed (only the backup *upload* path, which runs in a pod, had rclone).
   Fresh installs get it via `bootstrap.sh` (`install_packages_{apt,dnf}` +
   `install_rclone_if_missing` static fallback for AL2023); existing nodes get it
-  via host-migration `2026.6.9/0001-install-rclone.sh` (run when
-  `host-migrations-desired` is `mode: enforce`). Pinned static fallback tracks
-  the shim's rclone line (1.74.1).
+  via host-migration `2026.6.9/0001-install-rclone.sh` (run because
+  host-migrations now default to `enforce` — see Changed). Pinned static
+  fallback tracks the shim's rclone line (1.74.1).
+
+### Changed
+- **Host-migrations now run by default (`enforce`), no longer opt-in
+  (`observe`).** `host-migrations-desired` previously shipped `mode: observe`
+  (report-only) so the host-config runner was a strict no-op until an operator
+  opted in. Platform-migration `0008` flips it to `enforce` on every cluster
+  (new clusters right after the seed; existing clusters on upgrade), so shipped
+  host-migration scripts apply automatically (e.g. the rclone backfill above).
+  This is safe to default-on: the scripts are platform-authored, CI-validated
+  (idempotent + allow-paths-bounded), and embedded in the cosign-signed
+  `platform-ops` binary. An operator who wants report-only sets `mode: observe`
+  after the upgrade — `0008` runs once and won't re-flip it. The
+  operator-content gating policies (`host-packages-/ulimits-/modules-desired`,
+  which carry operator-supplied names) stay `observe`.
+- **`python3` is now an explicit `bootstrap.sh` dependency and is auto-installed
+  if missing.** It was always required (CIDR/IP validation, node-IP pinning,
+  admin/backup JSON bodies) but only assumed present; a minimal base image
+  failed `--allow-source` validation before `install_packages` ran. Added to
+  `install_packages_{apt,dnf}` plus an `ensure_python3` early-bootstrap helper.
 
 ## [2026.6.8] - 2026-06-09
 

@@ -83,17 +83,24 @@ export interface DesiredConfigMapSpec {
   readonly data: Record<string, string>;
 }
 
-// Order mirrors the seed migrations 0002–0006. `mode: observe` on every policy
-// that gates host writes, so a restored CM can NEVER auto-enforce (a restored
-// CM could otherwise become a backdoor to host kernel writes). host-config-desired
-// intentionally carries no `mode` key — the sysctl converger is observe-only at
-// the reconciler level and does not read `mode` for that CM (matches 0002).
+// Order mirrors the seed migrations 0002–0006. The OPERATOR-CONTENT gating
+// policies — host-packages-desired / host-ulimits-desired / host-modules-desired,
+// which carry operator-supplied package / limit / module names — stay
+// `mode: observe` so a restored CM can NEVER auto-enforce an operator-injected
+// host write (the backdoor concern). host-migrations-desired is the exception:
+// `mode: enforce` (migration 0008) because its scripts are platform-authored,
+// CI-validated (idempotent, allow-paths-bounded) and embedded in the cosign-
+// SIGNED platform-ops binary — a restored CM can only ever run PLATFORM-SIGNED
+// scripts, not operator content, so enforce-on-restore is safe and keeps the
+// default consistent (enforce everywhere). host-config-desired intentionally
+// carries no `mode` key — the sysctl converger is observe-only at the reconciler
+// level and does not read `mode` for that CM (matches 0002).
 export const HOST_DESIRED_CONFIGMAPS: readonly DesiredConfigMapSpec[] = [
   { name: 'host-config-desired', data: { sysctls: CANONICAL_SYSCTLS } },
   { name: 'host-packages-desired', data: { packages: CANONICAL_PACKAGES, mode: 'observe' } },
   {
     name: 'host-migrations-desired',
-    data: { mode: 'observe', _note: 'Set mode: enforce to apply shipped host-migration scripts on this node.' },
+    data: { mode: 'enforce', _note: 'Set mode: observe to make the host-migration runner report-only on this node.' },
   },
   { name: 'host-ulimits-desired', data: { limits: CANONICAL_LIMITS, mode: 'observe' } },
   { name: 'host-modules-desired', data: { modules: CANONICAL_MODULES, mode: 'observe' } },
