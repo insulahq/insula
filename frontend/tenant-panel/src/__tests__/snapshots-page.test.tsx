@@ -72,14 +72,17 @@ describe('Snapshots page', () => {
     expect(deleteMutate).toHaveBeenCalledWith('snap-1', expect.anything());
   });
 
-  it('restore goes through a destructive confirm before calling the hook', () => {
+  it('Restore is gated off (coming soon) — disabled, never fires the hook', () => {
+    // Full-volume restore is disabled pending the Longhorn snapshotRevert
+    // redesign. The button stays visible (discoverable) but disabled.
     listData = { data: { expiryHours: 48, snapshots: [readySnap] } };
     render(<Snapshots />, { wrapper });
-    // The Restore button only appears for ready snapshots.
-    fireEvent.click(screen.getByTestId('restore-snapshot-snap-1'));
-    // Destructive warning shown; confirm fires the mutation.
-    fireEvent.click(screen.getByTestId('confirm-restore-snapshot'));
-    expect(restoreMutate).toHaveBeenCalledWith('snap-1', expect.anything());
+    const btn = screen.getByTestId('restore-snapshot-snap-1');
+    expect(btn).toBeDisabled();
+    expect(btn.getAttribute('title')).toMatch(/coming soon/i);
+    fireEvent.click(btn); // disabled → no-op
+    expect(restoreMutate).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('confirm-restore-snapshot')).toBeNull();
   });
 
   it('does NOT offer restore for a still-creating snapshot', () => {
