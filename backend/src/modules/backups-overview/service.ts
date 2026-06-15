@@ -47,7 +47,11 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
   // class IN (system_backup, system_mail). The `subsystem` column
   // distinguishes producers; the count + bytes aggregates roll up
   // across all of them.
-  const sysAgg = (await db.execute(sql`
+  // db.execute() (drizzle-orm/node-postgres) returns a pg QueryResult —
+  // the rows live under `.rows`, NOT on the result itself. Treating the
+  // result as a bare array makes `[0]` silently undefined (and `.map`
+  // throw "rows.map is not a function").
+  const sysAgg = ((await db.execute(sql`
     SELECT
       COUNT(DISTINCT subsystem)::int AS subsystems,
       COUNT(*)::int AS snapshot_count,
@@ -56,7 +60,7 @@ export async function loadSystemOverview(db: Database): Promise<SystemBackupsOve
     FROM storage_snapshots
     WHERE backup_class IN ('system_backup', 'system_mail')
       AND status = 'ready'
-  `)) as unknown as Array<{ subsystems: number; snapshot_count: number; total_bytes: string | number; newest_at: Date | string | null }>;
+  `)) as unknown as { rows: Array<{ subsystems: number; snapshot_count: number; total_bytes: string | number; newest_at: Date | string | null }> }).rows;
 
   const sysRow = sysAgg[0] ?? { subsystems: 0, snapshot_count: 0, total_bytes: 0, newest_at: null };
 
@@ -188,7 +192,8 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
 
   // One query: tenants × plans × aggregates from storage_snapshots
   // and tenant_backups. SQL is wide but the alternative is 4N queries.
-  const rows = (await db.execute(sql`
+  // `.rows` — db.execute() returns a pg QueryResult, not a bare array.
+  const rows = ((await db.execute(sql`
     SELECT
       t.id AS tenant_id,
       t.name AS tenant_name,
@@ -235,7 +240,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       ${opts.filter ? sql`AND t.name ILIKE ${'%' + opts.filter + '%'}` : sql``}
     ORDER BY t.is_system DESC, t.name
     LIMIT ${limit}
-  `)) as unknown as Array<{
+  `)) as unknown as { rows: Array<{
     tenant_id: string;
     tenant_name: string;
     is_system: boolean;
@@ -251,7 +256,7 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
     last_bundle_at: Date | string | null;
     quota_max_bytes: string | number | null;
     open_cart_id: string | null;
-  }>;
+  }> }).rows;
 
   const toIso = (v: Date | string | null): string | null => {
     if (v == null) return null;
@@ -352,18 +357,20 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
       .where(eq(backupJobs.tenantId, tenantId))
       .orderBy(desc(backupJobs.createdAt))
       .limit(50),
+    // db.execute() → pg QueryResult; unwrap `.rows` so the `[0]` reads below
+    // get the actual row (not undefined off the result object).
     db.execute(sql`
       SELECT id FROM restore_jobs
-      WHERE tenant_id = ${tenantId} AND status NOT IN ('completed', 'failed', 'cancelled')
+      WHERE tenant_id = ${tenantId} AND status NOT IN ('done', 'failed')
       ORDER BY created_at DESC LIMIT 1
-    `) as unknown as Promise<Array<{ id: string }>>,
+    `).then((r) => (r as unknown as { rows: Array<{ id: string }> }).rows),
     db.execute(sql`
       SELECT
         COALESCE(SUM(CASE WHEN status = 'ready' THEN size_bytes ELSE 0 END), 0)::bigint AS bytes,
         COUNT(*) FILTER (WHERE status IN ('ready','creating'))::int AS cnt
       FROM storage_snapshots
       WHERE tenant_id = ${tenantId} AND backup_class = 'tenant_snapshot'
-    `) as unknown as Promise<Array<{ bytes: string | number; cnt: number }>>,
+    `).then((r) => (r as unknown as { rows: Array<{ bytes: string | number; cnt: number }> }).rows),
   ]);
 
   // Resolve target names for snapshot rows.

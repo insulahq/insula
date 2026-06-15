@@ -32,26 +32,30 @@ describe('backups-overview: restore_jobs status literals match enum', () => {
   const source = readFileSync(servicePath, 'utf8');
   const validValues = new Set(restoreJobStatusEnum.enumValues);
 
-  it('every quoted literal in the restore_jobs cart lateral exists in restoreJobStatusEnum', () => {
-    // Narrow to the cart subquery to avoid false positives from other
-    // enum references (e.g. backup_jobs.status = 'completed' is valid;
-    // that enum legitimately has 'completed').
-    const startIdx = source.indexOf('FROM restore_jobs');
-    expect(startIdx).toBeGreaterThan(0);
-    const endIdx = source.indexOf(') cart ON TRUE', startIdx);
-    expect(endIdx).toBeGreaterThan(startIdx);
-    const cartSql = source.slice(startIdx, endIdx);
+  it('every restore_jobs status filter literal exists in restoreJobStatusEnum', () => {
+    // Scan EVERY `FROM restore_jobs … status (NOT )?IN (…)` clause — both
+    // the loadTenantsOverview lateral AND the loadTenantDetail standalone
+    // openCart query. The earlier version only sliced the `) cart ON TRUE`
+    // lateral, so it missed loadTenantDetail's stale `'completed'/'cancelled'`
+    // literals (which Postgres rejects: invalid input value for enum
+    // restore_job_status). We avoid false positives from backup_jobs /
+    // storage_snapshots (where 'completed' IS valid) by anchoring on
+    // `FROM restore_jobs`.
+    const clauses = Array.from(
+      source.matchAll(/FROM restore_jobs[\s\S]{0,200}?status\s+(?:NOT\s+)?IN\s*\(([^)]*)\)/g),
+      (m) => m[1],
+    );
+    expect(clauses.length).toBeGreaterThanOrEqual(2); // overview lateral + detail openCart
 
-    // Extract every single-quoted literal — the only quoted strings in
-    // this slice are enum values for the status filter.
-    const literals = Array.from(cartSql.matchAll(/'([^']+)'/g), (m) => m[1]);
-    expect(literals.length).toBeGreaterThan(0);
-
-    for (const lit of literals) {
-      expect(
-        validValues,
-        `restore_jobs cart SQL references status='${lit}' which is not in restoreJobStatusEnum (${[...validValues].join(', ')})`,
-      ).toContain(lit);
+    for (const clause of clauses) {
+      const literals = Array.from(clause.matchAll(/'([^']+)'/g), (m) => m[1]);
+      expect(literals.length).toBeGreaterThan(0);
+      for (const lit of literals) {
+        expect(
+          validValues,
+          `a restore_jobs status filter references status='${lit}' which is not in restoreJobStatusEnum (${[...validValues].join(', ')})`,
+        ).toContain(lit);
+      }
     }
   });
 
