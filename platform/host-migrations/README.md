@@ -14,9 +14,12 @@ config file, relabelling a mount, a one-time data move.
 - On each daily `host-config apply`, the runner walks all shipped scripts in
   `(version, name)` order, **skips** any already applied (per-node marker at
   `/var/lib/platform/host-migrations/<version>/<name>.done`), and runs the rest.
-- **Opt-in**: scripts only run when the `host-migrations-desired` ConfigMap has
-  `mode: enforce` (default `observe` = report-only). `host-config status` always
-  dry-runs.
+- **Enforced by default**: scripts run when the `host-migrations-desired`
+  ConfigMap has `mode: enforce`, which is the **default** (platform-migration
+  0008; these scripts are platform-authored, CI-validated and embedded in the
+  cosign-signed `platform-ops` binary, so auto-applying them is safe). An
+  operator who wants report-only sets `mode: observe`. `host-config status`
+  always dry-runs regardless of mode.
 - **Halt on first failure** — later scripts become `blocked`; the run is
   operator-resumable (fix + re-run continues where it stopped).
 - **Skip-multiple**: a node N releases behind walks the whole backlog in order.

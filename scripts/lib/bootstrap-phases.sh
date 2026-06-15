@@ -162,12 +162,13 @@ Persistent=true
 WantedBy=timers.target
 UNIT
   # Host-config converge timer (ADR-045 W10/W10b/W10c, amended — host-side conv.).
-  # Runs `platform-ops host-config apply`, which is SAFE BY DEFAULT: it only
-  # writes host sysctls (host-config-desired), installs OS packages
-  # (host-packages-desired, additive-only), or runs host-migration scripts
-  # (host-migrations-desired) when that policy has mode=enforce (opt-in). With no
-  # policy / mode!=enforce it is a no-op dry-run, so enabling the timer on every
-  # node never mutates the host until an operator opts in.
+  # Runs `platform-ops host-config apply`. The OPERATOR-CONTENT policies are
+  # observe by default (no-op until opted in): host sysctls (host-config-desired)
+  # and OS packages (host-packages-desired, additive-only). Host-migration
+  # scripts (host-migrations-desired) default to mode=enforce (platform-migration
+  # 0008) and run automatically — they are platform-authored, CI-validated and
+  # embedded in the cosign-signed platform-ops binary, so they only ever apply
+  # signed, idempotent changes. An operator sets mode=observe for report-only.
   cat > "${dir}/platform-ops-host-config.service" <<UNIT
 [Unit]
 Description=Insula platform-ops host-config converge (sysctls + packages + migrations)

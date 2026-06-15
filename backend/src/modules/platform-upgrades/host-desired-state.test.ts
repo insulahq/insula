@@ -74,13 +74,25 @@ describe('ensureHostDesiredConfigMaps', () => {
     expect(store.get('host-config-desired')!.sysctls).toBe('net.ipv4.tcp_congestion_control = cubic\n');
   });
 
-  it('every restored gating policy is mode: observe (never auto-enforce)', async () => {
+  it('restored OPERATOR-CONTENT gating policies are mode: observe (never auto-enforce)', async () => {
     const store: CMStore = new Map();
     const { k8s } = fakeK8s(store);
     await ensureHostDesiredConfigMaps(k8s, log());
-    for (const name of ['host-packages-desired', 'host-migrations-desired', 'host-ulimits-desired', 'host-modules-desired']) {
+    // packages/ulimits/modules carry operator-supplied content — a restored CM
+    // must not auto-enforce an operator-injected host write.
+    for (const name of ['host-packages-desired', 'host-ulimits-desired', 'host-modules-desired']) {
       expect(store.get(name)!.mode).toBe('observe');
     }
+  });
+
+  it('restored host-migrations-desired is mode: enforce (platform-signed scripts only)', async () => {
+    const store: CMStore = new Map();
+    const { k8s } = fakeK8s(store);
+    await ensureHostDesiredConfigMaps(k8s, log());
+    // host-migration scripts are platform-authored + embedded in the cosign-
+    // signed platform-ops binary, so enforce-on-restore can only run signed
+    // scripts — and keeps the default consistent (enforce everywhere, per 0008).
+    expect(store.get('host-migrations-desired')!.mode).toBe('enforce');
   });
 
   it('no k8s client → no-op, no throw', async () => {

@@ -779,18 +779,43 @@ fi
 # shellcheck source=lib/bootstrap-phases.sh
 source "$PHASES_LIB"
 
+# Ensure python3 is on PATH, auto-installing it if missing. parse_args validates
+# --allow-source / --pre-enroll-peer / --cluster-network-cidr via python3's
+# `ipaddress` module BEFORE install_packages runs (and python3 is used widely
+# afterwards: node-IP pinning, admin/backup JSON bodies). A minimal base image
+# (e.g. the bare debian:N Docker image the OS-matrix harness uses) may lack it at
+# that point, so install it directly — the package manager is detectable without
+# OS_FAMILY, which check_os hasn't necessarily set yet. Idempotent: a no-op once
+# python3 is present (so the common real-host path costs one `command -v`).
+# Best-effort: returns non-zero if it still isn't available so the caller emits a
+# precise error. `apt-get update` runs ONLY on the missing path (never on a host
+# that already has python3).
+ensure_python3() {
+  command -v python3 >/dev/null 2>&1 && return 0
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q python3 >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y -q python3 >/dev/null 2>&1 || true
+  fi
+  command -v python3 >/dev/null 2>&1
+}
+
 # Parse one --allow-source argument value (comma-tolerant). Each token is
 # normalized to a CIDR (/32 for bare IPv4, /128 for bare IPv6) and pushed
 # to ALLOW_SOURCE_LIST_V4 or ALLOW_SOURCE_LIST_V6. Hard-fails on
 # malformed input BEFORE any nft-grammar concatenation downstream.
 parse_allow_source_arg() {
   # python3 is required for the ipaddress validation round-trip below.
-  # Bootstrap runs parse_args BEFORE install_base_packages, so on a
-  # fresh distro python3 may be absent. Fail with a clear message
-  # rather than the misleading "failed CIDR validation" we'd get if
-  # the python heredoc silently produced empty output.
-  if ! command -v python3 >/dev/null 2>&1; then
-    error "python3 not found — required for --allow-source CIDR validation. Install python3 first (Debian/Ubuntu: apt install python3; RHEL: dnf install python3) and re-run."
+  # parse_args runs BEFORE install_packages, so on a minimal image python3 may
+  # be absent here — ensure_python3 auto-installs it (the package manager is
+  # detectable even before check_os sets OS_FAMILY). Only error if it still
+  # can't be made available, rather than the misleading "failed CIDR validation"
+  # we'd get if the python heredoc silently produced empty output.
+  if ! ensure_python3; then
+    error "python3 not found and could not be auto-installed — required for --allow-source CIDR validation. Install python3 (Debian/Ubuntu: apt install python3; RHEL: dnf install python3) and re-run."
   fi
   local raw="$1" tok normalized family
   # IFS is restored on subshell exit; safe inside a function.
@@ -841,8 +866,8 @@ PYEOF
 # Validates via the same python3 + ipaddress round-trip as
 # parse_allow_source_arg so /32 tokens or networks get rejected.
 parse_pre_enroll_peer_arg() {
-  if ! command -v python3 >/dev/null 2>&1; then
-    error "python3 not found — required for --pre-enroll-peer validation. Install python3 first and re-run."
+  if ! ensure_python3; then
+    error "python3 not found and could not be auto-installed — required for --pre-enroll-peer validation. Install python3 (Debian/Ubuntu: apt install python3; RHEL: dnf install python3) and re-run."
   fi
   local raw="$1" tok normalized family
   local IFS=','
@@ -1469,10 +1494,16 @@ install_packages_apt() {
     wireguard-tools \
     gettext-base \
     dnsutils \
+    python3 \
     age \
     tmux \
     rclone \
     >/dev/null 2>&1
+  # python3: used throughout bootstrap — `ipaddress`-based validation of
+  # --allow-source / --pre-enroll-peer / --cluster-network-cidr, node-IP pinning,
+  # and the admin/backup JSON request bodies. Declared here AND auto-ensured early
+  # by ensure_python3 (the arg validators run BEFORE this install on a minimal
+  # image). In every Debian/Ubuntu base repo.
   # tmux: required by the admin node-terminal feature (ADR-041) for
   # cross-reconnect shell continuity. Without it, each page reload
   # spawns a fresh PTY and bash history / running commands are lost.
@@ -1523,8 +1554,11 @@ install_packages_dnf() {
     wireguard-tools \
     gettext \
     bind-utils \
+    python3 \
     tmux \
     >/dev/null 2>&1
+  # python3: same broad use as the apt path (CIDR/IP validation, node-IP pin,
+  # admin/backup JSON bodies). RHEL-9 family + AL2023 ship it in baseos.
   # tmux: required by the admin node-terminal feature (ADR-041) for
   # cross-reconnect shell continuity. In RHEL-9-family base repos.
   if [[ "$OS_VARIANT" != "amzn2023" ]]; then
