@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **`rclone` is now a host dependency on every node.** The DR restore scripts
+  (`restore-{etcd,mail,postgres}-from-shim.sh`, `platform-ops dr
+  restore-component`) run rclone on the host to pull a snapshot from the
+  backup-rclone-shim S3 endpoint before a local restore — but it was never
+  installed (only the backup *upload* path, which runs in a pod, had rclone).
+  Fresh installs get it via `bootstrap.sh` (`install_packages_{apt,dnf}` +
+  `install_rclone_if_missing` static fallback for AL2023); existing nodes get it
+  via host-migration `2026.6.9/0001-install-rclone.sh` (run when
+  `host-migrations-desired` is `mode: enforce`). Pinned static fallback tracks
+  the shim's rclone line (1.74.1).
+
 ## [2026.6.8] - 2026-06-09
 
 ## [2026.6.7] - 2026-06-07

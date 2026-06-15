@@ -1471,11 +1471,17 @@ install_packages_apt() {
     dnsutils \
     age \
     tmux \
+    rclone \
     >/dev/null 2>&1
   # tmux: required by the admin node-terminal feature (ADR-041) for
   # cross-reconnect shell continuity. Without it, each page reload
   # spawns a fresh PTY and bash history / running commands are lost.
   # Tiny package (~600KB), in every Debian/Ubuntu base repo.
+  # rclone: the DR restore scripts (restore-{etcd,mail,postgres}-from-shim.sh,
+  # and `platform-ops dr restore-component`) run rclone ON THE HOST against the
+  # backup-rclone-shim S3 endpoint to pull a snapshot before the local restore.
+  # The backup UPLOAD path uses a pod (rclone image), but a host restore can't —
+  # k3s etcd-snapshot restore is a local host op. In every Debian/Ubuntu repo.
 }
 
 install_packages_dnf() {
@@ -1522,12 +1528,14 @@ install_packages_dnf() {
   # tmux: required by the admin node-terminal feature (ADR-041) for
   # cross-reconnect shell continuity. In RHEL-9-family base repos.
   if [[ "$OS_VARIANT" != "amzn2023" ]]; then
-    # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age; install it
-    # via dnf so we get distro-managed updates. amzn2023 takes the
-    # static-binary path below.
+    # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age + rclone; install
+    # them via dnf so we get distro-managed updates. amzn2023 (no EPEL) takes
+    # the static-binary fallback paths below.
     dnf install -y -q age >/dev/null 2>&1 || true
+    dnf install -y -q rclone >/dev/null 2>&1 || true
   fi
   install_age_if_missing
+  install_rclone_if_missing
 }
 
 # Install age from the upstream GitHub release tarball if the system
@@ -1557,6 +1565,43 @@ install_age_if_missing() {
   tar -xzf "${tmpdir}/age.tar.gz" -C "$tmpdir"
   install -m 0755 "${tmpdir}/age/age"        /usr/local/bin/age
   install -m 0755 "${tmpdir}/age/age-keygen" /usr/local/bin/age-keygen
+  rm -rf "$tmpdir"
+}
+
+# Install rclone from the upstream GitHub release zip if the system package
+# isn't available. Used by AL2023 (no EPEL) and as a defensive fallback for any
+# RHEL variant where the EPEL `rclone` install slipped through. rclone is
+# required by the DR restore scripts (restore-*-from-shim.sh / `platform-ops dr
+# restore-component`), which run rclone on the host to pull a snapshot from the
+# shim before the local restore. Mirrors install_age_if_missing's trust model
+# (pinned version, HTTPS to github.com); the binary lands in /usr/local/bin so
+# a later distro `rclone` package never collides with it.
+install_rclone_if_missing() {
+  if command -v rclone >/dev/null 2>&1; then
+    return 0
+  fi
+  local arch="amd64"
+  case "$(uname -m)" in
+    x86_64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) error "install_rclone_if_missing: unsupported arch '$(uname -m)'" ;;
+  esac
+  # Pinned to the same line the backup-rclone-shim DaemonSet runs
+  # (rclone/rclone:1.74.1) so host-side restore and pod-side upload speak an
+  # identical rclone. Bump both together.
+  local rclone_ver="v1.74.1"
+  local base="rclone-${rclone_ver}-linux-${arch}"
+  local url="https://github.com/rclone/rclone/releases/download/${rclone_ver}/${base}.zip"
+  log "  rclone package not available — installing static binary ${rclone_ver}/${arch} from upstream..."
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  if ! curl -fsSL "$url" -o "${tmpdir}/rclone.zip" 2>/dev/null; then
+    rm -rf "$tmpdir"
+    error "Failed to download rclone from ${url}. Check outbound HTTPS connectivity to github.com."
+  fi
+  # unzip is installed by install_packages_{apt,dnf} earlier in the run.
+  unzip -q "${tmpdir}/rclone.zip" -d "$tmpdir"
+  install -m 0755 "${tmpdir}/${base}/rclone" /usr/local/bin/rclone
   rm -rf "$tmpdir"
 }
 
