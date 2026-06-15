@@ -3,6 +3,16 @@ import type { Database } from '../../db/index.js';
 import { systemSettings } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
+import {
+  assertSnapshotRevertable,
+  revertVolumeToSnapshot,
+  pollVolumeState,
+  RevertError,
+  LH_GROUP,
+  LH_VERSION,
+  LH_NS,
+  type RevertCoreOpts,
+} from '../storage-lifecycle/longhorn-revert.js';
 
 /**
  * Inventory of platform/system PVCs and their Longhorn snapshot state.
@@ -136,9 +146,7 @@ function parseQuantityBytes(value: string | number | undefined): number {
   return Math.round(num * (mul[unit] ?? 1));
 }
 
-const LH_GROUP = 'longhorn.io';
-const LH_VERSION = 'v1beta2';
-const LH_NS = 'longhorn-system';
+// LH_GROUP / LH_VERSION / LH_NS are imported from storage-lifecycle/longhorn-revert.
 
 /**
  * Determine which Longhorn RecurringJob names apply to a Longhorn volume,
@@ -437,8 +445,6 @@ export async function takeSnapshot(
 
 // ─── Restore (in-place snapshot revert) ──────────────────────────────────────
 
-const DEFAULT_LONGHORN_API_BASE = 'http://longhorn-backend.longhorn-system:9500';
-
 interface ConsumerRef {
   readonly kind: 'CnpgCluster' | 'StatefulSet' | 'Deployment';
   readonly namespace: string;
@@ -554,61 +560,6 @@ async function scaleConsumer(k8s: K8sClients, c: ConsumerRef, count: number): Pr
   }
 }
 
-/**
- * Poll the Longhorn Volume CR until it reaches the expected condition.
- *
- * For `expected='detached'` we don't strictly require `status.state ==
- * 'detached'` — Longhorn's snapshot-controller holds VolumeAttachment
- * tickets (with `disableFrontend: any`) for any pending snapshot
- * delete/purge work, which keeps `state` reading as "attached" even
- * though the consumer pod has released the volume. What actually
- * matters for `snapshotRevert` is that no `csi-*` attachment ticket
- * remains (i.e. no pod is mounting the volume's frontend). We accept
- * either state=detached OR no csi ticket.
- *
- * For `expected='attached'` we require state=attached AND a csi ticket
- * present (the consumer pod has rebound).
- */
-async function pollVolumeState(
-  k8s: K8sClients,
-  volumeName: string,
-  expected: 'detached' | 'attached',
-  timeoutMs: number,
-): Promise<{ readonly ok: boolean; readonly state: string | undefined }> {
-  const deadline = Date.now() + timeoutMs;
-  let last: string | undefined;
-  while (Date.now() < deadline) {
-    try {
-      const [v, va] = await Promise.all([
-        k8s.custom.getNamespacedCustomObject({
-          group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
-        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as Promise<{ status?: { state?: string } }>,
-        k8s.custom.getNamespacedCustomObject({
-          group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumeattachments', name: volumeName,
-        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0])
-          .catch(() => ({ spec: { attachmentTickets: {} } })) as Promise<{ spec?: { attachmentTickets?: Record<string, { type?: string }> } }>,
-      ]);
-      last = v.status?.state;
-      const tickets = va.spec?.attachmentTickets ?? {};
-      const hasCsi = Object.values(tickets).some((t) => t.type === 'csi-attacher');
-      // Detach is only "really done" when both: (a) no csi-attacher
-      // ticket (no consumer pod is mounting the volume), AND (b) the
-      // engine has stopped (state == 'detached'). Catching the volume
-      // mid-`detaching` (engine still tearing down) lets snapshotRevert
-      // race the detach handshake and Longhorn returns HTTP 500
-      // "failed to revert snapshot".
-      if (expected === 'detached' && last === 'detached' && !hasCsi) {
-        return { ok: true, state: last };
-      }
-      if (expected === 'attached' && last === 'attached' && hasCsi) {
-        return { ok: true, state: last };
-      }
-    } catch { /* keep polling */ }
-    await new Promise((r) => setTimeout(r, 2_000));
-  }
-  return { ok: false, state: last };
-}
-
 export interface RevertOpts {
   readonly apiBase?: string;
   readonly fetchFn?: typeof globalThis.fetch;
@@ -625,13 +576,18 @@ export interface RevertResult {
 }
 
 /**
- * Full snapshot-revert lifecycle:
- *   1. Resolve consumer (CNPG / StatefulSet / Deployment)
- *   2. Scale to 0; wait for Longhorn volume to detach (90s)
- *   3. POST /v1/volumes/<vol>?action=snapshotRevert via longhorn-backend
- *   4. Scale back to original count; wait for reattach (120s)
- * On any step failure we try to scale back to original to avoid
- * leaving the workload at 0 replicas.
+ * Full snapshot-revert lifecycle for a SYSTEM PVC:
+ *   1. Resolve the consumer (CNPG / StatefulSet / Deployment); refuse CNPG.
+ *   2. Assert the snapshot is revertable (exists, owns the volume, ready,
+ *      volume not faulted) BEFORE scaling, so we don't bounce a workload
+ *      only to fail mid-flight.
+ *   3. Scale the consumer to 0.
+ *   4. Revert the Longhorn volume in place via the shared core
+ *      (wait-detach → maintenance-attach → snapshotRevert → detach).
+ *   5. Scale back to the original count; wait for reattach.
+ * On any step failure we try to scale back to original to avoid leaving the
+ * workload at 0 replicas. The Longhorn mechanics are SHARED with the tenant
+ * restore path — see storage-lifecycle/longhorn-revert.ts.
  */
 export async function revertSnapshot(
   k8s: K8sClients,
@@ -641,41 +597,18 @@ export async function revertSnapshot(
   snapshotName: string,
   opts: RevertOpts = {},
 ): Promise<RevertResult> {
-  const apiBase = opts.apiBase ?? process.env.LONGHORN_API_BASE ?? DEFAULT_LONGHORN_API_BASE;
-  const fetchFn = opts.fetchFn ?? globalThis.fetch;
-  // 5 min default — Longhorn delays the detach handshake until any
-  // in-flight engine upgrade or replica rebuild finishes. A 90s
-  // timeout was too short for degraded volumes that are mid-rebuild.
-  const detachTimeoutMs = opts.detachTimeoutMs ?? 300_000;
-  const revertTimeoutMs = opts.revertTimeoutMs ?? 60_000;
   const attachTimeoutMs = opts.attachTimeoutMs ?? 180_000;
+  const coreOpts: RevertCoreOpts = {
+    apiBase: opts.apiBase,
+    fetchFn: opts.fetchFn,
+    detachTimeoutMs: opts.detachTimeoutMs,
+    revertTimeoutMs: opts.revertTimeoutMs,
+  };
   const steps: { step: string; ok: boolean; detail?: string }[] = [];
 
-  type SnapShape = { spec?: { volume?: string }; status?: { readyToUse?: boolean } };
-  let snap: SnapShape | null = null;
-  try {
-    snap = await k8s.custom.getNamespacedCustomObject({
-      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: snapshotName,
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as SnapShape;
-  } catch (err) {
-    const code = (err as { code?: number; statusCode?: number }).code ?? (err as { statusCode?: number }).statusCode;
-    if (code === 404) {
-      const e = new Error(`Snapshot '${snapshotName}' not found`);
-      (e as Error & { code?: number }).code = 404; throw e;
-    }
-    throw err;
-  }
-  if (snap?.spec?.volume !== volumeName) {
-    const e = new Error(`Snapshot '${snapshotName}' does not belong to volume '${volumeName}'`);
-    (e as Error & { code?: number }).code = 409; throw e;
-  }
-
-  // Resolve consumer FIRST and refuse CNPG immediately. The CNPG
-  // refusal doesn't depend on snapshot readiness — surfacing the
-  // "use barman-cloud" remediation regardless of snapshot state is
-  // both more honest and useful (no point asking the operator to
-  // wait for a snapshot to become ready when the restore can never
-  // succeed via this code path).
+  // Resolve consumer FIRST and refuse CNPG immediately. The CNPG refusal
+  // doesn't depend on snapshot readiness — surfacing the "use barman-cloud"
+  // remediation regardless of snapshot state is both more honest and useful.
   const consumer = await resolveConsumer(k8s, pvcNamespace, pvcName);
   if (!consumer) {
     const e = new Error(`Cannot resolve workload mounting ${pvcNamespace}/${pvcName} — manual restore required`);
@@ -692,43 +625,17 @@ export async function revertSnapshot(
   }
   steps.push({ step: 'resolve-consumer', ok: true, detail: `${consumer.kind}/${consumer.name} (count=${consumer.originalCount})` });
 
-  // Snapshot readiness check after CNPG refusal but before scaling —
-  // we don't want to scale-down a workload only to fail on a not-ready
-  // snapshot mid-flight. Poll briefly so a fresh snapshot has time to
-  // settle before bouncing the operator with a 409.
-  const readyDeadline = Date.now() + 30_000;
-  while (Date.now() < readyDeadline) {
-    if (snap.status?.readyToUse === true) break;
-    await new Promise((r) => setTimeout(r, 2_000));
-    try {
-      snap = await k8s.custom.getNamespacedCustomObject({
-        group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'snapshots', name: snapshotName,
-      } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as SnapShape;
-    } catch { /* keep polling */ }
-  }
-  if (snap.status?.readyToUse !== true) {
-    const e = new Error(`Snapshot '${snapshotName}' is not ready to use after 30s`);
-    (e as Error & { code?: number }).code = 409; throw e;
+  // Ownership + readiness (polls up to 30s) + not-faulted, before scaling.
+  try {
+    await assertSnapshotRevertable(k8s, volumeName, snapshotName);
+  } catch (err) {
+    if (err instanceof RevertError) {
+      const e = new Error(err.message);
+      (e as Error & { code?: number }).code = err.code; throw e;
+    }
+    throw err;
   }
   steps.push({ step: 'snapshot-ready', ok: true });
-
-  // Block restore on a faulted volume — engine can't safely revert
-  // when no replica is healthy. Degraded (some replicas missing) is
-  // OK; the surviving replicas can still serve the revert.
-  try {
-    const v = await k8s.custom.getNamespacedCustomObject({
-      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { robustness?: string; currentImage?: string } };
-    const robustness = v.status?.robustness ?? '';
-    if (robustness === 'faulted') {
-      const e = new Error(`Volume '${volumeName}' is faulted — restore refused. Inspect Longhorn UI and recover before retrying.`);
-      (e as Error & { code?: number }).code = 409; throw e;
-    }
-    steps.push({ step: 'volume-health-check', ok: true, detail: `robustness=${robustness || 'unknown'}` });
-  } catch (err) {
-    if ((err as { code?: number }).code === 409) throw err;
-    // Non-fatal: continue if we can't read the volume
-  }
 
   let restored = false;
   try {
@@ -736,86 +643,17 @@ export async function revertSnapshot(
       await scaleConsumer(k8s, consumer, 0);
       steps.push({ step: 'scale-down', ok: true });
     } catch (e) {
-      // Mark the failure explicitly in the step trace so the operator
-      // sees WHICH step failed (RBAC errors at scale-down were
-      // previously hidden behind the recovery-scale-up entry).
+      // Mark the failure explicitly so the operator sees WHICH step failed.
       steps.push({ step: 'scale-down', ok: false, detail: (e as Error).message });
-      // We never actually changed the consumer's replica count, so
-      // there's no recovery work needed — flip the flag to skip it.
+      // We never changed the replica count, so no recovery is needed.
       restored = true;
       throw e;
     }
 
-    const detach = await pollVolumeState(k8s, volumeName, 'detached', detachTimeoutMs);
-    steps.push({ step: 'wait-detach', ok: detach.ok, detail: `final=${detach.state ?? 'unknown'}` });
-    if (!detach.ok) throw new Error(`Volume did not detach within ${detachTimeoutMs / 1000}s (last=${detach.state ?? 'unknown'})`);
-
-    // Longhorn snapshotRevert requires the volume attached with
-    // frontend disabled (engine running, but block device not exposed
-    // to any pod). Detach alone gives "frontend enabled" once the
-    // snapshot-controller re-attaches for pending snapshot work.
-    // Pick a node that has a running replica so we minimise rebuild
-    // chatter, then explicitly attach with disableFrontend=true via
-    // the manager REST API.
-    const volForAttach = await k8s.custom.getNamespacedCustomObject({
-      group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { ownerID?: string }; spec?: { numberOfReplicas?: number } };
-    const targetNode = volForAttach.status?.ownerID;
-    if (!targetNode) throw new Error('Cannot determine a node to attach the volume on for revert');
-
-    const attachUrl = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=attach`;
-    const attachResp = await fetchFn(attachUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ hostId: targetNode, disableFrontend: true, attachedBy: 'system-snapshots-revert' }),
-      signal: AbortSignal.timeout(revertTimeoutMs),
-    });
-    if (!attachResp.ok) {
-      const body = await attachResp.text().catch(() => '<no body>');
-      throw new Error(`Longhorn maintenance-attach failed: HTTP ${attachResp.status} ${body.slice(0, 240)}`);
-    }
-    steps.push({ step: 'attach-maintenance', ok: true, detail: `node=${targetNode}` });
-
-    // Wait for the engine to come up with frontend disabled
-    const maintDeadline = Date.now() + revertTimeoutMs;
-    let maintReady = false;
-    while (Date.now() < maintDeadline) {
-      try {
-        const v = await k8s.custom.getNamespacedCustomObject({
-          group: LH_GROUP, version: LH_VERSION, namespace: LH_NS, plural: 'volumes', name: volumeName,
-        } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as { status?: { state?: string; frontendDisabled?: boolean } };
-        if (v.status?.state === 'attached' && v.status?.frontendDisabled === true) {
-          maintReady = true; break;
-        }
-      } catch { /* keep polling */ }
-      await new Promise((r) => setTimeout(r, 2_000));
-    }
-    if (!maintReady) throw new Error('Volume did not enter maintenance-attached state in time');
-    steps.push({ step: 'wait-maintenance', ok: true });
-
-    const url = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=snapshotRevert`;
-    const resp = await fetchFn(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: snapshotName }),
-      signal: AbortSignal.timeout(revertTimeoutMs),
-    });
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => '<no body>');
-      throw new Error(`Longhorn snapshotRevert failed: HTTP ${resp.status} ${body.slice(0, 240)}`);
-    }
-    steps.push({ step: 'longhorn-revert', ok: true });
-
-    // Detach from maintenance mode so the consumer's CSI attach can
-    // bind cleanly when we scale it back up.
-    const detachUrl = `${apiBase.replace(/\/$/, '')}/v1/volumes/${encodeURIComponent(volumeName)}?action=detach`;
-    await fetchFn(detachUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-      signal: AbortSignal.timeout(revertTimeoutMs),
-    }).catch(() => undefined);
-    steps.push({ step: 'detach-maintenance', ok: true });
+    // Shared Longhorn-side revert: wait-detach → maintenance-attach →
+    // snapshotRevert → detach-maintenance.
+    const coreSteps = await revertVolumeToSnapshot(k8s, volumeName, snapshotName, coreOpts);
+    for (const s of coreSteps) steps.push({ ...s });
 
     await scaleConsumer(k8s, consumer, consumer.originalCount);
     restored = true;
@@ -827,6 +665,11 @@ export async function revertSnapshot(
 
     return { volumeName, snapshotName, consumer, steps };
   } catch (err) {
+    // The shared core throws RevertError carrying its own partial step trace
+    // — merge it in so the operator sees which Longhorn step failed.
+    if (err instanceof RevertError) {
+      for (const s of err.steps) if (!steps.some((x) => x.step === s.step)) steps.push({ ...s });
+    }
     if (!restored) {
       try {
         await scaleConsumer(k8s, consumer, consumer.originalCount);

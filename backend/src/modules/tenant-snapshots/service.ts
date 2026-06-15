@@ -258,24 +258,12 @@ export async function listSnapshots(
 }
 
 /**
- * GATED OFF pending a Longhorn-mechanism redesign. The current restore deletes
- * the live PVC and recreates it from the VolumeSnapshot `spec.dataSource` (a
- * Longhorn CLONE). On staging this proved unreliable for `type=snap` snapshots:
- * the clone copies data in ~20s but the new volume then sticks in
- * `copy-completed-awaiting-healthy` while detached and never reliably becomes
- * attachable — unacceptable for a destructive op. The replacement is Longhorn
- * `snapshotRevert` (revert the EXISTING volume in-place; replicas stay healthy).
- * When that lands, flip FULL_RESTORE_ENABLED. The orchestration
- * (restoreTenantFromVolumeSnapshot) + the routes + the UI flow are kept ready.
- */
-const FULL_RESTORE_ENABLED = false;
-
-/**
- * Restore the tenant PVC from a snapshot. DESTRUCTIVE: hands off to the
- * storage-lifecycle orchestrator, which quiesces, swaps the PVC for one
- * provisioned from the VolumeSnapshot, and unquiesces. Returns the storage
- * operation id; poll {@link getRestoreOpStatus}. The snapshot row + CR are
- * preserved (a dataSource isn't consumed), so the tenant can restore again.
+ * Restore the tenant PVC from a snapshot by reverting the EXISTING Longhorn
+ * volume in place (replicas stay healthy — NOT a destructive PVC swap). Hands
+ * off to the storage-lifecycle orchestrator, which quiesces, calls Longhorn
+ * `snapshotRevert`, and unquiesces. Returns the storage operation id; poll
+ * {@link getRestoreOpStatus}. The snapshot row + CR are preserved (revert
+ * doesn't consume the snapshot), so the tenant can restore again.
  */
 export async function restoreSnapshot(
   deps: Deps,
@@ -283,13 +271,6 @@ export async function restoreSnapshot(
   snapshotId: string,
   opts: { triggeredByUserId?: string | null },
 ): Promise<{ operationId: string }> {
-  if (!FULL_RESTORE_ENABLED) {
-    throw new ApiError(
-      'RESTORE_NOT_AVAILABLE',
-      'Restoring the whole volume from a snapshot is being finalized and isn\'t available yet. Creating and deleting snapshots works today.',
-      503,
-    );
-  }
   const { db, k8s } = deps;
   const [row] = await db.select().from(tenantVolumeSnapshots)
     .where(and(eq(tenantVolumeSnapshots.id, snapshotId), eq(tenantVolumeSnapshots.tenantId, tenantId)))
@@ -302,7 +283,6 @@ export async function restoreSnapshot(
   return restoreTenantFromVolumeSnapshot(db, k8s, {
     tenantId,
     volumeSnapshotName: row.volumeSnapshotName,
-    restoreSizeBytes: row.sizeBytes,
     snapshotLabel: row.label,
     triggeredByUserId: opts.triggeredByUserId ?? null,
   });
