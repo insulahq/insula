@@ -167,14 +167,20 @@ export default function Snapshots() {
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2">
                         {s.status === 'ready' && (
+                          // Full-volume restore is gated off pending a Longhorn
+                          // snapshotRevert redesign (the dataSource-clone path is
+                          // unreliable). Button kept visible-but-disabled so the
+                          // capability is discoverable; the flow + hooks stay
+                          // wired and re-enable with the backend flag.
                           <button
                             type="button"
+                            disabled
                             onClick={() => { setConfirmRestore(s); setRestoreError(null); }}
-                            className="inline-flex items-center gap-1 rounded-md border border-indigo-300 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-50 dark:border-indigo-700 dark:text-indigo-300 dark:hover:bg-indigo-950"
+                            className="inline-flex cursor-not-allowed items-center gap-1 rounded-md border border-gray-200 px-2 py-1 text-xs font-medium text-gray-400 dark:border-gray-700 dark:text-gray-500"
                             data-testid={`restore-snapshot-${s.id}`}
-                            title="Replace your live files with this snapshot"
+                            title="Full-volume restore is coming soon — creating and deleting snapshots works today"
                           >
-                            <RotateCcw size={12} /> Restore
+                            <RotateCcw size={12} /> Restore (soon)
                           </button>
                         )}
                         <button
