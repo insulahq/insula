@@ -13,6 +13,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **`platform-ops` operator-CLI additions (R18 consolidation).**
+  - `cluster doctor` — per-node readiness/drift check (platform-ops version,
+    cosign trust anchor, host-config kubeconfig, cluster reachability, rclone,
+    host-migration markers, nodes-ready). Exit 1 on any FAIL; `--json`.
+  - `backup target list|add|test|delete|bind|unbind` — manage backup targets +
+    class bindings from a node (runs in the platform-api pod), removing the need
+    to mint an admin JWT and hand-craft REST calls. `add` takes the config JSON
+    on stdin (secret never in argv); list strips credentials.
+  - `backup key-status` — show the BACKUP_TARGET_KEY fingerprint + rotation
+    times (read-only companion to `backup rotate-key`).
+  - `mail rotate-master-password` — rotate the Stalwart webmail master password
+    (recovery; runs the same JMAP rotation the admin panel does, rolls Roundcube).
+  - `cluster diagnostics` now includes the on-node nft firewall posture.
 - **Worker nodes can now run host-config (host-migrations / package converge).**
   Worker hosts have no k3s admin kubeconfig (`/etc/rancher/k3s/k3s.yaml` is
   server-only), so `platform-ops host-config` was a permanent "cluster
