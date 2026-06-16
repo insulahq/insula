@@ -359,11 +359,25 @@ selected paths (idempotent overwrite, pre-restore snapshot taken). See
 [TENANT_BACKUP.md](../operations/TENANT_BACKUP.md). On-server Longhorn snapshots
 remain whole-volume revert by design.
 
+**rclone-shim multipart > 1 GB — no longer reached (2026-06-16, #118).** The
+original failure was a single `tar | gzip | rclone rcat` object OOMing the shim's
+gofakes3 `serve s3` at `CompleteMultipartUpload` (`NoSuchUpload` ~chunk 68).
+**Every tenant-data path that produced that object now goes through restic** (64
+MiB chunked packs — many small PUTs, never one large object): pre-resize /
+pre-archive bundles (`storage-lifecycle/prebundle.ts`, `service.ts`) and tenant
+bundles (files + mail, `restic backup --stdin`). The legacy single-object
+upload/restore methods (`streaming-store.ts:getStreamingJob` /
+`getStreamingRestoreJob`) have **no live caller** since #118 deleted
+`snapshot.ts`/`restore.ts`, and the `POST /storage/snapshot` repro endpoint was
+removed in the same PR. The shim's multipart limit is now an *unreached* engine
+property rather than an active blocker; large-PVC shrink/backup is no longer
+gated on it. (System backups are unaffected: CNPG/barman uploads bounded 16 MiB
+multipart parts — its earlier `NoSuchUpload` was a sidecar OOM, fixed 2026-05-20
+via a 1Gi memory bump — and etcd snapshots are small single files.) A future
+engine-level fix (or the R-X19 `rclone serve s3` VFS-cache behaviour) would only
+matter if a new single-large-object writer is introduced.
+
 **Open:**
-- **rclone-shim multipart > 1 GB** — `rclone serve s3` fails large multipart
-  uploads (`NoSuchUpload` ~chunk 68); mail works only because it's small. Blocks
-  large-PVC shrink/backup. Reproducible non-destructively via `POST
-  /storage/snapshot`.
 - Destructive-shrink rough edges: force-cancel can leave a tenant quiesced
   (manual `kubectl scale` recovery); the snapshot Job can hang several minutes.
 
