@@ -1512,7 +1512,8 @@ install_packages_apt() {
   # and `platform-ops dr restore-component`) run rclone ON THE HOST against the
   # backup-rclone-shim S3 endpoint to pull a snapshot before the local restore.
   # The backup UPLOAD path uses a pod (rclone image), but a host restore can't —
-  # k3s etcd-snapshot restore is a local host op. In every Debian/Ubuntu repo.
+  # the etcd restore (k3s server --cluster-reset) is a local host op. In every
+  # Debian/Ubuntu repo.
 }
 
 install_packages_dnf() {

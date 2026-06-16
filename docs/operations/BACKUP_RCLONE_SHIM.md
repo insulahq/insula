@@ -164,10 +164,11 @@ connection strings after validating the restored data — no automatic
 cutover (too dangerous for a load-bearing DB).
 
 **etcd**: must run as root on a control-plane node. Stops k3s, runs
-`k3s etcd-snapshot restore`, restarts k3s. Verifies the snapshot's
-sha256 against the `.meta` sidecar before applying. The on-disk
-snapshot is left at `/var/lib/rancher/k3s/server/db/snapshots/restore-from-shim-<ts>.db`
-for re-runs.
+`k3s server --cluster-reset --cluster-reset-restore-path=<snapshot>` (k3s has
+no `etcd-snapshot restore` subcommand — restore is a server-reset op),
+restarts k3s. Verifies the snapshot's sha256 against the `.meta` sidecar
+before applying. The on-disk snapshot is left at
+`/var/lib/rancher/k3s/server/db/snapshots/restore-from-shim-<ts>.db` for re-runs.
 
 **Mail**: destructive — overwrites the running mail server's PVC.
 Scales Stalwart to 0, runs `restic restore`, scales back. Requires
@@ -270,17 +271,21 @@ sudo ./scripts/restore-etcd-from-shim.sh --offline \
      --bundle <secrets-*.tar.age> --age-key <operator-private.key> --latest
 ```
 
-S3 upstreams only (SFTP/CIFS: use Tier 0 or the online path). The descriptor
-holds plaintext upstream creds — it exists only inside the age-encrypted bundle;
-the script streams it into memory and never writes it to disk.
+All shim upstream protocols work offline — **S3, SFTP, and CIFS/SMB** (the
+script renders a private per-run `rclone.conf` for the descriptor's
+`storageType`; SFTP/SMB passwords are rclone-obscured, all creds live in the
+0600 conf, never on argv). The descriptor holds plaintext upstream creds — it
+exists only inside the age-encrypted bundle; the script streams it into memory
+and never writes it to disk.
 
-> **Precondition — the SYSTEM target MUST be an EXTERNAL S3 endpoint.** Offline
-> restore pulls *directly* from the upstream with no cluster, so an in-cluster
-> backup target (e.g. a `*.svc.cluster.local` MinIO, or a pod/cluster IP) is
-> unreachable from a fresh node and the offline tier cannot work — the backup
-> also died with the cluster. `platform-ops dr preflight` flags an in-cluster
-> endpoint. Point the SYSTEM target at a genuinely off-site S3 (Hetzner, AWS, an
-> external MinIO) for real DR.
+> **Precondition — the SYSTEM target MUST be an EXTERNAL (off-cluster) endpoint.**
+> Offline restore pulls *directly* from the upstream with no cluster, so an
+> in-cluster backup target (e.g. a `*.svc.cluster.local` MinIO, or a pod/cluster
+> IP) is unreachable from a fresh node and the offline tier cannot work — the
+> backup also died with the cluster. `platform-ops dr preflight` flags an
+> in-cluster endpoint (it recognises both S3 `endpoint =` and SFTP/SMB `host =`).
+> Point the SYSTEM target at a genuinely off-site store (Hetzner S3/SFTP/CIFS,
+> AWS, an external MinIO/NAS) for real DR.
 
 **Tier 1b — off-site, ONLINE via the shim (cluster is up).** The original path:
 it resolves the cluster_id-namespaced prefix from the live CronJob's
