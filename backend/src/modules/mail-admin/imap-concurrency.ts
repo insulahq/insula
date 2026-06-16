@@ -13,7 +13,7 @@
  *   `NO [LIMIT] Too many concurrent requests`.
  *
  *   The mailbox backup/restore tooling
- *   (`images/mail-backup-tools/imap-restore.py --workers 4`) opens
+ *   (`images/tenant-backup-tools/imap-restore.py --workers 4`) opens
  *   four concurrent IMAP connections per user to amortize Stalwart's
  *   per-message processing pipeline (FTS, threading, ACL) across
  *   MULTIAPPEND batches. Without elevation the worker pool collapses
@@ -34,7 +34,7 @@
  *      (backup-restore/executors/mailboxes-by-address.ts) both call
  *      `ensureImapMaxConcurrentAtLeast(MIGRATION)` immediately after
  *      acquiring their cluster-concurrency slot, BEFORE creating the
- *      mail-backup-tools Job.
+ *      tenant-backup-tools Job.
  *
  *   2. The 5-min `imap-concurrency-reverter` scheduler (started from
  *      backend index.ts) checks `tenant_bundle_in_flight` every tick;

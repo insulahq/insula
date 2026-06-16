@@ -84,6 +84,12 @@ export interface OrchestratorDeps {
    *  Falls back to a placeholder for unit tests where region tagging
    *  is not under test. */
   readonly platformBaseDomain?: string;
+  /** Tenant CNAME base domain — second input to `resolveBaseDomain`
+   *  when deriving the snapshot-tag region id for the restic-native
+   *  files capture. Caller passes app.config.INGRESS_BASE_DOMAIN.
+   *  Optional; falls back to '' (resolveBaseDomain then leans on
+   *  platformBaseDomain / the dev default). */
+  readonly ingressBaseDomain?: string;
   /** Path to a kubeconfig file for `kubectl exec` inside the SQL
    *  Manager pre-dump path. NULL/undefined → use the in-cluster
    *  serviceaccount (the standard production path). */
@@ -161,6 +167,11 @@ export async function runBundle(
   // the files + secrets components; failing here gives a clean error
   // before any external state is touched.
   const namespace = await resolveTenantNamespace(deps.db, input.tenantId);
+
+  // Cluster-wide concurrency cap for restic captures — read once and
+  // threaded into the files component's cluster gate. 0 = disabled.
+  const [v2Settings] = await deps.db.select().from(tenantBackupV2Settings).limit(1);
+  const globalMaxInFlight = v2Settings?.globalMaxInFlight ?? 0;
 
   // Insert the backup_jobs row in `pending`.
   const newJob: NewBackupJob = {
@@ -254,9 +265,6 @@ export async function runBundle(
       }
       const componentRowId = await insertComponentRow(deps.db, bundleId, 'files', 'archive.tar.gz');
       try {
-        if (!deps.platformApiUrl) {
-          throw new Error('files component requires platformApiUrl on OrchestratorDeps (Phase 3 HTTP-upload pattern)');
-        }
         // Reviewer #2: derive pvcName from the namespace already
         // resolved at line 153 — saves a redundant SELECT on `tenants`
         // in the bundle hot path. Convention `${ns}-storage` mirrors
@@ -294,12 +302,16 @@ export async function runBundle(
 
         filesResult = await captureFilesComponent({
           k8s: deps.k8s,
+          db: deps.db,
           namespace,
           pvcName,
           tenantId: input.tenantId,
           backupId: bundleId,
-          platformApiUrl: deps.platformApiUrl,
           secretsKeyHex: deps.secretsKeyHex,
+          platformBaseDomain: deps.platformBaseDomain ?? '',
+          ingressBaseDomain: deps.ingressBaseDomain ?? '',
+          platformVersion: deps.platformVersion,
+          globalMaxInFlight,
         });
         await markComponentDone(deps.db, componentRowId, { sizeBytes: filesResult.sizeBytes, sha256: filesResult.sha256 });
         componentInfos.files = {

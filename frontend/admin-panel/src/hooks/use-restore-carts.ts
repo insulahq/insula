@@ -173,19 +173,21 @@ export function useBrowseDomains(bundleId: string | null) {
 interface BrowseFilesResponse {
   readonly data: {
     readonly bundleId: string;
-    readonly totalCount: number;
-    readonly entries: ReadonlyArray<{ path: string; size: number; mode: number; mtime: string }>;
-    readonly nextCursor: string | null;
+    readonly path: string;
+    readonly entries: ReadonlyArray<{ name: string; path: string; type: 'file' | 'dir'; size: number }>;
   };
 }
-export function useBrowseFiles(bundleId: string | null, after: string | null, limit = 500) {
+// Restic-native lazy tree browse: one directory level per call. `path`
+// is the directory to list (null/'' = root).
+export function useBrowseFiles(bundleId: string | null, path: string | null) {
   return useQuery({
-    queryKey: ['restore-browse', 'files', bundleId, after, limit],
+    queryKey: ['restore-browse', 'files', bundleId, path ?? ''],
     enabled: !!bundleId,
     queryFn: () => {
-      const qs = new URLSearchParams({ limit: String(limit) });
-      if (after) qs.set('after', after);
-      return apiFetch<BrowseFilesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/files/tree?${qs.toString()}`);
+      const qs = new URLSearchParams();
+      if (path) qs.set('path', path);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      return apiFetch<BrowseFilesResponse>(`/api/v1/admin/tenant-bundles/${bundleId}/browse/files/tree${suffix}`);
     },
   });
 }

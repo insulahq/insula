@@ -38,7 +38,6 @@ import {
   addRestoreItemSchema,
   type RestoreJobDetail,
 } from '@insula/api-contracts';
-import { gunzipSync } from 'node:zlib';
 import {
   loadBundle,
   resolveStoreForBundle,
@@ -47,6 +46,7 @@ import {
   toJobSummary,
   toItemInfo,
 } from './shared.js';
+import { browseFilesTree } from './browse-files-restic.js';
 import { snapshotTenant, rollbackToSnapshot } from '../storage-lifecycle/service.js';
 import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -496,69 +496,13 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
 
   app.get('/admin/tenant-bundles/:bundleId/browse/files/tree', async (request) => {
     const { bundleId } = request.params as { bundleId: string };
-    const q = request.query as { limit?: string; after?: string };
-    const limit = Math.min(Math.max(parseInt(q.limit ?? '500', 10) || 500, 1), 2000);
-    const after = q.after ?? '';
-    const store = await resolveStoreForBundle(app, bundleId);
-    const handle = await store.open(bundleId);
-    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
-    let tree: Buffer;
-    try {
-      const stream = await store.readComponent(handle, 'files', 'tree.jsonl.gz');
-      const chunks: Buffer[] = [];
-      for await (const c of stream) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
-      tree = gunzipSync(Buffer.concat(chunks));
-    } catch {
-      // Migration window: files.ts dropped the tree.jsonl.gz sidecar in
-      // favour of `restic ls <snapshot-id>` (see files.ts:32-34), but
-      // restic-based browsing is not yet wired into this endpoint.
-      // Return a graceful empty response + migration marker so the UI
-      // can render an explanation rather than a 404. Bundles created
-      // AFTER the sidecar drop legitimately have no tree.jsonl.gz —
-      // the absence is expected, not an error.
-      return success({
-        bundleId,
-        totalCount: 0,
-        entries: [],
-        nextCursor: null,
-        migrated: true,
-        message: 'File browsing for this bundle requires restic-based listing (not yet wired in this endpoint). Use the cart with "Restore full files snapshot" to restore the entire file set.',
-      });
-    }
-    // tree.jsonl.gz is produced by `find -printf` which is depth-
-    // first, NOT lexicographically sorted by path. Pagination via
-    // a `path > after` cursor only works on a sorted list — sort
-    // here so two consecutive page calls return a stable, complete
-    // result set with no skipped entries.
-    const lines = tree.toString('utf8').split('\n').filter(Boolean);
-    const allEntries: Array<{ path: string; size: number; mode: number; mtime: string }> = [];
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line) as { path: string; size: number; mode: number; mtime: string };
-        allEntries.push(obj);
-      } catch { /* tolerate malformed lines */ }
-    }
-    allEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    const totalCount = allEntries.length;
-    // Lexicographic forward cursor on sorted entries.
-    const startIdx = after
-      ? (() => {
-          // First index where path > after (binary search).
-          let lo = 0, hi = allEntries.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >>> 1;
-            if (allEntries[mid]!.path > after) hi = mid;
-            else lo = mid + 1;
-          }
-          return lo;
-        })()
-      : 0;
-    const endIdx = Math.min(startIdx + limit, allEntries.length);
-    const entries = allEntries.slice(startIdx, endIdx);
-    const nextCursor = endIdx < allEntries.length
-      ? entries[entries.length - 1]?.path ?? null
-      : null;
-    return success({ bundleId, totalCount, entries, nextCursor });
+    const q = request.query as { path?: string };
+    // Restic-native lazy tree browse: list the DIRECT CHILDREN of `path`
+    // (a DISPLAY path relative to the snapshot root; '' = root). The
+    // `/source` capture-root prefix is stripped server-side.
+    const job = await loadBundle(app, bundleId);
+    const result = await browseFilesTree(app, bundleId, job.tenantId, q.path);
+    return success(result);
   });
 }
 

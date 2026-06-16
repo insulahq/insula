@@ -1,6 +1,7 @@
-# tenant-backup-tools (image still named mail-backup-tools for the
-# Phase 1 window — rename to tenant-backup-tools deferred to a cleanup
-# PR per ADR-036 roadmap).
+# tenant-backup-tools — the image is now named tenant-backup-tools
+# (renamed from its Phase 1 name per ADR-036 roadmap).
+# Used by the mail backup/restore paths AND the tenant-bundle
+# files-component restic-native capture/restore Jobs.
 #
 # Used by:
 #   - Tenant Backup Phase 1 files component (tar | curl --upload-file -

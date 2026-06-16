@@ -2,7 +2,7 @@
 #
 # integration-mailbox-aux-orchestrator-e2e.sh — full E2E that mimics
 # what the platform-api tenant-bundles orchestrator's Jobs actually
-# run end-to-end, against the real mail-backup-tools image in the
+# run end-to-end, against the real tenant-backup-tools image in the
 # testing cluster.
 #
 # Spawns TWO Jobs in the `mail` namespace:
@@ -24,8 +24,8 @@
 #       /tmp/mfqdn  — master@<apex> FQDN
 #   - e2e-src already seeded with mail + aux corpus (run
 #     scripts/integration-tenant-bundles-mailbox-engine.sh first)
-#   - mail-backup-tools image available in the cluster's containerd
-#     as ghcr.io/.../mail-backup-tools:latest (either CI-built or
+#   - tenant-backup-tools image available in the cluster's containerd
+#     as ghcr.io/.../tenant-backup-tools:latest (either CI-built or
 #     locally-imported via `k3s ctr images import`)
 #
 # What it asserts:
@@ -75,7 +75,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: tools
-        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/insula/mail-backup-tools:latest}
+        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/insula/tenant-backup-tools:latest}
         imagePullPolicy: ${IMAGE_PULL_POLICY:-IfNotPresent}
         env: [{name: STALWART_MASTER_PASSWORD, value: "$MPW"}]
         command: ["sh", "-c"]
@@ -166,7 +166,7 @@ spec:
       restartPolicy: Never
       containers:
       - name: tools
-        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/insula/mail-backup-tools:latest}
+        image: ${TOOLS_IMAGE:-ghcr.io/insulahq/insula/tenant-backup-tools:latest}
         imagePullPolicy: ${IMAGE_PULL_POLICY:-IfNotPresent}
         env: [{name: STALWART_MASTER_PASSWORD, value: "$MPW"}]
         command: ["sh", "-c"]

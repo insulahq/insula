@@ -463,14 +463,14 @@ components:
     owner: platform
     notes: rclone/rclone image (etcd-snapshot-via-shim CronJob) + the SHA-verified binary baked into backup-rclone. Backup data path.
 
-  - id: mail-backup-tools
-    name: mail-backup-tools (restic + JMAP backup)
+  - id: tenant-backup-tools
+    name: tenant-backup-tools (restic + JMAP backup)
     tier: "1"
     kind: image
     pinned: ci-pinned
     pin_source: k8s/base/platform-config.yaml
     pin_check: false
-    repos: [insulahq/insula/mail-backup-tools]
+    repos: [insulahq/insula/tenant-backup-tools]
     watch: { type: first_party }
     scan: trivy
     owner: platform

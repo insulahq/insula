@@ -7,7 +7,7 @@
  * Both the tenant-bundle orchestrator's mailbox capture path
  * (`tenant-bundles/orchestrator.ts`) and the restore executor
  * (`backup-restore/executors/mailboxes-by-address.ts`) need to pass
- * `--master-user <fqdn>` to the mail-backup-tools image's
+ * `--master-user <fqdn>` to the tenant-backup-tools image's
  * `imap-sync.py` / `jmap-sync.py` / `imap-restore.py` / etc.
  *
  * Historically both call sites fell back to a hardcoded

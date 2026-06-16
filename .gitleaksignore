@@ -12,6 +12,8 @@ backend/src/modules/backup-restore/shared.ts:generic-api-key:115
 backend/src/modules/backup-rclone-shim/service.ts:generic-api-key:392
 backend/src/modules/tenant-bundles/cluster-concurrency.ts:generic-api-key:78
 backend/src/modules/tenant-bundles/internal-download-route.ts:generic-api-key:161
+backend/src/modules/tenant-bundles/internal-download-route.ts:generic-api-key:242
+backend/src/modules/storage-lifecycle/prebundle.ts:generic-api-key:134
 backend/src/modules/tenant-bundles/resolve-store.ts:generic-api-key:59
 backend/src/modules/tenant-bundles/schedule.ts:generic-api-key:54
 backend/src/modules/system-backup/dr-sidecars.ts:generic-api-key:287
@@ -28,5 +30,6 @@ docs/features/PASSWORD_PROTECTED_DIRECTORIES.md:curl-auth-user:1085
 k8s/base/backend-deployment.yaml:generic-api-key:301
 scripts/integration-all.sh:generic-api-key:135
 scripts/integration-all.sh:generic-api-key:179
+scripts/integration-all.sh:generic-api-key:184
 scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:277
 scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:282

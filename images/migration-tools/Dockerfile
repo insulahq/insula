@@ -1,5 +1,5 @@
 # migration-tools — tooling image for the Plesk→platform migration legs
-# (R1). The discovery leg reuses mail-backup-tools (ssh + python3 only);
+# (R1). The discovery leg reuses tenant-backup-tools (ssh + python3 only);
 # the DB + content legs need a MySQL/MariaDB client + rsync that that
 # image does not carry, so they run as Jobs on THIS image.
 #
@@ -20,7 +20,7 @@
 #   - gzip + tar     — compress streams / archives.
 #   - ca-certificates, coreutils — TLS + sha256sum/standard tools.
 #
-# debian:trixie-slim base matches mail-backup-tools / firewall images so the
+# debian:trixie-slim base matches tenant-backup-tools / firewall images so the
 # platform's distinct base-image surface stays small. Trivy CRITICAL/HIGH
 # (fixable) must pass. Image budget: <140 MiB.
 

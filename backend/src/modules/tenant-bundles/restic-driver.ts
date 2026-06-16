@@ -1083,6 +1083,152 @@ export async function runResticDump(args: RunResticDumpArgs): Promise<Readable> 
   }
 }
 
+// ─── Snapshot tree listing (restic-native files browse) ─────────────────────
+
+const LS_DIR_RE = /^\/(?:[A-Za-z0-9._@ -]+(?:\/[A-Za-z0-9._@ -]+)*\/?)?$/;
+
+/** One node as restic emits per line in `ls --json`. */
+export interface ResticLsNode {
+  /** Absolute path inside the snapshot, e.g. `/source/var/www/index.php`. */
+  readonly path: string;
+  readonly type: 'file' | 'dir';
+  readonly size: number;
+  /** RFC3339 mtime (best-effort — restic emits an ISO string). */
+  readonly mtime: string;
+}
+
+export interface RunResticLsArgs {
+  readonly target: BackupTarget;
+  readonly passwordHex: string;
+  /** Full per-(tenant, component) restic repo URI (buildResticRepoUri). */
+  readonly repoUri: string;
+  readonly snapshotId: string;
+  /**
+   * Optional absolute directory inside the snapshot to list. restic
+   * `ls <snap> <dir>` lists that subtree; we list it and the caller
+   * filters to direct children. Must be an absolute path with no `..`.
+   * When omitted, lists the whole snapshot (caller filters to the root's
+   * direct children).
+   */
+  readonly dir?: string;
+  /** `--no-lock` — listing is read-only; default true so a stale lock
+   *  from a crashed write never blocks a browse. */
+  readonly readOnly?: boolean;
+  readonly semaphore?: ResticConcurrencySemaphore;
+}
+
+/**
+ * Run `restic ls <snapshotId> [dir] --json --no-lock` against the
+ * per-tenant repo and parse the node stream.
+ *
+ * `restic ls --json` emits NDJSON: a leading snapshot object
+ * (`{"time":…,"tree":…,"id":…,"short_id":…,"struct_type":"snapshot"}`)
+ * followed by one node object per entry
+ * (`{"name":…,"type":"file"|"dir","path":…,"size":…,"mtime":…,
+ *   "struct_type":"node"}`). We skip the leading snapshot object and
+ * map every node into `{path, type, size, mtime}`.
+ *
+ * NOTE on field names: verified against restic 0.18 `ls --json` output —
+ * `struct_type`, `name`, `type`, `path`, `size`, `mode`, `mtime`. The
+ * snapshot header is distinguished by `struct_type === 'snapshot'` (or,
+ * defensively, the ABSENCE of a `path`). Both checks are applied.
+ */
+export async function runResticLs(args: RunResticLsArgs): Promise<ResticLsNode[]> {
+  if (!SNAPSHOT_ID_RE.test(args.snapshotId)) {
+    throw new Error(`runResticLs: invalid snapshotId '${args.snapshotId}'`);
+  }
+  if (args.dir !== undefined) {
+    if (!LS_DIR_RE.test(args.dir) || args.dir.split('/').includes('..')) {
+      throw new Error(`runResticLs: invalid dir '${args.dir}'`);
+    }
+  }
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    if (args.readOnly ?? true) cliArgs.push('--no-lock');
+    cliArgs.push('ls', args.snapshotId);
+    if (args.dir !== undefined) cliArgs.push(args.dir);
+    cliArgs.push('--json');
+
+    const child = spawnRestic(cliArgs, env);
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    child.stdout.on('data', (c: Buffer) => {
+      stdoutBuf += c.toString('utf8');
+    });
+    child.stderr.on('data', (c: Buffer) => {
+      stderrBuf += c.toString('utf8');
+    });
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new Error(`restic ls exited ${code}: ${stderrBuf.trim()}`);
+    }
+    return parseResticLs(stdoutBuf);
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
+/**
+ * Parse `restic ls --json` NDJSON output into nodes. Skips the leading
+ * snapshot object (struct_type 'snapshot' or any line lacking a `path`).
+ * Exported for unit-testing without a repo.
+ */
+// `restic ls <snap> <dir>` recurses the WHOLE subtree under <dir>, so a
+// huge directory can emit millions of node lines. Cap the buffered set to
+// bound platform-api heap — far above any realistic site (the platform
+// targets 50–100 tenants with ordinary web/mail data), so a normal browse
+// never trips it; a pathological tree errors cleanly instead of OOMing.
+export const MAX_RESTIC_LS_NODES = 2_000_000;
+
+export function parseResticLs(stdout: string): ResticLsNode[] {
+  const out: ResticLsNode[] = [];
+  for (const line of stdout.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    let obj: Record<string, unknown>;
+    try {
+      obj = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    // Skip the leading snapshot header.
+    if (obj.struct_type === 'snapshot') continue;
+    const path = obj.path;
+    if (typeof path !== 'string' || path.length === 0) continue; // header / malformed
+    const type = obj.type === 'dir' ? 'dir' : obj.type === 'file' ? 'file' : null;
+    if (!type) continue; // skip symlinks / sockets / unknown node kinds
+    if (out.length >= MAX_RESTIC_LS_NODES) {
+      throw new Error(`restic ls: directory subtree exceeds ${MAX_RESTIC_LS_NODES} entries — too large to browse`);
+    }
+    out.push({
+      path,
+      type,
+      size: typeof obj.size === 'number' ? obj.size : Number(obj.size ?? 0) || 0,
+      mtime: typeof obj.mtime === 'string' ? obj.mtime : '',
+    });
+  }
+  return out;
+}
+
 // ─── Snapshot listing (Phase 1.5) ───────────────────────────────────────────
 
 export interface ResticSnapshotMeta {
@@ -1326,7 +1472,7 @@ export async function addResticKey(args: AddResticKeyArgs): Promise<void> {
  * a Socket with no error listener — and Node's default behaviour is
  * to crash the entire process.
  */
-async function ensureResticRepoInitialised(args: {
+export async function ensureResticRepoInitialised(args: {
   target: BackupTarget;
   passwordHex: string;
   repoUri: string;

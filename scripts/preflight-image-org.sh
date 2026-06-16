@@ -73,7 +73,7 @@ target_prefix="ghcr.io/${owner}"
 
 # The canonical org is hardcoded across the whole kustomize deploy surface —
 # overlays (the `images:` blocks) AND base manifests (sidecar/runtime images
-# like firewall-reconciler, mail-backup-tools, sftp-gateway, and the runtime
+# like firewall-reconciler, tenant-backup-tools, sftp-gateway, and the runtime
 # image refs the backend reads from platform-config). Repoint them all. Because
 # we only ever substitute the literal `ghcr.io/insulahq/insula/` prefix,
 # third-party ghcr images (cloudnative-pg, bulwarkmail, stakater, …) are never

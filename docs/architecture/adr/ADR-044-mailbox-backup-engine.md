@@ -94,12 +94,12 @@ A *separate* admin path bumps Stalwart's `x:Imap.maxConcurrent` transiently from
 |---|---|---|
 | Engine selector | `backend/src/modules/tenant-bundles/mailbox-backup-engine.ts` | `platform_settings.mailbox_backup_engine` ∈ {`imap`, `jmap`}; default `'imap'` since 2026-05-22 |
 | Admin UI | `frontend/admin-panel/src/components/mail-settings/MailboxBackupEngineSection.tsx` | `/settings/email` → Backup Engine tab |
-| Capture script | `images/mail-backup-tools/imap-sync.py` | Folder enumeration → FETCH 1:* BODY.PEEK[] → Maildir output |
-| Restore script | `images/mail-backup-tools/imap-restore.py` | `--workers N` (default 4) parallel pool; byte-budgeted MULTIAPPEND (REQUEST_CAP=100 MiB, LITERAL+ batch=80 MiB, MAX_BATCH=200) |
+| Capture script | `images/tenant-backup-tools/imap-sync.py` | Folder enumeration → FETCH 1:* BODY.PEEK[] → Maildir output |
+| Restore script | `images/tenant-backup-tools/imap-restore.py` | `--workers N` (default 4) parallel pool; byte-budgeted MULTIAPPEND (REQUEST_CAP=100 MiB, LITERAL+ batch=80 MiB, MAX_BATCH=200) |
 | Sidecar metadata | `.imap-name` + `.keywords` | UTF-8 folder names + custom IMAP flags; mirrored to JMAP path 2026-05-22 |
 | Cluster gate | `backend/src/modules/tenant-bundles/cluster-concurrency.ts` (`mailbox-worker` slot) | Caps concurrent mailbox Jobs at 4 per cluster |
 | IMAP-concurrency elevator | `backend/src/modules/mail-admin/imap-concurrency.ts` | Idempotent `x:Imap/set maxConcurrent=64` on slot acquire; 5-min reverter on idle |
-| Legacy archive | `images/mail-backup-tools/legacy/jmap-sync.py` + `jmap-restore.py` | Kept on operator direction as don't-delete fallback |
+| Legacy archive | `images/tenant-backup-tools/legacy/jmap-sync.py` + `jmap-restore.py` | Kept on operator direction as don't-delete fallback |
 
 ---
 
