@@ -17,17 +17,14 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, HardDrive, Loader2, Trash2, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
+import type {
+  SupersededSystemPv,
+  ReleasedPvsResponse,
+  ReclaimReleasedPvResponse,
+} from '@insula/api-contracts';
 
-interface ReleasedPv {
-  readonly name: string;
-  readonly claimName: string;
-  readonly size: string;
-  readonly createdAt: string | null;
-  readonly storageClassName: string | null;
-}
-
-interface ListEnvelope { readonly data: { readonly pvs: ReadonlyArray<ReleasedPv> } }
-interface ReclaimEnvelope { readonly data: { readonly pvDeleted: boolean; readonly longhornVolumeDeleted: boolean } }
+interface ListEnvelope { readonly data: ReleasedPvsResponse }
+interface ReclaimEnvelope { readonly data: ReclaimReleasedPvResponse }
 
 const QUERY_KEY = ['postgres-restore', 'released-pvs'] as const;
 
@@ -91,7 +88,7 @@ export default function ReleasedSystemPvsCard() {
   );
 }
 
-function ReleasedPvRow({ pv }: { readonly pv: ReleasedPv }) {
+function ReleasedPvRow({ pv }: { readonly pv: SupersededSystemPv }) {
   const [showConfirm, setShowConfirm] = useState(false);
   return (
     <div className="flex items-center justify-between gap-3 py-2">
@@ -115,7 +112,7 @@ function ReleasedPvRow({ pv }: { readonly pv: ReleasedPv }) {
   );
 }
 
-function ReclaimModal({ pv, onClose }: { readonly pv: ReleasedPv; readonly onClose: () => void }) {
+function ReclaimModal({ pv, onClose }: { readonly pv: SupersededSystemPv; readonly onClose: () => void }) {
   const [typed, setTyped] = useState('');
   const reclaim = useReclaimReleasedPv();
   const [done, setDone] = useState(false);

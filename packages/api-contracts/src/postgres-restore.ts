@@ -100,3 +100,40 @@ export const pitrPrechecksResponseSchema = z.object({
   blockingError: z.string().nullable(),
 });
 export type PitrPrechecksResponse = z.infer<typeof pitrPrechecksResponseSchema>;
+
+// ─── Superseded Released system-db PVs (R17 item 3) ───────────────────────────
+//
+// Every PITR auto-promote leaves the previous `system-db` PV Released/Retain
+// (the last pre-restore copy of the platform DB). Its Longhorn replica keeps
+// pinning the full volume size of scheduling budget, so on a small node one
+// retained copy can fail the next PITR's budget preflight. These types back the
+// operator surface that lists + reclaims them (GET/POST
+// /admin/postgres-restore/released-pvs[/:name/reclaim]).
+
+export const supersededSystemPvSchema = z.object({
+  name: z.string(),
+  claimName: z.string(),
+  size: z.string(),
+  createdAt: z.string().nullable(),
+  storageClassName: z.string().nullable(),
+});
+export type SupersededSystemPv = z.infer<typeof supersededSystemPvSchema>;
+
+export const releasedPvsResponseSchema = z.object({
+  pvs: z.array(supersededSystemPvSchema),
+});
+export type ReleasedPvsResponse = z.infer<typeof releasedPvsResponseSchema>;
+
+// Type-to-confirm: the operator re-types the PV name. The strict
+// Released/`platform/system-db-*` filter is re-verified server-side at delete
+// time — this token is the deliberate-action gate, not the authorization.
+export const reclaimReleasedPvRequestSchema = z.object({
+  confirmName: z.string().min(1),
+});
+export type ReclaimReleasedPvRequest = z.infer<typeof reclaimReleasedPvRequestSchema>;
+
+export const reclaimReleasedPvResponseSchema = z.object({
+  pvDeleted: z.boolean(),
+  longhornVolumeDeleted: z.boolean(),
+});
+export type ReclaimReleasedPvResponse = z.infer<typeof reclaimReleasedPvResponseSchema>;
