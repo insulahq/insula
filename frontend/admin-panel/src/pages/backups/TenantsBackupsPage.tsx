@@ -125,9 +125,13 @@ function useTenantBundles(tenantFilter: string | null) {
 
 function useTenantActions(tenantTargetId: string | null) {
   const qc = useQueryClient();
-  const invalidate = () => {
+  const invalidate = (tenantId?: string) => {
     qc.invalidateQueries({ queryKey: ['admin', 'backups', 'tenants'] });
     qc.invalidateQueries({ queryKey: ['admin', 'tenant-bundles'] });
+    // Also refresh the per-tenant Longhorn snapshot cache shared with
+    // TenantSnapshotsPanel (TenantDetail → Snapshots tab), so it isn't
+    // stale after a create/delete triggered from this cross-tenant page.
+    if (tenantId) qc.invalidateQueries({ queryKey: ['admin-tenant-snapshots', tenantId] });
   };
 
   const snapshotNow = useMutation({
@@ -139,7 +143,7 @@ function useTenantActions(tenantTargetId: string | null) {
         method: 'POST',
         body: JSON.stringify({}),
       }),
-    onSuccess: invalidate,
+    onSuccess: (_d, tenantId) => invalidate(tenantId),
   });
 
   const bundleNow = useMutation<
@@ -166,13 +170,13 @@ function useTenantActions(tenantTargetId: string | null) {
         },
       );
     },
-    onSuccess: invalidate,
+    onSuccess: () => invalidate(),
   });
 
   const deleteSnapshot = useMutation({
     mutationFn: ({ tenantId, snapshotId }: { tenantId: string; snapshotId: string }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/snapshots/${snapshotId}`, { method: 'DELETE' }),
-    onSuccess: invalidate,
+    onSuccess: (_d, vars) => invalidate(vars.tenantId),
   });
 
   const createCart = useMutation({

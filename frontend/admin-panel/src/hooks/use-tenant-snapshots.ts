@@ -72,10 +72,12 @@ export function useRestoreTenantSnapshot(tenantId: string) {
 export function useTenantRestoreStatus(tenantId: string, operationId: string | null) {
   return useQuery({
     queryKey: ['admin-snapshot-restore', tenantId, operationId],
-    queryFn: () =>
-      apiFetch<{ data: SnapshotRestoreStatus }>(
+    queryFn: () => {
+      if (!operationId) throw new Error('operationId is required');
+      return apiFetch<{ data: SnapshotRestoreStatus }>(
         `/api/v1/tenants/${tenantId}/snapshots/restore-status/${operationId}`,
-      ),
+      );
+    },
     enabled: Boolean(tenantId && operationId),
     refetchInterval: (query) => {
       const st = query.state.data?.data?.state;

@@ -123,6 +123,7 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
         <button
           type="button"
           onClick={() => { setCreateOpen(true); setCreateError(null); setLabel(''); }}
+          disabled={createSnap.isPending}
           className="inline-flex items-center gap-2 rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
           data-testid="admin-create-snapshot"
         >
@@ -202,7 +203,7 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
                         )}
                         <button
                           type="button"
-                          onClick={() => setConfirmDelete(s)}
+                          onClick={() => { deleteSnap.reset(); setConfirmDelete(s); }}
                           className="inline-flex items-center gap-1 rounded-md border border-red-300 px-2 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:border-red-700 dark:text-red-300 dark:hover:bg-red-950"
                           data-testid={`admin-delete-snapshot-${s.id}`}
                         >
@@ -218,11 +219,11 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
         )}
       </div>
 
-      {compact && (allSnapshots.length > snapshots.length || onManageAll) && (
+      {compact && onManageAll && allSnapshots.length > 0 && (
         <button
           type="button"
           onClick={onManageAll}
-          className="inline-flex items-center gap-1 text-sm font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400"
+          className="inline-flex items-center gap-1 text-sm font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
           data-testid="admin-snapshots-manage-all"
         >
           Manage all snapshots ({allSnapshots.length}) <ArrowRight size={14} />

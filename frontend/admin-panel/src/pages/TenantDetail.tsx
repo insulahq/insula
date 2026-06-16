@@ -36,6 +36,7 @@ import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { useTenantMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
 import TenantSnapshotsPanel from '@/components/TenantSnapshotsPanel';
+import { useTenantSnapshots } from '@/hooks/use-tenant-snapshots';
 import {
   // useResizeTenant: still wired into ResourceLimitsCard so the
   // destructive-shrink confirmation can fire POST /storage/resize
@@ -86,6 +87,9 @@ export default function TenantDetail() {
   const emailDomainsQuery = useEmailDomains(id);
   const mailboxesQuery = useMailboxes(id);
   const subUsersQuery = useAdminSubUsers(id ?? null);
+  // Snapshot count for the tab badge. Shares the query cache (same key)
+  // with TenantSnapshotsPanel, so this adds no extra request.
+  const snapshotsQuery = useTenantSnapshots(id ?? '');
 
   const [provisioningOpen, setProvisioningOpen] = useState(false);
   // Op id surfaced when a status PATCH triggered a storage-lifecycle
@@ -251,6 +255,7 @@ export default function TenantDetail() {
   const backupCount = backupsQuery.data?.data.length ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
   const subUserCount = subUsersQuery.data?.data.length ?? 0;
+  const snapshotCount = snapshotsQuery.data?.data?.snapshots.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
@@ -259,7 +264,7 @@ export default function TenantDetail() {
     { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
-    { key: 'snapshots', label: 'Snapshots', count: 0 },
+    { key: 'snapshots', label: 'Snapshots', count: snapshotCount },
     { key: 'users', label: 'Users', count: subUserCount },
   ];
 
