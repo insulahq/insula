@@ -126,37 +126,41 @@ scripts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivit
 const manifestPath = path.join(work, 'host-migrations-manifest.json');
 fs.writeFileSync(manifestPath, JSON.stringify({ scripts }));
 assets['host-migrations/manifest.json'] = manifestPath;
-// DR component restores (R18 T2): embed the proven bash restore scripts so
-// `platform-ops dr restore-component <etcd|mail|postgres>` launches the exact
-// same logic as the standalone break-glass scripts (one source of truth). Each
-// MUST be self-contained (no `source scripts/lib/...`) — it's extracted to a
-// temp file and run alone. Fail the build loudly if one goes missing.
-const drRestores = ['restore-etcd-local.sh', 'restore-etcd-from-shim.sh', 'restore-mail-from-shim.sh', 'restore-postgres-from-shim.sh'];
-for (const f of drRestores) {
-  const p = path.join(repoRoot, 'scripts', f);
-  if (!fs.existsSync(p)) {
-    console.error(`build-platform-ops: DR restore script missing: scripts/${f}`);
-    process.exit(1);
-  }
-  assets[`dr/${f}`] = p;
+// DR component restores (R18 T2) + housekeeping (R18 T3): embed the proven bash
+// scripts so `platform-ops dr restore-component …` / the housekeeping subcommands
+// launch the EXACT same logic as the standalone break-glass scripts (one source
+// of truth). The embed list is DERIVED from the single-source manifest
+// backend/src/cli/platform-ops/embedded-scripts.ts — the SAME file the CLI's
+// typed dispatch references and the CI guard validates — so the three CANNOT
+// drift. Each script MUST be self-contained (no `source scripts/lib/...`): it's
+// extracted to a temp file and run alone. Fail the build loudly on any drift.
+const manifestTs = path.join(repoRoot, 'backend', 'src', 'cli', 'platform-ops', 'embedded-scripts.ts');
+const manifestSrc = fs.readFileSync(manifestTs, 'utf8');
+const manifestBody = manifestSrc.slice(manifestSrc.indexOf('EMBEDDED_SCRIPTS'));
+const embedEntries = [...manifestBody.matchAll(/^\s*'([^']+)':\s*'([^']+)'/gm)].map((m) => ({ key: m[1], file: m[2] }));
+if (embedEntries.length === 0) {
+  console.error(`build-platform-ops: parsed 0 entries from ${manifestTs} — EMBEDDED_SCRIPTS format changed?`);
+  process.exit(1);
 }
-// T3 housekeeping (R18): same embed-and-launch pattern — the proven scripts are
-// the single source of truth; the standalone scripts stay usable. Self-contained.
-const opsScripts = [
-  'cleanup-orphaned-namespaces.sh', 'upgrade-cnpg.sh', 'component-watch.sh',
-  'node-terminal-cleanup-stale-artifacts.sh', 'backup-target-key-rotate.sh',
-];
-for (const f of opsScripts) {
-  const p = path.join(repoRoot, 'scripts', f);
-  if (!fs.existsSync(p)) {
-    console.error(`build-platform-ops: housekeeping script missing: scripts/${f}`);
+let drCount = 0, opsCount = 0;
+for (const { key, file } of embedEntries) {
+  // The asset key is '<prefix>/<basename>' and the value is that basename in
+  // scripts/ — guard a typo'd manifest entry before trusting it.
+  if (key !== `dr/${file}` && key !== `ops/${file}`) {
+    console.error(`build-platform-ops: manifest key '${key}' must be 'dr/${file}' or 'ops/${file}'`);
     process.exit(1);
   }
-  assets[`ops/${f}`] = p;
+  const p = path.join(repoRoot, 'scripts', file);
+  if (!fs.existsSync(p)) {
+    console.error(`build-platform-ops: embedded script missing: scripts/${file} (manifest key '${key}')`);
+    process.exit(1);
+  }
+  assets[key] = p;
+  if (key.startsWith('dr/')) drCount++; else opsCount++;
 }
 const cfg = { main: bundle, output: blob, disableExperimentalSEAWarning: true, assets };
 fs.writeFileSync(path.join(work, 'sea-config.json'), JSON.stringify(cfg));
-console.error(`build-platform-ops: embedding ${scripts.length} host-migration + ${drRestores.length} DR restore + ${opsScripts.length} housekeeping script(s)`);
+console.error(`build-platform-ops: embedding ${scripts.length} host-migration + ${drCount} DR restore + ${opsCount} housekeeping script(s)`);
 NODEGEN
 node --experimental-sea-config "${work}/sea-config.json"
 

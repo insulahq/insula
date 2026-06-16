@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Deps } from './deps.js';
 import { dispatch } from './dispatch.js';
+import { EMBEDDED_SCRIPTS } from './embedded-scripts.js';
 
 function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: string[] } {
   const out: string[] = [];
@@ -408,5 +409,34 @@ describe('dispatch', () => {
     expect(runEmbeddedScript).toHaveBeenCalledWith('ops/backup-target-key-rotate.sh', ['--confirm']);
     expect(await dispatch(['backup'], deps)).toBe(2);
     expect(err.join('\n')).toMatch(/rotate-key/);
+  });
+
+  // Drift backstop: the set of asset keys the CLI actually LAUNCHES must equal
+  // the EMBEDDED_SCRIPTS manifest keys exactly — both directions. ⊆ proves the
+  // CLI never launches an un-embedded script (a runtime "asset missing"); ⊇
+  // proves every manifest entry is reachable (no dead embed bloating the
+  // binary). The CI guard ci-platform-ops-embed-check.sh asserts the same
+  // statically against the source; this asserts it through real dispatch.
+  it('dispatched embed keys ≡ EMBEDDED_SCRIPTS manifest (no un-embedded launch, no dead embed)', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ runEmbeddedScript });
+
+    // Exercise every embed-launching dispatch path once.
+    const invocations: readonly string[][] = [
+      ['dr', 'restore-component', 'etcd'],
+      ['dr', 'restore-component', 'etcd', '--local'],
+      ['dr', 'restore-component', 'mail'],
+      ['dr', 'restore-component', 'postgres'],
+      ['cluster', 'gc-namespaces'],
+      ['cluster', 'upgrade-cnpg'],
+      ['component-watch'],
+      ['node-terminal', 'gc'],
+      ['backup', 'rotate-key'],
+    ];
+    for (const argv of invocations) expect(await dispatch(argv, deps)).toBe(0);
+
+    const launched = new Set(runEmbeddedScript.mock.calls.map((c) => c[0] as string));
+    const manifest = new Set(Object.keys(EMBEDDED_SCRIPTS));
+    expect([...launched].sort()).toEqual([...manifest].sort());
   });
 });

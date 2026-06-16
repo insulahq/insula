@@ -17,6 +17,7 @@
  * Exit codes: 0 = success, 1 = runtime failure, 2 = usage error.
  */
 import type { Deps, DrBundleManifest, DrRescueRequest, DrRestoreRequest } from './deps.js';
+import type { EmbeddedScriptKey } from './embedded-scripts.js';
 import { scrubCreds } from './redact.js';
 import { drPreflight } from './dr-preflight.js';
 
@@ -278,15 +279,17 @@ async function rescueCommand(req: DrRescueRequest, json: boolean, deps: Deps): P
 // (scripts/restore-*-from-shim.sh) is embedded as a SEA asset and launched
 // verbatim — ONE source of truth, no TS re-port of complex/destructive CNPG/k3s
 // logic. The standalone scripts stay as break-glass. Args pass straight through.
-const DR_COMPONENT_ASSETS: Record<string, string> = {
+const DR_COMPONENT_ASSETS = {
   etcd: 'dr/restore-etcd-from-shim.sh',
   mail: 'dr/restore-mail-from-shim.sh',
   postgres: 'dr/restore-postgres-from-shim.sh',
-};
+} satisfies Record<string, EmbeddedScriptKey>;
+type DrComponent = keyof typeof DR_COMPONENT_ASSETS;
+const isDrComponent = (c: string): c is DrComponent => c in DR_COMPONENT_ASSETS;
 
 async function drRestoreComponent(args: string[], deps: Deps): Promise<number> {
   const [component, ...rest] = args;
-  if (!component || !(component in DR_COMPONENT_ASSETS)) {
+  if (!component || !isDrComponent(component)) {
     deps.err(`dr restore-component: expected one of etcd|mail|postgres, got ${component ? `'${component}'` : 'none'}`);
     deps.err('  e.g. platform-ops dr restore-component etcd --local         (Tier 0: local k3s snapshot, no network)');
     deps.err('       platform-ops dr restore-component etcd --offline --bundle <p> --age-key <k> --latest');
