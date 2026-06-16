@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Disaster-recovery break-glass: tiered etcd restore that works when the
+  cluster is DOWN (R20 follow-up).** The off-site etcd restore used to need
+  `kubectl` (to read the shim ClusterIP + creds) — but in a real etcd disaster
+  the kube-API is down, so the one restore you need most couldn't run. Now there
+  are three tiers, tried in order:
+  - **Tier 0** `restore-etcd-local.sh` (+ `platform-ops dr restore-component etcd
+    --local`) — restore from this node's local k3s snapshots; no network, no
+    kubectl, no shim. The first thing to try when the disk survived.
+  - **Tier 1** `restore-etcd-from-shim.sh --offline --bundle <secrets-*.tar.age>
+    --age-key <key>` — pulls the off-site snapshot DIRECTLY from the real
+    upstream S3, with no kubectl. It reads the decrypted `system` target from a
+    new `dr-system-target.json` carried inside the age-encrypted secrets bundle
+    (emitted by `/admin/system-backup/export-secrets-bundle` when a SYSTEM target
+    is bound). S3 upstreams; the credential travels via env, never argv.
+  - **Tier 1b** the existing kubectl→shim path (cluster up), unchanged.
+  - **`platform-ops dr preflight`** reports, per tier, whether each restore would
+    actually work — run it ahead of a disaster. Runbook:
+    [BACKUP_RCLONE_SHIM.md](docs/operations/BACKUP_RCLONE_SHIM.md#recover-etcd--tiered-break-glass).
 - **Per-file / per-folder restore from tenant backup bundles (#105).** The files
   component is now captured as a restic tree, so the restore cart can browse a
   bundle (`GET …/tenant-bundles/:id/browse/files/tree?path=` — lazy, one

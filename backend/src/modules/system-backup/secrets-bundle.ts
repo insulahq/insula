@@ -43,6 +43,10 @@ import {
   serializeDrInputs,
   serializeDrRows,
 } from './dr-sidecars.js';
+import {
+  buildDrSystemTargetDescriptor,
+  serializeDrSystemTarget,
+} from './dr-target-descriptor.js';
 import type { Database } from '../../db/index.js';
 
 export interface BundleManifestItem {
@@ -70,6 +74,11 @@ export type ExportSecretsBundleDeps = {
   readonly generator?: BundleManifest['generator'];
   /** Optional cluster hostname for forensics. */
   readonly clusterHostname?: string | null;
+  /** PLATFORM_ENCRYPTION_KEY — when present (with `db`), the bundle also
+   *  carries `dr-system-target.json`, the decrypted `system`-class upstream
+   *  target for the offline break-glass etcd restore. Omit and no
+   *  descriptor is emitted. */
+  readonly encryptionKey?: string;
 } & DrSidecarOpts;
 
 interface SecretYaml {
@@ -141,6 +150,8 @@ type DrSidecarOpts =
 export type BuildSecretsTarOpts = {
   readonly generator?: BundleManifest['generator'];
   readonly clusterHostname?: string | null;
+  /** PLATFORM_ENCRYPTION_KEY — gates `dr-system-target.json` emission. */
+  readonly encryptionKey?: string;
 } & DrSidecarOpts;
 
 export async function buildSecretsTar(
@@ -275,6 +286,23 @@ export async function buildSecretsTar(
     });
   }
 
+  // ─── DR break-glass descriptor (offline etcd restore) ──────────────
+  // `dr-system-target.json` carries the DECRYPTED system-class upstream
+  // target so a fresh node can restore etcd off-site with no live cluster
+  // (no shim, no kubectl). Gated on the encryption key; omitted when no
+  // system target is bound. Kept inside the age-encrypted tar only.
+  if (opts.db && opts.encryptionKey) {
+    const descriptor = await buildDrSystemTargetDescriptor(opts.db, opts.encryptionKey);
+    if (descriptor) {
+      const descBytes = serializeDrSystemTarget(descriptor);
+      await new Promise<void>((resolve, reject) => {
+        pack.entry({ name: 'dr-system-target.json', size: descBytes.length }, descBytes, (err?: Error | null) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+    }
+  }
+
   pack.finalize();
   await new Promise<void>((resolve) => { pack.on('end', () => resolve()); });
   return { tarBytes: Buffer.concat(chunks), manifest, manifestV2 };
@@ -356,12 +384,14 @@ export async function exportSecretsBundle(deps: ExportSecretsBundleDeps): Promis
     ? {
         generator: deps.generator,
         clusterHostname: deps.clusterHostname,
+        encryptionKey: deps.encryptionKey,
         db: deps.db,
         config: deps.config,
       }
     : {
         generator: deps.generator,
         clusterHostname: deps.clusterHostname,
+        encryptionKey: deps.encryptionKey,
       };
   const { tarBytes, manifest, manifestV2 } = await buildSecretsTar(deps.k8s, recipient, tarOpts);
   const encrypted = await ageEncrypt(tarBytes, recipient, deps.ageBinary);

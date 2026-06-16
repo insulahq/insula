@@ -339,7 +339,7 @@ export function renderShimConfig(
  * Slashes are stripped from operator-supplied paths to keep the final
  * path joiner predictable. Empty path → just the section root.
  */
-function upstreamRootPath(t: BackupTargetConfig): string {
+export function upstreamRootPath(t: BackupTargetConfig): string {
   switch (t.storageType) {
     case 's3': {
       if (!t.s3Bucket) throw new Error(`S3 target '${t.name}' missing bucket`);
