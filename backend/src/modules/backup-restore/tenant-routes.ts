@@ -58,8 +58,7 @@ import {
   filterConfigTableNames,
   validateRestoreItemForTenant,
 } from './tenant-restore-policy.js';
-import { snapshotTenant, rollbackToSnapshot } from '../storage-lifecycle/service.js';
-import { resolveSnapshotStore } from '../storage-lifecycle/snapshot-store.js';
+import { createSnapshot, restoreSnapshot, waitForSnapshotReady } from '../tenant-snapshots/service.js';
 import { runBundle } from '../tenant-bundles/orchestrator.js';
 import { resolveShimBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { resolveDirectStoreForBundle } from './shared.js';
@@ -440,13 +439,15 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       try {
         const k8s = (app as unknown as { k8s?: ReturnType<typeof createK8sClients> }).k8s
           ?? createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
-        const snapStore = await resolveSnapshotStore(app.db, app.config as Record<string, unknown>);
-        const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
-        const snap = await snapshotTenant(
-          { db: app.db, k8s, store: snapStore, platformNamespace },
+        // On-server Longhorn snapshot as the rollback safety net (in-place
+        // revertable), NOT the retired off-site tar snapshot. Wait for `ready`
+        // so it's a valid rollback target before the destructive restore runs.
+        const created = await createSnapshot(
+          { db: app.db, k8s },
           tenantId,
-          { kind: 'pre-restore', label: `tenant-restore-cart ${cartId}`, retentionDays: 7 },
+          { label: `pre-restore cart ${cartId}`, triggeredByUserId: request.user?.sub ?? null },
         );
+        const snap = await waitForSnapshotReady({ db: app.db, k8s }, tenantId, created.id);
         await app.db.update(restoreJobs)
           .set({ preRestoreSnapshotId: snap.id, updatedAt: new Date() })
           .where(eq(restoreJobs.id, cartId));
@@ -571,15 +572,14 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     try {
       const k8s = (app as unknown as { k8s?: ReturnType<typeof createK8sClients> }).k8s
         ?? createK8sClients((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
-      const snapStore = await resolveSnapshotStore(app.db, app.config as Record<string, unknown>);
-      const platformNamespace = ((app.config as Record<string, unknown>).PLATFORM_NAMESPACE as string | undefined) ?? 'platform';
-      const result = await rollbackToSnapshot(
-        { db: app.db, k8s, store: snapStore, platformNamespace },
+      // In-place Longhorn snapshotRevert to the pre-restore snapshot.
+      const result = await restoreSnapshot(
+        { db: app.db, k8s },
         tenantId,
         job.preRestoreSnapshotId,
         { triggeredByUserId },
       );
-      return success({ cartId, operationId: result.operationId, snapshotId: result.snapshotId });
+      return success({ cartId, operationId: result.operationId, snapshotId: job.preRestoreSnapshotId });
     } catch (err) {
       throw new ApiError('ROLLBACK_FAILED', `Rollback dispatch failed: ${(err as Error).message}`, 500);
     }

@@ -32,7 +32,7 @@ const SNAPSHOT_CLASS = 'longhorn';
  *  time; this bounds a burst. */
 const MAX_SNAPSHOTS_PER_TENANT = 20;
 
-interface Deps {
+export interface Deps {
   readonly db: Database;
   readonly k8s: K8sClients;
 }
@@ -255,6 +255,48 @@ export async function listSnapshots(
 
   const snapshots = rows.map((r) => toApi(updates.has(r.id) ? { ...r, ...updates.get(r.id)! } : r));
   return { snapshots, expiryHours: settings.snapshotExpiryHours };
+}
+
+/**
+ * Poll until a snapshot reaches `ready` (Longhorn CSI flips in a few seconds).
+ * Reuses {@link listSnapshots} so the live VolumeSnapshot status is reconciled
+ * into the DB on each tick. Throws on `error`, on the row vanishing, or on
+ * timeout. Used by the restore-cart pre-restore safety snapshot, which must be
+ * a valid rollback target BEFORE the destructive restore proceeds.
+ */
+export async function waitForSnapshotReady(
+  deps: Deps,
+  tenantId: string,
+  snapshotId: string,
+  opts: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    /** Injectable list fn + clock for tests. Default to the real ones. */
+    list?: (deps: Deps, tenantId: string) => Promise<{ snapshots: TenantSnapshot[] }>;
+    now?: () => number;
+  } = {},
+): Promise<TenantSnapshot> {
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const intervalMs = opts.intervalMs ?? 3_000;
+  const list = opts.list ?? listSnapshots;
+  const now = opts.now ?? Date.now;
+  const start = now();
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { snapshots } = await list(deps, tenantId);
+    const snap = snapshots.find((s) => s.id === snapshotId);
+    if (!snap) {
+      throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} vanished while waiting for ready`, 404);
+    }
+    if (snap.status === 'ready') return snap;
+    if (snap.status === 'error') {
+      throw new ApiError('SNAPSHOT_FAILED', `Snapshot ${snapshotId} failed: ${snap.lastError ?? 'unknown'}`, 502);
+    }
+    if (now() - start > timeoutMs) {
+      throw new ApiError('SNAPSHOT_TIMEOUT', `Snapshot ${snapshotId} not ready after ${Math.round(timeoutMs / 1000)}s (status=${snap.status})`, 504);
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
 }
 
 /**
