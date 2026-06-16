@@ -1059,8 +1059,13 @@ sudo systemctl enable k3s
 # etcd operations
 sudo k3s etcd-snapshot save --name backup-name
 sudo k3s etcd-snapshot list
-sudo k3s etcd-snapshot restore --name snapshot-name
 sudo k3s etcd-snapshot delete --name snapshot-name
+# NOTE: k3s has NO `etcd-snapshot restore` subcommand (only save/list/delete).
+# Restore is a server-reset op — stop k3s, then:
+sudo k3s server --cluster-reset \
+  --cluster-reset-restore-path=/var/lib/rancher/k3s/server/db/snapshots/<snapshot>
+# In practice use the wrapper, which stops/starts k3s + verifies for you:
+sudo ./scripts/restore-etcd-local.sh --latest    # or: platform-ops dr restore-component etcd --local --latest
 
 # Node management
 kubectl get nodes

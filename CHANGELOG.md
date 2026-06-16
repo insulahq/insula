@@ -12,6 +12,38 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Offline etcd restore now works for every shim upstream protocol — S3,
+  SFTP, and CIFS/SMB** (it was S3-only). `restore-etcd-from-shim.sh --offline`
+  renders a private per-run `rclone.conf` for the descriptor's `storageType`;
+  SFTP/SMB passwords are rclone-obscured and all credentials live in the 0600
+  conf, never on the command line. Proven against real Hetzner S3 / SFTP /
+  CIFS, including a destructive cluster-down recovery over CIFS.
+
+### Fixed
+- **The off-site etcd restore (`restore-etcd-from-shim.sh`, both online and
+  offline) called a nonexistent `k3s etcd-snapshot restore` subcommand** and
+  would have failed *after* downloading the snapshot — the worst time, mid
+  disaster. k3s has no such subcommand; restore is a server-reset op, so it now
+  runs `k3s server --cluster-reset --cluster-reset-restore-path=<snapshot>`
+  (matching the local Tier-0 path). Operator docs that referenced the
+  nonexistent command are corrected.
+- **The secrets-bundle export silently omitted `dr-system-target.json`** — the
+  descriptor the OFFLINE etcd restore reads — unless `PLATFORM_ENCRYPTION_KEY`
+  happened to be on `app.config`. It now falls back to `process.env`, so the
+  bundle always carries the descriptor when a SYSTEM target is bound.
+- **`platform-ops dr preflight`** only recognised S3 `endpoint =` lines when
+  checking that the off-site target is external, so it falsely warned on an
+  SFTP/SMB (`host =`) upstream. It now matches both.
+
+### Changed
+- **platform-ops' embedded break-glass scripts are single-sourced from one
+  manifest** (`backend/src/cli/platform-ops/embedded-scripts.ts`): the CLI
+  dispatch (typed), the binary build, and a new CI guard
+  (`ci-platform-ops-embed-check.sh`) all derive from it, so the signed binary,
+  the CLI, and the on-disk scripts cannot drift apart. Internal — no
+  operator-facing change.
+
 ## [2026.6.11] - 2026-06-16
 
 ### Added

@@ -2,8 +2,9 @@
 # restore-etcd-from-shim.sh — R-X11 restore tooling for SYSTEM.etcd.
 #
 # Pulls the newest (or operator-named) etcd snapshot from the
-# shim's `s3://system/etcd/<cluster_id>/` bucket and runs `k3s
-# etcd-snapshot restore` on the control-plane node.
+# shim's `s3://system/etcd/<cluster_id>/` bucket and restores it via
+# `k3s server --cluster-reset` on the control-plane node (k3s has no
+# `etcd-snapshot restore` subcommand — see the restore step below).
 #
 # CLUSTER-ID NAMESPACING (collision safety): etcd snapshots are
 # namespaced under the stable per-cluster `cluster_id` so that two
@@ -55,7 +56,7 @@
 #   0   success
 #   1   pre-flight failed
 #   2   rclone copy failed
-#   3   k3s etcd-snapshot restore failed
+#   3   k3s cluster-reset restore failed
 
 set -euo pipefail
 
@@ -119,7 +120,7 @@ rclone_up() {
 
 # ── Pre-flight ───────────────────────────────────────────────────────
 if [[ "$MODE" == "name" || "$MODE" == "latest" ]] && [[ "$DRY_RUN" -eq 0 && "$(id -u)" -ne 0 ]]; then
-  fail "Must run as root for k3s etcd-snapshot restore. Re-run with sudo."
+  fail "Must run as root for the k3s cluster-reset etcd restore. Re-run with sudo."
 fi
 if ! command -v rclone >/dev/null 2>&1; then
   fail "rclone CLI not installed. apt install rclone (or download from rclone.org)"
@@ -249,8 +250,8 @@ else
   fi
 
   # Resolve the shim's S3 endpoint to its ClusterIP, NOT the
-  # `.svc.cluster.local` DNS name. This script runs on a node HOST (k3s
-  # etcd-snapshot restore is a local operation), and the host does NOT resolve
+  # `.svc.cluster.local` DNS name. This script runs on a node HOST (the etcd
+  # restore via k3s cluster-reset is a local operation), and the host does NOT resolve
   # cluster DNS — that's pod-network only (and in a real etcd disaster CoreDNS is
   # down too — that's what --offline is for). The ClusterIP is kube-proxy-routed
   # and reachable from the host. Fall back to the DNS name only if the ClusterIP
