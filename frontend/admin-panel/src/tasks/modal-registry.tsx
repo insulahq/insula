@@ -34,6 +34,9 @@ const SpeedtestProgressModal = lazy(() => import('@/components/SpeedtestProgress
 // step-stream timeline pointed at the in-flight Job. Without this
 // the task's target was `type: 'route'` to the API path which 404'd.
 const PitrProgressModal = lazy(() => import('@/components/backups/PitrProgressModal'));
+// 2026-06-16: snapshot create enrolls a `storage.snapshot` task with a
+// `snapshot-create` modal target so the chip re-opens this progress modal.
+const SnapshotCreateProgressModal = lazy(() => import('@/components/SnapshotCreateProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -80,6 +83,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'pitr-progress': {
     Component: PitrProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'snapshot-create': {
+    Component: SnapshotCreateProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 
