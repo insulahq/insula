@@ -274,6 +274,14 @@ S3 upstreams only (SFTP/CIFS: use Tier 0 or the online path). The descriptor
 holds plaintext upstream creds — it exists only inside the age-encrypted bundle;
 the script streams it into memory and never writes it to disk.
 
+> **Precondition — the SYSTEM target MUST be an EXTERNAL S3 endpoint.** Offline
+> restore pulls *directly* from the upstream with no cluster, so an in-cluster
+> backup target (e.g. a `*.svc.cluster.local` MinIO, or a pod/cluster IP) is
+> unreachable from a fresh node and the offline tier cannot work — the backup
+> also died with the cluster. `platform-ops dr preflight` flags an in-cluster
+> endpoint. Point the SYSTEM target at a genuinely off-site S3 (Hetzner, AWS, an
+> external MinIO) for real DR.
+
 **Tier 1b — off-site, ONLINE via the shim (cluster is up).** The original path:
 it resolves the cluster_id-namespaced prefix from the live CronJob's
 `SHIM_PREFIX` and **refuses** an un-namespaced `etcd/` read:
