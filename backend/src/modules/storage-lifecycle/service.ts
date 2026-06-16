@@ -771,6 +771,21 @@ async function runResizeDestructive(
       ? `${newMib / 1024}Gi`
       : `${newMib}Mi`;
     await progress('replacing', 40, `Recreating PVC at ${newSizeStr}`);
+    // Preserve the tenant's storage class across the recreate. The PVC was
+    // provisioned with selectTenantStorageClass() (`longhorn-tenant`, which
+    // ships replicas=1 for LOCAL); recreating with the platform DEFAULT class
+    // (`longhorn`, replicas=3) silently re-tiered a LOCAL tenant to 3 replicas.
+    // Read the live PVC's storageClassName BEFORE deleting it; fall back to the
+    // tenant-class selector if the read fails.
+    const { selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
+    let storageClass = selectTenantStorageClass(namespace);
+    try {
+      const existing = await ctx.k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof ctx.k8s.core.readNamespacedPersistentVolumeClaim>[0]);
+      const sc = (existing as { spec?: { storageClassName?: string } } | undefined)?.spec?.storageClassName;
+      if (sc) storageClass = sc;
+    } catch (err) {
+      if (!is404(err)) throw err;
+    }
     // Delete old PVC (swallow 404 — the PVC may already be gone, e.g.
     // if a previous failed op's rollback dropped it).
     try {
@@ -782,8 +797,6 @@ async function runResizeDestructive(
     await waitForPvcGone(ctx.k8s, namespace, pvcName);
     // Recreate at MiB granularity so sub-GiB resizes (e.g. 2500 MiB)
     // survive — applyPVCMib picks the right k8s suffix (Mi vs Gi).
-    const { getDefaultStorageClass } = await import('../storage-settings/service.js');
-    const storageClass = await getDefaultStorageClass(ctx.db);
     await applyPVCMib(ctx.k8s, namespace, newMib, storageClass);
 
     await progress('restoring', 60, 'Restoring data from pre-resize bundle');
@@ -1640,9 +1653,12 @@ async function runRestoreArchive(
         409,
       );
     }
-    const { applyPVC } = await import('../k8s-provisioner/service.js');
-    const { getDefaultStorageClass } = await import('../storage-settings/service.js');
-    const storageClass = await getDefaultStorageClass(ctx.db);
+    // Recreate on the TENANT storage class (`longhorn-tenant`, replicas=1 for
+    // LOCAL), not the platform default (`longhorn`, replicas=3) — the original
+    // PVC was deleted at archive time, so there's nothing to read back; map
+    // from the namespace the same way provisioning does.
+    const { applyPVC, selectTenantStorageClass } = await import('../k8s-provisioner/service.js');
+    const storageClass = selectTenantStorageClass(namespace);
     await applyPVC(ctx.k8s, namespace, String(newGi), storageClass);
     await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 

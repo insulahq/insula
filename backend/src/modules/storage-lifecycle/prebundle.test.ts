@@ -11,10 +11,12 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
  *
  *   1. label `platform.io/component: restore-files` — the label the shim
  *      NetworkPolicy admits for the restore Job.
- *   2. restic-NATIVE restore (`restic restore <snap> --target /restore-tmp`,
- *      then `cp -a /restore-tmp/source/. /source/`), NOT the old
- *      `restic dump | tar x` stream — the files bundle is restic-native since
- *      #105 (each file a node, no single /archive.tar blob).
+ *   2. restic-NATIVE restore restored DIRECTLY into the PVC
+ *      (`restic restore <snap> --target /`), NOT the old `restic dump | tar x`
+ *      stream and NOT staged through a node-ephemeral `/restore-tmp` emptyDir +
+ *      `cp` (that ENOSPC'd the worker root disk on multi-GiB tenants — the
+ *      restore Job runs where the RWO PVC attaches, so it can't pick a roomier
+ *      node). The files bundle is restic-native since #105.
  *   3. the target PVC is mounted RW at /source (the capture root), and the
  *      per-Job creds Secret is mounted read-only.
  */
@@ -53,13 +55,18 @@ describe('buildResticRestoreJobSpec', () => {
     expect(vol?.persistentVolumeClaim?.claimName).toBe('tenant-abc-storage');
     const creds = spec.spec.template.spec.volumes.find((v) => v.name === 'restic-creds');
     expect(creds?.secret?.secretName).toBe('rs-preresize-creds-bkp123');
-    expect(c.volumeMounts.find((m) => m.name === 'restore-tmp')).toBeTruthy();
+    // No node-ephemeral staging volume — restore writes straight to the PVC.
+    expect(c.volumeMounts.find((m) => m.name === 'restore-tmp')).toBeFalsy();
+    expect(spec.spec.template.spec.volumes.find((v) => v.name === 'restore-tmp')).toBeFalsy();
+    expect(c.volumeMounts.find((m) => m.name === 'scratch')).toBeTruthy();
   });
 
-  it('does a restic-native restore (restore --target + cp), NOT restic dump | tar', () => {
+  it('restores restic-native DIRECTLY into the PVC (--target /), NOT via /restore-tmp + cp', () => {
     const script = spec.spec.template.spec.containers[0].command.join('\n');
-    expect(script).toContain('restic -r "$REPO" restore a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --target /restore-tmp');
-    expect(script).toContain('cp -a /restore-tmp/source/. /source/');
+    expect(script).toContain('restic -r "$REPO" restore a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --target / --no-lock');
+    // The fix: no node-ephemeral /restore-tmp staging and no cp overlay.
+    expect(script).not.toContain('--target /restore-tmp');
+    expect(script).not.toContain('cp -a /restore-tmp');
     expect(script).not.toContain('restic dump');
     expect(script).not.toContain('tar xf');
     expect(script).not.toContain('/archive.tar');
