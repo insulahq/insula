@@ -16,7 +16,7 @@
 | Resume                    | Status dropdown → active                                       | PATCH /tenants/:id { status: 'active' }                     |
 | Archive (with retention)  | Status dropdown → archived (+ retention_days input)            | PATCH /tenants/:id { status: 'archived', archive_retention_days } |
 | Restore from archive      | Status dropdown → active (with confirm modal)                  | PATCH /tenants/:id { status: 'active' }                     |
-| Manual snapshot           | Storage Operations → "Take snapshot"                           | POST /admin/tenants/:id/storage/snapshot                    |
+| Manual snapshot           | Storage / Snapshots → "Take snapshot"                          | POST /tenants/:id/snapshots (on-server Longhorn CSI)        |
 | Reset stuck failed state  | Storage Operations → "Reset to idle" (visible only on failed)  | POST /admin/tenants/:id/storage/clear-failed                |
 | Hard delete               | Top-bar → Delete                                               | DELETE /tenants/:id                                         |
 
@@ -52,13 +52,20 @@ are still called by:
 | --------------------------------------------------- | ------------------------------------------------ |
 | POST /admin/tenants/:id/storage/resize/dry-run     | (none — used by ResizeStorageModal directly)     |
 | POST /admin/tenants/:id/storage/resize             | ResourceLimits shrink confirm                    |
-| POST /admin/tenants/:id/storage/snapshot           | Storage Operations card "Take snapshot"          |
 | POST /admin/tenants/:id/storage/suspend            | (script-only; status flip uses cascade path)     |
 | POST /admin/tenants/:id/storage/resume             | (script-only; status flip uses cascade path)     |
 | POST /admin/tenants/:id/storage/archive            | PATCH /tenants status:archived                   |
 | POST /admin/tenants/:id/storage/restore            | PATCH /tenants status:active (when archived)     |
 | POST /admin/tenants/:id/storage/clear-failed       | Storage Operations "Reset to idle" (failed only) |
 | GET  /admin/storage/operations/:opId               | OperationProgressModal poll                      |
+
+> **Manual snapshots moved off `/storage/*` (2026-06-16, #118).** The legacy tar
+> `POST /admin/tenants/:id/storage/snapshot` + `…/storage/rollback` endpoints were
+> removed. Tenant PVC snapshots are now on-server Longhorn CSI snapshots via
+> `POST/GET/DELETE /tenants/:id/snapshots` (the `tenant-snapshots` module); the
+> `GET /admin/tenants/:id/storage/snapshots` list + `DELETE
+> /admin/storage/snapshots/:id` routes remain for the restic `bundle:` rows
+> (pre-resize / pre-archive) still recorded in `storage_snapshots`.
 
 ## Status transitions and the orchestrators
 
