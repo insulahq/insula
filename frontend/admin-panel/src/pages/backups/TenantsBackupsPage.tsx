@@ -131,8 +131,11 @@ function useTenantActions(tenantTargetId: string | null) {
   };
 
   const snapshotNow = useMutation({
+    // Longhorn on-server snapshot (operator token is authorized for any
+    // tenant via the route's requireTenantAccess gate). Replaces the old
+    // off-site tar snapshot, whose backup target no longer exists.
     mutationFn: (tenantId: string) =>
-      apiFetch(`/api/v1/admin/tenants/${tenantId}/storage/snapshot`, {
+      apiFetch(`/api/v1/tenants/${tenantId}/snapshots`, {
         method: 'POST',
         body: JSON.stringify({}),
       }),
@@ -167,8 +170,8 @@ function useTenantActions(tenantTargetId: string | null) {
   });
 
   const deleteSnapshot = useMutation({
-    mutationFn: (snapshotId: string) =>
-      apiFetch(`/api/v1/admin/storage/snapshots/${snapshotId}`, { method: 'DELETE' }),
+    mutationFn: ({ tenantId, snapshotId }: { tenantId: string; snapshotId: string }) =>
+      apiFetch(`/api/v1/tenants/${tenantId}/snapshots/${snapshotId}`, { method: 'DELETE' }),
     onSuccess: invalidate,
   });
 
@@ -254,7 +257,7 @@ interface SnapshotsTabProps {
   readonly snapshotAll: () => void;
   readonly snapshotAllPending: boolean;
   readonly onSnapshot: (tenantId: string) => void;
-  readonly onDelete: (snapshotId: string) => void;
+  readonly onDelete: (row: TenantSnapshotRow) => void;
   readonly onRestore: (row: TenantSnapshotRow) => void;
   readonly deletePendingFor: string | null;
 }
@@ -347,7 +350,7 @@ function SnapshotsTab(p: SnapshotsTabProps) {
                           type="button"
                           onClick={() => {
                             if (window.confirm(`Delete snapshot "${r.label ?? r.id}"? This cannot be undone.`)) {
-                              p.onDelete(r.id);
+                              p.onDelete(r);
                             }
                           }}
                           disabled={delBusy}
@@ -669,9 +672,9 @@ export default function TenantsBackupsPage() {
         onError: (e) => setError(`Bundle failed: ${e instanceof Error ? e.message : String(e)}`),
       });
     },
-    onDelete: (snapshotId: string) => {
+    onDelete: (row: TenantSnapshotRow) => {
       setError(null);
-      deleteSnapshot.mutate(snapshotId, {
+      deleteSnapshot.mutate({ tenantId: row.tenantId, snapshotId: row.id }, {
         onError: (e) => setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`),
       });
     },
@@ -735,7 +738,7 @@ export default function TenantsBackupsPage() {
               onSnapshot={handlers.onSnapshot}
               onDelete={handlers.onDelete}
               onRestore={handlers.onRestoreSnap}
-              deletePendingFor={deleteSnapshot.isPending ? (deleteSnapshot.variables ?? null) : null}
+              deletePendingFor={deleteSnapshot.isPending ? (deleteSnapshot.variables?.snapshotId ?? null) : null}
             />
           </div>
         }
@@ -767,9 +770,11 @@ export default function TenantsBackupsPage() {
           artifact={buildSnapArtifact(wizardSnap)}
           onClose={() => setWizardSnap(null)}
           onSubmit={async () => {
+            // Longhorn in-place revert (snapshotRevert). Operator token is
+            // authorized for any tenant via requireTenantAccess.
             const r = await apiFetch<{ data: { operationId: string } }>(
-              `/api/v1/admin/tenants/${wizardSnap.tenantId}/storage/rollback`,
-              { method: 'POST', body: JSON.stringify({ snapshotId: wizardSnap.id }) },
+              `/api/v1/tenants/${wizardSnap.tenantId}/snapshots/${wizardSnap.id}/restore`,
+              { method: 'POST' },
             );
             return { taskId: r.data.operationId };
           }}

@@ -35,8 +35,8 @@ import SortableHeader from '@/components/ui/SortableHeader';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { useTenantMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
+import TenantSnapshotsPanel from '@/components/TenantSnapshotsPanel';
 import {
-  useCreateSnapshot,
   // useResizeTenant: still wired into ResourceLimitsCard so the
   // destructive-shrink confirmation can fire POST /storage/resize
   // when the operator confirms the dialog. Suspend/Resume/Archive/
@@ -55,7 +55,7 @@ import {
 import { useTableSearch } from '@/hooks/use-table-search';
 import ErrorPanel from '@/components/ErrorPanel';
 
-type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'users';
+type TabKey = 'domains' | 'applications' | 'deployments' | 'files' | 'email' | 'backups' | 'snapshots' | 'users';
 
 export default function TenantDetail() {
   const { id } = useParams<{ id: string }>();
@@ -259,6 +259,7 @@ export default function TenantDetail() {
     { key: 'files', label: 'Files', count: 0 },
     { key: 'email', label: 'Email', count: emailDomainCount },
     { key: 'backups', label: 'Backups', count: backupCount },
+    { key: 'snapshots', label: 'Snapshots', count: 0 },
     { key: 'users', label: 'Users', count: subUserCount },
   ];
 
@@ -556,7 +557,7 @@ export default function TenantDetail() {
 
       <NamespaceIntegrityBanner tenantId={id!} />
 
-      <StorageLifecycleCard tenantId={id!} tenant={tenant} />
+      <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
 
       <PlacementCard tenantId={id!} tenant={tenant} />
 
@@ -598,6 +599,7 @@ export default function TenantDetail() {
               <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />
             </div>
           )}
+          {activeTab === 'snapshots' && id && <TenantSnapshotsPanel tenantId={id} />}
           {activeTab === 'users' && id && <TenantUsersTab tenantId={id} />}
         </div>
       </div>
@@ -2396,7 +2398,7 @@ function DecommissionConfirmDialog({
   );
 }
 
-function StorageLifecycleCard({ tenantId, tenant }: { readonly tenantId: string; readonly tenant: { status?: string; storageLifecycleState?: string; storageLimitOverride?: string | null } }) {
+function StorageLifecycleCard({ tenantId, tenant, onManageSnapshots }: { readonly tenantId: string; readonly tenant: { status?: string; storageLifecycleState?: string; storageLimitOverride?: string | null }; readonly onManageSnapshots: () => void }) {
   // Storage Operations card (formerly "Storage Lifecycle"). After the
   // collapse, lifecycle transitions (suspend / resume / archive /
   // restore / resize) are driven from the tenant row itself: status
@@ -2413,7 +2415,6 @@ function StorageLifecycleCard({ tenantId, tenant }: { readonly tenantId: string;
   //     wants ad-hoc backups without a status flip)
   //   • Reset-to-idle (recovery valve when an op left state=failed)
   const opsQuery = useStorageOperations(tenantId);
-  const snapshot = useCreateSnapshot();
   const clearFailed = useClearFailedState();
   const cancelOp = useCancelStorageOperation();
 
@@ -2421,24 +2422,12 @@ function StorageLifecycleCard({ tenantId, tenant }: { readonly tenantId: string;
   const activeOp = ops.find((o) => o.state !== 'idle' && o.state !== 'failed' && !o.completedAt);
   const recentOp = ops[0];
   const lifecycleState = tenant.storageLifecycleState ?? 'idle';
-  const isBusy = lifecycleState !== 'idle' || !!activeOp || snapshot.isPending;
 
   const [trackedOpId, setTrackedOpId] = useState<string | null>(null);
   const [opError, setOpError] = useState<string | null>(null);
 
-  const trackOp = (operationId: string) => { setTrackedOpId(operationId); setOpError(null); };
   const surfaceError = (err: unknown) => {
     setOpError(err instanceof Error ? err.message : String(err));
-  };
-
-  const onSnapshot = async () => {
-    const label = prompt('Snapshot label (optional):', `Manual ${new Date().toISOString().slice(0, 16)}`);
-    if (label === null) return;
-    try {
-      const res = await snapshot.mutateAsync({ tenantId, label });
-      const opId = (res as { data?: { operationId?: string } })?.data?.operationId;
-      if (opId) trackOp(opId);
-    } catch (err) { surfaceError(err); }
   };
 
   return (
@@ -2570,15 +2559,11 @@ function StorageLifecycleCard({ tenantId, tenant }: { readonly tenantId: string;
         );
       })()}
 
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={onSnapshot}
-          disabled={isBusy}
-          className="rounded-md border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-50"
-          data-testid="lifecycle-snapshot-button"
-        >
-          Take snapshot
-        </button>
+      {/* On-server Longhorn snapshots quick view (full management on the
+          Snapshots tab). Replaces the old off-site tar snapshot button,
+          which routed to a backup target that no longer exists. */}
+      <div className="mt-4 border-t border-gray-100 dark:border-gray-700 pt-4">
+        <TenantSnapshotsPanel tenantId={tenantId} variant="compact" onManageAll={onManageSnapshots} />
       </div>
 
       {/* Inline error banner — shown when the snapshot op rejects synchronously. */}
