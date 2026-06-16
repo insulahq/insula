@@ -113,22 +113,30 @@ parse "$(api POST /auth/login "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN
 [[ "$STATUS" == "200" ]] || { fail "admin login: $STATUS $BODY"; exit 1; }
 ADMIN_TOKEN=$(printf '%s' "$BODY" | jq -r '.data.token // empty'); ok "admin login"
 
-parse "$(api GET "/tenants" "" "$ADMIN_TOKEN")"
-TENANT_ID=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="active" and .name!="SYSTEM") | .id' | head -1)
-[[ -n "$TENANT_ID" ]] || { fail "no active non-SYSTEM tenant"; exit 1; }
+# TENANT_ID can be pinned via env (recommended — this harness MUTATES the
+# tenant's /data and runs a backup/restore; point it at a throwaway tenant).
+# A pinned tenant may be in any state (e.g. a `pending` migration target).
+TENANT_ID="${TENANT_ID:-}"
+if [[ -z "$TENANT_ID" ]]; then
+  parse "$(api GET "/tenants" "" "$ADMIN_TOKEN")"
+  TENANT_ID=$(printf '%s' "$BODY" | jq -r '.data[] | select(.status=="active" and .name!="SYSTEM") | .id' | head -1)
+fi
+[[ -n "$TENANT_ID" ]] || { fail "no tenant (set TENANT_ID=... or have an active non-SYSTEM tenant)"; exit 1; }
 parse "$(api GET "/tenants/$TENANT_ID" "" "$ADMIN_TOKEN")"
 NS=$(printf '%s' "$BODY" | jq -r '.data.kubernetesNamespace'); ok "tenant $TENANT_ID ns=$NS"
 
-TU_EMAIL="files-e2e-$(date +%s)@example.test"; TU_PW="Files-E2E-$(date +%s)"
-parse "$(api POST "/tenants/$TENANT_ID/users" \
-  "{\"email\":\"$TU_EMAIL\",\"password\":\"$TU_PW\",\"full_name\":\"Files E2E\",\"role_name\":\"tenant_admin\"}" "$ADMIN_TOKEN")"
-TU_ID=$(printf '%s' "$BODY" | jq -r '.data.id // empty')
-[[ "$STATUS" == "201" || "$STATUS" == "200" ]] || { fail "tenant_admin: $STATUS $BODY"; exit 1; }
-cleanup() { [[ -n "${TU_ID:-}" ]] && api DELETE "/tenants/$TENANT_ID/users/$TU_ID" "" "$ADMIN_TOKEN" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# Use the tenant's EXISTING primary user via an admin password reset — the
+# starter plan caps sub-users at 1, so we can't always add a tenant_admin.
+parse "$(api GET "/tenants/$TENANT_ID/users" "" "$ADMIN_TOKEN")"
+TU_ID=$(printf '%s' "$BODY" | jq -r '.data[0].id // empty')
+TU_EMAIL=$(printf '%s' "$BODY" | jq -r '.data[0].email // empty')
+[[ -n "$TU_ID" && -n "$TU_EMAIL" ]] || { fail "no tenant user to use: $STATUS $BODY"; exit 1; }
+TU_PW="Files-E2E-$(date +%s)-x"
+parse "$(api POST "/tenants/$TENANT_ID/users/$TU_ID/reset-password" "{\"new_password\":\"$TU_PW\"}" "$ADMIN_TOKEN")"
+[[ "$STATUS" == "204" || "$STATUS" == "200" ]] || { fail "reset tenant user pw: $STATUS $BODY"; exit 1; }
 parse "$(api POST /auth/login "{\"email\":\"$TU_EMAIL\",\"password\":\"$TU_PW\",\"panel\":\"tenant\"}")"
 TENANT_TOKEN=$(printf '%s' "$BODY" | jq -r '.data.token // empty')
-[[ -n "$TENANT_TOKEN" ]] || { fail "tenant login: $STATUS $BODY"; exit 1; }; ok "tenant login"
+[[ -n "$TENANT_TOKEN" ]] || { fail "tenant login: $STATUS $BODY"; exit 1; }; ok "tenant login as $TU_EMAIL"
 
 # ── start file-manager + write the known tree ───────────────────────────
 log "start file-manager + seed file tree"
@@ -146,10 +154,18 @@ fm_exec 'mkdir -p /data/site/wp-content; printf ORIGINAL > /data/site/index.php;
 ok "seeded /data/site/index.php, /data/site/wp-content/keep.txt, /data/config.ini"
 
 # ── files backup ────────────────────────────────────────────────────────
-log "files backup (run-now)"
-parse "$(api POST "/tenants/$TENANT_ID/bundles/run-now" "{}" "$TENANT_TOKEN")"
-[[ "$STATUS" == "202" ]] || { fail "run-now: $STATUS $BODY"; exit 1; }
-BUNDLE_ID=$(printf '%s' "$BODY" | jq -r '.data.bundleId'); ok "bundle $BUNDLE_ID"
+# Pass BUNDLE_TARGET=<backup-config-id> to bundle via the admin path (resolves
+# the target with requireActive:false — needed when the tenant's assigned
+# target is inactive, e.g. after a cluster rebuild). Otherwise the tenant
+# run-now flow (which requires an active assigned target).
+log "files backup"
+if [[ -n "${BUNDLE_TARGET:-}" ]]; then
+  parse "$(api POST "/admin/tenant-bundles" "{\"tenantId\":\"$TENANT_ID\",\"targetConfigId\":\"$BUNDLE_TARGET\",\"async\":true}" "$ADMIN_TOKEN")"
+else
+  parse "$(api POST "/tenants/$TENANT_ID/bundles/run-now" "{}" "$TENANT_TOKEN")"
+fi
+[[ "$STATUS" == "202" || "$STATUS" == "201" ]] || { fail "bundle create: $STATUS $BODY"; exit 1; }
+BUNDLE_ID=$(printf '%s' "$BODY" | jq -r '.data.bundleId // .data.id'); ok "bundle $BUNDLE_ID"
 wait_bundle "$BUNDLE_ID" "$TENANT_ID" "$TENANT_TOKEN" 240
 if [[ "$BUNDLE_STATUS" == "completed" || "$BUNDLE_STATUS" == "partial" ]]; then
   ok "bundle terminal: $BUNDLE_STATUS"
