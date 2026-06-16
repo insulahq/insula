@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **platform-ops CLI E2E coverage in the staging suite.** Extended
+  `integration-platform-ops-cli-e2e.sh` to assert the read-only / idempotent R18
+  surface (`version`, `cluster doctor`, `backup key-status`, `backup target list`
+  + idempotent re-bind) and wired it into `integration-staging.sh` as a
+  `platform_ops` scenario (the destructive domain-rename leg stays opt-in).
+
 ## [2026.6.10] - 2026-06-15
 
 ### Added
@@ -47,7 +54,58 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [2026.6.9] - 2026-06-15
 
+> First production cut since 2026.6.8 (2026-06-09). It captures the accumulated
+> development-branch work from 2026-06-11 → 06-14 (continuously deployed to the
+> dev cluster) in addition to the 06-15 host-dependency changes below.
+
 ### Added
+- **Plesk migration service (R1, ADR-052, PRs #70–#89).** A new agentless
+  `plesk-migration` module: source registry + SSH discovery (keyfile *or*
+  password; discovery fails visibly with a classified reason), provision a
+  discovered subscription onto a new or existing sized tenant (capacity
+  preflight), and per-leg import of databases (per-tenant MariaDB via a dedicated
+  `migration-tools` image), website content (rsync onto `apache-php`, PVC sized
+  to the real docroot), mailboxes (IMAP MULTIAPPEND, `new/`→`cur/` reshape
+  preserves unread state), cron jobs, and primary-DNS zones. E2E-proven on
+  staging against a real Plesk Obsidian source.
+- **FBL complaint processing (R4, PRs #64–#69).** Feedback-loop ingestion via
+  Stalwart webhooks + `x:ArfExternalReport` — an `fbl@<apex>` SYSTEM mailbox + a
+  JMAP poller writing `email_fbl_complaints`, per-domain complaint-rate
+  thresholds, and notify/auto enforcement (one-click or automatic throttle +
+  outbound-mail suspension), surfaced in Monitoring → Mail. Runbook
+  [MAIL_FBL.md](docs/operations/MAIL_FBL.md).
+- **Rolling sending-quota enforcement (R6, PRs #64–#69).** Per-tenant plan-based
+  hourly/daily send limits via the Stalwart JMAP registry
+  (`x:MtaOutboundThrottle` + `x:MtaQueueQuota`, applied with `ReloadSettings`),
+  rolling per-hour send accounting (`email_send_counters` fed by send webhooks),
+  80/100 % usage notifications + UI, and a Sending-Protection control
+  (off / notify / auto). Replaced the dead static `[queue.throttle]` TOML.
+- **Monitoring SLO completion (R2, ADR-051, PRs #50–#63).** In-API SLO alert
+  evaluator + admin SLOs tab, SLO alerts routed through the categorised
+  notification sources, admin-host path routes for VMUI (`/metrics/`) + the
+  Longhorn UI (`/longhorn/`) with an HA-replicated metrics volume, and a
+  `platform_flux_unready_resources` readiness gauge replacing a Flux-failure rule
+  that could never fire.
+- **Per-plan maximum mailbox size.** Hosting plans carry `max_mailbox_size_mb`
+  (+ per-tenant override); new mailboxes default to it and over-max creation is
+  refused (`MAILBOX_QUOTA_EXCEEDS_LIMIT`). Plan codes/names aligned
+  (Starter/Premium/Ultimate).
+- **Tenant on-server volume snapshots (R19, PRs #90–#102).** A `tenant-panel`
+  Snapshots page (list / create / delete via Longhorn CSI) with a 48 h reaper +
+  admin expiry, plus **full-volume restore via in-place Longhorn
+  `snapshotRevert`** (shared `storage-lifecycle/longhorn-revert.ts`).
+- **Turnkey platform-apex rename (R16, 2026-06-13/14).** `platform_domain` split
+  from `ingress_base_domain` (migration 0066) + `getPlatformApex()`, and a `POST
+  /admin/platform-domain/rename` action + rename UI under which the admin/panel
+  IngressRoutes, LE certs, Stalwart web-admin, and the private-worker tunnel
+  anchor all follow the new apex (seed-then-disown); the tenant CNAME target is
+  unaffected.
+- **`platform-ops` operator-CLI — first tranches (R18 T1–T4).** `admin
+  reset-password`, `domain rename` (both in-pod — the native-dep graph isn't
+  SEA-safe), `dr restore-component <etcd|mail|postgres>` (embedded bash), and the
+  T3 housekeeping subcommands (`cluster gc-namespaces|upgrade-cnpg`,
+  `component-watch`, `node-terminal gc`, `backup rotate-key`). See 2026.6.10 for
+  the R18-finish convenience batch.
 - **`rclone` is now a host dependency on every node.** The DR restore scripts
   (`restore-{etcd,mail,postgres}-from-shim.sh`, `platform-ops dr
   restore-component`) run rclone on the host to pull a snapshot from the
@@ -77,6 +135,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   admin/backup JSON bodies) but only assumed present; a minimal base image
   failed `--allow-source` validation before `install_packages` ran. Added to
   `install_packages_{apt,dnf}` plus an `ensure_python3` early-bootstrap helper.
+- **Backups are namespaced by a stable `cluster_id`** (cross-cluster restore
+  safety). A generate-once `cluster_id` UUID (in `platform_settings`, not the
+  apex) prefixes the system/postgres, mail-restic, and etcd-snapshot backup paths
+  so two clusters sharing one bucket+prefix can't `--latest`-restore each other's
+  state. The static postgres ObjectStore + the etcd-snap CronJob are held with
+  `reconcile: disabled` (seed-then-disown) so the reconciler's `cluster_id` path
+  sticks against Flux. Tenant backups stay cluster-agnostic (migration-ready).
+
+### Fixed
+- **Per-mailbox Stalwart quota was never applied.** The JMAP patch used
+  `quota/storage` (an invalid patch in Stalwart 0.16) instead of
+  `quotas/maxDiskQuota` (bytes) — quotas never reached Stalwart on create *or*
+  update. Now set at creation; verified via `x:Account`.
+- **Destructive PVC shrink — five-bug chain (PRs #90–#95).** Quiesce now waits
+  only on pods mounting the target PVC (a stuck cert-manager solver no longer
+  times it out) and actually scales workloads to 0 (the scale-subresource was a
+  no-op); the pre-resize capture writes a files-only restic bundle through a
+  per-class S3 streaming store (the hostPath store was PodSecurity-blocked under
+  baseline PSA); tenant namespaces are labelled so the snapshot/backup Jobs can
+  reach the rclone shim; and the failed-op banner clears when the lifecycle rolls
+  back to idle.
+- **etcd off-box backup silently no-op'd (DR gap).** The etcd-snap CronJob ran on
+  a read-only rootfs with no writable `/tmp`, so every off-box upload wrote
+  nothing (0 copies). Added an `emptyDir` at `/tmp`; the etcd break-glass restore
+  also now resolves the rclone-shim ClusterIP instead of `.svc` DNS (unresolvable
+  from a bare node).
+- **`/backups/restore` cart crash + Tenant-Backups list 500.** The shared restore
+  cart pulled in a second copy of React in the panel image (`Cannot read null` in
+  `useState`) — fixed with Vite `resolve.dedupe`. Separately, the admin
+  Tenant-Backups list 500'd because `db.execute()` (node-postgres) returns
+  `{rows}`, not a bare array, and an `openCart` query referenced a stale enum.
 
 ## [2026.6.8] - 2026-06-09
 

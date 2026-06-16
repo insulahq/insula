@@ -12,12 +12,12 @@
 
 | # | Item | Priority | Status |
 |---|------|----------|--------|
-| [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Not started |
-| [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051) — logs deferred |
+| [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Shipped (PRs #70–#89) — E2E on staging; production cutover pending |
+| [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051, PRs #50–#63) — logs deferred |
 | [R3](#r3--load-testing-in-ci) | Load testing in CI | P2 | Framework exists, unwired |
-| [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Not started |
+| [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Shipped (PRs #64–#69) |
 | [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | Not started |
-| [R6](#r6--rolling-sending-quota-enforcement) | Rolling sending-quota enforcement | P2 | Partial (Stalwart throttles only) |
+| [R6](#r6--rolling-sending-quota-enforcement) | Rolling sending-quota enforcement | P2 | Shipped (PRs #64–#69) |
 | [R7](#r7--ip-warm-up-pools-and-per-domain-relay) | IP warm-up, pools, per-domain relay | P3 | Not started |
 | [R8](#r8--notification-channels-slack--webhook--sms) | Notification channels: Slack/Webhook/SMS | P3 | Email + in-app shipped |
 | [R9](#r9--staff-role-email-access) | Staff-role email access | P3 | Not started |
@@ -27,24 +27,44 @@
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
+| [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
+| [R17](#r17--mail-housekeeping-follow-ups-2026-06-10-single-node-green-up) | Mail/snapshot housekeeping follow-ups | P2 | Mostly shipped (PRs #22–#37) — Released-PV operator surface open |
+| [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
+| [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | Partial — file-level restore + shrink rclone-shim multipart open |
+| [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
 
 ---
 
 ## R1 — Plesk migration service
 
-The original mission gate ("first Plesk customer migrated", Phase-1 Week 12).
-Extract domains, sites, databases, mailboxes, cron jobs, and DNS from a Plesk
-server and import them as platform tenants. The existing `tenant-migration`
-module is worker re-pinning — unrelated.
+The original mission gate ("first Plesk customer migrated", Phase-1 Week 12):
+extract domains, sites, databases, mailboxes, cron jobs, and DNS from a Plesk
+server and import them as platform tenants. (The unrelated `tenant-migration`
+module is worker re-pinning.)
 
-- Spec material: the original migration plan (per-client checklist,
-  Plesk/cPanel/Virtualmin extraction details, rollback plan) — see the git
-  history; cron extraction details in the migration sections of
-  [CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
-- Building blocks already shipped: `mail-imapsync` (mailbox import), tenant
-  bundles restore cart (import path), DNS zone import.
-- Acceptance: one real Plesk subscription migrated end-to-end onto a test
-  cluster (site serves, mail flows, DB intact, cron firing).
+**Shipped 2026-06-13 (ADR-052, PRs #70–#89), E2E-proven on staging against a
+real Plesk Obsidian source.** An agentless `plesk-migration` module:
+- **Source registry + agentless discovery** (#70–#72, #87–#88) — SSH (keyfile
+  *or* password, `ssh-auth.ts`) into a Plesk box, parse its inventory; discovery
+  now fails *visibly* with a classified reason (auth / unreachable / not-Plesk).
+- **Provision a discovered subscription** (#73–#76) — tenant-first mapping onto a
+  new **or existing, sized** tenant + capacity preflight; accepts `provisioned`
+  (not only `active`) targets.
+- **DB leg** (#77–#78, #80) — import Plesk databases into a per-tenant MariaDB
+  (dedicated `migration-tools` image).
+- **Content leg** (#79–#81) — rsync docroots onto `apache-php`; exit 23/24
+  treated as success; PVC sized to the real docroot (the rsync-exit-11/ENOSPC
+  root cause, #89).
+- **Mail leg** (#82, #84–#85) — IMAP MULTIAPPEND import; `new/`→`cur/` reshape
+  preserves unread state; preflight no longer double-counts on retry.
+- **Cron leg** (#83) — Plesk scheduled tasks → platform cron jobs.
+- **DNS** (#89) — Plesk primary-DNS domains migrate as PRIMARY; tenant DNS-records
+  tab visible in CNAME mode.
+
+Acceptance (one real subscription end-to-end: site serves, mail flows incl.
+unread state, DB intact, cron firing) is **met on staging**; the remaining gate
+is the production cutover. Cron extraction details:
+[CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
 
 ## R2 — Monitoring stack decision + SLI/SLO
 
@@ -196,14 +216,18 @@ The in-cluster Trivy scanning UI stays deferred under [R11](#r11--security-harde
 
 ## R16 — Decouple INGRESS_DOMAIN from PLATFORM_DOMAIN + turnkey apex rename
 
-**PR-1 + PR-2 + PR-3-core shipped 2026-06-13, E2E-proven on testing** (renamed
+**PR-1 + PR-2 + PR-3 shipped 2026-06-13/14, E2E-proven on testing** (renamed
 the apex and back: panels + LE certs followed, served with a trusted cert,
 `ingress_base_domain` stayed put): `platform_domain` split (migration 0066) +
-`getPlatformApex()`, apex consumers repointed, and a `POST
-/admin/platform-domain/rename` action that moves the reconciler-driven surfaces.
-**Remaining:** the static-`${DOMAIN}` surfaces (stalwart web-admin UI +
-private-worker tunnel anchor → reconciler-driven), platform-apex DNS automation
-(§3e), a rename UI, and the cross-cutting bootstrap/script/integration items.
+`getPlatformApex()`, apex consumers repointed, a `POST
+/admin/platform-domain/rename` action + **rename UI** that moves the
+reconciler-driven surfaces, and (3rd pass, 2026-06-14, E2E 15/15) the
+static-`${DOMAIN}` **stalwart web-admin UI + private-worker tunnel anchor** now
+follow the rename via **seed-then-disown** (`reconcile: disabled` + platform-api
+owns the Host/cert; shared `traefik-host-reconcile.ts`).
+**Remaining:** platform-apex DNS automation (§3e), the **live per-worker tunnel
+subdomains** (env-driven, disruptive to flip), and the cross-cutting
+bootstrap/script/integration items.
 
 Scoped 2026-06-08 (planning) — see
 [INGRESS_PLATFORM_DOMAIN_DECOUPLE.md](INGRESS_PLATFORM_DOMAIN_DECOUPLE.md). Split
@@ -275,9 +299,25 @@ Three small items deferred from the 2026-06-10 integration green-up
 
 ## R18 — Operator-script consolidation into the `platform-ops` CLI
 
-**Planning 2026-06-14** — see
-[PLATFORM_OPS_CLI_CONSOLIDATION.md](PLATFORM_OPS_CLI_CONSOLIDATION.md). `scripts/`
-has ~177 shell scripts; ~25 are genuine on-node operator actions
+**Shipped 2026-06-14/15 (released v2026.6.10)** — plan + scope in
+[PLATFORM_OPS_CLI_CONSOLIDATION.md](PLATFORM_OPS_CLI_CONSOLIDATION.md). All four
+tranches landed: **T1** `admin reset-password` + `domain rename` (in-pod, the
+native-dep graph isn't SEA-safe), **T2** `dr restore-component <etcd|mail|postgres>`
+via embedded bash + the keep-vs-retire decisions, **T3** housekeeping
+(`cluster gc-namespaces|upgrade-cnpg`, `component-watch`, `node-terminal gc`,
+`backup rotate-key`), **T4** one-shot archival. The **R18-finish** convenience
+batch added `cluster doctor`, `backup target` CRUD + bindings, `backup
+key-status`, `mail rotate-master-password`, and folded on-node firewall posture
+into `cluster diagnostics`; the E2E harness
+(`integration-platform-ops-cli-e2e.sh`) is wired into `integration-staging.sh`.
+Two enablers shipped alongside: **host-migrations default to `enforce`** + rclone
+as a host dep (v2026.6.9), and a **scoped worker kubeconfig** so host-config runs
+on worker nodes. **Residual:** the `ci-operator-script-placement` guard is
+deferred; secrets fetch/restore deliberately stay `make` (workstation→remote
+context); `mail rotate-admin-password` (the richer Stalwart admin rotation) stays
+UI for now. Original scope below.
+
+`scripts/` has ~177 shell scripts; ~25 are genuine on-node operator actions
 (`admin-password-reset.sh`, `backup-target-key-rotate.sh`, the R16
 `platform-domain rename` which is still API-only, …) that each re-implement
 cluster plumbing (CNPG-primary resolution, bcrypt-in-pod, kubeconfig) in bash —
@@ -294,3 +334,44 @@ T4 archive one-shot migrations. Adds an always-run `ci-operator-script-placement
 guard so new operator actions land as subcommands, not new bash. Open decisions:
 secrets-fetch/restore (workstation→remote context) and delete-vs-archive for
 one-shots — both in the plan doc §7.
+
+## R19 — Tenant on-server snapshots + storage-resize hardening
+
+**Mostly shipped 2026-06-14/15 (PRs #90–#102)** — on-server tenant volume
+snapshots via Longhorn CSI (`tenant-panel` Snapshots page: list / create / delete,
+48h reaper + admin expiry), and **full-volume restore via in-place Longhorn
+`snapshotRevert`** (shared `storage-lifecycle/longhorn-revert.ts`:
+maintenance-attach → revert → no PVC delete; the dataSource-clone approach was
+abandoned — it stalled `copy-completed-awaiting-healthy` while detached).
+Destructive PVC **shrink** was hardened across a 5-bug chain (#90–#95): quiesce
+only waits on pods mounting the target PVC; quiesce actually scales workloads to
+0; pre-resize snapshot → files-only restic bundle through a per-class S3
+streaming store (PodSecurity-safe); tenant namespaces labelled so backup/snapshot
+Jobs reach the rclone shim.
+
+**Open:**
+- **Individual-file restore** — browse a snapshot and pull single files without
+  reverting the whole volume (likely restic, not a Longhorn clone).
+- **rclone-shim multipart > 1 GB** — `rclone serve s3` fails large multipart
+  uploads (`NoSuchUpload` ~chunk 68); mail works only because it's small. Blocks
+  large-PVC shrink/backup. Reproducible non-destructively via `POST
+  /storage/snapshot`.
+- Destructive-shrink rough edges: force-cancel can leave a tenant quiesced
+  (manual `kubectl scale` recovery); the snapshot Job can hang several minutes.
+
+## R20 — Cross-cluster tenant migration
+
+**Design captured, not built.** Tenant backups are already cluster-agnostic
+(keyed by `bundleId` UUID + `meta.json.tenantId`, no cluster in the path), and
+system/mail/etcd backup paths are now namespaced by a stable `cluster_id`
+(2026-06-14) — so the substrate for "export a tenant bundle from cluster A →
+import into cluster B" exists. The actual move feature (the export/import
+orchestration + cutover) is not yet implemented. R1 (Plesk inbound) and
+within-cluster restore exist; cluster-A→B does not.
+
+Related DR follow-up: **break-glass shim reachability**. The
+`restore-{etcd,mail,postgres}-from-shim.sh` paths assume a node-local `rclone`
+and reach the in-cluster shim; the etcd path resolves the shim ClusterIP rather
+than `.svc` DNS (fixed 2026-06-14), but in a real etcd disaster CoreDNS is down
+too, so an in-cluster shim may be unreachable — rethink the break-glass source
+(off-cluster mirror / ClusterIP pinning) before relying on it.
