@@ -39,13 +39,14 @@
 #   Reads the DECRYPTED `system` upstream target from the DR-bundle
 #   descriptor (dr-system-target.json, carried in the age-encrypted bundle
 #   that `platform-ops dr verify/restore` consumes) and pulls the etcd
-#   snapshot DIRECTLY from the real upstream S3:
+#   snapshot DIRECTLY from the real upstream (S3 / SFTP / CIFS):
 #     sudo ./scripts/restore-etcd-from-shim.sh --offline \
 #          --bundle <secrets-*.tar.age> --age-key <operator-private.key> --latest
 #     ./scripts/restore-etcd-from-shim.sh --offline --descriptor <dr-system-target.json> --list
 #   (--list / --dry-run need no root and make NO cluster contact — the
-#   way to prove break-glass works before a real disaster.) S3 upstreams
-#   only; SFTP/CIFS fall back to a local snapshot or the online path.
+#   way to prove break-glass works before a real disaster.) All shim-
+#   supported protocols work offline (S3, SFTP, CIFS/SMB) — rclone speaks
+#   them directly; creds go via a 0600 rendered rclone.conf, never argv.
 #   This breaks the etcd chicken-and-egg: the off-site copy no longer
 #   needs the kube-API that's down. Prefer restore-etcd-local.sh (Tier 0)
 #   first if this node's local k3s snapshots survived.
@@ -100,14 +101,20 @@ fi
 log() { printf '\033[34m[restore-etcd]\033[0m %s\n' "$1"; }
 fail() { printf '\033[31m[restore-etcd FAIL]\033[0m %s\n' "$1" >&2; exit 1; }
 
-# Run rclone with the S3 credentials injected via the ENVIRONMENT of the
-# rclone child only — never as argv flags (which leak through
-# /proc/<pid>/cmdline to any process on the host). ACCESS_KEY/SECRET_KEY are
-# set by whichever mode-branch ran below; RCLONE_FLAGS carries only the
-# non-sensitive options. (Security review HIGH-1.)
-rclone_s3() {
-  env RCLONE_S3_ACCESS_KEY_ID="$ACCESS_KEY" RCLONE_S3_SECRET_ACCESS_KEY="$SECRET_KEY" \
-    rclone "${RCLONE_FLAGS[@]}" "$@"
+# Unified rclone invocation — credentials NEVER on argv (they leak via
+# /proc/<pid>/cmdline; security review HIGH-1):
+#  - OFFLINE: a rendered 0600 rclone.conf ($RCLONE_CONF) carries the upstream
+#    section (s3 / sftp / smb). Creds live only in that file (chmod 600,
+#    shredded on exit). The remote is always `upstream:`.
+#  - ONLINE: the shim is always S3 — creds go via the rclone S3 env vars,
+#    non-sensitive options in RCLONE_FLAGS. The remote is always `:s3:`.
+rclone_up() {
+  if [[ -n "${RCLONE_CONF:-}" ]]; then
+    rclone --config "$RCLONE_CONF" "$@"
+  else
+    env RCLONE_S3_ACCESS_KEY_ID="$ACCESS_KEY" RCLONE_S3_SECRET_ACCESS_KEY="$SECRET_KEY" \
+      rclone "${RCLONE_FLAGS[@]}" "$@"
+  fi
 }
 
 # ── Pre-flight ───────────────────────────────────────────────────────
@@ -118,11 +125,13 @@ if ! command -v rclone >/dev/null 2>&1; then
   fail "rclone CLI not installed. apt install rclone (or download from rclone.org)"
 fi
 
-# `S3_ROOT` is the bucket/key root the snapshots live under, addressed via
-# `:s3:$S3_ROOT/`. RCLONE_FLAGS carries the S3 connection. Both are set by
-# exactly one of the two branches below.
+# `REMOTE_BASE` is the full rclone remote+path prefix the snapshots live under
+# (`:s3:<bucket>/<key>` online, `upstream:<path>` offline). RCLONE_FLAGS (S3
+# online) / RCLONE_CONF (rendered, offline) carry the connection. Exactly one
+# branch below sets these.
 RCLONE_FLAGS=()
-S3_ROOT=""
+REMOTE_BASE=""
+RCLONE_CONF=""
 
 if [[ "$OFFLINE" -eq 1 ]]; then
   # ── OFFLINE break-glass: NO kubectl, NO shim ───────────────────────
@@ -166,41 +175,67 @@ if [[ "$OFFLINE" -eq 1 ]]; then
   field() { printf '%s' "$DESC_JSON" | FIELD="$1" python3 -c "import json,os,sys;d=json.load(sys.stdin);print(d.get(os.environ['FIELD'],'') or '')" 2>/dev/null || true; }
   STORAGE_TYPE=$(field storageType)
   ETCD_KEY_PREFIX=$(field etcdKeyPrefix)
-  [[ "$STORAGE_TYPE" == "s3" ]] || fail "Offline restore currently supports S3 upstreams only (descriptor storageType='$STORAGE_TYPE'). For SFTP/CIFS, restore from a local snapshot (restore-etcd-local.sh) or via the in-cluster shim once the cluster is up."
-  S3_ENDPOINT=$(field s3Endpoint)
-  S3_REGION=$(field s3Region)
-  S3_BUCKET=$(field s3Bucket)
-  ACCESS_KEY=$(field s3AccessKey)
-  SECRET_KEY=$(field s3SecretKey)
-  PATH_STYLE=$(field s3UsePathStyle)
-  [[ -n "$S3_ENDPOINT" && -n "$S3_BUCKET" && -n "$ACCESS_KEY" && -n "$SECRET_KEY" && -n "$ETCD_KEY_PREFIX" ]] \
-    || fail "Descriptor missing required S3 fields (endpoint/bucket/accessKey/secretKey/etcdKeyPrefix)."
+  [[ -n "$STORAGE_TYPE" && -n "$ETCD_KEY_PREFIX" ]] || fail "Descriptor missing storageType/etcdKeyPrefix."
   # Guard (mirror the online guard): the resolved key prefix MUST be
-  # cluster_id-namespaced under system/etcd — never a bare/shared path.
-  # Accept both `system/etcd/<id>` (bucket-root target, no operator prefix)
-  # and `<prefix>/system/etcd/<id>`; require a NON-empty cluster-id segment.
+  # cluster_id-namespaced under system/etcd — never a bare/shared path. Accept
+  # both `system/etcd/<id>` (root, no operator prefix) and `<prefix>/system/etcd/<id>`.
   case "$ETCD_KEY_PREFIX" in
     system/etcd/?* | */system/etcd/?*) : ;;
     *) fail "Refusing to restore from a non-namespaced etcd key prefix '$ETCD_KEY_PREFIX' (expected '[<prefix>/]system/etcd/<cluster_id>')." ;;
   esac
-  # The individual creds are now in ACCESS_KEY/SECRET_KEY; drop the full JSON
-  # blob from memory so it doesn't linger for the script's lifetime. (MEDIUM-3.)
-  unset DESC_JSON
 
-  # Credentials go via env (rclone_s3), NOT argv — see HIGH-1 above.
-  RCLONE_FLAGS=(
-    --s3-provider=Other
-    --s3-endpoint="$S3_ENDPOINT"
-    --s3-region="${S3_REGION:-auto}"
-    --s3-no-check-bucket
-  )
-  # Honour the descriptor's path-style (real upstreams vary: Hetzner is
-  # path-style, AWS virtual-hosted). The shim path always forced it.
-  if [[ "$PATH_STYLE" == "True" || "$PATH_STYLE" == "true" || -z "$PATH_STYLE" ]]; then
-    RCLONE_FLAGS+=(--s3-force-path-style)
-  fi
-  S3_ROOT="$S3_BUCKET/$ETCD_KEY_PREFIX"
-  log "OFFLINE mode — reading directly from the upstream S3 (no cluster): :s3:$S3_ROOT/"
+  # Render a 0600 rclone.conf for the upstream protocol — creds live ONLY in
+  # this file (never argv/env; HIGH-1), shredded on exit. UP_PATH is the path
+  # UNDER the remote where this cluster's etcd snapshots live.
+  RCLONE_CONF=$(mktemp "${TMPDIR:-/dev/shm}/restore-etcd-rclone.XXXXXX"); chmod 600 "$RCLONE_CONF"
+  SFTP_KEY_FILE=""
+  trap 'rm -f "${AGE_ERR:-}" "$RCLONE_CONF" "${SFTP_KEY_FILE:-}" 2>/dev/null' EXIT
+  obscure() { rclone obscure "$1" 2>/dev/null; }   # SFTP/SMB require the obscured pass
+  UP_PATH=""
+  case "$STORAGE_TYPE" in
+    s3)
+      S3_ENDPOINT=$(field s3Endpoint); S3_REGION=$(field s3Region); S3_BUCKET=$(field s3Bucket)
+      AK=$(field s3AccessKey); SK=$(field s3SecretKey); PS=$(field s3UsePathStyle)
+      [[ -n "$S3_ENDPOINT" && -n "$S3_BUCKET" && -n "$AK" && -n "$SK" ]] \
+        || fail "Descriptor missing required S3 fields (endpoint/bucket/accessKey/secretKey)."
+      PSFLAG=true; [[ "$PS" == "False" || "$PS" == "false" ]] && PSFLAG=false
+      printf '[upstream]\ntype = s3\nprovider = Other\nendpoint = %s\nregion = %s\naccess_key_id = %s\nsecret_access_key = %s\nforce_path_style = %s\nno_check_bucket = true\n' \
+        "$S3_ENDPOINT" "${S3_REGION:-auto}" "$AK" "$SK" "$PSFLAG" > "$RCLONE_CONF"
+      UP_PATH="$S3_BUCKET/$ETCD_KEY_PREFIX"
+      ;;
+    ssh)
+      SH=$(field sshHost); SP=$(field sshPort); SU=$(field sshUser); SKEY=$(field sshKey); SPASS=$(field sshPassword)
+      [[ -n "$SH" && -n "$SU" ]] || fail "Descriptor missing required SFTP fields (host/user)."
+      printf '[upstream]\ntype = sftp\nhost = %s\nuser = %s\nport = %s\nshell_type = unix\n' \
+        "$SH" "$SU" "${SP:-22}" > "$RCLONE_CONF"
+      if [[ -n "$SKEY" ]]; then
+        SFTP_KEY_FILE=$(mktemp "${TMPDIR:-/dev/shm}/restore-etcd-sftpkey.XXXXXX"); chmod 600 "$SFTP_KEY_FILE"
+        printf '%s\n' "$SKEY" > "$SFTP_KEY_FILE"
+        printf 'key_file = %s\n' "$SFTP_KEY_FILE" >> "$RCLONE_CONF"
+      elif [[ -n "$SPASS" ]]; then
+        printf 'pass = %s\n' "$(obscure "$SPASS")" >> "$RCLONE_CONF"
+      else
+        fail "Descriptor SFTP target has neither sshKey nor sshPassword."
+      fi
+      UP_PATH="$ETCD_KEY_PREFIX"
+      ;;
+    cifs)
+      CH=$(field cifsHost); CP=$(field cifsPort); CS=$(field cifsShare)
+      CU=$(field cifsUser); CPW=$(field cifsPassword); CD=$(field cifsDomain)
+      [[ -n "$CH" && -n "$CS" && -n "$CU" && -n "$CPW" ]] \
+        || fail "Descriptor missing required CIFS fields (host/share/user/password)."
+      { printf '[upstream]\ntype = smb\nhost = %s\nuser = %s\npass = %s\nport = %s\n' \
+          "$CH" "$CU" "$(obscure "$CPW")" "${CP:-445}"; [[ -n "$CD" ]] && printf 'domain = %s\n' "$CD"; } > "$RCLONE_CONF"
+      UP_PATH="$CS/$ETCD_KEY_PREFIX"
+      ;;
+    *)
+      fail "Offline restore: unknown descriptor storageType '$STORAGE_TYPE' (expected s3 | ssh | cifs)."
+      ;;
+  esac
+  # The creds now live only in the rendered rclone.conf; drop the JSON blob. (MEDIUM-3)
+  unset DESC_JSON
+  REMOTE_BASE="upstream:$UP_PATH"
+  log "OFFLINE mode — reading DIRECTLY from the upstream ($STORAGE_TYPE), no cluster: $REMOTE_BASE/"
 else
   # ── ONLINE: kubectl → in-cluster shim (cluster is up) ──────────────
   # Resolve shim creds from the cluster Secret. We use kubectl to
@@ -229,7 +264,7 @@ else
   fi
   log "shim S3 endpoint: $SHIM_ENDPOINT"
 
-  # Credentials go via env (rclone_s3), NOT argv — see HIGH-1 above.
+  # Credentials go via env (rclone_up), NOT argv — see HIGH-1 above.
   RCLONE_FLAGS=(
     --s3-provider=Other
     --s3-endpoint="$SHIM_ENDPOINT"
@@ -266,13 +301,13 @@ else
   if [[ "$ETCD_PREFIX" == "etcd" || "$ETCD_PREFIX" != etcd/* ]]; then
     fail "Refusing to restore from un-namespaced prefix '$ETCD_PREFIX'. Expected 'etcd/<cluster_id>'. Pass --cluster-id <uuid> explicitly if you really mean to read a specific cluster's snapshots."
   fi
-  S3_ROOT="system/$ETCD_PREFIX"
+  REMOTE_BASE=":s3:system/$ETCD_PREFIX"
 fi
 
 # ── List ─────────────────────────────────────────────────────────────
 if [[ "$MODE" == "list" ]]; then
-  log "Available etcd snapshots in :s3:$S3_ROOT/:"
-  rclone_s3 lsf ":s3:$S3_ROOT/" \
+  log "Available etcd snapshots in $REMOTE_BASE/:"
+  rclone_up lsf "$REMOTE_BASE/" \
     | grep '\.db$' \
     | sort
   exit 0
@@ -280,17 +315,17 @@ fi
 
 # ── Resolve target snapshot ──────────────────────────────────────────
 if [[ "$MODE" == "latest" ]]; then
-  SNAP_NAME=$(rclone_s3 lsf ":s3:$S3_ROOT/" \
+  SNAP_NAME=$(rclone_up lsf "$REMOTE_BASE/" \
     | grep '\.db$' \
     | sort -r | head -1)
   if [[ -z "$SNAP_NAME" ]]; then
-    fail "No etcd snapshots found in :s3:$S3_ROOT/. Has the etcd-snap-via-shim CronJob run yet? Check kubectl -n platform get cronjob etcd-snap-via-shim"
+    fail "No etcd snapshots found in $REMOTE_BASE/. Has the etcd-snap-via-shim CronJob run yet? Check kubectl -n platform get cronjob etcd-snap-via-shim"
   fi
   log "Resolved --latest → $SNAP_NAME"
 fi
 
 DEST=/var/lib/rancher/k3s/server/db/snapshots/restore-from-shim-$(date -u +%Y%m%d-%H%M%S).db
-log "Will download :s3:$S3_ROOT/$SNAP_NAME → $DEST"
+log "Will download $REMOTE_BASE/$SNAP_NAME → $DEST"
 
 if [[ $DRY_RUN -eq 1 ]]; then
   log "DRY-RUN — skipping download + restore"
@@ -299,14 +334,14 @@ fi
 
 # ── Download ────────────────────────────────────────────────────────
 log "Downloading snapshot..."
-if ! rclone_s3 copyto ":s3:$S3_ROOT/$SNAP_NAME" "$DEST"; then
+if ! rclone_up copyto "$REMOTE_BASE/$SNAP_NAME" "$DEST"; then
   fail "rclone download failed"
 fi
 log "Downloaded $(du -h "$DEST" | cut -f1) to $DEST"
 
 # Optional: download + verify .meta sidecar
 META_DEST="$DEST.meta"
-if rclone_s3 copyto ":s3:$S3_ROOT/$SNAP_NAME.meta" "$META_DEST" 2>/dev/null; then
+if rclone_up copyto "$REMOTE_BASE/$SNAP_NAME.meta" "$META_DEST" 2>/dev/null; then
   log "Snapshot metadata: $(cat "$META_DEST")"
   EXPECTED_SHA=$(grep -oE '"sha256":"[a-f0-9]+"' "$META_DEST" | cut -d '"' -f 4 || true)
   if [[ -n "$EXPECTED_SHA" ]]; then

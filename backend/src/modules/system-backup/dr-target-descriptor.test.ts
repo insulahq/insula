@@ -92,4 +92,21 @@ describe('buildDrSystemTargetDescriptor', () => {
     expect(d!.sshHost).toBe('sftp.example.test');
     expect(d!.etcdKeyPrefix).toBe(`backups/system/etcd/${CID}`);
   });
+
+  it('CIFS: descriptor carries smb fields; share+etcdKeyPrefix matches the shim path', async () => {
+    const target: BackupTargetConfig = {
+      id: 't5', name: 'sys-cifs', storageType: 'cifs',
+      cifsHost: 'box.example.test', cifsPort: 445, cifsShare: 'share1',
+      cifsUser: 'u', cifsPassword: 'topsecret', cifsPath: '/etcdbk/',
+    };
+    mockAssignments([{ className: 'system', target }]);
+    const d = await buildDrSystemTargetDescriptor(fakeDb, 'enc');
+    expect(d!.storageType).toBe('cifs');
+    expect(d!.cifsShare).toBe('share1');
+    expect(d!.cifsPassword).toBe('topsecret'); // decrypted creds, the descriptor's purpose
+    expect(d!.etcdKeyPrefix).toBe(`etcdbk/system/etcd/${CID}`);
+    // Drift guard: the offline path `<share>/<etcdKeyPrefix>` MUST equal the
+    // shim's own CIFS layout `<root>/system/etcd/<id>`.
+    expect(`${d!.cifsShare}/${d!.etcdKeyPrefix}`).toBe(`${upstreamRootPath(target)}/system/etcd/${CID}`);
+  });
 });
