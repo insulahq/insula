@@ -14,15 +14,22 @@
 #   5. `platform-ops backup target list --json` + idempotent re-bind round-trip
 #        (re-bind assignments[0] to its own target; assert the binding is
 #        unchanged — a CLI bind must be idempotent).
-#   6. `platform-ops domain rename --to <apex>` (only when RENAME_TARGET is set)
+#   6. DR break-glass (R20), all non-destructive:
+#        `dr preflight --json` (≥5 tier checks; exit matches the fails contract),
+#        `dr restore-component etcd --local --list / --dry-run --latest` (Tier 0
+#        local k3s snapshot; resolves but never cluster-resets), and Tier 1: a
+#        secrets-bundle export must carry `dr-system-target.json` (decrypted
+#        on-node with the operator key) and `dr restore-component etcd --offline
+#        --descriptor <p> --list` must resolve it with KUBECTL=/bin/false.
+#   7. `platform-ops domain rename --to <apex>` (only when RENAME_TARGET is set)
 #      → execs the in-pod entrypoint (same renamePlatformDomain the API uses);
 #        we assert the platform IngressRoute hosts flip, the tenant CNAME target
 #        (ingress_base_domain) does NOT, then revert.
 #
-# 1/6 and 6 are thin host-side orchestrators that `kubectl exec` into the
-# platform-api pod (native-dep graph); 2–5 run in-binary on the node. Tests
-# 2–5 are read-only / idempotent and safe inside an orchestrated suite; the
-# destructive rename (6) is opt-in via RENAME_TARGET.
+# 1 and 7 are thin host-side orchestrators that `kubectl exec` into the
+# platform-api pod (native-dep graph); 2–6 run in-binary on the node. Tests
+# 2–6 are read-only / idempotent / non-destructive and safe inside an
+# orchestrated suite; the destructive rename (7) is opt-in via RENAME_TARGET.
 #
 # USAGE: set ADMIN_PASSWORD to the known admin password (restored after the
 # --random reset so orchestrated runs keep authenticating; omit it for a
@@ -134,6 +141,79 @@ if echo "$TL" | python3 -c "import json,sys;d=json.load(sys.stdin);assert d.get(
   fi
 else
   fail "backup target list --json malformed: ${TL:0:160}"
+fi
+
+# ─── DR break-glass (R20): tiered etcd restore ─────────────────────────────────
+# All non-destructive: preflight + Tier-0 list/dry-run + Tier-1 descriptor
+# delivery & offline path-resolution (NO real cluster-reset, NO real restore).
+log "── dr preflight --json ──"
+PF=$(on_node "dr preflight --json"); PRC=$?
+if echo "$PF" | python3 -c "import json,sys
+d=json.load(sys.stdin)
+assert isinstance(d.get('checks'),list) and len(d['checks'])>=5
+n=[c['name'] for c in d['checks']]
+assert any('Tier 0' in x for x in n) and any('Tier 1' in x for x in n)" 2>/dev/null; then
+  ok "dr preflight --json: $(echo "$PF" | python3 -c "import json,sys;d=json.load(sys.stdin);print(f\"{len(d['checks'])} checks, fails={d['fails']}, warns={d['warns']}\")" 2>/dev/null)"
+  EXP=$(echo "$PF" | python3 -c "import json,sys;print(1 if json.load(sys.stdin)['fails']>0 else 0)" 2>/dev/null)
+  [[ "$PRC" == "$EXP" ]] && ok "dr preflight exit ($PRC) matches the fails contract" || fail "preflight exit $PRC != expected $EXP"
+else
+  fail "dr preflight --json malformed: ${PF:0:200}"
+fi
+
+log "── dr restore-component etcd --local (Tier 0, non-destructive) ──"
+LL=$(on_node "dr restore-component etcd --local --list")
+echo "$LL" | grep -qE 'snapshot|none found|in /var/lib' \
+  && ok "etcd --local --list ran (Tier 0): $(echo "$LL" | grep -cE 'etcd-snapshot|e2e-|\.db') snapshot line(s)" \
+  || fail "etcd --local --list output unexpected: ${LL:0:160}"
+DD=$(on_node "dr restore-component etcd --local --dry-run --latest")
+echo "$DD" | grep -q 'cluster-reset' \
+  && ok "etcd --local --dry-run --latest resolves + would cluster-reset (NOT executed)" \
+  || fail "etcd --local --dry-run did not resolve: ${DD:0:160}"
+
+log "── Tier 1: secrets bundle carries dr-system-target.json + offline path resolves ──"
+DRTOK=$(login_token "$ADMIN_PASSWORD")
+if [[ -z "$DRTOK" ]]; then
+  skip "no admin token (ADMIN_PASSWORD unset?) — Tier 1 bundle/offline checks skipped"
+else
+  RUN_ID=$(curl -sk --max-time 30 -H "Authorization: Bearer $DRTOK" -H 'Content-Type: application/json' \
+    -X POST "$ADMIN_HOST/api/v1/system-backup/secrets/export" --data-binary '{}' \
+    | python3 -c "import sys,json;print((json.load(sys.stdin).get('data') or {}).get('runId','') or '')" 2>/dev/null)
+  DL_URL=""
+  if [[ -n "$RUN_ID" ]]; then
+    for _ in $(seq 1 30); do
+      RUN=$(curl -sk --max-time 20 -H "Authorization: Bearer $DRTOK" "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID")
+      ST=$(echo "$RUN" | python3 -c "import sys,json;print((json.load(sys.stdin).get('data') or {}).get('status','?'))" 2>/dev/null)
+      DL_URL=$(echo "$RUN" | python3 -c "import sys,json;print((json.load(sys.stdin).get('data') or {}).get('downloadUrl') or '')" 2>/dev/null)
+      { [[ "$ST" == "succeeded" && -n "$DL_URL" ]] || [[ "$ST" == "failed" ]]; } && break
+      sleep 2
+    done
+  fi
+  if [[ -z "$DL_URL" ]]; then
+    skip "secrets-bundle export produced no downloadUrl (operator recipient missing? export failed) — Tier 1 checks skipped"
+  else
+    # Download ONCE on the node (single-use token); decrypt with the on-node
+    # operator key. The plaintext bundle stays on the node and is removed.
+    AGEKEY=/var/lib/hosting-platform/operator-key/operator-private.key
+    ssh_q "curl -sk --max-time 120 '$DL_URL' -o /tmp/dr-e2e.age" >/dev/null 2>&1
+    MEMBERS=$(ssh_q "age -d -i $AGEKEY /tmp/dr-e2e.age 2>/dev/null | tar -t 2>/dev/null")
+    if echo "$MEMBERS" | grep -qx 'dr-system-target.json'; then
+      ok "exported secrets bundle carries dr-system-target.json (descriptor delivery, in-pod)"
+      # Prove the offline restore consumes it end-to-end with NO kubectl.
+      ssh_q "age -d -i $AGEKEY /tmp/dr-e2e.age 2>/dev/null | tar -xO dr-system-target.json > /dev/shm/dr-desc.json && chmod 600 /dev/shm/dr-desc.json"
+      OFF=$(ssh_q "KUBECTL=/bin/false $PLATFORM_OPS_BIN dr restore-component etcd --offline --descriptor /dev/shm/dr-desc.json --list 2>&1; shred -u /dev/shm/dr-desc.json 2>/dev/null || rm -f /dev/shm/dr-desc.json")
+      echo "$OFF" | grep -q 'OFFLINE mode' \
+        && ok "offline restore resolved the descriptor with NO kubectl (KUBECTL=/bin/false)" \
+        || fail "offline path did not resolve the descriptor: ${OFF:0:200}"
+      if echo "$OFF" | grep -qE '\.db([^a-z]|$)'; then
+        ok "offline --list returned real etcd snapshots from the upstream (external target)"
+      else
+        skip "offline --list reached the upstream but listed nothing (in-cluster/.svc target — offline DR needs an EXTERNAL endpoint; preflight flags this)"
+      fi
+    else
+      skip "no dr-system-target.json in the bundle (no SYSTEM target bound, or pre-v2026.6.11 image) — Tier 1 descriptor check skipped"
+    fi
+    ssh_q "rm -f /tmp/dr-e2e.age" >/dev/null 2>&1
+  fi
 fi
 
 # ─── Test 2: domain rename via the CLI binary ──────────────────────────────────
