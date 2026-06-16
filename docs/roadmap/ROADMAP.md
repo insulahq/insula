@@ -63,7 +63,8 @@ real Plesk Obsidian source.** An agentless `plesk-migration` module:
 
 Acceptance (one real subscription end-to-end: site serves, mail flows incl.
 unread state, DB intact, cron firing) is **met on staging**; the remaining gate
-is the production cutover. Cron extraction details:
+is the production cutover. **Runbook:**
+[PLESK_MIGRATION.md](../operations/PLESK_MIGRATION.md). Cron extraction details:
 [CUSTOMER_CRON_JOBS.md](../features/CUSTOMER_CRON_JOBS.md).
 
 ## R2 — Monitoring stack decision + SLI/SLO
@@ -227,7 +228,8 @@ follow the rename via **seed-then-disown** (`reconcile: disabled` + platform-api
 owns the Host/cert; shared `traefik-host-reconcile.ts`).
 **Remaining:** platform-apex DNS automation (§3e), the **live per-worker tunnel
 subdomains** (env-driven, disruptive to flip), and the cross-cutting
-bootstrap/script/integration items.
+bootstrap/script/integration items. **Runbook:**
+[PLATFORM_DOMAIN_RENAME.md](../operations/PLATFORM_DOMAIN_RENAME.md).
 
 Scoped 2026-06-08 (planning) — see
 [INGRESS_PLATFORM_DOMAIN_DECOUPLE.md](INGRESS_PLATFORM_DOMAIN_DECOUPLE.md). Split
@@ -347,7 +349,8 @@ Destructive PVC **shrink** was hardened across a 5-bug chain (#90–#95): quiesc
 only waits on pods mounting the target PVC; quiesce actually scales workloads to
 0; pre-resize snapshot → files-only restic bundle through a per-class S3
 streaming store (PodSecurity-safe); tenant namespaces labelled so backup/snapshot
-Jobs reach the rclone shim.
+Jobs reach the rclone shim. **Runbook:**
+[TENANT_SNAPSHOTS.md](../operations/TENANT_SNAPSHOTS.md).
 
 **Open:**
 - **Individual-file restore** — browse a snapshot and pull single files without
