@@ -18,7 +18,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, asc, sql, and } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { gunzipSync } from 'node:zlib';
+import { browseFilesTree } from './browse-files-restic.js';
 import {
   authenticate,
   requirePanel,
@@ -240,59 +240,11 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId, bundleId } = request.params as { tenantId: string; bundleId: string };
     const bundle = await loadBundle(app, bundleId);
     assertOwnership(bundle.tenantId, tenantId, 'Bundle');
-    const q = request.query as { limit?: string; after?: string };
-    const limit = Math.min(Math.max(parseInt(q.limit ?? '500', 10) || 500, 1), 2000);
-    const after = q.after ?? '';
-    const store = await resolveStoreForBundle(app, bundleId);
-    const handle = await store.open(bundleId);
-    if (!handle) throw new ApiError('NOT_FOUND', 'Bundle artefacts not found on remote target', 404);
-    let tree: Buffer;
-    try {
-      const stream = await store.readComponent(handle, 'files', 'tree.jsonl.gz');
-      const chunks: Buffer[] = [];
-      for await (const c of stream) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
-      tree = gunzipSync(Buffer.concat(chunks));
-    } catch {
-      // tree.jsonl.gz sidecar was dropped in favour of restic ls
-      // (see files.ts:32). Return graceful empty for bundles created
-      // after that change so the UI can render an explanation instead
-      // of a hard 404. Restore the full files snapshot from the cart.
-      return success({
-        bundleId,
-        totalCount: 0,
-        entries: [],
-        nextCursor: null,
-        migrated: true,
-        message: 'File browsing migrated to restic listing — not yet wired here. Restore the full files snapshot via the cart.',
-      });
-    }
-    const lines = tree.toString('utf8').split('\n').filter(Boolean);
-    const allEntries: Array<{ path: string; size: number; mode: number; mtime: string }> = [];
-    for (const line of lines) {
-      try {
-        const obj = JSON.parse(line) as { path: string; size: number; mode: number; mtime: string };
-        allEntries.push(obj);
-      } catch { /* tolerate malformed lines */ }
-    }
-    allEntries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-    const totalCount = allEntries.length;
-    const startIdx = after
-      ? (() => {
-          let lo = 0, hi = allEntries.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >>> 1;
-            if (allEntries[mid]!.path > after) hi = mid;
-            else lo = mid + 1;
-          }
-          return lo;
-        })()
-      : 0;
-    const endIdx = Math.min(startIdx + limit, allEntries.length);
-    const entries = allEntries.slice(startIdx, endIdx);
-    const nextCursor = endIdx < allEntries.length
-      ? entries.length > 0 ? entries[entries.length - 1]!.path : null
-      : null;
-    return success({ bundleId, totalCount, entries, nextCursor });
+    const q = request.query as { path?: string };
+    // Restic-native lazy tree browse — list the DIRECT CHILDREN of
+    // `path` ('' = root). `/source` capture-root prefix stripped here.
+    const result = await browseFilesTree(app, bundleId, bundle.tenantId, q.path);
+    return success(result);
   });
 
   // ── POST /api/v1/tenants/:tenantId/restore-carts ───────────────────

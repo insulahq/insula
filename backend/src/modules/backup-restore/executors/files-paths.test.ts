@@ -1,11 +1,12 @@
 /**
- * Unit tests for the files-paths restore executor — focused on the
- * Job spec and the path-injection guard. The end-to-end restore is
- * covered by the integration-staging harness (E2E).
+ * Unit tests for the restic-native files-paths restore executor —
+ * the Job spec, the selector validation, and the DISPLAY→/source path
+ * mapping. The end-to-end restore is covered by the integration-staging
+ * harness (E2E).
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildFilesPathsJobSpec } from './files-paths.js';
+import { buildFilesPathsJobSpec, validateSelector } from './files-paths.js';
 
 describe('buildFilesPathsJobSpec', () => {
   const baseInput = {
@@ -15,18 +16,26 @@ describe('buildFilesPathsJobSpec', () => {
     tenantId: 'tenant-acme',
     cartId: 'rstr-1',
     itemId: 'item-1',
-    downloadUrl: 'http://platform-api.platform.svc:3000/api/v1/internal/bundles/bkp-1/components/files/archive.tar.gz?token=1.deadbeef',
-    pathArgs: 'all' as const,
+    credsSecretName: 'rs-files-creds-item1',
+    snapshotId: 'a'.repeat(64),
+    includePaths: [] as string[],
+    jobImage: 'ghcr.io/insulahq/insula/tenant-backup-tools:latest',
   };
 
-  it('runs in the tenant namespace and mounts the tenant PVC', () => {
+  it('runs in the tenant namespace and mounts the tenant PVC RW at /source', () => {
     const spec = buildFilesPathsJobSpec(baseInput) as {
       metadata: { namespace: string };
-      spec: { template: { spec: { volumes: Array<{ name: string; persistentVolumeClaim?: { claimName: string } }> } } };
+      spec: { template: { spec: {
+        volumes: Array<{ name: string; persistentVolumeClaim?: { claimName: string } }>;
+        containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>;
+      } } };
     };
     expect(spec.metadata.namespace).toBe('tenant-acme');
-    const target = spec.spec.template.spec.volumes.find((v) => v.name === 'target');
+    const target = spec.spec.template.spec.volumes.find((v) => v.name === 'source');
     expect(target?.persistentVolumeClaim?.claimName).toBe('tenant-acme-storage');
+    const mount = spec.spec.template.spec.containers[0]!.volumeMounts.find((m) => m.name === 'source');
+    expect(mount?.mountPath).toBe('/source');
+    expect(mount?.readOnly).not.toBe(true); // RW
   });
 
   it('labels with platform.io/component=restore-files so the tightened NetworkPolicy applies', () => {
@@ -36,45 +45,111 @@ describe('buildFilesPathsJobSpec', () => {
     expect(spec.metadata.labels['platform.io/restore-item']).toBe('item-1');
   });
 
-  it('mounts target PVC RW (not readOnly)', () => {
+  it('mounts the creds Secret read-only at /var/run/restic-creds (mode 0400)', () => {
     const spec = buildFilesPathsJobSpec(baseInput) as {
-      spec: { template: { spec: { containers: Array<{ volumeMounts: Array<{ name: string; readOnly?: boolean }> }> } } };
+      spec: { template: { spec: {
+        containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>;
+        volumes: Array<{ name: string; secret?: { secretName: string; defaultMode?: number } }>;
+      } } };
     };
-    const target = spec.spec.template.spec.containers[0]!.volumeMounts.find((m) => m.name === 'target');
-    expect(target?.readOnly).not.toBe(true);
+    const mount = spec.spec.template.spec.containers[0]!.volumeMounts.find((m) => m.name === 'restic-creds');
+    expect(mount?.mountPath).toBe('/var/run/restic-creds');
+    expect(mount?.readOnly).toBe(true);
+    const vol = spec.spec.template.spec.volumes.find((v) => v.name === 'restic-creds');
+    expect(vol?.secret?.secretName).toBe('rs-files-creds-item1');
+    expect(vol?.secret?.defaultMode).toBe(0o400);
   });
 
-  it('extracts the whole archive when pathArgs === "all"', () => {
+  it('runs restic restore --target /restore-tmp --no-lock with NO --include for a full restore', () => {
     const spec = buildFilesPathsJobSpec(baseInput) as {
       spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
     };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(cmd).toContain('tar -xzf /tmp/archive.tar.gz -C /target');
-    expect(cmd).not.toContain('--files-from');
+    expect(cmd).toContain(`restic -r "$REPO" restore ${'a'.repeat(64)} --target /restore-tmp`);
+    expect(cmd).toContain('--no-lock');
+    expect(cmd).not.toContain('--include');
   });
 
-  it('uses --files-from when paths are provided (defends against tar-arg-injection)', () => {
+  it('cp -a /restore-tmp/source/. /source/ to overlay onto the live PVC', () => {
+    const spec = buildFilesPathsJobSpec(baseInput) as {
+      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+    };
+    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
+    expect(cmd).toContain('cp -a /restore-tmp/source/. /source/');
+  });
+
+  it('passes one --include /source/<path> per requested DISPLAY path', () => {
     const spec = buildFilesPathsJobSpec({
       ...baseInput,
-      pathArgs: ['var/www/html/index.php', 'etc/config.json'],
+      includePaths: ['/source/var/www/html/index.php', '/source/etc/config.json'],
     }) as { spec: { template: { spec: { containers: Array<{ command: string[] }> } } } };
     const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    expect(cmd).toContain('--files-from=/tmp/paths.lst');
-    // The actual paths are written via printf — they're in the script,
-    // but they go through `printf '%s\n' '<path>'` so even if a path
-    // contained `--strip-components=2` (impossible because of the
-    // selector regex), tar reads it as a literal filename via files-from.
-    expect(cmd).toContain('var/www/html/index.php');
-    expect(cmd).toContain('etc/config.json');
+    expect(cmd).toContain(`--include '/source/var/www/html/index.php'`);
+    expect(cmd).toContain(`--include '/source/etc/config.json'`);
   });
 
-  it('does not embed the download token in tar command (only in curl)', () => {
-    const spec = buildFilesPathsJobSpec({ ...baseInput, pathArgs: ['foo.txt'] }) as {
-      spec: { template: { spec: { containers: Array<{ command: string[] }> } } };
+  it('mounts a /restore-tmp emptyDir staging area', () => {
+    const spec = buildFilesPathsJobSpec(baseInput) as {
+      spec: { template: { spec: {
+        containers: Array<{ volumeMounts: Array<{ name: string; mountPath: string }> }>;
+        volumes: Array<{ name: string; emptyDir?: { sizeLimit?: string } }>;
+      } } };
     };
-    const cmd = spec.spec.template.spec.containers[0]!.command.join(' ');
-    // Token appears once (in the curl URL), not twice.
-    const occurrences = cmd.match(/1\.deadbeef/g) ?? [];
-    expect(occurrences.length).toBe(1);
+    const mount = spec.spec.template.spec.containers[0]!.volumeMounts.find((m) => m.name === 'restore-tmp');
+    expect(mount?.mountPath).toBe('/restore-tmp');
+    const vol = spec.spec.template.spec.volumes.find((v) => v.name === 'restore-tmp');
+    expect(vol?.emptyDir).toBeDefined();
+  });
+
+  it('pins to the supplied node when pinToNode is set', () => {
+    const spec = buildFilesPathsJobSpec({ ...baseInput, pinToNode: 'worker-3' }) as {
+      spec: { template: { spec: { nodeName?: string } } };
+    };
+    expect(spec.spec.template.spec.nodeName).toBe('worker-3');
+  });
+});
+
+describe('validateSelector', () => {
+  it('returns [] for a full restore', () => {
+    expect(validateSelector({ kind: 'full' })).toEqual([]);
+  });
+
+  it('returns the relative DISPLAY paths for a paths selector', () => {
+    expect(validateSelector({ kind: 'paths', paths: ['var/www/index.php', 'etc/app.conf'] }))
+      .toEqual(['var/www/index.php', 'etc/app.conf']);
+  });
+
+  it('normalises a leading ./ to a clean relative path', () => {
+    expect(validateSelector({ kind: 'paths', paths: ['./var/www/index.php'] }))
+      .toEqual(['var/www/index.php']);
+  });
+
+  it('rejects an absolute path', () => {
+    expect(() => validateSelector({ kind: 'paths', paths: ['/etc/passwd'] })).toThrow(/absolute path/);
+  });
+
+  it('rejects a `..` traversal segment', () => {
+    expect(() => validateSelector({ kind: 'paths', paths: ['var/../../etc/passwd'] })).toThrow(/'\.\.'/);
+  });
+
+  it('rejects control characters / NUL in a path', () => {
+    expect(() => validateSelector({ kind: 'paths', paths: ['var/www/\nx'] })).toThrow(/control/);
+    expect(() => validateSelector({ kind: 'paths', paths: ['var/www/\x00x'] })).toThrow(/control/);
+  });
+
+  it('ACCEPTS shell-metachar filenames (printable) — they are single-quote-escaped in the Job, never executed', () => {
+    // Real tenant filenames hold these: WordPress plugins, numbered archives,
+    // a literal `$(...)` in a path is NOT a command substitution because the
+    // restore Job single-quote-escapes every --include arg.
+    expect(validateSelector({ kind: 'paths', paths: ['var/www/wp-content/plugins/foo (1).php', 'a/b+c[2].zip', 'x/$weird.txt'] }))
+      .toEqual(['var/www/wp-content/plugins/foo (1).php', 'a/b+c[2].zip', 'x/$weird.txt']);
+  });
+
+  it('rejects an empty path string', () => {
+    expect(() => validateSelector({ kind: 'paths', paths: [''] })).toThrow(/non-empty/);
+  });
+
+  it('throws for an unsupported selector shape', () => {
+    expect(() => validateSelector({ kind: 'paths', paths: [] })).toThrow(/unsupported selector/);
   });
 });

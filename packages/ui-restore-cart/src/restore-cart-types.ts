@@ -66,25 +66,23 @@ export interface BrowseMailboxesData {
 }
 
 export interface BrowseFilesEntry {
+  /** Base name (last path segment). */
+  readonly name: string;
+  /** Full DISPLAY path relative to the snapshot root, no leading slash. */
   readonly path: string;
+  readonly type: 'file' | 'dir';
   readonly size: number;
-  readonly mode: number;
-  readonly mtime: string;
 }
 
+/**
+ * Restic-native lazy tree browse: one directory level per call. `path`
+ * is the directory whose direct children `entries` lists ('' = root).
+ * The UI walks the tree by re-calling with a child dir's `path`.
+ */
 export interface BrowseFilesData {
   readonly bundleId: string;
-  readonly totalCount: number;
+  readonly path: string;
   readonly entries: ReadonlyArray<BrowseFilesEntry>;
-  readonly nextCursor: string | null;
-  /**
-   * 2026-05-28 migration window: bundles created BEFORE the
-   * tree.jsonl.gz drop have a real listing; bundles AFTER return
-   * totalCount=0 with `migrated: true` + a human-readable `message`.
-   * The UI surfaces the message instead of "no files".
-   */
-  readonly migrated?: boolean;
-  readonly message?: string;
 }
 
 /**
@@ -136,9 +134,10 @@ export interface RestoreCartHooks {
   useBrowseDeployments(bundleId: string | null): RestoreCartQueryResult<BrowseDeploymentsData>;
   useBrowseDomains(bundleId: string | null): RestoreCartQueryResult<BrowseDomainsData>;
   useBrowseMailboxes(bundleId: string | null): RestoreCartQueryResult<BrowseMailboxesData>;
+  // Lazy tree browse: `path` is the directory to list (null/'' = root).
+  // One directory level per call.
   useBrowseFiles(
     bundleId: string | null,
-    after: string | null,
-    limit?: number,
+    path: string | null,
   ): RestoreCartQueryResult<BrowseFilesData>;
 }

@@ -478,17 +478,15 @@ function MailboxesPicker({ hooks, bundleId, cartReady, addItem }: PickerProps) {
   );
 }
 
+// Minimal lazy-tree files picker: one directory level per call.
+// A richer tree UI is owned by a separate task; this keeps the cart
+// functional (navigate dirs + select files/folders) against the new
+// restic-native `useBrowseFiles(bundleId, path)` contract.
 function FilesPicker({ hooks, bundleId, cartReady, addItem }: PickerProps) {
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [pages, setPages] = useState<Array<BrowseFilesEntry>>([]);
+  const [dir, setDir] = useState<string>('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const q = hooks.useBrowseFiles(bundleId, cursor, 500);
-  useEffect(() => {
-    if (q.data?.data.entries) {
-      setPages((prev) => (cursor === null ? [...q.data!.data.entries] : [...prev, ...q.data!.data.entries]));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [q.data?.data.entries]);
+  const q = hooks.useBrowseFiles(bundleId, dir);
+  const entries: ReadonlyArray<BrowseFilesEntry> = q.data?.data.entries ?? [];
 
   const toggle = (path: string) => setSelected((s) => {
     const next = new Set(s);
@@ -496,19 +494,20 @@ function FilesPicker({ hooks, bundleId, cartReady, addItem }: PickerProps) {
     return next;
   });
 
-  const allCount = q.data?.data.totalCount ?? 0;
-  const migrated = q.data?.data.migrated;
+  // Parent directory of the current dir ('' = root).
+  const parentDir = dir === '' ? null : dir.split('/').slice(0, -1).join('/');
+
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-        <span>{pages.length} of {allCount} entries loaded</span>
-        {q.data?.data.nextCursor && (
+        <span className="truncate" title={dir || '/'}>/{dir}</span>
+        {parentDir !== null && (
           <button
             type="button"
-            onClick={() => setCursor(q.data!.data.nextCursor)}
+            onClick={() => setDir(parentDir)}
             className="rounded border border-gray-300 px-2 py-0.5 text-xs hover:bg-gray-100 dark:border-gray-600 dark:hover:bg-gray-700"
           >
-            Load more
+            Up
           </button>
         )}
         <span className="ml-auto">{selected.size} selected</span>
@@ -519,25 +518,20 @@ function FilesPicker({ hooks, bundleId, cartReady, addItem }: PickerProps) {
             type: 'files-paths',
             bundleId,
             selector: selected.size === 0 ? { kind: 'full' } : { kind: 'paths', paths: [...selected] },
-            label: selected.size === 0 ? `All files` : `${selected.size} file(s)`,
+            label: selected.size === 0 ? `All files` : `${selected.size} path(s)`,
           })}
           className="rounded-md border border-brand-500 px-2 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:hover:bg-brand-900"
         >
-          {selected.size === 0 ? 'Add all (whole archive)' : `Add ${selected.size}`}
+          {selected.size === 0 ? 'Add all (whole snapshot)' : `Add ${selected.size}`}
         </button>
       </div>
-      {migrated && q.data?.data.message && (
-        <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
-          {q.data.data.message}
-        </div>
-      )}
-      {q.isLoading && pages.length === 0 ? (
+      {q.isLoading ? (
         <PickerSkeleton />
       ) : q.isError ? (
         <PickerError msg={(q.error as Error)?.message ?? 'failed to load'} />
       ) : (
         <ul className="max-h-96 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
-          {pages.map((e) => (
+          {entries.map((e) => (
             <li key={e.path} className="flex items-center gap-2 py-1.5 text-sm">
               <input
                 type="checkbox"
@@ -545,8 +539,19 @@ function FilesPicker({ hooks, bundleId, cartReady, addItem }: PickerProps) {
                 onChange={() => toggle(e.path)}
                 className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
               />
-              <span className="flex-1 truncate text-gray-900 dark:text-gray-100" title={e.path}>{e.path.replace(/^\.\//, '')}</span>
-              <span className="text-xs text-gray-500">{formatSize(e.size)}</span>
+              {e.type === 'dir' ? (
+                <button
+                  type="button"
+                  onClick={() => setDir(e.path)}
+                  className="flex-1 truncate text-left text-brand-600 hover:underline dark:text-brand-400"
+                  title={e.path}
+                >
+                  {e.name}/
+                </button>
+              ) : (
+                <span className="flex-1 truncate text-gray-900 dark:text-gray-100" title={e.path}>{e.name}</span>
+              )}
+              <span className="text-xs text-gray-500">{e.type === 'dir' ? '' : formatSize(e.size)}</span>
             </li>
           ))}
         </ul>
