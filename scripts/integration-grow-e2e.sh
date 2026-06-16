@@ -312,6 +312,22 @@ SHRINK_CODE=$(echo "$SHRINK_RESP" | python3 -c "import json,sys;print(json.load(
 if [[ -z "$INTEGRATION_DESTRUCTIVE_SHRINK" ]]; then
   log "── destructive shrink SKIPPED (set INTEGRATION_DESTRUCTIVE_SHRINK=1 to run; timing-sensitive quiesce, see header) ──"
 else
+# Record the storage class + replica count BEFORE the shrink so we can prove
+# the destructive recreate PRESERVES them (#122: a LOCAL tenant must come back
+# on `longhorn-tenant`/1-replica, not the platform-default `longhorn`/3).
+SC_BEFORE=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.storageClassName}'")
+log "storageClass before shrink = $SC_BEFORE"
+
+# Seed a known marker + ~50 MiB of real (non-sparse) data so we prove the
+# direct restic restore (#122: restic restore --target / straight into the
+# recreated PVC, no node-ephemeral /restore-tmp staging) brings the bytes back.
+MARKER="shrink-integrity-$STAMP"
+FM_POD_SEED=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")
+if [[ -n "$FM_POD_SEED" ]]; then
+  ssh_cp "kubectl -n $NS exec $FM_POD_SEED -c file-manager -- sh -c 'printf %s \"$MARKER\" > /data/INTEGRITY_MARKER.txt; head -c 50000000 /dev/urandom > /data/integrity-blob.bin; sync'" || true
+  ok "seeded /data/INTEGRITY_MARKER.txt + 50MiB blob before shrink"
+fi
+
 log "── PATCH storage_limit_override=8 + confirm_destructive_shrink:true ──"
 SHRINK_OP_RESP=$(api PATCH "/tenants/$CID" '{"storage_limit_override":8,"confirm_destructive_shrink":true}')
 SHRINK_OP_ID=$(echo "$SHRINK_OP_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('storageShrinkOperationId') or '')" 2>/dev/null)
@@ -356,6 +372,28 @@ case "$NEW_OVERRIDE" in
   8|8.0|8.00) ok "storageLimitOverride=$NEW_OVERRIDE persists (shrink committed)" ;;
   *) fail "storageLimitOverride=$NEW_OVERRIDE (expected 8.00)" ;;
 esac
+
+# ─── #122: storage class + replica count PRESERVED across the recreate ────
+SC_AFTER=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.storageClassName}'")
+[[ "$SC_AFTER" == "$SC_BEFORE" ]] && ok "PVC storageClass preserved across shrink ($SC_AFTER) — not re-tiered to the default class" \
+  || fail "PVC storageClass changed $SC_BEFORE → $SC_AFTER (the destructive recreate dropped the tenant class — #122 regression)"
+NEW_PV=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.volumeName}'")
+REPLICAS=$(ssh_cp "kubectl -n longhorn-system get volume.longhorn.io $NEW_PV -o jsonpath='{.spec.numberOfReplicas}' 2>/dev/null" || echo "")
+# A non-HA (LOCAL) tenant's longhorn-tenant volume is 1 replica; the default
+# `longhorn` class would be 3. Assert 1 (the bug recreated it at 3).
+[[ "$REPLICAS" == "1" ]] && ok "recreated Longhorn volume has 1 replica (LOCAL tier preserved)" \
+  || fail "recreated volume numberOfReplicas=$REPLICAS (expected 1 for a LOCAL tenant — #122 storage-class regression)"
+
+# ─── #122: data survived the direct restic restore ──────────────────────
+FM_POD_AFTER_SHRINK=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")
+if [[ -n "$FM_POD_AFTER_SHRINK" && -n "$FM_POD_SEED" ]]; then
+  GOT_MARKER=$(ssh_cp "kubectl -n $NS exec $FM_POD_AFTER_SHRINK -c file-manager -- cat /data/INTEGRITY_MARKER.txt 2>/dev/null" || echo "")
+  BLOB_BYTES=$(ssh_cp "kubectl -n $NS exec $FM_POD_AFTER_SHRINK -c file-manager -- sh -c 'wc -c < /data/integrity-blob.bin 2>/dev/null' " || echo 0)
+  [[ "$GOT_MARKER" == "$MARKER" ]] && ok "data integrity: INTEGRITY_MARKER.txt restored intact through the shrink" \
+    || fail "data integrity: marker mismatch after shrink (got '${GOT_MARKER:0:40}', expected '$MARKER') — direct restore lost data"
+  [[ "$BLOB_BYTES" == "50000000" ]] && ok "data integrity: 50MiB blob restored byte-exact ($BLOB_BYTES)" \
+    || fail "data integrity: blob size=$BLOB_BYTES (expected 50000000) — restore truncated the data"
+fi
 fi
 
 # ─── summary ─────────────────────────────────────────────────────────
