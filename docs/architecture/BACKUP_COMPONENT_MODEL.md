@@ -100,25 +100,32 @@ code must reject bundles with an unknown `schemaVersion` rather than guess.
 
 ### `files` — tenant PVC contents
 
-**Capture.** A short-lived Kubernetes Job (see
-`backend/src/modules/storage-lifecycle/snapshot.ts`) mounts the tenant PVC
-read-only, runs `tar cf - . | gzip -1 > $ARCHIVE`, and writes both the
-tarball and a SHA-256 sidecar. For backups (not just snapshots) the same
-Job also emits a **tree index** (`tree.jsonl.gz`) — one JSON-Lines record
-per path:
+**Capture.** A short-lived tenant-namespace Kubernetes Job (the
+`tenant-backup-tools` image, driven by `backend/src/modules/tenant-bundles/`)
+mounts the tenant PVC read-only and runs **`restic backup`** against the
+per-tenant restic repo on the backup target (reached through the
+backup-rclone-shim). Restic stores **each file as its own node** and writes
+content as many small content-defined packs — so capture is **per-file
+deduplicated** and never produces a single large object (this is why the
+rclone-shim multipart limit no longer bites; see ROADMAP R19). There is no
+separate tarball, SHA-256 sidecar, or `tree.jsonl.gz` index — the restic
+snapshot index *is* the file tree.
 
-```jsonl
-{"path": "/wp-config.php", "size": 5922, "mode": 33188, "mtime": "2026-04-20T17:49:00Z", "digest": "sha256:..."}
-{"path": "/wp-content/themes/twentytwentyfour/style.css", "size": 184321, ...}
-```
+> **History.** Pre-2026-06 this component was a single `tar | gzip` archive + a
+> SHA-256 sidecar + a `tree.jsonl.gz` index, captured by a now-deleted
+> `storage-lifecycle/snapshot.ts` Job (with off-site streaming variants). That
+> tar path was replaced by restic-native files (#105) and removed (#118).
 
-The tree index powers file-browser UI (admin + client) so operators can
-select individual files/folders to restore **without extracting the
-whole archive first**.
+**Browse.** The file-browser UI (admin + client) lazily lists a snapshot's tree
+via `restic ls` (`GET …/bundles/:id/browse/files/tree`) so operators can pick
+individual files/folders to restore **without restoring the whole snapshot
+first**.
 
 **Restore scopes.**
-- `full` — extract the entire tarball back into a freshly-created tenant PVC
-- `selected` — extract only specified paths (`tar -xzf archive.tar.gz -- <path1> <path2> ...`) into the existing PVC via a scratch Job
+- `full` — `restic restore <snap>` into a freshly-created tenant PVC.
+- `selected` (the `files-paths` cart item) — `restic restore <snap> --include
+  <path…>` over the existing PVC (idempotent overwrite; a pre-restore Longhorn
+  snapshot is taken first as a rollback safety net).
 
 **What's in it.** WordPress files, MariaDB/PostgreSQL datadirs, Redis dumps,
 `/etc/nginx` config inside the web pod's volume, file-manager home, etc.
