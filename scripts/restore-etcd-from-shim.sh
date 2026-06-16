@@ -319,12 +319,18 @@ if rclone_s3 copyto ":s3:$S3_ROOT/$SNAP_NAME.meta" "$META_DEST" 2>/dev/null; the
 fi
 
 # ── Restore ──────────────────────────────────────────────────────────
+# k3s has NO `etcd-snapshot restore` subcommand (only save/ls) — the
+# documented embedded-etcd restore is `k3s server --cluster-reset
+# --cluster-reset-restore-path=<abs path>` (same as restore-etcd-local.sh +
+# dr-restore.sh). cluster-reset resets to a single-node cluster from the
+# snapshot, then a normal start brings it back. (Proven by the DR drill;
+# the old `etcd-snapshot restore` line never existed.)
 log "Stopping k3s..."
-systemctl stop k3s
+systemctl stop k3s 2>/dev/null || true
 
-log "Restoring etcd snapshot via k3s..."
-if ! k3s etcd-snapshot restore --name "$(basename "$DEST")"; then
-  fail "k3s etcd-snapshot restore failed. The on-disk snapshot is at $DEST — operator can retry manually."
+log "Restoring etcd snapshot via k3s cluster-reset..."
+if ! k3s server --cluster-reset --cluster-reset-restore-path="$DEST"; then
+  fail "k3s cluster-reset restore failed. The on-disk snapshot is at $DEST — operator can retry manually."
 fi
 
 log "Starting k3s..."
