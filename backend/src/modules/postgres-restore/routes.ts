@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { reclaimReleasedPvRequestSchema } from '@insula/api-contracts';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -257,10 +258,11 @@ export async function postgresRestoreRoutes(app: FastifyInstance): Promise<void>
   app.post('/admin/postgres-restore/released-pvs/:name/reclaim', async (req) => {
     const { name } = req.params as { name: string };
     validateName(name, 'persistentVolume');
-    const body = (req.body ?? {}) as { confirmName?: string };
-    if (!body.confirmName || typeof body.confirmName !== 'string') {
+    const parsed = reclaimReleasedPvRequestSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
       throw new ApiError('VALIDATION_ERROR', 'confirmName is required', 400);
     }
+    const body = parsed.data;
     const userId = (req as { user?: { sub?: string } }).user?.sub ?? 'unknown';
     app.log.warn(
       { userId, pvName: name },

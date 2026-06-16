@@ -24,6 +24,7 @@
  *     destructive admin surfaces.
  */
 
+import type { SupersededSystemPv, ReclaimReleasedPvResponse } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
 
@@ -32,14 +33,6 @@ const SYSTEM_CLAIM_PREFIX = 'system-db';
 const LH_GROUP = 'longhorn.io';
 const LH_VERSION = 'v1beta2';
 const LH_NS = 'longhorn-system';
-
-export interface SupersededSystemPv {
-  readonly name: string;
-  readonly claimName: string;
-  readonly size: string;
-  readonly createdAt: string | null;
-  readonly storageClassName: string | null;
-}
 
 interface PvShape {
   readonly metadata?: { readonly name?: string; readonly creationTimestamp?: string | Date };
@@ -82,7 +75,7 @@ export async function reclaimSupersededSystemPv(
   k8s: Pick<K8sClients, 'core' | 'custom'>,
   pvName: string,
   confirmName: string,
-): Promise<{ pvDeleted: boolean; longhornVolumeDeleted: boolean }> {
+): Promise<ReclaimReleasedPvResponse> {
   if (confirmName.trim() !== pvName) {
     throw new ApiError(
       'CONFIRM_NAME_MISMATCH',
