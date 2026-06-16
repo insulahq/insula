@@ -54,6 +54,7 @@ import { eq } from 'drizzle-orm';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../../db/index.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
+import { readJobToleratingEarlyAbsence, type JobReader } from '../../../shared/k8s-job-wait.js';
 import { STRATEGIC_MERGE_PATCH } from '../../../shared/k8s-patch.js';
 import { resolveBaseDomain } from '../../../config/domains.js';
 import { tenantBackupV2Settings, tenants } from '../../../db/schema.js';
@@ -408,6 +409,7 @@ export async function captureFilesComponent(
     const createdJob = await (opts.k8s.batch as unknown as {
       createNamespacedJob: (args: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
     }).createNamespacedJob({ namespace: opts.namespace, body: spec });
+    const jobCreatedAt = Date.now();
 
     // ownerRef the creds Secret to the Job so kube-controller GCs it
     // when the Job's ttlSecondsAfterFinished elapses.
@@ -424,7 +426,7 @@ export async function captureFilesComponent(
       }
     }
 
-    await waitForJob(opts.k8s, opts.namespace, jobName, orchestratorTimeoutMs, opts.onProgress);
+    await waitForJob(opts.k8s, opts.namespace, jobName, jobCreatedAt, orchestratorTimeoutMs, opts.onProgress);
 
     const log = await readEndOfJobLog(opts.k8s, opts.namespace, jobName);
     const parsed = parseFilesDone(log, opts.backupId);
@@ -508,21 +510,28 @@ async function waitForJob(
   k8s: K8sClients,
   namespace: string,
   jobName: string,
+  jobCreatedAtMs: number,
   timeoutMs: number,
   onProgress?: (msg: string) => Promise<void> | void,
 ): Promise<void> {
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const job = await (k8s.batch as unknown as {
-      readNamespacedJob: (args: { name: string; namespace: string }) => Promise<{
-        status?: {
-          conditions?: Array<{ type: string; status: string; reason?: string; message?: string }>;
-          succeeded?: number;
-          failed?: number;
-        };
-      }>;
-    }).readNamespacedJob({ name: jobName, namespace });
+    // Tolerate the post-create read-after-write race on HA control
+    // planes (see shared/k8s-job-wait.ts). `null` → not visible yet.
+    const job = await readJobToleratingEarlyAbsence(
+      k8s.batch as unknown as JobReader,
+      jobName,
+      namespace,
+      jobCreatedAtMs,
+    );
+    if (!job) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`files-component Job ${jobName} timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      await new Promise((res) => setTimeout(res, 3000));
+      continue;
+    }
 
     const status = job.status ?? {};
     const completed = (status.conditions ?? []).find((c) => c.type === 'Complete' && c.status === 'True');

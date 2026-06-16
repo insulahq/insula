@@ -67,6 +67,7 @@ import { sql, eq } from 'drizzle-orm';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../../db/index.js';
 import { tailJobLog, readJobLogTail } from '../../storage-lifecycle/job-log-tail.js';
+import { readJobToleratingEarlyAbsence, type JobReader } from '../../../shared/k8s-job-wait.js';
 import { signUploadToken } from '../upload-token.js';
 import { tenantJmapState } from '../../../db/schema.js';
 import {
@@ -639,8 +640,9 @@ export async function captureMailboxesComponent(
     await (opts.k8s.batch as unknown as {
       createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
     }).createNamespacedJob({ namespace: mailNamespace, body: spec });
+    const jobCreatedAt = Date.now();
 
-    await waitForJob(opts.k8s, mailNamespace, jobName, orchestratorTimeoutMs, opts.onProgress);
+    await waitForJob(opts.k8s, mailNamespace, jobName, jobCreatedAt, orchestratorTimeoutMs, opts.onProgress);
 
     // Parse Job log for {JMAP,IMAP}_DONE + MAILBOXES_DONE lines. We need
     // the FULL multi-line log (one *_DONE per mailbox), not the single-
@@ -743,21 +745,28 @@ async function waitForJob(
   k8s: K8sClients,
   namespace: string,
   jobName: string,
+  jobCreatedAtMs: number,
   timeoutMs: number,
   onProgress?: (msg: string) => Promise<void> | void,
 ): Promise<void> {
   const start = Date.now();
   // eslint-disable-next-line no-constant-condition
   while (true) {
-    const job = await (k8s.batch as unknown as {
-      readNamespacedJob: (a: { name: string; namespace: string }) => Promise<{
-        status?: {
-          conditions?: Array<{ type: string; status: string; reason?: string; message?: string }>;
-          succeeded?: number;
-          failed?: number;
-        };
-      }>;
-    }).readNamespacedJob({ name: jobName, namespace });
+    // Tolerate the post-create read-after-write race on HA control
+    // planes (see shared/k8s-job-wait.ts). `null` → not visible yet.
+    const job = await readJobToleratingEarlyAbsence(
+      k8s.batch as unknown as JobReader,
+      jobName,
+      namespace,
+      jobCreatedAtMs,
+    );
+    if (!job) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error(`mailboxes-component Job ${jobName} timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      await new Promise((res) => setTimeout(res, 3000));
+      continue;
+    }
 
     const status = job.status ?? {};
     const completed = (status.conditions ?? []).find((c) => c.type === 'Complete' && c.status === 'True');
