@@ -48,20 +48,28 @@ import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
-import { signUploadToken } from '../tenant-bundles/upload-token.js';
+import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
+import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../tenant-bundles/restic-driver.js';
+import {
+  FILES_CAPTURE_ROOT,
+  buildResticCredsStringData,
+  createResticCredsSecret,
+  wireSecretOwnerRef,
+} from '../tenant-bundles/components/files.js';
 import { tailJobLog } from './job-log-tail.js';
 
 /** Failure insurance window. The bundle is held this long so a shrink
  *  that dies after the PVC delete still has an off-site rollback source;
  *  it is reaped early (deleted) the moment the resize confirms success. */
 const PRE_RESIZE_RETENTION_DAYS = 7;
-/** Token lifetime only needs to cover the gap until the restore Job's
- *  curl CONNECTS (the token isn't re-checked during the stream), so 30
- *  min is ample even on a cold node — matches files-paths.ts. The
- *  transfer itself may then run for hours (DEFAULT_RESTORE_TIMEOUT_MS). */
-const DOWNLOAD_TOKEN_TTL_SEC = 30 * 60;
 const DEFAULT_RESTORE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
-const RESTORE_JOB_IMAGE = 'alpine:3.20';
+// Restic-native restore (mirrors backup-restore/executors/files-paths.ts): the
+// tenant Job runs `restic restore` directly against the per-tenant shim repo,
+// so it needs the restic toolchain image + the creds mount + a staging dir.
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+const CREDS_MOUNT_PATH = '/var/run/restic-creds';
+const RESTORE_TMP = '/restore-tmp';
+const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 
 function readEnv(name: string): string | undefined {
   const v = process.env[name];
@@ -277,14 +285,20 @@ async function deleteCaptureJob(
 }
 
 /**
- * Restore a files-only bundle into a tenant PVC. Spawns a tenant-
- * namespace Job that streams platform-api's `restic dump` of the files
- * snapshot and untars it into the PVC mounted RW at `/target`.
+ * Restore a files-only bundle into a tenant PVC via a restic-NATIVE restore.
  *
- * The Job carries `platform.io/component: restore-files` so the
- * `allow-backup-files-jobs-to-platform-api` NetworkPolicy lets it reach
- * platform-api:3000. The HMAC download token is bound to (bundleId,
- * 'files', 'restic-stream') — the same binding the capture used.
+ * Since #105 the files bundle is restic-native (each file a node, NO single
+ * `/archive.tar` blob), so the old `restic dump … | tar x` stream no longer
+ * works. This spawns a tenant-namespace Job (tenant-backup-tools image) that
+ * mounts the target PVC RW at `/source` + a per-Job creds Secret, and runs:
+ *
+ *   restic -r "$REPO" restore <snap> --target /restore-tmp --no-lock
+ *   cp -a /restore-tmp/source/. /source/
+ *
+ * It mirrors the PROVEN `backup-restore/executors/files-paths.ts` (the cart
+ * restore), but as a FULL restore (no `--include`) into the freshly recreated
+ * PVC. Used by destructive shrink AND tenant-archive restore. The Job carries
+ * `platform.io/component: restore-files` for the shim NetworkPolicy.
  */
 export async function restoreFilesBundleIntoPvc(args: {
   readonly db: Database;
@@ -296,65 +310,95 @@ export async function restoreFilesBundleIntoPvc(args: {
   readonly onProgress?: (msg: string) => Promise<void> | void;
   readonly timeoutMs?: number;
 }): Promise<void> {
-  const { k8s, bundleId, namespace, pvcName } = args;
-  const token = signUploadToken(
-    { bundleId, component: 'files', artifactName: 'restic-stream', ttlSeconds: DOWNLOAD_TOKEN_TTL_SEC },
-    secretsKey(),
-  );
-  const downloadUrl =
-    `${platformApiInternalUrl().replace(/\/$/, '')}` +
-    `/api/v1/internal/bundles/${bundleId}/files-restic-tar?token=${token}`;
+  const { db, k8s, bundleId, tenantId, namespace, pvcName } = args;
 
-  const jobName = `rs-preresize-${bundleId.replace(/[^a-z0-9]/gi, '').toLowerCase()}`.slice(0, 63);
-  const spec = buildRestoreJobSpec({
-    jobName,
-    namespace,
-    pvcName,
-    tenantId: args.tenantId,
-    bundleId,
-    downloadUrl,
-  });
+  // Resolve the files restic snapshot id — same source the browse + cart
+  // restore read (persisted on backup_components.sha256 by the orchestrator).
+  const [comp] = await db.select().from(backupComponents)
+    .where(and(eq(backupComponents.backupJobId, bundleId), eq(backupComponents.component, 'files')))
+    .limit(1);
+  if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) {
+    throw new ApiError('NOT_FOUND', `Bundle ${bundleId} has no files restic snapshot`, 404);
+  }
+  const snapshotId = comp.sha256;
 
-  await (k8s.batch as unknown as {
-    createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
-  }).createNamespacedJob({ namespace, body: spec });
+  // Shim target + per-tenant restic password + repo (same as the capture).
+  const target = await resolveShimBackupTarget(k8s.core, 'tenant');
+  const passwordHex = deriveResticPassword(secretsKey(), tenantId);
+  const repoUri = buildResticRepoUri(target, tenantId, 'files');
+  const env = buildResticEnv(target);
 
-  await waitForJob(k8s, namespace, jobName, args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS, args.onProgress);
+  const safe = bundleId.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const jobName = `rs-preresize-${safe}`.slice(0, 63);
+  const credsSecretName = `rs-preresize-creds-${safe}`.slice(0, 63);
 
-  // Delete the Job (and its pod) immediately — the destructive-resize
-  // orchestrator does not need the pod log post-mortem on success, and
-  // a lingering Completed pod holds nothing but is tidier gone.
+  let credsCreated = false;
+  let ownerRefWired = false;
   try {
-    await (k8s.batch as unknown as {
-      deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
-    }).deleteNamespacedJob({ name: jobName, namespace, propagationPolicy: 'Background' });
-  } catch {
-    /* best-effort — TTL GC will reap it */
+    await createResticCredsSecret(
+      k8s, namespace, credsSecretName,
+      buildResticCredsStringData({ passwordHex, repoUri, env }),
+      'restore-files',
+    );
+    credsCreated = true;
+
+    const spec = buildResticRestoreJobSpec({ jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId });
+    const createdJob = await (k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
+    }).createNamespacedJob({ namespace, body: spec });
+
+    const jobUid = createdJob.metadata?.uid;
+    if (jobUid) {
+      try { await wireSecretOwnerRef(k8s, namespace, credsSecretName, jobName, jobUid); ownerRefWired = true; }
+      catch (err) { console.warn(`[prebundle] could not wire ownerRef on creds Secret '${credsSecretName}': ${(err as Error).message}`); }
+    }
+
+    await waitForJob(k8s, namespace, jobName, args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS, args.onProgress);
+
+    try {
+      await (k8s.batch as unknown as {
+        deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+      }).deleteNamespacedJob({ name: jobName, namespace, propagationPolicy: 'Background' });
+    } catch { /* best-effort — TTL GC will reap it */ }
+  } finally {
+    // If the ownerRef never wired, kube won't GC the per-tenant creds Secret.
+    if (credsCreated && !ownerRefWired) {
+      try {
+        await (k8s.core as unknown as {
+          deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
+        }).deleteNamespacedSecret({ name: credsSecretName, namespace });
+      } catch { /* best-effort */ }
+    }
   }
 }
 
-export function buildRestoreJobSpec(input: {
+export function buildResticRestoreJobSpec(input: {
   jobName: string;
   namespace: string;
   pvcName: string;
   tenantId: string;
   bundleId: string;
-  downloadUrl: string;
+  credsSecretName: string;
+  snapshotId: string;
 }): Record<string, unknown> {
   const script = [
-    'command -v curl >/dev/null 2>&1 || apk add --no-cache curl >/dev/null 2>&1 || { echo "ERROR: curl install failed"; exit 1; }',
-    'echo "Streaming files restic snapshot into /target ..."',
-    // The capture used `tar cf - .` (UNCOMPRESSED — restic dedups on raw
-    // blocks). restic dump reproduces that exact tar, so extract WITHOUT
-    // -z. The curl exit is side-channelled to a file: a mid-stream HTTP
-    // failure gives tar a clean EOF, so `set -o pipefail` (bash-only,
-    // and busybox-ash lacks it) would miss it.
-    '( curl --fail-with-body -sS "$RESTORE_URL"; echo $? > /tmp/curl.exit ) | tar xf - -C /target',
-    'TAR_RC=$?',
-    'CURL_RC=$(cat /tmp/curl.exit 2>/dev/null || echo 1)',
-    'if [ "$CURL_RC" != 0 ]; then echo "ERROR: dump stream failed (curl rc=$CURL_RC)"; exit 1; fi',
-    'if [ "$TAR_RC" != 0 ]; then echo "ERROR: tar extract failed (rc=$TAR_RC)"; exit 1; fi',
-    'echo "PRERESIZE_RESTORE_DONE bundle=$BUNDLE"',
+    'set -e',
+    `export RESTIC_PASSWORD="$(cat ${CREDS_MOUNT_PATH}/restic_password)"`,
+    `[ -n "$RESTIC_PASSWORD" ] || { echo "ERROR: restic password missing"; exit 1; }`,
+    `if [ -f ${CREDS_MOUNT_PATH}/aws_access_key_id ]; then export AWS_ACCESS_KEY_ID="$(cat ${CREDS_MOUNT_PATH}/aws_access_key_id)"; fi`,
+    `if [ -f ${CREDS_MOUNT_PATH}/aws_secret_access_key ]; then export AWS_SECRET_ACCESS_KEY="$(cat ${CREDS_MOUNT_PATH}/aws_secret_access_key)"; fi`,
+    `if [ -f ${CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${CREDS_MOUNT_PATH}/aws_region)"; fi`,
+    `REPO="$(cat ${CREDS_MOUNT_PATH}/repo_uri)"`,
+    `[ -n "$REPO" ] || { echo "ERROR: repo uri missing"; exit 1; }`,
+    `mkdir -p ${RESTORE_TMP}`,
+    'echo "Running restic restore (full) into PVC..."',
+    // Full restore (no --include). restic stages files under
+    // <target>/source/<...> because the capture stored absolute paths rooted
+    // at /source; overlay them onto the freshly recreated PVC at /source.
+    `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+    `if [ -d ${RESTORE_TMP}${FILES_CAPTURE_ROOT} ]; then cp -a ${RESTORE_TMP}${FILES_CAPTURE_ROOT}/. ${FILES_CAPTURE_ROOT}/; fi`,
+    `COUNT=$(find ${RESTORE_TMP}${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
+    `echo "PRERESIZE_RESTORE_DONE bundle=${input.bundleId} count=\${COUNT:-0}"`,
   ].join('\n');
 
   return {
@@ -362,9 +406,6 @@ export function buildRestoreJobSpec(input: {
       name: input.jobName,
       namespace: input.namespace,
       labels: {
-        // MUST be `restore-files` — that's the label the
-        // allow-backup-files-jobs-to-platform-api NetworkPolicy admits
-        // for egress to platform-api:3000.
         'platform.io/component': 'restore-files',
         'platform.io/tenant-id': input.tenantId,
         'platform.io/pre-resize-bundle': input.bundleId,
@@ -383,38 +424,38 @@ export function buildRestoreJobSpec(input: {
         },
         spec: {
           restartPolicy: 'Never',
-          // Exempt from the tenant ResourceQuota — the workloads are
-          // quiesced during a shrink, but the priority class keeps this
-          // consistent with the capture/snapshot Jobs.
+          // Exempt from the tenant ResourceQuota — workloads are quiesced
+          // during a shrink/restore; the priority class keeps this consistent
+          // with the capture/snapshot Jobs.
           priorityClassName: 'platform-tenant-overhead',
           containers: [{
             name: 'files-restore',
-            image: RESTORE_JOB_IMAGE,
-            imagePullPolicy: 'IfNotPresent',
+            image: TOOLS_IMAGE_DEFAULT,
+            imagePullPolicy: 'Always',
             command: ['sh', '-c', script],
-            // Runs as root so `tar x` can restore file ownership (chown)
-            // into the PVC, but otherwise hardened: no privilege
-            // escalation, default seccomp. PSA-baseline compliant.
+            // Root so `cp -a` can restore file ownership into the PVC, but
+            // otherwise hardened (no privilege escalation, default seccomp).
             securityContext: {
               allowPrivilegeEscalation: false,
               seccompProfile: { type: 'RuntimeDefault' },
             },
-            env: [
-              { name: 'RESTORE_URL', value: input.downloadUrl },
-              { name: 'BUNDLE', value: input.bundleId },
-            ],
             resources: {
-              requests: { cpu: '100m', memory: '128Mi' },
-              limits: { cpu: '1000m', memory: '512Mi' },
+              requests: { cpu: '100m', memory: '256Mi' },
+              limits: { cpu: '1500m', memory: '1Gi' },
             },
             volumeMounts: [
-              { name: 'target', mountPath: '/target', readOnly: false },
+              { name: 'source', mountPath: FILES_CAPTURE_ROOT, readOnly: false },
+              { name: 'restore-tmp', mountPath: RESTORE_TMP },
               { name: 'scratch', mountPath: '/tmp' },
+              { name: 'restic-creds', mountPath: CREDS_MOUNT_PATH, readOnly: true },
             ],
           }],
           volumes: [
-            { name: 'target', persistentVolumeClaim: { claimName: input.pvcName } },
-            { name: 'scratch', emptyDir: { sizeLimit: '100Mi' } },
+            { name: 'source', persistentVolumeClaim: { claimName: input.pvcName } },
+            // restic stages the restore tree here before the cp -a overlay.
+            { name: 'restore-tmp', emptyDir: { sizeLimit: '50Gi' } },
+            { name: 'scratch', emptyDir: { sizeLimit: '2Gi' } },
+            { name: 'restic-creds', secret: { secretName: input.credsSecretName, defaultMode: 0o400 } },
           ],
         },
       },
