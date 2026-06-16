@@ -24,11 +24,11 @@
  *   - {@link reapPreResizeBundle}       — delete it after a confirmed
  *                                         successful resize.
  *
- * The restore is the genuinely-missing files restore-into-PVC primitive:
- * a tenant-namespace Job curls platform-api's `…/files-restic-tar`
- * endpoint (which `restic dump`s the snapshot) and untars the stream
- * into the live PVC. restic + backup creds stay on platform-api; the
- * tenant Job only ever sees an HMAC-scoped HTTP stream.
+ * The restore (since the restic-native files migration) spawns a
+ * tenant-namespace Job (tenant-backup-tools image) that mounts the target PVC
+ * RW + a per-Job creds Secret and runs `restic restore <snap> --target …`
+ * directly against the per-tenant shim repo, then overlays the result onto the
+ * PVC. Mirrors backup-restore/executors/files-paths.ts (the cart restore).
  */
 
 import { eq, and } from 'drizzle-orm';
@@ -342,7 +342,13 @@ export async function restoreFilesBundleIntoPvc(args: {
     );
     credsCreated = true;
 
-    const spec = buildResticRestoreJobSpec({ jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId });
+    const timeoutMs = args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS;
+    const spec = buildResticRestoreJobSpec({
+      jobName, namespace, pvcName, tenantId, bundleId, credsSecretName, snapshotId,
+      // Bound the Job's wall-clock in k8s so a platform-api restart mid-restore
+      // doesn't leave it running forever with the PVC + creds mounted.
+      activeDeadlineSeconds: Math.max(60, Math.ceil(timeoutMs / 1000) - 60),
+    });
     const createdJob = await (k8s.batch as unknown as {
       createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
     }).createNamespacedJob({ namespace, body: spec });
@@ -353,7 +359,7 @@ export async function restoreFilesBundleIntoPvc(args: {
       catch (err) { console.warn(`[prebundle] could not wire ownerRef on creds Secret '${credsSecretName}': ${(err as Error).message}`); }
     }
 
-    await waitForJob(k8s, namespace, jobName, args.timeoutMs ?? DEFAULT_RESTORE_TIMEOUT_MS, args.onProgress);
+    await waitForJob(k8s, namespace, jobName, timeoutMs, args.onProgress);
 
     try {
       await (k8s.batch as unknown as {
@@ -380,6 +386,7 @@ export function buildResticRestoreJobSpec(input: {
   bundleId: string;
   credsSecretName: string;
   snapshotId: string;
+  activeDeadlineSeconds?: number;
 }): Record<string, unknown> {
   const script = [
     'set -e',
@@ -414,6 +421,9 @@ export function buildResticRestoreJobSpec(input: {
     spec: {
       backoffLimit: 0,
       ttlSecondsAfterFinished: 600,
+      ...(input.activeDeadlineSeconds && input.activeDeadlineSeconds > 0
+        ? { activeDeadlineSeconds: input.activeDeadlineSeconds }
+        : {}),
       template: {
         metadata: {
           labels: {
