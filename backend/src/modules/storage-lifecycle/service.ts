@@ -1476,7 +1476,11 @@ export async function archiveTenant(
 
   const opId = uuid();
   const snapId = uuid();
-  const archivePath = ctx.store.reservePath(tenantId, snapId);
+  // Archive is now a restic files bundle (off-site, file-level restorable),
+  // not the legacy off-site tar. The row's archivePath becomes `bundle:<id>`
+  // once the capture completes; until then it carries the `bundle:pending`
+  // placeholder (mirrors the destructive-resize pre-bundle path).
+  const archivePath = 'bundle:pending';
   const retentionDays = params.retentionDays ?? 90;
   const expiresAt = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000);
 
@@ -1514,6 +1518,7 @@ async function runArchive(
   namespace: string,
 ): Promise<void> {
   let quiesceSnap: QuiesceSnapshot | null = null;
+  let preArchiveBundleId: string | null = null;
   const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
     await updateOp(ctx.db, opId, { state, progressPct: pct, progressMessage: msg });
   };
@@ -1522,15 +1527,38 @@ async function runArchive(
     quiesceSnap = await quiesce(ctx.k8s, namespace);
     await waitForQuiesced(ctx.k8s, namespace);
 
-    await progress('snapshotting', 30, 'Creating archive snapshot');
+    await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
     const tenantId = (await currentTenantId(ctx.db, opId))!;
     const pvcName = `${namespace}-storage`;
-    const result = await snapshotTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId, snapshotId: snapId, store: ctx.store,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
+    // The archive IS a restic files bundle — the same off-site, file-level
+    // restorable bundle the destructive-resize path uses, NOT the legacy tar.
+    // Retain it for the archive retention window (default 90d) since the
+    // bundle is the ONLY restore source after the PVC is deleted.
+    const [op] = await ctx.db.select({ params: storageOperations.params })
+      .from(storageOperations).where(eq(storageOperations.id, opId)).limit(1);
+    const retentionDays = (op?.params as { retentionDays?: number } | null)?.retentionDays ?? 90;
+    const bundle = await captureFilesOnlyBundle({
+      db: ctx.db,
+      k8s: ctx.k8s,
+      tenantId,
+      label: `Archive ${new Date().toISOString().slice(0, 10)}`,
+      retentionDays,
     });
+    // A `partial` bundle means the files component didn't fully capture —
+    // refuse to deprovision the tenant (delete PVC) without a complete archive.
+    if (bundle.status !== 'completed') {
+      throw new ApiError(
+        'SNAPSHOT_INCOMPLETE',
+        `Archive files bundle ${bundle.bundleId} finished '${bundle.status}', not 'completed' — refusing to deprovision without a complete archive.`,
+        500,
+      );
+    }
+    preArchiveBundleId = bundle.bundleId;
     await ctx.db.update(storageSnapshots).set({
-      status: 'ready', sizeBytes: String(result.sizeBytes), sha256: result.sha256,
+      status: 'ready',
+      archivePath: `bundle:${bundle.bundleId}`,
+      sizeBytes: String(bundle.sizeBytes),
+      sha256: null,
     }).where(eq(storageSnapshots.id, snapId));
 
     await progress('replacing', 70, 'Removing live workloads and PVC');
@@ -1556,10 +1584,18 @@ async function runArchive(
       activeStorageOpId: null,
     }).where(eq(tenants.id, tenantId));
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     const persisted = formatLifecycleError(err, 'pvc');
     await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
-    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: persisted }).where(eq(storageSnapshots.id, snapId));
+    // Settle the archive snapshot row. If the bundle DID capture before the
+    // failure, keep the row pointing at it (it IS the archive — NOT reaped on
+    // failure); otherwise mark failed. Unlike resize, archive never reaps the
+    // bundle on success — it's the long-lived restore source.
+    await ctx.db.update(storageSnapshots)
+      .set(preArchiveBundleId
+        ? { status: 'ready', archivePath: `bundle:${preArchiveBundleId}` }
+        : { status: 'failed', lastError: persisted })
+      .where(eq(storageSnapshots.id, snapId))
+      .catch(() => {});
     if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
@@ -1825,11 +1861,26 @@ async function runRestoreArchive(
     await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
     const tenantId = (await currentTenantId(ctx.db, opId))!;
-    // Phase 5: per-target restore for new rows; legacy ctx.store for old.
-    const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
-    const restoreStore = snap ? await resolveRestoreStore(ctx, snap) : ctx.store;
-    await restoreTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId, snapshotId: snapId, archivePath, store: restoreStore,
+    // The archive IS a restic files bundle (archivePath = `bundle:<id>`).
+    // The PVC was just recreated above; restore the bundle's files into it.
+    // Legacy off-site tar archives (pre-P3) are no longer restorable here.
+    const bundleId = archivePath.startsWith('bundle:')
+      ? archivePath.slice('bundle:'.length)
+      : null;
+    if (!bundleId) {
+      throw new ApiError(
+        'ARCHIVE_NOT_RESTORABLE',
+        `Archive ${snapId} is a legacy tar archive (archivePath='${archivePath}') and is no longer restorable.`,
+        409,
+      );
+    }
+    await restoreFilesBundleIntoPvc({
+      db: ctx.db,
+      k8s: ctx.k8s,
+      bundleId,
+      tenantId,
+      namespace,
+      pvcName,
       onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
     });
 
@@ -2282,14 +2333,24 @@ export async function deleteSnapshot(ctx: ServiceCtx, snapshotId: string): Promi
   // silently no-op'd (wrong bucket) or deleted from an unrelated
   // target. Phase 11 CIFS delete (one-shot rclone Job) was never
   // reached this way.
-  try {
-    const store = await resolveRestoreStore(ctx, snap);
-    await store.delete(snap.archivePath).catch(() => { /* best-effort remote cleanup */ });
-  } catch (err) {
-    // TARGET_REMOVED 410 is acceptable here — the target's gone, so
-    // there's nothing remote to clean up. Still delete the DB row.
-    if (!(err instanceof ApiError && err.code === 'TARGET_REMOVED')) {
-      throw err;
+  if (snap.archivePath.startsWith('bundle:')) {
+    // Archive / pre-resize rows hold a restic bundle id (`bundle:<id>`),
+    // NOT a snapshot-store key — reap the bundle, not store.delete (which
+    // would no-op on the literal "bundle:<id>" string and leak the data).
+    const bundleId = snap.archivePath.slice('bundle:'.length);
+    if (bundleId && bundleId !== 'pending') {
+      await reapPreResizeBundle({ db: ctx.db, k8s: ctx.k8s, bundleId }).catch(() => { /* best-effort */ });
+    }
+  } else {
+    try {
+      const store = await resolveRestoreStore(ctx, snap);
+      await store.delete(snap.archivePath).catch(() => { /* best-effort remote cleanup */ });
+    } catch (err) {
+      // TARGET_REMOVED 410 is acceptable here — the target's gone, so
+      // there's nothing remote to clean up. Still delete the DB row.
+      if (!(err instanceof ApiError && err.code === 'TARGET_REMOVED')) {
+        throw err;
+      }
     }
   }
   await ctx.db.delete(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
@@ -2333,11 +2394,19 @@ export async function expireSnapshots(ctx: ServiceCtx): Promise<number> {
       // for Phase 3+ snapshots). TARGET_REMOVED means the target's
       // gone; still flip the DB row to expired (no remote cleanup
       // possible anyway).
-      try {
-        const store = await resolveRestoreStore(ctx, snap);
-        await store.delete(snap.archivePath);
-      } catch (err) {
-        if (!(err instanceof ApiError && err.code === 'TARGET_REMOVED')) throw err;
+      if (snap.archivePath.startsWith('bundle:')) {
+        // restic bundle (archive / pre-resize) — reap the bundle, not store.delete.
+        const bundleId = snap.archivePath.slice('bundle:'.length);
+        if (bundleId && bundleId !== 'pending') {
+          await reapPreResizeBundle({ db: ctx.db, k8s: ctx.k8s, bundleId }).catch(() => {});
+        }
+      } else {
+        try {
+          const store = await resolveRestoreStore(ctx, snap);
+          await store.delete(snap.archivePath);
+        } catch (err) {
+          if (!(err instanceof ApiError && err.code === 'TARGET_REMOVED')) throw err;
+        }
       }
       await ctx.db.update(storageSnapshots).set({ status: 'expired' }).where(eq(storageSnapshots.id, snap.id));
       reaped += 1;
