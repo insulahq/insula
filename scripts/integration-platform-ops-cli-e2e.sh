@@ -191,10 +191,16 @@ else
   if [[ -z "$DL_URL" ]]; then
     skip "secrets-bundle export produced no downloadUrl (operator recipient missing? export failed) — Tier 1 checks skipped"
   else
-    # Download ONCE on the node (single-use token); decrypt with the on-node
-    # operator key. The plaintext bundle stays on the node and is removed.
+    # downloadUrl is a RELATIVE path (/api/v1/.../download/<token>); make it
+    # absolute. The download runs on the WORKSTATION (the node can't reach its
+    # own external admin ingress — hairpin), then we ship the bundle to the node
+    # and decrypt there with the on-node operator key (the key never leaves the
+    # node). single-use token → download exactly once.
+    case "$DL_URL" in http*) FULL_DL="$DL_URL";; *) FULL_DL="$ADMIN_HOST$DL_URL";; esac
     AGEKEY=/var/lib/hosting-platform/operator-key/operator-private.key
-    ssh_q "curl -sk --max-time 120 '$DL_URL' -o /tmp/dr-e2e.age" >/dev/null 2>&1
+    curl -sk --max-time 120 -o /tmp/dr-e2e-ws.age "$FULL_DL" >/dev/null 2>&1
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 -q /tmp/dr-e2e-ws.age "$SSH_HOST":/tmp/dr-e2e.age >/dev/null 2>&1
+    rm -f /tmp/dr-e2e-ws.age
     MEMBERS=$(ssh_q "age -d -i $AGEKEY /tmp/dr-e2e.age 2>/dev/null | tar -t 2>/dev/null")
     if echo "$MEMBERS" | grep -qx 'dr-system-target.json'; then
       ok "exported secrets bundle carries dr-system-target.json (descriptor delivery, in-pod)"
