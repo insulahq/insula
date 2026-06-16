@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildResticRestoreJobSpec, reapPreResizeBundle } from './prebundle.js';
+import { buildResticRestoreJobSpec, reapPreResizeBundle, resolveTenantBundleTarget } from './prebundle.js';
 import { backupJobs, backupConfigurations } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -150,5 +150,29 @@ describe('reapPreResizeBundle — frozen-target DR guard', () => {
     } as unknown as Database;
     await expect(reapPreResizeBundle({ db: emptyDb, k8s, bundleId: 'gone' })).resolves.toBeUndefined();
     expect(deletes).not.toContain('backupJobs');
+  });
+});
+
+/**
+ * The destructive-shrink pre-flight (resizeTenant) resolves this BEFORE any
+ * quiesce/PVC delete, so a tenant with no off-site target fails fast with a
+ * clear NO_SNAPSHOT_TARGET instead of being quiesced then aborting.
+ */
+describe('resolveTenantBundleTarget — fail-fast when no target', () => {
+  // Minimal drizzle stand-in: every query resolves to [] (no assignment, no
+  // legacy active target).
+  function emptyTargetsDb(): Database {
+    const chain: Record<string, unknown> = {};
+    for (const m of ['select', 'from', 'where', 'orderBy']) chain[m] = () => chain;
+    chain.limit = () => Promise.resolve([]);
+    (chain as { then: unknown }).then = (r: (v: unknown) => unknown) => Promise.resolve([]).then(r);
+    return chain as unknown as Database;
+  }
+
+  it('throws NO_SNAPSHOT_TARGET (HTTP 400) when no tenant-class target is configured', async () => {
+    await expect(resolveTenantBundleTarget(emptyTargetsDb())).rejects.toMatchObject({
+      code: 'NO_SNAPSHOT_TARGET',
+      status: 400,
+    });
   });
 });

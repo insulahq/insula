@@ -409,6 +409,13 @@ export async function resizeTenant(
   if (!dry.willFit) {
     throw new ApiError('RESIZE_UNSAFE', dry.rejectReason!, 400, { dryRun: dry });
   }
+  // Fail FAST (before any quiesce / PVC delete): a destructive shrink captures a
+  // pre-resize bundle to an off-site target BEFORE deleting the PVC. If no
+  // tenant-class target is configured, the capture would only discover that
+  // AFTER the tenant is already quiesced — so resolve it here, synchronously, and
+  // surface NO_SNAPSHOT_TARGET to the caller without disrupting the running tenant.
+  const { resolveTenantBundleTarget } = await import('./prebundle.js');
+  await resolveTenantBundleTarget(ctx.db);
   return resizeDestructive(ctx, tenant.kubernetesNamespace, tenantId, dry.currentMib, newMib, params.triggeredByUserId ?? null);
 }
 
