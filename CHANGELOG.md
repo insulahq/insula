@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.11] - 2026-06-16
+
 ### Added
 - **Disaster-recovery break-glass: tiered etcd restore that works when the
   cluster is DOWN (R20 follow-up).** The off-site etcd restore used to need
