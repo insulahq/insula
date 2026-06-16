@@ -165,9 +165,16 @@ TTL. Migration `0067` adds `tenant_volume_snapshots` + the expiry setting.
 - Longhorn API: `http://longhorn-backend.longhorn-system:9500`
   (override `LONGHORN_API_BASE`).
 
+## Per-file restore vs whole-volume restore
+
+On-server snapshots here only support **whole-volume** revert. To pull back
+**individual files or folders** without reverting everything, use the **bundle
+restore cart** (off-site restic backups) — it has a file-tree browser and a
+`files-paths` item that restores just the selected paths (idempotent overwrite,
+with a pre-restore snapshot as a rollback target). That path shipped 2026-06-16
+(#105); see [TENANT_BACKUP.md](TENANT_BACKUP.md).
+
 ## Still open (R19)
 
-- **Individual-file restore** — browse a snapshot and pull single files without
-  reverting the whole volume (likely restic, not a Longhorn clone). Not built.
 - **rclone-shim multipart > 1 GiB** — see Troubleshooting; blocks large-PVC
   shrink/backup through the in-cluster shim.

@@ -117,11 +117,30 @@ Item types:
 | `config-tables` | `{ kind: 'all' | 'tables', tables: ['<camelCase>'] }` | In-process INSERT…ON CONFLICT (id) DO UPDATE per row, per allow-listed table |
 | `deployments-by-id` | `{ kind: 'all' | 'ids', deploymentIds }` | In-process upsert filtered by id |
 | `domains-by-id` | `{ kind: 'all' | 'ids', domainIds }` | In-process upsert filtered by id |
-| `files-paths` | `{ kind: 'full' | 'paths', paths }` | Tenant-ns Job: download archive via internal-download endpoint, tar-extract paths into PVC |
+| `files-paths` | `{ kind: 'full' | 'paths', paths }` | Tenant-ns Job mounting the PVC read-write: **restic-native** `restic restore <snap> [--include /source/<path> …] --no-lock` → `cp -a` overlay onto the live PVC (idempotent overwrite; files not in the snapshot are left alone, never deleted) |
 | `mailboxes-by-address` | `{ kind: 'all' | 'addresses', addresses }` | Mail-ns Job: download per-mailbox tarball, run `stalwart-cli account import` per address |
 
 Cross-tenant guard: every executor asserts `dump.tenantId === restoreJob.tenantId`
 before applying anything.
+
+### File browse + selective restore (2026-06-16, #105)
+
+The files component is captured as a **restic** tree, so a cart can browse the
+bundle and restore individual files/folders instead of the whole archive:
+
+- **Browse** (lazy, one directory at a time):
+  `GET /api/v1/admin/tenant-bundles/:bundleId/browse/files/tree?path=<dir>` (admin)
+  · `GET /api/v1/tenants/:tenantId/bundles/:bundleId/browse/files/tree?path=<dir>`
+  (tenant). Each call returns the **direct children** of `path` (display paths,
+  no leading slash), dirs-first. The restore-cart UI renders this as an
+  expandable tree with per-file/per-folder checkboxes.
+- **Restore** the selection by adding a `files-paths` item with
+  `{ kind: 'paths', paths: [...] }` (up to 10 000 paths) — or `{ kind: 'full' }`
+  for the whole tree. The executor runs the restic-native overlay above; because
+  the item touches the PVC, a **pre-restore snapshot** is taken first (below) so
+  the whole cart is rollback-able.
+
+E2E: `scripts/integration-tenant-bundles-files-browse-restore-e2e.sh`.
 
 ### Pre-restore snapshot
 

@@ -43,7 +43,7 @@ A migration that finishes with one or more failed legs is reported as
   maildir/DB directories.
 - **The migration tool images are pullable** by the cluster:
   - `migration-tools` — DB + content legs (override: `PLESK_MIGRATION_TOOLS_IMAGE`)
-  - `mail-backup-tools` — mail leg + discovery (override: `PLESK_MAIL_TOOLS_IMAGE`,
+  - `tenant-backup-tools` — mail leg + discovery (override: `PLESK_MAIL_TOOLS_IMAGE`,
     `PLESK_DISCOVERY_IMAGE`)
   - All Jobs run `imagePullPolicy: Always` — a `:latest` tag never serves a stale
     cached layer, but the registry must be reachable.
@@ -120,7 +120,7 @@ for debugging; on success it's stripped (it can contain mailbox names).
 | **email** | Enable email on mail-hosting domains | in platform-api |
 | **databases** | Ensure the tenant MariaDB, create the DBs, stream the dumps | `migration-tools` Job in the **tenant** namespace (30-min deadline) |
 | **content** | Ensure the web deployment (apache-php / static-apache), rsync each docroot, route the domain | `migration-tools` Job in the **tenant** namespace (60-min deadline) |
-| **mail** | Create each Stalwart mailbox, import via IMAP (master-user proxy, multi-worker MULTIAPPEND) | `mail-backup-tools` Job in the **mail** namespace (120-min deadline) |
+| **mail** | Create each Stalwart mailbox, import via IMAP (master-user proxy, multi-worker MULTIAPPEND) | `tenant-backup-tools` Job in the **mail** namespace (120-min deadline) |
 | **cron** | Import crontab lines: webcrons → enabled cron jobs; shell crons → **disabled** deployment cron jobs (for review); `@reboot` skipped; `@`-macros mapped to numeric | in platform-api |
 
 All Jobs run non-root (uid 65534), read-only rootfs, all caps dropped; their
@@ -213,4 +213,4 @@ Migrations: `0061` (sources + discoveries), `0062` (migrations), `0063`
 - Contracts: `packages/api-contracts/src/plesk-migration.ts`.
 - Admin UI: `frontend/admin-panel/src/pages/platform/PleskMigrationPage.tsx`
   (+ `hooks/use-plesk-migration.ts`).
-- Tool images: `migration-tools`, `mail-backup-tools` (GHCR).
+- Tool images: `migration-tools`, `tenant-backup-tools` (GHCR).
