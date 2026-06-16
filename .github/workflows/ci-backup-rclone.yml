@@ -131,7 +131,7 @@ jobs:
 
       # ---- step 2: multi-arch push (uses the same cache) ----
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.IMAGE }}
           tags: |
