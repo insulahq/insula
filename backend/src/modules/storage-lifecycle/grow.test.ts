@@ -39,13 +39,22 @@ function makeMockCtx(currentGi: number) {
   const insertedOps: InsertedOp[] = [];
   const insertedSnapshots: unknown[] = [];
 
-  // Different queries hit different shapes. Rather than juggling call
-  // counts, we satisfy whoever asks: full tenant OR idle projection.
-  const whereFn = vi.fn().mockImplementation(() => Promise.resolve([tenant, idleProjection][0]
-    ? [{ ...tenant, ...idleProjection }] : []));
+  // Different queries hit different shapes. `.where()` returns an object that
+  // is BOTH awaitable (mustBeIdle/mustGetTenant `await …where()`) AND chainable
+  // (`.orderBy().limit()` + `.limit()`), so the destructive-shrink pre-flight's
+  // resolveTenantBundleTarget (assignment query → none; legacy active query →
+  // a truthy row, so the pre-flight passes) works without a real DB.
+  const row = { ...tenant, ...idleProjection };
+  const makeWhereResult = (): Record<string, unknown> => ({
+    then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+      Promise.resolve([row]).then(resolve, reject),
+    orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([]) }),
+    limit: vi.fn().mockResolvedValue([row]),
+  });
+  const whereFn = vi.fn().mockImplementation(() => makeWhereResult());
   const fromFn = vi.fn().mockReturnValue({
     where: whereFn,
-    orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([{ ...tenant, ...idleProjection }]) }),
+    orderBy: vi.fn().mockReturnValue({ limit: vi.fn().mockResolvedValue([row]) }),
   });
   const selectFn = vi.fn().mockReturnValue({ from: fromFn });
 

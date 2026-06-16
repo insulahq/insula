@@ -92,7 +92,7 @@ function platformApiInternalUrl(): string {
  * legacy `active=true` row. Fail-loud (`NO_SNAPSHOT_TARGET`) when none
  * exists: a destructive shrink MUST have an off-site rollback snapshot.
  */
-async function resolveTenantBundleTarget(
+export async function resolveTenantBundleTarget(
   db: Database,
 ): Promise<typeof backupConfigurations.$inferSelect> {
   let cfg: typeof backupConfigurations.$inferSelect | undefined;
