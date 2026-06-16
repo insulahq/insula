@@ -913,9 +913,9 @@ async function runResizeDestructive(
 
     await progress('restoring', 60, 'Restoring data from pre-resize bundle');
     // Restore the files bundle into the freshly recreated (smaller) PVC.
-    // A tenant-ns Job streams platform-api's `restic dump` of the files
-    // snapshot and untars it into the PVC — the file-level repack a
-    // block snapshot can't do when shrinking.
+    // A tenant-ns Job runs `restic restore` (restic-native) against the
+    // per-tenant shim repo and overlays it onto the PVC — the file-level
+    // repack a block snapshot can't do when shrinking.
     await restoreFilesBundleIntoPvc({
       db: ctx.db,
       k8s: ctx.k8s,

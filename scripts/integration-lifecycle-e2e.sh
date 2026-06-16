@@ -225,16 +225,21 @@ ARCH_SNAP_ID=$(echo "$ARCH_FINAL" | python3 -c "import json,sys;print(json.load(
 [[ -n "$ARCH_SNAP_ID" ]] && ok "pre-archive snapshot recorded id=${ARCH_SNAP_ID:0:8}" \
   || fail "no snapshotId on archive op (no rollback insurance)"
 
-# Snapshot row should be 'ready'.
-SNAP_STATUS=$(api GET "/admin/tenants/$CID/storage/snapshots" 2>/dev/null \
+# Snapshot row should be 'ready' AND be a restic bundle (2026-06-16: archive
+# is now a restic files bundle, archivePath='bundle:<id>', NOT the legacy tar).
+read -r SNAP_STATUS SNAP_ARCHIVE_PATH < <(api GET "/admin/tenants/$CID/storage/snapshots" 2>/dev/null \
   | python3 -c "
 import json,sys
 data=json.load(sys.stdin).get('data',[])
 for s in data:
-    if s.get('kind')=='pre-archive': print(s.get('status','')); break
+    if s.get('kind')=='pre-archive': print(s.get('status',''), s.get('archivePath','')); break
 " 2>/dev/null)
 [[ "$SNAP_STATUS" == "ready" ]] && ok "pre-archive snapshot status=ready" \
   || fail "pre-archive snapshot status=$SNAP_STATUS (expected ready)"
+case "$SNAP_ARCHIVE_PATH" in
+  bundle:*) ok "pre-archive snapshot is a restic bundle ($SNAP_ARCHIVE_PATH)" ;;
+  *) fail "pre-archive archivePath='$SNAP_ARCHIVE_PATH' — expected 'bundle:<id>' (archive should be restic, not tar)" ;;
+esac
 
 # Client.status must be 'archived' now.
 ARCH_STATUS_DB=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('status') or '')" 2>/dev/null)
