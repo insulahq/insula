@@ -131,7 +131,7 @@ assets['host-migrations/manifest.json'] = manifestPath;
 // same logic as the standalone break-glass scripts (one source of truth). Each
 // MUST be self-contained (no `source scripts/lib/...`) — it's extracted to a
 // temp file and run alone. Fail the build loudly if one goes missing.
-const drRestores = ['restore-etcd-from-shim.sh', 'restore-mail-from-shim.sh', 'restore-postgres-from-shim.sh'];
+const drRestores = ['restore-etcd-local.sh', 'restore-etcd-from-shim.sh', 'restore-mail-from-shim.sh', 'restore-postgres-from-shim.sh'];
 for (const f of drRestores) {
   const p = path.join(repoRoot, 'scripts', f);
   if (!fs.existsSync(p)) {

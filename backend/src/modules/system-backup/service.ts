@@ -44,6 +44,11 @@ export interface ExportRunInput {
     readonly INGRESS_BASE_DOMAIN?: string;
     readonly PLATFORM_VERSION?: string;
   };
+  /** PLATFORM_ENCRYPTION_KEY — threaded through so the bundle can carry the
+   *  `dr-system-target.json` break-glass descriptor (decrypted system
+   *  upstream target for the offline etcd restore). Optional; when absent
+   *  the descriptor is simply omitted. */
+  readonly encryptionKey?: string;
 }
 
 export interface CreateExportResult {
@@ -184,7 +189,7 @@ async function runExport(runId: string, input: ExportRunInput, logger: FastifyLo
     // supplied — production always provides config; legacy callers
     // and tests can omit it for a Secrets-only bundle.
     const bundle = input.config
-      ? await exportSecretsBundle({ k8s: input.k8s, db: input.db, config: input.config })
+      ? await exportSecretsBundle({ k8s: input.k8s, db: input.db, config: input.config, encryptionKey: input.encryptionKey })
       : await exportSecretsBundle({ k8s: input.k8s });
     const signed = signDownloadToken({ runId, ttlSeconds: DOWNLOAD_TTL_SECONDS }, input.jwtSecret);
 

@@ -181,11 +181,51 @@ describe('dispatch', () => {
     expect(runEmbeddedScript).toHaveBeenCalledWith('dr/restore-etcd-from-shim.sh', ['--dry-run']);
   });
 
+  it('dr restore-component etcd --local routes to the local-snapshot script (flag consumed)', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['dr', 'restore-component', 'etcd', '--local', '--latest'], deps)).toBe(0);
+    // --local selects the Tier-0 asset and is stripped from the passthrough args.
+    expect(runEmbeddedScript).toHaveBeenCalledWith('dr/restore-etcd-local.sh', ['--latest']);
+  });
+
   it('dr restore-component with no/unknown component → exit 2', async () => {
     const { deps, err } = fakeDeps();
     expect(await dispatch(['dr', 'restore-component'], deps)).toBe(2);
     expect(await dispatch(['dr', 'restore-component', 'frobnicate'], deps)).toBe(2);
     expect(err.join('\n')).toMatch(/etcd.*mail.*postgres|postgres/i);
+  });
+
+  it('dr preflight --json: all tiers ready → ok + exit 0', async () => {
+    const exec = vi.fn(async (_cmd: string, args: string[]) => {
+      const a = args.join(' ');
+      if (a.includes('db/snapshots')) return { code: 0, stdout: '5', stderr: '' };
+      if (a.includes('etcd-snap-via-shim')) return { code: 0, stdout: 'etcd/cid-123', stderr: '' };
+      if (a.includes('svc backup-rclone-shim')) return { code: 0, stdout: '10.43.0.9', stderr: '' };
+      if (a.includes('backup-rclone-shim-creds')) return { code: 0, stdout: 'secret/backup-rclone-shim-creds', stderr: '' };
+      if (a.includes('system-postgres-objectstore')) return { code: 0, stdout: 'objectstore/system-postgres-objectstore', stderr: '' };
+      if (a.includes('stalwart-snapshot-restic-repo')) return { code: 0, stdout: 'secret/stalwart-snapshot-restic-repo', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const { deps, out } = fakeDeps({ exec });
+    expect(await dispatch(['dr', 'preflight', '--json'], deps)).toBe(0);
+    const parsed = JSON.parse(out.join('')) as { ok: boolean; fails: number };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.fails).toBe(0);
+  });
+
+  it('dr preflight: no local snapshots AND no off-site flow → FAIL + exit 1', async () => {
+    const exec = vi.fn(async (_cmd: string, args: string[]) => {
+      const a = args.join(' ');
+      if (a.includes('db/snapshots')) return { code: 0, stdout: '0', stderr: '' };
+      if (a.includes('etcd-snap-via-shim')) return { code: 1, stdout: '', stderr: 'NotFound' };
+      return { code: 1, stdout: '', stderr: 'NotFound' };
+    });
+    const { deps, out } = fakeDeps({ exec });
+    expect(await dispatch(['dr', 'preflight', '--json'], deps)).toBe(1);
+    const parsed = JSON.parse(out.join('')) as { ok: boolean; checks: Array<{ name: string; status: string }> };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.checks.some((c) => c.name === 'etcd recoverability' && c.status === 'fail')).toBe(true);
   });
 
   it('dr rescue routes through to dr.rescue', async () => {

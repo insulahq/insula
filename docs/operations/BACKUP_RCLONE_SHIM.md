@@ -178,14 +178,22 @@ the operator to type `restore-mail` at the confirmation prompt.
 If both the platform-api and the running shim are gone (e.g.
 hardware loss, region failure):
 
+0. **If this control-plane node's disk survived, try Tier 0 first:**
+   `restore-etcd-local.sh --latest` (no network needed). If it brings
+   the cluster back, skip to step 4. The steps below are the
+   lost-everything (fresh-node) path.
 1. `bootstrap.sh` on a fresh cluster — installs k3s, CNPG, the shim
    DaemonSet, etc. Restore the BACKUP_TARGET_KEY from the Tier-1
    secrets bundle (`make secrets-restore`).
 2. PUT `/admin/backup-rclone-shim/assignments/system` with the
    recovered SYSTEM target id. The shim reconciler renders
    ConfigMap + Secret + DaemonSet annotation; pods roll into place.
-3. Run `restore-etcd-from-shim.sh --latest` on the control-plane
-   node — gives you back the cluster state.
+3. Restore etcd. If the kube-API isn't up yet (so the shim is
+   unreachable), use the OFFLINE path — it reads the upstream target
+   from the bundle directly, no kubectl:
+   `restore-etcd-from-shim.sh --offline --bundle <secrets-*.tar.age> --age-key <key> --latest`.
+   Once the cluster is up, the online `restore-etcd-from-shim.sh --latest`
+   works too.
 4. Wait ~5 min for the platform-api scheduler to materialise the
    ObjectStore CR (R-X6 reconciler).
 5. Run `restore-postgres-from-shim.sh --latest` — creates a fresh
@@ -227,31 +235,62 @@ The legacy `etcd-snapshot-cronjob` (direct-to-S3 via aws-cli with the
 during the transition. R-X13 archives it once shim coverage is
 proven on staging.
 
-### Recover from a shim-uploaded etcd snapshot
+### Recover etcd — tiered break-glass
 
-Use `scripts/restore-etcd-from-shim.sh` on the control-plane node (run as root —
-k3s etcd restore is a local operation). It resolves the cluster_id-namespaced
-prefix from the live CronJob's `SHIM_PREFIX` env (so it always reads the path the
-upload wrote to) and **refuses** an un-namespaced `etcd/` read:
+etcd restore has a **chicken-and-egg**: the shim-based path reads the shim
+ClusterIP + creds via `kubectl`, but in a real etcd disaster the kube-API is
+down. So try the tiers **in order** — earlier tiers need less of the cluster:
+
+**Tier 0 — local k3s snapshot (no network, no kubectl, no shim).** k3s keeps a
+rolling window of local snapshots on every server node
+(`/var/lib/rancher/k3s/server/db/snapshots/`). If this node's disk survived,
+this is the fastest, most reliable restore and the FIRST thing to try:
 
 ```bash
-# List THIS cluster's snapshots (prefix auto-resolved from the CronJob).
-sudo ./scripts/restore-etcd-from-shim.sh --list
-
-# Restore the newest — scoped to this cluster, never another's.
-sudo ./scripts/restore-etcd-from-shim.sh --latest
-
-# Restore a named snapshot, or dry-run first.
-sudo ./scripts/restore-etcd-from-shim.sh --name <host>-<ts>.db
-sudo ./scripts/restore-etcd-from-shim.sh --dry-run --latest
-
-# Bare-metal rebuild where the CronJob isn't applied yet → name the cluster.
-# The cluster_id is platform_settings.cluster_id (a stable UUID).
-sudo ./scripts/restore-etcd-from-shim.sh --cluster-id <uuid> --latest
+sudo ./scripts/restore-etcd-local.sh --list
+sudo ./scripts/restore-etcd-local.sh --latest        # k3s server --cluster-reset
+sudo ./scripts/restore-etcd-local.sh --dry-run --latest
+# or via the CLI:
+platform-ops dr restore-component etcd --local --latest
 ```
 
-The same logic ships inside the operator CLI:
-`platform-ops dr restore-component etcd --latest`.
+**Tier 1 — off-site, OFFLINE (fresh node / cluster down, no kubectl).** When the
+local snapshots are gone too, pull the off-site copy **directly from the real
+upstream** (bypassing the shim AND kubectl). It reads the decrypted `system`
+target from `dr-system-target.json`, carried inside the age-encrypted secrets
+bundle that `platform-ops dr verify/restore` consumes (produced by
+`/admin/system-backup/export-secrets-bundle` once a SYSTEM target is bound):
+
+```bash
+# --list / --dry-run make NO cluster contact — also the way to PROVE this works
+# before a disaster (run with KUBECTL=/bin/false to confirm).
+sudo ./scripts/restore-etcd-from-shim.sh --offline \
+     --bundle <secrets-*.tar.age> --age-key <operator-private.key> --list
+sudo ./scripts/restore-etcd-from-shim.sh --offline \
+     --bundle <secrets-*.tar.age> --age-key <operator-private.key> --latest
+```
+
+S3 upstreams only (SFTP/CIFS: use Tier 0 or the online path). The descriptor
+holds plaintext upstream creds — it exists only inside the age-encrypted bundle;
+the script streams it into memory and never writes it to disk.
+
+**Tier 1b — off-site, ONLINE via the shim (cluster is up).** The original path:
+it resolves the cluster_id-namespaced prefix from the live CronJob's
+`SHIM_PREFIX` and **refuses** an un-namespaced `etcd/` read:
+
+```bash
+sudo ./scripts/restore-etcd-from-shim.sh --list            # auto-resolves the prefix
+sudo ./scripts/restore-etcd-from-shim.sh --latest          # scoped to this cluster
+sudo ./scripts/restore-etcd-from-shim.sh --name <host>-<ts>.db
+sudo ./scripts/restore-etcd-from-shim.sh --cluster-id <uuid> --latest   # bare-metal rebuild
+# via the CLI:
+platform-ops dr restore-component etcd --latest
+```
+
+**Check readiness BEFORE a disaster:** `platform-ops dr preflight` reports, per
+tier, whether the restore would actually work (local snapshots present, SYSTEM
+target bound so the bundle carries the descriptor, shim reachable, postgres
+ObjectStore + mail restic repo present).
 
 ---
 

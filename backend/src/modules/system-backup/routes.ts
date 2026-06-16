@@ -95,6 +95,9 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
           INGRESS_BASE_DOMAIN: app.config?.INGRESS_BASE_DOMAIN,
           PLATFORM_VERSION: app.config?.PLATFORM_VERSION,
         },
+        // Offline break-glass: lets the bundle carry dr-system-target.json
+        // (decrypted system upstream target) for the no-cluster etcd restore.
+        encryptionKey: (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined,
       },
       app.log as unknown as { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void; error: (...a: unknown[]) => void },
     );

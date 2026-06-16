@@ -377,9 +377,14 @@ import into cluster B" exists. The actual move feature (the export/import
 orchestration + cutover) is not yet implemented. R1 (Plesk inbound) and
 within-cluster restore exist; cluster-A→B does not.
 
-Related DR follow-up: **break-glass shim reachability**. The
-`restore-{etcd,mail,postgres}-from-shim.sh` paths assume a node-local `rclone`
-and reach the in-cluster shim; the etcd path resolves the shim ClusterIP rather
-than `.svc` DNS (fixed 2026-06-14), but in a real etcd disaster CoreDNS is down
-too, so an in-cluster shim may be unreachable — rethink the break-glass source
-(off-cluster mirror / ClusterIP pinning) before relying on it.
+Related DR follow-up: **break-glass shim reachability — addressed 2026-06-16.**
+The etcd restore is now a three-tier ladder that no longer depends on a live
+cluster: **Tier 0** `restore-etcd-local.sh` (local k3s snapshot, zero network),
+**Tier 1** `restore-etcd-from-shim.sh --offline` (reads the decrypted `system`
+target from `dr-system-target.json` in the age-encrypted bundle and pulls direct
+from the real upstream S3 — no kubectl/shim), and **Tier 1b** the original
+kubectl→shim path. `platform-ops dr preflight` checks readiness ahead of a
+disaster. Runbook:
+[BACKUP_RCLONE_SHIM.md → Recover etcd](../operations/BACKUP_RCLONE_SHIM.md#recover-etcd--tiered-break-glass).
+Residual: an `--offline` path for SFTP/CIFS upstreams (S3-only today); postgres/
+mail restores still run after the cluster is back (by design).

@@ -18,6 +18,7 @@
  */
 import type { Deps, DrBundleManifest, DrRescueRequest, DrRestoreRequest } from './deps.js';
 import { scrubCreds } from './redact.js';
+import { drPreflight } from './dr-preflight.js';
 
 export type ParseDrResult =
   | { ok: true; sub: 'verify'; bundlePath: string; ageKeyPath: string; ageBinary?: string }
@@ -285,20 +286,30 @@ const DR_COMPONENT_ASSETS: Record<string, string> = {
 
 async function drRestoreComponent(args: string[], deps: Deps): Promise<number> {
   const [component, ...rest] = args;
-  const asset = component ? DR_COMPONENT_ASSETS[component] : undefined;
-  if (!asset) {
+  if (!component || !(component in DR_COMPONENT_ASSETS)) {
     deps.err(`dr restore-component: expected one of etcd|mail|postgres, got ${component ? `'${component}'` : 'none'}`);
-    deps.err('  e.g. platform-ops dr restore-component postgres --latest');
-    deps.err('       platform-ops dr restore-component postgres --pitr 2026-05-20T10:00:00Z');
+    deps.err('  e.g. platform-ops dr restore-component etcd --local         (Tier 0: local k3s snapshot, no network)');
+    deps.err('       platform-ops dr restore-component etcd --offline --bundle <p> --age-key <k> --latest');
+    deps.err('       platform-ops dr restore-component postgres --latest');
     return 2;
   }
-  return deps.runEmbeddedScript(asset, rest);
+  // etcd has three tiers selected by a leading flag, all sharing one
+  // passthrough surface. `--local` reads the on-node k3s snapshot dir
+  // (no network/kubectl); `--offline` reads the off-site target direct
+  // from a bundle descriptor (no kubectl); bare uses the kubectl→shim
+  // path. The flag is consumed here so the chosen script never sees it.
+  if (component === 'etcd' && rest.includes('--local')) {
+    return deps.runEmbeddedScript('dr/restore-etcd-local.sh', rest.filter((a) => a !== '--local'));
+  }
+  return deps.runEmbeddedScript(DR_COMPONENT_ASSETS[component], rest);
 }
 
 export async function drCommand(args: string[], deps: Deps): Promise<number> {
   // restore-component passes its args straight through to the embedded bash, so
   // it bypasses the structured DR (verify/restore/rescue) arg parser.
   if (args[0] === 'restore-component') return drRestoreComponent(args.slice(1), deps);
+  // preflight is an in-binary readiness check (kubectl + host probes).
+  if (args[0] === 'preflight') return drPreflight(args.slice(1), deps);
   const parsed = parseDrArgs(args);
   if (!parsed.ok) {
     deps.err(parsed.message);

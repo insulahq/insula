@@ -111,6 +111,16 @@ The k3s control plane is stopped, the snapshot is copied into
 The script sleeps 10s before starting this phase so you can Ctrl-C if
 you realise you're pointing at the wrong cluster.
 
+> **Faster etcd-only recovery (tiered break-glass).** If you've only lost
+> etcd (not the whole node), you don't need this full `dr-restore.sh` run.
+> Try, in order: **Tier 0** `restore-etcd-local.sh --latest` (restore from this
+> node's local k3s snapshots — no network), then **Tier 1**
+> `restore-etcd-from-shim.sh --offline --bundle <secrets-*.tar.age> --age-key <key> --latest`
+> (off-site, no cluster/kubectl needed — breaks the etcd chicken-and-egg), then
+> the online `restore-etcd-from-shim.sh --latest` once the cluster is up. Run
+> `platform-ops dr preflight` ahead of time to confirm each tier will work. See
+> [BACKUP_RCLONE_SHIM.md → Recover etcd](BACKUP_RCLONE_SHIM.md#recover-etcd--tiered-break-glass).
+
 ### Phase 5: Postgres restore
 
 `kubectl cp` the dump into `platform-postgres-0`, `pg_restore
