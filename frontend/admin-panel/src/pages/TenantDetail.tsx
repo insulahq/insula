@@ -255,7 +255,7 @@ export default function TenantDetail() {
   const backupCount = backupsQuery.data?.data.length ?? 0;
   const emailDomainCount = emailDomainsQuery.data?.data.length ?? 0;
   const subUserCount = subUsersQuery.data?.data.length ?? 0;
-  const snapshotCount = snapshotsQuery.data?.data?.snapshots.length ?? 0;
+  const snapshotCount = snapshotsQuery.data?.data?.snapshots?.length ?? 0;
 
   const tabs: readonly { readonly key: TabKey; readonly label: string; readonly count: number }[] = [
     { key: 'domains', label: 'Domains', count: domainCount },
