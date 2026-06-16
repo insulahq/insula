@@ -463,6 +463,19 @@ components:
     owner: platform
     notes: rclone/rclone image (etcd-snapshot-via-shim CronJob) + the SHA-verified binary baked into backup-rclone. Backup data path.
 
+  - id: rclone-binary
+    name: rclone (host binary installed by bootstrap.sh)
+    tier: "1"
+    kind: binary
+    pinned: "v1.74.1"
+    pin_source: scripts/bootstrap.sh
+    pin_check: true
+    repos: [rclone/rclone]
+    watch: { type: github_releases, repo: rclone/rclone, advisories: rclone/rclone }
+    scan: none
+    owner: platform
+    notes: Host-side rclone static binary (install_rclone_if_missing → /usr/local/bin/rclone) for host-side restore. SAME version as the rclone image (kept in lockstep — bump both together); pinned to the GitHub release tag (v-prefixed) vs the Docker tag (no v).
+
   - id: tenant-backup-tools
     name: tenant-backup-tools (restic + JMAP backup)
     tier: "1"
