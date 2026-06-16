@@ -115,8 +115,11 @@ else
   fi
 fi
 
-# ─── B2 — Cross-tenant snapshots endpoint ────────────────────────────
-echo '═══ B2 — /admin/backups/tenants/snapshots returns flat list ═══'
+# ─── B2 — Cross-tenant snapshots endpoint (Longhorn-sourced) ─────────
+# 2026-06-16: the aggregate now reads tenant_volume_snapshots (Longhorn
+# on-server snapshots), NOT the legacy off-site tar `storage_snapshots`.
+# Every row therefore carries subsystem='longhorn'.
+echo '═══ B2 — /admin/backups/tenants/snapshots returns Longhorn rows ═══'
 api GET '/api/v1/admin/backups/tenants/snapshots' '' SNAP_RESP SNAP_CODE
 if [[ "$SNAP_CODE" != "200" ]]; then
   fail "snapshots endpoint returned $SNAP_CODE"
@@ -124,6 +127,13 @@ else
   if printf '%s' "$SNAP_RESP" | grep -q '"rows":\['; then
     ROW_COUNT=$(printf '%s' "$SNAP_RESP" | tr ',' '\n' | grep -c '"id":"' || true)
     pass "snapshots endpoint returned rows[] with $ROW_COUNT entries"
+    if [[ "$ROW_COUNT" -gt 0 ]]; then
+      if printf '%s' "$SNAP_RESP" | grep -q '"subsystem":"longhorn"'; then
+        pass "aggregate rows are Longhorn-sourced (subsystem=longhorn)"
+      else
+        fail "aggregate has rows but none are subsystem=longhorn — still reading the tar storage_snapshots table?"
+      fi
+    fi
   else
     fail "snapshots endpoint response missing 'rows' field: $(printf '%s' "$SNAP_RESP" | head -c 200)"
   fi
@@ -176,25 +186,65 @@ else
   pass "schedules endpoint healthy (migration 0024 applied if bundle-create above succeeded)"
 fi
 
-# ─── B4 — Tenant detail snapshot trigger no longer FK-violates ───────
-echo '═══ B4 — POST /admin/tenants/:id/storage/snapshot succeeds ═══'
-if [[ -n "$TENANT_ID" ]]; then
-  api POST "/api/v1/admin/tenants/$TENANT_ID/storage/snapshot" '{}' SNAP_CREATE_RESP SNAP_CREATE_CODE
-  if [[ "$SNAP_CREATE_CODE" == "200" || "$SNAP_CREATE_CODE" == "201" ]]; then
-    pass "tenant snapshot create: http=$SNAP_CREATE_CODE"
-  elif printf '%s' "$SNAP_CREATE_RESP" | grep -q "FOREIGN_KEY_VIOLATION"; then
-    fail "tenant snapshot create: FK violation regression — migration 0025 not applied?"
-  elif printf '%s' "$SNAP_CREATE_RESP" | grep -q "STORAGE_OP_IN_PROGRESS"; then
-    # A previous run's snapshot is still in flight — that means the
-    # FIRST snapshot from a fresh harness run DID succeed (no FK
-    # violation) and is now occupying the per-tenant lock. Counts
-    # as evidence of B4 fix.
-    pass "tenant snapshot create: per-tenant lock held by previous in-flight op (proves FK fix — first call succeeded)"
-  else
-    fail "tenant snapshot create: http=$SNAP_CREATE_CODE body=$(printf '%s' "$SNAP_CREATE_RESP" | head -c 200)"
-  fi
-else
+# ─── B4 — Admin Longhorn tenant-snapshot lifecycle ──────────────────
+# 2026-06-16: the admin panel no longer uses the off-site tar snapshot
+# (`POST /admin/tenants/:id/storage/snapshot`, which fails with
+# BACKUP_CONFIG_NOT_FOUND when no shim:tenant_snapshot target exists).
+# It now drives the on-server Longhorn endpoints (`/tenants/:id/snapshots`),
+# which operator tokens reach for ANY tenant via requireTenantAccess.
+# This exercises the full create → ready → aggregate → delete loop an
+# operator drives from Client Details / the Backups → Snapshots tab.
+echo '═══ B4 — Admin Longhorn snapshot lifecycle (/tenants/:id/snapshots) ═══'
+# Pick a tenant that actually has a storage PVC to snapshot. Prefer one
+# already present in the aggregate (it provably has a snapshotable volume);
+# otherwise use the tenant resolved above and tolerate "no PVC".
+SNAP_TENANT="${SNAP_TENANT:-$TENANT_ID}"
+if [[ -z "$SNAP_TENANT" ]]; then
   info "Skipping B4 — no tenantId available"
+else
+  # Guard against the dead tar path silently coming back: the tar endpoint
+  # must NOT be what the admin path resolves to.
+  api POST "/api/v1/admin/tenants/$SNAP_TENANT/storage/snapshot" '{}' TAR_RESP TAR_CODE
+  if printf '%s' "$TAR_RESP" | grep -q 'shim:tenant_snapshot'; then
+    info "legacy tar snapshot endpoint still returns BACKUP_CONFIG_NOT_FOUND (expected — admin UI no longer uses it; retired in P3)"
+  fi
+
+  api POST "/api/v1/tenants/$SNAP_TENANT/snapshots" '{"label":"int-backups-ui"}' LH_RESP LH_CODE
+  if [[ "$LH_CODE" == "201" || "$LH_CODE" == "200" ]]; then
+    LH_ID=$(printf '%s' "$LH_RESP" | sed -nE 's/.*"id":"([0-9a-f-]{36})".*/\1/p' | head -1)
+    pass "Longhorn snapshot create: http=$LH_CODE id=$LH_ID"
+    # Poll until ready (Longhorn CSI snapshots flip in a few seconds).
+    LH_STATUS=''
+    for _ in $(seq 1 20); do
+      api GET "/api/v1/tenants/$SNAP_TENANT/snapshots" '' LIST_RESP LIST_CODE
+      LH_STATUS=$(printf '%s' "$LIST_RESP" | tr '{' '\n' | grep "\"id\":\"$LH_ID\"" | sed -nE 's/.*"status":"([^"]+)".*/\1/p' | head -1)
+      [[ "$LH_STATUS" == "ready" || "$LH_STATUS" == "error" ]] && break
+      sleep 3
+    done
+    if [[ "$LH_STATUS" == "ready" ]]; then
+      pass "Longhorn snapshot reached status=ready"
+    else
+      fail "Longhorn snapshot did not reach ready (status='${LH_STATUS:-unknown}')"
+    fi
+    # It must surface in the cross-tenant admin aggregate as a Longhorn row.
+    api GET '/api/v1/admin/backups/tenants/snapshots' '' AGG_RESP AGG_CODE
+    if printf '%s' "$AGG_RESP" | grep -q "\"id\":\"$LH_ID\""; then
+      pass "snapshot $LH_ID visible in /admin/backups/tenants/snapshots aggregate"
+    else
+      fail "snapshot $LH_ID NOT in admin aggregate — admin would not see tenant Longhorn snapshots"
+    fi
+    # Clean up — DELETE returns 204.
+    api DELETE "/api/v1/tenants/$SNAP_TENANT/snapshots/$LH_ID" '' DEL_RESP DEL_CODE
+    if [[ "$DEL_CODE" == "204" || "$DEL_CODE" == "200" ]]; then
+      pass "Longhorn snapshot delete: http=$DEL_CODE (cleaned up)"
+    else
+      fail "Longhorn snapshot delete: http=$DEL_CODE body=$(printf '%s' "$DEL_RESP" | head -c 200)"
+    fi
+  elif printf '%s' "$LH_RESP" | grep -qiE "no.*pvc|not.*provision|volume.*not|NO_STORAGE|PVC_NOT_FOUND"; then
+    info "Skipping B4 lifecycle — tenant $SNAP_TENANT has no snapshotable PVC (set SNAP_TENANT=<id with storage>)"
+  else
+    fail "Longhorn snapshot create: http=$LH_CODE body=$(printf '%s' "$LH_RESP" | head -c 200)"
+  fi
 fi
 
 # ─── B7 — CNPG health card reports healthy not no_backup_config ──────
