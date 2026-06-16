@@ -74,7 +74,9 @@ async function checkOffsiteEndpointExternal(deps: Deps, kcPath: string | null): 
   }
   let conf = '';
   try { conf = Buffer.from(r.stdout.trim(), 'base64').toString('utf8'); } catch { conf = ''; }
-  const endpoints = [...conf.matchAll(/^\s*endpoint\s*=\s*(.+)$/gm)].map((m) => m[1].trim());
+  // S3 upstreams use `endpoint = …`; SFTP/SMB use `host = …` — consider both,
+  // else a CIFS/SFTP target reads as "no endpoint" and falsely warns.
+  const endpoints = [...conf.matchAll(/^\s*(?:endpoint|host)\s*=\s*(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
   const inCluster = endpoints.filter((e) => /\.svc(\.cluster\.local)?(:|\/|$)/.test(e) || /\.cluster\.local/.test(e));
   if (inCluster.length > 0) {
     // WARN, not FAIL: this breaks the OFFLINE (fresh-node) tier specifically;

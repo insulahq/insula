@@ -233,6 +233,29 @@ describe('dispatch', () => {
     expect(parsed.checks.some((c) => c.name === 'etcd recoverability' && c.status === 'fail')).toBe(true);
   });
 
+  it('dr preflight: a CIFS upstream (host=, not endpoint=) is recognised as external (OK, no false WARN)', async () => {
+    const exec = vi.fn(async (_cmd: string, args: string[]) => {
+      const a = args.join(' ');
+      if (a.includes('db/snapshots')) return { code: 0, stdout: '3', stderr: '' };
+      if (a.includes('etcd-snap-via-shim')) return { code: 0, stdout: 'etcd/cid-1', stderr: '' };
+      if (a.includes('backup-rclone-shim-credentials')) {
+        // SMB/CIFS upstream uses `host = `, not `endpoint = `.
+        const conf = '[up]\ntype = smb\nhost = box.example-storagebox.test\nport = 445\n';
+        return { code: 0, stdout: Buffer.from(conf, 'utf8').toString('base64'), stderr: '' };
+      }
+      if (a.includes('svc backup-rclone-shim')) return { code: 0, stdout: '10.43.0.9', stderr: '' };
+      if (a.includes('backup-rclone-shim-creds')) return { code: 0, stdout: 'secret/backup-rclone-shim-creds', stderr: '' };
+      if (a.includes('system-postgres-objectstore')) return { code: 0, stdout: 'objectstore/x', stderr: '' };
+      if (a.includes('stalwart-snapshot-restic-repo')) return { code: 0, stdout: 'secret/x', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const { deps, out } = fakeDeps({ exec });
+    expect(await dispatch(['dr', 'preflight', '--json'], deps)).toBe(0);
+    const parsed = JSON.parse(out.join('')) as { checks: Array<{ name: string; status: string }> };
+    const ep = parsed.checks.find((c) => c.name === 'off-site endpoint is external');
+    expect(ep?.status).toBe('ok');
+  });
+
   it('dr rescue routes through to dr.rescue', async () => {
     const rescue = vi.fn(async () => ({ ok: true, snapshots: [] }));
     const { deps } = fakeDeps({
