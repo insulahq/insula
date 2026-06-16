@@ -64,12 +64,12 @@ import { tailJobLog } from './job-log-tail.js';
  *  it is reaped early (deleted) the moment the resize confirms success. */
 const PRE_RESIZE_RETENTION_DAYS = 7;
 const DEFAULT_RESTORE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
-// Restic-native restore (mirrors backup-restore/executors/files-paths.ts): the
-// tenant Job runs `restic restore` directly against the per-tenant shim repo,
-// so it needs the restic toolchain image + the creds mount + a staging dir.
+// Restic-native restore: the tenant Job runs `restic restore --target /`
+// straight against the per-tenant shim repo, writing into the PVC at /source —
+// so it needs the restic toolchain image + the creds mount + a small scratch
+// dir for restic's cache (no large staging volume).
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
 const CREDS_MOUNT_PATH = '/var/run/restic-creds';
-const RESTORE_TMP = '/restore-tmp';
 const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 
 function readEnv(name: string): string | undefined {
@@ -293,12 +293,15 @@ async function deleteCaptureJob(
  * works. This spawns a tenant-namespace Job (tenant-backup-tools image) that
  * mounts the target PVC RW at `/source` + a per-Job creds Secret, and runs:
  *
- *   restic -r "$REPO" restore <snap> --target /restore-tmp --no-lock
- *   cp -a /restore-tmp/source/. /source/
+ *   restic -r "$REPO" restore <snap> --target / --no-lock
  *
- * It mirrors the PROVEN `backup-restore/executors/files-paths.ts` (the cart
- * restore), but as a FULL restore (no `--include`) into the freshly recreated
- * PVC. Used by destructive shrink AND tenant-archive restore. The Job carries
+ * `--target /` writes the snapshot tree (absolute paths rooted at `/source`)
+ * straight onto the PVC — NO intermediate `/restore-tmp` emptyDir + `cp`. The
+ * old staging double-wrote the whole dataset to a node-ephemeral emptyDir,
+ * ENOSPC-ing the worker root disk on multi-GiB tenants (the restore Job runs
+ * where the RWO PVC attaches, so it can't pick a roomier node). A FULL restore
+ * (no `--include`) into the freshly recreated, EMPTY PVC. Used by destructive
+ * shrink AND tenant-archive restore. The Job carries
  * `platform.io/component: restore-files` for the shim NetworkPolicy.
  */
 export async function restoreFilesBundleIntoPvc(args: {
@@ -398,14 +401,21 @@ export function buildResticRestoreJobSpec(input: {
     `if [ -f ${CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${CREDS_MOUNT_PATH}/aws_region)"; fi`,
     `REPO="$(cat ${CREDS_MOUNT_PATH}/repo_uri)"`,
     `[ -n "$REPO" ] || { echo "ERROR: repo uri missing"; exit 1; }`,
-    `mkdir -p ${RESTORE_TMP}`,
-    'echo "Running restic restore (full) into PVC..."',
-    // Full restore (no --include). restic stages files under
-    // <target>/source/<...> because the capture stored absolute paths rooted
-    // at /source; overlay them onto the freshly recreated PVC at /source.
-    `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
-    `if [ -d ${RESTORE_TMP}${FILES_CAPTURE_ROOT} ]; then cp -a ${RESTORE_TMP}${FILES_CAPTURE_ROOT}/. ${FILES_CAPTURE_ROOT}/; fi`,
-    `COUNT=$(find ${RESTORE_TMP}${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
+    // Keep restic's cache on the scratch emptyDir, not the container root.
+    `export RESTIC_CACHE_DIR=/tmp/restic-cache`,
+    'echo "Running restic restore (full) DIRECTLY into PVC..."',
+    // Full restore (no --include) into a freshly-recreated, EMPTY PVC.
+    //
+    // The capture stored absolute paths rooted at /source, so
+    // `restic restore --target /` writes the snapshot tree straight onto the
+    // PVC (mounted at /source) — NO intermediate /restore-tmp staging + cp.
+    // The old staging double-wrote the whole dataset to a NODE-EPHEMERAL
+    // emptyDir first, which ENOSPC'd the (small) worker root disk on any
+    // multi-GiB tenant; the restore Job runs where the RWO PVC attaches, so
+    // it cannot pick a roomier node. Restoring straight into the Longhorn
+    // PVC uses the tenant's actual storage, not node ephemeral.
+    `restic -r "$REPO" restore ${input.snapshotId} --target / --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+    `COUNT=$(find ${FILES_CAPTURE_ROOT} -type f 2>/dev/null | wc -l | tr -d ' ')`,
     `echo "PRERESIZE_RESTORE_DONE bundle=${input.bundleId} count=\${COUNT:-0}"`,
   ].join('\n');
 
@@ -456,16 +466,15 @@ export function buildResticRestoreJobSpec(input: {
             },
             volumeMounts: [
               { name: 'source', mountPath: FILES_CAPTURE_ROOT, readOnly: false },
-              { name: 'restore-tmp', mountPath: RESTORE_TMP },
               { name: 'scratch', mountPath: '/tmp' },
               { name: 'restic-creds', mountPath: CREDS_MOUNT_PATH, readOnly: true },
             ],
           }],
           volumes: [
             { name: 'source', persistentVolumeClaim: { claimName: input.pvcName } },
-            // restic stages the restore tree here before the cp -a overlay.
-            { name: 'restore-tmp', emptyDir: { sizeLimit: '50Gi' } },
-            { name: 'scratch', emptyDir: { sizeLimit: '2Gi' } },
+            // Scratch holds restic's cache (RESTIC_CACHE_DIR=/tmp/restic-cache).
+            // No /restore-tmp staging — the restore writes straight to the PVC.
+            { name: 'scratch', emptyDir: { sizeLimit: '4Gi' } },
             { name: 'restic-creds', secret: { secretName: input.credsSecretName, defaultMode: 0o400 } },
           ],
         },
