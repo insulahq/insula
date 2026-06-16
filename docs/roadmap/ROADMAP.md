@@ -28,7 +28,7 @@
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 | [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
-| [R17](#r17--mail-housekeeping-follow-ups-2026-06-10-single-node-green-up) | Mail/snapshot housekeeping follow-ups | P2 | Mostly shipped (PRs #22–#37) — Released-PV operator surface open |
+| [R17](#r17--mail-housekeeping-follow-ups-2026-06-10-single-node-green-up) | Mail/snapshot housekeeping follow-ups | P2 | Shipped (PRs #22–#39) — all three follow-ups done incl. Released-PV operator surface |
 | [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
 | [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | Partial — per-file restore shipped (bundle cart, #105); shrink rclone-shim multipart open |
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
@@ -292,12 +292,19 @@ Three small items deferred from the 2026-06-10 integration green-up
    restore) AND a PITR preflight that checks Longhorn schedulable
    budget ≥ the recovery volume size, failing fast with an actionable
    error instead of stalling mid-cutover.
-   **Preflight half SHIPPED 2026-06-11** (PR #35:
-   `preflight-longhorn-budget` step, `PITR_INSUFFICIENT_STORAGE_BUDGET`
-   names the reclaimable PVs + the over-provisioning lever; the
-   integration harness also reclaims superseded Released PVs after each
-   VERIFIED round-trip, PR #33). Open: the operator-facing Released-PV
-   surface (storage page badge + confirmed delete action).
+   **SHIPPED in full.** Preflight half (PR #35): `preflight-longhorn-budget`
+   step + `PITR_INSUFFICIENT_STORAGE_BUDGET` names the reclaimable PVs + the
+   over-provisioning lever; the integration harness also reclaims superseded
+   Released PVs after each VERIFIED round-trip (PR #33). Operator surface
+   (PR #39, `postgres-restore/released-pvs.ts` + `released-pvs.test.ts`):
+   `GET /admin/postgres-restore/released-pvs` lists superseded
+   `platform/system-db-*` Released PVs and
+   `POST …/released-pvs/:name/reclaim` deletes BOTH the PV and its
+   `volumes.longhorn.io` CR behind a strict re-verified filter + type-to-confirm
+   (`CONFIRM_NAME_MISMATCH` / `PV_NOT_FOUND` / `PV_NOT_RECLAIMABLE`). UI:
+   `ReleasedSystemPvsCard` on the System Backups page (Snapshots tab); the
+   broader orphaned-volumes manager on the Storage page also catches Released
+   PVs past the stale threshold.
 
 ## R18 — Operator-script consolidation into the `platform-ops` CLI
 
