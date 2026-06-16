@@ -241,10 +241,9 @@ export async function captureFilesOnlyBundle(args: {
   // Completed pod still holds the PVC RO mount, and the pvc-protection
   // finalizer blocks a PVC delete while ANY pod (even Completed) mounts
   // it — so the resize's `waitForPvcGone` would time out (it leaves the
-  // Job for slow ttlSecondsAfterFinished GC). Delete the Job (+pod) now,
-  // mirroring snapshotTenantPVC's explicit Job delete. Background
-  // propagation so we don't block; the PVC-delete poll absorbs the brief
-  // pod-termination lag.
+  // Job for slow ttlSecondsAfterFinished GC). Explicitly delete the Job
+  // (+pod) now rather than waiting for GC — Background propagation so we
+  // don't block; the PVC-delete poll absorbs the brief pod-termination lag.
   await deleteCaptureJob(db, k8s, tenantId, result.bundleId);
 
   return {

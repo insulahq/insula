@@ -19,3 +19,4 @@ overlays, or backend code stay in `scripts/`.
 | `storage-snapshot-backfill.sh` | Phase-7 one-shot backfill of storage-snapshot rows for pre-existing PVCs. |
 | `spike-flux-repin-validate.sh` | Spike (ADR-045 W16/PR-18): validated the Flux re-pin/rollback approach (locked decision #14). |
 | `spike-restic-jmap.sh` | Phase-0 spike: validated the restic primitive against the platform's mail/JMAP data. |
+| `integration-snapshot-streaming.sh` | Phase-4 E2E for the **off-site tar/streaming snapshot + rollback** path (`POST /storage/snapshot`, `POST /storage/rollback`). Retired 2026-06-16 when the tar path was removed — tenant PVC snapshots are now on-server Longhorn CSI (`/tenants/:id/snapshots`, covered by `integration-backups-ui.sh` B4) and off-site backups are restic tenant-bundles (`integration-tenant-bundles-files-browse-restore-e2e.sh`; pre-resize/pre-archive restic in `integration-lifecycle-e2e.sh`). |

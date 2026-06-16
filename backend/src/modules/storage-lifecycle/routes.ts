@@ -22,10 +22,6 @@ const resizeSchema = z.object({
 }).refine((d) => d.newGi !== undefined || d.newMib !== undefined, {
   message: 'One of newGi or newMib is required',
 });
-const snapshotSchema = z.object({
-  label: z.string().max(255).optional(),
-  retentionDays: z.number().int().min(1).max(3650).optional(),
-});
 const archiveSchema = z.object({
   retentionDays: z.number().int().min(1).max(3650).optional(),
 });
@@ -119,28 +115,13 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     return success({ operationId });
   });
 
-  // ─── Manual snapshot ────────────────────────────────────────────────
-
-  app.post('/admin/tenants/:tenantId/storage/snapshot', {
-    onRequest: adminGate,
-    schema: {
-      tags: ['Storage Lifecycle'],
-      summary: 'Take an ad-hoc snapshot of a tenant PVC',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async (request) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const parsed = snapshotSchema.safeParse(request.body ?? {});
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
-    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    // Manual snapshot → per-class resolver for tenant_snapshot.
-    const snap = await service.snapshotTenant(await snapshotCtx('tenant_snapshot'), tenantId, {
-      label: parsed.data.label,
-      retentionDays: parsed.data.retentionDays,
-      triggeredByUserId: userId,
-    });
-    return success(snap);
-  });
+  // ─── Snapshot list / delete ─────────────────────────────────────────
+  //
+  // Ad-hoc tenant-PVC snapshots are taken via the Longhorn-backed
+  // `tenant-snapshots` module (`POST /tenants/:id/snapshots`); the
+  // legacy tar snapshot path has been retired. These read/delete routes
+  // remain so operators can inspect + reap rows in `storage_snapshots`
+  // (pre-resize / pre-archive restic bundles + legacy snapshots).
 
   app.get('/admin/tenants/:tenantId/storage/snapshots', {
     onRequest: adminGate,
@@ -157,32 +138,6 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const { snapshotId } = request.params as { snapshotId: string };
     await service.deleteSnapshot(await ctx(), snapshotId);
     return success({ deleted: snapshotId });
-  });
-
-  // ─── Rollback to a specific snapshot ─────────────────────────────────
-  //
-  // Phase 5 of the snapshot-storage overhaul: rollback exercises the
-  // streaming restore pipeline (rclone cat | gunzip | tar x). Resolves
-  // the store per-snapshot-row target_id so rollback reads from the
-  // exact target that received the original upload, regardless of
-  // current class assignments. Legacy ctx() is fine here because the
-  // service-internal `resolveRestoreStore` swaps ctx.store as needed.
-  const rollbackSchema = z.object({ snapshotId: z.string().uuid() });
-  app.post('/admin/tenants/:tenantId/storage/rollback', {
-    onRequest: adminGate,
-    schema: {
-      tags: ['Storage Lifecycle'],
-      summary: 'Roll back tenant data PVC to a specific snapshot (without archiving first)',
-      security: [{ bearerAuth: [] }],
-    },
-  }, async (request) => {
-    const { tenantId } = request.params as { tenantId: string };
-    const parsed = rollbackSchema.safeParse(request.body ?? {});
-    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
-    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
-    return success(await service.rollbackToSnapshot(await ctx(), tenantId, parsed.data.snapshotId, {
-      triggeredByUserId: userId,
-    }));
   });
 
   // ─── Suspend / Resume ───────────────────────────────────────────────

@@ -10,9 +10,7 @@ import {
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { getSnapshotStore, type SnapshotStore } from './snapshot-store.js';
-import { snapshotTenantPVC } from './snapshot.js';
-import { restoreTenantPVC } from './restore.js';
+import { type SnapshotStore } from './snapshot-store.js';
 import {
   captureFilesOnlyBundle,
   restoreFilesBundleIntoPvc,
@@ -216,129 +214,6 @@ async function mirrorOpToTaskTracker(db: Database, opId: string): Promise<void> 
     text: op.progressMessage ? toSafeText(op.progressMessage) : null,
     error: taskStatus === 'failed' ? (op.lastError ?? 'Storage operation failed') : null,
   });
-}
-
-// ─── Manual snapshot ────────────────────────────────────────────────────
-
-/**
- * Take a manual snapshot of a tenant's PVC. Quiesces briefly, runs the
- * snapshot Job, records the result. Returns the snapshot row.
- *
- * Safe to call on a healthy running tenant — quiesce restores workloads
- * after the snapshot completes.
- */
-export async function snapshotTenant(
-  ctx: ServiceCtx,
-  tenantId: string,
-  params: { label?: string; kind?: 'manual' | 'scheduled' | 'pre-restore'; retentionDays?: number; triggeredByUserId?: string | null } = {},
-): Promise<typeof storageSnapshots.$inferSelect> {
-  const tenant = await mustGetTenant(ctx.db, tenantId);
-  await mustBeIdle(ctx.db, tenantId);
-  // DR safety: refuse to start a tenant snapshot when the routed
-  // target is frozen. Without this guard the operator would see the
-  // snapshot reach 'creating' state before the rclone Job fails with
-  // an opaque error inside the Job's logs.
-  if (ctx.targetId) {
-    const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
-    await requireWritableTarget(ctx.db, ctx.targetId);
-  }
-  // Phase 6: pre-flight quota check. Manual + pre-restore snapshots
-  // count against the tenant's plan cap; the system-initiated paths
-  // (resize/archive) skip this via their own service entry points
-  // which don't call snapshotTenant.
-  const { enforceSnapshotQuota } = await import('./snapshot-quota.js');
-  await enforceSnapshotQuota(ctx.db, tenantId);
-  const opId = uuid();
-  const snapId = uuid();
-  const archivePath = ctx.store.reservePath(tenantId, snapId);
-  const expiresAt = params.retentionDays
-    ? new Date(Date.now() + params.retentionDays * 24 * 60 * 60 * 1000)
-    : null;
-
-  // Pre-create DB rows in a single transaction so we don't orphan an op
-  // if we crash before persisting the snapshot row.
-  //
-  // Phase 3: stamp backup_class + target_id from the resolver context
-  // so every row records where it was routed and which class produced it.
-  // When ctx.targetId is null (legacy single-active-target path) the
-  // column stays NULL and forensic queries fall back to subsystem alone.
-  await ctx.db.transaction(async (tx) => {
-    await tx.insert(storageSnapshots).values({
-      id: snapId,
-      tenantId,
-      kind: params.kind ?? 'manual',
-      status: 'creating',
-      archivePath,
-      label: params.label ?? null,
-      expiresAt,
-      backupClass: ctx.backupClass ?? 'tenant_snapshot',
-      subsystem: 'tenant-pvc',
-      targetId: ctx.targetId ?? null,
-    });
-    await tx.insert(storageOperations).values({
-      id: opId,
-      tenantId,
-      opType: 'snapshot',
-      state: 'snapshotting',
-      progressPct: 0,
-      progressMessage: 'Quiescing workloads',
-      snapshotId: snapId,
-      triggeredByUserId: params.triggeredByUserId ?? null,
-    });
-    await tx.update(tenants)
-      .set({ storageLifecycleState: 'snapshotting', activeStorageOpId: opId })
-      .where(eq(tenants.id, tenantId));
-  });
-
-  let quiesceSnap: QuiesceSnapshot | null = null;
-  try {
-    quiesceSnap = await quiesce(ctx.k8s, tenant.kubernetesNamespace);
-    await waitForQuiesced(ctx.k8s, tenant.kubernetesNamespace);
-    await updateOp(ctx.db, opId, { progressPct: 20, progressMessage: 'Creating snapshot' });
-
-    const result = await snapshotTenantPVC(ctx.k8s, {
-      namespace: tenant.kubernetesNamespace,
-      pvcName: `${tenant.kubernetesNamespace}-storage`,
-      tenantId,
-      snapshotId: snapId,
-      store: ctx.store,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
-    });
-
-    await ctx.db.update(storageSnapshots).set({
-      status: 'ready',
-      sizeBytes: String(result.sizeBytes),
-      sha256: result.sha256,
-    }).where(eq(storageSnapshots.id, snapId));
-
-    await updateOp(ctx.db, opId, {
-      state: 'idle',
-      progressPct: 90,
-      progressMessage: 'Unquiescing workloads',
-    });
-    await unquiesce(ctx.k8s, tenant.kubernetesNamespace, quiesceSnap);
-    await updateOp(ctx.db, opId, {
-      state: 'idle',
-      progressPct: 100,
-      progressMessage: 'Snapshot complete',
-      completedAt: new Date(),
-    });
-    await markTenantState(ctx.db, tenantId, 'idle', null);
-
-    const [row] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId));
-    return row;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const persisted = formatLifecycleError(err, 'pvc');
-    await ctx.db.update(storageSnapshots).set({ status: 'failed', lastError: persisted }).where(eq(storageSnapshots.id, snapId));
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
-    if (quiesceSnap) {
-      // Best-effort unquiesce so we don't leave the tenant broken.
-      await unquiesce(ctx.k8s, tenant.kubernetesNamespace, quiesceSnap).catch(() => {});
-    }
-    await markTenantState(ctx.db, tenantId, 'idle', null);
-    throw new ApiError('SNAPSHOT_FAILED', `Snapshot failed: ${msg}`, 502);
-  }
 }
 
 // ─── Resize ─────────────────────────────────────────────────────────────
@@ -1676,67 +1551,6 @@ export async function restoreArchivedTenant(
 }
 
 /**
- * Roll back the tenant data PVC to a specific snapshot WITHOUT
- * requiring the tenant to be archived. Used by the tenant-backup-
- * restore cart's rollback button when the operator wants to undo
- * a destructive files-paths restore.
- *
- * Flow:
- *   1. Verify the snapshot belongs to the requested tenant and is ready.
- *   2. Quiesce the live workloads (scale Deployments to 0).
- *   3. Tar-extract the snapshot archive over the existing PVC.
- *   4. Unquiesce.
- *
- * No PVC recreation — the existing PVC stays bound, contents are
- * replaced in-place. This matches the snapshotTenant round-trip
- * (capture is also a tar over the same PVC mount).
- *
- * Returns immediately; caller polls storage_operations for progress.
- */
-export async function rollbackToSnapshot(
-  ctx: ServiceCtx,
-  tenantId: string,
-  snapshotId: string,
-  params: { triggeredByUserId?: string | null } = {},
-): Promise<{ operationId: string; snapshotId: string }> {
-  const tenant = await mustGetTenant(ctx.db, tenantId);
-  await mustBeIdle(ctx.db, tenantId);
-
-  const [snap] = await ctx.db.select().from(storageSnapshots).where(
-    and(eq(storageSnapshots.id, snapshotId), eq(storageSnapshots.tenantId, tenantId), eq(storageSnapshots.status, 'ready')),
-  ).limit(1);
-  if (!snap) {
-    throw new ApiError(
-      'SNAPSHOT_NOT_FOUND',
-      `Snapshot ${snapshotId} not found, not owned by tenant ${tenantId}, or not in 'ready' status`,
-      404,
-    );
-  }
-
-  const opId = uuid();
-  await ctx.db.transaction(async (tx) => {
-    await tx.insert(storageOperations).values({
-      id: opId,
-      tenantId,
-      opType: 'restore',
-      state: 'restoring',
-      progressPct: 0,
-      progressMessage: 'Quiescing workloads',
-      snapshotId: snap.id,
-      params: { fromSnapshot: snap.id, kind: snap.kind },
-      triggeredByUserId: params.triggeredByUserId ?? null,
-    });
-    await tx.update(tenants)
-      .set({ storageLifecycleState: 'restoring', activeStorageOpId: opId })
-      .where(eq(tenants.id, tenantId));
-  });
-
-  void runRollbackToSnapshot(ctx, opId, snap.id, snap.archivePath, tenant.kubernetesNamespace, tenantId)
-    .catch((err) => { console.error(`[storage-lifecycle] runRollbackToSnapshot pre-orchestrator throw for op ${opId}:`, err); });
-  return { operationId: opId, snapshotId: snap.id };
-}
-
-/**
  * Phase 5 of the snapshot-storage overhaul: pick the right restore
  * store for a given snapshot row.
  *
@@ -1801,50 +1615,6 @@ async function resolveRestoreStore(
     );
   }
   return store;
-}
-
-async function runRollbackToSnapshot(
-  ctx: ServiceCtx,
-  opId: string,
-  snapId: string,
-  archivePath: string,
-  namespace: string,
-  tenantId: string,
-): Promise<void> {
-  let quiesceSnap: QuiesceSnapshot | null = null;
-  const pvcName = `${namespace}-storage`;
-  try {
-    // Phase 5: re-fetch the snapshot row so we have its target_id +
-    // backup_class to drive per-target restore lookup.
-    const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapId)).limit(1);
-    const restoreStore = snap
-      ? await resolveRestoreStore(ctx, snap)
-      : ctx.store; // defensive — snap should always exist; fall back to legacy
-
-    quiesceSnap = await quiesce(ctx.k8s, namespace);
-    await waitForQuiesced(ctx.k8s, namespace);
-    await updateOp(ctx.db, opId, { progressPct: 30, progressMessage: 'Restoring data from snapshot' });
-
-    await restoreTenantPVC(ctx.k8s, {
-      namespace, pvcName, tenantId, snapshotId: snapId, archivePath, store: restoreStore,
-      onProgress: async (msg) => { await updateOp(ctx.db, opId, { progressMessage: msg }); },
-    });
-
-    await updateOp(ctx.db, opId, { progressPct: 90, progressMessage: 'Unquiescing workloads' });
-    await unquiesce(ctx.k8s, namespace, quiesceSnap);
-    await updateOp(ctx.db, opId, {
-      state: 'idle',
-      progressPct: 100,
-      progressMessage: 'Rollback complete',
-      completedAt: new Date(),
-    });
-    await markTenantState(ctx.db, tenantId, 'idle', null);
-  } catch (err) {
-    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
-    const persisted = formatLifecycleError(err, 'pvc');
-    await updateOp(ctx.db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
-    await markTenantState(ctx.db, tenantId, 'failed', null);
-  }
 }
 
 async function runRestoreArchive(
