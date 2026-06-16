@@ -12,6 +12,7 @@ import {
   tenants,
   hostingPlans,
   storageSnapshots,
+  tenantVolumeSnapshots,
   backupConfigurations,
   backupTargetAssignments,
   systemSettings,
@@ -430,9 +431,15 @@ export async function loadTenantDetail(db: Database, tenantId: string): Promise<
 
 // ─── /admin/backups/tenants/snapshots — B2 cross-tenant list ──────────
 //
-// Flat list of tenant snapshots (storage_snapshots rows) with the
-// tenant name + plan joined in. One row per snapshot, sorted newest
+// Flat list of tenant **on-server Longhorn snapshots** (`tenant_volume_snapshots`
+// rows) with the tenant name joined in. One row per snapshot, sorted newest
 // first, capped at `limit`. Optional `tenantId` filter.
+//
+// 2026-06-16: switched from the legacy off-site tar `storage_snapshots` table
+// to `tenant_volume_snapshots` (Longhorn CSI). Snapshots are now local PVC
+// recovery points — the off-site path is restic tenant bundles, surfaced on the
+// Backups tab, not here. `subsystem`/`targetId`/`targetName` are retained in the
+// row shape (frontend compatibility) but reflect the on-server nature.
 
 export interface TenantSnapshotListRow {
   readonly id: string;
@@ -459,35 +466,29 @@ export async function listTenantSnapshots(
   opts: { tenantId?: string; limit?: number },
 ): Promise<TenantSnapshotListResponse> {
   const limit = opts.limit ?? 200;
-  const whereTenant = opts.tenantId ? eq(storageSnapshots.tenantId, opts.tenantId) : undefined;
+  const whereTenant = opts.tenantId
+    ? eq(tenantVolumeSnapshots.tenantId, opts.tenantId)
+    : undefined;
   const baseQuery = db
     .select({
-      id: storageSnapshots.id,
-      tenantId: storageSnapshots.tenantId,
+      id: tenantVolumeSnapshots.id,
+      tenantId: tenantVolumeSnapshots.tenantId,
       tenantName: tenants.name,
-      backupClass: storageSnapshots.backupClass,
-      label: storageSnapshots.label,
-      subsystem: storageSnapshots.subsystem,
-      sizeBytes: storageSnapshots.sizeBytes,
-      status: storageSnapshots.status,
-      targetId: storageSnapshots.targetId,
-      targetName: backupConfigurations.name,
-      createdAt: storageSnapshots.createdAt,
-      expiresAt: storageSnapshots.expiresAt,
+      label: tenantVolumeSnapshots.label,
+      sizeBytes: tenantVolumeSnapshots.sizeBytes,
+      status: tenantVolumeSnapshots.status,
+      createdAt: tenantVolumeSnapshots.createdAt,
+      expiresAt: tenantVolumeSnapshots.expiresAt,
     })
-    .from(storageSnapshots)
-    .leftJoin(tenants, eq(tenants.id, storageSnapshots.tenantId))
-    .leftJoin(
-      backupConfigurations,
-      eq(backupConfigurations.id, storageSnapshots.targetId),
-    );
+    .from(tenantVolumeSnapshots)
+    .leftJoin(tenants, eq(tenants.id, tenantVolumeSnapshots.tenantId));
 
   // Pull one extra row to know whether there's more.
   const rows = await (whereTenant
     ? baseQuery.where(whereTenant)
     : baseQuery
   )
-    .orderBy(desc(storageSnapshots.createdAt))
+    .orderBy(desc(tenantVolumeSnapshots.createdAt))
     .limit(limit + 1);
 
   const hasMore = rows.length > limit;
@@ -497,13 +498,14 @@ export async function listTenantSnapshots(
       id: r.id,
       tenantId: r.tenantId,
       tenantName: r.tenantName,
-      backupClass: r.backupClass,
+      // On-server Longhorn snapshots have no off-site target/class.
+      backupClass: 'tenant_snapshot',
       label: r.label,
-      subsystem: r.subsystem,
+      subsystem: 'longhorn',
       sizeBytes: Number(r.sizeBytes ?? 0),
       status: r.status,
-      targetId: r.targetId,
-      targetName: r.targetName,
+      targetId: null,
+      targetName: 'on-server (Longhorn)',
       createdAt: toIsoOrEmpty(r.createdAt),
       expiresAt: r.expiresAt ? toIsoOrEmpty(r.expiresAt) : null,
     })),
