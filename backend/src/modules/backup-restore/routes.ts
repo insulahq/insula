@@ -404,8 +404,8 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
   //   - cart.preRestoreSnapshotId is set (snapshot was taken)
   //   - cart.status is 'failed' or 'done' (not still executing)
   //   - the snapshot is still in 'ready' status (hasn't expired)
-  // Hands off to storage-lifecycle/service.rollbackToSnapshot which
-  // quiesces, restores PVC contents from the snapshot, unquiesces.
+  // Hands off to tenant-snapshots/service.restoreSnapshot which does an
+  // in-place Longhorn snapshotRevert (quiesce → revert → unquiesce).
   // Operator polls storage_operations for progress; the same
   // Storage Operations card surfaces it.
   app.post('/admin/restores/carts/:id/rollback', {

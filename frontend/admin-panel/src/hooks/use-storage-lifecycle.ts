@@ -64,22 +64,6 @@ export function useStorageAudit() {
   });
 }
 
-export function useCreateSnapshot() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (input: { tenantId: string; label?: string; retentionDays?: number }) => {
-      return apiFetch(`/api/v1/admin/tenants/${input.tenantId}/storage/snapshot`, {
-        method: 'POST',
-        body: JSON.stringify({ label: input.label, retentionDays: input.retentionDays }),
-      });
-    },
-    onSuccess: (_d, vars) => {
-      qc.invalidateQueries({ queryKey: ['snapshots', vars.tenantId] });
-      qc.invalidateQueries({ queryKey: ['storage-operations', vars.tenantId] });
-    },
-  });
-}
-
 export function useDeleteSnapshot() {
   const qc = useQueryClient();
   return useMutation({
