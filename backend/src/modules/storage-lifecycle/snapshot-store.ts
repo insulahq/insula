@@ -232,31 +232,6 @@ export class S3Store implements SnapshotStore {
     };
   }
 
-  /**
-   * Generate presigned URLs for the snapshot Job — the tarball PUT
-   * and the .sha256 sidecar PUT. Called by snapshotTenantPVC for S3
-   * stores so the Job uploads via a credential-less curl PUT.
-   */
-  async getUploadUrls(archivePath: string): Promise<{ archiveUrl: string; sha256Url: string }> {
-    const { PutObjectCommand } = await import('@aws-sdk/client-s3');
-    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
-    const c = await this.tenant();
-    const archiveCmd = new PutObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath), ContentType: 'application/gzip' });
-    const sha256Cmd = new PutObjectCommand({ Bucket: this.config.bucket, Key: this.key(`${archivePath}.sha256`), ContentType: 'text/plain' });
-    const [archiveUrl, sha256Url] = await Promise.all([
-      getSignedUrl(c, archiveCmd, { expiresIn: 3600 }),
-      getSignedUrl(c, sha256Cmd, { expiresIn: 3600 }),
-    ]);
-    return { archiveUrl, sha256Url };
-  }
-
-  async getDownloadUrl(archivePath: string): Promise<string> {
-    const { GetObjectCommand } = await import('@aws-sdk/client-s3');
-    const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner');
-    const c = await this.tenant();
-    return getSignedUrl(c, new GetObjectCommand({ Bucket: this.config.bucket, Key: this.key(archivePath) }), { expiresIn: 3600 });
-  }
-
   async stat(archivePath: string): Promise<{ sizeBytes: number } | null> {
     const { HeadObjectCommand, S3ServiceException } = await import('@aws-sdk/client-s3');
     const c = await this.tenant();

@@ -192,10 +192,8 @@ else
 fi
 
 # ─── B4 — Admin Longhorn tenant-snapshot lifecycle ──────────────────
-# 2026-06-16: the admin panel no longer uses the off-site tar snapshot
-# (`POST /admin/tenants/:id/storage/snapshot`, which fails with
-# BACKUP_CONFIG_NOT_FOUND when no shim:tenant_snapshot target exists).
-# It now drives the on-server Longhorn endpoints (`/tenants/:id/snapshots`),
+# 2026-06-16: the off-site tar snapshot path was REMOVED. The admin panel
+# drives the on-server Longhorn endpoints (`/tenants/:id/snapshots`),
 # which operator tokens reach for ANY tenant via requireTenantAccess.
 # This exercises the full create → ready → aggregate → delete loop an
 # operator drives from Client Details / the Backups → Snapshots tab.
@@ -207,11 +205,14 @@ SNAP_TENANT="${SNAP_TENANT:-$TENANT_ID}"
 if [[ -z "$SNAP_TENANT" ]]; then
   info "Skipping B4 — no tenantId available"
 else
-  # Guard against the dead tar path silently coming back: the tar endpoint
-  # must NOT be what the admin path resolves to.
+  # Guard against the dead tar path coming back: the legacy tar snapshot
+  # endpoint was REMOVED — it must now 404 (route gone), not silently
+  # resolve to a working snapshot path.
   api POST "/api/v1/admin/tenants/$SNAP_TENANT/storage/snapshot" '{}' TAR_RESP TAR_CODE
-  if printf '%s' "$TAR_RESP" | grep -q 'shim:tenant_snapshot'; then
-    info "legacy tar snapshot endpoint still returns BACKUP_CONFIG_NOT_FOUND (expected — admin UI no longer uses it; retired in P3)"
+  if [[ "$TAR_CODE" == "404" ]]; then
+    pass "legacy tar snapshot endpoint removed (404 — admin UI uses Longhorn /tenants/:id/snapshots)"
+  else
+    fail "legacy tar snapshot endpoint still present (http=$TAR_CODE) — tar path not fully retired"
   fi
 
   api POST "/api/v1/tenants/$SNAP_TENANT/snapshots" '{"label":"int-backups-ui"}' LH_RESP LH_CODE
