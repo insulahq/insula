@@ -9,6 +9,7 @@
  * destructive — e.g. backup rotate-key invalidates all remote backups).
  */
 import type { Deps } from './deps.js';
+import type { EmbeddedScriptKey } from './embedded-scripts.js';
 import { backupTargetCommand, backupKeyStatus } from './backup-ops.js';
 
 const OPS = {
@@ -17,7 +18,7 @@ const OPS = {
   componentWatch: 'ops/component-watch.sh',
   nodeTerminalGc: 'ops/node-terminal-cleanup-stale-artifacts.sh',
   backupRotateKey: 'ops/backup-target-key-rotate.sh',
-} as const;
+} as const satisfies Record<string, EmbeddedScriptKey>;
 
 /** `cluster gc-namespaces` — delete orphaned tenant-* namespaces. */
 export function clusterGcNamespaces(args: string[], deps: Deps): Promise<number> {

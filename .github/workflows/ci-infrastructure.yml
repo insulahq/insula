@@ -203,6 +203,14 @@ jobs:
       - name: Verify runner validation + embedding + per-script authoring contract
         run: ./scripts/ci-host-migrations-check.sh
 
+  platform-ops-embed-guard:
+    name: platform-ops embed-and-launch manifest ≡ dispatch ≡ scripts (ADR-045 R18)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify embedded-scripts manifest matches CLI dispatch + build derives from it
+        run: ./scripts/ci-platform-ops-embed-check.sh
+
   system-upgrade-guard:
     name: system-upgrade-controller integration (ADR-045 W12)
     runs-on: ubuntu-latest

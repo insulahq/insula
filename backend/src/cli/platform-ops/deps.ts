@@ -21,8 +21,11 @@ import { realNodeOps } from './node-ops.js';
 import { realUpgradeOps } from './upgrade-ops.js';
 import { realRollbackOps } from './rollback-ops.js';
 import { scrubCreds } from './redact.js';
+import type { EmbeddedScriptKey } from './embedded-scripts.js';
 import type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
 import type { RenamePlatformDomainResult } from '../../modules/platform-domain/service.js';
+
+export type { EmbeddedScriptKey } from './embedded-scripts.js';
 
 export type { SelfUpgradeOptions, SelfUpgradeResult } from './self-upgrade/types.js';
 export type { HostConfigOps } from './host-config/index.js';
@@ -443,7 +446,7 @@ export interface Deps {
    * node-level DR component restores, whose proven bash IS the single source of
    * truth (no backend module to import).
    */
-  runEmbeddedScript: (assetKey: string, args: string[]) => Promise<number>;
+  runEmbeddedScript: (assetKey: EmbeddedScriptKey, args: string[]) => Promise<number>;
 }
 
 function realExec(
