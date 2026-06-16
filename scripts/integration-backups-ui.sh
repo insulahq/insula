@@ -155,8 +155,13 @@ if [[ -z "$TENANT_ID" || -z "$TARGET_ID" ]]; then
   info "Skipping bundle creation — tenantId or tenant shim targetId not available (tenantId='$TENANT_ID' targetId='$TARGET_ID')"
 else
   info "Creating bundle for tenant=$TENANT_ID target=$TARGET_ID"
-  api POST '/api/v1/admin/tenant-bundles' "{\"tenantId\":\"$TENANT_ID\",\"targetConfigId\":\"$TARGET_ID\"}" CREATE_RESP CREATE_CODE
-  if [[ "$CREATE_CODE" == "200" || "$CREATE_CODE" == "201" ]]; then
+  # async:true → the orchestrator returns the bundleId as soon as the
+  # backup_jobs row is inserted (matches how the admin UI's "Bundle now"
+  # button fires). The synchronous form can exceed the 60s curl timeout and
+  # abort the rest of the harness under `set -e`.
+  api POST '/api/v1/admin/tenant-bundles' "{\"tenantId\":\"$TENANT_ID\",\"targetConfigId\":\"$TARGET_ID\",\"async\":true}" CREATE_RESP CREATE_CODE
+  # async accept → 202; sync → 200/201.
+  if [[ "$CREATE_CODE" == "200" || "$CREATE_CODE" == "201" || "$CREATE_CODE" == "202" ]]; then
     # The endpoint returns the bundle id as either `id` or `bundleId`
     # depending on the bundle subsystem version; match both.
     BUNDLE_ID=$(printf '%s' "$CREATE_RESP" \

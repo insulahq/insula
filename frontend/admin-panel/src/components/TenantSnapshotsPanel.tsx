@@ -21,6 +21,8 @@ import {
   useTenantRestoreStatus,
 } from '@/hooks/use-tenant-snapshots';
 import type { TenantSnapshot } from '@insula/api-contracts';
+import { useRefreshTaskCenter } from '@/hooks/use-task-center';
+import SnapshotCreateProgressModal from './SnapshotCreateProgressModal';
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '-';
@@ -77,11 +79,20 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
   const [confirmRestore, setConfirmRestore] = useState<TenantSnapshot | null>(null);
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [restoreOpId, setRestoreOpId] = useState<string | null>(null);
+  const [createTaskSnapId, setCreateTaskSnapId] = useState<string | null>(null);
+  const refreshTasks = useRefreshTaskCenter();
 
   const onCreate = () => {
     setCreateError(null);
     createSnap.mutate(label, {
-      onSuccess: () => { setCreateOpen(false); setLabel(''); },
+      onSuccess: (res) => {
+        setCreateOpen(false);
+        setLabel('');
+        // Open the task-center progress modal + nudge the chip to pick up
+        // the just-enrolled task.
+        setCreateTaskSnapId(res.data.id);
+        refreshTasks();
+      },
       onError: (e) => setCreateError(e instanceof Error ? e.message : 'Failed to create snapshot'),
     });
   };
@@ -296,6 +307,14 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
 
       {restoreOpId && (
         <RestoreProgressModal tenantId={tenantId} operationId={restoreOpId} onClose={() => { setRestoreOpId(null); snapsQ.refetch(); }} />
+      )}
+
+      {createTaskSnapId && (
+        <SnapshotCreateProgressModal
+          snapshotId={createTaskSnapId}
+          tenantId={tenantId}
+          onClose={() => { setCreateTaskSnapId(null); snapsQ.refetch(); }}
+        />
       )}
     </div>
   );
