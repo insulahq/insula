@@ -1525,6 +1525,9 @@ async function runArchive(
   try {
     await progress('quiescing', 10, 'Scaling workloads to zero');
     quiesceSnap = await quiesce(ctx.k8s, namespace);
+    // Persist the pre-quiesce replica counts so a force-cancel / pod restart
+    // mid-archive can unquiesce the tenant instead of leaving it at 0 replicas.
+    await persistQuiesceSnapshot(ctx.db, opId, quiesceSnap);
     await waitForQuiesced(ctx.k8s, namespace);
 
     await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
@@ -1592,7 +1595,7 @@ async function runArchive(
     // bundle on success — it's the long-lived restore source.
     await ctx.db.update(storageSnapshots)
       .set(preArchiveBundleId
-        ? { status: 'ready', archivePath: `bundle:${preArchiveBundleId}` }
+        ? { status: 'ready', archivePath: `bundle:${preArchiveBundleId}`, lastError: persisted }
         : { status: 'failed', lastError: persisted })
       .where(eq(storageSnapshots.id, snapId))
       .catch(() => {});
@@ -1854,6 +1857,19 @@ async function runRestoreArchive(
 ): Promise<void> {
   const pvcName = `${namespace}-storage`;
   try {
+    // Validate the archive is restorable BEFORE recreating the PVC — an
+    // unrestorable archive (legacy tar, or a `bundle:pending` row whose
+    // capture never completed) must not leave an empty orphan PVC behind.
+    const bundleId = archivePath.startsWith('bundle:')
+      ? archivePath.slice('bundle:'.length)
+      : null;
+    if (!bundleId || bundleId === 'pending') {
+      throw new ApiError(
+        'ARCHIVE_NOT_RESTORABLE',
+        `Archive ${snapId} is a legacy tar archive or never completed (archivePath='${archivePath}') and is no longer restorable.`,
+        409,
+      );
+    }
     const { applyPVC } = await import('../k8s-provisioner/service.js');
     const { getDefaultStorageClass } = await import('../storage-settings/service.js');
     const storageClass = await getDefaultStorageClass(ctx.db);
@@ -1861,19 +1877,7 @@ async function runRestoreArchive(
     await updateOp(ctx.db, opId, { state: 'restoring', progressPct: 30, progressMessage: 'Restoring data from snapshot' });
 
     const tenantId = (await currentTenantId(ctx.db, opId))!;
-    // The archive IS a restic files bundle (archivePath = `bundle:<id>`).
     // The PVC was just recreated above; restore the bundle's files into it.
-    // Legacy off-site tar archives (pre-P3) are no longer restorable here.
-    const bundleId = archivePath.startsWith('bundle:')
-      ? archivePath.slice('bundle:'.length)
-      : null;
-    if (!bundleId) {
-      throw new ApiError(
-        'ARCHIVE_NOT_RESTORABLE',
-        `Archive ${snapId} is a legacy tar archive (archivePath='${archivePath}') and is no longer restorable.`,
-        409,
-      );
-    }
     await restoreFilesBundleIntoPvc({
       db: ctx.db,
       k8s: ctx.k8s,
@@ -2319,6 +2323,12 @@ export async function getOperation(db: Database, opId: string) {
 export async function deleteSnapshot(ctx: ServiceCtx, snapshotId: string): Promise<void> {
   const [snap] = await ctx.db.select().from(storageSnapshots).where(eq(storageSnapshots.id, snapshotId));
   if (!snap) throw new ApiError('SNAPSHOT_NOT_FOUND', `Snapshot ${snapshotId} not found`, 404);
+  // Refuse to delete a snapshot still being created — an in-flight archive
+  // holds this snapId and would silently no-op its later "ready" update,
+  // leaving an archived tenant with no restore row.
+  if (snap.status === 'creating') {
+    throw new ApiError('SNAPSHOT_IN_PROGRESS', `Snapshot ${snapshotId} is still being created — wait for it to finish before deleting.`, 409);
+  }
   // DR safety: refuse to delete from a frozen target. The DB row is
   // not deleted either — the operator must explicitly unfreeze the
   // target before any cleanup happens.
