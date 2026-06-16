@@ -48,6 +48,7 @@ import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { decrypt } from '../oidc/crypto.js';
+import { requireWritableTarget } from '../backup-config/writable-guard.js';
 import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
 import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../tenant-bundles/restic-driver.js';
 import {
@@ -139,7 +140,8 @@ function buildDirectStore(
       region: cfg.s3Region ?? 'us-east-1',
       endpoint: cfg.s3Endpoint ?? undefined,
       accessKeyId: cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, secretsKeyHex) : '',
-      secretAccessKey: cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, secretsKeyHex) : '',
+      // Not a literal secret — decrypts the encrypted target credential at runtime.
+      secretAccessKey: cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, secretsKeyHex) : '', // gitleaks:allow
       pathPrefix: cfg.s3Prefix ?? undefined,
     });
   }
@@ -536,6 +538,12 @@ export async function reapPreResizeBundle(args: {
         .where(eq(backupConfigurations.id, job.targetConfigId))
         .limit(1);
       if (cfg) {
+        // DR safety: never prune a frozen/read-only target (e.g. one a
+        // freshly DR-restored cluster restored FROM). requireWritableTarget
+        // throws TargetFrozenError when read_only — the surrounding
+        // try/catch swallows it, so the bundle is simply retained until its
+        // 7-day expiry rather than deleted off a target we must not touch.
+        await requireWritableTarget(db, job.targetConfigId);
         const store = await resolveBundleStore(k8s, cfg, secretsKey());
         const handle = await store.open(bundleId);
         if (handle) await store.delete(handle);

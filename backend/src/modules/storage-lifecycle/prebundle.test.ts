@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { buildResticRestoreJobSpec } from './prebundle.js';
+import { buildResticRestoreJobSpec, reapPreResizeBundle } from './prebundle.js';
+import { backupJobs, backupConfigurations } from '../../db/schema.js';
+import type { Database } from '../../db/index.js';
+import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 /**
  * Properties of the pre-resize/archive restore Job that silently break the
@@ -60,5 +63,85 @@ describe('buildResticRestoreJobSpec', () => {
     expect(script).not.toContain('restic dump');
     expect(script).not.toContain('tar xf');
     expect(script).not.toContain('/archive.tar');
+  });
+});
+
+/**
+ * DR safety: reapPreResizeBundle must NOT prune a backup target that is
+ * frozen (read_only) — e.g. the target a freshly DR-restored cluster
+ * restored FROM. The reap is best-effort (never throws), so a frozen
+ * target simply retains the bundle until its 7-day expiry: the remote
+ * `store.delete` is skipped AND the backup_jobs row is left in place.
+ *
+ * This pins the requireWritableTarget(...) guard the
+ * ci-backup-target-ro-check.sh enforcement registers for prebundle.ts.
+ */
+describe('reapPreResizeBundle — frozen-target DR guard', () => {
+  // Minimal drizzle stand-in: requireWritableTarget awaits `.where()`
+  // directly (no .limit), while reapPreResizeBundle awaits `.limit(1)`.
+  function makeDb(opts: { job: { id: string; targetConfigId: string | null }; cfg: Record<string, unknown> | null; readOnly: boolean }) {
+    const deletes: string[] = [];
+    const db = {
+      select(_proj?: unknown) {
+        return {
+          from(table: unknown) {
+            const chain = {
+              where(_cond?: unknown) {
+                return {
+                  // reapPreResizeBundle: .where().limit(1)
+                  limit(_n: number) {
+                    if (table === backupJobs) return Promise.resolve([opts.job]);
+                    if (table === backupConfigurations) return Promise.resolve(opts.cfg ? [opts.cfg] : []);
+                    return Promise.resolve([]);
+                  },
+                  // requireWritableTarget: await db.select({...}).from(backupConfigurations).where(...)
+                  then(resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) {
+                    return Promise.resolve([{ name: 'frozen-target', readOnly: opts.readOnly }]).then(resolve, reject);
+                  },
+                };
+              },
+            };
+            return chain;
+          },
+        };
+      },
+      delete(table: unknown) {
+        return {
+          where(_cond?: unknown) {
+            if (table === backupJobs) deletes.push('backupJobs');
+            return Promise.resolve();
+          },
+        };
+      },
+    } as unknown as Database;
+    return { db, deletes };
+  }
+
+  const k8s = {} as unknown as K8sClients;
+
+  it('skips the remote delete AND the backup_jobs row delete when the target is read_only (never throws)', async () => {
+    const { db, deletes } = makeDb({
+      job: { id: 'bkp-frozen', targetConfigId: 'tgt-1' },
+      cfg: { id: 'tgt-1', storageType: 's3', readOnly: true },
+      readOnly: true,
+    });
+    // Must resolve (best-effort), not reject — the frozen guard throws
+    // internally and is swallowed.
+    await expect(reapPreResizeBundle({ db, k8s, bundleId: 'bkp-frozen' })).resolves.toBeUndefined();
+    // The throw aborts before resolveBundleStore/store.delete AND before
+    // the backup_jobs row delete, so nothing is pruned.
+    expect(deletes).not.toContain('backupJobs');
+  });
+
+  it('returns early (no target work) when the bundle row is gone', async () => {
+    const { db, deletes } = makeDb({ job: { id: 'gone', targetConfigId: null }, cfg: null, readOnly: false });
+    // No job row → makeDb returns [job] though; emulate "missing" via a db
+    // whose backupJobs select yields []:
+    const emptyDb = {
+      select() { return { from() { return { where() { return { limit() { return Promise.resolve([]); }, then(r: (v: unknown) => unknown) { return Promise.resolve([]).then(r); } }; } }; } }; },
+      delete() { return { where() { deletes.push('backupJobs'); return Promise.resolve(); } }; },
+    } as unknown as Database;
+    await expect(reapPreResizeBundle({ db: emptyDb, k8s, bundleId: 'gone' })).resolves.toBeUndefined();
+    expect(deletes).not.toContain('backupJobs');
   });
 });
