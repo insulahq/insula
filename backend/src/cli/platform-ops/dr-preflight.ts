@@ -59,6 +59,36 @@ async function checkOffsiteEtcd(deps: Deps, kcPath: string | null): Promise<Chec
   return { name: 'Tier 1: off-site etcd (system bound)', status: 'ok', detail: `snapshots namespaced under ${prefix}; the next secrets bundle carries dr-system-target.json` };
 }
 
+async function checkOffsiteEndpointExternal(deps: Deps, kcPath: string | null): Promise<Check> {
+  // The offline Tier-1 restore pulls DIRECTLY from the upstream endpoint with
+  // no cluster. If the upstream is an IN-CLUSTER address (a `.svc` MinIO, a
+  // pod/cluster IP), it is unreachable from a fresh node — so offline DR is
+  // impossible no matter what else is configured. Read the rendered shim
+  // rclone.conf (endpoint lines are non-secret) and flag any in-cluster one.
+  const r = await deps.exec(KUBECTL, kc(kcPath, [
+    '-n', 'platform', 'get', 'secret', 'backup-rclone-shim-credentials',
+    '-o', 'jsonpath={.data.rclone\\.conf}',
+  ]), {});
+  if (r.code !== 0 || !r.stdout.trim()) {
+    return { name: 'off-site endpoint is external', status: 'warn', detail: 'shim rclone.conf not readable — bind a SYSTEM target' };
+  }
+  let conf = '';
+  try { conf = Buffer.from(r.stdout.trim(), 'base64').toString('utf8'); } catch { conf = ''; }
+  const endpoints = [...conf.matchAll(/^\s*endpoint\s*=\s*(.+)$/gm)].map((m) => m[1].trim());
+  const inCluster = endpoints.filter((e) => /\.svc(\.cluster\.local)?(:|\/|$)/.test(e) || /\.cluster\.local/.test(e));
+  if (inCluster.length > 0) {
+    // WARN, not FAIL: this breaks the OFFLINE (fresh-node) tier specifically;
+    // Tier 0 (local) and Tier 1b (online shim) may still work, so don't gate
+    // preflight's exit on it — but make the gap loud.
+    return {
+      name: 'off-site endpoint is external',
+      status: 'warn',
+      detail: `backup target endpoint is IN-CLUSTER (${inCluster[0]}) — unreachable from a fresh node, so the OFFLINE etcd restore cannot work. Point the SYSTEM target at an EXTERNAL S3 endpoint for true off-site DR.`,
+    };
+  }
+  return { name: 'off-site endpoint is external', status: endpoints.length ? 'ok' : 'warn', detail: endpoints.length ? 'upstream endpoint(s) are external (reachable off-cluster)' : 'no upstream endpoint found' };
+}
+
 async function checkShim(deps: Deps, kcPath: string | null): Promise<Check> {
   const ip = await deps.exec(KUBECTL, kc(kcPath, ['-n', 'platform', 'get', 'svc', 'backup-rclone-shim', '-o', 'jsonpath={.spec.clusterIP}']), {});
   const cred = await deps.exec(KUBECTL, kc(kcPath, ['-n', 'platform', 'get', 'secret', 'backup-rclone-shim-creds', '-o', 'name']), {});
@@ -94,6 +124,7 @@ export async function drPreflight(args: string[], deps: Deps): Promise<number> {
   const checks: Check[] = [
     local,
     offsite,
+    await checkOffsiteEndpointExternal(deps, kcPath),
     await checkShim(deps, kcPath),
     await checkPostgresObjectStore(deps, kcPath),
     await checkMailResticRepo(deps, kcPath),

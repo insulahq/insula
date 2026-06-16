@@ -201,6 +201,11 @@ describe('dispatch', () => {
       const a = args.join(' ');
       if (a.includes('db/snapshots')) return { code: 0, stdout: '5', stderr: '' };
       if (a.includes('etcd-snap-via-shim')) return { code: 0, stdout: 'etcd/cid-123', stderr: '' };
+      if (a.includes('backup-rclone-shim-credentials')) {
+        // rclone.conf with an EXTERNAL endpoint → the off-site-endpoint check passes.
+        const conf = '[upstream_x]\ntype = s3\nendpoint = https://fsn1.example-objectstorage.test\n';
+        return { code: 0, stdout: Buffer.from(conf, 'utf8').toString('base64'), stderr: '' };
+      }
       if (a.includes('svc backup-rclone-shim')) return { code: 0, stdout: '10.43.0.9', stderr: '' };
       if (a.includes('backup-rclone-shim-creds')) return { code: 0, stdout: 'secret/backup-rclone-shim-creds', stderr: '' };
       if (a.includes('system-postgres-objectstore')) return { code: 0, stdout: 'objectstore/system-postgres-objectstore', stderr: '' };
