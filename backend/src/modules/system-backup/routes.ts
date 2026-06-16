@@ -97,7 +97,13 @@ export async function systemBackupRoutes(app: FastifyInstance): Promise<void> {
         },
         // Offline break-glass: lets the bundle carry dr-system-target.json
         // (decrypted system upstream target) for the no-cluster etcd restore.
-        encryptionKey: (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined,
+        // Mirror the established access pattern (app.ts): app.config can be
+        // undefined (schema is .min(32).optional()) while the env var holds the
+        // raw key — without the process.env fallback the descriptor silently
+        // no-ops, so the bundle ships without it (caught by staging E2E).
+        encryptionKey:
+          ((app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined)
+          ?? process.env.PLATFORM_ENCRYPTION_KEY,
       },
       app.log as unknown as { info: (...a: unknown[]) => void; warn: (...a: unknown[]) => void; error: (...a: unknown[]) => void },
     );
