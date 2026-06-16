@@ -13,11 +13,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Per-file / per-folder restore from tenant backup bundles (#105).** The files
+  component is now captured as a restic tree, so the restore cart can browse a
+  bundle (`GET …/tenant-bundles/:id/browse/files/tree?path=` — lazy, one
+  directory per call; admin + tenant) and restore a selection via a `files-paths`
+  cart item (`{ kind: 'paths', paths: […] }`, up to 10 000 paths) instead of the
+  whole archive. Restore is a restic-native overlay (`restic restore --include …`
+  → `cp -a`, idempotent overwrite, no delete) with a pre-restore snapshot taken
+  for rollback. Documented in [TENANT_BACKUP.md](docs/operations/TENANT_BACKUP.md).
 - **platform-ops CLI E2E coverage in the staging suite.** Extended
   `integration-platform-ops-cli-e2e.sh` to assert the read-only / idempotent R18
   surface (`version`, `cluster doctor`, `backup key-status`, `backup target list`
   + idempotent re-bind) and wired it into `integration-staging.sh` as a
   `platform_ops` scenario (the destructive domain-rename leg stays opt-in).
+- **Operator runbooks** for three shipped subsystems:
+  [PLESK_MIGRATION.md](docs/operations/PLESK_MIGRATION.md) (R1),
+  [TENANT_SNAPSHOTS.md](docs/operations/TENANT_SNAPSHOTS.md) (R19), and
+  [PLATFORM_DOMAIN_RENAME.md](docs/operations/PLATFORM_DOMAIN_RENAME.md) (R16);
+  roadmap + changelog reconciled to match what's actually shipped.
+
+### Changed
+- **The `mail-backup-tools` image is renamed `tenant-backup-tools`** — it now
+  backs tenant-bundle files/mailboxes, the Plesk mail/discovery legs, and restic
+  file restore. Override env vars are unchanged (`PLESK_MAIL_TOOLS_IMAGE`,
+  `PLESK_DISCOVERY_IMAGE`, the tenant-bundle tools-image vars).
 
 ## [2026.6.10] - 2026-06-15
 

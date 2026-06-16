@@ -30,7 +30,7 @@
 | [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
 | [R17](#r17--mail-housekeeping-follow-ups-2026-06-10-single-node-green-up) | Mail/snapshot housekeeping follow-ups | P2 | Mostly shipped (PRs #22–#37) — Released-PV operator surface open |
 | [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
-| [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | Partial — file-level restore + shrink rclone-shim multipart open |
+| [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | Partial — per-file restore shipped (bundle cart, #105); shrink rclone-shim multipart open |
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
 
 ---
@@ -352,9 +352,14 @@ streaming store (PodSecurity-safe); tenant namespaces labelled so backup/snapsho
 Jobs reach the rclone shim. **Runbook:**
 [TENANT_SNAPSHOTS.md](../operations/TENANT_SNAPSHOTS.md).
 
+**Per-file restore shipped 2026-06-16 (#105)** — but via the off-site **bundle
+restore cart**, not the on-server snapshot: a lazy restic file-tree browse
+(`…/bundles/:id/browse/files/tree`) + a `files-paths` cart item that restores
+selected paths (idempotent overwrite, pre-restore snapshot taken). See
+[TENANT_BACKUP.md](../operations/TENANT_BACKUP.md). On-server Longhorn snapshots
+remain whole-volume revert by design.
+
 **Open:**
-- **Individual-file restore** — browse a snapshot and pull single files without
-  reverting the whole volume (likely restic, not a Longhorn clone).
 - **rclone-shim multipart > 1 GB** — `rclone serve s3` fails large multipart
   uploads (`NoSuchUpload` ~chunk 68); mail works only because it's small. Blocks
   large-PVC shrink/backup. Reproducible non-destructively via `POST
