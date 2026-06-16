@@ -454,8 +454,8 @@ export function buildResticRestoreJobSpec(input: {
             image: TOOLS_IMAGE_DEFAULT,
             imagePullPolicy: 'Always',
             command: ['sh', '-c', script],
-            // Root so `cp -a` can restore file ownership into the PVC, but
-            // otherwise hardened (no privilege escalation, default seccomp).
+            // Root so restic can restore file ownership (uid/gid) into the
+            // PVC, but otherwise hardened (no privilege escalation, seccomp).
             securityContext: {
               allowPrivilegeEscalation: false,
               seccompProfile: { type: 'RuntimeDefault' },
