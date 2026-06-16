@@ -11,7 +11,7 @@
  *   3. Sign ONE HMAC upload token bound to (bundleId, 'mailboxes',
  *      'restic-stream') for the entire tenant's Maildir tarball.
  *   4. Spawn one Job in the `mail` namespace using the
- *      `mail-backup-tools` image. The Job loops every address and runs
+ *      `tenant-backup-tools` image. The Job loops every address and runs
  *      `jmap-sync.py` for each:
  *         a. Reads optional state-in file with prior Email/changes state.
  *         b. Authenticates against the Stalwart JMAP endpoint as
@@ -123,7 +123,7 @@ export interface CaptureMailboxesComponentOpts {
   readonly stalwartMasterUser: string;
   readonly masterSecretName?: string;    // defaults to 'mail-secrets'
   readonly masterSecretKey?: string;     // defaults to 'STALWART_MASTER_PASSWORD'
-  readonly toolsImage?: string;          // defaults to ghcr.io/.../mail-backup-tools:latest
+  readonly toolsImage?: string;          // defaults to ghcr.io/.../tenant-backup-tools:latest
   readonly timeoutMs?: number;
   readonly onProgress?: (msg: string) => Promise<void> | void;
   /**
@@ -150,7 +150,7 @@ const IMAP_PORT_DEFAULT = 993;
 // source-of-truth for the master FQDN.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/mail-backup-tools:latest';
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';
 const STDIN_FILENAME = 'maildir.tar';
 
@@ -399,7 +399,7 @@ export function buildMailboxesComponentJobSpec(input: {
           containers: [{
             name: 'mailboxes',
             image: input.toolsImage,
-            // Always pull: the mail-backup-tools image is published
+            // Always pull: the tenant-backup-tools image is published
             // with `:latest` floating to the newest build, but worker
             // nodes cache by tag. Without Always, a cached older
             // image (e.g. pre-Phase 2, no jmap-sync.py) silently runs

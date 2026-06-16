@@ -12,7 +12,7 @@ The Phase-4 tenant-bundle stack (ADR-032) treats every nightly backup as a full 
 
 - **Storage**: 100 tenants × 5 GiB PVC × 30 daily snapshots ≈ 15 TiB. Naïvely scaled to 500 tenants this is 75 TiB on object storage — a hard fail against the < $200/month budget.
 - **CPU and wall-clock**: mbsync re-pulls every message over IMAPS for every mailbox every run. A 10 000-message mailbox takes ~5–15 min and is single-threaded per account.
-- **Memory and tmpfs**: the `mail-backup-tools` Job and intermediate scripts have leaked into host `/tmp` (which is tmpfs) on multiple occasions; full archives buffered on `emptyDir` have caused node disk pressure (see `project_files_streaming_e2e_2026_05_07`).
+- **Memory and tmpfs**: the `tenant-backup-tools` Job and intermediate scripts have leaked into host `/tmp` (which is tmpfs) on multiple occasions; full archives buffered on `emptyDir` have caused node disk pressure (see `project_files_streaming_e2e_2026_05_07`).
 - **Restore granularity**: today there is no path to "restore just `/var/www/.../foo.jpg`" or "restore one message" without unpacking the full bundle in a side cluster.
 
 Recent platform changes that reframe the design space:
@@ -37,7 +37,7 @@ Replace the daily backup path with two primitives, kept inside the existing `ten
 
 ### Primitive 2 — JMAP-driven mail capture into Maildir-shaped tree
 
-- For each tenant mailbox, the Job runs `jmap-sync.py` (Python stdlib, ~200 lines, no third-party deps) inside the existing `mail-backup-tools` image (rebased on `debian:trixie-slim`).
+- For each tenant mailbox, the Job runs `jmap-sync.py` (Python stdlib, ~200 lines, no third-party deps) inside the existing `tenant-backup-tools` image (rebased on `debian:trixie-slim`).
 - The script authenticates as the **Stalwart master user** (same credentials webmail/mbsync use today, mounted from `mail-secrets` Secret) and uses the master-user proxy login `<addr>%<masterFQ>` to read each tenant mailbox.
 - It reads `lastJmapState` from the `tenant_jmap_state` table per `(tenantId, mailboxJmapId)`, calls `Email/changes`, fetches `created`+`updated` bodies via `Blob/get`, writes them into a **Maildir-shaped output tree**:
   ```
@@ -170,7 +170,7 @@ Storage at 100 tenants: ~640 GiB total (vs ~18 TiB legacy). At 500 tenants: ~3.2
 - Daily backups become incremental and dedup'd. Storage cost drops ~28×.
 - Object-level restore (single file, single message) becomes a first-class operation, in seconds.
 - mbsync removal eliminates the per-message IMAP RTT hot path that today dominates mail-backup CPU.
-- The `mail-backup-tools` image base aligns with `peer-firewall-reconciler` (`debian:trixie-slim`), reducing the platform's distinct base-image surface.
+- The `tenant-backup-tools` image base aligns with `peer-firewall-reconciler` (`debian:trixie-slim`), reducing the platform's distinct base-image surface.
 - Maildir-shaped output stays operator-portable — any IMAP server can ingest the tarball without `Email/import`.
 
 **Negative**

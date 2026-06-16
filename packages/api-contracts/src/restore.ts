@@ -31,7 +31,11 @@ export const filesPathsSelectorSchema = z.union([
   z.object({ kind: z.literal('full') }),
   z.object({
     kind: z.literal('paths'),
-    paths: z.array(z.string().min(1)).min(1).max(10000),
+    // Per-path length cap — each path is interpolated into the restore
+    // Job's `restic --include '<path>'` args, which land in the Job
+    // `command` field in etcd (≤~1.5 MiB/object). 4 KiB × 10k keeps the
+    // rendered script well under that ceiling.
+    paths: z.array(z.string().min(1).max(4096)).min(1).max(10000),
   }),
 ]);
 export type FilesPathsSelector = z.infer<typeof filesPathsSelectorSchema>;
@@ -175,20 +179,27 @@ export type RestoreJobListResponse = z.infer<typeof restoreJobListResponseSchema
 // bundle?" picker. Each call sources data from a single bundle on the
 // off-site target via BackupStore.readComponent + parsing.
 
+// Restic-native lazy tree browse. Each call lists the DIRECT CHILDREN
+// of `path` (a relative DISPLAY path, no leading slash / no `/source`
+// prefix — that prefix is restic's internal capture root, stripped
+// server-side). The UI lazily fetches one directory level per call via
+// GET .../files/tree?path=<dir>. Entries are sorted dirs-first then by
+// name.
 export const bundleBrowseFileEntrySchema = z.object({
+  /** Base name of the entry (last path segment). */
+  name: z.string(),
+  /** Full DISPLAY path relative to the snapshot root, no leading slash. */
   path: z.string(),
+  type: z.enum(['file', 'dir']),
   size: z.number().int().nonnegative(),
-  mode: z.number().int().nonnegative(),
-  mtime: z.string(),
 });
 export type BundleBrowseFileEntry = z.infer<typeof bundleBrowseFileEntrySchema>;
 
 export const bundleBrowseFilesTreeResponseSchema = z.object({
   bundleId: z.string(),
-  totalCount: z.number().int().nonnegative(),
+  /** The directory whose direct children `entries` lists ('' = root). */
+  path: z.string(),
   entries: z.array(bundleBrowseFileEntrySchema),
-  // Cursor-based: next-call to GET .../files/tree?after=<path>
-  nextCursor: z.string().nullable(),
 });
 export type BundleBrowseFilesTreeResponse = z.infer<typeof bundleBrowseFilesTreeResponseSchema>;
 

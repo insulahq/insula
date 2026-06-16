@@ -44,7 +44,7 @@ push**):
 
 **Per-component image CI** (build + Trivy scan + push to GHCR; one image each):
 `ci-file-manager`, `ci-sftp-gateway`, `ci-firewall-reconciler`, `ci-security-probe`,
-`ci-backup-rclone`, `ci-mail-backup-tools`, `ci-node-terminal-image`,
+`ci-backup-rclone`, `ci-tenant-backup-tools`, `ci-node-terminal-image`,
 `ci-private-worker-agent`, `ci-rocksdb-secondary-checkpoint`, `ci-claim-validator`.
 Each uses `IMAGE: ghcr.io/${{ github.repository }}/<name>` and pushes only on
 non-PR events (fork PRs build + scan but never push).

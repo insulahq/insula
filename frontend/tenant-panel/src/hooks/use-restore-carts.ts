@@ -148,16 +148,19 @@ export function useBrowseMailboxes(bundleId: string | null) {
   });
 }
 
-export function useBrowseFiles(bundleId: string | null, after: string | null, limit = 500) {
+// Restic-native lazy tree browse: one directory level per call. `path`
+// is the directory to list (null/'' = root).
+export function useBrowseFiles(bundleId: string | null, path: string | null) {
   const tenantId = useTenantId();
   return useQuery({
-    queryKey: ['tenant-bundle-browse', 'files', bundleId, after, limit],
+    queryKey: ['tenant-bundle-browse', 'files', bundleId, path ?? ''],
     enabled: !!(tenantId && bundleId),
     queryFn: () => {
-      const qs = new URLSearchParams({ limit: String(limit) });
-      if (after) qs.set('after', after);
+      const qs = new URLSearchParams();
+      if (path) qs.set('path', path);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
       return apiFetch<BrowseEnvelope<BrowseFilesData>>(
-        `${browseUrl(tenantId, bundleId!, 'files/tree')}?${qs.toString()}`,
+        `${browseUrl(tenantId, bundleId!, 'files/tree')}${suffix}`,
       );
     },
   });

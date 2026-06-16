@@ -30,6 +30,7 @@ import {
   runResticDump,
   listResticSnapshots,
   addResticKey,
+  parseResticLs,
   type BackupTarget,
 } from './restic-driver.js';
 
@@ -993,6 +994,67 @@ describe('addResticKey', () => {
         userLabel: 'eu fsn1',
       }),
     ).rejects.toThrow(/userLabel/);
+  });
+});
+
+describe('parseResticLs', () => {
+  // restic ls --json emits a leading snapshot object then one node per line.
+  const snapshotHeader = JSON.stringify({
+    time: '2026-06-15T00:00:00Z',
+    tree: 'abc',
+    id: 'a'.repeat(64),
+    short_id: 'aaaaaaaa',
+    struct_type: 'snapshot',
+  });
+  const dirNode = JSON.stringify({
+    name: 'www',
+    type: 'dir',
+    path: '/source/var/www',
+    size: 0,
+    mode: 2147484141,
+    mtime: '2026-06-14T12:00:00Z',
+    struct_type: 'node',
+  });
+  const fileNode = JSON.stringify({
+    name: 'index.php',
+    type: 'file',
+    path: '/source/var/www/index.php',
+    size: 1234,
+    mode: 420,
+    mtime: '2026-06-14T12:01:00Z',
+    struct_type: 'node',
+  });
+
+  it('skips the leading snapshot header object', () => {
+    const out = parseResticLs(`${snapshotHeader}\n${fileNode}\n`);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.path).toBe('/source/var/www/index.php');
+  });
+
+  it('parses both file and dir nodes with path/type/size/mtime', () => {
+    const out = parseResticLs(`${snapshotHeader}\n${dirNode}\n${fileNode}\n`);
+    expect(out).toEqual([
+      { path: '/source/var/www', type: 'dir', size: 0, mtime: '2026-06-14T12:00:00Z' },
+      { path: '/source/var/www/index.php', type: 'file', size: 1234, mtime: '2026-06-14T12:01:00Z' },
+    ]);
+  });
+
+  it('skips non-JSON lines, malformed JSON, and nodes without a path', () => {
+    const noPath = JSON.stringify({ name: 'x', type: 'file', size: 1, struct_type: 'node' });
+    const out = parseResticLs(`garbage\n{not json\n${noPath}\n${fileNode}\n`);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.path).toBe('/source/var/www/index.php');
+  });
+
+  it('skips unknown node types (symlink/socket) — only file|dir survive', () => {
+    const symlink = JSON.stringify({ name: 'l', type: 'symlink', path: '/source/l', size: 0, struct_type: 'node' });
+    const out = parseResticLs(`${symlink}\n${fileNode}\n`);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.type).toBe('file');
+  });
+
+  it('returns [] for empty output', () => {
+    expect(parseResticLs('')).toEqual([]);
   });
 });
 

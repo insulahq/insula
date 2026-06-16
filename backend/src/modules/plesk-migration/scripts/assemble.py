@@ -1,5 +1,5 @@
 # Assemble the Plesk discovery inventory JSON (R1 PR 1). Runs IN the
-# discovery Job (mail-backup-tools python3). Reads the tab-tagged lines
+# discovery Job (tenant-backup-tools python3). Reads the tab-tagged lines
 # from remote-discover.sh on stdin and prints the inventory JSON between
 # sentinels for the backend (plesk-migration/discovery.ts) to parse.
 import sys, json, base64

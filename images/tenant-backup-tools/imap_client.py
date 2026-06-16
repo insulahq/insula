@@ -1,5 +1,5 @@
 """
-imap_client.py — minimal raw IMAP4rev2 helper for mail-backup-tools.
+imap_client.py — minimal raw IMAP4rev2 helper for tenant-backup-tools.
 
 Why raw and not imaplib?
   - imaplib does not support MULTIAPPEND (RFC 3502). For restore we need

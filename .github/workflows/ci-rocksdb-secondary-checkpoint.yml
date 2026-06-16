@@ -5,7 +5,7 @@ name: rocksdb-secondary-checkpoint CI
 # the initContainer in mail-archive Jobs to enable zero-downtime app-level
 # archives via `stalwart -e` against the checkpoint dir.
 #
-# Mirrors ci-mail-backup-tools.yml exactly — same registry, same tagging
+# Mirrors ci-tenant-backup-tools.yml exactly — same registry, same tagging
 # scheme, same Trivy gate.
 
 on:
@@ -79,7 +79,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: 'CRITICAL,HIGH'
-          # Don't fail the build on findings — same policy as mail-backup-tools.
+          # Don't fail the build on findings — same policy as tenant-backup-tools.
           # The image is internal-only (initContainer in a privileged Job)
           # and the binary is a static rocksdb glue; surface area is tiny.
           exit-code: '0'

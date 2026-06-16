@@ -53,7 +53,7 @@ describe('buildMailSyncJob (IMAP reuse + hardening)', () => {
     const job = buildMailSyncJob({ jobName: 'j', secretName: 'sec', source, masterUser: 'master@apex.example', addresses: ['a@acme.example', 'b@acme.example'] }) as any;
     expect(job.metadata.namespace).toBe('mail');
     const c = job.spec.template.spec.containers[0];
-    expect(c.image).toContain('mail-backup-tools'); // the image that ships imap-restore.py
+    expect(c.image).toContain('tenant-backup-tools'); // the image that ships imap-restore.py
     expect(c.command).toEqual(['bash', '/usr/local/bin/plesk-mail-sync.sh']);
     const env = Object.fromEntries(c.env.filter((e: { value?: string }) => e.value !== undefined).map((e: { name: string; value: string }) => [e.name, e.value]));
     expect(env.IMAP_HOST).toContain('stalwart-mail');

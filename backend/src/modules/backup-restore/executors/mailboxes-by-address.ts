@@ -12,7 +12,7 @@
  *      For 'all' selector: enumerate the bundle's mailboxes
  *      component (same artefact-name → address mapping as capture).
  *   2. Sign one HMAC download token per address.
- *   3. Spawn a Job in the `mail` namespace using mail-backup-tools.
+ *   3. Spawn a Job in the `mail` namespace using tenant-backup-tools.
  *      For each address the Job:
  *        a. curl downloads `<addr>.mbox.tar.gz` to /tmp.
  *        b. tar -xzf into /tmp/maildir/.
@@ -52,7 +52,7 @@
  * deleted in Stalwart.
  *
  * Rollback: the legacy IMAP restore-mailbox.py stays in the
- * mail-backup-tools image. To re-enable the IMAP path, set
+ * tenant-backup-tools image. To re-enable the IMAP path, set
  * `MAILBOX_RESTORE_METHOD=imap` in the platform-api env — the
  * executor falls back to the pre-2026-05-11 script.
  */
@@ -108,7 +108,7 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 // `mail/mail-secrets.STALWART_MASTER_USER`.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/mail-backup-tools:latest';
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
 const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
 // Parallelism for Blob/upload from a single jmap-restore.py invocation.

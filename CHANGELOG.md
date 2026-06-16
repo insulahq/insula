@@ -284,7 +284,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ### Fixed
 - **Internal images pinned to immutable tags (kill the `:latest` pull-race).**
   security-probe, firewall-reconciler, host-config-reconciler, backup-rclone,
-  sftp-gateway and mail-backup-tools are now pinned to immutable
+  sftp-gateway and tenant-backup-tools are now pinned to immutable
   `<timestamp>-<sha>` tags in the development overlay (rewritten by each image's
   own build workflow *after* the push, via `pin-image-tag.sh`), instead of
   `:latest` + a deploy-rev bump that raced the image push and could leave pods

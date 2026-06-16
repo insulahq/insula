@@ -8,7 +8,7 @@ on:
       - 'frontend/admin-panel/**'
       - 'frontend/tenant-panel/**'
       - 'packages/api-contracts/**'
-      # NOTE: images/firewall-reconciler/** and images/mail-backup-tools/** used
+      # NOTE: images/firewall-reconciler/** and images/tenant-backup-tools/** used
       # to be listed here only to bump those DaemonSets' deploy-rev annotation.
       # They are now pinned to immutable tags by their own ci-*.yml (via
       # pin-image-tag.sh), which both rolls them and advances development, so

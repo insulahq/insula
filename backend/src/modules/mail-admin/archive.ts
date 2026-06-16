@@ -85,7 +85,7 @@ const MAIL_NAMESPACE = 'mail';
 const STALWART_DEPLOYMENT = 'stalwart-mail';
 const SETTINGS_ID = 'system';
 const ARCHIVE_JOB_PREFIX = 'stalwart-archive-';
-const ARCHIVE_TOOLS_IMAGE_ENV = 'MAIL_BACKUP_TOOLS_IMAGE';
+const ARCHIVE_TOOLS_IMAGE_ENV = 'TENANT_BACKUP_TOOLS_IMAGE';
 const STALWART_IMAGE_ENV = 'STALWART_IMAGE';
 const ROCKSDB_SECONDARY_IMAGE_ENV = 'ROCKSDB_SECONDARY_CHECKPOINT_IMAGE';
 const ARCHIVE_TIMEOUT_SECONDS = 900; // 15 min hard cap on the whole run
@@ -700,7 +700,7 @@ async function createArchiveJob(
 ): Promise<void> {
   const toolsImage =
     process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/mail-backup-tools:latest';
+    'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
   const stalwartImage =
     process.env[STALWART_IMAGE_ENV] ??
     'docker.io/stalwartlabs/stalwart:v0.16.5';
@@ -894,7 +894,7 @@ async function createArchiveJobNoDowntime(
 ): Promise<void> {
   const toolsImage =
     process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/mail-backup-tools:latest';
+    'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
   const stalwartImage =
     process.env[STALWART_IMAGE_ENV] ??
     'docker.io/stalwartlabs/stalwart:v0.16.5';
@@ -968,7 +968,7 @@ async function createArchiveJobNoDowntime(
       //      cleanup runs as the non-root stalwart user and CAN'T rm
       //      root-owned files inside a checkpoint dir; without this
       //      sweep, orphans accumulate forever on the live PVC). Run
-      //      as root via the mail-backup-tools image's default uid.
+      //      as root via the tenant-backup-tools image's default uid.
       name: 'scratch-prep',
       image: toolsImage,
       imagePullPolicy: 'IfNotPresent',
@@ -1013,7 +1013,7 @@ async function createArchiveJobNoDowntime(
         // `.path` to the checkpoint dir + assert `@type == "RocksDb"`
         // so we fail fast if Stalwart upstream changes the schema.
         //
-        // Using python3 (stdlib, already in mail-backup-tools) instead
+        // Using python3 (stdlib, already in tenant-backup-tools) instead
         // of jq to keep the image dependency list minimal. The new
         // path is bash-substituted into a single-quoted python arg so
         // it lands as a literal string in argv[1].
@@ -1090,7 +1090,7 @@ async function createArchiveJobNoDowntime(
   };
 
   // We avoid setting runAsNonRoot to dodge image-uid mismatches across
-  // the three different images (distroless/cc, mail-backup-tools, stalwart).
+  // the three different images (distroless/cc, tenant-backup-tools, stalwart).
   // The mail namespace's PSS policy is baseline (verified pre-merge) so
   // root-or-nonroot is allowed.
   const body: Record<string, unknown> = {

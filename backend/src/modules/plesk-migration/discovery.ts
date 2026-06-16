@@ -3,7 +3,7 @@
  *
  * Runs a read-only inventory of a Plesk source as a one-shot k8s Job
  * in the `plesk-migration` namespace, using the existing
- * mail-backup-tools image (ssh + python3 + rsync — no new image). The
+ * tenant-backup-tools image (ssh + python3 + rsync — no new image). The
  * SSH key is delivered via a per-job Secret; the discovery scripts via
  * a per-job ConfigMap (so no image rebuild). The Job ssh's to the
  * Plesk box, runs the read-only remote script, assembles JSON, and
@@ -34,7 +34,7 @@ export const PLESK_MIGRATION_NAMESPACE = 'plesk-migration';
 // Flux-pinned in the deployed manifests and cached on nodes; overridable
 // via env for tests. A platform-wide digest-pin is a separate effort.
 const DISCOVERY_IMAGE =
-  process.env.PLESK_DISCOVERY_IMAGE ?? 'ghcr.io/insulahq/insula/mail-backup-tools:latest';
+  process.env.PLESK_DISCOVERY_IMAGE ?? 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
 
 export interface DiscoveryLogger {
   info: (obj: unknown, msg?: string) => void;
