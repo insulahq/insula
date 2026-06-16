@@ -263,7 +263,10 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
           job.tenantId,
           { label: `pre-restore cart ${cartId}`, triggeredByUserId: job.initiatorUserId ?? null },
         );
-        const snap = await waitForSnapshotReady({ db: app.db, k8s }, job.tenantId, created.id);
+        // Block /execute until the rollback target is ready. Longhorn is
+        // usually <5s; 120s headroom covers a controller restart (nginx
+        // proxy_read_timeout is 3600s, so it won't cut this short).
+        const snap = await waitForSnapshotReady({ db: app.db, k8s }, job.tenantId, created.id, { timeoutMs: 120_000 });
         await app.db.update(restoreJobs)
           .set({ preRestoreSnapshotId: snap.id })
           .where(eq(restoreJobs.id, cartId));

@@ -447,7 +447,9 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
           tenantId,
           { label: `pre-restore cart ${cartId}`, triggeredByUserId: request.user?.sub ?? null },
         );
-        const snap = await waitForSnapshotReady({ db: app.db, k8s }, tenantId, created.id);
+        // Block until the rollback target is ready (Longhorn usually <5s;
+        // 120s headroom covers a controller restart).
+        const snap = await waitForSnapshotReady({ db: app.db, k8s }, tenantId, created.id, { timeoutMs: 120_000 });
         await app.db.update(restoreJobs)
           .set({ preRestoreSnapshotId: snap.id, updatedAt: new Date() })
           .where(eq(restoreJobs.id, cartId));

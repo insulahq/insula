@@ -59,36 +59,43 @@ export async function tenantSnapshotsRoutes(app: FastifyInstance): Promise<void>
       const target = isTenantPanel
         ? { type: 'route' as const, href: '/snapshots' }
         : { type: 'modal' as const, modal: 'snapshot-create', modalProps: { snapshotId: snap.id, tenantId } };
-      await startTask(app.db, {
-        kind: 'storage.snapshot',
-        refId: snap.id,
-        scope: isTenantPanel ? 'tenant' : 'admin',
-        userId,
-        tenantId,
-        label: toSafeText(snap.label ? `Snapshot "${snap.label}"` : 'Snapshot'),
-        target,
-        progressText: toSafeText('Creating snapshot…'),
-        details: { snapshotId: snap.id, tenantId },
-      });
-      const fdb = app.db;
-      const fk8s = k8sFor();
-      void (async () => {
-        try {
-          const ready = await waitForSnapshotReady({ db: fdb, k8s: fk8s }, tenantId, snap.id);
-          await finishTaskByRef(fdb, 'storage.snapshot', snap.id, {
-            status: 'succeeded',
-            text: toSafeText('Snapshot ready'),
-            detailsPatch: { sizeBytes: ready.sizeBytes },
-          });
-        } catch (err) {
+      // Best-effort: a task-center write must NEVER fail the snapshot create —
+      // the VolumeSnapshot is already live, so a 500 here would orphan it.
+      try {
+        await startTask(app.db, {
+          kind: 'storage.snapshot',
+          refId: snap.id,
+          scope: isTenantPanel ? 'tenant' : 'admin',
+          userId,
+          tenantId,
+          label: toSafeText(snap.label ? `Snapshot "${snap.label}"` : 'Snapshot'),
+          target,
+          progressText: toSafeText('Creating snapshot…'),
+          details: { snapshotId: snap.id, tenantId },
+        });
+        const fdb = app.db;
+        const fk8s = k8sFor();
+        void (async () => {
           try {
+            const ready = await waitForSnapshotReady({ db: fdb, k8s: fk8s }, tenantId, snap.id);
             await finishTaskByRef(fdb, 'storage.snapshot', snap.id, {
-              status: 'failed',
-              error: err instanceof Error ? err.message : String(err),
+              status: 'succeeded',
+              text: toSafeText('Snapshot ready'),
+              detailsPatch: { sizeBytes: ready.sizeBytes },
             });
-          } catch { /* best-effort — list reconcile still reflects the real state */ }
-        }
-      })();
+          } catch (err) {
+            // Tenants must not see raw k8s/Longhorn error strings (internal
+            // hostnames + resource paths via /me/tasks). Operators get the real one.
+            const raw = err instanceof Error ? err.message : String(err);
+            const safeErr = isTenantPanel ? 'Snapshot creation failed — contact support if this persists' : raw;
+            try {
+              await finishTaskByRef(fdb, 'storage.snapshot', snap.id, { status: 'failed', error: safeErr });
+            } catch { /* best-effort — list reconcile still reflects the real state */ }
+          }
+        })();
+      } catch (err) {
+        app.log.warn({ err, snapshotId: snap.id }, '[tenant-snapshots] task enroll failed — snapshot still created');
+      }
     }
 
     reply.status(201);

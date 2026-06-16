@@ -60,7 +60,7 @@ export default function SnapshotCreateProgressModal({ onClose, snapshotId }: Pro
               <div className="h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
                 <div className="h-full animate-pulse rounded-full bg-indigo-500" style={{ width: `${task?.progressPct ?? 40}%` }} />
               </div>
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-gray-400 dark:text-gray-500">
                 An on-server recovery point of your files — usually ready in a few seconds. It's safe to close this; progress stays in the task center.
               </p>
             </>
