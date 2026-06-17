@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { RetainedVolume, RestoreRetainedRequest } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 export interface StorageSnapshot {
@@ -273,5 +274,36 @@ export function useTenantStoragePlacement(tenantId: string | undefined) {
     enabled: Boolean(tenantId),
     staleTime: 15_000,
     refetchInterval: 30_000,
+  });
+}
+
+// ─── Retained-volume restore ──────────────────────────────────────────
+//
+// After a destructive shrink (or archive) the OLD Longhorn volume survives
+// detached + Released (longhorn-tenant SC is reclaimPolicy: Retain). If a
+// manual snapshot was taken first, the admin can roll the tenant back onto
+// that retained volume at the chosen snapshot. See
+// docs/roadmap/RETAINED_VOLUME_RESTORE.md.
+
+export function useRetainedVolumes(tenantId: string | undefined) {
+  return useQuery<{ data: RetainedVolume[] }>({
+    queryKey: ['retained-volumes', tenantId],
+    queryFn: () => apiFetch(`/api/v1/admin/tenants/${tenantId}/storage/retained-volumes`),
+    enabled: !!tenantId,
+  });
+}
+
+export function useRestoreRetained() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ tenantId, pvName, snapshotName }: { tenantId: string } & RestoreRetainedRequest) =>
+      apiFetch<{ data: { operationId: string } }>(
+        `/api/v1/admin/tenants/${tenantId}/storage/restore-retained`,
+        { method: 'POST', body: JSON.stringify({ pvName, snapshotName }) },
+      ),
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['storage-operations', vars.tenantId] });
+      qc.invalidateQueries({ queryKey: ['retained-volumes', vars.tenantId] });
+    },
   });
 }

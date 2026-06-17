@@ -3,6 +3,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import type { RetainedVolume, RetainedSnapshot } from '@insula/api-contracts';
 
 /**
  * Retained-volume discovery for the admin "restore from a retained volume"
@@ -23,29 +24,9 @@ import { ApiError } from '../../shared/errors.js';
  * without a cluster.
  */
 
-/** One restorable Longhorn snapshot living on a retained volume. */
-export interface RetainedSnapshot {
-  /** The `snapshots.longhorn.io` CR name — what snapshotRevert reverts to. */
-  readonly name: string;
-  /** RFC3339 creation time from the snapshot status, or null if unknown. */
-  readonly createdAt: string | null;
-  /** Snapshot size in bytes (0 when Longhorn hasn't reported it yet). */
-  readonly sizeBytes: number;
-  readonly readyToUse: boolean;
-}
-
-/** A detached, Released volume that previously backed this tenant's PVC. */
-export interface RetainedVolume {
-  readonly pvName: string;
-  readonly longhornVolumeName: string;
-  /** Capacity in bytes (from the PV, falling back to the Longhorn volume). */
-  readonly sizeBytes: number;
-  /** When the PV became Released (best-effort, from status), or null. */
-  readonly releasedAt: string | null;
-  /** Restorable snapshots on this volume, newest first. Always ≥1 (volumes
-   *  with no snapshot are not "retained" in the restorable sense — Q5). */
-  readonly snapshots: readonly RetainedSnapshot[];
-}
+// RetainedVolume / RetainedSnapshot live in @insula/api-contracts (the single
+// source of truth for API types) and are re-exported here for internal use.
+export type { RetainedVolume, RetainedSnapshot };
 
 // ─── Raw K8s shapes (subset we read) ────────────────────────────────────
 

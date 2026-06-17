@@ -6,6 +6,7 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import EditTenantModal from '@/components/EditTenantModal';
 import DeleteConfirmDialog from '@/components/DeleteConfirmDialog';
 import OperationProgressModal from '@/components/OperationProgressModal';
+import RetainedVolumesCard from '@/components/RetainedVolumesCard';
 import TransitionProgressModal from '@/components/TransitionProgressModal';
 import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
@@ -563,6 +564,8 @@ export default function TenantDetail() {
       <NamespaceIntegrityBanner tenantId={id!} />
 
       <StorageLifecycleCard tenantId={id!} tenant={tenant} onManageSnapshots={() => setActiveTab('snapshots')} />
+
+      <RetainedVolumesCard tenantId={id!} />
 
       <PlacementCard tenantId={id!} tenant={tenant} />
 
