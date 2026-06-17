@@ -3,6 +3,17 @@ import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 
 /**
+ * Annotation set on a tenant Deployment while a destructive storage op
+ * (quiesce → shrink/restore) is holding it at replicas=0 to release the PVC.
+ * `ensureFileManagerRunning` refuses to scale the file-manager back up while
+ * this is present — otherwise the SFTP gateway / file routes, which call
+ * ensureFileManagerRunning reactively, scale it back to 1 within ~2s and
+ * fight quiesce (the pod keeps the PVC's RWO lock → waitForQuiesced timeout).
+ * quiesce sets it; unquiesce (and the cancel/clear-failed valves) clear it.
+ */
+export const STORAGE_QUIESCED_ANNOTATION = 'insula.host/storage-quiesced';
+
+/**
  * Reliable Deployment scaling — scale-to-0 was a silent no-op via the SDK.
  *
  * Two SDK paths both FAILED to scale a Deployment to 0 (proven live on
