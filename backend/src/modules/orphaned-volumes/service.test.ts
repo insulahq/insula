@@ -21,6 +21,7 @@ interface MockOpts {
   namespaces?: Array<string | NamespaceMock>;
   longhornVolumes?: unknown[];
   longhornReplicas?: unknown[];
+  longhornSnapshots?: unknown[];
 }
 
 function makeK8s(opts: MockOpts, captures?: { deletedNamespaces: string[] }): K8sClients {
@@ -49,6 +50,7 @@ function makeK8s(opts: MockOpts, captures?: { deletedNamespaces: string[] }): K8
       listNamespacedCustomObject: vi.fn().mockImplementation(async (req: { plural: string }) => {
         if (req.plural === 'volumes') return { items: opts.longhornVolumes ?? [] };
         if (req.plural === 'replicas') return { items: opts.longhornReplicas ?? [] };
+        if (req.plural === 'snapshots') return { items: opts.longhornSnapshots ?? [] };
         return { items: [] };
       }),
       deleteNamespacedCustomObject: vi.fn().mockResolvedValue({}),
@@ -153,6 +155,47 @@ describe('detectOrphans', () => {
     const r = await detectOrphans(db, k8s, { stalePvThresholdDays: 7 });
     expect(r.orphans[0].reason).toBe('pv_released_stale');
     expect(r.orphans[0].ageDays).toBeGreaterThanOrEqual(10);
+  });
+
+  it('does NOT flag a stale Released PV that still holds a restorable snapshot (deliberately retained volume)', async () => {
+    const old = new Date(Date.now() - 30 * 86400_000).toISOString(); // 30 days, well past stale
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-retained' },
+        spec: { claimRef: { namespace: 'tenant-x', name: 'tenant-x-storage' }, capacity: { storage: '2Gi' } },
+        status: { phase: 'Released', lastTransitionTime: old },
+      }],
+      namespaces: ['tenant-x'],
+      longhornVolumes: [{ metadata: { name: 'pvc-retained' }, status: { kubernetesStatus: { pvName: 'pvc-retained' } } }],
+      // A real (non-head) snapshot on that volume → it's a retained fallback.
+      longhornSnapshots: [
+        { metadata: { name: 'volume-head' }, spec: { volume: 'pvc-retained' } },
+        { metadata: { name: 'snap-pre-shrink' }, spec: { volume: 'pvc-retained' } },
+      ],
+    });
+    const db = makeDb([{ ns: 'tenant-x', name: 'Tenant X' }]);
+
+    const r = await detectOrphans(db, k8s, { stalePvThresholdDays: 7 });
+    expect(r.orphans.find((o) => o.pvName === 'pvc-retained')).toBeUndefined();
+  });
+
+  it('DOES flag a stale Released PV once only the volume-head snapshot remains (snapshots expired)', async () => {
+    const old = new Date(Date.now() - 30 * 86400_000).toISOString();
+    const k8s = makeK8s({
+      pvs: [{
+        metadata: { name: 'pvc-expired' },
+        spec: { claimRef: { namespace: 'tenant-y', name: 'tenant-y-storage' }, capacity: { storage: '2Gi' } },
+        status: { phase: 'Released', lastTransitionTime: old },
+      }],
+      namespaces: ['tenant-y'],
+      longhornVolumes: [{ metadata: { name: 'pvc-expired' }, status: { kubernetesStatus: { pvName: 'pvc-expired' } } }],
+      // Only the writable head remains → no longer a restore point.
+      longhornSnapshots: [{ metadata: { name: 'volume-head' }, spec: { volume: 'pvc-expired' } }],
+    });
+    const db = makeDb([{ ns: 'tenant-y', name: 'Tenant Y' }]);
+
+    const r = await detectOrphans(db, k8s, { stalePvThresholdDays: 7 });
+    expect(r.orphans.find((o) => o.pvName === 'pvc-expired')?.reason).toBe('pv_released_stale');
   });
 
   it('does NOT flag a Bound PV whose tenant row exists', async () => {

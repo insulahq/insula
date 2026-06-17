@@ -117,6 +117,14 @@ interface RawLhReplica {
   readonly status?: { readonly currentState?: string };
 }
 
+interface RawLhSnapshot {
+  readonly metadata?: { readonly name?: string };
+  readonly spec?: { readonly volume?: string };
+}
+
+/** Longhorn's writable head snapshot — never a real restore point. */
+const LH_VOLUME_HEAD = 'volume-head';
+
 interface RawNamespace {
   readonly metadata?: {
     readonly name?: string;
@@ -168,7 +176,7 @@ export async function detectOrphans(
   const stalePvThresholdDays = options.stalePvThresholdDays ?? DEFAULT_STALE_PV_DAYS;
 
   // 1) Pull all data sources in parallel.
-  const [pvList, nsList, volList, replicaList, tenantRows] = await Promise.all([
+  const [pvList, nsList, volList, replicaList, snapList, tenantRows] = await Promise.all([
     k8s.core.listPersistentVolume({}) as Promise<{ items?: readonly RawPv[] }>,
     k8s.core.listNamespace({}) as Promise<{ items?: readonly RawNamespace[] }>,
     k8s.custom.listNamespacedCustomObject({
@@ -179,6 +187,10 @@ export async function detectOrphans(
       group: 'longhorn.io', version: 'v1beta2',
       namespace: 'longhorn-system', plural: 'replicas',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawLhReplica[] }>,
+    k8s.custom.listNamespacedCustomObject({
+      group: 'longhorn.io', version: 'v1beta2',
+      namespace: 'longhorn-system', plural: 'snapshots',
+    } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0]).catch(() => ({ items: [] })) as Promise<{ items?: readonly RawLhSnapshot[] }>,
     db.select({ ns: tenants.kubernetesNamespace, name: tenants.name }).from(tenants),
   ]);
 
@@ -223,6 +235,21 @@ export async function detectOrphans(
     if (pv.metadata?.name) pvByName.set(pv.metadata.name, pv);
   }
 
+  // Longhorn volumes that still carry a real (non-head) snapshot. A Released
+  // volume with such a snapshot is a DELIBERATELY retained volume — the old
+  // copy a destructive shrink/archive left behind so the admin can roll the
+  // tenant back onto it (see storage-lifecycle/retained-volumes.ts). The orphan
+  // reaper must NOT purge these: it would silently destroy the very fallback
+  // the retained-restore flow exists to offer. They drop out of this set once
+  // the snapshots expire (the tenant_volume_snapshots reaper deletes them),
+  // after which they become ordinary pv_released_stale orphans on the next scan.
+  const volumesWithSnapshots = new Set<string>();
+  for (const s of snapList.items ?? []) {
+    const vol = s.spec?.volume;
+    const name = s.metadata?.name;
+    if (vol && name && name !== LH_VOLUME_HEAD) volumesWithSnapshots.add(vol);
+  }
+
   // 3) Walk PVs and classify each one.
   const orphans: OrphanedVolumeEntry[] = [];
   const seenLonghornVols = new Set<string>();
@@ -251,7 +278,12 @@ export async function detectOrphans(
       reason = 'tenant_record_deleted';
     } else if (phase === 'Released'
       && ageDays !== null
-      && ageDays >= stalePvThresholdDays) {
+      && ageDays >= stalePvThresholdDays
+      // A Released volume that still holds a restorable snapshot is a
+      // deliberately-retained fallback (post-shrink/archive) — surfaced in the
+      // tenant's retained-volumes restore UI, NOT an orphan to reap. Skip it
+      // until its snapshots expire, then it falls through as a normal stale PV.
+      && !(lhVolName && volumesWithSnapshots.has(lhVolName))) {
       reason = 'pv_released_stale';
     }
 

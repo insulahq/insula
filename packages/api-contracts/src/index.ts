@@ -93,6 +93,7 @@ export * from './load-balancer.js';
 export * from './platform-storage-policy.js';
 export * from './system-settings.js';
 export * from './orphaned-volumes.js';
+export * from './retained-volumes.js';
 export * from './system-snapshots.js';
 export * from './snapshot-accounting.js';
 export * from './lifecycle-hooks.js';
