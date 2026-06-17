@@ -1,22 +1,20 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { scaleDeploymentReplicas } from '../../shared/scale-deployment.js';
 
-// Scaling/suspending via a strategic-merge PATCH. The previous
-// read-modify-replace on the `/scale` subresource
-// (`replaceNamespacedDeploymentScale`) silently NO-OPs under
-// @kubernetes/client-node v1.x — the serialized body drops `spec.replicas`,
-// so the call returns 200 but the Deployment stays at its old replica count.
-// That meant quiesce never actually scaled anything to 0 and every
-// destructive resize hung at "Scaling workloads to zero" → waitForQuiesced
-// timeout. patchNamespacedDeployment with the strategic-merge content-type
-// (proven against the live cluster) applies correctly.
-type DeploymentPatcher = { patchNamespacedDeployment: (a: { name: string; namespace: string; body: unknown }, o: unknown) => Promise<unknown> };
+// Deployment scaling goes through scaleDeploymentReplicas (raw SSA body) —
+// the typed SDK `patchNamespacedDeployment` serializer DROPS `replicas: 0`,
+// so a strategic-merge PATCH to scale-to-0 returns 200 but applies a no-op
+// and the Deployment stays at its old replica count. That made quiesce never
+// actually scale the file-manager (or any) pod down, so `waitForQuiesced`
+// hung at "Scaling workloads to zero" until timeout and every destructive
+// resize failed/rolled back. See shared/scale-deployment.ts. CronJob suspend
+// still uses a strategic-merge PATCH (`suspend: true` is not falsy, so the
+// serializer keeps it).
 type CronJobPatcher = { patchNamespacedCronJob: (a: { name: string; namespace: string; body: unknown }, o: unknown) => Promise<unknown> };
 
-async function scaleDeployment(k8s: K8sClients, namespace: string, name: string, replicas: number): Promise<void> {
-  await (k8s.apps as unknown as DeploymentPatcher).patchNamespacedDeployment(
-    { name, namespace, body: { spec: { replicas } } }, STRATEGIC_MERGE_PATCH,
-  );
+async function scaleDeployment(_k8s: K8sClients, namespace: string, name: string, replicas: number): Promise<void> {
+  await scaleDeploymentReplicas(namespace, name, replicas);
 }
 
 async function setCronJobSuspend(k8s: K8sClients, namespace: string, name: string, suspend: boolean): Promise<void> {
@@ -76,7 +74,6 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     deployments.push({ name, replicas });
     if (replicas > 0) {
       await scaleDeployment(k8s, namespace, name, 0);
-      console.warn(`[quiesce-dbg] ns=${namespace} scaled ${name} ${replicas}->0`);
     }
   }
 

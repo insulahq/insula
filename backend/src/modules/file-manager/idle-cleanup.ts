@@ -98,12 +98,11 @@ export function startIdleCleanup(kubeconfigPath?: string, intervalMs = 60_000): 
 
           if (now - lastAccess > IDLE_TIMEOUT_MS) {
             console.log(`[file-manager-cleanup] Scaling down idle file-manager in ${ns} (idle for ${Math.round((now - lastAccess) / 60_000)}m)`);
-            await k8s.apps.patchNamespacedDeployment({
-              name: 'file-manager',
-              namespace: ns,
-              body: { spec: { replicas: 0 } },
-            } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
-              STRATEGIC_MERGE_PATCH);
+            // Raw-body scale — the typed patch drops replicas:0 (serializer),
+            // which silently no-op'd this idle scale-down. See
+            // shared/scale-deployment.ts.
+            const { scaleDeploymentReplicas } = await import('../../shared/scale-deployment.js');
+            await scaleDeploymentReplicas(ns, 'file-manager', 0);
             lastAccessMap.delete(ns);
           }
         } catch {

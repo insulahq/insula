@@ -1,5 +1,18 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+// Deployment scaling now delegates to scaleDeploymentReplicas (raw SSA body)
+// because the typed SDK patch drops replicas:0. Mock it and record the calls.
+const { scaleReplicaCalls } = vi.hoisted(() => ({
+  scaleReplicaCalls: [] as Array<{ namespace: string; name: string; replicas: number }>,
+}));
+vi.mock('../../shared/scale-deployment.js', () => ({
+  scaleDeploymentReplicas: vi.fn(async (namespace: string, name: string, replicas: number) => {
+    scaleReplicaCalls.push({ namespace, name, replicas });
+  }),
+}));
+beforeEach(() => { scaleReplicaCalls.length = 0; });
+
 import { quiesce, unquiesce, waitForQuiesced } from './quiesce.js';
 
 function mockK8s(opts: {
@@ -87,7 +100,7 @@ describe('quiesce', () => {
       { name: 'redis', replicas: 0 },
     ]);
     // But only the running ones get scaled-to-0 calls
-    expect(m.scaleCalls).toEqual([
+    expect(scaleReplicaCalls.map((c) => ({ name: c.name, replicas: c.replicas }))).toEqual([
       { name: 'wordpress', replicas: 0 },
       { name: 'mariadb', replicas: 0 },
     ]);
@@ -114,7 +127,7 @@ describe('quiesce', () => {
       cronJobs: [{ name: 'c', suspend: true }],
     });
     await quiesce(m.tenant, 'ns');
-    expect(m.scaleCalls).toEqual([]);
+    expect(scaleReplicaCalls).toEqual([]);
     expect(m.cronPatchCalls).toEqual([]);
   });
 });
@@ -178,7 +191,7 @@ describe('unquiesce', () => {
       cronJobs: [],
     });
     // redis was at 0 before quiesce — leave it at 0
-    expect(m.scaleCalls).toEqual([
+    expect(scaleReplicaCalls.map((c) => ({ name: c.name, replicas: c.replicas }))).toEqual([
       { name: 'wp', replicas: 1 },
       { name: 'mdb', replicas: 1 },
     ]);
