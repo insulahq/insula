@@ -76,6 +76,7 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     deployments.push({ name, replicas });
     if (replicas > 0) {
       await scaleDeployment(k8s, namespace, name, 0);
+      console.warn(`[quiesce-dbg] ns=${namespace} scaled ${name} ${replicas}->0`);
     }
   }
 
