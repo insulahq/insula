@@ -67,8 +67,40 @@ the old state.
 > **`SNAPSHOT_VOLUME_MISMATCH` (409).** In-place revert only works on the *same*
 > Longhorn volume the snapshot came from. If a prior **shrink** (which recreates
 > the volume) or a different restore has since replaced the volume, the snapshot
-> is stranded and can't be reverted in place. Recover from the off-site bundle
-> instead.
+> is stranded and can't be reverted in place — restore it as a **retained
+> volume** (next section), or recover from the off-site bundle.
+
+## Restore from a retained volume (operator)
+
+When a destructive **shrink** (or archive) recreates the PVC, the *old* Longhorn
+volume is **not destroyed** — the `longhorn-tenant` StorageClass is
+`reclaimPolicy: Retain`, so the PV goes `Released` and the volume stays detached
+with its snapshots intact. If a snapshot was taken **before** the shrink, you can
+roll the tenant back onto that retained volume — this is the recovery path for the
+`SNAPSHOT_VOLUME_MISMATCH` case above (the snapshot the in-place revert refuses
+lives on the retained volume, not the current one).
+
+- **Where:** admin panel → tenant detail → the amber **"Restore from a retained
+  volume"** card. It renders only when the tenant *has* a retained volume, so most
+  tenants never see it. Pick the volume's snapshot, then type the PV name to
+  confirm. Tenant-scoped — an admin can only address volumes that belonged to
+  *this* tenant.
+- **API:** `GET …/admin/tenants/:id/storage/retained-volumes` (discovery) →
+  `POST …/admin/tenants/:id/storage/restore-retained { pvName, snapshotName }`
+  → `{ operationId }`, polled via the shared storage-operation progress modal.
+
+**Mechanism:** quiesce → Longhorn `snapshotRevert` on the **retained** volume at
+the chosen snapshot → rebind the PVC to it by static `volumeName` (raising
+`<ns>-storage-quota` first if the retained volume is larger than the current one)
+→ unquiesce. The **volume currently in use is kept as a fallback** (left
+`Released`, *not* deleted) so the restore is reversible — reclaim it later from
+**Cluster → Orphaned Volumes** once you've verified the restored data.
+
+> **Reaper safety.** The orphaned-volumes reaper will **not** auto-purge a
+> `Released` volume that still holds a restorable (non-`volume-head`) snapshot —
+> it's a deliberately-retained fallback. It only becomes an ordinary stale orphan
+> once its snapshots expire (the 48h snapshot reaper), after which it ages out
+> normally. So a freshly-retained volume can't be reaped out from under you.
 
 ## Destructive resize / shrink (operator)
 
@@ -176,5 +208,17 @@ with a pre-restore snapshot as a rollback target). That path shipped 2026-06-16
 
 ## Still open (R19)
 
-- **rclone-shim multipart > 1 GiB** — see Troubleshooting; blocks large-PVC
-  shrink/backup through the in-cluster shim.
+- **Destructive-shrink quiesce — FIXED 2026-06-17.** Single-node shrink used to
+  hang at "Scaling workloads to zero": the SDK serializer silently dropped
+  `replicas: 0` (scale-to-0 was a no-op), and even once that was fixed the
+  file-manager auto-restarted within ~2s and fought quiesce. Now quiesce scales
+  via the `/scale` subresource, stamps an `insula.host/storage-quiesced`
+  annotation that blocks the file-manager auto-start until the op finishes, and
+  force-deletes a pod stuck `Terminating` past a grace window. Shrink now
+  succeeds on the first attempt.
+- **rclone-shim multipart > 1 GiB** — no longer *reached* (every tenant-data
+  path goes through restic's 64 MiB chunked packs since #118); an unreached
+  engine property, not an active blocker.
+- **force-cancel** of a storage op can still leave a tenant's *other* workloads
+  scaled to 0 (manual `kubectl scale` recovery); the cancel now at least clears
+  the file-manager quiesce-hold so file access recovers.

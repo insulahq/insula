@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Restore a tenant from a retained Longhorn volume.** A destructive shrink (or
+  archive) leaves the old volume detached + `Released` with its snapshots intact
+  (`longhorn-tenant` is `reclaimPolicy: Retain`). The admin tenant-detail page now
+  has a **"Restore from a retained volume"** card that lists those volumes + their
+  snapshots and rolls the tenant back onto a chosen one (quiesce → Longhorn
+  `snapshotRevert` → rebind PVC by `volumeName`, raising the storage quota if
+  needed). The volume in use is kept as a `Released` fallback — reversible. This
+  is the recovery path for the `SNAPSHOT_VOLUME_MISMATCH` case the in-place revert
+  refuses. The orphaned-volumes reaper now skips a `Released` volume that still
+  holds a restorable snapshot, so a fresh retained fallback is never auto-purged.
+  Runbook: [TENANT_SNAPSHOTS.md](docs/operations/TENANT_SNAPSHOTS.md).
 - **Offline etcd restore now works for every shim upstream protocol — S3,
   SFTP, and CIFS/SMB** (it was S3-only). `restore-etcd-from-shim.sh --offline`
   renders a private per-run `rclone.conf` for the descriptor's `storageType`;
@@ -21,6 +32,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   CIFS, including a destructive cluster-down recovery over CIFS.
 
 ### Fixed
+- **Destructive PVC shrink no longer hangs at "Scaling workloads to zero" on a
+  single node.** Three layered bugs: (1) the `@kubernetes/client-node`
+  serializer silently dropped `replicas: 0`, so quiesce's scale-to-0 was a no-op
+  (now done via a raw merge-patch to the `/scale` subresource); (2) the
+  file-manager auto-restarted within ~2s and fought quiesce (quiesce now stamps
+  an `insula.host/storage-quiesced` annotation that blocks the auto-start until
+  the op finishes); (3) a pod stuck `Terminating` on a slow Longhorn unmount kept
+  the PVC's RWO lock (now force-deleted past a grace window). Shrink — and every
+  quiesce-based op (in-place / retained restore, fsck) — now succeeds first-try.
 - **The off-site etcd restore (`restore-etcd-from-shim.sh`, both online and
   offline) called a nonexistent `k3s etcd-snapshot restore` subcommand** and
   would have failed *after* downloading the snapshot — the worst time, mid
