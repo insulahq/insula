@@ -1257,7 +1257,17 @@ async function runRestoreFromRetained(
     // 3. Swap the PVC onto the retained volume. Deleting the current PVC
     //    leaves its volume Released (Retain SC) = the fallback.
     await progress('replacing', 60, 'Switching your storage to the retained volume');
-    await rebindPvcToRetainedVolume(k8s, namespace, pvcName, plan.retainedPvName);
+    const restoredCapacity = await rebindPvcToRetainedVolume(k8s, namespace, pvcName, plan.retainedPvName);
+
+    // Persist the restored size (the retained volume may be larger than the
+    // current — e.g. a rollback of a shrink) so the quota reconciler keeps the
+    // raised `<ns>-storage-quota` instead of reconciling it back down to the
+    // shrunk override and fighting the now-larger PVC.
+    const restoredGi = Math.max(1, Math.round(parseQuantityToBytes(restoredCapacity) / (1024 ** 3)));
+    const tIdForSize = await currentTenantId(db, opId);
+    if (tIdForSize) {
+      await db.update(tenants).set({ storageLimitOverride: restoredGi.toFixed(2) }).where(eq(tenants.id, tIdForSize));
+    }
 
     // Record the fallback volume on the op so the orphan surface + an
     // operator can see exactly what was set aside.
@@ -1307,7 +1317,7 @@ async function rebindPvcToRetainedVolume(
   namespace: string,
   pvcName: string,
   retainedPvName: string,
-): Promise<void> {
+): Promise<string> {
   const pv = await (k8s.core as unknown as {
     readPersistentVolume: (a: { name: string }) => Promise<{ spec?: { capacity?: { storage?: string }; storageClassName?: string } }>;
   }).readPersistentVolume({ name: retainedPvName });
@@ -1330,6 +1340,20 @@ async function rebindPvcToRetainedVolume(
     MERGE_PATCH,
   );
   await waitForPvPhase(k8s, retainedPvName, new Set(['Available', 'Bound']));
+
+  // 3b. Raise the namespace storage quota to fit the retained volume. A prior
+  // shrink lowered `<ns>-storage-quota` requests.storage to the shrunk size, so
+  // statically binding back to the larger (pre-shrink) retained volume would be
+  // 403-rejected by the ResourceQuota. The current PVC was just deleted above
+  // (used=0), so this raise never drops the quota below what's in use.
+  try {
+    await k8s.core.patchNamespacedResourceQuota(
+      { name: `${namespace}-storage-quota`, namespace, body: { spec: { hard: { 'requests.storage': capacity } } } } as unknown as Parameters<typeof k8s.core.patchNamespacedResourceQuota>[0],
+      MERGE_PATCH,
+    );
+  } catch (err) {
+    if (!is404(err)) throw err; // some namespaces may not have a storage quota
+  }
 
   // 4. Create a new PVC statically bound to the retained PV.
   await k8s.core.createNamespacedPersistentVolumeClaim({
@@ -1356,6 +1380,7 @@ async function rebindPvcToRetainedVolume(
 
   // 5. Wait for the bind to complete.
   await waitForPvcBound(k8s, namespace, pvcName);
+  return capacity;
 }
 
 /** Poll a PV until its phase is in `phases`, or time out. */
