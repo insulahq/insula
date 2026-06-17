@@ -1115,6 +1115,281 @@ async function readPvcBoundVolume(k8s: K8sClients, namespace: string, pvcName: s
   }
 }
 
+// ─── Restore from a RETAINED volume (post-shrink rollback) ──────────────
+
+/**
+ * Restore the tenant PVC from a **retained** (Released, detached) Longhorn
+ * volume — the old volume left behind when a destructive shrink recreated
+ * the PVC (the `longhorn-tenant` StorageClass is `reclaimPolicy: Retain`,
+ * so the old volume + its snapshots survive). This is the cross-volume case
+ * that {@link restoreTenantFromVolumeSnapshot} deliberately refuses
+ * (`SNAPSHOT_VOLUME_MISMATCH`): here it's intentional.
+ *
+ * Decisions (docs/roadmap/RETAINED_VOLUME_RESTORE.md):
+ *   - Q1: the volume currently bound is RETAINED as a fallback (its PV goes
+ *     Released, Retain SC) — never deleted on cutover; the orphan reaper
+ *     reclaims it after its window.
+ *   - Q2: restore to the admin-chosen snapshot on the retained volume.
+ *
+ * Flow: resolve+guard (tenancy via {@link listRetainedVolumesForTenant}) →
+ * pre-flight revert → quiesce → revert the retained volume to the snapshot →
+ * rebind the PVC onto it (delete current PVC = new fallback, static-bind a
+ * new PVC to the retained PV) → unquiesce. Tracked in storage_operations
+ * (opType='restore', params.mode='retained_volume').
+ */
+export async function restoreTenantFromRetainedVolume(
+  db: Database,
+  k8s: K8sClients,
+  args: {
+    readonly tenantId: string;
+    readonly pvName: string;
+    readonly snapshotName: string;
+    readonly triggeredByUserId?: string | null;
+  },
+): Promise<{ operationId: string }> {
+  const tenant = await mustGetTenant(db, args.tenantId);
+  await mustBeIdle(db, args.tenantId);
+  const namespace = tenant.kubernetesNamespace;
+  if (!namespace) throw new ApiError('CONFIG_INVALID', `Tenant ${args.tenantId} has no kubernetes namespace`, 400);
+  const pvcName = `${namespace}-storage`;
+
+  // Resolve + GUARD. listRetainedVolumesForTenant only ever returns
+  // Released PVs claim-reffed to THIS tenant's namespace, so finding the
+  // chosen pv+snapshot here both resolves the Longhorn volume name and
+  // enforces tenancy — an admin can't address an arbitrary cluster volume.
+  const { listRetainedVolumesForTenant } = await import('./retained-volumes.js');
+  const retained = await listRetainedVolumesForTenant(db, k8s, args.tenantId);
+  const chosen = retained.find((r) => r.pvName === args.pvName);
+  if (!chosen) {
+    throw new ApiError('RETAINED_VOLUME_NOT_FOUND', `No retained volume '${args.pvName}' is available for this tenant`, 404);
+  }
+  const snap = chosen.snapshots.find((s) => s.name === args.snapshotName);
+  if (!snap) {
+    throw new ApiError('RETAINED_SNAPSHOT_NOT_FOUND', `Snapshot '${args.snapshotName}' was not found on retained volume '${args.pvName}'`, 404);
+  }
+  const retainedVolume = chosen.longhornVolumeName;
+
+  // Never restore onto the currently-bound volume — that's the in-place
+  // revert path (restoreTenantFromVolumeSnapshot), not a retained restore.
+  const boundVolume = await readPvcBoundVolume(k8s, namespace, pvcName);
+  if (boundVolume && boundVolume === retainedVolume) {
+    throw new ApiError(
+      'RETAINED_VOLUME_IS_BOUND',
+      'That volume is the one currently in use — restore it in place from its snapshot instead of as a retained volume.',
+      409,
+    );
+  }
+
+  // Pre-flight the revert BEFORE touching the running tenant.
+  const { assertSnapshotRevertable, RevertError } = await import('./longhorn-revert.js');
+  try {
+    await assertSnapshotRevertable(k8s, retainedVolume, args.snapshotName);
+  } catch (err) {
+    if (err instanceof RevertError) throw new ApiError('SNAPSHOT_NOT_RESTORABLE', err.message, err.code);
+    throw err;
+  }
+
+  const opId = uuid();
+  await db.transaction(async (tx) => {
+    await tx.insert(storageOperations).values({
+      id: opId,
+      tenantId: args.tenantId,
+      opType: 'restore',
+      state: 'quiescing',
+      progressPct: 0,
+      progressMessage: 'Starting restore from retained volume',
+      params: {
+        mode: 'retained_volume',
+        retainedPvName: args.pvName,
+        retainedVolumeName: retainedVolume,
+        snapshotName: args.snapshotName,
+        sizeBytes: chosen.sizeBytes,
+      },
+      triggeredByUserId: args.triggeredByUserId ?? null,
+    });
+    await tx.update(tenants)
+      .set({ storageLifecycleState: 'quiescing', activeStorageOpId: opId })
+      .where(eq(tenants.id, args.tenantId));
+  });
+
+  void runRestoreFromRetained(db, k8s, opId, namespace, pvcName, {
+    retainedPvName: args.pvName,
+    retainedVolumeName: retainedVolume,
+    snapshotName: args.snapshotName,
+  }).catch((err) => { console.error(`[storage-lifecycle] runRestoreFromRetained pre-orchestrator throw for op ${opId}:`, err); });
+  return { operationId: opId };
+}
+
+async function runRestoreFromRetained(
+  db: Database,
+  k8s: K8sClients,
+  opId: string,
+  namespace: string,
+  pvcName: string,
+  plan: { readonly retainedPvName: string; readonly retainedVolumeName: string; readonly snapshotName: string },
+): Promise<void> {
+  let quiesceSnap: QuiesceSnapshot | null = null;
+  const progress = async (state: typeof tenants.$inferSelect['storageLifecycleState'], pct: number, msg: string) => {
+    await updateOp(db, opId, { state, progressPct: pct, progressMessage: msg });
+    await db.update(tenants).set({ storageLifecycleState: state }).where(eq(tenants.activeStorageOpId, opId));
+  };
+
+  try {
+    await progress('quiescing', 5, 'Scaling workloads to zero');
+    quiesceSnap = await quiesce(k8s, namespace);
+    await persistQuiesceSnapshot(db, opId, quiesceSnap);
+    await waitForQuiesced(k8s, namespace);
+
+    // 1. Revert the retained (detached) volume to the chosen snapshot. It's
+    //    a different volume from the one the PVC is bound to, so this is
+    //    safe to do before the swap.
+    await progress('restoring', 30, 'Reverting the retained volume to the chosen snapshot');
+    const { revertVolumeToSnapshot } = await import('./longhorn-revert.js');
+    await revertVolumeToSnapshot(k8s, plan.retainedVolumeName, plan.snapshotName, {
+      onStep: async (step) => {
+        await updateOp(db, opId, { progressMessage: `Reverting — ${step.step}${step.detail ? ` (${step.detail})` : ''}` });
+      },
+    });
+
+    // 2. The volume the PVC is currently bound to becomes the fallback (Q1).
+    const fallbackVolume = await readPvcBoundVolume(k8s, namespace, pvcName);
+
+    // 3. Swap the PVC onto the retained volume. Deleting the current PVC
+    //    leaves its volume Released (Retain SC) = the fallback.
+    await progress('replacing', 60, 'Switching your storage to the retained volume');
+    await rebindPvcToRetainedVolume(k8s, namespace, pvcName, plan.retainedPvName);
+
+    // Record the fallback volume on the op so the orphan surface + an
+    // operator can see exactly what was set aside.
+    const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
+    const params = (op?.params as Record<string, unknown> | null) ?? {};
+    await db.update(storageOperations)
+      .set({ params: { ...params, fallbackVolume: fallbackVolume ?? null } })
+      .where(eq(storageOperations.id, opId));
+
+    await progress('unquiescing', 90, 'Scaling workloads back up');
+    if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap);
+
+    await updateOp(db, opId, {
+      state: 'idle', progressPct: 100,
+      progressMessage: 'Restore complete — your previous volume is retained as a fallback',
+      completedAt: new Date(),
+    });
+    const cId = await currentTenantId(db, opId);
+    if (cId) await markTenantState(db, cId, 'idle', null);
+  } catch (err) {
+    const persisted = formatLifecycleError(err, 'pvc');
+    await updateOp(db, opId, { state: 'failed', lastError: persisted, completedAt: new Date() });
+    // Best-effort unquiesce. The current PVC is only deleted once the
+    // retained volume is reverted + Available, so a failure before the swap
+    // leaves the original volume bound and remountable; a failure after the
+    // swap leaves the (reverted) retained volume bound.
+    if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap).catch(() => {});
+    const cId = await currentTenantId(db, opId);
+    if (cId) await markTenantState(db, cId, 'failed', null);
+  }
+}
+
+/**
+ * Swap the tenant's `<ns>-storage` PVC onto a retained (Released) PV.
+ *   1. Delete the current PVC. Its PV (longhorn-tenant, Retain) survives as
+ *      a Released fallback volume.
+ *   2. Wait for the PVC object to disappear.
+ *   3. Clear the retained PV's stale `claimRef` (RFC-7396 merge → null) so it
+ *      returns to `Available`.
+ *   4. Create a new PVC of the SAME name with `spec.volumeName` set so
+ *      Kubernetes statically binds it to that exact PV — no dynamic provision,
+ *      no clone.
+ *   5. Wait for the new PVC to bind.
+ */
+async function rebindPvcToRetainedVolume(
+  k8s: K8sClients,
+  namespace: string,
+  pvcName: string,
+  retainedPvName: string,
+): Promise<void> {
+  const pv = await (k8s.core as unknown as {
+    readPersistentVolume: (a: { name: string }) => Promise<{ spec?: { capacity?: { storage?: string }; storageClassName?: string } }>;
+  }).readPersistentVolume({ name: retainedPvName });
+  const capacity = pv.spec?.capacity?.storage;
+  const storageClass = pv.spec?.storageClassName ?? 'longhorn-tenant';
+  if (!capacity) throw new ApiError('RETAINED_PV_INVALID', `Retained PV ${retainedPvName} has no capacity`, 500);
+
+  // 1 + 2. Delete the current PVC, wait until it's gone.
+  try {
+    await k8s.core.deleteNamespacedPersistentVolumeClaim({ name: pvcName, namespace } as Parameters<typeof k8s.core.deleteNamespacedPersistentVolumeClaim>[0]);
+  } catch (err) {
+    if (!is404(err)) throw err;
+  }
+  await waitForPvcGone(k8s, namespace, pvcName);
+
+  // 3. Clear the stale claimRef so the retained PV becomes Available.
+  const { MERGE_PATCH } = await import('../../shared/k8s-patch.js');
+  await k8s.core.patchPersistentVolume(
+    { name: retainedPvName, body: { spec: { claimRef: null } } } as unknown as Parameters<typeof k8s.core.patchPersistentVolume>[0],
+    MERGE_PATCH,
+  );
+  await waitForPvPhase(k8s, retainedPvName, new Set(['Available', 'Bound']));
+
+  // 4. Create a new PVC statically bound to the retained PV.
+  await k8s.core.createNamespacedPersistentVolumeClaim({
+    namespace,
+    body: {
+      metadata: {
+        name: pvcName,
+        namespace,
+        labels: {
+          'recurring-job-group.longhorn.io/default': 'enabled',
+          'app.kubernetes.io/part-of': 'hosting-platform',
+          'app.kubernetes.io/component': 'tenant-storage',
+          ...tenantStoragePvcLabelsFromNamespace(namespace),
+        },
+      },
+      spec: {
+        accessModes: ['ReadWriteOnce'],
+        storageClassName: storageClass,
+        volumeName: retainedPvName,
+        resources: { requests: { storage: capacity } },
+      },
+    },
+  } as Parameters<typeof k8s.core.createNamespacedPersistentVolumeClaim>[0]);
+
+  // 5. Wait for the bind to complete.
+  await waitForPvcBound(k8s, namespace, pvcName);
+}
+
+/** Poll a PV until its phase is in `phases`, or time out. */
+async function waitForPvPhase(k8s: K8sClients, pvName: string, phases: ReadonlySet<string>, timeoutMs = 60_000): Promise<void> {
+  const start = Date.now();
+  while (true) {
+    try {
+      const pv = await (k8s.core as unknown as {
+        readPersistentVolume: (a: { name: string }) => Promise<{ status?: { phase?: string } }>;
+      }).readPersistentVolume({ name: pvName });
+      if (pv.status?.phase && phases.has(pv.status.phase)) return;
+    } catch (err) {
+      if (!is404(err)) throw err;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error(`PV ${pvName} did not reach ${[...phases].join('/')} within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+/** Poll a PVC until it is `Bound`, or time out. */
+async function waitForPvcBound(k8s: K8sClients, namespace: string, pvcName: string, timeoutMs = 120_000): Promise<void> {
+  const start = Date.now();
+  while (true) {
+    try {
+      const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({ name: pvcName, namespace }) as { status?: { phase?: string } };
+      if (pvc.status?.phase === 'Bound') return;
+    } catch (err) {
+      if (!is404(err)) throw err;
+    }
+    if (Date.now() - start > timeoutMs) throw new Error(`PVC ${pvcName} did not bind within ${timeoutMs}ms`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
 // ─── Operator recovery ─────────────────────────────────────────────────
 
 /**
