@@ -138,6 +138,20 @@ describe('classifyRetainedVolumes', () => {
     expect(out.map((v) => v.pvName)).toEqual(['pvc-b', 'pvc-a']);
   });
 
+  it('tolerates a numeric Longhorn snapshot size (real cluster returns int64, not a string)', () => {
+    // Regression for the live 500: Longhorn `snapshots.longhorn.io` status.size
+    // is a JSON number, and the old parser called value.match() on it.
+    const out = classifyRetainedVolumes({
+      namespace: NS,
+      boundVolumeName: null,
+      pvs: [pv('pvc-old')],
+      longhornVolumes: [{ metadata: { name: 'pvc-old' }, spec: { size: 2147483648 }, status: { kubernetesStatus: { pvName: 'pvc-old' } } } as never],
+      snapshots: [{ metadata: { name: 'snapshot-num' }, spec: { volume: 'pvc-old' }, status: { readyToUse: true, size: 1048576, creationTime: '2026-06-16T09:00:00Z' } } as never],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].snapshots[0].sizeBytes).toBe(1048576);
+  });
+
   it('falls back to the Longhorn volume size when the PV capacity is missing', () => {
     const out = classifyRetainedVolumes({
       namespace: NS,

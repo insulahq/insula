@@ -61,7 +61,7 @@ interface RawPv {
 
 interface RawLhVolume {
   readonly metadata?: { readonly name?: string };
-  readonly spec?: { readonly size?: string };
+  readonly spec?: { readonly size?: string | number };
   readonly status?: { readonly kubernetesStatus?: { readonly pvName?: string } };
 }
 
@@ -70,7 +70,8 @@ interface RawLhSnapshot {
   readonly spec?: { readonly volume?: string };
   readonly status?: {
     readonly readyToUse?: boolean;
-    readonly size?: string;
+    // Longhorn reports snapshot size as an int64 → a JSON number.
+    readonly size?: string | number;
     readonly creationTime?: string;
   };
 }
@@ -78,9 +79,15 @@ interface RawLhSnapshot {
 /** Longhorn's writable head snapshot — never a restore target. */
 const VOLUME_HEAD = 'volume-head';
 
-/** Parse a K8s/Longhorn quantity string (`30Gi`, `1024`, …) into bytes. */
-function parseQuantityBytes(value: string | undefined): number {
-  if (!value) return 0;
+/**
+ * Parse a K8s/Longhorn size into bytes. Accepts BOTH a quantity string
+ * (`30Gi`, `"1024"`) AND a raw number — Longhorn returns `snapshots.longhorn.io`
+ * `status.size` as an int64 (a JSON number), while PV `capacity.storage` and
+ * Longhorn `volumes.longhorn.io` `spec.size` are quantity strings.
+ */
+function parseQuantityBytes(value: string | number | undefined | null): number {
+  if (value === undefined || value === null || value === '') return 0;
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.round(value) : 0;
   const match = value.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti|K|M|G|T)?$/);
   if (!match) {
     const n = Number(value);
