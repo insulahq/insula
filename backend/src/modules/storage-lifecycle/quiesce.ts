@@ -1,20 +1,42 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
-import { scaleDeploymentReplicas } from '../../shared/scale-deployment.js';
+import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { scaleDeploymentReplicas, STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 
-// Deployment scaling goes through scaleDeploymentReplicas (raw SSA body) —
+// Deployment scaling goes through scaleDeploymentReplicas (raw /scale patch) —
 // the typed SDK `patchNamespacedDeployment` serializer DROPS `replicas: 0`,
 // so a strategic-merge PATCH to scale-to-0 returns 200 but applies a no-op
-// and the Deployment stays at its old replica count. That made quiesce never
-// actually scale the file-manager (or any) pod down, so `waitForQuiesced`
-// hung at "Scaling workloads to zero" until timeout and every destructive
-// resize failed/rolled back. See shared/scale-deployment.ts. CronJob suspend
-// still uses a strategic-merge PATCH (`suspend: true` is not falsy, so the
-// serializer keeps it).
+// and the Deployment stays at its old replica count. See
+// shared/scale-deployment.ts. CronJob suspend / annotation patches still use a
+// merge PATCH (their values are not falsy, so the serializer keeps them).
+type DeploymentPatcher = { patchNamespacedDeployment: (a: { name: string; namespace: string; body: unknown }, o: unknown) => Promise<unknown> };
 type CronJobPatcher = { patchNamespacedCronJob: (a: { name: string; namespace: string; body: unknown }, o: unknown) => Promise<unknown> };
 
 async function scaleDeployment(_k8s: K8sClients, namespace: string, name: string, replicas: number): Promise<void> {
   await scaleDeploymentReplicas(namespace, name, replicas);
+}
+
+/**
+ * Mark/unmark a Deployment as "held quiesced" so ensureFileManagerRunning
+ * won't auto-start it mid-op. Without this, the reactive callers of
+ * ensureFileManagerRunning (SFTP gateway, file routes) scale the file-manager
+ * back to 1 within ~2s of quiesce scaling it to 0 — fighting quiesce and
+ * hanging waitForQuiesced. RFC-7396 merge so `null` deletes the annotation.
+ */
+async function setQuiesceHold(k8s: K8sClients, namespace: string, name: string, held: boolean): Promise<void> {
+  await (k8s.apps as unknown as DeploymentPatcher).patchNamespacedDeployment(
+    { name, namespace, body: { metadata: { annotations: { [STORAGE_QUIESCED_ANNOTATION]: held ? 'true' : null } } } },
+    MERGE_PATCH,
+  );
+}
+
+/**
+ * Best-effort clear of the quiesce-hold on the file-manager Deployment.
+ * Called by the cancel / clear-failed recovery valves so a force-cancelled op
+ * (which doesn't unquiesce) doesn't leave the file-manager permanently
+ * unable to auto-start.
+ */
+export async function clearQuiesceHold(k8s: K8sClients, namespace: string, name = 'file-manager'): Promise<void> {
+  try { await setQuiesceHold(k8s, namespace, name, false); } catch { /* best-effort */ }
 }
 
 async function setCronJobSuspend(k8s: K8sClients, namespace: string, name: string, suspend: boolean): Promise<void> {
@@ -73,6 +95,9 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     const replicas = d.spec?.replicas ?? 0;
     deployments.push({ name, replicas });
     if (replicas > 0) {
+      // Hold BEFORE scaling so a racing ensureFileManagerRunning can't slip a
+      // scale-to-1 in between the scale-down and the annotation.
+      await setQuiesceHold(k8s, namespace, name, true);
       await scaleDeployment(k8s, namespace, name, 0);
     }
   }
@@ -241,6 +266,9 @@ export async function unquiesce(
   snap: QuiesceSnapshot,
 ): Promise<void> {
   for (const d of snap.deployments) {
+    // Clear the quiesce-hold first so ensureFileManagerRunning can auto-start
+    // the file-manager again once the op is done.
+    try { await setQuiesceHold(k8s, namespace, d.name, false); } catch { /* gone — ignore */ }
     if (d.replicas === 0) continue;
     try {
       await scaleDeployment(k8s, namespace, d.name, d.replicas);

@@ -10,6 +10,7 @@
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { FileManagerStatus } from '@insula/api-contracts';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { STORAGE_QUIESCED_ANNOTATION } from '../../shared/scale-deployment.js';
 import { deriveFmSecret } from './internal-secret.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 
@@ -264,6 +265,13 @@ export async function ensureFileManagerRunning(
   } else {
     // Check if the existing deployment spec matches what we want
     const existingDeploy = await k8s.apps.readNamespacedDeployment({ name: FM_NAME, namespace }) as Record<string, unknown>;
+    // A destructive storage op (shrink / restore) holds the file-manager
+    // quiesced at replicas=0 to release the tenant PVC's RWO lock. Reactive
+    // callers (SFTP gateway, file routes) funnel through here — if we scaled
+    // it back to 1 now we'd fight quiesce and hang waitForQuiesced. Skip until
+    // unquiesce (or the cancel/clear-failed valves) clears the annotation.
+    const existingAnnotations = (existingDeploy as { metadata?: { annotations?: Record<string, string> } }).metadata?.annotations;
+    if (existingAnnotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true') return;
     const existingSpec = (existingDeploy as { spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }>; containers?: Array<{ securityContext?: { capabilities?: { add?: string[] } }; image?: string; imagePullPolicy?: string; resources?: { limits?: { cpu?: string; memory?: string } } }> } } } }).spec;
     const templateSpec = existingSpec?.template?.spec;
     const existingReplicas = existingSpec?.replicas ?? 0;

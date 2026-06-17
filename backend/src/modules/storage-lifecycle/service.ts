@@ -1511,6 +1511,13 @@ export async function cancelStorageOperation(
       });
     }
   }
+  // Belt-and-suspenders: clear the file-manager quiesce-hold even when there
+  // was no persisted snapshot to unquiesce (cancel raced the snapshot persist),
+  // so the file-manager can auto-start again after a cancel.
+  if (c.namespace) {
+    const { clearQuiesceHold } = await import('./quiesce.js');
+    await clearQuiesceHold(ctx.k8s, c.namespace);
+  }
 
   if (c.activeOpId) {
     await ctx.db

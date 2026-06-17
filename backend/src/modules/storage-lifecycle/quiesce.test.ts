@@ -7,6 +7,7 @@ const { scaleReplicaCalls } = vi.hoisted(() => ({
   scaleReplicaCalls: [] as Array<{ namespace: string; name: string; replicas: number }>,
 }));
 vi.mock('../../shared/scale-deployment.js', () => ({
+  STORAGE_QUIESCED_ANNOTATION: 'insula.host/storage-quiesced',
   scaleDeploymentReplicas: vi.fn(async (namespace: string, name: string, replicas: number) => {
     scaleReplicaCalls.push({ namespace, name, replicas });
   }),
@@ -25,6 +26,7 @@ function mockK8s(opts: {
 } = {}) {
   const scaleCalls: Array<{ name: string; replicas: number }> = [];
   const cronPatchCalls: Array<{ name: string; suspend: boolean }> = [];
+  const holdCalls: Array<{ name: string; held: boolean }> = [];
   let podsRemaining = opts.pods ?? [];
   let listPodsCallCount = 0;
   const deploymentMap = new Map((opts.deployments ?? []).map((d) => [d.name, d]));
@@ -32,6 +34,7 @@ function mockK8s(opts: {
   return {
     scaleCalls,
     cronPatchCalls,
+    holdCalls,
     tenant: {
       core: {
         listNamespacedPod: vi.fn().mockImplementation(async () => {
@@ -59,10 +62,17 @@ function mockK8s(opts: {
         }),
         // scale via strategic-merge PATCH on the Deployment (read-modify-
         // replace on /scale silently no-ops under client-node v1.x).
+        // Scaling now goes through scaleDeploymentReplicas (mocked). This is
+        // only hit for the quiesce-hold annotation patch (and tolerates a
+        // legacy spec.replicas body just in case).
         patchNamespacedDeployment: vi.fn().mockImplementation(async (args: {
-          name: string; body: { spec: { replicas: number } };
+          name: string; body: { metadata?: { annotations?: Record<string, string | null> }; spec?: { replicas?: number } };
         }, _opts: unknown) => {
-          scaleCalls.push({ name: args.name, replicas: args.body.spec.replicas });
+          const ann = args.body?.metadata?.annotations;
+          if (ann && 'insula.host/storage-quiesced' in ann) {
+            holdCalls.push({ name: args.name, held: ann['insula.host/storage-quiesced'] === 'true' });
+          }
+          if (args.body?.spec?.replicas !== undefined) scaleCalls.push({ name: args.name, replicas: args.body.spec.replicas });
         }),
       },
       batch: {
@@ -130,6 +140,12 @@ describe('quiesce', () => {
     expect(scaleReplicaCalls).toEqual([]);
     expect(m.cronPatchCalls).toEqual([]);
   });
+
+  it('sets the storage-quiesced hold on each scaled deployment (so ensureFileManagerRunning will not fight quiesce)', async () => {
+    const m = mockK8s({ deployments: [{ name: 'file-manager', replicas: 1 }] });
+    await quiesce(m.tenant, 'ns');
+    expect(m.holdCalls).toContainEqual({ name: 'file-manager', held: true });
+  });
 });
 
 describe('waitForQuiesced', () => {
@@ -195,6 +211,12 @@ describe('unquiesce', () => {
       { name: 'wp', replicas: 1 },
       { name: 'mdb', replicas: 1 },
     ]);
+  });
+
+  it('clears the storage-quiesced hold on each deployment so the file-manager can auto-start again', async () => {
+    const m = mockK8s();
+    await unquiesce(m.tenant, 'ns', { deployments: [{ name: 'file-manager', replicas: 1 }], cronJobs: [] });
+    expect(m.holdCalls).toContainEqual({ name: 'file-manager', held: false });
   });
 
   it('only unsuspends CronJobs that were previously active', async () => {
