@@ -1,23 +1,28 @@
 import { KubeConfig } from '@kubernetes/client-node';
-import { applyRaw } from './k8s-patch.js';
+import { readFileSync } from 'node:fs';
+import { request as httpsRequest } from 'node:https';
 
 /**
- * Reliable Deployment scaling — the SDK serializer drops `replicas: 0`.
+ * Reliable Deployment scaling — scale-to-0 was a silent no-op via the SDK.
  *
- * `@kubernetes/client-node` v1.x runs every typed `patchNamespaced*` body
- * through `ObjectSerializer`, which omits `spec.replicas` when its value is
- * `0` (zero is treated as an unset/default integer). So
- * `patchNamespacedDeployment({ body: { spec: { replicas: 0 } } }, STRATEGIC_MERGE_PATCH)`
- * is serialized to `{ spec: {} }` and the apiserver applies a NO-OP — the
- * Deployment stays at its old replica count. This silently broke quiesce's
- * scale-to-0 (the root cause of destructive-shrink quiesce timeouts: the
- * file-manager pod was never asked to terminate, so `waitForQuiesced` hung)
- * and the file-manager idle-cleanup. A non-zero scale (e.g. unquiesce → N)
- * serializes fine, which is why only scale-to-0 was affected.
+ * Two SDK paths both FAILED to scale a Deployment to 0 (proven live on
+ * testing):
+ *   • `patchNamespacedDeployment({ body: { spec: { replicas: 0 } } }, …)` —
+ *     the `@kubernetes/client-node` v1.x ObjectSerializer omits
+ *     `spec.replicas` when it's `0` (zero treated as an unset default), so
+ *     the server gets `{ spec: {} }` and applies a no-op.
+ *   • a Server-Side-Apply on the Deployment object — returned 2xx but never
+ *     recorded the field-manager nor changed `spec.replicas` (no Apply owner
+ *     appeared in managedFields).
  *
- * `applyRaw` sends the body as raw JSON over the wire (Server-Side Apply),
- * so `0` survives. force:true claims `spec.replicas` for a stable
- * fieldManager — harmless co-ownership; other managers keep template/selector.
+ * What DOES work (verified: `kubectl scale --replicas=0` sticks mid-op) is a
+ * patch to the **`/scale` subresource**. So we do exactly that, as a raw
+ * `application/merge-patch+json` request over node:https — the raw JSON body
+ * `{"spec":{"replicas":0}}` never touches the SDK serializer, so `0` survives.
+ * Throws on any non-2xx so a failed scale can never masquerade as success
+ * (which is how quiesce previously hung at "Scaling workloads to zero": the
+ * file-manager pod was never asked to terminate and kept the tenant PVC's
+ * RWO lock until waitForQuiesced timed out).
  */
 let cachedKc: KubeConfig | null = null;
 function clusterKubeConfig(): KubeConfig {
@@ -34,10 +39,61 @@ export async function scaleDeploymentReplicas(
   name: string,
   replicas: number,
 ): Promise<void> {
-  await applyRaw(
-    clusterKubeConfig(),
-    { apiVersion: 'apps/v1', kind: 'Deployment', resource: 'deployments', apiPath: 'apis/apps/v1', namespace, name },
-    { apiVersion: 'apps/v1', kind: 'Deployment', metadata: { name, namespace }, spec: { replicas } },
-    { fieldManager: 'platform-storage-quiesce', force: true },
-  );
+  const kc = clusterKubeConfig();
+  const cluster = kc.getCurrentCluster();
+  if (!cluster) throw new Error('scaleDeploymentReplicas: no current cluster in kubeconfig');
+  const server = cluster.server.replace(/\/$/, '');
+  const path = `/apis/apps/v1/namespaces/${namespace}/deployments/${encodeURIComponent(name)}/scale`;
+
+  // Bearer token: kubeconfig user first, then the in-cluster ServiceAccount
+  // token file (loadFromCluster wires it at request time, not into user.token).
+  let token = kc.getCurrentUser()?.token;
+  if (!token) {
+    try { token = readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/token', 'utf8').trim(); } catch { /* fall through */ }
+  }
+  if (!token) throw new Error('scaleDeploymentReplicas: no Bearer token (kubeconfig nor SA token file)');
+
+  let ca: string | Buffer | undefined;
+  if (cluster.caData) ca = Buffer.from(cluster.caData, 'base64');
+  else if (cluster.caFile) ca = readFileSync(cluster.caFile);
+  else if (!cluster.skipTLSVerify) {
+    try { ca = readFileSync('/var/run/secrets/kubernetes.io/serviceaccount/ca.crt'); } catch { /* system CA may suffice */ }
+  }
+
+  const bodyBuf = Buffer.from(JSON.stringify({ spec: { replicas } }), 'utf8');
+  const url = new URL(server + path);
+
+  await new Promise<void>((resolve, reject) => {
+    const req = httpsRequest(
+      {
+        method: 'PATCH',
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: url.pathname,
+        ca,
+        rejectUnauthorized: !cluster.skipTLSVerify,
+        headers: {
+          'Content-Type': 'application/merge-patch+json',
+          'Content-Length': String(bodyBuf.length),
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          if (status >= 200 && status < 300) { resolve(); return; }
+          reject(new Error(
+            `scaleDeploymentReplicas: ${namespace}/${name} scale->${replicas} HTTP ${status}: ${Buffer.concat(chunks).toString('utf8').slice(0, 300)}`,
+          ));
+        });
+        res.on('error', reject);
+      },
+    );
+    req.on('error', reject);
+    req.write(bodyBuf);
+    req.end();
+  });
 }
