@@ -1,5 +1,11 @@
 # Admin restore-from-retained-volume (design)
 
+> **STATUS: SHIPPED 2026-06-17** (main `c148c57`) — backend discovery +
+> `restoreTenantFromRetainedVolume`, the admin **`RetainedVolumesCard`** UI, and
+> the orphan-reaper guard are all live and full-stack E2E-proven. This file is the
+> original design/decision record; the **operator runbook** is
+> [TENANT_SNAPSHOTS.md › Restore from a retained volume](../operations/TENANT_SNAPSHOTS.md#restore-from-a-retained-volume-operator).
+
 > Admin-driven restore of a tenant PVC from a **retained (detached) Longhorn
 > volume** — the old volume left behind by a destructive shrink when a manual
 > snapshot was taken first. Born from the tenant-9649 shrink incident

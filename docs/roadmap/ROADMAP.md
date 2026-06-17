@@ -30,7 +30,7 @@
 | [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
 | [R17](#r17--mail-housekeeping-follow-ups-2026-06-10-single-node-green-up) | Mail/snapshot housekeeping follow-ups | P2 | Shipped (PRs #22–#39) — all three follow-ups done incl. Released-PV operator surface |
 | [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
-| [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | Partial — per-file restore shipped (bundle cart, #105); shrink rclone-shim multipart open |
+| [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | Shipped — snapshots + in-place/retained-volume restore + destructive-shrink quiesce fixed (2026-06-17); only force-cancel residual open |
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
 
 ---
@@ -384,9 +384,25 @@ via a 1Gi memory bump — and etcd snapshots are small single files.) A future
 engine-level fix (or the R-X19 `rclone serve s3` VFS-cache behaviour) would only
 matter if a new single-large-object writer is introduced.
 
+**Restore from a retained volume + quiesce hardening shipped 2026-06-17.** A
+destructive shrink/archive leaves the old Longhorn volume detached + `Released`
+with its snapshots intact (`longhorn-tenant` is `reclaimPolicy: Retain`). New
+admin **"Restore from a retained volume"** card (`RetainedVolumesCard`) rolls a
+tenant back onto a chosen retained snapshot (quiesce → Longhorn `snapshotRevert`
+→ rebind PVC by `volumeName`, quota raised; current volume kept as a `Released`
+fallback) — the recovery path for `SNAPSHOT_VOLUME_MISMATCH`. The orphan reaper
+skips `Released` volumes that still hold a restorable snapshot. Backend +
+api-contracts + UI + reaper guard all shipped; full browser E2E. **And the
+single-node destructive-shrink quiesce hang is fixed** (3 layered bugs: SDK
+dropped `replicas: 0` → `/scale` subresource; file-manager auto-restart fought
+quiesce → `insula.host/storage-quiesced` hold annotation; pod stuck `Terminating`
+→ force-delete). See [TENANT_SNAPSHOTS.md](../operations/TENANT_SNAPSHOTS.md) and
+[RETAINED_VOLUME_RESTORE.md](RETAINED_VOLUME_RESTORE.md).
+
 **Open:**
-- Destructive-shrink rough edges: force-cancel can leave a tenant quiesced
-  (manual `kubectl scale` recovery); the snapshot Job can hang several minutes.
+- Destructive-shrink residual: force-cancel can still leave a tenant's *other*
+  workloads scaled to 0 (manual `kubectl scale` recovery); cancel now at least
+  clears the file-manager quiesce-hold.
 
 ## R20 — Cross-cluster tenant migration
 
