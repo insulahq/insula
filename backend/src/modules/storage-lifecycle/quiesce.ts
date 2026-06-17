@@ -133,11 +133,21 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
  * Polls every 2 s, gives up after `timeoutMs` (default 120 s) and
  * throws; orchestrator treats that as a quiesce failure and rolls
  * back. Returns the number of pods remaining if successful (should be 0).
+ *
+ * Force-delete escalation: a PVC-mounting pod can get stuck `Terminating`
+ * past its grace period when the Longhorn volume unmount stalls (common on
+ * single-node clusters under churn). That keeps the PVC's RWO lock +
+ * pvc-protection finalizer and would hang the op until `timeoutMs`. Since
+ * quiesce already scaled the owning workload to 0, the pod will NOT be
+ * recreated — so once it has had `forceDeleteAfterMs` (default 45 s) to drain
+ * gracefully, we force-delete it (gracePeriodSeconds=0) to release the PVC
+ * and let the op proceed. Set `forceDeleteAfterMs=0` to disable.
  */
 export async function waitForQuiesced(
   k8s: K8sClients,
   namespace: string,
   timeoutMs = 120_000,
+  forceDeleteAfterMs = 45_000,
 ): Promise<number> {
   const start = Date.now();
   // listPods returns the count and the pod-name+phase list for the
@@ -179,11 +189,35 @@ export async function waitForQuiesced(
       });
   };
 
+  // Track when each lingering pod was first observed so we can force-delete
+  // the ones that overstay the grace window. The owning workload is already
+  // scaled to 0 (quiesce), so a force-delete never triggers a recreate.
+  const firstSeen = new Map<string, number>();
+  const forceDeleted = new Set<string>();
+  const forceDeletePod = async (name: string): Promise<void> => {
+    try {
+      await (k8s.core as unknown as {
+        deleteNamespacedPod: (a: { name: string; namespace: string; gracePeriodSeconds?: number }) => Promise<unknown>;
+      }).deleteNamespacedPod({ name, namespace, gracePeriodSeconds: 0 });
+      console.warn(`[quiesce] force-deleted stuck pod ${namespace}/${name} (did not drain within ${forceDeleteAfterMs}ms after scale-to-0; releasing the tenant PVC lock)`);
+    } catch { /* already gone — fine */ }
+  };
+
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const remaining = await listPods();
     if (remaining.length === 0) return 0;
-    if (Date.now() - start > timeoutMs) {
+    const now = Date.now();
+    for (const p of remaining) {
+      if (!firstSeen.has(p.name)) firstSeen.set(p.name, now);
+      if (forceDeleteAfterMs > 0
+        && !forceDeleted.has(p.name)
+        && now - (firstSeen.get(p.name) ?? now) >= forceDeleteAfterMs) {
+        forceDeleted.add(p.name);
+        await forceDeletePod(p.name);
+      }
+    }
+    if (now - start > timeoutMs) {
       const detail = remaining
         .map((r) => `${r.name} (phase=${r.phase}${r.owner ? `, owner=${r.owner}` : ''})`)
         .join('; ');
