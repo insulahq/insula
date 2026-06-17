@@ -49,7 +49,6 @@ export async function ensureFileManagerRunning(
   image: string,
   initialReplicas = 0,
 ): Promise<void> {
-  console.warn(`[fm-lifecycle-dbg] ensureFileManagerRunning(ns=${namespace}, initialReplicas=${initialReplicas}) caller: ${(new Error().stack || '').split('\n').slice(2, 7).map((s) => s.trim()).join(' <- ')}`);
   // Check if deployment exists
   let deployExists = false;
   try {
