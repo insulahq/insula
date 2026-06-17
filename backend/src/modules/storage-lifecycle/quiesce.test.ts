@@ -31,6 +31,11 @@ function mockK8s(opts: {
             spec: { volumes: (p.mountsPvc ?? true) ? [{ persistentVolumeClaim: { claimName: 'ns-storage' } }] : [] },
           })) };
         }),
+        // Force-delete removes the pod from the remaining set (models kubelet
+        // dropping a stuck-Terminating pod once gracePeriodSeconds=0).
+        deleteNamespacedPod: vi.fn().mockImplementation(async (args: { name: string }) => {
+          podsRemaining = podsRemaining.filter((p) => p.name !== args.name);
+        }),
       },
       apps: {
         listNamespacedDeployment: vi.fn().mockResolvedValue({
@@ -136,6 +141,24 @@ describe('waitForQuiesced', () => {
     // holds no PVC lock — quiesce must not wait on it.
     const m = mockK8s({ pods: [{ name: 'cm-acme-http-solver-x', mountsPvc: false }] });
     await expect(waitForQuiesced(m.tenant, 'ns', 50)).resolves.toBe(0);
+  });
+
+  it('force-deletes a PVC-mounting pod that overstays the grace window, then returns 0', async () => {
+    // A stuck-Terminating file-manager pod (slow Longhorn unmount on single-node)
+    // would otherwise hang quiesce until timeout. Force-delete releases the PVC.
+    const m = mockK8s({ pods: [{ name: 'file-manager-stuck', mountsPvc: true }] });
+    // timeout 5s, force-delete after 10ms → escalates almost immediately.
+    const res = await waitForQuiesced(m.tenant, 'ns', 5000, 10);
+    expect(res).toBe(0);
+    const delSpy = (m.tenant.core as unknown as { deleteNamespacedPod: ReturnType<typeof vi.fn> }).deleteNamespacedPod;
+    expect(delSpy).toHaveBeenCalledWith(expect.objectContaining({ name: 'file-manager-stuck', namespace: 'ns', gracePeriodSeconds: 0 }));
+  });
+
+  it('does NOT force-delete when forceDeleteAfterMs=0 (escalation disabled) — times out instead', async () => {
+    const m = mockK8s({ pods: [{ name: 'file-manager-stuck', mountsPvc: true }] });
+    await expect(waitForQuiesced(m.tenant, 'ns', 50, 0)).rejects.toThrow(/still running/);
+    const delSpy = (m.tenant.core as unknown as { deleteNamespacedPod: ReturnType<typeof vi.fn> }).deleteNamespacedPod;
+    expect(delSpy).not.toHaveBeenCalled();
   });
 
   it('still waits on a PVC-mounting pod even alongside a non-mounting one', async () => {
