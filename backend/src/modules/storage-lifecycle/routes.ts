@@ -11,6 +11,7 @@ import {
   storageLifecycleSettingsSchema,
 } from './settings.js';
 import * as service from './service.js';
+import { listRetainedVolumesForTenant } from './retained-volumes.js';
 
 // Accept both the legacy `newGi` (integer GiB) and the new `newMib`
 // (integer MiB). `newMib` is preferred — admins increasingly want
@@ -27,6 +28,12 @@ const archiveSchema = z.object({
 });
 const restoreSchema = z.object({
   newGi: z.number().int().min(1).max(1000).optional(),
+});
+// Restore from a RETAINED (detached, Released) volume the tenant previously
+// used — identified by the PV name + the Longhorn snapshot to revert it to.
+const restoreRetainedSchema = z.object({
+  pvName: z.string().min(1),
+  snapshotName: z.string().min(1),
 });
 
 export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void> {
@@ -188,6 +195,50 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
     return success(await service.restoreArchivedTenant(await ctx(), tenantId, {
       newGi: parsed.data.newGi,
+      triggeredByUserId: userId,
+    }));
+  });
+
+  // ─── Restore from a retained volume ─────────────────────────────────
+  //
+  // After a destructive shrink (which recreates the PVC) the OLD Longhorn
+  // volume survives detached + Released because the `longhorn-tenant` SC is
+  // reclaimPolicy: Retain. If a manual snapshot was taken beforehand, an
+  // admin can roll the tenant back onto that retained volume. See
+  // docs/roadmap/RETAINED_VOLUME_RESTORE.md.
+
+  app.get('/admin/tenants/:tenantId/storage/retained-volumes', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'List retained (detached) volumes + snapshots a tenant can be restored from',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kcfg);
+    return success(await listRetainedVolumesForTenant(app.db, k8s, tenantId));
+  });
+
+  app.post('/admin/tenants/:tenantId/storage/restore-retained', {
+    onRequest: adminGate,
+    schema: {
+      tags: ['Storage Lifecycle'],
+      summary: 'Restore a tenant PVC from a retained volume + snapshot (current volume kept as a fallback)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = restoreRetainedSchema.safeParse(request.body ?? {});
+    if (!parsed.success) throw new ApiError('VALIDATION_ERROR', parsed.error.issues[0].message, 400);
+    const userId = ((request.user as { id?: string } | undefined)?.id) ?? null;
+    const kcfg = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kcfg);
+    return success(await service.restoreTenantFromRetainedVolume(app.db, k8s, {
+      tenantId,
+      pvName: parsed.data.pvName,
+      snapshotName: parsed.data.snapshotName,
       triggeredByUserId: userId,
     }));
   });
