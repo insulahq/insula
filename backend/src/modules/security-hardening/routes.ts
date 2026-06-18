@@ -26,7 +26,7 @@ import { buildSecurityHardeningSnapshot, triggerProbeRefresh } from './service.j
 import { loadSecurityHardeningClients } from './k8s-client.js';
 import { getNetworkPolicyHardeningState, applyNetworkPolicyTemplate, removeNetworkPolicyHardening } from './netpol-templates.js';
 import { listWafEvents } from './waf-events.js';
-import { wafEventsQuerySchema, applyNetworkPolicyTemplateRequestSchema, removeNetworkPolicyHardeningRequestSchema } from '@insula/api-contracts';
+import { wafEventsQuerySchema, applyNetworkPolicyTemplateRequestSchema, removeNetworkPolicyHardeningRequestSchema, createTrustedRangeRequestSchema } from '@insula/api-contracts';
 import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -76,8 +76,11 @@ import {
   getL4Status,
   getOperatorIpWithSource,
   OperatorIpNotTrustedError,
+  resolveTrustSources,
   setL4Mode,
 } from './crowdsec-l4.js';
+import { buildOperatorTrustStatus } from './operator-trust.js';
+import { createTrustedRange } from '../cluster-network/cluster-trusted-ranges.js';
 import { sql } from 'drizzle-orm';
 
 const CONSOLE_VISIBLE_KEY = 'security.crowdsec.console_visible';
@@ -195,6 +198,58 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
         }
         const clients = await loadSecurityHardeningClients(k8sOpts);
         return removeNetworkPolicyHardening(clients, parsed.data);
+      },
+    );
+
+    // ─── Operator → trusted-range bridge (R11 / Phase 2.3.1) ──────────
+    //
+    // Surfaces whether the operator's CURRENT connection IP is in a trusted
+    // range (so a lockdown won't lock them out) and offers a one-click add.
+    // SECURITY: the IP is ALWAYS derived server-side from the request
+    // (X-Real-IP, Traefik-set + unspoofable) — never from the body — so this
+    // can only ever whitelist the caller's own connection, and only when a
+    // reliable real-client IP is known (canAdd).
+    app.get(
+      '/admin/security/operator-trust',
+      { preHandler: requireRole('super_admin') },
+      async (req: FastifyRequest) => {
+        const { ip, source } = getOperatorIpWithSource(req);
+        const sources = await resolveTrustSources(k8sOpts.kubeconfigPath);
+        return buildOperatorTrustStatus(ip, source, sources);
+      },
+    );
+
+    app.post(
+      '/admin/security/operator-trust/add',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const { ip, source } = getOperatorIpWithSource(req);
+        const sources = await resolveTrustSources(k8sOpts.kubeconfigPath);
+        const status = buildOperatorTrustStatus(ip, source, sources);
+        if (status.isTrusted) {
+          return reply.status(409).send({ error: 'ALREADY_TRUSTED', message: 'Your connection IP is already in a trusted range.' });
+        }
+        if (!status.canAdd || !status.suggestedCidr || !status.suggestedName) {
+          return reply.status(400).send({
+            error: 'OPERATOR_IP_UNDETERMINED',
+            message: `Could not determine a real client IP to whitelist (source=${status.source}). Add a trusted range manually on the Cluster Network page.`,
+          });
+        }
+        const actor = userOf(req);
+        app.log.warn({ userId: actor, cidr: status.suggestedCidr, source: status.source }, 'security-hardening: operator self-service trusted-range add');
+        // Defence-in-depth: re-validate the server-derived name/cidr against the
+        // contract schema before writing the CR (so a future helper regression
+        // surfaces as a clean error, not a CRD-layer 422).
+        const crReq = createTrustedRangeRequestSchema.parse({
+          name: status.suggestedName,
+          cidr: status.suggestedCidr,
+          description: `Operator self-service via Security Posture (${actor})`,
+        });
+        const added = await createTrustedRange(crReq, actor, { kubeconfigPath: k8sOpts.kubeconfigPath });
+        // NOTE: responses in this operator-trust + netpol-templates sub-API are
+        // intentionally bare (the contract schema IS the body) — do NOT wrap in
+        // success(); the hooks read the object directly via apiFetch.
+        return { added: { name: added.name, cidr: added.cidr } };
       },
     );
 
