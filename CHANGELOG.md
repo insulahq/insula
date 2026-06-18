@@ -32,6 +32,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   CIFS, including a destructive cluster-down recovery over CIFS.
 
 ### Fixed
+- **Force-cancelling a storage op no longer leaves the tenant's workloads scaled
+  to 0.** `quiesce` now persists the pre-quiesce replica snapshot *before*
+  scaling anything down (capture → persist → apply), so `…/storage/cancel` (or a
+  crash) mid-op always has the data to bring every workload back to its prior
+  replica count — previously a cancel that raced the post-quiesce persist found
+  the tenant DOWN with no record of its replica counts (manual `kubectl scale`
+  recovery). All quiesce-based ops (resize/shrink, restore, retained-restore,
+  suspend, archive, fsck) benefit; fsck now persists a snapshot it didn't before.
 - **Destructive PVC shrink no longer hangs at "Scaling workloads to zero" on a
   single node.** Three layered bugs: (1) the `@kubernetes/client-node`
   serializer silently dropped `replicas: 0`, so quiesce's scale-to-0 was a no-op
