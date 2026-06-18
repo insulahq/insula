@@ -22,7 +22,7 @@
 | [R8](#r8--notification-channels-slack--webhook--sms) | Notification channels: Slack/Webhook/SMS | P3 | Email + in-app shipped |
 | [R9](#r9--staff-role-email-access) | Staff-role email access | P3 | Not started |
 | [R10](#r10--bulwark-deferred-work) | Bulwark deferred work (phases 7–8) | P3 | Deferred by decision |
-| [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Mostly shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply (2026-06-18); only denied→trusted-range bridge + Trivy (deferred) open |
+| [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply + operator→trusted-range bridge (2026-06-18); only Trivy (deferred) open |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
@@ -177,10 +177,18 @@ Phase-2 surface from the hardening epic, on the Security → Posture page:
   enforcement live-proven (deny-all-egress blocks nslookup; remove restores it).
   See [SECURITY_HARDENING.md](../operations/SECURITY_HARDENING.md#networkpolicy-hardening-templates-network-policies-tab).
 
+- **Operator → trusted-range bridge (P2.3.1)** — **shipped 2026-06-18.** The
+  probe reports denied connections only as a count (not source IPs), so the
+  practical, safe form is the operator self-service bridge: the Firewall Posture
+  tab warns when *your current connection's* IP isn't in a trusted range (the #1
+  lockout risk) and offers a one-click "add my IP" (/32 or /128). The IP is
+  derived server-side from X-Real-IP only (never the body); CIDR is host-scoped;
+  super_admin + Bearer-only. TDD (16 tests) + security/code review + live E2E
+  (add → CR created → trusted → 409 re-add → delete → untrusted) + browser.
+
 **Open:**
-- **Denied-connection → trusted-range bridge (P2.3.1)** — from probe-reported
-  denied connections, offer a one-click "add to trusted ranges". Not started.
-- **Trivy CVE scanning** — deferred until operator demand surfaces.
+- **Trivy CVE scanning** — deferred until operator demand surfaces. (Only
+  remaining R11 item.)
 
 ## R12 — Service-to-service mTLS
 

@@ -12,7 +12,7 @@ The Security → Posture page (`/security/posture`) is super_admin only. Nine ta
 | **Overview** | SSH-public node count, critical CIS failures, stale probe reports, Phase 2 augmentation cards (Calico WG, TLS expiries, backup health, audit-log health, reserved-hostname collisions) | Read-only |
 | **SSH Lockdown** | Per-node SSH posture, sshd_config flags, restriction mode badge | "Restrict to mesh" runbook modal per node |
 | **Mesh Status** | Detected mesh provider per node (NetBird/Tailscale/WireGuard/none), peer count, last handshake | Copy install snippets for the three providers |
-| **Firewall Posture** | nft mode, trusted ranges + cluster peers counts, public ports per node | Deep-link to `/settings/cluster-network` for CR CRUD |
+| **Firewall Posture** | nft mode, trusted ranges + cluster peers counts, public ports per node, **a lockout-prevention card** if your current connection IP isn't trusted | "Add my IP" (one-click trusted-range add); deep-link to `/settings/cluster-network` for CR CRUD |
 | **Node Hardening** | Per-node CIS-style check matrix | "Hide info-only" toggle |
 | **K8s Posture** | Per-namespace PodSecurity levels, privileged / hostPath / hostNetwork pods | Read-only |
 | **Authentication** | Auth + audit metrics (login/step-up, audit health) | Read-only |
