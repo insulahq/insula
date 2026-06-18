@@ -146,6 +146,19 @@ describe('quiesce', () => {
     await quiesce(m.tenant, 'ns');
     expect(m.holdCalls).toContainEqual({ name: 'file-manager', held: true });
   });
+
+  it('persists the snapshot BEFORE scaling anything down (force-cancel safety)', async () => {
+    const m = mockK8s({ deployments: [{ name: 'wp', replicas: 1 }, { name: 'mdb', replicas: 2 }] });
+    let scaledWhenPersisted = -1;
+    const snap = await quiesce(m.tenant, 'ns', async (s) => {
+      // The full pre-quiesce state must be captured, and NOTHING scaled yet.
+      expect(s.deployments).toEqual([{ name: 'wp', replicas: 1 }, { name: 'mdb', replicas: 2 }]);
+      scaledWhenPersisted = scaleReplicaCalls.length;
+    });
+    expect(scaledWhenPersisted).toBe(0);          // persist ran before any scale-to-0
+    expect(scaleReplicaCalls).toHaveLength(2);     // and scaling still happened afterwards
+    expect(snap.deployments).toHaveLength(2);
+  });
 });
 
 describe('waitForQuiesced', () => {

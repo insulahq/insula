@@ -72,50 +72,68 @@ export interface QuiesceSnapshot {
  * and a running Job during a resize would just fail its own retry
  * logic which is acceptable for one-shots.
  */
-export async function quiesce(k8s: K8sClients, namespace: string): Promise<QuiesceSnapshot> {
-  const deployments: Array<{ name: string; replicas: number }> = [];
-  const cronJobs: Array<{ name: string; wasSuspended: boolean }> = [];
-
-  // Scale every Deployment in the tenant namespace — tenant namespaces
-  // are single-tenant dedicated, and every Deployment there
-  // (`platform.io/managed` workloads, `platform.io/system` sidecars
-  // like file-manager, etc.) can hold the tenant PVC's RWO lock. An
-  // earlier revision narrowed this to `platform.io/managed=true` only,
-  // which left file-manager holding the PVC and made `resize` fail
-  // with "PVC still exists after 60000ms" when the subsequent delete
-  // waited on a finalizer that couldn't release.
+export async function quiesce(
+  k8s: K8sClients,
+  namespace: string,
+  // Persist the restore-snapshot. Invoked AFTER the current state is captured
+  // but BEFORE anything is scaled down, so a force-cancel (or a crash)
+  // mid-quiesce always has the data to bring the tenant's workloads back up.
+  // The caller passes `(snap) => persistQuiesceSnapshot(db, opId, snap)`.
+  persist?: (snap: QuiesceSnapshot) => Promise<void>,
+): Promise<QuiesceSnapshot> {
+  // ── PHASE 1: capture current state (read-only, NO mutation) ──
+  // Capture every Deployment in the tenant namespace — tenant namespaces are
+  // single-tenant dedicated, and every Deployment there (`platform.io/managed`
+  // workloads, `platform.io/system` sidecars like file-manager, etc.) can hold
+  // the tenant PVC's RWO lock. An earlier revision narrowed this to
+  // `platform.io/managed=true` only, which left file-manager holding the PVC
+  // and made `resize` fail with "PVC still exists after 60000ms".
   const depList = await (k8s.apps as unknown as {
     listNamespacedDeployment: (args: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string }; spec?: { replicas?: number } }> }>;
   }).listNamespacedDeployment({
     namespace,
   });
+  const deployments: Array<{ name: string; replicas: number }> = [];
   for (const d of depList.items ?? []) {
     const name = d.metadata?.name;
     if (!name) continue;
-    const replicas = d.spec?.replicas ?? 0;
-    deployments.push({ name, replicas });
-    if (replicas > 0) {
-      // Hold BEFORE scaling so a racing ensureFileManagerRunning can't slip a
-      // scale-to-1 in between the scale-down and the annotation.
-      await setQuiesceHold(k8s, namespace, name, true);
-      await scaleDeployment(k8s, namespace, name, 0);
-    }
+    deployments.push({ name, replicas: d.spec?.replicas ?? 0 });
   }
 
-  // CronJobs: suspend new triggers (existing Job children are handled
-  // separately below).
   const cjList = await (k8s.batch as unknown as {
     listNamespacedCronJob: (args: { namespace: string; labelSelector?: string }) => Promise<{ items?: Array<{ metadata?: { name?: string }; spec?: { suspend?: boolean } }> }>;
   }).listNamespacedCronJob({
     namespace,
   });
+  const cronJobs: Array<{ name: string; wasSuspended: boolean }> = [];
   for (const cj of cjList.items ?? []) {
     const name = cj.metadata?.name;
     if (!name) continue;
-    const wasSuspended = cj.spec?.suspend ?? false;
-    cronJobs.push({ name, wasSuspended });
-    if (!wasSuspended) {
-      await setCronJobSuspend(k8s, namespace, name, true);
+    cronJobs.push({ name, wasSuspended: cj.spec?.suspend ?? false });
+  }
+
+  const snap: QuiesceSnapshot = { deployments, cronJobs };
+
+  // ── PHASE 2: persist the restore-snapshot BEFORE mutating anything ──
+  // Closes the window where a force-cancel found the workloads scaled DOWN
+  // with no record of their prior replica counts (the snapshot used to be
+  // persisted by the caller only AFTER quiesce returned).
+  if (persist) await persist(snap);
+
+  // ── PHASE 3: apply the quiesce (mutations) ──
+  for (const d of deployments) {
+    if (d.replicas > 0) {
+      // Hold BEFORE scaling so a racing ensureFileManagerRunning can't slip a
+      // scale-to-1 in between the scale-down and the annotation.
+      await setQuiesceHold(k8s, namespace, d.name, true);
+      await scaleDeployment(k8s, namespace, d.name, 0);
+    }
+  }
+
+  // CronJobs: suspend new triggers (existing Job children handled below).
+  for (const cj of cronJobs) {
+    if (!cj.wasSuspended) {
+      await setCronJobSuspend(k8s, namespace, cj.name, true);
     }
   }
 
@@ -144,7 +162,7 @@ export async function quiesce(k8s: K8sClients, namespace: string): Promise<Quies
     }
   }
 
-  return { deployments, cronJobs };
+  return snap;
 }
 
 /**
