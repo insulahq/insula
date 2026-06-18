@@ -736,12 +736,10 @@ async function runResizeDestructive(
 
   try {
     await progress('quiescing', 5, 'Scaling workloads to zero');
-    quiesceSnap = await quiesce(ctx.k8s, namespace);
-    // Persist the pre-quiesce replica counts on the op so a force-cancel
-    // mid-flight can restore them — otherwise the tenant is left scaled to 0
-    // (DOWN). The in-memory quiesceSnap is only available to this op's own
-    // catch block.
-    await persistQuiesceSnapshot(ctx.db, opId, quiesceSnap);
+    // quiesce persists the pre-quiesce replica counts on the op BEFORE scaling
+    // anything down, so a force-cancel mid-flight can restore them instead of
+    // leaving the tenant scaled to 0 (DOWN).
+    quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
     await waitForQuiesced(ctx.k8s, namespace);
 
     await progress('snapshotting', 15, 'Capturing pre-resize files bundle (off-site, restic)');
@@ -1070,8 +1068,8 @@ async function runRestoreFromSnapshot(
 
   try {
     await progress('quiescing', 5, 'Scaling workloads to zero');
-    quiesceSnap = await quiesce(k8s, namespace);
-    await persistQuiesceSnapshot(db, opId, quiesceSnap);
+    // quiesce persists the snapshot before scaling (force-cancel safety).
+    quiesceSnap = await quiesce(k8s, namespace, (snap) => persistQuiesceSnapshot(db, opId, snap));
     await waitForQuiesced(k8s, namespace);
 
     await progress('restoring', 40, 'Reverting your volume to the snapshot');
@@ -1236,8 +1234,8 @@ async function runRestoreFromRetained(
 
   try {
     await progress('quiescing', 5, 'Scaling workloads to zero');
-    quiesceSnap = await quiesce(k8s, namespace);
-    await persistQuiesceSnapshot(db, opId, quiesceSnap);
+    // quiesce persists the snapshot before scaling (force-cancel safety).
+    quiesceSnap = await quiesce(k8s, namespace, (snap) => persistQuiesceSnapshot(db, opId, snap));
     await waitForQuiesced(k8s, namespace);
 
     // 1. Revert the retained (detached) volume to the chosen snapshot. It's
@@ -1564,7 +1562,9 @@ export async function suspendTenant(
   });
 
   try {
-    const snap = await quiesce(ctx.k8s, tenant.kubernetesNamespace);
+    // Persist the snapshot before scaling so a cancel during the cascades
+    // below can still un-quiesce (resume also reads it from the completed op).
+    const snap = await quiesce(ctx.k8s, tenant.kubernetesNamespace, (s) => persistQuiesceSnapshot(ctx.db, opId, s));
 
     // Cross-cutting cascades (ingress swap, mailbox disable, domains
     // status, webcron off). Runs AFTER quiesce so pods are already
@@ -1726,10 +1726,10 @@ async function runArchive(
   };
   try {
     await progress('quiescing', 10, 'Scaling workloads to zero');
-    quiesceSnap = await quiesce(ctx.k8s, namespace);
-    // Persist the pre-quiesce replica counts so a force-cancel / pod restart
-    // mid-archive can unquiesce the tenant instead of leaving it at 0 replicas.
-    await persistQuiesceSnapshot(ctx.db, opId, quiesceSnap);
+    // quiesce persists the pre-quiesce replica counts before scaling so a
+    // force-cancel / pod restart mid-archive can unquiesce the tenant instead
+    // of leaving it at 0 replicas.
+    quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
     await waitForQuiesced(ctx.k8s, namespace);
 
     await progress('snapshotting', 30, 'Capturing archive files bundle (off-site, restic)');
@@ -2166,7 +2166,8 @@ async function runFsckOp(
     }
 
     await progress('quiescing', 5, 'Scaling workloads to zero');
-    quiesceSnap = await quiesce(ctx.k8s, namespace);
+    // Persist before scaling so a force-cancel mid-fsck can un-quiesce.
+    quiesceSnap = await quiesce(ctx.k8s, namespace, (snap) => persistQuiesceSnapshot(ctx.db, opId, snap));
     await waitForQuiesced(ctx.k8s, namespace);
 
     // Volume is detached after quiesce. fsck Pod uses hostPath
