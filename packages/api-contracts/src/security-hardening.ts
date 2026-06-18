@@ -167,6 +167,31 @@ export const deniedCountWindowSchema = z.object({
 });
 export type DeniedCountWindow = z.infer<typeof deniedCountWindowSchema>;
 
+// ─── Operator → trusted-range bridge (Phase 2.3.1) ─────────────────────────
+/** How the operator's source IP was resolved (x-real-ip is Traefik-set/trusted). */
+export const operatorIpSourceSchema = z.enum(['x-real-ip', 'x-forwarded-for', 'req-ip', 'none']);
+export type OperatorIpSourceKind = z.infer<typeof operatorIpSourceSchema>;
+
+/** Whether the operator's CURRENT connection IP is in a trusted range / peer. */
+export const operatorTrustStatusSchema = z.object({
+  ip: z.string().nullable(),
+  source: operatorIpSourceSchema,
+  isTrusted: z.boolean(),
+  /** Suggested host-route CIDR for a one-click add (/32 or /128). */
+  suggestedCidr: z.string().nullable(),
+  /** Suggested ClusterTrustedRange name. */
+  suggestedName: z.string().nullable(),
+  /** True only when a reliable real-client IP is known and it's not trusted yet. */
+  canAdd: z.boolean(),
+});
+export type OperatorTrustStatus = z.infer<typeof operatorTrustStatusSchema>;
+
+/** POST /admin/security/operator-trust/add — no body; the IP is derived server-side. */
+export const addOperatorTrustResponseSchema = z.object({
+  added: z.object({ name: z.string(), cidr: z.string() }),
+});
+export type AddOperatorTrustResponse = z.infer<typeof addOperatorTrustResponseSchema>;
+
 /** Phase 2.3: top-N denied source IPs from /proc/net/nf_conntrack. */
 export const deniedSourceSchema = z.object({
   ip: z.string().min(1).max(64),

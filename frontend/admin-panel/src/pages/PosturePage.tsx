@@ -52,6 +52,8 @@ import {
   useNetworkPolicyHardening,
   useApplyNetworkPolicyTemplate,
   useRemoveNetworkPolicyHardening,
+  useOperatorTrust,
+  useAddOperatorTrust,
 } from '@/hooks/use-security-hardening';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
@@ -464,9 +466,63 @@ function MeshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
 
 // ─── Firewall tab ───────────────────────────────────────────────────────
 
+function OperatorTrustCard() {
+  const { data: trust, isError } = useOperatorTrust();
+  const add = useAddOperatorTrust();
+  if (!trust) {
+    // The card is safety-critical (lockout warning) — on error say so rather
+    // than vanish. (No card during the brief initial load is fine.)
+    if (isError) {
+      return (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 text-xs text-gray-500 dark:text-gray-400" data-testid="operator-trust-card">
+          Could not determine whether your connection is in a trusted range.
+        </div>
+      );
+    }
+    return null;
+  }
+  if (trust.isTrusted) {
+    return (
+      <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-4 py-3 text-sm text-emerald-800 dark:text-emerald-200 flex items-center gap-2" data-testid="operator-trust-card">
+        <CheckCircle2 size={16} className="shrink-0" />
+        <span>Your connection{trust.ip ? <> (<span className="font-mono">{trust.ip}</span>)</> : ''} is in a trusted range — a lockdown won’t lock you out.</span>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-4 py-3 text-sm text-amber-800 dark:text-amber-200" data-testid="operator-trust-card">
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <strong>Your current connection is not in any trusted range.</strong>
+          <p className="mt-1 text-xs">
+            {trust.ip
+              ? <>You’re connecting from <span className="font-mono">{trust.ip}</span> (via {trust.source}). Locking down SSH or enabling L4 enforce could lock you out.</>
+              : <>Your client IP couldn’t be determined (source: {trust.source}) — add a trusted range manually on the Cluster Network page.</>}
+          </p>
+          {add.isError && <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{add.error?.message ?? 'Add failed'}</p>}
+        </div>
+        {trust.canAdd && (
+          <button
+            type="button"
+            onClick={() => add.mutate()}
+            disabled={add.isPending || add.isSuccess}
+            className="inline-flex shrink-0 items-center gap-1 rounded-md bg-amber-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+            data-testid="operator-trust-add"
+            title={`Adds ${trust.suggestedCidr} as a ClusterTrustedRange`}
+          >
+            {add.isPending ? <RefreshCw size={12} className="animate-spin" /> : <Plus size={12} />} Add my IP ({trust.suggestedCidr})
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FirewallTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
   return (
     <section className="space-y-4">
+      <OperatorTrustCard />
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <Stat label="Firewall mode" value={snapshot.firewall.mode} />
         <Stat label="Trusted ranges (v4 / v6)" value={`${snapshot.firewall.trustedRangesV4Count} / ${snapshot.firewall.trustedRangesV6Count}`} />

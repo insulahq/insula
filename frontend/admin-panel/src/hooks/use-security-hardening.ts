@@ -18,6 +18,8 @@ import type {
   ApplyNetworkPolicyTemplateResponse,
   RemoveNetworkPolicyHardeningRequest,
   RemoveNetworkPolicyHardeningResponse,
+  OperatorTrustStatus,
+  AddOperatorTrustResponse,
 } from '@insula/api-contracts';
 
 interface Envelope<T> {
@@ -75,5 +77,29 @@ export function useRemoveNetworkPolicyHardening() {
     mutationFn: (body) =>
       apiFetch('/api/v1/admin/security/netpol-templates/remove', { method: 'POST', body: JSON.stringify(body) }),
     onSuccess: (res) => { if (!res.dryRun) void qc.invalidateQueries({ queryKey: NETPOL_KEY }); },
+  });
+}
+
+// ─── Operator → trusted-range bridge (R11 / Phase 2.3.1) ─────────────────
+const OPERATOR_TRUST_KEY = ['security-hardening', 'operator-trust'] as const;
+
+/** Whether the operator's current connection IP is in a trusted range. */
+export function useOperatorTrust() {
+  return useQuery<OperatorTrustStatus>({
+    queryKey: OPERATOR_TRUST_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/operator-trust'),
+    staleTime: 15_000,
+  });
+}
+
+/** One-click add of the operator's own current IP to trusted ranges. */
+export function useAddOperatorTrust() {
+  const qc = useQueryClient();
+  return useMutation<AddOperatorTrustResponse, Error, void>({
+    mutationFn: () => apiFetch('/api/v1/admin/security/operator-trust/add', { method: 'POST' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: OPERATOR_TRUST_KEY });
+      void qc.invalidateQueries({ queryKey: SNAPSHOT_KEY });
+    },
   });
 }
