@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Lockout-prevention bridge on Security → Posture → Firewall Posture.** When
+  your current connection's source IP isn't in any trusted range, the tab warns
+  (locking down SSH / enabling L4 enforce would lock you out) and offers a
+  one-click "add my IP" to the cluster trusted ranges. The IP is derived
+  server-side from the Traefik-set X-Real-IP (never the request body),
+  host-scoped (/32 or /128), super_admin-gated.
 - **Bulk-apply NetworkPolicy hardening templates to tenant namespaces** (Security
   → Posture → Network Policies). Three egress-restricting templates —
   *isolate-tenant*, *deny-all-egress*, *allow-dns-only* — that compose on top of
