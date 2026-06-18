@@ -78,6 +78,18 @@ describe('getNetworkPolicyHardeningState', () => {
   });
 });
 
+describe('SYSTEM tenant exclusion', () => {
+  it('never enumerates / hardens the platform SYSTEM tenant namespace (tenant-system)', async () => {
+    const { clients, created } = mockClients({ namespaces: [{ name: 'tenant-system' }, { name: 'tenant-a' }] });
+    const state = await getNetworkPolicyHardeningState(clients);
+    expect(state.tenantNamespaceCount).toBe(1); // tenant-system excluded
+    const dry = await applyNetworkPolicyTemplate(clients, { templateId: 'isolate-tenant', apply: true, excludeNamespaces: [] });
+    expect(dry.affectedNamespaces).toEqual(['tenant-a']);
+    expect(dry.skipped).not.toContain('tenant-system');
+    expect(created.map((c) => c.namespace)).toEqual(['tenant-a']); // never wrote to tenant-system
+  });
+});
+
 describe('applyNetworkPolicyTemplate', () => {
   it('dry-run lists affected + skipped and writes nothing', async () => {
     const { clients, created, deleted } = mockClients({
