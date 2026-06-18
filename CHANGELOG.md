@@ -13,6 +13,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Bulk-apply NetworkPolicy hardening templates to tenant namespaces** (Security
+  → Posture → Network Policies). Three egress-restricting templates —
+  *isolate-tenant*, *deny-all-egress*, *allow-dns-only* — that compose on top of
+  the ingress-only tenant baseline. Dry-run preview shows the exact affected
+  namespaces before a type-to-confirm apply; one managed policy per namespace
+  (`insula-hardening-egress`), reversible via Remove. Auto-skips the SYSTEM
+  tenant, opt-out namespaces (`insula.host/netpol-hardening=optout`), and any
+  namespace with a custom egress policy. Calico enforcement live-proven. Runbook:
+  [SECURITY_HARDENING.md](docs/operations/SECURITY_HARDENING.md#networkpolicy-hardening-templates-network-policies-tab).
 - **Restore a tenant from a retained Longhorn volume.** A destructive shrink (or
   archive) leaves the old volume detached + `Released` with its snapshots intact
   (`longhorn-tenant` is `reclaimPolicy: Retain`). The admin tenant-detail page now

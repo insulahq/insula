@@ -22,7 +22,7 @@
 | [R8](#r8--notification-channels-slack--webhook--sms) | Notification channels: Slack/Webhook/SMS | P3 | Email + in-app shipped |
 | [R9](#r9--staff-role-email-access) | Staff-role email access | P3 | Not started |
 | [R10](#r10--bulwark-deferred-work) | Bulwark deferred work (phases 7–8) | P3 | Deferred by decision |
-| [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Phase 1 shipped |
+| [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Mostly shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply (2026-06-18); only denied→trusted-range bridge + Trivy (deferred) open |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
@@ -165,12 +165,22 @@ archive. Full context: [roadmap/BULWARK_DEFERRED_WORK.md](BULWARK_DEFERRED_WORK.
 
 ## R11 — Security-hardening Phase 2
 
-Remaining Phase-2 surface from the hardening epic: K8s posture tab,
-auth/audit metrics tab, NetworkPolicy templates + bulk apply, plus the
-deferred denied-connection → trusted-range bridge (P2.3.1). Trivy CVE
-scanning stays deferred until operator demand surfaces.
+Phase-2 surface from the hardening epic, on the Security → Posture page:
 
-- Spec: the original security-hardening roadmap (§Phase 2) — see the git history.
+- **K8s posture tab** — shipped (Phase 2.1): per-namespace PodSecurity levels +
+  privileged / hostPath / hostNetwork pods.
+- **Auth/audit metrics tab** — shipped (Authentication tab).
+- **NetworkPolicy templates + bulk apply** — **shipped 2026-06-18** (Phase 2.4.1).
+  Three egress templates (isolate-tenant / deny-all-egress / allow-dns-only) with
+  a single managed policy per namespace, dry-run preview → confirm → apply, a
+  reversible remove, opt-out + custom-egress + SYSTEM-tenant auto-skips. Calico
+  enforcement live-proven (deny-all-egress blocks nslookup; remove restores it).
+  See [SECURITY_HARDENING.md](../operations/SECURITY_HARDENING.md#networkpolicy-hardening-templates-network-policies-tab).
+
+**Open:**
+- **Denied-connection → trusted-range bridge (P2.3.1)** — from probe-reported
+  denied connections, offer a one-click "add to trusted ranges". Not started.
+- **Trivy CVE scanning** — deferred until operator demand surfaces.
 
 ## R12 — Service-to-service mTLS
 

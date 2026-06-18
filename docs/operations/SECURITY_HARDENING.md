@@ -5,7 +5,7 @@
 
 ## Page tour
 
-`/settings/security-hardening` is super_admin only. Six tabs:
+The Security → Posture page (`/security/posture`) is super_admin only. Nine tabs:
 
 | Tab | What you see | Action |
 |---|---|---|
@@ -14,6 +14,9 @@
 | **Mesh Status** | Detected mesh provider per node (NetBird/Tailscale/WireGuard/none), peer count, last handshake | Copy install snippets for the three providers |
 | **Firewall Posture** | nft mode, trusted ranges + cluster peers counts, public ports per node | Deep-link to `/settings/cluster-network` for CR CRUD |
 | **Node Hardening** | Per-node CIS-style check matrix | "Hide info-only" toggle |
+| **K8s Posture** | Per-namespace PodSecurity levels, privileged / hostPath / hostNetwork pods | Read-only |
+| **Authentication** | Auth + audit metrics (login/step-up, audit health) | Read-only |
+| **Network Policies** | NetworkPolicy egress hardening templates + current coverage | Bulk apply / remove (see below) |
 | **Security Events** | Last 50 audit-log rows filtered to security-relevant resource types | Read-only |
 
 Top-right buttons:
@@ -176,6 +179,43 @@ When `sshd_config` parsing fails (file unreadable, drop-in conflict, etc.), SSH-
 - **TLS certs expiring < 30d**: pulls from `certificates.cert-manager.io` cluster-wide. Sorted by `daysRemaining` ascending.
 - **Backup targets**: per-target `encryption_at_rest`, last connection test, last successful snapshot. Surfaces unencrypted off-site backups and stale targets as security risks.
 - **Reserved-hostname collisions**: feed of `RESERVED_PLATFORM_HOSTNAME` 409s from ADR-040 — tenant probing or accidental misconfig.
+
+## NetworkPolicy hardening templates (Network Policies tab)
+
+Tenant namespaces ship three **ingress-only** NetworkPolicies at provision
+(`default-deny-ingress` + `allow-intra-namespace` + `allow-platform-api`), so
+tenant pods can **egress freely** by default. The Network Policies tab lets you
+bulk-apply an **egress** restriction on top — they compose with the ingress
+baseline. Three templates:
+
+| Template | Egress allowed |
+|---|---|
+| **Isolate tenant** | same-namespace pods + cluster DNS only |
+| **Deny all egress** | nothing (not even DNS) |
+| **Allow DNS only** | cluster DNS only |
+
+Each tenant gets at most one managed policy, `insula-hardening-egress`
+(labelled `insula.host/managed-by=netpol-hardening`, annotated with the template
+id). Applying a different template replaces it; **Remove all hardening** deletes
+it. Only that labelled policy is ever touched — custom operator policies are
+left alone.
+
+**Safety:**
+- **Dry-run first.** The apply/remove modals call the API with `apply:false` and
+  show the exact affected namespaces before you type `APPLY`/`REMOVE` to confirm.
+- **Auto-skips:** the platform **SYSTEM tenant** (`tenant-system`) is never
+  enumerated; namespaces with the opt-out label
+  `insula.host/netpol-hardening=optout` are skipped; and any namespace that
+  already has a **custom (non-managed) Egress** policy is skipped (we never
+  union-loosen an operator's own egress rules).
+- **Reversible** via Remove; **idempotent** (delete-then-create).
+- ⚠ These templates **break tenant apps that need outbound** (external APIs, the
+  mail relay). Apply deliberately; opt out tenants that need egress.
+
+Endpoints (super_admin): `GET /admin/security/netpol-templates` (catalog +
+coverage + opted-out), `POST …/apply` and `POST …/remove`
+(`{ apply, excludeNamespaces }`). RBAC: the `platform-admin` ClusterRole already
+grants `networkpolicies` cluster-wide.
 
 ## CI guards
 
