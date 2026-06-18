@@ -24,8 +24,9 @@ import { ApiError } from '../../shared/errors.js';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { buildSecurityHardeningSnapshot, triggerProbeRefresh } from './service.js';
 import { loadSecurityHardeningClients } from './k8s-client.js';
+import { getNetworkPolicyHardeningState, applyNetworkPolicyTemplate, removeNetworkPolicyHardening } from './netpol-templates.js';
 import { listWafEvents } from './waf-events.js';
-import { wafEventsQuerySchema } from '@insula/api-contracts';
+import { wafEventsQuerySchema, applyNetworkPolicyTemplateRequestSchema, removeNetworkPolicyHardeningRequestSchema } from '@insula/api-contracts';
 import { scrapeWafLogs, getScraperStatus } from '../ingress-routes/waf-log-scraper.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -140,6 +141,60 @@ export function buildSecurityHardeningRoutes(deps: SecurityHardeningDeps) {
           triggeredAt: new Date().toISOString(),
           podsTouched,
         });
+      },
+    );
+
+    // ─── NetworkPolicy hardening templates (R11 / Phase 2.4.1) ─────────
+    //
+    // Bulk-apply an egress-restricting NetworkPolicy template to all tenant
+    // namespaces. Safe by design: GET shows the catalog + current coverage;
+    // apply/remove default to dry-run (`apply:false`) and honour per-namespace
+    // opt-out + custom-egress skips. Only the platform-managed policy
+    // (label insula.host/managed-by=netpol-hardening) is ever written.
+    app.get(
+      '/admin/security/netpol-templates',
+      { preHandler: requireRole('super_admin') },
+      async () => {
+        const clients = await loadSecurityHardeningClients(k8sOpts);
+        return getNetworkPolicyHardeningState(clients);
+      },
+    );
+
+    app.post(
+      '/admin/security/netpol-templates/apply',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = applyNetworkPolicyTemplateRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        if (parsed.data.apply) {
+          app.log.warn({ userId: userOf(req), templateId: parsed.data.templateId }, 'security-hardening: applying NetworkPolicy template');
+        }
+        const clients = await loadSecurityHardeningClients(k8sOpts);
+        return applyNetworkPolicyTemplate(clients, parsed.data);
+      },
+    );
+
+    app.post(
+      '/admin/security/netpol-templates/remove',
+      { preHandler: requireRole('super_admin') },
+      async (req: AuthedRequest & FastifyRequest, reply: FastifyReply) => {
+        const parsed = removeNetworkPolicyHardeningRequestSchema.safeParse(req.body ?? {});
+        if (!parsed.success) {
+          return reply.status(400).send({
+            error: 'INVALID_BODY',
+            message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+          });
+        }
+        if (parsed.data.apply) {
+          app.log.warn({ userId: userOf(req) }, 'security-hardening: removing NetworkPolicy hardening');
+        }
+        const clients = await loadSecurityHardeningClients(k8sOpts);
+        return removeNetworkPolicyHardening(clients, parsed.data);
       },
     );
 

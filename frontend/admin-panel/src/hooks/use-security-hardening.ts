@@ -13,6 +13,11 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   SecurityHardeningResponse,
   RefreshSecurityHardeningResponse,
+  ListNetworkPolicyTemplatesResponse,
+  ApplyNetworkPolicyTemplateRequest,
+  ApplyNetworkPolicyTemplateResponse,
+  RemoveNetworkPolicyHardeningRequest,
+  RemoveNetworkPolicyHardeningResponse,
 } from '@insula/api-contracts';
 
 interface Envelope<T> {
@@ -38,5 +43,37 @@ export function useRefreshSecurityHardening() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: SNAPSHOT_KEY });
     },
+  });
+}
+
+// ─── NetworkPolicy hardening templates (R11 / Phase 2.4.1) ───────────────
+const NETPOL_KEY = ['security-hardening', 'netpol-templates'] as const;
+
+/** Catalog + current coverage + opted-out namespaces. */
+export function useNetworkPolicyHardening() {
+  return useQuery<ListNetworkPolicyTemplatesResponse>({
+    queryKey: NETPOL_KEY,
+    queryFn: () => apiFetch('/api/v1/admin/security/netpol-templates'),
+    staleTime: 15_000,
+  });
+}
+
+/** Apply a template (apply:false = dry-run preview). */
+export function useApplyNetworkPolicyTemplate() {
+  const qc = useQueryClient();
+  return useMutation<ApplyNetworkPolicyTemplateResponse, Error, ApplyNetworkPolicyTemplateRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/netpol-templates/apply', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: (res) => { if (!res.dryRun) void qc.invalidateQueries({ queryKey: NETPOL_KEY }); },
+  });
+}
+
+/** Remove the platform-managed hardening policy (apply:false = dry-run preview). */
+export function useRemoveNetworkPolicyHardening() {
+  const qc = useQueryClient();
+  return useMutation<RemoveNetworkPolicyHardeningResponse, Error, RemoveNetworkPolicyHardeningRequest>({
+    mutationFn: (body) =>
+      apiFetch('/api/v1/admin/security/netpol-templates/remove', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: (res) => { if (!res.dryRun) void qc.invalidateQueries({ queryKey: NETPOL_KEY }); },
   });
 }

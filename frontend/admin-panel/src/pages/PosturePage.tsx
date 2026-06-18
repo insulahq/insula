@@ -14,7 +14,8 @@
  *   5. Node Hardening    — CIS-style check matrix
  *   6. K8s Posture       — pod security standards + privileged pods
  *   7. Authentication    — Dex / oauth2-proxy health + failed-login counts
- *   8. Network Policies  — bulk NetworkPolicy template catalog (P2.4)
+ *   8. Network Policies  — bulk-apply egress NetworkPolicy templates (P2.4.1): catalog +
+ *                          coverage + dry-run preview -> confirm -> apply, plus remove
  *   9. Security Events   — recent audit log entries (security-relevant)
  *
  * Mounted at /security/posture. Super_admin gated at the route level.
@@ -48,6 +49,9 @@ import {
 import {
   useSecurityHardeningSnapshot,
   useRefreshSecurityHardening,
+  useNetworkPolicyHardening,
+  useApplyNetworkPolicyTemplate,
+  useRemoveNetworkPolicyHardening,
 } from '@/hooks/use-security-hardening';
 import { useRefreshWafScraper, useWafEvents } from '@/hooks/use-waf-events';
 import { useDebouncedValue } from '@/hooks/use-debounced-value';
@@ -102,6 +106,8 @@ import type {
   CrowdsecL4Mode,
   WafRuleExclusion,
   WafRuleExclusionScope,
+  NetworkPolicyTemplate,
+  NetworkPolicyTemplateId,
 } from '@insula/api-contracts';
 import { buildHostnameRegexFromEventHost } from '@insula/api-contracts';
 
@@ -675,58 +681,213 @@ function AuthTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
   );
 }
 
-// ─── NetworkPolicy templates tab (Phase 2.4) ───────────────────────────
+// ─── NetworkPolicy templates tab (Phase 2.4.1 — bulk apply) ────────────
 
 function NetworkPolicyTab() {
+  const { data, isLoading, isError } = useNetworkPolicyHardening();
+  const [apply, setApply] = useState<NetworkPolicyTemplate | null>(null);
+  const [removeOpen, setRemoveOpen] = useState(false);
+
+  if (isLoading) return <div className="text-sm text-gray-500 dark:text-gray-400">Loading templates…</div>;
+  if (isError || !data) {
+    return (
+      <div className="rounded-lg border border-amber-300 bg-amber-50 dark:bg-amber-900/20 dark:border-amber-700 p-4 text-sm text-amber-800 dark:text-amber-200">
+        NetworkPolicy templates unavailable — could not read the cluster.
+      </div>
+    );
+  }
+  const templates = data.data;
+  const appliedCount = (id: NetworkPolicyTemplateId) => data.coverage.filter((c) => c.templateId === id).length;
+  const totalHardened = data.coverage.length;
+
   return (
     <section className="space-y-4">
-      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200">
-        Bulk-apply NetworkPolicy templates to all tenant namespaces. Phase 2.4 ships the read-only catalog
-        (preview-only). Bulk apply is wired via task-center (long-running op with progress modal); per-tenant
-        opt-out is honored. Templates are <strong>static</strong> — operators with custom policies should
-        exclude the affected namespaces.
+      <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 text-sm text-gray-700 dark:text-gray-200 space-y-2">
+        <p>
+          Bulk-apply an <strong>egress-restricting</strong> NetworkPolicy to all tenant namespaces. Tenant
+          pods can egress freely by default; these templates lock that down. <strong>This can break tenant
+          apps that need outbound</strong> (external APIs, the mail relay) — apply deliberately.
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Opt a tenant out with the label <code className="font-mono">insula.host/netpol-hardening=optout</code>.
+          Namespaces that already have a custom egress policy are skipped automatically. Apply previews the
+          affected namespaces (dry-run) before writing anything.
+        </p>
+        <div className="flex items-center justify-between pt-1">
+          <div className="text-xs text-gray-600 dark:text-gray-400" data-testid="netpol-coverage">
+            <strong className="text-gray-900 dark:text-gray-100">{totalHardened}</strong> of {data.tenantNamespaceCount} tenant
+            namespaces hardened · {data.optedOut.length} opted out
+          </div>
+          {totalHardened > 0 && (
+            <button
+              type="button"
+              onClick={() => setRemoveOpen(true)}
+              className="inline-flex items-center gap-1 rounded-md border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/40"
+              data-testid="netpol-remove-all"
+            >
+              <ShieldOff size={12} /> Remove all hardening…
+            </button>
+          )}
+        </div>
       </div>
-      <NetworkPolicyTemplatesList />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        {templates.map((t) => (
+          <div key={t.id} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4 flex flex-col">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t.title}</h3>
+              {appliedCount(t.id) > 0 && (
+                <span className="rounded-full bg-brand-100 dark:bg-brand-900/40 px-2 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
+                  {appliedCount(t.id)} active
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-600 dark:text-gray-400 mt-1 flex-1">{t.description}</p>
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-brand-600 dark:text-brand-400">Preview manifest</summary>
+              <pre className="mt-1 overflow-x-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-[11px] leading-tight text-gray-700 dark:text-gray-300">{t.manifestPreview}</pre>
+            </details>
+            <button
+              type="button"
+              onClick={() => setApply(t)}
+              className="mt-3 inline-flex items-center justify-center gap-1 rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/40"
+              data-testid={`netpol-apply-${t.id}`}
+            >
+              <Network size={12} /> Apply to tenants…
+            </button>
+          </div>
+        ))}
+      </div>
+      {apply && <NetpolApplyModal template={apply} onClose={() => setApply(null)} />}
+      {removeOpen && <NetpolRemoveModal onClose={() => setRemoveOpen(false)} />}
     </section>
   );
 }
 
-function NetworkPolicyTemplatesList() {
-  // Static list mirrored from packages/api-contracts/src/security-hardening.ts.
-  const templates = [
-    {
-      id: 'isolate-tenant',
-      title: 'Isolate tenant',
-      description: 'Pods in this namespace can only communicate with pods in the same namespace + kube-dns.',
-    },
-    {
-      id: 'deny-all-egress',
-      title: 'Deny all egress',
-      description: 'Pods in this namespace cannot make outbound connections. Use for high-security tenants.',
-    },
-    {
-      id: 'allow-dns-only',
-      title: 'Allow DNS only',
-      description: 'Pods can resolve DNS via kube-dns but cannot make any other outbound connections.',
-    },
-  ];
+function NetpolApplyModal({ template, onClose }: { template: NetworkPolicyTemplate; onClose: () => void }) {
+  const dryRun = useApplyNetworkPolicyTemplate();
+  const realApply = useApplyNetworkPolicyTemplate();
+  const [typed, setTyped] = useState('');
+  // Run the dry-run preview once when the modal opens.
+  useEffect(() => {
+    dryRun.mutate({ templateId: template.id, apply: false, excludeNamespaces: [] });
+  }, []);
+  const preview = dryRun.data;
+  const result = realApply.data;
+  const busy = dryRun.isPending || realApply.isPending;
+
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-      {templates.map((t) => (
-        <div key={t.id} className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-          <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">{t.title}</h3>
-          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{t.description}</p>
-          <button
-            type="button"
-            disabled
-            className="mt-3 inline-flex items-center gap-1 rounded-md border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 px-3 py-1.5 text-xs text-gray-500 dark:text-gray-400"
-            data-testid={`netpol-apply-${t.id}`}
-            title="Bulk apply ships in P2.4.1 — preview catalogue for now"
-          >
-            Preview only (P2.4.1)
-          </button>
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4" onClick={onClose} data-testid="netpol-apply-modal">
+      <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <AlertTriangle size={18} className="text-amber-500" /> Apply “{template.title}”
+          </h3>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"><XCircle size={18} /></button>
         </div>
-      ))}
+        <div className="px-6 py-5 space-y-4 text-sm">
+          {result ? (
+            <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-emerald-800 dark:text-emerald-200">
+              Applied to <strong>{result.affectedNamespaces.length}</strong> namespace(s); {result.skipped.length} skipped.
+            </div>
+          ) : (
+            <>
+              <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-amber-800 dark:text-amber-200 text-xs">
+                {template.description} Affected tenant pods will lose any outbound traffic this template doesn’t allow.
+              </div>
+              {dryRun.isPending && <p className="text-gray-500 dark:text-gray-400 text-xs">Computing affected namespaces…</p>}
+              {preview && (
+                <div className="space-y-2">
+                  <p className="text-gray-700 dark:text-gray-200">
+                    Will apply to <strong>{preview.affectedNamespaces.length}</strong> tenant namespace(s)
+                    {preview.skipped.length > 0 && <> · <span className="text-gray-500 dark:text-gray-400">{preview.skipped.length} skipped (opt-out / custom egress)</span></>}.
+                  </p>
+                  {preview.affectedNamespaces.length > 0 && (
+                    <pre className="max-h-32 overflow-y-auto rounded bg-gray-50 dark:bg-gray-900 p-2 text-[11px] text-gray-600 dark:text-gray-400" data-testid="netpol-affected-list">{preview.affectedNamespaces.join('\n')}</pre>
+                  )}
+                </div>
+              )}
+              {(dryRun.isError || realApply.isError) && (
+                <div className="text-xs text-rose-600 dark:text-rose-400">{(realApply.error ?? dryRun.error)?.message ?? 'Request failed'}</div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Type <code className="font-mono text-amber-600 dark:text-amber-400">APPLY</code> to confirm</label>
+                <input type="text" value={typed} onChange={(e) => setTyped(e.target.value)} className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100" data-testid="netpol-confirm-input" />
+              </div>
+            </>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-md border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700">{result ? 'Close' : 'Cancel'}</button>
+            {!result && (
+              <button
+                type="button"
+                onClick={() => realApply.mutate({ templateId: template.id, apply: true, excludeNamespaces: [] })}
+                disabled={typed.trim() !== 'APPLY' || busy || !preview || preview.affectedNamespaces.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                data-testid="netpol-apply-confirm"
+              >
+                {realApply.isPending && <RefreshCw size={14} className="animate-spin" />} Apply to {preview?.affectedNamespaces.length ?? 0} namespaces
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NetpolRemoveModal({ onClose }: { onClose: () => void }) {
+  const dryRun = useRemoveNetworkPolicyHardening();
+  const realRemove = useRemoveNetworkPolicyHardening();
+  const [typed, setTyped] = useState('');
+  // Run the dry-run preview once when the modal opens.
+  useEffect(() => {
+    dryRun.mutate({ apply: false, excludeNamespaces: [] });
+  }, []);
+  const preview = dryRun.data;
+  const result = realRemove.data;
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4" onClick={onClose} data-testid="netpol-remove-modal">
+      <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100"><ShieldOff size={18} className="text-red-500" /> Remove NetworkPolicy hardening</h3>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700"><XCircle size={18} /></button>
+        </div>
+        <div className="px-6 py-5 space-y-4 text-sm">
+          {result ? (
+            <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-emerald-800 dark:text-emerald-200">
+              Removed from <strong>{result.affectedNamespaces.length}</strong> namespace(s). Tenant egress is unrestricted again.
+            </div>
+          ) : (
+            <>
+              <p className="text-gray-700 dark:text-gray-200">
+                Removes the platform-managed hardening policy from {preview ? <strong>{preview.affectedNamespaces.length}</strong> : '…'} tenant namespace(s). Custom operator policies are left untouched.
+              </p>
+              {(dryRun.isError || realRemove.isError) && (
+                <div className="text-xs text-rose-600 dark:text-rose-400">{(realRemove.error ?? dryRun.error)?.message ?? 'Request failed'}</div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Type <code className="font-mono text-red-600 dark:text-red-400">REMOVE</code> to confirm</label>
+                <input type="text" value={typed} onChange={(e) => setTyped(e.target.value)} className="w-full rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm font-mono text-gray-900 dark:text-gray-100" data-testid="netpol-remove-confirm-input" />
+              </div>
+            </>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-md border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700">{result ? 'Close' : 'Cancel'}</button>
+            {!result && (
+              <button
+                type="button"
+                onClick={() => realRemove.mutate({ apply: true, excludeNamespaces: [] })}
+                disabled={typed.trim() !== 'REMOVE' || realRemove.isPending || !preview || preview.affectedNamespaces.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                data-testid="netpol-remove-confirm"
+              >
+                {realRemove.isPending && <RefreshCw size={14} className="animate-spin" />} Remove from {preview?.affectedNamespaces.length ?? 0} namespaces
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
