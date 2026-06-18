@@ -11,7 +11,7 @@
  * fake never pay the import cost.
  */
 
-import type { AppsV1Api, CoreV1Api, CustomObjectsApi } from '@kubernetes/client-node';
+import type { AppsV1Api, CoreV1Api, CustomObjectsApi, NetworkingV1Api } from '@kubernetes/client-node';
 
 export const PROBE_NAMESPACE = 'platform-system';
 export const PROBE_CONFIGMAP_PREFIX = 'security-probe-';
@@ -21,6 +21,7 @@ export interface SecurityHardeningClients {
   readonly core: CoreV1Api;
   readonly custom: CustomObjectsApi;
   readonly apps: AppsV1Api;
+  readonly networking: NetworkingV1Api;
 }
 
 export interface LoadOptions {
@@ -41,6 +42,7 @@ export async function loadSecurityHardeningClients(
     core: kc.makeApiClient(k8s.CoreV1Api),
     custom: kc.makeApiClient(k8s.CustomObjectsApi),
     apps: kc.makeApiClient(k8s.AppsV1Api),
+    networking: kc.makeApiClient(k8s.NetworkingV1Api),
   };
 }
 

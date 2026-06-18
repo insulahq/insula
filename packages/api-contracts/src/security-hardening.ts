@@ -373,8 +373,21 @@ export const networkPolicyTemplateSchema = z.object({
 });
 export type NetworkPolicyTemplate = z.infer<typeof networkPolicyTemplateSchema>;
 
+/** Which template (if any) is currently applied to a tenant namespace. */
+export const networkPolicyTemplateCoverageSchema = z.object({
+  namespace: z.string(),
+  templateId: networkPolicyTemplateIdSchema,
+});
+export type NetworkPolicyTemplateCoverage = z.infer<typeof networkPolicyTemplateCoverageSchema>;
+
 export const listNetworkPolicyTemplatesResponseSchema = z.object({
   data: z.array(networkPolicyTemplateSchema),
+  /** Total tenant namespaces (denominator for "N of M hardened"). */
+  tenantNamespaceCount: z.number().int().nonnegative().default(0),
+  /** Tenant namespaces that currently carry a hardening template. */
+  coverage: z.array(networkPolicyTemplateCoverageSchema).default([]),
+  /** Tenant namespaces with the opt-out label (skipped by bulk apply). */
+  optedOut: z.array(z.string()).default([]),
 });
 export type ListNetworkPolicyTemplatesResponse = z.infer<typeof listNetworkPolicyTemplatesResponseSchema>;
 
@@ -388,7 +401,7 @@ export const applyNetworkPolicyTemplateRequestSchema = z.object({
 export type ApplyNetworkPolicyTemplateRequest = z.infer<typeof applyNetworkPolicyTemplateRequestSchema>;
 
 export const applyNetworkPolicyTemplateResponseSchema = z.object({
-  /** task-center id (Phase 2 destructive ops always run as long-running tasks). */
+  /** task-center id when the op runs async; null when applied synchronously. */
   taskId: z.string().nullable(),
   affectedNamespaces: z.array(z.string()),
   skipped: z.array(z.string()),
@@ -396,3 +409,22 @@ export const applyNetworkPolicyTemplateResponseSchema = z.object({
   dryRun: z.boolean(),
 });
 export type ApplyNetworkPolicyTemplateResponse = z.infer<typeof applyNetworkPolicyTemplateResponseSchema>;
+
+/**
+ * Remove the platform-managed hardening NetworkPolicy from tenant namespaces
+ * (reverses an apply). `apply: false` is a dry-run. Custom operator policies
+ * are untouched — only policies labelled `insula.host/managed-by=netpol-hardening`
+ * are deleted.
+ */
+export const removeNetworkPolicyHardeningRequestSchema = z.object({
+  apply: z.boolean(),
+  excludeNamespaces: z.array(z.string()).default([]),
+});
+export type RemoveNetworkPolicyHardeningRequest = z.infer<typeof removeNetworkPolicyHardeningRequestSchema>;
+
+export const removeNetworkPolicyHardeningResponseSchema = z.object({
+  affectedNamespaces: z.array(z.string()),
+  skipped: z.array(z.string()),
+  dryRun: z.boolean(),
+});
+export type RemoveNetworkPolicyHardeningResponse = z.infer<typeof removeNetworkPolicyHardeningResponseSchema>;
