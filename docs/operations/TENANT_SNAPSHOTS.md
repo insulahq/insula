@@ -206,7 +206,7 @@ restore cart** (off-site restic backups) — it has a file-tree browser and a
 with a pre-restore snapshot as a rollback target). That path shipped 2026-06-16
 (#105); see [TENANT_BACKUP.md](TENANT_BACKUP.md).
 
-## Still open (R19)
+## R19 status (storage-resize hardening — resolved)
 
 - **Destructive-shrink quiesce — FIXED 2026-06-17.** Single-node shrink used to
   hang at "Scaling workloads to zero": the SDK serializer silently dropped
@@ -219,6 +219,8 @@ with a pre-restore snapshot as a rollback target). That path shipped 2026-06-16
 - **rclone-shim multipart > 1 GiB** — no longer *reached* (every tenant-data
   path goes through restic's 64 MiB chunked packs since #118); an unreached
   engine property, not an active blocker.
-- **force-cancel** of a storage op can still leave a tenant's *other* workloads
-  scaled to 0 (manual `kubectl scale` recovery); the cancel now at least clears
-  the file-manager quiesce-hold so file access recovers.
+- **force-cancel restores workloads — FIXED 2026-06-18.** quiesce now persists
+  the pre-quiesce replica snapshot *before* scaling anything down, so a
+  `…/storage/cancel` (or a crash) mid-op finds the snapshot and `unquiesce`
+  brings every workload back to its prior replica count and clears the
+  quiesce-hold — instead of leaving the tenant scaled to 0.
