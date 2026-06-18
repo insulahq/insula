@@ -27,6 +27,7 @@ import type {
   RemoveNetworkPolicyHardeningResponse,
 } from '@insula/api-contracts';
 import type { SecurityHardeningClients } from './k8s-client.js';
+import { SYSTEM_TENANT_NAMESPACE } from '../system-tenant/slug.js';
 
 const TENANT_LABEL = 'tenant';
 const OPTOUT_LABEL = 'insula.host/netpol-hardening';
@@ -149,6 +150,11 @@ async function listTenantNamespaces(core: SecurityHardeningClients['core']): Pro
   for (const ns of res.items ?? []) {
     const name = ns.metadata?.name;
     if (!name) continue;
+    // NEVER harden the platform SYSTEM tenant — it runs platform-critical
+    // workloads (apex domain owner, mail admin, …), not a customer app; an
+    // egress lockdown there could break the platform. It carries the `tenant`
+    // label but is not a customer tenant.
+    if (name === SYSTEM_TENANT_NAMESPACE) continue;
     out.push({ name, optedOut: ns.metadata?.labels?.[OPTOUT_LABEL] === OPTOUT_VALUE });
   }
   return out;
