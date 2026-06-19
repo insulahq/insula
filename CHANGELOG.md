@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.12] - 2026-06-19
+
 ### Added
 - **Lockout-prevention bridge on Security → Posture → Firewall Posture.** When
   your current connection's source IP isn't in any trusted range, the tab warns
