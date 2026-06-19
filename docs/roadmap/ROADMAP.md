@@ -177,14 +177,22 @@ Phase-2 surface from the hardening epic, on the Security → Posture page:
   enforcement live-proven (deny-all-egress blocks nslookup; remove restores it).
   See [SECURITY_HARDENING.md](../operations/SECURITY_HARDENING.md#networkpolicy-hardening-templates-network-policies-tab).
 
-- **Operator → trusted-range bridge (P2.3.1)** — **shipped 2026-06-18.** The
-  probe reports denied connections only as a count (not source IPs), so the
-  practical, safe form is the operator self-service bridge: the Firewall Posture
-  tab warns when *your current connection's* IP isn't in a trusted range (the #1
-  lockout risk) and offers a one-click "add my IP" (/32 or /128). The IP is
-  derived server-side from X-Real-IP only (never the body); CIDR is host-scoped;
-  super_admin + Bearer-only. TDD (16 tests) + security/code review + live E2E
-  (add → CR created → trusted → 409 re-add → delete → untrusted) + browser.
+- **Operator → trusted-range bridge (lockout prevention)** — **shipped 2026-06-18.**
+  The Firewall Posture tab warns when *your current connection's* IP isn't in a
+  trusted range (the #1 lockout risk before an SSH/L4 lockdown) and offers a
+  one-click "add my IP" (/32 or /128). IP derived server-side from X-Real-IP only
+  (never the body); CIDR host-scoped; super_admin + Bearer-only. TDD (16 tests) +
+  security/code review + live E2E + browser.
+
+- **Denied source-IP → trusted-range bridge (the original P2.3.1)** —
+  **superseded; intentionally NOT built (2026-06-18).** The firewall drops
+  untrusted connections with `counter drop` (no source IPs logged), and the probe
+  reads `/proc/net/nf_conntrack` (accepted flows only) — so surfacing the actual
+  denied source IPs would require continuous `nflog` drop-logging on
+  internet-facing nodes (scanner/bot noise) plus a sensitive nft-ruleset change.
+  Not minimal-cost. The *value* — see who's being denied + allow a wrongly-blocked
+  IP — is already delivered by **CrowdSec decisions + allowlists on Web Defense**;
+  the Firewall Posture tab now cross-links there (`DeniedSourcesCrossLink`).
 
 **Open:**
 - **Trivy CVE scanning** — deferred until operator demand surfaces. (Only

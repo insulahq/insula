@@ -519,6 +519,31 @@ function OperatorTrustCard() {
   );
 }
 
+/**
+ * The firewall drops untrusted connections without recording their source IPs
+ * (`counter drop`, no log) — capturing those would mean continuous drop-logging
+ * on public nodes. The actual denied source IPs the platform DOES track are
+ * CrowdSec decisions, managed on Web Defense; this cross-link bridges there.
+ * (R11 P2.3.1 — the firewall-drop-log version is intentionally not built.)
+ */
+function DeniedSourcesCrossLink() {
+  const { data } = useCrowdsecDecisions({});
+  const total = data?.data?.totalActive;
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2.5 text-xs text-gray-600 dark:text-gray-400 flex flex-wrap items-center justify-between gap-2" data-testid="denied-sources-crosslink">
+      <span>
+        {typeof total === 'number'
+          ? <><strong className="text-gray-900 dark:text-gray-100">{total}</strong> source IP{total === 1 ? '' : 's'} currently denied by CrowdSec.</>
+          : <>Source IPs being denied are tracked by CrowdSec.</>}{' '}
+        Review them or allow a wrongly-blocked one on Web Defense.
+      </span>
+      <Link to="/security/web-defense" className="shrink-0 inline-flex items-center gap-1 text-brand-600 dark:text-brand-400 hover:underline" data-testid="denied-sources-webdefense-link">
+        Web Defense →
+      </Link>
+    </div>
+  );
+}
+
 function FirewallTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
   return (
     <section className="space-y-4">
@@ -529,6 +554,7 @@ function FirewallTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
         <Stat label="Cluster peers (v4 / v6)" value={`${snapshot.firewall.clusterPeersV4Count} / ${snapshot.firewall.clusterPeersV6Count}`} />
         <Stat label="Denied (last 60s)" value={snapshot.firewall.deniedCountWindow.available ? String(snapshot.firewall.deniedCountWindow.denies ?? 0) : 'unavailable'} />
       </div>
+      <DeniedSourcesCrossLink />
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-900 dark:text-gray-100">
           Public ports per node
