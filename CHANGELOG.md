@@ -32,6 +32,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   had quietly fallen four releases behind) surfaces immediately instead of being
   buried in the rolling tracking issue.
 
+### Security
+- **Upgraded the Stalwart mail server v0.16.5 → v0.16.9** (was 4 releases behind).
+  Cuts the image's HIGH/CRITICAL CVE count from 26 → 15; the remaining 15 are
+  Debian base-image CVEs (perl-base, libsqlite3, curl, libssh2, ncurses) with no
+  fix in the latest upstream release, all outside the mail daemon's runtime path
+  (Rust binary on the RocksDB store) — triaged `not_affected` in
+  `security/cve-ledger.yaml`. Verified on testing: RocksDB store intact, all
+  SMTP/Submission/IMAP/IMAPS/JMAP listeners serving, 0 restarts.
+
 ## [2026.6.12] - 2026-06-19
 
 ### Added
