@@ -138,7 +138,7 @@ components:
     name: Stalwart mail server (SMTP/IMAP/JMAP)
     tier: "0"
     kind: image
-    pinned: "v0.16.5"
+    pinned: "v0.16.9"
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]

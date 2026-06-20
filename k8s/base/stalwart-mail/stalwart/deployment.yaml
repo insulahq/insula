@@ -542,7 +542,7 @@ spec:
               readOnly: true
       containers:
         - name: stalwart
-          image: docker.io/stalwartlabs/stalwart:v0.16.5
+          image: docker.io/stalwartlabs/stalwart:v0.16.9
           imagePullPolicy: IfNotPresent
           # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
           # The ConfigMap is mounted directly at /etc/stalwart so Stalwart
