@@ -23,14 +23,19 @@ resources:
 # override jwt_auth.inc.php must use a strategic-merge ConfigMap patch
 # under `patches:` (see k8s/overlays/development/roundcube/).
 configMapGenerator:
+  # nginx sidecar config (Phase 4 fpm-alpine + nginx rearchitecture). Hashed
+  # so an nginx.conf edit produces a new ConfigMap name → pod roll on apply.
+  - name: roundcube-nginx
+    files:
+      - nginx.conf
   - name: roundcube-jwt-plugin
     files:
       - jwt_auth.php
   # Platform branding bundle — CSS variable overrides + placeholder
   # SVG wordmark + branding.inc.php config + platform_branding plugin
   # source. Loaded at startup by deployment.yaml's wrapper script:
-  #   * branding.css + logo.svg → /var/www/html/branding/ (Apache
-  #     serves at /branding/*)
+  #   * branding.css + logo.svg → /var/www/html/public_html/branding/
+  #     (nginx sidecar serves at /branding/*)
   #   * branding.inc.php        → /var/roundcube/config/ (loaded by
   #     Roundcube entrypoint glob)
   #   * platform_branding.php   → /var/www/html/plugins/platform_branding/

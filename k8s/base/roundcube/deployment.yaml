@@ -56,31 +56,29 @@ spec:
               app: roundcube
       terminationGracePeriodSeconds: 30
       containers:
+        # ── php-fpm: Roundcube application (fpm-alpine, 0 base CVEs) ──
+        # Phase 4 (2026-06-20): migrated off the official apache image
+        # (Debian base = 700+ HIGH/CRITICAL base-OS CVEs) to fpm-alpine
+        # (0 CVE) served by the nginx:alpine sidecar below. php-fpm listens
+        # on 127.0.0.1:9000; nginx serves the static webroot + proxies *.php.
         - name: roundcube
-          # Phase 3.A.4: pinned by sha256 digest so security patches
-          # published under the same mutable tag don't silently change
-          # the running image. Bump this when:
-          #   1. An upstream release fixes a CVE we care about
-          #   2. We want a new feature
-          # Get the current digest:
-          #   docker pull roundcube/roundcubemail:1.6.16-apache
-          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.6.16-apache
-          image: roundcube/roundcubemail@sha256:f070dc85c0b12db1fe0f0fd9d3800e4b080ccda112f9c6f9574c98119b3e69c3
+          # Pinned by sha256 digest so a same-tag re-push can't silently
+          # change the running image. Bump this when an upstream release
+          # fixes a CVE or ships a feature we want. Get the digest:
+          #   docker pull roundcube/roundcubemail:1.6.16-fpm-alpine
+          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.6.16-fpm-alpine
+          image: roundcube/roundcubemail@sha256:bde2220178fdaf78c8217d10d8bae6536076af1d8a91c69911b464d18fb4977c
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
-            # The official roundcube image's apache prefork MPM needs
-            # SETUID + SETGID to drop privileges from root to www-data
-            # after binding port 80 (NET_BIND_SERVICE). Dropping ALL
-            # caps breaks the pod (setgid fails, error spam in logs).
-            # We drop the rest but keep the three apache needs.
-            # Phase 4+: pre-bake an image that runs fully as www-data
-            # so we can drop these too.
+            # php-fpm master runs as root and drops workers to www-data
+            # (SETUID/SETGID); the wrapper chowns plugin/branding files into
+            # the webroot (CHOWN/DAC_OVERRIDE). No NET_BIND_SERVICE — fpm
+            # binds the unprivileged port 9000, not 80.
             capabilities:
               drop:
                 - ALL
               add:
-                - NET_BIND_SERVICE
                 - SETUID
                 - SETGID
                 - CHOWN
@@ -127,7 +125,7 @@ spec:
                 chown -R www-data:www-data /var/www/html/public_html/branding /var/www/html/plugins/platform_branding 2>/dev/null || true
                 echo "[branding] assets + plugin installed"
               ) &
-              exec /docker-entrypoint.sh apache2-foreground
+              exec /docker-entrypoint.sh php-fpm
           env:
             # Stalwart connection details (IMAPS and submission, both go to
             # the same in-cluster service in the mail namespace)
@@ -203,13 +201,14 @@ spec:
                   name: mail-secrets
                   key: ROUNDCUBEMAIL_DES_KEY
           ports:
-            - containerPort: 80
-              name: http
+            - containerPort: 9000
+              name: fpm
               protocol: TCP
           volumeMounts:
             # Roundcube install dir — emptyDir, repopulated by the entrypoint
             # on every boot from /usr/src/roundcubemail/. The plugin gets
-            # injected by our wrapper script.
+            # injected by our wrapper script. Shared (read-only) with the
+            # nginx sidecar so it can serve the static webroot.
             - name: install
               mountPath: /var/www/html
             # Phase 3.A.5: ephemeral scratch dir where the Roundcube
@@ -264,13 +263,12 @@ spec:
             limits:
               cpu: "500m"
               memory: "512Mi"
-          # startupProbe uses exec to wait for both Roundcube's files to be
-          # populated in /var/www/html AND our jwt_auth plugin to be copied
-          # into place by the wrapper script. This closes the race where
-          # Apache could answer /?_jwt=... before the background copy
-          # finished. Once startupProbe passes, the readinessProbe below
-          # takes over and handles HTTP health. Note: the roundcube image
-          # does not ship wget or curl, so we can only use file tests here.
+          # startupProbe uses exec to wait for Roundcube's files to be
+          # populated in /var/www/html AND our jwt_auth + branding assets to
+          # be copied into place by the wrapper script. This closes the race
+          # where php-fpm could answer /?_jwt=... before the background copy
+          # finished. nginx's readiness (below) gates user-facing traffic on
+          # top of this. The image ships no wget/curl, so file tests only.
           startupProbe:
             exec:
               command:
@@ -284,6 +282,57 @@ spec:
                     && test -f /var/www/html/public_html/branding/logo.svg
             failureThreshold: 30
             periodSeconds: 5
+          # php-fpm speaks FastCGI, not HTTP — probe the TCP socket. The pod
+          # only becomes Ready once BOTH this and nginx's HTTP readiness pass.
+          readinessProbe:
+            tcpSocket:
+              port: fpm
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: fpm
+            initialDelaySeconds: 30
+            periodSeconds: 30
+        # ── nginx: 0-CVE static server + FastCGI proxy to php-fpm ──
+        - name: nginx
+          image: nginx:1.30-alpine
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Listens on 8080 (unprivileged); the master spawns workers as
+            # the `nginx` user (SETUID/SETGID). No NET_BIND_SERVICE needed.
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - SETUID
+                - SETGID
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          volumeMounts:
+            # Shared webroot (read-only) — populated by the php-fpm container's
+            # entrypoint + wrapper. Same path in both containers so FastCGI
+            # SCRIPT_FILENAME resolves identically.
+            - name: install
+              mountPath: /var/www/html
+              readOnly: true
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          # readiness hits `/` → proxied to php-fpm, so the pod is Ready only
+          # when the app actually serves. liveness uses the nginx-only health
+          # endpoint so a cold php-fpm doesn't trigger an nginx restart loop.
           readinessProbe:
             httpGet:
               path: /
@@ -292,7 +341,7 @@ spec:
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /
+              path: /nginx-health
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
@@ -301,6 +350,13 @@ spec:
           emptyDir: {}
         - name: data
           emptyDir: {}
+        # nginx sidecar config (generated ConfigMap — hash change rolls pods).
+        - name: nginx-conf
+          configMap:
+            name: roundcube-nginx
+            items:
+              - key: nginx.conf
+                path: default.conf
         - name: jwt-plugin
           configMap:
             name: roundcube-jwt-plugin
