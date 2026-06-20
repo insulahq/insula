@@ -32,6 +32,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (not `--reuse-values`, which carried chart-40 defaults the new schema rejects).
   Deployed + verified on staging: DaemonSet rolled 4/4, modsecurity + crowdsec
   plugins reloaded, ingress 200, WAF blocks a SQLi probe (403).
+- **Upgraded sealed-secrets chart 2.17.4 → 2.18.6** (controller 0.31.0 → 0.37.0).
+  Deployed + verified on staging: controller 1/1 on 0.37.0, the sealing key
+  persisted and was re-registered on startup (existing SealedSecrets stay
+  decryptable), HTTP server serving, no errors.
 
 ### Changed
 - **image-cve-scan is report-only while the base-OS-CVE backlog burns down**
