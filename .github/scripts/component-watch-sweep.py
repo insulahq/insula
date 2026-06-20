@@ -101,6 +101,16 @@ def main() -> int:
     # ── components behind upstream ──
     behind = [r for r in latest if r.get("behind")]
     out.append(f"## Components behind upstream ({len(behind)})\n")
+    # Tier-0 (critical) drift is easy to miss in a long list — call it out loudly
+    # so a behind-upstream critical component (e.g. the Stalwart mail server)
+    # surfaces immediately rather than buried among low-tier utilities.
+    crit = [r for r in behind if str(r.get("tier")) == "0"]
+    if crit:
+        out.append("> ⚠️ **Tier-0 (critical) components behind upstream — review breaking "
+                   "changes + upgrade promptly** (see COMPONENT_WATCH.md):")
+        for r in crit:
+            out.append(f"> - **{r.get('id')}** `{r.get('pinned')}` → `{r.get('latest')}`")
+        out.append("")
     if not behind:
         out.append("All watched components are current (or unverified).\n")
     else:

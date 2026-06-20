@@ -5,6 +5,8 @@
 #   --drift    registry `pinned` vs the literal in pin_source (offline)
 #   --scan     osv-scanner + govulncheck + cargo-audit over lockfiles/modules
 #   --latest   components whose upstream has a newer release than `pinned` (online; gh/curl)
+#   --changelog <id>  upstream releases between `pinned` and latest, breaking
+#              changes highlighted, + open-issues/compare links (online; review before bumping)
 #   --json     with --status/--scan/--latest: emit JSON instead of a table
 #
 # Registry: security/components.yaml   Ledger: security/cve-ledger.yaml
@@ -150,11 +152,65 @@ print(f"\n{sum(1 for r in rows if r['behind'])}/{len(rows)} component(s) behind 
 PY
     ;;
 
+  --changelog)
+    COMP="${2:-}"
+    [ -n "$COMP" ] || { echo "usage: component-watch.sh --changelog <component-id>" >&2; exit 2; }
+    CW_COMP="$COMP" python3 - <<'PY'
+import os, yaml, json, urllib.request
+REPO=os.environ["REPO_ROOT"]; tok=os.environ.get("GITHUB_TOKEN","")
+comp_id=os.environ["CW_COMP"]
+reg=yaml.safe_load(open(f"{REPO}/security/components.yaml"))
+c=next((x for x in (reg.get("components") or []) if x.get("id")==comp_id), None)
+if not c:
+    print(f"no component '{comp_id}' in security/components.yaml"); raise SystemExit(2)
+w=c.get("watch") or {}; repo=w.get("repo")
+if w.get("type")!="github_releases" or not repo:
+    print(f"{comp_id}: not a github_releases-watched component"); raise SystemExit(2)
+pin=str(c.get("pinned","")).strip()
+def api(path):
+    req=urllib.request.Request(f"https://api.github.com/repos/{repo}{path}",
+        headers={"Accept":"application/vnd.github+json",
+                 **({"Authorization":f"Bearer {tok}"} if tok else {})})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+rels=api("/releases?per_page=30")
+norm=lambda t:str(t or "").lstrip("v")
+newer=[]; found=False
+for rel in rels:
+    if norm(rel.get("tag_name"))==norm(pin):
+        found=True; break
+    newer.append(rel)
+top=rels[0].get("tag_name") if rels else "?"
+print(f"# {comp_id} (tier {c.get('tier')}): {pin} -> {top}   [{repo}]\n")
+if not newer:
+    print("Already current (pinned tag is the latest release).")
+elif not found:
+    # exhausted the page without seeing the pin → it's older than the last 30
+    print(f"WARNING: pinned tag '{pin}' not in the last {len(rels)} releases (likely much "
+          f"older). Showing the {len(newer)} most recent — verify the full gap manually:\n")
+else:
+    print(f"{len(newer)} release(s) since {pin} — REVIEW for breaking changes before bumping:\n")
+    for rel in newer:
+        print(f"## {rel.get('tag_name')}  ({(rel.get('published_at') or '')[:10]})")
+        body=(rel.get("body") or "").strip()
+        brk=[ln for ln in body.splitlines()
+             if any(k in ln.lower() for k in ("break", "incompat", "migrat", "removed", "deprecat"))]
+        if brk:
+            print("  ** potential BREAKING / MIGRATION notes:")
+            for ln in brk[:12]: print("   - "+ln.strip()[:160])
+        print(("  "+body[:500].replace("\n", "\n  ")) if body else "  (no release notes)")
+        print()
+print("Before upgrading, also review:")
+print(f"  - open issues: https://github.com/{repo}/issues")
+print(f"  - full compare: https://github.com/{repo}/compare/{pin}...{top}")
+PY
+    ;;
+
   -h|--help)
-    sed -n '2,18p' "$0"
+    sed -n '2,16p' "$0"
     ;;
   *)
-    echo "unknown mode: $MODE (try --status|--drift|--scan|--latest|--help)" >&2
+    echo "unknown mode: $MODE (try --status|--drift|--scan|--latest|--changelog <id>|--help)" >&2
     exit 2
     ;;
 esac

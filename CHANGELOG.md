@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Upstream-image Trivy CVE scan in CI (ADR-050).** New weekly + on-demand
+  `.github/workflows/image-cve-scan.yml` Trivy-scans the upstream images we deploy
+  (Stalwart, Postgres, CrowdSec, …) for OS/library CVEs the version+advisory watch
+  can't see — entirely in CI, no cluster resources. Pinned + checksum-verified
+  trivy binary; skips findings already tracked in `security/cve-ledger.yaml`; fails
+  the run on a new untracked HIGH/CRITICAL. Closes the gap that left the Stalwart
+  image's Debian base-OS CVEs (e.g. openssl heap-UAF, perl-archive-tar path
+  traversal) unscanned. Helpers: `scripts/list-scan-images.sh`,
+  `scripts/cve-ledger-trivyignore.py`, `scripts/trivy-scan-summary.py` (unit-tested).
+- **`component-watch.sh --changelog <id>`** — surfaces the upstream release notes
+  between a component's pinned version and latest, flagging breaking/migration
+  notes, with open-issues + compare links. Required before bumping a tier-0 pin.
+
+### Changed
+- **Component-watch weekly sweep now leads with a ⚠️ Tier-0 (critical) components
+  behind upstream callout** so critical drift (e.g. the Stalwart mail server, which
+  had quietly fallen four releases behind) surfaces immediately instead of being
+  buried in the rolling tracking issue.
+
 ## [2026.6.12] - 2026-06-19
 
 ### Added
