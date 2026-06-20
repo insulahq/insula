@@ -26,6 +26,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Upgraded Calico v3.31.5 → v3.31.6** (CNI patch). Deployed + verified on the
   staging cluster (rolling calico-node upgrade, all nodes Ready throughout, DNS +
   cross-node pod connectivity + ingress all healthy).
+- **Upgraded Traefik chart 40.2.0 → 41.0.0** (app v3.7.1 → v3.7.5). The chart-major
+  breaking changes are only the `logs.*`/`accessLog.*` value-key renames, which our
+  install doesn't set — verified by upgrading with our user-supplied values only
+  (not `--reuse-values`, which carried chart-40 defaults the new schema rejects).
+  Deployed + verified on staging: DaemonSet rolled 4/4, modsecurity + crowdsec
+  plugins reloaded, ingress 200, WAF blocks a SQLi probe (403).
 
 ### Changed
 - **image-cve-scan is report-only while the base-OS-CVE backlog burns down**

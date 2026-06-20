@@ -85,7 +85,7 @@ components:
     name: Traefik (ingress / TLS termination / WAF plugin host)
     tier: "0"
     kind: chart
-    pinned: "40.2.0"
+    pinned: "41.0.0"
     app_version: "v3.7.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
