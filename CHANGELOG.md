@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.13] - 2026-06-20
+
 ### Added
 - **Upstream-image Trivy CVE scan in CI (ADR-050).** New weekly + on-demand
   `.github/workflows/image-cve-scan.yml` Trivy-scans the upstream images we deploy
