@@ -354,7 +354,7 @@ LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 # unpinned drift is how the ssa-policy surprise class happens).
 # Latest stable at pin time: v2.8.8 (2026-05-20).
 FLUX_VERSION="2.8.8"
-TRAEFIK_CHART_VERSION="40.2.0"           # app v3.7.1 "Langres"; verify: helm search repo traefik/traefik
+TRAEFIK_CHART_VERSION="41.0.0"           # app v3.7.5; verify: helm search repo traefik/traefik
 # Traefik plugin catalog refs. install_traefik wires these into the
 # `experimental.plugins.<name>.{moduleName,version}` helm values so the
 # controller fetches the Yaegi-interpreted plugin source from
