@@ -54,7 +54,7 @@ spec:
             - name: upload
               # Alpine-based image — bitnami/kubectl pinned tags were
               # sunsetted from Docker Hub in 2026.
-              image: alpine/k8s:1.33.3
+              image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
               env:
                 - name: AWS_ACCESS_KEY_ID

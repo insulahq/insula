@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: roundcube
-          image: roundcube/roundcubemail:latest-fpm
+          image: roundcube/roundcubemail:1.6.16-apache
           ports:
             - containerPort: 9000
           env:

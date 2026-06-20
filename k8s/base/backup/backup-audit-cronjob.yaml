@@ -86,7 +86,7 @@ spec:
           serviceAccountName: backup-audit
           containers:
             - name: audit
-              image: alpine/k8s:1.33.3
+              image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
               command: [/bin/sh, -c]
               args:

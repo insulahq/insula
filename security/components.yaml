@@ -164,7 +164,7 @@ components:
     name: oauth2-proxy (admin-UI auth gate)
     tier: "0"
     kind: image
-    pinned: "v7.15.2"
+    pinned: "v7.15.3"
     pin_source: k8s/base/oauth2-proxy/deployment.yaml
     pin_check: true
     repos: [oauth2-proxy/oauth2-proxy]
@@ -190,7 +190,7 @@ components:
     name: OWASP ModSecurity Core Rule Set (WAF sidecar)
     tier: "0"
     kind: image
-    pinned: "4.25.0-nginx-alpine-202604040104"
+    pinned: "4.25.0-nginx-alpine-202605200705"
     pin_source: k8s/base/modsecurity-crs/deployment.yaml
     pin_check: true
     repos: [owasp/modsecurity-crs]
@@ -286,7 +286,7 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:6e98656e6a6f27ab827a727b68010622186d369f4527186a06f306136c924bdb"
+    pinned: "sha256:f070dc85c0b12db1fe0f0fd9d3800e4b080ccda112f9c6f9574c98119b3e69c3"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
@@ -429,7 +429,7 @@ components:
     name: frp / frps (reverse-tunnel server + client binary)
     tier: "1"
     kind: image
-    pinned: "v0.62.1"
+    pinned: "v0.69.1"
     pin_source: k8s/base/platform-config.yaml
     pin_check: true
     watch: { type: github_releases, repo: fatedier/frp, advisories: fatedier/frp }
@@ -557,7 +557,7 @@ components:
     name: Valkey (cache)
     tier: "1"
     kind: image
-    pinned: "8.0-alpine"
+    pinned: "8.1-alpine"
     pin_source: k8s/base/valkey/statefulset.yaml
     pin_check: true
     repos: [valkey/valkey]
@@ -648,7 +648,7 @@ components:
     name: alpine/k8s (kubectl utility image for CronJobs)
     tier: "2"
     kind: image
-    pinned: "1.33.3"
+    pinned: "1.33.13"
     pin_source: k8s/base/job-gc-cronjob.yaml
     pin_check: true
     repos: [alpine/k8s]
@@ -675,7 +675,7 @@ components:
     name: curlimages/curl (probe/init utility)
     tier: "3"
     kind: image
-    pinned: "8.10.1"
+    pinned: "8.20.0"
     pin_source: k8s/base
     pin_check: false
     repos: [curlimages/curl]

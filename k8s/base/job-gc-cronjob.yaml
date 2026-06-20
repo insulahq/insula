@@ -92,7 +92,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: gc
-              image: alpine/k8s:1.33.3
+              image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
               env:
                 - name: JOB_GC_MAX_AGE_DAYS

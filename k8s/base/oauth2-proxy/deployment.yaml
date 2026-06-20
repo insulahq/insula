@@ -54,7 +54,7 @@ spec:
       # visible reason in `kubectl describe`.
       initContainers:
         - name: wait-for-dex-discovery
-          image: curlimages/curl:8.10.1
+          image: curlimages/curl:8.20.0
           envFrom:
             - secretRef:
                 name: oauth2-proxy-config
@@ -97,7 +97,7 @@ spec:
               memory: 64Mi
       containers:
         - name: oauth2-proxy
-          image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.2
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.3
           args:
             - --http-address=0.0.0.0:4180
             - --upstream=static://200

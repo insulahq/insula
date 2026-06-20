@@ -63,9 +63,9 @@ spec:
           #   1. An upstream release fixes a CVE we care about
           #   2. We want a new feature
           # Get the current digest:
-          #   docker pull roundcube/roundcubemail:1.6.10-apache
-          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.6.10-apache
-          image: roundcube/roundcubemail@sha256:6e98656e6a6f27ab827a727b68010622186d369f4527186a06f306136c924bdb
+          #   docker pull roundcube/roundcubemail:1.6.16-apache
+          #   docker inspect --format='{{index .RepoDigests 0}}' roundcube/roundcubemail:1.6.16-apache
+          image: roundcube/roundcubemail@sha256:f070dc85c0b12db1fe0f0fd9d3800e4b080ccda112f9c6f9574c98119b3e69c3
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

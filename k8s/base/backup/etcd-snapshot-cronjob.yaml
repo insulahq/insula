@@ -67,7 +67,7 @@ spec:
               # within 2s with no log retained, likely apk network issue
               # or a pipefail edge case in the retention-list step).
               # Matches the image pattern used by the other DR CronJobs.
-              image: alpine/k8s:1.33.3
+              image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
               env:
                 - name: AWS_ACCESS_KEY_ID

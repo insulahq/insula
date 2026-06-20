@@ -95,7 +95,7 @@ spec:
             - name: cluster-state
               # alpine/k8s bundles kubectl + aws + jq. bitnami/kubectl
               # pinned tags sunsetted from Docker Hub in 2026.
-              image: alpine/k8s:1.33.3
+              image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
               env:
                 - name: AWS_ACCESS_KEY_ID

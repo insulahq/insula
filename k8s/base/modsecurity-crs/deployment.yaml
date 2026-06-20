@@ -55,7 +55,7 @@ spec:
           # `-alpine` variant is tiny (~150MB final image). Pinned to
           # the canonical 4.25.0 LTS tag (CRS 4.x stream). Bump via PR
           # after running the live block-test smoke.
-          image: docker.io/owasp/modsecurity-crs:4.25.0-nginx-alpine-202604040104
+          image: docker.io/owasp/modsecurity-crs:4.25.0-nginx-alpine-202605200705
           imagePullPolicy: IfNotPresent
           env:
             - name: BACKEND
