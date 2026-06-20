@@ -14,7 +14,7 @@
 |---|------|----------|--------|
 | [R1](#r1--plesk-migration-service) | Plesk migration service | **P1** | Shipped (PRs #70–#89) — E2E on staging; production cutover pending |
 | [R2](#r2--monitoring-stack-decision--slislo) | Monitoring stack decision + SLI/SLO | **P1** | Shipped (ADR-051, PRs #50–#63) — logs deferred |
-| [R3](#r3--load-testing-in-ci) | Load testing in CI | P2 | Framework exists, unwired |
+| [R3](#r3--load-testing-in-ci) | Load testing in CI | P3 | Not built — low value for the traffic profile (decision 2026-06-20) |
 | [R4](#r4--fbl-complaint-processing) | FBL complaint processing | **P1** (for production mail) | Shipped (PRs #64–#69) |
 | [R5](#r5--dmarc-aggregate-report-ingestion) | DMARC aggregate-report ingestion | P2 | Not started |
 | [R6](#r6--rolling-sending-quota-enforcement) | Rolling sending-quota enforcement | P2 | Shipped (PRs #64–#69) |
@@ -96,9 +96,24 @@ are deprecation no-ops).
 
 ## R3 — Load testing in CI
 
-`scripts/benchmark/api-load-test.js` (k6) + `run-benchmark.sh` exist but run
-nowhere. Wire into CI (manual-dispatch or nightly), capture baselines, enforce
-the documented p95 < 500 ms target on core endpoints.
+**Not built — decided against on 2026-06-20 (low value for the traffic profile).**
+The k6 framework (`scripts/benchmark/api-load-test.js` + `run-benchmark.sh`)
+targets the management API (admin/tenant panels), which is operator/tenant-facing,
+low-concurrency, and already fast (p95 ~200 ms measured against testing). A
+capacity stress test there solves a problem the platform doesn't have — and a
+single shared token can't generate real load anyway (the per-user rate limit,
+~100/min, correctly returns 429). A *true* stress test would need many benchmark
+accounts (one user per VU), which isn't worth it for panels nobody hammers.
+
+The traffic-bearing, capacity-sensitive paths are tenant-hosted sites (their own
+app perf + an infra-sizing question — see `docs/operations/INFRASTRUCTURE_SIZING.md`)
+and mail — and those **already have perf harnesses**:
+`integration-stalwart-storage-perf.sh`, `integration-stalwart-export-perf.sh`,
+`bench-imap-vs-jmap.sh` (mail) and `integration-shim-perf.sh` (backup/rclone).
+
+The k6 script is kept for ad-hoc local benchmarking (`BASE_URL=… EMAIL=… PASSWORD=…
+k6 run scripts/benchmark/api-load-test.js`). Revisit only if the panels ever face
+real concurrent load.
 
 ## R4 — FBL complaint processing
 
