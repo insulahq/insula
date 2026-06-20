@@ -71,7 +71,7 @@ spec:
               # entrypoint script). bitnami/kubectl was removed from
               # Docker Hub in 2026 so we can't use it either. Pinned to
               # 1.33.4 to match the cluster's k3s v1.33.x.
-              image: alpine/k8s:1.33.4
+              image: alpine/k8s:1.33.13
               imagePullPolicy: IfNotPresent
               command:
                 - /bin/sh

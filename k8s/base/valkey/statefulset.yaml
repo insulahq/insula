@@ -179,7 +179,7 @@ spec:
           # Foundation upstream — drop-in for redis:7.x on the
           # protocol level; Stalwart's redis-rs client doesn't care
           # whether the server identifies as redis or valkey).
-          image: valkey/valkey:8.0-alpine
+          image: valkey/valkey:8.1-alpine
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
@@ -260,7 +260,7 @@ spec:
         # Co-located so each pod hosts exactly one sentinel; quorum=2
         # of the 3 sentinels survives one pod outage.
         - name: sentinel
-          image: valkey/valkey:8.0-alpine
+          image: valkey/valkey:8.1-alpine
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
