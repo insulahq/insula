@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Roundcube webmail rearchitected to fpm-alpine + nginx sidecar (0 CVE).** The
+  official apache image is Debian-based (700+ HIGH/CRITICAL base-OS CVEs even at
+  1.6.16); replaced with the fpm-alpine image (0/0) served by an nginx:1.30-alpine
+  sidecar (also 0/0). Verified on testing: serves end-to-end (login page, PHP,
+  Postgres session, POST, branding, deny rules) and scales up/down correctly with
+  the `default_webmail_engine` setting via the webmail-router reconciler.
+- **Refreshed upstream images to cut base-OS CVEs** (~1650 → ~350 across the
+  fleet): roundcube, alpine/k8s 1.33.3/.4→1.33.13, modsecurity-crs date-build,
+  frps v0.62.1→v0.69.1, curl 8.10.1→8.20.0, oauth2-proxy v7.15.3, valkey 8.1-alpine.
+  Each scanned to confirm the reduction; deployed + smoke-tested (35/0) on testing.
+- **Upgraded Calico v3.31.5 → v3.31.6** (CNI patch). Deployed + verified on the
+  staging cluster (rolling calico-node upgrade, all nodes Ready throughout, DNS +
+  cross-node pod connectivity + ingress all healthy).
+
+### Changed
+- **image-cve-scan is report-only while the base-OS-CVE backlog burns down**
+  (`REPORT_ONLY=true`): unwaived HIGH/CRITICAL warn but don't fail the run; a
+  scan-infrastructure failure still fails hard. Flip to enforcing once cleared.
+
 ## [2026.6.13] - 2026-06-20
 
 ### Added
