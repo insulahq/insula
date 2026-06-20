@@ -300,14 +300,16 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
-            # Listens on 8080 (unprivileged); the master spawns workers as
-            # the `nginx` user (SETUID/SETGID). No NET_BIND_SERVICE needed.
+            # Listens on 8080 (unprivileged) → no NET_BIND_SERVICE. The root
+            # master chowns its cache/temp dirs to the worker uid (CHOWN) and
+            # spawns workers as the `nginx` user (SETUID/SETGID).
             capabilities:
               drop:
                 - ALL
               add:
                 - SETUID
                 - SETGID
+                - CHOWN
           ports:
             - containerPort: 8080
               name: http
