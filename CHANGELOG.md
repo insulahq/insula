@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.14] - 2026-06-20
+
 ### Security
 - **Roundcube webmail rearchitected to fpm-alpine + nginx sidecar (0 CVE).** The
   official apache image is Debian-based (700+ HIGH/CRITICAL base-OS CVEs even at
