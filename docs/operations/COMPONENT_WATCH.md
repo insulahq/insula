@@ -30,15 +30,22 @@ Three artifacts, one guard:
 | **Guard** | [`scripts/ci-component-watch-check.sh`](../../scripts/ci-component-watch-check.sh) | CI enforcement: schema · drift · coverage · SLA. |
 
 Automation: `.github/workflows/component-watch.yml` runs a weekly sweep and opens
-a rolling tracking issue; `.github/dependabot.yml` proposes dependency-bump PRs;
-per-image **Trivy** scans upload to the repo **Security** tab.
+a rolling tracking issue (now with a **⚠️ Tier-0 components behind upstream**
+callout so critical drift isn't buried); `.github/dependabot.yml` proposes
+dependency-bump PRs; **first-party** image builds Trivy-scan and upload SARIF to
+the repo **Security** tab; and `.github/workflows/image-cve-scan.yml` runs a
+weekly **Trivy scan of the UPSTREAM images** (Stalwart, Postgres, CrowdSec, …)
+for OS/library CVEs the version+advisory watch can't see — entirely in CI (no
+cluster). It skips findings already in `cve-ledger.yaml` and fails on a new,
+untracked HIGH/CRITICAL → triage the finding or upgrade the pin.
 
 ```bash
-scripts/component-watch.sh --status     # tiered table + open CVE counts
-scripts/component-watch.sh --drift      # registry vs real pins (offline)
-scripts/component-watch.sh --scan       # osv-scanner + govulncheck + cargo-audit
-scripts/component-watch.sh --latest     # what's behind upstream (online; GITHUB_TOKEN)
-bash scripts/ci-component-watch-check.sh # the full gate, locally
+scripts/component-watch.sh --status        # tiered table + open CVE counts
+scripts/component-watch.sh --drift         # registry vs real pins (offline)
+scripts/component-watch.sh --scan          # osv-scanner + govulncheck + cargo-audit
+scripts/component-watch.sh --latest        # what's behind upstream (online; GITHUB_TOKEN)
+scripts/component-watch.sh --changelog <id> # upstream releases pinned→latest, breaking changes flagged
+bash scripts/ci-component-watch-check.sh   # the full gate, locally
 ```
 
 ## Tiering rubric
@@ -100,7 +107,16 @@ Add the entry to [`security/cve-ledger.yaml`](../../security/cve-ledger.yaml)
 ## Research breaking changes
 
 Before bumping a pinned version, read the upstream changelog / migration notes and
-record the result in the ledger `breaking_changes` field:
+record the result in the ledger `breaking_changes` field. For a
+`github_releases`-watched component, start with:
+
+```bash
+scripts/component-watch.sh --changelog <id>   # e.g. stalwart — pinned→latest notes, breaking changes flagged, + open-issues/compare links
+```
+
+This is **required for tier-0 components** (Stalwart, Postgres, k3s, …) before a
+bump — review every release between the pin and latest plus the upstream open
+issues for regressions, since these run under active development. Then:
 
 - **Charts** (Traefik, cert-manager, CNPG, Longhorn, sealed-secrets): read the
   chart's `UPGRADING.md` / release notes; watch CRD/values schema changes.

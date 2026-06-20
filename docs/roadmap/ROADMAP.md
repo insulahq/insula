@@ -22,7 +22,7 @@
 | [R8](#r8--notification-channels-slack--webhook--sms) | Notification channels: Slack/Webhook/SMS | P3 | Email + in-app shipped |
 | [R9](#r9--staff-role-email-access) | Staff-role email access | P3 | Not started |
 | [R10](#r10--bulwark-deferred-work) | Bulwark deferred work (phases 7–8) | P3 | Deferred by decision |
-| [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply + operator→trusted-range bridge (2026-06-18); only Trivy (deferred) open |
+| [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply + operator→trusted-range bridge (2026-06-18) + upstream-image Trivy CVE scan (CI, 2026-06-20); only in-cluster Trivy UI deferred |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
 | [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
@@ -209,9 +209,18 @@ Phase-2 surface from the hardening epic, on the Security → Posture page:
   IP — is already delivered by **CrowdSec decisions + allowlists on Web Defense**;
   the Firewall Posture tab now cross-links there (`DeniedSourcesCrossLink`).
 
+- **Trivy upstream-image CVE scan** — **shipped 2026-06-20 (CI, ADR-050).** Weekly
+  + on-demand `.github/workflows/image-cve-scan.yml` Trivy-scans the upstream
+  images we deploy (Stalwart, Postgres, CrowdSec, …) for OS/library CVEs the
+  version+advisory watch can't see — entirely in CI, no cluster. Skips
+  `cve-ledger.yaml`-tracked findings, fails on a new untracked HIGH/CRITICAL.
+  Closed the gap that left the Stalwart image's Debian base CVEs unscanned (the
+  first run surfaces 22 HIGH + 4 CRITICAL in `stalwart:v0.16.5`). TDD helpers +
+  security/code review + local E2E against the real Stalwart image.
+
 **Open:**
-- **Trivy CVE scanning** — deferred until operator demand surfaces. (Only
-  remaining R11 item.)
+- **In-cluster Trivy scanning UI** — deferred until operator demand surfaces. The
+  CI scan above covers the actual CVE-detection need; an in-panel UI is cosmetic.
 
 ## R12 — Service-to-service mTLS
 
@@ -250,6 +259,13 @@ deploys: `security/components.yaml` (registry) + `security/cve-ledger.yaml`
 (triage + waiver register), enforced by `scripts/ci-component-watch-check.sh`
 (schema/drift/coverage/SLA), with a weekly OSV/upstream sweep, Dependabot, and
 per-image Trivy. Operate it via [COMPONENT_WATCH.md](../operations/COMPONENT_WATCH.md).
+
+Enhanced 2026-06-20 after a tier-0 (Stalwart) drift went unnoticed in the quiet
+rolling issue: the sweep now leads with a **⚠️ Tier-0 components behind upstream**
+callout; a new weekly **upstream-image Trivy scan** (`image-cve-scan.yml`, see
+[R11](#r11--security-hardening-phase-2)) covers base-OS CVEs the version/advisory
+watch can't; and `component-watch.sh --changelog <id>` surfaces the upstream
+release notes (breaking changes flagged) required before bumping a tier-0 pin.
 
 Open follow-ups carried by the registry's "known hygiene items": pin Flux to a
 release; align the `pg_dump` client image to PG 18; consolidate the duplicate
