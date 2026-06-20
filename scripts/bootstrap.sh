@@ -240,7 +240,7 @@ PLATFORM_DOMAIN=""
 K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.33.10+k3s1"
-CALICO_VERSION="v3.31.5"
+CALICO_VERSION="v3.31.6"
 
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
 # allow-list so pods can reach the host's control-plane ports via

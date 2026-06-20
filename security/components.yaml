@@ -73,7 +73,7 @@ components:
     name: Calico CNI (network policy + WireGuard)
     tier: "0"
     kind: binary
-    pinned: "v3.31.5"
+    pinned: "v3.31.6"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: projectcalico/calico, advisories: projectcalico/calico }
