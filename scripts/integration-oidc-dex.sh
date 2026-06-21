@@ -568,24 +568,25 @@ else
   else
     ok "client created id=$LIFECYCLE_TENANT_ID"
 
-    # Wait for the active lifecycle transition to provision the
-    # client's k8s namespace. Without this the next steps race the
-    # k8s-provisioner: ingress-route + auth-config writes succeed at
-    # the API layer but the reconciler can't find the namespace and
-    # returns RECONCILE_FAILED. Poll up to 90s.
+    # Tenants are created pending+unprovisioned (no auto-provision).
+    # Explicitly trigger provisioning, then wait for status=active. Until
+    # active the next steps would 409 TENANT_NOT_ACTIVE; provisioning also
+    # brings up the k8s namespace the reconciler needs. Poll up to 180s.
+    curl -sk --max-time 30 -X POST "${AUTH_H[@]}" -H "Content-Type: application/json" \
+      -d '{}' "$ADMIN_HOST/api/v1/admin/tenants/$LIFECYCLE_TENANT_ID/provision" >/dev/null 2>&1 || true
     PROV_OK=0
-    for i in $(seq 1 30); do
+    for i in $(seq 1 45); do
       PROV_STATUS=$(curl -sk --max-time 5 "${AUTH_H[@]}" "$ADMIN_HOST/api/v1/tenants/$LIFECYCLE_TENANT_ID" \
-        | jq -r '.data.provisioningStatus // .data.provisioning_status // empty')
-      if [[ "$PROV_STATUS" == "provisioned" || "$PROV_STATUS" == "active" ]]; then
+        | jq -r '.data.status // empty')
+      if [[ "$PROV_STATUS" == "active" ]]; then
         PROV_OK=1; break
       fi
-      sleep 3
+      sleep 4
     done
     if [[ "$PROV_OK" -eq 1 ]]; then
-      ok "client provisioning settled (status=$PROV_STATUS) after ~${i}×3s"
+      ok "client provisioning settled (status=$PROV_STATUS) after ~${i}×4s"
     else
-      warn "client provisioning still '$PROV_STATUS' after 90s — proceeding anyway (reconciler will retry)"
+      warn "client status still '$PROV_STATUS' after 180s — proceeding anyway (reconciler will retry)"
     fi
 
     # Step 2: add the test domain (dns_mode=cname — won't try to migrate DNS)

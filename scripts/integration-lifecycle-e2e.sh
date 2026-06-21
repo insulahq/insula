@@ -63,6 +63,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
   log "using cached INTEGRATION_TOKEN"
   TOKEN="$INTEGRATION_TOKEN"
@@ -102,14 +105,11 @@ CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['dat
 cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-log "── waiting for full provisioning ──"
-STATUS=""
-for _ in $(seq 1 90); do
-  STATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
-  [[ "$STATUS" == "provisioned" ]] && break
-  sleep 2
-done
-[[ "$STATUS" == "provisioned" ]] && ok "provisioningStatus=provisioned" || { fail "stuck at $STATUS"; exit 1; }
+# Tenants are created pending+unprovisioned (no auto-provision) — provision
+# + wait for status=active before any tenant-scoped op.
+log "── provisioning client ──"
+provision_tenant "$CID" || { fail "lifecycle: client provisioning failed"; exit 1; }
+ok "client active"
 
 NS=$(ssh_cp "kubectl get ns -l tenant=$CID -o jsonpath='{.items[0].metadata.name}'")
 [[ -n "$NS" ]] && ok "namespace $NS" || { fail "no namespace"; exit 1; }
@@ -364,9 +364,12 @@ DEL_CID=$(echo "$DEL_RESP" | python3 -c "import json,sys;print(json.load(sys.std
 if [[ -z "$DEL_CID" ]]; then
   fail "could not provision throwaway client for delete-cleanup scenario — body: $(echo "$DEL_RESP" | head -c 200)"
 else
-  ok "throwaway client provisioned (id=$DEL_CID, name=$DEL_NAME)"
+  ok "throwaway client created (id=$DEL_CID, name=$DEL_NAME)"
+  # Tenants are created pending+unprovisioned — explicitly provision (this
+  # brings up the namespace the cascade has to reap) and wait for active.
+  provision_tenant "$DEL_CID" || fail "delete-cleanup: throwaway client provisioning failed"
   # Wait for the namespace to provision so the cascade has something to reap.
-  DEL_NS=$(echo "$DEL_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('kubernetesNamespace',''))" 2>/dev/null || echo "")
+  DEL_NS=$(api GET "/tenants/$DEL_CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('kubernetesNamespace',''))" 2>/dev/null || echo "")
   for i in $(seq 1 30); do
     if [[ -n "$DEL_NS" ]] && ssh_cp "kubectl get ns $DEL_NS >/dev/null 2>&1"; then break; fi
     sleep 2
@@ -487,7 +490,11 @@ for i in 1 2; do
   BN="lifecycle-bulk-$(date +%s)-$i"
   BR=$(api POST "/tenants" "{\"name\":\"$BN\",\"primary_email\":\"$BN@e2e.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\"}")
   BID=$(echo "$BR" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
-  [[ -n "$BID" ]] && BULK_NAMES+=("$BN") && BULK_IDS+=("$BID")
+  # Tenants are created pending+unprovisioned — provision + wait for active
+  # before the bulk-delete cascade can act on them.
+  if [[ -n "$BID" ]] && provision_tenant "$BID"; then
+    BULK_NAMES+=("$BN"); BULK_IDS+=("$BID")
+  fi
 done
 if [[ ${#BULK_IDS[@]} -lt 2 ]]; then
   fail "could not provision 2 throwaway clients for bulk-delete scenario"

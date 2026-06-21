@@ -244,6 +244,28 @@ print(json.dumps({
 fi
 echo "  client id: $CID"
 
+# Tenants are created pending+unprovisioned (no auto-provision). Explicitly
+# provision and wait for status=active before any tenant-scoped op (the
+# namespace/PVC read + bundle below). Skip when the operator supplied an
+# existing active tenant via CLIENT_ID_OVERRIDE. This script's local `api`
+# helper is a bare curl passthrough, so we inline the provision rather than
+# use the shared provision_tenant (which expects api METHOD PATH [BODY]).
+if [ -z "${CLIENT_ID_OVERRIDE:-}" ]; then
+  echo "  provisioning tenant (waiting for status=active)…"
+  apij -X POST "$API_BASE/api/v1/admin/tenants/$CID/provision" -d '{}' >/dev/null 2>&1 || true
+  PROV_OK=0
+  for _ in $(seq 1 45); do
+    if apij "$API_BASE/api/v1/tenants/$CID" | grep -q '"status":"active"'; then
+      PROV_OK=1; break
+    fi
+    sleep 4
+  done
+  if [ "$PROV_OK" -ne 1 ]; then
+    echo "FAIL: tenant $CID did not reach status=active within 180s"
+    exit 1
+  fi
+fi
+
 # Resolve the namespace from the API.
 NS=$(apij "$API_BASE/api/v1/tenants/$CID" \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["kubernetesNamespace"])')

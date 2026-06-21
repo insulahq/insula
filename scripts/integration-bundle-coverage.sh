@@ -87,6 +87,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 # ─── Resolve a target ────────────────────────────────────────────
 
 target_id=$(api GET "/admin/backup-configs" \
@@ -138,13 +141,9 @@ cid=$(echo "$create_resp" | python3 -c 'import json,sys; print(json.load(sys.std
 [[ -n "$cid" ]] || { fail "client: create failed: $(echo "$create_resp" | head -c 300)"; exit 1; }
 ok "client created cid=$cid"
 
-# Wait for provision.
-for _ in $(seq 1 30); do
-  status=$(api GET "/tenants/$cid" \
-    | python3 -c 'import json,sys; d=json.load(sys.stdin).get("data",{}); print(d.get("provisioningStatus",""))' 2>/dev/null)
-  [[ "$status" == "provisioned" || "$status" == "ready" || "$status" == "active" ]] && break
-  sleep 4
-done
+# Tenants are created pending+unprovisioned — provision + wait for active
+# before any tenant-scoped op (domain/bundle).
+provision_tenant "$cid" || { fail "coverage: client provisioning failed"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; exit 1; }
 
 # Add cross-table state — domain, then a deployment that the domain
 # can attach to (matches the integration-staging.sh restore scenario

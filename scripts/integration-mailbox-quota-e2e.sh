@@ -89,14 +89,11 @@ CID=$(echo "$RESP" | jget "['data']['id']")
 cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-log "── waiting for provisioning ──"
-STATUS=""
-for _ in $(seq 1 90); do
-  STATUS=$(api GET "/tenants/$CID" | jget "['data'].get('provisioningStatus') or ''")
-  [[ "$STATUS" == "provisioned" ]] && break
-  sleep 2
-done
-[[ "$STATUS" == "provisioned" ]] && ok "provisioned" || { fail "stuck at provisioningStatus=$STATUS"; exit 1; }
+# Tenants are created pending+unprovisioned (no auto-provision) — provision
+# + wait for status=active before any email/domain op.
+log "── provisioning tenant ──"
+provision_tenant "$CID" || { fail "mailbox-quota: client provisioning failed"; exit 1; }
+ok "tenant active"
 
 TEST_DOMAIN="mqe2e${STAMP}.com"
 log "── attaching + enabling email domain $TEST_DOMAIN ──"

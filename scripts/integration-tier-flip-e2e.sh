@@ -48,6 +48,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
   log "using cached INTEGRATION_TOKEN"
   TOKEN="$INTEGRATION_TOKEN"
@@ -100,6 +103,10 @@ if [[ "${TENANT_NODE_COUNT:-0}" -lt 3 ]]; then
   cleanup_sn() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
   trap cleanup_sn EXIT
 
+  # Tenants are created pending+unprovisioned (no auto-provision) — provision
+  # + wait for status=active before any tenant-scoped op (the HA-flip PATCH).
+  provision_tenant "$CID" || { fail "tier-flip/single-node guard: client provisioning failed"; exit 1; }
+
   # Attempt the HA flip — must be rejected.
   FLIP_RESP=$(api PATCH "/tenants/$CID" '{"storage_tier":"ha"}')
   ERR_CODE=$(echo "$FLIP_RESP" | python3 -c "import json,sys;
@@ -151,13 +158,11 @@ CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['dat
 cleanup() { curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-log "── waiting for full provisioning ──"
-for _ in $(seq 1 60); do
-  STATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
-  [[ "$STATUS" == "provisioned" ]] && break
-  sleep 2
-done
-[[ "$STATUS" == "provisioned" ]] && ok "provisioningStatus=provisioned" || { fail "stuck at $STATUS"; exit 1; }
+# Tenants are created pending+unprovisioned (no auto-provision) — provision
+# + wait for status=active before any tenant-scoped op.
+log "── provisioning client ──"
+provision_tenant "$CID" || { fail "tier-flip: client provisioning failed"; exit 1; }
+ok "client active"
 
 NS=$(ssh_cp "kubectl get ns -l tenant=$CID -o jsonpath='{.items[0].metadata.name}'")
 PVNAME=$(ssh_cp "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.spec.volumeName}'")

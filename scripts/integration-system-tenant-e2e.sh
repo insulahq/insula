@@ -87,6 +87,24 @@ status_of() {
   api_with_status "$@" | tail -1
 }
 
+# Tenants are created pending+unprovisioned (no auto-provision). Provisioning
+# is an explicit step that flips status -> active on completion; until active,
+# tenant-scoped ops 409 TENANT_NOT_ACTIVE. This shim mirrors the shared
+# integration-env.sh provision_tenant but uses this harness's full-path `api`
+# helper (JWT + Host header) rather than the relative-path one.
+provision_tenant() {
+  local cid="$1" timeout="${2:-180}" i=0
+  api POST "/api/v1/admin/tenants/${cid}/provision" "{}" >/dev/null 2>&1 || true
+  while [ "$i" -lt "$timeout" ]; do
+    case "$(api GET "/api/v1/tenants/${cid}" 2>/dev/null)" in
+      *'"status":"active"'*) return 0 ;;
+    esac
+    sleep 4; i=$((i + 4))
+  done
+  echo "provision_tenant: tenant ${cid} did not reach status=active within ${timeout}s" >&2
+  return 1
+}
+
 psql_exec() {
   docker exec -i hosting-platform-k3s-server-1 kubectl exec -n platform system-db-1 -c postgres -- \
     psql -U postgres -d platform -tA -c "$1"
@@ -171,6 +189,7 @@ EOF
 cust_resp=$(api POST "/api/v1/tenants" "$create_body")
 CUSTOMER_TENANT_ID=$(echo "$cust_resp" | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
 [ -n "$CUSTOMER_TENANT_ID" ] && pass "customer fixture created: $CUSTOMER_TENANT_ID" || fail "customer create failed: $cust_resp"
+[ -n "$CUSTOMER_TENANT_ID" ] && { provision_tenant "$CUSTOMER_TENANT_ID" || fail "customer fixture provisioning failed"; }
 
 bulk_body=$(cat <<EOF
 {"tenant_ids":["$SYSTEM_TENANT_ID","$CUSTOMER_TENANT_ID"]}
@@ -197,6 +216,7 @@ else
     cust_resp=$(api POST "/api/v1/tenants" "$create_body")
     CUSTOMER_TENANT_ID=$(echo "$cust_resp" | grep -oE '"id":"[^"]+"' | head -1 | sed 's/"id":"//;s/"$//')
     note "re-created customer fixture: $CUSTOMER_TENANT_ID"
+    [ -n "$CUSTOMER_TENANT_ID" ] && { provision_tenant "$CUSTOMER_TENANT_ID" || fail "re-created customer fixture provisioning failed"; }
   fi
 
   status=$(status_of POST "/api/v1/tenants/$CUSTOMER_TENANT_ID/domains" \
