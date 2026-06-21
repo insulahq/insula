@@ -59,6 +59,11 @@ vi.mock('../login-passwords/service.js', () => ({
   issueLoginPasswordForPrincipal: vi.fn().mockResolvedValue(null),
 }));
 
+// Mock getTenantById (used by the assertTenantActive guard). Default: active.
+vi.mock('../tenants/service.js', () => ({
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', status: 'active' }),
+}));
+
 // Track select call results per test
 let selectResults: unknown[][];
 let selectCallIndex: number;

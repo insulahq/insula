@@ -32,6 +32,7 @@ function rethrowAsApiErrorIfBudget(err: unknown): never {
 }
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getTenantById } from '../tenants/service.js';
+import { assertTenantActive } from '../tenants/guards.js';
 import { getSettings as getSystemSettings } from '../system-settings/service.js';
 import {
   deployCatalogEntry,
@@ -374,6 +375,7 @@ export async function createDeployment(
   k8s?: K8sClients,
 ) {
   const tenant = await getTenantById(db, tenantId);
+  assertTenantActive(tenant, 'deploy workloads');
 
   // Look up catalog entry
   const [entry] = await db

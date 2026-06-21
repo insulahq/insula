@@ -154,7 +154,18 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
     }
   };
 
-  const handleProceedToProvisioning = () => {
+  // Provisioning is no longer auto-triggered on create — the tenant is
+  // created `pending` + unprovisioned. "Provision Now" explicitly triggers
+  // provisioning (which activates the tenant on completion) and advances to
+  // the progress modal. The progress modal's onRetry re-triggers if the
+  // initial trigger failed.
+  const handleProvisionNow = async () => {
+    if (!createdTenant) return;
+    try {
+      await triggerProvisioning.mutateAsync({ tenantId: createdTenant.id });
+    } catch {
+      // surfaced via the progress modal poll + retry
+    }
     setView('provisioning');
   };
 
@@ -253,14 +264,28 @@ export default function CreateTenantModal({ open, onClose }: CreateTenantModalPr
                 {copied ? 'Copied!' : 'Copy Credentials'}
               </button>
             </div>
-            <div className="flex justify-end">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              This tenant is <span className="font-medium">not provisioned yet</span> — it cannot deploy
+              workloads, configure domains, or set up email until you provision it. Provisioning activates
+              the tenant automatically.
+            </p>
+            <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={handleProceedToProvisioning}
-                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600"
-                data-testid="close-credentials"
+                onClick={handleClose}
+                className="rounded-lg border border-gray-300 dark:border-gray-600 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                data-testid="provision-later"
               >
-                Continue
+                Provision Later
+              </button>
+              <button
+                type="button"
+                onClick={handleProvisionNow}
+                disabled={triggerProvisioning.isPending}
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-60"
+                data-testid="provision-now"
+              >
+                {triggerProvisioning.isPending ? 'Provisioning…' : 'Provision Now'}
               </button>
             </div>
           </div>

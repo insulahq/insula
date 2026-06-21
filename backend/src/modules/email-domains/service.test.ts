@@ -15,6 +15,11 @@ vi.mock('../oidc/crypto.js', () => ({
   encrypt: (plaintext: string, _key: string) => `encrypted:${plaintext.slice(0, 10)}`,
 }));
 
+// Mock getTenantById (used by the assertTenantActive guard). Default: active.
+vi.mock('../tenants/service.js', () => ({
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', status: 'active' }),
+}));
+
 // Mock DNS provisioning
 vi.mock('./dns-provisioning.js', () => ({
   provisionEmailDns: vi.fn().mockResolvedValue(undefined),

@@ -23,8 +23,6 @@ import { success, paginated } from '../../shared/response.js';
 import { parsePaginationParams } from '../../shared/pagination.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
-import { provisioningTasks } from '../../db/schema.js';
-import { runProvisionNamespace, PROVISION_STEPS, buildStepsLog } from '../k8s-provisioner/service.js';
 
 export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   // Lazy-init K8s tenants (undefined if no kubeconfig available)
@@ -204,37 +202,16 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     const result = await service.createTenant(app.db, parsed.data, request.user.sub);
     const { _generatedPassword, _clientUserId, ...tenant } = result;
 
-    // Auto-provision: trigger namespace provisioning in the background
-    try {
-      const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-      const k8sTenants = createK8sClients(kubeconfigPath);
-      if (k8sTenants) {
-        const taskId = crypto.randomUUID();
-        await app.db.insert(provisioningTasks).values({
-          id: taskId,
-          tenantId: tenant.id,
-          type: 'provision_namespace',
-          status: 'pending',
-          totalSteps: PROVISION_STEPS.length,
-          completedSteps: 0,
-          stepsLog: buildStepsLog(PROVISION_STEPS),
-          startedBy: request.user!.sub,
-        });
-        // Mirror to chip immediately so the operator sees a "running"
-        // task right after clicking Create — without this, the chip
-        // only lights up once `runProvisionNamespace` updates state to
-        // 'running' which is several seconds later. Best-effort.
-        const { mirrorProvisioningToTaskTracker } = await import('../k8s-provisioner/service.js');
-        await mirrorProvisioningToTaskTracker(app.db, taskId).catch((err) => {
-          app.log.warn({ err, taskId }, 'task tracker enroll failed (non-fatal)');
-        });
-        runProvisionNamespace(app.db, k8sTenants, taskId, tenant.id, {}).catch((err) => {
-          app.log.error({ err, taskId, tenantId: tenant.id }, 'Auto-provisioning failed');
-        });
-      }
-    } catch {
-      // K8s not available — skip auto-provisioning
-    }
+    // NO auto-provision. A freshly-created tenant is `status:'pending'` +
+    // `provisioningStatus:'unprovisioned'`: registered but not yet provisioned.
+    // Provisioning is an explicit step (POST /admin/tenants/:id/provision, or
+    // the "Provision Now" button in the create-success modal / tenant detail
+    // page) and, on completion, flips the tenant to `status:'active'` (see
+    // k8s-provisioner/service.ts). Until then the tenant cannot deploy
+    // workloads, configure domains/ingress, or set up email — those paths are
+    // gated by assertTenantActive (tenants/guards.ts). This supports the
+    // future self-service sign-up model where a client registers and waits for
+    // an admin to provision + activate.
     reply.status(201).send(success({
       ...tenant,
       tenantUser: {

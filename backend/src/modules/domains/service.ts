@@ -4,6 +4,7 @@ import { domainNotFound, duplicateEntry } from '../../shared/errors.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getTenantById } from '../tenants/service.js';
+import { assertTenantActive } from '../tenants/guards.js';
 import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
 import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
 import { reconcileIngress } from './k8s-ingress.js';
@@ -140,6 +141,7 @@ import type { DomainDeletePreview } from '@insula/api-contracts';
 export async function createDomain(db: Database, tenantId: string, input: CreateDomainInput & { master_ip?: string; dns_group_id?: string }, k8s?: K8sClients) {
   // Verify tenant exists
   const tenant = await getTenantById(db, tenantId);
+  assertTenantActive(tenant, 'configure domains');
 
   // Secondary DNS mode requires master_ip
   if (input.dns_mode === 'secondary' && !input.master_ip) {
