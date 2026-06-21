@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Tenant provision-on-activate model.** `POST /tenants` now creates a tenant `pending` +
+  unprovisioned (no auto-provision); provisioning is explicit (admin "Provision Now" or
+  `POST /admin/tenants/:id/provision`) and flips the tenant to `active` on completion. Non-active
+  tenants are blocked from deploying workloads, configuring domains/ingress, and setting up email
+  domains/mailboxes with a clear `TENANT_NOT_ACTIVE` (409). Fixes tenants stuck `pending` forever and
+  the downstream `452 4.3.1 mail system full` their mailboxes hit. Admin UI: "Provision Now" in the
+  create-success dialog + a not-provisioned warning banner on the tenant detail page.
+
+### Security
+- **Upgraded k3s v1.33.10 → v1.35.5+k3s1** (Kubernetes stable channel) to cut base-OS CVEs in the
+  kube image stack. Rolled minor-by-minor (1.33 → 1.34.8 → 1.35.5) via system-upgrade-controller on
+  the staging HA cluster; smoke 35/0, all nodes Ready, CoreDNS healthy after each minor.
+  > **Upgrading existing clusters:** k3s is SEQUENTIAL — step ONE minor at a time
+  > (`platform-ops cluster upgrade --version <next-minor> --apply`, validating between). The plan
+  > generator and auto-update both refuse skip-a-minor; do not jump multiple minors in one step.
+
 ## [2026.6.14] - 2026-06-20
 
 ### Security
