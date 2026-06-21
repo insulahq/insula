@@ -395,6 +395,37 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
     probe_banner_host "$MAIL_HOST" "$MAIL_PORT_SUBMISSION" "Submission" "220"
     probe_banner_host "$MAIL_HOST" "$MAIL_PORT_IMAP"       "IMAP"       "* OK"
   fi
+
+  # ─── Mail DELIVERY gate (real cluster) ──────────────────────────────────
+  # CRITICAL (2026-06-21): the banner/TCP probes above are LIVENESS only — a
+  # listener answering "220" passes them even when the server REJECTS the
+  # message at DATA with "452 4.3.1 Mail system full". That exact regression
+  # (Stalwart v0.16.9) shipped in v2026.6.14 undetected because nothing in
+  # CI / release / this smoke checked actual delivery — only port liveness.
+  # This probe does an authenticated SMTPS send to self + IMAPS retrieve and
+  # FAILS on a 4xx/5xx delivery reject, so a mail-delivery regression turns
+  # the post-deploy smoke red. Runs when an operator-provided test mailbox is
+  # available (MAIL_E2E_USER + MAIL_E2E_PASS); skips with a loud notice
+  # otherwise so the gate's absence is never silent.
+  if [[ -n "${MAIL_E2E_USER:-}" && -n "${MAIL_E2E_PASS:-}" ]]; then
+    DELIV=$(MAIL_HOST="$MAIL_HOST" U="$MAIL_E2E_USER" P="$MAIL_E2E_PASS" bash -c '
+      tmp=$(mktemp); trap "rm -f $tmp" EXIT
+      printf "From: %s\r\nTo: %s\r\nSubject: smoke-delivery %s\r\n\r\nbody\r\n" "$U" "$U" "$(date +%s)" > "$tmp"
+      send=$(curl -sS -k --max-time 25 --url "smtps://${MAIL_HOST}:465" \
+        --mail-from "$U" --mail-rcpt "$U" --user "$U:$P" --upload-file "$tmp" 2>&1); rc=$?
+      if [ $rc -ne 0 ]; then echo "SEND_REJECT rc=$rc ${send}"; exit 0; fi
+      sleep 2
+      box=$(curl -sS -k --max-time 25 --url "imaps://${MAIL_HOST}:993/INBOX" --user "$U:$P" 2>&1)
+      echo "$box" | grep -qiE "EXISTS|LIST .*INBOX" && echo "DELIVER_OK" || echo "RECV_FAIL ${box}"
+    ' 2>&1)
+    if [[ "$DELIV" == DELIVER_OK* ]]; then
+      pass "Mail DELIVERY E2E (SMTPS send + IMAPS receive, user: $MAIL_E2E_USER)"
+    else
+      fail "Mail DELIVERY E2E (SMTPS send + IMAPS receive)" "${DELIV:0:300}"
+    fi
+  else
+    echo "  ⊘ Mail DELIVERY gate skipped — set MAIL_E2E_USER + MAIL_E2E_PASS (a real test mailbox) to assert actual send/receive. Banner probes above are LIVENESS only and do NOT catch a 452 'mail system full' delivery reject."
+  fi
 fi
 
 # ─── Mail Server E2E (opt-in via MAIL_E2E=1 / MAIL_E2E_SQL=1) ────────────────
