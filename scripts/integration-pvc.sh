@@ -57,6 +57,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 # Count tenant-capable nodes via the admin API. Same source of truth as
 # integration-tier-flip-e2e.sh ("need >=3 tenant nodes"). The HA tier-flip
 # scenario below needs >=3 so Longhorn can place 2 replicas; below that the
@@ -123,6 +126,10 @@ COMPANY="PVC Test L $STAMP"
 RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-l-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && { ok "client created cid=$CID"; track_cid "$CID"; } || { fail "create failed: $RESP"; exit 1; }
+
+# Tenants are created pending+unprovisioned (no auto-provision) — provision
+# + wait for status=active before the namespace/PVC exist.
+provision_tenant "$CID" || { fail "pvc/local: client provisioning failed"; exit 1; }
 
 # Wait for provisioning to settle (PVC bound, Volume CR present).
 NS=""
@@ -211,6 +218,10 @@ COMPANY="PVC Race $STAMP"
 RESP=$(api POST "/tenants" "{\"name\":\"$COMPANY\",\"primary_email\":\"pvc-race-$STAMP@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"storage_tier\":\"local\"}")
 CID2=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID2" ]] && { ok "race client created cid=$CID2"; track_cid "$CID2"; } || { fail "race create failed"; exit 1; }
+
+# Tenants are created pending+unprovisioned (no auto-provision) — provision
+# + wait for status=active before the namespace/PVC exist.
+provision_tenant "$CID2" || { fail "pvc/race: client provisioning failed"; exit 1; }
 
 # Capture the namespace immediately so we can identify the PV later.
 NS2=""

@@ -242,7 +242,24 @@ else
     }
     trap cleanup_client EXIT
 
-    run_panel_suite "tenant" "$TENANT_HOST" "$TENANT_USER_EMAIL" "$TENANT_USER_PWD"
+    # Tenants are created pending+unprovisioned (no auto-provision). Explicitly
+    # provision and wait for status=active before exercising the tenant panel.
+    curl -sk -X POST "$ADMIN_HOST/api/v1/admin/tenants/$CID/provision" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}' >/dev/null 2>&1 || true
+    prov_ok=0
+    for _ in $(seq 1 45); do
+      if curl -sk "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $ADMIN_TOKEN" \
+           | grep -q '"status":"active"'; then
+        prov_ok=1; break
+      fi
+      sleep 4
+    done
+    if [[ "$prov_ok" -eq 1 ]]; then
+      ok "tenant provisioned (status=active)"
+      run_panel_suite "tenant" "$TENANT_HOST" "$TENANT_USER_EMAIL" "$TENANT_USER_PWD"
+    else
+      fail "tenant $CID did not reach status=active within 180s; skipping tenant-panel checks"
+    fi
   else
     fail "client provisioning failed for passkey suite; skipping tenant-panel checks. body: $(echo "$CREATE_RESP" | head -c 300)"
   fi

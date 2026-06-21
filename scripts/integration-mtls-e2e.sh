@@ -121,6 +121,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 api_status() {
   local method="$1" path="$2" body="${3:-}"
   if [[ -z "$body" ]]; then
@@ -176,6 +179,10 @@ scenario_1_bootstrap() {
     }')")
   TENANT_ID=$(jq -r '.data.id // empty' <<<"$resp")
   [[ -n "$TENANT_ID" ]] && ok "client $TENANT_ID" || { fail "client create: $resp"; return; }
+
+  # Tenants are created pending+unprovisioned (no auto-provision) — provision
+  # + wait for status=active before any ingress-route / mTLS op.
+  provision_tenant "$TENANT_ID" || { fail "mtls: client provisioning failed"; api DELETE "/tenants/$TENANT_ID" >/dev/null 2>&1 || true; return; }
 
   resp=$(api POST "/tenants/$TENANT_ID/ingress-routes" "$(jq -nc --arg h "$hostname" '{
     hostname:$h, path:"/", targetServiceName:"echo", targetServicePort:8080

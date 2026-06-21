@@ -93,13 +93,12 @@ CLIENT_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/tenants" \
   -H 'Content-Type: application/json' \
   -d "{\"name\":\"$TENANT_NAME\",\"primary_email\":\"$TENANT_NAME@example.test\",\"plan_id\":\"$PLAN_ID\",\"region_id\":\"$REGION_ID\",\"cpu_limit_override\":2,\"memory_limit_override\":4}")
 TENANT_ID=$(echo "$CLIENT_RESP" | jq -r '.data.id')
-NAMESPACE=$(echo "$CLIENT_RESP" | jq -r '.data.kubernetesNamespace')
 
 if [[ -z "$TENANT_ID" || "$TENANT_ID" == "null" ]]; then
   echo "ERROR: client create failed: $CLIENT_RESP" >&2
   exit 1
 fi
-echo "  Client ID: $TENANT_ID, namespace: $NAMESPACE"
+echo "  Client ID: $TENANT_ID"
 
 cleanup() {
   if [[ -n "$TENANT_ID" && "$TENANT_ID" != "null" ]]; then
@@ -109,6 +108,30 @@ cleanup() {
   fi
 }
 trap cleanup EXIT
+
+# Tenants are created pending+unprovisioned (no auto-provision). Explicitly
+# provision and wait for status=active before any tenant-scoped op — this also
+# brings up the namespace + ResourceQuota the assertions below depend on.
+echo "→ Provisioning tenant (waiting for status=active)..."
+curl -sk -X POST "$ADMIN_HOST/api/v1/admin/tenants/$TENANT_ID/provision" \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true
+PROV_OK=0
+for i in $(seq 1 45); do
+  if curl -sk "$ADMIN_HOST/api/v1/tenants/$TENANT_ID" -H "Authorization: Bearer $TOKEN" \
+       | grep -q '"status":"active"'; then
+    PROV_OK=1; break
+  fi
+  sleep 4
+done
+if [[ "$PROV_OK" -ne 1 ]]; then
+  echo "ERROR: tenant $TENANT_ID did not reach status=active within 180s" >&2
+  exit 1
+fi
+
+# Re-read the namespace now that provisioning has created it.
+NAMESPACE=$(curl -sk "$ADMIN_HOST/api/v1/tenants/$TENANT_ID" \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.data.kubernetesNamespace')
+echo "  namespace: $NAMESPACE"
 
 # Wait for namespace to be ready
 echo "→ Waiting for namespace to be ready..."

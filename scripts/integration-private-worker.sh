@@ -46,6 +46,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/private-worker-helpers.sh
 source "$SCRIPT_DIR/lib/private-worker-helpers.sh"
+# shellcheck source=scripts/lib/integration-env.sh
+source "$SCRIPT_DIR/lib/integration-env.sh"
 
 # ─── config ───────────────────────────────────────────────────────────
 
@@ -179,13 +181,13 @@ phase1_provision() {
   ok "client created cid=$cid"
   echo "$cid" > "$STATE_CID"
 
-  # Wait for the namespace to exist before polling provisioningStatus —
-  # without this the /tenants/:id call may race the orchestrator.
+  # Tenants are created pending+unprovisioned (no auto-provision) — provision
+  # + wait for status=active before any tenant-scoped op.
+  provision_tenant "$cid" || { fail "private-worker: client provisioning failed"; return 1; }
+
+  # Namespace only exists once provisioning ran — assert it from the cluster.
   wait_for 90 "namespace exists for cid=$cid" "Active" \
     "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers 2>/dev/null'" || return 1
-
-  wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/tenants/$cid'" || return 1
 
   # Resolve the K8s namespace via label (the API returns
   # `kubernetesNamespace` directly, but we use the cluster as

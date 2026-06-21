@@ -106,6 +106,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 # ─── Cleanup trap — uncordon node + delete tenants no matter what ────
 cleanup() {
   log "── cleanup ──"
@@ -288,13 +291,9 @@ provision_on_worker() {
   cid=$(echo "$resp" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null) \
     || { echo "create failed: $resp" >&2; return 1; }
 
-  for _ in $(seq 1 90); do
-    local status
-    status=$(api GET "/tenants/$cid" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus') or '')" 2>/dev/null)
-    [[ "$status" == "provisioned" ]] && break
-    sleep 2
-  done
-  [[ "$status" == "provisioned" ]] || { echo "stuck at $status" >&2; return 1; }
+  # Tenants are created pending+unprovisioned — provision + wait for active
+  # before deploy / files-start.
+  provision_tenant "$cid" || { echo "drain: client provisioning failed" >&2; return 1; }
 
   local depl_name="t$(date +%s%N | tail -c 9)"
   api POST "/tenants/$cid/deployments" "{\"catalog_entry_id\":\"$CATALOG_NGINX_PHP\",\"name\":\"$depl_name\",\"replica_count\":1}" >/dev/null

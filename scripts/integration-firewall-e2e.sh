@@ -47,6 +47,9 @@ api() {
   fi
 }
 
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
+
 api_status() {
   local method="$1" path="$2" body="${3:-}"
   if [[ -z "$body" ]]; then
@@ -143,23 +146,12 @@ RESP=$(api POST "/tenants" "{\"name\":\"Firewall E2E $STAMP\",\"primary_email\":
 CID=$(echo "$RESP" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
 [[ -n "$CID" ]] && ok "client created cid=$CID" || { fail "create failed: $RESP"; exit 1; }
 
-# Wait for namespace+RBAC+PVC provisioning. clients.status is the
-# *lifecycle* (pending|active|suspended|…) and stays at pending until an
-# admin explicitly activates the tenant — provisioningStatus is the
-# infra-side flag that flips to 'provisioned' once runProvisionNamespace
-# finishes. For a firewall-deploy E2E we just need the namespace + worker
-# pin, so wait on provisioningStatus, not status.
-log "── waiting for provisioningStatus=provisioned (≤5min) ──"
-for i in $(seq 1 150); do
-  PSTATUS=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('provisioningStatus',''))" 2>/dev/null)
-  [[ "$PSTATUS" == "provisioned" ]] && break
-  if [[ "$PSTATUS" == "failed" ]]; then
-    fail "provisioningStatus=failed — see backend logs"; exit 1
-  fi
-  if (( i % 15 == 0 )); then log "  …provisioningStatus=$PSTATUS (${i}×2s)"; fi
-  sleep 2
-done
-[[ "$PSTATUS" == "provisioned" ]] && ok "namespace provisioned" || { fail "client never reached provisioned (provisioningStatus=$PSTATUS)"; exit 1; }
+# Tenants are created pending+unprovisioned (no auto-provision). Explicitly
+# provision and wait for status=active before any tenant-scoped op — this
+# also brings up the namespace + RBAC + PVC + worker pin we need below.
+log "── provisioning client (≤5min) ──"
+provision_tenant "$CID" || { fail "firewall: client provisioning failed"; exit 1; }
+ok "namespace provisioned"
 
 NAMESPACE=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('kubernetesNamespace',''))" 2>/dev/null)
 WORKER_NODE=$(api GET "/tenants/$CID" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'].get('workerNodeName',''))" 2>/dev/null)

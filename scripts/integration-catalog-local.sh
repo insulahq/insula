@@ -76,6 +76,8 @@ source "${LIB_DIR}/api.sh"
 source "${LIB_DIR}/probe.sh"
 # shellcheck source=catalog-tests/lib/cleanup.sh
 source "${LIB_DIR}/cleanup.sh"
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
 # ─── safety net: track every tenant we create so the EXIT trap can ──
 # tear them down even when SIGINT / set -e interrupts the run between
@@ -261,9 +263,9 @@ print(plans[0].get('id', '') if plans else '')
   info "tenant_id=${tenant_id}"
   track_created_tenant "$tenant_id"
 
-  # Wait for client provision
-  if ! wait_for 180 "client provisioned" '"provisioningStatus":"provisioned"' \
-       "api GET '/tenants/${tenant_id}'"; then
+  # Tenants are created pending+unprovisioned — explicitly provision and
+  # wait for status=active before any tenant-scoped op.
+  if ! provision_tenant "$tenant_id"; then
     fail "client never provisioned"
     local ev; ev=$(capture_evidence "$code" "client-${tenant_id}" "$EVIDENCE_DIR" 2>/dev/null || echo "-")
     [[ "$KEEP_ON_FAIL" == false ]] && tear_down_tenant "$tenant_id" ""
