@@ -57,7 +57,7 @@ components:
     name: k3s (Kubernetes distribution / kube-apiserver, kubelet, etcd, kube-proxy)
     tier: "0"
     kind: binary
-    pinned: "v1.33.10+k3s1"
+    pinned: "v1.35.5+k3s1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: k3s-io/k3s, advisories: kubernetes/kubernetes }
