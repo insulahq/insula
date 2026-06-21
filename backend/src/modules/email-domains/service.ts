@@ -6,6 +6,8 @@ import { getMailServerHostname, getDefaultWebmailEngine } from '../webmail-setti
 import { serviceNameForEngine } from '../webmail-router/reconciler.js';
 import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
+import { assertTenantActive } from '../tenants/guards.js';
+import { getTenantById } from '../tenants/service.js';
 
 const log = mailLogger().child({ module: 'email-domains' });
 // canManageDnsZone / getActiveServersForDomain are not imported here:
@@ -96,6 +98,8 @@ export async function enableEmailForDomain(
   input: EnableEmailDomainInput,
   encryptionKey: string,
 ) {
+  assertTenantActive(await getTenantById(db, tenantId), 'enable email for a domain');
+
   const domain = await verifyDomainOwnership(db, tenantId, domainId);
 
   // Idempotency: if the email_domains row already exists, return it —

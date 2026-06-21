@@ -104,3 +104,28 @@ require_or_skip() {
 redact() {
   sed -E 's#(://[^:/@]+:)[^@]+@#\1***@#g; s#([?&](password|token|key|secret|sig)=)[^&]+#\1***#gI'
 }
+
+# provision_tenant <cid> [timeout_seconds]
+#
+# Tenants are created `status:'pending'` + `provisioningStatus:'unprovisioned'`
+# with NO auto-provision. Provisioning is an explicit step that activates the
+# tenant on completion (status -> 'active'). Until active, a tenant cannot
+# deploy workloads, configure domains/ingress, or set up email — those are
+# gated by the backend (TENANT_NOT_ACTIVE). So every test that creates a tenant
+# must call this right after the create before doing anything else.
+#
+# Relies on the sourcing script defining `api METHOD PATH [BODY]` (the standard
+# integration helper). Triggers POST /admin/tenants/:id/provision and polls
+# GET /tenants/:id until status=active. Returns non-zero on timeout.
+provision_tenant() {
+  local cid="$1" timeout="${2:-180}" i=0
+  api POST "/admin/tenants/${cid}/provision" "{}" >/dev/null 2>&1 || true
+  while (( i < timeout )); do
+    case "$(api GET "/tenants/${cid}" 2>/dev/null)" in
+      *'"status":"active"'*) return 0 ;;
+    esac
+    sleep 4; i=$((i + 4))
+  done
+  echo "provision_tenant: tenant ${cid} did not reach status=active within ${timeout}s" >&2
+  return 1
+}

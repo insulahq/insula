@@ -14,6 +14,7 @@ import type { Database } from '../../db/index.js';
 import { deployments, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
+import { assertTenantActive } from '../tenants/guards.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
   validateCustomSpec,
@@ -700,12 +701,15 @@ async function loadTenantContext(db: Database, tenantId: string): Promise<Tenant
       kubernetesNamespace: tenants.kubernetesNamespace,
       nodeName: tenants.nodeName,
       storageTier: tenants.storageTier,
+      status: tenants.status,
     })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!tenant) {
     throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
   }
+  // Custom deployments create/update k8s resources — block non-active tenants.
+  assertTenantActive({ id: tenantId, status: tenant.status }, 'create custom deployments');
   return {
     namespace: tenant.kubernetesNamespace,
     nodeName: tenant.nodeName ?? null,

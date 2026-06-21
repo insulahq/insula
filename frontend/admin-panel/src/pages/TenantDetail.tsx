@@ -472,6 +472,45 @@ export default function TenantDetail() {
         </div>
       </div>
 
+      {/* Not-provisioned warning. A `pending` tenant is created but not yet
+          provisioned: it cannot deploy workloads, configure domains/ingress,
+          or set up email until provisioned. Provisioning activates it. */}
+      {!tenant.isSystem && tenant.status === 'pending' && (
+        <div
+          className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-200"
+          data-testid="not-provisioned-banner"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-medium">Tenant not provisioned yet</p>
+              <p className="mt-1 text-amber-800 dark:text-amber-300">
+                This tenant is <code>pending</code>. Until it is provisioned it cannot deploy
+                workloads, configure domains/ingress, or set up email domains and mailboxes.
+                Provisioning activates the tenant automatically.
+              </p>
+            </div>
+            {((tenant as Record<string, unknown>).provisioningStatus === 'unprovisioned'
+              || (tenant as Record<string, unknown>).provisioningStatus === 'failed') && (
+              <button
+                onClick={async () => {
+                  if (!id) return;
+                  try {
+                    await triggerProvision.mutateAsync({ tenantId: id });
+                    setProvisioningOpen(true);
+                  } catch { /* error shown via mutation state */ }
+                }}
+                disabled={triggerProvision.isPending}
+                className="shrink-0 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                data-testid="banner-provision-now"
+              >
+                {triggerProvision.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
+                Provision Now
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ADR-040: SYSTEM tenant banner. Explains why the destructive
           action buttons aren't shown and what this tenant is for. */}
       {tenant.isSystem && (

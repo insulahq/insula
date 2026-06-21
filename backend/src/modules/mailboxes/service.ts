@@ -16,6 +16,8 @@ import {
 } from '../stalwart-jmap/client.js';
 import type { Database } from '../../db/index.js';
 import { issueLoginPasswordForPrincipal } from '../login-passwords/service.js';
+import { assertTenantActive } from '../tenants/guards.js';
+import { getTenantById } from '../tenants/service.js';
 import type { CreateMailboxInput, UpdateMailboxInput, CreateMailboxResult } from '@insula/api-contracts';
 import type { FastifyInstance } from 'fastify';
 
@@ -127,6 +129,9 @@ export async function createMailbox(
   emailDomainId: string,
   input: CreateMailboxInput,
 ) {
+  // 0. Tenant must be active (provisioned) before mailboxes can be created.
+  assertTenantActive(await getTenantById(db, tenantId), 'create mailboxes');
+
   // 1. Verify emailDomain exists and belongs to tenant
   const [emailDomain] = await db
     .select()

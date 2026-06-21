@@ -939,6 +939,10 @@ scenario_lifecycle() {
   ok "client created cid=$cid"
   echo "$cid" > /tmp/integration.cid
 
+  # Tenants are created pending+unprovisioned (no auto-provision) — provision
+  # + wait for active before the namespace exists / any tenant-scoped op.
+  provision_tenant "$cid" || { fail "client provisioning failed"; return 1; }
+
   # Wait for namespace=Active first (orchestrator step 1).
   wait_for 90 "namespace provisioned" "Active" \
     "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers'" || return 1
@@ -1236,6 +1240,8 @@ scenario_reaper() {
   # observed 2026-05-04.
   echo "$cid" >> /tmp/integration.cids
 
+  provision_tenant "$cid" || { fail "reaper: client provisioning failed"; return 1; }
+
   wait_for 90 "reaper: namespace provisioned" "Active" \
     "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers'" || return 1
   wait_for 180 "reaper: client provisioned" '"provisioningStatus":"provisioned"' \
@@ -1350,8 +1356,7 @@ print(json.dumps(out))
   [[ -n "$cid" ]] || { fail "bundle: client create failed"; return 1; }
   ok "bundle: client created cid=$cid"
 
-  wait_for 120 "bundle: client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/tenants/$cid'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
+  provision_tenant "$cid" || { fail "bundle: client provisioning failed"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
   # Iterate each active target and run create + verify round-trip.
   local target_ids; target_ids=$(echo "$targets_json" | python3 -c "import json,sys;print(' '.join(t['id'] for t in json.load(sys.stdin)))")
@@ -1482,8 +1487,7 @@ for c in (items if isinstance(items, list) else []):
   local cid; cid=$(echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('id',''))" 2>/dev/null)
   [[ -n "$cid" ]] || { fail "restore: client create failed"; return 1; }
   ok "restore: client created cid=$cid"
-  wait_for 120 "restore: client provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/tenants/$cid'" || { api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
+  provision_tenant "$cid" || { fail "restore: client provisioning failed"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
   # Create a domain we can later delete + restore.
   local hostname="restore-${stamp}.${HTTPS_TEST_DOMAIN_BASE}"
@@ -2071,8 +2075,10 @@ scenario_mail() {
   _persist_mail_cid  # HIGH fix: SIGKILL-resilient cleanup
   ok "mail/client: created cid=$mail_cid"
 
-  wait_for 120 "mail/client: provisioned" '"provisioningStatus":"provisioned"' \
-    "api GET '/tenants/$mail_cid'" || { cleanup_mail; return 1; }
+  # Tenants are created pending+unprovisioned (no auto-provision) — provision
+  # + wait for active before any tenant-scoped op (domains/email/mailboxes).
+  provision_tenant "$mail_cid" || { fail "mail/client: provisioning failed"; cleanup_mail; return 1; }
+  ok "mail/client: provisioned + active"
 
   # ── Step 3: create test domain ──────────────────────────────────
   local test_domain="mail-e2e-${stamp}.${mail_domain_apex}"

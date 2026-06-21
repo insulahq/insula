@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { K8sClients } from './k8s-client.js';
 import type { ProvisioningStep } from '@insula/api-contracts';
 import { toSafeText } from '@insula/api-contracts';
@@ -1054,6 +1054,15 @@ export async function runProvisionNamespace(
     await db.update(tenants).set({
       provisioningStatus: 'provisioned',
     }).where(eq(tenants.id, tenantId));
+    // Provisioning IS activation: a freshly-provisioned tenant becomes
+    // 'active'. Conditional on status='pending' so we never resurrect a
+    // 'suspended'/'archived' tenant that happens to be re-provisioned, and
+    // an already-'active' re-provision is a no-op. (The 'pending' state is
+    // reserved for created-but-not-yet-provisioned tenants — see
+    // tenants/guards.ts:assertTenantActive and the gated create/deploy flows.)
+    await db.update(tenants).set({
+      status: 'active',
+    }).where(and(eq(tenants.id, tenantId), eq(tenants.status, 'pending')));
     await mirrorProvisioningToTaskTracker(db, taskId).catch((err) => {
       console.warn(`[k8s-provisioner] task tracker mirror failed for ${taskId}: ${err instanceof Error ? err.message : String(err)}`);
     });

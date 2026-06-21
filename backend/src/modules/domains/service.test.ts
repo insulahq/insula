@@ -50,7 +50,7 @@ vi.mock('../dns-servers/service.js', () => ({
 
 // We need to mock getTenantById which is imported by domains/service
 vi.mock('../tenants/service.js', () => ({
-  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', name: 'Acme' }),
+  getTenantById: vi.fn().mockResolvedValue({ id: 'c1', name: 'Acme', status: 'active' }),
 }));
 
 function createMockDb(selectResult: unknown[] = []) {
