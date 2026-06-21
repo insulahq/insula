@@ -4266,20 +4266,23 @@ install_flux() {
   # that took out staging image promotion 2026-05-04 → 2026-05-09.
   flux install --kubeconfig="$KUBECONFIG" --timeout=300s
 
-  # Determine which git ref Flux should watch.
-  #   dev      → branch main
-  #   staging  → branch development (W1 / ADR-045 Decision 13: the branch
-  #              formerly named `staging` — "staging" remains the CLUSTER
-  #              role name)
-  #   production → a PINNED RELEASE TAG, never a branch (ADR-045
-  #              Decision 10: the `stable` branch is retired; production
-  #              pulls signed releases — the W11 version-poller surfaces
-  #              newer ones and the W13 upgrade flow re-pins spec.ref.tag
-  #              on operator approval).
-  local flux_branch="main"
+  # Determine which git ref Flux should watch (ADR-053).
+  #   dev        → branch `development` — the UPSTREAM integration branch; the
+  #                DEV cluster auto-deploys every push to it (bleeding-edge).
+  #   staging    → a SEMVER TAG RANGE (`>=0.0.0-0`, RC + stable) — the
+  #                release-validation cluster auto-follows the newest tag every
+  #                manual `cut-release.sh [--prerelease]` produces.
+  #   production → a PINNED RELEASE TAG, never a branch (ADR-045 Decision 10:
+  #                production pulls signed releases — the W11 version-poller
+  #                surfaces newer ones and the W13 upgrade flow re-pins
+  #                spec.ref.tag on operator approval).
+  local flux_branch=""
   local flux_tag=""
-  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+  local flux_semver=""
+  if [[ "$PLATFORM_ENV" == "dev" ]]; then
     flux_branch="development"
+  elif [[ "$PLATFORM_ENV" == "staging" ]]; then
+    flux_semver=">=0.0.0-0"   # newest RC or stable; Masterminds semver needs the -0 to include prereleases
   elif [[ "$PLATFORM_ENV" == "production" ]]; then
     # Tag precedence: --release-tag override, else v<platform/VERSION>
     # of THIS checkout (Decision: first prod bootstrap lands on the
@@ -4313,11 +4316,14 @@ Cut it first (scripts/cut-release.sh) or pass an existing tag via --release-tag.
     source_name="hosting-platform-production"
   fi
 
-  # Overlay directory: tracks the BRANCH role, not the cluster role —
-  # staging-role clusters consume k8s/overlays/development/ (which the
-  # auto-pin pipeline rewrites on every main push).
+  # Overlay directory (ADR-053):
+  #   dev        → k8s/overlays/development (full config; build-deploy pins it
+  #                on the development branch)
+  #   staging    → k8s/overlays/staging (bases on production; inherits the
+  #                cut-release-stamped pins — tests exactly what prod will pull)
+  #   production → k8s/overlays/production
   local overlay_dir="$PLATFORM_ENV"
-  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+  if [[ "$PLATFORM_ENV" == "dev" ]]; then
     overlay_dir="development"
   fi
 
@@ -4326,6 +4332,15 @@ Cut it first (scripts/cut-release.sh) or pass an existing tag via --release-tag.
     flux create source git "$source_name" \
       --url="$REPO_URL" \
       --tag="$flux_tag" \
+      --interval=1m \
+      --kubeconfig="$KUBECONFIG"
+  elif [[ -n "$flux_semver" ]]; then
+    # Staging (ADR-053): track the highest tag matching the range — so each
+    # manual RC/stable cut rolls automatically (stable supersedes its own RCs).
+    log "Configuring Flux source and kustomization for ${PLATFORM_ENV} (tag-semver=${flux_semver}, source=${source_name})..."
+    flux create source git "$source_name" \
+      --url="$REPO_URL" \
+      --tag-semver="$flux_semver" \
       --interval=1m \
       --kubeconfig="$KUBECONFIG"
   else

@@ -1,3 +1,8 @@
+# Staging source (ADR-053): the release-validation cluster tracks release TAGS
+# via a semver RANGE — the highest tag matching `>=0.0.0-0` (RC + stable), so a
+# stable supersedes its own RCs. Each manual `cut-release.sh [--prerelease]`
+# rolls staging automatically. (bootstrap.sh `--env staging` sets this via
+# `flux create source git --tag-semver`.)
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
@@ -7,7 +12,7 @@ spec:
   interval: 1m
   url: https://github.com/insulahq/insula
   ref:
-    branch: development
+    semver: ">=0.0.0-0"
   # For private repos, uncomment and create the secret:
   # secretRef:
   #   name: flux-github-auth
