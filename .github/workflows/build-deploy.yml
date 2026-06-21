@@ -2,7 +2,7 @@ name: Build Images
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'backend/**'
       - 'frontend/admin-panel/**'
@@ -24,13 +24,12 @@ on:
       - 'k8s/**'
       - 'scripts/**'
       # Exclude the files that update-development-version itself rewrites.
-      # Without these `!` patterns the auto-pin commit (which only
-      # touches these three files) would re-trigger build-deploy →
-      # rebuild → new auto-pin → infinite loop. Previously prevented by
-      # `[skip ci]` in the auto-pin commit message, but that also skipped
-      # sync-development, leaving the pin stranded on main. With these path
-      # exclusions, the auto-pin commit no longer fires build-deploy and
-      # we can drop `[skip ci]`, so sync-development propagates the pin.
+      # Without these `!` patterns the auto-pin commit (which only touches
+      # these three files) could re-trigger build-deploy → rebuild → new
+      # auto-pin → infinite loop. (A GITHUB_TOKEN push already won't
+      # re-trigger a workflow, so this is belt-and-suspenders.) The pin is
+      # committed straight to `development`, which the DEV cluster's Flux
+      # tracks — no propagation step (ADR-053).
       - '!k8s/overlays/development/kustomization.yaml'
       - '!k8s/overlays/development/platform-version-patch.yaml'
       - '!k8s/overlays/development/deploy-rev-patch.yaml'
@@ -263,13 +262,12 @@ jobs:
   # the development overlay, so the backend's /api/v1/admin/platform/version
   # endpoint returns the real running version instead of "unknown".
   #
-  # Runs after images are pushed, only on main. Loop prevention is now
-  # the responsibility of the negative-path filter on the workflow's
-  # `on.push.paths` (the auto-pin commit only modifies the three
-  # development-overlay files, which are excluded). `[skip ci]` was removed
-  # from the commit message so sync-development propagates the pin onto
-  # the development branch — otherwise Flux keeps reconciling the previous
-  # image tag.
+  # Runs after images are pushed, on the `development` branch (ADR-053). Pins
+  # land directly on `development`, which the DEV cluster's Flux tracks — no
+  # cross-branch propagation. Loop prevention: the negative-path filter on
+  # `on.push.paths` (the auto-pin commit only touches the three excluded
+  # development-overlay files) plus the fact that a GITHUB_TOKEN push never
+  # re-triggers a workflow.
   update-development-version:
     name: Update development platform-version
     runs-on: ubuntu-latest
@@ -289,7 +287,7 @@ jobs:
       cancel-in-progress: false
     if: |
       always() &&
-      github.ref == 'refs/heads/main' &&
+      github.ref == 'refs/heads/development' &&
       !contains(github.event.head_commit.message, '[skip version]')
     permissions:
       contents: write
@@ -355,10 +353,10 @@ jobs:
               k8s/overlays/development/platform-version-patch.yaml \
               k8s/overlays/development/deploy-rev-patch.yaml \
               k8s/overlays/development/kustomization.yaml
-            # No [skip ci] — loop prevention is on the workflow's path
-            # filter (the auto-pin commit only touches the three excluded
-            # files). Dropping [skip ci] lets sync-development fire and
-            # propagate the pin to the development branch.
+            # No [skip ci] — loop prevention is the path filter (the auto-pin
+            # commit only touches the three excluded files) + the fact that a
+            # GITHUB_TOKEN push never re-triggers a workflow. The pin lands
+            # directly on `development`, which the DEV cluster's Flux tracks.
             git commit -m "chore(development): pin platform-version to ${VERSION}"
             return 0
           }
@@ -371,7 +369,7 @@ jobs:
           # race to a concurrent auto-pin job, we don't try to git-rebase
           # our commit onto the new HEAD (that would conflict on every
           # rewritten line — same base byte, two different new values).
-          # Instead: `git reset --hard origin/main`, re-run the pin
+          # Instead: `git reset --hard origin/development`, re-run the pin
           # script against the new HEAD, recommit, and retry the push.
           # The pin is idempotent, so this always converges.
           #
@@ -385,31 +383,29 @@ jobs:
           if [[ $had_changes -ne 0 ]]; then exit 0; fi
 
           for attempt in 1 2 3 4; do
-            git push origin HEAD:main
+            git push origin HEAD:development
             push_rc=$?
             if [[ $push_rc -eq 0 ]]; then
               echo "push succeeded on attempt $attempt"
               exit 0
             fi
-            echo "push attempt $attempt rejected (rc=$push_rc) — reset to origin/main + re-apply pin"
-            git fetch origin main
-            git reset --hard origin/main
+            echo "push attempt $attempt rejected (rc=$push_rc) — reset to origin/development + re-apply pin"
+            git fetch origin development
+            git reset --hard origin/development
             ./.github/scripts/apply-development-pin.sh
             stage_and_commit
             had_changes=$?
             if [[ $had_changes -ne 0 ]]; then
-              # After reset+reapply, our pin is already on origin/main
+              # After reset+reapply, our pin is already on origin/development
               # (another job landed an identical-content pin first, or
               # this commit's images are already pinned from a prior
               # workflow_dispatch). Either way, we're done.
-              echo "after reset+reapply the pin matches origin/main — nothing to push"
+              echo "after reset+reapply the pin matches origin/development — nothing to push"
               exit 0
             fi
           done
-          echo "::error::push failed after 4 attempts with reset-and-reapply — main is moving faster than we can land the auto-pin. Check for a build-deploy loop or a runaway pusher."
+          echo "::error::push failed after 4 attempts with reset-and-reapply — development is moving faster than we can land the auto-pin. Check for a build-deploy loop or a runaway pusher."
           exit 1
-          # main → development propagation is owned by sync-development.yml.
-          # That workflow does a real merge (not fast-forward) and fails
-          # loudly on conflict, so we don't silently drop infra-only
-          # commits anymore. The previous `git push origin HEAD:staging
-          # || true` here masked divergence — see project_cluster_resource_audit_2026_05_09.
+          # ADR-053: the pin lands directly on `development` (the DEV cluster's
+          # Flux source). There is no main→development propagation — code flows
+          # the other way (development → main via reviewed PR after DEV testing).

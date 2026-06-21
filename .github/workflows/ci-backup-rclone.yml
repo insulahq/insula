@@ -2,12 +2,12 @@ name: Backup-rclone CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'images/backup-rclone/**'
       - '.github/workflows/ci-backup-rclone.yml'
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'images/backup-rclone/**'
       - '.github/workflows/ci-backup-rclone.yml'
@@ -137,8 +137,8 @@ jobs:
           tags: |
             type=sha,prefix=
             type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
 
       - id: build_push
         uses: docker/build-push-action@v5
@@ -187,7 +187,7 @@ jobs:
 
       - id: tag
         name: Extract immutable timestamp tag (for the dev-overlay pin)
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
         env:
           ALL_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
@@ -202,7 +202,7 @@ jobs:
   pin:
     name: Pin dev image tag
     needs: build-push-sign
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build-push-sign.outputs.timestamp_tag != ''
+    if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request' && needs.build-push-sign.outputs.timestamp_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
