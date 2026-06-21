@@ -42,9 +42,67 @@ function isNewer(a: K3sVersion, b: K3sVersion): boolean {
   return b.k3s > a.k3s;
 }
 
+/**
+ * True if `version` is at least `atLeast` (major → minor → patch → k3s suffix).
+ * Returns false if either string is unparseable. Used to detect when a node has
+ * reached a target during a rollout wait.
+ */
+export function k3sVersionAtLeast(version: string, atLeast: string): boolean {
+  const v = parseK3sVersion(version);
+  const a = parseK3sVersion(atLeast);
+  if (!v || !a) return false;
+  if (v.major !== a.major) return v.major > a.major;
+  if (v.minor !== a.minor) return v.minor > a.minor;
+  if (v.patch !== a.patch) return v.patch > a.patch;
+  return v.k3s >= a.k3s;
+}
+
 export type PlanGenResult =
   | { readonly ok: false; readonly reason: string }
   | { readonly ok: true; readonly target: string; readonly plans: readonly Record<string, unknown>[] };
+
+/** One minor hop on the way from current → target. `isFinal` carries the exact requested target. */
+export interface UpgradeStep {
+  readonly major: number;
+  readonly minor: number;
+  readonly isFinal: boolean;
+}
+
+export type UpgradePathResult =
+  | { readonly ok: false; readonly reason: string }
+  | { readonly ok: true; readonly steps: readonly UpgradeStep[] };
+
+/**
+ * Plan the ordered, single-minor steps to get from `current` → `target`.
+ *
+ * k3s (like upstream k8s) forbids skipping a minor, so a multi-minor target is
+ * SPLIT into N serial hops — `[current.minor+1, … , target.minor]` — each of
+ * which the caller resolves to a concrete patch and feeds to `buildK3sUpgradePlans`
+ * (which re-validates the single-minor invariant per hop, defence in depth). A
+ * same-minor patch bump yields a single final step. Refuses cross-major /
+ * downgrade / no-op up front (the per-hop generator refuses them again).
+ *
+ * This is the implemented half of ADR-045 decision 21 ("pre-flight splits a
+ * multi-hop k3s upgrade into N serial SUC Plans") — pure, no I/O.
+ */
+export function planK3sUpgradePath(target: string, current: string): UpgradePathResult {
+  const t = parseK3sVersion(target);
+  if (!t) return { ok: false, reason: `target version ${JSON.stringify(target)} is not a valid k3s version (want vX.Y.Z+k3sN)` };
+  const c = parseK3sVersion(current);
+  if (!c) return { ok: false, reason: `current cluster version ${JSON.stringify(current)} is not a valid k3s version (want vX.Y.Z+k3sN)` };
+
+  if (t.major !== c.major) return { ok: false, reason: `refusing cross-major upgrade ${c.raw} → ${t.raw}` };
+  if (t.minor < c.minor || (t.minor === c.minor && !isNewer(c, t))) {
+    return { ok: false, reason: `refusing downgrade / no-op ${c.raw} → ${t.raw}` };
+  }
+
+  const steps: UpgradeStep[] = [];
+  for (let m = c.minor + 1; m < t.minor; m++) {
+    steps.push({ major: t.major, minor: m, isFinal: false });
+  }
+  steps.push({ major: t.major, minor: t.minor, isFinal: true });
+  return { ok: true, steps };
+}
 
 const SUC_NAMESPACE = 'system-upgrade';
 const UPGRADE_IMAGE = 'rancher/k3s-upgrade';

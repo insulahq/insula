@@ -52,6 +52,8 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     clusterUpgrade: {
       readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
       applyPlans: vi.fn(async (plans: readonly Record<string, unknown>[]) => ({ applied: plans.map((p) => (p as { metadata: { name: string } }).metadata.name) })),
+      resolveMinorVersion: vi.fn(async (major: number, minor: number) => `v${major}.${minor}.9+k3s1`),
+      waitForRollout: vi.fn(async () => ({ ok: true as const })),
     },
     node: { cordon: vi.fn(async () => {}) },
     upgrade: { run: vi.fn(async () => ({ ok: true, action: 'none', target: null, reason: 'up to date', proceed: false, applied: false, gitRepository: null, summary: 'up to date' })) },
@@ -602,7 +604,7 @@ describe('clusterUpgrade', () => {
     expect(out.join('\n')).toMatch(/applied 2 Plan/);
   });
 
-  it('REFUSES skip-a-minor (reads cluster current) → exit 1, no apply', async () => {
+  it('multi-minor target without auto-step deps → exit 1 (unavailable in this build), no apply', async () => {
     const applyPlans = vi.fn(async () => ({ applied: [] }));
     const { deps, err } = fakeDeps({ clusterUpgrade: {
       readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.31.5+k3s1' }]),
@@ -610,19 +612,71 @@ describe('clusterUpgrade', () => {
     } });
     expect(await clusterUpgrade(['--version', 'v1.33.0+k3s1', '--apply'], deps)).toBe(1);
     expect(applyPlans).not.toHaveBeenCalled();
-    expect(err.join('\n')).toMatch(/REFUSED.*skip-a-minor/);
+    expect(err.join('\n')).toMatch(/multi-minor auto-step is unavailable/);
+  });
+
+  it('auto-steps a multi-minor target through serial single-minor hops (--apply)', async () => {
+    const order: string[] = [];
+    const applyPlans = vi.fn(async (plans: readonly Record<string, unknown>[]) => {
+      const v = (plans[0] as any).spec.version as string;
+      order.push(`apply:${v}`);
+      return { applied: plans.map((p) => (p as any).metadata.name) };
+    });
+    const waitForRollout = vi.fn(async (v: string) => { order.push(`wait:${v}`); return { ok: true as const }; });
+    const resolveMinorVersion = vi.fn(async (maj: number, min: number) => `v${maj}.${min}.7+k3s1`);
+    const { deps, out } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.33.10+k3s1' }]),
+      applyPlans, waitForRollout, resolveMinorVersion,
+    } });
+    // 1.33 → 1.35 = two hops: resolve 1.34 (intermediate) then the exact 1.35 target
+    expect(await clusterUpgrade(['--version', 'v1.35.5+k3s1', '--apply'], deps)).toBe(0);
+    expect(resolveMinorVersion).toHaveBeenCalledWith(1, 34);
+    // hop1 applied → wait for it → hop2 applied; NO wait after the final hop
+    expect(order).toEqual(['apply:v1.34.7+k3s1', 'wait:v1.34.7+k3s1', 'apply:v1.35.5+k3s1']);
+    expect(out.join('\n')).toMatch(/hop 1\/2/);
+    expect(out.join('\n')).toMatch(/2 hops applied/);
+  });
+
+  it('aborts the chain if an intermediate hop does not roll out (exit 1, later hops skipped)', async () => {
+    const order: string[] = [];
+    const applyPlans = vi.fn(async (plans: readonly Record<string, unknown>[]) => { order.push(`apply:${(plans[0] as any).spec.version}`); return { applied: ['p'] }; });
+    const waitForRollout = vi.fn(async () => ({ ok: false as const, reason: 'timeout' }));
+    const { deps, err } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.33.10+k3s1' }]),
+      applyPlans, waitForRollout,
+      resolveMinorVersion: vi.fn(async (maj: number, min: number) => `v${maj}.${min}.7+k3s1`),
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.35.5+k3s1', '--apply'], deps)).toBe(1);
+    expect(order).toEqual(['apply:v1.34.7+k3s1']); // chain aborted after the failed wait
+    expect(err.join('\n')).toMatch(/did not roll out/);
+  });
+
+  it('dry-run multi-minor prints the serial hop sequence, applies nothing', async () => {
+    const applyPlans = vi.fn(async () => ({ applied: [] }));
+    const { deps, out } = fakeDeps({ clusterUpgrade: {
+      readNodeVersions: vi.fn(async () => [{ name: 'n1', role: 'server' as const, kubeletVersion: 'v1.33.10+k3s1' }]),
+      applyPlans,
+      resolveMinorVersion: vi.fn(async (maj: number, min: number) => `v${maj}.${min}.7+k3s1`),
+      waitForRollout: vi.fn(async () => ({ ok: true as const })),
+    } });
+    expect(await clusterUpgrade(['--version', 'v1.35.5+k3s1'], deps)).toBe(0);
+    expect(applyPlans).not.toHaveBeenCalled();
+    expect(out.join('\n')).toMatch(/multi-minor k3s upgrade.*2 serial hops/);
+    expect(out.join('\n')).toMatch(/v1\.34\.7\+k3s1 → v1\.35\.5\+k3s1/);
   });
 
   it('uses the lowest node version as the cluster floor', async () => {
+    // floor must be 1.31.4 (the lower of the two): a 1.32.0 target is then a valid
+    // single-minor step (exit 0). If the floor were wrongly read as 1.32.0, the
+    // 1.32.0 → 1.32.0 no-op would be refused (exit 1).
     const { deps } = fakeDeps({ clusterUpgrade: {
-      // floor is 1.31.4; a jump to 1.33 must be refused as skip-a-minor
       readNodeVersions: vi.fn(async () => [
         { name: 's', role: 'server' as const, kubeletVersion: 'v1.32.0+k3s1' },
         { name: 'a', role: 'agent' as const, kubeletVersion: 'v1.31.4+k3s1' },
       ]),
       applyPlans: vi.fn(async () => ({ applied: [] })),
     } });
-    expect(await clusterUpgrade(['--version', 'v1.33.0+k3s1'], deps)).toBe(1);
+    expect(await clusterUpgrade(['--version', 'v1.32.0+k3s1'], deps)).toBe(0);
   });
 
   it('--current override skips node reads', async () => {

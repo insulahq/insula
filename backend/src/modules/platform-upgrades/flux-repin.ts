@@ -22,16 +22,25 @@ export interface GitRepoRef {
   readonly commit?: string;
 }
 
+/** Stable release tag (CalVer): `vX.Y.Z`. */
+const STABLE_TAG_RE = /^v\d+\.\d+\.\d+$/;
+/** Release-candidate tag (ADR-045 dec. 3 — `-rc.N` only): `vX.Y.Z-rc.N`. */
+const RC_TAG_RE = /^v\d+\.\d+\.\d+-rc\.\d+$/;
+
 /**
- * Map a clean release version (CalVer, no leading v) to its git tag `vX.Y.Z`.
- * Validated with the SAME strict tag regex the patch path uses — a prerelease /
- * dev pin (`-<sha>`, `-rc.1`) or anything non-`X.Y.Z` is refused outright (not
- * just by composing isValidVersion, which accepts prereleases).
+ * Map a release version (CalVer, leading `v` optional) to its git tag.
+ *
+ * By default ONLY a clean `X.Y.Z` → `vX.Y.Z` is accepted — a dev pin (`-<sha>`)
+ * or anything non-stable is refused outright (not just by composing
+ * isValidVersion, which accepts prereleases). With `allowPrerelease` (Mode B —
+ * the `auto_update_include_prereleases` opt-in, default ON staging / OFF prod) an
+ * `X.Y.Z-rc.N` is ALSO accepted, so staging can pin a release-candidate tag.
  */
-export function gitTagForVersion(version: string): string | null {
-  const v = version.trim().replace(/^v/, '');
-  if (!/^\d+\.\d+\.\d+$/.test(v)) return null;
-  return `v${v}`;
+export function gitTagForVersion(version: string, opts: { allowPrerelease?: boolean } = {}): string | null {
+  const tag = `v${version.trim().replace(/^v/, '')}`;
+  if (STABLE_TAG_RE.test(tag)) return tag;
+  if (opts.allowPrerelease === true && RC_TAG_RE.test(tag)) return tag;
+  return null;
 }
 
 const FLUX_KS_GROUP = 'kustomize.toolkit.fluxcd.io';
@@ -163,8 +172,10 @@ export async function repinGitRepositoryTag(
   name: string,
   tag: string,
   namespace = FLUX_NAMESPACE,
+  opts: { allowPrerelease?: boolean } = {},
 ): Promise<RepinResult> {
-  if (!/^v\d+\.\d+\.\d+$/.test(tag)) {
+  const tagOk = STABLE_TAG_RE.test(tag) || (opts.allowPrerelease === true && RC_TAG_RE.test(tag));
+  if (!tagOk) {
     return { ok: false, name, previousRef: null, tag, reason: `refusing malformed tag ${JSON.stringify(tag)}` };
   }
   const previousRef = await readGitRepositoryRef(k8s, name, namespace);

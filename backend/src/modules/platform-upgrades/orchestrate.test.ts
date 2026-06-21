@@ -50,6 +50,42 @@ describe('runUpgrade', () => {
     expect(patches).toHaveLength(0);
   });
 
+  // ── Mode B: prerelease (-rc.N) auto-pin, gated by auto_update_include_prereleases ──
+  const seedRc = { installed_platform_version: '2026.6.2', available_version: '2026.7.0-rc.1', auto_update: 'true' };
+
+  it('Mode B: pins an -rc.N tag when auto_update_include_prereleases is on (staging)', async () => {
+    const { io } = fakeSettings({ ...seedRc, auto_update_include_prereleases: 'true' });
+    const { k8s, patches } = fakeK8s({ source: 'hosting-platform-staging', ref: { branch: 'development' } });
+    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true });
+    expect(r.applied).toBe(true);
+    expect(r.repin?.tag).toBe('v2026.7.0-rc.1');
+    // the re-pin switches the staging source from branch → rc tag
+    expect((patches[0] as { body: { spec: { ref: unknown } } }).body.spec.ref).toEqual({ tag: 'v2026.7.0-rc.1', branch: null, commit: null });
+  });
+
+  it('refuses to pin an -rc.N tag when the prerelease flag is OFF (production safety)', async () => {
+    const { io } = fakeSettings(seedRc); // no auto_update_include_prereleases
+    const { k8s, patches } = fakeK8s({ source: 'hosting-platform-production' });
+    const r = await runUpgrade(io, k8s, { mode: 'auto', apply: true });
+    expect(r.applied).toBe(false);
+    expect(r.summary).toMatch(/no clean release tag/);
+    expect(patches).toHaveLength(0);
+  });
+
+  it('Mode B: a manual --version <rc> is also refused unless the prerelease flag is on', async () => {
+    const off = fakeSettings({ installed_platform_version: '2026.6.2', auto_update: 'false' });
+    const k1 = fakeK8s({ source: 'hosting-platform-production' });
+    const r1 = await runUpgrade(off.io, k1.k8s, { mode: 'manual', requestedVersion: '2026.7.0-rc.1', apply: true });
+    expect(r1.applied).toBe(false);
+    expect(k1.patches).toHaveLength(0);
+
+    const on = fakeSettings({ installed_platform_version: '2026.6.2', auto_update: 'false', auto_update_include_prereleases: 'true' });
+    const k2 = fakeK8s({ source: 'hosting-platform-staging', ref: { branch: 'development' } });
+    const r2 = await runUpgrade(on.io, k2.k8s, { mode: 'manual', requestedVersion: '2026.7.0-rc.1', apply: true });
+    expect(r2.applied).toBe(true);
+    expect(r2.repin?.tag).toBe('v2026.7.0-rc.1');
+  });
+
   it('auto with auto_update off → no-op, no resolve, no patch', async () => {
     const { io } = fakeSettings({ ...seedReady, auto_update: 'false' });
     const { k8s, patches } = fakeK8s();

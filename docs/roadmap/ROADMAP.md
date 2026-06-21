@@ -32,8 +32,8 @@
 | [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
 | [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | ✅ Shipped — snapshots + in-place/retained-volume restore + destructive-shrink quiesce + force-cancel restore all done (2026-06-17/18) |
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
-| [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | Proposed 2026-06-21 — decision needed (auto-loop vs amend ADR) |
-| [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | Proposed 2026-06-21 — RC machinery exists; Mode B deferred |
+| [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | ✅ Shipped 2026-06-21 — `cluster upgrade` auto-steps multi-minor (auto-loop chosen) |
+| [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
 
 ---
 
@@ -490,7 +490,19 @@ mail restores still run after the cluster is back (by design).
 
 ## R21 — k3s multi-minor auto-step (ADR-045 ↔ implementation gap)
 
-**Reconcile a doc/code mismatch found 2026-06-21.** [ADR-045](../architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
+> **✅ Shipped 2026-06-21 — option (a), the auto-step loop.** `planK3sUpgradePath`
+> (`operations/k3s-plan.ts`) splits current→target into N single-minor hops;
+> `cluster upgrade` resolves each intermediate minor's latest patch from the k3s
+> channel server (`resolveMinorVersion`), applies each hop's Plans, and
+> `waitForRollout`s every node onto that minor before the next hop (the final hop
+> is left rolling async, like a single-minor upgrade). `buildK3sUpgradePlans` keeps
+> its per-hop skip-a-minor refusal as the safety net; `ci-system-upgrade-check.sh`
+> still passes. Implementation now matches ADR-045 dec. 21 ("pre-flight splits a
+> multi-hop into N serial Plans"). Unit-tested (planner splitting + command
+> apply-order + abort-on-failed-rollout); the stepped path was live-validated
+> 1.33.10 → 1.34.8 → 1.35.5 on staging.
+
+**Original gap (resolved).** [ADR-045](../architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
 decision 21 states the upgrade pre-flight *"splits multi-hop k3s upgrades into N
 serial SUC Plans"* — i.e. crossing 1.33→1.35 is handled automatically, one minor
 at a time. The **implementation does not auto-step**: `buildK3sUpgradePlans`
@@ -515,7 +527,21 @@ of the stepping is missing.
 
 ## R22 — RC validation on staging via Flux (ADR-045 Mode B)
 
-**Make release-candidate testing push-button.** The RC machinery exists:
+> **✅ Shipped 2026-06-21 — the load-bearing half: the Flux re-pin now accepts a
+> prerelease tag.** `gitTagForVersion` + `repinGitRepositoryTag`
+> (`platform-upgrades/flux-repin.ts`) gained an `allowPrerelease` option, and
+> `runUpgrade` threads it from the `auto_update_include_prereleases` setting. So a
+> staging cluster with the prerelease flag ON re-pins Flux from the `development`
+> branch → the newest `-rc.N` tag (the poller already selects RCs; `semver.ts`
+> already orders them). Production (flag OFF) still refuses an `-rc.N` tag even via
+> an explicit `--version <rc>` — defence in depth. Only `-rc.N` is accepted (not
+> arbitrary `-<sha>`/`-beta`). Unit-tested (flux-repin + orchestrate).
+> **Still operator-applied:** the platform deliberately keeps *apply* operator-gated
+> (the upgrade scheduler never auto-applies — see its header comment), so a fully
+> hands-off staging RC auto-apply loop is intentionally NOT added here; enabling it
+> for staging would be a separate decision.
+
+**Original scope.** The RC machinery exists:
 `scripts/cut-release.sh --prerelease` cuts `YYYY.M.PATCH-rc.N` (GitHub Release
 `prerelease=true`); the `auto_update_include_prereleases` setting gates them (default
 **ON** staging / **OFF** prod); the poller `select.ts` filters prereleases

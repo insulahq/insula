@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseK3sVersion, buildK3sUpgradePlans } from './k3s-plan.js';
+import { parseK3sVersion, buildK3sUpgradePlans, planK3sUpgradePath } from './k3s-plan.js';
 
 describe('parseK3sVersion', () => {
   it('parses vX.Y.Z+k3sN (leading v optional)', () => {
@@ -104,5 +104,59 @@ describe('buildK3sUpgradePlans — Plan shape', () => {
     const o = buildK3sUpgradePlans('v1.32.0+k3s1', 'v1.31.5+k3s1', { upgradeImage: 'mirror.local/k3s-upgrade:pinned' });
     const s = o.ok ? (o.plans[0] as any) : null;
     expect(s.spec.upgrade.image).toBe('mirror.local/k3s-upgrade:pinned');
+  });
+});
+
+describe('planK3sUpgradePath — multi-minor splitting (ADR-045 dec. 21)', () => {
+  const minors = (r: ReturnType<typeof planK3sUpgradePath>) => (r.ok ? r.steps.map((s) => s.minor) : []);
+
+  it('single-minor target → one final step', () => {
+    const r = planK3sUpgradePath('v1.34.0+k3s1', 'v1.33.10+k3s1');
+    expect(r.ok).toBe(true);
+    expect(minors(r)).toEqual([34]);
+    if (r.ok) expect(r.steps[0].isFinal).toBe(true);
+  });
+
+  it('same-minor patch bump → one final step (no intermediate hop)', () => {
+    const r = planK3sUpgradePath('v1.33.12+k3s1', 'v1.33.10+k3s1');
+    expect(r.ok).toBe(true);
+    expect(minors(r)).toEqual([33]);
+    if (r.ok) expect(r.steps[0].isFinal).toBe(true);
+  });
+
+  it('splits a 2-minor jump into serial hops with only the last marked final', () => {
+    const r = planK3sUpgradePath('v1.35.5+k3s1', 'v1.33.10+k3s1');
+    expect(r.ok).toBe(true);
+    expect(minors(r)).toEqual([34, 35]);
+    if (r.ok) {
+      expect(r.steps.map((s) => s.isFinal)).toEqual([false, true]);
+      expect(r.steps.every((s) => s.major === 1)).toBe(true);
+    }
+  });
+
+  it('splits a 3-minor jump (1.33 → 1.36) into 34,35,36', () => {
+    const r = planK3sUpgradePath('v1.36.1+k3s1', 'v1.33.10+k3s1');
+    expect(minors(r)).toEqual([34, 35, 36]);
+  });
+
+  it('refuses downgrade / no-op / cross-major / bad versions', () => {
+    expect(planK3sUpgradePath('v1.32.0+k3s1', 'v1.33.0+k3s1').ok).toBe(false);
+    expect(planK3sUpgradePath('v1.33.0+k3s1', 'v1.33.0+k3s1').ok).toBe(false);
+    expect(planK3sUpgradePath('v2.0.0+k3s1', 'v1.33.0+k3s1').ok).toBe(false);
+    expect(planK3sUpgradePath('garbage', 'v1.33.0+k3s1').ok).toBe(false);
+  });
+
+  it('every planned hop passes buildK3sUpgradePlans when chained (no skip-a-minor)', () => {
+    const r = planK3sUpgradePath('v1.36.1+k3s1', 'v1.33.10+k3s1');
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // chain concrete versions, validating each single-minor hop
+    let prev = 'v1.33.10+k3s1';
+    const concrete = ['v1.34.8+k3s1', 'v1.35.5+k3s1', 'v1.36.1+k3s1'];
+    r.steps.forEach((_step, i) => {
+      const gen = buildK3sUpgradePlans(concrete[i], prev);
+      expect(gen.ok).toBe(true);
+      prev = concrete[i];
+    });
   });
 });
