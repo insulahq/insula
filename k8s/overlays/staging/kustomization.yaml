@@ -1,0 +1,16 @@
+# Staging overlay (ADR-053) — the RELEASE-VALIDATION cluster.
+#
+# Tracks release TAGS via Flux `spec.ref.semver: ">=0.0.0-0"` (RC + stable), so
+# every manual `scripts/cut-release.sh [--prerelease]` rolls here automatically.
+# It deliberately MIRRORS production (bases on ../production) so staging exercises
+# the exact signed artifact production will later pull — image pins included
+# (cut-release stamps them in ../production; this overlay inherits them).
+#
+# Put staging-ONLY deltas here (patches/components/resources) — e.g. LE-staging
+# cert issuer, or `node-terminal-enabled` ON for debugging. None today: a pure
+# mirror is the truest validation of what production receives.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../production

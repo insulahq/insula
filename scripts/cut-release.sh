@@ -330,7 +330,68 @@ mv "$tmp" "$CHANGELOG"
 
 printf '%s\n' "$VERSION" > "$VERSION_FILE"
 
+# Stamp the release overlay so the immutable, cosign-signed tag fully pins its
+# own images (ADR-053). The 3 platform images get THIS version (release.yml
+# builds ghcr…/{backend,admin-panel,tenant-panel}:$VERSION on the tag push). The
+# internal DaemonSet/sidecar images are timestamp-sha tagged by their own CI —
+# never the release version — so snapshot their CURRENT development-overlay pins
+# into the release. staging (k8s/overlays/staging) bases on production and
+# inherits these pins. Fails closed if an internal image isn't pinned in dev.
+PROD_KZ="$ROOT/k8s/overlays/production/kustomization.yaml"
+DEV_KZ="$ROOT/k8s/overlays/development/kustomization.yaml"
+VERSION="$VERSION" PROD_KZ="$PROD_KZ" DEV_KZ="$DEV_KZ" python3 - <<'PY'
+import os, re, sys
+version, prod_p, dev_p = os.environ["VERSION"], os.environ["PROD_KZ"], os.environ["DEV_KZ"]
+# Skip cleanly when the overlays aren't present (e.g. the cut-release test
+# fixture is a minimal VERSION+CHANGELOG repo). A real checkout always has them.
+if not (os.path.exists(prod_p) and os.path.exists(dev_p)):
+    sys.stderr.write("cut-release: overlays not present — skipping image-pin stamp\n")
+    sys.exit(0)
+PFX = "ghcr.io/insulahq/insula/"
+MAIN = [PFX + n for n in ("backend", "admin-panel", "tenant-panel")]
+INTERNAL = [PFX + n for n in (
+    "security-probe", "firewall-reconciler", "host-config-reconciler",
+    "backup-rclone", "sftp-gateway", "tenant-backup-tools")]
+
+def read_pins(path):
+    pins, cur = {}, None
+    for line in open(path):
+        m = re.match(r"\s*- name:\s*(\S+)", line)
+        if m:
+            cur = m.group(1); continue
+        m = re.match(r'\s*newTag:\s*"?([^"#\s]+)"?', line)
+        if m and cur:
+            pins[cur] = m.group(1); cur = None
+    return pins
+
+dev_pins = read_pins(dev_p)
+desired = {img: version for img in MAIN}
+missing = [img for img in INTERNAL if img not in dev_pins]
+if missing:
+    sys.stderr.write("cut-release: internal image(s) not pinned in development overlay: "
+                     + ", ".join(missing) + "\n")
+    sys.exit(1)
+for img in INTERNAL:
+    desired[img] = dev_pins[img]
+
+out, cur, changed = [], None, 0
+for line in open(prod_p):
+    m = re.match(r"\s*- name:\s*(\S+)", line)
+    if m:
+        cur = m.group(1); out.append(line); continue
+    m = re.match(r'(\s*)newTag:\s*"?[^"#\s]+"?.*$', line)
+    if m and cur in desired:
+        out.append(f'{m.group(1)}newTag: "{desired[cur]}"\n'); changed += 1; cur = None; continue
+    out.append(line)
+open(prod_p, "w").write("".join(out))
+sys.stderr.write(f"cut-release: stamped {changed} image pin(s) in production overlay "
+                 f"(3 platform → {version}, 6 internal → development snapshot)\n")
+PY
+
 git -C "$ROOT" add platform/VERSION CHANGELOG.md
+# Only stage the release overlay when it exists (absent in the minimal test fixture).
+[ -f "$ROOT/k8s/overlays/production/kustomization.yaml" ] \
+  && git -C "$ROOT" add k8s/overlays/production/kustomization.yaml
 git -C "$ROOT" commit -qm "chore(release): ${TAG}"
 git -C "$ROOT" tag -a "$TAG" -m "Release ${TAG}"
 
