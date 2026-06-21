@@ -32,6 +32,8 @@
 | [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
 | [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | ✅ Shipped — snapshots + in-place/retained-volume restore + destructive-shrink quiesce + force-cancel restore all done (2026-06-17/18) |
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
+| [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | Proposed 2026-06-21 — decision needed (auto-loop vs amend ADR) |
+| [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | Proposed 2026-06-21 — RC machinery exists; Mode B deferred |
 
 ---
 
@@ -485,3 +487,49 @@ disaster. Runbook:
 [BACKUP_RCLONE_SHIM.md → Recover etcd](../operations/BACKUP_RCLONE_SHIM.md#recover-etcd--tiered-break-glass).
 Residual: an `--offline` path for SFTP/CIFS upstreams (S3-only today); postgres/
 mail restores still run after the cluster is back (by design).
+
+## R21 — k3s multi-minor auto-step (ADR-045 ↔ implementation gap)
+
+**Reconcile a doc/code mismatch found 2026-06-21.** [ADR-045](../architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
+decision 21 states the upgrade pre-flight *"splits multi-hop k3s upgrades into N
+serial SUC Plans"* — i.e. crossing 1.33→1.35 is handled automatically, one minor
+at a time. The **implementation does not auto-step**: `buildK3sUpgradePlans`
+(`backend/src/cli/platform-ops/operations/k3s-plan.ts`) **refuses** skip-a-minor /
+downgrade / cross-major, and `cluster upgrade` (`…/platform-ops/commands.ts`) is a
+single-step current→target generator with no loop. So an operator crossing >1
+minor today must invoke `cluster upgrade --version <next-minor> --apply` once per
+minor (validating between), and auto-update **halts** on the skip-a-minor refusal
+rather than walking the gap. (New installs are unaffected — `bootstrap.sh` installs
+the pinned version fresh.) CI guard `scripts/ci-system-upgrade-check.sh` already
+asserts the refusal.
+
+**Decision needed:** either (a) implement the auto-step loop in `cluster upgrade`
+(generate → apply → wait-for-rollout per minor, current→target) so a multi-minor
+release is one button, or (b) amend ADR-045 dec. 21 to say k3s is **manual,
+one-minor-per-step** and have the release pre-flight surface the required steps in
+the operator prompt. Either way, document in the CHANGELOG upgrade notes that a
+release bumping k3s by >1 minor requires N stepped upgrades on existing clusters.
+Manually validated the stepped path 1.33.10 → 1.34.8 → 1.35.5 on staging
+2026-06-21 (smoke 35/0 after each minor) — that path works; only the *automation*
+of the stepping is missing.
+
+## R22 — RC validation on staging via Flux (ADR-045 Mode B)
+
+**Make release-candidate testing push-button.** The RC machinery exists:
+`scripts/cut-release.sh --prerelease` cuts `YYYY.M.PATCH-rc.N` (GitHub Release
+`prerelease=true`); the `auto_update_include_prereleases` setting gates them (default
+**ON** staging / **OFF** prod); the poller `select.ts` filters prereleases
+defence-in-depth (drops both API-flagged and `-rc`-parsing tags when off, so prod
+never auto-pulls or even displays an RC); and `semver.ts` orders `-rc` correctly
+(`X.Y.Z-rc.1` < `X.Y.Z`, stable outranks its own prerelease). **What's deferred**
+([ADR-045](../architecture/adr/ADR-045-versioning-release-cycle-and-upgrade.md)
+dec. 12): staging **Mode B** — Flux pinning the newest `-rc.N` tag so a freshly-cut
+RC auto-rolls onto staging through the real signed upgrade path. Staging today runs
+**Mode A** only (Flux watches the `development` branch tip — every-commit
+bleeding-edge), so RC-artifact validation is currently manual: flip the
+include-prereleases poller flag, or `platform-ops self-upgrade --version <rc>
+--force` on a canary cluster.
+
+**Build Mode B** (Flux `spec.ref.tag` re-pinned to the latest `-rc.N` by the
+version-poller on staging) to get continuous, hands-off RC rollout testing that
+exercises cosign verify + migrations + the k3s stepping before a stable cut.
