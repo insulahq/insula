@@ -12,7 +12,7 @@ import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { planUpgrade, type UpgradeDecision } from './upgrade-planner.js';
-import { gitTagForVersion, repinGitRepositoryTag, resolveUpgradeGitRepository, type RepinResult } from './flux-repin.js';
+import { gitTagForVersion, repinGitRepositoryTag, resolveUpgradeGitRepository, FLUX_NAMESPACE, type RepinResult } from './flux-repin.js';
 
 const CURRENT_VERSION = (process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown').trim();
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
@@ -71,6 +71,10 @@ export async function runUpgrade(settings: SettingsIO, k8s: K8sClients, opts: Ru
   const available = await settings.get('available_version');
   const autoUpdate = (await settings.get('auto_update')) === 'true';
   const breaking = (await settings.get('available_breaking')) === 'true';
+  // Mode B (ADR-045 dec. 11/12): a cluster that opted into prereleases may re-pin
+  // Flux to a `-rc.N` tag. Default OFF → production never pins a release-candidate
+  // tag, even via an explicit `--version <rc>` (defence in depth).
+  const allowPrerelease = (await settings.get('auto_update_include_prereleases')) === 'true';
 
   const decision = planUpgrade({
     installed,
@@ -91,7 +95,7 @@ export async function runUpgrade(settings: SettingsIO, k8s: K8sClients, opts: Ru
       environment: ENVIRONMENT,
       gitRepository,
       applied: false,
-      summary: `DRY-RUN: would re-pin ${gitRepository ?? '<no GitRepository found>'} → ${gitTagForVersion(decision.target!) ?? '<bad tag>'} (${decision.reason})`,
+      summary: `DRY-RUN: would re-pin ${gitRepository ?? '<no GitRepository found>'} → ${gitTagForVersion(decision.target!, { allowPrerelease }) ?? '<bad tag>'} (${decision.reason})`,
     };
   }
 
@@ -100,7 +104,7 @@ export async function runUpgrade(settings: SettingsIO, k8s: K8sClients, opts: Ru
   if (!gitRepository) {
     return { decision, environment: ENVIRONMENT, gitRepository: null, applied: false, summary: 'could not resolve the platform Flux GitRepository (is this a Flux-managed cluster?)' };
   }
-  const tag = gitTagForVersion(decision.target!);
+  const tag = gitTagForVersion(decision.target!, { allowPrerelease });
   if (!tag) {
     return { decision, environment: ENVIRONMENT, gitRepository, applied: false, summary: `target ${decision.target} has no clean release tag` };
   }
@@ -115,7 +119,7 @@ export async function runUpgrade(settings: SettingsIO, k8s: K8sClients, opts: Ru
     }
   }
 
-  const repin = await repinGitRepositoryTag(k8s, gitRepository, tag);
+  const repin = await repinGitRepositoryTag(k8s, gitRepository, tag, FLUX_NAMESPACE, { allowPrerelease });
   if (repin.ok) {
     // Record the in-flight target so the UI/poller can show "upgrading → X".
     await settings.set('pending_update_version', decision.target!);

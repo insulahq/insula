@@ -296,11 +296,32 @@ export interface NodeVersion {
   readonly kubeletVersion: string | null;
 }
 
+/** Outcome of waiting for an SUC-driven minor hop to land on every node. */
+export interface RolloutWaitResult {
+  readonly ok: boolean;
+  /** Reason on !ok (timeout / unreachable); omitted on success. */
+  readonly reason?: string;
+}
+
 export interface ClusterUpgradeOps {
   /** Read every node's role + kubelet/k3s version (for current-min + validation). */
   readNodeVersions: () => Promise<NodeVersion[]>;
   /** Create/merge-patch the SUC Plan CRs in the system-upgrade namespace. */
   applyPlans: (plans: readonly Record<string, unknown>[]) => Promise<{ applied: string[] }>;
+  /**
+   * Resolve the latest patch release for a Kubernetes minor (e.g. 1→34 →
+   * `v1.34.8+k3s1`) from the k3s release channel server. Returns null when the
+   * channel can't be resolved (offline / unknown minor). OPTIONAL: only the
+   * multi-minor auto-step path needs it; a binary/caller without it can still do
+   * single-minor upgrades. (W12 / ADR-045 dec. 21.)
+   */
+  resolveMinorVersion?: (major: number, minor: number) => Promise<string | null>;
+  /**
+   * Block until every node has reached (or passed) `version`, or time out.
+   * Used between serial minor hops — k3s requires hop N to finish before hop
+   * N+1 starts. OPTIONAL (see `resolveMinorVersion`). (W12 / ADR-045 dec. 21.)
+   */
+  waitForRollout?: (version: string, opts?: { timeoutMs?: number }) => Promise<RolloutWaitResult>;
 }
 
 export interface NodeOps {

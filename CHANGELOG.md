@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **k3s multi-minor auto-step (R21, ADR-045 dec. 21).** `platform-ops cluster upgrade --version <target>`
+  now splits a multi-minor jump into serial single-minor hops automatically — it resolves each
+  intermediate minor's latest patch from the k3s release channel, applies the SUC Plans, and waits
+  for every node to reach that minor before the next hop (the final hop rolls async). Single-minor /
+  patch upgrades are unchanged. The per-hop generator still refuses skip-a-minor as the safety net.
+- **Release-candidate Flux re-pin (R22, ADR-045 dec. 12 — Mode B).** The platform upgrade re-pin now
+  accepts a `-rc.N` tag, gated by `auto_update_include_prereleases` (default ON staging / OFF prod).
+  A staging cluster with the flag on re-pins Flux from the `development` branch to the newest
+  release-candidate tag (the poller already selects RCs); production refuses an `-rc.N` tag even via
+  an explicit `--version <rc>`. Apply stays operator-gated (no auto-apply loop added).
 - **Tenant provision-on-activate model.** `POST /tenants` now creates a tenant `pending` +
   unprovisioned (no auto-provision); provisioning is explicit (admin "Provision Now" or
   `POST /admin/tenants/:id/provision`) and flips the tenant to `active` on completion. Non-active

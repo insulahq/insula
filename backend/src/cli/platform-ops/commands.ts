@@ -6,7 +6,7 @@
  * release). Each handler takes `Deps` and returns a process exit code.
  */
 import type { Deps, NodeVersion, VersionInfo } from './deps.js';
-import { buildK3sUpgradePlans, parseK3sVersion } from './operations/k3s-plan.js';
+import { buildK3sUpgradePlans, parseK3sVersion, planK3sUpgradePath } from './operations/k3s-plan.js';
 
 const KUBECTL = 'kubectl';
 
@@ -458,27 +458,85 @@ export async function clusterUpgrade(args: string[], deps: Deps): Promise<number
     current = floor;
   }
 
-  const gen = buildK3sUpgradePlans(version, current, upgradeImage ? { upgradeImage } : {});
-  if (!gen.ok) {
-    deps.err(`cluster upgrade: REFUSED — ${gen.reason}`);
+  // Split a multi-minor target into serial single-minor hops (k3s forbids
+  // skip-a-minor). A single-minor / patch target yields one hop — identical to
+  // the original behaviour. (ADR-045 dec. 21.)
+  const path = planK3sUpgradePath(version, current);
+  if (!path.ok) {
+    deps.err(`cluster upgrade: REFUSED — ${path.reason}`);
     return 1;
+  }
+  const multiHop = path.steps.length > 1;
+  const resolveMinor = deps.clusterUpgrade.resolveMinorVersion;
+  const waitForRollout = deps.clusterUpgrade.waitForRollout;
+  if (multiHop && (!resolveMinor || !waitForRollout)) {
+    deps.err('cluster upgrade: multi-minor auto-step is unavailable in this build; upgrade one minor at a time with --version');
+    return 1;
+  }
+
+  // Resolve each hop to a concrete version (final = the exact requested target;
+  // intermediate = the minor's latest patch) and validate each single-minor hop.
+  const hops: { version: string; plans: readonly Record<string, unknown>[] }[] = [];
+  let prev = current;
+  for (const step of path.steps) {
+    let stepVersion: string;
+    if (step.isFinal) {
+      stepVersion = version;
+    } else {
+      const resolved = resolveMinor ? await resolveMinor(step.major, step.minor) : null;
+      if (!resolved) {
+        deps.err(`cluster upgrade: could not resolve the latest patch for v${step.major}.${step.minor} from the k3s channel server (offline?); pass intermediate --version steps manually`);
+        return 1;
+      }
+      stepVersion = resolved;
+    }
+    const gen = buildK3sUpgradePlans(stepVersion, prev, upgradeImage ? { upgradeImage } : {});
+    if (!gen.ok) {
+      deps.err(`cluster upgrade: REFUSED — ${gen.reason}`);
+      return 1;
+    }
+    hops.push({ version: gen.target, plans: gen.plans });
+    prev = stepVersion;
   }
 
   if (!apply) {
-    deps.out(`# DRY-RUN — k3s upgrade ${current} → ${gen.target}. Pass --apply to create these Plans (SUC then rolls the nodes).`);
-    deps.out(JSON.stringify(gen.plans, null, 2));
+    if (multiHop) {
+      deps.out(`# DRY-RUN — multi-minor k3s upgrade ${current} → ${version} as ${hops.length} serial hops: ${hops.map((h) => h.version).join(' → ')}. Pass --apply to roll them (each hop waits for the prior to land).`);
+    } else {
+      deps.out(`# DRY-RUN — k3s upgrade ${current} → ${hops[0].version}. Pass --apply to create these Plans (SUC then rolls the nodes).`);
+    }
+    for (const h of hops) {
+      if (multiHop) deps.out(`# ── hop → ${h.version} ──`);
+      deps.out(JSON.stringify(h.plans, null, 2));
+    }
     return 0;
   }
 
-  try {
-    const res = await deps.clusterUpgrade.applyPlans(gen.plans);
-    deps.out(`cluster upgrade: applied ${res.applied.length} Plan(s) [${res.applied.join(', ')}] → SUC is now rolling ${current} → ${gen.target}`);
-    deps.out('Watch: kubectl -n system-upgrade get plans,jobs');
-    return 0;
-  } catch (err) {
-    deps.err(`cluster upgrade: failed to apply Plans: ${err instanceof Error ? err.message : String(err)}`);
-    return 1;
+  for (let i = 0; i < hops.length; i++) {
+    const h = hops[i];
+    const label = multiHop ? ` [hop ${i + 1}/${hops.length}]` : '';
+    try {
+      const res = await deps.clusterUpgrade.applyPlans(h.plans);
+      deps.out(`cluster upgrade${label}: applied ${res.applied.length} Plan(s) [${res.applied.join(', ')}] → SUC is now rolling to ${h.version}`);
+    } catch (err) {
+      deps.err(`cluster upgrade${label}: failed to apply Plans: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+    // Between hops, wait for the minor to land on every node — k3s requires hop N
+    // to finish before hop N+1 starts. The final hop is left rolling async (same
+    // fire-and-forget as a single-minor upgrade).
+    if (multiHop && i < hops.length - 1) {
+      const w = waitForRollout ? await waitForRollout(h.version) : { ok: false, reason: 'no rollout waiter' };
+      if (!w.ok) {
+        deps.err(`cluster upgrade [hop ${i + 1}/${hops.length}]: ${h.version} did not roll out: ${w.reason ?? 'unknown'}; fix the cluster then resume with --version`);
+        return 1;
+      }
+      deps.out(`cluster upgrade [hop ${i + 1}/${hops.length}]: all nodes reached ${h.version}`);
+    }
   }
+  deps.out(`cluster upgrade: ${multiHop ? `${hops.length} hops applied — ` : ''}${current} → ${hops[hops.length - 1].version}`);
+  deps.out('Watch: kubectl -n system-upgrade get plans,jobs');
+  return 0;
 }
 
 /**
