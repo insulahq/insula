@@ -2522,3 +2522,23 @@ mail leg + verification report. PR 4 cutover + runbook.
 v1 scope: WordPress/plain-PHP web, MariaDB target, password continuity
 opt-in where the source stores reversibly (`accounts.type=sym`). The
 operations runbook ships with PR 4.
+
+## ADR-053: GitOps restructure — `development`-upstream branch + artifact-tracked staging/prod
+
+See [ADR-053-gitops-restructure-development-upstream.md](ADR-053-gitops-restructure-development-upstream.md).
+
+Summary (2026-06-21): Supersedes the `main → development` auto-merge model
+(ADR-045 dec. 12/13); no backward compatibility (the two clusters
+re-bootstrap). Four tiers: `development` becomes the **upstream** integration
+branch; `main` is the promoted release trunk (no cluster tracks it); the **DEV
+cluster** (`--env dev`) Flux-tracks `branch: development` (auto every push); the
+**STAGING cluster** (`--env staging`) tracks `ref.semver: ">=0.0.0-0"` so each
+**manual** `cut-release.sh [--prerelease]` rolls automatically (RC or stable);
+**PRODUCTION** keeps the poller + manual W13 re-pin (stable-only). Release tags
+become self-describing — `cut-release.sh` stamps the staging+production overlay
+image `newTag`s to the version before tagging, so the immutable cosign-signed tag
+carries its own pins (the prod tag→pin path was never wired). Deletes
+`sync-development.yml`; moves image pinning off `main` (build-deploy pins only
+`overlays/development` on the `development` branch). Removes the pins-on-main,
+GITHUB_TOKEN/workflow_run, branch-divergence, overloaded-branch, and no-RC-home
+problems; staging finally tests the exact signed artifact prod will pull.
