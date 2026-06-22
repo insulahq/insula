@@ -2,12 +2,12 @@ name: Firewall-Reconciler CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'images/firewall-reconciler/**'
       - '.github/workflows/ci-firewall-reconciler.yml'
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'images/firewall-reconciler/**'
       - '.github/workflows/ci-firewall-reconciler.yml'
@@ -68,8 +68,8 @@ jobs:
           tags: |
             type=sha,prefix=
             type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
 
       - id: build
         uses: docker/build-push-action@v5
@@ -108,9 +108,9 @@ jobs:
       # ci-backup-rclone.yml — a transparency-log attestation for the internal
       # image. Gated to non-PR (fork PRs get a read-only token anyway).
       - uses: sigstore/cosign-installer@v3
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
       - name: Sign image (keyless, OCI 1.1 referrers)
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           COSIGN_EXPERIMENTAL: "1"
@@ -121,7 +121,7 @@ jobs:
 
       - id: tag
         name: Extract immutable timestamp tag (for the dev-overlay pin)
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
         env:
           ALL_TAGS: ${{ steps.meta.outputs.tags }}
         run: |
@@ -136,7 +136,7 @@ jobs:
   pin:
     name: Pin dev image tag
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.build.outputs.timestamp_tag != ''
+    if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request' && needs.build.outputs.timestamp_tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write

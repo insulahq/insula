@@ -19,9 +19,9 @@ name: Identifier Guard
 
 on:
   push:
-    branches: [main]
+    branches: [development]
   pull_request:
-    branches: [main]
+    branches: [development, main]
   workflow_dispatch:
 
 permissions:

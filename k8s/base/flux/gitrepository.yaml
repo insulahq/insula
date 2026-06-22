@@ -1,3 +1,7 @@
+# DEV source (ADR-053): the DEV cluster (`--env dev`) tracks the `development`
+# branch — the UPSTREAM integration branch — and auto-deploys every push to it.
+# Code is promoted development → main by reviewed PR after DEV testing; no
+# cluster tracks `main` directly.
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: GitRepository
 metadata:
@@ -7,7 +11,7 @@ spec:
   interval: 1m
   url: https://github.com/insulahq/insula
   ref:
-    branch: main
+    branch: development
   # For private repos, uncomment and create the secret:
   # secretRef:
   #   name: flux-github-auth

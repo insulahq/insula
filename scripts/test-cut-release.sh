@@ -99,6 +99,70 @@ yes "the 'new thing' moved under [2026.6.1]" "awk '/^## \[2026.6.1\]/{f=1} /^## 
 yes "release commit created" "git -C '$R' log -1 --format=%s | grep -qiE 'release.*2026.6.1'"
 rm -rf "$R"
 
+echo "== ADR-053: the cut stamps the release (production) overlay =="
+R=$(make_repo)
+mkdir -p "$R/k8s/overlays/production" "$R/k8s/overlays/development"
+cat > "$R/k8s/overlays/development/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+images:
+  - name: ghcr.io/insulahq/insula/backend
+    newTag: "20260101-devsha"
+  - name: ghcr.io/insulahq/insula/security-probe
+    newTag: "SP-111"
+  - name: ghcr.io/insulahq/insula/firewall-reconciler
+    newTag: "FR-222"
+  - name: ghcr.io/insulahq/insula/host-config-reconciler
+    newTag: "HC-333"
+  - name: ghcr.io/insulahq/insula/backup-rclone
+    newTag: "BR-444"
+  - name: ghcr.io/insulahq/insula/sftp-gateway
+    newTag: "SG-555"
+  - name: ghcr.io/insulahq/insula/tenant-backup-tools
+    newTag: "TB-666"
+EOF
+cat > "$R/k8s/overlays/production/kustomization.yaml" <<'EOF'
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+images:
+  - name: ghcr.io/insulahq/insula/backend
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/admin-panel
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/tenant-panel
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/security-probe
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/firewall-reconciler
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/host-config-reconciler
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/backup-rclone
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/sftp-gateway
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/tenant-backup-tools
+    newTag: "0.0.0"
+EOF
+git -C "$R" add -A >/dev/null; git -C "$R" commit -qm overlays >/dev/null
+"$CUT" --root "$R" --year-month 2026.6 --yes >/dev/null 2>&1
+PKZ="$R/k8s/overlays/production/kustomization.yaml"
+ntag() { awk -v img="ghcr.io/insulahq/insula/$1" 'p ~ ("- name: " img "$"){gsub(/.*newTag: *"|".*/,""); print; exit} {p=$0}' "$PKZ"; }
+eq "stamp: backend → version"          "$(ntag backend)"             "2026.6.1"
+eq "stamp: admin-panel → version"      "$(ntag admin-panel)"         "2026.6.1"
+eq "stamp: tenant-panel → version"     "$(ntag tenant-panel)"        "2026.6.1"
+eq "stamp: security-probe ← dev pin"   "$(ntag security-probe)"      "SP-111"
+eq "stamp: sftp-gateway ← dev pin"     "$(ntag sftp-gateway)"        "SG-555"
+eq "stamp: tenant-backup-tools ← dev"  "$(ntag tenant-backup-tools)" "TB-666"
+yes "the release commit includes the production overlay" "git -C '$R' show --stat HEAD | grep -q 'overlays/production/kustomization.yaml'"
+rm -rf "$R"
+
+echo "== ADR-053: a cut still works with NO overlays present (skips stamping) =="
+R=$(make_repo)
+"$CUT" --root "$R" --year-month 2026.6 --yes >/dev/null 2>&1
+yes "tag created even without overlays" "git -C '$R' rev-parse v2026.6.1 >/dev/null 2>&1"
+rm -rf "$R"
+
 echo "== the --breaking gate (both directions) =="
 # fixture's [Unreleased] has no ### BREAKING
 R=$(make_repo)

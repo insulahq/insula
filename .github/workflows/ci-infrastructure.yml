@@ -2,13 +2,13 @@ name: Infrastructure CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'k8s/**'
       - 'scripts/**'
       - 'security/**'
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'k8s/**'
       - 'scripts/**'
@@ -218,6 +218,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify no committed Plan + pinned+hardened SUC + skip-a-minor refusal
         run: ./scripts/ci-system-upgrade-check.sh
+      - name: Verify ADR-053 GitOps structure (Flux sources / build-deploy / sync-development / cut-release)
+        run: ./scripts/ci-gitops-structure-check.sh
 
   upgrade-repin-guard:
     name: Platform upgrade re-pin invariants (ADR-045 W13)

@@ -2,10 +2,10 @@ name: Backend CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths: ['backend/**', 'packages/api-contracts/**']
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths: ['backend/**', 'packages/api-contracts/**']
 
 jobs:

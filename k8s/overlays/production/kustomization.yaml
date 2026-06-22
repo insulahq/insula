@@ -3,7 +3,13 @@
 # Image tags are pinned to semver. The release.yml workflow creates a PR to
 # the `stable` branch with updated tags. Human merges the PR → Flux deploys.
 #
-# NEVER use :latest here. Tags are updated by release.yml GitHub Action.
+# NEVER use :latest here. ADR-053: scripts/cut-release.sh stamps these
+# newTags as part of cutting a release (the 3 platform images → the release
+# version; the internal DaemonSet/sidecar images → a snapshot of the current
+# development-overlay pins, since those are timestamp-sha tagged by their own
+# CI, never the release version). The immutable, cosign-signed tag therefore
+# fully describes its own image set. The `0.0.0` values are pre-first-release
+# placeholders, overwritten on the next cut.
 
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -71,3 +77,19 @@ images:
     newTag: "0.0.0"  # Updated by release.yml PR
   - name: ghcr.io/insulahq/insula/tenant-panel
     newTag: "0.0.0"  # Updated by release.yml PR
+  # Internal DaemonSet/sidecar images — timestamp-sha tagged by each image's own
+  # CI (.github/scripts/pin-image-tag.sh pins them in overlays/development).
+  # cut-release.sh snapshots the current development pins here at cut time so the
+  # release tag is reproducible (placeholders until the first cut).
+  - name: ghcr.io/insulahq/insula/security-probe
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/firewall-reconciler
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/host-config-reconciler
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/backup-rclone
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/sftp-gateway
+    newTag: "0.0.0"
+  - name: ghcr.io/insulahq/insula/tenant-backup-tools
+    newTag: "0.0.0"

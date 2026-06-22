@@ -64,8 +64,10 @@ The hard-won rules. Violating these is how past sessions broke things.
 
 ### Git & PRs
 - **Default to commit + push at task end** without being asked.
-- **Always `fetch` + `rebase` before pushing `main`.** `main` auto-pins images on every push, so a
-  manual push must rebase first. Never `--force` a non-fast-forward.
+- **Always `fetch` + `rebase` before pushing.** Code work lands on the **`development`** branch (the
+  DEV cluster's Flux source); `build-deploy` auto-pins images on every push to `development`, so a
+  manual push must rebase first. Promote `development → main` by reviewed PR — `main` has no
+  auto-pin. Never `--force` a non-fast-forward. (ADR-053.)
 - Conventional-commit messages (`feat|fix|refactor|docs|test|chore|perf|ci`). Attribution is
   disabled globally — no co-author trailers. For PRs, analyze the **full** commit history
   (`git diff <base>...HEAD`), not just the latest commit.
@@ -121,7 +123,7 @@ frontend/
   tenant-panel/           # React 18 + Vite + shadcn/ui (port 5174)
 k8s/
   base/                   # Kustomize base manifests
-  overlays/               # dev, production overlays
+  overlays/               # development (DEV cluster), staging, production (ADR-053)
   components/             # reusable Kustomize components (auth gates, …)
 scripts/                  # Utility + bootstrap + integration scripts
 docs/                     # architecture/ + operations/ + features/ + development/ (current),
@@ -217,10 +219,16 @@ blog.example.test → <slug>.ingress.<apex> → <node>.<apex> → <IP>
 - **Longhorn from day one** (replica=1 on single node) for a consistent StorageClass.
 - **Runtime config injection:** frontends `envsubst` at container startup (not build-time `VITE_`
   vars) — build once, deploy anywhere.
-- **GitOps:** `main` builds + auto-pins images on every push; the `development` branch drives the
-  development cluster via Flux; production uses an **admin-controlled pull model** — signed CalVer
-  releases verified on-node (openssl against `/etc/platform/cosign.pub`) by `platform-ops`. Specifics
-  in `docs/development/` and `docs/architecture/`.
+- **GitOps (ADR-053):** `development` is the **upstream integration branch** — the DEV cluster
+  (`--env dev`) auto-deploys every push to it (`build-deploy` builds + pins images directly on
+  `development`). Code promotes **`development → main` by reviewed PR** after DEV testing; **no
+  cluster tracks `main`**. Releases are **cut manually** from `main`
+  (`cut-release.sh [--prerelease]`, which stamps the staging+production overlay image pins so the
+  signed tag is self-describing). **STAGING** (`--env staging`) auto-follows the newest RC/stable
+  tag via Flux `ref.semver: ">=0.0.0-0"`; **PRODUCTION** (`--env production`) uses the
+  **admin-controlled pull model** — signed CalVer releases verified on-node (openssl against
+  `/etc/platform/cosign.pub`) by `platform-ops`. Guard: `ci-gitops-structure-check.sh`. Specifics in
+  ADR-053 + `docs/development/`.
 - **Domain placeholders:** every overlay uses `${DOMAIN}`, resolved at apply time by Flux
   `postBuild.substituteFrom` (`ConfigMap/platform-cluster-config`) or `bootstrap.sh`. Never bake a
   literal apex into manifests — a CI guard (`ci-no-pinned-domains.sh`) rejects it.

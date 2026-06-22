@@ -78,21 +78,22 @@ commit() {
 commit
 
 # Race-recovery loop (same shape as build-deploy.yml's pin push). On a rejected
-# push: reset to origin/main (picking up any concurrent pin), re-apply ONLY
-# this image's newTag line, recommit, retry. Each pin touches a single distinct
-# line, so this always converges; the shared `pin-development-*` concurrency
-# group on the caller job makes a collision rare in the first place.
+# push: reset to origin/development (picking up any concurrent pin), re-apply
+# ONLY this image's newTag line, recommit, retry. Each pin touches a single
+# distinct line, so this always converges; the shared `pin-development-*`
+# concurrency group on the caller job makes a collision rare in the first place.
+# ADR-053: pins land directly on `development` (the DEV cluster's Flux source).
 for attempt in 1 2 3 4; do
-  if git -C "$ROOT" push origin HEAD:main; then
+  if git -C "$ROOT" push origin HEAD:development; then
     echo "push succeeded on attempt $attempt"
     exit 0
   fi
-  echo "push attempt $attempt rejected — reset to origin/main + re-apply pin"
-  git -C "$ROOT" fetch origin main
-  git -C "$ROOT" reset --hard origin/main
+  echo "push attempt $attempt rejected — reset to origin/development + re-apply pin"
+  git -C "$ROOT" fetch origin development
+  git -C "$ROOT" reset --hard origin/development
   apply_pin
   if git -C "$ROOT" diff --quiet -- "$KUST"; then
-    echo "after reset+reapply ${IMAGE_SHORT} already at ${TAG} on origin/main — done."
+    echo "after reset+reapply ${IMAGE_SHORT} already at ${TAG} on origin/development — done."
     exit 0
   fi
   commit

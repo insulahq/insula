@@ -2,10 +2,10 @@ name: Private-Worker-Agent CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths: ['images/private-worker-agent/**', '.github/workflows/ci-private-worker-agent.yml']
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths: ['images/private-worker-agent/**', '.github/workflows/ci-private-worker-agent.yml']
   workflow_dispatch:
 

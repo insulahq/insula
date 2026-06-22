@@ -6,10 +6,10 @@ name: API Contracts CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths: ['packages/api-contracts/**', '.github/workflows/ci-api-contracts.yml']
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths: ['packages/api-contracts/**', '.github/workflows/ci-api-contracts.yml']
 
 jobs:

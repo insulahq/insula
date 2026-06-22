@@ -2,12 +2,12 @@ name: Claim-Validator Sidecar CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'images/claim-validator/**'
       - '.github/workflows/ci-claim-validator.yml'
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'images/claim-validator/**'
       - '.github/workflows/ci-claim-validator.yml'
@@ -53,7 +53,7 @@ jobs:
           tags: |
             type=sha,prefix=
             type=ref,event=branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
 
       - uses: docker/build-push-action@v5
         with:

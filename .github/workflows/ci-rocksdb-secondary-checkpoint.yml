@@ -10,12 +10,12 @@ name: rocksdb-secondary-checkpoint CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'images/rocksdb-secondary-checkpoint/**'
       - '.github/workflows/ci-rocksdb-secondary-checkpoint.yml'
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'images/rocksdb-secondary-checkpoint/**'
       - '.github/workflows/ci-rocksdb-secondary-checkpoint.yml'
