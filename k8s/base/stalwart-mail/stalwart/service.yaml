@@ -50,7 +50,19 @@ metadata:
     app.kubernetes.io/component: mail-server
 spec:
   type: LoadBalancer
-  externalTrafficPolicy: Local
+  # Cluster (NOT Local): the staging/production externalIPs land on the
+  # NON-active HAProxy nodes (the active Stalwart node is excluded — see
+  # mail-admin/port-exposure-modes.ts). Under `Local`, kube-proxy's
+  # KUBE-EXTERNAL-SERVICES drops externalIP mail traffic on every node
+  # without a local Stalwart endpoint, i.e. exactly the HAProxy nodes →
+  # mail unreachable on all but the active node (multi-node HA broken).
+  # `Cluster` routes externalIP mail cluster-wide; the HAProxy DaemonSet's
+  # send-proxy-v2 re-injects the real client IP (see haproxy/configmap.yaml),
+  # so source-IP for SPF/DKIM is preserved despite kube-proxy masquerade.
+  # The dev overlay still `op: remove`s this (its Service is ClusterIP, which
+  # forbids externalTrafficPolicy). Was `Local`; fixed 2026-06-22 after the
+  # ADR-053 prod-mirror staging exposed the multi-node HA-mail drop.
+  externalTrafficPolicy: Cluster
   selector:
     app: stalwart-mail
   ports:

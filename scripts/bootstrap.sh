@@ -6665,13 +6665,23 @@ apply_platform_manifests() {
   local tenant_host="tenant.${PLATFORM_DOMAIN}"
   log "Hostnames: ${api_host}, ${admin_host}, ${tenant_host}"
 
-  # Generate the environment overlay with real hostnames.
-  # For staging, preserve the checked-in kustomization.yaml (contains
-  # Flux image policy markers) and only write an ingress patch file.
-  # W1: staging-role clusters consume the development overlay (the
-  # overlay tracks the branch role, not the cluster role).
+  # ADR-053: bootstrap applies the SAME overlay Flux will reconcile for this
+  # env, so the imperative install and Flux never diverge. Mirror the
+  # env→overlay mapping from install_flux exactly:
+  #   dev        → overlays/development  (the cloud DEV-cluster overlay the
+  #                                       development branch feeds; overlays/dev
+  #                                       is the local-DinD overlay, NOT this)
+  #   staging    → overlays/staging      (the production mirror that release
+  #                                       tags feed)
+  #   production → overlays/production
+  # The old `staging → development` remap (W1, from the pre-ADR-053 model where
+  # staging tracked the development BRANCH) applied the dev overlay's 20Gi
+  # system-db patch, but Flux's staging overlay wants the 2Gi base → CNPG
+  # rejects the shrink → the platform Kustomization deadlocks Ready=False
+  # ("can't shrink existing storage from 20Gi to 2Gi"). Observed on the first
+  # ADR-053 staging re-bootstrap, 2026-06-22.
   local overlay_env="$PLATFORM_ENV"
-  if [[ "$PLATFORM_ENV" == "staging" ]]; then
+  if [[ "$PLATFORM_ENV" == "dev" ]]; then
     overlay_env="development"
   fi
   local overlay_dir="${repo_dir}/k8s/overlays/${overlay_env}"

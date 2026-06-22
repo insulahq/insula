@@ -21,6 +21,12 @@ data:
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.69.1"
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
+  # Per-tenant file-manager sidecar image. Without this override the base
+  # ConfigMap's bare `file-manager:latest` resolves to docker.io and
+  # ImagePullBackOffs — the dev overlay sets this but production didn't, so
+  # file-manager was broken on every non-dev cluster (surfaced by the ADR-053
+  # prod-mirror staging, 2026-06-22).
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
   # Admin node-terminal (ADR-041 — privileged root shell on cluster
   # nodes via nsenter into host PID 1). Default OFF in production
   # since the feature is a break-glass tool. Flip to "true" here when
