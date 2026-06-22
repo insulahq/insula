@@ -27,12 +27,16 @@ data:
   # file-manager was broken on every non-dev cluster (surfaced by the ADR-053
   # prod-mirror staging, 2026-06-22).
   file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
-  # Admin node-terminal (ADR-041 — privileged root shell on cluster
-  # nodes via nsenter into host PID 1). Default OFF in production
-  # since the feature is a break-glass tool. Flip to "true" here when
-  # the deployment is single-replica platform-api OR HA stickiness is
-  # configured. See docs/operations/NODE_TERMINAL.md.
-  node-terminal-enabled: "false"
+  # Admin node-terminal (ADR-041 — super_admin-only privileged root shell
+  # on cluster nodes via nsenter into host PID 1). ENABLED in production:
+  # it's a break-glass tool operators need, and it's still gated by the
+  # 30-min OIDC step-up freshness check + a 256-bit single-use 60s wsToken.
+  # HA-safe with no extra config — the wsToken is validated against the
+  # Postgres `node_terminal_sessions` table (any platform-api replica can
+  # serve any session; the old "needs single-replica/stickiness" caveat was
+  # the obsolete in-memory design), and base already sets the platform-api
+  # Service `sessionAffinity: ClientIP`. See docs/operations/NODE_TERMINAL.md.
+  node-terminal-enabled: "true"
   # Allowlist for publicWssOrigin — host portion of cors-origins.
   # Belt-and-braces against X-Forwarded-Host spoofing. Populated even
   # when the feature is disabled so flipping the flag above doesn't

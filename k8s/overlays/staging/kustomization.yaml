@@ -2,15 +2,54 @@
 #
 # Tracks release TAGS via Flux `spec.ref.semver: ">=0.0.0-0"` (RC + stable), so
 # every manual `scripts/cut-release.sh [--prerelease]` rolls here automatically.
-# It deliberately MIRRORS production (bases on ../production) so staging exercises
-# the exact signed artifact production will later pull — image pins included
-# (cut-release stamps them in ../production; this overlay inherits them).
+# It MIRRORS production (bases on ../production) so staging exercises the exact
+# signed artifact production will later pull — image pins included (cut-release
+# stamps them in ../production; this overlay inherits them).
 #
-# Put staging-ONLY deltas here (patches/components/resources) — e.g. LE-staging
-# cert issuer, or `node-terminal-enabled` ON for debugging. None today: a pure
-# mirror is the truest validation of what production receives.
+# Staging-ONLY deltas live below. Today: an in-cluster Dex (identity provider)
+# so OIDC integration is testable on staging. Production legitimately runs NO
+# in-cluster Dex (external IAM), and `ci-no-dex-in-production.sh` enforces that
+# by rendering ONLY ../production — which never references this overlay, so Dex
+# stays out of the production render. Restoring Dex here also un-sticks the base
+# oauth2-proxy on staging (its `wait-for-dex-discovery` initContainer was
+# blocking forever on a pruned issuer). The dex manifests are copied verbatim
+# from k8s/overlays/development/dex (both ${DOMAIN}-templated; copied, not
+# shared, so editing the running dev overlay carries no risk, and bootstrap's
+# dex-config secret-sync finds ${overlay_dir}/dex/config.yaml).
+# node-terminal-enabled is now ON in production, so staging inherits it.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../production
+  - dex/
+
+patches:
+  # Same affinity patch the dev overlay carries (development/kustomization.yaml):
+  # dex is overlay-only, so it can't ride the shared system-node-affinity
+  # component (which ../production pulls in but must exclude dex from). Inlined
+  # rather than `path:` because Kustomize refuses patch files outside the
+  # overlay root.
+  - target: { kind: Deployment, name: dex, namespace: platform }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: dex
+        namespace: platform
+      spec:
+        template:
+          spec:
+            affinity:
+              nodeAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  nodeSelectorTerms:
+                    - matchExpressions:
+                        - key: insula.host/node-role
+                          operator: In
+                          values: [server]
+            tolerations:
+              - key: insula.host/server-only
+                operator: Equal
+                value: "true"
+                effect: NoSchedule

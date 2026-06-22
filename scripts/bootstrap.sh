@@ -6443,11 +6443,23 @@ bootstrap_stalwart_v016() {
     return 0
   fi
 
-  local admin_code recovery_code
-  admin_code=$(kctl exec -n platform "$probe_pod" -- \
-    curl -s -o /dev/null -w '%{http_code}' \
-    -u "admin:${stalwart_admin_pw}" --max-time 5 \
-    "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+  local admin_code recovery_code probe_attempt
+  # Retry the admin probe on a transient 000 (connection failure). Stalwart can
+  # be momentarily unreachable here even after its Deployment reports ready: the
+  # mail pod reschedules across the host-port rolling-update gap, or its admin
+  # listener comes up a few seconds late. A single 000 previously fell through to
+  # the `*)` case below and made bootstrap "refuse to bootstrap" + exit 1
+  # (observed on the ADR-053 staging rebuild, 2026-06-22 — a bootstrap re-run
+  # then succeeded once Stalwart settled). Up to 10×6s = 60s before giving up.
+  for probe_attempt in $(seq 1 10); do
+    admin_code=$(kctl exec -n platform "$probe_pod" -- \
+      curl -s -o /dev/null -w '%{http_code}' \
+      -u "admin:${stalwart_admin_pw}" --max-time 5 \
+      "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+    [[ "$admin_code" != "000" ]] && break
+    log "  Stalwart admin endpoint not reachable yet (000, attempt ${probe_attempt}/10) — retrying in 6s..."
+    sleep 6
+  done
   recovery_code=$(kctl exec -n platform "$probe_pod" -- \
     curl -s -o /dev/null -w '%{http_code}' \
     -u "admin:${stalwart_recovery_pw}" --max-time 5 \
