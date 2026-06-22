@@ -12,12 +12,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 ENV_FILE="${SCRIPT_DIR}/../.env.local"
 
+# .env.local holds LOCAL-DinD defaults. When this script is invoked against a
+# REMOTE cluster (integration-all.sh exports ADMIN_PASSWORD / API_URL / ADMIN_EMAIL,
+# or an operator sets them), those caller-provided values MUST win — otherwise a
+# stray .env.local silently clobbers them and the smoke gate 401s against the
+# remote cluster with local-dev creds (observed on the staging rebuild 2026-06-22).
+# Capture what the caller passed, source the file, then restore the caller's values.
+_CALLER_API_URL="${API_URL:-}"
+_CALLER_ADMIN_EMAIL="${ADMIN_EMAIL:-}"
+_CALLER_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck source=/dev/null
   source "$ENV_FILE"
   set +a
 fi
+[[ -n "$_CALLER_API_URL" ]] && API_URL="$_CALLER_API_URL"
+[[ -n "$_CALLER_ADMIN_EMAIL" ]] && ADMIN_EMAIL="$_CALLER_ADMIN_EMAIL"
+[[ -n "$_CALLER_ADMIN_PASSWORD" ]] && ADMIN_PASSWORD="$_CALLER_ADMIN_PASSWORD"
 
 API_URL="${API_URL:-http://admin.k8s-platform.test:${PORT_INGRESS_HTTP:-2010}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
