@@ -12,6 +12,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **In-cluster Dex restored on staging for OIDC integration testing.** ADR-053 made the
+  staging overlay a pure mirror of production, which (correctly) has no in-cluster Dex —
+  but that also removed the ability to test the OIDC flow on staging. Dex is now a
+  staging-only delta (`k8s/overlays/staging/dex/`); production still ships no Dex
+  (`ci-no-dex-in-production.sh` stays green). Side effect: un-sticks the base oauth2-proxy
+  on staging, whose `wait-for-dex-discovery` init was blocking on the pruned issuer.
+
+### Changed
+- **Admin node-terminal is now ENABLED in production** (`overlays/production`). It's a
+  break-glass tool operators need and is HA-safe with no extra config: the single-use
+  `wsToken` is validated against the Postgres `node_terminal_sessions` table (any
+  platform-api replica serves any session — the old in-memory design that required
+  single-replica/stickiness is obsolete), and base already sets the platform-api Service
+  `sessionAffinity: ClientIP`. Still gated by the 30-min OIDC step-up + 256-bit single-use
+  60s wsToken.
+
+### Fixed
+- **bootstrap: Stalwart auth probe now retries a transient `000`** instead of refusing to
+  bootstrap (exit 1). The mail pod can be momentarily unreachable (host-port
+  rolling-update gap / admin listener lagging the rollout-ready signal); retries up to
+  10×6s before giving up.
+- **smoke-test.sh no longer lets `../.env.local` clobber caller-provided creds.** A local
+  `.env.local` was overriding the `ADMIN_PASSWORD`/`API_URL`/`ADMIN_EMAIL` exported for a
+  REMOTE cluster, 401'ing the smoke gate with local-dev creds. The caller's env now wins.
+
 ## [2026.6.15] - 2026-06-22
 
 ### Added
