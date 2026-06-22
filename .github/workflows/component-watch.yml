@@ -9,7 +9,7 @@ name: Component Watch
 
 on:
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'security/**'
       - 'package-lock.json'

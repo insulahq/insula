@@ -2,10 +2,10 @@ name: Admin Panel CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths: ['frontend/admin-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-admin-panel.yml']
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths: ['frontend/admin-panel/**', 'packages/api-contracts/**', 'packages/ui-restore-cart/**', '.github/workflows/ci-admin-panel.yml']
 
 jobs:

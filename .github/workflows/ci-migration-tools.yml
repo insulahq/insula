@@ -2,10 +2,10 @@ name: Migration-Tools CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths: ['images/migration-tools/**', '.github/workflows/ci-migration-tools.yml']
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths: ['images/migration-tools/**', '.github/workflows/ci-migration-tools.yml']
   workflow_dispatch:
 
@@ -61,9 +61,9 @@ jobs:
           sbom: ${{ github.event_name != 'pull_request' }}
 
       - uses: sigstore/cosign-installer@v3
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
       - name: Sign image (keyless, OCI 1.1 referrers)
-        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
           COSIGN_EXPERIMENTAL: "1"

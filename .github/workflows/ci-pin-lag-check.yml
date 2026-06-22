@@ -11,7 +11,7 @@ name: Pin Lag Check
 
 on:
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       # Avoid running on every PR — only when it could matter. The
       # guard is checking origin/main's pin state, not the PR diff, so

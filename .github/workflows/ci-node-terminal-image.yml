@@ -9,12 +9,12 @@ name: node-terminal CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths:
       - 'images/node-terminal/**'
       - '.github/workflows/ci-node-terminal-image.yml'
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'images/node-terminal/**'
       - '.github/workflows/ci-node-terminal-image.yml'

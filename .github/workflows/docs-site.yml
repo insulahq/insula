@@ -9,7 +9,7 @@ name: Documentation Site
 # documentation/ on a schedule. Both serve the same content.
 on:
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths:
       - 'documentation/**'
       - '.github/workflows/docs-site.yml'

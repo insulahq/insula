@@ -2,10 +2,10 @@ name: File-Manager CI
 
 on:
   push:
-    branches: [main]
+    branches: [development]
     paths: ['images/file-manager/**', '.github/workflows/ci-file-manager.yml']
   pull_request:
-    branches: [main]
+    branches: [development, main]
     paths: ['images/file-manager/**', '.github/workflows/ci-file-manager.yml']
   workflow_dispatch:
 
