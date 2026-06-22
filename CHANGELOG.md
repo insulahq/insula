@@ -43,6 +43,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   nodes the externalIPs land on. Changed to `Cluster`; the HAProxy DaemonSet's send-proxy-v2 still
   re-injects the real client IP, so SPF/DKIM source IP is preserved. (Surfaced by the ADR-053
   production-mirror staging; the development overlay had masked it by stripping the field.)
+- **Per-tenant file-manager was broken on every non-dev cluster (ImagePullBackOff).** The production
+  `platform-config` overlay was missing the `file-manager-image` override, so the base ConfigMap's
+  bare `file-manager:latest` resolved to `docker.io/library/file-manager:latest` (does not exist).
+  Added the GHCR override to the production overlay (the dev overlay already had it). Surfaced by the
+  ADR-053 production-mirror staging.
 
 ### Security
 - **Upgraded k3s v1.33.10 → v1.35.5+k3s1** (Kubernetes stable channel) to cut base-OS CVEs in the
