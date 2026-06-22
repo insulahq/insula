@@ -12,10 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.6.15-rc.2] - 2026-06-22
-
-## [2026.6.15-rc.1] - 2026-06-22
-
 ### Added
 - **k3s multi-minor auto-step (R21, ADR-045 dec. 21).** `platform-ops cluster upgrade --version <target>`
   now splits a multi-minor jump into serial single-minor hops automatically — it resolves each
@@ -34,6 +30,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   domains/mailboxes with a clear `TENANT_NOT_ACTIVE` (409). Fixes tenants stuck `pending` forever and
   the downstream `452 4.3.1 mail system full` their mailboxes hit. Admin UI: "Provision Now" in the
   create-success dialog + a not-provisioned warning banner on the tenant detail page.
+
+### Fixed
+- **ADR-053 cutover: bootstrap applied the wrong overlay for `--env staging`.** The stale
+  `staging → development` overlay remap applied the development overlay's 20Gi system-db patch while
+  Flux reconciled the 2Gi staging (production-mirror) overlay → CNPG rejected the storage shrink →
+  the platform Kustomization deadlocked `Ready=False`. bootstrap now mirrors `install_flux`'s
+  env→overlay mapping exactly (dev→`development`, staging→`staging`, production→`production`).
+- **Multi-node HA mail was unreachable on the non-active server nodes.** The `stalwart-mail` Service
+  used `externalTrafficPolicy: Local`, so kube-proxy dropped externalIP mail traffic
+  (:25/:465/:587/:993) on every node without a local Stalwart endpoint — i.e. exactly the HAProxy
+  nodes the externalIPs land on. Changed to `Cluster`; the HAProxy DaemonSet's send-proxy-v2 still
+  re-injects the real client IP, so SPF/DKIM source IP is preserved. (Surfaced by the ADR-053
+  production-mirror staging; the development overlay had masked it by stripping the field.)
 
 ### Security
 - **Upgraded k3s v1.33.10 → v1.35.5+k3s1** (Kubernetes stable channel) to cut base-OS CVEs in the
