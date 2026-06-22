@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.6.16-rc.1] - 2026-06-22
-
 ### Added
 - **In-cluster Dex restored on staging for OIDC integration testing.** ADR-053 made the
   staging overlay a pure mirror of production, which (correctly) has no in-cluster Dex —
