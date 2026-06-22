@@ -170,7 +170,7 @@ images:
   - name: ghcr.io/insulahq/insula/host-config-reconciler
     newTag: "20260610095804-ab58b4d"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260610095620-ab58b4d"
+    newTag: "20260622122902-6554a7c"
   - name: ghcr.io/insulahq/insula/sftp-gateway
     newTag: "20260610095545-ab58b4d"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
