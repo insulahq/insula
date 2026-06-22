@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.6.15-rc.3] - 2026-06-22
-
 ### Added
 - **k3s multi-minor auto-step (R21, ADR-045 dec. 21).** `platform-ops cluster upgrade --version <target>`
   now splits a multi-minor jump into serial single-minor hops automatically — it resolves each
