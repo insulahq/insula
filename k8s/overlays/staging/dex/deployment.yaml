@@ -1,0 +1,147 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: platform
+  labels:
+    app: dex
+spec:
+  # Replicas owned by the M14 storage-policy reconciler again. Earlier
+  # this overlay pinned replicas:1 because per-pod SQLite auth state
+  # made multi-replica Dex incoherent (auth_request created on pod A
+  # could not be looked up on pod B → "invalid 'state' parameter").
+  # config.yaml now uses storage.type: postgres against the platform
+  # CNPG `app` database, so every Dex pod shares state and HA is
+  # safe again. See integration-oidc-dex.sh scenarios 6+7 for
+  # regression coverage.
+  selector:
+    matchLabels:
+      app: dex
+  template:
+    metadata:
+      labels:
+        app: dex
+    spec:
+      # 2026-05-11: DoNotSchedule for strict one-per-server placement.
+      # Dex is dev/staging only per project_dex_deployment_scope; in HA
+      # mode every staging server runs a Dex pod so on node loss the
+      # surviving Dex replicas already serve and no rescheduling is
+      # needed. Headroom math protects against Pending — see
+      # backend/src/modules/platform-storage-policy/failover-headroom.ts.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: dex
+      # Wait for postgres before starting the main container. Without
+      # this, on a cold first-bootstrap dex hits "dial tcp ...:5432:
+      # connect: connection refused" → exits 1 → CrashLoopBackOff
+      # with exponential backoff. The pod eventually self-recovers
+      # (~7 restarts on testing.example.test 2026-05-21) once
+      # system-db comes up, but the backoff wastes minutes and clutters
+      # bootstrap logs with crashloop noise. Same pattern + 32Mi floor
+      # as oauth2-proxy's wait-for-dex-discovery initContainer.
+      initContainers:
+        - name: wait-for-postgres
+          image: busybox:1.37
+          command:
+            - sh
+            - -c
+            # IMPORTANT: every shell `$` is escaped as `$$` because Flux's
+            # Kustomization postBuild.substituteFrom (platform-cluster-config)
+            # runs envsubst over this manifest before apply — un-escaped
+            # ${host}/${port}/${i}/$(seq …) get stripped to empty strings,
+            # producing `nc -z -w 2 "" ""` → `nc: bad port ''` → the
+            # initContainer crashloops, the new ReplicaSet never goes Ready,
+            # and the dex rollout wedges (old rev keeps serving, new rev stuck
+            # Init). Flux collapses `$$`→`$` at apply, leaving real shell refs.
+            # Same fix as oauth2-proxy's initContainer (k8s/base/oauth2-proxy).
+            # NOTE: ci-flux-escape-check.sh only scans Job/CronJob, so it did
+            # NOT catch this Deployment — see PR for the guard-coverage gap.
+            - |
+              set -eu
+              host="postgres.platform.svc.cluster.local"
+              port="5432"
+              echo "polling: $${host}:$${port}"
+              for i in $$(seq 1 60); do
+                if nc -z -w 2 "$${host}" "$${port}"; then
+                  echo "postgres reachable (attempt $${i})"
+                  exit 0
+                fi
+                echo "waiting for postgres... ($${i}/60)"
+                sleep 5
+              done
+              echo "postgres never became reachable after 5 min — main dex would crashloop too" >&2
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      containers:
+        - name: dex
+          image: ghcr.io/dexidp/dex:v2.45.1
+          command: ["dex", "serve", "/etc/dex/config.yaml"]
+          env:
+            # Dex supports $ENV substitution in config.yaml. The
+            # oauth2-proxy client secret comes from the generated
+            # oauth2-proxy-config Secret (bootstrap creates it), and
+            # config.yaml references it as $OAUTH2_PROXY_CLIENT_SECRET.
+            # This avoids committing the secret into git.
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oauth2-proxy-config
+                  key: OAUTH2_PROXY_CLIENT_SECRET
+            # Same `platform` DB + `platform` SQL user that
+            # platform-api uses (Secret platform-db-credentials,
+            # bootstrapped from the postgres init Job). Dex creates
+            # its own table set on first start; none of those names
+            # collide with platform-api's oidc_* / users / clients
+            # tables. CNPG's auto-generated `postgres-app` Secret
+            # describes a different DB (`app`) that the platform
+            # doesn't actually use.
+            - name: DEX_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-credentials
+                  key: username
+            - name: DEX_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: platform-db-credentials
+                  key: password
+          ports:
+            - containerPort: 5556
+              protocol: TCP
+          volumeMounts:
+            - name: config
+              mountPath: /etc/dex
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          livenessProbe:
+            httpGet:
+              path: /dex/.well-known/openid-configuration
+              port: 5556
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /dex/.well-known/openid-configuration
+              port: 5556
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: dex-config

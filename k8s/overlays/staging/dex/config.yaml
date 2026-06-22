@@ -1,0 +1,79 @@
+# Dex configuration for staging environment
+#
+# Static users for testing:
+#   - admin@k8s-platform.test / admin
+#   - user@k8s-platform.test  / user
+#
+# IMPORTANT: bootstrap.sh --env staging --domain <FQDN> regenerates
+# this file with correct hostnames. ${DOMAIN} will
+# fail loudly if not overridden.
+
+issuer: https://dex.${DOMAIN}/dex
+
+# Postgres-backed storage: Dex auth_request / auth_code / refresh_token /
+# device_request rows live in the platform's `platform` database
+# (shared with platform-api, same `platform` SQL user). Dex creates its
+# own table set on first start (auth_request, auth_code, refresh_token,
+# keys, client, connector, password, offline_session, device_request,
+# device_token) — none of these names collide with platform's own
+# oidc_* / users / clients tables.
+#
+# Why postgres: SQLite-on-emptyDir stored auth state per-pod, which
+# made multi-replica Dex deployments incoherent (auth_request created
+# on pod A could not be looked up by /dex/auth/local/login on pod B).
+# Surfaced by integration-oidc-dex.sh — see project memory and the
+# 0086_oidc_pkce_state.sql migration which fixed the same class of
+# bug on platform-api's own PKCE store.
+#
+# Credentials are pulled from the platform-db-credentials Secret
+# (same one platform-api uses; created during bootstrap). $ENV
+# substitution is performed by Dex on config load via os.ExpandEnv.
+storage:
+  type: postgres
+  config:
+    host: postgres.platform.svc.cluster.local
+    port: 5432
+    database: platform
+    user: $DEX_DB_USER
+    password: $DEX_DB_PASSWORD
+    ssl:
+      mode: disable
+
+web:
+  http: 0.0.0.0:5556
+
+oauth2:
+  skipApprovalScreen: true
+
+staticClients:
+  - id: hosting-platform-admin
+    name: Hosting Platform Admin
+    secret: staging-secret-admin
+    redirectURIs:
+      - https://admin.${DOMAIN}/api/v1/auth/oidc/callback
+  - id: hosting-platform-tenant
+    name: Hosting Platform Tenant
+    secret: staging-secret-tenant
+    redirectURIs:
+      - https://admin.${DOMAIN}/api/v1/auth/oidc/callback
+  - id: hosting-platform-oauth2-proxy
+    name: OAuth2 Proxy
+    secret: $OAUTH2_PROXY_CLIENT_SECRET
+    redirectURIs:
+      - https://admin.${DOMAIN}/oauth2/callback
+
+connectors: []
+
+enablePasswordDB: true
+
+staticPasswords:
+  - email: admin@k8s-platform.test
+    # password: "admin"
+    hash: "$2a$12$CKIgnUHcoyiGpppJxt.03.O9rcptDVj3sD5K.vbx8VR5D/EcYgdua"
+    username: admin
+    userID: "00000000-0000-0000-0000-000000000001"
+  - email: user@k8s-platform.test
+    # password: "user"
+    hash: "$2a$12$hCtO8LmCEJW7B8UlS3jU7utAoLNHJf6P83ZpuyN6tM8YCnMJSsB5G"
+    username: user
+    userID: "00000000-0000-0000-0000-000000000003"
