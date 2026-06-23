@@ -42,9 +42,10 @@ WORKLOADS=(
   # sidecar inside this Pod and inherits the affinity.
   "mail|Deployment|bulwark|1"
   "platform|Deployment|dex|1"
-  # Valkey/Sentinel coordinator cache — staging-only until production
-  # overlay folds in k8s/base/valkey/. StatefulSet (not Deployment).
-  "redis-system|StatefulSet|valkey|1"
+  # Valkey/Sentinel coordinator cache was DISABLED 2026-06-23 (nothing consumes
+  # it — see k8s/overlays/development/kustomization.yaml). The base manifests are
+  # kept for re-activation; if `- valkey/` is re-enabled in an overlay, re-add
+  # "redis-system|StatefulSet|valkey|1" here so the affinity is re-checked.
   # OWASP ModSecurity-CRS WAF sidecars — checked in both overlays.
   # The platform IngressRoute Middleware proxies to these pods; if
   # they can't schedule, admin/client return 502.
