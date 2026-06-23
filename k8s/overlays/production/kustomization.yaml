@@ -37,9 +37,16 @@ resources:
   # `mail-secrets` Secret + the `roundcube` PG database/role on
   # the platform CNPG cluster (scripts/bootstrap.sh:create_roundcube_db).
   - roundcube/
-  # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by the
-  # roundcube Pod (and the bulwark Pod when production opts in). The
-  # data keys are reconciler-owned — Flux is told to skip them.
+  # ADR-039 — Bulwark webmail (JMAP-native). Shipped alongside Roundcube so
+  # the webmail-router reconciler runs whichever engine
+  # `platform_settings.default_webmail_engine` selects and scales the other to
+  # 0 (only one webmail pod ever runs). Without this a fresh prod cluster
+  # whose default engine is `bulwark` 404'd on webmail.${DOMAIN} (reconciler
+  # had no Deployment to scale). Staging inherits this via ../production.
+  - bulwark/
+  # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by BOTH the
+  # roundcube and bulwark Pods. The data keys are reconciler-owned — Flux is
+  # told to skip them.
   - ../../base/mail-feature-css
   # Cross-namespace NetworkPolicy so mail-namespace pods (Stalwart,
   # Roundcube, future MTA components) can reach platform Postgres.

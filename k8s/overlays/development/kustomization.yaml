@@ -68,11 +68,22 @@ resources:
   # the throttle. Production keeps the default.
   - stalwart-throttle-override-job.yaml
   # Platform-wide Valkey (Redis-protocol) coordinator cache. 3-replica
-  # HA from day 1 + Sentinel co-located. Fresh installs land at K8s
-  # default replicas=1; storage-policy reconciler scales to 3 when HA
-  # mode is applied. NetworkPolicy locks the cache to redis-system /
-  # mail / platform namespaces — tenant namespaces explicitly blocked.
-  - valkey/
+  # HA from day 1 + Sentinel co-located. NetworkPolicy locks the cache to
+  # redis-system / mail / platform namespaces — tenant namespaces blocked.
+  #
+  # 2026-06-23 — DISABLED (resource savings): nothing consumes Valkey in the
+  # automated config. The backend cache is in-memory LRU (backend/src/shared/
+  # redis.ts — no Redis client; REDIS_URL is unread). The only intended
+  # consumer is Stalwart, and it is wired ONLY by manually running
+  # scripts/migrate-valkey-bootstrap.sh — never on the bootstrap/CI path. So
+  # the 3-replica StatefulSet was running but unconsumed.
+  #
+  # The deployment code is intentionally KEPT (k8s/base/valkey/ + the valkey/
+  # overlay wrapper + scripts/migrate-valkey-bootstrap.sh) so re-activation is
+  # a one-line uncomment here once a real consumer (e.g. multi-instance
+  # Stalwart) lands. The scenario_redis integration test skips by default
+  # while disabled (SKIP_REDIS_SCENARIO defaults on — integration-staging.sh).
+  # - valkey/
   # NFS test server (originally R-X17 follow-up, 2026-05-21) was
   # REMOVED 2026-05-25 alongside the platform-wide NFS drop —
   # see ADR-043 postscript + migration 0027. No bench harness now
@@ -108,6 +119,14 @@ patches:
   - path: deploy-rev-patch.yaml
   - path: resource-quotas-patch.yaml
   - path: platform-config-patch.yaml
+  # DEV-cluster oauth2-proxy: do OIDC token-redeem + JWKS over the
+  # cluster-internal Dex Service (plaintext :5556) and skip discovery, so the
+  # pod reaches Running without a public LE cert for dex.${DOMAIN}. Mirrors the
+  # local-DinD pattern. Without this oauth2-proxy wedges Init:0/1 forever (the
+  # base init does strict-TLS discovery over the public https issuer). The
+  # active admin gate here is still the cookie gate (above); this keeps the
+  # oauth2 gate path testable on the DEV cluster (which runs Dex).
+  - path: oauth2-proxy-patch.yaml
   # ingress-patch.yaml was REMOVED in the Traefik migration. platform-ingress
   # is now reconciler-managed (backend/src/modules/system-settings/
   # ingress-reconciler.ts creates the IngressRoute from system_settings on

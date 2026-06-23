@@ -1,0 +1,91 @@
+# Development (cloud DEV cluster, --env dev) oauth2-proxy patch.
+#
+# WHY: the base oauth2-proxy does full OIDC discovery over the PUBLIC issuer
+# (https://dex.${DOMAIN}/dex) with strict TLS verify, and its init container
+# curls that issuer's /.well-known/openid-configuration before the main
+# container starts. On the DEV cluster that wedges oauth2-proxy in Init:0/1:
+#   - bootstrap historically baked an http:// issuer, but Dex's IngressRoute
+#     is websecure-only (no :80 route) -> curl 404/000, never ready;
+#   - even over https, the dev Dex Certificate is requested from LE-prod and
+#     may not issue on a non-public dev domain -> Traefik serves a self-signed
+#     cert -> curl -fsS refuses TLS verify.
+#
+# FIX (mirrors the proven local-DinD pattern, k8s/overlays/dev/
+# oauth2-proxy-patch.yaml): do all machine-to-machine OIDC over the
+# cluster-internal Dex Service in PLAINTEXT, so there is no public DNS / TLS /
+# CA dependency on the token-redeem + JWKS path:
+#   - --skip-oidc-discovery=true  (no discovery curl over TLS)
+#   - --login-url   -> public https Dex (browser redirect only)
+#   - --redeem-url / --oidc-jwks-url -> http://dex.platform.svc:5556 (cluster)
+#   - --insecure-oidc-skip-issuer-verification=true (iss is the public https
+#     issuer in the JWT; we verify signature via the internal JWKS)
+# and the init container polls the cluster-internal Dex instead of the public
+# https issuer, so the pod reaches Running without any cert being issued.
+#
+# Browser-facing login still uses https://dex.${DOMAIN}/dex/auth; if LE issues
+# for the dev domain the user sees a valid cert, otherwise a one-time accept —
+# either way the pod is healthy and the gate works.
+#
+# bootstrap.sh:4677-4678 sets OIDC_ISSUER_URL + OAUTH2_PROXY_REDIRECT_URL to
+# https for --env dev so they match Dex's advertised issuer + the registered
+# oauth2-proxy client redirectURI (development/dex/config.yaml).
+#
+# Flux postBuild substitutes ${DOMAIN}; shell ${VAR} inside the init command is
+# escaped as $${VAR} so substituteFrom leaves it for the shell.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: platform
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: wait-for-dex-discovery
+          # Poll the cluster-internal Dex JWKS (plaintext) — no TLS/CA/public
+          # DNS dependency. Mirrors the main container's --oidc-jwks-url so
+          # "init passed" implies the main container can redeem + verify too.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              url="http://dex.platform.svc.cluster.local:5556/dex/keys"
+              echo "polling (cluster-internal, plaintext): $${url}"
+              for i in $$(seq 1 60); do
+                if curl -fsS -o /dev/null --max-time 8 "$${url}"; then
+                  echo "Dex reachable (attempt $${i})"
+                  exit 0
+                fi
+                echo "waiting for cluster-internal Dex... ($${i}/60)"
+                sleep 5
+              done
+              echo "cluster-internal Dex never became reachable after 5 min" >&2
+              exit 1
+      containers:
+        - name: oauth2-proxy
+          args:
+            - --http-address=0.0.0.0:4180
+            - --upstream=static://200
+            - --email-domain=*
+            - --provider=oidc
+            - --oidc-issuer-url=$(OIDC_ISSUER_URL)
+            - --skip-oidc-discovery=true
+            - --login-url=https://dex.${DOMAIN}/dex/auth
+            - --redeem-url=http://dex.platform.svc.cluster.local:5556/dex/token
+            - --oidc-jwks-url=http://dex.platform.svc.cluster.local:5556/dex/keys
+            - --client-id=$(OAUTH2_PROXY_CLIENT_ID)
+            - --client-secret=$(OAUTH2_PROXY_CLIENT_SECRET)
+            - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
+            - --cookie-secure=true
+            - --cookie-samesite=lax
+            - --cookie-name=_platform_oauth2
+            - --redirect-url=$(OAUTH2_PROXY_REDIRECT_URL)
+            - --skip-provider-button=true
+            - --reverse-proxy=true
+            - --set-xauthrequest=true
+            - --pass-access-token=true
+            - --skip-auth-route=^/api/
+            - --skip-auth-route=^/oauth2/
+            - --silence-ping-logging=true
+            - --insecure-oidc-skip-issuer-verification=true

@@ -4674,8 +4674,15 @@ generate_platform_secrets() {
   # See apply_platform_manifests for the matching design choice.
   local issuer_url redirect_url
   if [[ "$PLATFORM_ENV" == "dev" ]]; then
-    issuer_url="http://dex.${PLATFORM_DOMAIN}/dex"
-    redirect_url="http://admin.${PLATFORM_DOMAIN}/oauth2/callback"
+    # HTTPS to match Dex's advertised issuer (development/dex/config.yaml:
+    # issuer: https://dex.<domain>/dex) + the registered oauth2-proxy client
+    # redirectURI. Dex's IngressRoute is websecure-only, so an http issuer
+    # 404s and wedges the oauth2-proxy init. The DEV overlay's
+    # oauth2-proxy-patch.yaml does token-redeem + JWKS over the cluster-
+    # internal Dex Service (plaintext :5556) so this https issuer never needs
+    # a publicly-trusted cert; --cookie-secure=true assumes https.
+    issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
+    redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"
   elif [[ "$PLATFORM_ENV" == "staging" ]]; then
     issuer_url="https://dex.${PLATFORM_DOMAIN}/dex"
     redirect_url="https://admin.${PLATFORM_DOMAIN}/oauth2/callback"

@@ -1358,6 +1358,13 @@ print(json.dumps(out))
 
   provision_tenant "$cid" || { fail "bundle: client provisioning failed"; api DELETE "/tenants/$cid" >/dev/null 2>&1 || true; return 1; }
 
+  # Capture the namespace NOW (while the row exists) so the post-delete drain
+  # can wait for THIS tenant's teardown to fully reap. Fall back to the stamp
+  # pattern if the API field can't be read.
+  local bundle_ns
+  bundle_ns=$(api GET "/tenants/$cid" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('data',{}).get('kubernetesNamespace',''))" 2>/dev/null)
+  local bmatch="${bundle_ns:-tenant-bundle-test-${stamp}}"
+
   # Iterate each active target and run create + verify round-trip.
   local target_ids; target_ids=$(echo "$targets_json" | python3 -c "import json,sys;print(' '.join(t['id'] for t in json.load(sys.stdin)))")
   local target_kinds; target_kinds=$(echo "$targets_json" | python3 -c "import json,sys;print(' '.join(t['kind'] for t in json.load(sys.stdin)))")
@@ -1431,6 +1438,29 @@ print(json.dumps({
 
   # Final cleanup
   api DELETE "/tenants/$cid" >/dev/null 2>&1 || true
+
+  # Drain (leak-guard parity): the DELETE returns as soon as the tenant row is
+  # dropped, but the namespace can still be Terminating and its Longhorn volume
+  # CR still detaching. ci-no-leaked-test-tenants.sh runs right after the suite
+  # and trips on any leftover namespace / Released PV / orphaned volume CR. Wait
+  # for THIS tenant's resources to fully reap before returning so the leak-guard
+  # is deterministic (this scenario used to leak exactly this reaper race).
+  local bdrain=0 bleft=999
+  while (( bdrain < 120 )); do
+    local b_ns b_pv b_lh
+    b_ns=$(ssh_cp "kubectl get ns -o name 2>/dev/null" | grep -c "$bmatch" || echo 0); b_ns=$(echo "$b_ns" | head -n1 | tr -dc '0-9'); b_ns=${b_ns:-0}
+    b_pv=$(ssh_cp "kubectl get pv -o jsonpath='{range .items[?(@.status.phase==\"Released\")]}{.spec.claimRef.namespace}{\"\n\"}{end}'" 2>/dev/null | grep -c "$bmatch" || echo 0); b_pv=$(echo "$b_pv" | head -n1 | tr -dc '0-9'); b_pv=${b_pv:-0}
+    b_lh=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io -o jsonpath='{range .items[*]}{.status.kubernetesStatus.namespace}{\"\n\"}{end}'" 2>/dev/null | grep -c "$bmatch" || echo 0); b_lh=$(echo "$b_lh" | head -n1 | tr -dc '0-9'); b_lh=${b_lh:-0}
+    bleft=$(( b_ns + b_pv + b_lh ))
+    [[ "$bleft" -eq 0 ]] && break
+    sleep 4; bdrain=$((bdrain + 4))
+  done
+  if [[ "$bleft" -ne 0 ]]; then
+    fail "bundle: teardown left $bleft orphan resource(s) (ns/Released-PV/Longhorn-vol) for $bmatch after ${bdrain}s — reaper race"
+  else
+    ok "bundle: tenant fully reaped — no orphan ns/PV/Longhorn-vol (after ${bdrain}s)"
+  fi
+
   ok "bundle: all $target_count target(s) round-trip verified end-to-end"
 }
 
@@ -3241,8 +3271,15 @@ scenario_redis() {
   #      6379)
   #   6. Stalwart Coordinator points at our Redis URL (post-migration
   #      verification — only fires if the migration script has run)
-  if [[ "${SKIP_REDIS_SCENARIO:-}" == "1" ]]; then
-    log "scenario redis skipped — SKIP_REDIS_SCENARIO=1"
+  #
+  # 2026-06-23: Valkey is DISABLED by default (removed from the deployed
+  # overlays — nothing consumes it; see k8s/overlays/development/
+  # kustomization.yaml). This scenario therefore SKIPS by default so it
+  # stops failing. To run it, first re-enable the `valkey/` overlay entry
+  # (and, for step 6, run scripts/migrate-valkey-bootstrap.sh), then invoke
+  # with SKIP_REDIS_SCENARIO=0.
+  if [[ "${SKIP_REDIS_SCENARIO:-1}" != "0" ]]; then
+    log "scenario redis skipped — Valkey disabled in overlays (set SKIP_REDIS_SCENARIO=0 to run after re-enabling valkey/)"
     return 0
   fi
 
