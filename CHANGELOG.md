@@ -12,6 +12,42 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Production ships both webmail engines (Bulwark + Roundcube).** The webmail-router
+  reconciler runs whichever engine `default_webmail_engine` selects and scales the other to
+  0, so only one webmail pod ever runs. Previously the production overlay shipped only
+  Roundcube, so a fresh cluster whose default engine is `bulwark` 404'd on `webmail.<apex>`
+  (the reconciler had no Deployment to scale). Staging inherits this via `../production`.
+
+### Fixed
+- **Tenant hard-delete now reaps stranded Longhorn volume CRs and deletes the DB row last.**
+  `applyDeleted` dropped the tenant row immediately after requesting the namespace delete,
+  while the namespace was still terminating and its Longhorn volume CR still detaching — and
+  the by-PV-name `pv-cleanup-released` hook can't reap a volume CR that outlives its PV. A
+  new scoped, bounded post-delete reap (`reap-namespace-volumes.ts`) clears this tenant's
+  Released PVs + stranded Longhorn volume CRs by namespace before the row is deleted.
+  Proven live on the DEV cluster (reaped the orphaned volume CR a prior session had to
+  delete by hand).
+- **Dev-cluster oauth2-proxy no longer wedges `Init:0/1`.** On `--env dev` the base init did
+  strict-TLS OIDC discovery over the public Dex issuer, which never readied (http issuer
+  404s; an LE-prod cert may not issue on a dev domain). The development overlay now does
+  token-redeem + JWKS over the cluster-internal Dex Service (plaintext `:5556`, skip
+  discovery), and `bootstrap.sh` bakes an https issuer + redirect for `--env dev` to match
+  Dex's advertised issuer and registered client.
+- **Integration test timing is adaptive on multi-node clusters.** Firewall-reconciler
+  convergence (`FW_RECONCILE_WAIT`, 60→150s), trusted-proxies ConfigMap+DaemonSet
+  (`TP_RECONCILE_WAIT`, 30s@1s→90s plus an explicit DaemonSet-args poll), break-glass
+  IngressRoute (15→45s), and the cross-node smoke probe (6s/1-retry → 15s/2-retry) no
+  longer false-fail on the 4-node staging cluster. Loops exit early on success, so the wider
+  budgets are free on the happy path.
+
+### Changed
+- **Valkey removed from the deployed path** (resource savings): nothing consumes it in the
+  automated config (the backend cache is in-memory LRU; Stalwart wiring is manual-only). The
+  `valkey/` entry is commented out of the development overlay — the base manifests, overlay
+  wrapper, and `migrate-valkey-bootstrap.sh` are kept so re-activation is a one-line
+  uncomment. The `scenario_redis` integration test skips by default while disabled.
+
 ## [2026.6.16] - 2026-06-22
 
 ### Added

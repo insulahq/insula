@@ -1,0 +1,34 @@
+# Production Bulwark overlay (ADR-039).
+#
+# Ships the Bulwark webmail Deployment + Service alongside Roundcube so the
+# webmail-router reconciler (backend/src/modules/webmail-router/reconciler.ts)
+# can run WHICHEVER engine `platform_settings.default_webmail_engine` selects
+# and scale the other engine to 0 — `reconcileEngineDeployments` guarantees
+# only one engine ever has replicas > 0 (best resource usage; never two
+# webmail pods at once).
+#
+# WHY this exists: before Production shipped Bulwark, a fresh cluster whose
+# default engine is `bulwark` (getDefaultWebmailEngine's fresh-install default)
+# 404'd — the reconciler tried to scale a Deployment this overlay never
+# created, so webmail.${DOMAIN} had no backend. Staging bases on this overlay
+# (../production), so it inherits the fix automatically.
+#
+# The dedicated bulwark.${DOMAIN} IngressRoute (present in the dev/development
+# overlays) is intentionally NOT included here: webmail SSO/impersonation
+# targets the platform host webmail.${DOMAIN}
+# (mailboxes/service.ts -> getDefaultWebmailUrl -> https://webmail.<apex>/),
+# which the platform-webmail-ingress already points at the active engine. So
+# no extra DNS record or TLS cert is required for Bulwark on production.
+#
+# Secret `bulwark-secrets` (+ platform-bulwark-jwt mirror) is operator-
+# provisioned env-agnostically by scripts/bootstrap.sh:generate_platform_secrets.
+# The mail-feature-css ConfigMap the Bulwark Pod mounts is already included by
+# the production overlay (../../base/mail-feature-css), and master creds are
+# read from mail-secrets at runtime.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: mail
+
+resources:
+  - ../../../base/bulwark

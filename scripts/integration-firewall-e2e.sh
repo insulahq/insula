@@ -225,9 +225,15 @@ fi
 # the reconciler programs tenant_ports on THAT host. This is now a hard
 # assertion (was a warning while the probe could silently hit the wrong
 # machine).
-log "── waiting up to 60s for firewall-reconciler to converge on $POD_NODE ──"
+# Convergence budget. On a multi-node HA cluster each node runs its own
+# firewall-reconciler ticking independently, so programming tenant_ports on
+# the SPECIFIC node the pod landed on can exceed the old 60s. The loop exits
+# the instant the ports appear, so a larger budget is free on the happy path
+# — it only matters when convergence is genuinely slow. Tune via env.
+FW_RECONCILE_WAIT="${FW_RECONCILE_WAIT:-150}"
+log "── waiting up to ${FW_RECONCILE_WAIT}s for firewall-reconciler to converge on $POD_NODE ──"
 NFT_TCP=""
-for _ in $(seq 1 12); do
+for _ in $(seq 1 $((FW_RECONCILE_WAIT / 5))); do
   NFT_TCP=$(ssh_node "$POD_NODE" "nft list set inet filter tenant_ports_tcp 2>/dev/null" 2>/dev/null || echo "")
   if [[ "$NFT_TCP" == *"3478"* && "$NFT_TCP" == *"5349"* ]]; then break; fi
   sleep 5
@@ -235,7 +241,7 @@ done
 if [[ "$NFT_TCP" == *"3478"* && "$NFT_TCP" == *"5349"* ]]; then
   ok "host nft set tenant_ports_tcp on $POD_NODE contains 3478 and 5349"
 else
-  fail "nft set tenant_ports_tcp on $POD_NODE missing 3478/5349 after 60s — current set: $(echo "$NFT_TCP" | tr '\n' ' ' | head -c 200)"
+  fail "nft set tenant_ports_tcp on $POD_NODE missing 3478/5349 after ${FW_RECONCILE_WAIT}s — current set: $(echo "$NFT_TCP" | tr '\n' ' ' | head -c 200)"
 fi
 
 # ─── Phase 4b: actually reach the server from outside ─────────────────────
@@ -319,7 +325,7 @@ TCP_RES=$(stun_probe tcp "$NODE_IP" 3478)
 # ports — that's the only retraction path the gate guarantees.
 
 # ─── Phase 5: deletion closes the ports (reconciler diff path) ────────────
-log "── phase 5: delete deployment, expect ports to be removed within 60s ──"
+log "── phase 5: delete deployment, expect ports to be removed within ${FW_RECONCILE_WAIT}s ──"
 api DELETE "/tenants/$CID/deployments/$DEP_ID" >/dev/null 2>&1 || true
 
 # Wait for pod gone, then for the reconciler to converge.
@@ -335,7 +341,7 @@ done
 # the first place. Probing the pod's real node makes it meaningful, and
 # a failure is now a hard fail (the reconciler must remove the ports).
 NFT_AFTER=""
-for _ in $(seq 1 12); do
+for _ in $(seq 1 $((FW_RECONCILE_WAIT / 5))); do
   NFT_AFTER=$(ssh_node "$POD_NODE" "nft list set inet filter tenant_ports_tcp 2>/dev/null" 2>/dev/null || echo "")
   if [[ "$NFT_AFTER" != *"3478"* ]]; then break; fi
   sleep 5
@@ -343,7 +349,7 @@ done
 if [[ "$NFT_AFTER" != *"3478"* ]]; then
   ok "tenant_ports_tcp on $POD_NODE no longer contains the deleted deployment's ports"
 else
-  fail "ports still present in tenant_ports_tcp on $POD_NODE 60s after deployment delete — reconciler did not remove them"
+  fail "ports still present in tenant_ports_tcp on $POD_NODE ${FW_RECONCILE_WAIT}s after deployment delete — reconciler did not remove them"
 fi
 
 # ─── Summary ───────────────────────────────────────────────────────────────

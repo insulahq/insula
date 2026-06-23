@@ -841,9 +841,13 @@ fi
 local_ssh_host="${SSH_HOST:-root@192.0.2.56}"
 local_ssh_key="${SSH_KEY:-$HOME/hosting-platform.key}"
 if [[ -r "$local_ssh_key" ]]; then
-  # Reconcile is async — poll up to 15 s.
+  # Reconcile is async — poll up to ${BG_RECONCILE_WAIT:-45}s. Traefik
+  # IngressRoute reconcile/propagation can exceed 15s on a multi-node cluster;
+  # the loop exits the instant the object appears, so a larger budget is free
+  # on the happy path. Tune via BG_RECONCILE_WAIT (seconds, 5s poll interval).
+  bg_reconcile_wait="${BG_RECONCILE_WAIT:-45}"
   BG_INGRESSROUTE_JSON=""
-  for attempt in 1 2 3; do
+  for _ in $(seq 1 $((bg_reconcile_wait / 5))); do
     BG_INGRESSROUTE_JSON=$(ssh -i "$local_ssh_key" \
       -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q \
       "$local_ssh_host" \
@@ -854,7 +858,7 @@ if [[ -r "$local_ssh_key" ]]; then
   done
 
   if [[ -z "$BG_INGRESSROUTE_JSON" ]]; then
-    fail "platform-break-glass-ingress IngressRoute not found in cluster after 15s"
+    fail "platform-break-glass-ingress IngressRoute not found in cluster after ${bg_reconcile_wait}s"
   else
     BG_MATCH=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].match // empty')
     BG_MIDDLEWARE_NAMES=$(echo "$BG_INGRESSROUTE_JSON" | jq -r '.spec.routes[0].middlewares // [] | map(.name) | join(",")')

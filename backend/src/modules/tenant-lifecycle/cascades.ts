@@ -3,6 +3,7 @@ import { tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { runTransition, type Transition } from './registry/index.js';
+import { reapNamespaceVolumes, realReapDeps } from './reap-namespace-volumes.js';
 
 /**
  * Client-lifecycle cascades.
@@ -140,10 +141,17 @@ export async function applyArchived(
  *      hooks can read domains/backup_jobs rows.
  *   2. Drop the k8s namespace — brings pods, PVCs, ingress, services,
  *      configmaps, secrets with it.
- *   3. Drop the tenant row — FK cascades reap domains, deployments,
- *      mailboxes, sftp_users, backups, etc. `audit_logs` and
- *      `tenant_lifecycle_transitions` intentionally retain
- *      `tenant_id` as a tombstone.
+ *   2b. Reap this tenant's Released PVs + stranded Longhorn volume CRs
+ *      (scoped to THIS namespace), bounded + best-effort. Runs after the
+ *      namespace delete (when PVs actually go Released) and catches the
+ *      volume CR that outlives its PV — the leak the by-PV-name
+ *      `pv-cleanup-released` hook cannot reach. See reap-namespace-volumes.ts.
+ *   3. Drop the tenant row — LAST, after teardown is initiated + volumes
+ *      reaped, so there is no DB-less-orphan window for the orphan scanner
+ *      to trip on. FK cascades reap domains, deployments, mailboxes,
+ *      sftp_users, backups, etc. `audit_logs` and
+ *      `tenant_lifecycle_transitions` intentionally retain `tenant_id` as a
+ *      tombstone.
  *
  * Storage-lifecycle snapshots for this tenant are purged by the
  * caller (storage-lifecycle/service.ts handles snapshot store
@@ -171,7 +179,24 @@ export async function applyDeleted(
     }
   }
 
-  // Step 3: drop the tenant row. FK cascades take care of children.
+  // Step 2b: reap this tenant's Released PVs + any stranded Longhorn volume CR
+  // (by namespace), BEFORE dropping the DB row. Best-effort + time-bounded —
+  // a transient failure or timeout must never block the delete; the
+  // pv-cleanup-released retry + the Orphaned Volumes "Purge All" UI are the
+  // safety nets for stragglers.
+  try {
+    const reap = await reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace);
+    if (reap.pvsReaped.length > 0 || reap.lhVolsReaped.length > 0) {
+      console.log(
+        `[cascades.applyDeleted] reaped ${reap.pvsReaped.length} PV(s) + ${reap.lhVolsReaped.length} Longhorn volume(s) for ${namespace}`
+        + (reap.timedOut ? ' (timed out — stragglers left to pv-cleanup retry + orphan UI)' : ''),
+      );
+    }
+  } catch (err) {
+    console.warn(`[cascades.applyDeleted] volume reap for ${namespace} failed (non-fatal): ${(err as Error).message}`);
+  }
+
+  // Step 3: drop the tenant row LAST. FK cascades take care of children.
   await ctx.db.delete(tenants).where(eq(tenants.id, tenantId));
   return transitionId;
 }
