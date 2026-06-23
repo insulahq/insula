@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.17-rc.1] - 2026-06-23
+
 ### Added
 - **Production ships both webmail engines (Bulwark + Roundcube).** The webmail-router
   reconciler runs whichever engine `default_webmail_engine` selects and scales the other to
