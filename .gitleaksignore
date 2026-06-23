@@ -32,4 +32,4 @@ scripts/integration-all.sh:generic-api-key:135
 scripts/integration-all.sh:generic-api-key:179
 scripts/integration-all.sh:generic-api-key:184
 scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:277
-scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:282
+scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:295
