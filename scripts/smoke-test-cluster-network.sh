@@ -236,11 +236,11 @@ test_2_ingress_to_backend() {
       # traefik-only :3000 rule. kubectl-run --attach races occasionally
       # (returns empty without an HTTP code) — retry once before failing.
       local probe out code attempt
-      for attempt in 1 2; do
+      for attempt in 1 2 3; do
         probe="smoke-t2-${ipod}-${bnode}-$$-$RANDOM"
         out=$(kubectl run "$probe" \
           --image=curlimages/curl:8.10.1 --restart=Never -n traefik \
-          --overrides='{"spec":{"nodeName":"'"$inode"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':'"$bport"'/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
+          --overrides='{"spec":{"nodeName":"'"$inode"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 15 curl -s -o /dev/null -w %{http_code} http://'"$bip"':'"$bport"'/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
           --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
         code="${out:-000}"
         code="${code: -3}"
@@ -385,11 +385,11 @@ test_4_hostnetwork_to_pod() {
       # false-000 would mask a real leak, so confirm 000 with a second
       # probe before counting it as blocked.
       local out code attempt
-      for attempt in 1 2; do
+      for attempt in 1 2 3; do
         local probe="smoke-hn-${node}-${bnode}-$$-$RANDOM"
         out=$(kubectl run "$probe" \
           --image=curlimages/curl:8.10.1 --restart=Never -n "$PROBE_NS" \
-          --overrides='{"spec":{"hostNetwork":true,"nodeName":"'"$node"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 6 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
+          --overrides='{"spec":{"hostNetwork":true,"nodeName":"'"$node"'","tolerations":[{"operator":"Exists"}],"containers":[{"name":"c","image":"curlimages/curl:8.10.1","command":["sh","-c","timeout 15 curl -s -o /dev/null -w %{http_code} http://'"$bip"':3000/ || echo 000"],"resources":{"requests":{"cpu":"10m","memory":"16Mi"},"limits":{"cpu":"100m","memory":"64Mi"}}}]}}' \
           --restart=Never --rm --attach --quiet -- 2>/dev/null || echo "000")
         code="${out:-000}"
         code="${code: -3}"

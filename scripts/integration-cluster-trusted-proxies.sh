@@ -168,8 +168,14 @@ DUP_STATUS=$(extract_status "$DUP_RESP")
 
 # ── Phase 6: Wait for reconciler + verify ConfigMap + Traefik ─────────
 phase "Phase 6: ConfigMap + Traefik DS reflect the new CIDR"
-log "Waiting up to 30s for reconciler..."
-for i in $(seq 1 30); do
+# Reconciler convergence budget. On a multi-node cluster the trusted-proxies
+# reconciler updating the ConfigMap AND then propagating the CIDR into the
+# Traefik DaemonSet args (a separate path) can exceed the old 30s. Both loops
+# exit the instant the CIDR appears, so a bigger budget is free on the happy
+# path. Tune via env.
+TP_RECONCILE_WAIT="${TP_RECONCILE_WAIT:-90}"
+log "Waiting up to ${TP_RECONCILE_WAIT}s for reconciler..."
+for i in $(seq 1 "$TP_RECONCILE_WAIT"); do
   CM_CONTENT=$(kctl -n platform get cm cluster-trusted-proxies -o jsonpath='{.data.trusted-proxies\.conf}' 2>/dev/null || echo "")
   if echo "$CM_CONTENT" | grep -q "set_real_ip_from $TEST_CIDR"; then
     ok "ConfigMap contains 'set_real_ip_from $TEST_CIDR;'  (after ${i}s)"
@@ -182,11 +188,18 @@ if ! echo "$CM_CONTENT" | grep -q "set_real_ip_from $TEST_CIDR"; then
   echo "ConfigMap content: $CM_CONTENT"
 fi
 
-TRAEFIK_ARGS=$(kctl -n traefik get ds traefik -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "[]")
+# The DaemonSet arg propagation lags the ConfigMap write — poll it instead of
+# asserting immediately (the old immediate check raced on multi-node).
+TRAEFIK_ARGS="[]"
+for _ in $(seq 1 "$TP_RECONCILE_WAIT"); do
+  TRAEFIK_ARGS=$(kctl -n traefik get ds traefik -o jsonpath='{.spec.template.spec.containers[0].args}' 2>/dev/null || echo "[]")
+  if echo "$TRAEFIK_ARGS" | grep -q "$TEST_CIDR"; then break; fi
+  sleep 1
+done
 if echo "$TRAEFIK_ARGS" | grep -q "$TEST_CIDR"; then
   ok "Traefik DS args include $TEST_CIDR"
 else
-  fail "Traefik DS args missing $TEST_CIDR"
+  fail "Traefik DS args missing $TEST_CIDR after ${TP_RECONCILE_WAIT}s"
 fi
 
 # ── Phase 7: admin-panel pod's rendered nginx config ──────────────────
@@ -229,7 +242,7 @@ fi
 
 # ── Phase 9: Reconcile back ──────────────────────────────────────────
 phase "Phase 9: Reconciler removes the CIDR from ConfigMap"
-for i in $(seq 1 30); do
+for i in $(seq 1 "${TP_RECONCILE_WAIT:-90}"); do
   CM_CONTENT=$(kctl -n platform get cm cluster-trusted-proxies -o jsonpath='{.data.trusted-proxies\.conf}' 2>/dev/null || echo "")
   if ! echo "$CM_CONTENT" | grep -q "set_real_ip_from $TEST_CIDR"; then
     ok "ConfigMap no longer contains $TEST_CIDR (after ${i}s)"
