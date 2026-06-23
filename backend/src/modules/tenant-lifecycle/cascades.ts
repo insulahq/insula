@@ -185,7 +185,7 @@ export async function applyDeleted(
   // pv-cleanup-released retry + the Orphaned Volumes "Purge All" UI are the
   // safety nets for stragglers.
   try {
-    const reap = await reapNamespaceVolumes(realReapDeps(ctx.k8s, namespace), namespace);
+    const reap = await reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace);
     if (reap.pvsReaped.length > 0 || reap.lhVolsReaped.length > 0) {
       console.log(
         `[cascades.applyDeleted] reaped ${reap.pvsReaped.length} PV(s) + ${reap.lhVolsReaped.length} Longhorn volume(s) for ${namespace}`

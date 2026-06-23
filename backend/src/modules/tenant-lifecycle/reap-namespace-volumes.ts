@@ -45,8 +45,6 @@ export interface ReapLonghornVolume {
 }
 
 export interface ReapDeps {
-  /** True once the namespace no longer exists (readNamespace 404s). */
-  readonly namespaceGone: () => Promise<boolean>;
   readonly listPvs: () => Promise<readonly ReapPv[]>;
   readonly listLonghornVolumes: () => Promise<readonly ReapLonghornVolume[]>;
   readonly deletePv: (name: string) => Promise<void>;
@@ -56,9 +54,9 @@ export interface ReapDeps {
 }
 
 export interface ReapResult {
-  readonly namespaceGone: boolean;
   readonly pvsReaped: readonly string[];
   readonly lhVolsReaped: readonly string[];
+  /** True if a Bound PV for the namespace never released within the budget. */
   readonly timedOut: boolean;
 }
 
@@ -66,9 +64,17 @@ export const DEFAULT_REAP_TIMEOUT_MS = 45_000;
 export const DEFAULT_REAP_INTERVAL_MS = 3_000;
 
 /**
- * Poll until the namespace is gone AND nothing reapable for it remains (or the
- * timeout elapses), reaping this namespace's Released PVs (+ their Longhorn
- * volume CRs) and any Longhorn volume CR still tagged with this namespace.
+ * Reap this namespace's Released PVs (+ their Longhorn volume CRs) and any
+ * Longhorn volume CR still tagged with this namespace.
+ *
+ * The loop waits ONLY while a Bound PV for the namespace still exists — that is
+ * precisely the window in which `deleteNamespace` deletes the PVC and the PV
+ * transitions Bound → Released so we can reap it. Once no Bound PV remains for
+ * the namespace and nothing new was reaped this pass, we're done — we do NOT
+ * wait on the namespace object itself to finish terminating (other finalizers
+ * are not our concern, and a no-storage tenant must return immediately rather
+ * than block the delete path). This also keeps the reap O(1) under unit-test
+ * mocks where the namespace never "disappears".
  *
  * Pure over the injected seam — unit-testable without a cluster.
  */
@@ -80,7 +86,7 @@ export async function reapNamespaceVolumes(
   // Safety guard (mirrors orphaned-volumes/deleteOrphan): only ever act on
   // tenant namespaces. A non-tenant namespace here would be a caller bug.
   if (!namespace.startsWith('tenant-')) {
-    return { namespaceGone: false, pvsReaped: [], lhVolsReaped: [], timedOut: false };
+    return { pvsReaped: [], lhVolsReaped: [], timedOut: false };
   }
 
   const timeoutMs = opts.timeoutMs ?? DEFAULT_REAP_TIMEOUT_MS;
@@ -88,18 +94,21 @@ export async function reapNamespaceVolumes(
   const reapedPvs = new Set<string>();
   const reapedVols = new Set<string>();
   const started = deps.now();
-  let nsGone = false;
 
   for (;;) {
-    nsGone = await deps.namespaceGone().catch(() => false);
-
-    // Released PVs claimed by this namespace. NEVER touch Bound PVs — a Bound
-    // PV is still serving a live pod and reaping it would be data loss.
     const pvs = await deps.listPvs().catch(() => [] as ReapPv[]);
     let freshThisPass = 0;
+    // Bound (or otherwise non-Released) PVs claimed by this namespace that
+    // could still transition to Released — the only reason to keep waiting.
+    let pendingBoundForNs = 0;
     for (const pv of pvs) {
       if (pv.claimNamespace !== namespace) continue;
-      if (pv.phase !== 'Released') continue;
+      if (pv.phase !== 'Released') {
+        // NEVER touch a non-Released PV — a Bound PV is still serving a live
+        // pod and reaping it would be data loss. Just note it to keep waiting.
+        pendingBoundForNs++;
+        continue;
+      }
       if (reapedPvs.has(pv.name)) continue;
       freshThisPass++;
       await deps.deletePv(pv.name).catch(() => undefined);
@@ -121,13 +130,13 @@ export async function reapNamespaceVolumes(
       reapedVols.add(v.name);
     }
 
-    // Done once the namespace is gone and no new reapable resource surfaced
-    // this pass — anything still in flight will settle after the row delete.
-    if (nsGone && freshThisPass === 0) {
-      return { namespaceGone: true, pvsReaped: [...reapedPvs], lhVolsReaped: [...reapedVols], timedOut: false };
+    // Done once no Bound PV remains to release AND nothing new was reaped this
+    // pass (eventual-consistency settled). A no-storage tenant exits on pass 1.
+    if (pendingBoundForNs === 0 && freshThisPass === 0) {
+      return { pvsReaped: [...reapedPvs], lhVolsReaped: [...reapedVols], timedOut: false };
     }
     if (deps.now() - started >= timeoutMs) {
-      return { namespaceGone: nsGone, pvsReaped: [...reapedPvs], lhVolsReaped: [...reapedVols], timedOut: true };
+      return { pvsReaped: [...reapedPvs], lhVolsReaped: [...reapedVols], timedOut: true };
     }
     await deps.sleep(intervalMs);
   }
@@ -152,17 +161,8 @@ function isNotFound(err: unknown): boolean {
 }
 
 /** Real K8s-backed deps for `reapNamespaceVolumes`. */
-export function realReapDeps(k8s: K8sClients, namespace: string): ReapDeps {
+export function realReapDeps(k8s: K8sClients): ReapDeps {
   return {
-    namespaceGone: async () => {
-      try {
-        await k8s.core.readNamespace({ name: namespace } as Parameters<typeof k8s.core.readNamespace>[0]);
-        return false;
-      } catch (err) {
-        if (isNotFound(err)) return true;
-        return false; // transient API error — treat as "still there", retry next pass
-      }
-    },
     listPvs: async () => {
       const list = await k8s.core.listPersistentVolume({}) as { items?: readonly RawPv[] };
       return (list.items ?? [])
