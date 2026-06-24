@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **system-backup pg-dump no longer hangs on an absent source cluster.** A pg_dump against a
+  non-existent CNPG cluster (e.g. `mail-db` after the RocksDB DataStore migration) created a run +
+  Job whose `pg_dump` blocked on the dead `<cluster>-ro` Service until the Job's 90-min
+  `activeDeadlineSeconds` SIGKILLed it — leaving the run stuck in `running` (k8s killed the process,
+  so the orchestrator's catch never wrote a terminal status). `POST /system-backup/pg-dump` now
+  validates the source CNPG Cluster CR exists and returns `404 SYSTEM_BACKUP_SOURCE_CLUSTER_NOT_FOUND`
+  before creating any run or Job, and the sweeper flips a run still in `running` past the Job deadline
+  to `failed` (covers deadline/OOM/crash deaths that bypass the catch). (#128)
+- **Tenant firewall ports of terminating pods are pruned immediately on multi-node clusters.** The
+  per-node `firewall-reconciler` counted the hostPorts of every cached pod with no
+  `deletionTimestamp`/phase guard, so a Terminating pod kept its port in the desired set until the
+  apiserver fully GC'd the object (minutes on a loaded HA node) — the nft set held the stale port
+  open the whole time. The reconcile loop now skips pods that are terminating or in a terminal phase,
+  so a deleted rule's ports close within seconds. (#129)
+
+### Changed
+- **Integration harness: dropped the stale `mail/mail-db` pg_dump leg** from the `system_backup`
+  scenario. `mail-db` was removed in the RocksDB DataStore migration (only `platform/system-db`
+  remains), so the leg dumped a non-existent cluster and polled the full 90-min cap (~96 min of dead
+  wall-clock per `all` run). Mail data is covered by the tenant-bundle + restic scenarios.
+
 ## [2026.6.17-rc.2] - 2026-06-24
 
 ### Fixed

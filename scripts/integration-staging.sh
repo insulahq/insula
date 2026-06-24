@@ -2950,15 +2950,18 @@ except Exception:
     fail "system_backup: platform/system-db pg_dump"
   fi
 
-  log "── scenario system_backup: pg_dump mail/mail-db ──"
-  if ADMIN_HOST="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
-     TARGET_CONFIG_ID="$target_id" \
-     SOURCE_NS=mail SOURCE_CLUSTER=mail-db SOURCE_DB=stalwart_app \
-     bash "$script_dir/integration-system-backup-pg-dump.sh"; then
-    ok "system_backup: mail/mail-db pg_dump"
-  else
-    fail "system_backup: mail/mail-db pg_dump"
-  fi
+  # NOTE (2026-06-24): the mail/mail-db pg_dump leg was REMOVED. The mail
+  # DataStore migrated CNPG-Postgres → RocksDB on a local-path PVC
+  # (stalwart-rocksdb-ha branch, 2026-05-12), so there is no `mail-db` CNPG
+  # cluster anymore — the backend's KNOWN_CNPG_CLUSTERS (system-backup/
+  # dr-sidecars.ts) lists only platform/system-db, and the removal is
+  # CI-enforced (ci-mail-pg-removal-check.sh). A pg_dump against the
+  # now-absent mail-db resolves no creds, the spawned Job pod Errors, but the
+  # run status never transitions to `failed`, so the harness used to poll the
+  # full 90-min cap before failing (~96 min of dead wall-clock per `all` run).
+  # Mail data is covered by the tenant-bundle + restic scenarios (RocksDB PVC
+  # is snapshotted/backed up there), not by pg_dump. See the OPEN backend gap:
+  # a pg-dump run whose Job pod Errors should transition to `failed` fast.
 
   # Phase 4 WAL archive — long-running (waits ≤6 min for CNPG to push
   # a WAL). Skip in `all` runs unless RUN_WAL_HARNESS=1 is set; the

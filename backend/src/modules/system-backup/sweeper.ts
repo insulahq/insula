@@ -27,6 +27,14 @@ import { systemBackupRuns } from '../../db/schema.js';
 
 const TICK_INTERVAL_MS = 5 * 60 * 1000;
 const ORPHAN_PENDING_AGE_MS = 10 * 60 * 1000;
+// A pg-dump Job is created with `activeDeadlineSeconds: 5400` (90 min) and
+// `backoffLimit: 0` (pg-dump-job-spawner.ts), so its pod cannot run longer
+// than 90 min before k8s SIGKILLs it. A run still in 'running' past that
+// (+ the ≤10-min pending window + a grace margin) is therefore orphaned:
+// the Job died WITHOUT the orchestrator writing a terminal status (k8s
+// killed the process on deadline/OOM, so the catch-path never ran). Flip
+// it to 'failed' so pollers and the operator UI don't hang on it. (#128)
+const ORPHAN_RUNNING_AGE_MS = 110 * 60 * 1000;
 const RETENTION_DAYS = 90;
 
 interface Logger {
@@ -37,12 +45,14 @@ interface Logger {
 
 interface SweepResult {
   readonly orphanedPending: number;
+  readonly orphanedRunning: number;
   readonly purgedFailed: number;
 }
 
 /** One sweep tick. Exported for unit tests. */
 export async function runSystemBackupSweeperTick(db: Database): Promise<SweepResult> {
   const orphanCutoff = new Date(Date.now() - ORPHAN_PENDING_AGE_MS);
+  const runningCutoff = new Date(Date.now() - ORPHAN_RUNNING_AGE_MS);
   const retentionCutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
   // Orphan flip — covers BOTH 'secrets' and 'pg_dump' kinds; the
@@ -64,6 +74,28 @@ export async function runSystemBackupSweeperTick(db: Database): Promise<SweepRes
     ))
     .returning({ id: systemBackupRuns.id });
 
+  // Orphan flip #2 — a run stuck in 'running' past the Job's hard
+  // activeDeadlineSeconds (+ pending window + grace) is one whose Job
+  // died WITHOUT reporting a terminal status (k8s SIGKILLed the pod on
+  // deadline/OOM, so the orchestrator's catch never wrote 'failed').
+  // Without this, the row would show 'running' forever and any poller
+  // (the integration harness, the operator UI) hangs on it. (#128)
+  const orphanedRunning = await db
+    .update(systemBackupRuns)
+    .set({
+      status: 'failed',
+      finishedAt: new Date(),
+      errorEnvelope: {
+        code: 'SYSTEM_BACKUP_JOB_ORPHANED',
+        message: 'run row stuck in running past the Job activeDeadlineSeconds — sweeper flipped to failed (Job died without reporting a terminal status)',
+      } as unknown as Record<string, unknown>,
+    })
+    .where(and(
+      eq(systemBackupRuns.status, 'running'),
+      lt(systemBackupRuns.createdAt, runningCutoff),
+    ))
+    .returning({ id: systemBackupRuns.id });
+
   // Retention purge — pg_dump only. 'secrets' rows are kept indefinitely
   // (small, audit-relevant). Use raw SQL for the DELETE…RETURNING to
   // get a count without a separate SELECT.
@@ -78,7 +110,11 @@ export async function runSystemBackupSweeperTick(db: Database): Promise<SweepRes
   // off rowCount; the cast keeps the Drizzle types happy.
   const purgedCount = (purged as unknown as { rowCount?: number }).rowCount ?? 0;
 
-  return { orphanedPending: orphaned.length, purgedFailed: purgedCount };
+  return {
+    orphanedPending: orphaned.length,
+    orphanedRunning: orphanedRunning.length,
+    purgedFailed: purgedCount,
+  };
 }
 
 /**
@@ -93,9 +129,9 @@ export function startSystemBackupSweeper(db: Database, logger: Logger): () => vo
     if (stopped) return;
     try {
       const r = await runSystemBackupSweeperTick(db);
-      if (r.orphanedPending > 0 || r.purgedFailed > 0) {
+      if (r.orphanedPending > 0 || r.orphanedRunning > 0 || r.purgedFailed > 0) {
         logger.info(
-          { orphanedPending: r.orphanedPending, purgedFailed: r.purgedFailed },
+          { orphanedPending: r.orphanedPending, orphanedRunning: r.orphanedRunning, purgedFailed: r.purgedFailed },
           '[system-backup-sweeper] tick',
         );
       }
