@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.17-rc.5] - 2026-06-24
+
 ### Fixed
 - **Firewall tenant-port REMOVE now actually prunes (real #129 fix).** The reconciler WRITES nft
   interval-set ranges in the legacy paired-`IntervalEnd` shape, but the kernel normalises interval
