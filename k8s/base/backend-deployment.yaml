@@ -358,29 +358,16 @@ spec:
               cpu: 100m
               memory: 128Mi
             limits:
-              # 750m CPU / 1Gi memory (right-sized 2026-05-23).
+              # No CPU limit (2026-06-24): platform-api is high-priority
+              # infra and must not be CFS-throttled, and the platform-quota
+              # no longer tracks limits.cpu (a limits.cpu quota wedged the
+              # rolling update on burst-ceiling math while nodes sat idle).
+              # CPU is bounded by requests (100m) + node capacity.
               #
-              # CPU: 750m (was 1500m before 2026-05-20). Real steady-state
-              # usage stays well under 300m (Node.js / Fastify is I/O
-              # bound), observed bursts under 600m. 750m gives ~25%
-              # headroom over observed peak. The previous 1500m × 2
-              # replicas = 3000m permanently reserved against the
-              # platform-quota's limits.cpu, which made surge-during-
-              # rollout exceed quota and required manual quota bumps.
-              #
-              # Memory: 2 GiB → 1 GiB. The 2 GiB sizing dates back to
-              # when restic capture ran IN-PROCESS inside platform-api.
-              # Restic now runs in dedicated CronJob pods (see
-              # backup-rclone-shim mail-restic / tenant-bundles) — the
-              # in-process restic load this limit was sized for no
-              # longer exists. Live observed RSS on staging: 210 MiB
-              # steady. 1 GiB gives ~4.8× headroom over actual usage.
-              # 3 replicas × 1 GiB = 3 GiB committed (was 6 GiB),
-              # freeing 3 GiB of namespace quota for rollout transients.
-              # If a future workload reintroduces in-process restic-
-              # scale memory bursts, bump back to 2 GiB AFTER an OOM,
-              # not preemptively.
-              cpu: 750m
+              # Memory: 1 GiB retained. Restic capture now runs in dedicated
+              # CronJob pods (not in-process), so the old 2 GiB sizing is
+              # unneeded; live RSS on staging is ~210 MiB steady. Bump only
+              # AFTER an OOM, not preemptively.
               memory: 1Gi
           # startupProbe gates liveness+readiness: while it's failing the pod
           # is NOT killed, so a slow boot (waiting out a CNPG restart on the
