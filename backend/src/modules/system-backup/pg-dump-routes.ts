@@ -28,6 +28,7 @@ import {
 } from '@insula/api-contracts';
 import { createPgDumpJob } from './pg-dump-job-spawner.js';
 import { resolveSystemStore, SYSTEM_BACKUP_CLIENT_ID, resolveCnpgCredentials } from './pg-dump-orchestrator.js';
+import { assertCnpgClusterExists, CnpgClusterNotFoundError } from './cnpg-cluster-check.js';
 import { getPlatformApiImage } from '../postgres-restore/service.js';
 import { spawn } from 'node:child_process';
 
@@ -85,6 +86,25 @@ export async function systemBackupPgDumpRoutes(app: FastifyInstance): Promise<vo
 
     const runId = randomUUID();
     const k8s = createK8sClients();
+
+    // issue #128: reject up-front if the source CNPG cluster does not
+    // exist. Otherwise the spawned Job's pg_dump blocks on the dead
+    // `<cluster>-ro` Service until the Job's activeDeadlineSeconds (90 min)
+    // SIGKILLs it, leaving the run stuck in 'running' (the orchestrator's
+    // catch never runs because k8s killed the process, not an exception).
+    try {
+      await assertCnpgClusterExists(k8s, parsed.data.sourceNamespace, parsed.data.sourceCluster);
+    } catch (err) {
+      if (err instanceof CnpgClusterNotFoundError) {
+        throw new ApiError(
+          'SYSTEM_BACKUP_SOURCE_CLUSTER_NOT_FOUND',
+          `source CNPG cluster ${parsed.data.sourceNamespace}/${parsed.data.sourceCluster} not found`,
+          404,
+        );
+      }
+      throw err;
+    }
+
     const image = await getPlatformApiImage(k8s);
 
     // Create run row + audit row inside a transaction so we never
