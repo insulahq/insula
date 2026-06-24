@@ -150,7 +150,9 @@ spec:
               cpu: 200m
               memory: 64Mi
             limits:
-              cpu: "1"
+              # No CPU limit (2026-06-24): a bursty rclone shim that
+              # requests only 200m. The old 1000m limit × 4 nodes pinned
+              # half the platform limits.cpu quota and wedged rollouts.
               memory: 1Gi
 
           # Container security context — R-X19 fully unprivileged.

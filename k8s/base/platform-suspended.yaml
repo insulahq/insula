@@ -87,7 +87,7 @@ spec:
             # and the Deployment never produces a pod. Caught on
             # testing.example.test fresh-bootstrap 2026-05-21.
             requests: { cpu: "10m", memory: "32Mi" }
-            limits:   { cpu: "100m", memory: "64Mi" }
+            limits:   { memory: "64Mi" } # no CPU limit — high-priority platform pod
           volumeMounts:
             - name: content
               mountPath: /usr/share/nginx/html
