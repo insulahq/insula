@@ -350,6 +350,17 @@ type reconciler struct {
 	// log-on-change only (the apply itself is unconditional/idempotent).
 	lastBlacklistFP string
 
+	// lastTenantFP / lastPeerFP — last desired tenant-ports / peer set we
+	// applied, used as the in-memory short-circuit for those two paths.
+	// They REPLACED a kernel read-back (observe*Fingerprint) that decoded
+	// interval sets and could misread a populated set as empty, which made
+	// the empty-desired REMOVE path match-and-skip the flush, leaking the
+	// deleted members' nft entries (#129). An in-memory cache can't be
+	// fooled by the kernel encoding; out-of-band kernel edits self-heal on
+	// the next desired change or pod restart (lastFP starts empty).
+	lastTenantFP string
+	lastPeerFP   string
+
 	// cppGrace is the delay between setting status.claimedAt and
 	// deleting the CR. Lets ops/UI observe the claimed state before
 	// the resource disappears.
