@@ -291,8 +291,9 @@ func TestReconcileOnce_dedup(t *testing.T) {
 }
 
 func TestReconcileOnce_emptyDesiredYieldsZeroState(t *testing.T) {
-	// No tenants on this node — desired is empty TCP/UDP. Apply still happens
-	// once (changed: empty-vs-cache miss), then second tick is a no-op.
+	// No tenants on this node — desired is empty TCP/UDP. The apply is now
+	// UNCONDITIONAL (idempotent flush+re-add), so every tick re-writes the
+	// empty set; what matters is that each applied set is empty.
 	tpr, fa := fakeTenantSetup(t, "n1", nil, nil)
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
@@ -300,64 +301,53 @@ func TestReconcileOnce_emptyDesiredYieldsZeroState(t *testing.T) {
 	if err := tpr.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("reconcileOnce: %v", err)
 	}
-	if len(fa.tenantPortCalls) != 1 {
-		t.Errorf("expected 1 apply (second is cached no-op), got %d", len(fa.tenantPortCalls))
+	if len(fa.tenantPortCalls) != 2 {
+		t.Errorf("expected 2 unconditional applies, got %d", len(fa.tenantPortCalls))
 	}
-	if len(fa.tenantPortCalls[0].TCP) != 0 || len(fa.tenantPortCalls[0].UDP) != 0 {
-		t.Errorf("empty desired sets; got tcp=%v udp=%v",
-			fa.tenantPortCalls[0].TCP, fa.tenantPortCalls[0].UDP)
+	for i, c := range fa.tenantPortCalls {
+		if len(c.TCP) != 0 || len(c.UDP) != 0 {
+			t.Errorf("apply %d: empty desired sets expected; got tcp=%v udp=%v", i, c.TCP, c.UDP)
+		}
 	}
 }
 
 func TestReconcileOnce_outOfBandKernelResetForcesReApply(t *testing.T) {
-	// Regression for the staging bug observed 2026-05-09: an operator
-	// runs `nft -f /etc/nftables.conf` to reset corrupt state, the
-	// reconciler's old in-process cache thought "{4 IPs}" was already
-	// applied and skipped the re-write, leaving the kernel set empty.
+	// Regression for the staging bug observed 2026-05-09: an operator runs
+	// `nft -f /etc/nftables.conf` to reset corrupt state; the reconciler's
+	// old in-process "already applied" cache thought the set was current and
+	// skipped the re-write, leaving the kernel set empty.
 	//
-	// The new design observes kernel state on every tick. Simulate a
-	// kernel-state divergence by overriding observePeerFP to an empty
-	// fingerprint AFTER the first apply — and verify the next call
-	// re-applies.
+	// The applier now writes UNCONDITIONALLY on every tick (idempotent
+	// flush+re-add), so an out-of-band reset between ticks is overwritten on
+	// the very next reconcile — no cache (in-process OR kernel read-back) can
+	// mask it. Assert each call re-applies.
 	fa := &fakeApplier{}
 	parent := &reconciler{applier: fa}
-
-	// First call: empty observed (initial state) → applies.
-	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
-	if len(fa.calls) != 1 {
-		t.Fatalf("expected 1 apply on first call; got %d", len(fa.calls))
-	}
-
-	// Second call with same desired state: observe matches → skip.
-	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
-	if len(fa.calls) != 1 {
-		t.Fatalf("expected 1 apply when desired matches observed; got %d", len(fa.calls))
-	}
-
-	// Out-of-band reset: observed is now empty (kernel was reset).
-	empty := ""
-	fa.observePeerFP = &empty
-	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
-	if len(fa.calls) != 2 {
-		t.Errorf("expected re-apply after observed kernel state diverges; got %d total calls", len(fa.calls))
+	for i := 1; i <= 3; i++ {
+		if _, err := parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}}); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+		if len(fa.calls) != i {
+			t.Fatalf("tick %d: expected unconditional re-apply (%d calls), got %d", i, i, len(fa.calls))
+		}
 	}
 }
 
 func TestReconcileOnce_observeErrorTriggersForceApply(t *testing.T) {
-	// When netlink is briefly unhappy, observe* returns an error.
-	// Reconciler should fall back to "force apply" — better to
-	// over-write than under-write when state is unknown.
+	// The apply is now unconditional and never consults observe*, so even a
+	// (now-ignored) observe error still results in a write on every call.
+	// errReconcile is kept set to assert the apply path ignores observe.
 	fa := &fakeApplier{observeErr: errReconcile}
 	parent := &reconciler{applier: fa}
 
 	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
 	if len(fa.calls) != 1 {
-		t.Fatalf("expected force-apply on observe error; got %d calls", len(fa.calls))
+		t.Fatalf("expected apply on first call; got %d calls", len(fa.calls))
 	}
-	// And again, even if desired didn't change, observe-error keeps forcing.
+	// Identical desired state on the next tick still re-applies (idempotent).
 	_, _ = parent.applyPeersIfChanged(peerNftSets{PeersV4: []string{"10.0.0.1"}})
 	if len(fa.calls) != 2 {
-		t.Errorf("observe-error should keep forcing apply; got %d calls", len(fa.calls))
+		t.Errorf("unconditional apply expected on every call; got %d calls", len(fa.calls))
 	}
 }
 
