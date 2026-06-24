@@ -12,32 +12,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.6.17-rc.6] - 2026-06-24
+### Added
+- **Production ships both webmail engines (Bulwark + Roundcube).** The webmail-router reconciler
+  runs whichever engine `default_webmail_engine` selects and scales the other to 0, so only one
+  webmail pod ever runs. Previously the production overlay shipped only Roundcube, so a fresh
+  cluster whose default engine is `bulwark` 404'd on `webmail.<apex>` (the reconciler had no
+  Deployment to scale). Staging inherits this via `../production`.
 
 ### Fixed
-- **Firewall tenant-port / peer REMOVE now prunes deterministically (the actual #129 fix).** The
-  rc.5 `KeyEnd` decode was a real correctness fix but insufficient: live, the reconciler still
-  re-applied the same set every tick and never pruned on delete, because the apply *short-circuit*
-  trusted a kernel read-back that misreads a populated interval set as empty — so on a delete the
-  empty desired set matched the (misread) empty observed set and the flush was skipped. The
-  tenant-port and peer appliers now write **unconditionally** (an idempotent flush+re-add), using an
-  in-memory `lastFP` only to gate the change/log signal — mirroring the existing crowdsec-blacklist
-  applier. This prunes the deleted member every tick *and* keeps the 2026-05-09 out-of-band
-  (`nft -f`) self-heal, without depending on the read-back decode. (#129)
-
-## [2026.6.17-rc.5] - 2026-06-24
-
-### Fixed
-- **Firewall tenant-port REMOVE now actually prunes (real #129 fix).** The reconciler WRITES nft
-  interval-set ranges in the legacy paired-`IntervalEnd` shape, but the kernel normalises interval
-  sets and returns the modern single-element `KeyEnd` shape on read — and the read path only
-  understood `IntervalEnd`, so it decoded a *populated* set as empty. On a pod delete the desired set
-  is empty and `observeTenantPortsFingerprint` misread the still-populated kernel set as empty too,
-  so `applyTenantPortsIfChanged` short-circuited (`desiredFP == observedFP`) and never flushed — the
-  ports lingered indefinitely. The decoders now accept both shapes (and gained the direct round-trip
-  test whose absence let this ship). Also fixes the same latent bug on the cluster-peer / trusted-range
-  REMOVE path. Supersedes the rc.3 terminating-pod guard, which was a valid hardening but not the
-  cause. (#129)
+- **Firewall tenant-port / peer REMOVE now prunes deterministically.** On a multi-node cluster a
+  deleted hostPort (or peer / trusted-range) lingered in the host nft set indefinitely. The apply
+  short-circuit compared the desired set against a kernel read-back, but that read decodes nft
+  interval sets and misread a *populated* set as empty — so on a delete the empty desired set
+  matched the (misread) empty observed set and the flush was skipped. The tenant-port and peer
+  appliers now write **unconditionally** (an idempotent flush+re-add), using an in-memory
+  fingerprint only to gate the change/log signal — mirroring the crowdsec-blacklist applier. This
+  prunes the deleted member on the next tick *and* keeps the 2026-05-09 out-of-band (`nft -f`)
+  self-heal, without depending on the read-back decode. (Validated live: REMOVE prunes in ~11s.) (#129)
+- **system-backup pg-dump no longer hangs on an absent source cluster.** A pg_dump against a
+  non-existent CNPG cluster (e.g. `mail-db` after the RocksDB DataStore migration) created a run +
+  Job whose `pg_dump` blocked on the dead `<cluster>-ro` Service until the Job's 90-min
+  `activeDeadlineSeconds` SIGKILLed it — leaving the run stuck in `running` (k8s killed the process,
+  so the orchestrator's catch never wrote a terminal status). `POST /system-backup/pg-dump` now
+  validates the source CNPG Cluster CR exists and returns `404 SYSTEM_BACKUP_SOURCE_CLUSTER_NOT_FOUND`
+  before creating any run or Job, and the sweeper flips a run still in `running` past the Job deadline
+  to `failed` (covers deadline/OOM/crash deaths that bypass the catch). (#128)
+- **Webmail mutex now scales the inactive engine to 0 on staging/production.** Bulwark's base
+  Deployment hardcoded `replicas: 1`, so when an operator selected Roundcube the webmail-router
+  reconciler's scale-to-0 of Bulwark was reverted by Flux on every apply and BOTH webmail engines
+  ran. Bulwark now omits `replicas` (reconciler-owned, mirroring Roundcube); the RWO scale-to-2
+  hazard the hardcode guarded cannot recur — Bulwark is not platform-storage-policy-managed and the
+  reconciler only ever sets 0 (inactive) or 1 (active). So exactly one webmail pod runs.
+- **Tenant hard-delete now reaps stranded Longhorn volume CRs and deletes the DB row last.**
+  `applyDeleted` dropped the tenant row immediately after requesting the namespace delete, while the
+  namespace was still terminating and its Longhorn volume CR still detaching — and the by-PV-name
+  `pv-cleanup-released` hook can't reap a volume CR that outlives its PV. A new scoped, bounded
+  post-delete reap (`reap-namespace-volumes.ts`) clears this tenant's Released PVs + stranded
+  Longhorn volume CRs by namespace before the row is deleted. Proven live on the DEV cluster.
+- **Dev-cluster oauth2-proxy no longer wedges `Init:0/1`.** On `--env dev` the base init did
+  strict-TLS OIDC discovery over the public Dex issuer, which never readied. The development overlay
+  now does token-redeem + JWKS over the cluster-internal Dex Service (plaintext `:5556`, skip
+  discovery), and `bootstrap.sh` bakes an https issuer + redirect for `--env dev`.
+- **Integration test timing is adaptive on multi-node clusters.** Firewall-reconciler convergence,
+  trusted-proxies ConfigMap+DaemonSet, break-glass IngressRoute, and the cross-node smoke probe no
+  longer false-fail on the 4-node staging cluster. Loops exit early on success.
 
 ### Changed
 - **Platform pods now run without CPU limits.** Platform pods are high-priority infra; CPU limits
@@ -47,81 +65,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   nodes sat <30% CPU. Dropped `limits.cpu` from the quota, dropped `default.cpu`/`max.cpu` from the
   platform LimitRange, and stripped `limits.cpu` from all platform-ns workloads (requests + memory
   limits retained). CPU is now bounded by requests + node capacity.
-
-## [2026.6.17-rc.4] - 2026-06-24
-
-## [2026.6.17-rc.3] - 2026-06-24
-
-### Fixed
-- **system-backup pg-dump no longer hangs on an absent source cluster.** A pg_dump against a
-  non-existent CNPG cluster (e.g. `mail-db` after the RocksDB DataStore migration) created a run +
-  Job whose `pg_dump` blocked on the dead `<cluster>-ro` Service until the Job's 90-min
-  `activeDeadlineSeconds` SIGKILLed it — leaving the run stuck in `running` (k8s killed the process,
-  so the orchestrator's catch never wrote a terminal status). `POST /system-backup/pg-dump` now
-  validates the source CNPG Cluster CR exists and returns `404 SYSTEM_BACKUP_SOURCE_CLUSTER_NOT_FOUND`
-  before creating any run or Job, and the sweeper flips a run still in `running` past the Job deadline
-  to `failed` (covers deadline/OOM/crash deaths that bypass the catch). (#128)
-- **Tenant firewall ports of terminating pods are pruned immediately on multi-node clusters.** The
-  per-node `firewall-reconciler` counted the hostPorts of every cached pod with no
-  `deletionTimestamp`/phase guard, so a Terminating pod kept its port in the desired set until the
-  apiserver fully GC'd the object (minutes on a loaded HA node) — the nft set held the stale port
-  open the whole time. The reconcile loop now skips pods that are terminating or in a terminal phase,
-  so a deleted rule's ports close within seconds. (#129)
-
-### Changed
+- **Valkey removed from the deployed path** (resource savings): nothing consumes it in the automated
+  config (the backend cache is in-memory LRU; Stalwart wiring is manual-only). The base manifests,
+  overlay wrapper, and `migrate-valkey-bootstrap.sh` are kept so re-activation is a one-line uncomment.
 - **Integration harness: dropped the stale `mail/mail-db` pg_dump leg** from the `system_backup`
-  scenario. `mail-db` was removed in the RocksDB DataStore migration (only `platform/system-db`
-  remains), so the leg dumped a non-existent cluster and polled the full 90-min cap (~96 min of dead
-  wall-clock per `all` run). Mail data is covered by the tenant-bundle + restic scenarios.
-
-## [2026.6.17-rc.2] - 2026-06-24
-
-### Fixed
-- **Webmail mutex now scales the inactive engine to 0 on staging/production.** Bulwark's base
-  Deployment hardcoded `replicas: 1`, so when an operator selected Roundcube the webmail-router
-  reconciler's scale-to-0 of Bulwark was reverted by Flux on every apply and BOTH webmail engines
-  ran. Bulwark now omits `replicas` (reconciler-owned, mirroring Roundcube); the RWO scale-to-2
-  hazard the hardcode guarded cannot recur — Bulwark is not platform-storage-policy-managed and the
-  reconciler only ever sets 0 (inactive) or 1 (active). Completes the v2026.6.17-rc.1 "production
-  ships both webmail engines" change so exactly one webmail pod runs.
-
-## [2026.6.17-rc.1] - 2026-06-23
-
-### Added
-- **Production ships both webmail engines (Bulwark + Roundcube).** The webmail-router
-  reconciler runs whichever engine `default_webmail_engine` selects and scales the other to
-  0, so only one webmail pod ever runs. Previously the production overlay shipped only
-  Roundcube, so a fresh cluster whose default engine is `bulwark` 404'd on `webmail.<apex>`
-  (the reconciler had no Deployment to scale). Staging inherits this via `../production`.
-
-### Fixed
-- **Tenant hard-delete now reaps stranded Longhorn volume CRs and deletes the DB row last.**
-  `applyDeleted` dropped the tenant row immediately after requesting the namespace delete,
-  while the namespace was still terminating and its Longhorn volume CR still detaching — and
-  the by-PV-name `pv-cleanup-released` hook can't reap a volume CR that outlives its PV. A
-  new scoped, bounded post-delete reap (`reap-namespace-volumes.ts`) clears this tenant's
-  Released PVs + stranded Longhorn volume CRs by namespace before the row is deleted.
-  Proven live on the DEV cluster (reaped the orphaned volume CR a prior session had to
-  delete by hand).
-- **Dev-cluster oauth2-proxy no longer wedges `Init:0/1`.** On `--env dev` the base init did
-  strict-TLS OIDC discovery over the public Dex issuer, which never readied (http issuer
-  404s; an LE-prod cert may not issue on a dev domain). The development overlay now does
-  token-redeem + JWKS over the cluster-internal Dex Service (plaintext `:5556`, skip
-  discovery), and `bootstrap.sh` bakes an https issuer + redirect for `--env dev` to match
-  Dex's advertised issuer and registered client.
-- **Integration test timing is adaptive on multi-node clusters.** Firewall-reconciler
-  convergence (`FW_RECONCILE_WAIT`, 60→150s), trusted-proxies ConfigMap+DaemonSet
-  (`TP_RECONCILE_WAIT`, 30s@1s→90s plus an explicit DaemonSet-args poll), break-glass
-  IngressRoute (15→45s), and the cross-node smoke probe (6s/1-retry → 15s/2-retry) no
-  longer false-fail on the 4-node staging cluster. Loops exit early on success, so the wider
-  budgets are free on the happy path.
-
-### Changed
-- **Valkey removed from the deployed path** (resource savings): nothing consumes it in the
-  automated config (the backend cache is in-memory LRU; Stalwart wiring is manual-only). The
-  `valkey/` entry is commented out of the development overlay — the base manifests, overlay
-  wrapper, and `migrate-valkey-bootstrap.sh` are kept so re-activation is a one-line
-  uncomment. The `scenario_redis` integration test skips by default while disabled.
+  scenario. `mail-db` was removed in the RocksDB DataStore migration, so the leg dumped a non-existent
+  cluster and polled the full 90-min cap (~96 min of dead wall-clock per `all` run). Mail data is
+  covered by the tenant-bundle + restic scenarios.
 
 ## [2026.6.16] - 2026-06-22
 
