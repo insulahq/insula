@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.17-rc.3] - 2026-06-24
+
 ### Fixed
 - **system-backup pg-dump no longer hangs on an absent source cluster.** A pg_dump against a
   non-existent CNPG cluster (e.g. `mail-db` after the RocksDB DataStore migration) created a run +
