@@ -117,6 +117,13 @@ API_BASE="${API_BASE:-https://admin.k8s-platform.test:2011}"
 # Accept INTEGRATION_TOKEN (master integration-all.sh exports this) as
 # a fallback so node-terminal can run inside the bundled suite without
 # its own login round-trip.
+# #130: reuse ONE cache-backed admin token across ALL/single-test modes so
+# rapid runs don't trip the auth rate limit. Only mints if no token is set.
+if [[ -z "${ADMIN_TOKEN:-}" && -z "${INTEGRATION_TOKEN:-}" ]] && [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+  # shellcheck source=integration-token.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+fi
 ADMIN_TOKEN="${ADMIN_TOKEN:-${INTEGRATION_TOKEN:-}}"
 NAMESPACE="${NAMESPACE:-platform}"
 CURL_INSECURE="${CURL_INSECURE:-1}"

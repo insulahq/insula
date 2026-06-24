@@ -104,8 +104,19 @@ login_token() {
   resp=$(curl "${CURL_OPTS[@]}" -X POST "$ADMIN_HOST/api/v1/auth/login" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"${ADMIN_EMAIL:-admin@example.test}\",\"password\":\"$ADMIN_PASSWORD\"}")
-  echo "$resp" | sed -nE 's/.*"accessToken":"([^"]+)".*/\1/p'
+  # The API returns the bearer as data.token (NOT accessToken — the old regex
+  # silently produced an empty token, so single-mode runs always failed). #130
+  echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("token",""))' 2>/dev/null
 }
+
+# #130: reuse ONE cache-backed admin token across ALL/single-test modes so
+# rapid runs don't trip the auth rate limit (and single mode skips the login
+# above entirely). Only mints if no token is set and the cache is cold.
+if [[ -z "${INTEGRATION_TOKEN:-}" ]] && [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+  # shellcheck source=integration-token.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+fi
 
 TOKEN=$(cached_or_login_token)
 if [[ -z "$TOKEN" ]]; then

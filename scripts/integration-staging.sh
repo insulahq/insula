@@ -2871,6 +2871,15 @@ trap cleanup EXIT
 
 # ─── main ─────────────────────────────────────────────────────────
 
+# #130: reuse ONE cache-backed admin token across ALL/single-test modes so
+# rapid runs don't trip the auth rate limit. Only mints if no token is set
+# and the cache is cold; otherwise reads the shared cache file.
+if [[ -z "${INTEGRATION_TOKEN:-}" ]] && [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+  # shellcheck source=integration-token.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+fi
+
 log "logging in as $ADMIN_EMAIL"
 TOKEN=$(login_token)
 [[ -n "$TOKEN" ]] || { echo "login failed" >&2; exit 1; }

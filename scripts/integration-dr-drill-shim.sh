@@ -83,6 +83,15 @@ login_token() {
     | sed -nE 's/.*"token":"([^"]+)".*/\1/p'
 }
 
+# #130: reuse ONE cache-backed admin token across ALL/single-test modes so
+# rapid runs don't trip the auth rate limit. Only mints if no token is set
+# and the cache is cold; otherwise reads the shared cache file.
+if [[ -z "${INTEGRATION_TOKEN:-}" ]] && [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+  # shellcheck source=integration-token.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+fi
+
 TOKEN=$(cached_or_login_token)
 [[ -z "$TOKEN" ]] && { fail "no ADMIN_TOKEN"; exit 1; }
 
@@ -137,8 +146,15 @@ else
   skip "A5: plugin-barman-cloud not yet installed (Flux not synced)"
 fi
 
-# A6: dry-run restore scripts
-if "$SCRIPT_DIR/restore-postgres-from-shim.sh" --dry-run --latest >/dev/null 2>&1; then
+# A6: dry-run restore scripts. These operator tools run ON a control-plane
+# node, so their pre-flights need node-local tooling (kubectl/rclone/sudo).
+# When that isn't present (e.g. running the suite from a workstation that
+# reaches the cluster via $KUBECTL/SSH rather than a kubectl in PATH), SKIP
+# rather than FAIL — A6b/A6c already do this for their prereqs; A6a now
+# matches instead of hard-failing on "kubectl not in PATH".
+if ! command -v kubectl >/dev/null 2>&1; then
+  skip "A6a: restore-postgres-from-shim.sh dry-run (needs kubectl in PATH — a control-plane node)"
+elif "$SCRIPT_DIR/restore-postgres-from-shim.sh" --dry-run --latest >/dev/null 2>&1; then
   pass "A6a: restore-postgres-from-shim.sh dry-run OK"
 else
   fail "A6a: restore-postgres-from-shim.sh dry-run FAILED"

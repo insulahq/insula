@@ -125,16 +125,15 @@ reset_admin_password() {
 # parallel groups (~midway through a full run) to stay well within
 # that window. Sub-scripts that get a 401 fall back to fresh login
 # (their existing curl path is the else-branch of the cache check).
+# 2026-06-24 (#130): delegate to the shared, cache-backed, 429-resilient token
+# helper so the whole run reuses ONE token (re-minted only when it nears
+# expiry, with backoff on rate-limit). Sub-suites source the SAME helper and
+# read the SAME cache file, so neither the long ALL run nor rapid single-suite
+# runs storm /auth/login. Re-minting before each group (below) keeps the
+# inherited INTEGRATION_TOKEN fresh for any suite that hasn't migrated yet.
 mint_token() {
-  # Build the JSON body with json.dumps (env-passed) so a password containing a
-  # double-quote/backslash can't silently corrupt the body and fail login.
-  local body
-  body=$(ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" python3 -c \
-    'import json,os;print(json.dumps({"email":os.environ["ADMIN_EMAIL"],"password":os.environ["ADMIN_PASSWORD"]}))')
-  curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "$body" \
-    | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  get_admin_token
 }
 if [[ "$LIST" == 0 ]]; then
   reset_admin_password
@@ -378,6 +377,13 @@ run_serial_group() {
     local args=("${parts[@]:1}")
     local to start; to="$(suite_timeout_of "$name")"; start=$(date +%s)
     log "Suite: $name (tier=$(suite_tier_of "$name"), hard-timeout ${to}s)"
+    # #130: refresh the shared token before each suite. mint_token is
+    # cache-backed (get_admin_token), so this is ~0s unless the token is near
+    # expiry — in which case it re-mints once (with 429 backoff). Stops a long
+    # serial run (which can outlive a single 30-min token) from handing a stale
+    # token to late suites (the rc.* runs failed backup-rclone-shim / dr-drill
+    # / node-terminal at preflight 401 for exactly this reason).
+    INTEGRATION_TOKEN="$(mint_token)" && export INTEGRATION_TOKEN || warn "$name: token refresh failed (continuing with prior token)"
     set +e
     ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
