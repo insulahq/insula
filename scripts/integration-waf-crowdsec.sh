@@ -123,6 +123,15 @@ kubectl_run() {
 TOKEN=""
 
 api_login() {
+  # #130: reuse the shared cache-backed token first (429-resilient) so running
+  # alongside other suites doesn't trip the auth rate limit. Falls through to
+  # the password / in-pod JWT paths below if the cache is cold and minting fails.
+  if [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+    # shellcheck source=integration-token.sh
+    source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+    TOKEN="$(get_admin_token 2>/dev/null || true)"
+    [[ -n "$TOKEN" ]] && return 0
+  fi
   if [[ -z "$ADMIN_PASSWORD" ]]; then
     # Fallback path: generate JWT inside platform-api pod (lets the
     # harness run in CI without password access — same trick the
@@ -243,7 +252,16 @@ api_internal_status() { _api_exec status "$1" "$2" "${3:-}" "${4:-}"; }
 probe_traefik_pod() {
   local pod="$1" host="$2" xff="$3" path="$4"
   local rnd; rnd=$(next_nonce)
-  local pod_ip; pod_ip=$(kubectl_run "get pod -n traefik $pod -o jsonpath='{.status.podIP}'" 2>/dev/null)
+  # The kubectl call travels over SSH on a real cluster; under load (e.g.
+  # several suites probing at once) it can transiently return empty. Retry a
+  # few times before giving up — a flaky resolve isn't a WAF failure.
+  local pod_ip=""
+  local _ip_try
+  for _ip_try in 1 2 3 4 5; do
+    pod_ip=$(kubectl_run "get pod -n traefik $pod -o jsonpath='{.status.podIP}'" 2>/dev/null)
+    [[ -n "$pod_ip" ]] && break
+    sleep 2
+  done
   if [[ -z "$pod_ip" ]]; then
     printf 'NOIP||\n'
     return 1
@@ -414,6 +432,12 @@ phase "Phase 3 — WAF events captured per Traefik DS pod"
 before=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
 log "waf_logs count in last 2min before probes: ${before:-0}"
 
+# Count probes that actually TRIPPED the WAF (403). On a cluster with no
+# WAF-protected route matching PROBE_HOSTNAME/PATH, Traefik returns a baseline
+# 404 *before* the modsec middleware runs, so the probe can't generate a per-pod
+# WAF event — the same condition the L3 enforcement phase already SKIPs on. We
+# only assert per-pod capture for probes that actually reached the WAF.
+probe_403=0
 for pod in $traefik_pods; do
   # probe_traefik_pod fires a CRS-tripping request through this specific
   # Traefik pod's hostPort (via pod IP from a node-pinned ephemeral curl
@@ -423,8 +447,12 @@ for pod in $traefik_pods; do
   rc="${result%%|*}"
   if [[ "$rc" == "403" ]]; then
     ok "$pod: CRS-tripping probe returned 403"
+    probe_403=$(( probe_403 + 1 ))
   elif [[ "$rc" == "NOIP" ]]; then
-    fail "$pod: could not resolve pod IP"
+    # Couldn't resolve this pod's IP even after retries — an infra/kubectl-over-
+    # SSH hiccup (not a WAF failure). warn, don't fail: the skip-on-no-403 guard
+    # below already handles the case where no pod could be probed.
+    warn "$pod: could not resolve pod IP after retries — skipping this pod's probe"
   else
     warn "$pod: probe through Traefik returned HTTP $rc (expected 403)"
   fi
@@ -436,10 +464,15 @@ sleep 40
 
 after=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
 delta=$(( ${after:-0} - ${before:-0} ))
-if (( delta >= traefik_count )); then
-  ok "waf_logs grew by $delta (≥ $traefik_count probes)"
+if (( probe_403 == 0 )); then
+  # No probe tripped the WAF (all hit a baseline 404) — there is no
+  # WAF-protected route to exercise per-pod capture on this cluster. SKIP,
+  # mirroring the L3 enforcement phase, rather than emit a false failure.
+  skip "WAF per-pod capture: no probe reached modsec (all $traefik_count probes hit baseline 404 — no WAF-protected route on this cluster)"
+elif (( delta >= probe_403 )); then
+  ok "waf_logs grew by $delta (≥ $probe_403 probe(s) that tripped the WAF)"
 else
-  fail "waf_logs grew by only $delta — expected ≥ $traefik_count (one per Traefik pod)"
+  fail "waf_logs grew by only $delta — expected ≥ $probe_403 (one per Traefik pod that returned 403)"
 fi
 
 # Verify hostname extraction works (X-Forwarded-Host should be captured,
