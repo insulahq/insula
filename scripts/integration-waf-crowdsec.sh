@@ -449,18 +449,31 @@ for pod in $traefik_pods; do
   # Traefik pod's hostPort (via pod IP from a node-pinned ephemeral curl
   # pod). The Traefik plugin can't be `kubectl exec`d into directly —
   # the traefik:v3.x image is distroless (no shell, no wget, no curl).
-  result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "$TEST_PROBE_PATH")
-  rc="${result%%|*}"
+  #
+  # Retry the WHOLE probe until it lands 403: the WAF verdict is stable, so a
+  # one-off non-403 is always transient — a NOIP (kubectl-over-SSH returned an
+  # empty pod IP under load), an ephemeral curl-pod scheduling/teardown hiccup,
+  # or a router not yet synced on that pod. Each attempt re-resolves the pod IP
+  # (probe_traefik_pod retries that internally too) and spawns a fresh uniquely
+  # named curl pod, so retries never collide. This is what makes 4/4 reliable.
+  rc=""
+  for _probe_try in 1 2 3 4 5 6; do
+    result=$(probe_traefik_pod "$pod" "$PROBE_HOSTNAME" "$TEST_BAN_IP" "$TEST_PROBE_PATH")
+    rc="${result%%|*}"
+    [[ "$rc" == "403" ]] && break
+    log "$pod: probe attempt ${_probe_try} → '${rc:-<empty>}' (want 403) — retrying in 4s"
+    sleep 4
+  done
   if [[ "$rc" == "403" ]]; then
-    ok "$pod: CRS-tripping probe returned 403"
+    ok "$pod: CRS-tripping probe returned 403 (after ${_probe_try} attempt(s))"
     probe_403=$(( probe_403 + 1 ))
   elif [[ "$rc" == "NOIP" ]]; then
-    # Couldn't resolve this pod's IP even after retries — an infra/kubectl-over-
-    # SSH hiccup (not a WAF failure). warn, don't fail: the skip-on-no-403 guard
-    # below already handles the case where no pod could be probed.
+    # Still couldn't resolve this pod's IP after all retries — a persistent
+    # infra/kubectl-over-SSH problem (not a WAF failure). warn, don't fail: the
+    # skip-on-no-403 guard below handles the case where no pod could be probed.
     warn "$pod: could not resolve pod IP after retries — skipping this pod's probe"
   else
-    warn "$pod: probe through Traefik returned HTTP $rc (expected 403)"
+    warn "$pod: probe through Traefik returned HTTP $rc after retries (expected 403)"
   fi
 done
 
