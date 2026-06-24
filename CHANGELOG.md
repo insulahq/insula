@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Firewall tenant-port / peer REMOVE now prunes deterministically (the actual #129 fix).** The
+  rc.5 `KeyEnd` decode was a real correctness fix but insufficient: live, the reconciler still
+  re-applied the same set every tick and never pruned on delete, because the apply *short-circuit*
+  trusted a kernel read-back that misreads a populated interval set as empty — so on a delete the
+  empty desired set matched the (misread) empty observed set and the flush was skipped. The
+  tenant-port and peer appliers now write **unconditionally** (an idempotent flush+re-add), using an
+  in-memory `lastFP` only to gate the change/log signal — mirroring the existing crowdsec-blacklist
+  applier. This prunes the deleted member every tick *and* keeps the 2026-05-09 out-of-band
+  (`nft -f`) self-heal, without depending on the read-back decode. (#129)
+
 ## [2026.6.17-rc.5] - 2026-06-24
 
 ### Fixed
