@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.17-rc.6] - 2026-06-24
+
 ### Fixed
 - **Firewall tenant-port / peer REMOVE now prunes deterministically (the actual #129 fix).** The
   rc.5 `KeyEnd` decode was a real correctness fix but insufficient: live, the reconciler still

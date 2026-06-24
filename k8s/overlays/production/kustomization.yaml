@@ -79,11 +79,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "2026.6.17-rc.5"
+    newTag: "2026.6.17-rc.6"
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "2026.6.17-rc.5"
+    newTag: "2026.6.17-rc.6"
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "2026.6.17-rc.5"
+    newTag: "2026.6.17-rc.6"
   # Internal DaemonSet/sidecar images — timestamp-sha tagged by each image's own
   # CI (.github/scripts/pin-image-tag.sh pins them in overlays/development).
   # cut-release.sh snapshots the current development pins here at cut time so the
@@ -91,7 +91,7 @@ images:
   - name: ghcr.io/insulahq/insula/security-probe
     newTag: "20260610095807-ab58b4d"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260624141118-7edd5b9"
+    newTag: "20260624145651-862bae3"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
     newTag: "20260610095804-ab58b4d"
   - name: ghcr.io/insulahq/insula/backup-rclone
