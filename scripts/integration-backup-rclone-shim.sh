@@ -205,10 +205,16 @@ fi
 # ─── Phase C — Assign + reconcile + verify ───────────────────────────
 echo "── Phase C: assign / reconcile / verify ──"
 
-# Create a fresh target via the existing backup-config API so we can
-# bind to it. We rely on the dev minio defaults (in DinD) — in staging
-# the operator typically already has at least one S3 target.
-CREATE_RESP=$(api POST /api/v1/admin/backup-configs '{"name":"rx5-shim-itest","storageType":"s3","s3Endpoint":"http://minio.dev-minio.svc.cluster.local:9000","s3Bucket":"itest-rx5","s3Region":"us-east-1","s3AccessKey":"minioadmin","s3SecretKey":"minioadmin","retentionDays":7}')
+# Create a throwaway target so we can bind to it. Field names MUST be
+# snake_case: createBackupConfigSchema discriminates on `storage_type` and uses
+# s3_endpoint/s3_bucket/s3_access_key/... The old camelCase body 400'd on EVERY
+# cluster ("Invalid discriminator value: Expected 'ssh'|'s3'|'cifs'"), so Phase
+# C was silently skipped everywhere — never actually exercising the shim
+# assign/reconcile/verify path. Creds are dummy but satisfy the schema
+# (s3_access_key min length is 16; the old "minioadmin" was also too short).
+# Phase C only binds + reconciles + unbinds — it never runs a real backup, so
+# the creds/endpoint don't need to be live; the create just stores the config.
+CREATE_RESP=$(api POST /api/v1/admin/backup-configs '{"name":"rx5-shim-itest","storage_type":"s3","s3_endpoint":"http://minio.dev-minio.svc.cluster.local:9000","s3_bucket":"itest-rx5","s3_region":"us-east-1","s3_access_key":"itestaccesskey0000001","s3_secret_key":"itestsecretkey0000000001","retention_days":7}')
 if [[ "$(http_code "$CREATE_RESP")" == "200" ]] || [[ "$(http_code "$CREATE_RESP")" == "201" ]]; then
   TARGET_ID=$(http_body "$CREATE_RESP" | sed -nE 's/.*"id":"([^"]+)".*/\1/p' | head -1)
   pass "C1: created S3 backup target $TARGET_ID"
@@ -218,6 +224,16 @@ else
 fi
 
 if [[ -n "$TARGET_ID" ]]; then
+  # Save the ORIGINAL system→target binding so C6 can restore it. On a real
+  # cluster `system` is bound (e.g. staging-s3-hetzner); a bare unassign would
+  # CLEAR the operator's system backup binding. Capture it before we overwrite.
+  _orig_resp=$(api GET /api/v1/admin/backup-rclone-shim/assignments)
+  ORIG_SYS_TARGET=$(http_body "$_orig_resp" | python3 -c 'import json,sys
+try:
+  a=json.load(sys.stdin).get("data",{}).get("assignments",[])
+  print(next((r.get("targetId") or "" for r in a if r.get("className")=="system"), ""))
+except Exception: print("")' 2>/dev/null)
+
   PUT_RESP=$(api PUT "/api/v1/admin/backup-rclone-shim/assignments/system" "{\"targetId\":\"$TARGET_ID\",\"force\":false}")
   if [[ "$(http_code "$PUT_RESP")" == "200" ]]; then
     if echo "$(http_body "$PUT_RESP")" | grep -q '"phase":"drain_immediate"\|"phase":"drain_skipped"' \
@@ -257,23 +273,34 @@ if [[ -n "$TARGET_ID" ]]; then
     skip "C5: kubectl unavailable for DaemonSet annotation check"
   fi
 
-  # C6: Unassign.
-  UN_RESP=$(api PUT "/api/v1/admin/backup-rclone-shim/assignments/system" '{"targetId":null,"force":true}')
+  # C6: RESTORE the original system binding (NOT a bare unassign — that would
+  # leave the operator's system backup class unbound on a real cluster).
+  if [[ -n "$ORIG_SYS_TARGET" ]]; then
+    UN_RESP=$(api PUT "/api/v1/admin/backup-rclone-shim/assignments/system" "{\"targetId\":\"$ORIG_SYS_TARGET\",\"force\":true}")
+  else
+    UN_RESP=$(api PUT "/api/v1/admin/backup-rclone-shim/assignments/system" '{"targetId":null,"force":true}')
+  fi
   if [[ "$(http_code "$UN_RESP")" == "200" ]]; then
-    pass "C6: unassign system succeeded"
+    pass "C6: restored system to its original binding"
   else
-    fail "C6: unassign failed (HTTP $(http_code "$UN_RESP"))"
+    fail "C6: restore failed (HTTP $(http_code "$UN_RESP")): $(http_body "$UN_RESP")"
   fi
 
-  # C7: List again — system should have null targetId.
+  # C7: List again — system should be back to its ORIGINAL targetId (or null if
+  # it started unbound), proving the round-trip left the operator's config intact.
   resp=$(api GET /api/v1/admin/backup-rclone-shim/assignments)
-  if echo "$(http_body "$resp")" | grep -qE '"className":"system","targetId":null'; then
-    pass "C7: system back to targetId=null after unassign"
+  if [[ -n "$ORIG_SYS_TARGET" ]]; then
+    _want="\"className\":\"system\",\"targetId\":\"$ORIG_SYS_TARGET\""
   else
-    fail "C7: system targetId not null after unassign"
+    _want='"className":"system","targetId":null'
+  fi
+  if echo "$(http_body "$resp")" | grep -qF "$_want"; then
+    pass "C7: system restored to its original binding (round-trip non-destructive)"
+  else
+    fail "C7: system NOT restored to original binding — operator config disturbed"
   fi
 
-  # Cleanup: delete the test target.
+  # Cleanup: delete the throwaway test target (NOT an operator target).
   api DELETE "/api/v1/admin/backup-configs/$TARGET_ID" >/dev/null
 fi
 
