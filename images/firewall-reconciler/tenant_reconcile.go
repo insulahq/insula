@@ -142,6 +142,19 @@ func (t *tenantPortsReconciler) reconcileOnce(ctx context.Context) error {
 		if pod.Spec.NodeName != t.nodeName {
 			continue
 		}
+		// A Pod that is Terminating (deletionTimestamp set) or in a
+		// terminal phase no longer serves traffic — prune its hostPorts
+		// from tenant_ports immediately rather than holding them open
+		// until the apiserver fully removes the object. On a loaded HA
+		// node that GC can lag minutes; without this guard the desired
+		// set never shrinks, the fingerprint matches the live nft set,
+		// and the stale port stays open the whole time (issue #129).
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+			continue
+		}
 		ok, err := t.isTenantNamespace(pod.Namespace)
 		if err != nil {
 			slog.Warn("namespace lookup failed; skipping pod",
