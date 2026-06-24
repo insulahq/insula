@@ -168,8 +168,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [[ "$b_status" != "completed" && "$b_status" != "partial" ]]; then
-  fail "capture: status=$b_status — resp: $(echo "$b_resp" | head -c 400)"
+# A `partial` bundle means at least one component FAILED to back up — a silent
+# data-loss risk. Treat it as a hard failure (assert == completed), per the
+# project rule; dump which component(s) are not completed so a real partial is
+# diagnosable rather than tolerated.
+if [[ "$b_status" != "completed" ]]; then
+  echo "$b_resp" | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin).get("data",{})
+  for c in d.get("components",[]) or []:
+    if c.get("status")!="completed": print(f"    component={c.get(\"component\")} status={c.get(\"status\")} err={c.get(\"lastError\",\"\")}")
+except Exception: pass' 2>/dev/null || true
+  fail "capture: status=$b_status (expected completed) — resp: $(echo "$b_resp" | head -c 400)"
   exit 1
 fi
 ok "bundle $bundle_id captured (status=$b_status)"
