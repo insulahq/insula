@@ -69,6 +69,19 @@ func withAnnotation(k, v string) func(*corev1.Pod) {
 	}
 }
 
+func withDeletionTimestamp() func(*corev1.Pod) {
+	return func(p *corev1.Pod) {
+		dt := metav1.Now()
+		p.DeletionTimestamp = &dt
+	}
+}
+
+func withPhase(phase corev1.PodPhase) func(*corev1.Pod) {
+	return func(p *corev1.Pod) {
+		p.Status.Phase = phase
+	}
+}
+
 func mkNS(name string, annotations map[string]string) *corev1.Namespace {
 	if annotations == nil {
 		annotations = map[string]string{}
@@ -222,6 +235,42 @@ func TestReconcileOnce_skipsPodsOnOtherNodes(t *testing.T) {
 	}
 	if got, want := fa.tenantPortCalls[0].TCP, []string{"80"}; !equalSorted(got, want) {
 		t.Errorf("expected only n1's port; got %v", got)
+	}
+}
+
+// issue #129: a Terminating pod (deletionTimestamp set) must not keep its
+// hostPort in the desired set — otherwise the nft set holds the port open
+// until the apiserver fully GCs the object (minutes on a loaded HA node).
+func TestReconcileOnce_skipsTerminatingPod(t *testing.T) {
+	pods := []*corev1.Pod{
+		mkPod("tenant-acme", "live", "n1", withHostPort(80, corev1.ProtocolTCP)),
+		mkPod("tenant-acme", "terminating", "n1", withHostPort(90, corev1.ProtocolTCP), withDeletionTimestamp()),
+	}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
+	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
+	if err := tpr.reconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if got, want := fa.tenantPortCalls[0].TCP, []string{"80"}; !equalSorted(got, want) {
+		t.Errorf("terminating pod's port should be pruned; got %v", got)
+	}
+}
+
+// issue #129: pods in a terminal phase (Succeeded/Failed) no longer serve
+// traffic — their hostPorts must be excluded from the desired set too.
+func TestReconcileOnce_skipsTerminalPhasePods(t *testing.T) {
+	pods := []*corev1.Pod{
+		mkPod("tenant-acme", "live", "n1", withHostPort(80, corev1.ProtocolTCP)),
+		mkPod("tenant-acme", "done", "n1", withHostPort(91, corev1.ProtocolTCP), withPhase(corev1.PodSucceeded)),
+		mkPod("tenant-acme", "crashed", "n1", withHostPort(92, corev1.ProtocolTCP), withPhase(corev1.PodFailed)),
+	}
+	nses := []*corev1.Namespace{mkNS("tenant-acme", nil)}
+	tpr, fa := fakeTenantSetup(t, "n1", pods, nses)
+	if err := tpr.reconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcileOnce: %v", err)
+	}
+	if got, want := fa.tenantPortCalls[0].TCP, []string{"80"}; !equalSorted(got, want) {
+		t.Errorf("terminal-phase pods' ports should be pruned; got %v", got)
 	}
 }
 
