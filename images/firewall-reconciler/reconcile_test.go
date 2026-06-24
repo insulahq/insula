@@ -445,8 +445,15 @@ func TestReconcileOnce_noOpWhenScriptUnchanged(t *testing.T) {
 	if err := r.reconcileOnce(context.Background()); err != nil {
 		t.Fatalf("second reconcileOnce: %v", err)
 	}
-	if len(fa.calls) != 1 {
-		t.Errorf("expected exactly 1 apply (second is cached no-op), got %d", len(fa.calls))
+	// The apply is unconditional (idempotent flush+re-add), so the peer set
+	// is re-written on each reconcile even when the desired state is
+	// unchanged — what matters is the re-applied content is IDENTICAL (no
+	// churn in the desired set; only the change SIGNAL/log is suppressed).
+	if len(fa.calls) != 2 {
+		t.Errorf("expected 2 unconditional applies, got %d", len(fa.calls))
+	}
+	if len(fa.calls) == 2 && peerFingerprint(fa.calls[0]) != peerFingerprint(fa.calls[1]) {
+		t.Errorf("unchanged desired must re-apply identical content; got %v then %v", fa.calls[0], fa.calls[1])
 	}
 }
 

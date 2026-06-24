@@ -29,52 +29,47 @@ type nodeLister interface {
 	List(selector labels.Selector) ([]*corev1.Node, error)
 }
 
-// applyPeersIfChanged compares the desired peer/trusted set state
-// against the *observed* kernel state (read fresh from netlink each
-// tick) and applies via the netlink writer if they differ.
+// applyPeersIfChanged applies the desired peer/trusted set state to the
+// kernel UNCONDITIONALLY (applyPeerSets is an idempotent flush+re-add) and
+// uses r.lastPeerFP only to decide whether the change is worth a log line.
+// This mirrors the crowdsec-blacklist applier.
 //
-// Reading kernel state every tick costs ~5-10ms (4 GetSetElements
-// netlink reads); floorReconcile is 30s, so the overhead is < 0.1%.
-// In exchange we close the previous cached-fingerprint divergence
-// bug: if anything writes the kernel state out-of-band (operator
-// running `nft -f /etc/nftables.conf`, kernel reboot stripping the
-// sets, third-party tool flushing them) the next reconcile observes
-// the divergence and re-applies, instead of believing its in-process
-// cache that says state is already correct.
+// Why unconditional rather than read-the-kernel-and-skip:
+//   - Re-applying every tick self-heals out-of-band edits (operator
+//     `nft -f`, kernel reboot, third-party flush) — the 2026-05-09 staging
+//     bug an in-process "already applied" cache caused. (Tested below.)
+//   - The previous design read the kernel set back (observePeerFingerprint)
+//     to detect divergence, but that decodes interval sets and could MISREAD
+//     a populated set as empty, so an empty-desired vs (misread) empty match
+//     skipped the flush on REMOVE and leaked stale members (#129).
 //
-// On a netlink read error we fall back to "force apply" (better to
-// over-write than under-write when state is unknown). holds r.mu via
-// defer to serialize the two reconcile loops' state inspection.
+// Unconditional apply gets BOTH right without trusting the read-back decode.
+// Holds r.mu to serialize the two reconcile loops' state.
 func (r *reconciler) applyPeersIfChanged(s peerNftSets) (changed bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	desiredFP := peerFingerprint(s)
-	observedFP, obsErr := r.applier.observePeerFingerprint()
-	if obsErr == nil && desiredFP == observedFP {
-		return false, nil
-	}
 	if err := r.applier.applyPeerSets(s); err != nil {
 		return false, err
 	}
-	return true, nil
+	fp := peerFingerprint(s)
+	changed = fp != r.lastPeerFP
+	r.lastPeerFP = fp
+	return changed, nil
 }
 
 // applyTenantPortsIfChanged is the inet_service-set sibling of
-// applyPeersIfChanged. Same shape: read observed, compare to
-// desired, apply if different. Same fall-back-to-apply on read
-// errors.
+// applyPeersIfChanged — same unconditional idempotent apply, same
+// lastFP-only-gates-the-log (r.lastTenantFP), same #129 + 2026-05-09 reasons.
 func (r *reconciler) applyTenantPortsIfChanged(s tenantPortSets) (changed bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	desiredFP := tenantPortsFingerprint(s)
-	observedFP, obsErr := r.applier.observeTenantPortsFingerprint()
-	if obsErr == nil && desiredFP == observedFP {
-		return false, nil
-	}
 	if err := r.applier.applyTenantPorts(s); err != nil {
 		return false, err
 	}
-	return true, nil
+	fp := tenantPortsFingerprint(s)
+	changed = fp != r.lastTenantFP
+	r.lastTenantFP = fp
+	return changed, nil
 }
 
 // peerFingerprint returns a stable string representation of the four
