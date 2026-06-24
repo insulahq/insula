@@ -485,10 +485,13 @@ else
   else
     warn "per-pod WAF enforcement: only $probe_403/$traefik_count pods returned 403 (others 404/NOIP — see above)"
   fi
-  # SCRAPER CAPTURE is a softer check: the waf-log-scraper dedups events by
-  # ModSecurity's unique_id, so N identical same-rule probes can collapse to a
-  # single row (see waf-log-scraper.ts). Assert the pipeline captured at least
-  # one event — NOT one-per-pod, which the dedup makes unachievable here.
+  # SCRAPER CAPTURE is a softer check: the waf-log scraper runs on a ~30s cycle,
+  # so the exact number of rows landed within this probe window is timing-
+  # dependent. It keys on ModSecurity's per-transaction unique_id (present in
+  # the live audit log), so distinct hits are NOT over-deduped — verified live:
+  # 3 identical attacks → 3 distinct rows. Assert the pipeline captured >=1
+  # event rather than a precise one-per-pod count, which the scrape cadence
+  # makes flaky.
   if (( delta >= 1 )); then
     ok "waf-log scraper captured $delta new event(s) from the probes"
   else
