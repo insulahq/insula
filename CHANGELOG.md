@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Webmail mutex now scales the inactive engine to 0 on staging/production.** Bulwark's base
+  Deployment hardcoded `replicas: 1`, so when an operator selected Roundcube the webmail-router
+  reconciler's scale-to-0 of Bulwark was reverted by Flux on every apply and BOTH webmail engines
+  ran. Bulwark now omits `replicas` (reconciler-owned, mirroring Roundcube); the RWO scale-to-2
+  hazard the hardcode guarded cannot recur — Bulwark is not platform-storage-policy-managed and the
+  reconciler only ever sets 0 (inactive) or 1 (active). Completes the v2026.6.17-rc.1 "production
+  ships both webmail engines" change so exactly one webmail pod runs.
+
 ## [2026.6.17-rc.1] - 2026-06-23
 
 ### Added
