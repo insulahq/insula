@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.17-rc.4] - 2026-06-24
+
 ## [2026.6.17-rc.3] - 2026-06-24
 
 ### Fixed
