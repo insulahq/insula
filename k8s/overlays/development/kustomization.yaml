@@ -185,7 +185,7 @@ images:
   - name: ghcr.io/insulahq/insula/security-probe
     newTag: "20260610095807-ab58b4d"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260624121347-165c59a" # #129 terminating-pod port prune
+    newTag: "20260624141118-7edd5b9" # #129 KeyEnd decode (real fix) + terminating-pod prune
   - name: ghcr.io/insulahq/insula/host-config-reconciler
     newTag: "20260610095804-ab58b4d"
   - name: ghcr.io/insulahq/insula/backup-rclone

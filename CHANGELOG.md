@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Firewall tenant-port REMOVE now actually prunes (real #129 fix).** The reconciler WRITES nft
+  interval-set ranges in the legacy paired-`IntervalEnd` shape, but the kernel normalises interval
+  sets and returns the modern single-element `KeyEnd` shape on read — and the read path only
+  understood `IntervalEnd`, so it decoded a *populated* set as empty. On a pod delete the desired set
+  is empty and `observeTenantPortsFingerprint` misread the still-populated kernel set as empty too,
+  so `applyTenantPortsIfChanged` short-circuited (`desiredFP == observedFP`) and never flushed — the
+  ports lingered indefinitely. The decoders now accept both shapes (and gained the direct round-trip
+  test whose absence let this ship). Also fixes the same latent bug on the cluster-peer / trusted-range
+  REMOVE path. Supersedes the rc.3 terminating-pod guard, which was a valid hardening but not the
+  cause. (#129)
+
+### Changed
+- **Platform pods now run without CPU limits.** Platform pods are high-priority infra; CPU limits
+  CFS-throttle them, and the `platform-quota` tracked `limits.cpu` (hard 8) — so the sum of container
+  CPU *limits* (notably `backup-rclone-shim` at 1000m × 4 nodes for a shim that requests 200m) left no
+  room for a rolling-update surge pod, wedging every backend rollout on burst-ceiling math while the
+  nodes sat <30% CPU. Dropped `limits.cpu` from the quota, dropped `default.cpu`/`max.cpu` from the
+  platform LimitRange, and stripped `limits.cpu` from all platform-ns workloads (requests + memory
+  limits retained). CPU is now bounded by requests + node capacity.
+
 ## [2026.6.17-rc.4] - 2026-06-24
 
 ## [2026.6.17-rc.3] - 2026-06-24
