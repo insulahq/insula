@@ -3779,7 +3779,14 @@ scenario_mail_migration_fixes() {
   #    creating a snapshot Job every 2 minutes indefinitely (observed
   #    live: 22:22→22:32 runaway until a manual restore). A failed
   #    restore must be loud, and retried before giving up.
-  local restore_expr="${orig_db_sched:-*/30 * * * *}"
+  # Restore to the NATIVE default (NOT orig_db_sched). The un-suspend leg below
+  # asserts NATIVE mode unsuspends the CronJob, which only holds when the
+  # restored schedule == DEFAULT_MAIL_SNAPSHOT_SCHEDULE. If a prior run left a
+  # custom cadence (e.g. */2) in backup_schedules.mail, restoring to that orig
+  # value stays PLATFORM-FIRED → CronJob stays suspended → a false failure
+  # (exactly what wedged this on the shared staging cluster: the */2 cascade).
+  # Restoring to the default also leaves the cluster clean.
+  local restore_expr="*/30 * * * *"
   local _restore_ok=0 _restore_try _restore_resp _restore_code
   for _restore_try in 1 2 3; do
     _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" 2>&1)
