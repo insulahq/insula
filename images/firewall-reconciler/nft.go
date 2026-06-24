@@ -472,38 +472,49 @@ func (r *realApplier) readAddrSet(conn *nftables.Conn, table *nftables.Table, na
 	if err != nil {
 		return nil, fmt.Errorf("get %s elements: %w", name, err)
 	}
+	return decodeAddrElements(elems, isV6), nil
+}
+
+// decodeAddrElements decodes a bare-IP interval set (cluster_peers) into IP
+// strings, accepting both the modern KeyEnd shape (kernel read) and the
+// legacy paired-IntervalEnd shape (write). A bare IP is the degenerate
+// range [ip, ip+1). Pure for unit-testability. Same KeyEnd read/write
+// asymmetry as #129 — without this, the peer/trusted REMOVE path lingers.
+func decodeAddrElements(elems []nftables.SetElement, isV6 bool) []string {
 	out := []string{}
+	emit := func(start, endExcl netip.Addr) {
+		if start.Next() == endExcl { // bare IP [ip, ip+1)
+			out = append(out, start.String())
+		}
+		// Else a CIDR-shaped range in an address set — shouldn't happen
+		// for cluster_peers; skip silently.
+	}
 	var pendingStart netip.Addr
 	havePending := false
 	for _, e := range elems {
-		if !e.IntervalEnd {
-			a, ok := bytesToAddr(e.Key, isV6)
-			if !ok {
-				havePending = false
-				continue
+		switch {
+		case !e.IntervalEnd && len(e.KeyEnd) > 0: // modern KeyEnd shape (kernel read)
+			havePending = false
+			start, ok1 := bytesToAddr(e.Key, isV6)
+			endExcl, ok2 := bytesToAddr(e.KeyEnd, isV6)
+			if ok1 && ok2 {
+				emit(start, endExcl)
 			}
-			pendingStart = a
-			havePending = true
-			continue
+		case !e.IntervalEnd: // legacy start element
+			if a, ok := bytesToAddr(e.Key, isV6); ok {
+				pendingStart, havePending = a, true
+			} else {
+				havePending = false
+			}
+		case havePending: // legacy IntervalEnd element
+			havePending = false
+			if endA, ok := bytesToAddr(e.Key, isV6); ok {
+				emit(pendingStart, endA)
+			}
 		}
-		if !havePending {
-			continue
-		}
-		endA, ok := bytesToAddr(e.Key, isV6)
-		havePending = false
-		if !ok {
-			continue
-		}
-		// Bare-IP encoding: [ip, ip+1). If the gap is 1, recover ip.
-		next := pendingStart.Next()
-		if next == endA {
-			out = append(out, pendingStart.String())
-		}
-		// Else it's a CIDR-shaped range in an address set, which
-		// shouldn't happen for cluster_peers — skip silently.
 	}
 	sort.Strings(out)
-	return out, nil
+	return out
 }
 
 // readCidrSet returns the CIDR strings encoded in an interval address
@@ -521,40 +532,51 @@ func (r *realApplier) readCidrSet(conn *nftables.Conn, table *nftables.Table, na
 	if err != nil {
 		return nil, fmt.Errorf("get %s elements: %w", name, err)
 	}
+	return decodeCidrElements(elems, isV6), nil
+}
+
+// decodeCidrElements decodes a CIDR interval set (trusted_ranges) into
+// "network/bits" strings, accepting both the modern KeyEnd shape (kernel
+// read) and the legacy paired-IntervalEnd shape (write). Each CIDR is the
+// range [network, network+2^k). Pure for unit-testability. Same KeyEnd
+// asymmetry as #129 — fixes the trusted-range REMOVE path.
+func decodeCidrElements(elems []nftables.SetElement, isV6 bool) []string {
 	out := []string{}
 	totalBits := 32
 	if isV6 {
 		totalBits = 128
 	}
+	emit := func(start, endExcl netip.Addr) {
+		if bits, ok := prefixFromInterval(start, endExcl, totalBits); ok {
+			out = append(out, start.String()+"/"+strconv.Itoa(bits))
+		}
+	}
 	var pendingStart netip.Addr
 	havePending := false
 	for _, e := range elems {
-		if !e.IntervalEnd {
-			a, ok := bytesToAddr(e.Key, isV6)
-			if !ok {
-				havePending = false
-				continue
+		switch {
+		case !e.IntervalEnd && len(e.KeyEnd) > 0: // modern KeyEnd shape (kernel read)
+			havePending = false
+			start, ok1 := bytesToAddr(e.Key, isV6)
+			endExcl, ok2 := bytesToAddr(e.KeyEnd, isV6)
+			if ok1 && ok2 {
+				emit(start, endExcl)
 			}
-			pendingStart = a
-			havePending = true
-			continue
+		case !e.IntervalEnd: // legacy start element
+			if a, ok := bytesToAddr(e.Key, isV6); ok {
+				pendingStart, havePending = a, true
+			} else {
+				havePending = false
+			}
+		case havePending: // legacy IntervalEnd element
+			havePending = false
+			if endA, ok := bytesToAddr(e.Key, isV6); ok {
+				emit(pendingStart, endA)
+			}
 		}
-		if !havePending {
-			continue
-		}
-		havePending = false
-		endA, ok := bytesToAddr(e.Key, isV6)
-		if !ok {
-			continue
-		}
-		bits, ok := prefixFromInterval(pendingStart, endA, totalBits)
-		if !ok {
-			continue
-		}
-		out = append(out, pendingStart.String()+"/"+strconv.Itoa(bits))
 	}
 	sort.Strings(out)
-	return out, nil
+	return out
 }
 
 // readPortSet returns the canonical port-or-range strings encoded in
@@ -572,50 +594,67 @@ func (r *realApplier) readPortSet(conn *nftables.Conn, table *nftables.Table, na
 	if err != nil {
 		return nil, fmt.Errorf("get %s elements: %w", name, err)
 	}
+	return decodePortElements(elems), nil
+}
+
+// decodePortElements decodes a tenant_ports interval set's elements into
+// canonical "port" / "lo-hi" strings. It accepts BOTH on-wire interval
+// encodings: the modern single-element KeyEnd shape the kernel returns on
+// read (Key=start, KeyEnd=end-exclusive) AND the legacy paired-IntervalEnd
+// shape that portsToElements writes. Pure (no conn) so it is unit-testable
+// without a live kernel.
+//
+// #129: we WRITE the IntervalEnd shape, the read side only understood
+// IntervalEnd, but the kernel normalises interval sets and GetSetElements
+// returns the KeyEnd shape on read — so observe misread a populated set as
+// EMPTY and the empty-desired REMOVE tick short-circuited the flush
+// (desiredFP "|" == observedFP "|") and never pruned. ADD was unaffected
+// (empty→nonempty always differs). The bug shipped because the decode had
+// no direct test (the fake applier round-tripped last-applied state).
+func decodePortElements(elems []nftables.SetElement) []string {
 	out := []string{}
+	emit := func(start, endExcl uint16) {
+		var hi uint16
+		switch {
+		case endExcl == 0: // portsToElements emits 0 as the end sentinel for hi==65535
+			hi = 65535
+		case endExcl <= start:
+			return // malformed range — skip
+		default:
+			hi = endExcl - 1
+		}
+		if hi == start {
+			out = append(out, strconv.FormatUint(uint64(start), 10))
+		} else {
+			out = append(out, strconv.FormatUint(uint64(start), 10)+"-"+strconv.FormatUint(uint64(hi), 10))
+		}
+	}
 	var pendingStart uint16
 	havePending := false
 	for _, e := range elems {
-		if !e.IntervalEnd {
-			p, ok := bytesToPort(e.Key)
-			if !ok {
-				havePending = false
-				continue
+		switch {
+		case !e.IntervalEnd && len(e.KeyEnd) > 0: // modern KeyEnd shape (kernel read)
+			havePending = false
+			start, ok1 := bytesToPort(e.Key)
+			endExcl, ok2 := bytesToPort(e.KeyEnd)
+			if ok1 && ok2 {
+				emit(start, endExcl)
 			}
-			pendingStart = p
-			havePending = true
-			continue
-		}
-		if !havePending {
-			continue
-		}
-		havePending = false
-		endRaw, ok := bytesToPort(e.Key)
-		if !ok {
-			continue
-		}
-		// Wraparound: portsToElements emits {0x00, 0x00} as the
-		// IntervalEnd when hi == 65535. Convert the observed 0 back to
-		// the conceptual 65536 by treating the inclusive end as 65535.
-		var hi uint16
-		if endRaw == 0 {
-			hi = 65535
-		} else if endRaw <= pendingStart {
-			// Non-wraparound but end <= start: malformed range, skip.
-			continue
-		} else {
-			hi = endRaw - 1
-		}
-		if hi == pendingStart {
-			out = append(out, strconv.FormatUint(uint64(pendingStart), 10))
-		} else {
-			out = append(out,
-				strconv.FormatUint(uint64(pendingStart), 10)+
-					"-"+strconv.FormatUint(uint64(hi), 10))
+		case !e.IntervalEnd: // legacy start element
+			if p, ok := bytesToPort(e.Key); ok {
+				pendingStart, havePending = p, true
+			} else {
+				havePending = false
+			}
+		case havePending: // legacy IntervalEnd element pairs with pendingStart
+			havePending = false
+			if endRaw, ok := bytesToPort(e.Key); ok {
+				emit(pendingStart, endRaw)
+			}
 		}
 	}
 	sort.Strings(out)
-	return out, nil
+	return out
 }
 
 // bytesToAddr is the inverse of addrBytes.
