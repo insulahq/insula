@@ -51,7 +51,17 @@ spec:
   # platform-storage-policy. Removed 2026-05-25 when the bulwark stuck-
   # in-Init bug was traced to that exact pattern (RWO PVC + replicas=2
   # + topologySpread = always-pending second pod).
-  replicas: 1
+  #
+  # 2026-06-23: `replicas` is now OMITTED (was hardcoded `1`) so the
+  # webmail-router reconciler can scale this engine to 0 when it is the
+  # INACTIVE engine (it stamps insula.host/webmail-engine-disabled=true and
+  # patches /scale to 0) WITHOUT Flux reverting it on the next apply. A
+  # hardcoded replicas made Flux own the field, so a deselected Bulwark
+  # stayed at 1 forever and BOTH webmail engines ran. The RWO-PVC scale-to-2
+  # hazard cannot recur: bulwark is NOT in platform-storage-policy's managed
+  # list, and reconcileEngineDeployments only ever sets 0 (inactive) or 1
+  # (active, ACTIVE_ENGINE_MIN_REPLICAS) — never HA. Mirrors roundcube, which
+  # already omits replicas for the same reconciler-ownership reason.
   strategy:
     # Single-replica + Recreate. RollingUpdate with maxSurge=1 cannot
     # work — the surge pod would attempt to attach the same RWO PVC
