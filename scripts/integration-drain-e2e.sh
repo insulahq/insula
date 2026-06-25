@@ -222,6 +222,26 @@ except: print('PARSE_FAIL')
     exit 1
   fi
 
+  # The lone-node 4xx guard ONLY applies when LONE_NODE is genuinely the LAST
+  # tenant-capable schedulable node. On a multi-node cluster we can land here
+  # because the only role=worker was left CORDONED by a prior run (so WORKER_NODE
+  # came up empty) — but other tenant-capable nodes still exist, so draining
+  # LONE_NODE is CORRECTLY allowed (2xx) and asserting 4xx is a false failure
+  # (observed 2026-06-25: drained `worker` → 200 with 3 server nodes remaining).
+  # Count OTHER tenant-capable, uncordoned, non-drained nodes; if any exist, the
+  # guard is not applicable here — skip cleanly instead of bricking the assertion.
+  OTHER_CAPABLE=$(echo "$NODES_JSON" | LONE="$LONE_NODE" python3 -c "
+import json,sys,os
+lone=os.environ['LONE']
+nodes=json.load(sys.stdin).get('data') or []
+print(sum(1 for n in nodes if n.get('name')!=lone and n.get('canHostTenantWorkloads') and not n.get('cordoned') and not n.get('drained')))
+" 2>/dev/null)
+  if [[ "${OTHER_CAPABLE:-0}" -ge 1 ]]; then
+    ok "single-node drain guard: NOT APPLICABLE — $OTHER_CAPABLE other tenant-capable schedulable node(s) exist, so draining $LONE_NODE is legitimately allowed; the last-node 4xx guard only fires on a true single-node cluster. (Uncordon a role=worker node to exercise the full multi-node drain path.)"
+    trap - EXIT
+    exit 77
+  fi
+
   # POST drain — must be rejected. If the API somehow lets us cordon
   # the only tenant-capable node, the cluster ends up unable to host
   # any tenant workload at all. That's the regression we want to catch.
