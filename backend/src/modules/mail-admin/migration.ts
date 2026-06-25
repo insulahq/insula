@@ -921,6 +921,19 @@ async function runMigrationStateMachine(
     }
   }
 
+  // Arm the restore safety net BEFORE the destructive window (2026-06-25). If
+  // ANYTHING from here on fails — stuck source-PVC delete, scale-up timeout,
+  // verify failure — the next Stalwart start with an empty store self-heals from
+  // the fresh snapshot rather than coming up empty (the confirmed data-loss
+  // vector). Cleared on success at Step 7; left armed on failure on purpose.
+  // Best-effort: never block the migration on this annotation patch.
+  try {
+    await armRestoreSafetyNet(apps);
+    log.info(`[migration ${runId}] restore safety net armed (allow-restore=true) before destructive window`);
+  } catch (armErr) {
+    log.warn('[migration] failed to arm restore safety net (non-fatal):', armErr);
+  }
+
   // Step 3: Scale Stalwart to 0 (releases the source PVC mount).
   //
   // Recovery mode: stuck pods (Pending / CrashLoopBackOff on dead or
@@ -1774,6 +1787,40 @@ async function clearAllowRestoreAnnotation(apps: AppsV1Api): Promise<void> {
           },
         },
       },
+    } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
+    MERGE_PATCH,
+  );
+}
+
+/**
+ * Arm the restore safety net BEFORE the destructive scale-down / PVC-swap
+ * window (2026-06-25). Sets `allow-restore=true` (and clears any stale pinned
+ * snapshot id → restore the LATEST, i.e. the fresh pre-migration snapshot) so
+ * that if the migration FAILS — or any pod restarts with an EMPTY data store —
+ * during or after the swap, the `restore-state` initContainer recovers from
+ * the fresh snapshot instead of starting empty.
+ *
+ * Why this exists: an instrumented staging migration (2026-06-25) confirmed the
+ * happy path is data-safe, but the FAILURE path (e.g. a stuck source-PVC
+ * delete) `failRun`s WITHOUT arming any restore — so a failed swap on local-path
+ * (reclaimPolicy=Delete) could leave a fresh empty PVC and silently lose the
+ * JMAP-provisioned master (the master is not a DB-tracked mailbox, so the
+ * `protect-from-silent-data-loss` guard's 0-mailbox fast-path doesn't catch it).
+ *
+ * Harmless on the happy path: `restore-state` short-circuits when the DataStore
+ * already exists, and Step 7 clears the annotation on success. On failure the
+ * annotation is intentionally LEFT armed so the next Stalwart start self-heals.
+ */
+export async function armRestoreSafetyNet(apps: AppsV1Api): Promise<void> {
+  const annotations: Record<string, string | null> = {
+    [ALLOW_RESTORE_ANNOTATION]: 'true',
+    [RESTORE_SNAPSHOT_ID_ANNOTATION]: null,
+  };
+  await apps.patchNamespacedDeployment(
+    {
+      namespace: MAIL_NAMESPACE,
+      name: DEPLOYMENT_NAME,
+      body: { spec: { template: { metadata: { annotations } } } },
     } as unknown as Parameters<typeof apps.patchNamespacedDeployment>[0],
     MERGE_PATCH,
   );
