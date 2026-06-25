@@ -232,10 +232,14 @@ _api_exec() {
     rm -f "$tmpfile"
     kubectl_run "cp /tmp/.wcs-body-src platform/$pod:/tmp/.wcs-body" >/dev/null 2>&1
   fi
+  # Per-request token: get_admin_token reads the shared cache (cheap; the ALL
+  # runner's background refresher keeps it fresh), so a long suite never reuses
+  # an expired grab-once $TOKEN mid-run. Falls back to $TOKEN if unavailable.
+  local tok; tok="$(get_admin_token 2>/dev/null || true)"; [[ -n "$tok" ]] || tok="$TOKEN"
   # Header/body values go through env (single-quoted for the remote shell); the
   # JS itself contains no untrusted data. Values here (method, path, token, xri)
   # are harness-controlled and validated, never raw request payloads.
-  ssh_run "kubectl exec -n platform $pod -c api -- env M='$method' P='$path' TOK='$TOKEN' XRI='$xri' HASBODY='$hasbody' W='$want' node -e '$js'" 2>/dev/null
+  ssh_run "kubectl exec -n platform $pod -c api -- env M='$method' P='$path' TOK='$tok' XRI='$xri' HASBODY='$hasbody' W='$want' node -e '$js'" 2>/dev/null
   if [[ "$hasbody" == 1 ]]; then
     kubectl_run "exec -n platform $pod -c api -- rm -f /tmp/.wcs-body" >/dev/null 2>&1 || true
     ssh_run "rm -f /tmp/.wcs-body-src" >/dev/null 2>&1 || true
@@ -388,12 +392,24 @@ else
   fail "LAPI unreachable from platform-api (check NetworkPolicy + crowdsec.crowdsec.svc DNS)"
 fi
 
-cov_traefik=$(printf '%s' "$status" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['coverage']; print(f\"{d['traefikPodsCovered']}/{d['traefikPodsTotal']}\")")
-cov_nodes=$(printf '%s' "$status" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['coverage']['nodesTotal'])")
+# Coverage = DS numberReady/desired. It can transiently read N-1/N when the
+# Traefik DaemonSet is mid-roll — e.g. a sibling suite (trusted-proxies mutates
+# the Traefik DS args) rolling it concurrently, or a Flux reconcile. Retry the
+# status fetch until coverage is stable (== Running pods) or ~60s elapse; only
+# a persistent mismatch is a real enforcement gap. (Root cause of the
+# 2026-06-25 "3/4" flake: trusted-proxies ran in the same parallel batch.)
+cov_traefik=""
+for _cov_try in $(seq 1 12); do
+  cov_traefik=$(printf '%s' "$status" | python3 -c "import sys,json; d=json.load(sys.stdin)['data']['coverage']; print(f\"{d['traefikPodsCovered']}/{d['traefikPodsTotal']}\")" 2>/dev/null)
+  [[ "$cov_traefik" == "${traefik_count}/${traefik_count}" ]] && break
+  sleep 5
+  status=$(api_internal GET /admin/security/crowdsec/status)
+done
+cov_nodes=$(printf '%s' "$status" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['coverage']['nodesTotal'])" 2>/dev/null)
 if [[ "$cov_traefik" == "${traefik_count}/${traefik_count}" ]]; then
   ok "Traefik DS coverage: $cov_traefik (== Running pods)"
 else
-  fail "Traefik DS coverage mismatch: $cov_traefik reported vs $traefik_count Running"
+  fail "Traefik DS coverage mismatch: $cov_traefik reported vs $traefik_count Running (persisted ~60s — not a transient roll)"
 fi
 if [[ "$cov_nodes" == "$traefik_count" ]]; then
   ok "Ready node count == Traefik DS count: $cov_nodes (cluster-wide enforcement coverage)"
@@ -477,12 +493,21 @@ for pod in $traefik_pods; do
   fi
 done
 
-# Wait for the scraper's 30s cycle + 5s buffer.
-log "waiting 40s for WAF scraper to capture..."
-sleep 40
-
-after=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes';\"" 2>/dev/null | tr -d '[:space:]')
-delta=$(( ${after:-0} - ${before:-0} ))
+# POLL (up to ~120s) for the scraper to capture THIS probe's events, keyed on
+# the probe's X-Forwarded-Host. The scraper runs on a ~30s cycle, so the old
+# fixed 40s wait + a 2-min sliding-window delta raced the cycle AND aged older
+# rows out of the window → flaky "0 new rows" (observed 2026-06-25 even on an
+# idle cluster). Matching the probe's own hostname counts only our events and
+# removes the timing race; it also subsumes the X-Forwarded-Host extraction
+# check (a matched hostname row proves extraction works).
+log "polling up to 120s for the WAF scraper to capture probe events (hostname=$PROBE_HOSTNAME)..."
+host_rows=0
+for _sc_try in $(seq 1 24); do
+  host_rows=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '5 minutes' AND hostname = '$PROBE_HOSTNAME';\"" 2>/dev/null | tr -d '[:space:]')
+  [[ "${host_rows:-0}" =~ ^[0-9]+$ ]] || host_rows=0
+  (( host_rows >= 1 )) && break
+  sleep 5
+done
 if (( probe_403 == 0 )); then
   # No probe tripped the WAF (all hit a baseline 404) — there is no
   # WAF-protected route to exercise on this cluster. SKIP, mirroring the L3
@@ -498,27 +523,13 @@ else
   else
     warn "per-pod WAF enforcement: only $probe_403/$traefik_count pods returned 403 (others 404/NOIP — see above)"
   fi
-  # SCRAPER CAPTURE is a softer check: the waf-log scraper runs on a ~30s cycle,
-  # so the exact number of rows landed within this probe window is timing-
-  # dependent. It keys on ModSecurity's per-transaction unique_id (present in
-  # the live audit log), so distinct hits are NOT over-deduped — verified live:
-  # 3 identical attacks → 3 distinct rows. Assert the pipeline captured >=1
-  # event rather than a precise one-per-pod count, which the scrape cadence
-  # makes flaky.
-  if (( delta >= 1 )); then
-    ok "waf-log scraper captured $delta new event(s) from the probes"
+  # SCRAPER CAPTURE + X-Forwarded-Host extraction, one deterministic check: the
+  # scraper landed >=1 row tagged with the probe's hostname within the poll.
+  if (( host_rows >= 1 )); then
+    ok "waf-log scraper captured the probe events (hostname=$PROBE_HOSTNAME, $host_rows row(s)) — pipeline + X-Forwarded-Host extraction OK"
   else
-    fail "WAF enforced ($probe_403 pods → 403) but the scraper captured 0 new waf_logs rows — log-pipeline gap"
+    fail "WAF enforced ($probe_403 pods → 403) but the scraper captured 0 rows with hostname=$PROBE_HOSTNAME after 120s — log-pipeline gap"
   fi
-fi
-
-# Verify hostname extraction works (X-Forwarded-Host should be captured,
-# not the modsec Service hostname or 'localhost').
-real_host_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes' AND hostname = '$PROBE_HOSTNAME';\"" 2>/dev/null | tr -d '[:space:]')
-if (( ${real_host_count:-0} >= 1 )); then
-  ok "Events captured with hostname=$PROBE_HOSTNAME (X-Forwarded-Host extraction works)"
-else
-  fail "No events captured with hostname=$PROBE_HOSTNAME — hostname extraction is broken"
 fi
 
 # Verify source IP extraction (X-Real-Ip should be captured, not the

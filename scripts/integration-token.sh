@@ -78,9 +78,27 @@ get_admin_token() {
     echo "get_admin_token: /auth/login failed (rate-limited or bad creds)" >&2
     return 1
   }
-  ( umask 077; printf '%s\n' "$line" > "$cache" ) 2>/dev/null
+  # Atomic write (temp + rename) so a concurrent reader/refresher never sees a
+  # half-written cache line.
+  ( umask 077; local t="${cache}.$$"; printf '%s\n' "$line" > "$t" && mv -f "$t" "$cache" ) 2>/dev/null
   printf '%s\n' "${line#*|}"
 }
 
 # Drop the cache so the next get_admin_token re-mints — call on a 401 mid-run.
 invalidate_admin_token() { rm -f "$(_itoken_cache_file)" 2>/dev/null || true; }
+
+# force_mint_token: ALWAYS mint a FRESH, full-TTL token, ignoring + refreshing
+# the shared cache. get_admin_token reuses a cached token while it is still
+# >120s from expiry, so calling it "to refresh" before a LONG phase (e.g. the
+# 30-min parallel group) returns a near-dead token — the group then inherits a
+# token that dies mid-flight (the INVALID_TOKEN cascade). Use this instead at
+# phase boundaries so each long phase starts with a full token.
+#
+# Unsets INTEGRATION_TOKEN inside this (sub)shell so get_admin_token cannot
+# short-circuit on the stale inherited value (branch 2). The caller captures
+# the printed fresh token and re-exports it.
+force_mint_token() {
+  invalidate_admin_token
+  unset INTEGRATION_TOKEN
+  get_admin_token
+}

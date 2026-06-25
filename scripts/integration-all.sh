@@ -135,6 +135,14 @@ mint_token() {
   source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
   get_admin_token
 }
+# force_mint: returns a FRESH, full-TTL token (ignores + refreshes the shared
+# cache). get_admin_token reuses a cached token while it's >120s from expiry,
+# so a "refresh" before a LONG phase returns a near-dead token and the phase
+# dies mid-flight (the INVALID_TOKEN cascade). Use this at phase boundaries.
+force_mint() {
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  force_mint_token
+}
 if [[ "$LIST" == 0 ]]; then
   reset_admin_password
   INTEGRATION_TOKEN="$(mint_token)"
@@ -170,6 +178,12 @@ fi
 SERIAL_PRE=(
   "staging-all:integration-staging.sh all"
   "oidc-dex:integration-oidc-dex.sh"
+  # trusted-proxies MUTATES the shared Traefik DaemonSet args (adds + removes a
+  # test CIDR), which rolls ALL Traefik pods. It MUST run serially (alone) so it
+  # never churns the DS while a sibling suite measures it — waf-crowdsec's
+  # transient "DS coverage 3/4" failure (2026-06-25) was exactly this
+  # concurrency (a Traefik pod caught mid-roll → numberReady N-1/N). ~30s.
+  "trusted-proxies:integration-cluster-trusted-proxies.sh"
 )
 PARALLEL=(
   "pvc:integration-pvc.sh"
@@ -203,10 +217,8 @@ PARALLEL=(
   # CronJob → restic Secret) plus dry-run of all three restore scripts.
   # Cleans up after itself via trap. ~2 minutes on a healthy cluster.
   "dr-drill-shim:integration-dr-drill-shim.sh"
-  # Operator-managed trusted upstream proxy CIDRs (Nodes & Storage →
-  # Trusted Proxies). Adds + verifies + deletes a test CIDR; checks
-  # ConfigMap, Traefik DS args, and admin-panel pod mount. ~30s.
-  "trusted-proxies:integration-cluster-trusted-proxies.sh"
+  # (trusted-proxies moved to SERIAL_PRE — it mutates the shared Traefik DS and
+  #  must not run concurrently with suites that measure it, e.g. waf-crowdsec.)
   # ADR-051 monitoring stack: VMUI auth gate + scrape health, SLO admin
   # API, the admin.slo_alert_* notification sources (#56), and an
   # induced cnpg-down fire→notify→resolve lifecycle incl. the #57
@@ -513,14 +525,32 @@ fi
 
 [[ ${#SERIAL_PRE[@]} -gt 0 ]] && run_serial_group "PRE (sequential, mutates global state)" "${SERIAL_PRE[@]}"
 
-# Refresh the cached token before the parallel batch — group PRE
-# can run 10-15 min on a slow cluster, and the parallel batch then
-# runs another 10-15 min. With JWT default TTL of 30 min, we'd cut
-# it close. Cheap insurance.
-log "Refreshing INTEGRATION_TOKEN before parallel group"
-INTEGRATION_TOKEN="$(mint_token)"
+# FORCE a fresh, full-TTL token before the parallel batch. Group PRE can run
+# 10-20 min, and the parallel batch runs concurrently for another 20-30 min
+# during which suites CANNOT be re-tokened one-by-one (they run at once). A
+# plain mint_token here reuses the cache while it's >120s from expiry, so the
+# parallel group would inherit a near-dead token and die mid-flight (the
+# INVALID_TOKEN cascade observed 2026-06-25). force_mint guarantees a full TTL.
+log "Force-minting a fresh INTEGRATION_TOKEN before the parallel group"
+INTEGRATION_TOKEN="$(force_mint)"
 [[ -n "$INTEGRATION_TOKEN" ]] || { fail "mid-run re-login failed — aborting"; exit 1; }
 export INTEGRATION_TOKEN
+
+# Background refresher: while the parallel group runs, keep the SHARED cache
+# file fresh by force-re-minting every ~12 min. Suites whose API wrapper fetches
+# get_admin_token per request (waf-crowdsec, firewall, …) thus never see an
+# expired token even on a 30-min+ run. Killed via trap on exit.
+_token_refresher() {
+  while true; do
+    sleep 720
+    force_mint >/dev/null 2>&1 || true
+  done
+}
+_REFRESHER_PID=""
+if [[ ${#PARALLEL[@]} -gt 0 && "$INTEGRATION_PARALLEL" == "1" ]]; then
+  _token_refresher & _REFRESHER_PID=$!
+  trap '[[ -n "$_REFRESHER_PID" ]] && kill "$_REFRESHER_PID" 2>/dev/null || true' EXIT
+fi
 
 if [[ ${#PARALLEL[@]} -gt 0 ]]; then
   if [[ "$INTEGRATION_PARALLEL" == "1" ]]; then
@@ -531,9 +561,13 @@ if [[ ${#PARALLEL[@]} -gt 0 ]]; then
   fi
 fi
 
-# Final refresh + serial post-group.
+# Stop the refresher before the (serial) post group — serial suites re-token
+# per-suite, so the background loop is no longer needed.
+if [[ -n "$_REFRESHER_PID" ]]; then kill "$_REFRESHER_PID" 2>/dev/null || true; _REFRESHER_PID=""; fi
+
+# Final force-mint + serial post-group.
 if [[ ${#SERIAL_POST[@]} -gt 0 ]]; then
-  INTEGRATION_TOKEN="$(mint_token)" && export INTEGRATION_TOKEN || warn "post-group re-login failed"
+  INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "post-group re-login failed"
   run_serial_group "POST (destructive, terminal)" "${SERIAL_POST[@]}"
 fi
 
