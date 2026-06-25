@@ -93,6 +93,11 @@ export async function rotateWebmailMasterPassword(
     skipJmapSessionVerify: true,
     principalDomain,
     autoReseed: true,
+    // Migration hygiene: when moving a legacy install onto the sentinel,
+    // destroy any stale `master@<old-domain>` left behind so only the
+    // sentinel master remains (no dangling Admin principal). No-op once
+    // migrated.
+    cleanupStaleMastersInOtherDomains: true,
     // Mirrors the DO-NOT-DELETE warning bootstrap.sh stamps on the
     // initial provisioning so a manual `Stalwart cli` user delete still
     // sees the operator hint after auto-reseed.

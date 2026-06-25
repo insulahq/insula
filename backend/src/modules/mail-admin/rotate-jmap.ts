@@ -155,6 +155,17 @@ export interface RotateJmapOptions {
    * caller).
    */
   readonly recyclePodsBeforeVerify?: boolean;
+  /**
+   * Migration cleanup: after ensuring the master on `principalDomain`,
+   * destroy any same-named principal that lives in a DIFFERENT Domain.
+   * The webmail-master rotation sets this so a legacy
+   * `master@mail.<oldApex>` left behind when an install moves to the
+   * fixed sentinel is removed (a dangling Admin principal otherwise
+   * lingers — mirrors bootstrap's STALE_ACCT cleanup). No-op on a
+   * healthy cluster where only the sentinel master exists. Non-fatal:
+   * the new master is already active, so a failed cleanup only logs.
+   */
+  readonly cleanupStaleMastersInOtherDomains?: boolean;
 }
 
 export async function rotateAdminPasswordViaJmap(
@@ -210,6 +221,17 @@ export interface RotateJmapDeps {
     /** Stalwart `roles` value, e.g. `{ '@type': 'Admin' }`. */
     roles?: Record<string, unknown>;
   }): Promise<string>;
+  /**
+   * Destroy any principal named `username` that lives in a Domain OTHER
+   * than `keepDomainName`. Returns the destroyed ids. Used by the
+   * sentinel migration to remove a stale `master@mail.<oldApex>`.
+   * Optional — only the webmail-master rotation provides + invokes it.
+   */
+  destroyStaleMasters?(
+    accountId: JmapAccountId,
+    username: string,
+    keepDomainName: string,
+  ): Promise<readonly string[]>;
   patchK8sSecret(req: { namespace: string; name: string; stringData: Record<string, string> }): Promise<void>;
   verifyNewPassword(password: string): Promise<boolean>;
   /**
@@ -306,6 +328,34 @@ export async function rotateAdminPasswordViaJmapImpl(
       log.info({
         username: opts.username,
       }, 'no Stalwart Account principal — rotating recovery-admin Secret only (Reloader will roll the pod)');
+    }
+
+    // Migration cleanup: remove a stale same-named master left in a
+    // DIFFERENT Domain (e.g. master@mail.<oldApex> after moving to the
+    // sentinel). No-op when only the sentinel master exists. Non-fatal —
+    // the new master is already active; a leftover principal is hygiene.
+    if (
+      jmapPathSucceeded
+      && opts.cleanupStaleMastersInOtherDomains
+      && opts.principalDomain
+      && deps.destroyStaleMasters
+    ) {
+      try {
+        const destroyed = await deps.destroyStaleMasters(
+          accountId, opts.username, opts.principalDomain,
+        );
+        if (destroyed.length > 0) {
+          log.warn(
+            { destroyed, keepDomain: opts.principalDomain },
+            'destroyed stale master principal(s) in other Domains during sentinel migration',
+          );
+        }
+      } catch (cleanupErr) {
+        log.warn(
+          { err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) },
+          'stale-master cleanup failed (non-fatal — the new master is already active)',
+        );
+      }
     }
   } catch (err) {
     const status = (err as { code?: string; details?: { status?: number } })?.details?.status;
@@ -674,6 +724,42 @@ function defaultDeps(kubeconfigPath: string | undefined): RotateJmapDeps {
         );
       }
       return newId;
+    },
+
+    async destroyStaleMasters(
+      accountId: JmapAccountId,
+      username: string,
+      keepDomainName: string,
+    ): Promise<readonly string[]> {
+      // Resolve the keep (sentinel) Domain id so we never touch the
+      // current master. If Stalwart doesn't know that Domain yet, bail
+      // out rather than risk destroying the only master.
+      const domains = await domainGet({
+        accountId, ids: null, properties: ['id', 'name'], baseUrl,
+      });
+      const keep = keepDomainName.toLowerCase();
+      const keepDomain = domains.list.find(
+        (d) => (typeof d.name === 'string' ? d.name.toLowerCase() : '') === keep,
+      );
+      const keepDomainId = (keepDomain?.id as string | undefined) ?? null;
+      if (!keepDomainId) return [];
+
+      // List all principals; target same-named ones in OTHER Domains.
+      const accounts = await accountGet({
+        accountId, ids: null, properties: ['id', 'name', 'domainId'], baseUrl,
+      });
+      const target = username.toLowerCase();
+      const staleIds = accounts.list
+        .filter((r) => (typeof r.name === 'string' ? r.name.toLowerCase() : '') === target)
+        .filter((r) => (typeof r.domainId === 'string' ? r.domainId : null) !== keepDomainId)
+        .map((r) => r.id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
+      if (staleIds.length === 0) return [];
+
+      const result = await accountSet({
+        accountId, request: { destroy: staleIds }, baseUrl,
+      });
+      return result.destroyed ?? [];
     },
 
     async updateAdminPassword(accountId: JmapAccountId, principalId: string, newPassword: string): Promise<void> {
