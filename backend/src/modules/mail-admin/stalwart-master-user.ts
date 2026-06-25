@@ -11,13 +11,13 @@
  * `imap-sync.py` / `jmap-sync.py` / `imap-restore.py` / etc.
  *
  * Historically both call sites fell back to a hardcoded
- * `MASTER_USER_DEFAULT = 'master@master.local'`. That worked on the
- * unit-test fixture but breaks any real cluster: bootstrap.sh
- * provisions the master user as `master@<PLATFORM_DOMAIN>` — e.g.
- * `master@staging.example.test` — and stores the FQDN in
- * `mail/mail-secrets.STALWART_MASTER_USER`. Without this lookup
- * Stalwart returns `AUTHENTICATIONFAILED` and the bundle Job exits
- * non-zero, failing the entire mailboxes component.
+ * `master@master.local`. That worked on the unit-test fixture but broke
+ * any real cluster. As of 2026-06-25 bootstrap.sh provisions the master
+ * as `master@local.host` — a FIXED sentinel Domain decoupled from the
+ * mail domain (see `MASTER_SENTINEL_DOMAIN`) — and stores the FQDN in
+ * `mail/mail-secrets.STALWART_MASTER_USER`. Without this lookup Stalwart
+ * returns `AUTHENTICATIONFAILED` and the bundle Job exits non-zero,
+ * failing the entire mailboxes component.
  *
  * Resolution order:
  *
@@ -27,10 +27,12 @@
  *   2. Cached value from a previous successful read (5 min TTL — picks
  *      up rotation/redeploy without restarting platform-api, but
  *      avoids hammering the k8s API on every capture).
- *   3. The compiled-in default `'master@master.local'` — only used
- *      when neither the Secret nor the cache is available (fresh
- *      install before bootstrap completes, unit-test fixtures, etc).
- *      Reaching this is logged at WARN so operators see the fallback.
+ *   3. The compiled-in default `'master@local.host'` (the sentinel) —
+ *      only used when neither the Secret nor the cache is available
+ *      (fresh install before bootstrap completes, unit-test fixtures,
+ *      etc). Reaching this is logged at WARN so operators see the
+ *      fallback; unlike the old `master@master.local`, this default is a
+ *      VALID auth Domain so the degrade no longer silently breaks auth.
  *
  * Read failures (RBAC, network) are best-effort — they log a warning
  * and return the cache (or the default). Refusing to spawn a backup
@@ -48,10 +50,38 @@ export const MAIL_SECRET_NAMESPACE = 'mail';
 export const MAIL_SECRET_NAME = 'mail-secrets';
 export const MASTER_USER_KEY = 'STALWART_MASTER_USER';
 
-/** Compiled-in fallback. Matches the historical default used by both
- * the orchestrator and the restore executor before this helper landed.
- * Only reached when the Secret cannot be read AT ALL — see header. */
-export const MASTER_USER_FALLBACK = 'master@master.local';
+/**
+ * The fixed, mail-domain-INDEPENDENT Stalwart Domain that holds the
+ * master principal (2026-06-25).
+ *
+ * The master is used ONLY for IMAP/JMAP master-auth impersonation
+ * (`<mailbox>%<master>`) — never for mail routing, DNS, or MX — so it
+ * does NOT need to live on a mail-serving domain. Pinning it to a fixed
+ * sentinel decouples it from the platform apex/mail domain, so a
+ * mail-domain rename (`platform-domain` rename / R16 decouple) can never
+ * strand the master the way `master@mail.<apex>` did (the principal was
+ * left dangling, the Secret never re-stamped — the staging mail-backup
+ * `AUTHENTICATIONFAILED` bug).
+ *
+ * `.host` is a real ICANN gTLD — verified (local Stalwart v0.16.9 spike,
+ * 2026-06-25) that Stalwart 0.16 accepts it for auth and that an
+ * Admin-role master in this Domain impersonates mailboxes in ANY other
+ * Domain and survives deletion of the old mail domain. Stalwart 0.16
+ * rejects only the reserved `.local` pseudo-TLD (the reason the master
+ * moved off the original `master.local`). The sentinel is reserved
+ * platform-side (`reserved-subdomains.ts`) so no tenant can claim it.
+ */
+export const MASTER_SENTINEL_DOMAIN = 'local.host';
+
+/** The canonical master principal FQDN — `master@<sentinel>`. */
+export const MASTER_USER_DEFAULT = `master@${MASTER_SENTINEL_DOMAIN}`;
+
+/** Compiled-in fallback, used only when the Secret cannot be read AT ALL
+ * (no k8s client / test fixtures / pre-bootstrap). Since 2026-06-25 this
+ * equals the canonical `master@local.host` sentinel — a VALID auth Domain
+ * — so falling back to it (and auto-reseeding there) is now correct, not
+ * a broken degrade as the old `master@master.local` was. */
+export const MASTER_USER_FALLBACK = MASTER_USER_DEFAULT;
 
 /** Cache TTL — picks up rotations within 5 min without restart. */
 export const CACHE_TTL_MS = 5 * 60 * 1000;

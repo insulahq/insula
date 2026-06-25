@@ -2,9 +2,15 @@
 # integration-master-user-rotation.sh
 #
 # End-to-end verification of the Stalwart webmail master-user rotation
-# flow on a real cluster (default: staging1.example.test). Covers
-# the three 2026-05-28 fixes — domain-scoped lookup, mail.<apex> Domain
-# move, and auto-reseed when the principal is missing.
+# flow on a real cluster (default: staging1.example.test). Covers the
+# domain-scoped lookup, auto-reseed when the principal is missing, and
+# the 2026-06-25 decouple: the master now lives on the FIXED sentinel
+# Domain `local.host` (mail-domain-INDEPENDENT) — NOT `mail.<apex>`.
+#
+# REQUIRES the sentinel-aware backend (the local.host decouple). On a
+# cluster still running pre-sentinel code, §3 (rotation succeeds) returns
+# 409 WEBMAIL_MASTER_DOMAIN_MISMATCH because that code's guard still
+# expects `mail.<apex>`. Migrate first: `platform-ops mail rotate-master`.
 #
 # Usage:
 #   HOST=root@staging1.example.test \
@@ -20,22 +26,13 @@ HOST="${HOST:-root@staging1.example.test}"
 PLATFORM_APEX="${PLATFORM_APEX:-staging.example.test}"
 SSH_KEY="${SSH_KEY:-${HOME}/hosting-platform.key}"
 
-# Discover the operator-configured mail hostname instead of hard-coding
-# `mail.${PLATFORM_APEX}` — the rotation flow uses platform_settings.
-# mail_server_hostname as the source-of-truth, and an operator may have
-# set it to something other than the default (e.g. smtp.example.com).
-discover_mail_hostname() {
-  ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o LogLevel=ERROR "$HOST" "
-    PGPASS=\$(kubectl -n cnpg-system get secret system-db-app -o jsonpath='{.data.password}' | base64 -d 2>/dev/null || true)
-    if [[ -z \"\$PGPASS\" ]]; then echo ''; exit 0; fi
-    kubectl -n cnpg-system exec system-db-1 -c postgres -- env PGPASSWORD=\"\$PGPASS\" \
-      psql -At -U platform -d platform_db -c \"SELECT value FROM platform_settings WHERE key='mail_server_hostname'\" 2>/dev/null | head -1
-  " 2>/dev/null || true
-}
-EXPECTED_DOMAIN="${EXPECTED_DOMAIN:-$(discover_mail_hostname)}"
-EXPECTED_DOMAIN="${EXPECTED_DOMAIN:-mail.${PLATFORM_APEX}}"
+# The master is pinned to the fixed sentinel Domain (decoupled from the
+# mail domain, 2026-06-25) — keep in sync with MASTER_SENTINEL_DOMAIN in
+# backend/src/modules/mail-admin/stalwart-master-user.ts.
+MASTER_SENTINEL_DOMAIN="${MASTER_SENTINEL_DOMAIN:-local.host}"
+EXPECTED_DOMAIN="$MASTER_SENTINEL_DOMAIN"
 EXPECTED_FQDN="master@${EXPECTED_DOMAIN}"
-echo "INFO: expected mail hostname = $EXPECTED_DOMAIN"
+echo "INFO: expected master domain = $EXPECTED_DOMAIN (fixed sentinel)"
 
 declare -i ok=0 failed=0
 
@@ -70,7 +67,7 @@ assert_contains() {
 echo "=== §1: mail-secrets shape (post-bootstrap, post-restamp) ==="
 master_user_b64=$(s "kubectl -n mail get secret mail-secrets -o jsonpath='{.data.STALWART_MASTER_USER}'" || true)
 master_user=$(echo "$master_user_b64" | base64 -d 2>/dev/null || true)
-assert_eq "STALWART_MASTER_USER == master@mail.<apex>" "$EXPECTED_FQDN" "$master_user"
+assert_eq "STALWART_MASTER_USER == master@<sentinel>" "$EXPECTED_FQDN" "$master_user"
 
 echo
 echo "=== §2: route handler refuses rotation when Secret domain doesn't match ==="

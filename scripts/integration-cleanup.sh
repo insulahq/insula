@@ -51,8 +51,12 @@ log "discovering test clients via /api/v1/tenants?limit=100"
 # Match by name pattern. The integration scenarios all use
 # names like "Reaper Test 1777905086" / "Bundle Test …" / "Ingress
 # Test …" / "Mail Test …". Real customers don't follow that pattern.
+# NOTE: the route is /api/v1/tenants — NOT /api/v1/admin/tenants (that 404s).
+# The old /admin/ prefix made this discovery silently return a 404 body, so
+# the matcher always found 0 clients and cleanup was inert — which is exactly
+# why stale test tenants accumulated and tripped the leak guard every run.
 curl -sS -k -H "Authorization: Bearer $TOKEN" \
-  "$ADMIN_HOST/api/v1/admin/tenants?limit=100" \
+  "$ADMIN_HOST/api/v1/tenants?limit=100" \
   > /tmp/cleanup-clients.json
 
 TEST_CIDS=$(python3 <<'EOF'
@@ -98,7 +102,7 @@ FAILED=0
 while IFS=$'\t' read -r cid name; do
   [[ -n "$cid" ]] || continue
   HTTP=$(curl -sS -k -o /tmp/cleanup-resp.json -w '%{http_code}' \
-    -X DELETE "$ADMIN_HOST/api/v1/admin/tenants/$cid" \
+    -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
     -H "Authorization: Bearer $TOKEN")
   if [[ "$HTTP" =~ ^2 ]]; then
     ok "deleted $cid ($name)"

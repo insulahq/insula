@@ -136,6 +136,26 @@ binary can't load on a bare host. Add `--json` for machine output.
   cert until the (disruptive) tunnel re-issue lands. New workers use the new apex.
 - **DNS records** — §3e automation isn't built; records are manual (above).
 
+## The Stalwart webmail master is intentionally NOT renamed
+
+The Stalwart master principal (`master@local.host`, used for IMAP/JMAP
+master-auth impersonation by Roundcube/Bulwark + tenant-mailbox backups) lives
+on a **fixed sentinel Domain** that is deliberately decoupled from the mail
+domain (2026-06-25). A rename does **not** — and must not — touch it: the master
+is auth infra only, never used for mail routing or DNS/MX, so anchoring it to
+`mail.<apex>` was the wrong coupling (a rename left `master@mail.<oldApex>`
+dangling and never re-stamped `STALWART_MASTER_USER` → the staging mail-backup
+`AUTHENTICATIONFAILED` bug). The sentinel is reserved platform-side so no tenant
+can collide. No action on rename.
+
+> **One-time migration for installs provisioned before 2026-06-25** (whose
+> Secret still reads `master@mail.<apex>`): run the in-pod CLI once —
+> `kubectl -n platform exec deploy/platform-api -- node dist/cli/mail-rotate-master.js`
+> (or `platform-ops mail rotate-master`). It creates `master@local.host` with the
+> Admin role, re-stamps `STALWART_MASTER_USER` + `STALWART_MASTER_PASSWORD`, and
+> rolls Roundcube. The API/UI rotate button refuses the legacy value with
+> `WEBMAIL_MASTER_DOMAIN_MISMATCH` until this CLI migration runs.
+
 ## Reference
 
 ```

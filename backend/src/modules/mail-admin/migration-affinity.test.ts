@@ -14,6 +14,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   applyDeploymentAffinity,
+  armRestoreSafetyNet,
   MAIL_STACK_DEPLOYMENTS,
 } from './migration.js';
 
@@ -138,5 +139,21 @@ describe('applyDeploymentAffinity (mail-stack co-location)', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0]!.name).toBe('stalwart-mail');
     expect(calls[1]!.name).toBe('bulwark');
+  });
+});
+
+describe('armRestoreSafetyNet (pre-destructive-window crash safety, 2026-06-25)', () => {
+  it('stamps allow-restore=true + clears restore-snapshot-id (→ restore LATEST) on stalwart-mail', async () => {
+    const { apps, calls } = makeAppsMock();
+    await armRestoreSafetyNet(apps);
+    // One patch, to stalwart-mail's pod template (where restore-state reads it).
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.name).toBe('stalwart-mail');
+    expect(calls[0]!.body.spec?.template?.metadata?.annotations).toEqual({
+      'mail.platform/allow-restore': 'true',
+      // null → strategic-merge deletes any stale pinned id → restore the latest
+      // (fresh pre-migration) snapshot, not an older one.
+      'mail.platform/restore-snapshot-id': null,
+    });
   });
 });

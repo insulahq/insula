@@ -1786,12 +1786,15 @@ for c in (items if isinstance(items, list) else []):
       # service certificate is self-signed).
       local imap_host="stalwart-mail.mail.svc.cluster.local"
       local imap_port="993"
-      # Stalwart master proxy needs the FQ master account (the short
-      # 'master' form resolves to master@localhost.local which doesn't
-      # exist → AUTHENTICATIONFAILED). master@master.local is the
-      # default account managed by mail-admin/rotate-webmail-master.
-      local imap_user="${mb_addr}%master@master.local"
-      local master_pw
+      # Stalwart master proxy needs the FQ master account. Since 2026-06-25 the
+      # master lives on the fixed sentinel `master@local.host` (decoupled from
+      # the mail domain). Read the AUTHORITATIVE value from the secret
+      # (STALWART_MASTER_USER), the same key the backup path resolves via
+      # readStalwartMasterUser; fall back to the sentinel only if unset.
+      local master_user master_pw
+      master_user=$(ssh_cp "kubectl -n mail get secret mail-secrets -o jsonpath='{.data.STALWART_MASTER_USER}' | base64 -d" 2>/dev/null)
+      [[ -n "$master_user" ]] || master_user="master@local.host"
+      local imap_user="${mb_addr}%${master_user}"
       master_pw=$(ssh_cp "kubectl -n mail get secret mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
       [[ -n "$master_pw" ]] || { echo "ERROR: master password fetch failed" >&2; return 1; }
 
@@ -2648,14 +2651,14 @@ PY
   if [[ "$tester_spawned" == "1" ]]; then
     local master_pw master_user
     master_pw=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null || echo "")
-    # The master principal's FQDN lives in the Secret too — modern
-    # bootstraps provision `master@mail.<apex>`; only legacy clusters
-    # still use the synthetic `master@master.local`. Hardcoding the
-    # legacy name made this probe fail AUTHENTICATIONFAILED on every
-    # current cluster (caught on testing 2026-06-10; mirrors the
-    # fallback order in rotate-webmail-master.ts).
+    # The master principal's FQDN lives in the Secret too. Since 2026-06-25
+    # the master is provisioned on the FIXED, mail-domain-INDEPENDENT
+    # sentinel `master@local.host` (decoupled so a mail-domain rename can
+    # never strand it). The fallback mirrors MASTER_USER_DEFAULT in
+    # backend stalwart-master-user.ts.
     master_user=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_USER}' | base64 -d" 2>/dev/null | tr -d '[:space:]')
-    [[ -n "$master_user" ]] || master_user="master@master.local"
+    [[ -n "$master_user" ]] || master_user="master@local.host"
+    local master_domain="${master_user#*@}"
     if [[ -n "$master_pw" ]]; then
       local master_probe
       master_probe=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
@@ -2676,6 +2679,22 @@ except Exception as e:
         ok "mail/master-auth: <target>%${master_user} login succeeded for $mail_box_user"
       else
         fail "mail/master-auth: master-auth IMAP login FAILED (master=${master_user}) — webmail SSO won't work. tail: $(echo "$master_probe" | tail -3 | tr '\n' ' ')"
+      fi
+
+      # ── Step 8c-bis: rename-safety invariant (simulated rename) ─────
+      # The master must live on the fixed, mail-domain-INDEPENDENT
+      # sentinel Domain. If it instead shared the mail domain
+      # (master@mail.<apex>), a platform mail-domain rename would strand
+      # it (the old principal dangles + STALWART_MASTER_USER is never
+      # re-stamped → AUTHENTICATIONFAILED, the bug this fixes). Asserting
+      # master_domain == sentinel IS the simulated-rename test: because
+      # the sentinel never changes when mail.<apex> does, a rename
+      # provably cannot affect the master. A legacy un-migrated cluster
+      # fails here with an actionable hint (run the migration CLI).
+      if [[ "$master_domain" == "local.host" ]]; then
+        ok "mail/master-auth: master is on the fixed sentinel '${master_domain}' — decoupled from the mail domain, so a mail-domain rename cannot strand it (rename-safe)"
+      else
+        fail "mail/master-auth: master is on '${master_domain}', NOT the rename-safe sentinel 'local.host' — a mail-domain rename would strand it. Migrate: kubectl -n platform exec deploy/platform-api -- node dist/cli/mail-rotate-master.js"
       fi
     else
       log "mail/master-auth: STALWART_MASTER_PASSWORD secret missing — skipping (provision via bootstrap.sh:provision_stalwart_master_user)"
@@ -2870,6 +2889,15 @@ cleanup() {
 trap cleanup EXIT
 
 # ─── main ─────────────────────────────────────────────────────────
+
+# #130: reuse ONE cache-backed admin token across ALL/single-test modes so
+# rapid runs don't trip the auth rate limit. Only mints if no token is set
+# and the cache is cold; otherwise reads the shared cache file.
+if [[ -z "${INTEGRATION_TOKEN:-}" ]] && [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+  # shellcheck source=integration-token.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+fi
 
 log "logging in as $ADMIN_EMAIL"
 TOKEN=$(login_token)
@@ -3250,12 +3278,13 @@ cd /tmp; wget -q -O cli.tar.xz https://github.com/stalwartlabs/cli/releases/down
 tar -xJf cli.tar.xz; CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli; chmod +x \$CLI
 PW=\$(cat /var/run/stalwart-recovery 2>/dev/null || echo \"\")
 STALWART_USER=admin STALWART_PASSWORD=\$PW STALWART_URL=http://stalwart-mgmt.mail.svc.cluster.local:8080 \
-  \$CLI query Account 2>&1 | awk \"NR>1 && \\\$2 == \\\"master@master.local\\\" {print \\\$2; exit}\"
+  \$CLI query Account 2>&1 | awk \"NR>1 && \\\$2 == \\\"master@local.host\\\" {print \\\$2; exit}\"
 "' 2>&1 | tail -1 || true)
   # Soft check — the harness can't easily mount the recovery secret,
   # so this often returns blank. We only fail if the check ran AND
-  # returned a non-master row. Otherwise log + continue.
-  if [[ -n "$master_check" ]] && ! echo "$master_check" | grep -q "master@master.local"; then
+  # returned a non-master row. Otherwise log + continue. (Real master-auth
+  # is asserted by Step 8c above; the master lives on the local.host sentinel.)
+  if [[ -n "$master_check" ]] && ! echo "$master_check" | grep -q "master@local.host"; then
     log "webmail/master-account: probe inconclusive (cli not authenticated)"
   fi
 }
@@ -3770,7 +3799,14 @@ scenario_mail_migration_fixes() {
   #    creating a snapshot Job every 2 minutes indefinitely (observed
   #    live: 22:22→22:32 runaway until a manual restore). A failed
   #    restore must be loud, and retried before giving up.
-  local restore_expr="${orig_db_sched:-*/30 * * * *}"
+  # Restore to the NATIVE default (NOT orig_db_sched). The un-suspend leg below
+  # asserts NATIVE mode unsuspends the CronJob, which only holds when the
+  # restored schedule == DEFAULT_MAIL_SNAPSHOT_SCHEDULE. If a prior run left a
+  # custom cadence (e.g. */2) in backup_schedules.mail, restoring to that orig
+  # value stays PLATFORM-FIRED → CronJob stays suspended → a false failure
+  # (exactly what wedged this on the shared staging cluster: the */2 cascade).
+  # Restoring to the default also leaves the cluster clean.
+  local restore_expr="*/30 * * * *"
   local _restore_ok=0 _restore_try _restore_resp _restore_code
   for _restore_try in 1 2 3; do
     _restore_resp=$(api_raw PATCH /admin/backups/schedules/mail "{\"cronExpression\":\"${restore_expr}\"}" 2>&1)

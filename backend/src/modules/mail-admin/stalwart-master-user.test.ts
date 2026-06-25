@@ -3,6 +3,8 @@ import {
   readStalwartMasterUser,
   _resetCacheForTests,
   MASTER_USER_FALLBACK,
+  MASTER_SENTINEL_DOMAIN,
+  MASTER_USER_DEFAULT,
   CACHE_TTL_MS,
   type ReadStalwartMasterUserDeps,
 } from './stalwart-master-user.js';
@@ -93,5 +95,21 @@ describe('readStalwartMasterUser', () => {
       nowMs: () => tNow,
     });
     expect(refreshed).toBe('master@b.example.com');
+  });
+});
+
+describe('master sentinel constants (mail-domain-independent master, 2026-06-25)', () => {
+  it('pins the master to the fixed local.host sentinel (a valid non-.local TLD)', () => {
+    expect(MASTER_SENTINEL_DOMAIN).toBe('local.host');
+    expect(MASTER_USER_DEFAULT).toBe('master@local.host');
+    // The sentinel must NOT be the rejected .local pseudo-TLD that broke auth.
+    expect(MASTER_SENTINEL_DOMAIN.endsWith('.local')).toBe(false);
+  });
+
+  it('makes the compiled-in fallback equal the canonical sentinel FQDN', () => {
+    // Pre-2026-06-25 the fallback was the broken master@master.local; it is now
+    // a VALID auth Domain, so degrading to it self-heals instead of breaking.
+    expect(MASTER_USER_FALLBACK).toBe(MASTER_USER_DEFAULT);
+    expect(MASTER_USER_FALLBACK).toBe('master@local.host');
   });
 });

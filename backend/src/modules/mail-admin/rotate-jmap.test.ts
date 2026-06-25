@@ -101,6 +101,70 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     });
   });
 
+  it('merges extraStringData (e.g. STALWART_MASTER_USER FQDN re-stamp) into the same Secret patch', async () => {
+    const deps = makeDeps();
+    await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        secretName: 'mail-secrets',
+        secretKeys: ['STALWART_MASTER_PASSWORD'],
+        extraStringData: { STALWART_MASTER_USER: 'master@local.host' },
+      },
+      deps,
+    );
+
+    expect(deps.patchK8sSecret).toHaveBeenCalledWith({
+      namespace: 'mail',
+      name: 'mail-secrets',
+      stringData: expect.objectContaining({
+        STALWART_MASTER_PASSWORD: 'new-secret-password',
+        STALWART_MASTER_USER: 'master@local.host',
+      }),
+    });
+  });
+
+  it('destroys stale masters in other domains when cleanupStaleMastersInOtherDomains is set', async () => {
+    const destroyStaleMasters = vi.fn().mockResolvedValue(['stale-1']);
+    const deps = makeDeps({ destroyStaleMasters });
+    await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        secretName: 'mail-secrets',
+        principalDomain: 'local.host',
+        autoReseed: true,
+        cleanupStaleMastersInOtherDomains: true,
+      },
+      deps,
+    );
+    expect(destroyStaleMasters).toHaveBeenCalledWith('account-123', 'admin', 'local.host');
+  });
+
+  it('does NOT destroy stale masters when the cleanup flag is unset', async () => {
+    const destroyStaleMasters = vi.fn().mockResolvedValue([]);
+    const deps = makeDeps({ destroyStaleMasters });
+    await rotateAdminPasswordViaJmapImpl(
+      { ...BASE_OPTS, principalDomain: 'local.host', autoReseed: true },
+      deps,
+    );
+    expect(destroyStaleMasters).not.toHaveBeenCalled();
+  });
+
+  it('tolerates a failing stale-master cleanup (non-fatal — rotation still succeeds)', async () => {
+    const destroyStaleMasters = vi.fn().mockRejectedValue(new Error('JMAP destroy failed'));
+    const deps = makeDeps({ destroyStaleMasters });
+    const result = await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        principalDomain: 'local.host',
+        autoReseed: true,
+        cleanupStaleMastersInOtherDomains: true,
+      },
+      deps,
+    );
+    expect(result.password).toBe('new-secret-password');
+    expect(deps.patchK8sSecret).toHaveBeenCalled();
+  });
+
   it('falls through to Secret-only rotation when admin principal not found', async () => {
     // Cut 3 follow-up (2026-05-04): Stalwart 0.16 supports a recovery-
     // admin path where no x:Account row exists in the DB. Rotation now

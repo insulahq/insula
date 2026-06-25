@@ -76,11 +76,21 @@ kctl() {
 # ── Phase 1: Auth ─────────────────────────────────────────────────────
 phase "Phase 1: Authenticating"
 TOKEN=""
-TOKEN_RESP=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
-  -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" || true)
-TOKEN=$(echo "$TOKEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])" 2>/dev/null || true)
 API_BASE="$ADMIN_HOST"
+# #130: reuse the shared cache-backed token first (429-resilient), so running
+# alongside other suites doesn't trip the auth rate limit. Falls through to the
+# direct + in-cluster logins below if the cache is cold and minting fails.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+  # shellcheck source=integration-token.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+  TOKEN="$(get_admin_token 2>/dev/null || true)"
+fi
+if [[ -z "${TOKEN:-}" ]]; then
+  TOKEN_RESP=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" || true)
+  TOKEN=$(echo "$TOKEN_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['token'])" 2>/dev/null || true)
+fi
 if [[ -z "${TOKEN:-}" && "$ADMIN_HOST" == *"k8s-platform.test"* ]]; then
   log "Direct login failed; falling back to in-cluster API via ephemeral curl pod"
   TOKEN_RESP=$(docker exec "$K3S_CONTAINER" sh -c "kubectl run -n default --rm -i --restart=Never --image=curlimages/curl:latest sh-login -- sh -c \"curl -sk -X POST http://platform-api.platform.svc.cluster.local:3000/api/v1/auth/login -H Content-Type:application/json -d '{\\\"email\\\":\\\"$ADMIN_EMAIL\\\",\\\"password\\\":\\\"$ADMIN_PASSWORD\\\"}'\"" 2>&1)
@@ -208,11 +218,21 @@ ADMIN_POD=$(kctl -n platform get pods -l app=admin-panel -o jsonpath='{.items[0]
 if [[ -z "$ADMIN_POD" ]]; then
   fail "no admin-panel pod found — skipping"
 else
-  MOUNTED=$(kctl -n platform exec "$ADMIN_POD" -- cat /etc/nginx/conf.d/trusted-proxies.d/trusted-proxies.conf 2>/dev/null || echo "")
-  if echo "$MOUNTED" | grep -q "$TEST_CIDR"; then
-    ok "Mounted ConfigMap visible in pod (/etc/nginx/conf.d/trusted-proxies.d/)"
+  # Phase 6 confirms the ConfigMap OBJECT is updated, but the kubelet
+  # propagates that into the pod's mounted volume only on its sync cycle
+  # (up to ~60-90s + the configmap cache TTL). Poll instead of checking once —
+  # a single read races the kubelet and flakes (observed: Phase 6 green,
+  # Phase 7 red against the multi-node cluster).
+  MOUNTED=""; _m_ok=0
+  for _m_try in $(seq 1 24); do
+    MOUNTED=$(kctl -n platform exec "$ADMIN_POD" -- cat /etc/nginx/conf.d/trusted-proxies.d/trusted-proxies.conf 2>/dev/null || echo "")
+    if echo "$MOUNTED" | grep -q "$TEST_CIDR"; then _m_ok=1; break; fi
+    sleep 5
+  done
+  if [[ "$_m_ok" == "1" ]]; then
+    ok "Mounted ConfigMap visible in pod (/etc/nginx/conf.d/trusted-proxies.d/) after $((_m_try * 5))s"
   else
-    fail "Mounted ConfigMap does NOT contain $TEST_CIDR"
+    fail "Mounted ConfigMap does NOT contain $TEST_CIDR after 120s"
     log "Mount content: $MOUNTED"
   fi
 fi
@@ -292,11 +312,20 @@ fi
 
 # ── Phase 11: RBAC — non-admin POST → 403 ────────────────────────────
 phase "Phase 11: RBAC — invalid token → 401/403"
-RBAC_RESP=$(curl -sk -X POST "$API_BASE/api/v1/admin/cluster-network/trusted-proxies" \
-  -H "Authorization: Bearer not-a-real-token" \
-  -H 'Content-Type: application/json' \
-  -d '{"cidr":"1.2.3.4/32","description":"x"}' -w '\nHTTP_STATUS=%{http_code}' || true)
-RBAC_STATUS=$(extract_status "$RBAC_RESP")
+# This asserts the AUTH outcome (401/403), so retry through transient gateway
+# blips (504/502/000) — a one-off ingress timeout otherwise red-flags a healthy
+# auth gate (observed: a single 504 on the multi-node staging cluster).
+RBAC_STATUS=""
+for _rbac_try in 1 2 3 4 5; do
+  RBAC_RESP=$(curl -sk --max-time 15 -X POST "$API_BASE/api/v1/admin/cluster-network/trusted-proxies" \
+    -H "Authorization: Bearer not-a-real-token" \
+    -H 'Content-Type: application/json' \
+    -d '{"cidr":"1.2.3.4/32","description":"x"}' -w '\nHTTP_STATUS=%{http_code}' || true)
+  RBAC_STATUS=$(extract_status "$RBAC_RESP")
+  [[ "$RBAC_STATUS" == "504" || "$RBAC_STATUS" == "502" || "$RBAC_STATUS" == "000" ]] || break
+  log "Phase 11: transient gateway $RBAC_STATUS on unauth POST — retry ${_rbac_try}/5 in 3s"
+  sleep 3
+done
 if [[ "$RBAC_STATUS" == "401" || "$RBAC_STATUS" == "403" ]]; then
   ok "unauth POST rejected ($RBAC_STATUS)"
 else

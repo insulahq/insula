@@ -167,10 +167,14 @@ fi
 [[ "$STATUS" == "202" || "$STATUS" == "201" ]] || { fail "bundle create: $STATUS $BODY"; exit 1; }
 BUNDLE_ID=$(printf '%s' "$BODY" | jq -r '.data.bundleId // .data.id'); ok "bundle $BUNDLE_ID"
 wait_bundle "$BUNDLE_ID" "$TENANT_ID" "$TENANT_TOKEN" 240
-if [[ "$BUNDLE_STATUS" == "completed" || "$BUNDLE_STATUS" == "partial" ]]; then
+# `partial` means a component FAILED to back up — a silent data-loss risk. This
+# suite then restores a file from the bundle, so a partial bundle could be
+# missing the very file we assert. Require completed (per the project rule);
+# dump the offending component(s) for diagnosis.
+if [[ "$BUNDLE_STATUS" == "completed" ]]; then
   ok "bundle terminal: $BUNDLE_STATUS"
 else
-  fail "bundle terminal: $BUNDLE_STATUS"
+  fail "bundle terminal: $BUNDLE_STATUS (expected completed)"
   api GET "/admin/tenant-bundles/$BUNDLE_ID" "" "$ADMIN_TOKEN" | jq -r '.data.components[]? | select(.status!="completed") | "  comp=\(.component) status=\(.status) err=\(.lastError//"")"' || true
   exit 1
 fi

@@ -35,7 +35,7 @@ import {
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
-import { readStalwartMasterUser, MASTER_USER_FALLBACK } from '../mail-admin/stalwart-master-user.js';
+import { readStalwartMasterUser } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
@@ -230,7 +230,7 @@ async function syncPrincipals(params: {
   }> = [];
 
   // ── C: webmail master-user detector ──────────────────────────────────────
-  // The Stalwart master user (`master@mail.<domain>`) is what Bulwark +
+  // The Stalwart master user (`master@local.host` sentinel) is what Bulwark +
   // Roundcube authenticate as to impersonate tenant mailboxes. If it goes
   // missing, ALL webmail login/impersonation silently breaks (the rest of
   // Stalwart is fine, so nothing else alerts). It is NOT a platform DB row, so
@@ -240,9 +240,14 @@ async function syncPrincipals(params: {
   // the master up in that map) — do not hoist this block above the principal loop.
   try {
     const masterFqdn = (await readStalwartMasterUser(core ?? null)).trim().toLowerCase();
-    // Skip when we only have the compiled-in fallback (no k8s/secret) — we
-    // can't know the real master FQDN, so don't false-alarm.
-    if (masterFqdn && masterFqdn !== MASTER_USER_FALLBACK.toLowerCase()) {
+    // Skip only when there is no k8s client to read the Secret (unit/test
+    // or pre-bootstrap) — then the FQDN is just the compiled-in default and
+    // we can't meaningfully assert presence. With a client, the resolved
+    // FQDN (Secret value, or the `master@local.host` sentinel default) is
+    // authoritative, so check it. (Previously this compared against the
+    // fallback constant, but the fallback now EQUALS the real sentinel —
+    // that comparison would skip the check in the normal case.)
+    if (masterFqdn && core) {
       if (!stalwartMailboxByEmail.has(masterFqdn)) {
         driftThisTick.push({
           kind: 'master-user',
