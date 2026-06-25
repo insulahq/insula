@@ -5,7 +5,7 @@
 # Stages:
 #   0. Identify a usable test mailbox (existing platform mailbox with
 #      working Stalwart principal — JMAP write succeeds as
-#      <addr>%master@master.local).
+#      <addr>%master@local.host).
 #   1. Erase any prior test residue in that mailbox (best-effort:
 #      Email/query → Email/set destroy all current messages).
 #   2. Seed COUNT messages via jmap-seed.py (default 1000), with
@@ -165,7 +165,7 @@ kubectl -n mail exec -i stalwart-probe -- python3 - <<'PY'
 import base64, json, os, urllib.request, urllib.parse, urllib.error
 ENDPOINT = "http://stalwart-mgmt.mail.svc.cluster.local:8080/.well-known/jmap"
 pw = os.environ["STALWART_MASTER_PASSWORD"]
-auth = "Basic " + base64.b64encode(f"$TEST_ADDR%master@master.local:{pw}".encode()).decode()
+auth = "Basic " + base64.b64encode(f"$TEST_ADDR%master@local.host:{pw}".encode()).decode()
 def http(url, method="GET", body=None):
     req = urllib.request.Request(url, data=body, method=method)
     req.add_header("Authorization", auth)
@@ -209,7 +209,7 @@ T0=$(date +%s)
 ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec stalwart-probe -- /usr/local/bin/jmap-seed.py \
   --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 \
   --account-address $TEST_ADDR \
-  --master-user master@master.local \
+  --master-user master@local.host \
   --auth-pass-env STALWART_MASTER_PASSWORD \
   --count $COUNT \
   --marker $MARKER \
@@ -346,7 +346,7 @@ kubectl -n mail exec -i stalwart-probe -- python3 - <<'PY'
 import base64, json, os, urllib.request, urllib.parse, urllib.error, time
 ENDPOINT="http://stalwart-mgmt.mail.svc.cluster.local:8080/.well-known/jmap"
 pw=os.environ["STALWART_MASTER_PASSWORD"]
-auth="Basic "+base64.b64encode(f"$TEST_ADDR%master@master.local:{pw}".encode()).decode()
+auth="Basic "+base64.b64encode(f"$TEST_ADDR%master@local.host:{pw}".encode()).decode()
 def http(url, method="GET", body=None):
     req=urllib.request.Request(url, data=body, method=method)
     req.add_header("Authorization", auth)
@@ -375,7 +375,7 @@ REMOTE
 ssh -i "$SSH_KEY" "$STAGING_HOST" "kubectl -n mail exec stalwart-probe -- /usr/local/bin/jmap-seed.py \
   --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 \
   --account-address $TEST_ADDR \
-  --master-user master@master.local \
+  --master-user master@local.host \
   --auth-pass-env STALWART_MASTER_PASSWORD \
   --count 5 \
   --marker $MARKER-incr" 2>&1 | tail -3
@@ -431,7 +431,7 @@ kubectl -n mail exec -i stalwart-probe -- python3 - <<'PY'
 import base64, json, os, urllib.request, urllib.parse, urllib.error
 ENDPOINT="http://stalwart-mgmt.mail.svc.cluster.local:8080/.well-known/jmap"
 pw=os.environ["STALWART_MASTER_PASSWORD"]
-auth="Basic "+base64.b64encode(f"$RESTORE_ADDR%master@master.local:{pw}".encode()).decode()
+auth="Basic "+base64.b64encode(f"$RESTORE_ADDR%master@local.host:{pw}".encode()).decode()
 def http(url, method="GET", body=None):
     req=urllib.request.Request(url, data=body, method=method)
     req.add_header("Authorization", auth)
@@ -490,7 +490,7 @@ set -e
   --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 \
   --target-address $RESTORE_ADDR \
   --source-address $TEST_ADDR \
-  --master-user master@master.local \
+  --master-user master@local.host \
   --auth-pass-env STALWART_MASTER_PASSWORD \
   --maildir-root /tmp/restore/extracted \
   --mode merge-overwrite \

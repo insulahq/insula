@@ -3278,12 +3278,13 @@ cd /tmp; wget -q -O cli.tar.xz https://github.com/stalwartlabs/cli/releases/down
 tar -xJf cli.tar.xz; CLI=/tmp/stalwart-cli-x86_64-unknown-linux-musl/stalwart-cli; chmod +x \$CLI
 PW=\$(cat /var/run/stalwart-recovery 2>/dev/null || echo \"\")
 STALWART_USER=admin STALWART_PASSWORD=\$PW STALWART_URL=http://stalwart-mgmt.mail.svc.cluster.local:8080 \
-  \$CLI query Account 2>&1 | awk \"NR>1 && \\\$2 == \\\"master@master.local\\\" {print \\\$2; exit}\"
+  \$CLI query Account 2>&1 | awk \"NR>1 && \\\$2 == \\\"master@local.host\\\" {print \\\$2; exit}\"
 "' 2>&1 | tail -1 || true)
   # Soft check — the harness can't easily mount the recovery secret,
   # so this often returns blank. We only fail if the check ran AND
-  # returned a non-master row. Otherwise log + continue.
-  if [[ -n "$master_check" ]] && ! echo "$master_check" | grep -q "master@master.local"; then
+  # returned a non-master row. Otherwise log + continue. (Real master-auth
+  # is asserted by Step 8c above; the master lives on the local.host sentinel.)
+  if [[ -n "$master_check" ]] && ! echo "$master_check" | grep -q "master@local.host"; then
     log "webmail/master-account: probe inconclusive (cli not authenticated)"
   fi
 }
