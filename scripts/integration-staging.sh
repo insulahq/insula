@@ -1786,12 +1786,15 @@ for c in (items if isinstance(items, list) else []):
       # service certificate is self-signed).
       local imap_host="stalwart-mail.mail.svc.cluster.local"
       local imap_port="993"
-      # Stalwart master proxy needs the FQ master account (the short
-      # 'master' form resolves to master@localhost.local which doesn't
-      # exist → AUTHENTICATIONFAILED). master@master.local is the
-      # default account managed by mail-admin/rotate-webmail-master.
-      local imap_user="${mb_addr}%master@master.local"
-      local master_pw
+      # Stalwart master proxy needs the FQ master account. It is NOT a fixed
+      # 'master@master.local' — the apex decouple (R16) moved it to the platform
+      # mail domain. Read the AUTHORITATIVE value from the secret
+      # (STALWART_MASTER_USER), the same key the backup path resolves via
+      # readStalwartMasterUser; fall back to the old default only if unset.
+      local master_user master_pw
+      master_user=$(ssh_cp "kubectl -n mail get secret mail-secrets -o jsonpath='{.data.STALWART_MASTER_USER}' | base64 -d" 2>/dev/null)
+      [[ -n "$master_user" ]] || master_user="master@master.local"
+      local imap_user="${mb_addr}%${master_user}"
       master_pw=$(ssh_cp "kubectl -n mail get secret mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null)
       [[ -n "$master_pw" ]] || { echo "ERROR: master password fetch failed" >&2; return 1; }
 
