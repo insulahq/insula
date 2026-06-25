@@ -48,6 +48,7 @@ import {
 } from '../../config/domains.js';
 import type { Database } from '../../db/index.js';
 import { getPlatformApex } from '../system-settings/platform-domain.js';
+import { MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 
 /** Returned by getReservedPlatformHostnames. Keys are normalized
  *  (lowercase, no trailing dot). The `apex` field carries the
@@ -191,6 +192,13 @@ export async function getReservedPlatformHostnames(db: Database): Promise<Reserv
   if (apex) {
     fqdns.set(apex, 'platform apex domain (owned by SYSTEM)');
   }
+
+  // Source 5: the mail master sentinel Domain (apex-INDEPENDENT). The
+  // Stalwart `master@<sentinel>` principal lives here; reserving it stops
+  // a tenant from registering the Domain and provisioning a colliding
+  // mailbox (the original reason the master was pinned to `mail.<apex>`).
+  // It is NOT owned by any tenant (not even SYSTEM) — pure auth infra.
+  fqdns.set(normalize(MASTER_SENTINEL_DOMAIN), 'platform mail master principal domain');
 
   const result: ReservedHostnames = {
     apex,

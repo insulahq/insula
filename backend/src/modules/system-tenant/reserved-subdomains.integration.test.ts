@@ -68,6 +68,17 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
       expect(r.fqdns.has(TEST_APEX)).toBe(true);
     });
 
+    it('reserves the apex-independent mail master sentinel domain (local.host)', async () => {
+      const r = await getReservedPlatformHostnames(getTestDb());
+      // The Stalwart master lives at master@local.host — reserve the Domain so
+      // no tenant can register it and provision a colliding mailbox. It is NOT
+      // a subdomain of the apex, so this reservation is apex-independent.
+      expect(r.fqdns.has('local.host')).toBe(true);
+      expect('local.host'.endsWith(`.${TEST_APEX}`)).toBe(false);
+      expect(await isReservedPlatformHostname(getTestDb(), 'local.host')).toBe(true);
+      expect(await isReservedPlatformHostname(getTestDb(), 'LOCAL.HOST')).toBe(true);
+    });
+
     it('reflects operator-edited platform_settings (longhorn URL re-mapped)', async () => {
       const db = getTestDb();
       // Operator points longhorn at a custom subdomain via platform_settings.

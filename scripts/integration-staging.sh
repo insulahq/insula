@@ -2651,14 +2651,14 @@ PY
   if [[ "$tester_spawned" == "1" ]]; then
     local master_pw master_user
     master_pw=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d" 2>/dev/null || echo "")
-    # The master principal's FQDN lives in the Secret too — modern
-    # bootstraps provision `master@mail.<apex>`; only legacy clusters
-    # still use the synthetic `master@master.local`. Hardcoding the
-    # legacy name made this probe fail AUTHENTICATIONFAILED on every
-    # current cluster (caught on testing 2026-06-10; mirrors the
-    # fallback order in rotate-webmail-master.ts).
+    # The master principal's FQDN lives in the Secret too. Since 2026-06-25
+    # the master is provisioned on the FIXED, mail-domain-INDEPENDENT
+    # sentinel `master@local.host` (decoupled so a mail-domain rename can
+    # never strand it). The fallback mirrors MASTER_USER_DEFAULT in
+    # backend stalwart-master-user.ts.
     master_user=$(ssh_cp "kubectl get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_USER}' | base64 -d" 2>/dev/null | tr -d '[:space:]')
-    [[ -n "$master_user" ]] || master_user="master@master.local"
+    [[ -n "$master_user" ]] || master_user="master@local.host"
+    local master_domain="${master_user#*@}"
     if [[ -n "$master_pw" ]]; then
       local master_probe
       master_probe=$(ssh_cp "kubectl exec -n default ${tester_pod} -- python3 -c '
@@ -2679,6 +2679,22 @@ except Exception as e:
         ok "mail/master-auth: <target>%${master_user} login succeeded for $mail_box_user"
       else
         fail "mail/master-auth: master-auth IMAP login FAILED (master=${master_user}) — webmail SSO won't work. tail: $(echo "$master_probe" | tail -3 | tr '\n' ' ')"
+      fi
+
+      # ── Step 8c-bis: rename-safety invariant (simulated rename) ─────
+      # The master must live on the fixed, mail-domain-INDEPENDENT
+      # sentinel Domain. If it instead shared the mail domain
+      # (master@mail.<apex>), a platform mail-domain rename would strand
+      # it (the old principal dangles + STALWART_MASTER_USER is never
+      # re-stamped → AUTHENTICATIONFAILED, the bug this fixes). Asserting
+      # master_domain == sentinel IS the simulated-rename test: because
+      # the sentinel never changes when mail.<apex> does, a rename
+      # provably cannot affect the master. A legacy un-migrated cluster
+      # fails here with an actionable hint (run the migration CLI).
+      if [[ "$master_domain" == "local.host" ]]; then
+        ok "mail/master-auth: master is on the fixed sentinel '${master_domain}' — decoupled from the mail domain, so a mail-domain rename cannot strand it (rename-safe)"
+      else
+        fail "mail/master-auth: master is on '${master_domain}', NOT the rename-safe sentinel 'local.host' — a mail-domain rename would strand it. Migrate: kubectl -n platform exec deploy/platform-api -- node dist/cli/mail-rotate-master.js"
       fi
     else
       log "mail/master-auth: STALWART_MASTER_PASSWORD secret missing — skipping (provision via bootstrap.sh:provision_stalwart_master_user)"

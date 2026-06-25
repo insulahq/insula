@@ -64,11 +64,21 @@ export interface RotateJmapOptions {
    */
   readonly secretKeys?: readonly string[];
   /**
+   * Extra (non-password) key/value pairs to patch into the SAME Secret
+   * alongside the rotated password. Used by the webmail-master rotation
+   * to re-stamp `STALWART_MASTER_USER` to `master@<sentinel>` so the
+   * Secret's recorded FQDN converges with the principal the rotation
+   * actually (re)seeds — closing the long-standing gap where the user
+   * key was never written and drifted after a mail-domain rename.
+   * Values are plain text (patched via `stringData`, k8s base64-encodes).
+   */
+  readonly extraStringData?: Readonly<Record<string, string>>;
+  /**
    * Optional principal-resolver override. Defaults to looking up by the
    * `name` field in the JMAP principals account. The webmail master
-   * Account lives at `master@master.local` (a synthetic domain) so its
-   * `name` is plain `master`; the existing find-by-name path works as-is.
-   * Provided for tests + future flexibility.
+   * Account lives at `master@<sentinel>` so its `name` is plain `master`;
+   * the existing find-by-name path works as-is. Provided for tests +
+   * future flexibility.
    */
   readonly principalLookupName?: string;
   /**
@@ -347,9 +357,14 @@ export async function rotateAdminPasswordViaJmapImpl(
     recoveryPassword: plain,
     recoveryAdmin: `${opts.username}:${plain}`,
   };
-  const stringData: Record<string, string> = opts.secretKeys
-    ? Object.fromEntries(opts.secretKeys.map((k) => [k, plain]))
-    : defaultStringData;
+  const stringData: Record<string, string> = {
+    ...(opts.secretKeys
+      ? Object.fromEntries(opts.secretKeys.map((k) => [k, plain]))
+      : defaultStringData),
+    // Non-password extras (e.g. STALWART_MASTER_USER FQDN re-stamp) patched
+    // into the same Secret in one round-trip.
+    ...(opts.extraStringData ?? {}),
+  };
 
   try {
     await deps.patchK8sSecret({

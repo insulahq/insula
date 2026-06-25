@@ -237,6 +237,17 @@ NODE_ROLE=""
 HOST_CLIENT_WORKLOADS=""
 PLATFORM_ENV="production"
 PLATFORM_DOMAIN=""
+# Fixed sentinel Domain that holds the Stalwart webmail master principal
+# (`master@local.host`). DECOUPLED from PLATFORM_DOMAIN/mail.<apex> on
+# purpose (2026-06-25): the master is used only for IMAP/JMAP master-auth
+# impersonation, never for mail routing or DNS/MX, so pinning it to a fixed
+# Domain means a mail-domain rename never strands it. `.host` is a real
+# gTLD — verified Stalwart 0.16 accepts it for auth (it rejects only the
+# reserved `.local` pseudo-TLD, the reason the master moved off
+# master.local). Reserved platform-side (backend reserved-subdomains.ts) so
+# no tenant can claim it. Keep in sync with MASTER_SENTINEL_DOMAIN in
+# backend/src/modules/mail-admin/stalwart-master-user.ts.
+STALWART_MASTER_DOMAIN="local.host"
 K3S_SERVER_IP=""
 K3S_TOKEN=""
 K3S_VERSION="v1.35.5+k3s1"
@@ -4776,19 +4787,15 @@ STALWART_ADMIN_PASSWORD=${stalwart_admin_pw}
 # entirely on auth ('AUTHENTICATIONFAILED master.local' even with
 # correct password + Admin role) — anchor the master Account under a
 # real TLD instead.
-# 2026-05-28a: was master@${PLATFORM_DOMAIN}; moved to
-# master@mail.${PLATFORM_DOMAIN} so the principal lives in the same
-# Stalwart Domain Stalwart actually serves mail for.
-# 2026-05-28b (final): the rotation flow now consults
-# 'platform_settings.mail_server_hostname' (Email -> Settings -> Server)
-# as the source-of-truth for the principal's home Domain, with
-# 'mail.[ingress_base_domain]' as the cascade default. Bootstrap only
-# SEEDS this Secret — operator changes via the admin UI take precedence
-# afterwards (rotate-webmail-master will re-seed under the current
-# operator-set hostname automatically, even if it differs from the
-# bootstrap default). The seeded value here matches the default branch
-# of 'getExplicitMailHostname' so a vanilla install round-trips cleanly.
-STALWART_MASTER_USER=master@mail.${PLATFORM_DOMAIN}
+# 2026-06-25 (final): DECOUPLED the master from the mail domain entirely.
+# It now lives on the FIXED sentinel '${STALWART_MASTER_DOMAIN}' (real
+# gTLD, Stalwart-accepted) so a mail-domain rename can never strand it
+# (the old master@mail.<apex> was left dangling on rename + the Secret was
+# never re-stamped — the staging mail-backup AUTHENTICATIONFAILED bug).
+# The sentinel is reserved platform-side so no tenant can collide. Verified
+# by a local Stalwart v0.16.9 spike that an Admin-role master here
+# impersonates mailboxes in ANY Domain and survives mail-domain deletion.
+STALWART_MASTER_USER=master@${STALWART_MASTER_DOMAIN}
 STALWART_MASTER_PASSWORD=${stalwart_master_pw}
 STALWART_EOF
     chmod 600 /etc/platform/stalwart-credentials
@@ -4948,7 +4955,7 @@ STALWART016_EOF
     kctl create secret generic mail-secrets \
       --namespace=mail \
       --from-literal=JWT_AUTH_SECRET="$rc_jwt" \
-      --from-literal=STALWART_MASTER_USER="master@mail.${PLATFORM_DOMAIN}" \
+      --from-literal=STALWART_MASTER_USER="master@${STALWART_MASTER_DOMAIN}" \
       --from-literal=STALWART_MASTER_PASSWORD="$rc_master_pw" \
       --from-literal=ROUNDCUBEMAIL_DES_KEY="$rc_des" \
       --from-literal=ROUNDCUBEMAIL_DB_HOST="system-db-rw.platform.svc.cluster.local" \
@@ -5645,22 +5652,25 @@ provision_stalwart_master_user() {
   #   2026-05-16: changed from the synthetic `master.local` to the
   #               platform base domain (PLATFORM_DOMAIN) because
   #               Stalwart 0.16 hard-blocks the .local TLD on auth.
-  #   2026-05-28: moved from PLATFORM_DOMAIN to mail.PLATFORM_DOMAIN so
-  #               the master Account lives in the same Stalwart Domain
-  #               Stalwart actually serves mail for. This (a) matches
-  #               the cert SAN / DNS that Stalwart already uses for
-  #               its SMTP/IMAP/JMAP endpoints, and (b) prevents a
-  #               tenant who provisions a `master@<their-tenant-domain>`
-  #               mailbox from colliding with the platform's master
-  #               (the rotation flow scopes the JMAP lookup to this
-  #               Domain). Stale Accounts in the PLATFORM_DOMAIN
-  #               Domain are detected + destroyed in the same
-  #               "STALE_ACCT" branch below as the historical
-  #               master.local migration — no extra step needed.
+  #   2026-05-28: moved to mail.PLATFORM_DOMAIN (same Domain Stalwart
+  #               serves mail for; avoided tenant collisions).
+  #   2026-06-25: DECOUPLED — moved to the FIXED sentinel
+  #               STALWART_MASTER_DOMAIN ('local.host'). The master is
+  #               used ONLY for master-auth impersonation, never mail
+  #               routing/DNS, so anchoring it to the mail domain was the
+  #               wrong coupling: a mail-domain rename left
+  #               master@mail.<oldApex> dangling (the staging mail-backup
+  #               AUTHENTICATIONFAILED bug). The sentinel never changes,
+  #               is reserved platform-side so no tenant can collide, and
+  #               (verified by a local Stalwart v0.16.9 spike) impersonates
+  #               mailboxes in ANY Domain. Stale `master` Accounts in ANY
+  #               OTHER Domain (master.local, PLATFORM_DOMAIN,
+  #               mail.PLATFORM_DOMAIN) are detected + destroyed in the
+  #               "STALE_ACCT" branch below — the migration is automatic.
   kctl create secret generic "${params_secret}" \
     --namespace=mail \
     --from-literal=MASTER_PW="${master_pw}" \
-    --from-literal=MASTER_DOMAIN="mail.${PLATFORM_DOMAIN}" \
+    --from-literal=MASTER_DOMAIN="${STALWART_MASTER_DOMAIN}" \
     --dry-run=client -o yaml | kctl apply -n mail -f - >/dev/null
 
   cat <<EOF | kctl apply -n mail -f - >/dev/null
@@ -5742,12 +5752,14 @@ spec:
       echo "domain=\$MASTER_DOMAIN id=\${DOMAIN_ID}"
 
       # Step 2: ensure master Account exists IN THE TARGET DOMAIN.
-      # Upgrade path 2026-05-16: older bootstrap runs anchored master
-      # in `master.local`, which Stalwart 0.16 hard-rejects on auth.
-      # If we find a stale `master` Account in a different domain,
-      # destroy it so the create below puts a fresh one in the right
-      # domain. We also destroy the stale master.local Domain since
-      # nothing else uses it.
+      # Upgrade path: older bootstrap runs anchored master in
+      # `master.local` (Stalwart 0.16 rejects .local on auth), then in
+      # `mail.<apex>`. Both are now wrong — the master belongs on the
+      # fixed sentinel. If we find a stale `master` Account in ANY other
+      # domain, destroy it so the create below puts a fresh one on the
+      # sentinel. We also destroy the leftover `master.local` Domain
+      # (safe — nothing uses it); the `mail.<apex>` Domain is left intact
+      # because Stalwart still serves real mail for it.
       ACCT_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
         '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
           methodCalls:[["x:Account/get",

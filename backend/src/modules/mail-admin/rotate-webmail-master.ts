@@ -2,7 +2,7 @@
  * Stalwart 0.16 — Roundcube webmail master password rotation.
  *
  * Wraps `rotateAdminPasswordViaJmap()` so the same JMAP + Secret-patch
- * mechanics are reused for the `master@master.local` Account that
+ * mechanics are reused for the `master@local.host` Account that
  * Roundcube's jwt_auth plugin uses for IMAP master-user impersonation.
  *
  * Two differences vs the admin rotation:
@@ -34,6 +34,7 @@
  */
 
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
+import { MASTER_SENTINEL_DOMAIN, MASTER_USER_KEY } from './stalwart-master-user.js';
 import { rotateWebmailMasterPasswordResponseSchema, type RotateWebmailMasterPasswordResponse } from '@insula/api-contracts';
 import { mailLogger } from '../../shared/mail-logger.js';
 
@@ -45,15 +46,16 @@ export interface RotateWebmailMasterOptions {
   readonly mailNamespace?: string;
   /** Defaults to `mail-secrets`. */
   readonly secretName?: string;
-  /** Defaults to `master`. The master Account in `master.local` Domain. */
+  /** Defaults to `master`. The master Account in the sentinel Domain. */
   readonly masterUsername?: string;
   /** Defaults to `roundcube`. The Deployment to roll after rotation. */
   readonly roundcubeDeployment?: string;
   /**
-   * Stalwart Domain that holds the master principal. As of 2026-05-26
-   * the bootstrap creates it in `mail.<PLATFORM_DOMAIN>`. Required —
-   * caller MUST resolve from runtime config (e.g. `mail.${PLATFORM_DOMAIN}`)
-   * so dev/staging/production stay in sync without hard-coding.
+   * Stalwart Domain that holds the master principal. Defaults to the
+   * fixed `MASTER_SENTINEL_DOMAIN` (`local.host`) — decoupled from the
+   * platform mail domain (2026-06-25) so a mail-domain rename never
+   * strands the master. Callers normally omit this; it's still accepted
+   * (lower-cased) for tests / forced migration of a legacy install.
    *
    * The rotation flow uses this for TWO purposes:
    *   1. Scoped principal lookup — `findAdminPrincipalId` filters
@@ -64,7 +66,7 @@ export interface RotateWebmailMasterOptions {
    *      under this Domain with the new password embedded. No extra
    *      endpoint, no operator click — drift heals automatically.
    */
-  readonly principalDomain: string;
+  readonly principalDomain?: string;
 }
 
 export async function rotateWebmailMasterPassword(
@@ -74,6 +76,8 @@ export async function rotateWebmailMasterPassword(
   const secretName = opts.secretName ?? 'mail-secrets';
   const masterUsername = opts.masterUsername ?? 'master';
   const roundcubeDeployment = opts.roundcubeDeployment ?? 'roundcube';
+  const principalDomain = (opts.principalDomain ?? MASTER_SENTINEL_DOMAIN).toLowerCase();
+  const masterFqdn = `${masterUsername}@${principalDomain}`;
 
   const result = await rotateAdminPasswordViaJmap({
     kubeconfigPath: opts.kubeconfigPath,
@@ -81,8 +85,13 @@ export async function rotateWebmailMasterPassword(
     secretName,
     username: masterUsername,
     secretKeys: ['STALWART_MASTER_PASSWORD'],
+    // Re-stamp the master FQDN in the SAME Secret patch so
+    // STALWART_MASTER_USER converges to the principal we (re)seed —
+    // historically this key was never written, so it drifted after a
+    // mail-domain rename and stranded mailbox backup auth.
+    extraStringData: { [MASTER_USER_KEY]: masterFqdn },
     skipJmapSessionVerify: true,
-    principalDomain: opts.principalDomain,
+    principalDomain,
     autoReseed: true,
     // Mirrors the DO-NOT-DELETE warning bootstrap.sh stamps on the
     // initial provisioning so a manual `Stalwart cli` user delete still

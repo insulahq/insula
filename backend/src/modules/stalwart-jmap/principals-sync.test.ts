@@ -54,13 +54,19 @@ vi.mock('./client.js', () => ({
   principalGet: (...args: unknown[]) => mockPrincipalGet(...args),
 }));
 
-// master-user detector dependency. Default → the compiled-in fallback so the
-// detector SKIPS in tests that don't exercise it (no false alarm, no throw).
-const mockReadMaster = vi.fn(async () => 'master@master.local');
+// master-user detector dependency. The detector now SKIPS only when no k8s
+// client is available (the FQDN would just be the compiled-in default); with
+// a client it always checks the resolved FQDN. So tests that exercise the
+// detector pass `fakeCore`; the skip test omits it (core=null).
+const mockReadMaster = vi.fn(async () => 'master@local.host');
 vi.mock('../mail-admin/stalwart-master-user.js', () => ({
   readStalwartMasterUser: (...args: unknown[]) => mockReadMaster(...args),
-  MASTER_USER_FALLBACK: 'master@master.local',
 }));
+
+/** A truthy stand-in for the CoreV1Api client — its only role in these tests
+ *  is to flip the detector's `core` gate on (the actual secret read is mocked
+ *  via mockReadMaster). */
+const fakeCore = {} as never;
 
 // orphan-domain detector dependency (R17.2): the current mail hostname's
 // cert-anchor Domain is excluded from orphan flagging.
@@ -159,7 +165,7 @@ function createMockDb(
 describe('createPrincipalsSyncScheduler — runOnce', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockReadMaster.mockResolvedValue('master@master.local'); // default: detector skips
+    mockReadMaster.mockResolvedValue('master@local.host'); // default value (detector skips when core omitted)
   });
 
   it('returns early with error when JMAP session fails', async () => {
@@ -352,7 +358,7 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
       { id: 'sp-d', type: 'individual', name: 'kjh', emails: ['kjh@staging.example.net'] }, // a tenant mailbox, NOT the master
     ]));
     const db = createMockDb([], []);
-    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore }).runOnce();
 
     const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
     const masterInsert = inserts.find((c) => (c[0] as { kind?: string })?.kind === 'master-user');
@@ -369,14 +375,14 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
       { id: 'b', type: 'individual', name: 'master', emails: ['master@mail.staging.example.net'] },
     ]));
     const db = createMockDb([], []);
-    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv }).runOnce();
+    await createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore }).runOnce();
 
     const inserts = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls;
     expect(inserts.some((c) => (c[0] as { kind?: string })?.kind === 'master-user')).toBe(false);
   });
 
-  it('skips the master-user check when only the compiled-in fallback FQDN is known', async () => {
-    // default mockReadMaster → 'master@master.local' (fallback) → skip, no false alarm
+  it('skips the master-user check when there is no k8s client to read the secret', async () => {
+    // core omitted (null) → can't read mail-secrets → skip, no false alarm
     mockGetJmapSession.mockResolvedValueOnce(makeSession());
     mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([]));
     const db = createMockDb([], []);

@@ -31,7 +31,7 @@ import * as service from './service.js';
 import { readStalwartCredentials } from './credentials.js';
 import { rotateAdminPasswordViaJmap } from './rotate-jmap.js';
 import { rotateWebmailMasterPassword } from './rotate-webmail-master.js';
-import { readStalwartMasterUser, MASTER_USER_FALLBACK } from './stalwart-master-user.js';
+import { readStalwartMasterUser, MASTER_SENTINEL_DOMAIN } from './stalwart-master-user.js';
 import { getMailPvcStorage } from './mail-pvc.js';
 import { getMailNodeStorage } from './mail-node-storage.js';
 import {
@@ -501,7 +501,7 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  // Cut 3 (2026-05-05): rotate the Stalwart `master@master.local` Account
+  // Cut 3 (2026-05-05): rotate the Stalwart `master@local.host` Account
   // password (consumed by Roundcube's jwt_auth plugin for IMAP master-
   // user impersonation). Same JMAP+Secret mechanics as the admin route
   // but targets `mail-secrets/STALWART_MASTER_PASSWORD` and rolls
@@ -514,30 +514,14 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
     try {
       // Resolve the master principal's FQDN from the live Secret so the
       // rotation flow scopes the JMAP lookup (and the auto-reseed
-      // create-target) to the exact Domain bootstrap provisioned. Splits
-      // `master@mail.<apex>` → masterUsername=`master`,
-      // principalDomain=`mail.<apex>`. Falls back to the historical
-      // `master@master.local` synthetic Domain if the Secret can't be
-      // read — preserves the pre-2026-05-28 behaviour for fresh installs
-      // that boot before bootstrap finishes.
+      // create-target) to the exact Domain. Splits `master@local.host` →
+      // masterUsername=`master`, principalDomain=`local.host`. The
+      // compiled-in fallback is now the sentinel itself (a valid auth
+      // Domain), so an unreadable Secret degrades to self-healing the
+      // sentinel master rather than a hard error.
       const masterFqdn = await readStalwartMasterUser(
         await getCoreV1ApiForRotation(cfg.KUBECONFIG_PATH as string | undefined),
       );
-      // Refuse the compiled-in fallback (`master@master.local`). It's
-      // returned by `readStalwartMasterUser` when the Secret can't be
-      // read at all (no k8s client + no test injection) — splitting it
-      // would route the auto-reseed into the synthetic `master.local`
-      // Domain that Stalwart 0.16 hard-rejects on auth (bootstrap.sh
-      // documents this at MASTER_DOMAIN history). Refusing here is the
-      // safe default: the operator sees a clear error instead of a
-      // silently-broken master Account in `master.local`.
-      if (masterFqdn === MASTER_USER_FALLBACK) {
-        throw new ApiError(
-          'WEBMAIL_MASTER_FQDN_UNRESOLVED',
-          'Cannot rotate webmail master password — mail-secrets STALWART_MASTER_USER is not readable and the compiled-in fallback would route auto-reseed into the retired `master.local` Domain. Confirm platform-api has RBAC to read mail/mail-secrets, then retry.',
-          503,
-        );
-      }
       const atIdx = masterFqdn.lastIndexOf('@');
       if (atIdx < 1 || atIdx === masterFqdn.length - 1) {
         throw new ApiError(
@@ -549,53 +533,32 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       const masterUsername = masterFqdn.slice(0, atIdx);
       const principalDomain = masterFqdn.slice(atIdx + 1).toLowerCase();
 
-      // Security defence-in-depth (2026-05-28): refuse to rotate +
-      // auto-reseed unless the Secret's recorded domain matches the
-      // operator-configured mail hostname. Without this an attacker
-      // with write access to `mail/mail-secrets` could swap
-      // `STALWART_MASTER_USER` to `master@<their-tenant-domain>` and
-      // the rotation flow would happily create a working master
-      // principal under that tenant's Domain — a one-click platform-
-      // wide mail backdoor. Mismatch is operator-fixable (re-stamp
-      // the Secret with the correct value) and SHOULD be surfaced
-      // loudly rather than silently corrected: an unexpected drift
-      // here usually means either a misconfigured bootstrap, a
-      // migration in flight, OR Secret tampering, and an automated
-      // "fix" would mask all three.
+      // Security defence-in-depth: refuse to rotate + auto-reseed unless
+      // the Secret's recorded Domain is the FIXED master sentinel
+      // (`local.host`). Without this an attacker with write access to
+      // `mail/mail-secrets` could swap `STALWART_MASTER_USER` to
+      // `master@<their-tenant-domain>` and the rotation flow would
+      // happily create a working master principal under that tenant's
+      // Domain — a one-click platform-wide mail backdoor.
       //
-      // Resolve the expected mail hostname the SAME way every other
-      // mail subsystem does — `getExplicitMailHostname(db)` walks the
-      // cascade:
-      //   1. platform_settings.mail_server_hostname (operator's admin-
-      //      UI override at Email → Settings → Server)
-      //   2. STALWART_HOSTNAME / MAIL_SERVER_HOSTNAME env overrides
-      //   3. mail.<platform_settings.ingress_base_domain> default
-      // Using a derived-from-env-only helper (e.g. mailHost(cfg)) would
-      // silently ignore operator overrides — an operator who set the
-      // mail hostname to `smtp.example.com` would get a
-      // WEBMAIL_MASTER_DOMAIN_MISMATCH every rotation because the route
-      // would expect `mail.example.com`. The reconciler + cert-issuance
-      // + delivery-probe paths all consult the same helper, so the
-      // rotation flow MUST too.
-      const { getExplicitMailHostname } = await import('./stalwart-domain-reconciler.js');
-      const resolvedMailHostname = await getExplicitMailHostname(app.db);
-      if (!resolvedMailHostname) {
-        throw new ApiError(
-          'WEBMAIL_MASTER_MAIL_HOSTNAME_UNRESOLVED',
-          'Cannot rotate — mail hostname is not configured. Set it under Admin → Email → Settings → Server (writes platform_settings.mail_server_hostname) OR set Settings → Platform URLs → Ingress Base Domain, then retry.',
-          412,
-        );
-      }
-      const expectedPrincipalDomain = resolvedMailHostname.trim().toLowerCase();
-      if (principalDomain !== expectedPrincipalDomain) {
+      // Pre-2026-06-25 this guard compared against the live mail hostname
+      // (`mail.<apex>`), which BROKE every rotation after a mail-domain
+      // rename (the Secret still pointed at `mail.<oldApex>`). The master
+      // is now decoupled from the mail domain — it lives on the sentinel
+      // permanently — so the expected value is constant. A legacy install
+      // whose Secret still reads `master@mail.<oldApex>` will mismatch
+      // here (operator-fixable): run the in-pod `platform-ops mail
+      // rotate-master` CLI, which has no guard, targets the sentinel, and
+      // re-stamps STALWART_MASTER_USER to `master@local.host`.
+      if (principalDomain !== MASTER_SENTINEL_DOMAIN) {
         app.log.error({
           userId,
           observedPrincipalDomain: principalDomain,
-          expectedPrincipalDomain,
-        }, 'mail-admin: refusing to rotate webmail master — Secret-recorded Domain does not match platform config (possible Secret tampering OR misconfigured bootstrap)');
+          expectedPrincipalDomain: MASTER_SENTINEL_DOMAIN,
+        }, 'mail-admin: refusing to rotate webmail master — Secret-recorded Domain is not the master sentinel (possible Secret tampering OR pre-sentinel legacy install)');
         throw new ApiError(
           'WEBMAIL_MASTER_DOMAIN_MISMATCH',
-          `Refusing to rotate — mail-secrets STALWART_MASTER_USER points at Domain '${principalDomain}' but platform config expects '${expectedPrincipalDomain}'. Re-stamp the Secret to match before retrying.`,
+          `Refusing to rotate — mail-secrets STALWART_MASTER_USER points at Domain '${principalDomain}' but the master sentinel is '${MASTER_SENTINEL_DOMAIN}'. Run 'platform-ops mail rotate-master' in the platform-api pod to migrate, then retry.`,
           409,
         );
       }

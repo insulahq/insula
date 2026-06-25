@@ -101,6 +101,28 @@ describe('rotateAdminPasswordViaJmapImpl', () => {
     });
   });
 
+  it('merges extraStringData (e.g. STALWART_MASTER_USER FQDN re-stamp) into the same Secret patch', async () => {
+    const deps = makeDeps();
+    await rotateAdminPasswordViaJmapImpl(
+      {
+        ...BASE_OPTS,
+        secretName: 'mail-secrets',
+        secretKeys: ['STALWART_MASTER_PASSWORD'],
+        extraStringData: { STALWART_MASTER_USER: 'master@local.host' },
+      },
+      deps,
+    );
+
+    expect(deps.patchK8sSecret).toHaveBeenCalledWith({
+      namespace: 'mail',
+      name: 'mail-secrets',
+      stringData: expect.objectContaining({
+        STALWART_MASTER_PASSWORD: 'new-secret-password',
+        STALWART_MASTER_USER: 'master@local.host',
+      }),
+    });
+  });
+
   it('falls through to Secret-only rotation when admin principal not found', async () => {
     // Cut 3 follow-up (2026-05-04): Stalwart 0.16 supports a recovery-
     // admin path where no x:Account row exists in the DB. Rotation now
