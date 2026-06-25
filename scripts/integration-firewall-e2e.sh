@@ -187,7 +187,20 @@ sleep 7  # let the 5s cache invalidate on the other replicas
 
 DEPLOY_NAME="coturn-fw-ok-$STAMP"
 log "── deploying $CATALOG_CODE ──"
-DEPLOY_RESP=$(api POST "/tenants/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"$DEPLOY_NAME\"}")
+# Retry on the platform's GLOBAL API rate limiter (@fastify/rate-limit -> 429):
+# in a full ALL run, the parallel batch's request burst can trip it on this
+# create (observed 2026-06-25 — passes serially). The limiter is legitimate, so
+# back off + retry rather than fail the suite.
+DEPLOY_RESP=""
+for _dtry in 1 2 3 4 5 6; do
+  DEPLOY_RESP=$(api POST "/tenants/$CID/deployments" "{\"catalog_entry_id\":\"$CATALOG_ENTRY_ID\",\"name\":\"$DEPLOY_NAME\"}")
+  if echo "$DEPLOY_RESP" | grep -qE '"status":[[:space:]]*429'; then
+    log "  deploy create hit API rate limit (429) — backing off $((_dtry * 3))s (try ${_dtry}/6)"
+    sleep "$((_dtry * 3))"
+    continue
+  fi
+  break
+done
 DEP_ID=$(echo "$DEPLOY_RESP" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(d.get('id',''))" 2>/dev/null)
 if [[ -n "$DEP_ID" ]]; then ok "deployment created id=$DEP_ID"; else fail "deployment create failed: $DEPLOY_RESP"; exit 1; fi
 
