@@ -84,6 +84,14 @@ ssh_node() {
   ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q "root@$ip" "$@"
 }
 
+# Source the shared helper for api_curl (defines functions only — no side effects).
+# Without this, api() (routed through api_curl) emits nothing in the ALL run where
+# INTEGRATION_TOKEN is pre-set → empty bodies → JSONDecodeError (root cause of the
+# 2026-06-26 "parallel cascade"). This suite keeps its own login below.
+# shellcheck source=integration-token.sh
+[[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]] && \
+  source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
+
 # ─── Login ──────────────────────────────────────────────────────────────────
 if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
   log "using cached INTEGRATION_TOKEN"
