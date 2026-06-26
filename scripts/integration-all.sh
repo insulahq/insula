@@ -525,6 +525,38 @@ fi
 
 [[ ${#SERIAL_PRE[@]} -gt 0 ]] && run_serial_group "PRE (sequential, mutates global state)" "${SERIAL_PRE[@]}"
 
+# Barrier: let the control plane SETTLE before launching the parallel batch.
+# SERIAL_PRE (staging-all) toggles WAL-archive enable/disable on system-db, which
+# patches the CNPG `system-db` spec.plugins[barman-cloud] → CNPG ROLLING-RESTARTS
+# the primary → platform-api flaps with it (docker-entrypoint.sh says it outright:
+# "every backup-target enable/disable" restarts the API). If that flap is still
+# settling when the parallel batch launches, the API returns empty bodies that
+# fail the parallel suites as COLLATERAL — root-caused 2026-06-26: 6-9 suites died
+# on JSONDecodeError (empty body) with INVALID_TOKEN=0, no 429s; capping
+# concurrency made it WORSE (it's a control-plane event, not load). Gate on a
+# DB-BACKED endpoint (healthz is SHALLOW — returns 200 even while postgres is
+# down) being stably 200 so the batch runs against a settled control plane.
+wait_for_control_plane_stable() {
+  local need=6 ok=0 i max=180 code   # 6 consecutive DB-backed 200s (~30s stable), up to 15 min
+  log "Barrier: waiting for platform-api + DB to stabilize after SERIAL_PRE before the parallel batch…"
+  for ((i=0; i<max; i++)); do
+    code=$(curl -sk --max-time 6 -o /dev/null -w '%{http_code}' "$ADMIN_HOST/api/v1/plans" 2>/dev/null)
+    if [[ "$code" == "200" ]]; then
+      ok=$((ok+1))
+      if [[ $ok -ge $need ]]; then log "  control plane stable ($need consecutive DB-backed 200s)"; return 0; fi
+    else
+      if [[ $ok -gt 0 ]]; then log "  control-plane blip (HTTP ${code:-000}) — resetting stability counter"; fi
+      ok=0
+    fi
+    sleep 5
+  done
+  warn "control plane not stable within $((max*5))s — proceeding anyway (parallel group may flake)"
+  return 0
+}
+if [[ ${#SERIAL_PRE[@]} -gt 0 && ${#PARALLEL[@]} -gt 0 ]]; then
+  wait_for_control_plane_stable
+fi
+
 # FORCE a fresh, full-TTL token before the parallel batch. Group PRE can run
 # 10-20 min, and the parallel batch runs concurrently for another 20-30 min
 # during which suites CANNOT be re-tokened one-by-one (they run at once). A

@@ -53,6 +53,32 @@ _itoken_mint() {
   return 1
 }
 
+# api_curl: a drop-in for `curl` that transparently retries on the platform's
+# GLOBAL API rate limiter (HTTP 429 / @fastify/rate-limit). In a full ALL run
+# the parallel batch's request burst can trip it on tenant/deployment creates
+# (observed 2026-06-25 on firewall's coturn deploy; the suites pass serially).
+# The limiter is legitimate, so back off + retry rather than fail the suite.
+#
+# Pass the SAME args you'd pass curl (including -s/-k); api_curl appends its own
+# -w to capture the status code, then emits ONLY the response body on stdout —
+# so callers parse JSON exactly as with a bare curl. Up to 6 tries (~3..18s).
+# Use it anywhere a suite calls a mutating endpoint the limiter can reject.
+api_curl() {
+  local _resp _code _attempt
+  for _attempt in 1 2 3 4 5 6; do
+    _resp=$(curl -w $'\n%{http_code}' "$@" 2>/dev/null)
+    _code="${_resp##*$'\n'}"; _resp="${_resp%$'\n'*}"
+    if [[ "$_code" == "429" ]]; then
+      sleep $(( _attempt * 3 ))
+      continue
+    fi
+    printf '%s' "$_resp"
+    return 0
+  done
+  printf '%s' "$_resp"   # exhausted retries — return the last body so the caller can report it
+  return 0
+}
+
 # get_admin_token: echo a valid Bearer, reusing the shared cache when fresh.
 get_admin_token() {
   local cache exp tok now line

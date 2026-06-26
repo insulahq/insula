@@ -58,9 +58,9 @@ ssh_cp() { ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=10 -q
 api() {
   local method="$1" path="$2" body="${3:-}"
   if [[ -z "$body" ]]; then
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" -H "Authorization: Bearer $TOKEN"
+    api_curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" -H "Authorization: Bearer $TOKEN"
   else
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
+    api_curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
       -H "Authorization: Bearer $TOKEN" \
       -H "Content-Type: application/json" \
       -d "$body"

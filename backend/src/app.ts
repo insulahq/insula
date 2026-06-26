@@ -823,27 +823,42 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // failures (no DATABASE_URL in unit tests, pg-boss schema lock
       // contention on cold start) leave email deliveries queued; a
       // future tick of the retention scan can re-enqueue them.
-      try {
-        // Phase 6 prep: k8sCore is used by the stalwart-internal
-        // Provider path to read master account creds from
-        // mail/mail-secrets at send time. Best-effort — if the
-        // platform-api has no kubeconfig, stalwart-internal sends
-        // will fail with a clear error but every other Provider type
-        // still works.
-        const workerKubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
-        let workerK8sCore: import('@kubernetes/client-node').CoreV1Api | null = null;
+      //
+      // CRITICAL: this MUST NOT be awaited in onReady. pg-boss `start()`
+      // connects + runs schema migration and BLOCKS on a cold/unavailable DB
+      // (it retries the connection internally rather than throwing). The outer
+      // try/catch catches a thrown error but NOT a hang — so a transient DB
+      // blip at startup (e.g. a CNPG failover/restart under load) would hang
+      // this hook past Fastify's 60s onReady timeout, exit(1), and crash-loop
+      // the WHOLE API, turning a few-second DB blip into a multi-minute
+      // outage (observed 2026-06-26 during a full integration run). Register
+      // the close hook synchronously, then fire-and-forget the start (mirrors
+      // the quota reconciler above, which is detached for the same reason).
+      // Deliveries stay queued until pg-boss connects; the re-enqueue scan
+      // re-dispatches them.
+      app.addHook('onClose', async () => { await stopBoss().catch(() => {}); });
+      void (async () => {
         try {
-          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
-          workerK8sCore = createK8sClients(workerKubeconfigPath).core;
+          // Phase 6 prep: k8sCore is used by the stalwart-internal
+          // Provider path to read master account creds from
+          // mail/mail-secrets at send time. Best-effort — if the
+          // platform-api has no kubeconfig, stalwart-internal sends
+          // will fail with a clear error but every other Provider type
+          // still works.
+          const workerKubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+          let workerK8sCore: import('@kubernetes/client-node').CoreV1Api | null = null;
+          try {
+            const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+            workerK8sCore = createK8sClients(workerKubeconfigPath).core;
+          } catch (err) {
+            app.log.warn({ err }, '[notifications] email worker: k8s client unavailable — stalwart-internal Provider sends will fail until kubeconfig is wired');
+          }
+          await startEmailWorker({ db: app.db, k8sCore: workerK8sCore });
+          app.log.info('[notifications] email send worker started');
         } catch (err) {
-          app.log.warn({ err }, '[notifications] email worker: k8s client unavailable — stalwart-internal Provider sends will fail until kubeconfig is wired');
+          app.log.warn({ err }, '[notifications] email send worker failed to start (deliveries will stay queued)');
         }
-        await startEmailWorker({ db: app.db, k8sCore: workerK8sCore });
-        app.log.info('[notifications] email send worker started');
-        app.addHook('onClose', async () => { await stopBoss().catch(() => {}); });
-      } catch (err) {
-        app.log.warn({ err }, '[notifications] email send worker failed to start (deliveries will stay queued)');
-      }
+      })();
 
       // Phase 3C: re-enqueue scan. Defense in depth — catches any
       // delivery row that got stuck in `queued` (pg-boss outage at

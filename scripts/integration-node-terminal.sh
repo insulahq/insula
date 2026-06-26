@@ -157,13 +157,29 @@ curl_status() {
 
 curl_body() {
   local method="$1" path="$2" bearer="${3:-$ADMIN_TOKEN}" body="${4:-}"
-  local cmd=(curl -sS -X "$method" -H "Authorization: Bearer $bearer")
+  local cmd=(curl -sS -w $'\n%{http_code}' -X "$method" -H "Authorization: Bearer $bearer")
   [[ "$CURL_INSECURE" == "1" ]] && cmd+=(-k)
   if [[ -n "$body" ]]; then
     cmd+=(-H "Content-Type: application/json" -d "$body")
   fi
   cmd+=("$API_BASE$path")
-  "${cmd[@]}"
+  # Retry the platform's GLOBAL API rate limiter (429): in a full ALL run the
+  # parallel batch's request burst can trip it on session creates. Capture the
+  # status via -w, back off + retry on 429, then emit ONLY the body (strip the
+  # code) so the 22 JSON-parsing call sites are unaffected.
+  local _resp _code _attempt
+  for _attempt in 1 2 3 4 5 6; do
+    _resp="$("${cmd[@]}" 2>/dev/null)"
+    _code="${_resp##*$'\n'}"; _resp="${_resp%$'\n'*}"
+    if [[ "$_code" == "429" ]]; then
+      sleep $(( _attempt * 3 ))
+      continue
+    fi
+    printf '%s' "$_resp"
+    return 0
+  done
+  printf '%s' "$_resp"
+  return 0
 }
 
 # Embedded WS client. Reads frames, sends inputs, captures everything
