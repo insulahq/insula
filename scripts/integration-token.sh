@@ -53,29 +53,36 @@ _itoken_mint() {
   return 1
 }
 
-# api_curl: a drop-in for `curl` that transparently retries on the platform's
-# GLOBAL API rate limiter (HTTP 429 / @fastify/rate-limit). In a full ALL run
-# the parallel batch's request burst can trip it on tenant/deployment creates
-# (observed 2026-06-25 on firewall's coturn deploy; the suites pass serially).
-# The limiter is legitimate, so back off + retry rather than fail the suite.
+# api_curl: a drop-in for `curl` that transparently retries the two TRANSIENT
+# control-plane failures the full ALL run hits, so neither fails a suite:
+#   1. the GLOBAL API rate limiter (HTTP 429 / @fastify/rate-limit) — the
+#      parallel batch's request burst trips it on creates (observed 2026-06-25);
+#   2. a brief control-plane BLIP — empty body, connection refused (000), or 5xx
+#      — the platform is momentarily unavailable during system-db maintenance /
+#      a platform-api roll (root-caused 2026-06-26: a CNPG snapshot-recovery
+#      recreates system-db + rolls the API). The parallel suites were dying on
+#      empty bodies (JSONDecodeError) from these windows.
+# Both are LEGITIMATE platform behaviour, so back off + retry (up to ~105s total)
+# rather than fail. A PERSISTENT error still surfaces — after the retries we
+# return the last body, so a real 4xx/5xx/empty reaches the caller's assertion.
 #
 # Pass the SAME args you'd pass curl (including -s/-k); api_curl appends its own
 # -w to capture the status code, then emits ONLY the response body on stdout —
-# so callers parse JSON exactly as with a bare curl. Up to 6 tries (~3..18s).
-# Use it anywhere a suite calls a mutating endpoint the limiter can reject.
+# so callers parse JSON exactly as with a bare curl.
 api_curl() {
-  local _resp _code _attempt
-  for _attempt in 1 2 3 4 5 6; do
+  local _resp _code _body _attempt
+  for _attempt in 1 2 3 4 5 6 7 8 9 10; do
     _resp=$(curl -w $'\n%{http_code}' "$@" 2>/dev/null)
-    _code="${_resp##*$'\n'}"; _resp="${_resp%$'\n'*}"
-    if [[ "$_code" == "429" ]]; then
-      sleep $(( _attempt * 3 ))
+    _code="${_resp##*$'\n'}"; _body="${_resp%$'\n'*}"
+    [[ "$_code" =~ ^[0-9]+$ ]] || _code=000
+    if [[ "$_code" == "429" || "$_code" == "000" || "$_code" -ge 500 || -z "$_body" ]]; then
+      sleep $(( _attempt < 5 ? _attempt * 3 : 15 ))
       continue
     fi
-    printf '%s' "$_resp"
+    printf '%s' "$_body"
     return 0
   done
-  printf '%s' "$_resp"   # exhausted retries — return the last body so the caller can report it
+  printf '%s' "$_body"   # exhausted retries — return the last body so the caller can report it
   return 0
 }
 
