@@ -2885,6 +2885,21 @@ cleanup() {
     done < /tmp/integration.cids
     rm -f /tmp/integration.cids
   fi
+  # Restore the mail server hostname if a rename scenario was interrupted
+  # before its explicit restore — otherwise the cluster (and every
+  # subsequent run) inherits the stale mail-e2e-* probe hostname, which
+  # poisons the rename scenario indefinitely. Fire-and-forget: the PATCH
+  # re-pins Stalwart + the DB; the rollout settles async.
+  if [[ -f /tmp/integration.mail_hostname_restore ]]; then
+    local rest_hn; rest_hn=$(cat /tmp/integration.mail_hostname_restore 2>/dev/null || true)
+    if [[ -n "$rest_hn" ]]; then
+      log "cleanup: restoring mail server hostname to $rest_hn"
+      curl -sk -X PATCH "$ADMIN_HOST/api/v1/admin/webmail-settings" \
+        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+        -d "{\"mailServerHostname\":\"$rest_hn\"}" >/dev/null 2>&1 || true
+    fi
+    rm -f /tmp/integration.mail_hostname_restore
+  fi
 }
 trap cleanup EXIT
 
@@ -3423,18 +3438,46 @@ scenario_mail_hostname_rename() {
     return 0
   fi
 
-  # ── Read original state ──
-  local original
-  original=$(api GET /admin/webmail-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['mailServerHostname'])" 2>/dev/null || echo "")
-  if [[ -z "$original" ]]; then
-    fail "hostname: could not read current mailServerHostname via API"
-    return 1
-  fi
-  log "hostname: original=${original}"
+  # ── Resolve the CANONICAL apex from a trusted source (env), NEVER
+  # from the live API value ──
+  # A prior interrupted run can leave the live mailServerHostname stuck
+  # at a stale `mail-e2e-*` probe leftover (its explicit restore never
+  # ran). Deriving the apex from THAT value builds a doubly-nested
+  # bogus test_host (mail-e2e-NEW.mail-e2e-OLD.<apex>) that can't
+  # resolve via the `*.<apex>` wildcard, cascading every assertion
+  # below into failure — and the run's own "restore" then re-pins the
+  # stale value, so the corruption is self-perpetuating across runs.
+  # The apex is the cluster's mail apex; the canonical mail hostname is
+  # `mail.<apex>` (bootstrap convention + backend defaultMailHostname()).
+  local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-staging.example.test}}"
+  local canonical="mail.${apex}"
 
-  # Derive an apex from the original (strip leading `mail.`). Build a
-  # one-shot test hostname that resolves via the cluster's wildcard.
-  local apex="${original#mail.}"
+  # ── Read the live original, then SELF-HEAL if it is a leftover ──
+  # Accept the live value as the restore target ONLY if it is sane: a
+  # single label directly under <apex> and NOT a `mail-e2e-*` probe
+  # leftover. Otherwise fall back to the canonical hostname so an
+  # earlier aborted run can't poison this one — and gets repaired.
+  local live_original
+  live_original=$(api GET /admin/webmail-settings | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['mailServerHostname'])" 2>/dev/null || echo "")
+  local original="$canonical"
+  if [[ -n "$live_original" \
+        && "$live_original" != mail-e2e-* \
+        && "$live_original" == *".${apex}" \
+        && "${live_original%.${apex}}" != *.* ]]; then
+    original="$live_original"
+  elif [[ -n "$live_original" && "$live_original" != "$canonical" ]]; then
+    warn "hostname: live mailServerHostname='${live_original}' is a stale/invalid leftover — self-healing restore target to canonical '${canonical}'"
+  fi
+  log "hostname: original=${original} (live=${live_original:-empty})"
+
+  # Persist the restore target so the file-scope EXIT trap (cleanup)
+  # always restores a SANE hostname even if this run is killed mid-
+  # window — otherwise the cluster (and every subsequent run) inherits
+  # a bogus mail-e2e-* hostname. Cleared after the explicit restore.
+  printf '%s' "$original" > /tmp/integration.mail_hostname_restore
+
+  # Build a one-shot test hostname that is exactly ONE label under the
+  # canonical apex, so it resolves via the cluster's `*.<apex>` wildcard.
   local ts; ts=$(date +%s)
   local test_host="mail-e2e-${ts}.${apex}"
   log "hostname: test=${test_host}"
@@ -3564,25 +3607,37 @@ except Exception as e:
     fail "hostname: no active stalwart-mail ReplicaSet found"
   fi
 
-  # ── Wait up to 90s for at least one fresh pod to be Ready, then probe SMTP banner ──
-  local attempt=0 banner_host=""
-  while [[ $attempt -lt 30 ]]; do
+  # ── Wait up to ~120s for the renamed host to be served on ANY mail
+  # node, then assert the SMTP 465 banner ──
+  # The mail port is fronted by a per-node `stalwart-haproxy` DaemonSet
+  # whose pods RESTART when this rename's Stalwart rollout changes the
+  # backend ClusterIP/endpoints — so an individual node can be briefly
+  # dark (empty banner / refused TLS) right after the PATCH. Probing a
+  # single round-robin-resolved IP therefore races the proxy recovery
+  # and flakes. Instead resolve the full mail-IP set ONCE and probe
+  # EVERY node each round, passing as soon as one answers with the new
+  # hostname; remember that healthy IP for the cert-SAN poll below.
+  local mail_ips; mail_ips=$(_resolve_mail_ips "$test_host")
+  if [[ -z "$mail_ips" ]]; then
+    fail "hostname: no mail-serving IPs resolvable for ${test_host} — cannot probe SMTP banner"
+  fi
+  local attempt=0 banner_host="" banner_ip=""
+  while [[ $attempt -lt 40 && -n "$mail_ips" ]]; do
     sleep 3
-    # Resolve the cluster's mail IP — public DNS first (what an external
-    # client sees), then kubectl node-IP fallback (the rename doesn't move
-    # the pod, and DNS for the new name may not have propagated yet). The
-    # 465 banner is then read FROM THE WORKSTATION via openssl implicit-TLS.
-    local node_ip
-    node_ip=$(MAIL_HOSTNAME="$test_host" _resolve_mail_host)
-    [[ -z "$node_ip" ]] && { attempt=$((attempt + 1)); continue; }
-    banner_host=$( ( sleep 0.4; printf "EHLO test\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -quiet -servername "$test_host" 2>/dev/null | grep -oE '^220 [^ ]+' | awk '{print $2}' | head -1)
+    local ip b
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      # The 465 banner is read FROM THE WORKSTATION via openssl implicit-TLS.
+      b=$( ( sleep 0.4; printf "EHLO test\r\n"; sleep 0.4; printf "QUIT\r\n"; sleep 0.4 ) | timeout 8 openssl s_client -connect "${ip}:465" -crlf -quiet -servername "$test_host" 2>/dev/null | grep -oE '^220 [^ ]+' | awk '{print $2}' | head -1)
+      if [[ "$b" == "$test_host" ]]; then banner_host="$b"; banner_ip="$ip"; break; fi
+    done <<<"$mail_ips"
     [[ "$banner_host" == "$test_host" ]] && break
     attempt=$((attempt + 1))
   done
   if [[ "$banner_host" == "$test_host" ]]; then
-    ok "hostname: SMTP banner reports new hostname (${banner_host})"
+    ok "hostname: SMTP banner reports new hostname (${banner_host} via ${banner_ip})"
   else
-    fail "hostname: SMTP banner is ${banner_host:-empty}, expected ${test_host}"
+    fail "hostname: SMTP banner is ${banner_host:-empty}, expected ${test_host} (probed: ${mail_ips//$'\n'/, })"
   fi
 
   # ── Wait up to 300s for cert to include the new hostname as SAN ──
@@ -3592,10 +3647,18 @@ except Exception as e:
   # the LE order itself adds ~15-60s on top.
   attempt=0
   local cert_san=""
+  # Probe the node that already served the new banner; fall back to the
+  # whole mail-IP set if the banner leg never found a healthy one.
+  local cert_probe_ips="${banner_ip:-$mail_ips}"
   while [[ $attempt -lt 60 ]]; do
-    cert_san=$(echo | timeout 8 openssl s_client -connect "${node_ip}:465" -crlf -servername "$test_host" 2>/dev/null \
-      | openssl x509 -noout -ext subjectAltName 2>/dev/null \
-      | grep -oE "DNS:[^,]+" | sed 's/DNS://g' | tr -d '[:space:]')
+    local ip
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      cert_san=$(echo | timeout 8 openssl s_client -connect "${ip}:465" -crlf -servername "$test_host" 2>/dev/null \
+        | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+        | grep -oE "DNS:[^,]+" | sed 's/DNS://g' | tr -d '[:space:]')
+      echo "$cert_san" | grep -q "$test_host" && break
+    done <<<"$cert_probe_ips"
     if echo "$cert_san" | grep -q "$test_host"; then break; fi
     sleep 5
     attempt=$((attempt + 1))
@@ -3610,9 +3673,11 @@ except Exception as e:
   local restore_status
   restore_status=$(api_raw PATCH /admin/webmail-settings "{\"mailServerHostname\":\"${original}\"}" 2>&1 | tail -1)
   if [[ "$restore_status" == "200" ]]; then
+    # Explicit restore landed — disarm the EXIT-trap safety net.
+    rm -f /tmp/integration.mail_hostname_restore
     ok "hostname: original ${original} restored (HTTP ${restore_status})"
   else
-    fail "hostname: restore returned ${restore_status} — manual cleanup needed"
+    fail "hostname: restore returned ${restore_status} — EXIT trap will retry (target ${original})"
   fi
 }
 
