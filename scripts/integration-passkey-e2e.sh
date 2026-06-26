@@ -43,9 +43,9 @@ api() {
   local h_auth=()
   if [[ -n "$auth" ]]; then h_auth=(-H "Authorization: Bearer $auth"); fi
   if [[ -z "$body" ]]; then
-    curl -sk -X "$method" "$host/api/v1$path" "${h_auth[@]}"
+    api_curl -sk -X "$method" "$host/api/v1$path" "${h_auth[@]}"
   else
-    curl -sk -X "$method" "$host/api/v1$path" "${h_auth[@]}" \
+    api_curl -sk -X "$method" "$host/api/v1$path" "${h_auth[@]}" \
       -H "Content-Type: application/json" -d "$body"
   fi
 }
