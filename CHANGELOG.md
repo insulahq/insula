@@ -13,14 +13,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
-- **Tenant hard-delete returns promptly.** `DELETE /tenants/:id` previously
-  blocked the request while it waited synchronously — up to ~45 s, ~68 s
-  measured for a provisioned tenant — for the namespace's Longhorn PV to Release
-  before reaping it, so deleting a provisioned tenant felt hung and concurrent
-  deletes piled up on the API. The tenant row is now dropped synchronously (the
-  tenant disappears from the API immediately) and the best-effort volume reap
-  runs in the background, backed by the existing `pv-cleanup-released` retry +
-  Orphaned-Volumes safety nets.
+- **Tenant hard-delete returns promptly** (~68 s → single digits for a
+  provisioned tenant). `DELETE /tenants/:id` blocked the request on two
+  synchronous waits for the namespace's Longhorn PV to Release — neither of which
+  *can* complete inside the request, because the namespace delete that releases
+  the PV runs between them: (1) the `pv-cleanup-released` lifecycle hook polled up
+  to 60 s for a PV that is still Bound at hook time (it runs before the namespace
+  delete), and (2) the post-namespace-delete volume reap waited up to 45 s for the
+  PV to Release. The hook now early-exits (~6 s) once it sees the PV can't release
+  yet, the reap runs detached in the background, and the tenant row is dropped
+  synchronously so the tenant disappears from the API immediately. Both cleanups
+  still happen — via the reap + the 2-min lifecycle-hook scheduler retry +
+  Orphaned-Volumes safety nets — just off the request path. This also stops
+  concurrent deletes from piling up slow requests on the API.
 
 ### Fixed
 - **Integration harness robustness.** `drain` no longer hard-fails on best-effort
