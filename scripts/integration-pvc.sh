@@ -57,6 +57,35 @@ api() {
   fi
 }
 
+# delete_tenant <cid> — DELETE a tenant, retrying the transient 429s the parallel
+# integration-all run trips. All 12 parallel suites authenticate as the ONE shared
+# admin token, so the global limiter's per-user bucket (keyGenerator = user.sub,
+# default 100/min) saturates under the synthetic batch burst; a bare DELETE with
+# no retry then fails instantly (observed 2026-06-27: the cascade DELETE here + the
+# EXIT-trap cleanup both 429'd). Self-contained (this suite sources integration-
+# token.sh only when INTEGRATION_TOKEN is unset, so api_curl isn't guaranteed to
+# exist). Echoes the same "<body>\nHTTP <code>" shape as
+# `curl … -w "\nHTTP %{http_code}"`, so callers `tail -1 | grep 20[04]` unchanged.
+# Also rides out brief 5xx/000 control-plane blips; a PERSISTENT error still
+# surfaces (returns the last body after retries → the caller's assertion fails).
+delete_tenant() {
+  local cid="$1" resp code attempt
+  for attempt in 1 2 3 4 5 6 7 8; do
+    resp=$(curl -sk -m 30 -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
+      -H "Authorization: Bearer $TOKEN" -w $'\nHTTP %{http_code}' 2>/dev/null)
+    code="${resp##*HTTP }"
+    [[ "$code" =~ ^[0-9]+$ ]] || code=000
+    if [[ "$code" == "429" || "$code" == "000" || "$code" -ge 500 ]]; then
+      sleep $(( attempt < 5 ? attempt * 3 : 15 ))
+      continue
+    fi
+    printf '%s' "$resp"
+    return 0
+  done
+  printf '%s' "$resp"
+  return 0
+}
+
 # shellcheck source=scripts/lib/integration-env.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
@@ -116,8 +145,7 @@ cleanup_tenants() {
     log "EXIT trap: deleting ${#CREATED_CIDS[@]} leftover tenant(s)"
     for cid in "${CREATED_CIDS[@]}"; do
       [[ -z "$cid" ]] && continue
-      curl -sk -m 30 -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
-        -H "Authorization: Bearer $TOKEN" -o /dev/null -w "  cleanup $cid → HTTP %{http_code}\n" || true
+      printf '  cleanup %s → %s\n' "$cid" "$(delete_tenant "$cid" | tail -1)" || true
     done
   fi
   exit "$rc"
@@ -206,7 +234,7 @@ fi
 
 # ─── scenario 3: client delete cascade fires ─────────────────────────
 log "── scenario: cascade cleans tenant PV ──"
-DEL=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
+DEL=$(delete_tenant "$CID")
 echo "$DEL" | tail -1 | grep -qE "20[04]" && { ok "tenant deleted (200|204)"; untrack_cid "$CID"; } || { fail "delete failed: $DEL"; exit 1; }
 
 # Wait up to 90s for the orphan PV to disappear.
@@ -244,7 +272,7 @@ done
 # DELETE within ~3s — Longhorn won't have bound the PV yet, exercising
 # the late-binding tracking in the pv-cleanup-released hook.
 sleep 1
-DEL2=$(curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$CID2" -H "Authorization: Bearer $TOKEN" -w "\nHTTP %{http_code}")
+DEL2=$(delete_tenant "$CID2")
 echo "$DEL2" | tail -1 | grep -qE "20[04]" && { ok "race delete 20x"; untrack_cid "$CID2"; } || fail "race delete failed: $DEL2"
 
 # After 90s, no PV should reference this namespace.

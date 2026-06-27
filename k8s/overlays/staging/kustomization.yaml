@@ -53,3 +53,36 @@ patches:
                 operator: Equal
                 value: "true"
                 effect: NoSchedule
+
+  # Integration-test rate-limit headroom (STAGING ONLY — production keeps the
+  # defaults; this overlay never feeds the production render). `integration-all.sh`
+  # runs 12 suites in PARALLEL, all authenticating as the ONE shared admin token,
+  # so the global limiter's per-user bucket (keyGenerator = user.sub, default
+  # 100/min) and the per-IP /auth/login limit saturate under a synthetic burst
+  # that no real operator produces (root-caused 2026-06-27). Raise both so the
+  # harness has headroom. The rate-limit-TESTING suites are unaffected: waf-crowdsec
+  # L6 exercises a per-route INGRESS limit, and no suite asserts these globals.
+  #   • AUTH_LOGIN_RATE_LIMIT_MAX is env-only (auth/routes.ts, read at boot) →
+  #     effective the moment this rolls.
+  #   • API_RATE_LIMIT only SEEDS a fresh DB: system_settings.api_rate_limit is
+  #     NOT NULL default 100 and WINS at runtime (app.ts resolveRateLimitMax reads
+  #     the DB first), so this covers fresh staging rebuilds; an ALREADY-seeded
+  #     staging also needs a one-time Settings PATCH (apiRateLimit=1000), which the
+  #     next platform-api roll then reads.
+  - target: { kind: Deployment, name: platform-api, namespace: platform }
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: platform-api
+        namespace: platform
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api
+                env:
+                  - name: API_RATE_LIMIT
+                    value: "1000"
+                  - name: AUTH_LOGIN_RATE_LIMIT_MAX
+                    value: "1000"
