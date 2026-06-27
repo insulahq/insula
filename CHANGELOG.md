@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.18-rc.7] - 2026-06-27
+
 ### Changed
 - **Tenant hard-delete returns promptly** (~68 s → single digits for a
   provisioned tenant). `DELETE /tenants/:id` blocked the request on two
