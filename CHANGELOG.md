@@ -12,7 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Tenant hard-delete returns promptly.** `DELETE /tenants/:id` previously
+  blocked the request while it waited synchronously — up to ~45 s, ~68 s
+  measured for a provisioned tenant — for the namespace's Longhorn PV to Release
+  before reaping it, so deleting a provisioned tenant felt hung and concurrent
+  deletes piled up on the API. The tenant row is now dropped synchronously (the
+  tenant disappears from the API immediately) and the best-effort volume reap
+  runs in the background, backed by the existing `pv-cleanup-released` retry +
+  Orphaned-Volumes safety nets.
+
 ### Fixed
+- **Integration harness robustness.** `drain` no longer hard-fails on best-effort
+  Longhorn replica-record GC lag (it warns instead; the real drain invariants —
+  active replicas + workloads moved off the node — still fail hard); the `pvc`
+  suite treats a 404-after-retry on a tenant DELETE as an idempotent success;
+  and `integration-cleanup.sh` now matches every test-tenant name format (by the
+  reserved `example.test` email domain + a trailing epoch) so stale test tenants
+  can't accumulate and trip the leak guard.
 - **Integration harness: the full `integration-all.sh` parallel run no longer
   self-inflicts failures.** Root-caused 2026-06-27: platform-api stays up through
   the whole parallel group — its only restarts come from `postgres-pitr`'s
