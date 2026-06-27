@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Integration harness: the full `integration-all.sh` parallel run no longer
+  self-inflicts failures.** Root-caused 2026-06-27: platform-api stays up through
+  the whole parallel group — its only restarts come from `postgres-pitr`'s
+  by-design system-db recreate in the terminal serial phase, not parallel load.
+  Two test-side fixes remove the remaining noise: (1) the control-plane barrier's
+  `set -e` no longer leaks out of the serial group and abort the entire run on a
+  single platform-api blip; (2) rate-limit contention is absorbed — all 12
+  parallel suites share one admin identity (so one global-limiter bucket) and one
+  source IP, so the `pvc` suite's tenant DELETEs now retry transient 429s, and the
+  **staging overlay** raises `API_RATE_LIMIT` + `AUTH_LOGIN_RATE_LIMIT_MAX` for
+  the synthetic batch (staging only — production keeps the defaults; the
+  rate-limit-testing suites are unaffected).
+
 ## [2026.6.16] - 2026-06-22
 
 ### Added
