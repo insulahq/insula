@@ -397,6 +397,51 @@ _resolve_mail_host() {
   echo ""
 }
 
+# Like _resolve_mail_host, but SWEEPS every candidate mail IP and returns
+# the first that currently answers an SMTP 220 banner — so the banner /
+# cert / TLS probes don't flake when the single round-robin-resolved node
+# happens to be a haproxy node that is momentarily dark. A haproxy node
+# accept-then-drops (no banner) whenever its Stalwart backend is mid-roll
+# ("backend stalwart_smtp has no server available") or the haproxy pod is
+# cycling on its liveness probe — a real, transient window that a
+# single-IP pick turns into a hard failure (caught in the full staging-all
+# run, where every mail/mail_tls banner assert hit one flapping node).
+# Candidates = the DNS A-records of mail.<apex> (the externalIP/haproxy
+# nodes) PLUS the active Stalwart pod's hostIP, which serves the port
+# directly and is the most reliable. Returns the first serving IP; falls
+# back to the first candidate so a genuine outage still fails loudly.
+_resolve_serving_mail_host() {
+  if [[ -n "${MAIL_HOST:-}" ]]; then
+    echo "$MAIL_HOST"
+    return 0
+  fi
+  local mailhost; mailhost=$(_resolve_mail_hostname)
+  local candidates
+  candidates=$(_resolve_mail_ips "$mailhost")
+  local stalwart_ip
+  stalwart_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
+  if [[ -n "$stalwart_ip" ]]; then
+    candidates=$(printf '%s\n%s\n' "$candidates" "$stalwart_ip" | grep -vE '^$' | sort -u)
+  fi
+  local _try ip
+  for _try in 1 2 3 4 5 6; do
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      # Clean SMTP session (EHLO+QUIT) — NOT a port scan, so it does not
+      # trip Stalwart's portScanning ban (the harness IP is allowlisted
+      # before mail scenarios anyway). Probe :25 only; a node serving 25
+      # serves every mail port (same haproxy frontend / Stalwart pod).
+      if ( sleep 0.3; printf "QUIT\r\n"; sleep 0.3 ) \
+           | timeout 7 ncat -w 5 "$ip" 25 2>/dev/null | grep -qE '^220[ -]'; then
+        echo "$ip"
+        return 0
+      fi
+    done <<<"$candidates"
+    sleep 4
+  done
+  printf '%s\n' "$candidates" | head -1
+}
+
 # Dump the raw openssl s_client output for one (host, port, sni,
 # starttls_proto) tuple. starttls_proto="" means implicit-TLS port.
 # Echoes the openssl stdout/stderr blob to the caller's stdout so the
@@ -1297,8 +1342,27 @@ scenario_reaper() {
 
   # Assert image is GONE from the node the pod ran on (same multi-node
   # fix as the presence check above).
+  #
+  # The reaper's in-use guard (correctly) REFUSES to evict an image any
+  # OTHER running pod still references. The nginx-php base image is shared
+  # by sibling scenarios (drain, tier-flip) and many catalog entries, so
+  # in a full ALL run the image legitimately stays present on the node —
+  # "image still present" is then the CORRECT reaper behaviour, not a
+  # failure (deleting a base image other tenants are running would be the
+  # bug). So only assert eviction when this test's deployment was the SOLE
+  # user of the image; if another pod still references it, the in-use
+  # guard working as designed is a PASS. (Caught in the staging-all run,
+  # where reaper passes solo but fails beside drain/tier-flip.)
+  local img_digest="${image_ref##*@}"   # sha256:… (imageID is a digest ref)
+  local other_users
+  other_users=$(ssh_cp "kubectl get pods -A -o jsonpath='{range .items[*]}{range .status.containerStatuses[*]}{.imageID}{\"\n\"}{end}{end}'" 2>/dev/null \
+    | grep -cF "$img_digest" || true)
   if ssh_node "$node_name" "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}"; then
-    fail "reaper: image STILL present on node $node_name after 330s — reaper did not fire"
+    if [[ "${other_users:-0}" -ge 1 ]]; then
+      ok "reaper: image retained on $node_name but ${other_users} other running pod(s) still reference it — in-use guard correctly skipped eviction (PASS)"
+    else
+      fail "reaper: image STILL present on node $node_name after 330s with NO other users — reaper did not fire"
+    fi
   else
     ok "reaper: image successfully reaped from node $node_name"
   fi
@@ -2054,12 +2118,15 @@ scenario_mail() {
   # mail.${apex} A record first, falls back to the current pod's
   # hostIP. Operator can still set MAIL_HOST=<ip> to pin a specific
   # node for multi-node debugging.
-  local mail_host; mail_host=$(_resolve_mail_host)
+  # Allowlist the harness IP FIRST — _resolve_serving_mail_host below
+  # opens SMTP sessions to find the serving node, which must not look
+  # like a port scan to Stalwart's autoban.
+  _mail_allowlist_harness_ip
+  local mail_host; mail_host=$(_resolve_serving_mail_host)
   if [[ -z "$mail_host" ]]; then
     fail "mail/resolve: could not auto-resolve mail host (DNS of mail.<apex> + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
     return 1
   fi
-  _mail_allowlist_harness_ip
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
   # Derive defaults from the apex under test (matches scenario_webmail's
   # convention) — a hardcoded example-host default silently probes a
@@ -3043,12 +3110,15 @@ scenario_mail_tls() {
   # between nodes (drain, failover, allServerNodes haproxy mode).
   # Operator can still pin to a specific node IP via MAIL_HOST=...
   # for multi-node debugging.
-  local mail_host; mail_host=$(_resolve_mail_host)
+  # Allowlist the harness IP FIRST — _resolve_serving_mail_host below
+  # opens SMTP sessions to find the serving node, which must not look
+  # like a port scan to Stalwart's autoban.
+  _mail_allowlist_harness_ip
+  local mail_host; mail_host=$(_resolve_serving_mail_host)
   if [[ -z "$mail_host" ]]; then
     fail "mail-tls/resolve: could not auto-resolve mail host (DNS of ${mail_hostname} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
     return 1
   fi
-  _mail_allowlist_harness_ip
   log "mail-tls: probing ${mail_hostname} via ${mail_host}"
 
   # ── 0. DNS / PTR / DNSBL hygiene — these checks run BEFORE the TLS
