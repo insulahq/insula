@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.18-rc.4] - 2026-06-27
+
 ### Fixed
 - **Integration harness: the full `integration-all.sh` parallel run no longer
   self-inflicts failures.** Root-caused 2026-06-27: platform-api stays up through
