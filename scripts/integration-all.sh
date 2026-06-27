@@ -404,6 +404,11 @@ run_serial_group() {
     classify_rc "$name" "$rc"
     assert_admin_reachable "$name" || true
   done
+  # Restore the top-level default (the script runs `set -uo pipefail`, NOT
+  # -e). The per-suite `set -e`/`set +e` dance above otherwise leaks -e to
+  # the caller — a global option, not function-scoped — making every later
+  # top-level bare assignment abort the run on the first command blip.
+  set +e
 }
 
 # run_parallel_group GROUP_LABEL SUITE_ENTRY...
@@ -540,7 +545,12 @@ wait_for_control_plane_stable() {
   local need=6 ok=0 i max=180 code   # 6 consecutive DB-backed 200s (~30s stable), up to 15 min
   log "Barrier: waiting for platform-api + DB to stabilize after SERIAL_PRE before the parallel batch…"
   for ((i=0; i<max; i++)); do
-    code=$(curl -sk --max-time 6 -o /dev/null -w '%{http_code}' "$ADMIN_HOST/api/v1/plans" 2>/dev/null)
+    # `|| echo 000`: a curl timeout exits 28; a BARE assignment under a
+    # leaked `set -e` (run_serial_group leaves -e on — see set +e below)
+    # would then abort the WHOLE run (exit 28) on a single transient
+    # control-plane blip — the exact instability this barrier exists to
+    # ABSORB. Keep the sub exit 0 so the loop treats a blip as a blip.
+    code=$(curl -sk --max-time 6 -o /dev/null -w '%{http_code}' "$ADMIN_HOST/api/v1/plans" 2>/dev/null || echo 000)
     if [[ "$code" == "200" ]]; then
       ok=$((ok+1))
       if [[ $ok -ge $need ]]; then log "  control plane stable ($need consecutive DB-backed 200s)"; return 0; fi
