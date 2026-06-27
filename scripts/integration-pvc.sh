@@ -69,13 +69,28 @@ api() {
 # Also rides out brief 5xx/000 control-plane blips; a PERSISTENT error still
 # surfaces (returns the last body after retries → the caller's assertion fails).
 delete_tenant() {
-  local cid="$1" resp code attempt
+  local cid="$1" resp code attempt retried=0
   for attempt in 1 2 3 4 5 6 7 8; do
     resp=$(curl -sk -m 30 -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
       -H "Authorization: Bearer $TOKEN" -w $'\nHTTP %{http_code}' 2>/dev/null)
     code="${resp##*HTTP }"
     [[ "$code" =~ ^[0-9]+$ ]] || code=000
+    # A 404 that FOLLOWS a retried transient means a prior attempt reached the
+    # server and the (async) tenant delete already went through — its 200 was
+    # lost to the very blip we retried on. The tenant is gone, which is the whole
+    # goal, so normalize to success (idempotent DELETE) instead of failing on
+    # "not found". A first-attempt 404 (retried=0) is a genuine error and still
+    # surfaces. Observed 2026-06-27: under the parallel burst on a freshly-rolled
+    # pod, attempt 1 timed out (curl 000) after the server had accepted the
+    # delete, so the retry hit 404 and false-failed the suite + leaked a PV.
+    if [[ "$code" == "404" && "$retried" == "1" ]]; then
+      echo "delete_tenant $cid: 404 after a retried transient — tenant already deleted, treating as success" >&2
+      printf 'HTTP 204'
+      return 0
+    fi
     if [[ "$code" == "429" || "$code" == "000" || "$code" -ge 500 ]]; then
+      retried=1
+      echo "delete_tenant $cid: attempt $attempt got HTTP $code — retrying" >&2
       sleep $(( attempt < 5 ? attempt * 3 : 15 ))
       continue
     fi
