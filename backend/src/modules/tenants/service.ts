@@ -1309,13 +1309,13 @@ export async function deleteTenant(
   // namespace delete + DB row cascade in one function. Falls through
   // to a DB-only delete when k8s isn't available (unit tests).
   if (k8sTenants) {
-    const { applyDeleted } = await import('../tenant-lifecycle/cascades.js');
-    const transitionId = await applyDeleted({ db, k8s: k8sTenants }, id, tenant.kubernetesNamespace);
-
-    // Also purge snapshot-store archives for this tenant so we don't
-    // leak data after a hard delete. Best-effort; snapshots for
-    // already-deleted tenants are reaped by the housekeeping cron
-    // anyway.
+    // Purge snapshot-store archives BEFORE the cascade drops the tenant row.
+    // `storage_snapshots.tenant_id` is `onDelete: cascade`, so applyDeleted's
+    // row drop deletes these rows — a purge AFTER it queries zero and the
+    // archives leak in the store forever (the housekeeping cron can't find them
+    // either once the rows are gone). Best-effort: a no-snapshot tenant only
+    // pays a single empty query, so the common fast-delete path is unchanged;
+    // only tenants that actually hold snapshots incur the store deletes.
     try {
       const { resolveSnapshotStore } = await import('../storage-lifecycle/snapshot-store.js');
       const { storageSnapshots } = await import('../../db/schema.js');
@@ -1332,6 +1332,12 @@ export async function deleteTenant(
     } catch (err) {
       console.warn(`[tenant-delete] snapshot purge failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+
+    // Unified hard-delete cascade (namespace delete + DB row cascade). Drops the
+    // tenant row LAST — and now AFTER the snapshot purge above so the archives
+    // are gone before the row (and its cascade-linked snapshot rows) disappear.
+    const { applyDeleted } = await import('../tenant-lifecycle/cascades.js');
+    const transitionId = await applyDeleted({ db, k8s: k8sTenants }, id, tenant.kubernetesNamespace);
     return { transitionId };
   }
 
