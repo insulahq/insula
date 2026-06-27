@@ -179,24 +179,36 @@ export async function applyDeleted(
     }
   }
 
-  // Step 2b: reap this tenant's Released PVs + any stranded Longhorn volume CR
-  // (by namespace), BEFORE dropping the DB row. Best-effort + time-bounded —
-  // a transient failure or timeout must never block the delete; the
-  // pv-cleanup-released retry + the Orphaned Volumes "Purge All" UI are the
-  // safety nets for stragglers.
-  try {
-    const reap = await reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace);
-    if (reap.pvsReaped.length > 0 || reap.lhVolsReaped.length > 0) {
-      console.log(
-        `[cascades.applyDeleted] reaped ${reap.pvsReaped.length} PV(s) + ${reap.lhVolsReaped.length} Longhorn volume(s) for ${namespace}`
-        + (reap.timedOut ? ' (timed out — stragglers left to pv-cleanup retry + orphan UI)' : ''),
-      );
-    }
-  } catch (err) {
-    console.warn(`[cascades.applyDeleted] volume reap for ${namespace} failed (non-fatal): ${(err as Error).message}`);
-  }
-
-  // Step 3: drop the tenant row LAST. FK cascades take care of children.
+  // Step 3: drop the tenant row. FK cascades take care of children. Done
+  // SYNCHRONOUSLY (and now BEFORE the volume reap) so the DELETE request
+  // returns promptly and the tenant disappears from the API immediately —
+  // the reap below can wait up to DEFAULT_REAP_TIMEOUT_MS (45 s) for the PV to
+  // Release, which used to hold the request open (>25 s observed) and pile up
+  // under concurrent deletes.
   await ctx.db.delete(tenants).where(eq(tenants.id, tenantId));
+
+  // Step 4 (BACKGROUND): reap this namespace's Released PVs + any stranded
+  // Longhorn volume CR. Scoped to the NAMESPACE (not the now-deleted row), so
+  // it stays correct after the row drop. Best-effort, time-bounded, idempotent;
+  // its up-to-45 s PV-Release wait must NOT block the response, so run it
+  // detached. Any straggler or failure here is caught by the
+  // pv-cleanup-released retry hook + the Orphaned Volumes reaper/UI — the same
+  // safety nets that already cover the reap's own internal timeout. (Backgrounding
+  // re-opens a brief row-gone-but-volume-pending window the in-line reap used to
+  // close, but this detached reap closes it within seconds and the safety nets
+  // back it up — strictly better than the pre-reap code, which had no reap.)
+  void reapNamespaceVolumes(realReapDeps(ctx.k8s), namespace)
+    .then((reap) => {
+      if (reap.pvsReaped.length > 0 || reap.lhVolsReaped.length > 0) {
+        console.log(
+          `[cascades.applyDeleted] reaped ${reap.pvsReaped.length} PV(s) + ${reap.lhVolsReaped.length} Longhorn volume(s) for ${namespace}`
+          + (reap.timedOut ? ' (timed out — stragglers left to pv-cleanup retry + orphan UI)' : ''),
+        );
+      }
+    })
+    .catch((err) => {
+      console.warn(`[cascades.applyDeleted] background volume reap for ${namespace} failed (non-fatal): ${(err as Error).message}`);
+    });
+
   return transitionId;
 }
