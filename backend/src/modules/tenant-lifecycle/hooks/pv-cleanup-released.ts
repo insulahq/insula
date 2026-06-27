@@ -41,10 +41,11 @@ interface PvLite {
 
 const POLL_WINDOW_MS = 60_000;
 const POLL_INTERVAL_MS = 2_000;
-// If no candidate PVs have appeared after this many consecutive polls,
-// exit early as `noop`. PVC binding is async but typically completes
-// within seconds — burning the full 60 s on a no-storage tenant just to
-// confirm nothing claimed the namespace is wasteful.
+// If no tracked PV has transitioned toward Released after this many consecutive
+// polls, exit early. PV Release is driven by the applyDeleted namespace-delete
+// that runs AFTER this hook, so a still-Bound PV will not move on the first
+// attempt — burning the full 60 s (no-storage tenant OR provisioned tenant)
+// just stalls the DELETE request.
 //
 // Late-binding PVs that miss the grace window get caught by:
 //   1. The dispatcher returns status='retry' on miss → Phase 5
@@ -73,7 +74,7 @@ async function reapPvsForNamespace(
 
   const handled = new Set<string>();
   const startedAt = Date.now();
-  let emptyPolls = 0;
+  let stalePolls = 0;
   while (Date.now() - startedAt < POLL_WINDOW_MS) {
     const pvsNow = await k8s.core.listPersistentVolume({}).catch(() => null);
     if (!pvsNow) {
@@ -94,12 +95,20 @@ async function reapPvsForNamespace(
       if (!stillPresent.has(c)) handled.add(c);
     }
     if (tracked.size > 0 && handled.size >= tracked.size) break;
-    // Late-binding grace: if nothing has appeared yet, keep polling
-    // for a few cycles — but not the full 60 s — so a no-storage
-    // tenant doesn't burn the full window for no reason.
-    if (tracked.size === 0) {
-      emptyPolls++;
-      if (emptyPolls >= EMPTY_POLL_GRACE_CYCLES) break;
+    // Early-exit grace: if NO tracked PV has transitioned toward Released after
+    // a few cycles, stop burning the 60 s window and return (→ the dispatcher
+    // marks it 'retry'). This hook runs in applyDeleted's Step 1 — BEFORE the
+    // Step 2 namespace-delete that actually Releases the PVs — so on the first
+    // attempt a still-Bound PV can NEVER release here; waiting the full 60 s
+    // only stalls the DELETE request (~60 s observed for a provisioned tenant).
+    // Covers both the no-storage tenant (the only case handled before) and the
+    // far more common provisioned-tenant case. The post-delete volume reap + the
+    // 2-min scheduler retry clean the PVs once they actually reach Released.
+    if (handled.size === 0) {
+      stalePolls++;
+      if (stalePolls >= EMPTY_POLL_GRACE_CYCLES) break;
+    } else {
+      stalePolls = 0; // a PV is releasing — keep polling for the remainder
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }
