@@ -28,6 +28,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   concurrent deletes from piling up slow requests on the API.
 
 ### Fixed
+- **Snapshot archives no longer leak when a tenant is hard-deleted.** The
+  snapshot-store purge ran *after* the delete cascade dropped the tenant row, but
+  `storage_snapshots` cascade-deletes with the tenant — so the purge queried zero
+  rows and the archives were orphaned in the store forever. The purge now runs
+  *before* the row drop, while the snapshot records still exist.
 - **Integration harness robustness.** `drain` no longer hard-fails on best-effort
   Longhorn replica-record GC lag (it warns instead; the real drain invariants —
   active replicas + workloads moved off the node — still fail hard); the `pvc`
