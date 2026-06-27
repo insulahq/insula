@@ -48,9 +48,7 @@ TOKEN=$(curl -sS -k -X POST "$ADMIN_HOST/api/v1/auth/login" \
 ok "logged in"
 
 log "discovering test clients via /api/v1/tenants?limit=100"
-# Match by name pattern. The integration scenarios all use
-# names like "Reaper Test 1777905086" / "Bundle Test …" / "Ingress
-# Test …" / "Mail Test …". Real customers don't follow that pattern.
+# Match by test-email domain + name signature (see the matcher below).
 # NOTE: the route is /api/v1/tenants — NOT /api/v1/admin/tenants (that 404s).
 # The old /admin/ prefix made this discovery silently return a 404 body, so
 # the matcher always found 0 clients and cleanup was inert — which is exactly
@@ -63,14 +61,29 @@ TEST_CIDS=$(python3 <<'EOF'
 import json, re
 d = json.load(open('/tmp/cleanup-clients.json'))
 items = d.get('data', []) or []
-# 2026-06-11: added Integration — the staging-all lifecycle scenario
-# names its tenants "Integration Test <ts>", and three of them from
-# crashed runs sat in status=pending for a day, invisible to this
-# matcher; the k8s-provisioner kept faithfully recreating their
-# namespaces after every manual `kubectl delete ns`, tripping the
-# runner's leak guard on every pass.
-patt = re.compile(r'^(Reaper|Bundle|Ingress|Mail|Drain|Tier|Grow|Lifecycle|Pvc|Provision|Integration)\s+Test\s+\d+', re.I)
-hits = [c for c in items if patt.match(c.get('name', '') or '')]
+# Match the TWO universal signatures every integration suite stamps on its
+# tenants, NOT a brittle exact-name list:
+#   (a) a primaryEmail on the RFC-reserved `example.test` test domain — every
+#       suite uses it (`pvc-l-<ts>@example.test`, `mqe2e-<ts>@example.test`, …);
+#   (b) a name carrying a test token AND ending in a `date +%s` epoch (10 digits).
+# The OLD pattern required the literal "<Subject> Test <digits>" and so MISSED
+# every suite whose middle token wasn't "Test" — "PVC Test L …", "Drain HA …",
+# "Drain LOCAL …", "Firewall E2E …", "Grow E2E …", "Tier Flip E2E …",
+# "MboxQuota E2E …", "cd-cmp-…" — which is exactly how 9 stale tenants
+# accumulated (2026-06-22..25) and tripped the runner's leak guard. Match EITHER
+# signature; NEVER the SYSTEM tenant (isSystem) or a tenant off the test domain.
+EMAIL_TEST = re.compile(r'@(?:[a-z0-9-]+\.)*example\.test$', re.I)
+NAME_TEST = re.compile(
+    r'(?i)\b(Reaper|Bundle|Ingress|Mail|Mbox|Drain|Tier|Grow|Lifecycle|Pvc|'
+    r'Provision|Integration|Firewall|Snapshot|Quota|Storage|Backup|Restore|'
+    r'Coturn|Single-Node|Guard|Race|Flip|E2E|cd|fw)\b.*\b\d{10}\s*$')
+def is_test(c):
+    if c.get('isSystem'):
+        return False
+    email = c.get('primaryEmail') or ''
+    name = c.get('name') or ''
+    return bool(EMAIL_TEST.search(email)) or bool(NAME_TEST.search(name))
+hits = [c for c in items if is_test(c)]
 for c in hits:
     print(f"{c['id']}\t{c['name']}")
 EOF
@@ -101,16 +114,21 @@ DELETED=0
 FAILED=0
 while IFS=$'\t' read -r cid name; do
   [[ -n "$cid" ]] || continue
-  HTTP=$(curl -sS -k -o /tmp/cleanup-resp.json -w '%{http_code}' \
+  # -m 90 so a slow delete (the cascade waits on Longhorn PV release) can't hang
+  # the runner's non-interactive cleanup pass; the server completes the delete
+  # server-side even if the client times out. Sequential + a brief pause so we
+  # don't fire many heavy cascades at once. 404 = already gone = success.
+  HTTP=$(curl -sS -k -m 90 -o /tmp/cleanup-resp.json -w '%{http_code}' \
     -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" \
-    -H "Authorization: Bearer $TOKEN")
-  if [[ "$HTTP" =~ ^2 ]]; then
-    ok "deleted $cid ($name)"
+    -H "Authorization: Bearer $TOKEN" || echo 000)
+  if [[ "$HTTP" =~ ^2 || "$HTTP" == "404" ]]; then
+    ok "deleted $cid ($name)$([[ "$HTTP" == "404" ]] && echo ' (already gone)')"
     DELETED=$((DELETED+1))
   else
-    warn "DELETE $cid → HTTP=$HTTP body=$(head -c 200 /tmp/cleanup-resp.json)"
+    warn "DELETE $cid → HTTP=$HTTP body=$(head -c 200 /tmp/cleanup-resp.json 2>/dev/null)"
     FAILED=$((FAILED+1))
   fi
+  sleep 2
 done <<< "$TEST_CIDS"
 
 log "result: $DELETED deleted, $FAILED failed (cascade may still be in progress; re-run if needed)"
