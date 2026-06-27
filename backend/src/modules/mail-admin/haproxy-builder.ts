@@ -151,11 +151,29 @@ export function buildHaproxyDaemonSet(): Record<string, unknown> {
                // connection to localhost:25 (frontend smtp_in). If
                // haproxy is alive and listening, TCP succeeds. No
                // extra tooling required.
+              // 2026-06-27: the tcpSocket :25 liveness probe collides
+              // with the externalIP→ClusterIP DNAT under hostNetwork.
+              // Because each haproxy node IP is also in
+              // Service.spec.externalIPs, kube-proxy's PREROUTING DNAT
+              // preempts the hostPort and redirects the probe to the
+              // Stalwart ClusterIP. During a Stalwart rollout (or a
+              // mail-node migration) the backend endpoint slice empties
+              // for ~10-30s → the probe gets connection-refused. With
+              // the old timeoutSeconds:1 (default) + failureThreshold:3
+              // + periodSeconds:10, kubelet killed haproxy within ~30s
+              // and it crash-looped (24 restarts observed on staging)
+              // on EVERY roll. Loosen the LIVENESS probe to tolerate a
+              // ~90s backend gap (6 × 15s) so a transient rollout can't
+              // kill a healthy haproxy. The READINESS probe stays tight
+              // so a node IS pulled from the Service while its backend
+              // is genuinely down (correct) — only liveness must not
+              // restart the container for a transient gap.
               livenessProbe: {
                 tcpSocket: { port: 25 },
                 initialDelaySeconds: 5,
-                periodSeconds: 10,
-                failureThreshold: 3,
+                periodSeconds: 15,
+                timeoutSeconds: 5,
+                failureThreshold: 6,
               },
               readinessProbe: {
                 tcpSocket: { port: 25 },

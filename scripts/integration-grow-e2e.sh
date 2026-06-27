@@ -73,10 +73,17 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 # #130: reuse ONE cache-backed admin token across ALL/single-test modes so
 # rapid runs don't trip the auth rate limit. Only mints if no token is set
 # and the cache is cold; otherwise reads the shared cache file.
-if [[ -z "${INTEGRATION_TOKEN:-}" ]] && [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
+# ALWAYS source the shared helper for its functions (api_curl, get_admin_token).
+# The ALL run pre-sets INTEGRATION_TOKEN, so the old `-z`-gated source SKIPPED it
+# and left api_curl undefined → api() emitted nothing → JSONDecodeError (the
+# 2026-06-26 "parallel cascade" was this self-inflicted regression). Sourcing only
+# defines functions (no side effects); mint a token only when none is pre-set.
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh" ]]; then
   # shellcheck source=integration-token.sh
   source "$(dirname "${BASH_SOURCE[0]}")/integration-token.sh"
-  INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+  if [[ -z "${INTEGRATION_TOKEN:-}" ]]; then
+    INTEGRATION_TOKEN="$(get_admin_token)" && export INTEGRATION_TOKEN || true
+  fi
 fi
 
 if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
