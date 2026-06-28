@@ -28,6 +28,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   concurrent deletes from piling up slow requests on the API.
 
 ### Fixed
+- **Mail migration is now data-safe on local-path volumes.** The node-swap
+  migration deleted the source `mail-stack-data` PVC (StorageClass `local-path`,
+  `reclaimPolicy: Delete`) *before* the destination was confirmed populated, and
+  had **no rollback** — so a stuck-finalizer delete (or any post-delete failure)
+  wiped the only live copy of the mail store, surviving only because of an
+  out-of-band restic snapshot (data-loss incident 2026-06-28). The swap now flips
+  the source PV to `Retain` **before** the delete (data survives regardless), and
+  every post-delete failure path (PVC-delete fail, target-PVC create fail, affinity
+  fail, scale-up/cancel, restore-verify fail) rolls mail back onto the source's
+  retained volume instead of leaving it on an empty disk; the retained PV is GC'd
+  only after the destination is verified.
+- **Mail forwarding survives every Stalwart pod roll.** Stalwart 0.16 caches each
+  listener's PROXY-trusted-networks at listener-init from RocksDB; the
+  proxy-networks reconciler writes the trust (server node IPs) via JMAP but that
+  does not re-activate it on a running pod. After a roll (snapshot-restore migration
+  restores RocksDB wholesale, Reloader, or a manual delete) the new pod could boot
+  with stale/empty trust and silently accept-then-drop haproxy's `send-proxy-v2`
+  forwards — breaking mail on every non-active node with no self-heal. The
+  reconciler now tracks Stalwart pod identity and, when it (re)writes trust for a
+  pod it hasn't confirmed (≥2 server nodes = haproxy in play), recycles the pod once
+  so the replacement re-reads the corrected trust at listener-init; a pod that boots
+  in-sync is recorded and never recycled (no steady-state bouncing).
 - **Snapshot archives no longer leak when a tenant is hard-deleted.** The
   snapshot-store purge ran *after* the delete cascade dropped the tenant row, but
   `storage_snapshots` cascade-deletes with the tenant — so the purge queried zero

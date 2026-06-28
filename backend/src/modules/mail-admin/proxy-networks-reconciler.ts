@@ -35,11 +35,29 @@
  */
 
 import { readStalwartCredentials } from './credentials.js';
+import { recycleStalwartPods } from './recycle-stalwart-pods.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 
 /** Default tick: 60s — same cadence as certificate reconciler. */
 export const PROXY_NETWORKS_RECONCILER_TICK_MS = 60_000;
+
+/**
+ * The Stalwart pod whose LIVE listeners we believe hold the correct
+ * proxy-trusted-networks. Stalwart 0.16 caches the per-listener trust at
+ * listener-init (from RocksDB); a JMAP `set` persists to RocksDB but does
+ * NOT re-activate it on the running process. So after a pod ROLL (a
+ * snapshot-restore migration restores RocksDB wholesale, or Reloader / a
+ * manual delete recreates the pod) the new pod can come up with stale or
+ * empty trust and silently drop haproxy's PROXY-v2 forwards — mail breaks
+ * on every non-active node and does NOT self-heal (the 60s reconciler
+ * write lands in RocksDB but the live listener never re-reads it). We
+ * track pod identity so the reconciler forces exactly ONE recycle when it
+ * had to (re)write trust for an unconfirmed pod, so the replacement
+ * re-reads the corrected trust at listener-init. Module-scoped because the
+ * reconciler is a singleton timer; reset to null on each forced recycle.
+ */
+let trustAppliedToPod: string | null = null;
 
 /** Server-role node label — matches placement.ts. */
 const SERVER_ROLE_LABEL_KEY = 'insula.host/node-role';
@@ -236,6 +254,9 @@ export async function runProxyNetworksReconcilerTick(
   // production discovers a Running Stalwart pod and exec's curl inside it
   // (only way to bypass Stalwart 0.16's PROXY-v2 sniffing — see jmapPost()).
   let jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>;
+  // Captured so the post-Step-2 self-heal can recycle the live (init-cached)
+  // pod after a trust write. null in tests (injected transport) → recycle skipped.
+  let stalwartPodName: string | null = null;
   if (deps.jmapTransport) {
     jmapCall = deps.jmapTransport;
   } else {
@@ -244,6 +265,7 @@ export async function runProxyNetworksReconcilerTick(
       log.warn('No Running Stalwart pod found — skipping tick (will retry).');
       return;
     }
+    stalwartPodName = podName;
     const transport: ExecTransport = {
       core: deps.core,
       podName,
@@ -271,8 +293,9 @@ export async function runProxyNetworksReconcilerTick(
   // Mail protocols (smtp/imap/manageSieve/pop3) get the full trust list;
   // http (and any other) protocols get an empty override so they inherit
   // the empty global → no PROXY-v2 sniff on HTTP connections.
+  let trustWasWritten = false;
   try {
-    await reconcileListenerProxyTrustedNetworks(
+    trustWasWritten = await reconcileListenerProxyTrustedNetworks(
       jmapCall,
       auth,
       expectedMailListenerOverride,
@@ -281,6 +304,47 @@ export async function runProxyNetworksReconcilerTick(
     );
   } catch (err) {
     log.warn('NetworkListener.overrideProxyTrustedNetworks reconcile failed:', err);
+  }
+
+  // ── Step 2b (2026-06-28): self-heal a Stalwart roll that lost live trust ─
+  // Stalwart 0.16 caches per-listener trust at listener-init; the JMAP set
+  // above persists to RocksDB but does NOT re-activate it on the running
+  // pod. After a roll (snapshot-restore migration restores RocksDB; or
+  // Reloader / a manual delete recreates the pod) the new pod can boot with
+  // stale/empty trust and silently DROP haproxy's PROXY-v2 forwards — mail
+  // breaks on every non-active node and does not self-heal. This only
+  // matters when haproxy actually fronts non-active nodes (≥2 server nodes).
+  // When we just (re)WROTE trust for a pod we haven't yet recycled-for, its
+  // live listener is stale → recycle once so the replacement re-reads the
+  // corrected RocksDB trust at listener-init. We record the pod so a
+  // pathological "write never persists" can't loop-recycle the same pod; a
+  // pod that booted in-sync (no write) is recorded and never recycled, so
+  // steady state never bounces.
+  if (stalwartPodName && serverNodes.length >= 2) {
+    if (trustWasWritten) {
+      if (stalwartPodName !== trustAppliedToPod) {
+        log.warn(
+          `mail-listener trust was stale for Stalwart pod ${stalwartPodName} ` +
+          `(likely a post-roll/restore listener-init); recycling once so the ` +
+          `replacement re-reads the corrected trust and honors haproxy PROXY-v2.`,
+        );
+        try {
+          await recycleStalwartPods({
+            kubeconfigPath: deps.kubeconfigPath,
+            namespace: 'mail',
+            labelSelector: 'app=stalwart-mail',
+            gracePeriodSeconds: 15,
+          });
+        } catch (err) {
+          log.warn('proxy-trust self-heal recycle failed (will retry next tick):', err);
+        }
+        trustAppliedToPod = stalwartPodName;
+      }
+    } else {
+      // In sync at this pod's listener-init → its live trust is correct.
+      // Reset so a future roll (new pod name) re-triggers the check.
+      trustAppliedToPod = stalwartPodName;
+    }
   }
 
   // ── Step 3: reconcile x:AllowedIp for cluster-IP rate-limit safety ─
@@ -678,7 +742,7 @@ async function reconcileListenerProxyTrustedNetworks(
   mailTrust: Record<string, boolean>,
   httpTrust: Record<string, boolean>,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
-): Promise<void> {
+): Promise<boolean> {
   const getRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
     methodCalls: [
@@ -698,7 +762,7 @@ async function reconcileListenerProxyTrustedNetworks(
   const list = args?.list;
   if (!Array.isArray(list) || list.length === 0) {
     log.warn('x:NetworkListener/get returned no listeners — Stalwart may not be fully bootstrapped.');
-    return;
+    return false;
   }
 
   type Listener = {
@@ -717,7 +781,7 @@ async function reconcileListenerProxyTrustedNetworks(
     }
   }
 
-  if (Object.keys(updates).length === 0) return; // already in sync
+  if (Object.keys(updates).length === 0) return false; // already in sync
 
   const setRes = await jmapCall(auth, {
     using: [JMAP_CORE, JMAP_STALWART],
@@ -730,9 +794,11 @@ async function reconcileListenerProxyTrustedNetworks(
   log.info(
     `Updated NetworkListener.overrideProxyTrustedNetworks on ${Object.keys(updates).length} listener(s); ` +
       `mail-trust=${Object.keys(mailTrust).join(',')} http-trust=empty. ` +
-      `NOTE: Stalwart caches the trust list at listener-init time; a pod ` +
-      `restart may be needed for the change to take effect on existing connections.`,
+      `NOTE: Stalwart caches the trust list at listener-init time; the caller ` +
+      `recycles the pod when this writes for an unconfirmed pod so the change ` +
+      `takes effect on existing connections.`,
   );
+  return true;
 }
 
 // ── Internal: AllowedIp reconcile ────────────────────────────────────
