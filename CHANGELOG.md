@@ -40,6 +40,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and `integration-cleanup.sh` now matches every test-tenant name format (by the
   reserved `example.test` email domain + a trailing epoch) so stale test tenants
   can't accumulate and trip the leak guard.
+- **Mail integration probes survive a Stalwart roll/migration.** The harness
+  allowlists its public IP in Stalwart's `x:AllowedIp` so its rapid multi-port
+  mail probes (25/465/587/993/4190) aren't accept-then-dropped by the port-scan
+  autoban. A one-time guard meant the allowlist was never re-armed after a
+  scenario rolled or migrated Stalwart (`mail_hostname_rename`,
+  `mail_migration_fixes`) — and a node-swap onto a fresh RocksDB store drops the
+  entry, so every later mail probe banned the harness IP (the recurring
+  `staging-all` mail-flake tail). The allowlist helper now takes a `force`
+  argument that re-registers + unbans + reloads after each roll (a cheap no-op
+  when the entry survived); `mail_tls`, `mail_hostname_rename`, and
+  `mail_migration_fixes` call it post-roll.
 - **Integration harness: the full `integration-all.sh` parallel run no longer
   self-inflicts failures.** Root-caused 2026-06-27: platform-api stays up through
   the whole parallel group — its only restarts come from `postgres-pitr`'s

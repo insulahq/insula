@@ -844,7 +844,17 @@ _stalwart_jmap() {
 }
 
 _mail_allowlist_harness_ip() {
-  [[ "$_MAIL_HARNESS_ALLOWLISTED" == "1" ]] && return 0
+  # $1 == "force" RE-ARMS past a Stalwart roll. The `_MAIL_HARNESS_ALLOWLISTED`
+  # guard short-circuits every call after the first so the steady-state mail
+  # scenarios don't re-pay the JMAP+recycle cost. But a scenario that ROLLS or
+  # MIGRATES Stalwart (mail_hostname_rename, mail_migration_fixes) can drop the
+  # x:AllowedIp entry (a node-swap provisions/restores a different RocksDB
+  # store) OR get the harness IP banned in the roll window — after which every
+  # later public probe accept-then-drops. Such scenarios call this with "force"
+  # AFTER the roll settles to re-register + unban + reload (still a cheap no-op
+  # when the entry survived and the IP is not banned: 2 JMAP gets, no recycle).
+  local force="${1:-}"
+  [[ "$force" != "force" && "$_MAIL_HARNESS_ALLOWLISTED" == "1" ]] && return 0
   if [[ "${MAIL_HARNESS_ALLOWLIST:-1}" != "1" ]]; then
     log "mail/allowlist: disabled via MAIL_HARNESS_ALLOWLIST=0"
     return 0
@@ -3111,9 +3121,11 @@ scenario_mail_tls() {
   # Operator can still pin to a specific node IP via MAIL_HOST=...
   # for multi-node debugging.
   # Allowlist the harness IP FIRST — _resolve_serving_mail_host below
-  # opens SMTP sessions to find the serving node, which must not look
-  # like a port scan to Stalwart's autoban.
-  _mail_allowlist_harness_ip
+  # opens SMTP sessions to find the serving node, and the port sweep
+  # further down hits 25/465/587/143/993/4190 in quick succession, which
+  # must not look like a port scan to Stalwart's autoban. `force` re-arms
+  # even when an earlier scenario already armed-then-lost it via a roll.
+  _mail_allowlist_harness_ip force
   local mail_host; mail_host=$(_resolve_serving_mail_host)
   if [[ -z "$mail_host" ]]; then
     fail "mail-tls/resolve: could not auto-resolve mail host (DNS of ${mail_hostname} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
@@ -3677,6 +3689,16 @@ except Exception as e:
     fail "hostname: no active stalwart-mail ReplicaSet found"
   fi
 
+  # ── Re-arm the harness allowlist AFTER the rename roll ──
+  # The PATCH above rolled stalwart-mail (and restarted the haproxy
+  # DaemonSet). The x:AllowedIp entry persists on the PVC's RocksDB across
+  # a same-node roll, but the workstation probes below (465 banner + cert
+  # SAN, polled up to 40+60 rounds) open a fresh implicit-TLS session each
+  # iteration — and if the harness IP was banned in the roll window the
+  # whole loop accept-then-drops and the rename reads as broken. `force`
+  # re-checks/unbans/reloads (cheap no-op when the entry survived).
+  _mail_allowlist_harness_ip force
+
   # ── Wait up to ~120s for the renamed host to be served on ANY mail
   # node, then assert the SMTP 465 banner ──
   # The mail port is fronted by a per-node `stalwart-haproxy` DaemonSet
@@ -4056,6 +4078,15 @@ for c in cands:
     fail "PART B: stalwart-mail Pod phase=${pod_phase} node=${pod_node} (expected Running on ${target_node}). The init container guard likely refused — check 'kubectl -n mail logs <pod> -c protect-from-silent-data-loss'"
     return 1
   fi
+
+  # ── Re-arm the harness allowlist on the MIGRATED store ──
+  # The node-swap moved Stalwart to ${target_node} with a different RocksDB
+  # store (restored/re-provisioned), which need not carry the x:AllowedIp
+  # entry registered against the source node's store. Leaving the cluster
+  # un-armed banned the harness IP for every mail probe in subsequent runs
+  # (the recurring `staging-all` mail-flake tail). `force` re-registers +
+  # reloads on the new node so the post-migration state is clean.
+  _mail_allowlist_harness_ip force
 
   # ── Part C: pre-migration snapshot carries the distinct tag ──────
   log "mail-migration-fixes: PART C — pre-migration tag visible to operators"
