@@ -780,7 +780,7 @@ async function failRun(
 
 async function runMigrationStateMachine(
   runId: string,
-  _sourceNode: string,
+  sourceNode: string,
   targetNode: string,
   deps: MigrationDeps,
   newGiB?: number,
@@ -989,9 +989,26 @@ async function runMigrationStateMachine(
     log.warn('[migration] snapshot CronJob cleanup non-fatal — proceeding:', err);
   }
 
+  // DATA-SAFETY (2026-06-28): retain the source PV BEFORE deleting the
+  // PVC so the delete can't wipe the only live copy of the mail store.
+  // The retained PV is GC'd at Step 7 on success, or re-bound by
+  // restoreMailOnSource on any failure below (declared at function scope
+  // so it's reachable from the later scale-up/verify failure branches).
+  let retainedSourcePv: string | null = null;
+  try {
+    retainedSourcePv = await retainSourcePvBeforeDelete(core, log);
+  } catch (err) {
+    await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
+    await failRun(db, runId, `failed to retain source PV before swap: ${(err as Error).message}`, taskId);
+    return;
+  }
+
   try {
     await deletePvcAndWait(core, MAIL_PVC_NAME, 120);
   } catch (err) {
+    // Delete failed → PVC + (now Retained) data still intact. Bring mail
+    // back up on the source node rather than leaving it scaled to 0.
+    await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
     await failRun(db, runId, `failed to delete source PVC: ${(err as Error).message}`, taskId);
     // Re-enable the snapshot CronJob even on failure so backups resume.
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
@@ -1001,6 +1018,8 @@ async function runMigrationStateMachine(
   try {
     await createMailPvc(core, targetNode, pvcSizeGiB);
   } catch (err) {
+    // Source PVC already deleted — re-bind the retained PV so no data is lost.
+    await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
     // Resume snapshot CronJob before bailing — was suspended at step 4a.
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to recreate PVC on target node: ${(err as Error).message}`, taskId);
@@ -1015,6 +1034,7 @@ async function runMigrationStateMachine(
       opts.restoreSnapshotId ?? null,
     );
   } catch (err) {
+    await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to apply target-node affinity: ${(err as Error).message}`, taskId);
     return;
@@ -1070,7 +1090,19 @@ async function runMigrationStateMachine(
   // depending on DataStore size and BackupStore latency.
   await setStep(db, runId, 'scaling-up', 'running', taskId);
   await patchDeploymentReplicas(apps, 1);
-  await waitForReplicaCount(apps, 1, 600, () => isCancelRequested(db, runId));
+  try {
+    await waitForReplicaCount(apps, 1, 600, () => isCancelRequested(db, runId));
+  } catch (err) {
+    // Source PVC is already gone — the new pod failing to come Ready (or
+    // a cancel mid-swap) means the destination is unusable. Roll mail back
+    // onto the source's RETAINED data so a failed/cancelled migration never
+    // leaves mail down on an empty volume.
+    await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
+    await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
+    if (err instanceof MigrationCancelledError) throw err; // outer handler records 'cancelled'
+    await failRun(db, runId, `target pod did not become Ready: ${(err as Error).message}`, taskId);
+    return;
+  }
 
   // Step 6: Verify the restore actually RESTORED tenant data — not just
   // that Stalwart opened a (possibly empty) DataStore.
@@ -1126,6 +1158,11 @@ async function runMigrationStateMachine(
         .set({ mailDrState: 'degraded' })
         .where(eq(systemSettings.id, SETTINGS_ID))
         .catch(() => { /* best-effort — failRun below is the source of truth */ });
+      // The restore on the TARGET is incomplete/empty — but the SOURCE
+      // data is RETAINED. Roll mail back onto the source's full data
+      // rather than leaving it on a half-restored volume (this is the
+      // exact silent-data-loss path the verifier guards; 2026-06-28).
+      await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
       // Resume the snapshot CronJob BEFORE failing so the operator
       // doesn't end up with both a failed migration AND a stuck
       // snapshot pipeline. Caught 2026-05-27 — see verify comment.
@@ -1147,6 +1184,12 @@ async function runMigrationStateMachine(
   } catch (annotErr) {
     log.warn('[migration] failed to clear allow-restore annotation (non-fatal):', annotErr);
   }
+
+  // Step 7a (2026-06-28): destination verified — the retained source PV is
+  // no longer the source of truth. Flip its reclaim back to Delete so the
+  // orphaned source volume + on-disk data are GC'd, freeing the old node's
+  // disk. Best-effort; a leftover Released PV is harmless if this fails.
+  await releaseRetainedSourcePv(core, retainedSourcePv, log);
 
   // Step 7b: Resume the snapshot CronJob suspended at swapping-pvc.
   try {
@@ -1545,6 +1588,138 @@ async function createMailPvc(core: CoreV1Api, targetNode: string, sizeGiB: numbe
       },
     } as unknown as Parameters<typeof core.createNamespacedPersistentVolumeClaim>[0]['body'],
   });
+}
+
+// ── DATA-SAFETY: source-volume retain + rollback (data-loss incident 2026-06-28) ──
+
+/**
+ * Flip the source mail PV's reclaimPolicy to Retain BEFORE the PVC is
+ * deleted in the swap step, so the on-disk local-path data SURVIVES the
+ * delete. local-path PVs default to reclaimPolicy=Delete, which runs a
+ * cleanup Job that ERASES the directory the instant the PVC is gone —
+ * destroying the only live copy of the mail store before the destination
+ * is confirmed restored. (2026-06-28: a stuck-finalizer PVC delete during
+ * a migration left mail-stack-data bound to a fresh EMPTY volume; only a
+ * pre-migration restic snapshot saved the data. Retaining the PV makes the
+ * swap data-safe independent of whether any snapshot exists.)
+ *
+ * Returns the retained PV name (for rollback + post-success GC), or null
+ * when the PVC has no bound PV (nothing to protect).
+ */
+export async function retainSourcePvBeforeDelete(
+  core: CoreV1Api,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+): Promise<string | null> {
+  let pvName: string | undefined;
+  try {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({
+      name: MAIL_PVC_NAME,
+      namespace: MAIL_NAMESPACE,
+    }) as { spec?: { volumeName?: string } };
+    pvName = pvc.spec?.volumeName;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+  if (!pvName) return null;
+  await core.patchPersistentVolume(
+    {
+      name: pvName,
+      body: { spec: { persistentVolumeReclaimPolicy: 'Retain' } },
+    } as unknown as Parameters<typeof core.patchPersistentVolume>[0],
+    MERGE_PATCH,
+  );
+  log.info(`[migration] source PV ${pvName} reclaimPolicy=Retain — on-disk data preserved across the PVC swap`);
+  return pvName;
+}
+
+/**
+ * Roll the mail stack back onto the SOURCE node after a swap failure,
+ * with NO data loss. Handles both shapes:
+ *   - source PVC delete FAILED   → PVC still bound to the retained PV;
+ *     just re-pin Stalwart to source + scale up.
+ *   - source PVC delete SUCCEEDED → a fresh EMPTY replacement PVC may
+ *     exist; delete it, clear the retained PV's stale claimRef, and
+ *     re-create mail-stack-data bound (volumeName) to the retained PV so
+ *     the ORIGINAL data comes back.
+ * Best-effort end-to-end — every step is guarded so a partial failure
+ * still leaves the retained PV intact for manual recovery. No-op when
+ * nothing was retained.
+ */
+export async function restoreMailOnSource(
+  core: CoreV1Api,
+  apps: AppsV1Api,
+  retainedPvName: string | null,
+  sourceNode: string,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+): Promise<void> {
+  if (!retainedPvName) {
+    log.warn('[migration] rollback: no retained source PV recorded — scaling Stalwart back up best-effort only');
+    await applyDeploymentAffinity(apps, sourceNode, false, null).catch(() => {});
+    await patchDeploymentReplicas(apps, 1).catch(() => {});
+    return;
+  }
+  log.warn(`[migration] ROLLBACK → re-binding ${MAIL_PVC_NAME} to retained source PV ${retainedPvName} on ${sourceNode}`);
+  // What is mail-stack-data bound to right now?
+  let boundPv: string | undefined;
+  try {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({
+      name: MAIL_PVC_NAME, namespace: MAIL_NAMESPACE,
+    }) as { spec?: { volumeName?: string } };
+    boundPv = pvc.spec?.volumeName;
+  } catch (err) {
+    if (!isNotFound(err)) log.warn('[migration] rollback: read PVC failed (continuing):', err);
+  }
+  if (boundPv !== retainedPvName) {
+    // Delete-succeeded shape: drop the empty replacement (if any) and re-bind.
+    if (boundPv !== undefined) {
+      await deletePvcAndWait(core, MAIL_PVC_NAME, 60).catch((e) =>
+        log.warn('[migration] rollback: deleting the empty replacement PVC failed (continuing):', e));
+    }
+    await core.patchPersistentVolume(
+      { name: retainedPvName, body: { spec: { claimRef: null } } } as unknown as Parameters<typeof core.patchPersistentVolume>[0],
+      MERGE_PATCH,
+    ).catch((e) => log.warn(`[migration] rollback: clear claimRef on ${retainedPvName} failed:`, e));
+    await core.createNamespacedPersistentVolumeClaim({
+      namespace: MAIL_NAMESPACE,
+      body: {
+        metadata: {
+          name: MAIL_PVC_NAME, namespace: MAIL_NAMESPACE,
+          annotations: { 'volume.kubernetes.io/selected-node': sourceNode },
+          labels: { app: 'stalwart-mail', 'app.kubernetes.io/part-of': 'hosting-platform', 'app.kubernetes.io/component': 'mail-server' },
+        },
+        spec: {
+          storageClassName: 'local-path',
+          accessModes: ['ReadWriteOnce'],
+          volumeName: retainedPvName,
+          resources: { requests: { storage: '1Gi' } },
+        },
+      } as unknown as Parameters<typeof core.createNamespacedPersistentVolumeClaim>[0]['body'],
+    }).catch((e) => log.warn(`[migration] rollback: recreate PVC bound to ${retainedPvName} failed:`, e));
+  }
+  // Re-pin Stalwart to the source node (data already present → no restore) + scale up.
+  await applyDeploymentAffinity(apps, sourceNode, /* allowRestore */ false, null).catch((e) =>
+    log.warn('[migration] rollback: re-pin affinity to source failed:', e));
+  await patchDeploymentReplicas(apps, 1).catch((e) =>
+    log.warn('[migration] rollback: scale-up failed:', e));
+}
+
+/**
+ * Post-success GC of the retained source PV: flip reclaim back to Delete
+ * so the now-orphaned source volume + its on-disk data are cleaned up,
+ * freeing the source node's disk. Best-effort. Only called once the
+ * destination is verified, so the source copy is no longer needed.
+ */
+async function releaseRetainedSourcePv(
+  core: CoreV1Api,
+  retainedPvName: string | null,
+  log: { warn: (...a: unknown[]) => void },
+): Promise<void> {
+  if (!retainedPvName) return;
+  await core.patchPersistentVolume(
+    { name: retainedPvName, body: { spec: { persistentVolumeReclaimPolicy: 'Delete' } } } as unknown as Parameters<typeof core.patchPersistentVolume>[0],
+    MERGE_PATCH,
+  ).catch((e) => log.warn(`[migration] failed to release retained source PV ${retainedPvName} (manual GC needed):`, e));
 }
 
 // ── Deployment helpers ────────────────────────────────────────────────────────

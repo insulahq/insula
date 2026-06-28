@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.6.18-rc.7] - 2026-06-27
-
 ### Changed
 - **Tenant hard-delete returns promptly** (~68 s → single digits for a
   provisioned tenant). `DELETE /tenants/:id` blocked the request on two
@@ -30,6 +28,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   concurrent deletes from piling up slow requests on the API.
 
 ### Fixed
+- **Mail migration is now data-safe on local-path volumes.** The node-swap
+  migration deleted the source `mail-stack-data` PVC (StorageClass `local-path`,
+  `reclaimPolicy: Delete`) *before* the destination was confirmed populated, and
+  had **no rollback** — so a stuck-finalizer delete (or any post-delete failure)
+  wiped the only live copy of the mail store, surviving only because of an
+  out-of-band restic snapshot (data-loss incident 2026-06-28). The swap now flips
+  the source PV to `Retain` **before** the delete (data survives regardless), and
+  every post-delete failure path (PVC-delete fail, target-PVC create fail, affinity
+  fail, scale-up/cancel, restore-verify fail) rolls mail back onto the source's
+  retained volume instead of leaving it on an empty disk; the retained PV is GC'd
+  only after the destination is verified.
+- **Mail forwarding survives every Stalwart pod roll.** Stalwart 0.16 caches each
+  listener's PROXY-trusted-networks at listener-init from RocksDB; the
+  proxy-networks reconciler writes the trust (server node IPs) via JMAP but that
+  does not re-activate it on a running pod. After a roll (snapshot-restore migration
+  restores RocksDB wholesale, Reloader, or a manual delete) the new pod could boot
+  with stale/empty trust and silently accept-then-drop haproxy's `send-proxy-v2`
+  forwards — breaking mail on every non-active node with no self-heal. The
+  reconciler now tracks Stalwart pod identity and, when it (re)writes trust for a
+  pod it hasn't confirmed (≥2 server nodes = haproxy in play), recycles the pod once
+  so the replacement re-reads the corrected trust at listener-init; a pod that boots
+  in-sync is recorded and never recycled (no steady-state bouncing).
 - **Snapshot archives no longer leak when a tenant is hard-deleted.** The
   snapshot-store purge ran *after* the delete cascade dropped the tenant row, but
   `storage_snapshots` cascade-deletes with the tenant — so the purge queried zero
@@ -42,6 +62,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and `integration-cleanup.sh` now matches every test-tenant name format (by the
   reserved `example.test` email domain + a trailing epoch) so stale test tenants
   can't accumulate and trip the leak guard.
+- **Mail integration probes survive a Stalwart roll/migration.** The harness
+  allowlists its public IP in Stalwart's `x:AllowedIp` so its rapid multi-port
+  mail probes (25/465/587/993/4190) aren't accept-then-dropped by the port-scan
+  autoban. A one-time guard meant the allowlist was never re-armed after a
+  scenario rolled or migrated Stalwart (`mail_hostname_rename`,
+  `mail_migration_fixes`) — and a node-swap onto a fresh RocksDB store drops the
+  entry, so every later mail probe banned the harness IP (the recurring
+  `staging-all` mail-flake tail). The allowlist helper now takes a `force`
+  argument that re-registers + unbans + reloads after each roll (a cheap no-op
+  when the entry survived); `mail_tls`, `mail_hostname_rename`, and
+  `mail_migration_fixes` call it post-roll.
+- **`mail_hostname_rename` is reproducibly green and stops burning LE certs.**
+  The scenario hard-failed on two checks that race *external* Let's Encrypt
+  issuance under load: a `defaultHostname` read via the `stalwart-mgmt` *service*
+  (empty while the rollout's endpoint was unready) and a cert-SAN poll (LE took
+  longer than the budget). Investigation showed the rename itself is fast
+  (backend applies it + triggers ACME in ~21 s; Stalwart's `defaultHostname`
+  updates in ~15 s; pod Ready ~40 s) — the only slow phase is LE issuance, which
+  the platform doesn't own in-window. Fix, split by responsibility: the
+  `defaultHostname` check now reads the pod **loopback** JMAP (up the instant the
+  pod is Ready, ~15 s) and the SMTP-465 banner stays a **hard** gate — these prove
+  the platform applied the rename; cert-SAN coverage is now **advisory**
+  (`certfail`, promotable with `MAIL_RENAME_CERT_STRICT=1`) since it depends on
+  external LE. Also, the test host is now a **stable** `mail-e2e-rename.<apex>`
+  instead of a per-run timestamp: LE rate-limits per *registered domain*, so
+  unique names burned a fresh cert every run (≈14 leftover anchor rows found on
+  staging); a fixed name lets Stalwart cache and reuse the cert. Validated: two
+  back-to-back runs 7/0 in ~56 s each (was ~9 min with 2 failures).
 - **Integration harness: the full `integration-all.sh` parallel run no longer
   self-inflicts failures.** Root-caused 2026-06-27: platform-api stays up through
   the whole parallel group — its only restarts come from `postgres-pitr`'s
