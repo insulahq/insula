@@ -51,6 +51,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   argument that re-registers + unbans + reloads after each roll (a cheap no-op
   when the entry survived); `mail_tls`, `mail_hostname_rename`, and
   `mail_migration_fixes` call it post-roll.
+- **`mail_hostname_rename` is reproducibly green and stops burning LE certs.**
+  The scenario hard-failed on two checks that race *external* Let's Encrypt
+  issuance under load: a `defaultHostname` read via the `stalwart-mgmt` *service*
+  (empty while the rollout's endpoint was unready) and a cert-SAN poll (LE took
+  longer than the budget). Investigation showed the rename itself is fast
+  (backend applies it + triggers ACME in ~21 s; Stalwart's `defaultHostname`
+  updates in ~15 s; pod Ready ~40 s) — the only slow phase is LE issuance, which
+  the platform doesn't own in-window. Fix, split by responsibility: the
+  `defaultHostname` check now reads the pod **loopback** JMAP (up the instant the
+  pod is Ready, ~15 s) and the SMTP-465 banner stays a **hard** gate — these prove
+  the platform applied the rename; cert-SAN coverage is now **advisory**
+  (`certfail`, promotable with `MAIL_RENAME_CERT_STRICT=1`) since it depends on
+  external LE. Also, the test host is now a **stable** `mail-e2e-rename.<apex>`
+  instead of a per-run timestamp: LE rate-limits per *registered domain*, so
+  unique names burned a fresh cert every run (≈14 leftover anchor rows found on
+  staging); a fixed name lets Stalwart cache and reuse the cert. Validated: two
+  back-to-back runs 7/0 in ~56 s each (was ~9 min with 2 failures).
 - **Integration harness: the full `integration-all.sh` parallel run no longer
   self-inflicts failures.** Root-caused 2026-06-27: platform-api stays up through
   the whole parallel group — its only restarts come from `postgres-pitr`'s
