@@ -243,17 +243,19 @@ describe('resolveHaproxyNodes (excludes active to prevent hostPort conflict + ha
   });
 });
 
-// ─── resolveExternalIpNodes (NEW 2026-05-28 hairpin fix) ─────────────
+// ─── resolveExternalIpNodes (2026-06-29: externalIPs eliminated) ─────
 //
-// resolveExternalIpNodes returns the node names whose IPs go into the
-// Service.spec.externalIPs list. ALWAYS excludes the active node because
-// kube-proxy installs a PREROUTING DNAT for each externalIP that runs
-// BEFORE CNI-HOSTPORT-DNAT and routes via ClusterIP → kube-proxy →
-// pod-on-active-node, causing a same-node hairpin (reply has dst=
-// active-node-IP which routes to lo, never reaches the original socket).
-// Proven on staging 2026-05-28.
+// resolveExternalIpNodes now returns [] in EVERY mode. The Service
+// externalIP DNAT was actively HARMFUL on multi-node clusters: kube-proxy's
+// externalIP PREROUTING DNAT PREEMPTED the haproxy hostNetwork socket
+// entirely (haproxy got zero external traffic → PROXY-v2 never ran → client
+// IP lost), and Calico/WireGuard masqueraded every cross-node client to ONE
+// pod-CIDR tunnel IP, which Stalwart's portScanning autoban then banned →
+// mail dead on the node. haproxy now receives external mail directly via its
+// hostPorts and forwards to Stalwart's dedicated PROXY listeners, so NO
+// Service externalIP is needed or wanted. Proven on multi-node staging.
 
-describe('resolveExternalIpNodes (excludes active to prevent kube-proxy DNAT hairpin)', () => {
+describe('resolveExternalIpNodes (always [] — externalIPs eliminated 2026-06-29)', () => {
   const allNodes = [
     node('staging1', { 'insula.host/node-role': 'server' }),
     node('staging2', { 'insula.host/node-role': 'server' }),
@@ -268,63 +270,24 @@ describe('resolveExternalIpNodes (excludes active to prevent kube-proxy DNAT hai
     activeNode: 'worker',
   };
 
-  it('returns [] for activeNodeOnly (Stalwart hostPort handles the active node directly; no other listener)', () => {
-    expect(resolveExternalIpNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
-  });
-
-  it('matches resolveHaproxyNodes for haproxy modes (one-to-one with where haproxy actually binds)', () => {
-    for (const mode of ['assignedMailNodes', 'allServerNodes'] as const) {
-      const haproxy = resolveHaproxyNodes(mode, baseSettings, allNodes);
-      const extIp = resolveExternalIpNodes(mode, baseSettings, allNodes);
-      expect(extIp).toEqual(haproxy);
-    }
-  });
-
-  it('NEVER contains active node in any mode', () => {
+  it('returns [] for every mode regardless of active/assigned placement', () => {
+    const actives: Array<string | null> = ['worker', 'staging1', 'staging2', 'staging3', null];
     for (const mode of ['activeNodeOnly', 'assignedMailNodes', 'allServerNodes'] as const) {
-      for (const active of ['worker', 'staging1', 'staging2', 'staging3']) {
-        const r = resolveExternalIpNodes(
-          mode,
-          { ...baseSettings, activeNode: active },
-          allNodes,
-        );
-        expect(r).not.toContain(active);
+      for (const active of actives) {
+        expect(
+          resolveExternalIpNodes(mode, { ...baseSettings, activeNode: active }, allNodes),
+        ).toEqual([]);
       }
     }
   });
 
-  // Independent literal-set assertions (not derived from resolveHaproxyNodes).
-  // If the two functions ever diverge, the matches-resolveHaproxyNodes test
-  // above will pass vacuously; these spell the expected sets out explicitly
-  // so that aliasing changes are caught.
-
-  it('activeNodeOnly with active=worker → [] (literal)', () => {
-    expect(resolveExternalIpNodes('activeNodeOnly', baseSettings, allNodes)).toEqual([]);
-  });
-
-  it('assignedMailNodes with active=staging1 → [staging2,staging3] (literal)', () => {
-    expect(
-      resolveExternalIpNodes(
-        'assignedMailNodes',
-        { ...baseSettings, activeNode: 'staging1' },
-        allNodes,
-      ),
-    ).toEqual(['staging2', 'staging3']);
-  });
-
-  it('allServerNodes with active=worker → [staging1,staging2,staging3] (literal)', () => {
-    expect(resolveExternalIpNodes('allServerNodes', baseSettings, allNodes))
-      .toEqual(['staging1', 'staging2', 'staging3']);
-  });
-
-  it('allServerNodes with active=staging2 → [staging1,staging3] (literal)', () => {
-    expect(
-      resolveExternalIpNodes(
-        'allServerNodes',
-        { ...baseSettings, activeNode: 'staging2' },
-        allNodes,
-      ),
-    ).toEqual(['staging1', 'staging3']);
+  it('returns [] on a single-node cluster for every mode', () => {
+    const oneNode = [node('testing', { 'insula.host/node-role': 'server' })];
+    const unset: Settings = { primaryNode: null, secondaryNode: null, tertiaryNode: null, activeNode: null };
+    for (const mode of ['activeNodeOnly', 'assignedMailNodes', 'allServerNodes'] as const) {
+      expect(resolveExternalIpNodes(mode, unset, oneNode)).toEqual([]);
+      expect(resolveExternalIpNodes(mode, { ...unset, activeNode: 'testing' }, oneNode)).toEqual([]);
+    }
   });
 });
 

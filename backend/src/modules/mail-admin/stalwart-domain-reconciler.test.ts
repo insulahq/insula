@@ -170,6 +170,16 @@ function buildJmapMock(behavior: JmapMockBehavior) {
 
 const logger = { warn: () => {}, info: () => {} };
 
+// All NetworkListeners the reconciler requires present: 3 base
+// (http-acme/submission/imap) + 6 dedicated PROXY-protocol listeners added
+// 2026-06-29. A "fully configured" fixture must list all of them, otherwise
+// ensureRequiredListeners creates the missing `-proxy` ones and flips noOp.
+const ALL_REQUIRED_LISTENERS = [
+  { name: 'http-acme' }, { name: 'submission' }, { name: 'imap' },
+  { name: 'smtp-proxy' }, { name: 'submissions-proxy' }, { name: 'submission-proxy' },
+  { name: 'imap-proxy' }, { name: 'imaps-proxy' }, { name: 'sieve-proxy' },
+];
+
 beforeEach(() => {
   vi.stubEnv('STALWART_ADMIN_PASSWORD', 'test-pw');
 });
@@ -211,7 +221,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
         },
       }],
       acmeProviders: [{ id: 'ap1' }],
-      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      listeners: ALL_REQUIRED_LISTENERS,
       defaultHostname: 'mail.example.net',
       defaultDomainId: 'd-host',
     });
@@ -276,7 +286,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
       acmeProviders: [{ id: 'ap1' }],
       defaultHostname: 'mail.example.net',
       defaultDomainId: 'd-host',
-      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      listeners: ALL_REQUIRED_LISTENERS,
     });
     const result = await runStalwartDomainReconcilerTick({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -311,9 +321,23 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     expect(result.defaultHostnameUpdated).toBe(true);
     expect(result.acmeProviderCreated).toBe(true);
     expect(result.certManagementUpdated).toBe(true);
-    expect(result.listenersCreated.sort()).toEqual(['http-acme', 'imap', 'submission']);
+    // 3 base listeners + 6 dedicated PROXY-protocol listeners.
+    expect(result.listenersCreated.slice().sort()).toEqual([
+      'http-acme', 'imap', 'imap-proxy', 'imaps-proxy', 'sieve-proxy',
+      'smtp-proxy', 'submission', 'submission-proxy', 'submissions-proxy',
+    ]);
     expect(result.acmeRenewalFired).toBe(true);
     expect(result.noOp).toBe(false);
+
+    // Dedicated `-proxy` listeners are created CARRYING the pod-CIDR trust so
+    // haproxy's send-proxy-v2 is honored from first bind; standard listeners
+    // are created WITHOUT a proxy-trust override.
+    const nlSet = calls.find((c) => c.method === 'x:NetworkListener/set')!;
+    const nlCreate = nlSet.args.create as Record<string, Record<string, unknown>>;
+    expect(nlCreate['smtp-proxy'].overrideProxyTrustedNetworks).toEqual({ '10.42.0.0/16': true });
+    expect(nlCreate['imaps-proxy'].overrideProxyTrustedNetworks).toEqual({ '10.42.0.0/16': true });
+    expect(nlCreate['sieve-proxy'].protocol).toBe('manageSieve');
+    expect(nlCreate['submission'].overrideProxyTrustedNetworks).toBeUndefined();
 
     // SystemSettings/set must include BOTH fields.
     const ssSet = calls.find((c) => c.method === 'x:SystemSettings/set')!;
@@ -344,7 +368,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
         },
       }],
       acmeProviders: [{ id: 'ap1' }],
-      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      listeners: ALL_REQUIRED_LISTENERS,
       defaultHostname: 'mail.example.net',
       defaultDomainId: 'd1',
     });
@@ -374,7 +398,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
         certificateManagement: { '@type': 'Manual' },
       }],
       acmeProviders: [{ id: 'ap1' }],
-      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      listeners: ALL_REQUIRED_LISTENERS,
       defaultHostname: 'mail.example.net',
       defaultDomainId: 'd1',
     });
@@ -408,7 +432,7 @@ describe('mail-admin stalwart-domain-reconciler', () => {
         },
       }],
       acmeProviders: [{ id: 'ap1' }],
-      listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+      listeners: ALL_REQUIRED_LISTENERS,
       defaultHostname: 'mail.example.net',
       defaultDomainId: 'd1',
     });
@@ -449,7 +473,12 @@ describe('mail-admin stalwart-domain-reconciler', () => {
     });
     const setCall = calls.find((c) => c.method === 'x:NetworkListener/set')!;
     const create = setCall.args.create as Record<string, unknown>;
-    expect(Object.keys(create).sort()).toEqual(['imap', 'submission']);
+    // http-acme already exists; everything else (incl. the 6 PROXY listeners)
+    // is created.
+    expect(Object.keys(create).sort()).toEqual([
+      'imap', 'imap-proxy', 'imaps-proxy', 'sieve-proxy',
+      'smtp-proxy', 'submission', 'submission-proxy', 'submissions-proxy',
+    ]);
   });
 
   it('hostname case-normalised on the way to Stalwart', async () => {
@@ -511,7 +540,7 @@ describe('mail-admin stalwart-domain-reconciler — served-cert self-heal', () =
       },
     }],
     acmeProviders: [{ id: 'ap1' }],
-    listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+    listeners: ALL_REQUIRED_LISTENERS,
     defaultHostname: 'mail.example.net',
     defaultDomainId: 'd1',
     certificates: [{ id: 'cert1', subjectAlternativeNames: { 'mail.example.net': true } }],
@@ -763,7 +792,7 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
       },
     }],
     acmeProviders: [{ id: 'ap1' }],
-    listeners: [{ name: 'http-acme' }, { name: 'submission' }, { name: 'imap' }],
+    listeners: ALL_REQUIRED_LISTENERS,
     defaultHostname: 'mail.example.net',
     defaultDomainId: 'd1',
   } as const;

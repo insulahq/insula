@@ -47,6 +47,7 @@ import { eq } from 'drizzle-orm';
 
 import { readStalwartCredentials } from './credentials.js';
 import { ensureMailAcmeOverrideRoute, resolveDefaultMailHost } from './mail-acme-override-route.js';
+import { recycleStalwartPods } from './recycle-stalwart-pods.js';
 import { platformSettings } from '../../db/schema.js';
 import { acmeRenewalsTotal, mailTlsCertExpirySeconds, mailTlsCertSelfSigned, stalwartAcmeTaskQueueDepth } from '../../shared/metrics.js';
 import type { Database } from '../../db/index.js';
@@ -193,26 +194,58 @@ export function __resetStalwartForceStateForTest(): void {
 }
 
 /**
+ * Cluster pod CIDR (IPv4) the dedicated PROXY-protocol listeners trust.
+ * Configurable via env; default matches the platform's Calico pod CIDR.
+ * haproxy's cross-node forwards to Stalwart arrive masqueraded to a
+ * pod-CIDR tunnel IP, so the `-proxy` listeners must trust this range for
+ * send-proxy-v2 to be honored (see proxy-networks-reconciler.ts header).
+ */
+const POD_CIDR_V4 = process.env.PLATFORM_POD_CIDR_V4 || '10.42.0.0/16';
+
+/**
  * Listeners the platform requires Stalwart to bind, beyond the
  * Stalwart 0.16 defaults (smtp/25, submissions/465, imaps/993,
  * pop3s/995, sieve/4190, https/443, http/8080).
  *
  * Each entry mirrors the bootstrap.sh:5776-5793 jq snippets exactly,
  * so a fresh install vs a self-heal pass produce the same shape.
+ *
+ * The six `*-proxy` entries are DEDICATED PROXY-protocol listeners on
+ * internal ports (12025/12465/12587/12143/12993/14190). The haproxy
+ * DaemonSet forwards external mail to them with `send-proxy-v2`; they
+ * trust the pod CIDR so Stalwart parses the PROXY header and sees the
+ * REAL client IP. The standard mail listeners stay PROXY-free for the
+ * active-node hostPort path + in-cluster direct clients (Roundcube,
+ * Bulwark, health probes). See haproxy/configmap.yaml + service.yaml.
  */
 interface RequiredListener {
   readonly name: string;
   readonly bindAddress: string;
-  readonly protocol: 'smtp' | 'imap' | 'http';
+  readonly protocol: 'smtp' | 'imap' | 'http' | 'manageSieve';
   readonly tlsImplicit: boolean;
   /** http-acme is plain HTTP for ACME HTTP-01; everything else STARTTLS. */
   readonly useTls: boolean;
+  /**
+   * When set, the listener is created with this per-listener
+   * `overrideProxyTrustedNetworks` map (used by the `*-proxy` listeners to
+   * trust the pod CIDR). Omitted ⇒ inherits the empty global trust.
+   */
+  readonly overrideProxyTrustedNetworks?: Record<string, boolean>;
 }
 
 const REQUIRED_LISTENERS: ReadonlyArray<RequiredListener> = [
   { name: 'http-acme', bindAddress: '[::]:80', protocol: 'http', tlsImplicit: false, useTls: false },
   { name: 'submission', bindAddress: '[::]:587', protocol: 'smtp', tlsImplicit: false, useTls: true },
   { name: 'imap', bindAddress: '[::]:143', protocol: 'imap', tlsImplicit: false, useTls: true },
+  // ── Dedicated PROXY-protocol listeners (haproxy → Stalwart, real client IP) ──
+  // Each maps 1:1 to a public mail port; haproxy backends target these and
+  // trust the pod CIDR. tlsImplicit mirrors the public port it fronts.
+  { name: 'smtp-proxy', bindAddress: '[::]:12025', protocol: 'smtp', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
+  { name: 'submissions-proxy', bindAddress: '[::]:12465', protocol: 'smtp', tlsImplicit: true, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
+  { name: 'submission-proxy', bindAddress: '[::]:12587', protocol: 'smtp', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
+  { name: 'imap-proxy', bindAddress: '[::]:12143', protocol: 'imap', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
+  { name: 'imaps-proxy', bindAddress: '[::]:12993', protocol: 'imap', tlsImplicit: true, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
+  { name: 'sieve-proxy', bindAddress: '[::]:14190', protocol: 'manageSieve', tlsImplicit: false, useTls: true, overrideProxyTrustedNetworks: { [POD_CIDR_V4]: true } },
 ];
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -511,6 +544,34 @@ export async function runStalwartDomainReconcilerTick(
   } catch (err) {
     notes.push(`NetworkListener ensure failed: ${err instanceof Error ? err.message : String(err)}`);
     log.warn('Stalwart NetworkListener ensure failed:', err);
+  }
+
+  // 7b. ONE-TIME bind-restart for newly-created `-proxy` listeners.
+  //     A JMAP-created NetworkListener binds its socket only at
+  //     listener-init (pod start) — until the pod restarts it persists in
+  //     RocksDB but does NOT accept connections. The six dedicated
+  //     PROXY-protocol listeners are how haproxy reaches Stalwart with the
+  //     real client IP, so when this tick just CREATED any of them, recycle
+  //     the Stalwart pod once so they bind. This fires ONLY on first
+  //     creation: on every later tick they already exist, so listenersCreated
+  //     no longer contains them and this never fires again. It is NOT a
+  //     per-tick recycle. Skipped when there is no real pod handle (podName
+  //     null ⇒ tests inject a JMAP transport). Best-effort: a recycle failure
+  //     is logged; the next tick re-creates nothing and re-attempts the bind.
+  if (podName && listenersCreated.some((n) => n.endsWith('-proxy'))) {
+    try {
+      await recycleStalwartPods({
+        kubeconfigPath: deps.kubeconfigPath,
+        namespace: 'mail',
+        labelSelector: 'app=stalwart-mail',
+        gracePeriodSeconds: 15,
+      });
+      notes.push('recycled Stalwart once to bind newly-created PROXY-protocol listeners');
+      log.info('Recycled Stalwart to bind newly-created dedicated PROXY-protocol listeners');
+    } catch (err) {
+      notes.push(`PROXY-listener bind-restart failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn('Stalwart PROXY-listener bind-restart recycle failed:', err);
+    }
   }
 
   // 8. Fire AcmeRenewal — ONLY when actually needed.
@@ -1410,6 +1471,11 @@ async function ensureRequiredListeners(
       // useTls=false only meaningful for http-acme; Stalwart defaults
       // to true for mail protocols so omit it for those.
       ...(want.protocol === 'http' ? { useTls: want.useTls } : {}),
+      // Dedicated `-proxy` listeners carry their pod-CIDR trust at create
+      // time so haproxy's send-proxy-v2 is honored from first bind.
+      ...(want.overrideProxyTrustedNetworks
+        ? { overrideProxyTrustedNetworks: want.overrideProxyTrustedNetworks }
+        : {}),
     };
   }
   if (Object.keys(create).length === 0) return [];

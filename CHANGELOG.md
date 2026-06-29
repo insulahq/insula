@@ -12,6 +12,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **External mail to non-active nodes works (the real multi-node fix).** On a
+  multi-node cluster, external mail to a NON-active node was accept-then-dropped.
+  Root cause: the `stalwart-mail` Service carried `externalIPs` = the non-active
+  node IPs, and kube-proxy's externalIP PREROUTING DNAT **preempted the haproxy
+  hostNetwork socket entirely** — haproxy received zero external traffic and mail
+  was DNAT'd straight to the Stalwart pod, so `send-proxy-v2` never ran and the
+  real client IP was lost. Calico/WireGuard then masqueraded every cross-node
+  client to the origin node's pod-network tunnel IP (10.42.x), so all external
+  clients collapsed onto ONE tunnel IP hitting six mail ports → Stalwart's
+  `portScanning` autoban permanently banned that tunnel IP and **mail died on the
+  node**. The previous PROXY-v2 trust (node public IPs) targeted an address
+  Stalwart never saw cross-node, so it never worked. Fix: platform-api now resolves
+  the Service externalIPs to `[]` (haproxy receives external mail directly via its
+  hostPorts); Stalwart gains six DEDICATED PROXY-protocol listeners
+  (12025/12465/12587/12143/12993/14190) that trust the cluster **pod CIDR**; and the
+  haproxy backends repoint to those listeners with `send-proxy-v2`. Stalwart now
+  parses the PROXY header from the (masqueraded) pod-CIDR source and recovers the
+  **real client IP**, so SPF/DKIM and the port-scan autoban operate on real IPs.
+  The standard mail listeners stay PROXY-free for the active-node hostPort path and
+  in-cluster direct clients (Roundcube, Bulwark, health probes). Newly-created
+  proxy listeners are bound via a one-time Stalwart recycle on first creation.
+  **Reverts** the prior `proxy-networks-reconciler` "track pod identity + recycle
+  on trust write" self-heal (`v2026.6.18-rc.8`) — it was built on the disproven
+  theory that haproxy fronted the mail ports and Stalwart saw node IPs.
+
 ## [2026.6.18-rc.8] - 2026-06-28
 
 ### Changed
@@ -41,17 +67,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   fail, scale-up/cancel, restore-verify fail) rolls mail back onto the source's
   retained volume instead of leaving it on an empty disk; the retained PV is GC'd
   only after the destination is verified.
-- **Mail forwarding survives every Stalwart pod roll.** Stalwart 0.16 caches each
-  listener's PROXY-trusted-networks at listener-init from RocksDB; the
-  proxy-networks reconciler writes the trust (server node IPs) via JMAP but that
-  does not re-activate it on a running pod. After a roll (snapshot-restore migration
-  restores RocksDB wholesale, Reloader, or a manual delete) the new pod could boot
-  with stale/empty trust and silently accept-then-drop haproxy's `send-proxy-v2`
-  forwards — breaking mail on every non-active node with no self-heal. The
-  reconciler now tracks Stalwart pod identity and, when it (re)writes trust for a
-  pod it hasn't confirmed (≥2 server nodes = haproxy in play), recycles the pod once
-  so the replacement re-reads the corrected trust at listener-init; a pod that boots
-  in-sync is recorded and never recycled (no steady-state bouncing).
+- **Mail forwarding self-heal (ineffective — reverted in the next release).** rc.8
+  added a `proxy-networks-reconciler` "track Stalwart pod identity + recycle once
+  after a trust write" attempt to fix non-active-node mail forwarding. It was built
+  on a disproven theory (that haproxy fronted the mail ports and Stalwart saw the
+  node public IPs) and did **not** fix the accept-then-drop; the real root cause and
+  fix land in the next release (see `[Unreleased]`).
 - **Snapshot archives no longer leak when a tenant is hard-deleted.** The
   snapshot-store purge ran *after* the delete cascade dropped the tenant row, but
   `storage_snapshots` cascade-deletes with the tenant — so the purge queried zero

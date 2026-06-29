@@ -1,32 +1,33 @@
 /**
- * Proxy-trusted-networks reconciler — keeps Stalwart's global
- * `SystemSettings.proxyTrustedNetworks` map in sync with the set of
- * server-role node IPs (the source addresses haproxy DaemonSet pods
- * will use, since they run hostNetwork).
+ * Proxy-trusted-networks reconciler — keeps Stalwart's PROXY-protocol
+ * trust in sync with how haproxy actually forwards mail.
  *
  * Why this exists:
- *   When mailPortExposureMode flips to 'allServerNodes', haproxy pods on
- *   each server node accept mail connections, write a PROXY-v2 header
- *   carrying the real tenant IP, and forward to stalwart-mail.mail.svc.
- *   Stalwart must trust those source addresses to honor the PROXY-v2
- *   header — that trust list is `proxyTrustedNetworks` on the singleton
- *   SystemSettings record (applied to every mail listener uniformly;
- *   the per-listener `overrideProxyTrustedNetworks` field is left
- *   untouched).
+ *   The haproxy DaemonSet fronts the public mail ports on every non-active
+ *   node and forwards each connection to Stalwart's DEDICATED PROXY-protocol
+ *   listeners (`*-proxy`, internal ports 12025/12465/12587/12143/12993/14190)
+ *   with a `send-proxy-v2` header carrying the real client IP. Stalwart only
+ *   parses that header from a TRUSTED source — so the `-proxy` listeners must
+ *   carry `overrideProxyTrustedNetworks` = the cluster POD CIDR.
  *
- *   Setting the trust list to 0.0.0.0/0 would let any internet attacker
- *   spoof source IPs via PROXY-v2 and defeat Stalwart's IP rate-limiter.
- *   So the list is narrowed to the actual haproxy sources: the server
- *   nodes' kubelet InternalIPs (`/32` each).
+ *   Why the POD CIDR (not node IPs): haproxy runs `hostNetwork: true`, but
+ *   its forward to `stalwart-mail.mail.svc` is CROSS-NODE, and Calico/
+ *   WireGuard MASQUERADES every cross-node connection to the origin node's
+ *   pod-network tunnel IP (10.42.x). Stalwart therefore sees a 10.42/16
+ *   source for haproxy traffic, NEVER the node's public IP. Trusting the
+ *   pod CIDR on the `-proxy` listeners is what makes PROXY-v2 honored.
  *
- *   We also append the same IPs to x:AllowedIp so cluster IPs are never
- *   subject to Stalwart's connection/login rate-limits even if PROXY-v2
- *   unwrap ever fails — belt-and-suspenders against blocking the cluster
- *   itself when an external user misbehaves.
+ *   Why NOT on the standard listeners: trusting the pod CIDR on the standard
+ *   mail listeners (25/465/...) would force Stalwart to REQUIRE a PROXY-v2
+ *   frame on every cluster-internal direct connection (Roundcube, Bulwark,
+ *   the health prober, integration probes, etc. all reach Stalwart via the
+ *   Service from a pod-CIDR source) and break them with `write:errno=104` —
+ *   the 2026-05-17 regression. So every non-`-proxy` listener gets an EMPTY
+ *   override and the global trust stays empty.
  *
- *   The reconciler runs in both 'thisNodeOnly' and 'allServerNodes' modes
- *   (per operator request) so we don't have to re-patch settings every
- *   time the mode flips.
+ *   We also append the server node IPs to x:AllowedIp so cluster sources are
+ *   never subject to Stalwart's connection/login rate-limits even if PROXY-v2
+ *   unwrap ever fails — belt-and-suspenders against blocking the cluster.
  *
  * Tick cadence: 60s (matches the certificate reconciler). Empty node
  * sets are NEVER pushed; if the node listing fails or returns zero
@@ -35,29 +36,11 @@
  */
 
 import { readStalwartCredentials } from './credentials.js';
-import { recycleStalwartPods } from './recycle-stalwart-pods.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 
 /** Default tick: 60s — same cadence as certificate reconciler. */
 export const PROXY_NETWORKS_RECONCILER_TICK_MS = 60_000;
-
-/**
- * The Stalwart pod whose LIVE listeners we believe hold the correct
- * proxy-trusted-networks. Stalwart 0.16 caches the per-listener trust at
- * listener-init (from RocksDB); a JMAP `set` persists to RocksDB but does
- * NOT re-activate it on the running process. So after a pod ROLL (a
- * snapshot-restore migration restores RocksDB wholesale, or Reloader / a
- * manual delete recreates the pod) the new pod can come up with stale or
- * empty trust and silently drop haproxy's PROXY-v2 forwards — mail breaks
- * on every non-active node and does NOT self-heal (the 60s reconciler
- * write lands in RocksDB but the live listener never re-reads it). We
- * track pod identity so the reconciler forces exactly ONE recycle when it
- * had to (re)write trust for an unconfirmed pod, so the replacement
- * re-reads the corrected trust at listener-init. Module-scoped because the
- * reconciler is a singleton timer; reset to null on each forced recycle.
- */
-let trustAppliedToPod: string | null = null;
 
 /** Server-role node label — matches placement.ts. */
 const SERVER_ROLE_LABEL_KEY = 'insula.host/node-role';
@@ -170,74 +153,33 @@ export async function runProxyNetworksReconcilerTick(
     return;
   }
 
-  // Stalwart stores bare-IP keys for /32-equivalent entries (it strips
-  // the suffix on storage), so we write what we'll read back. Wider CIDRs
-  // would be preserved verbatim, but server-role node InternalIPs are
-  // always individual hosts.
-  //
-  // **Per-listener trust architecture** (Phase 11 streamline, 2026-05-15):
-  //
-  // Until PR #57 surfaced Bug F, this reconciler set
-  // `SystemSettings.proxyTrustedNetworks` GLOBALLY with cluster CIDRs +
-  // server node IPs. That worked for mail listener PROXY-v2 forwarding
-  // from haproxy, but it ALSO caused Stalwart to PROXY-v2-sniff HTTP
-  // listeners (mgmt :8080 and http-acme :80). Any non-loopback connection
-  // from a cluster-CIDR source (platform-api → mgmt, Traefik → http-acme
-  // for ACME HTTP-01) was rejected with "invalid proxy header".
-  //
-  // Fix: split trust by listener protocol.
-  //   - global `proxyTrustedNetworks` = {} (empty)
-  //   - mail listener override = cluster CIDRs + node IPs (PROXY-v2 from
-  //     haproxy honored)
-  //   - http listener override = {} (inherits empty global → no sniff,
-  //     plain HTTP from platform-api / Traefik works)
-  //
-  // Verified on staging.example.test 2026-05-15: with this layout,
-  //   cross-pod plain HTTP to mgmt:8080 succeeds (HTTP 200 JMAP session),
-  //   and an external GET to http://mail.staging.../.well-known/acme-
-  //   challenge/* returns 404 cleanly (no connection reset).
-  //
-  // CRITICAL: trust changes require Stalwart pod RESTART (or wait until
-  // the listener is naturally re-bound). `x:Action/set ReloadSettings`
-  // is NOT sufficient — Stalwart caches the trust list at listener-init
-  // time in 0.16. The reconciler tolerates a stale pod for the duration
-  // of one tick; operators can force a faster update by `kubectl rollout
-  // restart deploy/stalwart-mail` after a node-IP change.
-  //
-  // **Trust list = SERVER NODE IPs ONLY** (no cluster CIDRs).
-  //
-  // The haproxy DaemonSet runs `hostNetwork: true`, so when it forwards
-  // a mail connection to stalwart-mail.mail.svc the source address
-  // Stalwart sees is the haproxy pod's NODE IP — never a 10.42/16 pod
-  // CIDR address. Historically this map also included `10.42.0.0/16` +
-  // `10.43.0.0/16` as a defensive catch-all, but that turned out to be
-  // actively harmful: it makes Stalwart's PROXY-v2 sniffer require a
-  // header on every connection from a cluster-internal source. That
-  // breaks every direct-to-Stalwart probe (mail-admin health prober's
-  // TCP scan via the Service, integration mail/SMTP/IMAP scenarios from
-  // a one-shot test pod, mail-imapsync, the Roundcube and Bulwark pods
-  // that talk to stalwart-mail directly) with `write:errno=104` —
-  // Stalwart was waiting on a PROXY-v2 frame the client never sent.
-  // Caught on testing.example.test 2026-05-17 integration run.
-  //
-  // Cluster pods that talk to mail listeners via the Service now hit
-  // Stalwart with a non-trusted source IP, so the PROXY-v2 sniff is
-  // skipped and the raw SMTP/IMAP/manageSieve handshake proceeds
-  // normally. haproxy still gets PROXY-v2 honored because its
-  // hostNetwork source IP IS in the trust list.
-  const expectedProxyNetworks: Record<string, boolean> = {};
-  for (const node of serverNodes) {
-    expectedProxyNetworks[node.ip] = true;
-  }
-
-  /**
-   * Per-listener override map: same trust list as `expectedProxyNetworks`
-   * for mail listeners; empty for everything else (http etc).
-   */
-  const expectedMailListenerOverride: Record<string, boolean> = { ...expectedProxyNetworks };
-  const expectedHttpListenerOverride: Record<string, boolean> = {};
-
   const env = deps.env ?? process.env;
+
+  // ── Per-listener proxy trust = the cluster POD CIDR ──────────────────
+  //
+  // ONLY the dedicated PROXY-protocol listeners (name ends with `-proxy`)
+  // are trusted, and they trust the POD CIDR (default 10.42.0.0/16; set
+  // PLATFORM_POD_CIDR_V4 to override).
+  //
+  // WHY the pod CIDR (and not the server node IPs): the haproxy DaemonSet
+  // runs `hostNetwork: true`, but its forward to `stalwart-mail.mail.svc`
+  // is a CROSS-NODE connection that Calico/WireGuard MASQUERADES to the
+  // ORIGIN node's pod-network tunnel IP (10.42.x). Stalwart therefore sees
+  // a pod-CIDR source for haproxy's send-proxy-v2 forwards — never the
+  // node's public IP. The old "trust the server node IPs" approach trusted
+  // an address Stalwart NEVER saw, so PROXY-v2 was never honored. Proven on
+  // multi-node staging 2026-06-29.
+  //
+  // WHY ONLY the `-proxy` listeners (and never the standard ones): trusting
+  // the pod CIDR on the standard mail listeners (25/465/587/143/993/4190)
+  // would force Stalwart to REQUIRE a PROXY-v2 frame on every cluster-
+  // internal direct connection — Roundcube, Bulwark, the mail-admin health
+  // prober, and the integration probes all reach Stalwart via the Service
+  // from a pod-CIDR source — and break them with `write:errno=104` (the
+  // 2026-05-17 regression). So every non-`-proxy` listener keeps an EMPTY
+  // override and inherits the empty global trust (no PROXY-v2 sniff).
+  const podCidr = env.PLATFORM_POD_CIDR_V4 || '10.42.0.0/16';
+  const proxyListenerTrust: Record<string, boolean> = { [podCidr]: true };
 
   let auth: string;
   try {
@@ -254,9 +196,6 @@ export async function runProxyNetworksReconcilerTick(
   // production discovers a Running Stalwart pod and exec's curl inside it
   // (only way to bypass Stalwart 0.16's PROXY-v2 sniffing — see jmapPost()).
   let jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>;
-  // Captured so the post-Step-2 self-heal can recycle the live (init-cached)
-  // pod after a trust write. null in tests (injected transport) → recycle skipped.
-  let stalwartPodName: string | null = null;
   if (deps.jmapTransport) {
     jmapCall = deps.jmapTransport;
   } else {
@@ -265,7 +204,6 @@ export async function runProxyNetworksReconcilerTick(
       log.warn('No Running Stalwart pod found — skipping tick (will retry).');
       return;
     }
-    stalwartPodName = podName;
     const transport: ExecTransport = {
       core: deps.core,
       podName,
@@ -290,61 +228,20 @@ export async function runProxyNetworksReconcilerTick(
   }
 
   // ── Step 2: per-listener overrideProxyTrustedNetworks ────────────────
-  // Mail protocols (smtp/imap/manageSieve/pop3) get the full trust list;
-  // http (and any other) protocols get an empty override so they inherit
-  // the empty global → no PROXY-v2 sniff on HTTP connections.
-  let trustWasWritten = false;
+  // ONLY the dedicated PROXY-protocol listeners (name ends with `-proxy`)
+  // get trust = the pod CIDR; every other listener (standard mail
+  // 25/465/587/143/993/4190, http, mgmt) gets an EMPTY override so it
+  // inherits the empty global and is never PROXY-v2-sniffed. See the
+  // proxyListenerTrust block above for the full rationale.
+  //
+  // The `-proxy` listeners themselves are created by the domain reconciler
+  // (stalwart-domain-reconciler.ts) carrying this same override, and bound
+  // via a one-time pod recycle on first creation — so this step is normally
+  // a steady-state no-op and exists to repair external drift only.
   try {
-    trustWasWritten = await reconcileListenerProxyTrustedNetworks(
-      jmapCall,
-      auth,
-      expectedMailListenerOverride,
-      expectedHttpListenerOverride,
-      log,
-    );
+    await reconcileListenerProxyTrustedNetworks(jmapCall, auth, proxyListenerTrust, log);
   } catch (err) {
     log.warn('NetworkListener.overrideProxyTrustedNetworks reconcile failed:', err);
-  }
-
-  // ── Step 2b (2026-06-28): self-heal a Stalwart roll that lost live trust ─
-  // Stalwart 0.16 caches per-listener trust at listener-init; the JMAP set
-  // above persists to RocksDB but does NOT re-activate it on the running
-  // pod. After a roll (snapshot-restore migration restores RocksDB; or
-  // Reloader / a manual delete recreates the pod) the new pod can boot with
-  // stale/empty trust and silently DROP haproxy's PROXY-v2 forwards — mail
-  // breaks on every non-active node and does not self-heal. This only
-  // matters when haproxy actually fronts non-active nodes (≥2 server nodes).
-  // When we just (re)WROTE trust for a pod we haven't yet recycled-for, its
-  // live listener is stale → recycle once so the replacement re-reads the
-  // corrected RocksDB trust at listener-init. We record the pod so a
-  // pathological "write never persists" can't loop-recycle the same pod; a
-  // pod that booted in-sync (no write) is recorded and never recycled, so
-  // steady state never bounces.
-  if (stalwartPodName && serverNodes.length >= 2) {
-    if (trustWasWritten) {
-      if (stalwartPodName !== trustAppliedToPod) {
-        log.warn(
-          `mail-listener trust was stale for Stalwart pod ${stalwartPodName} ` +
-          `(likely a post-roll/restore listener-init); recycling once so the ` +
-          `replacement re-reads the corrected trust and honors haproxy PROXY-v2.`,
-        );
-        try {
-          await recycleStalwartPods({
-            kubeconfigPath: deps.kubeconfigPath,
-            namespace: 'mail',
-            labelSelector: 'app=stalwart-mail',
-            gracePeriodSeconds: 15,
-          });
-        } catch (err) {
-          log.warn('proxy-trust self-heal recycle failed (will retry next tick):', err);
-        }
-        trustAppliedToPod = stalwartPodName;
-      }
-    } else {
-      // In sync at this pod's listener-init → its live trust is correct.
-      // Reset so a future roll (new pod name) re-triggers the check.
-      trustAppliedToPod = stalwartPodName;
-    }
   }
 
   // ── Step 3: reconcile x:AllowedIp for cluster-IP rate-limit safety ─
@@ -588,9 +485,12 @@ async function jmapPost(
 
 /**
  * Patch the singleton SystemSettings record's `proxyTrustedNetworks` map.
- * Stalwart applies this trust list to every NetworkListener that lacks
- * its own `overrideProxyTrustedNetworks` (which, in this platform,
- * none do — we never set the per-listener override).
+ * Stalwart applies this trust list to every NetworkListener that lacks its
+ * own `overrideProxyTrustedNetworks`. The platform keeps this GLOBAL trust
+ * EMPTY ({}): the dedicated `-proxy` listeners carry their own pod-CIDR
+ * override, and every other listener must inherit an empty trust so it is
+ * never PROXY-v2-sniffed (in-cluster direct clients hit them via the
+ * Service from a pod-CIDR source — the 2026-05-17 errno=104 regression).
  */
 async function reconcileSystemProxyTrustedNetworks(
   jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>,
@@ -714,19 +614,17 @@ export function proxyNetworksMatches(
 
 // ── Internal: NetworkListener.overrideProxyTrustedNetworks reconcile ─
 
-/** Stalwart protocol categories — mail protocols get PROXY-v2 trust. */
-const MAIL_PROTOCOLS = new Set(['smtp', 'imap', 'manageSieve', 'pop3']);
-
 /**
  * For each NetworkListener, write the appropriate `overrideProxyTrustedNetworks`
- * map based on its `protocol`:
+ * map based on its `name`:
  *
- *   - Mail protocols (smtp/imap/manageSieve/pop3) → mail-trust
- *     (server node IPs only — cluster CIDRs were removed 2026-05-17
- *     because haproxy DS uses hostNetwork; see the constant block
- *     above for full rationale)
- *   - Everything else (http and any future protocols) → empty map →
- *     inherits empty global → no PROXY-v2 sniff
+ *   - Dedicated PROXY-protocol listeners (name ends with `-proxy`) →
+ *     `proxyListenerTrust` (the pod CIDR — haproxy's send-proxy-v2 forwards
+ *     arrive masqueraded to a pod-CIDR tunnel IP; see the proxyListenerTrust
+ *     block in runProxyNetworksReconcilerTick for the full rationale)
+ *   - Everything else (standard mail 25/465/..., http, mgmt) → empty map →
+ *     inherits empty global → no PROXY-v2 sniff (the 2026-05-17 errno=104
+ *     regression: in-cluster direct clients reach these via the Service)
  *
  * Idempotent — only writes a listener if its current override doesn't
  * match the expected map (per `proxyNetworksMatches`).
@@ -739,8 +637,7 @@ const MAIL_PROTOCOLS = new Set(['smtp', 'imap', 'manageSieve', 'pop3']);
 async function reconcileListenerProxyTrustedNetworks(
   jmapCall: (auth: string, body: unknown) => Promise<JmapInvocationResponse>,
   auth: string,
-  mailTrust: Record<string, boolean>,
-  httpTrust: Record<string, boolean>,
+  proxyListenerTrust: Record<string, boolean>,
   log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
 ): Promise<boolean> {
   const getRes = await jmapCall(auth, {
@@ -772,10 +669,12 @@ async function reconcileListenerProxyTrustedNetworks(
     overrideProxyTrustedNetworks?: Record<string, boolean> | null;
   };
 
+  // Standard listeners (and any not ending in `-proxy`) get an EMPTY trust.
+  const emptyTrust: Record<string, boolean> = {};
   const updates: Record<string, { overrideProxyTrustedNetworks: Record<string, boolean> }> = {};
   for (const l of list as Listener[]) {
     if (!l.id) continue;
-    const expected = MAIL_PROTOCOLS.has(l.protocol ?? '') ? mailTrust : httpTrust;
+    const expected = (l.name ?? '').endsWith('-proxy') ? proxyListenerTrust : emptyTrust;
     if (!proxyNetworksMatches(l.overrideProxyTrustedNetworks, expected)) {
       updates[l.id] = { overrideProxyTrustedNetworks: expected };
     }
@@ -793,10 +692,7 @@ async function reconcileListenerProxyTrustedNetworks(
 
   log.info(
     `Updated NetworkListener.overrideProxyTrustedNetworks on ${Object.keys(updates).length} listener(s); ` +
-      `mail-trust=${Object.keys(mailTrust).join(',')} http-trust=empty. ` +
-      `NOTE: Stalwart caches the trust list at listener-init time; the caller ` +
-      `recycles the pod when this writes for an unconfirmed pod so the change ` +
-      `takes effect on existing connections.`,
+      `proxy-listener trust=${Object.keys(proxyListenerTrust).join(',')}, all others=empty.`,
   );
   return true;
 }

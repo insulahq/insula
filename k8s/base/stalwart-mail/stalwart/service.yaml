@@ -90,6 +90,36 @@ spec:
       port: 4190
       targetPort: sieve
       protocol: TCP
+    # Internal PROXY-protocol ports — how the haproxy DaemonSet reaches
+    # Stalwart's dedicated `-proxy` NetworkListeners via the ClusterIP.
+    # haproxy backends target these with send-proxy-v2; the listeners trust
+    # the pod CIDR so Stalwart recovers the real client IP (see
+    # haproxy/configmap.yaml + networkpolicy.yaml). Internal only — NOT
+    # exposed externally (no externalIPs, no hostPort). targetPort == port.
+    - name: smtp-proxy
+      port: 12025
+      targetPort: 12025
+      protocol: TCP
+    - name: submissions-proxy
+      port: 12465
+      targetPort: 12465
+      protocol: TCP
+    - name: submission-proxy
+      port: 12587
+      targetPort: 12587
+      protocol: TCP
+    - name: imap-proxy
+      port: 12143
+      targetPort: 12143
+      protocol: TCP
+    - name: imaps-proxy
+      port: 12993
+      targetPort: 12993
+      protocol: TCP
+    - name: sieve-proxy
+      port: 14190
+      targetPort: 14190
+      protocol: TCP
 ---
 # Stalwart-managed ACME HTTP-01 listener (Bootstrap.requestTlsCertificate=true
 # in bootstrap-plan-cm.yaml). ClusterIP ONLY — never give this externalIPs or a
