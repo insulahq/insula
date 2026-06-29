@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.18-rc.10] - 2026-06-29
+
 ### Fixed
 - **Inbound mail (MX, port 25) now accepted on the haproxy/non-active nodes.** The
   dedicated `smtp-proxy` listener (port 12025) inherited Stalwart's default
