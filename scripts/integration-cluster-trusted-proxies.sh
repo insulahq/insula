@@ -220,11 +220,16 @@ if [[ -z "$ADMIN_POD" ]]; then
 else
   # Phase 6 confirms the ConfigMap OBJECT is updated, but the kubelet
   # propagates that into the pod's mounted volume only on its sync cycle
-  # (up to ~60-90s + the configmap cache TTL). Poll instead of checking once —
-  # a single read races the kubelet and flakes (observed: Phase 6 green,
-  # Phase 7 red against the multi-node cluster).
+  # (up to ~60-90s + the configmap cache TTL — and longer when the kubelet /
+  # cluster is still settling right after a platform roll). Poll instead of
+  # checking once — a single read races the kubelet and flakes (observed:
+  # Phase 6 green, Phase 7 red against the multi-node cluster, incl. a >120s
+  # propagation right after the rc.11 roll on 2026-06-29). Budget is tunable
+  # via TP_MOUNT_WAIT (default 180s) — it's a kubelet-timing concern, not a
+  # product latency.
+  TP_MOUNT_WAIT="${TP_MOUNT_WAIT:-180}"
   MOUNTED=""; _m_ok=0
-  for _m_try in $(seq 1 24); do
+  for _m_try in $(seq 1 "$(( TP_MOUNT_WAIT / 5 ))"); do
     MOUNTED=$(kctl -n platform exec "$ADMIN_POD" -- cat /etc/nginx/conf.d/trusted-proxies.d/trusted-proxies.conf 2>/dev/null || echo "")
     if echo "$MOUNTED" | grep -q "$TEST_CIDR"; then _m_ok=1; break; fi
     sleep 5
@@ -232,7 +237,7 @@ else
   if [[ "$_m_ok" == "1" ]]; then
     ok "Mounted ConfigMap visible in pod (/etc/nginx/conf.d/trusted-proxies.d/) after $((_m_try * 5))s"
   else
-    fail "Mounted ConfigMap does NOT contain $TEST_CIDR after 120s"
+    fail "Mounted ConfigMap does NOT contain $TEST_CIDR after ${TP_MOUNT_WAIT}s"
     log "Mount content: $MOUNTED"
   fi
 fi

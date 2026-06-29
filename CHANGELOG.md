@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Stable release of the 2026.6.18 mail-reliability cycle.** Promotes the
+  rc.8–rc.11 prereleases to stable — see those sections below for full detail:
+  - data-safe mail migration on local-path volumes (source PV retained + rollback);
+  - real multi-node mail forwarding (drop the externalIP so haproxy fronts the
+    non-active nodes + dedicated PROXY-protocol Stalwart listeners trusting the pod
+    CIDR, so the real client IP is preserved and portscan autoban is decoupled from
+    the WireGuard tunnel IP);
+  - inbound mail (MX, port 25) accepted on the haproxy/non-active nodes
+    (`MtaStageAuth.require` exempts the smtp-proxy port);
+  - migration scale-down no longer fails on a slow Stalwart graceful shutdown
+    (force-delete the mail pod after the graceful window so the PVC releases).
+- **trusted-proxies integration harness:** Phase-7 admin-panel ConfigMap
+  mount-propagation budget bumped 120s→180s and made tunable via `TP_MOUNT_WAIT`
+  (a kubelet sync-cycle timing concern, worse right after a platform roll).
+
 ## [2026.6.18-rc.11] - 2026-06-29
 
 ### Fixed
