@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.18-rc.11] - 2026-06-29
+
 ### Fixed
 - **Mail migration no longer fails when Stalwart's graceful shutdown is slow.**
   The node-swap migration scaled Stalwart to 0 and waited only 90 s for the
