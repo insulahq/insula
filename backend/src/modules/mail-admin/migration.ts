@@ -956,7 +956,31 @@ async function runMigrationStateMachine(
       log.warn(`[migration ${runId}] recovery: force-delete pass failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  await waitForReplicaCount(apps, 0, 90, () => isCancelRequested(db, runId));
+  // Give Stalwart a graceful window to flush + terminate, but do NOT fail
+  // the whole migration just because its graceful shutdown runs past the
+  // budget. `terminationGracePeriodSeconds` is 300s and Stalwart's SIGTERM
+  // path drains live connections (incl. the haproxy backend health checks
+  // on the dedicated PROXY listeners), which can exceed 90s — that
+  // previously failed the migration at 'scaling-down' ("did not reach 0
+  // ready replica(s) within 90s"; observed on staging 2026-06-29). The
+  // Step-2 pre-migration snapshot already captured the data and the source
+  // PV is retained (rollback-safe), so once the graceful window elapses we
+  // force-delete the mail pod(s) to guarantee the PVC releases for the swap.
+  // RocksDB recovers via its WAL, so the grace-0 SIGKILL here is data-safe.
+  try {
+    await waitForReplicaCount(apps, 0, 90, () => isCancelRequested(db, runId));
+  } catch (err) {
+    if (err instanceof MigrationCancelledError) throw err; // honor operator cancel
+    log.warn(
+      `[migration ${runId}] Stalwart did not gracefully scale to 0 within 90s — `
+      + `force-deleting mail pod(s) mounting ${MAIL_PVC_NAME} to release the PVC for the `
+      + `swap (data captured in the pre-migration snapshot; source PV retained). `
+      + `err=${err instanceof Error ? err.message : String(err)}`,
+    );
+    await forceDeleteMailPodsMountingPvc(core, MAIL_PVC_NAME);
+    // Re-wait briefly — a grace-0 delete finalizes near-instantly.
+    await waitForReplicaCount(apps, 0, 60, () => isCancelRequested(db, runId));
+  }
 
   // Step 4: Swap the PVC binding to the target node + signal restore-on-start.
   //
@@ -1551,6 +1575,51 @@ async function forceDeleteStuckPodsOnDeadNodes(
       } as unknown as Parameters<typeof core.deleteNamespacedPod>[0]);
     } catch {
       // best-effort; the outer loop logs the timeout if this didn't help
+    }
+  }
+}
+
+/**
+ * Force-delete (grace 0) every Terminating pod in the mail namespace that
+ * still mounts `pvcName`, REGARDLESS of node readiness.
+ *
+ * The scale-down backstop (vs `forceDeleteStuckPodsOnDeadNodes`, which only
+ * acts on dead/NotReady nodes): a healthy-node Stalwart pod can take longer
+ * than the migration's 90s scale-down budget to shut down gracefully
+ * (terminationGracePeriodSeconds is 300s; SIGTERM drains live connections).
+ * Rather than fail the migration, the caller force-deletes here once the
+ * graceful window elapses so the PVC releases for the swap. Only pods that
+ * are already Terminating (deletionTimestamp set by the replicas=0 patch)
+ * are touched, so this never kills a pod the scheduler still wants running.
+ *
+ * Best-effort: errors are logged and swallowed (the caller's re-wait
+ * surfaces a clean timeout if this somehow didn't resolve it).
+ */
+export async function forceDeleteMailPodsMountingPvc(
+  core: CoreV1Api,
+  pvcName: string,
+): Promise<void> {
+  type PodShape = {
+    metadata?: { name?: string; deletionTimestamp?: string };
+    spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> };
+  };
+  const podList = await core.listNamespacedPod({ namespace: MAIL_NAMESPACE }) as { items?: PodShape[] };
+  for (const pod of podList.items ?? []) {
+    const podName = pod.metadata?.name;
+    const isTerminating = !!pod.metadata?.deletionTimestamp;
+    const mountsPvc = (pod.spec?.volumes ?? []).some(
+      (v) => v.persistentVolumeClaim?.claimName === pvcName,
+    );
+    if (!podName || !isTerminating || !mountsPvc) continue;
+    try {
+      await core.deleteNamespacedPod({
+        name: podName,
+        namespace: MAIL_NAMESPACE,
+        gracePeriodSeconds: 0,
+        propagationPolicy: 'Background',
+      } as unknown as Parameters<typeof core.deleteNamespacedPod>[0]);
+    } catch {
+      // best-effort; the caller's re-wait logs a clean timeout if needed
     }
   }
 }
