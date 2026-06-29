@@ -46,6 +46,28 @@ spec:
           port: 993
         - protocol: TCP
           port: 4190
+    # Internal PROXY-protocol ports (12025/12465/12587/12143/12993/14190).
+    # These are how the haproxy DaemonSet (hostNetwork) reaches Stalwart's
+    # dedicated `-proxy` listeners; the cross-node forward is masqueraded to
+    # a pod-CIDR tunnel IP (10.42.0.0/16), so the source appears in the pod
+    # CIDR. INTERNAL ONLY — these ports are NOT in the Service externalIPs
+    # and have no hostPort, so they are unreachable from outside the cluster.
+    - from:
+        - ipBlock:
+            cidr: 10.42.0.0/16
+      ports:
+        - protocol: TCP
+          port: 12025
+        - protocol: TCP
+          port: 12465
+        - protocol: TCP
+          port: 12587
+        - protocol: TCP
+          port: 12143
+        - protocol: TCP
+          port: 12993
+        - protocol: TCP
+          port: 14190
     # ACME HTTP-01 challenge (port 80) — from the Traefik ingress
     # controller pods. ingress-acme.yaml (an IngressRoute on the `web`
     # entrypoint) routes /.well-known/acme-challenge/* to Service:80 →

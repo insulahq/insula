@@ -387,7 +387,7 @@ describe('runProxyNetworksReconcilerTick', () => {
     });
   });
 
-  it('sets per-listener override on mail listeners only (http stays empty)', async () => {
+  it('sets pod-CIDR trust on `-proxy` listeners only (standard mail + http stay empty)', async () => {
     let listenerUpdates: Record<string, unknown> | null = null;
     mockFetch((req) => {
       const method = (req.body as { methodCalls?: unknown[][] }).methodCalls?.[0]?.[0];
@@ -398,12 +398,16 @@ describe('runProxyNetworksReconcilerTick', () => {
         return {
           methodResponses: [['x:NetworkListener/get', {
             list: [
+              // Standard listeners — must end up with EMPTY trust (they are
+              // reached by in-cluster direct clients via the Service; trusting
+              // the pod CIDR would force PROXY-v2 on them → errno=104).
               { id: 'l-smtp', name: 'smtp', protocol: 'smtp', overrideProxyTrustedNetworks: {} },
               { id: 'l-imap', name: 'imap', protocol: 'imap', overrideProxyTrustedNetworks: {} },
-              { id: 'l-sieve', name: 'sieve', protocol: 'manageSieve', overrideProxyTrustedNetworks: {} },
-              { id: 'l-pop3', name: 'pop3s', protocol: 'pop3', overrideProxyTrustedNetworks: {} },
-              { id: 'l-http', name: 'http', protocol: 'http', overrideProxyTrustedNetworks: {} },
               { id: 'l-http-acme', name: 'http-acme', protocol: 'http', overrideProxyTrustedNetworks: {} },
+              // Dedicated PROXY-protocol listeners — must get pod-CIDR trust.
+              { id: 'l-smtp-proxy', name: 'smtp-proxy', protocol: 'smtp', overrideProxyTrustedNetworks: {} },
+              { id: 'l-imaps-proxy', name: 'imaps-proxy', protocol: 'imap', overrideProxyTrustedNetworks: {} },
+              { id: 'l-sieve-proxy', name: 'sieve-proxy', protocol: 'manageSieve', overrideProxyTrustedNetworks: {} },
             ],
           }, 'c0']],
         };
@@ -411,7 +415,7 @@ describe('runProxyNetworksReconcilerTick', () => {
       if (method === 'x:NetworkListener/set') {
         const call = (req.body as { methodCalls: unknown[][] }).methodCalls[0];
         listenerUpdates = (call[1] as { update: Record<string, unknown> }).update;
-        return { methodResponses: [['x:NetworkListener/set', { updated: { 'l-smtp': {}, 'l-imap': {}, 'l-sieve': {}, 'l-pop3': {} } }, 'c0']] };
+        return { methodResponses: [['x:NetworkListener/set', { updated: { 'l-smtp-proxy': {}, 'l-imaps-proxy': {}, 'l-sieve-proxy': {} } }, 'c0']] };
       }
       return { methodResponses: [[method as string, { list: [] }, 'c0']] };
     });
@@ -431,34 +435,24 @@ describe('runProxyNetworksReconcilerTick', () => {
       logger: { warn: () => undefined, info: () => undefined },
     });
 
-    // 4 mail listeners updated with the SERVER NODE IP set only — cluster
-    // CIDRs are intentionally OUT of the trust list as of 2026-05-17
-    // (haproxy DS runs hostNetwork so its source IP is the node IP, not
-    // a cluster-CIDR IP; including 10.42/16+10.43/16 forced PROXY-v2
-    // sniffing on every cluster-internal mail probe and broke them).
-    // 2 http listeners already had empty override → no update needed →
-    // not in the set call.
+    // ONLY the three `-proxy` listeners are updated, each to the pod CIDR.
+    // The standard listeners already had {} and expect {} → no update → not
+    // in the set call. (Pre-2026-06-29 this trusted server node IPs on the
+    // standard mail listeners — an address Stalwart never saw cross-node.)
     expect(listenerUpdates).not.toBeNull();
     const updates = listenerUpdates! as Record<string, { overrideProxyTrustedNetworks: Record<string, boolean> }>;
-    expect(Object.keys(updates).sort()).toEqual(['l-imap', 'l-pop3', 'l-sieve', 'l-smtp']);
+    expect(Object.keys(updates).sort()).toEqual(['l-imaps-proxy', 'l-sieve-proxy', 'l-smtp-proxy']);
     for (const id of Object.keys(updates)) {
-      expect(updates[id].overrideProxyTrustedNetworks).toEqual({
-        '10.0.0.1': true,
-      });
+      expect(updates[id].overrideProxyTrustedNetworks).toEqual({ '10.42.0.0/16': true });
     }
 
-    // Regression guard: cluster CIDRs MUST stay out of the per-listener
-    // trust list. A future refactor that adds them back would re-break
-    // every cluster-internal mail probe (integration harness, mail-admin
-    // health prober, Roundcube, Bulwark) with `write:errno=104`. The
-    // positive-set assertion above doesn't catch this — adding a second
-    // key wouldn't fail toEqual against a strict-shape object, but a
-    // weakened future toMatchObject would. Pin both CIDRs explicitly.
-    for (const id of Object.keys(updates)) {
-      const trust = updates[id].overrideProxyTrustedNetworks;
-      expect(trust['10.42.0.0/16']).toBeUndefined();
-      expect(trust['10.43.0.0/16']).toBeUndefined();
-    }
+    // Regression guard: standard mail listeners MUST NOT be re-trusted —
+    // they're reached by in-cluster direct clients (Roundcube, Bulwark, the
+    // health prober, integration probes) via the Service, and trusting any
+    // source on them forces PROXY-v2 and breaks them with errno=104.
+    expect(updates['l-smtp']).toBeUndefined();
+    expect(updates['l-imap']).toBeUndefined();
+    expect(updates['l-http-acme']).toBeUndefined();
   });
 
   it('creates AllowedIp entries for cluster IPs that are not already allowlisted', async () => {
