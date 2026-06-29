@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.18] - 2026-06-29
+
 ### Fixed
 - **Stable release of the 2026.6.18 mail-reliability cycle.** Promotes the
   rc.8–rc.11 prereleases to stable — see those sections below for full detail:
