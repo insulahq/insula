@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Inbound mail (MX, port 25) now accepted on the haproxy/non-active nodes.** The
+  dedicated `smtp-proxy` listener (port 12025) inherited Stalwart's default
+  `MtaStageAuth.require` (`require auth when local_port != 25`), so it rejected
+  unauthenticated inbound `MAIL FROM` with `503 must authenticate first` — breaking
+  real external mail delivery on ~2/3 of nodes (round-robin). The domain reconciler
+  now sets `MtaStageAuth.require.else` to `local_port != 25 && local_port != 12025`,
+  so port 12025 is treated as a no-auth inbound MX like port 25 (submission/IMAP
+  proxy listeners stay auth-required). Applied via the same one-time Stalwart recycle
+  that binds the proxy listeners.
+
 ## [2026.6.18-rc.9] - 2026-06-29
 
 ### Fixed
