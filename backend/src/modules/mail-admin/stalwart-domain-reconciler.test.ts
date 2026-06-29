@@ -71,6 +71,14 @@ interface JmapMockBehavior {
   tasks?: ReadonlyArray<Record<string, unknown>>;
   /** Stored x:Certificate objects (issued certs). */
   certificates?: ReadonlyArray<Record<string, unknown>>;
+  /**
+   * MtaStageAuth singleton's `require.else` expression. Defaults to the
+   * CANONICAL post-fix value so fully-configured fixtures stay no-op on
+   * step 7a (the reconciler only issues x:MtaStageAuth/set when this
+   * differs). Set to Stalwart's default `local_port != 25` to exercise the
+   * exemption being applied.
+   */
+  mtaAuthRequireElse?: string;
 }
 
 function buildJmapMock(behavior: JmapMockBehavior) {
@@ -86,6 +94,10 @@ function buildJmapMock(behavior: JmapMockBehavior) {
   // like real Stalwart (this is what the storm-fix dedup gate reads).
   const liveTasks: Array<Record<string, unknown>> = behavior.tasks ? [...behavior.tasks] : [];
   let nextTaskSerial = 1;
+  // MtaStageAuth singleton's require.else — x:MtaStageAuth/set mutates it
+  // so a follow-up get within the same tick reflects the change, mirroring
+  // the real singleton. Defaults to the canonical post-fix expr (idempotent).
+  let liveMtaAuthRequireElse = behavior.mtaAuthRequireElse ?? 'local_port != 25 && local_port != 12025';
 
   const transport = async (_auth: string, body: unknown) => {
     const req = body as { methodCalls: ReadonlyArray<[string, Record<string, unknown>, string]> };
@@ -161,6 +173,26 @@ function buildJmapMock(behavior: JmapMockBehavior) {
     }
     if (method === 'x:Certificate/get') {
       return wrap({ list: behavior.certificates ? [...behavior.certificates] : [] });
+    }
+    if (method === 'x:MtaStageAuth/get') {
+      // The singleton always exists in a real store; `match` is an OBJECT,
+      // `else` an expression STRING. Other fields (saslMechanisms, …) are
+      // present so a test could assert the update preserves them by sending
+      // ONLY `require`.
+      return wrap({
+        list: [{
+          id: 'singleton',
+          require: { match: {}, else: liveMtaAuthRequireElse },
+          saslMechanisms: ['PLAIN', 'LOGIN'],
+          mustMatchSender: true,
+        }],
+      });
+    }
+    if (method === 'x:MtaStageAuth/set') {
+      const upd = (args.update as Record<string, Record<string, unknown>> | undefined)?.singleton;
+      const req = upd?.require as { else?: unknown } | undefined;
+      if (typeof req?.else === 'string') liveMtaAuthRequireElse = req.else;
+      return wrap({ updated: { singleton: null } });
     }
     return wrap({});
   };
@@ -873,5 +905,61 @@ describe('mail-admin stalwart-domain-reconciler — AcmeRenewal fire gates (step
     });
     expect(result.acmeRenewalFired).toBe(true);
     expect(calls.filter((c) => c.method === 'x:Task/set')).toHaveLength(1);
+  });
+});
+
+describe('mail-admin stalwart-domain-reconciler — MtaStageAuth inbound-MX auth exemption (step 7a)', () => {
+  // Fully-configured otherwise, so step 7a is the only thing that can issue
+  // an x:MtaStageAuth/set. podName is null (injected transport), so the
+  // 7b recycle never runs in tests — we assert the SET (or its absence).
+  const base = {
+    domains: [{
+      id: 'd1',
+      name: 'mail.example.net',
+      certificateManagement: {
+        '@type': 'Automatic',
+        acmeProviderId: 'ap1',
+        subjectAlternativeNames: { 'mail.example.net': true },
+      },
+    }],
+    acmeProviders: [{ id: 'ap1' }],
+    listeners: ALL_REQUIRED_LISTENERS,
+    defaultHostname: 'mail.example.net',
+    defaultDomainId: 'd1',
+    certificates: [{ id: 'cert1', subjectAlternativeNames: { 'mail.example.net': true } }],
+  } as const;
+
+  it('widens require.else to exempt port 12025 when the singleton still has the default (local_port != 25)', async () => {
+    const { transport, calls } = buildJmapMock({ ...base, mtaAuthRequireElse: 'local_port != 25' });
+    await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    const mtaSet = calls.find((c) => c.method === 'x:MtaStageAuth/set');
+    expect(mtaSet).toBeDefined();
+    // The update sends ONLY `require` (preserving other singleton fields),
+    // with the exact canonical exemption body.
+    const upd = (mtaSet!.args.update as Record<string, Record<string, unknown>>).singleton;
+    expect(upd).toEqual({
+      require: { match: {}, else: 'local_port != 25 && local_port != 12025' },
+    });
+  });
+
+  it('is idempotent — no x:MtaStageAuth/set when require.else already exempts port 12025', async () => {
+    // The mock defaults require.else to the canonical post-fix expr.
+    const { transport, calls } = buildJmapMock({ ...base });
+    await runStalwartDomainReconcilerTick({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      core: {} as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      db: dbStub('mail.example.net') as any,
+      jmapTransport: transport,
+      logger,
+    });
+    expect(calls.filter((c) => c.method === 'x:MtaStageAuth/set')).toHaveLength(0);
   });
 });

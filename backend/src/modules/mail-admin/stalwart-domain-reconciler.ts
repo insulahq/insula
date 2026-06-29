@@ -203,6 +203,34 @@ export function __resetStalwartForceStateForTest(): void {
 const POD_CIDR_V4 = process.env.PLATFORM_POD_CIDR_V4 || '10.42.0.0/16';
 
 /**
+ * Dedicated inbound-MX PROXY-protocol listener port. MUST match the
+ * `smtp-proxy` entry in REQUIRED_LISTENERS (which binds `[::]:12025`) —
+ * it's the port haproxy forwards external port-25 mail to with the real
+ * client IP.
+ */
+const SMTP_PROXY_MX_PORT = 12025;
+
+/**
+ * Canonical `MtaStageAuth.require.else` expression: ports 25 + 12025 are
+ * no-auth INBOUND MX, everything else requires auth.
+ *
+ * Stalwart decides whether SMTP auth is mandatory via the MtaStageAuth
+ * singleton's `require` field, whose DEFAULT is `require auth when
+ * local_port != 25` (i.e. `else: 'local_port != 25'`). The rc.9 proxy
+ * design added a dedicated `smtp-proxy` inbound-MX listener on port 12025
+ * so haproxy can forward external mail to non-active nodes with the real
+ * client IP via send-proxy-v2 (see haproxy/configmap.yaml + the
+ * REQUIRED_LISTENERS `-proxy` entries). But because 12025 != 25, the
+ * default rule made that listener REQUIRE auth, so unauthenticated inbound
+ * `MAIL FROM` was rejected with `503 5.5.1 You must authenticate first` —
+ * breaking real external mail delivery on the haproxy/non-active nodes.
+ * Exempting 12025 alongside 25 treats it as a no-auth inbound MX like the
+ * standard :25 listener; the submission (12465/12587) and IMAP proxy
+ * listeners stay auth-required because they aren't in the exemption.
+ */
+const MTA_AUTH_REQUIRE_EXPR = `local_port != 25 && local_port != ${SMTP_PROXY_MX_PORT}`;
+
+/**
  * Listeners the platform requires Stalwart to bind, beyond the
  * Stalwart 0.16 defaults (smtp/25, submissions/465, imaps/993,
  * pop3s/995, sieve/4190, https/443, http/8080).
@@ -546,19 +574,41 @@ export async function runStalwartDomainReconcilerTick(
     log.warn('Stalwart NetworkListener ensure failed:', err);
   }
 
-  // 7b. ONE-TIME bind-restart for newly-created `-proxy` listeners.
+  // 7a. Ensure the MtaStageAuth singleton exempts the dedicated inbound-MX
+  //     proxy listener (port 12025) from SMTP auth. Without this the
+  //     `smtp-proxy` listener inherits Stalwart's default
+  //     `require auth when local_port != 25`, so unauthenticated inbound
+  //     `MAIL FROM` is rejected (503 must-authenticate) on the haproxy
+  //     nodes — see MTA_AUTH_REQUIRE_EXPR for the full reasoning. Returns
+  //     true only when the require rule was just changed; like the proxy
+  //     listeners, the rule is cached at listener-init so a change needs a
+  //     one-time recycle (folded into 7b below).
+  let mtaAuthChanged = false;
+  try {
+    mtaAuthChanged = await ensureMtaStageAuthMxExemption(jmapCall, auth, log);
+  } catch (err) {
+    notes.push(`MtaStageAuth MX-exemption ensure failed: ${err instanceof Error ? err.message : String(err)}`);
+    log.warn('Stalwart MtaStageAuth MX-exemption ensure failed:', err);
+  }
+
+  // 7b. ONE-TIME bind-restart for newly-created `-proxy` listeners and/or a
+  //     just-changed MtaStageAuth.require rule.
   //     A JMAP-created NetworkListener binds its socket only at
   //     listener-init (pod start) — until the pod restarts it persists in
   //     RocksDB but does NOT accept connections. The six dedicated
   //     PROXY-protocol listeners are how haproxy reaches Stalwart with the
   //     real client IP, so when this tick just CREATED any of them, recycle
-  //     the Stalwart pod once so they bind. This fires ONLY on first
-  //     creation: on every later tick they already exist, so listenersCreated
-  //     no longer contains them and this never fires again. It is NOT a
-  //     per-tick recycle. Skipped when there is no real pod handle (podName
-  //     null ⇒ tests inject a JMAP transport). Best-effort: a recycle failure
-  //     is logged; the next tick re-creates nothing and re-attempts the bind.
-  if (podName && listenersCreated.some((n) => n.endsWith('-proxy'))) {
+  //     the Stalwart pod once so they bind. The MtaStageAuth.require rule is
+  //     cached at the SAME listener-init point (step 7a), so a just-applied
+  //     inbound-MX auth exemption also needs one recycle to take effect on
+  //     the running process. This fires ONLY on first creation / first
+  //     change: on every later tick the listeners already exist AND
+  //     require already equals the canonical expr, so both predicates are
+  //     false and this never fires again. It is NOT a per-tick recycle.
+  //     Skipped when there is no real pod handle (podName null ⇒ tests
+  //     inject a JMAP transport). Best-effort: a recycle failure is logged;
+  //     the next tick re-creates/re-changes nothing and re-attempts the bind.
+  if (podName && (listenersCreated.some((n) => n.endsWith('-proxy')) || mtaAuthChanged)) {
     try {
       await recycleStalwartPods({
         kubeconfigPath: deps.kubeconfigPath,
@@ -566,11 +616,11 @@ export async function runStalwartDomainReconcilerTick(
         labelSelector: 'app=stalwart-mail',
         gracePeriodSeconds: 15,
       });
-      notes.push('recycled Stalwart once to bind newly-created PROXY-protocol listeners');
-      log.info('Recycled Stalwart to bind newly-created dedicated PROXY-protocol listeners');
+      notes.push('recycled Stalwart once to bind newly-created PROXY-protocol listeners and/or apply the inbound-MX auth exemption');
+      log.info('Recycled Stalwart to bind newly-created dedicated PROXY-protocol listeners and/or apply the inbound-MX auth exemption');
     } catch (err) {
-      notes.push(`PROXY-listener bind-restart failed: ${err instanceof Error ? err.message : String(err)}`);
-      log.warn('Stalwart PROXY-listener bind-restart recycle failed:', err);
+      notes.push(`PROXY-listener/auth-rule bind-restart failed: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn('Stalwart PROXY-listener/auth-rule bind-restart recycle failed:', err);
     }
   }
 
@@ -1444,6 +1494,96 @@ async function ensureAcmeProvider(
   const id = await readId();
   if (id) log.info(`Stalwart x:AcmeProvider created (id=${id})`);
   return { id, created: id !== null };
+}
+
+/**
+ * Ensure the MtaStageAuth singleton exempts the dedicated inbound-MX
+ * proxy listener (port 12025) from SMTP auth, alongside the standard :25
+ * MX listener.
+ *
+ * Stalwart's `MtaStageAuth.require` default is `{ match: {}, else:
+ * 'local_port != 25' }` — auth required on every port but 25. The rc.9
+ * `smtp-proxy` listener lives on port 12025, so the default rejects
+ * unauthenticated inbound `MAIL FROM` there with `503 must authenticate
+ * first`, breaking external delivery on the haproxy/non-active nodes.
+ * This widens `require.else` to MTA_AUTH_REQUIRE_EXPR so BOTH 25 and
+ * 12025 are no-auth inbound MX (submission/IMAP proxy listeners stay
+ * auth-required — they aren't in the exemption).
+ *
+ * The singleton id is the literal string `singleton` and can only be
+ * UPDATED (never created/destroyed). We send ONLY `require` so the other
+ * fields (saslMechanisms, maxFailures, waitOnFail, mustMatchSender) are
+ * preserved. A brand-new store that omits the singleton from `list` is
+ * treated as "needs setting" and gets the same update.
+ *
+ * Idempotent: returns false when `require.else` already equals the
+ * canonical expression (steady state). Returns true when it issued the
+ * update — the caller then recycles Stalwart once, because the auth rule
+ * is cached at listener-init, exactly like the proxy-listener trust.
+ *
+ * Best-effort: never throws — any error is logged (warn) and returns
+ * false (mirrors the other fail-open ensure* steps), so an older Stalwart
+ * that lacks the x:MtaStageAuth methods can't brick the tick.
+ */
+async function ensureMtaStageAuthMxExemption(
+  jmapCall: JmapCall,
+  auth: string,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+): Promise<boolean> {
+  try {
+    const getRes = await jmapCall(auth, {
+      using: [JMAP_CORE, JMAP_STALWART],
+      methodCalls: [
+        ['x:MtaStageAuth/get', { accountId: ADMIN_ACCOUNT_ID, ids: ['singleton'] }, 'c0'],
+      ],
+    });
+    const args = getRes.methodResponses[0]?.[1] as {
+      list?: ReadonlyArray<{ require?: { else?: unknown } }>;
+    };
+    const currentElse = args?.list?.[0]?.require?.else;
+    // Steady state: the exemption is already in place ⇒ no change.
+    if (typeof currentElse === 'string' && currentElse === MTA_AUTH_REQUIRE_EXPR) {
+      return false;
+    }
+    // The default (`local_port != 25`), any other value, OR an absent
+    // singleton (brand-new store) all need the update.
+    const setRes = await jmapCall(auth, {
+      using: [JMAP_CORE, JMAP_STALWART],
+      methodCalls: [
+        [
+          'x:MtaStageAuth/set',
+          {
+            accountId: ADMIN_ACCOUNT_ID,
+            update: {
+              // Send ONLY `require` — Stalwart preserves the unspecified
+              // singleton fields (saslMechanisms, maxFailures, …).
+              singleton: { require: { match: {}, else: MTA_AUTH_REQUIRE_EXPR } },
+            },
+          },
+          'c0',
+        ],
+      ],
+    });
+    const setArgs = setRes.methodResponses[0]?.[1] as {
+      notUpdated?: Record<string, { description?: string }>;
+    };
+    const notUpdated = setArgs?.notUpdated ?? {};
+    if (Object.keys(notUpdated).length > 0) {
+      log.warn('x:MtaStageAuth/set update rejected:', JSON.stringify(notUpdated));
+      return false;
+    }
+    log.info(
+      `Stalwart MtaStageAuth.require.else = '${MTA_AUTH_REQUIRE_EXPR}' `
+      + `(inbound-MX auth exemption for port ${SMTP_PROXY_MX_PORT})`,
+    );
+    return true;
+  } catch (err) {
+    log.warn(
+      'Stalwart MtaStageAuth MX-exemption ensure failed (best-effort, treating as no change):',
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
 }
 
 async function ensureRequiredListeners(
