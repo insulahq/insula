@@ -11,6 +11,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  forceDeleteMailPodsMountingPvc,
   retainSourcePvBeforeDelete,
   restoreMailOnSource,
 } from './migration.js';
@@ -133,5 +134,40 @@ describe('restoreMailOnSource (rollback re-binds the retained PV — no data los
     expect(createNamespacedPersistentVolumeClaim).toHaveBeenCalledTimes(1);
     const body = (createNamespacedPersistentVolumeClaim.mock.calls[0][0] as { body: { spec: { volumeName: string } } }).body;
     expect(body.spec.volumeName).toBe('pvc-orig-123');
+  });
+});
+
+describe('forceDeleteMailPodsMountingPvc (scale-down backstop for slow graceful shutdown)', () => {
+  const PVC = 'mail-stack-data';
+  function coreWith(items: unknown[]): { core: AnyCore; del: ReturnType<typeof vi.fn> } {
+    const del = vi.fn().mockResolvedValue({});
+    const core = {
+      listNamespacedPod: vi.fn().mockResolvedValue({ items }),
+      deleteNamespacedPod: del,
+    } as unknown as AnyCore;
+    return { core, del };
+  }
+  const podMounting = (name: string, terminating: boolean, pvc = PVC) => ({
+    metadata: { name, ...(terminating ? { deletionTimestamp: '2026-06-29T00:00:00Z' } : {}) },
+    spec: { volumes: [{ persistentVolumeClaim: { claimName: pvc } }] },
+  });
+
+  it('grace-0 force-deletes ONLY the Terminating pod(s) mounting the PVC', async () => {
+    const { core, del } = coreWith([
+      podMounting('stalwart-mail-abc', true),          // terminating + mounts PVC → delete
+      podMounting('stalwart-mail-other', true, 'some-other-pvc'), // terminating, wrong PVC → skip
+      podMounting('stalwart-mail-live', false),        // mounts PVC but NOT terminating → skip
+    ]);
+    await forceDeleteMailPodsMountingPvc(core, PVC);
+    expect(del).toHaveBeenCalledTimes(1);
+    const arg = del.mock.calls[0][0] as { name: string; gracePeriodSeconds: number };
+    expect(arg.name).toBe('stalwart-mail-abc');
+    expect(arg.gracePeriodSeconds).toBe(0);
+  });
+
+  it('is best-effort — a delete failure is swallowed (never throws)', async () => {
+    const { core, del } = coreWith([podMounting('stalwart-mail-abc', true)]);
+    del.mockRejectedValueOnce(new Error('apiserver hiccup'));
+    await expect(forceDeleteMailPodsMountingPvc(core, PVC)).resolves.toBeUndefined();
   });
 });

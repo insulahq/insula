@@ -28,6 +28,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   concurrent deletes from piling up slow requests on the API.
 
 ### Fixed
+- **Mail migration no longer fails when Stalwart's graceful shutdown is slow.**
+  The node-swap migration scaled Stalwart to 0 and waited only 90 s for the
+  Deployment to reach 0 ready replicas, but the pod's
+  `terminationGracePeriodSeconds` is 300 s and its SIGTERM path drains live
+  connections (incl. the haproxy backend health checks on the dedicated PROXY
+  listeners), which can exceed 90 s — failing the migration at `scaling-down`
+  ("did not reach 0 ready replica(s) within 90 s"). The scale-down now keeps the
+  90 s graceful window, then **force-deletes (grace 0) the mail pod(s) still
+  mounting the source PVC** to guarantee it releases for the swap. Data-safe: the
+  pre-migration snapshot already captured the store and the source PV is retained
+  (rollback-safe), and RocksDB recovers via its WAL after a SIGKILL. Operator
+  cancel is still honoured.
 - **Mail migration is now data-safe on local-path volumes.** The node-swap
   migration deleted the source `mail-stack-data` PVC (StorageClass `local-path`,
   `reclaimPolicy: Delete`) *before* the destination was confirmed populated, and
