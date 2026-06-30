@@ -262,6 +262,18 @@ if [[ -z "$TENANT_ID" ]]; then
 fi
 pass "2.1 client created (id=${TENANT_ID})"
 
+# Provision + wait for active before attaching a domain: a freshly-created tenant
+# is 'provisioning' and POST /domains rejects with 409 TENANT_NOT_ACTIVE (the bare
+# create->attach raced the provisioner; fixed 2026-06-30).
+api POST "/api/v1/admin/tenants/${TENANT_ID}/provision" "{}" >/dev/null 2>&1 || true
+PSTATUS=""
+for _i in $(seq 1 45); do
+  PSTATUS=$(api GET "/api/v1/tenants/${TENANT_ID}" | jq -r '.data.status // empty')
+  [[ "$PSTATUS" == "active" ]] && break
+  sleep 4
+done
+[[ "$PSTATUS" == "active" ]] && pass "2.2 tenant provisioned -> active" || { fail "2.2 tenant did not reach active in 180s (last=$PSTATUS)"; exit 1; }
+
 # ── Phase 3: attach domain ──────────────────────────────────────────
 phase "3. Attach domain"
 DOM_RESP=$(api POST "/api/v1/tenants/${TENANT_ID}/domains" "{
