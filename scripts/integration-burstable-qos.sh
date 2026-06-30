@@ -165,15 +165,15 @@ else
 fi
 
 # ─── Assertion 4: deploy a multi-component test app ─────────────────────────
-echo "→ Looking up Nextcloud catalog entry..."
-NC_ID=$(curl -fsSL "$ADMIN_HOST/api/v1/catalog/entries?code=nextcloud" \
-  -H "Authorization: Bearer $TOKEN" | jq -r '.data[0].id // empty')
-
-if [[ -z "$NC_ID" ]]; then
-  echo "  Nextcloud not in catalog — falling back to wordpress"
-  NC_ID=$(curl -fsSL "$ADMIN_HOST/api/v1/catalog/entries?code=wordpress" \
-    -H "Authorization: Bearer $TOKEN" | jq -r '.data[0].id // empty')
-fi
+# /catalog/entries?code=<x> was removed (2026-06 restructure) → use the /catalog
+# list endpoint. Prefer a multi-component app (nextcloud/wordpress) but fall back
+# to ANY application-type entry, so the QoS check runs against whatever catalog is
+# synced on the target cluster (DEV/staging carry different seed sets).
+echo "→ Looking up a multi-component application catalog entry..."
+NC_ID=$(curl -fsSL "$ADMIN_HOST/api/v1/catalog" -H "Authorization: Bearer $TOKEN" | jq -r '
+  ([.data[] | select((.code // "") | test("nextcloud|wordpress"))] | .[0].id)
+  // ([.data[] | select(.type == "application")] | .[0].id)
+  // empty')
 
 if [[ -z "$NC_ID" ]]; then
   fail "Neither Nextcloud nor WordPress in catalog — can't test multi-component"
