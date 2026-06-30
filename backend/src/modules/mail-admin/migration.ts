@@ -1028,7 +1028,11 @@ async function runMigrationStateMachine(
   }
 
   try {
-    await deletePvcAndWait(core, MAIL_PVC_NAME, 120);
+    // The source PV was flipped to Retain just above, so the finalizer-strip
+    // last resort inside deletePvcAndWait is data-safe (PVC object removed, the
+    // on-disk mail store survives). This is what lets the delete always complete
+    // rather than wedging the swap on a stuck pvc-protection finalizer.
+    await deletePvcAndWait(core, MAIL_PVC_NAME, 120, { forceFinalizerAfterSeconds: 60 });
   } catch (err) {
     // Delete failed → PVC + (now Retained) data still intact. Bring mail
     // back up on the source node rather than leaving it scaled to 0.
@@ -1471,15 +1475,24 @@ async function getMailPvcRequestedBytes(core: CoreV1Api): Promise<number> {
  * cleanup pod. Deletion blocks until the cleanup completes; we wait up
  * to `timeoutSeconds` for the apiserver to surface 404.
  *
- * Fix #2 (2026-05-25, A4 destructive test): when the source node's
- * kubelet is dead, pods on it sit Terminating forever (kubelet never
- * confirms delete). The PVC's `pvc-protection` finalizer keeps the
- * PVC alive because at least one mounted pod still exists. Detect
- * this case (no progress at 30s with pods still Terminating on a
- * NotReady node) and force-delete the stuck pods, which releases
- * the finalizer and lets normal PVC deletion proceed.
+ * The PVC's `pvc-protection` finalizer keeps it in Terminating while ANY pod
+ * still references it. Robust two-stage escalation so the delete cannot wedge
+ * the migration (observed 2026-06-30: a worker migration hung here because a
+ * pod referencing the PVC on a *healthy* node held the finalizer, which the old
+ * dead-node-only escalation never cleared):
+ *   1. at 15s — force-delete EVERY pod referencing the PVC (any node, any phase:
+ *      Running/Completed snapshot pods, a Pending Stalwart pod, healthy-node
+ *      stragglers). Stalwart is already scaled to 0 here, so no live writer.
+ *   2. at `opts.forceFinalizerAfterSeconds` (opt-in) — strip the pvc-protection
+ *      finalizer outright. DATA-SAFE only because the swap caller flips the PV to
+ *      `Retain` first, so the on-disk mail store survives the PVC-object removal.
  */
-async function deletePvcAndWait(core: CoreV1Api, name: string, timeoutSeconds: number): Promise<void> {
+async function deletePvcAndWait(
+  core: CoreV1Api,
+  name: string,
+  timeoutSeconds: number,
+  opts: { forceFinalizerAfterSeconds?: number } = {},
+): Promise<void> {
   try {
     await core.deleteNamespacedPersistentVolumeClaim({ name, namespace: MAIL_NAMESPACE });
   } catch (err) {
@@ -1488,22 +1501,32 @@ async function deletePvcAndWait(core: CoreV1Api, name: string, timeoutSeconds: n
   }
   const startMs = Date.now();
   const deadline = startMs + timeoutSeconds * 1000;
-  let forceDeleteTried = false;
+  let podForceTried = false;
+  let finalizerForced = false;
   while (Date.now() < deadline) {
     try {
       await core.readNamespacedPersistentVolumeClaim({ name, namespace: MAIL_NAMESPACE });
-      // After 30s of waiting, escalate: enumerate pods still mounting
-      // the PVC, force-delete any whose node is NotReady (kubelet won't
-      // confirm graceful termination, finalizer blocks PVC forever).
-      if (!forceDeleteTried && (Date.now() - startMs) >= 30_000) {
-        forceDeleteTried = true;
-        await forceDeleteStuckPodsOnDeadNodes(core, name);
-      }
-      await sleep(2000);
     } catch (err) {
-      if (isNotFound(err)) return;
+      if (isNotFound(err)) return; // gone
       throw err;
     }
+    const elapsedMs = Date.now() - startMs;
+    // Escalation 1 (15s): clear EVERY finalizer-holding pod, not just dead-node ones.
+    if (!podForceTried && elapsedMs >= 15_000) {
+      podForceTried = true;
+      await forceDeleteStuckPodsOnDeadNodes(core, name).catch(() => { /* best-effort */ });
+      await forceDeleteMailPodsMountingPvc(core, name, { onlyTerminating: false }).catch(() => { /* best-effort */ });
+    }
+    // Escalation 2 (opt-in): strip the finalizer as a last resort (data-safe via Retain).
+    if (
+      !finalizerForced
+      && opts.forceFinalizerAfterSeconds !== undefined
+      && elapsedMs >= opts.forceFinalizerAfterSeconds * 1000
+    ) {
+      finalizerForced = true;
+      await forceRemovePvcProtectionFinalizer(core, name).catch(() => { /* best-effort */ });
+    }
+    await sleep(2000);
   }
   throw new ApiError(
     'MAIL_MIGRATION_PVC_DELETE_TIMEOUT',
@@ -1580,17 +1603,21 @@ async function forceDeleteStuckPodsOnDeadNodes(
 }
 
 /**
- * Force-delete (grace 0) every Terminating pod in the mail namespace that
- * still mounts `pvcName`, REGARDLESS of node readiness.
+ * Force-delete (grace 0) pods in the mail namespace that still mount `pvcName`,
+ * REGARDLESS of node readiness.
  *
- * The scale-down backstop (vs `forceDeleteStuckPodsOnDeadNodes`, which only
- * acts on dead/NotReady nodes): a healthy-node Stalwart pod can take longer
- * than the migration's 90s scale-down budget to shut down gracefully
- * (terminationGracePeriodSeconds is 300s; SIGTERM drains live connections).
- * Rather than fail the migration, the caller force-deletes here once the
- * graceful window elapses so the PVC releases for the swap. Only pods that
- * are already Terminating (deletionTimestamp set by the replicas=0 patch)
- * are touched, so this never kills a pod the scheduler still wants running.
+ * Two modes:
+ *   - `onlyTerminating: true` (default) — the scale-down backstop. A healthy-node
+ *     Stalwart pod can take longer than the migration's 90s scale-down budget to
+ *     shut down gracefully (terminationGracePeriodSeconds is 300s; SIGTERM drains
+ *     live connections). Only pods already Terminating (deletionTimestamp set by
+ *     the replicas=0 patch) are touched, so this never kills a pod the scheduler
+ *     still wants running.
+ *   - `onlyTerminating: false` — the PVC-delete backstop. ANY pod referencing the
+ *     PVC (a Running/Completed snapshot pod, a Pending Stalwart pod, a healthy-node
+ *     straggler) holds the `pvc-protection` finalizer open and deadlocks the PVC
+ *     delete. `deletePvcAndWait` calls this once Stalwart is already scaled to 0,
+ *     so no live writer remains and force-killing any leftover mounter is safe.
  *
  * Best-effort: errors are logged and swallowed (the caller's re-wait
  * surfaces a clean timeout if this somehow didn't resolve it).
@@ -1598,7 +1625,9 @@ async function forceDeleteStuckPodsOnDeadNodes(
 export async function forceDeleteMailPodsMountingPvc(
   core: CoreV1Api,
   pvcName: string,
+  opts: { onlyTerminating?: boolean } = {},
 ): Promise<void> {
+  const onlyTerminating = opts.onlyTerminating ?? true;
   type PodShape = {
     metadata?: { name?: string; deletionTimestamp?: string };
     spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> };
@@ -1610,7 +1639,8 @@ export async function forceDeleteMailPodsMountingPvc(
     const mountsPvc = (pod.spec?.volumes ?? []).some(
       (v) => v.persistentVolumeClaim?.claimName === pvcName,
     );
-    if (!podName || !isTerminating || !mountsPvc) continue;
+    if (!podName || !mountsPvc) continue;
+    if (onlyTerminating && !isTerminating) continue;
     try {
       await core.deleteNamespacedPod({
         name: podName,
@@ -1622,6 +1652,39 @@ export async function forceDeleteMailPodsMountingPvc(
       // best-effort; the caller's re-wait logs a clean timeout if needed
     }
   }
+}
+
+/**
+ * Last-resort: strip the `kubernetes.io/pvc-protection` finalizer from a PVC
+ * that is stuck in Terminating, so the apiserver completes the delete.
+ *
+ * DATA-SAFETY (read before using): the `pvc-protection` finalizer only gates the
+ * PVC OBJECT's removal — it does NOT protect on-disk data. Removing it is
+ * data-safe **only** when the bound PV has been flipped to `Retain`
+ * (`retainSourcePvBeforeDelete`) AND no pod is actively writing (Stalwart scaled
+ * to 0 + referencing pods force-deleted): the PVC object is dropped, the PV goes
+ * `Released`, and the local-path data on disk is preserved. On a `Delete`-reclaim
+ * PVC this WOULD wipe the volume — never call it without a Retained PV.
+ *
+ * Best-effort: a 404 (already gone) returns; nothing-to-strip returns; a patch
+ * failure is swallowed (the caller's re-wait surfaces a clean timeout).
+ */
+export async function forceRemovePvcProtectionFinalizer(core: CoreV1Api, name: string): Promise<void> {
+  type PvcShape = { metadata?: { finalizers?: string[] } };
+  let pvc: PvcShape;
+  try {
+    pvc = await core.readNamespacedPersistentVolumeClaim({ name, namespace: MAIL_NAMESPACE }) as PvcShape;
+  } catch (err) {
+    if (isNotFound(err)) return; // already gone
+    throw err;
+  }
+  const finalizers = pvc.metadata?.finalizers ?? [];
+  const remaining = finalizers.filter((f) => f !== 'kubernetes.io/pvc-protection');
+  if (remaining.length === finalizers.length) return; // nothing to strip
+  await core.patchNamespacedPersistentVolumeClaim(
+    { name, namespace: MAIL_NAMESPACE, body: { metadata: { finalizers: remaining } } } as unknown as Parameters<typeof core.patchNamespacedPersistentVolumeClaim>[0],
+    MERGE_PATCH,
+  ).catch(() => { /* best-effort — re-wait surfaces a clean timeout if this didn't help */ });
 }
 
 /**
@@ -1729,15 +1792,29 @@ export async function restoreMailOnSource(
     return;
   }
   log.warn(`[migration] ROLLBACK → re-binding ${MAIL_PVC_NAME} to retained source PV ${retainedPvName} on ${sourceNode}`);
-  // What is mail-stack-data bound to right now?
+  // What is mail-stack-data bound to right now — and is it stuck mid-delete?
   let boundPv: string | undefined;
+  let pvcTerminating = false;
   try {
     const pvc = await core.readNamespacedPersistentVolumeClaim({
       name: MAIL_PVC_NAME, namespace: MAIL_NAMESPACE,
-    }) as { spec?: { volumeName?: string } };
+    }) as { metadata?: { deletionTimestamp?: string }; spec?: { volumeName?: string } };
     boundPv = pvc.spec?.volumeName;
+    pvcTerminating = !!pvc.metadata?.deletionTimestamp;
   } catch (err) {
     if (!isNotFound(err)) log.warn('[migration] rollback: read PVC failed (continuing):', err);
+  }
+  // Stuck-Terminating shape (the worker-migration deadlock, 2026-06-30): the swap's
+  // delete set deletionTimestamp but a finalizer wedged it, so the PVC is neither
+  // fully bound nor gone. Scaling Stalwart up onto it would make the pod
+  // unschedulable ("PVC is being deleted") AND hold the finalizer open itself →
+  // permanent deadlock. Force-complete the delete first (data-safe: the retained
+  // source PV preserves the on-disk store), then fall through to the re-bind path.
+  if (pvcTerminating) {
+    log.warn(`[migration] rollback: ${MAIL_PVC_NAME} stuck Terminating — force-completing the delete before re-bind`);
+    await deletePvcAndWait(core, MAIL_PVC_NAME, 90, { forceFinalizerAfterSeconds: 5 }).catch((e) =>
+      log.warn('[migration] rollback: force-completing the stuck PVC delete failed (continuing):', e));
+    boundPv = undefined; // now gone → re-create bound to the retained PV below
   }
   if (boundPv !== retainedPvName) {
     // Delete-succeeded shape: drop the empty replacement (if any) and re-bind.

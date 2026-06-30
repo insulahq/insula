@@ -28,6 +28,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   concurrent deletes from piling up slow requests on the API.
 
 ### Fixed
+- **Mail migration to a worker node no longer deadlocks — and never loses mail data.**
+  Migrating the active mail node could hang at `swapping-pvc` ("failed to delete
+  source PVC after 120 s — finalizer stuck") when a pod on a *healthy* node held the
+  source PVC's `pvc-protection` finalizer open — a Running/Completed snapshot pod or
+  a Pending Stalwart pod. The previous escalation only force-deleted pods on *dead*
+  nodes, so it missed these, and the rollback then scaled Stalwart back up onto the
+  still-Terminating PVC → permanent deadlock (pod Pending forever, PVC never deletes)
+  → mail down on every node (observed migrating to the worker node, 2026-06-30).
+  Now `deletePvcAndWait` force-deletes EVERY pod referencing the PVC (any node, any
+  phase) and, as a data-safe last resort, strips the `pvc-protection` finalizer —
+  safe because the swap flips the source PV to `Retain` first, so the on-disk store
+  survives the PVC-object removal; and the rollback force-completes a stuck-Terminating
+  PVC before re-binding the retained PV. The retained source PV preserves the mail
+  store throughout, so no migration failure path can lose data.
 - **Mail migration no longer fails when Stalwart's graceful shutdown is slow.**
   The node-swap migration scaled Stalwart to 0 and waited only 90 s for the
   Deployment to reach 0 ready replicas, but the pod's

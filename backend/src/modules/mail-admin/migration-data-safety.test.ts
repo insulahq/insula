@@ -12,6 +12,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   forceDeleteMailPodsMountingPvc,
+  forceRemovePvcProtectionFinalizer,
   retainSourcePvBeforeDelete,
   restoreMailOnSource,
 } from './migration.js';
@@ -169,5 +170,54 @@ describe('forceDeleteMailPodsMountingPvc (scale-down backstop for slow graceful 
     const { core, del } = coreWith([podMounting('stalwart-mail-abc', true)]);
     del.mockRejectedValueOnce(new Error('apiserver hiccup'));
     await expect(forceDeleteMailPodsMountingPvc(core, PVC)).resolves.toBeUndefined();
+  });
+
+  it('{onlyTerminating:false} ALSO force-deletes non-Terminating PVC-mounting pods (snapshot/Pending finalizer holders)', async () => {
+    const { core, del } = coreWith([
+      podMounting('snapshot-running', false),        // mounts PVC, NOT terminating → deleted in this mode
+      podMounting('stalwart-mail-pending', false),   // mounts PVC, NOT terminating → deleted
+      podMounting('other', false, 'some-other-pvc'), // wrong PVC → skip
+    ]);
+    await forceDeleteMailPodsMountingPvc(core, PVC, { onlyTerminating: false });
+    expect(del).toHaveBeenCalledTimes(2);
+    const names = del.mock.calls.map((c) => (c[0] as { name: string }).name).sort();
+    expect(names).toEqual(['snapshot-running', 'stalwart-mail-pending']);
+  });
+});
+
+describe('forceRemovePvcProtectionFinalizer (data-safe last-resort PVC unstick)', () => {
+  function coreWithPvc(
+    finalizers: string[] | undefined,
+    opts: { notFound?: boolean } = {},
+  ): { core: AnyCore; patch: ReturnType<typeof vi.fn> } {
+    const patch = vi.fn().mockResolvedValue({});
+    const read = opts.notFound
+      ? vi.fn().mockRejectedValue(notFound())
+      : vi.fn().mockResolvedValue({ metadata: { finalizers } });
+    const core = {
+      readNamespacedPersistentVolumeClaim: read,
+      patchNamespacedPersistentVolumeClaim: patch,
+    } as unknown as AnyCore;
+    return { core, patch };
+  }
+
+  it('strips pvc-protection but preserves any other finalizers', async () => {
+    const { core, patch } = coreWithPvc(['kubernetes.io/pvc-protection', 'example.com/keep']);
+    await forceRemovePvcProtectionFinalizer(core, 'mail-stack-data');
+    expect(patch).toHaveBeenCalledTimes(1);
+    const body = (patch.mock.calls[0][0] as { body: { metadata: { finalizers: string[] } } }).body;
+    expect(body.metadata.finalizers).toEqual(['example.com/keep']);
+  });
+
+  it('is a no-op when pvc-protection is absent (never patches)', async () => {
+    const { core, patch } = coreWithPvc(['example.com/keep']);
+    await forceRemovePvcProtectionFinalizer(core, 'mail-stack-data');
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it('returns quietly when the PVC is already gone (404) and never patches', async () => {
+    const { core, patch } = coreWithPvc(undefined, { notFound: true });
+    await expect(forceRemovePvcProtectionFinalizer(core, 'mail-stack-data')).resolves.toBeUndefined();
+    expect(patch).not.toHaveBeenCalled();
   });
 });
