@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.19-rc.2] - 2026-06-30
+
 ### Changed
 - **external-snapshotter upgraded v6.3.0 → v8.6.0** (latest stable). The
   running snapshot-controller on staging was actually v6.2.1 — even older
