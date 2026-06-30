@@ -20,6 +20,8 @@ regexes = [
   '''example\.test''',
   '''(192\.0\.2|198\.51\.100|203\.0\.113)\.\d{1,3}''',   # RFC 5737 doc IPs
   '''CHANGE[_-]?ME|REPLACE_WITH|<[a-z-]+>|your-[a-z-]+''',
+  '''not-a-real-[a-z0-9-]+''',           # deliberate invalid token in auth-gate integration tests (sent to prove rejection)
+  '''integration-[a-z0-9-]+\.sh''',      # integration-all.sh suite-registry labels ("<suite>:integration-<name>.sh") — filenames, not keys
   # Dev/staging-only fixtures that MUST match committed config (Dex static
   # clients, local-dev secrets, the unit-test JWT secret). Never used in prod.
   '''local-dev-[a-z-]+''',

@@ -5779,12 +5779,12 @@ spec:
 
       # Step 2: ensure master Account exists IN THE TARGET DOMAIN.
       # Upgrade path: older bootstrap runs anchored master in
-      # `master.local` (Stalwart 0.16 rejects .local on auth), then in
-      # `mail.<apex>`. Both are now wrong — the master belongs on the
-      # fixed sentinel. If we find a stale `master` Account in ANY other
+      # master.local (Stalwart 0.16 rejects .local on auth), then in the
+      # apex mail domain. Both are now wrong — the master belongs on the
+      # fixed sentinel. If we find a stale master Account in ANY other
       # domain, destroy it so the create below puts a fresh one on the
-      # sentinel. We also destroy the leftover `master.local` Domain
-      # (safe — nothing uses it); the `mail.<apex>` Domain is left intact
+      # sentinel. We also destroy the leftover master.local Domain
+      # (safe — nothing uses it); the apex mail Domain is left intact
       # because Stalwart still serves real mail for it.
       ACCT_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
         '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
