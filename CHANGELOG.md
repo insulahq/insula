@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.19-rc.1] - 2026-06-30
+
 ### Added
 - **One-click Retry on a failed mail migration.** The admin panel's mail DR card
   showed a failed migration's target + error but made the operator re-pick the
