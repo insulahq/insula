@@ -226,9 +226,19 @@ export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
   const r = await deps.selfUpgrade.run(parsed);
 
   switch (r.action) {
-    case 'upgraded':
+    case 'upgraded': {
       deps.out(`platform-ops upgraded ${r.current} → ${r.target} (via ${r.source}, ${r.arch})`);
+      // apply-on-Apply: converge this release's host-migrations now (via the
+      // just-replaced binary) instead of waiting for the next daily host-config
+      // timer. Best-effort — the upgrade already succeeded, and the timer is the
+      // backstop, so a converge failure does not fail the self-upgrade.
+      if (deps.convergeAfterSelfUpgrade) {
+        const c = await deps.convergeAfterSelfUpgrade();
+        if (c.code === 0) deps.out('platform-ops: converged host-migrations for the new release.');
+        else deps.err(`platform-ops: host-migration converge exited ${c.code} (the daily host-config timer will retry).`);
+      }
       return 0;
+    }
     case 'already-current':
       deps.out(`platform-ops is current (${r.current}; target ${r.target ?? '—'} via ${r.source ?? '—'})`);
       return 0;

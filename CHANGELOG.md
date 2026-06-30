@@ -50,6 +50,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   (k3s/Calico/Longhorn/Traefik/cert-manager/sealed-secrets/CNPG/Flux/snapshotter)
   alongside the firewall shape — any pin bump without a matching host-migration
   fails the build.
+- **`platform-ops self-upgrade` now converges host-migrations immediately**
+  (apply-on-Apply). After a successful binary self-upgrade it re-execs the
+  just-replaced binary as `host-config apply`, so the new release's
+  host-migrations apply on the same cycle instead of waiting for the next daily
+  `platform-ops-host-config.timer`. Best-effort (the timer remains the backstop,
+  so a converge failure never fails the upgrade) and SEA-only; no `--apply`, so
+  each host-config surface still honours its own enforce/observe policy.
 
 ### Fixed
 - **Mail migration to a worker node no longer deadlocks — and never loses mail data.**

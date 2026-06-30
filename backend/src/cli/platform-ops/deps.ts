@@ -468,6 +468,18 @@ export interface Deps {
    * truth (no backend module to import).
    */
   runEmbeddedScript: (assetKey: EmbeddedScriptKey, args: string[]) => Promise<number>;
+  /**
+   * After a successful self-upgrade, converge this release's host-migrations
+   * immediately — by invoking the JUST-REPLACED binary (`process.execPath`, which
+   * self-upgrade atomically overwrote on disk) as `host-config apply`. The running
+   * process is still the OLD code, so we MUST re-exec the new binary to pick up its
+   * new embedded host-migration catalog. No `--apply`, so each host-config surface
+   * still honours its own `enforce`/`observe` policy mode (host-migrations default
+   * to enforce); without this the new migrations would wait for the next daily
+   * `platform-ops-host-config.timer`. NEVER throws; returns the converge exit code.
+   * Optional: absent in tests + dev (non-SEA), where there is no replaced binary.
+   */
+  convergeAfterSelfUpgrade?: () => Promise<{ code: number }>;
 }
 
 function realExec(
@@ -767,6 +779,30 @@ async function realRunEmbeddedScript(assetKey: string, args: string[]): Promise<
   }
 }
 
+/**
+ * apply-on-Apply (ADR-045 W10c): converge host-migrations right after a
+ * successful self-upgrade. Re-execs the NEW binary (process.execPath was
+ * atomically replaced on disk) as `host-config apply` so the freshly-installed
+ * release's embedded migrations run now, not on the next daily host-config timer.
+ * SEA-only: in dev (non-SEA) there is no replaced binary to invoke, so skip.
+ * NEVER throws.
+ */
+async function realConvergeAfterSelfUpgrade(env: NodeJS.ProcessEnv): Promise<{ code: number }> {
+  let isSea = false;
+  try {
+    const sea = await import('node:sea');
+    isSea = sea.isSea();
+  } catch {
+    isSea = false;
+  }
+  if (!isSea) return { code: 0 };
+  // No `--apply`: each surface converges only if its policy mode is `enforce`
+  // (host-migrations default to enforce), so operator observe-mode sysctls /
+  // packages are left untouched.
+  const r = await realExec(process.execPath, ['host-config', 'apply'], { env });
+  return { code: r.code };
+}
+
 export function realDeps(): Deps {
   const env = process.env;
   return {
@@ -806,5 +842,6 @@ export function realDeps(): Deps {
       return Buffer.concat(chunks).toString('utf8');
     },
     runEmbeddedScript: (assetKey, args) => realRunEmbeddedScript(assetKey, args),
+    convergeAfterSelfUpgrade: () => realConvergeAfterSelfUpgrade(env),
   };
 }
