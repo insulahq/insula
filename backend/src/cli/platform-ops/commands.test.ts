@@ -327,6 +327,38 @@ describe('selfUpgrade', () => {
     expect(out.join('\n')).toMatch(/upgraded 2026\.6\.2 → 2026\.6\.3/);
   });
 
+  it('apply-on-Apply: converges host-migrations after a successful upgrade', async () => {
+    const converge = vi.fn(async () => ({ code: 0 }));
+    const { deps, out } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '2026.6.2', target: '2026.6.3', source: 'configmap' as const, arch: 'amd64' })) },
+      convergeAfterSelfUpgrade: converge,
+    });
+    const code = await selfUpgrade(['--check'], deps);
+    expect(code).toBe(0);
+    expect(converge).toHaveBeenCalledTimes(1);
+    expect(out.join('\n')).toMatch(/converged host-migrations/);
+  });
+
+  it('apply-on-Apply: a converge failure does NOT fail the self-upgrade (timer is the backstop)', async () => {
+    const converge = vi.fn(async () => ({ code: 1 }));
+    const { deps, err } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '2026.6.2', target: '2026.6.3', source: 'configmap' as const, arch: 'amd64' })) },
+      convergeAfterSelfUpgrade: converge,
+    });
+    expect(await selfUpgrade(['--check'], deps)).toBe(0);
+    expect(err.join('\n')).toMatch(/host-migration converge exited 1/);
+  });
+
+  it('apply-on-Apply: NOT triggered when already-current (no upgrade happened)', async () => {
+    const converge = vi.fn(async () => ({ code: 0 }));
+    const { deps } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.3', target: '2026.6.3', source: 'releases' as const, arch: 'amd64' })) },
+      convergeAfterSelfUpgrade: converge,
+    });
+    expect(await selfUpgrade([], deps)).toBe(0);
+    expect(converge).not.toHaveBeenCalled();
+  });
+
   it('exit 0 on already-current', async () => {
     const { deps } = fakeDeps({
       selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'already-current' as const, current: '2026.6.3', target: '2026.6.3', source: 'releases' as const, arch: 'amd64' })) },

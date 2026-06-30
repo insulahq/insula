@@ -7,9 +7,9 @@
 # Kubernetes snapshot.storage.k8s.io API — it doesn't speak Longhorn-
 # native CRDs — so this bridge is mandatory.
 #
-# The CRDs are the upstream external-snapshotter v8.x set (the version
-# that ships with Kubernetes 1.31+). Idempotent: applying when already
-# present is a no-op.
+# The CRDs are the upstream external-snapshotter v8.6.0 set (installed by
+# scripts/bootstrap.sh; v8 requires k8s >= 1.25 for CEL CRD validation).
+# Idempotent: applying when already present is a no-op.
 ---
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass

@@ -12,6 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **external-snapshotter upgraded v6.3.0 → v8.6.0** (latest stable). The
+  running snapshot-controller on staging was actually v6.2.1 — even older
+  than the previous pin claimed. v8 requires k8s ≥ 1.25 (CRD CEL validation
+  rules); clusters run 1.35. This is a pin bump in `scripts/bootstrap.sh`
+  plus a re-apply of the upstream CRDs + RBAC + snapshot-controller
+  Deployment, and it realigns the controller with the v8.x CRD set already
+  referenced by `k8s/base/longhorn/csi-snapshots.yaml`. Safe by inspection:
+  the VolumeSnapshot storage version has been v1 since external-snapshotter
+  v4.1, no v1beta1 objects exist (CRDs already serve v1 only), so the CRD
+  update is additive; VolumeGroupSnapshot CRDs are intentionally omitted
+  (the controller is Ready on the v1 CRD set alone). Underpins the CNPG
+  snapshot-PITR path and the Longhorn `VolumeSnapshotClass`.
+- **Bootstrap-pinned infra now upgrades existing clusters via a host-migration**
+  (the path I previously hand-applied). A `bootstrap.sh` infra-version-pin bump
+  reaches FRESH installs only — Flux/RC applies app overlays, never `bootstrap.sh`.
+  So the external-snapshotter bump ships
+  `platform/host-migrations/2026.6.19/0001-external-snapshotter-v8.sh` (ADR-045
+  W10c): embedded in the signed `platform-ops` binary, run host-side by the
+  `platform-ops host-config` converger in `enforce` (idempotent; exits 0 once the
+  v8 selector is present; workers no-op via least-priv RBAC). New forcing function:
+  `ci-migration-coverage.sh` now fingerprints the bootstrap **infra version pins**
+  (k3s/Calico/Longhorn/Traefik/cert-manager/sealed-secrets/CNPG/Flux/snapshotter)
+  alongside the firewall shape — any pin bump without a matching host-migration
+  fails the build.
+- **`platform-ops self-upgrade` now converges host-migrations immediately**
+  (apply-on-Apply). After a successful binary self-upgrade it re-execs the
+  just-replaced binary as `host-config apply`, so the new release's
+  host-migrations apply on the same cycle instead of waiting for the next daily
+  `platform-ops-host-config.timer`. Best-effort (the timer remains the backstop,
+  so a converge failure never fails the upgrade) and SEA-only; no `--apply`, so
+  each host-config surface still honours its own enforce/observe policy.
+
 ## [2026.6.19-rc.1] - 2026-06-30
 
 ### Added
