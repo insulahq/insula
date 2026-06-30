@@ -79,10 +79,10 @@ DEADLINE=$(( $(date +%s) + 180 ))
 STATUS=""
 while [[ $(date +%s) -lt $DEADLINE ]]; do
   STATUS=$(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" \
-    "$ADMIN_HOST/api/v1/system-backup/runs/$RUN_ID" | jq -r '.data.status')
+    "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID" | jq -r '.data.status')
   if [[ "$STATUS" == "succeeded" ]]; then break; fi
   if [[ "$STATUS" == "failed" ]]; then
-    fail "A2 export failed: $(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/system-backup/runs/$RUN_ID")"
+    fail "A2 export failed: $(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID")"
     exit 1
   fi
   sleep 3
@@ -95,7 +95,7 @@ ok "A2 export reached status=succeeded"
 
 # A3 — Download URL
 DOWNLOAD_URL=$(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" \
-  "$ADMIN_HOST/api/v1/system-backup/runs/$RUN_ID" | jq -r '.data.downloadUrl')
+  "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID" | jq -r '.data.downloadUrl')
 if [[ -z "$DOWNLOAD_URL" || "$DOWNLOAD_URL" == "null" ]]; then
   fail "A3 no downloadUrl in run record"
   exit 1
