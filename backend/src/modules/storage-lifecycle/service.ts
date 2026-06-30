@@ -1354,6 +1354,10 @@ async function rebindPvcToRetainedVolume(
   }
 
   // 4. Create a new PVC statically bound to the retained PV.
+  // backup-coverage: captured-by:files
+  // (re-bind of the SAME tenant-storage volume onto its retained PV — no new data
+  //  dimension; the tenant files are captured by the files component, as at the
+  //  primary tenant-storage create-site.)
   await k8s.core.createNamespacedPersistentVolumeClaim({
     namespace,
     body: {
