@@ -83,9 +83,24 @@ warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
 
 KCTL=(kubectl --namespace="$NAMESPACE")
 
-POD="$("${KCTL[@]}" get pods -l app=bulwark -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+# Resolve a READY bulwark pod. On a roundcube-active cluster bulwark is scaled to
+# 0 → self-skip (77) rather than fail. Right after a webmail-feature-toggle roll
+# the pod is briefly NotReady → poll instead of racing it (the A1 flake caught on
+# the 2026-06-30 DEV run, where the JMAP call then 500s against a half-rolled pod).
+POD=""
+for _i in $(seq 1 30); do
+  "${KCTL[@]}" get deploy bulwark >/dev/null 2>&1 || { warn "no bulwark Deployment in namespace=$NAMESPACE — skipping (77)"; exit 77; }
+  REPL="$("${KCTL[@]}" get deploy bulwark -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
+  [[ "${REPL:-0}" == "0" ]] && { warn "bulwark scaled to 0 (roundcube-active cluster) — skipping (77)"; exit 77; }
+  CAND="$("${KCTL[@]}" get pods -l app=bulwark -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  if [[ -n "$CAND" ]]; then
+    RDY="$("${KCTL[@]}" get pod "$CAND" -o jsonpath='{.status.containerStatuses[?(@.name=="bulwark")].ready}' 2>/dev/null || true)"
+    [[ "$RDY" == "true" ]] && { POD="$CAND"; break; }
+  fi
+  sleep 3
+done
 if [[ -z "$POD" ]]; then
-  fail "no bulwark Pod found in namespace=$NAMESPACE — is it deployed?"
+  fail "no Ready bulwark Pod in namespace=$NAMESPACE after ~90s"
   exit 1
 fi
 
