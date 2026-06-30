@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **undici upgraded to 6.27.0** (`npm audit fix`, within range) — clears the four
+  backend HIGH advisories (Set-Cookie header injection, WS DoS, response-queue
+  poisoning, SameSite downgrade) on the transitive `<=6.26.0` copy. The other
+  undici moved 7.27.2→7.28.0. Backend unit suite green (5473). nodemailer's
+  GHSA-p6gq-j5cr-w38f stays tracked as `not_affected` (the `raw` message option is
+  unused; the fix is a breaking 8→9 major) — the temporary undici cve-ledger
+  waivers are removed now that it's fixed in-tree.
+
 ### Changed
 - **Tenant hard-delete returns promptly** (~68 s → single digits for a
   provisioned tenant). `DELETE /tenants/:id` blocked the request on two
