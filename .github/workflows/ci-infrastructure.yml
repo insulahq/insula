@@ -69,6 +69,7 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-ci-migration-coverage.sh
+      - run: ./scripts/test-ci-integration-coverage.sh
       - run: ./scripts/test-new-host-migration.sh
       - run: ./scripts/test-cut-release-audit.sh
       - run: ./.github/scripts/test-pin-image-tag.sh
@@ -144,6 +145,14 @@ jobs:
         run: git fetch origin main --depth=200 || true
       - name: Verify a bootstrap firewall-shape change ships a host-migration
         run: ./scripts/ci-migration-coverage.sh
+
+  integration-test-coverage:
+    name: Integration-test registry coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify every integration-*.sh is registered (no orphans)
+        run: ./scripts/ci-integration-coverage.sh
 
   nginx-real-ip-check:
     name: Nginx real_ip template guardrail

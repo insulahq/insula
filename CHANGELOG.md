@@ -27,6 +27,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   SMTP/IMAP/JMAP + webmail).
 
 ### Changed
+- **Integration-test sprawl cleanup + coverage guard.** An audit found 33 of 71
+  `scripts/integration-*.sh` wired into no orchestrator — ~half the E2E suite never
+  ran and **8 scripts had bit-rotted** (testing removed routes: `mail/node-selector`,
+  `mail/blob-store`, `/system-backup/runs`, `/catalog/entries?code=`, `companyEmail`,
+  `tenants/bulk/delete`, the `thisNodeOnly` port-exposure enum). Added
+  `scripts/integration-test-registry.txt` (every script categorized:
+  suite/perf/local/manual/pending) + `ci-integration-coverage.sh` (a new
+  `integration-*.sh` not in the registry fails Infrastructure CI — sprawl can't
+  regrow) + a self-test. Deleted 3 dead scripts (`mail-ha-e2e` 7/13-dead,
+  `backups-ui-phase-2026-05-24` dated, `tenant-bundles-jmap` subset-of-full-e2e);
+  fixed two route/field bit-rots (`dr-bundle`, `tenant-bundles-restic`). The 21
+  `pending` feature-E2E (each route-validated against the live backend) are tracked
+  in the registry for staging-validated integration.
 - **Tenant hard-delete returns promptly** (~68 s → single digits for a
   provisioned tenant). `DELETE /tenants/:id` blocked the request on two
   synchronous waits for the namespace's Longhorn PV to Release — neither of which

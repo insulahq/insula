@@ -1,0 +1,106 @@
+# integration-test-registry.txt — the single source of truth for every
+# scripts/integration-*.sh. Enforced by scripts/ci-integration-coverage.sh:
+# a new integration-*.sh that is not listed here FAILS CI (no silent orphans).
+#
+# Format:  <category>  <script-basename>  # <note>
+# Categories:
+#   orchestrator  - the suite runners themselves
+#   suite         - wired into integration-all.sh (guard verifies the reference)
+#   suite-staging - invoked by integration-staging.sh
+#   helper        - sourced/called by a wired script (not a standalone suite)
+#   perf          - performance benchmark, on-demand only (never CI-gated)
+#   local         - local-DinD/docker harness (docker exec); NOT the SSH staging suite
+#   manual        - maintained standalone harness, run by hand (heavy/seed-chain root)
+#   pending       - triaged for integration but NOT yet wired; <- the backlog.
+#                   Note carries the target array/tier + any fix needed (ADR-053 §itest-cleanup).
+# Retired scripts are deleted, not listed (see the tombstone block at the end).
+
+# ── runners ───────────────────────────────────────────────────────────────
+orchestrator  integration-all.sh
+orchestrator  integration-staging.sh
+
+# ── wired into integration-all.sh ────────────────────────────────────────
+suite         integration-token.sh                       # shared api_curl/login helper
+suite         integration-cleanup.sh                     # SERIAL_PRE fixture cleanup
+suite         integration-pvc.sh
+suite         integration-grow-e2e.sh
+suite         integration-oidc-dex.sh
+suite         integration-drain-e2e.sh
+suite         integration-passkey-e2e.sh
+suite         integration-firewall-e2e.sh
+suite         integration-waf-crowdsec.sh
+suite         integration-dr-drill-shim.sh
+suite         integration-lifecycle-e2e.sh
+suite         integration-node-terminal.sh
+suite         integration-postgres-pitr.sh
+suite         integration-tier-flip-e2e.sh
+suite         integration-monitoring-slo.sh
+suite         integration-system-snapshots.sh
+suite         integration-mailbox-quota-e2e.sh
+suite         integration-backup-rclone-shim.sh
+suite         integration-cluster-trusted-proxies.sh
+suite         integration-wal-archive-failure-e2e.sh
+suite         integration-waf-failure-e2e.sh
+
+# ── invoked by integration-staging.sh ────────────────────────────────────
+suite-staging integration-stalwart-mail-ha.sh            # shared mail-TLS/SMTP probe helpers
+suite-staging integration-system-wal-archive.sh
+suite-staging integration-platform-ops-cli-e2e.sh
+suite-staging integration-system-backup-pg-dump.sh
+
+# ── helpers / chain sub-scripts (run via a maintained parent) ─────────────
+helper        integration-tenant-bundles-roundtrip.sh    # called by files-browse-restore-e2e
+helper        integration-tenant-bundles-tenant-side.sh  # called by roundtrip
+
+# ── maintained standalone (run by hand: heavy or seed-chain root) ─────────
+manual        integration-tenant-bundles-files-browse-restore-e2e.sh  # chain root
+manual        integration-tenant-bundles-jmap-full-e2e.sh             # canonical jmap bundle E2E
+manual        integration-tenant-bundles-mailbox-engine.sh            # L1 seed harness
+manual        integration-bundle-coverage.sh
+manual        integration-backups-ui.sh
+manual        integration-catalog-local.sh
+manual        integration-private-worker.sh
+manual        integration-custom-deployments.sh                       # ADR-036 phase-1
+manual        integration-system-dr-drill.sh                          # full cold-restore, dedicated VM
+
+# ── performance benchmarks (on-demand, never CI-gated) ────────────────────
+perf          integration-shim-perf.sh                   # R-X14 rclone-shim throughput floors
+perf          integration-stalwart-export-perf.sh        # DESTRUCTIVE (scale-0 + DataStore wipe)
+perf          integration-stalwart-storage-perf.sh       # local-path vs Longhorn fio
+
+# ── local-DinD / local-docker (docker exec; not the SSH staging suite) ────
+local         integration-notifications.sh               # docker exec into k3s container
+local         integration-system-tenant-e2e.sh           # local-DinD; FIX: bulk-delete route (see pending note)
+local         integration-sftp-gateway.sh                # local-docker sftp-chroot contract
+local         integration-secrets-bundle.sh              # local-DinD secrets-audit smoke
+local         integration-tenant-backup-tools-dind.sh    # image build/binary smoke
+local         integration-stalwart-v016-local.sh         # Stalwart 0.16 JMAP smoke (drop 8b/8c removed-route steps)
+
+# ── pending integration (triaged 2026-06-30; backlog phase 2) ─────────────
+# Each carries its target. FIX = code fix needed before wiring (route bit-rot etc).
+pending       integration-mail-external-reachability.sh  # INTEGRATE SERIAL_PRE/external+slow (accurate)
+pending       integration-mail-dr-failover.sh            # FIX (parameterize bastion/apex) -> SERIAL_POST/slow/external
+pending       integration-mail-mobility-e2e.sh           # FIX (thisNodeOnly->activeNodeOnly; cron timing) -> SERIAL_POST/slow
+pending       integration-mailbox-aux-orchestrator-e2e.sh # FIX (chain after mailbox-engine seed; needs /tmp/mpw) -> SERIAL/slow
+pending       integration-master-user-rotation.sh        # FIX (cookie->Bearer; drop rollout-restart) -> SERIAL_PRE/core
+pending       integration-bulwark-impersonate.sh         # INTEGRATE PARALLEL/core (add exit-77 no-bulwark skip-guard)
+pending       integration-webmail-feature-toggle.sh      # INTEGRATE SERIAL_PRE/core (rolls webmail deploys; restores)
+pending       integration-webmail-platform-e2e.sh        # FIX (add provision-wait via provision_tenant) -> PARALLEL/core
+pending       integration-dr-bundle.sh                   # route FIXED -> /system-backup/secrets/runs (pending staging validation) -> PARALLEL/external
+pending       integration-dr-protocols.sh                # INTEGRATE PARALLEL/external (offline etcd break-glass)
+pending       integration-postgres-barman-restore.sh     # INTEGRATE SERIAL_POST/slow (destructive promote)
+pending       integration-system-backup.sh               # INTEGRATE PARALLEL/external (secrets bundle single-use URL)
+pending       integration-tenant-bundles-engine-e2e.sh   # FIX (wire MODE=api-smoke as SERIAL/core)
+pending       integration-tenant-bundles-restic.sh       # field FIXED -> primaryEmail (pending staging validation) -> SERIAL/external
+pending       integration-burstable-qos.sh               # FIX (/catalog/entries?code= -> /catalog?search=) -> PARALLEL/core
+pending       integration-custom-deployments-phase2.sh   # INTEGRATE SERIAL_PRE/slow (needs phase-1 prereq)
+pending       integration-firewall-blacklist.sh          # INTEGRATE SERIAL_PRE/core (clean)
+pending       integration-mtls-e2e.sh                    # INTEGRATE PARALLEL/slow (clean)
+pending       integration-platform-domain-rename-e2e.sh  # INTEGRATE SERIAL_PRE-isolated/core (apex rename; restores)
+pending       integration-sftp-gateway-e2e.sh            # FIX (parameterize port-forward ports) -> SERIAL/core (on-node)
+pending       integration-postgres-snapshot-restore.sh   # RETIRE after folding its unique WITH_WAL recoveryTargetTime branch into postgres-pitr
+
+# ── Retired 2026-06-30 (deleted; bit-rotted or superseded) ────────────────
+# integration-mail-ha-e2e.sh                  7/13 dead: blob-store removed (ADR-046), node-selector gone, cron */2->*/30
+# integration-backups-ui-phase-2026-05-24.sh  dated point-in-time script, superseded by integration-backups-ui.sh
+# integration-tenant-bundles-jmap.sh          strict subset of integration-tenant-bundles-jmap-full-e2e.sh
