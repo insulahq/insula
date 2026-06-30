@@ -20,6 +20,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   GHSA-p6gq-j5cr-w38f stays tracked as `not_affected` (the `raw` message option is
   unused; the fix is a breaking 8→9 major) — the temporary undici cve-ledger
   waivers are removed now that it's fixed in-tree.
+- **Mail-stack images bumped** (component-watch tier-0): Stalwart `v0.16.9 → v0.16.11`
+  (drop-in patch — encryption-at-rest, IDN/OAuth/IMAP-objectid features + DANE/TLS/JMAP
+  fixes; no config/cert/port change), Bulwark webmail `1.6.7 → 1.7.6`, and Roundcube
+  `1.6.16 → 1.7.1` (both digest-pinned). Validated against the staging cluster (Stalwart
+  SMTP/IMAP/JMAP + webmail).
 
 ### Changed
 - **Tenant hard-delete returns promptly** (~68 s → single digits for a

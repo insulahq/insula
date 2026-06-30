@@ -138,7 +138,7 @@ components:
     name: Stalwart mail server (SMTP/IMAP/JMAP)
     tier: "0"
     kind: image
-    pinned: "v0.16.9"
+    pinned: "v0.16.11"
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]
@@ -273,7 +273,7 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:4ee0f0b505287555f814654fec12bd07c8bde098ee80a92b2dc13d556f576431"
+    pinned: "sha256:fa41d82ce5a4331241d501bb9a3f83c554bd647ce6ef17e3055daaa860a00470"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
@@ -286,7 +286,7 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:bde2220178fdaf78c8217d10d8bae6536076af1d8a91c69911b464d18fb4977c"
+    pinned: "sha256:6f52dff5624c7dc887cea389d58e1cd47f9eb4707e14ff68a01ffbc55df7dbfd"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
