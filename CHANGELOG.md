@@ -26,6 +26,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   still happen — via the reap + the 2-min lifecycle-hook scheduler retry +
   Orphaned-Volumes safety nets — just off the request path. This also stops
   concurrent deletes from piling up slow requests on the API.
+- **external-snapshotter upgraded v6.3.0 → v8.6.0** (latest stable). The
+  running snapshot-controller on staging was actually v6.2.1 — even older
+  than the previous pin claimed. v8 requires k8s ≥ 1.25 (CRD CEL validation
+  rules); clusters run 1.35. This is a pin bump in `scripts/bootstrap.sh`
+  plus a re-apply of the upstream CRDs + RBAC + snapshot-controller
+  Deployment, and it realigns the controller with the v8.x CRD set already
+  referenced by `k8s/base/longhorn/csi-snapshots.yaml`. Safe by inspection:
+  the VolumeSnapshot storage version has been v1 since external-snapshotter
+  v4.1, no v1beta1 objects exist (CRDs already serve v1 only), so the CRD
+  update is additive; VolumeGroupSnapshot CRDs are intentionally omitted
+  (the controller is Ready on the v1 CRD set alone). Underpins the CNPG
+  snapshot-PITR path and the Longhorn `VolumeSnapshotClass`. Existing-cluster
+  upgrade is the manual staged procedure, not a Flux bump.
 
 ### Fixed
 - **Mail migration to a worker node no longer deadlocks — and never loses mail data.**

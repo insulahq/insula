@@ -4150,10 +4150,36 @@ install_longhorn() {
   #   - CNPG bootstrap.recovery.volumeSnapshots — the Postgres PITR
   #     auto-promote endpoint depends on this to wrap an existing
   #     Longhorn snapshot for CNPG to recover from.
-  # Pinned to v6.3.0 (matches Longhorn v1.11.x compatibility matrix).
+  # Pinned to v8.6.0 (latest stable). v8 requires k8s >= 1.25 (CRD CEL
+  # validation rules) — we run >= 1.35, so this is satisfied. The
+  # VolumeSnapshot storage version is v1 (since external-snapshotter
+  # v4.1); no v1beta1 objects exist on our clusters, so the CRD bump is
+  # purely additive. VolumeGroupSnapshot CRDs are intentionally NOT
+  # applied — the controller is Ready on the v1 VolumeSnapshot CRD set
+  # alone and group snapshots stay disabled (no --enable-volume-group-
+  # snapshots flag). Realigns the controller with the v8.x CRD set
+  # referenced by k8s/base/longhorn/csi-snapshots.yaml.
   log "Installing external-snapshotter CRDs + controller (CNPG PITR + VolumeSnapshotClass dep)…"
-  local snap_ver="v6.3.0"
+  local snap_ver="v8.6.0"
   local snap_base="https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${snap_ver}"
+
+  # external-snapshotter v7+ renamed the snapshot-controller pod selector
+  # from `app: snapshot-controller` to `app.kubernetes.io/name:
+  # snapshot-controller`. spec.selector is IMMUTABLE, so `kubectl apply`
+  # over a pre-v7 Deployment fails ("field is immutable"). Delete the old
+  # Deployment first so the apply below recreates it with the new selector.
+  # Safe: snapshot-controller is a stateless leader-elected control loop —
+  # the VolumeSnapshot/Content/Class CRD objects it reconciles persist
+  # independently, so a brief gap only delays reconciliation, never data.
+  # Idempotent: skipped on a fresh install (no Deployment) and on an
+  # already-v7+ cluster (selector already carries app.kubernetes.io/name).
+  if kctl get deploy -n kube-system snapshot-controller >/dev/null 2>&1 \
+     && [[ -z "$(kctl get deploy -n kube-system snapshot-controller \
+          -o jsonpath='{.spec.selector.matchLabels.app\.kubernetes\.io/name}' 2>/dev/null)" ]]; then
+    log "Replacing pre-v7 snapshot-controller Deployment (immutable selector changed)…"
+    kctl delete deploy -n kube-system snapshot-controller --ignore-not-found
+  fi
+
   for f in \
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml" \
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml" \

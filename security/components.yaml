@@ -532,7 +532,7 @@ components:
     name: external-snapshotter (CSI VolumeSnapshot CRDs + controller)
     tier: "1"
     kind: binary
-    pinned: "v6.3.0"
+    pinned: "v8.6.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: kubernetes-csi/external-snapshotter, advisories: kubernetes-csi/external-snapshotter }
