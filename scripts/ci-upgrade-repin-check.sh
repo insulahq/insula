@@ -36,12 +36,14 @@ else
   fail "orchestrate.ts is missing"
 fi
 
-# (3) re-pin only writes a clean vX.Y.Z tag (+ clears branch/commit); a dev pin /
-#     prerelease is refused by the strict X.Y.Z regex in BOTH functions.
+# (3) re-pin only writes a clean vX.Y.Z tag (+ clears branch/commit). A dev pin
+#     (-<sha>) is ALWAYS refused by the strict STABLE_TAG_RE; an -rc.N prerelease
+#     is refused by DEFAULT and accepted ONLY under allowPrerelease (Mode B —
+#     staging opt-in / prod off, ADR-045 dec. 11/12).
 if [[ -f "$REPIN" ]]; then
   grep -qF 'branch: null' "$REPIN" || fail "repin must clear branch when switching to a tag"
-  grep -qF '/^v\d+\.\d+\.\d+$/' "$REPIN" || fail "repinGitRepositoryTag must validate the tag is a clean v X.Y.Z"
-  grep -qF '/^\d+\.\d+\.\d+$/' "$REPIN" || fail "gitTagForVersion must validate a clean X.Y.Z (refusing dev pins / prereleases)"
+  grep -qF '/^v\d+\.\d+\.\d+$/' "$REPIN" || fail "STABLE_TAG_RE must validate a clean vX.Y.Z (dev pins / prereleases refused by default)"
+  grep -qF 'allowPrerelease === true && RC_TAG_RE' "$REPIN" || fail "gitTagForVersion/repin must gate -rc.N tags behind allowPrerelease (prod refuses RC; dev pins always refused)"
 else
   fail "flux-repin.ts is missing"
 fi
