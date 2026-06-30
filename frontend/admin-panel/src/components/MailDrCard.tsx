@@ -9,6 +9,7 @@ import {
   Info,
   Database,
   Wrench,
+  RefreshCw,
 } from 'lucide-react';
 import StalwartReprovisionModal from '@/components/StalwartReprovisionModal';
 import {
@@ -387,9 +388,22 @@ export default function MailDrCard() {
                 </code>
                 <div className="mt-1">
                   Your declared primary is still <code className="font-mono">{current.lastFailedMigration.targetNode}</code>.
-                  Resolve the underlying issue and retry the migration below.
+                  Retry the migration directly below — the swap now self-heals a stuck PVC delete — or
+                  resolve any underlying issue first.
                 </div>
               </div>
+              <button
+                type="button"
+                onClick={() => void handleMove(current.lastFailedMigration!.targetNode)}
+                disabled={movePending}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed px-3 py-1.5 text-xs font-medium text-white"
+                data-testid="mail-dr-retry-migration"
+                title={`Re-run the migration to ${current.lastFailedMigration.targetNode}`}
+              >
+                {movePending
+                  ? <Loader2 size={12} className="animate-spin" />
+                  : <RefreshCw size={12} />} Retry migration to {current.lastFailedMigration.targetNode}
+              </button>
             </div>
           </div>
         </div>
