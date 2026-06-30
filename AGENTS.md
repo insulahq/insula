@@ -104,6 +104,15 @@ The hard-won rules. Violating these is how past sessions broke things.
 - If a deployed feature "doesn't work," **first check `kubectl get rs` for `ReplicaFailure`**
   (usually a quota block) before blaming the build or buildkit cache.
 - **STOP before any DROP / recreate on a system PVC** — enumerate snapshots and bundles first.
+- **A `bootstrap.sh` infra-version-pin bump (`K3S_VERSION`, `CALICO_VERSION`, `LONGHORN_VERSION`,
+  `TRAEFIK_CHART_VERSION`, `CNPG_CHART_VERSION`, `snap_ver`, …) reaches FRESH installs ONLY.** Existing
+  clusters are upgraded **in place by a per-release host-migration** (`platform/host-migrations/<ver>/NNNN-*.sh`,
+  ADR-045 W10c) — embedded in the signed `platform-ops` binary, run host-side by the `platform-ops
+  host-config` converger in `enforce` mode; **NOT by Flux/RC** (Flux only applies app overlays). Author one
+  with `scripts/new-host-migration.sh <name>` (idempotent, `# idempotent:`/`# allow-paths:` headers). CI guard
+  `ci-migration-coverage.sh` **fails any pin change with no matching host-migration** (refresh
+  `scripts/.firewall-shape.sha256` via `--update-baseline`). k3s is the exception (`platform-ops cluster
+  upgrade`, SUC Plans).
 - Every operator-facing failure renders an `OperatorError` via `<ErrorPanel>`.
 
 ### UI/UX conventions

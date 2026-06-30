@@ -37,8 +37,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   v4.1, no v1beta1 objects exist (CRDs already serve v1 only), so the CRD
   update is additive; VolumeGroupSnapshot CRDs are intentionally omitted
   (the controller is Ready on the v1 CRD set alone). Underpins the CNPG
-  snapshot-PITR path and the Longhorn `VolumeSnapshotClass`. Existing-cluster
-  upgrade is the manual staged procedure, not a Flux bump.
+  snapshot-PITR path and the Longhorn `VolumeSnapshotClass`.
+- **Bootstrap-pinned infra now upgrades existing clusters via a host-migration**
+  (the path I previously hand-applied). A `bootstrap.sh` infra-version-pin bump
+  reaches FRESH installs only — Flux/RC applies app overlays, never `bootstrap.sh`.
+  So the external-snapshotter bump ships
+  `platform/host-migrations/2026.6.19/0001-external-snapshotter-v8.sh` (ADR-045
+  W10c): embedded in the signed `platform-ops` binary, run host-side by the
+  `platform-ops host-config` converger in `enforce` (idempotent; exits 0 once the
+  v8 selector is present; workers no-op via least-priv RBAC). New forcing function:
+  `ci-migration-coverage.sh` now fingerprints the bootstrap **infra version pins**
+  (k3s/Calico/Longhorn/Traefik/cert-manager/sealed-secrets/CNPG/Flux/snapshotter)
+  alongside the firewall shape — any pin bump without a matching host-migration
+  fails the build.
 
 ### Fixed
 - **Mail migration to a worker node no longer deadlocks — and never loses mail data.**

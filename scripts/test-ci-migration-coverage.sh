@@ -89,6 +89,29 @@ echo "== whitespace / comment edits do NOT count as a shape change =="
 fake_bootstrap "" | sed 's/    tcp dport 80 accept/        tcp dport 80 accept    # reindented + comment/' > "$D/cosmetic.sh"
 run "$D/cosmetic.sh" "$D/baseline" 0 0 0; expect "reindent+comment → still OK" 0 $?
 
+echo "== infra version PIN change → coverage required (external-snapshotter v6→v8 gap, 2026-06-30) =="
+# A bootstrap-pinned infra version is rendered ONCE at install, so a bump needs a
+# host-migration to reach existing nodes — same gate as the firewall shape.
+printf '#!/usr/bin/env bash\nLONGHORN_VERSION="v1.11.1"\n' > "$D/pin.sh"
+FWSHAPE_BOOTSTRAP="$D/pin.sh" FWSHAPE_BASELINE="$D/pinbase" bash "$GUARD" --update-baseline >/dev/null
+run "$D/pin.sh"  "$D/pinbase" 0 0 0; expect "pin unchanged → OK" 0 $?
+printf '#!/usr/bin/env bash\nLONGHORN_VERSION="v1.12.0"\n' > "$D/pin2.sh"
+run "$D/pin2.sh" "$D/pinbase" 0 0 0; expect "pin bumped + no coverage → FAIL" 1 $?
+run "$D/pin2.sh" "$D/pinbase" 1 0 1; expect "pin bumped + migration + baseline → OK" 0 $?
+# A local `snap_ver="vX"` assignment (external-snapshotter) is fingerprinted too.
+printf '#!/usr/bin/env bash\n  local snap_ver="v6.3.0"\n' > "$D/snap.sh"
+FWSHAPE_BOOTSTRAP="$D/snap.sh" FWSHAPE_BASELINE="$D/snapbase" bash "$GUARD" --update-baseline >/dev/null
+printf '#!/usr/bin/env bash\n  local snap_ver="v8.6.0"\n' > "$D/snap2.sh"
+run "$D/snap2.sh" "$D/snapbase" 0 0 0; expect "snap_ver bumped + no coverage → FAIL" 1 $?
+# An arg-parser assignment from a variable must NOT be fingerprinted (no churn).
+printf '#!/usr/bin/env bash\nLONGHORN_VERSION="v1.11.1"\n--longhorn-version) LONGHORN_VERSION="$2";;\n' > "$D/argp.sh"
+FWSHAPE_BOOTSTRAP="$D/argp.sh" FWSHAPE_BASELINE="$D/argpbase" bash "$GUARD" --update-baseline >/dev/null
+printf '#!/usr/bin/env bash\nLONGHORN_VERSION="v1.11.1"\n--longhorn-version) LONGHORN_VERSION="$3";;\n' > "$D/argp2.sh"
+run "$D/argp2.sh" "$D/argpbase" 0 0 0; expect "arg-parser var assignment edit → still OK (not fingerprinted)" 0 $?
+# A pin-line trailing-comment edit is NOT a change.
+printf '#!/usr/bin/env bash\nLONGHORN_VERSION="v1.11.1"   # 2026-07-01 reviewed\n' > "$D/pin3.sh"
+run "$D/pin3.sh" "$D/pinbase" 0 0 0; expect "pin comment edit → still OK" 0 $?
+
 echo "== real repo passes its own committed baseline =="
 bash "$GUARD" >/dev/null 2>&1; expect "live repo OK" 0 $?
 

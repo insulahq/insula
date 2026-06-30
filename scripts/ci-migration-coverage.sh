@@ -49,10 +49,31 @@ firewall_shape() {
     | grep -v '^$'
 }
 
-current_hash() { firewall_shape | sha256sum | awk '{print $1}'; }
+# Bootstrap-pinned infra component versions (k3s, Calico, Longhorn, Traefik,
+# cert-manager, sealed-secrets, CNPG, Flux, external-snapshotter). bootstrap.sh
+# installs/pins these ONCE at install time, so a version bump reaches FRESH
+# installs but NOT already-bootstrapped clusters — those need a one-shot W10c
+# host-migration to upgrade in place (same forcing-function rationale as the
+# firewall shape above; the external-snapshotter v6→v8 gap, 2026-06-30, that
+# adding this here prevents from recurring). Match only literal version
+# assignments (`="v?<digit>…`) so arg-parser lines like `K3S_VERSION="$2"` never
+# churn the hash; trailing `# date` comments are already stripped above, so a
+# comment edit is not a change.
+infra_pin_shape() {
+  sed -E 's/#.*$//' "$BOOTSTRAP" \
+    | grep -E '(K3S_VERSION|CALICO_VERSION|LONGHORN_VERSION|TRAEFIK_CHART_VERSION|CERT_MANAGER_CHART_VERSION|SEALED_SECRETS_CHART_VERSION|CNPG_CHART_VERSION|FLUX_VERSION|snap_ver)="v?[0-9]' \
+    | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//' \
+    | grep -v '^$'
+}
+
+# The coverage hash spans BOTH the firewall shape AND the infra version pins —
+# a change to either is a "fresh-render vs existing-node" delta that an existing
+# cluster only gets via a host-migration.
+render_shape() { firewall_shape; infra_pin_shape; }
+current_hash() { render_shape | sha256sum | awk '{print $1}'; }
 
 case "${1:-}" in
-  --print) firewall_shape; exit 0 ;;
+  --print) render_shape; exit 0 ;;
   --update-baseline)
     current_hash > "$BASELINE"
     echo "ci-migration-coverage: baseline refreshed → $BASELINE ($(cat "$BASELINE"))"
@@ -63,7 +84,7 @@ cur="$(current_hash)"
 base="$(cat "$BASELINE" 2>/dev/null || echo "")"
 
 if [[ "$cur" == "$base" ]]; then
-  echo "ci-migration-coverage: firewall shape unchanged — OK."
+  echo "ci-migration-coverage: bootstrap firewall shape + infra pins unchanged — OK."
   exit 0
 fi
 
@@ -91,7 +112,7 @@ waiver=$(( waiver + 0 )) 2>/dev/null || waiver=0
 baseline_updated=$(( baseline_updated + 0 )) 2>/dev/null || baseline_updated=0
 
 if (( waiver > 0 )); then
-  echo "ci-migration-coverage: firewall shape changed; [no-host-migration] waiver present — allowed."
+  echo "ci-migration-coverage: bootstrap firewall shape / infra pin changed; [no-host-migration] waiver present — allowed."
   # A waiver still must refresh the baseline so the NEXT PR starts clean.
   if (( baseline_updated == 0 )); then
     echo "::error::waiver requires refreshing the baseline: run scripts/ci-migration-coverage.sh --update-baseline and commit scripts/.firewall-shape.sha256" >&2
@@ -101,12 +122,12 @@ if (( waiver > 0 )); then
 fi
 
 if (( migration_added > 0 && baseline_updated > 0 )); then
-  echo "ci-migration-coverage: firewall shape changed + host-migration added + baseline refreshed — OK."
+  echo "ci-migration-coverage: bootstrap firewall shape / infra pin changed + host-migration added + baseline refreshed — OK."
   exit 0
 fi
 
-echo "::error::ci-migration-coverage: scripts/bootstrap.sh firewall shape changed but no host-migration backfills existing nodes." >&2
-echo "  Existing clusters render the firewall ONCE at bootstrap — a change here will NOT reach them." >&2
+echo "::error::ci-migration-coverage: scripts/bootstrap.sh firewall shape or infra version pin changed but no host-migration upgrades existing nodes." >&2
+echo "  Existing clusters render the firewall + install pinned infra ONCE at bootstrap — a change here will NOT reach them." >&2
 echo "  Do ONE of:" >&2
 echo "   1. Add platform/host-migrations/<next-version>/NNNN-name.sh that idempotently backfills the change," >&2
 echo "      then refresh the baseline:  ./scripts/ci-migration-coverage.sh --update-baseline" >&2
