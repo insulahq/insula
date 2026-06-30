@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.6.19-rc.3] - 2026-06-30
+
 ### Security
 - **undici upgraded to 6.27.0** (`npm audit fix`, within range) — clears the four
   backend HIGH advisories (Set-Cookie header injection, WS DoS, response-queue
