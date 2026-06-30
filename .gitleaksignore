@@ -28,8 +28,7 @@ docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1868
 docs/architecture/MANAGEMENT_API_SPEC.md:generic-api-key:1963
 docs/features/PASSWORD_PROTECTED_DIRECTORIES.md:curl-auth-user:1085
 k8s/base/backend-deployment.yaml:generic-api-key:301
-scripts/integration-all.sh:generic-api-key:135
-scripts/integration-all.sh:generic-api-key:179
-scripts/integration-all.sh:generic-api-key:184
-scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:277
-scripts/integration-cluster-trusted-proxies.sh:curl-auth-header:295
+# integration-all.sh suite labels + integration-cluster-trusted-proxies.sh
+# `not-a-real-token` curl placeholders are now covered by line-independent
+# allowlist regexes in .gitleaks.toml (they kept breaking this baseline on line
+# shifts) — fingerprints removed.

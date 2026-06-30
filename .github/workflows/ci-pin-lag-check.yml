@@ -42,11 +42,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # On pull_request, check the BASE branch (origin/main) — the
-          # PR's HEAD likely doesn't touch the pin files, and we want
-          # to flag if main itself is in a stale state before merging
-          # more PRs on top of it.
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || 'main' }}
+          # Always verify the `development` branch's pin. Per ADR-053 development
+          # is the auto-pinned integration branch — build-deploy pins it on every
+          # code push, so it is the ONLY branch where the development-overlay pin
+          # is live. main carries an inert promote-snapshot of that pin (no cluster
+          # tracks main), so checking it on main false-flagged after every
+          # promote/release (the `chore(release)`/`chore(promote)` commits count as
+          # "code commits" but never carry a development auto-pin).
+          ref: development
           # 100 commits ≫ the auto-pin churn rate; the script looks at
           # most ~10 commits back before giving up.
           fetch-depth: 100

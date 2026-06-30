@@ -1826,6 +1826,10 @@ export async function restoreMailOnSource(
       { name: retainedPvName, body: { spec: { claimRef: null } } } as unknown as Parameters<typeof core.patchPersistentVolume>[0],
       MERGE_PATCH,
     ).catch((e) => log.warn(`[migration] rollback: clear claimRef on ${retainedPvName} failed:`, e));
+    // backup-coverage: captured-by:mail-snapshot
+    // (rollback re-bind of the SAME mail store onto its retained PV — no new data
+    //  dimension; the mail content is captured by the mail-snapshot component, as
+    //  at the primary create-site above.)
     await core.createNamespacedPersistentVolumeClaim({
       namespace: MAIL_NAMESPACE,
       body: {

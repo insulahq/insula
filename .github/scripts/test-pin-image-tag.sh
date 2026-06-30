@@ -39,7 +39,7 @@ grep -q 'newTag: "20260606120000-abc1234"' "$TMP/k8s/overlays/development/kustom
 # 'other' must be untouched (still latest)
 otherline=$(grep -A1 '/other$' "$TMP/k8s/overlays/development/kustomization.yaml" | grep newTag)
 echo "$otherline" | grep -q '"latest"' && ok "other image untouched" || bad "other image changed: $otherline"
-# idempotent: once the tag is committed (the real CI flow re-checks out main),
+# idempotent: once the tag is committed (the real CI flow re-checks out development),
 # re-pinning the same tag is a no-op. The script compares the working tree vs
 # HEAD, so commit the first pin before re-running.
 ( cd "$TMP" && git add -A && git -c user.email=t@t -c user.name=t commit -qm pin )
@@ -49,15 +49,15 @@ grep -q 'already at' /tmp/pin_idem.txt && ok "re-pin same tag → no-op" || bad 
 echo "[4] commit + push to a real remote"
 RTMP=$(mktemp -d); trap 'rm -rf "$TMP" "$RTMP"' EXIT
 ORIGIN="$RTMP/origin.git"; WORK="$RTMP/work"
-git init -q --bare -b main "$ORIGIN"
+git init -q --bare -b development "$ORIGIN"
 git clone -q "$ORIGIN" "$WORK"
-( cd "$WORK" && git config user.email t@t && git config user.name t && git checkout -q -b main )
+( cd "$WORK" && git config user.email t@t && git config user.name t && git checkout -q -b development )
 seed_overlay "$WORK"
-( cd "$WORK" && git add -A && git commit -qm init && git push -q -u origin main )
+( cd "$WORK" && git add -A && git commit -qm init && git push -q -u origin development )
 ( cd "$WORK" && ROOT="$WORK" "$PIN" myimage 20260606130000-def5678 ) >/dev/null 2>&1
-# origin main should now carry the pin commit
-got=$(git -C "$ORIGIN" show main:k8s/overlays/development/kustomization.yaml | grep -A1 '/myimage$' | grep newTag)
-echo "$got" | grep -q '20260606130000-def5678' && ok "origin main has the pin" || bad "origin missing pin: $got"
+# origin development should now carry the pin commit (pin-image-tag.sh pushes HEAD:development)
+got=$(git -C "$ORIGIN" show development:k8s/overlays/development/kustomization.yaml | grep -A1 '/myimage$' | grep newTag)
+echo "$got" | grep -q '20260606130000-def5678' && ok "origin development has the pin" || bad "origin missing pin: $got"
 
 echo "[5] race recovery: first push rejected (origin advanced) → reset+reapply+repush"
 # Advance origin via a SECOND clone with an UNRELATED change, so the work clone's
@@ -65,14 +65,14 @@ echo "[5] race recovery: first push rejected (origin advanced) → reset+reapply
 WORK2="$RTMP/work2"
 git clone -q "$ORIGIN" "$WORK2"
 ( cd "$WORK2" && git config user.email t@t && git config user.name t \
-   && echo "unrelated" > UNRELATED.txt && git add -A && git commit -qm "advance origin" && git push -q origin main )
+   && echo "unrelated" > UNRELATED.txt && git add -A && git commit -qm "advance origin" && git push -q origin development )
 # work clone is now behind origin; pin from there must converge via the loop.
 ( cd "$WORK" && ROOT="$WORK" "$PIN" myimage 20260606140000-aaa9999 ) >/tmp/pin_race.txt 2>&1
 race_rc=$?
-[ "$race_rc" -eq 0 ] && ok "pin converged despite stale local main" || bad "race rc=$race_rc: $(cat /tmp/pin_race.txt)"
+[ "$race_rc" -eq 0 ] && ok "pin converged despite stale local development" || bad "race rc=$race_rc: $(cat /tmp/pin_race.txt)"
 # origin must have BOTH the unrelated commit AND the new pin
-git -C "$ORIGIN" show main:UNRELATED.txt >/dev/null 2>&1 && ok "origin kept the concurrent unrelated commit" || bad "lost the concurrent commit"
-got2=$(git -C "$ORIGIN" show main:k8s/overlays/development/kustomization.yaml | grep -A1 '/myimage$' | grep newTag)
+git -C "$ORIGIN" show development:UNRELATED.txt >/dev/null 2>&1 && ok "origin kept the concurrent unrelated commit" || bad "lost the concurrent commit"
+got2=$(git -C "$ORIGIN" show development:k8s/overlays/development/kustomization.yaml | grep -A1 '/myimage$' | grep newTag)
 echo "$got2" | grep -q '20260606140000-aaa9999' && ok "origin has the re-applied pin" || bad "origin missing re-applied pin: $got2"
 rm -rf "$RTMP"
 
