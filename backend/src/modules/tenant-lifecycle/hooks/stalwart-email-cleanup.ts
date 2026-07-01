@@ -43,12 +43,27 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
   }
 
   let attempted = 0;
+  let destroyed = 0;
+  const stranded: string[] = [];
   for (const row of rows) {
     if (!row.stalwartDomainId) continue;
     attempted += 1;
-    // Failures are logged + swallowed inside the helper — a partial
-    // cleanup leaves inert orphans that principals-sync surfaces.
-    await destroyStalwartArtifactsForEmailDomain(ctx.db, row);
+    // The helper retries the Domain destroy internally to ride out a transient
+    // Stalwart blip, then reports the outcome. Anything still stranded is an
+    // inert orphan that principals-sync surfaces (a hook-level retry can't help —
+    // the FK cascade deletes this email_domain row moments after we return).
+    const outcome = await destroyStalwartArtifactsForEmailDomain(ctx.db, row);
+    if (outcome?.domainDestroyed ?? true) destroyed += 1;
+    else stranded.push(row.stalwartDomainId);
+  }
+
+  if (stranded.length > 0) {
+    // Non-blocking by design — deletion already proceeded. Surface the count so
+    // the stranded Domains aren't invisible until the next principals-sync tick.
+    return {
+      status: 'ok',
+      detail: `destroyed ${destroyed}/${attempted} Stalwart Domain(s); ${stranded.length} stranded as orphan(s) (principals-sync will flag) — Stalwart likely unreachable during teardown`,
+    };
   }
 
   return {

@@ -315,13 +315,26 @@ export async function enableEmailForDomain(
  * operator action — which is exactly what the three callers are
  * (email-domain disable, domain delete, tenant delete).
  */
+/**
+ * Result of a Stalwart-artifact teardown. `domainDestroyed` is the one that
+ * matters for orphans: false means the Domain principal is still in Stalwart
+ * (an orphan the principals-sync detector will flag). `failures` lists
+ * human-readable reasons for observability. Callers that don't care can ignore
+ * the return (it stays `await`-compatible).
+ */
+export interface DestroyStalwartArtifactsResult {
+  readonly domainDestroyed: boolean;
+  readonly failures: readonly string[];
+}
+
 export async function destroyStalwartArtifactsForEmailDomain(
   db: Database,
   emailDomain: { readonly id: string; readonly stalwartDomainId: string | null },
-): Promise<void> {
-  if (!emailDomain.stalwartDomainId) return;
+): Promise<DestroyStalwartArtifactsResult> {
+  const failures: string[] = [];
+  if (!emailDomain.stalwartDomainId) return { domainDestroyed: true, failures };
   const accountId = await getDomainJmapAccountId();
-  if (!accountId) return;
+  if (!accountId) return { domainDestroyed: false, failures: ['no Stalwart JMAP account id'] };
 
   // 1. Mailbox principals — Stalwart links them to the Domain and
   //    refuses the Domain destroy while any remain.
@@ -338,6 +351,7 @@ export async function destroyStalwartArtifactsForEmailDomain(
         baseUrl: process.env.STALWART_MGMT_URL,
       });
     } catch (err) {
+      failures.push(`mailbox ${mb.id}: ${err instanceof Error ? err.message : String(err)}`);
       log.warn(
         { mailboxId: mb.id, principalId: mb.principalId, err: err instanceof Error ? err.message : String(err) },
         'Stalwart mailbox principal destroy failed — principal will orphan (principals-sync flags it)',
@@ -356,25 +370,49 @@ export async function destroyStalwartArtifactsForEmailDomain(
       baseUrl: process.env.STALWART_MGMT_URL,
     });
   } catch (err) {
+    failures.push(`dkim: ${err instanceof Error ? err.message : String(err)}`);
     log.warn(
       { stalwartDomainId: emailDomain.stalwartDomainId, err: err instanceof Error ? err.message : String(err) },
       'DkimSignature cleanup failed — rows will orphan',
     );
   }
 
-  // 3. The Domain principal itself.
-  try {
-    await jmapDestroyPrincipal({
-      accountId,
-      id: emailDomain.stalwartDomainId,
-      baseUrl: process.env.STALWART_MGMT_URL,
-    });
-  } catch (err) {
-    log.warn(
-      { stalwartDomainId: emailDomain.stalwartDomainId, err: err instanceof Error ? err.message : String(err) },
-      'Stalwart Domain destroy failed (platform row removal proceeds; principals-sync will flag orphan)',
-    );
+  // 3. The Domain principal itself. Bounded in-call retry: the dominant cause
+  //    of orphan pile-up is Stalwart being momentarily unreachable during a
+  //    redeploy/restart window (2026-06-30 churn left 63 orphans). Retrying a
+  //    few times here rides out that blip so the FK cascade — which deletes
+  //    this email_domain row moments later, making a hook-level retry useless —
+  //    doesn't strand the Domain. A persistent failure still degrades to an
+  //    inert orphan that principals-sync surfaces.
+  let domainDestroyed = false;
+  const MAX_ATTEMPTS = 3;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+    try {
+      await jmapDestroyPrincipal({
+        accountId,
+        id: emailDomain.stalwartDomainId,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+      domainDestroyed = true;
+      break;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (attempt === MAX_ATTEMPTS) {
+        failures.push(`domain destroy: ${msg}`);
+        log.warn(
+          { stalwartDomainId: emailDomain.stalwartDomainId, attempts: MAX_ATTEMPTS, err: msg },
+          'Stalwart Domain destroy failed after retries (platform row removal proceeds; principals-sync will flag orphan)',
+        );
+      } else {
+        log.warn(
+          { stalwartDomainId: emailDomain.stalwartDomainId, attempt, err: msg },
+          'Stalwart Domain destroy failed — retrying',
+        );
+        await new Promise((r) => setTimeout(r, 500 * attempt));
+      }
+    }
   }
+  return { domainDestroyed, failures };
 }
 
 export async function disableEmailForDomain(

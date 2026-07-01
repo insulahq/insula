@@ -29,13 +29,14 @@ import { mailboxes, emailDomains, domains, mailDriftItems, users, notifications 
 import {
   getJmapSession,
   principalGet,
+  verifyMasterJmapAuth,
   type JmapAccountId,
   type StalwartPrincipal,
 } from './client.js';
 import type { CoreV1Api } from '@kubernetes/client-node';
 import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
-import { readStalwartMasterUser } from '../mail-admin/stalwart-master-user.js';
+import { readStalwartMasterUser, readStalwartMasterPassword, MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
@@ -248,7 +249,9 @@ async function syncPrincipals(params: {
     // fallback constant, but the fallback now EQUALS the real sentinel —
     // that comparison would skip the check in the normal case.)
     if (masterFqdn && core) {
+      let masterInDrift = false;
       if (!stalwartMailboxByEmail.has(masterFqdn)) {
+        masterInDrift = true;
         driftThisTick.push({
           kind: 'master-user',
           expectedName: masterFqdn,
@@ -257,11 +260,71 @@ async function syncPrincipals(params: {
           notes:
             'Webmail master user is missing from Stalwart — Bulwark/Roundcube '
             + 'login + impersonation are broken for ALL mailboxes until it is '
-            + 'recreated. Remediate: POST /api/v1/admin/mail/rotate-webmail-master '
-            + '(super_admin) — it recreates the master principal and re-syncs '
-            + 'mail-secrets. No tenant data is affected.',
+            + 'recreated. Auto-heal re-asserts it from mail-secrets on this cycle; '
+            + 'if that is disabled/failing, remediate: POST '
+            + '/api/v1/admin/mail/rotate-webmail-master (super_admin). No tenant '
+            + 'data is affected.',
         });
         log.warn({ masterFqdn }, 'webmail master user missing from Stalwart — drift recorded (impersonation broken)');
+      } else {
+        // The master principal is PRESENT — but existence alone does not prove
+        // it still WORKS. A password that has drifted out of sync with
+        // mail-secrets (e.g. a Stalwart data restore / redeploy that reset the
+        // account) leaves the master "present" yet unable to authenticate,
+        // SILENTLY breaking Bulwark/Roundcube impersonation for ALL mailboxes —
+        // exactly the class the existence check above cannot see. Verify it can
+        // actually obtain a JMAP session with the mail-secrets credential.
+        try {
+          const masterPw = await readStalwartMasterPassword(core);
+          if (masterPw) {
+            const probe = await verifyMasterJmapAuth(masterFqdn, masterPw, baseUrl);
+            if (!probe.ok) {
+              masterInDrift = true;
+              driftThisTick.push({
+                kind: 'master-user',
+                expectedName: masterFqdn,
+                expectedStalwartId: '',
+                platformRowId: MASTER_DRIFT_ROW_ID,
+                notes:
+                  `Webmail master user "${masterFqdn}" EXISTS in Stalwart but its `
+                  + `password no longer authenticates (HTTP ${probe.status}) — mail-secrets `
+                  + 'and Stalwart have drifted apart, so Bulwark/Roundcube login + '
+                  + 'impersonation are broken for ALL mailboxes. Auto-heal re-asserts the '
+                  + 'mail-secrets password onto Stalwart on this cycle; if that is '
+                  + 'disabled/failing, remediate: POST /api/v1/admin/mail/rotate-webmail-master '
+                  + '(super_admin). No tenant data is affected.',
+              });
+              log.warn(
+                { masterFqdn, status: probe.status },
+                'webmail master user present but cannot authenticate — credential drift recorded (impersonation broken)',
+              );
+            }
+          }
+        } catch (err) {
+          // Network / non-auth (5xx, timeout) — NOT a clean auth verdict. Record
+          // a soft error so a transient JMAP blip never raises a false drift.
+          errors.push(`master-auth check failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      // Self-heal: re-assert the master credential from mail-secrets so a
+      // Stalwart redeploy/restore that reset the account cannot leave webmail
+      // impersonation persistently broken. Runs ONLY on detected drift, converges
+      // to the EXISTING secret (no new password, no webmail roll), and the drift
+      // item auto-resolves next cycle once the master authenticates again.
+      // Kill-switch: MAIL_MASTER_AUTOHEAL=disable.
+      if (masterInDrift && env.MAIL_MASTER_AUTOHEAL !== 'disable') {
+        try {
+          const { reconcileStalwartMasterCredential } = await import('../mail-admin/reconcile-master-credential.js');
+          const outcome = await reconcileStalwartMasterCredential({ core, baseUrl });
+          if (outcome.healed) {
+            log.info({ masterFqdn }, 'webmail master credential auto-healed from mail-secrets — drift resolves next cycle');
+          } else if (outcome.status === 'failed') {
+            errors.push(`master auto-heal did not converge: ${outcome.detail}`);
+          }
+        } catch (err) {
+          errors.push(`master auto-heal failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
   } catch (err) {
@@ -396,6 +459,11 @@ async function syncPrincipals(params: {
     for (const [name, stalwartId] of stalwartDomainByName) {
       if (platformKnownNames.has(name)) continue;
       if (currentMailHostname && name === currentMailHostname) continue;
+      // The master sentinel Domain (holds the webmail master principal) is
+      // platform-owned and intentionally has NO email_domains row — it is never
+      // an orphan. Flagging it is a footgun: an operator delete-orphan on
+      // `local.host` would destroy the master and break ALL impersonation.
+      if (name === MASTER_SENTINEL_DOMAIN) continue;
       driftThisTick.push({
         kind: 'orphan-domain',
         expectedName: name,

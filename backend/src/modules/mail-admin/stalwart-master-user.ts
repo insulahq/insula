@@ -49,6 +49,7 @@ const log = mailLogger().child({ module: 'stalwart-master-user' });
 export const MAIL_SECRET_NAMESPACE = 'mail';
 export const MAIL_SECRET_NAME = 'mail-secrets';
 export const MASTER_USER_KEY = 'STALWART_MASTER_USER';
+export const MASTER_PASSWORD_KEY = 'STALWART_MASTER_PASSWORD';
 
 /**
  * The fixed, mail-domain-INDEPENDENT Stalwart Domain that holds the
@@ -146,6 +147,38 @@ export async function readStalwartMasterUser(
     if (cache) return cache.value; // honour the last good read even past TTL
   }
   return MASTER_USER_FALLBACK;
+}
+
+/**
+ * Read the master principal's PASSWORD from `mail-secrets`.
+ *
+ * Unlike the FQDN, a password has NO safe compiled-in default — return
+ * `null` when it cannot be read (no k8s client, missing/empty key, or a
+ * read error) so callers SKIP the master auth-drift probe rather than
+ * authenticate with a bogus credential and raise a false drift item.
+ *
+ * Deliberately NOT cached: the auth-drift detector runs every few minutes
+ * and a rotation must be picked up on the very next tick — a stale cached
+ * password would make it flag a just-fixed master as still broken (or the
+ * reverse). The k8s read is cheap at that cadence.
+ */
+export async function readStalwartMasterPassword(
+  core: CoreV1Api | null | undefined,
+  deps: ReadStalwartMasterUserDeps = {},
+): Promise<string | null> {
+  const reader = deps.readSecret ?? makeDefaultReader(core);
+  if (!reader) return null;
+  try {
+    const value = await reader(MAIL_SECRET_NAMESPACE, MAIL_SECRET_NAME, MASTER_PASSWORD_KEY);
+    const trimmed = value?.trim();
+    return trimmed && trimmed.length > 0 ? trimmed : null;
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'mail-secrets read failed for STALWART_MASTER_PASSWORD; skipping master auth-drift check',
+    );
+    return null;
+  }
 }
 
 function makeDefaultReader(
