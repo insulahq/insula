@@ -31,6 +31,8 @@ import { createRoute } from '../ingress-routes/service.js';
 import { buildAllRouteSpecs } from '../ingress-routes/annotation-sync.js';
 import {
   buildIngressRoute,
+  buildTLSOption,
+  clientAuthTypeForVerifyMode,
   hostMatch,
   middlewareName,
 } from '../ingress-routes/traefik-types.js';
@@ -38,10 +40,16 @@ import type { TraefikRoute } from '../ingress-routes/traefik-types.js';
 import {
   applyIngressRoute,
   applyMiddleware,
+  applyTLSOption,
   deleteIngressRoute,
   deleteMiddleware,
+  deleteTLSOption,
   listMiddlewares,
+  listIngressRoutes,
+  listTLSOptions,
 } from '../ingress-routes/traefik-apply.js';
+import { loadRouteMtlsPolicy } from '../ingress-mtls/service.js';
+import type { RouteMtlsPolicy } from '../ingress-mtls/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -342,9 +350,16 @@ export async function reconcileIngress(
 
   // Build the IngressRoute spec.routes[] from the merged set. Each
   // ingress_routes row produces 1 primary route + 0..N child routes
-  // (protected directories) on the same hostname. We then dedupe per
-  // hostname so a single tenant IngressRoute carries every route.
-  const traefikRoutes: TraefikRoute[] = [];
+  // (protected directories) on the same hostname.
+  //
+  // mTLS PARTITION: Traefik's `tls.options` (which carries the client-cert
+  // requirement) is scoped per-IngressRoute, not per-router, and a host
+  // present with two different TLSOptions makes Traefik error ("found
+  // different TLS options for the same host"). So mTLS-enabled routes go
+  // into their OWN IngressRoute (each with a per-route TLSOption); all
+  // other routes stay in the shared tenant IngressRoute.
+  const plainRoutes: TraefikRoute[] = [];
+  const mtlsBuilds: Array<{ routeId: string; host: string; policy: RouteMtlsPolicy; routes: TraefikRoute[] }> = [];
   const tlsHostnames = new Set<string>();
   for (const route of updatedRoutes as RouteRowLike[]) {
     const spec = routeSpecs.get(route.id);
@@ -373,40 +388,53 @@ export async function reconcileIngress(
     // already prepended the platform-wide `crowdsec@traefik` ref to
     // spec.middlewareRefs, so the same list flows into both the
     // primary route AND every protected-dir child route below.
-    traefikRoutes.push({
+    const primary: TraefikRoute = {
       match: route.path && route.path !== '/'
         ? `${hostMatch(canonicalHost)} && PathPrefix(\`${route.path}\`)`
         : hostMatch(canonicalHost),
       kind: 'Rule',
       ...(spec.middlewareRefs.length > 0 ? { middlewares: spec.middlewareRefs } : {}),
       services: [{ name: backend.serviceName, port: backend.port }],
-    });
+    };
     // Protected-directory child routes (higher priority — set by
     // buildProtectedDirChildRoutes; they reuse parentMiddlewareRefs
     // which already carries crowdsec at slot 0).
-    for (const child of spec.childRoutes) traefikRoutes.push(child);
+    const entryRoutes: TraefikRoute[] = [primary, ...spec.childRoutes];
+
+    // Partition on mTLS. verify_mode `optional_no_ca` needs no CA; `on`
+    // and `optional` require the CA Secret (route-mtls-<id>) materialised
+    // by annotation-sync. If enabled-but-no-CA, we can't verify — log and
+    // fall back to a plain route rather than silently break TLS.
+    const mtlsPolicy = await loadRouteMtlsPolicy(db, route.id);
+    if (mtlsPolicy && (mtlsPolicy.hasCa || mtlsPolicy.verifyMode === 'optional_no_ca')) {
+      mtlsBuilds.push({ routeId: route.id, host: canonicalHost, policy: mtlsPolicy, routes: entryRoutes });
+    } else {
+      if (mtlsPolicy && !mtlsPolicy.hasCa) {
+        console.warn(`[ingress-reconcile] ${canonicalHost}: mTLS enabled (verify_mode=${mtlsPolicy.verifyMode}) but no CA available — enforcement skipped`);
+      }
+      plainRoutes.push(...entryRoutes);
+    }
   }
 
-  if (traefikRoutes.length === 0) {
+  if (plainRoutes.length === 0 && mtlsBuilds.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
     // Also drop the HTTP entrypoint companion if it was previously
     // applied — otherwise it orphans on the cluster after the last
     // route is deleted.
     await deleteIngressRoute(k8s.custom, namespace, `${ingressName}-http`);
     await gcOrphanMiddlewares(k8s, namespace, new Set());
+    await gcOrphanMtls(k8s, namespace, new Set(), new Set());
     return;
   }
 
   // Resolve TLS secret names via the certificates module. cert-manager
-  // owns the Certificate CR + Secret lifecycle; we just pick which
-  // Secret to reference. Traefik supports multiple Secrets via
-  // `tls.options` + TLSStore — but for the tenant ingress we use a
-  // single primary secretName (the first hostname's cert) and let
-  // Traefik fall back to the SNI-routed cert from
-  // `default` TLSStore for additional hostnames. Wildcard reuse
-  // collapses naturally because all hostnames covered by a wildcard
-  // resolve to the same Secret.
+  // owns the Certificate CR + Secret lifecycle; we just pick which Secret
+  // each IngressRoute references. `primaryTlsSecret` (first host) serves
+  // the shared tenant IngressRoute (Traefik SNI-routes additional hosts
+  // from the default store); `hostCertSecret` gives each split mTLS
+  // IngressRoute its own hostname's server cert.
   const autoTls = await isAutoTlsEnabled(db);
+  const hostCertSecret = new Map<string, string>();
   let primaryTlsSecret: string | null = null;
   if (autoTls) {
     for (const hostname of tlsHostnames) {
@@ -427,6 +455,7 @@ export async function reconcileIngress(
           console.warn(`[ingress-reconcile] ${hostname}: cert ready but no secretName returned`);
           continue;
         }
+        hostCertSecret.set(hostname, cert.secretName);
         if (!primaryTlsSecret) primaryTlsSecret = cert.secretName;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -435,18 +464,72 @@ export async function reconcileIngress(
     }
   }
 
-  // Build + apply the tenant IngressRoute (HTTPS / websecure).
-  const ingressBody = buildIngressRoute({
-    name: ingressName,
-    namespace,
-    routes: traefikRoutes,
-    entryPoints: ['websecure'],
-    ...(primaryTlsSecret ? { tls: { secretName: primaryTlsSecret } } : {}),
-    labels: {
-      'hosting-platform/tenant-id': tenantId,
-    },
-  });
-  await applyIngressRoute(k8s.custom, ingressBody);
+  // Shared tenant IngressRoute for all non-mTLS routes.
+  if (plainRoutes.length > 0) {
+    const ingressBody = buildIngressRoute({
+      name: ingressName,
+      namespace,
+      routes: plainRoutes,
+      entryPoints: ['websecure'],
+      ...(primaryTlsSecret ? { tls: { secretName: primaryTlsSecret } } : {}),
+      labels: {
+        'hosting-platform/tenant-id': tenantId,
+      },
+    });
+    await applyIngressRoute(k8s.custom, ingressBody);
+  } else {
+    // Every route is mTLS — the shared IngressRoute would carry nothing.
+    await deleteIngressRoute(k8s.custom, namespace, ingressName);
+  }
+
+  // Per-route mTLS IngressRoutes + TLSOptions. Traefik enforces the CA
+  // check at the TLS handshake (per connection); revocation is enforced
+  // separately by the forwardAuth serial check that annotation-sync wired
+  // into spec.middlewareRefs (Traefik v3.7 OSS TLSOption has no CRL field).
+  const expectedTlsOptions = new Set<string>();
+  const expectedMtlsIngress = new Set<string>();
+  for (const b of mtlsBuilds) {
+    const short = b.routeId.slice(0, 8);
+    const optionName = `mtls-${short}`;
+    const mtlsIngressName = `${ingressName}-mtls-${short}`;
+    const caSecretName = `route-mtls-${short}`;
+    const needsCa = b.policy.verifyMode !== 'optional_no_ca';
+
+    await applyTLSOption(k8s.custom, buildTLSOption({
+      name: optionName,
+      namespace,
+      clientAuthType: clientAuthTypeForVerifyMode(b.policy.verifyMode),
+      ...(needsCa ? { secretNames: [caSecretName] } : {}),
+      labels: {
+        'hosting-platform/tenant-id': tenantId,
+        'hosting-platform/route-id': b.routeId,
+        'hosting-platform/purpose': 'mtls-tlsoption',
+      },
+    }));
+    expectedTlsOptions.add(optionName);
+
+    const certSecret = hostCertSecret.get(b.host) ?? primaryTlsSecret;
+    await applyIngressRoute(k8s.custom, buildIngressRoute({
+      name: mtlsIngressName,
+      namespace,
+      routes: b.routes,
+      entryPoints: ['websecure'],
+      tls: {
+        ...(certSecret ? { secretName: certSecret } : {}),
+        options: { name: optionName, namespace },
+      },
+      labels: {
+        'hosting-platform/tenant-id': tenantId,
+        'hosting-platform/route-id': b.routeId,
+        'hosting-platform/mtls': 'true',
+      },
+    }));
+    expectedMtlsIngress.add(mtlsIngressName);
+  }
+
+  // GC mTLS artefacts (TLSOptions + split IngressRoutes) whose routes no
+  // longer have mTLS enabled.
+  await gcOrphanMtls(k8s, namespace, expectedTlsOptions, expectedMtlsIngress);
 
   // Force-HTTPS HTTP entrypoint — parallel IngressRoute on `web` that
   // 301s HTTP → HTTPS for every route with forceHttps=true. Without
@@ -593,5 +676,45 @@ async function gcOrphanMiddlewares(
     }
   } catch (err) {
     console.warn(`[ingress-reconcile] failed to list Middlewares for GC in ${namespace}:`, err);
+  }
+}
+
+/**
+ * GC the split mTLS artefacts — per-route TLSOption CRs and their dedicated
+ * IngressRoutes — for routes that no longer have mTLS enabled (config
+ * disabled/deleted, or the route removed). Scoped by our own labels so we
+ * never touch a resource we didn't create.
+ */
+async function gcOrphanMtls(
+  k8s: K8sClients,
+  namespace: string,
+  keepTlsOptions: ReadonlySet<string>,
+  keepIngress: ReadonlySet<string>,
+): Promise<void> {
+  try {
+    const options = await listTLSOptions(k8s.custom, namespace, 'hosting-platform/purpose=mtls-tlsoption');
+    for (const opt of options) {
+      if (keepTlsOptions.has(opt.name)) continue;
+      try {
+        await deleteTLSOption(k8s.custom, namespace, opt.name);
+      } catch (err) {
+        console.warn(`[ingress-reconcile] GC of orphan TLSOption ${namespace}/${opt.name} failed:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[ingress-reconcile] failed to list TLSOptions for GC in ${namespace}:`, err);
+  }
+  try {
+    const routes = await listIngressRoutes(k8s.custom, namespace, 'hosting-platform/mtls=true');
+    for (const ir of routes) {
+      if (keepIngress.has(ir.name)) continue;
+      try {
+        await deleteIngressRoute(k8s.custom, namespace, ir.name);
+      } catch (err) {
+        console.warn(`[ingress-reconcile] GC of orphan mTLS IngressRoute ${namespace}/${ir.name} failed:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[ingress-reconcile] failed to list mTLS IngressRoutes for GC in ${namespace}:`, err);
   }
 }
