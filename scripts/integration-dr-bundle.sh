@@ -124,13 +124,17 @@ ok "A3 download produced $(stat -c%s "$WORK_DIR/bundle.age") bytes"
 
 # ─── Decrypt ────────────────────────────────────────────────────────
 echo "==> Phase B: decrypt + untar"
+# External-tier prerequisites: the `age` binary + the operator's AGE private
+# key. Absent on a public clone / CI without the operator's secrets, so SKIP
+# (77) rather than FAIL — this suite decrypts a real operator bundle and only
+# runs where that key is provisioned (matches the other external-tier suites).
 if ! command -v age >/dev/null 2>&1; then
-  fail "B0 'age' binary not found on PATH — install via 'apt-get install age' or download from filippo.io/age"
-  exit 1
+  echo "  SKIP (77): 'age' binary not on PATH — external-tier bundle-decrypt suite. Install age (apt-get install age / filippo.io/age) to run." >&2
+  exit 77
 fi
 if [[ ! -f "$AGE_KEY_FILE" ]]; then
-  fail "B0 AGE_KEY_FILE not found at $AGE_KEY_FILE"
-  exit 1
+  echo "  SKIP (77): AGE_KEY_FILE not found at $AGE_KEY_FILE — external-tier suite needs the operator AGE private key (set AGE_KEY_FILE)." >&2
+  exit 77
 fi
 
 # B1 — looks like an age file (magic = "age-encryption.org/v1")
