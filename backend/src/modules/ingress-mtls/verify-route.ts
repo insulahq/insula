@@ -84,7 +84,7 @@ function safeDecode(s: string): string | null {
 }
 
 export async function mtlsVerifyRoutes(app: FastifyInstance): Promise<void> {
-  const DEBUG = process.env.MTLS_VERIFY_DEBUG !== '0';
+  const DEBUG = process.env.MTLS_VERIFY_DEBUG === '1';
   const handler = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const hdr = request.headers[CERT_HEADER];
     const certHeader = Array.isArray(hdr) ? hdr[0] : hdr;
@@ -109,12 +109,13 @@ export async function mtlsVerifyRoutes(app: FastifyInstance): Promise<void> {
     const serial = serialFromHeaders(certHeader, infoHeader);
     if (!serial) {
       // A cert we cannot parse must fail closed — never treat a malformed or
-      // forged header as a valid, unrevoked certificate. Always log (rare,
-      // and signals a misconfigured mTLS route); the sample is truncated.
+      // forged header as a valid, unrevoked certificate. Log terse metadata
+      // (rare; signals a misconfigured mTLS route) — the cert sample is gated
+      // behind MTLS_VERIFY_DEBUG so cert material isn't logged by default.
       request.log.warn({
         rawLen: certHeader.length,
-        rawHead: certHeader.slice(0, 90),
         hasInfo: Boolean(infoHeader),
+        ...(DEBUG ? { rawHead: certHeader.slice(0, 90) } : {}),
       }, 'mtls-verify: unparseable client certificate');
       reply.code(403).send('mtls: unparseable client certificate');
       return;
