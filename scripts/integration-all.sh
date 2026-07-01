@@ -189,6 +189,12 @@ SERIAL_PRE=(
   # serially (never alongside a suite that reads a Ready bulwark pod). Restores
   # defaults on completion. Validated on DEV 2026-06-30. ~30s.
   "webmail-feature-toggle:integration-webmail-feature-toggle.sh"
+  # Mailbox-backup engine selector (api-smoke): PATCH + GET round-trip of the
+  # GLOBAL mailbox_backup_engine setting (imap/jmap). Serial because it mutates
+  # a global setting; saves + restores the original so it's non-mutating. The
+  # heavy mailboxes-only/full modes (real S3 bundle round-trip) stay manual/on
+  # demand. Staging-validated. ~5s.
+  "tenant-bundles-engine:integration-tenant-bundles-engine-e2e.sh api-smoke"
 )
 PARALLEL=(
   "pvc:integration-pvc.sh"
