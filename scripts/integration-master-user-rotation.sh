@@ -84,8 +84,12 @@ s "kubectl -n mail patch secret mail-secrets --type=json -p='[{\"op\":\"replace\
 # Allow cache TTL to expire in case readStalwartMasterUser cached the
 # value during a prior request. 5 min TTL would be too long for a test
 # run, but a platform-api restart clears the cache instantly.
-echo "  restarting platform-api to flush master-user cache"
-s "kubectl -n platform rollout restart deploy/platform-api >/dev/null"
+# Flush the master-user cache by DELETING the platform-api pods — the ReplicaSet
+# recreates them from the current template. NEVER `kubectl rollout restart` on a
+# Flux-managed cluster: Flux treats the restart annotation as drift and scales the
+# new ReplicaSet back to 0 (CLAUDE.md golden rule).
+echo "  recreating platform-api pods to flush master-user cache"
+s "kubectl -n platform delete pod -l app=platform-api >/dev/null"
 s "kubectl -n platform rollout status deploy/platform-api --timeout=120s >/dev/null"
 
 # Acquire an admin session token (platform_session cookie). Re-use the
@@ -117,7 +121,7 @@ fi
 echo
 echo "  restoring Secret to original FQDN"
 s "kubectl -n mail patch secret mail-secrets --type=json -p='[{\"op\":\"replace\",\"path\":\"/data/STALWART_MASTER_USER\",\"value\":\"$(echo -n "$ORIG_FQDN" | base64)\"}]' >/dev/null"
-s "kubectl -n platform rollout restart deploy/platform-api >/dev/null"
+s "kubectl -n platform delete pod -l app=platform-api >/dev/null"   # Flux-safe restart (never rollout-restart)
 s "kubectl -n platform rollout status deploy/platform-api --timeout=120s >/dev/null"
 
 echo
