@@ -240,6 +240,22 @@ PARALLEL=(
   # (~8-12 min: deployment provisioning + LE cert issuance), comparable to
   # monitoring-slo above; self-cleans via trap. Staging-validated 17/17.
   "mtls:integration-mtls-e2e.sh"
+  # ADR-037 asymmetric QoS: asserts the tenant ResourceQuota shape (requests.cpu
+  # + limits.memory, NO limits.cpu), multi-component allocation, per-container
+  # Burstable-CPU/Guaranteed-memory, and that an over-allocation is rejected at
+  # pod-admission by the quota (not a sync 4xx). Disposable tenant, trap cleanup.
+  # Uses SSH kubectl (SSH_HOST from integration.env). Staging-validated 10/10. ~2 min.
+  "burstable-qos:integration-burstable-qos.sh"
+  # Platform-driven webmail E2E: provision tenant→domain→email→mailbox, mint the
+  # webmail token, follow the SSO URL, and (bulwark) run the SPA-equivalent JMAP
+  # probe — the real "open webmail as a tenant" path incl. master-user
+  # impersonation. Disposable tenant, trap cleanup. Staging-validated 15/0. ~3-4 min.
+  "webmail-platform:integration-webmail-platform-e2e.sh"
+  # Bulwark native impersonation handler (A: pod health, B: happy path incl. the
+  # #296 JMAP Mailbox/get read via master-auth, C: 14 negative JWT cases). Runs
+  # in-pod via kubectl, no tenant provisioning, self-skips (77) if bulwark is
+  # scaled to 0 (roundcube-active). Staging-validated 26/0. ~1-2 min.
+  "bulwark-impersonate:integration-bulwark-impersonate.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).
