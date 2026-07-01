@@ -788,6 +788,12 @@ async function buildOidcMiddleware(
 
 // ─── mTLS Secret + Middleware ──────────────────────────────────────────────
 
+// ForwardAuth target for the mTLS revocation gate — the platform-api Service
+// reached in-cluster (see ingress-mtls/verify-route.ts). Overridable for
+// non-default service/namespace layouts (no vendor/topology lock-in).
+const MTLS_VERIFY_URL = process.env.MTLS_VERIFY_URL
+  ?? 'http://platform-api.platform.svc.cluster.local:3000/internal/mtls/verify';
+
 /**
  * Sync the CA-bundle Secret for an mTLS-enabled route and emit the
  * companion passTLSClientCert Middleware that forwards the tenant cert
@@ -860,10 +866,30 @@ async function syncMtlsSecretAndBuildSpec(
     }
   }
 
-  // Forward the cert details to the upstream service if requested.
+  // Middleware chain for cert-forwarding + revocation. CA verification itself
+  // is enforced at the TLS handshake by the TLSOption the reconciler attaches
+  // (per connection, no per-request cost). These middlewares add:
+  //
+  //   1. passTLSClientCert — surfaces the client cert as an
+  //      `X-Forwarded-Tls-Client-Cert` header so (a) the forwardAuth
+  //      revocation gate can read its serial and (b) the upstream app sees it
+  //      when passCertToUpstream is set.
+  //   2. forwardAuth — the per-request revocation gate. Traefik v3.7 OSS
+  //      TLSOption has no CRL field, so a revoked cert would otherwise still
+  //      be accepted; this forwards the cert to /internal/mtls/verify, which
+  //      403s revoked serials via an in-memory set (O(1), no per-request DB).
+  //      Only provider-backed configs have revocable certs, so it is wired
+  //      only when providerId is set.
+  //   3. headers (strip) — when the operator did NOT opt into
+  //      passCertToUpstream, drop the cert header before the upstream so the
+  //      revocation plumbing doesn't leak the cert to the app.
   const middlewares: MiddlewareBody[] = [];
   const refs: Array<{ name: string; namespace: string }> = [];
-  if (config.passCertToUpstream) {
+
+  const wantRevocation = Boolean(config.providerId);
+  const wantForward = config.passCertToUpstream || wantRevocation;
+
+  if (wantForward) {
     const name = middlewareName(routeId, 'mtls-fwd');
     middlewares.push(buildMiddleware({
       name,
@@ -876,6 +902,45 @@ async function syncMtlsSecretAndBuildSpec(
       labels: {
         'hosting-platform/route-id': routeId,
         'hosting-platform/middleware-kind': 'mtls-fwd',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  if (wantRevocation) {
+    const name = middlewareName(routeId, 'mtls-revoke');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: {
+        forwardAuth: {
+          address: MTLS_VERIFY_URL,
+          authRequestHeaders: ['X-Forwarded-Tls-Client-Cert'],
+        },
+      },
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'mtls-revoke',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  if (wantForward && !config.passCertToUpstream) {
+    // Strip the cert header before the upstream — it was added only for the
+    // revocation gate, not for the app.
+    const name = middlewareName(routeId, 'mtls-strip');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: {
+        headers: {
+          customRequestHeaders: { 'X-Forwarded-Tls-Client-Cert': '' },
+        },
+      },
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'mtls-strip',
       },
     }));
     refs.push({ name, namespace });

@@ -80,6 +80,25 @@ export interface IngressRouteBody {
   spec: TraefikIngressRouteSpec;
 }
 
+export interface TLSOptionBody {
+  apiVersion: 'traefik.io/v1alpha1';
+  kind: 'TLSOption';
+  metadata: {
+    name: string;
+    namespace: string;
+    labels?: Record<string, string>;
+  };
+  spec: {
+    minVersion?: string;
+    clientAuth?: {
+      /** One of the TLSOption clientAuthType enum values. */
+      clientAuthType: string;
+      /** Names of Secrets (same namespace) carrying the CA bundle under `tls.ca`. */
+      secretNames?: string[];
+    };
+  };
+}
+
 /**
  * Aggregate of what a single ingress_routes row produces in the
  * Traefik model. The reconciler:
@@ -181,6 +200,61 @@ export function buildIngressRoute(args: {
       entryPoints: args.entryPoints ?? ['websecure'],
       routes: args.routes,
       ...(args.tls ? { tls: args.tls } : {}),
+    },
+  };
+}
+
+/**
+ * Map the platform's per-route mTLS `verify_mode` to a Traefik
+ * `clientAuthType`. Traefik v3.7 OSS TLSOption supports CA verification
+ * (this) but NOT CRL — revocation is enforced separately via a ForwardAuth
+ * serial check (see ingress-mtls revocation path).
+ *   on             → RequireAndVerifyClientCert (require + verify against CA)
+ *   optional       → VerifyClientCertIfGiven    (verify if presented, else allow)
+ *   optional_no_ca → RequestClientCert          (ask for a cert, don't verify)
+ */
+export function clientAuthTypeForVerifyMode(verifyMode: string): string {
+  switch (verifyMode) {
+    case 'optional':
+      return 'VerifyClientCertIfGiven';
+    case 'optional_no_ca':
+      return 'RequestClientCert';
+    case 'on':
+    default:
+      return 'RequireAndVerifyClientCert';
+  }
+}
+
+/**
+ * Build a TLSOption CR that enforces client-cert auth. `secretNames` point
+ * at the CA-bundle Secret(s) (key `tls.ca`) materialised by annotation-sync;
+ * an IngressRoute references this via `spec.tls.options`. TLSOption scope is
+ * per-IngressRoute (per TLS listener) — mTLS hosts therefore live in their
+ * own IngressRoute, never mixed with plain hosts.
+ */
+export function buildTLSOption(args: {
+  name: string;
+  namespace: string;
+  clientAuthType: string;
+  secretNames?: string[];
+  labels?: Record<string, string>;
+}): TLSOptionBody {
+  return {
+    apiVersion: 'traefik.io/v1alpha1',
+    kind: 'TLSOption',
+    metadata: {
+      name: args.name,
+      namespace: args.namespace,
+      labels: defaultLabels(args.labels),
+    },
+    spec: {
+      minVersion: 'VersionTLS12',
+      clientAuth: {
+        clientAuthType: args.clientAuthType,
+        ...(args.secretNames && args.secretNames.length > 0
+          ? { secretNames: args.secretNames }
+          : {}),
+      },
     },
   };
 }

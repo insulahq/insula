@@ -15,8 +15,9 @@ import {
   TRAEFIK_VERSION,
   INGRESSROUTE_PLURAL,
   MIDDLEWARE_PLURAL,
+  TLSOPTION_PLURAL,
 } from './traefik-types.js';
-import type { IngressRouteBody, MiddlewareBody } from './traefik-types.js';
+import type { IngressRouteBody, MiddlewareBody, TLSOptionBody } from './traefik-types.js';
 
 export function isK8sNotFound(err: unknown): boolean {
   if (err instanceof Error && err.message.includes('HTTP-Code: 404')) return true;
@@ -136,6 +137,64 @@ export async function deleteMiddleware(
     });
   } catch (err: unknown) {
     if (!isK8sNotFound(err)) throw err;
+  }
+}
+
+export async function applyTLSOption(
+  custom: k8s.CustomObjectsApi,
+  body: TLSOptionBody,
+): Promise<void> {
+  await createOrReplaceCustomObject(custom, {
+    group: TRAEFIK_GROUP,
+    version: TRAEFIK_VERSION,
+    namespace: body.metadata.namespace,
+    plural: TLSOPTION_PLURAL,
+    name: body.metadata.name,
+    body: body as unknown as Record<string, unknown>,
+  });
+}
+
+export async function deleteTLSOption(
+  custom: k8s.CustomObjectsApi,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  try {
+    await custom.deleteNamespacedCustomObject({
+      group: TRAEFIK_GROUP,
+      version: TRAEFIK_VERSION,
+      namespace,
+      plural: TLSOPTION_PLURAL,
+      name,
+    });
+  } catch (err: unknown) {
+    if (!isK8sNotFound(err)) throw err;
+  }
+}
+
+export async function listTLSOptions(
+  custom: k8s.CustomObjectsApi,
+  namespace: string,
+  labelSelector?: string,
+): Promise<Array<{ name: string; labels: Record<string, string> }>> {
+  try {
+    const res = await custom.listNamespacedCustomObject({
+      group: TRAEFIK_GROUP,
+      version: TRAEFIK_VERSION,
+      namespace,
+      plural: TLSOPTION_PLURAL,
+      ...(labelSelector ? { labelSelector } : {}),
+    });
+    const items = ((res as { items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> }).items) ?? [];
+    return items
+      .map((it) => ({
+        name: it.metadata?.name ?? '',
+        labels: it.metadata?.labels ?? {},
+      }))
+      .filter((it) => it.name !== '');
+  } catch (err: unknown) {
+    if (isK8sNotFound(err)) return [];
+    throw err;
   }
 }
 
