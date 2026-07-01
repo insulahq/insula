@@ -64,6 +64,16 @@ export interface RotateJmapOptions {
    */
   readonly secretKeys?: readonly string[];
   /**
+   * When set, use THIS password instead of generating a fresh one. Lets a
+   * reconciler CONVERGE Stalwart's stored credential to the password already
+   * in `mail-secrets` (idempotent re-assert) rather than rotate to a new one
+   * — so a Stalwart redeploy/restore that reset the master account can be
+   * healed WITHOUT changing the Secret or rolling Bulwark/Roundcube (they
+   * already hold this value). The Secret patch then writes the same value
+   * (a no-op). Omit for a normal rotation.
+   */
+  readonly explicitPassword?: string;
+  /**
    * Extra (non-password) key/value pairs to patch into the SAME Secret
    * alongside the rotated password. Used by the webmail-master rotation
    * to re-stamp `STALWART_MASTER_USER` to `master@<sentinel>` so the
@@ -252,7 +262,9 @@ export async function rotateAdminPasswordViaJmapImpl(
   opts: RotateJmapOptions,
   deps: RotateJmapDeps,
 ): Promise<RotateStalwartPasswordResponse> {
-  const plain = deps.generatePassword();
+  // `explicitPassword` lets a reconciler converge Stalwart to the password
+  // already in mail-secrets (idempotent re-assert) instead of rotating anew.
+  const plain = opts.explicitPassword ?? deps.generatePassword();
   // Stakater Reloader takes 30-90s to roll the Stalwart pod after we
   // patch the Secret, and JMAP /session can't authenticate with the
   // new password until the pod is re-up with the new env. 30s was

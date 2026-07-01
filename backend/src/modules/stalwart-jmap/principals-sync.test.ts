@@ -48,10 +48,12 @@ vi.mock('../../db/schema.js', () => ({
 
 const mockGetJmapSession = vi.fn();
 const mockPrincipalGet = vi.fn();
+const mockVerifyMasterJmapAuth = vi.fn();
 
 vi.mock('./client.js', () => ({
   getJmapSession: (...args: unknown[]) => mockGetJmapSession(...args),
   principalGet: (...args: unknown[]) => mockPrincipalGet(...args),
+  verifyMasterJmapAuth: (...args: unknown[]) => mockVerifyMasterJmapAuth(...args),
 }));
 
 // master-user detector dependency. The detector now SKIPS only when no k8s
@@ -59,8 +61,17 @@ vi.mock('./client.js', () => ({
 // a client it always checks the resolved FQDN. So tests that exercise the
 // detector pass `fakeCore`; the skip test omits it (core=null).
 const mockReadMaster = vi.fn(async () => 'master@local.host');
+const mockReadMasterPassword = vi.fn(async () => 'master-pw-secret');
 vi.mock('../mail-admin/stalwart-master-user.js', () => ({
   readStalwartMasterUser: (...args: unknown[]) => mockReadMaster(...args),
+  readStalwartMasterPassword: (...args: unknown[]) => mockReadMasterPassword(...args),
+  MASTER_SENTINEL_DOMAIN: 'local.host',
+}));
+
+// master auto-heal reconciler (called by the detector on detected drift).
+const mockReconcileMaster = vi.fn(async () => ({ status: 'healed', healed: true, detail: 'test' }));
+vi.mock('../mail-admin/reconcile-master-credential.js', () => ({
+  reconcileStalwartMasterCredential: (...args: unknown[]) => mockReconcileMaster(...args),
 }));
 
 /** A truthy stand-in for the CoreV1Api client — its only role in these tests
@@ -166,6 +177,9 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReadMaster.mockResolvedValue('master@local.host'); // default value (detector skips when core omitted)
+    mockReadMasterPassword.mockResolvedValue('master-pw-secret');
+    mockVerifyMasterJmapAuth.mockResolvedValue({ ok: true, status: 200 }); // healthy by default
+    mockReconcileMaster.mockResolvedValue({ status: 'healed', healed: true, detail: 'test' });
   });
 
   it('returns early with error when JMAP session fails', async () => {
@@ -267,6 +281,130 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
       .map((c) => c[0] as Record<string, unknown>)
       .filter((v) => v.kind === 'orphan-domain');
     expect(inserted).toHaveLength(0);
+  });
+
+  it('flags master-user drift when the master is PRESENT but its password no longer authenticates', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
+    ]));
+    mockReadMasterPassword.mockResolvedValueOnce('stale-master-pw');
+    mockVerifyMasterJmapAuth.mockResolvedValueOnce({ ok: false, status: 401 });
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    expect(mockVerifyMasterJmapAuth).toHaveBeenCalledWith('master@local.host', 'stale-master-pw', undefined);
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'master-user');
+    expect(inserted).toHaveLength(1);
+    expect(String(inserted[0].notes)).toMatch(/no longer authenticates/i);
+    expect(inserted[0].platformRowId).toBe('__webmail_master_user__');
+    // Self-heal is triggered on detected drift.
+    expect(mockReconcileMaster).toHaveBeenCalledTimes(1);
+  });
+
+  it('auto-heals + flags drift when the master is MISSING from Stalwart', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    // No master@local.host principal present → detector sees it as missing.
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-alice', type: 'individual', name: 'alice', emails: ['alice@example.com'] },
+    ]));
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'master-user');
+    expect(inserted).toHaveLength(1);
+    expect(String(inserted[0].notes)).toMatch(/missing from Stalwart/i);
+    expect(mockReconcileMaster).toHaveBeenCalledTimes(1);
+  });
+
+  it('honours the MAIL_MASTER_AUTOHEAL=disable kill-switch', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
+    ]));
+    mockVerifyMasterJmapAuth.mockResolvedValueOnce({ ok: false, status: 401 });
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, {
+      env: { MAIL_MASTER_AUTOHEAL: 'disable' } as unknown as NodeJS.ProcessEnv,
+      core: fakeCore,
+    });
+    const result = await scheduler.runOnce();
+
+    // Drift is still recorded, but the reconciler is NOT invoked.
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'master-user');
+    expect(inserted).toHaveLength(1);
+    expect(mockReconcileMaster).not.toHaveBeenCalled();
+    void result;
+  });
+
+  it('does NOT flag master-user drift when the present master authenticates', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
+    ]));
+    mockVerifyMasterJmapAuth.mockResolvedValueOnce({ ok: true, status: 200 });
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'master-user');
+    expect(inserted).toHaveLength(0);
+    expect(mockReconcileMaster).not.toHaveBeenCalled();
+  });
+
+  it('treats a transient master-auth probe error as a soft error, NOT drift', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
+    ]));
+    mockVerifyMasterJmapAuth.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors.some((e) => /master-auth check failed/.test(e))).toBe(true);
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'master-user');
+    expect(inserted).toHaveLength(0);
+  });
+
+  it('does NOT flag the master sentinel domain (local.host) as an orphan', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
+      { id: 'dp-sentinel', type: 'domain', name: 'local.host' },              // sentinel — never an orphan
+      { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
+      { id: 'dp-orphan', type: 'domain', name: 'mail-e2e-9.example.test' },    // real orphan (control)
+    ]));
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const orphans = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'orphan-domain');
+    // Only the real orphan is flagged; local.host is excluded.
+    expect(orphans.map((o) => o.expectedName)).toEqual(['mail-e2e-9.example.test']);
   });
 
   it('does not backfill when stalwartPrincipalId already set', async () => {

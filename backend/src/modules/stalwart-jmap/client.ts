@@ -368,6 +368,42 @@ export async function getJmapSession(
   return data as JmapSession;
 }
 
+/**
+ * Verify the webmail master principal can obtain a JMAP session with the
+ * given credentials.
+ *
+ * The principals-sync drift detector uses this to catch a master that
+ * EXISTS in Stalwart but whose password has drifted out of sync with
+ * `mail-secrets` (e.g. after a Stalwart data restore / redeploy that reset
+ * the account). Impersonation is then silently broken for ALL webmail
+ * users, yet the existence check alone reports the master as healthy.
+ *
+ * Returns `{ ok: true }` on a 200 session and `{ ok: false, status }` on a
+ * definitive auth rejection (401/403). THROWS on network / non-auth errors
+ * (5xx, timeout, malformed) so the caller can treat those as transient and
+ * NOT raise a false drift item.
+ */
+export async function verifyMasterJmapAuth(
+  masterUser: string,
+  masterPassword: string,
+  baseUrl: string = STALWART_MGMT_URL,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ ok: boolean; status: number }> {
+  const timeoutMs = Number(env.JMAP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+  const auth = `Basic ${Buffer.from(`${masterUser}:${masterPassword}`).toString('base64')}`;
+  const res = await fetch(`${baseUrl}/jmap/session`, {
+    headers: { Authorization: auth, Accept: 'application/json' },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (res.status === 200) return { ok: true, status: 200 };
+  if (res.status === 401 || res.status === 403) return { ok: false, status: res.status };
+  throw new JmapError(
+    `master-auth probe got unexpected HTTP ${res.status} (not a clean auth verdict)`,
+    'httpError',
+    { status: res.status },
+  );
+}
+
 // ── Stalwart x:Account / x:Domain primitives ────────────────────────────────
 //
 // Cut 3 follow-up (2026-05-04): Stalwart 0.16 implements its own JMAP

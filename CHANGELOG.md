@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Webmail master-credential drift detection + self-heal** (`mail-drift`) — the
+  principals-sync detector now VERIFIES the Stalwart master (`master@<sentinel>`)
+  can authenticate, not just that it exists. A master that is present but whose
+  password has drifted out of sync with `mail-secrets` (e.g. a Stalwart
+  redeploy/restore that reset the account — the 2026-07-01 staging incident) is
+  flagged AND **auto-healed**: the detector re-asserts the `mail-secrets`
+  password onto Stalwart (no new password, no webmail roll) so a reset can never
+  leave impersonation persistently broken. Kill-switch `MAIL_MASTER_AUTOHEAL=disable`.
+  New `verifyMasterJmapAuth`, `readStalwartMasterPassword`,
+  `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
+
+### Fixed
+- **`local.host` master sentinel no longer flagged as an orphan-domain** — the
+  drift detector excluded the mail-hostname anchor but not the sentinel Domain
+  that holds the master; a `delete-orphan` on it would have destroyed the master
+  and broken ALL impersonation.
+- **Stalwart Domain teardown hardened** — `destroyStalwartArtifactsForEmailDomain`
+  now retries the Domain destroy (3×, backoff) to ride out a transient Stalwart
+  redeploy window and reports its outcome, cutting the orphan-domain pile-up left
+  by best-effort tenant-delete cleanup.
+
 ### Security
 - **undici upgraded to 6.27.0** (`npm audit fix`, within range) — clears the four
   backend HIGH advisories (Set-Cookie header injection, WS DoS, response-queue
