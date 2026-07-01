@@ -26,7 +26,7 @@ rules:
   # route 404s through Traefik. Phase 2 of the migration added the
   # emission code; the matching RBAC slipped through.
   - apiGroups: ["traefik.io"]
-    resources: ["ingressroutes", "middlewares"]
+    resources: ["ingressroutes", "middlewares", "tlsoptions"]
     verbs: ["*"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
@@ -125,7 +125,7 @@ rules:
   # route 404s through Traefik. Phase 2 of the migration added the
   # emission code; the matching RBAC slipped through.
   - apiGroups: ["traefik.io"]
-    resources: ["ingressroutes", "middlewares"]
+    resources: ["ingressroutes", "middlewares", "tlsoptions"]
     verbs: ["*"]
   - apiGroups: ["batch"]
     resources: ["jobs", "cronjobs"]
