@@ -93,7 +93,7 @@ pending       integration-postgres-barman-restore.sh     # INTEGRATE SERIAL_POST
 pending       integration-system-backup.sh               # INTEGRATE PARALLEL/external (secrets bundle single-use URL)
 pending       integration-tenant-bundles-engine-e2e.sh   # FIX (wire MODE=api-smoke as SERIAL/core)
 pending       integration-tenant-bundles-restic.sh       # field FIXED -> primaryEmail (pending staging validation) -> SERIAL/external
-pending       integration-burstable-qos.sh               # catalog route FIXED + dynamic app-entry pick (DEV 2026-06-30: multi-component QoS passes); remaining 'quota does not enforce limits.memory' = needs check (DEV quota config vs ADR-037) -> PARALLEL/core
+pending       integration-burstable-qos.sh               # catalog route FIXED (#140) + dynamic app-entry pick; DEV 9/10 once STAGING_SSH_HOST is set (the quota 'failures' were k()->placeholder-IP SSH, not a bug — quota enforces limits.memory correctly). Remaining assert-5 = TEST-LAYER mismatch: plan cap is enforced via ResourceQuota at pod-admission (k8s-deployer.ts:1121 parses 'exceeded quota' events), NOT a synchronous deploy-API 4xx — fix the assertion to verify quota-rejection. -> PARALLEL/core
 pending       integration-custom-deployments-phase2.sh   # INTEGRATE SERIAL_PRE/slow (needs phase-1 prereq)
 pending       integration-mtls-e2e.sh                    # FIX (DEV 2026-06-30): only the route CREATE is bit-rotted — attach a domain then POST /tenants/:id/domains/:did/routes (bare POST /tenants/:id/ingress-routes is gone); the mTLS BIND PATCH /ingress-routes/:rid/mtls is STILL valid. Then PARALLEL/slow w/ INGRESS_DOMAIN_BASE (wildcard works)
 pending       integration-platform-domain-rename-e2e.sh  # INTEGRATE SERIAL_PRE-isolated/core (apex rename; restores)
