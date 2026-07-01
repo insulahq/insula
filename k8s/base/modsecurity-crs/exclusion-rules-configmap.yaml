@@ -83,3 +83,23 @@ data:
          ctl:ruleRemoveTargetById=931110;ARGS_NAMES,\
          ctl:ruleRemoveTargetById=931120;ARGS_NAMES,\
          ctl:ruleRemoveTargetById=931130;ARGS_NAMES"
+
+    # ── mTLS CRL download (crl.pem) — CRS 920440 false-positive ──
+    # Rule 920440 "URL file extension is restricted by policy" matches
+    # the `.pem` suffix of the CRL-download endpoint
+    #   GET /api/v1/tenants/:id/mtls-providers/:pid/crl.pem
+    # pushing the inbound anomaly score to 5 → 949110 blocks it with a
+    # 403 (nginx page from the modsec sidecar). It's an API endpoint,
+    # not a served file, so the extension check is a false positive.
+    # Scope: platform-api hosts + the crl.pem path only (chained), so
+    # 920440 still guards `.bak`/`.key`/etc. on every other path.
+    # (ADR-054; confirmed 2026-07-01 via the modsec audit log — ruleId
+    # 920440, TX:EXTENSION=`.pem`.)
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000102,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveById=920440"
+        SecRule REQUEST_URI "@rx /mtls-providers/[^/]+/crl\.pem(\?|$)"
