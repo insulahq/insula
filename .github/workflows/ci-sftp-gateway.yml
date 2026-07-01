@@ -23,7 +23,7 @@ jobs:
     name: Go unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version-file: images/sftp-gateway/go.mod
@@ -47,7 +47,7 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
 
@@ -142,7 +142,7 @@ jobs:
       group: pin-development-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

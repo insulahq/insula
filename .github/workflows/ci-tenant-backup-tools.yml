@@ -30,7 +30,7 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Fast script-level guard before the (slow) image build. Catches the
       # Plesk-migration reshape regression where unread new/ messages were
@@ -135,7 +135,7 @@ jobs:
       group: pin-development-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

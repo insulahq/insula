@@ -15,7 +15,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - run: ./scripts/ci-manual-impact-check.sh
@@ -27,6 +27,6 @@ jobs:
     name: Docs link integrity
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify every referenced docs/ path exists
         run: ./scripts/ci-docs-link-check.sh

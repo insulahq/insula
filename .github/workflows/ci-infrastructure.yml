@@ -19,7 +19,7 @@ jobs:
     name: Kustomize Build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           echo "Building base..."
           kubectl kustomize k8s/base
@@ -34,7 +34,7 @@ jobs:
     name: Shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: |
           # shellcheck is pre-installed on ubuntu-latest runners. The
           # previous `sudo apt-get install -y` step intermittently failed
@@ -63,7 +63,7 @@ jobs:
     name: Shell unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/test-image-org.sh
       - run: ./scripts/test-cut-release.sh
       - run: ./scripts/test-ci-no-cluster-push.sh
@@ -89,7 +89,7 @@ jobs:
     name: platform-ops binary build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -105,14 +105,14 @@ jobs:
     name: No push-to-cluster guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-no-cluster-push.sh
 
   admin-auth-gate-check:
     name: Admin-auth gate guardrail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install yq
         run: |
           # mikefarah/yq v4 — exact syntax used in scripts/ci-admin-auth-check.sh.
@@ -128,7 +128,7 @@ jobs:
     name: Firewall-rule guardrail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify bootstrap.sh firewall rules
         run: ./scripts/ci-firewall-check.sh
 
@@ -136,7 +136,7 @@ jobs:
     name: Migration coverage (firewall shape → host-migration)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Full history so the guard can diff the PR against origin/main to
           # detect an added host-migration / refreshed baseline / waiver.
@@ -150,7 +150,7 @@ jobs:
     name: Integration-test registry coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify every integration-*.sh is registered (no orphans)
         run: ./scripts/ci-integration-coverage.sh
 
@@ -158,7 +158,7 @@ jobs:
     name: Nginx real_ip template guardrail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify admin/tenant panel nginx.conf.template has real_ip directives
         run: ./scripts/ci-nginx-real-ip-check.sh
 
@@ -166,7 +166,7 @@ jobs:
     name: SYSTEM tenant protection guardrail (ADR-040)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify SYSTEM tenant scheduler filters + DB invariants
         run: ./scripts/ci-system-tenant-check.sh
 
@@ -174,7 +174,7 @@ jobs:
     name: Platform apex / ingress-domain conflation (R16)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify platform subdomains derive from the apex, not ingress_base_domain
         run: ./scripts/ci-platform-apex-conflation.sh
 
@@ -182,7 +182,7 @@ jobs:
     name: Platform-migration registry discipline (ADR-045 W9)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify migration registry consistency + idempotency discipline
         run: ./scripts/ci-migration-idempotency.sh
 
@@ -190,7 +190,7 @@ jobs:
     name: Version-poller invariants (ADR-045 W11)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify cosign-signed manifest + baked key + hourly CronJob + no cosign binary
         run: ./scripts/ci-version-poller-check.sh
 
@@ -198,7 +198,7 @@ jobs:
     name: Host-config host-side model (ADR-045 W10)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify no privileged enforcer pod + observe stays locked + deny-list
         run: ./scripts/ci-host-config-check.sh
 
@@ -206,7 +206,7 @@ jobs:
     name: Host-migration runner + catalog discipline (ADR-045 W10c)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Verify runner validation + embedding + per-script authoring contract
@@ -216,7 +216,7 @@ jobs:
     name: platform-ops embed-and-launch manifest ≡ dispatch ≡ scripts (ADR-045 R18)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify embedded-scripts manifest matches CLI dispatch + build derives from it
         run: ./scripts/ci-platform-ops-embed-check.sh
 
@@ -224,7 +224,7 @@ jobs:
     name: system-upgrade-controller integration (ADR-045 W12)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify no committed Plan + pinned+hardened SUC + skip-a-minor refusal
         run: ./scripts/ci-system-upgrade-check.sh
       - name: Verify ADR-053 GitOps structure (Flux sources / build-deploy / sync-development / cut-release)
@@ -234,7 +234,7 @@ jobs:
     name: Platform upgrade re-pin invariants (ADR-045 W13)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify dry-run-default + resolved-source + clean-tag + decision gates
         run: ./scripts/ci-upgrade-repin-check.sh
 
@@ -242,7 +242,7 @@ jobs:
     name: Dex must not ship in production
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install yq
         run: |
           sudo wget -qO /usr/local/bin/yq \
@@ -256,7 +256,7 @@ jobs:
     name: No hard-coded apex domains in K8s manifests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scan k8s/ for pinned apex literals
         run: ./scripts/ci-no-pinned-domains.sh
 
@@ -264,7 +264,7 @@ jobs:
     name: No hard-coded public IPs in K8s manifests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scan k8s/ for literal IPv4 addresses
         # 2026-05-16: testing.example.test re-bootstrap revealed an
         # IP literal hardcoded inside an inline kustomize patch for the
@@ -278,7 +278,7 @@ jobs:
     name: No operator IPs/domains in committed files
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Scan the repo for operator domains and node IPs
         # Repo-wide: no committed file may bake one operator's cluster (apex
         # domain anywhere; node-netblock IPs anywhere; any public IP under
@@ -291,7 +291,7 @@ jobs:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install gitleaks (latest stable)
         run: |
           ver=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
@@ -311,7 +311,7 @@ jobs:
     name: K8s client patchNamespaced* Content-Type guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify every patch call has an explicit middleware shim
         run: ./scripts/ci-k8s-patch-check.sh
 
@@ -319,7 +319,7 @@ jobs:
     name: Job ttlSecondsAfterFinished guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify every Job spec declares ttlSecondsAfterFinished
         # Completed Jobs (and their Pods) stay forever without
         # ttlSecondsAfterFinished, accumulating etcd objects and Pod
@@ -332,7 +332,7 @@ jobs:
     name: Flux postBuild ${VAR} escape guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify CronJob/Job inline shell escapes ${VAR} as $${VAR}
         # Flux postBuild.substituteFrom expands every ${VAR} against
         # platform-cluster-config before kubectl apply. Bash locals
@@ -346,7 +346,7 @@ jobs:
     name: Task Tracker helper coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify long-running surfaces register with the Task Tracker helper
         run: ./scripts/ci-task-helper-coverage.sh
 
@@ -354,7 +354,7 @@ jobs:
     name: CNPG snapshot Restore is wired to the real PITR endpoint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify SystemSnapshotsModal posts to /admin/postgres-restore
         # Phase 1 (2026-05-22) — operator pushback: the CNPG snapshot
         # Restore button used to navigate to /backups/disaster-recovery
@@ -366,7 +366,7 @@ jobs:
     name: CNPG backup catalogue invariants (graceful degradation)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify catalogue auth gate + S3-direct + unavailable-on-failure
         # Phase 2 (2026-05-22) — the catalogue exists for graceful
         # degradation when the CNPG operator is dead. Any regression
@@ -378,7 +378,7 @@ jobs:
     name: Barman-cloud restore invariants (source-safety + plugin-shape)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify barman-restore module gates source mutation + plugin parameter shape
         # Phase 3 (2026-05-22) — this module spawns Cluster CRs from
         # off-cluster archives. The two regressions that would matter
@@ -392,7 +392,7 @@ jobs:
     name: Flux postBuild envsubst safety
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify no malformed ${...} sequences in rendered overlays
         # Catches the parse-error class that crashed the 2026-05-04
         # staging cutover apply (`${'`, `${ `, `${{` etc.) — Flux's
@@ -404,7 +404,7 @@ jobs:
     name: Empty cluster-issuer guardrail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install python3 + PyYAML
         run: |
           python3 -m pip install --user pyyaml
@@ -423,7 +423,7 @@ jobs:
     name: System node-affinity guardrail
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install yq
         run: |
           # Same binary as admin-auth-gate-check — kept as a separate step
@@ -448,7 +448,7 @@ jobs:
     name: Mail-admin SDK v0/v1 shape
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.x'
@@ -458,14 +458,14 @@ jobs:
     name: No Longhorn refs in mail subsystem
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-no-longhorn-in-mail.sh
 
   mail-arch-regressions:
     name: Mail architecture regression guards (Phase 1/2 streamline)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-mail-arch-regressions.sh
 
   # Image-org fork-safety (Holistic plan W2): overlays stay canonical, workflows
@@ -474,7 +474,7 @@ jobs:
     name: Image-org fork-safety guard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-image-org-check.sh
 
   # R-X5: universal backup-rclone-shim invariants. 8 checks: super_admin
@@ -486,7 +486,7 @@ jobs:
     name: Backup-rclone-shim invariants (R-X1..R-X5)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-backup-rclone-shim-check.sh
 
   # DR safety: every backup write/delete callsite must call
@@ -498,7 +498,7 @@ jobs:
     name: Backup target read_only enforcement
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-backup-target-ro-check.sh
 
   # A2 DR-bundle sidecar drift guard: a contributor adding a column to
@@ -510,14 +510,14 @@ jobs:
     name: DR bundle sidecar drift
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: ./scripts/ci-dr-bundle-check.sh
 
   component-watch-guard:
     name: Component watch registry/ledger (ADR-050)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install python3 + PyYAML
         run: python3 -m pip install --user pyyaml
       - name: Verify registry schema + drift + k8s/bootstrap coverage + ledger SLA
