@@ -256,6 +256,12 @@ PARALLEL=(
   # in-pod via kubectl, no tenant provisioning, self-skips (77) if bulwark is
   # scaled to 0 (roundcube-active). Staging-validated 26/0. ~1-2 min.
   "bulwark-impersonate:integration-bulwark-impersonate.sh"
+  # System DR bundle: triggers a real export run, downloads it, and (external-
+  # tier) decrypts with the operator AGE key → verifies tar + sidecars + E2
+  # readOnly freeze + secrets. Phase A (export+download) staging-validated;
+  # self-skips (77) when the `age` binary / AGE_KEY_FILE are absent (public
+  # clone / CI). Runner needs psql (Phase G) + tsx (Phase H) — those self-skip too.
+  "dr-bundle:integration-dr-bundle.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).
