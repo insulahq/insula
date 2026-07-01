@@ -45,7 +45,9 @@ if [[ -z "$ADMIN_PASSWORD" ]]; then
   exit 2
 fi
 
-CONTROL_HOST="${STAGING_SSH_HOST:-192.0.2.58}"
+# STAGING_SSH_HOST when run standalone; SSH_HOST when driven by integration-all
+# (which loads scripts/integration.env — SSH_HOST=root@<node>). Placeholder last.
+CONTROL_HOST="${STAGING_SSH_HOST:-${SSH_HOST:-192.0.2.58}}"
 CONTROL_HOST="${CONTROL_HOST##*@}"
 
 PASS=0
