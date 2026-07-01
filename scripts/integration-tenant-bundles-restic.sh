@@ -69,8 +69,13 @@ API_BASE="${API_BASE:-https://admin.testing.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@testing.example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
-TESTING_HOST="${TESTING_HOST:-root@testing.example.test}"
-SERVERS_TXT="${SERVERS_TXT:-$HOME/k8s-staging/servers.txt}"
+# The node whose cluster owns the tenant we create (via ADMIN_HOST) — reads
+# PLATFORM_ENCRYPTION_KEY + writer-pod info there. Prefer the integration.env
+# SSH_HOST (same cluster as ADMIN_HOST) over the compiled-in placeholder.
+TESTING_HOST="${TESTING_HOST:-${SSH_HOST:-root@testing.example.test}}"
+# servers.txt moved from ~/k8s-staging/ to ~/ (2026-06-17); honour the new
+# location, fall back to the legacy path.
+SERVERS_TXT="${SERVERS_TXT:-$([ -f "$HOME/servers.txt" ] && echo "$HOME/servers.txt" || echo "$HOME/k8s-staging/servers.txt")}"
 require_env ADMIN_PASSWORD
 
 RESTIC="${SPIKE_RESTIC:-/tmp/restic}"
@@ -103,7 +108,7 @@ SFTP_KEY="${SFTP_KEY:-$SSH_KEY}"
 if [ -z "${PLATFORM_OIDC_KEY:-}" ]; then
   echo "[1/9] reading PLATFORM_ENCRYPTION_KEY from testing cluster…"
   PLATFORM_OIDC_KEY=$(ssh -i "$SSH_KEY" -o StrictHostKeyChecking=accept-new "$TESTING_HOST" \
-    "kubectl -n platform get secret platform-secrets -o jsonpath='{.data.PLATFORM_ENCRYPTION_KEY}' 2>/dev/null | base64 -d" \
+    "KUBECONFIG=/etc/rancher/k3s/k3s.yaml kubectl -n platform get secret platform-secrets -o jsonpath=\"{.data['platform-encryption-key']}\" 2>/dev/null | base64 -d" \
     | strip_cr || true)
   if [ -z "$PLATFORM_OIDC_KEY" ] || [ "${#PLATFORM_OIDC_KEY}" -ne 64 ]; then
     echo "ERROR: could not retrieve PLATFORM_ENCRYPTION_KEY (got ${#PLATFORM_OIDC_KEY} chars; expected 64 hex)" >&2
@@ -281,6 +286,7 @@ echo "[4/9] waiting for namespace + PVC + writer pod…"
 # the Python f-string literal in earlier rev.
 WRITER_INFO=$(ssh -i "$SSH_KEY" "$TESTING_HOST" "NS=$NS bash -s" <<'REMOTE'
 set -e
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml   # k3s root kubeconfig (not on default PATH)
 PVC_NAME="${NS}-storage"
 for i in $(seq 1 60); do
   NS_OK=$(kubectl get ns "$NS" --no-headers 2>/dev/null | awk '{print $2}')
