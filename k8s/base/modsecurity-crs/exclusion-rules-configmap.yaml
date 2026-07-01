@@ -91,15 +91,16 @@ data:
     # pushing the inbound anomaly score to 5 → 949110 blocks it with a
     # 403 (nginx page from the modsec sidecar). It's an API endpoint,
     # not a served file, so the extension check is a false positive.
-    # Scope: platform-api hosts + the crl.pem path only (chained), so
-    # 920440 still guards `.bak`/`.key`/etc. on every other path.
-    # (ADR-054; confirmed 2026-07-01 via the modsec audit log — ruleId
-    # 920440, TX:EXTENSION=`.pem`.)
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+    # Single (non-chained) rule matching the crl.pem URI only — that path
+    # is platform-API-specific (no tenant workload serves it), so a host
+    # guard is unnecessary, and avoiding the chain keeps the rule from
+    # leaving a dangling `chain` that would bleed into the next-loaded
+    # (dynamic) exclusion file. 920440 still guards `.bak`/`.key`/etc.
+    # everywhere else. (ADR-054; confirmed 2026-07-01 via the modsec audit
+    # log — ruleId 920440, TX:EXTENSION=`.pem`.)
+    SecRule REQUEST_URI "@rx /mtls-providers/[^/]+/crl\.pem" \
         "id:9000102,\
          phase:1,\
          pass,\
          nolog,\
-         chain,\
          ctl:ruleRemoveById=920440"
-        SecRule REQUEST_URI "@rx /mtls-providers/[^/]+/crl\.pem(\?|$)"
