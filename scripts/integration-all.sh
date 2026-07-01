@@ -184,6 +184,11 @@ SERIAL_PRE=(
   # transient "DS coverage 3/4" failure (2026-06-25) was exactly this
   # concurrency (a Traefik pod caught mid-roll → numberReady N-1/N). ~30s.
   "trusted-proxies:integration-cluster-trusted-proxies.sh"
+  # webmail-feature-toggle PATCHes the GLOBAL webmail_show_* settings; the
+  # feature-css annotation change rolls BOTH webmail Deployments → must run
+  # serially (never alongside a suite that reads a Ready bulwark pod). Restores
+  # defaults on completion. Validated on DEV 2026-06-30. ~30s.
+  "webmail-feature-toggle:integration-webmail-feature-toggle.sh"
 )
 PARALLEL=(
   "pvc:integration-pvc.sh"

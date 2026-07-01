@@ -43,6 +43,9 @@ import {
   getCertificatePem,
   revokeCertificate,
   unrevokeCertificate,
+} from './service.js';
+import { invalidateRevocationCache } from '../ingress-mtls/revocation.js';
+import {
   deleteCertificate,
   getOrGenerateCrl,
   getCrlMetadata,
@@ -246,6 +249,9 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
       actingUserId(request),
     );
     await fanOutCrlReconcile(tenantId, pid, 'revoke');
+    // Make the edge revocation gate see this immediately (else up to one
+    // cache TTL — ~60s — before /internal/mtls/verify starts 403ing it).
+    invalidateRevocationCache();
     return success(result);
   });
 
@@ -253,6 +259,7 @@ export async function mtlsProvidersRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId, pid, certId } = request.params as { tenantId: string; pid: string; certId: string };
     const result = await unrevokeCertificate(app.db, tenantId, pid, certId);
     await fanOutCrlReconcile(tenantId, pid, 'unrevoke');
+    invalidateRevocationCache();
     return success(result);
   });
 

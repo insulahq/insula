@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.6.19-rc.3] - 2026-06-30
-
 ### Security
 - **undici upgraded to 6.27.0** (`npm audit fix`, within range) — clears the four
   backend HIGH advisories (Set-Cookie header injection, WS DoS, response-queue
@@ -28,9 +26,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `1.6.16 → 1.7.1` (both digest-pinned). Validated against the staging cluster (Stalwart
   SMTP/IMAP/JMAP + webmail).
 
-## [2026.6.19-rc.2] - 2026-06-30
-
 ### Changed
+- **Integration-test sprawl cleanup + coverage guard.** An audit found 33 of 71
+  `scripts/integration-*.sh` wired into no orchestrator — ~half the E2E suite never
+  ran and **8 scripts had bit-rotted** (testing removed routes: `mail/node-selector`,
+  `mail/blob-store`, `/system-backup/runs`, `/catalog/entries?code=`, `companyEmail`,
+  `tenants/bulk/delete`, the `thisNodeOnly` port-exposure enum). Added
+  `scripts/integration-test-registry.txt` (every script categorized:
+  suite/perf/local/manual/pending) + `ci-integration-coverage.sh` (a new
+  `integration-*.sh` not in the registry fails Infrastructure CI — sprawl can't
+  regrow) + a self-test. Deleted 3 dead scripts (`mail-ha-e2e` 7/13-dead,
+  `backups-ui-phase-2026-05-24` dated, `tenant-bundles-jmap` subset-of-full-e2e);
+  fixed two route/field bit-rots (`dr-bundle`, `tenant-bundles-restic`). The 21
+  `pending` feature-E2E (each route-validated against the live backend) are tracked
+  in the registry for staging-validated integration.
+- **Tenant hard-delete returns promptly** (~68 s → single digits for a
+  provisioned tenant). `DELETE /tenants/:id` blocked the request on two
+  synchronous waits for the namespace's Longhorn PV to Release — neither of which
+  *can* complete inside the request, because the namespace delete that releases
+  the PV runs between them: (1) the `pv-cleanup-released` lifecycle hook polled up
+  to 60 s for a PV that is still Bound at hook time (it runs before the namespace
+  delete), and (2) the post-namespace-delete volume reap waited up to 45 s for the
+  PV to Release. The hook now early-exits (~6 s) once it sees the PV can't release
+  yet, the reap runs detached in the background, and the tenant row is dropped
+  synchronously so the tenant disappears from the API immediately. Both cleanups
+  still happen — via the reap + the 2-min lifecycle-hook scheduler retry +
+  Orphaned-Volumes safety nets — just off the request path. This also stops
+  concurrent deletes from piling up slow requests on the API.
 - **external-snapshotter upgraded v6.3.0 → v8.6.0** (latest stable). The
   running snapshot-controller on staging was actually v6.2.1 — even older
   than the previous pin claimed. v8 requires k8s ≥ 1.25 (CRD CEL validation
@@ -63,14 +85,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   so a converge failure never fails the upgrade) and SEA-only; no `--apply`, so
   each host-config surface still honours its own enforce/observe policy.
 
-## [2026.6.19-rc.1] - 2026-06-30
-
-### Added
-- **One-click Retry on a failed mail migration.** The admin panel's mail DR card
-  showed a failed migration's target + error but made the operator re-pick the
-  target to retry. It now has a direct "Retry migration to <node>" button (reuses
-  the failover/failback/migrate dispatch + progress modal).
-
 ### Fixed
 - **Mail migration to a worker node no longer deadlocks — and never loses mail data.**
   Migrating the active mail node could hang at `swapping-pvc` ("failed to delete
@@ -79,35 +93,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   a Pending Stalwart pod. The previous escalation only force-deleted pods on *dead*
   nodes, so it missed these, and the rollback then scaled Stalwart back up onto the
   still-Terminating PVC → permanent deadlock (pod Pending forever, PVC never deletes)
-  → mail down on every node (observed migrating to the worker node). Now
-  `deletePvcAndWait` force-deletes EVERY pod referencing the PVC (any node, any phase)
-  and, as a data-safe last resort, strips the `pvc-protection` finalizer — safe
-  because the swap flips the source PV to `Retain` first, so the on-disk store
+  → mail down on every node (observed migrating to the worker node, 2026-06-30).
+  Now `deletePvcAndWait` force-deletes EVERY pod referencing the PVC (any node, any
+  phase) and, as a data-safe last resort, strips the `pvc-protection` finalizer —
+  safe because the swap flips the source PV to `Retain` first, so the on-disk store
   survives the PVC-object removal; and the rollback force-completes a stuck-Terminating
   PVC before re-binding the retained PV. The retained source PV preserves the mail
   store throughout, so no migration failure path can lose data.
-
-## [2026.6.18] - 2026-06-29
-
-### Fixed
-- **Stable release of the 2026.6.18 mail-reliability cycle.** Promotes the
-  rc.8–rc.11 prereleases to stable — see those sections below for full detail:
-  - data-safe mail migration on local-path volumes (source PV retained + rollback);
-  - real multi-node mail forwarding (drop the externalIP so haproxy fronts the
-    non-active nodes + dedicated PROXY-protocol Stalwart listeners trusting the pod
-    CIDR, so the real client IP is preserved and portscan autoban is decoupled from
-    the WireGuard tunnel IP);
-  - inbound mail (MX, port 25) accepted on the haproxy/non-active nodes
-    (`MtaStageAuth.require` exempts the smtp-proxy port);
-  - migration scale-down no longer fails on a slow Stalwart graceful shutdown
-    (force-delete the mail pod after the graceful window so the PVC releases).
-- **trusted-proxies integration harness:** Phase-7 admin-panel ConfigMap
-  mount-propagation budget bumped 120s→180s and made tunable via `TP_MOUNT_WAIT`
-  (a kubelet sync-cycle timing concern, worse right after a platform roll).
-
-## [2026.6.18-rc.11] - 2026-06-29
-
-### Fixed
 - **Mail migration no longer fails when Stalwart's graceful shutdown is slow.**
   The node-swap migration scaled Stalwart to 0 and waited only 90 s for the
   Deployment to reach 0 ready replicas, but the pod's
@@ -120,23 +112,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   pre-migration snapshot already captured the store and the source PV is retained
   (rollback-safe), and RocksDB recovers via its WAL after a SIGKILL. Operator
   cancel is still honoured.
-
-## [2026.6.18-rc.10] - 2026-06-29
-
-### Fixed
-- **Inbound mail (MX, port 25) now accepted on the haproxy/non-active nodes.** The
-  dedicated `smtp-proxy` listener (port 12025) inherited Stalwart's default
-  `MtaStageAuth.require` (`require auth when local_port != 25`), so it rejected
-  unauthenticated inbound `MAIL FROM` with `503 must authenticate first` — breaking
-  real external mail delivery on ~2/3 of nodes (round-robin). The domain reconciler
-  now sets `MtaStageAuth.require.else` to `local_port != 25 && local_port != 12025`,
-  so port 12025 is treated as a no-auth inbound MX like port 25 (submission/IMAP
-  proxy listeners stay auth-required). Applied via the same one-time Stalwart recycle
-  that binds the proxy listeners.
-
-## [2026.6.18-rc.9] - 2026-06-29
-
-### Fixed
+- **Mail migration is now data-safe on local-path volumes.** The node-swap
+  migration deleted the source `mail-stack-data` PVC (StorageClass `local-path`,
+  `reclaimPolicy: Delete`) *before* the destination was confirmed populated, and
+  had **no rollback** — so a stuck-finalizer delete (or any post-delete failure)
+  wiped the only live copy of the mail store, surviving only because of an
+  out-of-band restic snapshot (data-loss incident 2026-06-28). The swap now flips
+  the source PV to `Retain` **before** the delete (data survives regardless), and
+  every post-delete failure path (PVC-delete fail, target-PVC create fail, affinity
+  fail, scale-up/cancel, restore-verify fail) rolls mail back onto the source's
+  retained volume instead of leaving it on an empty disk; the retained PV is GC'd
+  only after the destination is verified.
 - **External mail to non-active nodes works (the real multi-node fix).** On a
   multi-node cluster, external mail to a NON-active node was accept-then-dropped.
   Root cause: the `stalwart-mail` Service carried `externalIPs` = the non-active
@@ -161,42 +147,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **Reverts** the prior `proxy-networks-reconciler` "track pod identity + recycle
   on trust write" self-heal (`v2026.6.18-rc.8`) — it was built on the disproven
   theory that haproxy fronted the mail ports and Stalwart saw node IPs.
-
-## [2026.6.18-rc.8] - 2026-06-28
-
-### Changed
-- **Tenant hard-delete returns promptly** (~68 s → single digits for a
-  provisioned tenant). `DELETE /tenants/:id` blocked the request on two
-  synchronous waits for the namespace's Longhorn PV to Release — neither of which
-  *can* complete inside the request, because the namespace delete that releases
-  the PV runs between them: (1) the `pv-cleanup-released` lifecycle hook polled up
-  to 60 s for a PV that is still Bound at hook time (it runs before the namespace
-  delete), and (2) the post-namespace-delete volume reap waited up to 45 s for the
-  PV to Release. The hook now early-exits (~6 s) once it sees the PV can't release
-  yet, the reap runs detached in the background, and the tenant row is dropped
-  synchronously so the tenant disappears from the API immediately. Both cleanups
-  still happen — via the reap + the 2-min lifecycle-hook scheduler retry +
-  Orphaned-Volumes safety nets — just off the request path. This also stops
-  concurrent deletes from piling up slow requests on the API.
-
-### Fixed
-- **Mail migration is now data-safe on local-path volumes.** The node-swap
-  migration deleted the source `mail-stack-data` PVC (StorageClass `local-path`,
-  `reclaimPolicy: Delete`) *before* the destination was confirmed populated, and
-  had **no rollback** — so a stuck-finalizer delete (or any post-delete failure)
-  wiped the only live copy of the mail store, surviving only because of an
-  out-of-band restic snapshot (data-loss incident 2026-06-28). The swap now flips
-  the source PV to `Retain` **before** the delete (data survives regardless), and
-  every post-delete failure path (PVC-delete fail, target-PVC create fail, affinity
-  fail, scale-up/cancel, restore-verify fail) rolls mail back onto the source's
-  retained volume instead of leaving it on an empty disk; the retained PV is GC'd
-  only after the destination is verified.
-- **Mail forwarding self-heal (ineffective — reverted in the next release).** rc.8
-  added a `proxy-networks-reconciler` "track Stalwart pod identity + recycle once
-  after a trust write" attempt to fix non-active-node mail forwarding. It was built
-  on a disproven theory (that haproxy fronted the mail ports and Stalwart saw the
-  node public IPs) and did **not** fix the accept-then-drop; the real root cause and
-  fix land in the next release (see `[Unreleased]`).
+- **Inbound mail (MX, port 25) now accepted on the haproxy/non-active nodes.** The
+  dedicated `smtp-proxy` listener (port 12025) inherited Stalwart's default
+  `MtaStageAuth.require` (`require auth when local_port != 25`), so it rejected
+  unauthenticated inbound `MAIL FROM` with `503 must authenticate first` — breaking
+  real external mail delivery on ~2/3 of nodes (round-robin). The domain reconciler
+  now sets `MtaStageAuth.require.else` to `local_port != 25 && local_port != 12025`,
+  so port 12025 is treated as a no-auth inbound MX like port 25 (submission/IMAP
+  proxy listeners stay auth-required). Applied via the same one-time Stalwart recycle
+  that binds the proxy listeners.
 - **Snapshot archives no longer leak when a tenant is hard-deleted.** The
   snapshot-store purge ran *after* the delete cascade dropped the tenant row, but
   `storage_snapshots` cascade-deletes with the tenant — so the purge queried zero

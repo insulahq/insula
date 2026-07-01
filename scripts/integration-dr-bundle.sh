@@ -44,6 +44,7 @@ fi
 
 # shellcheck disable=SC1090
 source "$(dirname "$0")/lib/integration-token.sh"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"   # Phase H invokes scripts/dr-restore-bundle.sh
 
 WORK_DIR=$(mktemp -d -t dr-bundle-XXXXXX)
 cleanup() { rm -rf "$WORK_DIR"; }
@@ -55,8 +56,19 @@ ok() { echo "  ✅ $*"; PASS=$((PASS + 1)); }
 fail() { echo "  ❌ $*" >&2; FAIL=$((FAIL + 1)); }
 
 # ─── Auth ───────────────────────────────────────────────────────────
+# get_integration_token was removed when lib/integration-token.sh was refactored
+# (#130) to cached_or_login_token + a caller-defined login_token(). Provide it.
+login_token() {
+  if [[ -z "${ADMIN_PASSWORD:-}" ]]; then
+    echo "ERROR: ADMIN_PASSWORD unset and INTEGRATION_TOKEN absent" >&2; return 1
+  fi
+  curl "${CURL_OPTS[@]}" -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"${ADMIN_EMAIL:-admin@example.test}\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | sed -nE 's/.*"token":"([^"]+)".*/\1/p'
+}
 echo "==> Phase A: trigger export run + wait for success"
-TOKEN=$(get_integration_token "$ADMIN_HOST" "$ADMIN_EMAIL" "${ADMIN_PASSWORD:-}" "${CURL_OPTS[@]}")
+TOKEN=$(cached_or_login_token)
 if [[ -z "$TOKEN" ]]; then
   fail "no auth token"
   exit 1
@@ -79,10 +91,10 @@ DEADLINE=$(( $(date +%s) + 180 ))
 STATUS=""
 while [[ $(date +%s) -lt $DEADLINE ]]; do
   STATUS=$(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" \
-    "$ADMIN_HOST/api/v1/system-backup/runs/$RUN_ID" | jq -r '.data.status')
+    "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID" | jq -r '.data.status')
   if [[ "$STATUS" == "succeeded" ]]; then break; fi
   if [[ "$STATUS" == "failed" ]]; then
-    fail "A2 export failed: $(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/system-backup/runs/$RUN_ID")"
+    fail "A2 export failed: $(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID")"
     exit 1
   fi
   sleep 3
@@ -95,12 +107,15 @@ ok "A2 export reached status=succeeded"
 
 # A3 — Download URL
 DOWNLOAD_URL=$(curl "${CURL_OPTS[@]}" -H "Authorization: Bearer $TOKEN" \
-  "$ADMIN_HOST/api/v1/system-backup/runs/$RUN_ID" | jq -r '.data.downloadUrl')
+  "$ADMIN_HOST/api/v1/system-backup/secrets/runs/$RUN_ID" | jq -r '.data.downloadUrl')
 if [[ -z "$DOWNLOAD_URL" || "$DOWNLOAD_URL" == "null" ]]; then
   fail "A3 no downloadUrl in run record"
   exit 1
 fi
-curl "${CURL_OPTS[@]}" -o "$WORK_DIR/bundle.age" "$DOWNLOAD_URL"
+# downloadUrl is a relative path (/api/v1/system-backup/secrets/runs/:id/download,
+# a one-shot signed URL) — prefix ADMIN_HOST unless the backend returns absolute.
+case "$DOWNLOAD_URL" in http*) DL_URL="$DOWNLOAD_URL" ;; *) DL_URL="${ADMIN_HOST%/}${DOWNLOAD_URL}" ;; esac
+curl "${CURL_OPTS[@]}" -o "$WORK_DIR/bundle.age" "$DL_URL"
 if [[ ! -s "$WORK_DIR/bundle.age" ]]; then
   fail "A3 download produced empty file"
   exit 1

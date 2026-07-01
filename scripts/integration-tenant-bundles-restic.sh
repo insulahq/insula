@@ -204,7 +204,7 @@ else
 import json, sys
 d = json.load(sys.stdin)['data']
 for c in d:
-    if c.get('companyEmail') == '$TEST_EMAIL':
+    if c.get('primaryEmail') == '$TEST_EMAIL':
         print(c['id']); break
 ")
   if [ -z "$CID" ]; then

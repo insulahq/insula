@@ -2542,3 +2542,38 @@ carries its own pins (the prod tag→pin path was never wired). Deletes
 `overlays/development` on the `development` branch). Removes the pins-on-main,
 GITHUB_TOKEN/workflow_run, branch-divergence, overloaded-branch, and no-RC-home
 problems; staging finally tests the exact signed artifact prod will pull.
+
+## ADR-054: Per-route mTLS edge enforcement on Traefik (TLSOption + forwardAuth revocation)
+
+Summary (2026-07-01): The nginx→Traefik migration (ADR-038) **regressed**
+per-route mutual-TLS enforcement. Under nginx, an mTLS-enabled route required +
+verified a client cert and honored the CRL via `auth-tls-*` annotations. The
+Traefik port emitted the CA-bundle Secret and a cert-forwarding Middleware but
+**never emitted the `TLSOption` CR** that carries the client-cert requirement,
+and dropped revocation — leaving mTLS routes **fail-open** while the UI reported
+them enabled. (Discovered by re-triaging `integration-mtls-e2e.sh`.)
+
+Decision — restore full enforcement:
+
+- **CA verification** (per TLS handshake, no per-request cost): the domains
+  reconciler PARTITIONS routes — mTLS-enabled routes get their **own**
+  IngressRoute whose `spec.tls.options` references a per-route `TLSOption`
+  (`clientAuth.clientAuthType` from `verify_mode`: on→RequireAndVerify,
+  optional→VerifyIfGiven, optional_no_ca→RequestClientCert;
+  `secretNames`→`route-mtls-<id>`). Splitting is REQUIRED because Traefik
+  `tls.options` is scoped per-IngressRoute (per TLS listener), not per-router,
+  and a host present with two different TLSOptions is a Traefik error.
+
+- **Revocation** (per request, O(1)): Traefik v3.7 OSS `TLSOption` has **no CRL
+  field** (verified against the live CRD — only `clientAuthType` + `secretNames`),
+  so `tls.crl` in the Secret is inert. Revocation is enforced by a `forwardAuth`
+  Middleware → an internal `/internal/mtls/verify` endpoint that extracts the
+  client-cert serial (from `passTLSClientCert`) and 403s revoked serials. The
+  check is an in-memory Set lookup refreshed on a 60s timer (and on revoke) — no
+  per-request DB work; the CA handshake gate + a fail-closed verify keep a stale
+  cache from ever granting access. A zero-round-trip variant (a Traefik CRL
+  plugin reading a local list in-process) is a possible future optimization.
+
+RBAC: the platform-api ClusterRole must include `tlsoptions` alongside
+`ingressroutes`/`middlewares` (same class of gap ADR-038's inline comment warns
+about). Validated E2E on DEV: no-cert rejected, valid accepted, revoked → 403.

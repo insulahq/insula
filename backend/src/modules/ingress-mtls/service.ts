@@ -198,6 +198,42 @@ export async function deleteMtlsConfig(db: Database, routeId: string): Promise<v
   await db.delete(ingressMtlsConfigs).where(eq(ingressMtlsConfigs.ingressRouteId, routeId));
 }
 
+export interface RouteMtlsPolicy {
+  verifyMode: string;
+  passCertToUpstream: boolean;
+  /** True when a CA bundle is available (provider or legacy inline) — i.e. a
+   *  `route-mtls-<id>` Secret is materialised for the TLSOption to reference. */
+  hasCa: boolean;
+}
+
+/**
+ * Reconciler-facing, lightweight: return the enforcement policy for a route's
+ * mTLS config WITHOUT decrypting any CA material. Returns null when mTLS is
+ * disabled or no config exists. The reconciler uses this to decide whether a
+ * route needs its own TLSOption-bearing IngressRoute.
+ */
+export async function loadRouteMtlsPolicy(
+  db: Database,
+  routeId: string,
+): Promise<RouteMtlsPolicy | null> {
+  const [row] = await db
+    .select({
+      enabled: ingressMtlsConfigs.enabled,
+      verifyMode: ingressMtlsConfigs.verifyMode,
+      passCertToUpstream: ingressMtlsConfigs.passCertToUpstream,
+      providerId: ingressMtlsConfigs.providerId,
+      caCertPemEncrypted: ingressMtlsConfigs.caCertPemEncrypted,
+    })
+    .from(ingressMtlsConfigs)
+    .where(eq(ingressMtlsConfigs.ingressRouteId, routeId));
+  if (!row || !row.enabled) return null;
+  return {
+    verifyMode: row.verifyMode,
+    passCertToUpstream: row.passCertToUpstream,
+    hasCa: Boolean(row.providerId) || Boolean(row.caCertPemEncrypted),
+  };
+}
+
 /**
  * Reconciler-facing: load an enabled config (with the decrypted CA
  * bundle ready for Secret materialisation). The CA cert is sourced

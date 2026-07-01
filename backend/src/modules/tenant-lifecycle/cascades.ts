@@ -1,5 +1,5 @@
-import { eq } from 'drizzle-orm';
-import { tenants } from '../../db/schema.js';
+import { eq, inArray } from 'drizzle-orm';
+import { tenants, ingressMtlsConfigs, tenantMtlsProviders } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { runTransition, type Transition } from './registry/index.js';
@@ -185,6 +185,25 @@ export async function applyDeleted(
   // the reap below can wait up to DEFAULT_REAP_TIMEOUT_MS (45 s) for the PV to
   // Release, which used to hold the request open (>25 s observed) and pile up
   // under concurrent deletes.
+  // Clear mTLS configs that reference this tenant's mTLS providers BEFORE the
+  // tenant-row delete cascade fires. ingress_mtls_configs.provider_id →
+  // tenant_mtls_providers is ON DELETE RESTRICT (a bound provider must not be
+  // deletable out from under a route via the API), but during a tenant delete
+  // the providers cascade too — and PG's cascade ordering can reach a provider
+  // before the route→config cascade, tripping RESTRICT and failing the whole
+  // delete. Removing the provider-backed configs first lets the cascade run
+  // cleanly. Inline-CA configs (null provider_id) still cascade via their
+  // ingress_route_id FK when the routes go. (ADR-054.)
+  await ctx.db.delete(ingressMtlsConfigs).where(
+    inArray(
+      ingressMtlsConfigs.providerId,
+      ctx.db
+        .select({ id: tenantMtlsProviders.id })
+        .from(tenantMtlsProviders)
+        .where(eq(tenantMtlsProviders.tenantId, tenantId)),
+    ),
+  );
+
   await ctx.db.delete(tenants).where(eq(tenants.id, tenantId));
 
   // Step 4 (BACKGROUND): reap this namespace's Released PVs + any stranded
