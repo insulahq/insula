@@ -232,6 +232,14 @@ PARALLEL=(
   # cnpg-down's forSeconds=300 → ~9-12 min wall; self-skips (77) on
   # overlays without k8s/base/monitoring (e.g. local DinD).
   "monitoring-slo:integration-monitoring-slo.sh"
+  # mTLS edge enforcement (ADR-054): provisions a throwaway tenant +
+  # nginx-php deployment + domain (auto-route) + CA provider, binds mTLS,
+  # then asserts via real curl that no-cert is handshake-rejected, a valid
+  # cert passes the gate, and a revoked cert gets 403 (per-cert) + the CRL
+  # lifecycle. Needs HTTPS_TEST_DOMAIN_BASE (the staging wildcard). Slow
+  # (~8-12 min: deployment provisioning + LE cert issuance), comparable to
+  # monitoring-slo above; self-cleans via trap. Staging-validated 17/17.
+  "mtls:integration-mtls-e2e.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).
