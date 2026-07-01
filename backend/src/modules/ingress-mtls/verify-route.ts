@@ -27,15 +27,18 @@ import {
 const CERT_HEADER = 'x-forwarded-tls-client-cert';
 
 /**
- * Rebuild a parseable PEM from Traefik's `X-Forwarded-Tls-Client-Cert` value,
- * which is the certificate URL-encoded and may arrive with or without the PEM
- * armor and newlines. We strip everything down to the base64 body and re-wrap.
+ * Rebuild a parseable PEM from Traefik's `X-Forwarded-Tls-Client-Cert` value.
+ * Traefik `url.QueryEscape`s the PEM — which encodes SPACE as `+` (not `%20`)
+ * and real `+` as `%2B`. `decodeURIComponent` does NOT turn `+` into a space,
+ * so we first rewrite `+` → `%20`; then decode (`%2B`→`+`, `%2F`→`/`,
+ * `%0A`→newline, `%20`→space), strip the armor, and keep only base64 chars.
  */
 function reconstructPem(raw: string): string {
-  const body = raw
+  const decoded = decodeURIComponent(raw.replace(/\+/g, '%20'));
+  const body = decoded
     .replace(/-----BEGIN CERTIFICATE-----/g, '')
     .replace(/-----END CERTIFICATE-----/g, '')
-    .replace(/\s+/g, '');
+    .replace(/[^A-Za-z0-9+/=]/g, '');
   const lines = body.match(/.{1,64}/g) ?? [body];
   return `-----BEGIN CERTIFICATE-----\n${lines.join('\n')}\n-----END CERTIFICATE-----\n`;
 }
@@ -55,7 +58,7 @@ export async function mtlsVerifyRoutes(app: FastifyInstance): Promise<void> {
 
     let serial: string;
     try {
-      const pem = reconstructPem(decodeURIComponent(certHeader));
+      const pem = reconstructPem(certHeader);
       serial = new X509Certificate(pem).serialNumber;
     } catch {
       // A cert we cannot parse must fail closed — never treat a malformed or
