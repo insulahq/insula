@@ -13,6 +13,7 @@
  * for drift recovery (same pattern as webmail-feature-css).
  */
 
+import { createHash } from 'node:crypto';
 import type * as k8s from '@kubernetes/client-node';
 import type { Logger } from 'pino';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -24,6 +25,13 @@ import { renderExclusions, type RenderResult } from './renderer.js';
 type Db = NodePgDatabase<any>;
 
 export const WAF_EXCLUSION_CM_NAME = 'modsec-crs-exclusions-dynamic';
+// The static, code-managed exclusion ConfigMap (k8s/base/modsecurity-crs/
+// exclusion-rules-configmap.yaml, Flux-applied). It has no reload trigger of
+// its own — nginx/modsec read the rules at pod start — so we fold its content
+// into the deploy-stamp hash below, making a static-exclusion change (e.g. the
+// crl.pem 920440 exemption) roll modsec too, not just dynamic (DB) changes.
+export const WAF_STATIC_EXCLUSION_CM_NAME = 'modsec-crs-exclusions';
+export const WAF_STATIC_EXCLUSION_CM_KEY = 'REQUEST-900-EXCLUSION-RULES-BEFORE-CRS.conf';
 export const WAF_EXCLUSION_CM_NAMESPACE = 'traefik';
 export const WAF_EXCLUSION_CM_KEY = 'REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf';
 export const WAF_EXCLUSION_HASH_ANNOTATION =
@@ -143,6 +151,32 @@ export async function reconcileWafExclusions(
   // Triggers a rolling restart so pods pick up the new .conf via the
   // volume mount. We skip the patch when the live annotation already
   // matches to avoid log noise on unchanged ticks.
+  //
+  // The deploy hash combines the DYNAMIC exclusions (rendered.hash) with the
+  // content of the STATIC exclusion ConfigMap, so a change to EITHER rolls
+  // modsec. (The static CM is Flux-applied and has no reload trigger of its
+  // own — its rules would otherwise not take effect until an unrelated pod
+  // restart.) The dynamic CM keeps its own rendered.hash annotation.
+  let staticContent = '';
+  try {
+    const staticCm = (await clients.core.readNamespacedConfigMap({
+      name: WAF_STATIC_EXCLUSION_CM_NAME,
+      namespace: WAF_EXCLUSION_CM_NAMESPACE,
+    } as unknown as Parameters<typeof clients.core.readNamespacedConfigMap>[0])) as ConfigMapShape;
+    staticContent = staticCm.data?.[WAF_STATIC_EXCLUSION_CM_KEY] ?? '';
+  } catch (err) {
+    // Best-effort: on a read failure fall back to the dynamic-only hash so a
+    // transient error never destabilises the deploy annotation (which would
+    // roll modsec on every tick until the read recovers).
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'waf-rule-exclusions: static ConfigMap read failed — deploy hash falls back to dynamic-only',
+    );
+  }
+  const deployHash = staticContent
+    ? createHash('sha256').update(`${rendered.hash}\n${staticContent}`).digest('hex')
+    : rendered.hash;
+
   let deployStamped = false;
   try {
     const dep = (await clients.apps.readNamespacedDeployment({
@@ -152,7 +186,7 @@ export async function reconcileWafExclusions(
     const current = dep.spec?.template?.metadata?.annotations?.[
       WAF_EXCLUSION_HASH_ANNOTATION
     ];
-    if (current !== rendered.hash) {
+    if (current !== deployHash) {
       await clients.apps.patchNamespacedDeployment(
         {
           name: MODSEC_DEPLOY_NAME,
@@ -161,7 +195,7 @@ export async function reconcileWafExclusions(
             spec: {
               template: {
                 metadata: {
-                  annotations: { [WAF_EXCLUSION_HASH_ANNOTATION]: rendered.hash },
+                  annotations: { [WAF_EXCLUSION_HASH_ANNOTATION]: deployHash },
                 },
               },
             },
