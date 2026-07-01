@@ -247,22 +247,54 @@ else
   fi
 fi
 
-# ─── Assertion 5: Plan cap rejection ────────────────────────────────────────
-if [[ -n "$DEP_ID" ]]; then
-  echo "→ Asserting plan cap rejects over-allocation..."
-  # Try a deploy that exceeds the plan — cpu_request = 5 (plan is 2).
-  if [[ -n "$NC_ID" ]]; then
-    OVER_RESP=$(curl -sS -X POST "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H 'Content-Type: application/json' \
-      -d "{\"catalog_entry_id\":\"$NC_ID\",\"name\":\"qos-over\",\"cpu_request\":\"5\",\"memory_request\":\"1Gi\"}" \
-      -w '\n%{http_code}')
-    STATUS=$(echo "$OVER_RESP" | tail -1)
-    if [[ "$STATUS" -ge 400 && "$STATUS" -lt 500 ]]; then
-      pass "Plan cap correctly rejected over-allocation (HTTP $STATUS)"
+# ─── Assertion 5: Plan cap enforced at pod-admission (ResourceQuota) ─────────
+# The plan cap is NOT a synchronous deploy-API 4xx. The deploy API accepts the
+# spec and creates the Deployment; the tenant ResourceQuota then blocks the
+# ReplicaSet's pods at admission, surfacing as a `FailedCreate` "exceeded quota"
+# event that the reconciler turns into deployment status=failed
+# (k8s-deployer.ts formatQuotaExceededMessage). Assert on that real path — an
+# over-alloc that pushes namespace requests.cpu past the 2-core cap.
+if [[ -n "$DEP_ID" && -n "$NC_ID" ]]; then
+  echo "→ Asserting plan cap rejects over-allocation at pod-admission..."
+  OVER_RESP=$(curl -sS -X POST "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"catalog_entry_id\":\"$NC_ID\",\"name\":\"qos-over\",\"cpu_request\":\"5\",\"memory_request\":\"1Gi\"}" \
+    -w '\n%{http_code}')
+  OVER_STATUS=$(echo "$OVER_RESP" | tail -1)
+  OVER_DEP_ID=$(echo "$OVER_RESP" | sed '$d' | jq -r '.data.id // empty')
+
+  if [[ "$OVER_STATUS" -ge 400 && "$OVER_STATUS" -lt 500 ]]; then
+    # Defensive: a synchronous pre-admission rejection is also acceptable.
+    pass "Plan cap rejected over-allocation synchronously (HTTP $OVER_STATUS)"
+  elif [[ "$OVER_STATUS" -ge 200 && "$OVER_STATUS" -lt 300 ]]; then
+    # Expected path: accepted, then quota-blocked at admission. Poll (up to
+    # ~120s) for the FailedCreate "exceeded quota" event on the over-alloc
+    # ReplicaSet, or the reconciler-surfaced quota message on the deployment.
+    QUOTA_BLOCKED=0
+    for _ in $(seq 1 30); do
+      EVT=$(k get events -n "$NAMESPACE" -o json 2>/dev/null | jq -r \
+        '[.items[] | select(.reason=="FailedCreate" and ((.message // "") | test("exceeded quota")))] | length')
+      if [[ "${EVT:-0}" -ge 1 ]]; then QUOTA_BLOCKED=1; break; fi
+      if [[ -n "$OVER_DEP_ID" ]]; then
+        DJSON=$(curl -sk "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments/$OVER_DEP_ID" \
+          -H "Authorization: Bearer $TOKEN" 2>/dev/null)
+        if echo "$DJSON" | grep -qi 'exceeded quota'; then QUOTA_BLOCKED=1; break; fi
+      fi
+      sleep 4
+    done
+    if [[ "$QUOTA_BLOCKED" -eq 1 ]]; then
+      pass "Plan cap rejected over-allocation at pod-admission (ResourceQuota: exceeded quota)"
     else
-      fail "Plan cap did NOT reject over-allocation (HTTP $STATUS)"
+      fail "Over-allocation neither rejected synchronously nor blocked by ResourceQuota within 120s (HTTP $OVER_STATUS)"
     fi
+    # Remove the over-alloc deployment so it doesn't linger past the test.
+    if [[ -n "$OVER_DEP_ID" ]]; then
+      curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments/$OVER_DEP_ID" \
+        -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true
+    fi
+  else
+    fail "Unexpected response creating over-allocation deployment (HTTP $OVER_STATUS)"
   fi
 fi
 
