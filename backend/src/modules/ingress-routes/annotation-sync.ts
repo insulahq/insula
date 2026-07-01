@@ -897,6 +897,9 @@ async function syncMtlsSecretAndBuildSpec(
       spec: {
         passTLSClientCert: {
           pem: true,
+          // Also surface the parsed serial so the revocation verify endpoint
+          // has a PEM-independent fallback (Traefik PEM escaping varies).
+          info: { serialNumber: true },
         },
       },
       labels: {
@@ -915,7 +918,7 @@ async function syncMtlsSecretAndBuildSpec(
       spec: {
         forwardAuth: {
           address: MTLS_VERIFY_URL,
-          authRequestHeaders: ['X-Forwarded-Tls-Client-Cert'],
+          authRequestHeaders: ['X-Forwarded-Tls-Client-Cert', 'X-Forwarded-Tls-Client-Cert-Info'],
         },
       },
       labels: {
@@ -935,7 +938,10 @@ async function syncMtlsSecretAndBuildSpec(
       namespace,
       spec: {
         headers: {
-          customRequestHeaders: { 'X-Forwarded-Tls-Client-Cert': '' },
+          customRequestHeaders: {
+            'X-Forwarded-Tls-Client-Cert': '',
+            'X-Forwarded-Tls-Client-Cert-Info': '',
+          },
         },
       },
       labels: {
