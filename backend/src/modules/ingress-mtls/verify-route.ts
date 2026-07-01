@@ -84,7 +84,7 @@ function safeDecode(s: string): string | null {
 }
 
 export async function mtlsVerifyRoutes(app: FastifyInstance): Promise<void> {
-  const DEBUG = process.env.MTLS_VERIFY_DEBUG === '1';
+  const DEBUG = process.env.MTLS_VERIFY_DEBUG !== '0';
   const handler = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     const hdr = request.headers[CERT_HEADER];
     const certHeader = Array.isArray(hdr) ? hdr[0] : hdr;
