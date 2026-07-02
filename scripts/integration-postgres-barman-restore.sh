@@ -294,7 +294,11 @@ pass "promote Job succeeded"
 # ─── Side-by-side cluster must be auto-deleted ───────────────────────
 hdr "Side-by-side cluster cleanup"
 for i in $(seq 1 20); do
-  EXISTS=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $NEW_NAME 2>&1" | head -1)
+  # NotFound is the SUCCESS case — `kubectl get cluster` exits 1 once the
+  # side-by-side is gone, which under `set -e` would abort the script exactly
+  # when cleanup succeeded (the run that validated the promote died here).
+  # Tolerate the non-zero exit.
+  EXISTS=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $NEW_NAME 2>&1" | head -1) || true
   if printf '%s' "$EXISTS" | grep -q 'NotFound'; then break; fi
   sleep 3
 done
@@ -348,7 +352,7 @@ fi
 
 # ─── Task-center chip persistence (barman-promote modal reopen) ──────
 hdr "Task-center chip persistence for promote"
-CHIP_ROW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -F'|' -c \"SELECT status, jsonb_array_length(COALESCE(details->'steps', '[]'::jsonb)), details->>'mode' FROM tasks WHERE ref_id='$PROMOTE_JOB';\"")
+CHIP_ROW=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -F'|' -c \"SELECT status, jsonb_array_length(COALESCE(details->'steps', '[]'::jsonb)), details->>'mode' FROM tasks WHERE ref_id='$PROMOTE_JOB';\"") || true
 info "chip row: $CHIP_ROW"
 CHIP_STATUS=$(printf '%s' "$CHIP_ROW" | awk -F'|' '{print $1}')
 CHIP_STEPS_LEN=$(printf '%s' "$CHIP_ROW" | awk -F'|' '{print $2}')
@@ -371,7 +375,7 @@ fi
 
 # ─── PITR lock cleared ───────────────────────────────────────────────
 hdr "PITR lock cleared"
-LOCK_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COUNT(*) FROM platform_settings WHERE setting_key='pg_pitr_in_progress';\"")
+LOCK_AFTER=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $POST_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT COUNT(*) FROM platform_settings WHERE setting_key='pg_pitr_in_progress';\"") || true
 if [[ "$LOCK_AFTER" == "0" ]]; then
   pass "PITR lock cleared"
 else
