@@ -189,6 +189,12 @@ SERIAL_PRE=(
   # serially (never alongside a suite that reads a Ready bulwark pod). Restores
   # defaults on completion. Validated on DEV 2026-06-30. ~30s.
   "webmail-feature-toggle:integration-webmail-feature-toggle.sh"
+  # Mailbox-backup engine selector (api-smoke): PATCH + GET round-trip of the
+  # GLOBAL mailbox_backup_engine setting (imap/jmap). Serial because it mutates
+  # a global setting; saves + restores the original so it's non-mutating. The
+  # heavy mailboxes-only/full modes (real S3 bundle round-trip) stay manual/on
+  # demand. Staging-validated. ~5s.
+  "tenant-bundles-engine:integration-tenant-bundles-engine-e2e.sh api-smoke"
 )
 PARALLEL=(
   "pvc:integration-pvc.sh"
@@ -232,6 +238,43 @@ PARALLEL=(
   # cnpg-down's forSeconds=300 → ~9-12 min wall; self-skips (77) on
   # overlays without k8s/base/monitoring (e.g. local DinD).
   "monitoring-slo:integration-monitoring-slo.sh"
+  # mTLS edge enforcement (ADR-054): provisions a throwaway tenant +
+  # nginx-php deployment + domain (auto-route) + CA provider, binds mTLS,
+  # then asserts via real curl that no-cert is handshake-rejected, a valid
+  # cert passes the gate, and a revoked cert gets 403 (per-cert) + the CRL
+  # lifecycle. Needs HTTPS_TEST_DOMAIN_BASE (the staging wildcard). Slow
+  # (~8-12 min: deployment provisioning + LE cert issuance), comparable to
+  # monitoring-slo above; self-cleans via trap. Staging-validated 17/17.
+  "mtls:integration-mtls-e2e.sh"
+  # ADR-037 asymmetric QoS: asserts the tenant ResourceQuota shape (requests.cpu
+  # + limits.memory, NO limits.cpu), multi-component allocation, per-container
+  # Burstable-CPU/Guaranteed-memory, and that an over-allocation is rejected at
+  # pod-admission by the quota (not a sync 4xx). Disposable tenant, trap cleanup.
+  # Uses SSH kubectl (SSH_HOST from integration.env). Staging-validated 10/10. ~2 min.
+  "burstable-qos:integration-burstable-qos.sh"
+  # Platform-driven webmail E2E: provision tenant→domain→email→mailbox, mint the
+  # webmail token, follow the SSO URL, and (bulwark) run the SPA-equivalent JMAP
+  # probe — the real "open webmail as a tenant" path incl. master-user
+  # impersonation. Disposable tenant, trap cleanup. Staging-validated 15/0. ~3-4 min.
+  "webmail-platform:integration-webmail-platform-e2e.sh"
+  # Bulwark native impersonation handler (A: pod health, B: happy path incl. the
+  # #296 JMAP Mailbox/get read via master-auth, C: 14 negative JWT cases). Runs
+  # in-pod via kubectl, no tenant provisioning, self-skips (77) if bulwark is
+  # scaled to 0 (roundcube-active). Staging-validated 26/0. ~1-2 min.
+  "bulwark-impersonate:integration-bulwark-impersonate.sh"
+  # System DR bundle: triggers a real export run, downloads it, and (external-
+  # tier) decrypts with the operator AGE key → verifies tar + sidecars + E2
+  # readOnly freeze + secrets. Phase A (export+download) staging-validated;
+  # self-skips (77) when the `age` binary / AGE_KEY_FILE are absent (public
+  # clone / CI). Runner needs psql (Phase G) + tsx (Phase H) — those self-skip too.
+  "dr-bundle:integration-dr-bundle.sh"
+  # System Backup Phase 1: secrets-bundle export → one-shot signed download URL
+  # (sha256 byte-match) → 410-Gone single-use enforcement → fresh export yields a
+  # new runId → audit rows → postgres-restore route smoke. Read-mostly (exports a
+  # bundle). The age-decrypt content check is external-tier and soft-skips when
+  # AGE_KEY isn't the operator recipient (bundle bytes already proven in step 5).
+  # Staging-validated 2026-07-01. ~10s.
+  "system-backup:integration-system-backup.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).

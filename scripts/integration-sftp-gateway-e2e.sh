@@ -26,12 +26,20 @@
 # USAGE (on a node):  sudo ./scripts/integration-sftp-gateway-e2e.sh
 #   ADMIN_EMAIL / ADMIN_PASSWORD  (password reset via admin-password-reset.sh if unset)
 #   KUBECONFIG (default /etc/rancher/k3s/k3s.yaml) · PLAN_ID (auto first plan)
+#   API_PORT (local pf port for platform-api, default 3000) · SFTP_PORT
+#   (local pf port for sftp-gateway, default 2222) — override to avoid host
+#   port collisions or run two suites concurrently.
 set -uo pipefail
 
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 NS_PLATFORM="${NS_PLATFORM:-platform}"
 NS_GATEWAY="${NS_GATEWAY:-platform-system}"
-API=http://127.0.0.1:3000/api/v1
+# Local port-forward ports are parameterized so the suite can run when the
+# node already binds 3000/2222 or when two runs overlap. The REMOTE svc ports
+# (platform-api:3000, sftp-gateway:2222) are fixed by the manifests.
+API_PORT="${API_PORT:-3000}"
+SFTP_PORT="${SFTP_PORT:-2222}"
+API="http://127.0.0.1:${API_PORT}/api/v1"
 G='\033[32m'; R='\033[31m'; C='\033[36m'; Z='\033[0m'; pass=0; fail=0
 ok(){ printf "${G}  ✓ %s${Z}\n" "$1"; pass=$((pass+1)); }
 no(){ printf "${R}  ✗ %s${Z}\n" "$1"; fail=$((fail+1)); }
@@ -56,7 +64,7 @@ cleanup(){
 }
 trap cleanup EXIT
 
-kubectl -n "$NS_PLATFORM" port-forward svc/platform-api 3000:3000 >"$WORK/pf-api.log" 2>&1 & PF_API=$!; sleep 4
+kubectl -n "$NS_PLATFORM" port-forward svc/platform-api "${API_PORT}:3000" >"$WORK/pf-api.log" 2>&1 & PF_API=$!; sleep 4
 
 # ---- admin auth -----------------------------------------------------------
 APEX=$(DB -tAc "select value from platform_settings where key='platform_apex_domain';" 2>/dev/null | tr -d '[:space:]')
@@ -77,6 +85,12 @@ PLAN_ID="${PLAN_ID:-$(DB -tAc "select id from hosting_plans order by created_at 
 TID=$(curl -s -X POST "$API/tenants" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"name\":\"sftp-e2e\",\"primary_email\":\"sftp-e2e@example.com\",\"contact_name\":\"E2E\",\"plan_id\":\"$PLAN_ID\"}" | jq -r '.data.id // empty')
 [ -n "$TID" ] && ok "tenant $TID" || die "tenant create failed"
+# Tenant-create is deliberately NO auto-provision (tenants/routes.ts:205 — a
+# fresh tenant is status:'pending'/'unprovisioned'). Provisioning is an EXPLICIT
+# step, so trigger it before waiting or the tenant sits unprovisioned forever.
+info "trigger provisioning (POST /admin/tenants/:id/provision)"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  "$API/admin/tenants/$TID/provision" -d '{}' >/dev/null 2>&1 || true
 info "wait for provisioning"
 for _ in $(seq 1 60); do
   r=$(curl -s -H "Authorization: Bearer $TOKEN" "$API/tenants/$TID"); NS=$(echo "$r" | jq -r '.data.kubernetesNamespace // empty')
@@ -107,27 +121,37 @@ U_KEY=$(curl -s -X POST "$API/tenants/$TID/sftp-users" -H "Authorization: Bearer
 [ -n "$U_KEY" ] && ok "ssh-key user $U_KEY (home /public_html)" || die "ssh-key user create failed"
 
 # ---- gateway port-forward + sftp helpers ---------------------------------
-kubectl -n "$NS_GATEWAY" port-forward svc/sftp-gateway 2222:2222 >"$WORK/pf-sftp.log" 2>&1 & PF_SFTP=$!; sleep 4
+kubectl -n "$NS_GATEWAY" port-forward svc/sftp-gateway "${SFTP_PORT}:2222" >"$WORK/pf-sftp.log" 2>&1 & PF_SFTP=$!; sleep 4
 SFTP_PW(){  # $1 user $2 pass ; commands on stdin
   { cat; printf 'bye\n'; } | timeout 30 sshpass -p "$2" sftp -oBatchMode=no \
     -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -oPreferredAuthentications=password \
     -oPubkeyAuthentication=no -oConnectTimeout=10 -oServerAliveInterval=5 -oServerAliveCountMax=2 \
-    -P 2222 "$1@127.0.0.1" 2>&1; }
+    -P "$SFTP_PORT" "$1@127.0.0.1" 2>&1; }
 SFTP_KEY(){ # $1 user $2 keyfile ; commands on stdin
   { cat; printf 'bye\n'; } | timeout 30 sftp -i "$2" -oBatchMode=no \
     -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -oPreferredAuthentications=publickey \
     -oIdentitiesOnly=yes -oConnectTimeout=10 -oServerAliveInterval=5 -oServerAliveCountMax=2 \
-    -P 2222 "$1@127.0.0.1" 2>&1; }
+    -P "$SFTP_PORT" "$1@127.0.0.1" 2>&1; }
 
 # ---- bootstrap file-manager + seed PVC (incl. a cross-UID file) ----------
 info "bootstrap (auth + ensure-file-manager) + seed PVC"
 printf 'pwd\n' | SFTP_PW "$U_ROOT" "$P_ROOT" >/dev/null 2>&1 || true
+# The file-manager is a Deployment scaled 0<->1 on demand (idle-cleanup scales
+# it to 0; a bare tenant starts at 0 replicas). The SFTP login above does not
+# reliably start it, so explicitly start it via the files/start API, which
+# calls ensureFileManagerRunning + refreshes the idle timer.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$API/tenants/$TID/files/start" >/dev/null 2>&1 || true
 FM=""
 for _ in $(seq 1 40); do
   FM=$(kubectl -n "$NS" get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
   [ -n "$FM" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$FM" --timeout=10s >/dev/null 2>&1 && break; sleep 4
 done
-[ -n "$FM" ] && ok "file-manager pod Ready ($FM)" || die "file-manager pod never became ready"
+# Re-assert Ready in the final check — a set-but-not-Ready $FM must NOT pass.
+if [ -n "$FM" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$FM" --timeout=5s >/dev/null 2>&1; then
+  ok "file-manager pod Ready ($FM)"
+else
+  die "file-manager pod never became ready"
+fi
 kubectl -n "$NS" exec "$FM" -c file-manager -- sh -c '
   mkdir -p /data/public_html/uploads
   echo PUBLIC > /data/public_html/MARKER_PUBLIC

@@ -730,6 +730,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         );
       }
 
+      // platform-secrets mirror drift-guard: re-assert the platform-system copy
+      // of `platform-secrets` against the `platform`-ns source on boot so the
+      // sftp-gateway's internal-auth secret (internal-secret) + mailbox-cred key
+      // (platform-encryption-key) can't silently drift. A stale mirror makes the
+      // gateway's X-Internal-Auth mismatch platform-api → every SFTP auth 403s.
+      // Bootstrap only mirrors once (skip-if-exists), so a rotation of the source
+      // used to leave the mirror stale forever. Paired with the Deployment's
+      // `secret.reloader.stakater.com/reload` annotation so a heal auto-restarts
+      // the gateway. Best-effort — never blocks startup.
+      try {
+        const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+        const { reconcilePlatformSecretsMirror } = await import(
+          './modules/platform-secrets/mirror-reconciler.js'
+        );
+        const cfg = app.config as Record<string, unknown>;
+        const k8s = createK8sClients(cfg.KUBECONFIG_PATH as string | undefined);
+        await reconcilePlatformSecretsMirror(k8s.core, app.log);
+      } catch (err) {
+        app.log.warn({ err }, 'startup: platform-secrets mirror reconcile skipped (k8s unavailable)');
+      }
+
       // PR 2 (network-access two-tier): re-reconcile every tenant
       // ResourceQuota on boot to ensure the new scopeSelector + plan-
       // exact limits are in place. Idempotent — quotas already in the
