@@ -57,7 +57,9 @@
 set -euo pipefail
 
 ENGINE="${ENGINE:-imap}"
-MODE="${MODE:-mailboxes-only}"
+# MODE from env, else a positional arg (so integration-all can wire
+# `...engine-e2e.sh api-smoke`), else the default.
+MODE="${MODE:-${1:-mailboxes-only}}"
 API_BASE="${API_BASE:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-markus@example.test}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
@@ -98,6 +100,11 @@ TOKEN=$(api -X POST "$API_BASE/api/v1/auth/login" \
 [ -n "$TOKEN" ] || { red "ERROR: login failed"; exit 2; }
 green "  ✓ login: ${#TOKEN}-char token"
 
+# Save the current backup engine so api-smoke can restore it — Stage 1 flips a
+# GLOBAL setting, so the smoke must leave it as it found it (SERIAL_PRE suite).
+ORIG_ENGINE=$(apij "$API_BASE/api/v1/admin/mailbox-backup-settings" 2>/dev/null \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["engine"])' 2>/dev/null || echo "")
+
 # ──────────────────────────────────────────────────────────────────
 heading "Stage 1 — flip mailbox_backup_engine = $ENGINE"
 # ──────────────────────────────────────────────────────────────────
@@ -123,6 +130,12 @@ green "  ✓ GET returns engine=$RT_ENGINE recommended=$RT_RECOMMENDED lastUpdat
 
 # Stop here if api-smoke mode (no S3/tenant required beyond this point).
 if [ "$MODE" = "api-smoke" ]; then
+  # Restore the engine we found so the smoke is non-mutating (Stage 1 flipped it).
+  if [ -n "$ORIG_ENGINE" ] && [ "$ORIG_ENGINE" != "$ENGINE" ]; then
+    apij -X PATCH "$API_BASE/api/v1/admin/mailbox-backup-settings" \
+      -d "{\"engine\":\"$ORIG_ENGINE\"}" >/dev/null 2>&1 \
+      && green "  ✓ restored original engine=$ORIG_ENGINE"
+  fi
   green "✓ api-smoke complete — engine selector endpoints work"
   exit 0
 fi

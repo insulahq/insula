@@ -20,6 +20,27 @@
 #   4. Write-lock middleware blocks general POSTs during PITR with 503
 #      RESTORE_IN_PROGRESS but allows status polling.
 #
+#   5. Chip-persistence + plugin-sidecar propagation + fast/slow path
+#      selection (folded 2026-07-02 from the retired
+#      integration-postgres-snapshot-restore.sh):
+#        - the task-center chip lands in a TERMINAL state with the full
+#          step timeline persisted to tasks.details.steps (so re-opening
+#          PitrProgressModal renders history, not a blank list);
+#        - the plugin-barman-cloud sidecar is present on the recreated
+#          primary pod WITHOUT a manual `kubectl delete pod`;
+#        - default mode (no recoveryTargetTime) took the FAST-path
+#          (create-temp-cluster SKIPPED); WAL mode took the SLOW-path.
+#
+# MODES:
+#   Default (WITH_WAL unset): restore-to-snapshot-LSN. The post-snapshot
+#     row MUST be gone; fast-path (temp cluster skipped) expected.
+#   WITH_WAL=1: recoveryTargetTime WAL-replay. Two markers wrap the
+#     target time — marker A (pre-target) MUST survive, marker B
+#     (post-target) MUST be gone — proving WAL replayed up to the target
+#     and stopped exactly there. Forces the slow-path (temp cluster +
+#     WAL replay from the barman object store). Runs longer (~+5 min).
+#     On-demand only; integration-all runs the fast default path.
+#
 # WHY A SEPARATE HARNESS (vs. integration-system-snapshots.sh):
 #   Phase 4a of system-snapshots asserts that the OLD per-PVC restore
 #   route refuses CNPG (422). This harness is the proof that the NEW
@@ -34,6 +55,7 @@
 #
 # USAGE:
 #   ADMIN_PASSWORD=<…> ./scripts/integration-postgres-pitr.sh
+#   WITH_WAL=1 ADMIN_PASSWORD=<…> ./scripts/integration-postgres-pitr.sh
 
 set -uo pipefail
 
@@ -42,6 +64,7 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_HOST="${SSH_HOST:-root@192.0.2.56}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
+WITH_WAL="${WITH_WAL:-0}"   # 1 = recoveryTargetTime WAL-replay mode (slow-path)
 [[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD must be set" >&2; exit 2; }
 
 CYAN='\033[36m'; GREEN='\033[32m'; RED='\033[31m'; YELLOW='\033[33m'; RESET='\033[0m'
@@ -79,6 +102,13 @@ psql_pg() {
   $SSH "kubectl exec -n platform '$primary' -c postgres -i -- psql -tA -d platform" <<EOF
 $sql
 EOF
+}
+
+# Force a WAL segment switch so a freshly-inserted row is flushed into
+# the archived WAL — required in WITH_WAL mode so the temp cluster can
+# replay it from the barman object store up to recoveryTargetTime.
+flush_wal() {
+  psql_pg "SELECT pg_switch_wal();" >/dev/null 2>&1 || true
 }
 
 log "1) Login"
@@ -136,25 +166,55 @@ for _ in {1..30}; do
 done
 [[ "$READY" = "true" ]] && pass "snapshot ready" || fail "snapshot not ready after 60s"
 
-log "5) Insert POST-snapshot row that MUST be lost on restore"
-psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'post-snapshot-MUST-BE-LOST');" >/dev/null
-POST_COUNT=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker;")
-echo "  post-snapshot rows: $POST_COUNT (should be 2)"
-[[ "$POST_COUNT" = "2" ]] || fail "expected 2 rows after second insert"
+RECOVERY_TARGET_TIME=""
+if [[ "$WITH_WAL" = "1" ]]; then
+  log "5) WAL mode: wrap recoveryTargetTime with markers A (pre, survives) + B (post, lost)"
+  # Marker A: post-snapshot, BEFORE target. Flush its WAL so it is
+  # durable in the archive, THEN capture the target time.
+  psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (500, 'marker-A-pre-target-MUST-SURVIVE');" >/dev/null
+  flush_wal
+  echo "  marker A (id=500) inserted + WAL flushed"
+  # Capture target from postgres NOW() (avoids harness/cluster clock skew).
+  sleep 3
+  RECOVERY_TARGET_TIME=$(psql_pg "SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"');" | tr -d ' ')
+  echo "  recoveryTargetTime captured: $RECOVERY_TARGET_TIME"
+  [[ -n "$RECOVERY_TARGET_TIME" ]] || fail "failed to capture recoveryTargetTime"
+  # Marker B: AFTER the target — must be replayed-past and dropped.
+  sleep 3
+  psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'marker-B-post-target-MUST-BE-LOST');" >/dev/null
+  flush_wal
+  echo "  marker B (id=999) inserted POST-target + WAL flushed"
+  POST_COUNT=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker;")
+  echo "  rows now: $POST_COUNT (should be 3: pre-snapshot + A + B)"
+  [[ "$POST_COUNT" = "3" ]] || fail "expected 3 rows in WAL mode, got $POST_COUNT"
+else
+  log "5) Insert POST-snapshot row that MUST be lost on restore"
+  psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'post-snapshot-MUST-BE-LOST');" >/dev/null
+  POST_COUNT=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker;")
+  echo "  post-snapshot rows: $POST_COUNT (should be 2)"
+  [[ "$POST_COUNT" = "2" ]] || fail "expected 2 rows after second insert"
+fi
 
 log "6) Verify status endpoint reports no restore in progress"
 STATUS=$(curl_admin "$ADMIN_HOST/api/v1/admin/postgres-restore/status" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["inProgress"])')
 [[ "$STATUS" = "False" ]] && pass "status=in-progress=false (idle)" || fail "expected idle, got inProgress=$STATUS"
 
 log "7) Trigger PITR auto-promote (async — returns 202 immediately)"
-echo "  POST /api/v1/admin/postgres-restore { snapshot=$SNAP }"
-echo "  this will: wrap snap → temp cluster → handoff → DELETE source → recreate from temp → cleanup"
+if [[ "$WITH_WAL" = "1" ]]; then
+  echo "  POST /api/v1/admin/postgres-restore { snapshot=$SNAP, recoveryTargetTime=$RECOVERY_TARGET_TIME }"
+  echo "  WAL mode: slow-path — wrap snap → temp cluster (WAL replay to target) → handoff → recreate → cleanup"
+  RESTORE_BODY="{\"clusterNamespace\":\"platform\",\"clusterName\":\"system-db\",\"snapshotName\":\"$SNAP\",\"recoveryTargetTime\":\"$RECOVERY_TARGET_TIME\"}"
+else
+  echo "  POST /api/v1/admin/postgres-restore { snapshot=$SNAP }"
+  echo "  this will: wrap snap → temp cluster → handoff → DELETE source → recreate from temp → cleanup"
+  RESTORE_BODY="{\"clusterNamespace\":\"platform\",\"clusterName\":\"system-db\",\"snapshotName\":\"$SNAP\"}"
+fi
 START=$(date +%s)
 HTTP=$(curl -sS -k -o /tmp/pitr.json -w '%{http_code}' \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -X POST "$ADMIN_HOST/api/v1/admin/postgres-restore" \
   --max-time 30 \
-  -d "{\"clusterNamespace\":\"platform\",\"clusterName\":\"system-db\",\"snapshotName\":\"$SNAP\"}")
+  -d "$RESTORE_BODY")
 ELAPSED=$(( $(date +%s) - START ))
 echo "  HTTP=$HTTP in ${ELAPSED}s"
 cat /tmp/pitr.json | python3 -m json.tool 2>/dev/null | head -20 || cat /tmp/pitr.json
@@ -162,6 +222,10 @@ cat /tmp/pitr.json | python3 -m json.tool 2>/dev/null | head -20 || cat /tmp/pit
 if [[ "$HTTP" != "202" ]]; then
   fail "POST returned HTTP $HTTP (expected 202): $(cat /tmp/pitr.json)"
 fi
+# Capture the Job name — it is the tasks.ref_id used by the chip-
+# persistence + path-selection assertions below.
+JOB_NAME=$(python3 -c 'import json; print(json.load(open("/tmp/pitr.json"))["data"].get("jobName",""))' 2>/dev/null || echo "")
+[[ -n "$JOB_NAME" ]] && echo "  jobName=$JOB_NAME" || warn "no jobName in response — chip/path assertions will be skipped"
 pass "PITR async accepted in ${ELAPSED}s — orchestration started"
 
 log "7b) Poll status until orchestration completes (≤30 min for HA)"
@@ -295,14 +359,82 @@ if [[ "$PHASE_AFTER" != "Cluster in healthy state" ]]; then
 fi
 pass "source healthy: $PHASE_AFTER"
 
-log "9) Round-trip assertion: post-snapshot row MUST be gone, pre-snapshot row MUST remain"
+log "9) Round-trip assertion"
 ROW_PRE=$(psql_pg "SELECT label FROM e2e_pitr_marker WHERE id=1;" 2>/dev/null || echo "")
-ROW_POST=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" 2>/dev/null || echo "0")
 echo "  pre-snapshot row: '$ROW_PRE' (expect 'pre-snapshot')"
-echo "  post-snapshot row count: $ROW_POST (expect 0)"
 [[ "$ROW_PRE" = "pre-snapshot" ]] || fail "pre-snapshot row missing — restore lost data!"
-[[ "$ROW_POST" = "0" ]] || fail "post-snapshot row survived — restore did NOT roll back!"
-pass "round-trip verified: only pre-snapshot data present"
+if [[ "$WITH_WAL" = "1" ]]; then
+  ROW_A=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=500;" 2>/dev/null || echo "0")
+  ROW_B=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" 2>/dev/null || echo "0")
+  echo "  marker A (id=500, pre-target) count: $ROW_A (expect 1 — WAL replayed up to target)"
+  echo "  marker B (id=999, post-target) count: $ROW_B (expect 0 — replay stopped at target)"
+  [[ "$ROW_A" = "1" ]] || fail "marker A missing — WAL replay didn't reach target time (target too early?)"
+  [[ "$ROW_B" = "0" ]] || fail "marker B survived — WAL replayed BEYOND recoveryTargetTime!"
+  pass "WAL round-trip verified: replay reached target (A present) + stopped there (B gone)"
+else
+  ROW_POST=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" 2>/dev/null || echo "0")
+  echo "  post-snapshot row count: $ROW_POST (expect 0)"
+  [[ "$ROW_POST" = "0" ]] || fail "post-snapshot row survived — restore did NOT roll back!"
+  pass "round-trip verified: only pre-snapshot data present"
+fi
+
+# ── Folded from integration-postgres-snapshot-restore.sh (2026-07-02) ──
+# 9a) Fast/slow path selection: WAL mode MUST create the temp cluster
+#     (no SKIPPED); default mode MUST skip it (fast-path). 9b) plugin
+#     sidecar propagation on the recreated primary (no manual bounce).
+#     9c) task chip terminal + step timeline persisted (modal-reopen).
+if [[ -n "$JOB_NAME" ]]; then
+  NEW_PRIMARY=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}' 2>/dev/null || echo "")
+
+  log "9a) Path selection: create-temp-cluster SKIPPED?"
+  CHIP_STEPS_RAW=$(psql_pg "SELECT details->'steps' FROM tasks WHERE ref_id='$JOB_NAME';" 2>/dev/null || echo "")
+  if [[ "$WITH_WAL" = "1" ]]; then
+    if printf '%s' "$CHIP_STEPS_RAW" | grep -q 'SKIPPED'; then
+      fail "WAL mode took the fast-path (SKIPPED) — slow-path required for WAL replay"
+    else
+      pass "WAL mode took the slow-path (temp cluster created) — required for WAL replay"
+    fi
+  else
+    if printf '%s' "$CHIP_STEPS_RAW" | grep -q 'SKIPPED'; then
+      pass "default mode took the fast-path (temp cluster skipped) — ~3-5 min saved"
+    else
+      warn "default mode took the slow-path — fast-path may be disabled via PITR_FORCE_TEMP_CLUSTER"
+    fi
+  fi
+
+  log "9b) Plugin sidecar propagation (no manual pod-bounce)"
+  PLUGINS_IN_SPEC=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.plugins}' 2>/dev/null || echo "")
+  if [[ -n "$PLUGINS_IN_SPEC" && "$PLUGINS_IN_SPEC" != "null" && "$PLUGINS_IN_SPEC" != "[]" && -n "$NEW_PRIMARY" ]]; then
+    # CNPG plugins run as native sidecars (restartPolicy:Always initContainers
+    # on k8s 1.28+) — check both container lists so the assertion is robust.
+    ALL_CONTAINERS=$($KUBECTL get pod -n platform "$NEW_PRIMARY" -o jsonpath='{range .spec.containers[*]}{.name}{" "}{end}|{range .spec.initContainers[*]}{.name}{" "}{end}' 2>/dev/null || echo "")
+    if printf '%s' "$ALL_CONTAINERS" | grep -q "plugin-barman-cloud"; then
+      pass "plugin-barman-cloud sidecar PRESENT on recreated primary (no manual bounce needed)"
+    else
+      fail "plugin-barman-cloud sidecar MISSING — buildRecoveryCluster did not propagate spec.plugins"
+    fi
+  else
+    warn "source cluster had no spec.plugins (or no primary) — skipping sidecar check"
+  fi
+
+  log "9c) Task-center chip persistence (modal-reopen must render history)"
+  CHIP_ROW=$(psql_pg "SELECT status || '|' || jsonb_array_length(COALESCE(details->'steps','[]'::jsonb)) FROM tasks WHERE ref_id='$JOB_NAME';" 2>/dev/null || echo "")
+  CHIP_STATUS="${CHIP_ROW%%|*}"
+  CHIP_STEPS_LEN="${CHIP_ROW##*|}"
+  echo "  chip: status=$CHIP_STATUS steps=$CHIP_STEPS_LEN"
+  if [[ "$CHIP_STATUS" = "succeeded" ]]; then
+    pass "chip.status='succeeded' (finalized via finishByRef)"
+  else
+    fail "chip.status='$CHIP_STATUS' (expected 'succeeded')"
+  fi
+  if [[ "${CHIP_STEPS_LEN:-0}" =~ ^[0-9]+$ ]] && [[ "${CHIP_STEPS_LEN:-0}" -ge 5 ]]; then
+    pass "chip.details.steps has $CHIP_STEPS_LEN entries — modal reopen renders timeline"
+  else
+    fail "chip.details.steps too short ($CHIP_STEPS_LEN) — modal reopen would be blank"
+  fi
+else
+  warn "no JOB_NAME — skipping path-selection / sidecar / chip assertions"
+fi
 
 log "10) Cluster identity: instance count preserved"
 INSTANCES_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.instances}')

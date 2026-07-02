@@ -12,6 +12,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
+  `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
+  a mirrored copy (k8s has no cross-namespace secret refs). Bootstrap mirrored it
+  **once** (skip-if-exists), so rotating the `platform` source left the
+  `platform-system` copy stale — the gateway's `internal-secret` then no longer
+  matched platform-api's `PLATFORM_INTERNAL_SECRET` and **every SFTP auth 403'd,
+  silently, for all tenants** (found on DEV 2026-07-02, drifted since the
+  06-22 rebuild; nothing had exercised SFTP). Now drift-proofed three ways:
+  platform-api re-asserts the mirror on boot (`reconcilePlatformSecretsMirror`,
+  mirrors the mail-master auto-heal shape), the sftp-gateway Deployment carries a
+  `secret.reloader.stakater.com/reload: platform-secrets` annotation so a heal
+  auto-restarts it, and `bootstrap.sh` now reconciles the mirror every run
+  instead of skipping when present.
+- **Webmail master-credential drift detection + self-heal** (`mail-drift`) — the
+  principals-sync detector now VERIFIES the Stalwart master (`master@<sentinel>`)
+  can authenticate, not just that it exists. A master that is present but whose
+  password has drifted out of sync with `mail-secrets` (e.g. a Stalwart
+  redeploy/restore that reset the account — the 2026-07-01 staging incident) is
+  flagged AND **auto-healed**: the detector re-asserts the `mail-secrets`
+  password onto Stalwart (no new password, no webmail roll) so a reset can never
+  leave impersonation persistently broken. Kill-switch `MAIL_MASTER_AUTOHEAL=disable`.
+  New `verifyMasterJmapAuth`, `readStalwartMasterPassword`,
+  `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
+
+### Fixed
+- **`local.host` master sentinel no longer flagged as an orphan-domain** — the
+  drift detector excluded the mail-hostname anchor but not the sentinel Domain
+  that holds the master; a `delete-orphan` on it would have destroyed the master
+  and broken ALL impersonation.
+- **Stalwart Domain teardown hardened** — `destroyStalwartArtifactsForEmailDomain`
+  now retries the Domain destroy (3×, backoff) to ride out a transient Stalwart
+  redeploy window and reports its outcome, cutting the orphan-domain pile-up left
+  by best-effort tenant-delete cleanup.
+
 ## [2026.7.1-rc.1] - 2026-07-01
 
 ### Security

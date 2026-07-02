@@ -4760,18 +4760,22 @@ generate_platform_secrets() {
   fi
 
   # sftp-gateway also references platform-secrets (for PLATFORM_ENCRYPTION_KEY
-  # used to decrypt mailbox credentials). Mirror the secret to
-  # platform-system so the sftp-gateway Deployment can mount it there
-  # without cross-namespace secret references (which k8s doesn't support).
-  if kctl get secret -n platform-system platform-secrets &>/dev/null 2>&1; then
-    log "platform-secrets already mirrored to platform-system, skipping."
-  else
-    kctl get secret -n platform platform-secrets -o yaml \
-      | sed -E "s|namespace: platform$|namespace: platform-system|" \
-      | grep -vE "resourceVersion|uid|creationTimestamp|ownerReferences" \
-      | kctl apply -f - >/dev/null
-    log "platform-secrets mirrored to platform-system namespace."
-  fi
+  # used to decrypt mailbox credentials, and internal-secret for its auth
+  # callback to platform-api). Mirror the secret to platform-system so the
+  # sftp-gateway Deployment can mount it there without cross-namespace secret
+  # references (which k8s doesn't support).
+  #
+  # RECONCILE every run — do NOT skip-if-exists. A one-time mirror let the
+  # platform-system copy go stale whenever the platform-ns source was rotated,
+  # silently breaking SFTP auth (the gateway's internal-secret no longer matched
+  # platform-api's). `kubectl apply` re-asserts the current source data
+  # idempotently. At runtime, platform-api's reconcilePlatformSecretsMirror +
+  # the gateway Deployment's Reloader annotation keep the two converged.
+  kctl get secret -n platform platform-secrets -o yaml \
+    | sed -E "s|namespace: platform$|namespace: platform-system|" \
+    | grep -vE "resourceVersion|uid|creationTimestamp|ownerReferences" \
+    | kctl apply -f - >/dev/null
+  log "platform-secrets mirrored/reconciled to platform-system namespace."
 
   # Stalwart mail StatefulSet mounts a `stalwart-secrets` Secret with the
   # admin + master credentials. Without it, stalwart-mail-0 hangs in
