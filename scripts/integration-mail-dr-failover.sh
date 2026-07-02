@@ -30,7 +30,7 @@ DR_FAILOVER_BUDGET=${DR_FAILOVER_BUDGET:-720}  # 12 min
 # Node → SSH-address resolution. k8s node NAMES (e.g. staging1) rarely resolve
 # as DNS; real clusters reach nodes by IP. Supply a map so the suite runs
 # anywhere without baking hostnames:
-#   MAIL_DR_NODE_MAP="staging1=1.2.3.4,staging2=5.6.7.8,staging3=9.10.11.12"
+#   MAIL_DR_NODE_MAP="staging1=192.0.2.11,staging2=192.0.2.12,staging3=192.0.2.13"
 # Falls back to "<name><MAIL_DR_NODE_SUFFIX>" (default .example.test) for any
 # node not in the map — preserving the original behaviour.
 MAIL_DR_NODE_MAP="${MAIL_DR_NODE_MAP:-}"
