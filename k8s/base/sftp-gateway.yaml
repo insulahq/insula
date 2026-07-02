@@ -50,6 +50,11 @@ metadata:
   namespace: platform-system
   labels:
     app: sftp-gateway
+  annotations:
+    # Restart the gateway when platform-secrets changes so the boot-time mirror
+    # drift-guard (platform-api reconcilePlatformSecretsMirror) auto-loads a
+    # healed internal-secret — otherwise a stale env keeps every SFTP auth 403ing.
+    secret.reloader.stakater.com/reload: "platform-secrets"
 spec:
   replicas: 1
   selector:
