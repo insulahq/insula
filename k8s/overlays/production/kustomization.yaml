@@ -79,11 +79,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "2026.7.1-rc.1"
+    newTag: "2026.7.1-rc.2"
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "2026.7.1-rc.1"
+    newTag: "2026.7.1-rc.2"
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "2026.7.1-rc.1"
+    newTag: "2026.7.1-rc.2"
   # Internal DaemonSet/sidecar images — timestamp-sha tagged by each image's own
   # CI (.github/scripts/pin-image-tag.sh pins them in overlays/development).
   # cut-release.sh snapshots the current development pins here at cut time so the
