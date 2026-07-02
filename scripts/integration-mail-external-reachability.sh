@@ -58,15 +58,24 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
 PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
 AID=$(kubectl exec -n platform "$PG" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
-AP=$(kubectl get pod -n platform -l app=platform-api -o jsonpath='{.items[0].metadata.name}')
+AP=$(kubectl get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 TOK=$(kubectl exec -n platform "$AP" -- env JWT_SECRET="$JWT" SUB="$AID" node -e '
 const { SignJWT } = require("jose");
 (async () => { const enc = new TextEncoder().encode(process.env.JWT_SECRET);
   const tok = await new SignJWT({ sub: process.env.SUB, role: "super_admin", panel: "admin" })
     .setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("1h").sign(enc);
   process.stdout.write(tok); })();' 2>/dev/null)
-SVC=$(kubectl get svc -n platform platform-api -o jsonpath='{.spec.clusterIP}:{.spec.ports[0].port}')
-curl -sS -X PATCH -H "Authorization: Bearer ${TOK}" -H "Content-Type: application/json" -d "$body" "http://${SVC}/api/v1/admin/mail/port-exposure"
+# Reach the API IN-POD (127.0.0.1:3000) via the platform-api container: a node
+# HOST cannot route a ClusterIP on Calico (curl times out ~134s). Mirrors the
+# mail-mobility ClusterIP->in-pod fix + the token-minting exec above.
+kubectl exec -n platform "$AP" -- env TOK="$TOK" BODY="$body" node -e '
+const { TOK, BODY } = process.env;
+fetch("http://127.0.0.1:3000/api/v1/admin/mail/port-exposure", {
+  method: "PATCH",
+  headers: { Authorization: "Bearer " + TOK, "Content-Type": "application/json" },
+  body: BODY,
+}).then(async (r) => { process.stdout.write(await r.text()); })
+  .catch((e) => { process.stderr.write(String(e)); process.exit(1); });'
 SSH
 }
 
@@ -401,15 +410,20 @@ export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
 PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
 AID=$(kubectl exec -n platform "$PG" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
-AP=$(kubectl get pod -n platform -l app=platform-api -o jsonpath='{.items[0].metadata.name}')
+AP=$(kubectl get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
 TOK=$(kubectl exec -n platform "$AP" -- env JWT_SECRET="$JWT" SUB="$AID" node -e '
 const { SignJWT } = require("jose");
 (async () => { const enc = new TextEncoder().encode(process.env.JWT_SECRET);
   const tok = await new SignJWT({ sub: process.env.SUB, role: "super_admin", panel: "admin" })
     .setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime("1h").sign(enc);
   process.stdout.write(tok); })();' 2>/dev/null)
-SVC=$(kubectl get svc -n platform platform-api -o jsonpath='{.spec.clusterIP}:{.spec.ports[0].port}')
-curl -sS --max-time 120 -H "Authorization: Bearer ${TOK}" "http://${SVC}/api/v1/admin/mail/health?refresh=1"
+# In-pod (127.0.0.1:3000) — a node host can't route the ClusterIP on Calico.
+kubectl exec -n platform "$AP" -- env TOK="$TOK" node -e '
+const { TOK } = process.env;
+fetch("http://127.0.0.1:3000/api/v1/admin/mail/health?refresh=1", {
+  headers: { Authorization: "Bearer " + TOK },
+}).then(async (r) => { process.stdout.write(await r.text()); })
+  .catch((e) => { process.stderr.write(String(e)); process.exit(1); });'
 SSH
 )
 echo "$HEALTH" | jq '.data.components.deliverability | {status, summary, subProbeCount: (.subProbes // [] | length)}'
