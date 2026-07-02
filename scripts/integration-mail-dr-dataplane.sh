@@ -125,21 +125,14 @@ fi
 BASTION="root@$(node_addr "$BASTION_NODE")"; ACTIVE_ADDR="root@$(node_addr "$ACTIVE")"
 kc(){ ssh $SSH_OPTS "$BASTION" "kubectl $*"; }
 psql1(){ kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"$1\"" 2>/dev/null | head -1 | tr -d ' '; }
-# CRITICAL: a standby that hosts platform-api or system-db can fail the
-# restore-failover under contention (observed 2026-07-02: staging2 standby →
-# failover verify-timeout → mail incident). Exclude those nodes from auto-select.
+# HA means ANY node loss must be recoverable — including a node hosting
+# platform-api / system-db — so the standby is any node != active (override via
+# STANDBY_NODE). PAPI/DB nodes are surfaced only as diagnostics.
 PAPI_NODE=$(kc "get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
 DB_NODE=$(kc "get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
 STANDBY="${STANDBY_NODE:-}"
 if [ -z "$STANDBY" ]; then
-  for n in $ALL_NODES; do
-    [ "$n" = "$ACTIVE" ] && continue; [ "$n" = "$PAPI_NODE" ] && continue; [ "$n" = "$DB_NODE" ] && continue
-    STANDBY="$n"; break
-  done
-  if [ -z "$STANDBY" ]; then
-    for n in $ALL_NODES; do [ "$n" != "$ACTIVE" ] && { STANDBY="$n"; break; }; done
-    red "WARNING: no non-critical standby available — using $STANDBY (hosts platform-api/system-db; restore-failover may fail under load)"
-  fi
+  for n in $ALL_NODES; do [ "$n" != "$ACTIVE" ] && { STANDBY="$n"; break; }; done
 fi
 echo "active=$ACTIVE standby=$STANDBY bastion=$BASTION_NODE (papi=$PAPI_NODE db=$DB_NODE)"
 MP=$(kc "get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d")
