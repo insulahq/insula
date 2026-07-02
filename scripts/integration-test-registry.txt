@@ -32,7 +32,7 @@ suite         integration-waf-crowdsec.sh
 suite         integration-dr-drill-shim.sh
 suite         integration-lifecycle-e2e.sh
 suite         integration-node-terminal.sh
-suite         integration-postgres-pitr.sh
+suite         integration-postgres-pitr.sh              # default (snapshot-LSN) mode wired into integration-all + STAGING-validated. WITH_WAL=1 mode (folded 2026-07-02 from the retired snapshot-restore.sh) = recoveryTargetTime WAL-replay (marker-A survives/marker-B gone + slow-path forced); on-demand only, needs a barman-archiving cluster (staging), NOT DEV (empty spec.plugins). Also folds chip-persistence + plugin-sidecar-propagation assertions (run in both modes).
 suite         integration-tier-flip-e2e.sh
 suite         integration-monitoring-slo.sh
 suite         integration-system-snapshots.sh
@@ -98,9 +98,10 @@ pending       integration-custom-deployments-phase2.sh   # INTEGRATE SERIAL_PRE/
 suite         integration-mtls-e2e.sh                    # ADR-054 mTLS edge enforcement E2E, wired into integration-all PARALLEL. STAGING-VALIDATED 17/17 on v2026.7.1-rc.1 (2026-07-01). tenant->provision->nginx-php deployment->domain(auto-route)->provider->bind(PATCH /ingress-routes/:rid/mtls)->cert lifecycle. Asserts via curl: no-cert=handshake-reject (TLSOption), valid=passes gate (distinguishes upstream-403 from gate-403 by the `mtls:` body), revoke=gate-403, per-cert, + CRL verifies (crl.pem WAF 920440 exemption). Slow (~8-12min: deployment provisioning + LE cert), comparable to monitoring-slo. Needs HTTPS_TEST_DOMAIN_BASE (staging wildcard); integration-all provides INTEGRATION_TOKEN+ADMIN_HOST.
 pending       integration-platform-domain-rename-e2e.sh  # INTEGRATE SERIAL_PRE-isolated/core (apex rename; restores)
 pending       integration-sftp-gateway-e2e.sh            # FIX (parameterize port-forward ports) -> SERIAL/core (on-node)
-pending       integration-postgres-snapshot-restore.sh   # RETIRE after folding its unique WITH_WAL recoveryTargetTime branch into postgres-pitr
 
 # ── Retired 2026-06-30 (deleted; bit-rotted or superseded) ────────────────
 # integration-mail-ha-e2e.sh                  7/13 dead: blob-store removed (ADR-046), node-selector gone, cron */2->*/30
 # integration-backups-ui-phase-2026-05-24.sh  dated point-in-time script, superseded by integration-backups-ui.sh
 # integration-tenant-bundles-jmap.sh          strict subset of integration-tenant-bundles-jmap-full-e2e.sh
+# ── Retired 2026-07-02 ────────────────────────────────────────────────────
+# integration-postgres-snapshot-restore.sh    unique WITH_WAL recoveryTargetTime branch (+ chip-persistence & plugin-sidecar assertions) folded into integration-postgres-pitr.sh (WITH_WAL=1 mode); pitr is now a strict superset
