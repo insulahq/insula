@@ -34,6 +34,11 @@
 #   ADMIN_HOST/ADMIN_EMAIL/ADMIN_PASSWORD  from integration.env
 #   STANDBY_NODE          failover target (default: the mailSecondaryNode, else auto)
 #   TOOLS_IMAGE           tenant-backup-tools ref (default: auto-detect in containerd)
+#   NODE_LOSS_MODE        "wipe" = TRUE node-loss: after stopping k3s, destroy the
+#                         source node's local-path mail store so recovery is
+#                         forced from backup (restic/standby) — exercises the
+#                         restic-escalation + availability cutover (Gap A/B).
+#                         Default (unset): plain k3s-stop (data survives on-node).
 #
 set -uo pipefail
 
@@ -207,7 +212,23 @@ hdr "FAILOVER: reachability prober + stop k3s on $ACTIVE"
 S_STANDBY=$(node_addr "$STANDBY"); S_BASTION=$(node_addr "$BASTION_NODE")
 : > "$PROBE_LOG"
 ( for r in $(seq 1 300); do t=$(date +%s); for h in "$S_BASTION" "$S_STANDBY"; do echo "$t $h $(python3 "$SMTP_PY" probe "$h" 25)"; done >> "$PROBE_LOG"; sleep 2; done ) & PROBE_PID=$!
+# Resolve the source node's local-path mail data dir BEFORE stopping k3s (read
+# via the surviving bastion — the PV object lives in etcd).
+SRC_VOL=$(kc "get pvc -n mail mail-stack-data -o jsonpath='{.spec.volumeName}'" 2>/dev/null)
+SRC_DATA_PATH=$(kc "get pv $SRC_VOL -o jsonpath='{.spec.local.path}'" 2>/dev/null)
 ssh $SSH_OPTS "$ACTIVE_ADDR" 'systemctl stop k3s' 2>&1 | head -1
+if [ "${NODE_LOSS_MODE:-}" = "wipe" ]; then
+  # TRUE node-loss: destroy the source node's local-path mail store so recovery
+  # is forced from BACKUP (restic/standby), not the surviving on-node PVC. This
+  # is the scenario that exercises the restic-escalation + availability cutover
+  # (a plain `systemctl stop k3s` leaves the local data intact → the pod just
+  # reschedules with full data and never restores).
+  if [ -n "$SRC_DATA_PATH" ]; then
+    ssh $SSH_OPTS "$ACTIVE_ADDR" "rm -rf '$SRC_DATA_PATH'/* '$SRC_DATA_PATH'/.[!.]* 2>/dev/null; echo NODE-LOSS: wiped source mail store at '$SRC_DATA_PATH'" 2>&1 | head -1
+  else
+    red "NODE_LOSS_MODE=wipe but could not resolve source local-path dir — running as plain k3s-stop"
+  fi
+fi
 PRE=$(psql1 "SELECT COUNT(*) FROM mail_migration_runs;"); NEWRUN=""; END=$(( $(date +%s)+BUDGET ))
 while [ $(date +%s) -lt $END ]; do
   N=$(psql1 "SELECT COUNT(*) FROM mail_migration_runs;")

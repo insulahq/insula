@@ -778,6 +778,68 @@ async function failRun(
   }
 }
 
+/**
+ * Is the given k8s node Ready? Returns false if the node is NotReady, gone, or
+ * the API is unreachable. Used by the verify-fail path to decide whether the
+ * SOURCE node can still serve a rollback (alive) or is truly lost (dead) — the
+ * latter drives the availability cutover instead of a rollback to a dead node.
+ */
+export async function isNodeReadyForRollback(core: CoreV1Api, nodeName: string): Promise<boolean> {
+  try {
+    const node = (await core.readNode({ name: nodeName })) as {
+      status?: { conditions?: Array<{ type: string; status: string }> };
+    };
+    return node.status?.conditions?.find((c) => c.type === 'Ready')?.status === 'True';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fan a LOUD, operator-facing data-loss alert to every admin. Fired only on the
+ * availability cutover (source dead + no complete restore source): mail is
+ * brought UP on the freshest-available data, but some RPO-window data may be
+ * missing. Non-fatal — a failed insert never blocks the (already succeeded)
+ * cutover. Mirrors the master-password-rotation notification fan-out.
+ */
+export async function notifyAdminsMailDataLoss(
+  db: Database,
+  runId: string,
+  sourceNode: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const { users, notifications } = await import('../../db/schema.js');
+    const { inArray } = await import('drizzle-orm');
+    const admins = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(inArray(users.roleName, ['super_admin', 'admin']));
+    for (const a of admins) {
+      await db
+        .insert(notifications)
+        .values({
+          id: randomUUID(),
+          userId: a.id,
+          type: 'error',
+          title: 'Mail failover: data loss on node-loss recovery',
+          message:
+            `Mail failed over from the DEAD node ${sourceNode} to the freshest available backup, ` +
+            `but that backup was incomplete: ${reason}. Mail is UP, but data created just before the ` +
+            `node was lost (within the backup RPO window) may be missing. Review /backups/mail and the ` +
+            `mail DR state.`,
+          resourceType: 'mail_migration',
+          resourceId: runId,
+        })
+        .catch(() => {
+          /* fire-and-forget per row */
+        });
+    }
+  } catch {
+    /* fan-out failure is non-fatal — the degraded dr_state + log line are the fallback signals */
+  }
+}
+
 async function runMigrationStateMachine(
   runId: string,
   sourceNode: string,
@@ -1156,6 +1218,10 @@ async function runMigrationStateMachine(
   // mailDrState='degraded' (not 'healthy') so the operator sees the
   // problem in the admin UI rather than mistakenly trusting the
   // migration succeeded.
+  // Set true only by the availability cutover (source dead + no complete
+  // restore source): the cutover succeeds but on incomplete data, so Step 8
+  // keeps dr_state 'degraded' (not 'healthy') and a data-loss alert is fired.
+  let dataLossCutover = false;
   await setStep(db, runId, 'verifying', 'running', taskId);
   const podName = await findStalwartPod(core);
   if (podName) {
@@ -1180,27 +1246,78 @@ async function runMigrationStateMachine(
       : await verifyRestoreContent(db, podName, kubeconfigPath, log, runStartedAt);
     if (!verify.ok) {
       // Mark mailDrState=degraded so the operator UI surfaces the
-      // problem; the migration's 'failed' state alone is too easy to
-      // miss.
+      // problem; the migration's 'failed' state alone is too easy to miss.
       await db.update(systemSettings)
         .set({ mailDrState: 'degraded' })
         .where(eq(systemSettings.id, SETTINGS_ID))
         .catch(() => { /* best-effort — failRun below is the source of truth */ });
-      // The restore on the TARGET is incomplete/empty — but the SOURCE
-      // data is RETAINED. Roll mail back onto the source's full data
-      // rather than leaving it on a half-restored volume (this is the
-      // exact silent-data-loss path the verifier guards; 2026-06-28).
-      await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
-      // Resume the snapshot CronJob BEFORE failing so the operator
-      // doesn't end up with both a failed migration AND a stuck
-      // snapshot pipeline. Caught 2026-05-27 — see verify comment.
-      try { await resumeSnapshotCronJob(deps); } catch { /* best-effort */ }
-      await failRun(
-        db, runId,
-        `restore content verification failed: ${verify.reason}`,
-        taskId,
-      );
-      return;
+
+      // The TARGET restore is incomplete. The common cause: the failover used
+      // the FAST PATH (standby-rsync, <=5min stale) and data created within the
+      // RPO window (e.g. a just-created tenant Domain) hadn't synced. Before
+      // giving up, ESCALATE to a forced restic restore — restic is a
+      // source-INDEPENDENT offsite backup that may hold what the stale standby
+      // copy lacked. This makes a node-loss recoverable even when the source is
+      // dead (a rollback to a dead source cannot). Gap A/B, root-caused
+      // 2026-07-02; availability policy operator-selected same day.
+      // Force restic by stamping restore-snapshot-id (any non-empty value
+      // disables the FAST PATH; 'latest' → restic restore latest).
+      let recovered = false;
+      let escalationReason = verify.reason;
+      if (!opts.restoreSnapshotId && !opts.recoverFromBrokenState) {
+        log.warn(
+          `[migration ${runId}] restore verify failed (${verify.reason}) — escalating to a forced restic restore (FAST PATH disabled)`,
+        );
+        try {
+          await applyDeploymentAffinity(apps, targetNode, /* allowRestore */ true, 'latest');
+          await patchDeploymentReplicas(apps, 0);
+          await waitForReplicaCount(apps, 0, 120, () => isCancelRequested(db, runId));
+          await patchDeploymentReplicas(apps, 1);
+          await waitForReplicaCount(apps, 1, 600, () => isCancelRequested(db, runId));
+          const podName2 = await findStalwartPod(core);
+          const verify2 = podName2
+            ? await verifyRestoreContent(db, podName2, kubeconfigPath, log, runStartedAt)
+            : { ok: false as const, reason: 'restic escalation: stalwart pod not found after re-restore' };
+          if (verify2.ok) {
+            log.info(`[migration ${runId}] restic escalation restored complete data — proceeding to cutover`);
+            recovered = true;
+          } else {
+            escalationReason = verify2.reason;
+          }
+        } catch (escErr) {
+          if (escErr instanceof MigrationCancelledError) throw escErr;
+          escalationReason = `restic escalation failed: ${(escErr as Error).message}`;
+        }
+      }
+
+      if (!recovered) {
+        // No complete restore source. If the SOURCE is still alive it retains
+        // the FULL data — roll back to it (completeness). If the source is DEAD,
+        // rolling back leaves mail permanently down, so per the availability
+        // policy cut over to the freshest-available data + fire a loud alert.
+        const sourceAlive = await isNodeReadyForRollback(core, sourceNode);
+        if (sourceAlive) {
+          log.warn(
+            `[migration ${runId}] restic escalation did not yield complete data (${escalationReason}); source ${sourceNode} is alive — rolling back to the source's full data`,
+          );
+          await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
+          try { await resumeSnapshotCronJob(deps); } catch { /* best-effort */ }
+          await failRun(
+            db, runId,
+            `restore content verification failed: ${verify.reason}`,
+            taskId,
+          );
+          return;
+        }
+        // AVAILABILITY cutover (source dead, no complete backup): keep mail UP
+        // on the freshest-available restore + LOUD data-loss alert. Fall through
+        // to the success path; dataLossCutover keeps dr_state 'degraded'.
+        log.warn(
+          `[migration ${runId}] AVAILABILITY cutover: source ${sourceNode} is DEAD and no complete restore source — cutting over to the freshest-available data with a data-loss alert (missing: ${escalationReason})`,
+        );
+        await notifyAdminsMailDataLoss(db, runId, sourceNode, escalationReason);
+        dataLossCutover = true;
+      }
     }
   }
 
@@ -1226,9 +1343,11 @@ async function runMigrationStateMachine(
     log.warn('[migration] failed to resume snapshot CronJob (non-fatal — operator should re-enable manually):', err);
   }
 
-  // Step 8: Update DB → success
+  // Step 8: Update DB → success. An availability cutover (dataLossCutover)
+  // succeeded on INCOMPLETE data, so it stays 'degraded' (with the data-loss
+  // alert already fired) rather than 'healthy' — the operator must still see it.
   await db.update(systemSettings)
-    .set({ mailActiveNode: targetNode, mailDrState: 'healthy' })
+    .set({ mailActiveNode: targetNode, mailDrState: dataLossCutover ? 'degraded' : 'healthy' })
     .where(eq(systemSettings.id, SETTINGS_ID));
 
   // Step 8b: re-reconcile port-exposure for the NEW active node. In
@@ -1243,6 +1362,26 @@ async function runMigrationStateMachine(
     await ensureMailPortExposureApplied(db, { kubeconfigPath });
   } catch (err) {
     log.warn('[migration] post-success port-exposure reconcile failed (non-fatal):', err);
+  }
+
+  // Step 8b2 (Gap C, 2026-07-02): re-assert Stalwart's REQUIRED_LISTENERS +
+  // defaultHostname on the newly-active pod. A restore brings Stalwart up with
+  // whatever config was in the restored RocksDB — which can be MISSING the
+  // platform's listeners (143/587 + the six :12xxx -proxy) and its
+  // defaultHostname (SMTP banner = pod name → SPF/EHLO breakage). The
+  // domain-reconciler heals these on its tick, but a migration must not depend
+  // on that timing — a stalled reconciler left mail degraded (only 25/465/993/
+  // 4190 bound, HA entrypoints dead) for ~30min after a failover on 2026-07-02.
+  try {
+    const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
+    const rec = await runStalwartDomainReconcilerTick({ core, db, kubeconfigPath, logger: log });
+    if (rec.listenersCreated.length > 0 || rec.defaultHostnameUpdated) {
+      log.info(
+        `[migration ${runId}] post-cutover reconcile healed mail config: listeners=[${rec.listenersCreated.join(',')}] hostnameUpdated=${rec.defaultHostnameUpdated}`,
+      );
+    }
+  } catch (err) {
+    log.warn('[migration] post-cutover listener/hostname reconcile failed (non-fatal — domain-reconciler tick will retry):', err);
   }
 
   // Step 8c (2026-05-28): auto-rotate Stalwart master password.
