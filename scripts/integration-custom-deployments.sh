@@ -211,14 +211,28 @@ except Exception: pass
     fail "Service $SIMPLE_NAME-http :80 missing (got '$svc_port')"
   fi
 
-  # PSS labels on the namespace (PR-1 backfill).
-  local enforce
+  # PSS labels on the namespace (PR-1 backfill). The tenant-psa-reconciler sets
+  # enforce=privileged cluster-wide when EITHER allowHostPortsServer or
+  # allowHostPortsWorker is on (to admit hostPort pods), and enforce=baseline
+  # when both are off. So derive the expectation from the live global setting
+  # rather than hardcoding one — the assertion must hold on any cluster.
+  local host_ports_on expected_enforce enforce
+  host_ports_on=$(api GET "/admin/system-settings" | python3 -c "
+import json,sys
+d=json.load(sys.stdin).get('data',{})
+print('yes' if (d.get('allowHostPortsServer') or d.get('allowHostPortsWorker')) else 'no')
+" 2>/dev/null || echo no)
+  if [[ "$host_ports_on" == "yes" ]]; then
+    expected_enforce="privileged"
+  else
+    expected_enforce="baseline"
+  fi
   enforce=$(remote_kubectl get ns "$TENANT_NS" \
     -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null || true)
-  if [[ "$enforce" == "baseline" ]]; then
-    pass "Namespace has PSS enforce=baseline (PR-1)"
+  if [[ "$enforce" == "$expected_enforce" ]]; then
+    pass "Namespace PSS enforce=$enforce matches global allowHostPorts=$host_ports_on (PR-1)"
   else
-    fail "Namespace PSS enforce missing or wrong (got '$enforce')"
+    fail "Namespace PSS enforce mismatch (got '$enforce', expected '$expected_enforce' for allowHostPorts=$host_ports_on)"
   fi
 }
 
@@ -324,11 +338,15 @@ except Exception: pass
   pass "POST /custom-deployments mode=compose → id=$COMPOSE_ID"
 
   # Multi-service: 2 Deployments. Names: `<deployment>-<service>`.
+  # web starts only AFTER api (its wait-api initContainer blocks on depends_on),
+  # so its budget must cover api-ready + web image-pull + start. On a loaded
+  # cluster image pulls dominate — timeouts are env-overridable for headroom.
   local dep_web="$COMPOSE_NAME-web" dep_api="$COMPOSE_NAME-api"
-  if wait_pod_running "$TENANT_NS" "$dep_api" 120 && wait_pod_running "$TENANT_NS" "$dep_web" 180; then
+  local api_wait="${COMPOSE_API_WAIT:-180}" web_wait="${COMPOSE_WEB_WAIT:-300}"
+  if wait_pod_running "$TENANT_NS" "$dep_api" "$api_wait" && wait_pod_running "$TENANT_NS" "$dep_web" "$web_wait"; then
     pass "Both web + api Pods reached Running"
   else
-    fail "compose stack did not stabilise within 180s"
+    fail "compose stack did not stabilise (api ${api_wait}s / web ${web_wait}s)"
     remote_kubectl get pods -n "$TENANT_NS" -l "insula.host/deployment-id=$COMPOSE_ID" -o wide || true
     return 1
   fi

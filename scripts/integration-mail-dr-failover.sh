@@ -27,6 +27,24 @@ SSH_KEY=${SSH_KEY:-/home/dev/hosting-platform.key}
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -i $SSH_KEY"
 DR_FAILOVER_BUDGET=${DR_FAILOVER_BUDGET:-720}  # 12 min
 
+# Node → SSH-address resolution. k8s node NAMES (e.g. staging1) rarely resolve
+# as DNS; real clusters reach nodes by IP. Supply a map so the suite runs
+# anywhere without baking hostnames:
+#   MAIL_DR_NODE_MAP="staging1=1.2.3.4,staging2=5.6.7.8,staging3=9.10.11.12"
+# Falls back to "<name><MAIL_DR_NODE_SUFFIX>" (default .example.test) for any
+# node not in the map — preserving the original behaviour.
+MAIL_DR_NODE_MAP="${MAIL_DR_NODE_MAP:-}"
+MAIL_DR_NODE_SUFFIX="${MAIL_DR_NODE_SUFFIX:-.example.test}"
+node_addr() {
+  local name="$1" pair k v
+  local IFS=','
+  for pair in $MAIL_DR_NODE_MAP; do
+    k="${pair%%=*}"; v="${pair#*=}"
+    if [ "$k" = "$name" ]; then printf '%s' "$v"; return; fi
+  done
+  printf '%s%s' "$name" "$MAIL_DR_NODE_SUFFIX"
+}
+
 red()   { printf '\033[31m%s\033[0m\n' "$*" >&2; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 amber() { printf '\033[33m%s\033[0m\n' "$*"; }
@@ -35,7 +53,8 @@ hdr()   { printf '\n\033[1;36m=== %s ===\033[0m\n' "$*"; }
 # Pick any node to run kubectl through — prefer one that ISN'T the active
 # mail node (so we still have kubectl access after stopping k3s on active).
 # Default to staging2 as the kubectl bastion.
-BASTION_HOST=root@staging2.example.test
+BASTION_NODE="${MAIL_DR_BASTION_NODE:-staging2}"
+BASTION_HOST="root@$(node_addr "$BASTION_NODE")"
 KUBECTL="ssh $SSH_OPTS $BASTION_HOST 'export KUBECONFIG=/etc/rancher/k3s/k3s.yaml &&'"
 
 run_kubectl() {
@@ -47,11 +66,12 @@ hdr "DR FAILOVER LIVE TEST"
 ACTIVE_NODE=$(run_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\" 2>/dev/null | head -1")
 echo "active_mail_node=$ACTIVE_NODE"
 
-if [ "$ACTIVE_NODE" = "$(echo $BASTION_HOST | sed 's/root@//;s/\.example\.test//')" ]; then
+if [ "$ACTIVE_NODE" = "$BASTION_NODE" ]; then
   amber "active is the bastion ($ACTIVE_NODE) — switching bastion to another server-role node"
   for try in staging1 staging2 staging3; do
     if [ "$try" != "$ACTIVE_NODE" ]; then
-      BASTION_HOST="root@${try}.example.test"
+      BASTION_NODE="$try"
+      BASTION_HOST="root@$(node_addr "$try")"
       echo "new bastion: $BASTION_HOST"
       break
     fi
@@ -75,14 +95,15 @@ echo "pre_migration_runs=$PRE_RUNS"
 # Stop k3s on the active node — kubelet stops, node goes NotReady after
 # node-monitor-grace-period (~40s). dr-watcher detects and triggers failover.
 hdr "STEP 1: stop k3s on $ACTIVE_NODE (via SSH from local)"
-ssh $SSH_OPTS "root@${ACTIVE_NODE}.example.test" 'systemctl stop k3s' 2>&1 | head -3 || {
+ACTIVE_ADDR="$(node_addr "$ACTIVE_NODE")"
+ssh $SSH_OPTS "root@${ACTIVE_ADDR}" 'systemctl stop k3s' 2>&1 | head -3 || {
   red "failed to stop k3s on $ACTIVE_NODE — aborting"
   exit 1
 }
 echo "k3s stopped"
 
 # Trap to always restart k3s on exit (success OR fail), so cluster recovers
-trap "echo 'CLEANUP: restarting k3s on $ACTIVE_NODE'; ssh $SSH_OPTS root@${ACTIVE_NODE}.example.test 'systemctl start k3s' 2>&1 | head -2 || true" EXIT
+trap "echo 'CLEANUP: restarting k3s on $ACTIVE_NODE'; ssh $SSH_OPTS root@${ACTIVE_ADDR} 'systemctl start k3s' 2>&1 | head -2 || true" EXIT
 
 hdr "STEP 2: wait for dr-watcher to launch failover migration (up to ${DR_FAILOVER_BUDGET}s)"
 END=$(( $(date +%s) + DR_FAILOVER_BUDGET ))

@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Mail DR node-loss recoverability (ADR-033 mail HA).** The failover state
+  machine could leave mail permanently down on a true node-loss: a restore
+  verify-fail rolled back to the *source* node's retained local-path PV (gone
+  when the node is truly dead), and never tried the source-independent restic
+  backup. It also brought Stalwart up with whatever config the restored RocksDB
+  held — which can miss the platform listeners (143/587 + the six `:12xxx`
+  `-proxy` HA listeners) and the default hostname. Now: on verify-fail the
+  migration **escalates to a forced restic restore** and re-verifies; if that is
+  still incomplete it rolls back to a *live* source (completeness) or, when the
+  source is **dead**, cuts over to the freshest-available data with a **loud
+  admin data-loss alert** and keeps `dr_state=degraded` (availability policy);
+  and every cutover runs a one-shot listener/hostname reconcile so mail comes up
+  fully configured. New destructive coverage: `integration-mail-dr-dataplane.sh`
+  (+ `NODE_LOSS_MODE=wipe`) asserts reachability, data survival, failback
+  sync-back, and RPO.
+
 ## [2026.7.1-rc.2] - 2026-07-02
 
 ### Added
