@@ -85,6 +85,12 @@ PLAN_ID="${PLAN_ID:-$(DB -tAc "select id from hosting_plans order by created_at 
 TID=$(curl -s -X POST "$API/tenants" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d "{\"name\":\"sftp-e2e\",\"primary_email\":\"sftp-e2e@example.com\",\"contact_name\":\"E2E\",\"plan_id\":\"$PLAN_ID\"}" | jq -r '.data.id // empty')
 [ -n "$TID" ] && ok "tenant $TID" || die "tenant create failed"
+# Tenant-create is deliberately NO auto-provision (tenants/routes.ts:205 — a
+# fresh tenant is status:'pending'/'unprovisioned'). Provisioning is an EXPLICIT
+# step, so trigger it before waiting or the tenant sits unprovisioned forever.
+info "trigger provisioning (POST /admin/tenants/:id/provision)"
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  "$API/admin/tenants/$TID/provision" -d '{}' >/dev/null 2>&1 || true
 info "wait for provisioning"
 for _ in $(seq 1 60); do
   r=$(curl -s -H "Authorization: Bearer $TOKEN" "$API/tenants/$TID"); NS=$(echo "$r" | jq -r '.data.kubernetesNamespace // empty')
@@ -130,12 +136,22 @@ SFTP_KEY(){ # $1 user $2 keyfile ; commands on stdin
 # ---- bootstrap file-manager + seed PVC (incl. a cross-UID file) ----------
 info "bootstrap (auth + ensure-file-manager) + seed PVC"
 printf 'pwd\n' | SFTP_PW "$U_ROOT" "$P_ROOT" >/dev/null 2>&1 || true
+# The file-manager is a Deployment scaled 0<->1 on demand (idle-cleanup scales
+# it to 0; a bare tenant starts at 0 replicas). The SFTP login above does not
+# reliably start it, so explicitly start it via the files/start API, which
+# calls ensureFileManagerRunning + refreshes the idle timer.
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$API/tenants/$TID/files/start" >/dev/null 2>&1 || true
 FM=""
 for _ in $(seq 1 40); do
   FM=$(kubectl -n "$NS" get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
   [ -n "$FM" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$FM" --timeout=10s >/dev/null 2>&1 && break; sleep 4
 done
-[ -n "$FM" ] && ok "file-manager pod Ready ($FM)" || die "file-manager pod never became ready"
+# Re-assert Ready in the final check — a set-but-not-Ready $FM must NOT pass.
+if [ -n "$FM" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$FM" --timeout=5s >/dev/null 2>&1; then
+  ok "file-manager pod Ready ($FM)"
+else
+  die "file-manager pod never became ready"
+fi
 kubectl -n "$NS" exec "$FM" -c file-manager -- sh -c '
   mkdir -p /data/public_html/uploads
   echo PUBLIC > /data/public_html/MARKER_PUBLIC
