@@ -268,6 +268,13 @@ PARALLEL=(
   # self-skips (77) when the `age` binary / AGE_KEY_FILE are absent (public
   # clone / CI). Runner needs psql (Phase G) + tsx (Phase H) — those self-skip too.
   "dr-bundle:integration-dr-bundle.sh"
+  # System Backup Phase 1: secrets-bundle export → one-shot signed download URL
+  # (sha256 byte-match) → 410-Gone single-use enforcement → fresh export yields a
+  # new runId → audit rows → postgres-restore route smoke. Read-mostly (exports a
+  # bundle). The age-decrypt content check is external-tier and soft-skips when
+  # AGE_KEY isn't the operator recipient (bundle bytes already proven in step 5).
+  # Staging-validated 2026-07-01. ~10s.
+  "system-backup:integration-system-backup.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).
