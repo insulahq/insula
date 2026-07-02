@@ -44,8 +44,12 @@ NS=mail
 HOST_TMP=${HOST_TMP:-/tmp}
 MPW=$(cat "$HOST_TMP/mpw")
 MFQDN=$(cat "$HOST_TMP/mfqdn")
-SRC="e2e-src@mailperf-bench.net"
-DST="e2e-imap-dst@mailperf-bench.net"
+# Source/target accounts. Env-overridable so the suite can run against any
+# seeded domain (default = the mailperf-bench.net benchmark accounts). The two
+# accounts must exist in Stalwart; e2e-src needs ≥1 message (Maildir cur/) —
+# see the registry note for the minimal seed recipe.
+SRC="${AUX_SRC_ADDRESS:-e2e-src@mailperf-bench.net}"
+DST="${AUX_DST_ADDRESS:-e2e-imap-dst@mailperf-bench.net}"
 
 CAPTURE_JOB=aux-e2e-capture-$(date +%s)
 RESTORE_JOB=aux-e2e-restore-$(date +%s)
