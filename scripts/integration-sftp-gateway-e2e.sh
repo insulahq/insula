@@ -26,12 +26,20 @@
 # USAGE (on a node):  sudo ./scripts/integration-sftp-gateway-e2e.sh
 #   ADMIN_EMAIL / ADMIN_PASSWORD  (password reset via admin-password-reset.sh if unset)
 #   KUBECONFIG (default /etc/rancher/k3s/k3s.yaml) · PLAN_ID (auto first plan)
+#   API_PORT (local pf port for platform-api, default 3000) · SFTP_PORT
+#   (local pf port for sftp-gateway, default 2222) — override to avoid host
+#   port collisions or run two suites concurrently.
 set -uo pipefail
 
 export KUBECONFIG="${KUBECONFIG:-/etc/rancher/k3s/k3s.yaml}"
 NS_PLATFORM="${NS_PLATFORM:-platform}"
 NS_GATEWAY="${NS_GATEWAY:-platform-system}"
-API=http://127.0.0.1:3000/api/v1
+# Local port-forward ports are parameterized so the suite can run when the
+# node already binds 3000/2222 or when two runs overlap. The REMOTE svc ports
+# (platform-api:3000, sftp-gateway:2222) are fixed by the manifests.
+API_PORT="${API_PORT:-3000}"
+SFTP_PORT="${SFTP_PORT:-2222}"
+API="http://127.0.0.1:${API_PORT}/api/v1"
 G='\033[32m'; R='\033[31m'; C='\033[36m'; Z='\033[0m'; pass=0; fail=0
 ok(){ printf "${G}  ✓ %s${Z}\n" "$1"; pass=$((pass+1)); }
 no(){ printf "${R}  ✗ %s${Z}\n" "$1"; fail=$((fail+1)); }
@@ -56,7 +64,7 @@ cleanup(){
 }
 trap cleanup EXIT
 
-kubectl -n "$NS_PLATFORM" port-forward svc/platform-api 3000:3000 >"$WORK/pf-api.log" 2>&1 & PF_API=$!; sleep 4
+kubectl -n "$NS_PLATFORM" port-forward svc/platform-api "${API_PORT}:3000" >"$WORK/pf-api.log" 2>&1 & PF_API=$!; sleep 4
 
 # ---- admin auth -----------------------------------------------------------
 APEX=$(DB -tAc "select value from platform_settings where key='platform_apex_domain';" 2>/dev/null | tr -d '[:space:]')
@@ -107,17 +115,17 @@ U_KEY=$(curl -s -X POST "$API/tenants/$TID/sftp-users" -H "Authorization: Bearer
 [ -n "$U_KEY" ] && ok "ssh-key user $U_KEY (home /public_html)" || die "ssh-key user create failed"
 
 # ---- gateway port-forward + sftp helpers ---------------------------------
-kubectl -n "$NS_GATEWAY" port-forward svc/sftp-gateway 2222:2222 >"$WORK/pf-sftp.log" 2>&1 & PF_SFTP=$!; sleep 4
+kubectl -n "$NS_GATEWAY" port-forward svc/sftp-gateway "${SFTP_PORT}:2222" >"$WORK/pf-sftp.log" 2>&1 & PF_SFTP=$!; sleep 4
 SFTP_PW(){  # $1 user $2 pass ; commands on stdin
   { cat; printf 'bye\n'; } | timeout 30 sshpass -p "$2" sftp -oBatchMode=no \
     -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -oPreferredAuthentications=password \
     -oPubkeyAuthentication=no -oConnectTimeout=10 -oServerAliveInterval=5 -oServerAliveCountMax=2 \
-    -P 2222 "$1@127.0.0.1" 2>&1; }
+    -P "$SFTP_PORT" "$1@127.0.0.1" 2>&1; }
 SFTP_KEY(){ # $1 user $2 keyfile ; commands on stdin
   { cat; printf 'bye\n'; } | timeout 30 sftp -i "$2" -oBatchMode=no \
     -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -oPreferredAuthentications=publickey \
     -oIdentitiesOnly=yes -oConnectTimeout=10 -oServerAliveInterval=5 -oServerAliveCountMax=2 \
-    -P 2222 "$1@127.0.0.1" 2>&1; }
+    -P "$SFTP_PORT" "$1@127.0.0.1" 2>&1; }
 
 # ---- bootstrap file-manager + seed PVC (incl. a cross-UID file) ----------
 info "bootstrap (auth + ensure-file-manager) + seed PVC"
