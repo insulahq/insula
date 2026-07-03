@@ -388,6 +388,30 @@ spec:
                   echo "restore-state: standby marker is $${age}s old (limit $${STANDBY_MAX_AGE_SECONDS}s) — rejecting FAST PATH, falling through to restic"
                   standby_age_ok=false
                 fi
+                # FRESHNESS-VS-SNAPSHOT GUARD (2026-07-03): a recent standby
+                # marker only means the last rsync FINISHED recently — the copied
+                # data can still predate the latest restic snapshot (a message
+                # delivered AFTER the last rsync but captured in a snapshot is
+                # absent from the standby copy). The age gate alone would then
+                # prefer standby data up to STANDBY_MAX_AGE_SECONDS (30 min) stale
+                # over a FRESHER snapshot, LOSING snapshot-captured mail on
+                # failover (the dataplane D-assertion; observed 2026-07-03). So:
+                # if the latest snapshot is NEWER than the standby marker, reject
+                # the FAST PATH and restore that snapshot via restic instead.
+                # Best-effort — an unreadable repo leaves the verdict unchanged
+                # (fail toward FAST PATH: never worse than the age-gate-only
+                # behaviour, and restic is the only alternative anyway when the
+                # repo is down).
+                if [ "$$standby_age_ok" = "true" ] && [ -n "$$RESTIC_REPOSITORY" ]; then
+                  snap_epoch=$$(restic snapshots --latest 1 --json 2>/dev/null | python3 -c 'import sys,json,re,datetime; a=json.load(sys.stdin); t=(a[0]["time"] if a else "").replace("Z","+00:00"); t=re.sub(r"(\.\d{1,6})\d*",r"\1",t); print(int(datetime.datetime.fromisoformat(t).timestamp()) if t else 0)' 2>/dev/null || echo 0)
+                  : $${snap_epoch:=0}
+                  if [ "$$snap_epoch" -gt "$$sentinel_epoch" ]; then
+                    echo "restore-state: latest restic snapshot ($$snap_epoch) is NEWER than standby marker ($$sentinel_epoch) — rejecting FAST PATH, restoring the fresher snapshot via restic (no snapshot-captured mail lost)"
+                    standby_age_ok=false
+                  else
+                    echo "restore-state: standby marker ($$sentinel_epoch) is >= latest snapshot ($$snap_epoch) — standby is fresh enough for FAST PATH"
+                  fi
+                fi
               fi
               if [ -n "$$FAST_PATH_DISABLED_REASON" ]; then
                 echo "restore-state: $$FAST_PATH_DISABLED_REASON"
