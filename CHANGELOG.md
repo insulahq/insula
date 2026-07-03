@@ -12,27 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.3] - 2026-07-03
-
-### Fixed
-- **Mail DR node-loss recoverability (ADR-033 mail HA).** The failover state
-  machine could leave mail permanently down on a true node-loss: a restore
-  verify-fail rolled back to the *source* node's retained local-path PV (gone
-  when the node is truly dead), and never tried the source-independent restic
-  backup. It also brought Stalwart up with whatever config the restored RocksDB
-  held — which can miss the platform listeners (143/587 + the six `:12xxx`
-  `-proxy` HA listeners) and the default hostname. Now: on verify-fail the
-  migration **escalates to a forced restic restore** and re-verifies; if that is
-  still incomplete it rolls back to a *live* source (completeness) or, when the
-  source is **dead**, cuts over to the freshest-available data with a **loud
-  admin data-loss alert** and keeps `dr_state=degraded` (availability policy);
-  and every cutover runs a one-shot listener/hostname reconcile so mail comes up
-  fully configured. New destructive coverage: `integration-mail-dr-dataplane.sh`
-  (+ `NODE_LOSS_MODE=wipe`) asserts reachability, data survival, failback
-  sync-back, and RPO.
-
-## [2026.7.1-rc.2] - 2026-07-02
-
 ### Added
 - **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
   `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
@@ -59,6 +38,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
+- **Mail failover now verifies the TLS cert is actually *served*, not just
+  issued** (`mail-dr`, issuance≠serving) — after a failover/DR cutover the
+  reconcile fires the ACME order, but Stalwart binds a freshly-issued cert to
+  its `:465` listener on its own reload cadence (observed ~1h lag), so a
+  failover could complete while the node still served the bootstrap self-signed
+  `rcgen` cert — and mail was reported "healthy" over it. The cutover now polls
+  the served cert (`waitForServedMailCert`); if still self-signed after the
+  issuance grace it recycles Stalwart once to reload the stored cert, and a
+  persistent failure fires a loud operator alert (`notifyAdminsMailCertNotServing`)
+  instead of a silent "healthy". The mail DR + external-reachability integration
+  suites now poll the served cert (forcing a reconcile) and treat a persistent
+  self-signed listener as a hard FAIL.
 - **`local.host` master sentinel no longer flagged as an orphan-domain** — the
   drift detector excluded the mail-hostname anchor but not the sentinel Domain
   that holds the master; a `delete-orphan` on it would have destroyed the master
@@ -67,8 +58,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   now retries the Domain destroy (3×, backoff) to ride out a transient Stalwart
   redeploy window and reports its outcome, cutting the orphan-domain pile-up left
   by best-effort tenant-delete cleanup.
-
-## [2026.7.1-rc.1] - 2026-07-01
 
 ### Security
 - **undici upgraded to 6.27.0** (`npm audit fix`, within range) — clears the four
