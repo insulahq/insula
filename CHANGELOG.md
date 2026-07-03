@@ -38,6 +38,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
+- **Mail failover now verifies the TLS cert is actually *served*, not just
+  issued** (`mail-dr`, issuance≠serving) — after a failover/DR cutover the
+  reconcile fires the ACME order, but Stalwart binds a freshly-issued cert to
+  its `:465` listener on its own reload cadence (observed ~1h lag), so a
+  failover could complete while the node still served the bootstrap self-signed
+  `rcgen` cert — and mail was reported "healthy" over it. The cutover now polls
+  the served cert (`waitForServedMailCert`); if still self-signed after the
+  issuance grace it recycles Stalwart once to reload the stored cert, and a
+  persistent failure fires a loud operator alert (`notifyAdminsMailCertNotServing`)
+  instead of a silent "healthy". The mail DR + external-reachability integration
+  suites now poll the served cert (forcing a reconcile) and treat a persistent
+  self-signed listener as a hard FAIL.
 - **`local.host` master sentinel no longer flagged as an orphan-domain** — the
   drift detector excluded the mail-hostname anchor but not the sentinel Domain
   that holds the master; a `delete-orphan` on it would have destroyed the master
