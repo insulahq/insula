@@ -165,6 +165,30 @@ cert_valid(){
   echo "$out" | grep -qi "DNS:$MAILHOST" && return 0
   return 1
 }
+# force_reconcile — run the domain-reconciler tick on demand (re-asserts the
+# listeners + fires the ACME self-heal / cert re-bind). Best-effort: a 403
+# (token not super_admin) or transient error is swallowed — the migration's
+# own post-cutover Step 8b3 already recycles+re-polls server-side; this just
+# makes the test converge faster and deterministically.
+force_reconcile(){ AH -X POST "$API/admin/mail/stalwart-reprovision" -H 'Content-Type: application/json' -d '{}' >/dev/null 2>&1 || true; }
+# assert_cert_valid <node-ip> <label> — POLL the served :465 cert until it is a
+# valid CA cert covering $MAILHOST, forcing a reconcile every few tries so a
+# freshly-issued cert actually gets BOUND to the listener. Issuance≠serving:
+# Stalwart binds a new ACME cert on its own reload cadence (observed ~1h lag),
+# so a single probe right after failover can catch a transient self-signed
+# window. A cert still self-signed after the whole bounded window (+reconciles)
+# is a real FAIL — never advisory (the 2026-07-03 miss: mail reported "healthy"
+# while serving a self-signed cert for days).
+assert_cert_valid(){
+  local ip="$1" label="$2" i
+  for i in $(seq 1 20); do
+    cert_valid "$ip" && { ok "TLS: $label serves a valid cert for $MAILHOST (settled after $((i-1)) retr$([ $((i-1)) -eq 1 ] && echo y || echo ies))"; return 0; }
+    [ $((i % 5)) -eq 0 ] && force_reconcile
+    sleep 12
+  done
+  no "TLS: $label serves an INVALID cert for $MAILHOST (self-signed/SAN-mismatch) after ~4min + reconciles — mail TLS is broken for every verifying client"
+  return 1
+}
 # wait until master-user impersonation heals (post-restore credential drift)
 wait_auth(){ local i; for i in $(seq 1 25); do [ "$(jmap auth "$ADDR")" = OK ] && return 0; sleep 12; done; return 1; }
 # read with retry (eventual consistency after restore)
@@ -284,7 +308,7 @@ r1=$(smtp probe "$S_BASTION" 25); r2=$(smtp probe "$S_STANDBY" 25)
 [ "$r1" = OK ] && [ "$r2" = OK ] && ok "mail reachable again on surviving nodes post-failover" || no "mail NOT reachable post-failover ($S_BASTION=$r1 $S_STANDBY=$r2)"
 # TLS: the new active must serve a VALID cert covering $MAILHOST (not the
 # self-signed rcgen fallback a restore can leave behind). Invalid cert = FAIL.
-cert_valid "$S_STANDBY" && ok "TLS: new active serves a valid cert for $MAILHOST" || no "TLS: new active serves an INVALID cert for $MAILHOST (self-signed/SAN-mismatch) — mail TLS is broken for clients"
+assert_cert_valid "$S_STANDBY" "new active $STANDBY"
 
 hdr "DATA on new active (wait master-auth heal, retry reads)"
 wait_auth || no "master-auth did not heal within ~5min post-failover"
@@ -313,5 +337,5 @@ for m in "$M1" "$M2" "$M3"; do echo "$SUBS" | grep -qF "$m" && ok "S: $m present
 echo "final subjects: $SUBS"
 # TLS on the reactivated primary must ALSO be valid — a failback restore can
 # reset the cert just like a failover. Invalid cert = FAIL.
-cert_valid "$(node_addr "$ACTIVE")" && ok "TLS: reactivated $ACTIVE serves a valid cert for $MAILHOST" || no "TLS: reactivated $ACTIVE serves an INVALID cert for $MAILHOST (self-signed/SAN-mismatch)"
+assert_cert_valid "$(node_addr "$ACTIVE")" "reactivated $ACTIVE"
 # cleanup + result printed by trap
