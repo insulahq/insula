@@ -1500,6 +1500,28 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-cutover admin credential re-sync failed (non-fatal — operator can POST /admin/mail/rotate-admin-password):', err);
   }
 
+  // Step 8b1b (2026-07-03, master-drift-on-restore heal): a restore ALSO brings
+  // Stalwart up with the SNAPSHOT's MASTER account password — drifted from
+  // mail-secrets — so Bulwark/Roundcube webmail impersonation is broken for ALL
+  // mailboxes until the slow principals-sync auto-heal tick catches it (observed
+  // post-failover 2026-07-03: master-auth didn't heal within ~5min). Re-assert
+  // the mail-secrets master password HERE (mirrors 8b1 for the admin) so
+  // impersonation heals AT CUTOVER — regardless of whether the security-hygiene
+  // auto-rotate (Step 8c, flag-gated) runs. A no-op when the master already
+  // authenticates; runs after 8b1 so its admin-authed JMAP calls succeed.
+  // Non-fatal: the auto-heal tick is the fallback.
+  try {
+    const { reconcileStalwartMasterCredential } = await import('./reconcile-master-credential.js');
+    const outcome = await reconcileStalwartMasterCredential({ core, kubeconfigPath });
+    if (outcome.healed) {
+      log.info(`[migration ${runId}] post-cutover master credential re-synced from mail-secrets (restore-drift heal)`);
+    } else if (outcome.status === 'failed') {
+      log.warn(`[migration ${runId}] post-cutover master credential re-sync did not converge: ${outcome.detail}`);
+    }
+  } catch (err) {
+    log.warn('[migration] post-cutover master credential re-sync failed (non-fatal — principals-sync auto-heal will retry):', err);
+  }
+
   // Step 8b2 (Gap C, 2026-07-02): re-assert Stalwart's REQUIRED_LISTENERS +
   // defaultHostname on the newly-active pod. A restore brings Stalwart up with
   // whatever config was in the restored RocksDB — which can be MISSING the
