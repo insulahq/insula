@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.3] - 2026-07-03
+
 ### Fixed
 - **Mail DR node-loss recoverability (ADR-033 mail HA).** The failover state
   machine could leave mail permanently down on a true node-loss: a restore
