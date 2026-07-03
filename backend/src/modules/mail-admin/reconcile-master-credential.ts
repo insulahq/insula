@@ -54,6 +54,15 @@ export interface ReconcileMasterOptions {
   readonly baseUrl?: string;
   /** Kubeconfig path; undefined = in-cluster (the normal platform-api case). */
   readonly kubeconfigPath?: string | undefined;
+  /**
+   * A guaranteed-present mailbox (`_system@<apex>`) the master must be able to
+   * IMPERSONATE. When set, the convergence probes test `<target>%<master>`
+   * rather than a bare master login — so this reconcile detects (and its
+   * post-heal check requires) that the master retains impersonate capability,
+   * not merely that it can authenticate as itself. Undefined ⇒ direct-auth
+   * probe (unbootstrapped apex, or caller opted out).
+   */
+  readonly impersonateTarget?: string;
 }
 
 export interface MasterReconcileResult {
@@ -74,10 +83,22 @@ export async function reconcileStalwartMasterCredential(
   }
 
   // Already converged? (verifyMasterJmapAuth throws on a transient/non-auth
-  // error — never mutate on an unclear signal.)
+  // error — never mutate on an unclear signal.) When an impersonation target is
+  // supplied, "converged" means the master can IMPERSONATE it — a bare login
+  // (which the config fallback-admin satisfies even with the principal gone) is
+  // NOT enough. This is what makes the auto-heal fire on the 2026-07-03 class:
+  // master authenticates but cannot impersonate → still drift.
   try {
-    const probe = await verifyMasterJmapAuth(masterUser, masterPw, opts.baseUrl);
-    if (probe.ok) return { status: 'ok', healed: false, detail: 'master already authenticates' };
+    const probe = await verifyMasterJmapAuth(masterUser, masterPw, opts.baseUrl, {
+      impersonateTarget: opts.impersonateTarget,
+    });
+    if (probe.ok) {
+      return {
+        status: 'ok',
+        healed: false,
+        detail: `master already ${probe.mode === 'impersonation' ? 'impersonates' : 'authenticates'}`,
+      };
+    }
   } catch (err) {
     return {
       status: 'skipped',
@@ -121,10 +142,15 @@ export async function reconcileStalwartMasterCredential(
     };
   }
 
-  // Confirm convergence.
+  // Confirm convergence — via impersonation when a target is supplied, so a
+  // reseed that restores login but NOT impersonate capability is reported as a
+  // FAILED heal (not a false success). This is the check that surfaces the
+  // 2026-07-03 "reseed did not restore impersonation" gap.
   let after = false;
   try {
-    after = (await verifyMasterJmapAuth(masterUser, masterPw, opts.baseUrl)).ok;
+    after = (await verifyMasterJmapAuth(masterUser, masterPw, opts.baseUrl, {
+      impersonateTarget: opts.impersonateTarget,
+    })).ok;
   } catch {
     after = false;
   }
@@ -132,5 +158,11 @@ export async function reconcileStalwartMasterCredential(
     log.info({ masterUser }, 'master credential re-asserted from mail-secrets — impersonation restored');
     return { status: 'healed', healed: true, detail: 're-asserted master password from mail-secrets' };
   }
-  return { status: 'failed', healed: false, detail: 're-assert did not converge (still not authenticating)' };
+  return {
+    status: 'failed',
+    healed: false,
+    detail: opts.impersonateTarget
+      ? 're-assert did not converge (master still cannot impersonate)'
+      : 're-assert did not converge (still not authenticating)',
+  };
 }
