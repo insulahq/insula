@@ -126,6 +126,17 @@ probe_node_ports() {
       fail=$((fail+1))
       reasons="$reasons banner='${banner:-empty}'"
     fi
+    # TLS cert on :465 must be a REAL CA cert, NOT Stalwart's self-signed rcgen
+    # fallback (SAN=localhost). An invalid cert is a FAIL, not a warning — it
+    # breaks every TLS-verifying IMAP/SMTP client + degrades deliverability.
+    if probe_tcp "$ip" 465; then
+      local iss; iss=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+      if echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
+        fail=$((fail+1)); reasons="$reasons cert=self-signed(${iss#issuer=})"
+      else
+        pass=$((pass+1))
+      fi
+    fi
   fi
 
   if [ $fail -eq 0 ]; then
@@ -144,6 +155,10 @@ ACTIVE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l
 PRE_MODE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_port_exposure_mode FROM system_settings;\"" | head -1)
 echo "Active mail node: $ACTIVE"
 echo "Current mode: $PRE_MODE"
+# Mail hostname the served :465 cert must cover (SNI). Live value from settings.
+MAILHOST=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT 'mail.'||platform_domain FROM system_settings;\"" 2>/dev/null | head -1)
+MAILHOST="${MAILHOST:-mail}"
+echo "Mail hostname (cert SNI): $MAILHOST"
 
 # Parse node-name → ip + role from kubectl JSON. Using jq through the local shell.
 mapfile -t NODE_LINES < <(
