@@ -1965,6 +1965,21 @@ export async function restoreMailOnSource(
       { name: retainedPvName, body: { spec: { claimRef: null } } } as unknown as Parameters<typeof core.patchPersistentVolume>[0],
       MERGE_PATCH,
     ).catch((e) => log.warn(`[migration] rollback: clear claimRef on ${retainedPvName} failed:`, e));
+    // Size the re-bound PVC to the RETAINED PV's actual capacity — NOT a
+    // hardcoded value. A too-small request (the old hardcoded '1Gi', 2026-07-03)
+    // leaves the live PVC smaller than the git manifest, so Flux's next reconcile
+    // tries to resize the local-path PVC and is Forbidden → the whole platform
+    // kustomization wedges. Matching the PV capacity keeps the PVC in sync with
+    // the manifest and never triggers a resize.
+    let rebindSize = '20Gi';
+    try {
+      const pv = (await core.readPersistentVolume({ name: retainedPvName })) as {
+        spec?: { capacity?: { storage?: string } };
+      };
+      if (pv.spec?.capacity?.storage) rebindSize = pv.spec.capacity.storage;
+    } catch (e) {
+      log.warn(`[migration] rollback: could not read ${retainedPvName} capacity — defaulting rebind PVC to ${rebindSize}:`, e);
+    }
     // backup-coverage: captured-by:mail-snapshot
     // (rollback re-bind of the SAME mail store onto its retained PV — no new data
     //  dimension; the mail content is captured by the mail-snapshot component, as
@@ -1981,7 +1996,7 @@ export async function restoreMailOnSource(
           storageClassName: 'local-path',
           accessModes: ['ReadWriteOnce'],
           volumeName: retainedPvName,
-          resources: { requests: { storage: '1Gi' } },
+          resources: { requests: { storage: rebindSize } },
         },
       } as unknown as Parameters<typeof core.createNamespacedPersistentVolumeClaim>[0]['body'],
     }).catch((e) => log.warn(`[migration] rollback: recreate PVC bound to ${retainedPvName} failed:`, e));
