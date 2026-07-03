@@ -387,33 +387,18 @@ export async function verifyMasterJmapAuth(
   masterUser: string,
   masterPassword: string,
   baseUrl: string = STALWART_MGMT_URL,
-  opts: { env?: NodeJS.ProcessEnv; impersonateTarget?: string } = {},
-): Promise<{ ok: boolean; status: number; mode: 'direct' | 'impersonation' }> {
-  const env = opts.env ?? process.env;
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ ok: boolean; status: number }> {
   const timeoutMs = Number(env.JMAP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
-  // 2026-07-03: when `impersonateTarget` is given, authenticate AS that user
-  // VIA the master (`<target>%<master>`) instead of as the master itself. This
-  // proves the master retains the IMPERSONATE capability — the property webmail
-  // (Bulwark/Roundcube) actually depends on — not merely that it can obtain its
-  // OWN session. The distinction is load-bearing: Stalwart's config-based
-  // fallback-admin shares the master's name+password and satisfies a DIRECT
-  // login (HTTP 200) even when the master PRINCIPAL has been destroyed, masking
-  // a total impersonation outage (all webmail logins broken). A direct-auth
-  // probe cannot see that; an impersonation probe returns 401 and does. The
-  // target should be a guaranteed-present mailbox — `_system@<apex>` (ADR-040).
-  const mode: 'direct' | 'impersonation' = opts.impersonateTarget ? 'impersonation' : 'direct';
-  const loginName = opts.impersonateTarget
-    ? `${opts.impersonateTarget}%${masterUser}`
-    : masterUser;
-  const auth = `Basic ${Buffer.from(`${loginName}:${masterPassword}`).toString('base64')}`;
+  const auth = `Basic ${Buffer.from(`${masterUser}:${masterPassword}`).toString('base64')}`;
   const res = await fetch(`${baseUrl}/jmap/session`, {
     headers: { Authorization: auth, Accept: 'application/json' },
     signal: AbortSignal.timeout(timeoutMs),
   });
-  if (res.status === 200) return { ok: true, status: 200, mode };
-  if (res.status === 401 || res.status === 403) return { ok: false, status: res.status, mode };
+  if (res.status === 200) return { ok: true, status: 200 };
+  if (res.status === 401 || res.status === 403) return { ok: false, status: res.status };
   throw new JmapError(
-    `master-auth probe (${mode}) got unexpected HTTP ${res.status} (not a clean auth verdict)`,
+    `master-auth probe got unexpected HTTP ${res.status} (not a clean auth verdict)`,
     'httpError',
     { status: res.status },
   );

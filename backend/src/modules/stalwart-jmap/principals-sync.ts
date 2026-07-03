@@ -38,8 +38,6 @@ import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { readStalwartMasterUser, readStalwartMasterPassword, MASTER_SENTINEL_DOMAIN } from '../mail-admin/stalwart-master-user.js';
 import { getMailServerHostname } from '../webmail-settings/service.js';
-import { getPlatformApex } from '../system-settings/platform-domain.js';
-import { systemTenantEmail } from '../system-tenant/slug.js';
 
 const log = mailLogger().child({ module: 'stalwart-principals-sync' });
 
@@ -252,21 +250,6 @@ async function syncPrincipals(params: {
     // that comparison would skip the check in the normal case.)
     if (masterFqdn && core) {
       let masterInDrift = false;
-      // Canonical impersonation probe target (`_system@<apex>`, ADR-040 —
-      // guaranteed present, self-healed on every bootstrap). When resolvable,
-      // the auth checks below prove the master retains IMPERSONATE capability
-      // (what webmail depends on), not just self-login — the config
-      // fallback-admin satisfies self-login even when the master principal is
-      // gone, masking a total impersonation outage (2026-07-03). Resolution is
-      // best-effort: a DB blip (or unbootstrapped apex) MUST NOT abort master
-      // drift detection — it just degrades this cycle to a direct-auth probe.
-      let impersonateTarget: string | undefined;
-      try {
-        const apex = await getPlatformApex(db);
-        impersonateTarget = apex ? systemTenantEmail(apex) : undefined;
-      } catch {
-        impersonateTarget = undefined;
-      }
       if (!stalwartMailboxByEmail.has(masterFqdn)) {
         masterInDrift = true;
         driftThisTick.push({
@@ -285,41 +268,35 @@ async function syncPrincipals(params: {
         log.warn({ masterFqdn }, 'webmail master user missing from Stalwart — drift recorded (impersonation broken)');
       } else {
         // The master principal is PRESENT — but existence alone does not prove
-        // it still WORKS. Two silent-failure classes hide behind a present
-        // principal: (a) its password has drifted out of sync with mail-secrets
-        // (a restore/redeploy that reset the account), and (b) it authenticates
-        // but has LOST its impersonate capability (e.g. the principal was
-        // destroyed and only the config fallback-admin — same name+password —
-        // remains; 2026-07-03). Both break Bulwark/Roundcube impersonation for
-        // ALL mailboxes. Probe IMPERSONATION of `_system@<apex>` (when
-        // resolvable): a 200 proves the master can actually impersonate; a 401
-        // catches BOTH classes at once. Falls back to a direct-auth probe when
-        // the apex is unbootstrapped.
+        // it still WORKS. A password that has drifted out of sync with
+        // mail-secrets (e.g. a Stalwart data restore / redeploy that reset the
+        // account) leaves the master "present" yet unable to authenticate,
+        // SILENTLY breaking Bulwark/Roundcube impersonation for ALL mailboxes —
+        // exactly the class the existence check above cannot see. Verify it can
+        // actually obtain a JMAP session with the mail-secrets credential.
         try {
           const masterPw = await readStalwartMasterPassword(core);
           if (masterPw) {
-            const probe = await verifyMasterJmapAuth(masterFqdn, masterPw, baseUrl, { impersonateTarget });
+            const probe = await verifyMasterJmapAuth(masterFqdn, masterPw, baseUrl);
             if (!probe.ok) {
               masterInDrift = true;
-              const brokenCapability = probe.mode === 'impersonation'
-                ? 'authenticates but can no longer IMPERSONATE mailboxes'
-                : 'password no longer authenticates';
               driftThisTick.push({
                 kind: 'master-user',
                 expectedName: masterFqdn,
                 expectedStalwartId: '',
                 platformRowId: MASTER_DRIFT_ROW_ID,
                 notes:
-                  `Webmail master user "${masterFqdn}" EXISTS in Stalwart but ${brokenCapability} `
-                  + `(HTTP ${probe.status}, ${probe.mode} probe) — so Bulwark/Roundcube login + `
+                  `Webmail master user "${masterFqdn}" EXISTS in Stalwart but its `
+                  + `password no longer authenticates (HTTP ${probe.status}) — mail-secrets `
+                  + 'and Stalwart have drifted apart, so Bulwark/Roundcube login + '
                   + 'impersonation are broken for ALL mailboxes. Auto-heal re-asserts the '
-                  + 'master onto Stalwart on this cycle; if that is '
+                  + 'mail-secrets password onto Stalwart on this cycle; if that is '
                   + 'disabled/failing, remediate: POST /api/v1/admin/mail/rotate-webmail-master '
                   + '(super_admin). No tenant data is affected.',
               });
               log.warn(
-                { masterFqdn, status: probe.status, mode: probe.mode },
-                `webmail master user present but ${brokenCapability} — credential drift recorded (impersonation broken)`,
+                { masterFqdn, status: probe.status },
+                'webmail master user present but cannot authenticate — credential drift recorded (impersonation broken)',
               );
             }
           }
@@ -339,7 +316,7 @@ async function syncPrincipals(params: {
       if (masterInDrift && env.MAIL_MASTER_AUTOHEAL !== 'disable') {
         try {
           const { reconcileStalwartMasterCredential } = await import('../mail-admin/reconcile-master-credential.js');
-          const outcome = await reconcileStalwartMasterCredential({ core, baseUrl, impersonateTarget });
+          const outcome = await reconcileStalwartMasterCredential({ core, baseUrl });
           if (outcome.healed) {
             log.info({ masterFqdn }, 'webmail master credential auto-healed from mail-secrets — drift resolves next cycle');
           } else if (outcome.status === 'failed') {

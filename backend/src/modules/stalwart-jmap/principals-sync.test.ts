@@ -289,18 +289,14 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
       { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
     ]));
     mockReadMasterPassword.mockResolvedValueOnce('stale-master-pw');
-    mockVerifyMasterJmapAuth.mockResolvedValueOnce({ ok: false, status: 401, mode: 'direct' });
+    mockVerifyMasterJmapAuth.mockResolvedValueOnce({ ok: false, status: 401 });
 
     const db = createMockDb([], []);
     const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
     const result = await scheduler.runOnce();
 
     expect(result.errors).toHaveLength(0);
-    // 4th arg is the impersonation-probe options ({ impersonateTarget }); its
-    // exact value depends on apex resolution — assert the first three precisely.
-    expect(mockVerifyMasterJmapAuth).toHaveBeenCalledWith(
-      'master@local.host', 'stale-master-pw', undefined, expect.anything(),
-    );
+    expect(mockVerifyMasterJmapAuth).toHaveBeenCalledWith('master@local.host', 'stale-master-pw', undefined);
     const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
       .map((c) => c[0] as Record<string, unknown>)
       .filter((v) => v.kind === 'master-user');
@@ -308,32 +304,6 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect(String(inserted[0].notes)).toMatch(/no longer authenticates/i);
     expect(inserted[0].platformRowId).toBe('__webmail_master_user__');
     // Self-heal is triggered on detected drift.
-    expect(mockReconcileMaster).toHaveBeenCalledTimes(1);
-  });
-
-  it('flags master-user drift when the master is PRESENT + authenticates but can no longer IMPERSONATE', async () => {
-    // The 2026-07-03 class: the master principal was destroyed and only the
-    // config fallback-admin (same name+password) remains — DIRECT login would
-    // pass (masking the outage), but the impersonation probe returns 401.
-    mockGetJmapSession.mockResolvedValueOnce(makeSession());
-    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([
-      { id: 'sp-master', type: 'individual', name: 'master', emails: ['master@local.host'] },
-    ]));
-    mockReadMasterPassword.mockResolvedValueOnce('good-pw');
-    // mode:'impersonation' => the probe tested `_system@<apex>%master` and it 401'd.
-    mockVerifyMasterJmapAuth.mockResolvedValueOnce({ ok: false, status: 401, mode: 'impersonation' });
-
-    const db = createMockDb([], []);
-    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv, core: fakeCore });
-    const result = await scheduler.runOnce();
-
-    expect(result.errors).toHaveLength(0);
-    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
-      .map((c) => c[0] as Record<string, unknown>)
-      .filter((v) => v.kind === 'master-user');
-    expect(inserted).toHaveLength(1);
-    expect(String(inserted[0].notes)).toMatch(/can no longer IMPERSONATE/i);
-    // The blind spot this closes: direct auth would have passed; the heal must fire.
     expect(mockReconcileMaster).toHaveBeenCalledTimes(1);
   });
 
