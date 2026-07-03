@@ -45,8 +45,16 @@ set -uo pipefail
 SSH_KEY="${SSH_KEY:-/home/dev/hosting-platform.key}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -q -i $SSH_KEY"
 BUDGET="${DR_FAILOVER_BUDGET:-720}"
-DOMAIN=mailperf-bench.net
+# Unique per-run probe domain + tenant name. A FIXED domain let a prior run's
+# leftover tenant (crashed teardown) block a new run's domain create, and made
+# a tenant-delete cascade's retrying Stalwart-Domain DESTROY race the new run's
+# CREATE of the SAME domain — both surfaced as a misleading "master-auth never
+# healed" (the probe mailbox simply never got created). A per-run domain can
+# collide with neither. (2026-07-03.)
+RUN="$(date +%s 2>/dev/null || echo "$$")"
+DOMAIN="drdp-${RUN}.net"
 ADDR="dr-probe@${DOMAIN}"
+TENANT_NAME="itest-drdp-${RUN}"
 
 green(){ printf '\033[32m%s\033[0m\n' "$*"; }
 red(){ printf '\033[31m%s\033[0m\n' "$*" >&2; }
@@ -216,7 +224,15 @@ cleanup(){
   kc "label node $STANDBY insula.host/mail-standby- " >/dev/null 2>&1 || true
   kc "delete pod -n mail dp-probe --ignore-not-found --wait=false" >/dev/null 2>&1 || true
   kc "delete job -n mail -l dp-dataplane --ignore-not-found --wait=false" >/dev/null 2>&1 || true
-  [ -n "$CID" ] && AH -X DELETE "$API/tenants/$CID" -o /dev/null 2>/dev/null || true
+  if [ -n "$CID" ]; then
+    AH -X DELETE "$API/tenants/$CID" -o /dev/null 2>/dev/null || true
+    # Wait for the delete cascade (incl. the Stalwart Domain destroy) to finish
+    # so the tenant + domain don't linger into a back-to-back run.
+    for _d in $(seq 1 20); do
+      [ "$(AH "$API/tenants/$CID" | python3 -c 'import json,sys;d=json.load(sys.stdin);print("Y" if d.get("data") else "N")' 2>/dev/null)" = N ] && break
+      sleep 3
+    done
+  fi
   rm -rf "$TMP"
   hdr "RESULT: PASS=$PASS FAIL=$FAIL"
   [ "$FAIL" -eq 0 ] && green "DATA-PLANE DR: GREEN" || red "DATA-PLANE DR: $FAIL failure(s)"
@@ -224,22 +240,35 @@ cleanup(){
 trap cleanup EXIT
 
 hdr "SETUP: standby + placement + probe mailbox"
+# Best-effort pre-flight sweep of leftover probe tenants from CRASHED prior runs
+# (the unique per-run DOMAIN already prevents collisions; this just stops orphan
+# tenants — and their retrying Stalwart-Domain destroys — from accumulating).
+for _t in $(kc "exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT id FROM tenants WHERE name LIKE 'itest-drdp%';\"" 2>/dev/null | tr -d ' '); do
+  [ -n "$_t" ] && AH -X DELETE "$API/tenants/$_t" -o /dev/null 2>/dev/null || true
+done
 kc "label node $STANDBY insula.host/mail-standby=true --overwrite" >/dev/null
 AH -X PATCH "$API/admin/mail/placement" -H 'Content-Type: application/json' -d '{"primaryNode":"'"$ACTIVE"'","secondaryNode":"'"$STANDBY"'","autoFailoverEnabled":true,"failoverThresholdSeconds":60}' >/dev/null
 PLAN=$(AH "$API/plans?limit=20" | python3 -c "import json,sys;ps=json.load(sys.stdin)['data'];print((next((p for p in ps if p.get('name')=='Starter'),None) or ps[0])['id'])")
 REGION=$(AH "$API/regions?limit=1" | jg "d['data'][0]['id']")
-CID=$(AH -X POST "$API/tenants" -H 'Content-Type: application/json' -d "{\"name\":\"itest-drdp\",\"primary_email\":\"drdp-itest@example.test\",\"plan_id\":\"$PLAN\",\"region_id\":\"$REGION\"}" | jg "d['data']['id']")
+CID=$(AH -X POST "$API/tenants" -H 'Content-Type: application/json' -d "{\"name\":\"$TENANT_NAME\",\"primary_email\":\"drdp-itest@example.test\",\"plan_id\":\"$PLAN\",\"region_id\":\"$REGION\"}" | jg "d['data']['id']")
+[ -n "$CID" ] || { no "setup: tenant create failed (no id) — check plan/region/quota"; exit 1; }
 AH -X POST "$API/admin/tenants/$CID/provision" -H 'Content-Type: application/json' -d '{}' -o /dev/null
 for i in $(seq 1 60); do [ "$(AH "$API/tenants/$CID" | jg "d['data']['status']")" = active ] && break; sleep 4; done
+[ "$(AH "$API/tenants/$CID" | jg "d['data']['status']")" = active ] || { no "setup: tenant $CID never went active"; exit 1; }
 DID=$(AH -X POST "$API/tenants/$CID/domains" -H 'Content-Type: application/json' -d '{"domain_name":"'"$DOMAIN"'","dns_mode":"primary"}' | jg "d['data']['id']")
+[ -n "$DID" ] || { no "setup: domain create for $DOMAIN failed (no id) — taken/invalid?"; exit 1; }
 EDID=$(AH -X POST "$API/tenants/$CID/email/domains/$DID/enable" -H 'Content-Type: application/json' -d '{}' | jg "d['data'].get('id')")
-AH -X POST "$API/tenants/$CID/email/domains/$EDID/mailboxes" -H 'Content-Type: application/json' -d '{"local_part":"dr-probe"}' -o /dev/null
+{ [ -n "$EDID" ] && [ "$EDID" != None ]; } || { no "setup: email-domain enable for $DOMAIN failed (no id)"; exit 1; }
+MBX=$(AH -X POST "$API/tenants/$CID/email/domains/$EDID/mailboxes" -H 'Content-Type: application/json' -d '{"local_part":"dr-probe"}' | jg "d['data'].get('id')")
+{ [ -n "$MBX" ] && [ "$MBX" != None ]; } || { no "setup: mailbox dr-probe@$DOMAIN create failed (no id)"; exit 1; }
 kc "run dp-probe -n mail --restart=Never --image='$TOOLS' --image-pull-policy=IfNotPresent --command -- sleep 3600" >/dev/null 2>&1
 for i in $(seq 1 20); do [ "$(kc "get pod -n mail dp-probe -o jsonpath='{.status.phase}'" 2>/dev/null)" = Running ] && break; sleep 3; done
 ssh $SSH_OPTS "$BASTION" "cat > /tmp/dpj.py" < "$JMAP_PY"
 kc "cp /tmp/dpj.py mail/dp-probe:/tmp/dpj.py" >/dev/null 2>&1
-wait_auth || { no "master-auth never healed at setup"; exit 1; }
-green "setup complete (tenant=$CID)"
+# The probe mailbox is CONFIRMED created (asserts above), so a wait_auth failure
+# here is a GENUINE master/impersonation problem — not a missing/absent target.
+wait_auth || { no "master-auth never healed at setup (probe mailbox exists — genuine master-impersonation failure)"; exit 1; }
+green "setup complete (tenant=$CID domain=$DOMAIN)"
 
 ST=$(psql1 "SELECT extract(epoch from now())::int;"); [ -n "$ST" ] || ST=$$
 M1="DR-M1-$ST"; M1B="DR-M1B-$ST"; M2="DR-M2-$ST"; M3="DR-M3-$ST"
