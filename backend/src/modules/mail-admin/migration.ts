@@ -1364,6 +1364,34 @@ async function runMigrationStateMachine(
     log.warn('[migration] post-success port-exposure reconcile failed (non-fatal):', err);
   }
 
+  // Step 8b1 (2026-07-03, credential-drift-on-restore fix): a restore brings
+  // Stalwart up with the SNAPSHOT's admin credential — NOT the current secret —
+  // so admin JMAP 401s and EVERY admin-authed step below silently fails: the
+  // listener/hostname reconcile (8b2), the master rotation (8c), the ACME
+  // provider/renewal, and every future domain-reconciler tick. That left staging
+  // mail degraded (self-signed cert + dead HA listeners) until an operator ran
+  // rotate-admin-password by hand (2026-07-03 incident). Re-sync the admin
+  // credential HERE first — rotate-admin-password uses the recovery-superuser
+  // fallback, which works even when the DB admin credential is stale — so the
+  // reconciles below actually succeed. Non-fatal: the cutover already succeeded;
+  // the operator can still POST /admin/mail/rotate-admin-password.
+  try {
+    const { rotateAdminPasswordViaJmap } = await import('./rotate-jmap.js');
+    const { readStalwartCredentials } = await import('./credentials.js');
+    await rotateAdminPasswordViaJmap({
+      kubeconfigPath,
+      stalwartNamespace: 'mail',
+      secretName: 'stalwart-admin-creds',
+      mirrorNamespace: 'platform',
+      mirrorSecretName: 'platform-stalwart-creds',
+      username: readStalwartCredentials(process.env).username,
+      recyclePodsBeforeVerify: true,
+    });
+    log.info(`[migration ${runId}] post-cutover admin credential re-synced (restore-drift heal)`);
+  } catch (err) {
+    log.warn('[migration] post-cutover admin credential re-sync failed (non-fatal — operator can POST /admin/mail/rotate-admin-password):', err);
+  }
+
   // Step 8b2 (Gap C, 2026-07-02): re-assert Stalwart's REQUIRED_LISTENERS +
   // defaultHostname on the newly-active pod. A restore brings Stalwart up with
   // whatever config was in the restored RocksDB — which can be MISSING the
@@ -1372,6 +1400,7 @@ async function runMigrationStateMachine(
   // domain-reconciler heals these on its tick, but a migration must not depend
   // on that timing — a stalled reconciler left mail degraded (only 25/465/993/
   // 4190 bound, HA entrypoints dead) for ~30min after a failover on 2026-07-02.
+  // (Runs AFTER 8b1 so its admin JMAP calls authenticate.)
   try {
     const { runStalwartDomainReconcilerTick } = await import('./stalwart-domain-reconciler.js');
     const rec = await runStalwartDomainReconcilerTick({ core, db, kubeconfigPath, logger: log });
