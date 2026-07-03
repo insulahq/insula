@@ -96,6 +96,24 @@ read_smtp_banner() {
   " 2>/dev/null
 }
 
+# mail_reconcile — run the domain-reconciler tick on demand (re-asserts the
+# mail listeners + fires the ACME self-heal / cert re-bind). Same SSH + in-pod
+# Bearer-fetch path as api_patch (a node host can't route a ClusterIP on
+# Calico). Best-effort: any error is swallowed — this only nudges a freshly-
+# issued cert to bind faster; the cert check still hard-FAILs on its own if the
+# listener stays self-signed.
+mail_reconcile() {
+  ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' <<'SSH' >/dev/null 2>&1 || true
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+JWT=$(kubectl get secret -n platform platform-jwt-secret -o jsonpath='{.data.secret}' | base64 -d)
+PG=$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}')
+AID=$(kubectl exec -n platform "$PG" -- psql -U postgres -d platform -tA -c "SELECT id FROM users WHERE role_name='super_admin' ORDER BY created_at LIMIT 1;" 2>/dev/null | head -1)
+AP=$(kubectl get pod -n platform -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+TOK=$(kubectl exec -n platform "$AP" -- env JWT_SECRET="$JWT" SUB="$AID" node -e 'const {SignJWT}=require("jose");(async()=>{const enc=new TextEncoder().encode(process.env.JWT_SECRET);const t=await new SignJWT({sub:process.env.SUB,role:"super_admin",panel:"admin"}).setProtectedHeader({alg:"HS256"}).setIssuedAt().setExpirationTime("1h").sign(enc);process.stdout.write(t);})();' 2>/dev/null)
+kubectl exec -n platform "$AP" -- env TOK="$TOK" node -e 'fetch("http://127.0.0.1:3000/api/v1/admin/mail/stalwart-reprovision",{method:"POST",headers:{Authorization:"Bearer "+process.env.TOK,"Content-Type":"application/json"},body:"{}"}).then(()=>process.exit(0)).catch(()=>process.exit(0));' 2>/dev/null
+SSH
+}
+
 probe_node_ports() {
   local node="$1" ip="$2" expect_answers="$3"  # expect_answers = "yes" or "no"
   local pass=0 fail=0 reasons=""
@@ -130,11 +148,24 @@ probe_node_ports() {
     # fallback (SAN=localhost). An invalid cert is a FAIL, not a warning — it
     # breaks every TLS-verifying IMAP/SMTP client + degrades deliverability.
     if probe_tcp "$ip" 465; then
-      local iss; iss=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
-      if echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
-        fail=$((fail+1)); reasons="$reasons cert=self-signed(${iss#issuer=})"
-      else
+      # issuance≠serving: a freshly-issued ACME cert can lag the listener bind
+      # (Stalwart reloads on its own cadence), so POLL — nudge one reconcile on
+      # the first self-signed reading, then keep re-probing. A cert still
+      # self-signed after the whole bounded window is a real FAIL, never a warn.
+      local ci iss cert_ok=0 nudged=0
+      for ci in $(seq 1 8); do
+        iss=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
+        if echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
+          [ "$nudged" -eq 0 ] && { mail_reconcile; nudged=1; }
+          sleep 12
+        else
+          cert_ok=1; break
+        fi
+      done
+      if [ "$cert_ok" -eq 1 ]; then
         pass=$((pass+1))
+      else
+        fail=$((fail+1)); reasons="$reasons cert=self-signed(${iss#issuer=})"
       fi
     fi
   fi

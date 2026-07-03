@@ -1332,7 +1332,7 @@ async function forceFreshAcmeOrder(
  * no pod / no openssl / non-parseable output, so the caller treats it
  * as "unknown, do not force".
  */
-async function defaultServedCertProbe(
+export async function defaultServedCertProbe(
   podName: string | null,
   kubeconfigPath: string | undefined,
 ): Promise<ServedCertResult> {

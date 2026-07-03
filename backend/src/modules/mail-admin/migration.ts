@@ -840,6 +840,114 @@ export async function notifyAdminsMailDataLoss(
   }
 }
 
+/**
+ * Fan an error-level notification to all admins when the newly-active mail
+ * node is still NOT serving a valid TLS cert on :465 after a failover — i.e.
+ * the ACME order/self-heal fired (Step 8b2) but the listener is serving the
+ * bootstrap `rcgen` self-signed cert (or the probe couldn't confirm a valid
+ * one). Mirrors {@link notifyAdminsMailDataLoss}. Best-effort — a fan-out
+ * failure is non-fatal (the run note + log line are the fallback signals).
+ * Exported for unit coverage.
+ */
+export async function notifyAdminsMailCertNotServing(
+  db: Database,
+  runId: string,
+  node: string,
+  issuer: string | null,
+): Promise<void> {
+  try {
+    const { users, notifications } = await import('../../db/schema.js');
+    const { inArray } = await import('drizzle-orm');
+    const admins = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(inArray(users.roleName, ['super_admin', 'admin']));
+    for (const a of admins) {
+      await db
+        .insert(notifications)
+        .values({
+          id: randomUUID(),
+          userId: a.id,
+          type: 'error',
+          title: 'Mail failover: TLS cert not serving',
+          message:
+            `After failover to ${node}, the mail TLS listener (:465) is still serving an invalid / ` +
+            `self-signed certificate (issuer=${issuer ?? 'unknown'}). Mail is UP, but TLS clients will ` +
+            `reject it. The ACME self-heal has been re-fired; if this persists, check HTTP-01 ` +
+            `reachability and the Let's Encrypt rate-limit under /settings/email-admin.`,
+          resourceType: 'mail_migration',
+          resourceId: runId,
+        })
+        .catch(() => {
+          /* fire-and-forget per row */
+        });
+    }
+  } catch {
+    /* fan-out failure is non-fatal — the run note + log line are the fallback signals */
+  }
+}
+
+/** Verdict shape from a served-cert probe (mirrors reconciler ServedCertResult). */
+interface ServedCertVerdict {
+  readonly selfSigned: boolean;
+  readonly issuer: string | null;
+  readonly error: string | null;
+}
+
+/**
+ * Poll the TLS cert Stalwart is actually SERVING on :465 until it is a valid
+ * (non-self-signed) cert, or `timeoutMs` elapses.
+ *
+ * Issuance ≠ serving: a fresh ACME order can land in Stalwart's cert store
+ * minutes before the TLS listener rebinds to it (observed ~1h lag on the
+ * post-restore self-heal path). A failover that only *fires* the order
+ * (Step 8b2) can therefore complete while :465 still serves the bootstrap
+ * `rcgen` cert — the exact "reported healthy over a cert FAIL" gap.
+ *
+ * Best-effort throughout: a probe error (pod gone, exec failure) is treated
+ * as "unknown, keep waiting" — never as success. `deps` are injectable for
+ * unit testing; production uses the reconciler's real served-cert probe.
+ */
+export async function waitForServedMailCert(
+  core: CoreV1Api,
+  kubeconfigPath: string | undefined,
+  timeoutMs: number,
+  pollMs: number,
+  log: { warn: (...args: unknown[]) => void; info: (...args: unknown[]) => void },
+  deps?: {
+    probe?: (podName: string | null, kc: string | undefined) => Promise<ServedCertVerdict>;
+    findPod?: (core: CoreV1Api) => Promise<string | null>;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  },
+): Promise<{ ok: boolean; selfSigned: boolean; issuer: string | null }> {
+  const findPod = deps?.findPod ?? findStalwartPod;
+  const sleep = deps?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = deps?.now ?? (() => Date.now());
+  const probe =
+    deps?.probe ??
+    (async (podName: string | null, kc: string | undefined): Promise<ServedCertVerdict> => {
+      const { defaultServedCertProbe } = await import('./stalwart-domain-reconciler.js');
+      return defaultServedCertProbe(podName, kc);
+    });
+
+  const deadline = now() + timeoutMs;
+  let selfSigned = false;
+  let issuer: string | null = null;
+  for (;;) {
+    const podName = await findPod(core);
+    const res = await probe(podName, kubeconfigPath);
+    selfSigned = res.selfSigned;
+    issuer = res.issuer;
+    if (!res.error && !res.selfSigned && res.issuer) {
+      return { ok: true, selfSigned: false, issuer: res.issuer };
+    }
+    if (now() + pollMs >= deadline) break;
+    await sleep(pollMs);
+  }
+  return { ok: false, selfSigned, issuer };
+}
+
 async function runMigrationStateMachine(
   runId: string,
   sourceNode: string,
@@ -1411,6 +1519,62 @@ async function runMigrationStateMachine(
     }
   } catch (err) {
     log.warn('[migration] post-cutover listener/hostname reconcile failed (non-fatal — domain-reconciler tick will retry):', err);
+  }
+
+  // Step 8b3 (2026-07-03, issuance≠serving): confirm the newly-active pod is
+  // actually SERVING a valid TLS cert on :465 — not just that Step 8b2 fired
+  // the ACME order. Stalwart binds a freshly-issued cert on its own reload
+  // cadence (observed ~1h lag on the post-restore self-heal path), so without
+  // this a failover reports healthy while :465 still serves the bootstrap
+  // self-signed cert — the exact "healthy over a cert FAIL" gap this whole
+  // change closes. Bounded + best-effort — NEVER fails the migration (mail is
+  // already UP): if still self-signed after the issuance grace, ONE pod
+  // recycle forces Stalwart to reload the stored cert; a persistent failure is
+  // surfaced LOUDLY (operator notification) rather than silently "healthy".
+  // dr_state is intentionally NOT overloaded here — the authoritative
+  // cert-aware "mail healthy" signal is /admin/mail/health (certSanMatch /
+  // deliverability), which already FAILs on a self-signed listener.
+  try {
+    const first = await waitForServedMailCert(core, kubeconfigPath, 90_000, 6_000, log);
+    if (first.ok) {
+      log.info(`[migration ${runId}] mail TLS cert serving valid on ${targetNode} (issuer=${first.issuer})`);
+    } else if (first.selfSigned) {
+      log.warn(
+        `[migration ${runId}] mail still serving a self-signed cert on ${targetNode} after the issuance ` +
+        `grace — recycling Stalwart once to reload the stored cert`,
+      );
+      try {
+        const { recycleStalwartPods } = await import('./recycle-stalwart-pods.js');
+        await recycleStalwartPods({
+          kubeconfigPath,
+          namespace: MAIL_NAMESPACE,
+          labelSelector: 'app=stalwart-mail',
+          gracePeriodSeconds: 15,
+        });
+      } catch (recErr) {
+        log.warn('[migration] Stalwart recycle for cert reload failed (non-fatal):', recErr);
+      }
+      const second = await waitForServedMailCert(core, kubeconfigPath, 120_000, 6_000, log);
+      if (second.ok) {
+        log.info(`[migration ${runId}] mail TLS cert serving valid on ${targetNode} after reload (issuer=${second.issuer})`);
+      } else {
+        log.warn(
+          `[migration ${runId}] mail STILL not serving a valid cert on ${targetNode} ` +
+          `(issuer=${second.issuer ?? 'unknown'}) — firing operator alert`,
+        );
+        await notifyAdminsMailCertNotServing(db, runId, targetNode, second.issuer);
+      }
+    } else {
+      // Probe inconclusive (no pod handle / exec error) — do NOT recycle
+      // blindly, but surface it so the failover isn't silently "healthy".
+      log.warn(
+        `[migration ${runId}] could not confirm the mail TLS cert serving on ${targetNode} ` +
+        `(served-cert probe inconclusive) — firing operator alert`,
+      );
+      await notifyAdminsMailCertNotServing(db, runId, targetNode, first.issuer);
+    }
+  } catch (err) {
+    log.warn('[migration] served-cert verification failed (non-fatal — reconciler tick will retry):', err);
   }
 
   // Step 8c (2026-05-28): auto-rotate Stalwart master password.
