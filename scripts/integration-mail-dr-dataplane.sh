@@ -141,7 +141,12 @@ if [ -z "$STANDBY" ]; then
 fi
 echo "active=$ACTIVE standby=$STANDBY bastion=$BASTION_NODE (papi=$PAPI_NODE db=$DB_NODE)"
 MP=$(kc "get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d")
-TOOLS="${TOOLS_IMAGE:-$(ssh $SSH_OPTS "$BASTION" "k3s ctr images ls -q 2>/dev/null | grep tenant-backup-tools | grep -v sha256 | head -1")}"
+# Resolve the tenant-backup-tools image. Prefer the stalwart Deployment's
+# restore-state init image ref (always resolvable) over the bastion's containerd
+# cache (which may not have pulled it — that broke the first rc.3 run).
+TOOLS="${TOOLS_IMAGE:-}"
+[ -z "$TOOLS" ] && TOOLS=$(kc "get deploy -n mail stalwart-mail -o jsonpath='{range .spec.template.spec.initContainers[*]}{.image}{\"\n\"}{end}'" 2>/dev/null | grep tenant-backup-tools | head -1)
+[ -z "$TOOLS" ] && TOOLS=$(ssh $SSH_OPTS "$BASTION" "k3s ctr images ls -q 2>/dev/null | grep tenant-backup-tools | grep -v sha256 | head -1")
 [ -n "$MP" ] && [ -n "$TOOLS" ] || { red "missing master password or tools image"; exit 2; }
 jmap(){ kc "exec -n mail dp-probe -- env MP='$MP' python3 /tmp/dpj.py $*" 2>/dev/null; }
 smtp(){ python3 "$SMTP_PY" "$@"; }
