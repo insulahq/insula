@@ -38,6 +38,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
+- **Mail failover no longer loses snapshot-captured mail to a stale standby
+  copy** (`mail-dr`, restore freshness) — the failover restore's FAST PATH
+  copied the standby-rsync pre-staged data and skipped restic whenever the
+  standby marker was younger than `STANDBY_MAX_AGE_SECONDS` (30 min). But a
+  recent marker only means the last rsync *finished* recently, not that its
+  data contains the latest deliveries — a message delivered after the last
+  rsync yet captured in a snapshot was absent from the standby copy, so a
+  failover could restore data up to 30 min stale and drop mail that a *fresher*
+  snapshot held. The restore-state init now compares the standby marker against
+  the latest restic snapshot's time and rejects the FAST PATH (restoring the
+  snapshot via restic) whenever the snapshot is newer — so snapshot-captured
+  mail always survives a failover.
 - **Mail failover now verifies the TLS cert is actually *served*, not just
   issued** (`mail-dr`, issuance≠serving) — after a failover/DR cutover the
   reconcile fires the ACME order, but Stalwart binds a freshly-issued cert to
