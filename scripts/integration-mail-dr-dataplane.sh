@@ -149,6 +149,13 @@ if [ -z "$STANDBY" ]; then
 fi
 echo "active=$ACTIVE standby=$STANDBY bastion=$BASTION_NODE (papi=$PAPI_NODE db=$DB_NODE)"
 MP=$(kc "get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d")
+# Re-read MP from mail-secrets. A migration's Step 8c ROTATES the master
+# password (post-migration security hygiene) and patches mail-secrets, so the
+# value cached at setup goes STALE across a failover/failback — impersonation
+# then 401s with the old value. Refresh before each auth/read attempt so the
+# probe follows the rotation. (2026-07-03: this masqueraded as "master-auth
+# never healed" post-failover; the platform DOES re-sync at cutover.)
+refresh_mp(){ local v; v=$(kc "get secret -n mail mail-secrets -o jsonpath='{.data.STALWART_MASTER_PASSWORD}' | base64 -d"); [ -n "$v" ] && MP="$v"; }
 # Resolve the tenant-backup-tools image. Prefer the stalwart Deployment's
 # restore-state init image ref (always resolvable) over the bastion's containerd
 # cache (which may not have pulled it — that broke the first rc.3 run).
@@ -198,9 +205,9 @@ assert_cert_valid(){
   return 1
 }
 # wait until master-user impersonation heals (post-restore credential drift)
-wait_auth(){ local i; for i in $(seq 1 25); do [ "$(jmap auth "$ADDR")" = OK ] && return 0; sleep 12; done; return 1; }
+wait_auth(){ local i; for i in $(seq 1 25); do refresh_mp; [ "$(jmap auth "$ADDR")" = OK ] && return 0; sleep 12; done; return 1; }
 # read with retry (eventual consistency after restore)
-has(){ local subj="$1" i r; for i in $(seq 1 8); do r=$(jmap read "$ADDR" | grep SUBJECTS); echo "$r" | grep -qF "$subj" && return 0; sleep 6; done; return 1; }
+has(){ local subj="$1" i r; refresh_mp; for i in $(seq 1 8); do r=$(jmap read "$ADDR" | grep SUBJECTS); echo "$r" | grep -qF "$subj" && return 0; sleep 6; done; return 1; }
 
 CID=""; PROBE_PID=""
 cleanup(){
@@ -348,7 +355,18 @@ has "$M2" && ok "I: inbound SMTP :25 to new active delivered" || no "I: inbound 
 jmap deliver "$ADDR" "$M3" "m3$ST" >/dev/null
 
 hdr "FAILBACK → $ACTIVE (target-Ready gate + retry) and SYNC-BACK"
-for i in $(seq 1 30); do [ "$(kc "get node $ACTIVE -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'" 2>/dev/null)" = True ] && break; sleep 6; done
+# Gate on the target being genuinely SCHEDULABLE, not just node-Ready: the
+# k3s-stop restarted the target's CNI (calico-node) + the local-path
+# provisioning path, and a failback firing before they're back leaves the swap
+# PVC unprovisionable → Pending pod → the migration stalls "running". Wait for
+# node Ready AND the calico-node pod on the target Ready, then a short settle.
+for i in $(seq 1 40); do
+  nr=$(kc "get node $ACTIVE -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'" 2>/dev/null)
+  cni=$(kc "get pods -n kube-system --field-selector spec.nodeName=$ACTIVE -l k8s-app=calico-node -o jsonpath='{.items[0].status.containerStatuses[0].ready}'" 2>/dev/null)
+  [ "$nr" = True ] && { [ "$cni" = true ] || [ -z "$cni" ]; } && break
+  sleep 6
+done
+sleep 20   # settle: let the local-path provisioner finish coming up post-restart
 FB_OK=0
 for attempt in 1 2 3; do
   RID=$(AH -X POST "$API/admin/mail/failback" -H 'Content-Type: application/json' -d '{"confirm":true}' | jg "d['data']['runId']")
@@ -356,7 +374,11 @@ for attempt in 1 2 3; do
   END=$(( $(date +%s)+600 ))
   while [ $(date +%s) -lt $END ]; do S=$(psql1 "SELECT state FROM mail_migration_runs WHERE id='$RID';"); case "$S" in done) FB_OK=1; break;; failed|rolled-back|cancelled) break;; esac; sleep 10; done
   [ "$FB_OK" = 1 ] && break
-  echo "  failback attempt $attempt = $S; retrying"
+  # Capture WHY it stalled so a stuck failback is diagnosable (was silent before).
+  ERR=$(psql1 "SELECT left(coalesce(error,'<none>'),160) FROM mail_migration_runs WHERE id='$RID';")
+  STEP=$(psql1 "SELECT step FROM mail_migration_runs WHERE id='$RID';" 2>/dev/null)
+  PODST=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].status.phase}@{.items[0].spec.nodeName}'" 2>/dev/null)
+  echo "  failback attempt $attempt = ${S:-timeout} step=${STEP:-?} pod=${PODST:-?} err=${ERR:-?}; retrying"
 done
 NODE_FB=$(kc "get pod -n mail -l app=stalwart-mail -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null)
 [ "$NODE_FB" = "$ACTIVE" ] && ok "failback relocated stalwart → $ACTIVE" || no "failback did not return to $ACTIVE (on $NODE_FB)"

@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.5] - 2026-07-03
-
 ### Added
 - **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
   `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
@@ -40,6 +38,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
+- **Webmail impersonation heals AT cutover after a failover** (`mail-dr`) — a
+  restore brings Stalwart up with the SNAPSHOT's master-account password,
+  drifted from `mail-secrets`, so Bulwark/Roundcube impersonation was broken for
+  all mailboxes until the slow principals-sync auto-heal tick caught it
+  (post-failover master-auth could stay broken for minutes). The migration
+  cutover now re-asserts the `mail-secrets` master password onto Stalwart
+  immediately (Step 8b1b, mirroring the admin re-sync), so impersonation heals
+  at cutover regardless of the flag-gated security-hygiene master rotation.
 - **Mail failover no longer loses snapshot-captured mail to a stale standby
   copy** (`mail-dr`, restore freshness) — the failover restore's FAST PATH
   copied the standby-rsync pre-staged data and skipped restic whenever the
