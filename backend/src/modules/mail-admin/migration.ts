@@ -1295,6 +1295,12 @@ async function runMigrationStateMachine(
   // depending on DataStore size and BackupStore latency.
   await setStep(db, runId, 'scaling-up', 'running', taskId);
   await patchDeploymentReplicas(apps, 1);
+  // The scale-up above is the "first consumer" that triggers local-path to
+  // provision the fresh target PVC. If that provisioning stalls — the stuck-
+  // provisioner-after-node-restart bug that hangs a failback (TRUE root cause,
+  // rc.7 destructive run 2026-07-04) — bounce the provisioner so the PVC binds
+  // and the pod can schedule, instead of silently burning the full 600s below.
+  await ensureTargetPvcProvisions(core, log);
   try {
     await waitForReplicaCount(apps, 1, 600, () => isCancelRequested(db, runId));
   } catch (err) {
@@ -2198,6 +2204,107 @@ export async function cleanupStaleTargetMailPv(
       log.warn(`[migration] stale-target-PV sweep: delete of ${name} failed (non-fatal):`, err);
     }
   }
+}
+
+const LOCAL_PATH_NS = 'kube-system';
+const LOCAL_PATH_SELECTOR = 'app=local-path-provisioner';
+
+/**
+ * Restart the local-path provisioner by deleting its pod(s) — the Deployment's
+ * ReplicaSet recreates one within seconds. This is the ALLOWED restart pattern
+ * on a Flux-managed cluster (delete the pod, let the controller recreate from
+ * the current template) — NOT a `rollout restart` (which Flux fights). Returns
+ * true if at least one provisioner pod was deleted. Best-effort — never throws.
+ */
+export async function bounceLocalPathProvisioner(
+  core: CoreV1Api,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+): Promise<boolean> {
+  try {
+    const pods = await core.listNamespacedPod({
+      namespace: LOCAL_PATH_NS,
+      labelSelector: LOCAL_PATH_SELECTOR,
+    }) as { items?: Array<{ metadata?: { name?: string } }> };
+    const names = (pods.items ?? []).map((p) => p.metadata?.name).filter((n): n is string => !!n);
+    if (names.length === 0) {
+      log.warn('[migration] provisioner bounce: no local-path-provisioner pod found (custom storage backend?) — skipping');
+      return false;
+    }
+    for (const n of names) {
+      await core.deleteNamespacedPod({ name: n, namespace: LOCAL_PATH_NS }).catch((e: unknown) =>
+        log.warn(`[migration] provisioner bounce: delete of ${n} failed (non-fatal):`, e));
+    }
+    log.info(`[migration] bounced local-path provisioner (${names.join(', ')}) to clear stale node state`);
+    return true;
+  } catch (err) {
+    log.warn('[migration] provisioner bounce: list local-path-provisioner pods failed (non-fatal):', err);
+    return false;
+  }
+}
+
+/**
+ * After scale-up, make sure the target-node PVC actually PROVISIONS — and if it
+ * stalls, bounce the local-path provisioner to unstick it.
+ *
+ * Why (failback scaling-up hang, TRUE root cause found on the rc.7 destructive
+ * run 2026-07-04): when the failover target's k3s is stopped + restarted, the
+ * single-replica local-path provisioner's informer/connection to that node goes
+ * STALE. Its helper-pod-create then times out — `create process timeout after
+ * 120s` + `failed to save logs: error in opening stream: resource name may not
+ * be empty` — repeatedly, so the fresh PVC never binds → pod Pending → the 600s
+ * scaling-up wait times out → rollback. The node itself is healthy (runs pods +
+ * the helper image fine); only the provisioner is stuck. **Deleting the
+ * provisioner pod (ReplicaSet recreates it) re-establishes the connection and
+ * the PVC binds within seconds** — proven manually on staging. This automates
+ * that recovery: poll the PVC, and if it is still unbound after a grace window,
+ * bounce the provisioner (up to `maxBounces` times) so the failback self-heals
+ * instead of hanging. Best-effort — never throws; a real provisioning problem
+ * still surfaces via the scaling-up timeout + captureScaleUpDiagnostics.
+ */
+export async function ensureTargetPvcProvisions(
+  core: CoreV1Api,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+  opts: { graceSeconds?: number; overallSeconds?: number; maxBounces?: number; pollMs?: number } = {},
+): Promise<void> {
+  const graceSeconds = opts.graceSeconds ?? 60;
+  const overallSeconds = opts.overallSeconds ?? 240;
+  const maxBounces = opts.maxBounces ?? 2;
+  const pollMs = opts.pollMs ?? 5_000;
+  const deadline = Date.now() + overallSeconds * 1000;
+  let bounces = 0;
+  let stuckSince: number | null = null;
+  while (Date.now() < deadline) {
+    let phase: string | undefined;
+    try {
+      const pvc = await core.readNamespacedPersistentVolumeClaim({
+        name: MAIL_PVC_NAME,
+        namespace: MAIL_NAMESPACE,
+      }) as { status?: { phase?: string } };
+      phase = pvc.status?.phase;
+    } catch {
+      phase = undefined; // transient read failure — treat as not-yet-bound, keep polling
+    }
+    if (phase === 'Bound') {
+      if (bounces > 0) log.info('[migration] target PVC bound after provisioner bounce — provisioning unstuck');
+      return;
+    }
+    // Unbound. Start the grace clock; once it exceeds graceSeconds, bounce.
+    const now = Date.now();
+    if (stuckSince === null) stuckSince = now;
+    if (bounces < maxBounces && (now - stuckSince) >= graceSeconds * 1000) {
+      log.warn(
+        `[migration] target PVC still ${phase ?? 'unreadable'} after ${Math.round((now - stuckSince) / 1000)}s`
+        + ` — bouncing local-path provisioner (attempt ${bounces + 1}/${maxBounces}; stuck-provisioner-after-node-restart heal)`,
+      );
+      await bounceLocalPathProvisioner(core, log);
+      bounces += 1;
+      stuckSince = now; // reset the grace clock so the recreated provisioner gets time
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  // Fell through unbound — don't fail here; the scaling-up replica wait is the
+  // authority and captureScaleUpDiagnostics will record the PVC/provisioning state.
+  log.warn('[migration] target PVC did not bind within the provisioning window — deferring to the scaling-up wait for the final verdict');
 }
 
 // ── DATA-SAFETY: source-volume retain + rollback (data-loss incident 2026-06-28) ──
