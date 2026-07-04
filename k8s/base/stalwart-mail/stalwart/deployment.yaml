@@ -481,64 +481,95 @@ spec:
                 exit 1
               fi
 
-              # Retry restic restore up to 3 times. Each restic invocation
-              # has its own internal timeouts; a transient blip (rate
-              # limit, brief outage, S3 5xx) often clears within 30s.
-              # Pod-restart retries (via CrashLoopBackOff) cycle at 0/10/
-              # 20/40/80/160/300s — coarse. In-container retry catches
-              # the common transient case in <2 min.
-              RESTORE_ATTEMPT=0
-              RESTORE_OK=false
-              while [ "$$RESTORE_ATTEMPT" -lt 3 ]; do
-                RESTORE_ATTEMPT=$$((RESTORE_ATTEMPT + 1))
-                echo "restore-state: restic restore attempt $${RESTORE_ATTEMPT}/3 (id=$$RESTORE_ID)..."
-                if restic restore "$$RESTORE_ID" --target /restore-tmp 2>&1; then
-                  RESTORE_OK=true
+              # EMPTY-SNAPSHOT WALK-BACK (2026-07-04): resolve the ordered list of
+              # candidate snapshots to try. For `latest` we build a NEWEST→OLDEST
+              # list (capped at 10) so a POISONED empty snapshot — a 0-byte
+              # snapshot captured during a DR PVC-swap window; `latest` points at
+              # it and `restic restore latest` yields a tree with NO stalwart/ or
+              # data/ subdir → the old code FATAL'd "Snapshot is malformed" and
+              # crash-looped forever — can be SKIPPED in favour of the newest
+              # snapshot that actually holds a DataStore. (snapshot-upload.sh now
+              # also refuses to WRITE empty snapshots; this walk-back recovers
+              # repos already polluted by one.) A PINNED per-snapshot id is the
+              # operator's explicit choice, so its candidate list is just itself —
+              # never silently substitute a different snapshot.
+              if [ "$$RESTORE_ID" = "latest" ]; then
+                # Single-line python (YAML `|` block scalars break on a dedented
+                # continuation line — keep it one line with `;`, same as the
+                # freshness guard above). restic returns [] on an empty repo →
+                # empty output → the fallback below pins "latest".
+                CANDIDATES=$$(restic snapshots --json 2>/dev/null | python3 -c 'import sys,json; a=json.load(sys.stdin); a.sort(key=lambda s: s.get("time",""), reverse=True); print("\n".join(s.get("short_id","") for s in a if s.get("short_id")))' 2>/dev/null | head -10)
+                [ -z "$$CANDIDATES" ] && CANDIDATES="latest"
+              else
+                CANDIDATES="$$RESTORE_ID"
+              fi
+
+              # Try each candidate newest→oldest. Per candidate, retry the restic
+              # restore up to 3× for transient blips (rate limit, brief outage, S3
+              # 5xx clears within ~30s); then validate the restored tree holds a
+              # real DataStore. An EMPTY/malformed candidate (restic OK but no
+              # stalwart/ or data/ CURRENT) is skipped to the next-older snapshot.
+              RESTORED_DATA=""
+              CHOSEN_ID=""
+              for CAND in $$CANDIDATES; do
+                RESTORE_ATTEMPT=0
+                RESTORE_OK=false
+                while [ "$$RESTORE_ATTEMPT" -lt 3 ]; do
+                  RESTORE_ATTEMPT=$$((RESTORE_ATTEMPT + 1))
+                  echo "restore-state: restic restore attempt $${RESTORE_ATTEMPT}/3 (id=$$CAND)..."
+                  rm -rf /restore-tmp/* /restore-tmp/.* 2>/dev/null || true
+                  if restic restore "$$CAND" --target /restore-tmp 2>&1; then
+                    RESTORE_OK=true
+                    break
+                  fi
+                  echo "restore-state: attempt $${RESTORE_ATTEMPT} for '$$CAND' failed; cleaned /restore-tmp"
+                  if [ "$$RESTORE_ATTEMPT" -lt 3 ]; then
+                    echo "restore-state: sleeping 30s before retry..."
+                    sleep 30
+                  fi
+                done
+                if [ "$$RESTORE_OK" != "true" ]; then
+                  echo "restore-state: restic restore of '$$CAND' failed after 3 attempts — trying next-older snapshot (if any)"
+                  continue
+                fi
+                # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
+                # A2.5 (2026-05-25): the snapshot CronJob backs up /var/lib/mail-stack/
+                # (consolidated), so files land at /restore-tmp/var/lib/mail-stack/stalwart/.
+                # Legacy snapshots (pre-A2.5) backed up /var/lib/stalwart/data — fall back
+                # to that path for the retention window until all retained snapshots are new.
+                if [ -d /restore-tmp/var/lib/mail-stack/stalwart ]; then
+                  CAND_DATA=/restore-tmp/var/lib/mail-stack/stalwart
+                elif [ -d /restore-tmp/var/lib/stalwart/data ]; then
+                  CAND_DATA=/restore-tmp/var/lib/stalwart/data
+                else
+                  CAND_DATA=""
+                fi
+                # A snapshot is VALID only if it holds the RocksDB CURRENT sentinel —
+                # the exact "DataStore exists" test used everywhere else. An empty
+                # DR-window snapshot has neither the subtree nor CURRENT.
+                if [ -n "$$CAND_DATA" ] && [ -f "$$CAND_DATA/CURRENT" ]; then
+                  RESTORED_DATA="$$CAND_DATA"
+                  CHOSEN_ID="$$CAND"
+                  echo "restore-state: snapshot '$$CAND' holds a valid DataStore ($$CAND_DATA)"
                   break
                 fi
-                echo "restore-state: attempt $${RESTORE_ATTEMPT} failed; cleaning /restore-tmp before retry"
-                rm -rf /restore-tmp/* /restore-tmp/.* 2>/dev/null || true
-                if [ "$$RESTORE_ATTEMPT" -lt 3 ]; then
-                  echo "restore-state: sleeping 30s before retry..."
-                  sleep 30
-                fi
+                echo "restore-state: snapshot '$$CAND' is EMPTY/malformed (no stalwart/ or data/ CURRENT) — skipping to next-older snapshot"
               done
-              if [ "$$RESTORE_OK" != "true" ]; then
-                echo "RESTORE-STATE-FATAL: restic restore failed after 3 attempts — refusing to fresh-start because tenant data would be silently lost. Pod will CrashLoopBackOff until operator fixes the backup target OR explicitly clears the allow-restore annotation to acknowledge data loss." >&2
-                exit 1
-              fi
-              # Raw RocksDB backup: restic restores to /restore-tmp<original-path>.
-              # A2.5 (2026-05-25): the snapshot CronJob now backs up
-              # /var/lib/mail-stack/ (consolidated layout), so files land at
-              # /restore-tmp/var/lib/mail-stack/stalwart/. Legacy snapshots
-              # taken before A2.5 backed up /var/lib/stalwart/data — fall
-              # back to that path for the ~7d retention window before all
-              # retained snapshots are new-layout.
-              RESTORED_NEW=/restore-tmp/var/lib/mail-stack/stalwart
-              RESTORED_LEGACY=/restore-tmp/var/lib/stalwart/data
-              if [ -d "$$RESTORED_NEW" ]; then
-                RESTORED_DATA="$$RESTORED_NEW"
-                echo "restore-state: detected NEW (post-A2.5) snapshot layout"
-              elif [ -d "$$RESTORED_LEGACY" ]; then
-                RESTORED_DATA="$$RESTORED_LEGACY"
-                echo "restore-state: detected LEGACY (pre-A2.5) snapshot layout"
-              else
-                echo "RESTORE-STATE-FATAL: restic reported success but neither $$RESTORED_NEW nor $$RESTORED_LEGACY exists in restored tree — refusing to fresh-start. Snapshot is malformed; investigate the snapshot CronJob output before retrying." >&2
+              if [ -z "$$RESTORED_DATA" ]; then
+                echo "RESTORE-STATE-FATAL: no restorable snapshot found — every candidate was unreachable or EMPTY/malformed (no DataStore tree). Refusing to fresh-start because tenant data would be silently lost. Pod will CrashLoopBackOff until the backup target is fixed OR the allow-restore annotation is cleared to acknowledge data loss. (snapshot-upload.sh's empty-store guard prevents NEW empty snapshots; investigate the snapshot CronJob output.)" >&2
                 exit 1
               fi
               if ! cp -a "$${RESTORED_DATA}/." /var/lib/stalwart/data/ 2>&1; then
                 echo "RESTORE-STATE-FATAL: cp to /var/lib/stalwart/data failed after successful restic restore — refusing to fresh-start. Likely cause: PVC out of inodes or permission mismatch on local-path volume." >&2
                 exit 1
               fi
-              echo "restore-state: restore complete ($$(ls /var/lib/stalwart/data | wc -l) files)"
-              # Idempotency marker: record WHICH snapshot id we just
-              # restored. On the next pod restart (with the same
-              # annotation still in place), this short-circuits the wipe
-              # + restic at the top of the script. Empty when restic
-              # restored 'latest' since 'latest' is not a stable id —
-              # subsequent restarts will hit the SENTINEL skip instead.
-              if [ "$$RESTORE_ID" != "latest" ]; then
-                echo "$$RESTORE_ID" > /var/lib/stalwart/data/.restore-applied-at
+              echo "restore-state: restore complete from snapshot '$$CHOSEN_ID' ($$(ls /var/lib/stalwart/data | wc -l) files)"
+              # Idempotency marker: record WHICH snapshot id we just restored. On
+              # the next pod restart (same annotation in place) this short-circuits
+              # the wipe + restic at the top. Skipped for the floating 'latest'
+              # alias (not a stable id) — subsequent restarts hit the SENTINEL skip.
+              if [ "$$CHOSEN_ID" != "latest" ]; then
+                echo "$$CHOSEN_ID" > /var/lib/stalwart/data/.restore-applied-at
               fi
           envFrom:
             - secretRef:
