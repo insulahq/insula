@@ -355,6 +355,14 @@ has "$M2" && ok "I: inbound SMTP :25 to new active delivered" || no "I: inbound 
 jmap deliver "$ADDR" "$M3" "m3$ST" >/dev/null
 
 hdr "FAILBACK → $ACTIVE (target-Ready gate + retry) and SYNC-BACK"
+# RECOVER THE PRIMARY FIRST: the failover stopped $ACTIVE's k3s and it stays
+# stopped until the teardown trap — so without this a failback ALWAYS targets a
+# down node and the platform's preflight node-readiness gate correctly refuses
+# ("target node … did not become schedulable within 300s"). Restarting k3s here
+# simulates the operator recovering the node, so the failback can actually
+# return mail to it. (2026-07-04: this ordering gap made every failback attempt
+# fail at preflight until the gate landed and surfaced it.)
+ssh $SSH_OPTS "$ACTIVE_ADDR" 'systemctl start k3s' 2>&1 | head -1 || true
 # Gate on the target being genuinely SCHEDULABLE, not just node-Ready: the
 # k3s-stop restarted the target's CNI (calico-node) + the local-path
 # provisioning path, and a failback firing before they're back leaves the swap
