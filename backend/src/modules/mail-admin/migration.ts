@@ -963,6 +963,22 @@ async function runMigrationStateMachine(
   // Step 1: Preflight — validate target node is schedulable + has disk
   //         AND has a viable restore path BEFORE we delete the source PVC.
   await setStep(db, runId, 'preflight', 'running', taskId);
+
+  // Step 1a (2026-07-04): gate on the TARGET node being Ready + its transient
+  // recovery taints cleared BEFORE any destructive action. A FAILBACK commonly
+  // fires while the target is still recovering from its k3s restart during the
+  // preceding failover (NotReady + node.kubernetes.io/{not-ready,unreachable}
+  // taints) — which blocks BOTH local-path provisioning AND pod scheduling and
+  // hangs the migration for the full 600s scaling-up timeout. captureScaleUpDiagnostics
+  // pinned this on the 2026-07-04 runs (pvc=Pending vol=<unbound>, NodeNotReady,
+  // untolerated taint). Data-safe: nothing has been torn down yet, so a target that
+  // never comes Ready fails the migration cleanly. No-op for an already-Ready target.
+  const nodeReady = await waitForTargetNodeReady(core, targetNode, { timeoutSeconds: 300, log });
+  if (!nodeReady.ok) {
+    await failRun(db, runId, nodeReady.reason, taskId);
+    return;
+  }
+
   const usedBytes = await getMailPvcRequestedBytes(core);
   const requiredBytes = Math.ceil(usedBytes * DISK_HEADROOM_RATIO);
   log.info(`[migration ${runId}] preflight: PVC requested=${usedBytes} bytes, target headroom=${requiredBytes}`);
@@ -2305,6 +2321,67 @@ export async function ensureTargetPvcProvisions(
   // Fell through unbound — don't fail here; the scaling-up replica wait is the
   // authority and captureScaleUpDiagnostics will record the PVC/provisioning state.
   log.warn('[migration] target PVC did not bind within the provisioning window — deferring to the scaling-up wait for the final verdict');
+}
+
+/**
+ * Wait for the target node to be Ready and its transient recovery taints cleared
+ * BEFORE the migration's destructive swap/scale-up.
+ *
+ * Why (failback root cause pinned by captureScaleUpDiagnostics on the 2026-07-04
+ * destructive runs): a FAILBACK commonly fires while the target is still recovering
+ * from its k3s restart during the preceding failover — the node reports NotReady and
+ * the node controller applies `node.kubernetes.io/not-ready` / `…/unreachable`
+ * NoSchedule taints. In that window local-path can't provision the fresh PVC AND the
+ * mail pod (which doesn't tolerate those taints) can't schedule, so the whole
+ * migration burns the full 600s scaling-up timeout on `pvc=Pending vol=<unbound>`
+ * (exactly what the failback error rows recorded). Gating here — in preflight, BEFORE
+ * any source teardown — is data-safe: a target that never becomes Ready fails the
+ * migration cleanly with the source intact.
+ *
+ * "Schedulable" = Ready condition True AND no not-ready/unreachable taint. A normal
+ * migration to an already-Ready node returns on the first poll (no-op). Complements
+ * `ensureTargetPvcProvisions` (which bounces a provisioner still stuck AFTER the node
+ * is Ready) — this gate guarantees the node is Ready first.
+ */
+export async function waitForTargetNodeReady(
+  core: CoreV1Api,
+  targetNode: string,
+  opts: { timeoutSeconds?: number; pollMs?: number; log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void } },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const timeoutSeconds = opts.timeoutSeconds ?? 300;
+  const pollMs = opts.pollMs ?? 5_000;
+  const RECOVERY_TAINTS = new Set(['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable']);
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let last = 'not yet polled';
+  let warnedWaiting = false;
+  while (Date.now() < deadline) {
+    try {
+      const node = await core.readNode({ name: targetNode } as unknown as Parameters<typeof core.readNode>[0]) as {
+        status?: { conditions?: Array<{ type?: string; status?: string }> };
+        spec?: { taints?: Array<{ key?: string; effect?: string }> };
+      };
+      const ready = (node.status?.conditions ?? []).some((c) => c.type === 'Ready' && c.status === 'True');
+      const blocking = (node.spec?.taints ?? []).filter((t) => t.key && RECOVERY_TAINTS.has(t.key));
+      if (ready && blocking.length === 0) {
+        if (warnedWaiting) {
+          opts.log.info(`[migration] target node ${targetNode} is Ready + recovery taints cleared — proceeding`);
+        }
+        return { ok: true };
+      }
+      last = `Ready=${ready} recoveryTaints=[${blocking.map((t) => t.key).join(',') || 'none'}]`;
+      if (!warnedWaiting) {
+        opts.log.warn(
+          `[migration] target node ${targetNode} not schedulable yet (${last}) — waiting up to ${timeoutSeconds}s`
+          + ' (post-restart recovery gate; a failback fires while the target is still coming back)',
+        );
+        warnedWaiting = true;
+      }
+    } catch (err) {
+      last = `readNode failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return { ok: false, reason: `target node ${targetNode} did not become schedulable within ${timeoutSeconds}s (last: ${last})` };
 }
 
 // ── DATA-SAFETY: source-volume retain + rollback (data-loss incident 2026-06-28) ──
