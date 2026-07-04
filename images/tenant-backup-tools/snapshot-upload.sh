@@ -55,6 +55,28 @@ if [ ! -d "$DATA_DIR" ]; then
   exit 1
 fi
 
+# ── EMPTY-STORE GUARD (2026-07-04) ───────────────────────────────────────────
+# NEVER write a snapshot of an empty / half-swapped DataStore. During a DR
+# PVC-swap the mail-stack PVC is briefly recreated EMPTY (Stalwart scaled to 0,
+# restore-state not yet run). A snapshot fired in that window — an in-flight
+# CronJob Job that started just before the migration suspended the CronJob, or a
+# snapshot after a failed failback left mail down — captures 0 bytes and poisons
+# `latest`, which the restore-state initContainer then restores and FATALs on
+# ("Snapshot is malformed"). The RocksDB CURRENT MANIFEST is the canonical
+# "DataStore exists" sentinel (same file the restore-state + protect-init check);
+# refuse to back up unless it is present in one of the known layouts:
+#   • consolidated (post-A2.5): $DATA_DIR/stalwart/CURRENT
+#   • legacy fallback:          $DATA_DIR/CURRENT  (DATA_DIR already == data dir)
+#   • defensive:                $DATA_DIR/data/CURRENT
+if [ ! -f "$DATA_DIR/stalwart/CURRENT" ] \
+   && [ ! -f "$DATA_DIR/CURRENT" ] \
+   && [ ! -f "$DATA_DIR/data/CURRENT" ]; then
+  echo "=== snapshot-upload: SKIP — no RocksDB CURRENT sentinel under $DATA_DIR" \
+    "(store empty or mid-DR-swap); refusing to write an EMPTY snapshot that would" \
+    "poison 'latest' and break restore ==="
+  exit 0
+fi
+
 # ── Initialize repo if it doesn't exist yet ──────────────────────────────────
 
 echo "=== snapshot-upload: initialising or checking restic repo ==="
