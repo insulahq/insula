@@ -1213,6 +1213,13 @@ async function runMigrationStateMachine(
     return;
   }
 
+  // Clear any stale mail-stack-data PV left pinned to the TARGET node by a
+  // prior failover whose local-path cleanup never ran (node was down). Without
+  // this, its mismatched-uid claimRef races the fresh PVC → pod stuck Pending →
+  // scaling-up 600s timeout (the failback hang root-caused 2026-07-04).
+  // Data-safe: target-scoped + skips the retained source PV.
+  await cleanupStaleTargetMailPv(core, targetNode, retainedSourcePv, log);
+
   try {
     await createMailPvc(core, targetNode, pvcSizeGiB);
   } catch (err) {
@@ -1291,6 +1298,12 @@ async function runMigrationStateMachine(
   try {
     await waitForReplicaCount(apps, 1, 600, () => isCancelRequested(db, runId));
   } catch (err) {
+    // Capture WHY the pod never became Ready BEFORE rollback mutates the state
+    // (pod Pending reason, init/container waiting reason, PVC bind state, recent
+    // Warning events). Without this the operator/harness only sees the opaque
+    // "did not reach 1 ready replica within 600s" — the exact gap that made the
+    // failback hang undiagnosable across two destructive runs (2026-07-04).
+    const diag = err instanceof MigrationCancelledError ? '' : await captureScaleUpDiagnostics(core, log);
     // Source PVC is already gone — the new pod failing to come Ready (or
     // a cancel mid-swap) means the destination is unusable. Roll mail back
     // onto the source's RETAINED data so a failed/cancelled migration never
@@ -1298,7 +1311,12 @@ async function runMigrationStateMachine(
     await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     if (err instanceof MigrationCancelledError) throw err; // outer handler records 'cancelled'
-    await failRun(db, runId, `target pod did not become Ready: ${(err as Error).message}`, taskId);
+    await failRun(
+      db,
+      runId,
+      `target pod did not become Ready: ${(err as Error).message}${diag ? ` [${diag}]` : ''}`,
+      taskId,
+    );
     return;
   }
 
@@ -2076,6 +2094,112 @@ async function createMailPvc(core: CoreV1Api, targetNode: string, sizeGiB: numbe
   });
 }
 
+/**
+ * Read the hostname a local-path PV is pinned to from its nodeAffinity.
+ * Returns null if no `kubernetes.io/hostname` term is present. Scans ALL
+ * terms × ALL matchExpressions (a Longhorn-style PV interleaves a zone key  // ci-no-longhorn: ignore
+ * before the hostname key — taking [0][0] blindly would misread a zone as
+ * a node; same defensiveness as readActualPvcBoundNode).
+ */
+function pvPinnedNode(pv: {
+  spec?: {
+    nodeAffinity?: {
+      required?: {
+        nodeSelectorTerms?: ReadonlyArray<{
+          matchExpressions?: ReadonlyArray<{ key?: string; values?: string[] }>;
+        }>;
+      };
+    };
+  };
+}): string | null {
+  const terms = pv.spec?.nodeAffinity?.required?.nodeSelectorTerms ?? [];
+  for (const term of terms) {
+    for (const expr of term.matchExpressions ?? []) {
+      if (expr.key === 'kubernetes.io/hostname' && expr.values && expr.values.length > 0) {
+        return expr.values[0];
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Before creating the fresh target PVC in a swap, delete any STALE local-path
+ * PV that still claims mail/mail-stack-data and is pinned to the TARGET node.
+ *
+ * Why (failback scaling-up hang, root-caused 2026-07-04): on a FAILBACK the
+ * target node (the original primary) usually carries a leftover mail-stack-data
+ * PV from BEFORE the failover — `releaseRetainedSourcePv` flipped its reclaim to
+ * Delete, but the local-path cleanup Job never ran because the node was DOWN
+ * during the failover. That orphan sits Released/Available with a stale claimRef
+ * (name=mail-stack-data, MISMATCHED uid). When `createMailPvc` recreates the PVC,
+ * the PV controller sees a same-named-but-uid-mismatched PV it can neither bind
+ * nor cleanly ignore, and local-path's fresh dynamic provisioning races it → the
+ * new PVC never binds → the pod stays Pending → scaling-up times out at 600s →
+ * rollback. Removing the orphan first lets local-path provision cleanly.
+ *
+ * DATA-SAFE by construction:
+ *   - Only touches PVs pinned to the **target** node (never the source).
+ *   - ALWAYS skips `retainedSourcePv` (the just-retained live copy — belt-and-
+ *     braces; it lives on the source node so the node filter already excludes it).
+ *   - Only removes Released/Available PVs (never a Bound one).
+ * On a failback the target's old data is stale-by-definition: `restore-state`
+ * re-imports the fresh snapshot into the new PVC, so dropping a target orphan
+ * loses nothing. On a first-time migration the target has no prior mail PV and
+ * this is a no-op. Best-effort end-to-end — a failure here never blocks the swap
+ * (the create below surfaces any real provisioning problem).
+ */
+export async function cleanupStaleTargetMailPv(
+  core: CoreV1Api,
+  targetNode: string,
+  retainedSourcePv: string | null,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+): Promise<void> {
+  let pvs: {
+    items?: Array<{
+      metadata?: { name?: string };
+      status?: { phase?: string };
+      spec?: {
+        storageClassName?: string;
+        claimRef?: { namespace?: string; name?: string };
+        nodeAffinity?: {
+          required?: {
+            nodeSelectorTerms?: ReadonlyArray<{
+              matchExpressions?: ReadonlyArray<{ key?: string; values?: string[] }>;
+            }>;
+          };
+        };
+      };
+    }>;
+  };
+  try {
+    pvs = await core.listPersistentVolume() as typeof pvs;
+  } catch (err) {
+    log.warn('[migration] stale-target-PV sweep: listPersistentVolume failed (non-fatal — proceeding to create):', err);
+    return;
+  }
+  for (const pv of pvs.items ?? []) {
+    const name = pv.metadata?.name;
+    if (!name || name === retainedSourcePv) continue;
+    if (pv.spec?.storageClassName !== 'local-path') continue;
+    const cr = pv.spec?.claimRef;
+    if (cr?.namespace !== MAIL_NAMESPACE || cr?.name !== MAIL_PVC_NAME) continue;
+    // Never touch a Bound PV — only orphaned Released/Available ones.
+    const phase = pv.status?.phase;
+    if (phase !== 'Released' && phase !== 'Available') continue;
+    // Target-scoped only: the retained SOURCE copy lives on the source node.
+    if (pvPinnedNode(pv) !== targetNode) continue;
+    try {
+      await core.deletePersistentVolume({ name });
+      log.info(
+        `[migration] removed stale target-node orphan PV ${name} (${phase} mail-stack-data pinned to ${targetNode}) to unblock fresh local-path provisioning`,
+      );
+    } catch (err) {
+      log.warn(`[migration] stale-target-PV sweep: delete of ${name} failed (non-fatal):`, err);
+    }
+  }
+}
+
 // ── DATA-SAFETY: source-volume retain + rollback (data-loss incident 2026-06-28) ──
 
 /**
@@ -2589,6 +2713,104 @@ async function waitForReplicaCount(
 // because no other caller existed.)
 
 // ── Pod inspection ────────────────────────────────────────────────────────────
+
+/** Collapse a multi-line message to a single truncated line for error strings. */
+function trunc(s: string, max: number): string {
+  const oneLine = s.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+}
+
+/**
+ * Best-effort scheduling diagnostics for a scale-up that never reached Ready.
+ * Captures WHY the pod is stuck — the Pending/Unschedulable reason, any init/
+ * container waiting reasons, the mail PVC bind state, and recent Warning events —
+ * so the failRun error is self-diagnosing instead of the opaque "did not reach 1
+ * ready replica within 600s". This is the missing evidence the failback
+ * investigation needed (2026-07-04). NEVER throws — returns '' when everything is
+ * unreadable.
+ */
+async function captureScaleUpDiagnostics(
+  core: CoreV1Api,
+  log: { warn: (...a: unknown[]) => void },
+): Promise<string> {
+  const parts: string[] = [];
+  try {
+    const pods = await core.listNamespacedPod({
+      namespace: MAIL_NAMESPACE,
+      labelSelector: 'app=stalwart-mail',
+    }) as {
+      items?: Array<{
+        metadata?: { name?: string };
+        status?: {
+          phase?: string;
+          conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+          initContainerStatuses?: Array<{ name?: string; state?: Record<string, { reason?: string; message?: string }> }>;
+          containerStatuses?: Array<{ name?: string; state?: Record<string, { reason?: string; message?: string }> }>;
+        };
+      }>;
+    };
+    const pod = (pods.items ?? [])[0];
+    if (pod) {
+      parts.push(`pod=${pod.metadata?.name ?? '?'} phase=${pod.status?.phase ?? '?'}`);
+      const sched = (pod.status?.conditions ?? []).find(
+        (c) => c.type === 'PodScheduled' && c.status !== 'True',
+      );
+      if (sched?.message) parts.push(`unschedulable=${sched.reason ?? ''}:${trunc(sched.message, 200)}`);
+      const ctrStatuses = [
+        ...(pod.status?.initContainerStatuses ?? []),
+        ...(pod.status?.containerStatuses ?? []),
+      ];
+      for (const cs of ctrStatuses) {
+        const waiting = cs.state?.waiting;
+        if (waiting?.reason) {
+          parts.push(`ctr:${cs.name}=${waiting.reason}${waiting.message ? `:${trunc(waiting.message, 120)}` : ''}`);
+        }
+      }
+    } else {
+      parts.push('pod=<none>');
+    }
+  } catch (err) {
+    log.warn('[migration] scale-up diag: pod read failed:', err);
+  }
+  try {
+    const pvc = await core.readNamespacedPersistentVolumeClaim({
+      name: MAIL_PVC_NAME,
+      namespace: MAIL_NAMESPACE,
+    }) as {
+      status?: { phase?: string };
+      spec?: { volumeName?: string };
+      metadata?: { annotations?: Record<string, string> };
+    };
+    parts.push(
+      `pvc=${pvc.status?.phase ?? '?'} vol=${pvc.spec?.volumeName ?? '<unbound>'}`
+      + ` selNode=${pvc.metadata?.annotations?.['volume.kubernetes.io/selected-node'] ?? '?'}`,
+    );
+  } catch {
+    parts.push('pvc=<unreadable>');
+  }
+  try {
+    const events = await core.listNamespacedEvent({ namespace: MAIL_NAMESPACE }) as {
+      items?: Array<{
+        type?: string;
+        reason?: string;
+        message?: string;
+        involvedObject?: { name?: string };
+      }>;
+    };
+    const warnings = (events.items ?? [])
+      .filter(
+        (e) => e.type === 'Warning'
+          && (e.involvedObject?.name === MAIL_PVC_NAME
+            || (e.involvedObject?.name ?? '').startsWith('stalwart-mail')),
+      )
+      .slice(-4)
+      .map((e) => `${e.reason ?? ''}:${trunc(e.message ?? '', 120)}`);
+    if (warnings.length) parts.push(`events=[${warnings.join(' | ')}]`);
+  } catch {
+    /* best-effort — events are optional context */
+  }
+  return parts.join(' ');
+}
 
 async function findStalwartPod(core: CoreV1Api): Promise<string | null> {
   try {

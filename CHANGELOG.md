@@ -38,6 +38,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
+- **Mail failback no longer hangs at scaling-up on a stale target-node PV**
+  (`mail-dr`, failback reliability) — a failback (staging3→staging1) consistently
+  timed out at `scaling-up` ("pod did not become Ready within 600s") because the
+  failback target (the original primary) still carried a leftover `mail-stack-data`
+  local-path PV from before the failover — `releaseRetainedSourcePv` flipped its
+  reclaim to Delete, but the cleanup Job never ran because the node was down during
+  the failover. Its mismatched-uid claimRef then raced the fresh PVC, which never
+  bound, so the pod stayed Pending until the 600s timeout → rollback. The swap now
+  sweeps any Released/Available `mail-stack-data` orphan pinned to the **target**
+  node before recreating the PVC (data-safe: target-scoped, never touches the
+  retained source PV or a Bound PV), so local-path provisions cleanly. Additionally,
+  a scaling-up timeout now captures the pod's Pending/Unschedulable reason, init/
+  container waiting reasons, the PVC bind state, and recent Warning events into the
+  run error — previously the only signal was the opaque "did not reach 1 ready
+  replica" with no cause.
+- **Mail snapshots can no longer poison `latest` with an empty (0-byte) capture**
+  (`mail-dr`, snapshot integrity) — a restic snapshot fired during a DR PVC-swap
+  window (or after a failed failback left mail down) captured an empty DataStore;
+  `latest` then pointed at it and the `restore-state` init FATAL'd "Snapshot is
+  malformed" and crash-looped. Two-sided fix: (1) `snapshot-upload.sh` refuses to
+  back up unless the RocksDB `CURRENT` sentinel is present, so an empty/mid-swap
+  store is never snapshotted; (2) the `restore-state` init walks candidate
+  snapshots newest→oldest and skips any empty/malformed one, falling back to the
+  newest snapshot that actually holds a DataStore (a pinned per-snapshot restore is
+  still honored exactly, never silently substituted).
 - **Webmail impersonation heals AT cutover after a failover** (`mail-dr`) — a
   restore brings Stalwart up with the SNAPSHOT's master-account password,
   drifted from `mail-secrets`, so Bulwark/Roundcube impersonation was broken for
