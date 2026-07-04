@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.7] - 2026-07-04
-
 ### Added
 - **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
   `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
@@ -40,21 +38,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
-- **Mail failback no longer hangs at scaling-up on a stale target-node PV**
-  (`mail-dr`, failback reliability) — a failback (staging3→staging1) consistently
-  timed out at `scaling-up` ("pod did not become Ready within 600s") because the
-  failback target (the original primary) still carried a leftover `mail-stack-data`
-  local-path PV from before the failover — `releaseRetainedSourcePv` flipped its
-  reclaim to Delete, but the cleanup Job never ran because the node was down during
-  the failover. Its mismatched-uid claimRef then raced the fresh PVC, which never
-  bound, so the pod stayed Pending until the 600s timeout → rollback. The swap now
-  sweeps any Released/Available `mail-stack-data` orphan pinned to the **target**
-  node before recreating the PVC (data-safe: target-scoped, never touches the
-  retained source PV or a Bound PV), so local-path provisions cleanly. Additionally,
-  a scaling-up timeout now captures the pod's Pending/Unschedulable reason, init/
-  container waiting reasons, the PVC bind state, and recent Warning events into the
-  run error — previously the only signal was the opaque "did not reach 1 ready
-  replica" with no cause.
+- **Mail failback no longer hangs at scaling-up on a stale local-path provisioner**
+  (`mail-dr`, failback reliability) — a failback consistently timed out at
+  `scaling-up` ("pod did not become Ready within 600s"). Root cause (pinned on a
+  live destructive run 2026-07-04): when the failover target's k3s is stopped and
+  restarted, the single-replica **local-path provisioner goes stale toward that
+  node** — its helper-pod-create times out (`create process timeout after 120s` +
+  `failed to save logs: error in opening stream: resource name may not be empty`)
+  repeatedly, so the fresh target PVC never binds → pod stays Pending → 600s timeout
+  → rollback. The node itself is healthy (runs pods + the helper image fine); only
+  the provisioner is stuck, and **deleting the provisioner pod (its ReplicaSet
+  recreates it — the Flux-safe restart pattern) re-establishes the connection and
+  the PVC binds within seconds**. The migration now automates that: after scale-up
+  it polls the target PVC and, if it stays unbound past a grace window, bounces the
+  local-path provisioner (bounded retries) so the failback self-heals instead of
+  hanging. A scaling-up timeout also now captures the pod's Pending/Unschedulable
+  reason, init/container waiting reasons, the PVC bind state, and recent Warning
+  events into the run error — previously the only signal was the opaque "did not
+  reach 1 ready replica". (A defensive sweep of any Released/Available
+  `mail-stack-data` orphan pinned to the target node — data-safe, target-scoped,
+  never the retained source or a Bound PV — is also run before recreating the PVC.)
 - **Mail snapshots can no longer poison `latest` with an empty (0-byte) capture**
   (`mail-dr`, snapshot integrity) — a restic snapshot fired during a DR PVC-swap
   window (or after a failed failback left mail down) captured an empty DataStore;
