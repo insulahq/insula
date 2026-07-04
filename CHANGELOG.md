@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.8] - 2026-07-04
-
 ### Added
 - **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
   `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
@@ -40,26 +38,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `reconcileStalwartMasterCredential`; `rotate-jmap` gains `explicitPassword`.
 
 ### Fixed
-- **Mail failback no longer hangs at scaling-up on a stale local-path provisioner**
+- **Mail failback no longer hangs when the target node is still recovering**
   (`mail-dr`, failback reliability) — a failback consistently timed out at
-  `scaling-up` ("pod did not become Ready within 600s"). Root cause (pinned on a
-  live destructive run 2026-07-04): when the failover target's k3s is stopped and
-  restarted, the single-replica **local-path provisioner goes stale toward that
-  node** — its helper-pod-create times out (`create process timeout after 120s` +
-  `failed to save logs: error in opening stream: resource name may not be empty`)
-  repeatedly, so the fresh target PVC never binds → pod stays Pending → 600s timeout
-  → rollback. The node itself is healthy (runs pods + the helper image fine); only
-  the provisioner is stuck, and **deleting the provisioner pod (its ReplicaSet
-  recreates it — the Flux-safe restart pattern) re-establishes the connection and
-  the PVC binds within seconds**. The migration now automates that: after scale-up
-  it polls the target PVC and, if it stays unbound past a grace window, bounces the
-  local-path provisioner (bounded retries) so the failback self-heals instead of
-  hanging. A scaling-up timeout also now captures the pod's Pending/Unschedulable
-  reason, init/container waiting reasons, the PVC bind state, and recent Warning
-  events into the run error — previously the only signal was the opaque "did not
-  reach 1 ready replica". (A defensive sweep of any Released/Available
-  `mail-stack-data` orphan pinned to the target node — data-safe, target-scoped,
-  never the retained source or a Bound PV — is also run before recreating the PVC.)
+  `scaling-up` ("pod did not become Ready within 600s"). Root cause (pinned on live
+  destructive runs 2026-07-04, via the new diagnostics below): a failback fires
+  while the target node is still coming back from the k3s restart it took during the
+  preceding failover — it reports **NotReady with `node.kubernetes.io/{not-ready,
+  unreachable}` taints**, which blocks BOTH local-path provisioning (`pvc=Pending
+  vol=<unbound>`) AND pod scheduling (untolerated taint), so the whole migration
+  burns the full 600s timeout. Two composed fixes:
+  1. **Target-node-readiness gate** — preflight now waits (before any destructive
+     swap) for the target node to be `Ready` with its recovery taints cleared, so a
+     migration never tears down the source for a node that isn't schedulable yet;
+     a target that never recovers fails the migration cleanly. No-op for an
+     already-Ready target.
+  2. **Stale-provisioner bounce** — once the node is Ready, the single-replica
+     local-path provisioner can still be stale toward it (`create process timeout
+     after 120s` / `failed to save logs: … resource name may not be empty`), so the
+     fresh PVC never binds. After scale-up the migration polls the target PVC and,
+     if it stays unbound past a grace window, bounces the provisioner pod (its
+     ReplicaSet recreates it — the Flux-safe restart pattern; proven to bind the PVC
+     within seconds) up to a bounded number of times.
+
+  A scaling-up timeout also now captures the pod's Pending/Unschedulable reason,
+  init/container waiting reasons, the PVC bind state, and recent Warning events into
+  the run error — previously the only signal was the opaque "did not reach 1 ready
+  replica" (this diagnostic is what pinned the root cause). A defensive sweep of any
+  Released/Available `mail-stack-data` orphan pinned to the target node (data-safe,
+  target-scoped, never the retained source or a Bound PV) also runs before recreating
+  the PVC.
 - **Mail snapshots can no longer poison `latest` with an empty (0-byte) capture**
   (`mail-dr`, snapshot integrity) — a restic snapshot fired during a DR PVC-swap
   window (or after a failed failback left mail down) captured an empty DataStore;
