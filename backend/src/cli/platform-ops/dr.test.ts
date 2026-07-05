@@ -1,5 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { Deps, DrBundleManifest, DrRescueOutcome, DrRestoreOutcome, DrRestoreRequest } from './deps.js';
+import type {
+  Deps,
+  DrBundleManifest,
+  DrRescueOutcome,
+  DrRestoreOutcome,
+  DrRestoreRequest,
+  TenantRecoverOutcome,
+  TenantRecoverRequest,
+} from './deps.js';
 import { parseDrArgs, drCommand } from './dr.js';
 
 // ── Fixtures ────────────────────────────────────────────────────────────────
@@ -40,6 +48,10 @@ function fakeDeps(over: Partial<Deps> = {}, drOver: Partial<Deps['dr']> = {}): {
       capture: vi.fn(async () => ({ ok: true })),
       list: vi.fn(async () => ({ ok: true, backups: [] })),
     },
+    tenantRecover: vi.fn(async (): Promise<TenantRecoverOutcome> => ({
+      ok: true,
+      json: { cartId: 'cart-1', bundleId: 'bundle-1', components: ['config'], provisioned: true, status: 'done' },
+    })),
     ...over,
   };
   return { deps, out, err };
@@ -418,5 +430,165 @@ describe('drCommand rescue', () => {
     const code = await drCommand(['rescue'], deps);
     expect(code).toBe(0);
     expect(out.join('\n')).toMatch(/no system volumes|0 /i);
+  });
+});
+
+// ── parseDrArgs: tenant-restore ──────────────────────────────────────────────
+describe('parseDrArgs tenant-restore', () => {
+  it('requires --tenant', () => {
+    const r = parseDrArgs(['tenant-restore', '--bundle', 'b1']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.code).toBe(2); expect(r.message).toMatch(/--tenant/); }
+  });
+
+  it('parses a minimal tenant-restore (--tenant only)', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't-123']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'tenant-restore') {
+      expect(r.req.tenantId).toBe('t-123');
+      expect(r.req.bundleId).toBeUndefined();
+      expect(r.req.components).toBeUndefined();
+      expect(r.req.mailboxMode).toBeUndefined();
+      expect(r.req.provision).toBeUndefined();
+    }
+  });
+
+  it('parses --bundle + --components csv (each validated)', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--bundle', 'b1', '--components', 'config,files,mailboxes']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'tenant-restore') {
+      expect(r.req.bundleId).toBe('b1');
+      expect(r.req.components).toEqual(['config', 'files', 'mailboxes']);
+    }
+  });
+
+  it('trims whitespace in the --components csv', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--components', ' files , config ']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'tenant-restore') expect(r.req.components).toEqual(['files', 'config']);
+  });
+
+  it('rejects an unknown component', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--components', 'files,bogus']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.code).toBe(2); expect(r.message).toMatch(/bogus/); }
+  });
+
+  it('rejects an empty --components list', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--components', ',']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe(2);
+  });
+
+  it('--no-provision sets provision:false', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--no-provision']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'tenant-restore') expect(r.req.provision).toBe(false);
+  });
+
+  it('accepts a valid --mailbox-mode', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--mailbox-mode', 'merge-overwrite']);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.sub === 'tenant-restore') expect(r.req.mailboxMode).toBe('merge-overwrite');
+  });
+
+  it('rejects an invalid --mailbox-mode', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--mailbox-mode', 'clobber']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) { expect(r.code).toBe(2); expect(r.message).toMatch(/--mailbox-mode/); }
+  });
+
+  it('rejects an unknown flag', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--frob']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe(2);
+  });
+
+  it('rejects a value-flag with no value', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant']);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toMatch(/requires a value/);
+  });
+
+  it('ignores --json (consumed by the command layer)', () => {
+    const r = parseDrArgs(['tenant-restore', '--tenant', 't1', '--json']);
+    expect(r.ok).toBe(true);
+  });
+});
+
+// ── drCommand: tenant-restore ────────────────────────────────────────────────
+describe('drCommand tenant-restore', () => {
+  it('drives the recover seam and prints a summary (exit 0)', async () => {
+    const tenantRecover = vi.fn(async (): Promise<TenantRecoverOutcome> => ({
+      ok: true,
+      json: { cartId: 'cart-9', bundleId: 'bundle-9', components: ['config', 'files'], provisioned: true, status: 'done' },
+    }));
+    const { deps, out } = fakeDeps({ tenantRecover });
+    const code = await drCommand(['tenant-restore', '--tenant', 't-77'], deps);
+    expect(code).toBe(0);
+    const req = tenantRecover.mock.calls[0][0] as TenantRecoverRequest;
+    expect(req.tenantId).toBe('t-77');
+    const text = out.join('\n');
+    expect(text).toContain('cart-9');
+    expect(text).toContain('bundle-9');
+    expect(text).toContain('done');
+  });
+
+  it('passes parsed components + --no-provision through to the seam', async () => {
+    const tenantRecover = vi.fn(async (): Promise<TenantRecoverOutcome> => ({ ok: true, json: { cartId: 'c', status: 'done' } }));
+    const { deps } = fakeDeps({ tenantRecover });
+    const code = await drCommand([
+      'tenant-restore', '--tenant', 't1', '--components', 'files,mailboxes', '--no-provision', '--mailbox-mode', 'replace',
+    ], deps);
+    expect(code).toBe(0);
+    const req = tenantRecover.mock.calls[0][0] as TenantRecoverRequest;
+    expect(req.components).toEqual(['files', 'mailboxes']);
+    expect(req.provision).toBe(false);
+    expect(req.mailboxMode).toBe('replace');
+  });
+
+  it('emits the raw result with --json', async () => {
+    const tenantRecover = vi.fn(async (): Promise<TenantRecoverOutcome> => ({
+      ok: true, json: { cartId: 'cart-1', status: 'done' },
+    }));
+    const { deps, out } = fakeDeps({ tenantRecover });
+    const code = await drCommand(['tenant-restore', '--tenant', 't1', '--json'], deps);
+    expect(code).toBe(0);
+    const parsed = JSON.parse(out.join('\n'));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.result.cartId).toBe('cart-1');
+  });
+
+  it('reports a recover failure (errorCode + exit 1)', async () => {
+    const tenantRecover = vi.fn(async (): Promise<TenantRecoverOutcome> => ({
+      ok: false, errorCode: 'DR_NO_BUNDLE', detail: 'No completed backup bundle found',
+    }));
+    const { deps, err } = fakeDeps({ tenantRecover });
+    const code = await drCommand(['tenant-restore', '--tenant', 't1'], deps);
+    expect(code).toBe(1);
+    const text = err.join('\n');
+    expect(text).toMatch(/DR_NO_BUNDLE/);
+    expect(text).toContain('No completed backup bundle');
+  });
+
+  it('emits label-only failure JSON (no detail leak)', async () => {
+    const tenantRecover = vi.fn(async (): Promise<TenantRecoverOutcome> => ({
+      ok: false, errorCode: 'DR_PROVISION_FAILED', detail: 'postgres://u:p@h/db unreachable',
+    }));
+    const { deps, out } = fakeDeps({ tenantRecover });
+    const code = await drCommand(['tenant-restore', '--tenant', 't1', '--json'], deps);
+    expect(code).toBe(1);
+    const joined = out.join('\n');
+    expect(joined).not.toContain('u:p@h');
+    expect(JSON.parse(joined)).toEqual({ ok: false, errorCode: 'DR_PROVISION_FAILED' });
+  });
+
+  it('returns a usage error (exit 2) without calling the seam', async () => {
+    const tenantRecover = vi.fn(async (): Promise<TenantRecoverOutcome> => ({ ok: true, json: {} }));
+    const { deps, err } = fakeDeps({ tenantRecover });
+    const code = await drCommand(['tenant-restore', '--bundle', 'b1'], deps); // no --tenant
+    expect(code).toBe(2);
+    expect(tenantRecover).not.toHaveBeenCalled();
+    expect(err.join('\n')).toMatch(/--tenant/);
   });
 });

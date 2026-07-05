@@ -87,6 +87,11 @@ Commands:
   dr verify              Inspect a DR bundle (decrypt + manifest; read-only)
   dr restore             Restore from a DR bundle (partial rows | full recovery)
   dr rescue              Take Longhorn safety snapshots of the system volumes
+  dr tenant-restore --tenant <id> [--bundle <id>] [--components <csv>]
+                       [--mailbox-mode <m>] [--no-provision] [--json]
+                         One-button tenant DR recover from an off-site bundle
+                         (provision → cart → execute); runs in a RUNNING
+                         platform-api pod (needs the API up, unlike dr restore)
   dr restore-component etcd|mail|postgres [args]
                          Restore one component from the backup-rclone-shim
                          (postgres --latest|--pitr <T>; runs the embedded,
