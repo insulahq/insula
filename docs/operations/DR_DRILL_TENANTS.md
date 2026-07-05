@@ -233,6 +233,16 @@ RTO, notes. Redact identifiers._
   seed→capture→loss→restore harness path itself works; the executor is the defect.
 - **Add-on DB — GAP G4 confirmed** (no `databases-by-id` restore executor; `.sql` recoverable via
   `files-paths` + manual import). Cheap validation of the DB path deferred behind the mail fix.
+- **DR tenant-restore E2E — GREEN 13/0 (DEV, 2026-07-05).** `integration-dr-tenant-restore-e2e.sh`
+  against the DEV cluster (image `backend:…-da1204f`): probe tenant → seed known site file + a
+  12-message mailbox → capture whole-client bundle **completed** → delete namespace + destroy mail
+  → **recover via `POST /admin/dr/tenants/:id/recover`** (provisioned=true, cart done) → **FILES
+  SHA matches + all 12 mail messages restored**. Proves the mail-restore fix (G0), the recover
+  route (G1), and the harness — end to end, user-visible. DEV had to be prepared: minted an admin
+  JWT in-pod (DEV login is broken — see §12 note), added + activated an S3 backup config, and
+  **assigned it to the `tenant` shim class** (the shim was `assignedClasses:[]` → capture got
+  connection-refused until assigned). The first run's "imap-sync SSL EOF" was a cascade of the
+  down shim, not a mail defect — it cleared once the shim served the class.
 
 ---
 

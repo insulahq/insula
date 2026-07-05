@@ -28,7 +28,10 @@
 set -uo pipefail
 : "${ADMIN_HOST:?set ADMIN_HOST or source scripts/integration.env}"
 : "${ADMIN_EMAIL:=admin@${PLATFORM_DOMAIN:?}}"
-: "${ADMIN_PASSWORD:?}" "${SSH_HOST:?}" "${PLATFORM_DOMAIN:?}"
+: "${SSH_HOST:?}" "${PLATFORM_DOMAIN:?}"
+# TOKEN may be preset (e.g. an out-of-band minted admin JWT when /auth/login is
+# unavailable); otherwise ADMIN_PASSWORD is required for the login below.
+[[ -n "${TOKEN:-}" ]] || : "${ADMIN_PASSWORD:?set ADMIN_PASSWORD, or export a preset TOKEN}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 NODE="$SSH_HOST"
 COUNT="${MAIL_COUNT:-15}"
@@ -96,9 +99,13 @@ cleanup(){ [[ -n "$TENANT_ID" ]] && { cyn "TEARDOWN: delete probe tenant $TENANT
 trap cleanup EXIT
 
 cyn "0. login + resolve plan/region/backup-cfg + probe pod"
-parse "$(api POST /auth/login "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")"
-[[ "$STATUS" == 200 ]] || { no "login $STATUS"; echo "$BODY"|rd; exit 1; }
-TOKEN=$(printf '%s' "$BODY"|jq -r '.data.token'); ok "admin login"
+if [[ -n "${TOKEN:-}" ]]; then
+  ok "using preset TOKEN (login skipped)"
+else
+  parse "$(api POST /auth/login "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}")"
+  [[ "$STATUS" == 200 ]] || { no "login $STATUS"; echo "$BODY"|rd; exit 1; }
+  TOKEN=$(printf '%s' "$BODY"|jq -r '.data.token'); ok "admin login"
+fi
 parse "$(api GET /admin/backup-configs '' "$TOKEN")"
 CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.active==true or .isActive==true)|.id'|head -1)
 [[ -n "$CFG" ]] || CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.name|test("s3";"i"))|.id'|head -1)
