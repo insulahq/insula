@@ -151,6 +151,9 @@ describe('parseMailboxesDone', () => {
 
     const r = parseMailboxesDone(log, 'bkp-test');
     expect(r.sizeBytes).toBe(4096);
+    // Snapshot id is persisted to backup_components.sha256 (mailboxes) so
+    // the mailboxes-by-address restore executor can `restic restore` it.
+    expect(r.snapshotId).toBe('a'.repeat(64));
     expect(r.newStates).toHaveLength(2);
     expect(r.newStates[0]).toMatchObject({ address: 'user1@example.com', newState: 's1', fullPull: false, fetched: 12 });
     expect(r.newStates[1]).toMatchObject({ address: 'user2@example.com', newState: 's2', fullPull: true, skipped: 1 });

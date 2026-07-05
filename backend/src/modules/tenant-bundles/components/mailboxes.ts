@@ -89,6 +89,15 @@ export interface MailboxesComponentResult {
   readonly addresses: ReadonlyArray<string>;
   /** Total bytes the restic snapshot reported for this component. */
   readonly sizeBytes: number;
+  /**
+   * Restic snapshot id (full 64-char) for the whole-tenant Maildir
+   * tarball, parsed from the MAILBOXES_DONE Job-log line. Empty string
+   * when no mailboxes were captured. The orchestrator persists this to
+   * `backup_components.sha256` (component='mailboxes') so the
+   * `mailboxes-by-address` restore executor can resolve the snapshot to
+   * `restic restore` — same source + column the files component uses.
+   */
+  readonly snapshotId: string;
   /** Per-mailbox new state, for the orchestrator to persist AFTER the
    *  restic snapshot is acknowledged. */
   readonly newStates: ReadonlyArray<{
@@ -527,7 +536,7 @@ export async function captureMailboxesComponent(
 ): Promise<MailboxesComponentResult> {
   const addresses = await listTenantMailboxAddresses(opts.db, opts.tenantId);
   if (addresses.length === 0) {
-    return { mailboxCount: 0, addresses: [], sizeBytes: 0, newStates: [] };
+    return { mailboxCount: 0, addresses: [], sizeBytes: 0, snapshotId: '', newStates: [] };
   }
 
   // Engine selection: explicit override > platform_settings > default ('imap').
@@ -648,12 +657,13 @@ export async function captureMailboxesComponent(
     // the FULL multi-line log (one *_DONE per mailbox), not the single-
     // last-line summary that tailJobLog returns for progress.
     const log = await readJobLogTail(opts.k8s, mailNamespace, jobName, { tailLines: 500 }).catch(() => null);
-    const { newStates, sizeBytes } = parseMailboxesDone(log ?? '', opts.backupId);
+    const { newStates, sizeBytes, snapshotId } = parseMailboxesDone(log ?? '', opts.backupId);
 
     return {
       mailboxCount: addresses.length,
       addresses,
       sizeBytes,
+      snapshotId,
       newStates,
     };
   } finally {
@@ -685,6 +695,8 @@ export function parseMailboxesDone(
     fullPull: boolean;
   }>;
   sizeBytes: number;
+  /** Full 64-char restic snapshot id from MAILBOXES_DONE, '' if absent. */
+  snapshotId: string;
 } {
   const newStates: Array<{
     address: string;
@@ -695,6 +707,7 @@ export function parseMailboxesDone(
     fullPull: boolean;
   }> = [];
   let sizeBytes = 0;
+  let snapshotId = '';
   for (const line of log.split('\n')) {
     // Accept both `JMAP_DONE` (legacy) and `IMAP_DONE` (new engine).
     // IMAP summaries never carry `newState`/`fullPull` — we synthesize
@@ -735,10 +748,11 @@ export function parseMailboxesDone(
     }
     const mboxMatch = line.match(/MAILBOXES_DONE bundleId=(\S+) snapshot=([0-9a-f]{64}) sizeBytes=(\d+)/);
     if (mboxMatch && mboxMatch[1] === expectedBundleId) {
+      snapshotId = mboxMatch[2]!;
       sizeBytes = Number.parseInt(mboxMatch[3]!, 10);
     }
   }
-  return { newStates, sizeBytes };
+  return { newStates, sizeBytes, snapshotId };
 }
 
 async function waitForJob(
