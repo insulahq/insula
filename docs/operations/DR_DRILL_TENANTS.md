@@ -158,6 +158,18 @@ mail + add-on DB first_, **then** build the harness — and **every DR op must a
 non-destructive) → (2) `platform-ops dr tenant-restore` command → (3) harness that drives it →
 (4) full destructive 1b run as validation.
 
+**Progress (2026-07-05):**
+- Mail restore-cart bug (G0) **fixed + reviewed SAFE + unit-tested**, on `development`
+  (`8349cc3f`). Awaiting live validation at the consolidated RC (operator decision:
+  build-more-then-one-RC).
+- **DEV cluster (testing box) is degraded** — admin login returns 401 `INVALID_TOKEN` despite a
+  valid active admin + correct clock, plus webmail-reconcile drift. Blocks DEV as the fast
+  validation loop; flagged separately. Validation will happen on staging via the RC.
+- Orchestrator design fixed: new backend route **`POST /api/v1/admin/dr/tenants/:id/recover`**
+  reuses the existing provision + restore-cart endpoints via **`app.inject`** (no refactor);
+  `platform-ops dr tenant-restore` is a thin client to it. Closes G1; the same route is the
+  admin-panel action later (G3). DB re-import (G4) is a follow-on item on the same route.
+
 ---
 
 ## 7. Phase 3 — validation
