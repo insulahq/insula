@@ -1,36 +1,56 @@
 /**
- * Restore executor: `mailboxes-by-address` (Phase 2 of ADR-047 rewrite,
- * 2026-05-11).
+ * Restore executor: `mailboxes-by-address` (restic-native rewrite,
+ * 2026-07-05).
  *
- * Switched from IMAP APPEND (`restore-mailbox.py`) to JMAP Blob/upload +
- * Email/import (`jmap-restore.py`). Real-world measurement on staging:
- *   - IMAP path:  916s for 980 messages  (~1 msg/sec)
- *   - JMAP path: ~15-30s for 980 messages (~30-70 msg/sec)
+ * The `mailboxes` capture component (ADR-047, see
+ * tenant-bundles/components/mailboxes.ts) writes ONE whole-tenant restic
+ * stream per bundle: it `tar cf - .` over `/tmp/maildir-out` (which holds
+ * `<address>/<mailbox>/cur/<...>` for ALL of the tenant's addresses) and
+ * pipes it to platform-api's restic-stream endpoint with stdin-filename
+ * `maildir.tar`, landing a single snapshot in the per-tenant restic repo
+ * for component `mailboxes`. There is NO per-address `<addr>.mbox.tar.gz`
+ * artifact any more — the legacy download-token + curl path that this
+ * executor used to drive always 404'd against the current capture.
  *
- * Flow:
- *   1. For 'addresses' selector: validate addresses + sanitise.
- *      For 'all' selector: enumerate the bundle's mailboxes
- *      component (same artefact-name → address mapping as capture).
- *   2. Sign one HMAC download token per address.
- *   3. Spawn a Job in the `mail` namespace using tenant-backup-tools.
- *      For each address the Job:
- *        a. curl downloads `<addr>.mbox.tar.gz` to /tmp.
- *        b. tar -xzf into /tmp/maildir/.
- *        c. python3 /usr/local/bin/jmap-restore.py
- *             --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080
- *             --target-address <addr> --source-address <addr>
- *             --master-user master@master.local
- *             --auth-pass-env STALWART_MASTER_PASSWORD
- *             --maildir-root /tmp/maildir
- *             --mode <mode> --workers 16
- *        d. rm -rf the maildir before the next address.
+ * This executor now mirrors the `files-paths` restic pattern exactly:
+ *
+ *   1. Resolve the mailboxes restic snapshot id from
+ *      `backup_components.sha256` (component='mailboxes'). 404 if missing.
+ *   2. Derive the per-tenant restic password, build the repo URI for
+ *      component `mailboxes`, resolve the shim S3 target, and mount a
+ *      per-Job creds Secret at /var/run/restic-creds (mode 0400).
+ *   3. Resolve the target address list — `addresses` selector uses the
+ *      requested list; `all` enumerates the tenant's mailbox addresses
+ *      from the platform DB (listTenantMailboxAddresses).
+ *   4. Spawn a Job in the `mail` namespace using tenant-backup-tools that:
+ *        a. `restic -r "$REPO" restore <snap> --target /tmp/restic-out
+ *           --no-lock` → produces `/tmp/restic-out/maildir.tar`.
+ *        b. `tar xf /tmp/restic-out/maildir.tar -C /tmp/maildir-all`
+ *           → yields `/tmp/maildir-all/<address>/<mailbox>/cur/...`.
+ *        c. loops the target addresses; per ADDR runs
+ *             python3 /usr/local/bin/jmap-restore.py
+ *               --endpoint <jmapEndpoint>
+ *               --target-address "$ADDR" --source-address "$ADDR"
+ *               --master-user <master>
+ *               --auth-pass-env STALWART_MASTER_PASSWORD
+ *               --maildir-root /tmp/maildir-all
+ *               --mode "$MODE" --workers "$WORKERS"
+ *           `--maildir-root` is the SHARED extraction root; `--source-
+ *           address $ADDR` selects that address's subtree (jmap-restore.py
+ *           expects `<root>/<source-address>/<mailbox>/cur/...`, which is
+ *           exactly the extracted layout).
+ *        d. best-effort aux restore (jmap-aux-restore.py) against
+ *           `/tmp/maildir-all/$ADDR/.aux`.
  *
  * Per-address shell loop uses POSIX `case "$i"` dispatch (same security
  * pattern as the capture executor — see tenant-bundles/components/
- * mailboxes.ts) so an attacker cannot inject through MAILBOX_ADDR_<i>
- * env values even if the upstream isSafeAddress() check were bypassed.
+ * mailboxes.ts) so an attacker cannot inject through the address list
+ * even if the upstream isSafeAddress() check were bypassed. The Stalwart
+ * master password reaches jmap-restore.py only via --auth-pass-env (never
+ * argv); the restic + shim S3 creds reach restic only via the mounted
+ * Secret (never argv / env-in-spec).
  *
- * Mode plumbing:
+ * Mode plumbing (unchanged):
  *   The restore mode lives in the selector (mailboxRestoreModeSchema):
  *     - merge-skip-duplicates (default)        — JMAP dedup by Message-ID
  *     - merge-overwrite                        — JMAP import, no dedup
@@ -38,34 +58,37 @@
  *   The schema's superRefine enforces the typed-confirmation pattern;
  *   the executor reads selector.mode (defaulting to merge-skip).
  *
- * Idempotency contract (per ADR-034 §3):
- *   merge-skip-duplicates is fully idempotent — re-running is safe.
- *   merge-overwrite is monotonic (each run appends without dedup).
- *   replace is destructive but crash-safe (pre-purge is one Email/set
- *   destroy batch; failure between purge and import leaves an empty
- *   account that the retry will re-fill).
- *
  * Stalwart account existence: jmap-restore.py REQUIRES the target
- * principal to exist (otherwise auth fails). The cart's
- * `ensureStalwartPrincipal` step (see ./recreate-principal.ts) runs
- * BEFORE this executor when restoring an account whose principal was
- * deleted in Stalwart.
+ * principal to exist (otherwise auth fails). ensureStalwartPrincipals()
+ * runs BEFORE the Job and recreates missing principals from the platform
+ * DB `mailboxes` row when necessary.
  *
- * Rollback: the legacy IMAP restore-mailbox.py stays in the
- * tenant-backup-tools image. To re-enable the IMAP path, set
- * `MAILBOX_RESTORE_METHOD=imap` in the platform-api env — the
- * executor falls back to the pre-2026-05-11 script.
+ * Rollback: set `MAILBOX_RESTORE_METHOD=imap` in the platform-api env to
+ * drive imap-restore.py instead of jmap-restore.py (both consume the same
+ * extracted Maildir tree). The engine also follows
+ * platform_settings.mailbox_backup_engine.
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
-import { restoreItems, restoreJobs, type RestoreItem } from '../../../db/schema.js';
+import { restoreItems, restoreJobs, backupComponents, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
-import { signUploadToken } from '../../tenant-bundles/upload-token.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
+import { listTenantMailboxAddresses } from '../../tenant-bundles/components/mailboxes.js';
+import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
+import {
+  buildResticRepoUri,
+  buildResticEnv,
+  deriveResticPassword,
+} from '../../tenant-bundles/restic-driver.js';
+import {
+  buildResticCredsStringData,
+  createResticCredsSecret,
+  wireSecretOwnerRef,
+} from '../../tenant-bundles/components/files.js';
 import {
   getMailboxBackupEngine,
   getMailboxBackupMaxConcurrent,
@@ -96,10 +119,6 @@ const MAIL_NAMESPACE = 'mail';
 // preferring the HTTP mgmt service over the public HTTPS ingress
 // (cert verification + cluster-local routing).
 const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
-// Stalwart master-user proxy needs the FQ master account
-// (master@master.local). The short-form 'master' resolves to
-// master@localhost.local which doesn't exist → AUTHENTICATIONFAILED.
-// See tenant-bundles/components/mailboxes.ts for the rationale.
 // MASTER_USER_DEFAULT intentionally removed 2026-05-23 — the executor
 // now resolves the master FQDN at runtime via readStalwartMasterUser
 // (see ../../mail-admin/stalwart-master-user.ts) so it can never silently
@@ -109,12 +128,23 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
 const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
-const DOWNLOAD_TOKEN_TTL_SEC = 60 * 60;
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
 // Parallelism for Blob/upload from a single jmap-restore.py invocation.
 // Stalwart's bumped maxConcurrentUploads=32 caps the upper bound;
 // 16 leaves headroom for backup-and-restore-at-the-same-time.
 const RESTORE_WORKERS_DEFAULT = 16;
+// Per-Job creds Secret mount — mirrors files-paths.ts / files.ts.
+const CREDS_MOUNT_PATH = '/var/run/restic-creds';
+// Full restic snapshot ids are 64 hex; accept a short id too (restic
+// resolves prefixes) — same shape files-paths.ts validates.
+const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
+// restic lands the restore tree here; the stdin capture is a single file
+// at `<target>/maildir.tar`.
+const RESTORE_TMP = '/tmp/restic-out';
+// Shared extraction root for the whole-tenant Maildir tarball.
+const MAILDIR_ALL = '/tmp/maildir-all';
+// stdin-filename used by the capture (mailboxes.ts STDIN_FILENAME).
+const STDIN_TARBALL = 'maildir.tar';
 
 const VALID_MODES: ReadonlySet<MailboxRestoreMode> = new Set([
   'merge-skip-duplicates',
@@ -155,7 +185,7 @@ export async function execMailboxesByAddressItem(args: {
   item: RestoreItem;
   store: BackupStore;
 }): Promise<void> {
-  const { app, item, store } = args;
+  const { app, item } = args;
   const selector = item.selector as unknown as Selector;
 
   // Mode: default merge-skip-duplicates. Replace requires explicit
@@ -176,16 +206,30 @@ export async function execMailboxesByAddressItem(args: {
   const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, item.restoreJobId)).limit(1);
   if (!job) throw new ApiError('NOT_FOUND', `Restore job ${item.restoreJobId} not found`, 404);
 
-  // Resolve target addresses.
+  // ── Resolve the mailboxes restic snapshot id ──────────────────────
+  // Persisted on backup_components.sha256 (component='mailboxes') by the
+  // orchestrator — the same source + column the files component uses.
+  const [comp] = await app.db.select()
+    .from(backupComponents)
+    .where(and(
+      eq(backupComponents.backupJobId, item.bundleId),
+      eq(backupComponents.component, 'mailboxes'),
+    ))
+    .limit(1);
+  if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) {
+    throw new ApiError('NOT_FOUND', `Bundle ${item.bundleId} has no mailboxes restic snapshot`, 404);
+  }
+  const snapshotId = comp.sha256;
+
+  // ── Resolve target addresses ──────────────────────────────────────
   let addresses: readonly string[];
   if (selector.kind === 'all') {
-    const handle = await store.open(item.bundleId);
-    if (!handle) throw new ApiError('NOT_FOUND', `Bundle ${item.bundleId} not found on remote target`, 404);
-    const refs = await store.listArtifacts(handle, 'mailboxes');
-    addresses = refs.map((r) => r.name.replace(/\.mbox\.tar\.gz$/, '')).filter((s) => s.length > 0);
+    // Enumerate the tenant's mailbox addresses from the platform DB —
+    // the same query the capture side uses to decide what to snapshot.
+    addresses = await listTenantMailboxAddresses(app.db, job.tenantId);
     if (addresses.length === 0) {
       await app.db.update(restoreItems)
-        .set({ progressMessage: 'mailboxes-by-address: bundle contains no mailboxes' })
+        .set({ progressMessage: 'mailboxes-by-address: tenant has no mailboxes' })
         .where(eq(restoreItems.id, item.id));
       return;
     }
@@ -200,18 +244,12 @@ export async function execMailboxesByAddressItem(args: {
     throw new Error(`mailboxes-by-address: unsupported selector ${JSON.stringify(selector)}`);
   }
 
-  const platformApiUrl = (app.config as Record<string, unknown>).PLATFORM_API_INTERNAL_URL as string | undefined
-    ?? process.env.PLATFORM_API_INTERNAL_URL
-    ?? 'http://platform-api.platform.svc:3000';
-  const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+  // ── Resolve PLATFORM_ENCRYPTION_KEY (per-tenant restic password) ───
+  const secretsKeyHex = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
     ?? process.env.PLATFORM_ENCRYPTION_KEY;
-  if (!configuredKey) {
-    app.log.error(
-      { module: 'mailboxes-by-address-restore' },
-      'PLATFORM_ENCRYPTION_KEY missing — falling back to a zero-key. HMAC tokens for download URLs will be predictable; restore will only succeed if capture-side ran with the same fallback.',
-    );
+  if (!secretsKeyHex) {
+    throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
   }
-  const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 
   // Ensure each target principal exists in Stalwart BEFORE shipping
   // the restore Job — otherwise jmap-restore.py would fail per address
@@ -243,16 +281,8 @@ export async function execMailboxesByAddressItem(args: {
     );
   }
 
-  const downloads = addresses.map((address) => ({
-    address,
-    token: signUploadToken(
-      { bundleId: item.bundleId, component: 'mailboxes', artifactName: `${address}.mbox.tar.gz`, ttlSeconds: DOWNLOAD_TOKEN_TTL_SEC },
-      secretsKeyHex,
-    ),
-  }));
-
-  const downloadBase = `${platformApiUrl.replace(/\/$/, '')}/api/v1/internal/bundles/${item.bundleId}/components/mailboxes`;
   const jobName = `rs-mbox-${item.id.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 50)}`;
+  const credsSecretName = `rs-mbox-creds-${item.id.replace(/[^a-z0-9]/gi, '').toLowerCase()}`.slice(0, 63);
 
   // Engine + concurrency cap from platform_settings.
   const engine = await getMailboxBackupEngine(app.db);
@@ -261,6 +291,15 @@ export async function execMailboxesByAddressItem(args: {
   const kc = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
     ?? process.env.KUBECONFIG;
   const k8s: K8sClients = createK8sClients(kc);
+
+  // ── Resolve the shim target + per-tenant password + repo URI ──────
+  // The mailboxes component snapshot lives in the per-tenant restic repo
+  // under the `tenant` shim bucket (same target the capture-side restic-
+  // stream endpoint uses); the repo URI component is `mailboxes`.
+  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
+  const repoUri = buildResticRepoUri(target, job.tenantId, 'mailboxes');
+  const env = buildResticEnv(target);
 
   // Resolve the Stalwart master-user FQDN from mail-secrets — the
   // compiled-in default (`master@master.local`) only matches unit-
@@ -282,8 +321,9 @@ export async function execMailboxesByAddressItem(args: {
     masterSecretName: MASTER_SECRET_NAME_DEFAULT,
     masterSecretKey: MASTER_SECRET_KEY_DEFAULT,
     mode,
-    downloadBase,
-    downloads,
+    credsSecretName,
+    snapshotId,
+    addresses,
     workers: RESTORE_WORKERS_DEFAULT,
   });
 
@@ -291,6 +331,8 @@ export async function execMailboxesByAddressItem(args: {
   // capture side uses; serializes restore Jobs with capture Jobs across
   // all platform-api replicas.
   let slot: SlotHandle | null = null;
+  let credsCreated = false;
+  let ownerRefWired = false;
   try {
     try {
       slot = await acquireGlobalSlot(app.db, {
@@ -325,63 +367,100 @@ export async function execMailboxesByAddressItem(args: {
       }
     }
 
-    await (k8s.batch as unknown as {
-      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<unknown>;
+    // Per-Job creds Secret (restic password + shim S3 keys + repo URI),
+    // mounted read-only at /var/run/restic-creds. Reuses the files
+    // component's helpers so capture + restore share one code path.
+    await createResticCredsSecret(
+      k8s,
+      MAIL_NAMESPACE,
+      credsSecretName,
+      buildResticCredsStringData({ passwordHex, repoUri, env }),
+      'restore-files',
+    );
+    credsCreated = true;
+
+    const createdJob = await (k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
     }).createNamespacedJob({ namespace: MAIL_NAMESPACE, body: spec });
 
-  await waitForJob(k8s, MAIL_NAMESPACE, jobName, DEFAULT_TIMEOUT_MS, async (msg) => {
-    await app.db.update(restoreItems)
-      .set({ progressMessage: msg })
-      .where(eq(restoreItems.id, item.id));
-  });
-
-  let log = '';
-  // jmap-restore.py emits one JSON summary line per address to stdout.
-  // The script's `echo "MAILBOX_RESTORED addr=$ADDR ..."` lines and
-  // python stderr can interleave, so we don't require a fixed tail
-  // length — grab the last 200 lines and JSON-parse any that look like
-  // our summary shape.
-  try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 200, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
-  let imported = 0;
-  let skippedTotal = 0;
-  let failed = 0;
-  let mailboxesCreated = 0;
-  let prePurged = 0;
-  let elapsedMs = 0;
-  for (const line of log.split('\n')) {
-    const t = line.trim();
-    if (!t.startsWith('{') || !t.endsWith('}')) continue;
-    try {
-      const j = JSON.parse(t) as Partial<{
-        imported: number;
-        skipped: number;
-        failed: number;
-        prePurged: number;
-        mailboxesCreated: string[];
-        elapsedSeconds: number;
-      }>;
-      if (typeof j.imported === 'number') {
-        imported += j.imported;
-        skippedTotal += j.skipped ?? 0;
-        failed += j.failed ?? 0;
-        prePurged += j.prePurged ?? 0;
-        mailboxesCreated += (j.mailboxesCreated ?? []).length;
-        elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
+    // ownerRef the creds Secret to the Job so it GCs with the Job.
+    const jobUid = createdJob.metadata?.uid;
+    if (jobUid) {
+      try {
+        await wireSecretOwnerRef(k8s, MAIL_NAMESPACE, credsSecretName, jobName, jobUid);
+        ownerRefWired = true;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[mailboxes-by-address] could not wire ownerRef on creds Secret '${credsSecretName}': ${(err as Error).message}`);
       }
-    } catch {
-      // Not a jmap-restore summary line; ignore.
     }
-  }
-  await app.db.update(restoreItems)
-    .set({
-      progressMessage:
-        `restored ${addresses.length} mailbox(es) (mode=${mode}, imported=${imported}, ` +
-        `skipped=${skippedTotal}, failed=${failed}, mailboxesCreated=${mailboxesCreated}, ` +
-        `prePurged=${prePurged}, elapsedMs=${elapsedMs})`,
-    })
-    .where(eq(restoreItems.id, item.id));
+
+    await waitForJob(k8s, MAIL_NAMESPACE, jobName, DEFAULT_TIMEOUT_MS, async (msg) => {
+      await app.db.update(restoreItems)
+        .set({ progressMessage: msg })
+        .where(eq(restoreItems.id, item.id));
+    });
+
+    let log = '';
+    // jmap-restore.py emits one JSON summary line per address to stdout.
+    // The script's `echo "MAILBOX_RESTORED addr=$ADDR ..."` lines and
+    // python stderr can interleave, so we don't require a fixed tail
+    // length — grab the last 200 lines and JSON-parse any that look like
+    // our summary shape.
+    try { log = (await tailJobLog(k8s, MAIL_NAMESPACE, jobName, { tailLines: 200, maxLineLength: 5000 })) ?? ''; } catch { /* ignore */ }
+    let imported = 0;
+    let skippedTotal = 0;
+    let failed = 0;
+    let mailboxesCreated = 0;
+    let prePurged = 0;
+    let elapsedMs = 0;
+    for (const line of log.split('\n')) {
+      const t = line.trim();
+      if (!t.startsWith('{') || !t.endsWith('}')) continue;
+      try {
+        const j = JSON.parse(t) as Partial<{
+          imported: number;
+          skipped: number;
+          failed: number;
+          prePurged: number;
+          mailboxesCreated: string[];
+          elapsedSeconds: number;
+        }>;
+        if (typeof j.imported === 'number') {
+          imported += j.imported;
+          skippedTotal += j.skipped ?? 0;
+          failed += j.failed ?? 0;
+          prePurged += j.prePurged ?? 0;
+          mailboxesCreated += (j.mailboxesCreated ?? []).length;
+          elapsedMs = Math.max(elapsedMs, Math.round((j.elapsedSeconds ?? 0) * 1000));
+        }
+      } catch {
+        // Not a jmap-restore summary line; ignore.
+      }
+    }
+    await app.db.update(restoreItems)
+      .set({
+        progressMessage:
+          `restored ${addresses.length} mailbox(es) (mode=${mode}, imported=${imported}, ` +
+          `skipped=${skippedTotal}, failed=${failed}, mailboxesCreated=${mailboxesCreated}, ` +
+          `prePurged=${prePurged}, elapsedMs=${elapsedMs})`,
+      })
+      .where(eq(restoreItems.id, item.id));
   } finally {
     if (slot) await slot.release();
+    // If the creds Secret was created but the Job's ownerRef never got
+    // wired (Job create failed, or the ownerRef patch failed), kube won't
+    // GC it — delete it ourselves so the per-tenant creds don't linger.
+    if (credsCreated && !ownerRefWired) {
+      try {
+        await (k8s.core as unknown as {
+          deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
+        }).deleteNamespacedSecret({ name: credsSecretName, namespace: MAIL_NAMESPACE });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[mailboxes-by-address] best-effort delete of creds Secret '${credsSecretName}' failed: ${(err as Error).message}`);
+      }
+    }
   }
 }
 
@@ -394,8 +473,9 @@ export function buildMailboxesByAddressJobSpec(input: {
   toolsImage: string;
   /**
    * Active engine. `jmap` (default — legacy) runs `jmap-restore.py`;
-   * `imap` runs the new `imap-restore.py` with byte-budgeted
-   * MULTIAPPEND batching. See platform_settings.mailbox_backup_engine.
+   * `imap` runs the new `imap-restore.py`. Both consume the SAME shared
+   * extraction root (/tmp/maildir-all) selected per address via
+   * `--source-address`. See platform_settings.mailbox_backup_engine.
    */
   engine?: 'jmap' | 'imap';
   jmapEndpoint: string;
@@ -406,14 +486,21 @@ export function buildMailboxesByAddressJobSpec(input: {
   masterSecretName: string;
   masterSecretKey: string;
   mode: MailboxRestoreMode;
-  downloadBase: string;
-  downloads: ReadonlyArray<{ address: string; token: string }>;
+  /** Name of the per-Job creds Secret (restic_password, aws_*, repo_uri). */
+  credsSecretName: string;
+  /** Mailboxes restic snapshot id (from backup_components.sha256). */
+  snapshotId: string;
+  /** Target mailbox addresses (validated, whitelisted). */
+  addresses: ReadonlyArray<string>;
   workers: number;
 }): Record<string, unknown> {
-  for (const d of input.downloads) {
-    if (!isSafeAddress(d.address)) {
-      throw new Error(`buildMailboxesByAddressJobSpec: invalid address '${d.address}'`);
+  for (const a of input.addresses) {
+    if (!isSafeAddress(a)) {
+      throw new Error(`buildMailboxesByAddressJobSpec: invalid address '${a}'`);
     }
+  }
+  if (input.addresses.length === 0) {
+    throw new Error('buildMailboxesByAddressJobSpec: no addresses to restore');
   }
   if (!isSafeJmapEndpoint(input.jmapEndpoint)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid jmapEndpoint '${input.jmapEndpoint}'`);
@@ -427,6 +514,9 @@ export function buildMailboxesByAddressJobSpec(input: {
   if (!VALID_MODES.has(input.mode)) {
     throw new Error(`buildMailboxesByAddressJobSpec: invalid mode '${input.mode}'`);
   }
+  if (!RESTIC_SNAPSHOT_ID_RE.test(input.snapshotId)) {
+    throw new Error(`buildMailboxesByAddressJobSpec: invalid snapshotId '${input.snapshotId}'`);
+  }
   const engine = input.engine ?? 'jmap';
   const imapHost = input.imapHost ?? 'stalwart-mail.mail.svc.cluster.local';
   const imapPort = input.imapPort ?? 993;
@@ -438,9 +528,8 @@ export function buildMailboxesByAddressJobSpec(input: {
       throw new Error(`buildMailboxesByAddressJobSpec: invalid imapPort ${imapPort}`);
     }
   }
-  // Addresses + tokens are embedded directly in the script's `case "$i"`
-  // dispatch block (see below) so we no longer need per-address env
-  // vars. The master password is the only secret-mounted env.
+  // The master password is the only secret-mounted env; restic + shim S3
+  // creds arrive via the mounted creds Secret (never argv / env-in-spec).
   const masterPasswordEnv = {
     name: 'STALWART_MASTER_PASSWORD',
     valueFrom: {
@@ -452,83 +541,88 @@ export function buildMailboxesByAddressJobSpec(input: {
     },
   };
 
-  // Per-address loop. Each iteration:
-  //   1. curl download .mbox.tar.gz → /tmp/maildir-tar/<addr>.tar.gz
-  //   2. mkdir + tar -xzf into /tmp/maildir/<addr>/  (Maildir tree;
-  //      jmap-restore.py expects <root>/<source-address>/<mailbox>/cur/...)
-  //   3. python3 jmap-restore.py — Blob/upload + Email/import via the
-  //      in-cluster JMAP mgmt endpoint, parallel uploads, mode-aware.
-  //   4. rm -rf the per-address Maildir tree to free emptyDir for the
-  //      next address (each tenant can have many addresses).
-  //
-  // Why `case "$i"` dispatch over `eval echo \$MAILBOX_ADDR_$i`:
-  //   The eval indirection is a known shell-injection foot-gun. Even
-  //   though isSafeAddress whitelists characters, the case-dispatch
-  //   pattern is materially safer (no shell interpolation of the
-  //   variable name itself) and matches the capture executor in
-  //   tenant-bundles/components/mailboxes.ts. Build-time embedding
-  //   uses the same whitelist the validator above already enforced.
+  // Per-address loop dispatches the address via a POSIX `case "$i"` block
+  // keyed on the integer index, with the whitelisted string literal
+  // embedded at TS-build time. No `eval`, no per-address env vars — same
+  // shell-injection posture as the capture executor
+  // (tenant-bundles/components/mailboxes.ts).
   //
   // STALWART_MASTER_PASSWORD is read by jmap-restore.py via
-  // --auth-pass-env (the password value never appears in argv,
-  // keeping it out of /proc/<pid>/cmdline and `kubectl get pod -o yaml`).
-  const caseBlock = input.downloads.map((d, i) =>
-    `    ${i}) ADDR="${d.address}"; TOKEN="${d.token}";;`,
+  // --auth-pass-env (the password value never appears in argv, keeping
+  // it out of /proc/<pid>/cmdline and `kubectl get pod -o yaml`).
+  const caseBlock = input.addresses.map((address, i) =>
+    `    ${i}) ADDR="${address}";;`,
   ).join('\n');
-  const script = [
-    'set -e',
-    `COUNT=${input.downloads.length}`,
-    `MODE=${input.mode}`,
-    `WORKERS=${input.workers}`,
-    'mkdir -p /tmp/maildir-tar /tmp/maildir',
-    'for i in $(seq 0 $((COUNT - 1))); do',
-    '  ADDR=',
-    '  TOKEN=',
-    '  case "$i" in',
-    caseBlock,
-    '    *) echo "BUG: address index $i out of bounds" >&2; exit 1;;',
-    '  esac',
-    '  [ -n "$ADDR" ] || { echo "BUG: empty address at $i" >&2; exit 1; }',
-    '  echo "Downloading $ADDR.mbox.tar.gz (#$i of $COUNT)..." >&2',
-    `  curl --fail-with-body -sS -o "/tmp/maildir-tar/$ADDR.tar.gz" \\
-       "${input.downloadBase}/$ADDR.mbox.tar.gz?token=$TOKEN"`,
-    '  rm -rf "/tmp/maildir/$ADDR"',
-    '  mkdir -p "/tmp/maildir/$ADDR"',
-    '  tar -xzf "/tmp/maildir-tar/$ADDR.tar.gz" -C "/tmp/maildir/$ADDR"',
-    '  rm -f "/tmp/maildir-tar/$ADDR.tar.gz"',
-    `  echo "Restoring $ADDR via ${engine.toUpperCase()} (mode=$MODE workers=$WORKERS)..." >&2`,
-    engine === 'imap'
-      // shQuote `imapHost` for parity with the capture-side script
-      // (mailboxes.ts line ~301) — even though the imap-branch validator
-      // restricts imapHost to `/^[A-Za-z0-9.\-]+$/` so the current value
-      // can't carry shell metacharacters, this keeps the two scripts
-      // symmetric in case a future refactor relaxes the validator.
-      ? `  python3 /usr/local/bin/imap-restore.py \\
+
+  const mailRestoreLine = engine === 'imap'
+    // shQuote `imapHost` for parity with the capture-side script — even
+    // though the imap-branch validator restricts imapHost to
+    // `/^[A-Za-z0-9.\-]+$/`, this keeps the two scripts symmetric.
+    ? `  python3 /usr/local/bin/imap-restore.py \\
        --imap-host ${shQuote(imapHost)} \\
        --imap-port ${imapPort} \\
        --target-address "$ADDR" \\
        --source-address "$ADDR" \\
        --master-user "${input.stalwartMasterUser}" \\
        --auth-pass-env STALWART_MASTER_PASSWORD \\
-       --maildir-root "/tmp/maildir/$ADDR" \\
+       --maildir-root ${MAILDIR_ALL} \\
        --mode "$MODE"`
-      : `  python3 /usr/local/bin/jmap-restore.py \\
+    : `  python3 /usr/local/bin/jmap-restore.py \\
        --endpoint "${input.jmapEndpoint}" \\
        --target-address "$ADDR" \\
        --source-address "$ADDR" \\
        --master-user "${input.stalwartMasterUser}" \\
        --auth-pass-env STALWART_MASTER_PASSWORD \\
-       --maildir-root "/tmp/maildir/$ADDR" \\
+       --maildir-root ${MAILDIR_ALL} \\
        --mode "$MODE" \\
-       --workers "$WORKERS"`,
-    // Auxiliary surfaces — Sieve scripts, Contacts, Calendars,
-    // Vacation responses, FileNodes. Restore mirrors the capture
-    // wiring (mailboxes.ts) — always JMAP, best-effort. A non-zero
-    // exit logs a WARN and the per-address loop continues so a
-    // partially-failed aux restore doesn't fail the mail restore.
-    // --confirm-destructive is conditionally appended only in replace
-    // mode (jmap-aux-restore.py refuses replace without the flag).
-    '  if [ -d "/tmp/maildir/$ADDR/$ADDR/.aux" ]; then',
+       --workers "$WORKERS"`;
+
+  const script = [
+    'set -e',
+    // ── restic creds from the mounted Secret (never argv / env-in-spec) ──
+    `export RESTIC_PASSWORD="$(cat ${CREDS_MOUNT_PATH}/restic_password)"`,
+    `[ -n "$RESTIC_PASSWORD" ] || { echo "ERROR: restic password missing"; exit 1; }`,
+    `if [ -f ${CREDS_MOUNT_PATH}/aws_access_key_id ]; then export AWS_ACCESS_KEY_ID="$(cat ${CREDS_MOUNT_PATH}/aws_access_key_id)"; fi`,
+    `if [ -f ${CREDS_MOUNT_PATH}/aws_secret_access_key ]; then export AWS_SECRET_ACCESS_KEY="$(cat ${CREDS_MOUNT_PATH}/aws_secret_access_key)"; fi`,
+    `if [ -f ${CREDS_MOUNT_PATH}/aws_region ]; then export AWS_DEFAULT_REGION="$(cat ${CREDS_MOUNT_PATH}/aws_region)"; fi`,
+    `REPO="$(cat ${CREDS_MOUNT_PATH}/repo_uri)"`,
+    `[ -n "$REPO" ] || { echo "ERROR: repo uri missing"; exit 1; }`,
+    `COUNT=${input.addresses.length}`,
+    `MODE=${input.mode}`,
+    `WORKERS=${input.workers}`,
+    `mkdir -p ${RESTORE_TMP} ${MAILDIR_ALL}`,
+    // ── Restore the ONE whole-tenant Maildir tarball via restic ──────────
+    `echo "Restoring maildir snapshot ${input.snapshotId} from restic..." >&2`,
+    `restic -r "$REPO" restore ${input.snapshotId} --target ${RESTORE_TMP} --no-lock || { echo "ERROR: restic restore failed"; exit 1; }`,
+    // The stdin capture lands as a single file `<target>/maildir.tar`.
+    // Fall back to a defensive `find` in case restic nests it under a
+    // sub-path for the stdin-filename layout.
+    `TARBALL=${RESTORE_TMP}/${STDIN_TARBALL}`,
+    `[ -f "$TARBALL" ] || TARBALL=$(find ${RESTORE_TMP} -type f -name ${STDIN_TARBALL} 2>/dev/null | head -n1)`,
+    `{ [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; } || { echo "ERROR: ${STDIN_TARBALL} not found in restored snapshot"; ls -laR ${RESTORE_TMP} >&2 || true; exit 1; }`,
+    // Extract → /tmp/maildir-all/<address>/<mailbox>/cur/... (capture
+    // tarred `.` over /tmp/maildir-out, so entries are ./<address>/...).
+    `tar xf "$TARBALL" -C ${MAILDIR_ALL}`,
+    `rm -f "$TARBALL"`,
+    // ── Per-address restore loop ─────────────────────────────────────────
+    'for i in $(seq 0 $((COUNT - 1))); do',
+    '  ADDR=',
+    '  case "$i" in',
+    caseBlock,
+    '    *) echo "BUG: address index $i out of bounds" >&2; exit 1;;',
+    '  esac',
+    '  [ -n "$ADDR" ] || { echo "BUG: empty address at $i" >&2; exit 1; }',
+    `  echo "Restoring $ADDR via ${engine.toUpperCase()} (mode=$MODE workers=$WORKERS)..." >&2`,
+    mailRestoreLine,
+    // Auxiliary surfaces — Sieve scripts, Contacts, Calendars, Vacation
+    // responses, FileNodes. Restore mirrors the capture wiring
+    // (mailboxes.ts) — always JMAP, best-effort. A non-zero exit logs a
+    // WARN and the per-address loop continues so a partially-failed aux
+    // restore doesn't fail the mail restore. --confirm-destructive is
+    // conditionally appended only in replace mode (jmap-aux-restore.py
+    // refuses replace without the flag). The aux subtree extracted for
+    // this address is `/tmp/maildir-all/$ADDR/.aux`.
+    `  if [ -d "${MAILDIR_ALL}/$ADDR/.aux" ]; then`,
     `    AUX_FLAGS=""; [ "$MODE" = "replace" ] && AUX_FLAGS="--confirm-destructive"`,
     `    python3 /usr/local/bin/jmap-aux-restore.py \\
        --endpoint "${input.jmapEndpoint}" \\
@@ -536,16 +630,15 @@ export function buildMailboxesByAddressJobSpec(input: {
        --source-address "$ADDR" \\
        --master-user "${input.stalwartMasterUser}" \\
        --auth-pass-env STALWART_MASTER_PASSWORD \\
-       --maildir-root "/tmp/maildir/$ADDR" \\
+       --maildir-root ${MAILDIR_ALL} \\
        --mode "$MODE" $AUX_FLAGS || echo "AUX_WARN address=$ADDR jmap-aux-restore.py exited non-zero — mail restore is unaffected"`,
     '    echo "AUX_RESTORED addr=$ADDR mode=$MODE"',
     '  else',
     '    echo "AUX_SKIP addr=$ADDR no .aux dir in snapshot"',
     '  fi',
-    '  rm -rf "/tmp/maildir/$ADDR"',
     '  echo "MAILBOX_RESTORED addr=$ADDR mode=$MODE"',
     'done',
-    'rmdir /tmp/maildir-tar /tmp/maildir 2>/dev/null || true',
+    `rm -rf ${RESTORE_TMP} ${MAILDIR_ALL} 2>/dev/null || true`,
     'echo "MAILBOXES_RESTORED total=$COUNT"',
   ].join('\n');
 
@@ -555,7 +648,7 @@ export function buildMailboxesByAddressJobSpec(input: {
       namespace: input.mailNamespace,
       labels: {
         // Reuse restore-files label so the existing NetworkPolicy
-        // covers this Job too (it allows Job → platform-api +
+        // covers this Job too (it allows Job → shim S3 +
         // Job → in-cluster Stalwart svc).
         'platform.io/component': 'restore-files',
         'platform.io/tenant-id': input.tenantId,
@@ -593,20 +686,26 @@ export function buildMailboxesByAddressJobSpec(input: {
               masterPasswordEnv,
             ],
             resources: {
-              // jmap-restore.py streams blobs one at a time through
-              // urllib (no in-memory tarball buffer), so memory is
-              // bounded by max-attachment-size × workers ≈ 1.6 GB at
-              // the extreme. Limit set higher than peak to leave a
-              // GC-time cushion.
+              // restic restore streams pack files + jmap-restore.py streams
+              // blobs one at a time; memory stays bounded. Limit set higher
+              // than peak to leave a GC-time cushion.
               requests: { cpu: '200m', memory: '512Mi' },
               limits: { cpu: '2000m', memory: '2Gi' },
             },
             volumeMounts: [
               { name: 'scratch', mountPath: '/tmp' },
+              { name: 'restic-creds', mountPath: CREDS_MOUNT_PATH, readOnly: true },
             ],
           }],
           volumes: [
             { name: 'scratch', emptyDir: { sizeLimit: '50Gi' } },
+            {
+              name: 'restic-creds',
+              secret: {
+                secretName: input.credsSecretName,
+                defaultMode: 0o400,
+              },
+            },
           ],
         },
       },
@@ -638,7 +737,12 @@ async function waitForJob(
     const failed = (status.conditions ?? []).find((c) => c.type === 'Failed' && c.status === 'True');
     if (completed || (status.succeeded ?? 0) > 0) return;
     if (failed || (status.failed ?? 0) > 0) {
-      throw new Error(`mailboxes-by-address Job ${jobName} failed: ${failed?.message ?? 'unknown'}`);
+      let logTail = '';
+      try {
+        const tail = await tailJobLog(k8s, namespace, jobName, { tailLines: 30, maxLineLength: 400 });
+        if (tail) logTail = `; logs: ${tail.slice(-1200)}`;
+      } catch { /* ignore */ }
+      throw new Error(`mailboxes-by-address Job ${jobName} failed: ${failed?.message ?? 'unknown'}${logTail}`);
     }
     if (Date.now() - start > timeoutMs) {
       throw new Error(`mailboxes-by-address Job ${jobName} timed out after ${Math.round(timeoutMs / 1000)}s`);

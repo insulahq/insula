@@ -460,7 +460,14 @@ export async function runBundle(
           secretsKeyHex: deps.secretsKeyHex,
           stalwartMasterUser,
         });
-        await markComponentDone(deps.db, componentRowId, { sizeBytes: mailboxesResult.sizeBytes, sha256: null });
+        // Persist the mailboxes restic snapshot id to backup_components.sha256
+        // (component='mailboxes') — same column the files component uses — so
+        // the mailboxes-by-address restore executor can resolve it to
+        // `restic restore`. Fall back to null if the Job log had no snapshot.
+        await markComponentDone(deps.db, componentRowId, {
+          sizeBytes: mailboxesResult.sizeBytes,
+          sha256: mailboxesResult.snapshotId || null,
+        });
         componentInfos.mailboxes = {
           sizeBytes: mailboxesResult.sizeBytes,
           mailboxCount: mailboxesResult.mailboxCount,

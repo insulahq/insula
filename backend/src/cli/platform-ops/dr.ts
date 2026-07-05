@@ -7,6 +7,12 @@
  *               [--age-binary <p>] [--kubeconfig <p>] [--target-mail-node <n>]
  *               [--confirm-cluster <name> ...] [--json]
  *               Import DR rows (partial) or full CNPG + mail recovery.
+ *   dr tenant-restore --tenant <id> [--bundle <id>] [--components <csv>]
+ *               [--mailbox-mode <m>] [--no-provision] [--json]
+ *               One-button tenant DR recover: drive the recover route (which
+ *               orchestrates provision → cart → execute) from a RUNNING
+ *               platform-api pod. Unlike verify/restore/rescue, this needs the
+ *               API up — it POSTs to the pod's local server (via deps.tenantRecover).
  *
  * This wraps the backend `dr-restore` primitive directly (via deps.dr) —
  * the same module `scripts/dr-restore-bundle.sh` drives today. The argv
@@ -16,7 +22,15 @@
  *
  * Exit codes: 0 = success, 1 = runtime failure, 2 = usage error.
  */
-import type { Deps, DrBundleManifest, DrRescueRequest, DrRestoreRequest } from './deps.js';
+import type {
+  Deps,
+  DrBundleManifest,
+  DrRescueRequest,
+  DrRestoreRequest,
+  TenantRecoverComponent,
+  TenantRecoverMailboxMode,
+  TenantRecoverRequest,
+} from './deps.js';
 import type { EmbeddedScriptKey } from './embedded-scripts.js';
 import { scrubCreds } from './redact.js';
 import { drPreflight } from './dr-preflight.js';
@@ -25,6 +39,7 @@ export type ParseDrResult =
   | { ok: true; sub: 'verify'; bundlePath: string; ageKeyPath: string; ageBinary?: string }
   | { ok: true; sub: 'restore'; req: DrRestoreRequest }
   | { ok: true; sub: 'rescue'; req: DrRescueRequest }
+  | { ok: true; sub: 'tenant-restore'; req: TenantRecoverRequest }
   | { ok: false; code: number; message: string };
 
 type Fail = { ok: false; code: number; message: string };
@@ -165,16 +180,92 @@ function parseRescue(rest: string[]): ParseDrResult {
   return { ok: true, sub: 'rescue', req: { kubeconfig, label, volume } };
 }
 
+/** Components a tenant recover can pull (kept in sync with the api-contract enum). */
+const TENANT_RECOVER_COMPONENTS: readonly TenantRecoverComponent[] = ['files', 'mailboxes', 'config'];
+/** Mailbox merge strategies the recover route accepts. */
+const TENANT_RECOVER_MAILBOX_MODES: readonly TenantRecoverMailboxMode[] = [
+  'merge-skip-duplicates', 'merge-overwrite', 'replace',
+];
+
+const isTenantRecoverComponent = (c: string): c is TenantRecoverComponent =>
+  (TENANT_RECOVER_COMPONENTS as readonly string[]).includes(c);
+const isTenantRecoverMailboxMode = (m: string): m is TenantRecoverMailboxMode =>
+  (TENANT_RECOVER_MAILBOX_MODES as readonly string[]).includes(m);
+
+/**
+ * `dr tenant-restore` — one-button tenant DR recover. `--tenant <id>` is
+ * required; `--components` is a comma-separated subset of files|mailboxes|config
+ * (each validated), `--no-provision` sets `provision:false`, and `--mailbox-mode`
+ * is validated against the three merge strategies. Unknown flags / bad values
+ * are usage errors (exit 2) so nothing reaches the running API on a typo.
+ */
+function parseTenantRestore(rest: string[]): ParseDrResult {
+  let tenantId: string | undefined;
+  let bundleId: string | undefined;
+  let components: TenantRecoverComponent[] | undefined;
+  let mailboxMode: TenantRecoverMailboxMode | undefined;
+  let provision: boolean | undefined;
+
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    switch (a) {
+      case '--tenant': case '--bundle': case '--components': case '--mailbox-mode': {
+        const t = takeValue(rest, i, a);
+        if (!t.ok) return t;
+        switch (a) {
+          case '--tenant': tenantId = t.value; break;
+          case '--bundle': bundleId = t.value; break;
+          case '--components': {
+            const parts = t.value.split(',').map((s) => s.trim()).filter(Boolean);
+            if (parts.length === 0) {
+              return usage('dr tenant-restore: --components must be a comma-separated list of files|mailboxes|config');
+            }
+            const validated: TenantRecoverComponent[] = [];
+            for (const p of parts) {
+              if (!isTenantRecoverComponent(p)) {
+                return usage(`dr tenant-restore: unknown component '${p}' (expected files|mailboxes|config)`);
+              }
+              validated.push(p);
+            }
+            components = validated;
+            break;
+          }
+          case '--mailbox-mode': {
+            if (!isTenantRecoverMailboxMode(t.value)) {
+              return usage(`dr tenant-restore: --mailbox-mode must be one of ${TENANT_RECOVER_MAILBOX_MODES.join('|')} (got ${t.value})`);
+            }
+            mailboxMode = t.value;
+            break;
+          }
+        }
+        i++;
+        break;
+      }
+      case '--no-provision':
+        provision = false;
+        break;
+      case '--json':
+        break; // formatting flag, consumed by the command layer
+      default:
+        return usage(`dr tenant-restore: unknown argument '${a}'`);
+    }
+  }
+  if (!tenantId) return usage('dr tenant-restore: --tenant <id> is required');
+  const req: TenantRecoverRequest = { tenantId, bundleId, components, mailboxMode, provision };
+  return { ok: true, sub: 'tenant-restore', req };
+}
+
 export function parseDrArgs(args: string[]): ParseDrResult {
   const [sub, ...rest] = args;
   switch (sub) {
     case 'verify': return parseVerify(rest);
     case 'restore': return parseRestore(rest);
     case 'rescue': return parseRescue(rest);
+    case 'tenant-restore': return parseTenantRestore(rest);
     case undefined:
-      return usage('dr: expected a subcommand (verify | restore | rescue)');
+      return usage('dr: expected a subcommand (verify | restore | rescue | tenant-restore)');
     default:
-      return usage(`dr: unknown subcommand '${sub}' (expected verify | restore | rescue)`);
+      return usage(`dr: unknown subcommand '${sub}' (expected verify | restore | rescue | tenant-restore)`);
   }
 }
 
@@ -275,6 +366,40 @@ async function rescueCommand(req: DrRescueRequest, json: boolean, deps: Deps): P
   return 0;
 }
 
+/**
+ * `dr tenant-restore` — call the recover seam and render its outcome. On success
+ * the seam returns the route's response `data` (cartId, bundleId, components,
+ * provisioned, status); print a human summary or, with --json, the raw result.
+ * Failure → errorCode (label-only in --json; detail to stderr) + exit 1.
+ */
+async function tenantRestoreCommand(req: TenantRecoverRequest, json: boolean, deps: Deps): Promise<number> {
+  const outcome = await deps.tenantRecover(req);
+  if (!outcome.ok) {
+    // Label only in JSON — detail (scrubbed by the seam) goes to stderr.
+    if (json) deps.out(JSON.stringify({ ok: false, errorCode: outcome.errorCode ?? 'UNEXPECTED' }));
+    deps.err(`dr tenant-restore: ${outcome.errorCode ?? 'UNEXPECTED'}${outcome.detail ? ` — ${outcome.detail}` : ''}`);
+    return 1;
+  }
+  if (json) {
+    deps.out(JSON.stringify({ ok: true, result: outcome.json }));
+    return 0;
+  }
+  const data = (outcome.json ?? {}) as {
+    cartId?: string;
+    bundleId?: string;
+    status?: string;
+    components?: readonly string[];
+    provisioned?: boolean;
+  };
+  deps.out(`Tenant DR recover accepted for tenant ${req.tenantId}.`);
+  if (data.bundleId) deps.out(`  bundle:       ${data.bundleId}`);
+  if (data.cartId) deps.out(`  restore cart: ${data.cartId}`);
+  if (data.components?.length) deps.out(`  components:   ${data.components.join(', ')}`);
+  if (data.provisioned !== undefined) deps.out(`  provisioned:  ${data.provisioned ? 'yes' : 'no'}`);
+  if (data.status) deps.out(`  status:       ${data.status}`);
+  return 0;
+}
+
 // Node-level component restores from the backup-rclone-shim. The proven bash
 // (scripts/restore-*-from-shim.sh) is embedded as a SEA asset and launched
 // verbatim — ONE source of truth, no TS re-port of complex/destructive CNPG/k3s
@@ -321,5 +446,6 @@ export async function drCommand(args: string[], deps: Deps): Promise<number> {
   const json = args.includes('--json');
   if (parsed.sub === 'verify') return verifyCommand(parsed, json, deps);
   if (parsed.sub === 'restore') return restoreCommand(parsed, json, deps);
+  if (parsed.sub === 'tenant-restore') return tenantRestoreCommand(parsed.req, json, deps);
   return rescueCommand(parsed.req, json, deps);
 }

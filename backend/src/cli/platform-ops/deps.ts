@@ -379,6 +379,41 @@ export interface DomainRenameOutcome {
   readonly detail?: string;
 }
 
+// ── Tenant DR recover (one-button; wraps POST /admin/dr/tenants/:id/recover) ───
+/** Restorable component kinds a tenant DR recover can pull from a bundle. */
+export type TenantRecoverComponent = 'files' | 'mailboxes' | 'config';
+/** Mailbox merge strategy for the recovered mailboxes item. */
+export type TenantRecoverMailboxMode = 'merge-skip-duplicates' | 'merge-overwrite' | 'replace';
+
+/** Inputs for `dr tenant-restore` — forwarded to the recover route as its body. */
+export interface TenantRecoverRequest {
+  /** Target tenant (`tenants.id`); goes in the URL, not the body. */
+  readonly tenantId: string;
+  /** Bundle to recover from. Omit → the tenant's newest COMPLETED bundle. */
+  readonly bundleId?: string;
+  /** Components to recover. Omit → all present (completed) in the bundle. */
+  readonly components?: readonly TenantRecoverComponent[];
+  /** Mailbox merge strategy. Omit → route default (`merge-skip-duplicates`). */
+  readonly mailboxMode?: TenantRecoverMailboxMode;
+  /** Forward-compat node hint (route does not yet act on it). */
+  readonly targetNode?: string;
+  /** Re-provision the namespace/PVC first. Omit → route default (`true`). */
+  readonly provision?: boolean;
+  /** Path to a kubeconfig for the exec; falls back to in-cluster resolution. */
+  readonly kubeconfig?: string;
+}
+
+/** Outcome of `dr tenant-restore` — never thrown; failures map to errorCode. */
+export interface TenantRecoverOutcome {
+  readonly ok: boolean;
+  /** The recover route's response `data` on success (cartId, status, …). */
+  readonly json?: unknown;
+  /** Stable error label on failure (the route's error code, or a local one). */
+  readonly errorCode?: string;
+  /** Diagnostic detail for the operator terminal (stderr), never a public log. */
+  readonly detail?: string;
+}
+
 export interface Deps {
   env: NodeJS.ProcessEnv;
   /** Write a line to stdout. */
@@ -441,6 +476,15 @@ export interface Deps {
    * NEVER throws.
    */
   renameDomain: (opts: { newApex: string; kubeconfig?: string }) => Promise<DomainRenameOutcome>;
+  /**
+   * Drive the one-button tenant DR recover route by exec-ing the in-pod
+   * entrypoint (`node dist/cli/dr-tenant-recover.js`) in a RUNNING platform-api
+   * pod — it mints a short-lived admin token from the pod's JWT_SECRET and POSTs
+   * to `POST /admin/dr/tenants/:id/recover` on the local server, so the whole
+   * provision→cart→execute orchestration runs through the real API path. The
+   * request JSON is piped on stdin (nothing sensitive in argv). NEVER throws.
+   */
+  tenantRecover: (req: TenantRecoverRequest) => Promise<TenantRecoverOutcome>;
   /**
    * Run a `backup target` operation by exec-ing the in-pod entrypoint
    * (`node dist/cli/backup-target.js <args>`) in the platform-api pod — it reuses
@@ -716,6 +760,36 @@ async function realRenameDomain(
   }
 }
 
+async function realTenantRecover(
+  env: NodeJS.ProcessEnv,
+  req: TenantRecoverRequest,
+): Promise<TenantRecoverOutcome> {
+  // The recover request is piped as JSON on stdin (nothing sensitive in argv);
+  // `kubeconfig` is a host-side exec hint and is NOT forwarded into the pod.
+  const { kubeconfig, ...body } = req;
+  const r = await execApiPodNode(env, kubeconfig, ['dist/cli/dr-tenant-recover.js'], JSON.stringify(body));
+  if (r.timedOut) return { ok: false, errorCode: 'TIMEOUT', detail: 'kubectl exec into platform-api timed out after 60s (pod not ready?)' };
+  const line = lastJsonLine(r.stdout);
+  if (r.code === 0) {
+    // Success: the in-pod script printed the route's `{ data: {…} }` envelope.
+    try {
+      const j = JSON.parse(line) as { data?: unknown };
+      return { ok: true, json: j.data ?? j };
+    } catch {
+      return { ok: false, errorCode: 'RECOVER_FAILED', detail: scrubCreds(r.stdout.trim() || r.stderr.trim()) };
+    }
+  }
+  // Non-zero: on a route rejection the in-pod script prints the
+  // `{ error: { code, message } }` envelope on stdout — lift its stable code.
+  try {
+    const j = JSON.parse(line) as { error?: { code?: string; message?: string } };
+    if (j.error?.code) return { ok: false, errorCode: j.error.code, detail: scrubCreds(j.error.message ?? '') };
+  } catch {
+    // fall through to the raw exec failure
+  }
+  return { ok: false, errorCode: 'RECOVER_FAILED', detail: scrubCreds((r.stderr || r.stdout).trim()) || `kubectl exec exited ${r.code}` };
+}
+
 async function realBackupTarget(
   env: NodeJS.ProcessEnv,
   args: string[],
@@ -834,6 +908,7 @@ export function realDeps(): Deps {
     rollback: realRollbackOps(env),
     resetAdminPassword: (opts) => realResetAdminPassword(env, opts),
     renameDomain: (opts) => realRenameDomain(env, opts),
+    tenantRecover: (req) => realTenantRecover(env, req),
     backupTarget: (args, stdin) => realBackupTarget(env, args, stdin),
     mailRotateMaster: (opts) => realMailRotateMaster(env, opts),
     readStdin: async () => {
