@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.10] - 2026-07-05
+
 ### Added
 - **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
   `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
