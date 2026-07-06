@@ -42,6 +42,16 @@ export const drRecoverRequestSchema = z.object({
   mailboxMode: mailboxRestoreModeSchema.optional(),
   /** Re-provision namespace/PVC/file-manager before restoring. Default `true`. */
   provision: z.boolean().optional(),
+  /**
+   * Run the post-restore reconcile (rebuild ingress + regenerate mail DKIM +
+   * redeploy workloads). Omit → AUTO: runs only when this call re-created a
+   * deleted tenant (fresh, empty namespace — always safe). Set `true` to FORCE
+   * it for an EXISTING tenant that lost its namespace to a dead node (node-loss
+   * recovery) — this redeploys the tenant's workloads, so only use it when the
+   * namespace is gone, NOT to restore data into a healthy running tenant. Set
+   * `false` to skip it even on a re-create.
+   */
+  reconcile: z.boolean().optional(),
 });
 export type DrRecoverRequest = z.infer<typeof drRecoverRequestSchema>;
 
