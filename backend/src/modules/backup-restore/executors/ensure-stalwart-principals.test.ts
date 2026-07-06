@@ -7,18 +7,24 @@ vi.mock('../../stalwart-jmap/client.js', () => ({
   findMailboxByEmail: vi.fn(),
   createMailbox: vi.fn(),
   getJmapSession: vi.fn(),
+  findDomainByName: vi.fn(),
+  createDomain: vi.fn(),
 }));
 
 import {
   findMailboxByEmail,
   createMailbox,
   getJmapSession,
+  findDomainByName,
+  createDomain,
 } from '../../stalwart-jmap/client.js';
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 
 const findMock = findMailboxByEmail as unknown as ReturnType<typeof vi.fn>;
 const createMock = createMailbox as unknown as ReturnType<typeof vi.fn>;
 const sessionMock = getJmapSession as unknown as ReturnType<typeof vi.fn>;
+const domFindMock = findDomainByName as unknown as ReturnType<typeof vi.fn>;
+const domCreateMock = createDomain as unknown as ReturnType<typeof vi.fn>;
 
 function makeApp(dbRows: Array<{
   id: string;
@@ -32,9 +38,18 @@ function makeApp(dbRows: Array<{
   return {
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     db: {
+      // `where` returns a thenable that ALSO exposes `.limit` so both the
+      // mailboxes prefetch (`await …where()`) and the domain back-fill
+      // (`…where().limit(1)`) resolve against the same mock.
       select: vi.fn(() => ({
         from: vi.fn(() => ({
-          where: vi.fn().mockResolvedValue(dbRows),
+          where: vi.fn(() => {
+            const p = Promise.resolve(dbRows) as Promise<typeof dbRows> & {
+              limit?: (n: number) => Promise<typeof dbRows>;
+            };
+            p.limit = () => Promise.resolve(dbRows);
+            return p;
+          }),
         })),
       })),
       update: vi.fn(() => ({
@@ -57,6 +72,9 @@ describe('ensureStalwartPrincipals', () => {
     sessionMock.mockResolvedValue({
       primaryAccounts: { 'urn:ietf:params:jmap:principals': 'acct-principals' },
     });
+    // Default: the mailbox's domain principal already exists in Stalwart, so
+    // the domain-ensure step is a no-op for the mailbox-focused tests below.
+    domFindMock.mockResolvedValue({ id: 'dom-existing', type: 'domain', name: 'example.com' });
   });
 
   it('reports existing for principals already in Stalwart', async () => {
@@ -118,6 +136,39 @@ describe('ensureStalwartPrincipals', () => {
       expect(result.outcomes[0].reason).toContain('config-tables');
     }
     expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it('creates the Stalwart DOMAIN principal when missing before the mailbox (DR re-create)', async () => {
+    // Domain principal absent in Stalwart (deleted-tenant re-create) → create it.
+    domFindMock.mockResolvedValue(null);
+    domCreateMock.mockResolvedValue({ id: 'dom-new', type: 'domain', name: 'reborn.test' });
+    // Mailbox principal also absent but DB row present → recreate it too.
+    findMock.mockResolvedValue(null);
+    createMock.mockResolvedValue({ id: 'stw-new', type: 'individual', name: 'user@reborn.test', emails: ['user@reborn.test'] });
+    const app = makeApp([{
+      id: 'mb-d',
+      fullAddress: 'user@reborn.test',
+      stalwartPrincipalId: null,
+      displayName: null,
+      quotaMb: 0,
+    }]);
+
+    const result = await ensureStalwartPrincipals({ app, addresses: ['user@reborn.test'] });
+
+    // Domain created with the bare domain name (not the address) BEFORE the
+    // mailbox, so createMailbox can validate the local part against it.
+    expect(domCreateMock).toHaveBeenCalledOnce();
+    expect(domCreateMock.mock.calls[0]![0]).toMatchObject({ input: { type: 'domain', name: 'reborn.test' } });
+    expect(result.recreated).toBe(1);
+    expect(result.outcomes[0]?.status).toBe('recreated');
+  });
+
+  it('does NOT create a domain when it already exists in Stalwart', async () => {
+    domFindMock.mockResolvedValue({ id: 'dom-existing', type: 'domain', name: 'example.com' });
+    findMock.mockResolvedValue({ id: 'stw-1', type: 'individual', name: 'a@example.com', emails: ['a@example.com'] });
+    const app = makeApp([]);
+    await ensureStalwartPrincipals({ app, addresses: ['a@example.com'] });
+    expect(domCreateMock).not.toHaveBeenCalled();
   });
 
   it('throws STALWART_UNAVAILABLE if JMAP session fails', async () => {
