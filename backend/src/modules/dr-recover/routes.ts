@@ -376,15 +376,17 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const execBody = JSON.parse(execRes.body) as { data?: { status?: RestoreJobStatus } };
     const status: RestoreJobStatus = execBody.data?.status ?? 'executing';
 
-    // ── 8. Post-restore reconcile (RE-CREATE path only). A re-created tenant
-    //       has a fresh namespace with NOTHING running; best-effort re-establish
-    //       ingress + mail DKIM + workloads from the just-restored rows so it
-    //       comes back live in this one click. Gated on `recreated` so a normal
-    //       recover into a LIVE tenant never disruptively redeploys its running
-    //       workloads. Never fails the recover — on error we keep the static
-    //       re-create gaps. See `./reconcile.ts`.
+    // ── 8. Post-restore reconcile. Best-effort re-establish of ingress + mail
+    //       DKIM + workloads from the just-restored rows, so a recovered tenant
+    //       comes back live in this one click. AUTO on the re-create path (fresh
+    //       empty namespace — always safe); the operator can FORCE it via
+    //       `reconcile: true` for an existing tenant that lost its namespace to a
+    //       dead node, or suppress it with `reconcile: false`. Default keeps a
+    //       normal recover into a LIVE tenant from disruptively redeploying its
+    //       running workloads. Never fails the recover. See `./reconcile.ts`.
+    const runReconcile = status === 'done' && (input.reconcile ?? recreated);
     let reconcile: DrRecoverResponse['reconcile'];
-    if (recreated && status === 'done') {
+    if (runReconcile) {
       try {
         const { reconcileRecoveredTenant } = await import('./reconcile.js');
         const rec = await reconcileRecoveredTenant(app, tenantId);

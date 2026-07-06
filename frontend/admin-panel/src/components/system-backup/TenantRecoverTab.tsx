@@ -92,6 +92,9 @@ export default function TenantRecoverTab() {
   );
   const [mailboxMode, setMailboxMode] = useState<MailboxRestoreMode>('merge-skip-duplicates');
   const [provision, setProvision] = useState(true);
+  // Force the post-restore reconcile for an EXISTING tenant that lost its
+  // namespace (node loss). Auto-runs on a re-create regardless of this toggle.
+  const [forceReconcile, setForceReconcile] = useState(false);
 
   const recover = useRecoverTenantFromBundle();
   const result = recover.data?.data ?? null;
@@ -122,6 +125,7 @@ export default function TenantRecoverTab() {
       ...(targetNode.trim() ? { targetNode: targetNode.trim() } : {}),
       ...(allThreeSelected ? {} : { components: selected }),
       ...(mailboxesSelected ? { mailboxMode } : {}),
+      ...(forceReconcile ? { reconcile: true } : {}),
     };
     try {
       await recover.mutateAsync({ tenantId: tenantId.trim(), input });
@@ -265,6 +269,26 @@ export default function TenantRecoverTab() {
               Re-provision namespace / PVC before restoring
               <span className="block text-xs text-gray-500 dark:text-gray-400">
                 Required after cluster loss or deletion; safe to leave on.
+              </span>
+            </span>
+          </label>
+
+          <label className="flex items-center gap-2 self-end pb-2 sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={forceReconcile}
+              onChange={(e) => setForceReconcile(e.target.checked)}
+              disabled={recover.isPending}
+              data-testid="dr-recover-force-reconcile"
+              className="rounded disabled:opacity-50"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              Re-establish services after restore (ingress, mail signing, workloads)
+              <span className="block text-xs text-gray-500 dark:text-gray-400">
+                Auto-runs when re-creating a deleted tenant. Check this to also reconcile an
+                <span className="font-medium"> existing </span>
+                tenant that lost its namespace to a dead node — it redeploys workloads, so leave it
+                OFF when restoring data into a healthy, running tenant.
               </span>
             </span>
           </label>

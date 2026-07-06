@@ -203,9 +203,14 @@ else
 fi
 
 cyn "5. RECOVER from offsite bundle via DR orchestrator route"
+RARGS="\"bundleId\":\"$BID\""
 # G2: when TARGET_NODE is set, ask the recover route to place the tenant there.
-RBODY="{\"bundleId\":\"$BID\"}"
-[[ -n "${TARGET_NODE:-}" ]] && { RBODY="{\"bundleId\":\"$BID\",\"targetNode\":\"$TARGET_NODE\"}"; echo "  targetNode=$TARGET_NODE"; }
+[[ -n "${TARGET_NODE:-}" ]] && { RARGS="$RARGS,\"targetNode\":\"$TARGET_NODE\""; echo "  targetNode=$TARGET_NODE"; }
+# Node-loss (non-recreate): the tenant row survived but its namespace was lost, so
+# FORCE the post-restore reconcile to rebuild ingress + DKIM + workloads. The
+# recreate path auto-reconciles, so the flag is only needed here.
+[[ -z "${RECREATE:-}" ]] && { RARGS="$RARGS,\"reconcile\":true"; echo "  reconcile=true (node-loss)"; }
+RBODY="{$RARGS}"
 parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "$RBODY" "$TOKEN")"
 [[ "$STATUS" =~ ^20 ]] || { no "recover route $STATUS"; echo "$BODY"|rd; exit 1; }
 CID=$(printf '%s' "$BODY"|jq -r '.data.cartId // .data.id // empty')
@@ -229,21 +234,21 @@ if [[ -n "${RECREATE:-}" ]]; then
   st2=""; for i in $(seq 1 60); do st2=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.status // empty'); [[ "$st2" == active ]] && break; sleep 3; done
   [[ "$st2" == active ]] && ok "re-create: tenant $TENANT_ID is back + active (original id preserved)" || no "re-create: tenant not active after recover ($st2)"
   NS=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.kubernetesNamespace')
-  # Post-restore reconcile (recreate path only): assert the recover auto-closed
-  # the platform-side gaps — ingress rebuilt, mail DKIM re-signed, workloads
-  # redeployed — from the report the recover route returned.
-  if [[ -n "$RECON" ]]; then
-    RING=$(printf '%s' "$RECON"|jq -r '.ingress'); RDK=$(printf '%s' "$RECON"|jq -r '.mail.dkimRegenerated'); RMF=$(printf '%s' "$RECON"|jq -r '.mail.failed')
-    RWR=$(printf '%s' "$RECON"|jq -r '.workloads.redeployed'); RWF=$(printf '%s' "$RECON"|jq -r '.workloads.failed')
-    [[ "$RING" != failed ]] && ok "RECONCILE: ingress=$RING (not failed)" || no "RECONCILE: ingress reconcile failed"
-    [[ "${RDK:-0}" -ge 1 && "${RMF:-0}" -eq 0 ]] && ok "RECONCILE: mail DKIM re-signed $RDK domain(s), 0 failed" || no "RECONCILE: mail dkim=$RDK failed=$RMF"
-    [[ "${RWR:-0}" -ge 1 && "${RWF:-0}" -eq 0 ]] && ok "RECONCILE: workloads redeployed=$RWR, 0 failed" || no "RECONCILE: workloads redeployed=$RWR failed=$RWF"
-    wait_wl_pod "$WLNAME" && ok "WORKLOAD: $WLNAME redeployed + pod Running after recover" || no "WORKLOAD: $WLNAME pod not Running after recover"
-  else
-    no "RECONCILE: no reconcile report in recover response (expected on recreate+done)"
-  fi
 fi
 wait_ns && wait_pvc && ensure_fm || { no "file-manager not back after recover"; exit 1; }
+# Post-restore reconcile — runs on the RECREATE path (auto) AND the node-loss path
+# (reconcile:true forced above). Assert the recover auto-closed the platform-side
+# gaps: ingress rebuilt, mail DKIM re-signed, workloads redeployed + pod Running.
+if [[ -n "$RECON" ]]; then
+  RING=$(printf '%s' "$RECON"|jq -r '.ingress'); RDK=$(printf '%s' "$RECON"|jq -r '.mail.dkimRegenerated'); RMF=$(printf '%s' "$RECON"|jq -r '.mail.failed')
+  RWR=$(printf '%s' "$RECON"|jq -r '.workloads.redeployed'); RWF=$(printf '%s' "$RECON"|jq -r '.workloads.failed')
+  [[ "$RING" != failed ]] && ok "RECONCILE: ingress=$RING (not failed)" || no "RECONCILE: ingress reconcile failed"
+  [[ "${RDK:-0}" -ge 1 && "${RMF:-0}" -eq 0 ]] && ok "RECONCILE: mail DKIM re-signed $RDK domain(s), 0 failed" || no "RECONCILE: mail dkim=$RDK failed=$RMF"
+  [[ "${RWR:-0}" -ge 1 && "${RWF:-0}" -eq 0 ]] && ok "RECONCILE: workloads redeployed=$RWR, 0 failed" || no "RECONCILE: workloads redeployed=$RWR failed=$RWF"
+  wait_wl_pod "$WLNAME" && ok "WORKLOAD: $WLNAME redeployed + pod Running after recover" || no "WORKLOAD: $WLNAME pod not Running after recover"
+else
+  no "RECONCILE: no reconcile report in recover response (expected on recreate OR reconcile:true)"
+fi
 GOT_SHA=$(fm_exec "sha256sum /data/site/index.html 2>/dev/null"|awk '{print $1}')
 [[ "$GOT_SHA" == "$ORIG_SHA" ]] && ok "FILES: site/index.html SHA matches ($GOT_SHA)" || no "FILES: SHA mismatch want=$ORIG_SHA got=$GOT_SHA"
 sleep 5; RCOUNT=$(jcount 2>/dev/null || echo 0)
