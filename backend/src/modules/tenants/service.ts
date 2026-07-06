@@ -61,9 +61,61 @@ export function toTenantResponse<T extends TenantRow>(row: T): TenantResponseSha
   return { ...rest, billingAddress } as TenantResponseShape & Omit<T, keyof TenantRow>;
 }
 
-export async function createTenant(db: Database, input: CreateTenantInput, createdBy: string) {
-  const id = crypto.randomUUID();
-  const namespace = generateNamespace(input.name);
+/**
+ * INTERNAL-only knobs for {@link createTenant}. Deliberately NOT part of the
+ * public `CreateTenantInput` / `POST /tenants` contract — these bypass the
+ * random-id + random-namespace generation and are only used by trusted
+ * server-side flows (DR re-create of a deleted tenant).
+ */
+export interface CreateTenantInternalOptions {
+  /**
+   * Preserve a SPECIFIC tenant id instead of a fresh `crypto.randomUUID()`.
+   * Essential for DR re-create: the per-tenant restic repo password is
+   * `HKDF(key, "restic-tenant-<id>")`, and bundle paths + config-component
+   * FKs are keyed on the original id — a new id would make every restored
+   * artefact unreachable. Must be a valid UUID that is NOT already present.
+   */
+  readonly tenantIdOverride?: string;
+  /**
+   * Preserve the tenant's ORIGINAL kubernetes namespace instead of deriving a
+   * fresh one. Required alongside {@link tenantIdOverride} for DR re-create:
+   * the `config` component restores the captured `tenants` row (including
+   * `kubernetes_namespace`) over the row created here, and the files/mailbox
+   * executors resolve the namespace fresh from that row. If provisioning used
+   * a freshly-generated namespace while config restored the original, the
+   * tenant row and the provisioned namespace/PVC would permanently drift.
+   */
+  readonly namespaceOverride?: string;
+}
+
+/** Matches RFC-4122 UUIDs (any version). Used to guard `tenantIdOverride`. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function createTenant(
+  db: Database,
+  input: CreateTenantInput,
+  createdBy: string,
+  opts: CreateTenantInternalOptions = {},
+) {
+  let id: string;
+  if (opts.tenantIdOverride !== undefined) {
+    if (!UUID_RE.test(opts.tenantIdOverride)) {
+      const err = new Error(`tenantIdOverride '${opts.tenantIdOverride}' is not a valid UUID`) as Error & { code?: string };
+      err.code = 'INVALID_TENANT_ID_OVERRIDE';
+      throw err;
+    }
+    const [existing] = await db.select({ id: tenants.id })
+      .from(tenants).where(eq(tenants.id, opts.tenantIdOverride)).limit(1);
+    if (existing) {
+      const err = new Error(`a tenant with id '${opts.tenantIdOverride}' already exists`) as Error & { code?: string };
+      err.code = 'TENANT_ID_EXISTS';
+      throw err;
+    }
+    id = opts.tenantIdOverride;
+  } else {
+    id = crypto.randomUUID();
+  }
+  const namespace = opts.namespaceOverride ?? generateNamespace(input.name);
 
   // Validate worker pin early so the error surfaces before we touch
   // k8s or write the tenant row.

@@ -188,10 +188,37 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const authHeader = request.headers.authorization;
     if (!authHeader) throw missingToken();
 
-    // ── 1. Tenant must exist ──────────────────────────────────────────────
+    // ── 1. Tenant must exist — OR be re-created from the bundle (S4) ───────
+    // When the tenant's DB row is ABSENT (hard-deleted, or this is a fresh
+    // target cluster), re-create it from the bundle's `meta.tenant` block —
+    // preserving the ORIGINAL tenantId + namespace — then fall through to the
+    // exact same provision + restore-cart flow. This is the cross-cluster /
+    // cheap-multi-region unlock. See `./recreate.ts`.
+    let recreated = false;
+    let residualGaps: string[] = [];
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     if (!tenant) {
-      throw new ApiError('TENANT_NOT_FOUND', `Tenant '${tenantId}' not found`, 404, { tenant_id: tenantId });
+      if (!input.bundleId) {
+        // Re-create needs an explicit bundle: with no local tenant AND no
+        // local backup_jobs rows (cascade-dropped on delete), there is no
+        // "newest bundle" to resolve — the operator must name the off-site
+        // bundle to recover from.
+        throw new ApiError(
+          'TENANT_NOT_FOUND',
+          `Tenant '${tenantId}' not found; DR re-create requires an explicit bundleId to recover from`,
+          404,
+          { tenant_id: tenantId },
+          'Pass the off-site bundleId to re-create this deleted tenant (preserving its original id).',
+        );
+      }
+      const { recreateTenantFromBundle } = await import('./recreate.js');
+      const result = await recreateTenantFromBundle(app, tenantId, input.bundleId, {
+        targetNode: input.targetNode,
+      });
+      recreated = true;
+      residualGaps = result.residualGaps;
+      // Fall through: §2 now finds the just-registered backup_jobs row, §3 its
+      // components, and the restore cart resolves the same off-site bundle.
     }
 
     // ── 2. Resolve the bundle ─────────────────────────────────────────────
@@ -358,6 +385,8 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
       components: [...applied],
       provisioned: shouldProvision,
       status,
+      recreated,
+      residualGaps,
     };
     reply.status(202).send(success(response));
   });

@@ -63,5 +63,20 @@ export const drRecoverResponseSchema = z.object({
   provisioned: z.boolean(),
   /** Terminal cart status reflected from the synchronous `/execute` call. */
   status: restoreJobStatusSchema,
+  /**
+   * True when the tenant's DB row was ABSENT and this call re-created it from
+   * the bundle's `meta.tenant` block (preserving the original tenantId +
+   * namespace) before running provision + restore — the S4 cross-cluster /
+   * cheap-multi-region unlock. False on the normal recover-an-existing-tenant
+   * path. See `backend/src/modules/dr-recover/recreate.ts`.
+   */
+  recreated: z.boolean(),
+  /**
+   * Human-readable residual manual steps the operator must still perform after
+   * a re-create+restore (empty on the normal path). Data + config are restored,
+   * but e.g. workloads are not auto-redeployed and mail principals may need a
+   * sync — the recover route cannot close these gaps on its own.
+   */
+  residualGaps: z.array(z.string()),
 });
 export type DrRecoverResponse = z.infer<typeof drRecoverResponseSchema>;
