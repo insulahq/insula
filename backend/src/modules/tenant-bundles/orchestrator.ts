@@ -472,6 +472,14 @@ export async function runBundle(
           sizeBytes: mailboxesResult.sizeBytes,
           mailboxCount: mailboxesResult.mailboxCount,
           addresses: [...mailboxesResult.addresses],
+          // Carry the restic snapshot id in meta.json too (not just the
+          // backup_components DB row) so DR re-create of a deleted tenant can
+          // repopulate it — the DB row is cascade-dropped with the tenant.
+          // Guarded to the executor's own id format so a malformed value can
+          // never fail meta serialization (→ omitted; older-bundle behaviour).
+          ...(mailboxesResult.snapshotId && /^[0-9a-f]{8,64}$/.test(mailboxesResult.snapshotId)
+            ? { sha256: mailboxesResult.snapshotId }
+            : {}),
         };
         // Persist Email/changes state AFTER the restic snapshot is
         // acked (ADR-047 — at-least-once: dedup makes re-pull harmless).

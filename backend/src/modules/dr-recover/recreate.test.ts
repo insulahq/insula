@@ -75,7 +75,7 @@ function makeMeta(overrides: Partial<BackupMetaV2> = {}): BackupMetaV2 {
     components: {
       config: { sizeBytes: 12, rowCount: 4 },
       files: { sizeBytes: 200, fileCount: 3, sha256: 'a'.repeat(64) },
-      mailboxes: { sizeBytes: 40, mailboxCount: 2, addresses: [] },
+      mailboxes: { sizeBytes: 40, mailboxCount: 2, addresses: [], sha256: 'b'.repeat(64) },
     },
     nodePlacement: null,
     expiresAt: null,
@@ -166,6 +166,13 @@ describe('recreateTenantFromBundle', () => {
     });
     const comps = inserts[1].values as Row[];
     expect(comps.map((c) => c.component).sort()).toEqual(['config', 'files', 'mailboxes']);
+    // The restic snapshot id from meta is repopulated onto backup_components.
+    // sha256 for BOTH files and mailboxes — the DB rows were cascade-dropped
+    // with the tenant, and the restore executors resolve the snapshot from
+    // this column (regression: mailboxes previously lacked it in meta).
+    const byName = Object.fromEntries(comps.map((c) => [c.component, c])) as Record<string, Row>;
+    expect(byName.files.sha256).toBe('a'.repeat(64));
+    expect(byName.mailboxes.sha256).toBe('b'.repeat(64));
 
     expect(result.residualGaps).toEqual([...DR_RECREATE_RESIDUAL_GAPS]);
   });
