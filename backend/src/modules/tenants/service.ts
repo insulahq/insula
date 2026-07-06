@@ -86,6 +86,16 @@ export interface CreateTenantInternalOptions {
    * tenant row and the provisioned namespace/PVC would permanently drift.
    */
   readonly namespaceOverride?: string;
+  /**
+   * Skip auto-creating the placeholder `tenant_admin` user. DR re-create sets
+   * this because the `config` component restores the tenant's ORIGINAL users
+   * (with their original ids). If we also created a placeholder user with the
+   * tenant's primary email, the config-tables restore's INSERT of the original
+   * user (different id, same email) hits `users_email_unique` and the whole
+   * restore aborts. With this flag the tenant is created user-less and the
+   * config restore populates the real users.
+   */
+  readonly skipAdminUser?: boolean;
 }
 
 /** Matches RFC-4122 UUIDs (any version). Used to guard `tenantIdOverride`. */
@@ -212,6 +222,13 @@ export async function createTenant(
   });
 
   const [created] = await db.select().from(tenants).where(eq(tenants.id, id));
+
+  // DR re-create: skip the placeholder admin user — the config restore brings
+  // back the ORIGINAL users; a placeholder with the same email would collide
+  // (users_email_unique) with that restore. No password is generated.
+  if (opts.skipAdminUser) {
+    return { ...toTenantResponse(created), _generatedPassword: '', _clientUserId: '' };
+  }
 
   // Auto-create tenant_admin user with generated password.
   //

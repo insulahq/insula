@@ -182,7 +182,11 @@ if [[ -n "${RECREATE:-}" ]]; then
   jmap_op destroy >/dev/null 2>&1 || true
   api DELETE "/tenants/$TENANT_ID" '' "$TOKEN" >/dev/null 2>&1 || true
   gone=""; for i in $(seq 1 80); do [[ "$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|tail -n1)" == 404 ]] && { gone=1; break; }; sleep 3; done
-  [[ -n "$gone" ]] && ok "tenant $TENANT_ID DELETED entirely (row+config+ns gone)" || { no "tenant not fully deleted"; exit 1; }
+  [[ -n "$gone" ]] && ok "tenant $TENANT_ID DELETED (row+config gone)" || { no "tenant row not deleted"; exit 1; }
+  # Same-cluster race: the tenant-delete removes the namespace ASYNC. Wait for it
+  # to FULLY terminate before recover re-provisions the same-named ns (a true
+  # cross-cluster recover onto a fresh cluster never hits this).
+  wait_ns_gone && ok "namespace $NS fully terminated" || { no "namespace $NS still terminating (would block re-provision)"; exit 1; }
 else
   ssh_node "kubectl delete ns $NS --wait=false" </dev/null 2>&1|rd || true
   wait_ns_gone && ok "namespace $NS deleted (files+PVC gone)" || { no "namespace not deleted"; exit 1; }
