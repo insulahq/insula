@@ -6,6 +6,7 @@ import { tenants, provisioningTasks, hostingPlans } from '../../db/schema.js';
 import { ensureFileManagerRunning } from '../file-manager/k8s-lifecycle.js';
 import { getFileManagerImage } from '../file-manager/image.js';
 import { translateOperatorError } from '../../shared/operator-error.js';
+import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import { JSON_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
@@ -704,6 +705,54 @@ export interface ProvisionOptions {
     readonly memory_limit?: string;
     readonly storage_limit?: string;
   };
+  /**
+   * Place this tenant's resources on a specific cluster node (gap G2). When
+   * set, the node is validated to exist BEFORE any mutation and persisted as
+   * `tenants.nodeName`, so the existing Local-tier placement (auto-pick below)
+   * is skipped and the deployment reconciler pins the tenant's workloads here;
+   * the file-manager pin is threaded separately into `ensureFileManagerRunning`.
+   */
+  readonly targetNode?: string;
+}
+
+/**
+ * Validate an operator-chosen target node EXISTS in the cluster, then persist
+ * it as `tenants.nodeName` (gap G2). Validation runs FIRST — no DB write until
+ * the node is confirmed present — mirroring `dr-restore`'s `preflightTargetNode`:
+ * pinning a tenant to a non-existent node would leave every tenant pod Pending
+ * forever with no clear signal, and would persist a pin we never verified.
+ *
+ * A PVC cannot itself carry a `nodeName`; its topology follows the pods that
+ * mount it (file-manager + tenant workloads, which now carry the pin), so the
+ * node choice is expressed purely through `tenants.nodeName` + the pod specs.
+ *
+ * Throws `ApiError TARGET_NODE_NOT_FOUND` (404) when the node is missing. Any
+ * other k8s error propagates unchanged so a transient API failure is never
+ * masked as "node not found".
+ */
+export async function applyTargetNodePlacement(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  targetNode: string,
+): Promise<void> {
+  try {
+    await k8s.core.readNode(
+      { name: targetNode } as unknown as Parameters<typeof k8s.core.readNode>[0],
+    );
+  } catch (err) {
+    if (isK8s404(err)) {
+      throw new ApiError(
+        'TARGET_NODE_NOT_FOUND',
+        `Target node '${targetNode}' not found in the cluster`,
+        404,
+        { targetNode },
+        'Pick a node listed by `kubectl get nodes` (or the worker-selector dropdown) and retry.',
+      );
+    }
+    throw err;
+  }
+  await db.update(tenants).set({ nodeName: targetNode }).where(eq(tenants.id, tenantId));
 }
 
 // ─── Task Tracker mirror ─────────────────────────────────────────────────────
@@ -906,15 +955,22 @@ export async function runProvisionNamespace(
   // Production tenants are NEVER matched.
   const storageClass = selectTenantStorageClass(namespace);
 
+  // Gap G2: the operator may pin this provisioning run to a specific node.
+  // When provided, we validate + persist it inside the try below (so a bad
+  // node fails the task cleanly) and pin the file-manager to it. The pin
+  // takes precedence over the Local-tier auto-pick.
+  const targetNode = options?.targetNode;
+
   // Auto-pick worker for Local tier when the operator chose "Auto"
-  // (nodeName=null). Local tier MUST run on a specific node
-  // because the single replica only exists there — without a pin,
-  // the next pod reschedule could land on a node with no replica
-  // and Longhorn would have to migrate the volume (slow + risky).
-  // HA tier with Auto stays null: the scheduler picks freely and
-  // dataLocality=best-effort drifts the primary toward the chosen
-  // node naturally.
-  if (!tenant.nodeName && tenant.storageTier !== 'ha') {
+  // (nodeName=null) AND did not pass an explicit targetNode. Local tier
+  // MUST run on a specific node because the single replica only exists
+  // there — without a pin, the next pod reschedule could land on a node
+  // with no replica and Longhorn would have to migrate the volume (slow +
+  // risky). HA tier with Auto stays null: the scheduler picks freely and
+  // dataLocality=best-effort drifts the primary toward the chosen node
+  // naturally. Skipped when targetNode is set so we never persist an
+  // auto-picked node that an unverified operator target would then override.
+  if (!tenant.nodeName && !targetNode && tenant.storageTier !== 'ha') {
     try {
       const { autoPickWorkerNode } = await import('../tenants/storage-placement-service.js');
       const picked = await autoPickWorkerNode(db, k8s);
@@ -980,6 +1036,18 @@ export async function runProvisionNamespace(
   };
 
   try {
+    // Gap G2: operator-chosen node placement. Validate the node EXISTS and
+    // persist it as tenants.nodeName BEFORE any cluster resource is created —
+    // a bad node throws here and the catch below marks the task 'failed' with
+    // a clear message (the DR-recover poller then sees a terminal status
+    // instead of spinning until timeout). On success the persisted nodeName
+    // drives the deployment reconciler's workload placement; the file-manager
+    // is pinned explicitly further down (a PVC cannot carry a nodeName).
+    if (targetNode) {
+      await applyTargetNodePlacement(db, k8s, tenantId, targetNode);
+      tenant.nodeName = targetNode;
+    }
+
     // Step 1: Create Namespace
     if (!(await guardTenantExists())) return;
     await updateProgress('Create Namespace', 'running');
@@ -1040,7 +1108,12 @@ export async function runProvisionNamespace(
     // Step 5: Start file-manager sidecar (Deployment + Service)
     if (!(await guardTenantExists())) return;
     await updateProgress('Start File Manager', 'running');
-    await ensureFileManagerRunning(k8s, namespace, getFileManagerImage());
+    // Gap G2: pin the file-manager to the operator-chosen node so it shares
+    // the tenant's RWO PVC on the same node the workloads are pinned to.
+    // Passing the default initialReplicas (0) explicitly since targetNode is
+    // the fifth argument. Omitting targetNode leaves FM unpinned (unchanged
+    // behaviour) — it relies on its preferred podAffinity as before.
+    await ensureFileManagerRunning(k8s, namespace, getFileManagerImage(), 0, targetNode);
     await updateProgress('Start File Manager', 'completed');
 
     // All done — mark task and tenant as provisioned

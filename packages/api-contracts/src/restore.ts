@@ -10,6 +10,7 @@ export const restoreItemTypeSchema = z.enum([
   'files-paths',
   'mailboxes-by-address',
   'deployments-by-id',
+  'databases-by-id',
   'domains-by-id',
   'config-tables',
 ]);
@@ -95,6 +96,28 @@ export const deploymentsSelectorSchema = z.union([
 ]);
 export type DeploymentsSelector = z.infer<typeof deploymentsSelectorSchema>;
 
+/**
+ * databases-by-id: restore a tenant's add-on database(s) from the
+ * per-database `.sql` dump captured inside the files snapshot
+ * (`databases/<deploymentName>/predump-<db>-<bundleId>.sql`, ADR-047).
+ *
+ *   { kind: 'all' }                     → every database deployment of
+ *                                         the tenant.
+ *   { kind: 'ids', deploymentIds: […] } → the given deployments, each
+ *                                         validated to belong to the
+ *                                         tenant AND be a `type='database'`
+ *                                         catalog deployment.
+ *
+ * The dumps ride on the `files` component — a `databases-by-id` item is
+ * only meaningful AFTER a `files-paths` restore has landed the `.sql`
+ * on the tenant PVC.
+ */
+export const databasesSelectorSchema = z.union([
+  z.object({ kind: z.literal('all') }),
+  z.object({ kind: z.literal('ids'), deploymentIds: z.array(uuidField).min(1).max(100) }),
+]);
+export type DatabasesSelector = z.infer<typeof databasesSelectorSchema>;
+
 export const domainsSelectorSchema = z.union([
   z.object({ kind: z.literal('all') }),
   z.object({ kind: z.literal('ids'), domainIds: z.array(uuidField).min(1).max(1000) }),
@@ -112,6 +135,7 @@ export const restoreItemPayloadSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('files-paths'), selector: filesPathsSelectorSchema }),
   z.object({ type: z.literal('mailboxes-by-address'), selector: mailboxesSelectorSchema }),
   z.object({ type: z.literal('deployments-by-id'), selector: deploymentsSelectorSchema }),
+  z.object({ type: z.literal('databases-by-id'), selector: databasesSelectorSchema }),
   z.object({ type: z.literal('domains-by-id'), selector: domainsSelectorSchema }),
   z.object({ type: z.literal('config-tables'), selector: configTablesSelectorSchema }),
 ]);

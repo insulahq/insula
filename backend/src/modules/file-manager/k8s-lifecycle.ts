@@ -43,12 +43,25 @@ function isK8s404(err: unknown): boolean {
  *     RWO PVC mount. With no workload pods, FM goes anywhere; the
  *     first workload that scales up afterwards will then pin to
  *     FM's node via the platform's normal node selection.
+ *
+ * `targetNode` (gap G2): when the operator provisions a tenant onto a
+ * specific node, FM gets a HARD `nodeSelector` (kubernetes.io/hostname)
+ * so it lands on the same node as the tenant workloads and shares the RWO
+ * PVC from the start — the preferred podAffinity above is too soft to win
+ * against a Running pod's residual placement. Omitted → FM stays unpinned
+ * and relies on the podAffinity (unchanged behaviour). The pin is stamped on
+ * CREATE and, when an EXPLICIT `targetNode` differs from an existing FM
+ * Deployment's pin (a re-provision onto a different node), the mismatch check
+ * below recreates FM with the new pin so a retry actually moves the pod (else
+ * the RWO PVC can't mount). The tier-change flow (`applyTenantTier`) also
+ * patches it.
  */
 export async function ensureFileManagerRunning(
   k8s: K8sClients,
   namespace: string,
   image: string,
   initialReplicas = 0,
+  targetNode?: string,
 ): Promise<void> {
   // Check if deployment exists
   let deployExists = false;
@@ -123,6 +136,11 @@ export async function ensureFileManagerRunning(
           template: {
             metadata: { labels: FM_LABELS },
             spec: {
+              // Gap G2: hard-pin FM to the operator-chosen node so it lands
+              // on the same node as the tenant workloads and shares the RWO
+              // `tenant-storage` PVC. Only added when targetNode is provided;
+              // otherwise FM stays unpinned (preferred podAffinity below).
+              ...(targetNode ? { nodeSelector: { 'kubernetes.io/hostname': targetNode } } : {}),
               // file-manager runs in the tenant namespace because it
               // mounts the tenant's RWO PVC, but it is platform infra,
               // not tenant workload — so it MUST NOT count against the
@@ -281,6 +299,12 @@ export async function ensureFileManagerRunning(
     const existingPullPolicy = templateSpec?.containers?.[0]?.imagePullPolicy ?? '';
     const existingCpuLim = templateSpec?.containers?.[0]?.resources?.limits?.cpu ?? '';
     const existingMemLim = templateSpec?.containers?.[0]?.resources?.limits?.memory ?? '';
+    // gap G2: the operator can re-provision onto a DIFFERENT node. `nodeSelector`
+    // isn't in the inline templateSpec type, so read it via a widening cast. Only
+    // an EXPLICIT targetNode drives a mismatch — when absent we never strip an
+    // existing pin (the no-targetNode path stays exactly as before).
+    const existingNodeHost = (templateSpec as { nodeSelector?: Record<string, string> } | undefined)
+      ?.nodeSelector?.['kubernetes.io/hostname'];
 
     const expectedPvcClaim = `${namespace}-storage`;
     // The SFTP jail mounts the tenant PVC at /jail/home via the pod spec and
@@ -319,8 +343,11 @@ export async function ensureFileManagerRunning(
     // → /files/start permanently no-op (caught by lifecycle-e2e
     // 2026-05-14: "FM did not become ready").
     const resourcesMismatch = existingMemLim !== '128Mi' || existingCpuLim !== '';
+    // Recreate when an explicit targetNode differs from the FM's current pin so a
+    // retry onto a different node moves the pod (else the RWO PVC can't mount).
+    const nodeSelectorMismatch = Boolean(targetNode) && existingNodeHost !== targetNode;
 
-    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch) {
+    if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch || nodeSelectorMismatch) {
       // Spec mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
       try {
         await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });

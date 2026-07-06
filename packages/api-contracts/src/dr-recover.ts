@@ -31,10 +31,11 @@ export const drRecoverRequestSchema = z.object({
   /** Components to recover. Omit → all present (completed) in the bundle. */
   components: z.array(drRecoverComponentSchema).min(1).optional(),
   /**
-   * Optional node hint. NOTE: the underlying provision endpoint
-   * (`triggerProvisionSchema`) does not yet accept a node target, so this is
-   * accepted for forward-compatibility but is NOT currently forwarded — see
-   * `backend/src/modules/dr-recover/routes.ts`.
+   * Optional node placement (gap G2). Forwarded into the provision step
+   * (`triggerProvisionSchema.targetNode`) so the recovered tenant's resources
+   * land on this specific cluster node — the provision endpoint validates the
+   * node exists and pins the tenant to it. Omit → the provisioner auto-picks.
+   * See `backend/src/modules/dr-recover/routes.ts`.
    */
   targetNode: z.string().min(1).optional(),
   /** Mailbox merge strategy for the mailboxes item. Default `merge-skip-duplicates`. */

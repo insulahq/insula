@@ -3565,6 +3565,7 @@ export const restoreItemTypeEnum = pgEnum('restore_item_type', [
   'files-paths',
   'mailboxes-by-address',
   'deployments-by-id',
+  'databases-by-id',
   'domains-by-id',
   'config-tables',
 ]);
