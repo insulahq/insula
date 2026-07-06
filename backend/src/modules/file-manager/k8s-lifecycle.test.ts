@@ -108,6 +108,41 @@ describe('File Manager K8s Lifecycle', () => {
       expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
     });
 
+    it('should recreate FM when an explicit targetNode differs from the existing pin (gap G2 retry)', async () => {
+      // A re-provision onto a DIFFERENT node must move the FM pod (else the RWO
+      // PVC can't mount from the wrong node). Existing FM pinned to node-a;
+      // provision with targetNode=node-b → delete + recreate with the new pin.
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { replicas: 1, template: { spec: {
+          nodeSelector: { 'kubernetes.io/hostname': 'node-a' },
+          volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+        } } },
+      });
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 0, 'node-b');
+      expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
+      expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
+    });
+
+    it('does NOT recreate FM for nodeSelector when no targetNode is provided (unchanged path)', async () => {
+      // Existing FM carries a nodeSelector but the caller passes NO targetNode —
+      // must not strip/recreate it (the no-targetNode path is unchanged).
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { replicas: 1, template: { spec: {
+          nodeSelector: { 'kubernetes.io/hostname': 'node-a' },
+          volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+        } } },
+      });
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
+      expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
+      expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
+    });
+
     it('should recreate if existing deployment carries the old 3-cap set (pre-/jail/home migration)', async () => {
       // Pods deployed by the prior PR (DAC_OVERRIDE/FOWNER/CHOWN only, no
       // SYS_CHROOT/SETUID/SETGID/MKNOD) must be force-recreated so they pick up
@@ -141,6 +176,24 @@ describe('File Manager K8s Lifecycle', () => {
       await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
       expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
+    });
+
+    it('pins the file-manager to targetNode via a hard nodeSelector when provided (gap G2)', async () => {
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest', 0, 'worker-2');
+      const call = (mockK8s.apps.createNamespacedDeployment as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        body: { spec: { template: { spec: { nodeSelector?: Record<string, string> } } } };
+      };
+      expect(call.body.spec.template.spec.nodeSelector).toEqual({ 'kubernetes.io/hostname': 'worker-2' });
+    });
+
+    it('leaves the file-manager unpinned (no nodeSelector) when targetNode is omitted', async () => {
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
+      const call = (mockK8s.apps.createNamespacedDeployment as ReturnType<typeof vi.fn>).mock.calls[0][0] as {
+        body: { spec: { template: { spec: { nodeSelector?: Record<string, string> } } } };
+      };
+      expect(call.body.spec.template.spec.nodeSelector).toBeUndefined();
     });
 
     it('should delete and recreate deployment if PVC claim is wrong', async () => {

@@ -243,6 +243,13 @@ RTO, notes. Redact identifiers._
   **assigned it to the `tenant` shim class** (the shim was `assignedClasses:[]` → capture got
   connection-refused until assigned). The first run's "imap-sync SSL EOF" was a cascade of the
   down shim, not a mail defect — it cleared once the shim served the class.
+- **DR tenant-restore E2E — GREEN 13/0 (STAGING, rc.10, 2026-07-06).** Same suite against the
+  shipped release (`backend:2026.7.1-rc.10`, Flux `a1ac0761`): capture completed → loss → recover
+  route (provisioned=true) → FILES SHA + all 12 mail restored. Now validated on BOTH DEV and the
+  release environment. First staging attempt failed at setup on a **stale `Succeeded` stalwart-probe
+  pod** (leftover from a prior mail test — `restartPolicy:Never` sleep ended; `kubectl apply` won't
+  recreate it, so `exec` failed → "mailbox never JMAP-reachable"). Harness fix: delete any
+  non-Running probe pod before applying a fresh one + a real Running assertion. Not a DR/mail defect.
 
 ---
 
@@ -274,19 +281,26 @@ recovering one tenant is a manual sequence: `provision` → re-deploy workloads 
 There is no single "recover this tenant (or all tenants) from the latest offsite bundle onto
 node X" action.
 
-**Gap G2 — no deleted-client re-create / target-node pick (blocks S4).** Restore-cart 404s if
-the tenant row is absent, and there is no target-node field (`RESTORE_SPECIFICATION.md` Phase 4.x
-is unimplemented). So **cross-cluster tenant migration (S4)** — restoring onto a *different*
-healthy cluster that never had the row — is not possible via the current API. This is the core
-missing primitive for the cheap-multi-region story.
+**Gap G2 — target-node pick ✅ IMPLEMENTED (2026-07-06); deleted-client re-create still open.**
+`provision` now accepts `targetNode` (validates the node exists, persists `tenants.nodeName`,
+stamps a `nodeSelector` on the file-manager pod so the tenant's data lands there), and the DR
+recover route forwards it — so a tenant can be recovered onto an operator-chosen node
+(`k8s-provisioner/service.ts:applyTargetNodePlacement`). **Still open:** restore-cart 404s if the
+tenant ROW is absent (`RESTORE_SPECIFICATION.md` Phase 4.x re-create-on-node), so **cross-cluster
+tenant migration (S4)** onto a *different* cluster that never had the row still needs the
+deleted-client re-create path. Target-node is the placement half; re-create is the remaining half.
+_Live validation of target-node pending (see §13)._
 
-**Gap G4 — no automated add-on-DB restore executor.** A tenant's add-on DB (MariaDB/Postgres)
-IS captured — `database-predump.ts` dumps it to `/exports/<name>-<iso>.sql`, folded into the
-files restic snapshot. But the restore-cart has **no `databases-by-id` executor** (types are
-only `files-paths | mailboxes-by-address | deployments-by-id | domains-by-id | config-tables`).
-So DB recovery today = restore the `.sql` via a `files-paths` item, then **manually re-import**.
-`deployments-by-id` restores only deployment metadata, not DB contents. The `platform-ops dr
-tenant-restore` orchestrator should close this by re-importing the dump after files restore.
+**Gap G4 — ✅ IMPLEMENTED (2026-07-06, on `development` → next RC).** A tenant's add-on DB
+(MariaDB/Postgres) IS captured — `database-predump.ts` dumps it to
+`databases/<deploy>/predump-<db>-<bundleId>.sql`, folded into the files restic snapshot. Added a
+new restore-cart item type **`databases-by-id`** (`executors/databases-by-id.ts`) that, after the
+`files-paths` restore lands the `.sql` on the PVC, re-imports each dump into the RUNNING DB pod via
+the existing `importSqlFromPvcFile` primitive. Exact-bundle dump matching (point-in-time), graceful
+skip when the DB workload isn't running / no dump (not a failure), fails only on a real import
+error. Wired into the recover route after `files-paths`. Needed enum migration `0068` (the
+`restore_items.type` column is a Postgres enum). _Live validation pending (needs a DB-restore
+harness — see §13)._
 
 **Gap G3 — DR restore is CLI/runbook only (S2/S3).** `dr-restore*.sh` / `integration-system-dr-drill.sh`
 are operator-run scripts; there is no admin-panel DR console showing "cluster lost → rebuild →
@@ -305,3 +319,35 @@ restore platform → restore N tenants" as guided, actionable steps with progres
 The drill (Phases 2–3) validates the data path with the primitives that exist **today**; these
 follow-ups turn a validated-but-manual runbook into the convenient operations the platform
 should ship.
+
+---
+
+## 13. Live-validation plan for G2 + G4 (next cycle)
+
+G2 (target-node) and G4 (`databases-by-id`) are implemented + unit-tested + reviewed, but — unlike
+the mail fix (a bug in a path the existing harness already drove) — they are **new capabilities
+that need new harness coverage** and a deploy (they ride the next RC). To validate live:
+
+- **G4 — add-on-DB restore round-trip** (new harness / extension). Seed a tenant with an add-on DB
+  (a catalog `type='database'` deployment) → insert **known rows** → capture a bundle (the `.sql`
+  predump lands in the files snapshot) → **change/drop the rows** (simulate corruption; keep the DB
+  workload RUNNING — the recover-route flow doesn't re-deploy workloads, so this targets the
+  *live-tenant DB restore* case) → restore-cart `databases-by-id {kind:'all'}` → **assert the rows
+  are back**. Registry tier `manual`.
+- **G2 — target-node placement.** Extend `integration-dr-tenant-restore-e2e.sh` with an optional
+  `TARGET_NODE` env: pass `targetNode` in the recover body → after recovery assert the tenant's
+  storage PVC + file-manager pod landed on that node (`kubectl get pod -o wide` / PV nodeAffinity).
+
+Both need the code deployed first (an RC, like the mail-fix cycle). Sequence: build the two harness
+pieces → cut an RC → run on staging → flip this section to validated.
+
+**Built + G4 DEV-validated (2026-07-06):** `integration-dr-database-restore-e2e.sh` (G4, new,
+**GREEN 11/0 on DEV**) + the `TARGET_NODE` extension of `integration-dr-tenant-restore-e2e.sh` (G2),
+both registered. **The G4 harness caught a real, pre-existing bug** — through three wrong predump-path
+theories: `databases/<deploy>/` → `exports/` (what the capture *intends*, but its `mv` is a silent
+no-op) → the **actual** `database/<engine>/<name>/` (the DB pod's own storage subPath, where the dump
+is stranded because `database-predump.ts` passes the wrong subPath; broken since ADR-047, latent
+because nothing restored DB dumps until now). Final executor is robust: `find`s the predump wherever
+it is + imports it in place. DEV run: deploy MariaDB → seed 25 rows → capture → delete rows →
+`databases-by-id` → 25 rows restored. Also: add-on DBs need a plan bigger than Starter (quota).
+Next: cut rc.11 → validate G4 + G2 (multi-node target-node test) on staging.

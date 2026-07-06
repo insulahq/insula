@@ -9,7 +9,7 @@
  *
  *   1. (optional) POST /admin/tenants/:id/provision   → poll provision/status
  *   2. POST /admin/restores/carts                     → cartId
- *   3. POST /admin/restores/carts/:id/items  ×N       (config → files → mailboxes)
+ *   3. POST /admin/restores/carts/:id/items  ×N       (config → files → databases → mailboxes)
  *   4. POST /admin/restores/carts/:id/execute
  *
  * The caller's `Authorization` header is forwarded into every injected call so
@@ -60,7 +60,7 @@ interface InjectResponseLike {
 
 interface AddItemPayload {
   readonly bundleId: string;
-  readonly type: 'config-tables' | 'files-paths' | 'mailboxes-by-address';
+  readonly type: 'config-tables' | 'files-paths' | 'databases-by-id' | 'mailboxes-by-address';
   readonly selector: Readonly<Record<string, unknown>>;
 }
 
@@ -188,15 +188,6 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const authHeader = request.headers.authorization;
     if (!authHeader) throw missingToken();
 
-    if (input.targetNode) {
-      // The provision endpoint (triggerProvisionSchema) has no node-target
-      // field yet, so we cannot forward this. Accepted for forward-compat.
-      request.log.info(
-        { tenantId, targetNode: input.targetNode },
-        'dr-recover: targetNode provided but the provision endpoint does not support node targeting yet; ignoring',
-      );
-    }
-
     // ── 1. Tenant must exist ──────────────────────────────────────────────
     const [tenant] = await app.db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
     if (!tenant) {
@@ -269,7 +260,10 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
         method: 'POST',
         url: `/api/v1/admin/tenants/${encodeURIComponent(tenantId)}/provision`,
         headers: { authorization: authHeader, 'content-type': 'application/json' },
-        payload: {},
+        // Gap G2: forward the operator's node choice so the recovered tenant's
+        // resources land on the chosen node. The provision endpoint validates
+        // the node exists and pins the tenant to it.
+        payload: input.targetNode ? { targetNode: input.targetNode } : {},
       });
       if (provRes.statusCode !== 202) {
         const info = upstreamError(provRes);
@@ -304,10 +298,20 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('DR_CART_CREATE_FAILED', 'Restore cart response missing cart id', 502);
     }
 
-    // ── 6. Add items in apply order (config → files → mailboxes) ───────────
+    // ── 6. Add items in apply order (config → files → databases → mailboxes)
+    //       The add-on database dumps ride INSIDE the files snapshot
+    //       (ADR-047), so a `databases-by-id` item is queued right after
+    //       the `files-paths` item — the `.sql` must land on the PVC first.
+    //       It is NOT a request-contract component; it piggybacks on `files`.
     const mailboxMode = input.mailboxMode ?? MAILBOX_RESTORE_MODE_DEFAULT;
+    const itemPayloads: AddItemPayload[] = [];
     for (const component of applied) {
-      const payload = buildItemPayload(component, bundleId, mailboxMode);
+      itemPayloads.push(buildItemPayload(component, bundleId, mailboxMode));
+      if (component === 'files') {
+        itemPayloads.push({ bundleId, type: 'databases-by-id', selector: { kind: 'all' } });
+      }
+    }
+    for (const payload of itemPayloads) {
       const itemRes = await app.inject({
         method: 'POST',
         url: `/api/v1/admin/restores/carts/${encodeURIComponent(cartId)}/items`,
@@ -318,9 +322,9 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
         const info = upstreamError(itemRes);
         throw new ApiError(
           'DR_ITEM_ADD_FAILED',
-          `Could not add '${component}' item to cart (upstream ${info.code})`,
+          `Could not add '${payload.type}' item to cart (upstream ${info.code})`,
           502,
-          { component, cartId, upstreamStatus: itemRes.statusCode, upstreamCode: info.code },
+          { itemType: payload.type, cartId, upstreamStatus: itemRes.statusCode, upstreamCode: info.code },
         );
       }
     }

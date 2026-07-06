@@ -19,6 +19,8 @@ function createMockK8sTenants(): K8sClients {
       createNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue({}),
       createNamespacedServiceAccount: vi.fn().mockResolvedValue({}),
       createNamespacedService: vi.fn().mockResolvedValue({}),
+      // Gap G2 node targeting: default to "node exists".
+      readNode: vi.fn().mockResolvedValue({ metadata: { name: 'worker-2' } }),
     } as unknown as K8sClients['core'],
     apps: {
       createNamespacedDeployment: vi.fn().mockResolvedValue({}),
@@ -289,6 +291,95 @@ describe('K8s Provisioner Service', () => {
       expect(labels['platform/owner']).toBe('tenant-abc12345');
       expect(labels['platform/canonical-name']).toBe('tenant-acme-abc12345-storage');
       expect(labels['platform/managed-by']).toBe('platform-api');
+    });
+  });
+
+  describe('applyTargetNodePlacement (gap G2 node targeting)', () => {
+    // Focused DB mock that records every `.set()` payload so we can assert
+    // whether tenants.nodeName was persisted (and that it was NOT persisted
+    // when validation fails).
+    function makeRecordingDb() {
+      const updateSets: Array<Record<string, unknown>> = [];
+      const db = {
+        updateSets,
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
+            updateSets.push(data);
+            return { where: vi.fn().mockResolvedValue(undefined) };
+          }),
+        }),
+      };
+      return db;
+    }
+
+    it('validates then persists tenants.nodeName when the target node exists', async () => {
+      const { applyTargetNodePlacement } = await import('./service.js');
+      const db = makeRecordingDb();
+      (mockK8s.core.readNode as ReturnType<typeof vi.fn>).mockResolvedValue({ metadata: { name: 'worker-2' } });
+
+      await applyTargetNodePlacement(
+        db as unknown as Parameters<typeof applyTargetNodePlacement>[0],
+        mockK8s,
+        'tenant-123',
+        'worker-2',
+      );
+
+      expect(mockK8s.core.readNode).toHaveBeenCalledWith(expect.objectContaining({ name: 'worker-2' }));
+      expect(db.updateSets).toEqual([{ nodeName: 'worker-2' }]);
+    });
+
+    it('throws TARGET_NODE_NOT_FOUND (404) and does NOT mutate when the node is missing', async () => {
+      const { applyTargetNodePlacement } = await import('./service.js');
+      const { ApiError } = await import('../../shared/errors.js');
+      const db = makeRecordingDb();
+      (mockK8s.core.readNode as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      );
+
+      await expect(
+        applyTargetNodePlacement(
+          db as unknown as Parameters<typeof applyTargetNodePlacement>[0],
+          mockK8s,
+          'tenant-123',
+          'ghost-node',
+        ),
+      ).rejects.toMatchObject({ code: 'TARGET_NODE_NOT_FOUND', status: 404 });
+
+      // Validation gates the persist — no DB write may happen on a bad node.
+      expect(db.update).not.toHaveBeenCalled();
+      expect(db.updateSets).toEqual([]);
+
+      // And it really is an ApiError (renders the operator-facing envelope).
+      (mockK8s.core.readNode as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 404'), { statusCode: 404 }),
+      );
+      await expect(
+        applyTargetNodePlacement(
+          db as unknown as Parameters<typeof applyTargetNodePlacement>[0],
+          mockK8s,
+          'tenant-123',
+          'ghost-node',
+        ),
+      ).rejects.toBeInstanceOf(ApiError);
+    });
+
+    it('propagates a non-404 k8s error unchanged (transient API failure ≠ node-not-found)', async () => {
+      const { applyTargetNodePlacement } = await import('./service.js');
+      const db = makeRecordingDb();
+      (mockK8s.core.readNode as ReturnType<typeof vi.fn>).mockRejectedValue(
+        Object.assign(new Error('HTTP-Code: 500\nMessage: apiserver unavailable'), { statusCode: 500 }),
+      );
+
+      await expect(
+        applyTargetNodePlacement(
+          db as unknown as Parameters<typeof applyTargetNodePlacement>[0],
+          mockK8s,
+          'tenant-123',
+          'worker-2',
+        ),
+      ).rejects.toThrow(/500/);
+      // A masked "not found" here would persist a pin we never verified.
+      expect(db.update).not.toHaveBeenCalled();
     });
   });
 
