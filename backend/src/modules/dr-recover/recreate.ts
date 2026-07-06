@@ -52,7 +52,7 @@ import type { BackupStore } from '../tenant-bundles/bundle-store.js';
  */
 export const DR_RECREATE_RESIDUAL_GAPS: readonly string[] = [
   'Workloads are NOT auto-redeployed: restored `deployments` rows exist but no pods are scheduled. Re-provision each workload (deployment reconciler) or redeploy it from the catalog.',
-  'Mail principals may be out of sync: restored `mailboxes` rows exist but the Stalwart directory may not yet hold the principals. If mail login fails, run the mailbox principal sync (ensure-stalwart-principals).',
+  'Mail SEND-readiness (DKIM/DNS) is NOT re-established: the mailboxes restore auto-heals the Stalwart domain + mailbox principals so messages are delivered and mail login works, but DKIM signing + mail DNS (MX/SPF/DKIM/DMARC) are not regenerated. Re-enable each email domain to restore outbound signing, then re-verify DNS.',
   'Cross-cluster DNS/ingress: verify `ingress_routes` resolve on this cluster — the CNAME chain + ingress IP differ per region, so client DNS may need updating.',
 ];
 

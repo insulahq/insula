@@ -35,8 +35,18 @@
 import type { FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
-import { mailboxes as mailboxesTable } from '../../../db/schema.js';
-import { createMailbox, findMailboxByEmail, getJmapSession } from '../../stalwart-jmap/client.js';
+import {
+  mailboxes as mailboxesTable,
+  emailDomains as emailDomainsTable,
+  domains as domainsTable,
+} from '../../../db/schema.js';
+import {
+  createDomain,
+  createMailbox,
+  findDomainByName,
+  findMailboxByEmail,
+  getJmapSession,
+} from '../../stalwart-jmap/client.js';
 import { ApiError } from '../../../shared/errors.js';
 
 type EnsureOutcome =
@@ -125,6 +135,77 @@ export async function ensureStalwartPrincipals(
   const dbByAddress = new Map<string, typeof dbRows[number]>();
   for (const row of dbRows) {
     dbByAddress.set(row.fullAddress.toLowerCase(), row);
+  }
+
+  // 2.5. Ensure the Stalwart DOMAIN principal exists for every address's
+  //      domain BEFORE creating any mailbox principal.
+  //
+  //      After a full tenant re-create (DR of a DELETED tenant) the config
+  //      restore brought back the `email_domains` row, but nothing recreated
+  //      the Stalwart domain principal — and the restored `stalwartDomainId`
+  //      is the SOURCE cluster's id, meaningless here. Without the domain
+  //      principal, `createMailbox` fails with "Invalid email local part"
+  //      (Stalwart can't validate an address against an unknown local domain).
+  //      Resolve by NAME (not the stale id); create if missing; back-fill the
+  //      row so principals-sync sees the correct id. Mirrors the domain half
+  //      of email-domains/service.ts:enableEmailForDomain (DKIM/DNS are a
+  //      documented residual gap — delivery only needs the principal).
+  const domainNames = [...new Set(
+    addresses
+      .map((a) => a.split('@')[1]?.toLowerCase())
+      .filter((d): d is string => !!d),
+  )];
+  for (const domainName of domainNames) {
+    try {
+      const existingDomain = await findDomainByName({
+        accountId: principalsAccountId,
+        domainName,
+        baseUrl: jmapBaseUrl,
+        env: process.env,
+      });
+      let stalwartDomainId = existingDomain?.id ?? null;
+      if (!stalwartDomainId) {
+        const created = await createDomain({
+          accountId: principalsAccountId,
+          baseUrl: jmapBaseUrl,
+          env: process.env,
+          input: { type: 'domain', name: domainName },
+        });
+        stalwartDomainId = created.id ?? null;
+        app.log.info(
+          { module: 'ensure-stalwart-principals', domainName, stalwartDomainId },
+          'recreated deleted Stalwart domain principal for restore',
+        );
+      }
+      // Best-effort back-fill of the stale source-cluster id. `email_domains`
+      // has no name column — resolve via its parent `domains` row (domainName
+      // is globally unique, so this maps to at most one email_domains row).
+      if (stalwartDomainId) {
+        const [domRow] = await app.db
+          .select({ id: domainsTable.id })
+          .from(domainsTable)
+          .where(eq(domainsTable.domainName, domainName))
+          .limit(1);
+        if (domRow) {
+          await app.db
+            .update(emailDomainsTable)
+            .set({ stalwartDomainId })
+            .where(eq(emailDomainsTable.domainId, domRow.id));
+        }
+      }
+    } catch (err) {
+      // Non-fatal here: a missing domain will surface as a per-address
+      // mailbox-create failure below with an actionable message. Log so the
+      // root cause (domain ensure) is visible in the server logs.
+      app.log.warn(
+        {
+          module: 'ensure-stalwart-principals',
+          domainName,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        'Stalwart domain principal ensure failed — mailbox creation may fail',
+      );
+    }
   }
 
   // 3. For each address, decide whether to recreate.
