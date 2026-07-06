@@ -183,7 +183,10 @@ jmap_op destroy | rd
 [[ "$(jcount)" == 0 ]] && ok "mailbox emptied (mail gone)" || { no "mailbox not emptied"; exit 1; }
 
 cyn "5. RECOVER from offsite bundle via DR orchestrator route"
-parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "{\"bundleId\":\"$BID\"}" "$TOKEN")"
+# G2: when TARGET_NODE is set, ask the recover route to place the tenant there.
+RBODY="{\"bundleId\":\"$BID\"}"
+[[ -n "${TARGET_NODE:-}" ]] && { RBODY="{\"bundleId\":\"$BID\",\"targetNode\":\"$TARGET_NODE\"}"; echo "  targetNode=$TARGET_NODE"; }
+parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "$RBODY" "$TOKEN")"
 [[ "$STATUS" =~ ^20 ]] || { no "recover route $STATUS"; echo "$BODY"|rd; exit 1; }
 CID=$(printf '%s' "$BODY"|jq -r '.data.cartId // .data.id // empty')
 [[ -n "$CID" ]] || { no "recover: no cartId in response: $BODY"; exit 1; }
@@ -201,6 +204,11 @@ GOT_SHA=$(fm_exec "sha256sum /data/site/index.html 2>/dev/null"|awk '{print $1}'
 [[ "$GOT_SHA" == "$ORIG_SHA" ]] && ok "FILES: site/index.html SHA matches ($GOT_SHA)" || no "FILES: SHA mismatch want=$ORIG_SHA got=$GOT_SHA"
 sleep 5; RCOUNT=$(jcount 2>/dev/null || echo 0)
 [[ "${RCOUNT:-0}" -ge "$COUNT" ]] && ok "MAIL: $RCOUNT messages restored (>= $COUNT)" || no "MAIL: only $RCOUNT restored (want >= $COUNT)"
+# G2: assert the recovered tenant's file-manager landed on the requested node.
+if [[ -n "${TARGET_NODE:-}" ]]; then
+  FMNODE=$(ssh_node "kubectl -n $NS get pod -l app=file-manager --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" </dev/null 2>/dev/null)
+  [[ "$FMNODE" == "$TARGET_NODE" ]] && ok "G2: file-manager placed on target node $TARGET_NODE" || no "G2: file-manager on '$FMNODE', expected '$TARGET_NODE'"
+fi
 
 cyn "RESULT: PASS=$pass FAIL=$fail"
 [[ "$fail" == 0 ]] && { grn "TENANT DR RESTORE: GREEN"; exit 0; } || { red "TENANT DR RESTORE: $fail failure(s)"; exit 1; }

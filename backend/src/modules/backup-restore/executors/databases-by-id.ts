@@ -3,15 +3,18 @@
  *
  * Recovers a tenant's add-on database(s) from the per-database `.sql`
  * dump captured INSIDE the files snapshot (ADR-047). The pre-capture
- * hook (`tenant-bundles/components/database-predump.ts`) writes one dump
- * per database to the tenant PVC at
+ * hook (`tenant-bundles/components/database-predump.ts` →
+ * `db-manager.ts:exportDatabaseToPvc`) dumps each database and MOVES it to
+ * the flat per-tenant exports dir on the tenant PVC:
  *
- *     databases/<deploymentName>/predump-<db>-<bundleId>.sql
+ *     exports/predump-<db>-<bundleId>.sql
  *
- * so after a `files-paths` restore lands the snapshot on the live PVC,
- * the `.sql` is already sitting next to the DB pod's data dir. This
- * executor then imports each dump back into the RUNNING database pod via
- * the existing SQL-Manager primitive `importSqlFromPvcFile` — it does NOT
+ * (exportDatabaseToPvc returns `/exports/<file>` — it `mv`s the dump out of
+ * the DB's data subPath into `exports/`). So after a `files-paths` restore
+ * lands the snapshot on the live PVC, the `.sql` sits in `exports/`. This
+ * executor then imports each dump back into the RUNNING database pod via the
+ * existing SQL-Manager primitive `importSqlFromPvcFile` (which copies the file
+ * from `exports/` into the deployment's own subPath for the pod) — it does NOT
  * re-invent the mysql/psql import path.
  *
  * Dump→bundle pinning: the pre-dump uses the backup job id as its
@@ -229,7 +232,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
     if (bundleDumps.length === 0) {
       outcomes.push(skippedOutcome(
         dep,
-        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected databases/${dep.deploymentName}/${DUMP_PREFIX}*${suffix})`,
+        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected exports/${DUMP_PREFIX}*${suffix})`,
       ));
       continue;
     }
@@ -246,8 +249,12 @@ export async function restoreDatabasesForDeployments<Ctx>(
       bySanitized.set(key, reals);
     }
 
-    // 4. Import each dump into its target database (import errors fail).
-    const dumpDir = `databases/${dep.deploymentName}`;
+    // 4. Import each dump into its target database (import errors fail). The
+    // predump lives in the flat per-tenant `exports/` dir; importSqlFromPvcFile
+    // copies it INTO the deployment's own subPath (databases/<deploy>) for the
+    // DB pod, so the source path is `exports/…` and the target subPath is the
+    // deployment's.
+    const importSubPath = `databases/${dep.deploymentName}`;
     const imported: string[] = [];
     const skipped: string[] = [];
     const failed: { database: string; error: string }[] = [];
@@ -266,7 +273,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
         continue;
       }
       const realDb = reals[0]!;
-      const res = await deps.importSql(ctx, realDb, `${dumpDir}/${file}`, dumpDir);
+      const res = await deps.importSql(ctx, realDb, `exports/${file}`, importSubPath);
       if (res.success) {
         imported.push(realDb);
       } else {
@@ -470,19 +477,23 @@ async function resolveTargetDeployments(
 }
 
 /**
- * List filenames directly under `databases/<deploymentName>/` on the
- * tenant PVC via the file-manager pod (which mounts the whole PVC at
- * `/data`). A missing directory returns `[]` — never throws. `ls` runs
- * as a bare argv (no shell), so the deployment name cannot inject.
+ * List predump filenames in the flat per-tenant `exports/` dir on the tenant
+ * PVC via the file-manager pod (which mounts the whole PVC at `/data`).
+ * `exportDatabaseToPvc` moves every predump there regardless of deployment, so
+ * the dir is the same for all of a tenant's databases; the caller filters by
+ * the `-<bundleId>.sql` suffix + maps each dump's db-name to the deployment's
+ * live databases. `deploymentName` is unused for the path (kept for the
+ * dep-scoped signature). A missing dir returns `[]` — never throws. `ls` runs
+ * as a bare argv (no shell).
  */
 async function listPredumpFiles(
   k8s: K8sClients,
   kubeconfigPath: string | undefined,
   namespace: string,
-  deploymentName: string,
+  _deploymentName: string,
 ): Promise<string[]> {
   const fmPod = await getReadyFileManagerPod(k8s, namespace);
-  const dir = `/data/databases/${deploymentName}`;
+  const dir = `/data/exports`;
   const res = await execInPod(kubeconfigPath, namespace, fmPod, 'file-manager', ['ls', '-1', dir]);
   if (res.exitCode !== 0) return [];
   return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
