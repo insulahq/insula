@@ -9,6 +9,14 @@ import { errorHandler } from '../../middleware/error-handler.js';
 // without touching the off-site store. recreate.ts is covered by recreate.test.ts.
 vi.mock('./recreate.js', () => ({ recreateTenantFromBundle: vi.fn() }));
 import { recreateTenantFromBundle } from './recreate.js';
+vi.mock('./reconcile.js', () => ({ reconcileRecoveredTenant: vi.fn() }));
+import { reconcileRecoveredTenant } from './reconcile.js';
+
+const RECONCILE_REPORT = {
+  ingress: 'reconciled' as const,
+  mail: { domainsTotal: 1, dkimRegenerated: 1, failed: 0 },
+  workloads: { total: 2, redeployed: 2, failed: 0 },
+};
 
 const JWT_SECRET = 'test-jwt-secret-for-dr-recover-routes';
 
@@ -446,8 +454,14 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       expect(vi.mocked(recreateTenantFromBundle)).not.toHaveBeenCalled();
     });
 
-    it('re-creates from the bundle then falls through to provision + restore', async () => {
+    it('re-creates from the bundle then falls through to provision + restore + reconcile', async () => {
       vi.mocked(recreateTenantFromBundle).mockResolvedValue({ residualGaps: ['redeploy workloads'] });
+      // On a done restore of a RE-CREATED tenant, the post-restore reconcile runs
+      // and its dynamic gaps supersede the static re-create gaps.
+      vi.mocked(reconcileRecoveredTenant).mockResolvedValue({
+        report: RECONCILE_REPORT,
+        residualGaps: ['Cross-cluster DNS: re-point client DNS at this cluster.'],
+      });
       // Queue after the (empty) tenant lookup: §2 bundle row, §3 components.
       const { app, calls, adminToken } = await setupApp([[], [BUNDLE], ALL_COMPONENTS]);
       const res = await app.inject({
@@ -459,7 +473,10 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       expect(res.statusCode).toBe(202);
       const body = JSON.parse(res.body).data;
       expect(body.recreated).toBe(true);
-      expect(body.residualGaps).toEqual(['redeploy workloads']);
+      // reconcile ran (recreated + done) → its report is attached + its gaps win.
+      expect(vi.mocked(reconcileRecoveredTenant)).toHaveBeenCalledWith(expect.anything(), 't-1');
+      expect(body.reconcile).toEqual(RECONCILE_REPORT);
+      expect(body.residualGaps).toEqual(['Cross-cluster DNS: re-point client DNS at this cluster.']);
       expect(body.bundleId).toBe('bundle-9');
 
       // Re-create ran with the path tenantId + explicit bundleId + node.

@@ -71,6 +71,16 @@ const CART_STATUS_BADGE: Record<RestoreJobStatus, string> = {
   failed: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
 };
 
+const RECONCILE_BADGE: Record<'ok' | 'bad' | 'muted', string> = {
+  ok: 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
+  bad: 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300',
+  muted: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300',
+};
+
+function reconcileBadgeClass(kind: 'ok' | 'bad' | 'muted'): string {
+  return `inline-block rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums ${RECONCILE_BADGE[kind]}`;
+}
+
 // ── Component ─────────────────────────────────────────────────────────
 
 export default function TenantRecoverTab() {
@@ -336,6 +346,35 @@ export default function TenantRecoverTab() {
                   preserved) before restore. Review the remaining manual steps below.
                 </p>
               </div>
+            </div>
+          )}
+
+          {result.reconcile && (
+            <div
+              className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-900/40"
+              data-testid="dr-recover-reconcile"
+            >
+              <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Auto-reconcile (post-restore)</h4>
+              <ul className="mt-1.5 space-y-1 text-sm text-gray-700 dark:text-gray-300">
+                <li className="flex items-center gap-2">
+                  <span className={reconcileBadgeClass(
+                    result.reconcile.ingress === 'reconciled' ? 'ok' : result.reconcile.ingress === 'failed' ? 'bad' : 'muted',
+                  )}>{result.reconcile.ingress}</span>
+                  Ingress routes rebuilt
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className={reconcileBadgeClass(result.reconcile.mail.failed > 0 ? 'bad' : 'ok')}>
+                    {result.reconcile.mail.dkimRegenerated}/{result.reconcile.mail.domainsTotal}
+                  </span>
+                  Mail domains DKIM-resigned{result.reconcile.mail.failed > 0 ? ` — ${result.reconcile.mail.failed} failed` : ''}
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className={reconcileBadgeClass(result.reconcile.workloads.failed > 0 ? 'bad' : 'ok')}>
+                    {result.reconcile.workloads.redeployed}/{result.reconcile.workloads.total}
+                  </span>
+                  Workloads redeployed{result.reconcile.workloads.failed > 0 ? ` — ${result.reconcile.workloads.failed} failed` : ''}
+                </li>
+              </ul>
             </div>
           )}
 

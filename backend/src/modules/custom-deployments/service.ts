@@ -475,6 +475,42 @@ export async function updateCustomDeployment(
   return getCustomDeployment(db, tenantId, id);
 }
 
+/**
+ * DR helper: redeploy a custom-deployment ROW's k8s workload from its stored
+ * spec, with NO spec change. Used by the DR recover reconcile to bring restored
+ * custom deployments back up on a re-created tenant — the `deployments` row +
+ * its `customSpec` jsonb survive the bundle restore, but the k8s Deployment does
+ * not. Reuses the exact create/update deploy path (loadTenantContext →
+ * deployToCluster) so image-pull secrets, storage, and node/quota placement are
+ * materialised identically to a normal deploy. Throws on a non-custom row or a
+ * spec-less row so the caller can record a per-workload failure.
+ */
+export async function redeployCustomDeploymentRow(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  row: typeof deployments.$inferSelect,
+): Promise<void> {
+  if (row.source !== 'custom' || !row.customSpec) {
+    throw new ApiError(
+      'CUSTOM_DEPLOYMENT_INVALID',
+      `Deployment '${row.id}' is not a custom deployment with a spec`,
+      422,
+      { deployment_id: row.id },
+    );
+  }
+  const spec = row.customSpec as unknown as CustomDeploymentSpec;
+  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
+  await db.update(deployments)
+    .set({ status: 'deploying', statusMessage: null, lastError: null })
+    .where(eq(deployments.id, row.id));
+  await deployToCluster(
+    db, k8s, row.id, namespace, row.name,
+    row.storagePath ?? `custom-deployment/${row.name}`,
+    spec, nodeName, storageTier,
+  );
+}
+
 // ─── Upgrade-tag (one-click) ────────────────────────────────────────────────
 
 export async function upgradeTag(
