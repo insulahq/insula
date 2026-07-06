@@ -149,6 +149,11 @@ function makeFixtureDb(): Database {
       name      VARCHAR(255) NOT NULL,
       tenant_id VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
+    CREATE TABLE custom_deployment_image_credentials (
+      id            VARCHAR(36) PRIMARY KEY,
+      deployment_id VARCHAR(36) NOT NULL REFERENCES deployments(id) ON DELETE CASCADE,
+      registry_host VARCHAR(253) NOT NULL
+    );
     CREATE TABLE ingress_routes (
       id        VARCHAR(36) PRIMARY KEY,
       hostname  VARCHAR(255) NOT NULL,
@@ -243,6 +248,9 @@ function makeFixtureDb(): Database {
     INSERT INTO deployments(id, name, tenant_id) VALUES
       ('depl-fix',   'wp',     '${FIXTURE_CLIENT_ID}'),
       ('depl-other', 'static', '${FIXTURE_OTHER_CLIENT_ID}');
+    INSERT INTO custom_deployment_image_credentials(id, deployment_id, registry_host) VALUES
+      ('cred-fix',   'depl-fix',   'ghcr.io'),
+      ('cred-other', 'depl-other', 'docker.io');
     INSERT INTO ingress_routes(id, hostname, domain_id) VALUES
       ('ir-fix',   'fixture.test', 'd-fix'),
       ('ir-other', 'other.test',   'd-other');

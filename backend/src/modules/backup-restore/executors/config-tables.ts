@@ -42,6 +42,7 @@ export const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   sshKeys: 'ssh_keys',
   sftpUsers: 'sftp_users',
   deployments: 'deployments',
+  customDeploymentImageCredentials: 'custom_deployment_image_credentials',
   ingressAuthConfigs: 'ingress_auth_configs',
   sslCertificates: 'ssl_certificates',
   cronJobs: 'cron_jobs',

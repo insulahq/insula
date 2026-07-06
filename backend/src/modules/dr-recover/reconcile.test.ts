@@ -120,6 +120,22 @@ describe('reconcileRecoveredTenant', () => {
     expect(residualGaps.some((g) => /1\/2 workload\(s\) failed to redeploy/.test(g))).toBe(true);
   });
 
+  it('surfaces a cross-cluster credential gap when a private-image workload fails PAT_DECRYPT_FAILED', async () => {
+    const patErr = Object.assign(new Error('cannot decrypt PAT'), { code: 'PAT_DECRYPT_FAILED' });
+    customRedeployMock.mockRejectedValueOnce(patErr);
+    const app = makeApp({
+      deps: [
+        { id: 'w1', source: 'custom', status: 'running' },  // private-image PAT fails
+        { id: 'w2', source: 'catalog', status: 'running' }, // ok
+      ],
+    });
+    const { report, residualGaps } = await reconcileRecoveredTenant(app, 't-1');
+    expect(report.workloads).toEqual({ total: 2, redeployed: 1, failed: 1 });
+    // The credential-decrypt failure gets its OWN actionable gap, not the generic one.
+    expect(residualGaps.some((g) => /registry pull\s+credential.*cross-cluster/s.test(g))).toBe(true);
+    expect(residualGaps.some((g) => /failed to redeploy \(image or registry/.test(g))).toBe(false);
+  });
+
   it('counts a domain with a MISSING stalwartDomainId as a mail failure', async () => {
     const app = makeApp({
       domains: [
