@@ -147,7 +147,7 @@ describe('restoreDatabasesForDeployments', () => {
   it('imports each captured dump into its target database with the right PVC path', async () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
-      listDumpFiles: async () => [`predump-app${SUFFIX}`, `predump-shop${SUFFIX}`, 'unrelated.txt'],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-app${SUFFIX}`, `database/mariadb/maria-a/predump-shop${SUFFIX}`, 'unrelated.txt'],
       listDatabaseNames: async () => ['app', 'shop'],
       importSql,
     });
@@ -159,10 +159,10 @@ describe('restoreDatabasesForDeployments', () => {
     expect(importSql).toHaveBeenCalledTimes(2);
     // (ctx, database, filePath, deploymentSubPath)
     expect(importSql).toHaveBeenNthCalledWith(
-      1, { pod: 'db-0' }, 'app', `exports/predump-app${SUFFIX}`, 'databases/maria-a',
+      1, { pod: 'db-0' }, 'app', `database/mariadb/maria-a/predump-app${SUFFIX}`, 'database/mariadb/maria-a',
     );
     expect(importSql).toHaveBeenNthCalledWith(
-      2, { pod: 'db-0' }, 'shop', `exports/predump-shop${SUFFIX}`, 'databases/maria-a',
+      2, { pod: 'db-0' }, 'shop', `database/mariadb/maria-a/predump-shop${SUFFIX}`, 'database/mariadb/maria-a',
     );
     expect(summary.deployments[0]!.status).toBe('imported');
   });
@@ -171,8 +171,8 @@ describe('restoreDatabasesForDeployments', () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
       listDumpFiles: async () => [
-        `predump-app${SUFFIX}`,
-        'predump-app-bkp-OTHER.sql', // stale predump from a different bundle
+        `database/mariadb/maria-a/predump-app${SUFFIX}`,
+        'database/mariadb/maria-a/predump-app-bkp-OTHER.sql', // stale predump from a different bundle
       ],
       listDatabaseNames: async () => ['app'],
       importSql,
@@ -180,7 +180,7 @@ describe('restoreDatabasesForDeployments', () => {
     const summary = await restoreDatabasesForDeployments([dep('d1', 'maria-a')], BUNDLE_ID, deps);
     expect(importSql).toHaveBeenCalledTimes(1);
     expect(importSql).toHaveBeenCalledWith(
-      { pod: 'db-0' }, 'app', `exports/predump-app${SUFFIX}`, 'databases/maria-a',
+      { pod: 'db-0' }, 'app', `database/mariadb/maria-a/predump-app${SUFFIX}`, 'database/mariadb/maria-a',
     );
     expect(summary.totalImported).toBe(1);
   });
@@ -189,7 +189,7 @@ describe('restoreDatabasesForDeployments', () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
       // one captured dump for the sanitised token "my_db"
-      listDumpFiles: async () => [`predump-my_db${SUFFIX}`],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-my_db${SUFFIX}`],
       // two live databases BOTH sanitise to "my_db" ("my db" → "my_db")
       listDatabaseNames: async () => ['my_db', 'my db'],
       importSql,
@@ -217,7 +217,7 @@ describe('restoreDatabasesForDeployments', () => {
   it('SKIPS a deployment with no dump on the PVC for this bundle', async () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
-      listDumpFiles: async () => ['predump-app-bkp-OTHER.sql'], // none for BUNDLE_ID
+      listDumpFiles: async () => ['database/mariadb/maria-a/predump-app-bkp-OTHER.sql'], // none for BUNDLE_ID
       listDatabaseNames: async () => ['app'],
       importSql,
     });
@@ -231,7 +231,7 @@ describe('restoreDatabasesForDeployments', () => {
   it('SKIPS a dump whose target database is not currently present (recreate-then-retry)', async () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
-      listDumpFiles: async () => [`predump-gone${SUFFIX}`],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-gone${SUFFIX}`],
       listDatabaseNames: async () => ['app'], // 'gone' not present
       importSql,
     });
@@ -244,7 +244,7 @@ describe('restoreDatabasesForDeployments', () => {
 
   it('FAILS the deployment when an import command errors', async () => {
     const deps = makeDeps({
-      listDumpFiles: async () => [`predump-app${SUFFIX}`],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-app${SUFFIX}`],
       listDatabaseNames: async () => ['app'],
       importSql: async () => ({ success: false, error: 'syntax error near line 3' }),
     });
@@ -267,20 +267,20 @@ describe('restoreDatabasesForDeployments', () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
       // real db name 'my db' → predump wrote sanitised 'my_db'
-      listDumpFiles: async () => [`predump-my_db${SUFFIX}`],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-my_db${SUFFIX}`],
       listDatabaseNames: async () => ['my db'],
       importSql,
     });
     await restoreDatabasesForDeployments([dep('d1', 'maria-a')], BUNDLE_ID, deps);
     // Import must target the REAL name, from the SANITISED file.
     expect(importSql).toHaveBeenCalledWith(
-      { pod: 'db-0' }, 'my db', `exports/predump-my_db${SUFFIX}`, 'databases/maria-a',
+      { pod: 'db-0' }, 'my db', `database/mariadb/maria-a/predump-my_db${SUFFIX}`, 'database/mariadb/maria-a',
     );
   });
 
   it('aggregates a mixed run (imported + skipped) and marks it imported', async () => {
     const deps = makeDeps({
-      listDumpFiles: async () => [`predump-app${SUFFIX}`, `predump-gone${SUFFIX}`],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-app${SUFFIX}`, `database/mariadb/maria-a/predump-gone${SUFFIX}`],
       listDatabaseNames: async () => ['app'],
     });
     const summary = await restoreDatabasesForDeployments([dep('d1', 'maria-a')], BUNDLE_ID, deps);
@@ -298,7 +298,7 @@ describe('restoreDatabasesForDeployments', () => {
 describe('formatSummary', () => {
   it('produces a ≤500-char honest one-liner', async () => {
     const deps = makeDeps({
-      listDumpFiles: async () => [`predump-app${SUFFIX}`],
+      listDumpFiles: async () => [`database/mariadb/maria-a/predump-app${SUFFIX}`],
       listDatabaseNames: async () => ['app'],
     });
     const summary = await restoreDatabasesForDeployments([dep('d1', 'maria-a')], BUNDLE_ID, deps);
