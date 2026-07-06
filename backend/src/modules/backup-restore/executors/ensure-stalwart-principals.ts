@@ -41,11 +41,12 @@ import {
   domains as domainsTable,
 } from '../../../db/schema.js';
 import {
+  accountSet,
   createDomain,
-  createMailbox,
   findDomainByName,
   findMailboxByEmail,
   getJmapSession,
+  updatePrincipal,
 } from '../../stalwart-jmap/client.js';
 import { ApiError } from '../../../shared/errors.js';
 
@@ -143,18 +144,18 @@ export async function ensureStalwartPrincipals(
   //      After a full tenant re-create (DR of a DELETED tenant) the config
   //      restore brought back the `email_domains` row, but nothing recreated
   //      the Stalwart domain principal — and the restored `stalwartDomainId`
-  //      is the SOURCE cluster's id, meaningless here. Without the domain
-  //      principal, `createMailbox` fails with "Invalid email local part"
-  //      (Stalwart can't validate an address against an unknown local domain).
-  //      Resolve by NAME (not the stale id); create if missing; back-fill the
-  //      row so principals-sync sees the correct id. Mirrors the domain half
-  //      of email-domains/service.ts:enableEmailForDomain (DKIM/DNS are a
-  //      documented residual gap — delivery only needs the principal).
+  //      is the SOURCE cluster's id, meaningless here. Resolve by NAME (not the
+  //      stale id); create if missing; back-fill the row so principals-sync
+  //      sees the correct id. Mirrors the domain half of email-domains/
+  //      service.ts:enableEmailForDomain (DKIM/DNS are a documented residual
+  //      gap — delivery only needs the principal). The resolved id is ALSO
+  //      required as the `domainId` on the modern x:Account create below.
   const domainNames = [...new Set(
     addresses
       .map((a) => a.split('@')[1]?.toLowerCase())
       .filter((d): d is string => !!d),
   )];
+  const domainIdByName = new Map<string, string>();
   for (const domainName of domainNames) {
     try {
       const existingDomain = await findDomainByName({
@@ -177,6 +178,7 @@ export async function ensureStalwartPrincipals(
           'recreated deleted Stalwart domain principal for restore',
         );
       }
+      if (stalwartDomainId) domainIdByName.set(domainName, stalwartDomainId);
       // Best-effort back-fill of the stale source-cluster id. `email_domains`
       // has no name column — resolve via its parent `domains` row (domainName
       // is globally unique, so this maps to at most one email_domains row).
@@ -233,30 +235,53 @@ export async function ensureStalwartPrincipals(
         });
         continue;
       }
-      // Recreate principal with random placeholder secret.
+      // Recreate the principal via the MODERN x:Account/set API. Stalwart 0.16
+      // rejects the legacy createMailbox shim (which passes the full address as
+      // `name` + `emails`) with "Invalid email local part" — it validates
+      // `name` as a bare local-part token and binds the account to its parent
+      // via `domainId`. Mirror mailboxes/service.ts:createMailbox exactly
+      // (create payload omits quota — unproven shape — quota patched after).
+      const stalwartDomainId = domainIdByName.get((address.split('@')[1] ?? '').toLowerCase());
+      if (!stalwartDomainId) {
+        outcomes.push({
+          status: 'failed',
+          address,
+          reason: `DOMAIN_ENSURE_FAILED: no Stalwart domain principal for '${address.split('@')[1] ?? ''}' — `
+            + 'the mail domain could not be (re)created, so the mailbox cannot be bound.',
+        });
+        continue;
+      }
+      const localPart = address.split('@')[0] ?? dbRow.fullAddress;
       const secret = generatePrincipalSecret();
-      const created = await createMailbox({
+      const setResult = await accountSet({
         accountId: principalsAccountId,
         baseUrl: jmapBaseUrl,
         env: process.env,
-        input: {
-          type: 'individual',
-          name: dbRow.fullAddress,  // Stalwart's principal `name` is the
-                                    // canonical address; the displayName is
-                                    // a profile attribute on Email objects.
-          description: dbRow.displayName ?? undefined,
-          emails: [dbRow.fullAddress],
-          secrets: [secret],
-          // Platform DB stores quota in MB; Stalwart's PrincipalQuota.storage
-          // is bytes. Mailboxes that opted out of a quota land with
-          // quotaMb=0 or NULL — leave undefined in that case so Stalwart
-          // applies the tenant or global default.
-          quota: dbRow.quotaMb && dbRow.quotaMb > 0
-            ? { storage: dbRow.quotaMb * 1024 * 1024 }
-            : undefined,
+        request: {
+          create: {
+            'new-mailbox': {
+              '@type': 'User',
+              name: localPart,
+              domainId: stalwartDomainId,
+              credentials: {
+                '0': { '@type': 'Password', secret, allowedIps: {}, expiresAt: null },
+              },
+              ...(dbRow.displayName ? { description: dbRow.displayName } : {}),
+            },
+          },
         },
       });
-      if (!created.id) {
+      const notCreated = setResult.notCreated?.['new-mailbox'];
+      if (notCreated) {
+        outcomes.push({
+          status: 'failed',
+          address,
+          reason: `PRINCIPAL_CREATE_REJECTED: ${notCreated.description ?? notCreated.type}`,
+        });
+        continue;
+      }
+      const created = setResult.created?.['new-mailbox'] as { id?: string } | undefined;
+      if (!created?.id) {
         outcomes.push({
           status: 'failed',
           address,
@@ -264,13 +289,37 @@ export async function ensureStalwartPrincipals(
         });
         continue;
       }
+      const newPrincipalId = created.id;
+      // Apply the stored quota after create (create shape omits it — see
+      // mailboxes/service.ts). Best-effort: Stalwart falls back to the
+      // tenant/global default if this patch fails.
+      if (dbRow.quotaMb && dbRow.quotaMb > 0) {
+        try {
+          await updatePrincipal({
+            accountId: principalsAccountId,
+            id: newPrincipalId,
+            patch: { 'quotas/maxDiskQuota': dbRow.quotaMb * 1024 * 1024 },
+            baseUrl: jmapBaseUrl,
+            env: process.env,
+          });
+        } catch (quotaErr) {
+          app.log.warn(
+            {
+              module: 'ensure-stalwart-principals',
+              address,
+              err: quotaErr instanceof Error ? quotaErr.message : String(quotaErr),
+            },
+            'mailbox quota apply failed after principal recreate (non-fatal)',
+          );
+        }
+      }
       // Back-fill the platform DB row's stalwartPrincipalId so the
       // next principals-sync run doesn't see the row as an orphan.
       await app.db
         .update(mailboxesTable)
-        .set({ stalwartPrincipalId: created.id })
+        .set({ stalwartPrincipalId: newPrincipalId })
         .where(eq(mailboxesTable.id, dbRow.id));
-      outcomes.push({ status: 'recreated', address, stalwartPrincipalId: created.id });
+      outcomes.push({ status: 'recreated', address, stalwartPrincipalId: newPrincipalId });
       recreated++;
       app.log.info(
         {
