@@ -341,9 +341,13 @@ that need new harness coverage** and a deploy (they ride the next RC). To valida
 Both need the code deployed first (an RC, like the mail-fix cycle). Sequence: build the two harness
 pieces → cut an RC → run on staging → flip this section to validated.
 
-**Built (2026-07-06):** `integration-dr-database-restore-e2e.sh` (G4, new) + the `TARGET_NODE`
-extension of `integration-dr-tenant-restore-e2e.sh` (G2), both registered. **Building the G4
-harness caught a real bug in the executor:** `exportDatabaseToPvc` MOVES each predump to the flat
-per-tenant `exports/` dir (not `databases/<deploy>/`), so the executor's file lookup was wrong and
-it would have silently skipped every DB — fixed to read `exports/`. Found by reading the capture
-code, not by the live run. Live validation in progress (DEV pre-flight → RC → staging).
+**Built + G4 DEV-validated (2026-07-06):** `integration-dr-database-restore-e2e.sh` (G4, new,
+**GREEN 11/0 on DEV**) + the `TARGET_NODE` extension of `integration-dr-tenant-restore-e2e.sh` (G2),
+both registered. **The G4 harness caught a real, pre-existing bug** — through three wrong predump-path
+theories: `databases/<deploy>/` → `exports/` (what the capture *intends*, but its `mv` is a silent
+no-op) → the **actual** `database/<engine>/<name>/` (the DB pod's own storage subPath, where the dump
+is stranded because `database-predump.ts` passes the wrong subPath; broken since ADR-047, latent
+because nothing restored DB dumps until now). Final executor is robust: `find`s the predump wherever
+it is + imports it in place. DEV run: deploy MariaDB → seed 25 rows → capture → delete rows →
+`databases-by-id` → 25 rows restored. Also: add-on DBs need a plan bigger than Starter (quota).
+Next: cut rc.11 → validate G4 + G2 (multi-node target-node test) on staging.
