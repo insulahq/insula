@@ -31,15 +31,18 @@ import {
   Copy,
   Check,
   AlertTriangle,
+  RotateCcw,
 } from 'lucide-react';
 import SecretsBundleTab from '@/components/system-backup/SecretsBundleTab';
 import DrDrillTab from '@/components/system-backup/DrDrillTab';
+import TenantRecoverTab from '@/components/system-backup/TenantRecoverTab';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
 
-type Section = 'secrets' | 'drill' | 'instructions';
+type Section = 'recover' | 'secrets' | 'drill' | 'instructions';
 
 const SECTIONS: ReadonlyArray<{ id: Section; label: string; icon: typeof ShieldCheck }> = [
+  { id: 'recover',      label: 'Recover Tenant',       icon: RotateCcw },
   { id: 'secrets',      label: 'Secrets Bundle',       icon: ShieldCheck },
   { id: 'drill',        label: 'DR Drill',             icon: Stethoscope },
   { id: 'instructions', label: 'Restore Instructions', icon: BookOpen },
@@ -52,7 +55,7 @@ function isSection(v: string | null): v is Section {
 export default function DisasterRecoveryPage() {
   const url = new URL(typeof window !== 'undefined' ? window.location.href : 'http://x/');
   const initial = url.searchParams.get('section');
-  const [section, setSection] = useState<Section>(isSection(initial) ? initial : 'secrets');
+  const [section, setSection] = useState<Section>(isSection(initial) ? initial : 'recover');
 
   return (
     <div className="space-y-6 p-6">
@@ -108,6 +111,7 @@ export default function DisasterRecoveryPage() {
         aria-labelledby={`dr-tab-${section}-btn`}
         data-testid={`dr-pane-${section}`}
       >
+        {section === 'recover' && <TenantRecoverTab />}
         {section === 'secrets' && <SecretsBundleTab />}
         {section === 'drill' && <DrDrillTab />}
         {section === 'instructions' && <RestoreInstructions />}
