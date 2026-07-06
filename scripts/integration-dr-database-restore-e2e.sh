@@ -56,7 +56,11 @@ if [[ -n "$TOKEN" ]]; then ok "using preset TOKEN"; else
 fi
 parse "$(api GET /admin/backup-configs '' "$TOKEN")"
 CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.active==true or .isActive==true)|.id'|head -1)
-PLAN_ID=$(api GET /plans '' "$TOKEN"|sed '$d'|jq -r '.data[]|select(.name=="Starter").id'|head -1)
+# An add-on DB needs real quota — the Starter plan (0.25 CPU / 0.25Gi) is too
+# small for MariaDB + file-manager. Default to a mid plan; fall back to the
+# largest-memory plan available.
+PLAN_ID=$(api GET /plans '' "$TOKEN"|sed '$d'|jq -r --arg n "${DB_PLAN:-Premium}" '.data[]|select(.name==$n).id'|head -1)
+[[ -n "$PLAN_ID" ]] || PLAN_ID=$(api GET /plans '' "$TOKEN"|sed '$d'|jq -r '.data|sort_by(.memory_limit // .memoryLimit // 0)|last|.id')
 REGION_ID=$(api GET /regions '' "$TOKEN"|sed '$d'|jq -r '.data[0].id')
 # a MariaDB catalog entry (fall back to any database engine)
 parse "$(api GET '/catalog?type=database&limit=200' '' "$TOKEN")"
@@ -108,18 +112,19 @@ ok "bundle $BID completed"
 # confirm the predump landed in the flat exports/ dir on the PVC
 FMPOD=$(ssh_node "kubectl -n $NS get pod -l app=file-manager --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" </dev/null 2>/dev/null||true)
 DUMP="predump-drdata-$BID.sql"
-if [[ -n "$FMPOD" ]]; then ssh_node "kubectl -n $NS exec $FMPOD -c file-manager -- ls -1 /data/exports" </dev/null 2>/dev/null | grep -qF "$DUMP" && ok "predump present: exports/$DUMP" || no "predump exports/$DUMP NOT found on PVC"; fi
+# The predump lands in the DB pod's OWN storage subPath (exportDatabaseToPvc's
+# move to exports/ is a silent no-op for DBs), so find it wherever it is.
+if [[ -n "$FMPOD" ]]; then ssh_node "kubectl -n $NS exec $FMPOD -c file-manager -- find /data -type f -name '$DUMP'" </dev/null 2>/dev/null | grep -qF "$DUMP" && ok "predump present on PVC ($DUMP)" || no "predump $DUMP NOT found on PVC"; fi
 
 cyn "5. SIMULATE CORRUPTION: delete the rows (DB stays running)"
 db_sql "DELETE FROM drdata.t" >/dev/null
 [[ "$(db_sql "SELECT COUNT(*) FROM drdata.t"|tr -d '[:space:]')" == 0 ]] && ok "rows deleted (count=0)" || { no "delete failed"; exit 1; }
 
-cyn "6. RESTORE via restore cart: files-paths(dump) + databases-by-id"
+cyn "6. RESTORE via restore cart: databases-by-id"
 parse "$(api POST /admin/restores/carts "{\"tenantId\":\"$TENANT_ID\",\"description\":\"dr-db\"}" "$TOKEN")"
 CID=$(printf '%s' "$BODY"|jq -r '.data.id // empty'); [[ -n "$CID" ]] || { no "cart create $STATUS"; echo "$BODY"|rd; exit 1; }
-# restore ONLY the predump file (not kind:full — avoid overwriting live DB files)
-parse "$(api POST "/admin/restores/carts/$CID/items" "{\"bundleId\":\"$BID\",\"type\":\"files-paths\",\"selector\":{\"kind\":\"paths\",\"paths\":[\"exports/$DUMP\"]}}" "$TOKEN")"
-[[ "$STATUS" == 201 ]] || { no "add files-paths item $STATUS"; echo "$BODY"|rd; exit 1; }
+# The predump persists on the live PVC in the DB's data dir, so databases-by-id
+# finds + imports it in place — no files-paths (which would overwrite live DB files).
 parse "$(api POST "/admin/restores/carts/$CID/items" "{\"bundleId\":\"$BID\",\"type\":\"databases-by-id\",\"selector\":{\"kind\":\"ids\",\"deploymentIds\":[\"$DEP_ID\"]}}" "$TOKEN")"
 [[ "$STATUS" == 201 ]] || { no "add databases-by-id item $STATUS"; echo "$BODY"|rd; exit 1; }
 parse "$(api POST "/admin/restores/carts/$CID/execute" '{}' "$TOKEN")"

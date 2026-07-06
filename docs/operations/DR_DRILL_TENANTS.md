@@ -340,3 +340,10 @@ that need new harness coverage** and a deploy (they ride the next RC). To valida
 
 Both need the code deployed first (an RC, like the mail-fix cycle). Sequence: build the two harness
 pieces → cut an RC → run on staging → flip this section to validated.
+
+**Built (2026-07-06):** `integration-dr-database-restore-e2e.sh` (G4, new) + the `TARGET_NODE`
+extension of `integration-dr-tenant-restore-e2e.sh` (G2), both registered. **Building the G4
+harness caught a real bug in the executor:** `exportDatabaseToPvc` MOVES each predump to the flat
+per-tenant `exports/` dir (not `databases/<deploy>/`), so the executor's file lookup was wrong and
+it would have silently skipped every DB — fixed to read `exports/`. Found by reading the capture
+code, not by the live run. Live validation in progress (DEV pre-flight → RC → staging).

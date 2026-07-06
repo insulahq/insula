@@ -4,18 +4,18 @@
  * Recovers a tenant's add-on database(s) from the per-database `.sql`
  * dump captured INSIDE the files snapshot (ADR-047). The pre-capture
  * hook (`tenant-bundles/components/database-predump.ts` →
- * `db-manager.ts:exportDatabaseToPvc`) dumps each database and MOVES it to
- * the flat per-tenant exports dir on the tenant PVC:
+ * `db-manager.ts:exportDatabaseToPvc`) dumps each database into the DB pod's
+ * OWN storage subPath on the tenant PVC:
  *
- *     exports/predump-<db>-<bundleId>.sql
+ *     database/<engine>/<name>/predump-<db>-<bundleId>.sql   (standalone DB)
  *
- * (exportDatabaseToPvc returns `/exports/<file>` — it `mv`s the dump out of
- * the DB's data subPath into `exports/`). So after a `files-paths` restore
- * lands the snapshot on the live PVC, the `.sql` sits in `exports/`. This
- * executor then imports each dump back into the RUNNING database pod via the
- * existing SQL-Manager primitive `importSqlFromPvcFile` (which copies the file
- * from `exports/` into the deployment's own subPath for the pod) — it does NOT
- * re-invent the mysql/psql import path.
+ * (exportDatabaseToPvc TRIES to move it to a shared `exports/` dir but that move
+ * is a silent no-op for DBs — the pre-dump hook passes the wrong subPath — so the
+ * dump stays put; it is captured by the files component in place and persists on
+ * the live PVC). This executor therefore `find`s the dump wherever it is and
+ * imports it back into the RUNNING database pod via the existing SQL-Manager
+ * primitive `importSqlFromPvcFile` — the dump already sits in the DB pod's mount,
+ * so it is referenced directly. It does NOT re-invent the mysql/psql import path.
  *
  * Dump→bundle pinning: the pre-dump uses the backup job id as its
  * `backupId`, and `restore_items.bundle_id` IS that same backup job id,
@@ -141,6 +141,18 @@ export function sanitizeDumpName(name: string): string {
   return name.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 
+/** Last path segment (filename) of a PVC-relative path. */
+export function baseName(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+/** Parent directory (PVC-relative) of a path; '' when top-level. */
+export function dirName(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i > 0 ? p.slice(0, i) : '';
+}
+
 /** Narrow: was the DB context build rejected because the pod is not running? */
 export function isPodNotRunning(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
@@ -224,15 +236,21 @@ export async function restoreDatabasesForDeployments<Ctx>(
       throw err;
     }
 
-    // 2. Dumps for THIS bundle only.
-    const files = await deps.listDumpFiles(ctx, dep.deploymentName);
-    const bundleDumps = files.filter(
-      (f) => f.startsWith(DUMP_PREFIX) && f.endsWith(suffix) && f.length > DUMP_PREFIX.length + suffix.length,
-    );
+    // 2. Dumps for THIS bundle (PVC-relative paths). The DB predump lands in
+    // the DB pod's OWN storage subPath — e.g.
+    // database/<engine>/<name>/predump-<db>-<bundleId>.sql — NOT a shared
+    // exports/ dir (exportDatabaseToPvc's move to exports/ is a silent no-op
+    // for DBs because the pre-dump hook passes the wrong subPath). So we LOCATE
+    // the dump by name wherever it is and import it in place.
+    const paths = await deps.listDumpFiles(ctx, dep.deploymentName);
+    const bundleDumps = paths.filter((p) => {
+      const b = baseName(p);
+      return b.startsWith(DUMP_PREFIX) && b.endsWith(suffix) && b.length > DUMP_PREFIX.length + suffix.length;
+    });
     if (bundleDumps.length === 0) {
       outcomes.push(skippedOutcome(
         dep,
-        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected exports/${DUMP_PREFIX}*${suffix})`,
+        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected ${DUMP_PREFIX}*${suffix})`,
       ));
       continue;
     }
@@ -250,17 +268,16 @@ export async function restoreDatabasesForDeployments<Ctx>(
     }
 
     // 4. Import each dump into its target database (import errors fail). The
-    // predump lives in the flat per-tenant `exports/` dir; importSqlFromPvcFile
-    // copies it INTO the deployment's own subPath (databases/<deploy>) for the
-    // DB pod, so the source path is `exports/…` and the target subPath is the
-    // deployment's.
-    const importSubPath = `databases/${dep.deploymentName}`;
+    // predump sits in the DB pod's OWN mount subPath, so importSqlFromPvcFile
+    // references it directly: source = the predump's full PVC path, target
+    // subPath = its parent dir (= the DB's mount).
     const imported: string[] = [];
     const skipped: string[] = [];
     const failed: { database: string; error: string }[] = [];
 
-    for (const file of bundleDumps) {
-      const sanitizedDb = file.slice(DUMP_PREFIX.length, file.length - suffix.length);
+    for (const p of bundleDumps) {
+      const b = baseName(p);
+      const sanitizedDb = b.slice(DUMP_PREFIX.length, b.length - suffix.length);
       const reals = bySanitized.get(sanitizedDb) ?? [];
       if (reals.length === 0) {
         skipped.push(`database '${sanitizedDb}' not present in ${dep.deploymentName} (skipped — recreate it, then re-run this restore)`);
@@ -273,7 +290,7 @@ export async function restoreDatabasesForDeployments<Ctx>(
         continue;
       }
       const realDb = reals[0]!;
-      const res = await deps.importSql(ctx, realDb, `exports/${file}`, importSubPath);
+      const res = await deps.importSql(ctx, realDb, p, dirName(p));
       if (res.success) {
         imported.push(realDb);
       } else {
@@ -477,14 +494,14 @@ async function resolveTargetDeployments(
 }
 
 /**
- * List predump filenames in the flat per-tenant `exports/` dir on the tenant
- * PVC via the file-manager pod (which mounts the whole PVC at `/data`).
- * `exportDatabaseToPvc` moves every predump there regardless of deployment, so
- * the dir is the same for all of a tenant's databases; the caller filters by
- * the `-<bundleId>.sql` suffix + maps each dump's db-name to the deployment's
- * live databases. `deploymentName` is unused for the path (kept for the
- * dep-scoped signature). A missing dir returns `[]` — never throws. `ls` runs
- * as a bare argv (no shell).
+ * Locate predump files ANYWHERE under the tenant PVC (mounted at `/data` in the
+ * file-manager pod) and return their PVC-relative paths. Predumps land in each
+ * database's own storage subPath (e.g. `database/<engine>/<name>/predump-*.sql`),
+ * which varies by deployment, so a `find` by name is more robust than assuming a
+ * fixed dir; the caller filters by the `-<bundleId>.sql` suffix, maps each dump's
+ * db-name to the deployment's live databases, and imports each in place.
+ * `deploymentName` is unused (kept for the dep-scoped signature). No match →
+ * `[]` — never throws. `find` runs as a bare argv (no shell).
  */
 async function listPredumpFiles(
   k8s: K8sClients,
@@ -493,10 +510,11 @@ async function listPredumpFiles(
   _deploymentName: string,
 ): Promise<string[]> {
   const fmPod = await getReadyFileManagerPod(k8s, namespace);
-  const dir = `/data/exports`;
-  const res = await execInPod(kubeconfigPath, namespace, fmPod, 'file-manager', ['ls', '-1', dir]);
+  const res = await execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
+    ['find', '/data', '-type', 'f', '-name', 'predump-*.sql']);
   if (res.exitCode !== 0) return [];
-  return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+  return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+    .map((p) => p.replace(/^\/data\//, ''));
 }
 
 async function setProgress(app: FastifyInstance, item: RestoreItem, msg: string): Promise<void> {
