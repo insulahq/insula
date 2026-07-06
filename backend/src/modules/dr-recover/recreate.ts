@@ -234,6 +234,11 @@ export async function recreateTenantFromBundle(
   await createTenant(app.db, createInput, 'system', {
     tenantIdOverride: tenantId,
     namespaceOverride: t.kubernetesNamespace,
+    // Do NOT auto-create a placeholder tenant_admin user: the `config`
+    // component restores the tenant's ORIGINAL users (original ids). A
+    // placeholder sharing the tenant's primary email would collide on
+    // users_email_unique and abort the whole config-tables restore.
+    skipAdminUser: true,
   });
 
   // ── 5. Register a local backup_jobs + backup_components index for the

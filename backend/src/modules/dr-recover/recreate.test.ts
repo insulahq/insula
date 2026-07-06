@@ -154,7 +154,7 @@ describe('recreateTenantFromBundle', () => {
       storage_tier: 'local',
     });
     expect(call[2]).toBe('system');
-    expect(call[3]).toEqual({ tenantIdOverride: TENANT_ID, namespaceOverride: NAMESPACE });
+    expect(call[3]).toEqual({ tenantIdOverride: TENANT_ID, namespaceOverride: NAMESPACE, skipAdminUser: true });
 
     // backup_jobs + backup_components rows registered so the fall-through finds
     // the bundle: job first, then a components batch (config/files/mailboxes).
