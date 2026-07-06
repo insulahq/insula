@@ -51,6 +51,7 @@ fm_exec(){ ssh_node "kubectl -n $NS exec '$FM_POD' -c file-manager -- sh -c '$1'
 wait_ns_gone(){ for i in $(seq 1 40); do ssh_node "kubectl get ns $NS" </dev/null >/dev/null 2>&1 || return 0; sleep 3; done; return 1; }
 wait_ns(){ for i in $(seq 1 60); do ssh_node "kubectl get ns $NS" </dev/null >/dev/null 2>&1 && return 0; sleep 3; done; return 1; }
 wait_pvc(){ for i in $(seq 1 80); do [[ "$(ssh_node "kubectl -n $NS get pvc ${NS}-storage -o jsonpath='{.status.phase}'" </dev/null 2>/dev/null||true)" == Bound ]] && return 0; sleep 3; done; return 1; }
+wait_wl_pod(){ for i in $(seq 1 45); do [[ -n "$(ssh_node "kubectl -n $NS get pod -l app=$1 --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" </dev/null 2>/dev/null||true)" ]] && return 0; sleep 4; done; return 1; }
 ensure_fm(){ api POST "/tenants/$TENANT_ID/files/start" '{}' "$TOKEN" >/dev/null 2>&1 || true
   for i in $(seq 1 30); do ssh_node "kubectl -n $NS get deploy file-manager" </dev/null >/dev/null 2>&1 && break
     api POST "/tenants/$TENANT_ID/files/start" '{}' "$TOKEN" >/dev/null 2>&1 || true; sleep 4; done
@@ -164,6 +165,13 @@ RDY=""; for i in $(seq 1 25); do c=$(jcount 2>/dev/null); [[ -n "$c" ]] && { RDY
 ssh_node "kubectl -n mail exec stalwart-probe -- /usr/local/bin/jmap-seed.py --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 --account-address $TEST_ADDR --master-user master@local.host --auth-pass-env STALWART_MASTER_PASSWORD --count $COUNT --marker $MARK --flagged-every-n 5" </dev/null 2>&1 | tail -2 | rd
 SEED=$(jcount); [[ "$SEED" -ge "$COUNT" ]] || { no "mail seed short: $SEED<$COUNT"; exit 1; }
 ok "seeded mailbox $TEST_ADDR ($SEED messages)"
+# workload: a simple public-image custom deployment so the recover reconcile's
+# WORKLOAD-redeploy path is exercised end-to-end (config captures the deployments
+# row + customSpec; the recover re-deploys it into the re-created namespace).
+WLNAME="drwl-$STAMP"
+WLID=$(api POST "/tenants/$TENANT_ID/custom-deployments" "{\"mode\":\"simple\",\"name\":\"$WLNAME\",\"image\":\"nginx:1.27-alpine\",\"ports\":[{\"containerPort\":80,\"name\":\"http\",\"protocol\":\"TCP\",\"exposeAsService\":true,\"ingressEligible\":true}]}" "$TOKEN"|sed '$d'|jq -r '.data.id // empty')
+[[ -n "$WLID" && "$WLID" != null ]] || { no "workload create failed"; exit 1; }
+wait_wl_pod "$WLNAME" && ok "seeded workload $WLNAME (nginx pod Running)" || { no "workload pod never Running before capture"; exit 1; }
 
 cyn "3. capture whole-client bundle (files+mailboxes+config) offsite"
 parse "$(api POST /admin/tenant-bundles "{\"tenantId\":\"$TENANT_ID\",\"targetConfigId\":\"$CFG\",\"async\":true,\"components\":{\"files\":true,\"mailboxes\":true,\"config\":true,\"secrets\":false}}" "$TOKEN")"
@@ -203,6 +211,8 @@ parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "$RBODY" "$TOKEN")"
 CID=$(printf '%s' "$BODY"|jq -r '.data.cartId // .data.id // empty')
 [[ -n "$CID" ]] || { no "recover: no cartId in response: $BODY"; exit 1; }
 ok "recover started (cart=$CID, provisioned=$(printf '%s' "$BODY"|jq -r '.data.provisioned // "?"'), recreated=$(printf '%s' "$BODY"|jq -r '.data.recreated // "?"'))"
+# Capture the post-restore reconcile report BEFORE the cart-poll loop overwrites BODY.
+RECON=$(printf '%s' "$BODY"|jq -c '.data.reconcile // empty')
 if [[ -n "${RECREATE:-}" ]]; then
   REC=$(printf '%s' "$BODY"|jq -r '.data.recreated // false')
   [[ "$REC" == true ]] && ok "re-create: tenant re-created from bundle (recreated=true)" || no "re-create: recreated=$REC (expected true)"
@@ -219,6 +229,19 @@ if [[ -n "${RECREATE:-}" ]]; then
   st2=""; for i in $(seq 1 60); do st2=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.status // empty'); [[ "$st2" == active ]] && break; sleep 3; done
   [[ "$st2" == active ]] && ok "re-create: tenant $TENANT_ID is back + active (original id preserved)" || no "re-create: tenant not active after recover ($st2)"
   NS=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.kubernetesNamespace')
+  # Post-restore reconcile (recreate path only): assert the recover auto-closed
+  # the platform-side gaps — ingress rebuilt, mail DKIM re-signed, workloads
+  # redeployed — from the report the recover route returned.
+  if [[ -n "$RECON" ]]; then
+    RING=$(printf '%s' "$RECON"|jq -r '.ingress'); RDK=$(printf '%s' "$RECON"|jq -r '.mail.dkimRegenerated'); RMF=$(printf '%s' "$RECON"|jq -r '.mail.failed')
+    RWR=$(printf '%s' "$RECON"|jq -r '.workloads.redeployed'); RWF=$(printf '%s' "$RECON"|jq -r '.workloads.failed')
+    [[ "$RING" != failed ]] && ok "RECONCILE: ingress=$RING (not failed)" || no "RECONCILE: ingress reconcile failed"
+    [[ "${RDK:-0}" -ge 1 && "${RMF:-0}" -eq 0 ]] && ok "RECONCILE: mail DKIM re-signed $RDK domain(s), 0 failed" || no "RECONCILE: mail dkim=$RDK failed=$RMF"
+    [[ "${RWR:-0}" -ge 1 && "${RWF:-0}" -eq 0 ]] && ok "RECONCILE: workloads redeployed=$RWR, 0 failed" || no "RECONCILE: workloads redeployed=$RWR failed=$RWF"
+    wait_wl_pod "$WLNAME" && ok "WORKLOAD: $WLNAME redeployed + pod Running after recover" || no "WORKLOAD: $WLNAME pod not Running after recover"
+  else
+    no "RECONCILE: no reconcile report in recover response (expected on recreate+done)"
+  fi
 fi
 wait_ns && wait_pvc && ensure_fm || { no "file-manager not back after recover"; exit 1; }
 GOT_SHA=$(fm_exec "sha256sum /data/site/index.html 2>/dev/null"|awk '{print $1}')
