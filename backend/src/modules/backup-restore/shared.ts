@@ -32,6 +32,7 @@ import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { resolveShimFirstBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { execConfigTablesItem } from './executors/config-tables.js';
+import { execDatabasesByIdItem } from './executors/databases-by-id.js';
 import { execDeploymentsByIdItem } from './executors/deployments-by-id.js';
 import { execDomainsByIdItem } from './executors/domains-by-id.js';
 import { execFilesPathsItem } from './executors/files-paths.js';
@@ -179,6 +180,9 @@ export async function dispatchExecutor(
   switch (item.type) {
     case 'config-tables':
       await execConfigTablesItem({ app, item, store, tenantPolicy });
+      return;
+    case 'databases-by-id':
+      await execDatabasesByIdItem({ app, item, store });
       return;
     case 'deployments-by-id':
       await execDeploymentsByIdItem({ app, item, store });

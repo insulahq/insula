@@ -207,7 +207,7 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
   });
 
   describe('orchestration sequence + ordering', () => {
-    it('drives provision → poll → cart → items(config,files,mailboxes) → execute in order', async () => {
+    it('drives provision → poll → cart → items(config,files,databases,mailboxes) → execute in order', async () => {
       const { app, calls, adminToken } = await setupApp([[TENANT], [BUNDLE], ALL_COMPONENTS]);
       const res = await app.inject({
         method: 'POST',
@@ -220,10 +220,12 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       expect(body.cartId).toBe('rstr-cart-1');
       expect(body.provisioned).toBe(true);
       expect(body.status).toBe('done');
-      // 'secrets' component is ignored; order is config → files → mailboxes.
+      // 'secrets' component is ignored; the response components stay the
+      // 3-value contract enum (databases rides on 'files', not a component).
       expect(body.components).toEqual(['config', 'files', 'mailboxes']);
 
-      // Injected call sequence.
+      // Injected call sequence — a databases-by-id item is queued right
+      // after the files item, so there are FOUR item POSTs.
       const seq = calls.map((c) => `${c.method} ${c.url.replace('/api/v1', '')}`);
       expect(seq).toEqual([
         'POST /admin/tenants/t-1/provision',
@@ -232,15 +234,19 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
         'POST /admin/restores/carts/rstr-cart-1/items',
         'POST /admin/restores/carts/rstr-cart-1/items',
         'POST /admin/restores/carts/rstr-cart-1/items',
+        'POST /admin/restores/carts/rstr-cart-1/items',
         'POST /admin/restores/carts/rstr-cart-1/execute',
       ]);
 
-      // Item ordering + selectors.
+      // Item ordering + selectors — databases-by-id lands after files-paths.
       const items = itemCalls(calls).map((c) => c.body as { type: string; selector: Record<string, unknown> });
-      expect(items.map((i) => i.type)).toEqual(['config-tables', 'files-paths', 'mailboxes-by-address']);
+      expect(items.map((i) => i.type)).toEqual([
+        'config-tables', 'files-paths', 'databases-by-id', 'mailboxes-by-address',
+      ]);
       expect(items[0].selector).toEqual({ kind: 'all' });
       expect(items[1].selector).toEqual({ kind: 'full' });
-      expect(items[2].selector).toEqual({ kind: 'all', mode: 'merge-skip-duplicates' });
+      expect(items[2].selector).toEqual({ kind: 'all' });
+      expect(items[3].selector).toEqual({ kind: 'all', mode: 'merge-skip-duplicates' });
     });
 
     it('forwards the caller Authorization header into every injected call', async () => {
@@ -301,7 +307,24 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       });
       expect(res.statusCode).toBe(202);
       expect(JSON.parse(res.body).data.components).toEqual(['config', 'files']);
-      expect(itemCalls(calls)).toHaveLength(2);
+      // config + files + the databases item that rides on files = 3.
+      const items = itemCalls(calls).map((c) => (c.body as { type: string }).type);
+      expect(items).toEqual(['config-tables', 'files-paths', 'databases-by-id']);
+    });
+
+    it('does NOT queue a databases item when files is not applied (config only)', async () => {
+      const configOnly: Row[] = [{ component: 'config', status: 'completed' }];
+      const { app, calls, adminToken } = await setupApp([[TENANT], [BUNDLE], configOnly]);
+      const res = await app.inject({
+        method: 'POST',
+        url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(202);
+      const items = itemCalls(calls).map((c) => (c.body as { type: string }).type);
+      expect(items).toEqual(['config-tables']);
+      expect(items).not.toContain('databases-by-id');
     });
   });
 
@@ -343,6 +366,35 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       // No provision / provision-status calls at all.
       expect(calls.some((c) => c.url.includes('/provision'))).toBe(false);
       expect(calls[0].url).toContain('/restores/carts');
+    });
+  });
+
+  describe('node targeting (gap G2)', () => {
+    it('forwards targetNode into the provision call body', async () => {
+      const { app, calls, adminToken } = await setupApp([[TENANT], [BUNDLE], ALL_COMPONENTS]);
+      const res = await app.inject({
+        method: 'POST',
+        url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { targetNode: 'worker-2' },
+      });
+      expect(res.statusCode).toBe(202);
+      const provisionCall = calls.find((c) => c.url.endsWith('/provision'));
+      expect(provisionCall).toBeDefined();
+      expect(provisionCall!.body).toEqual({ targetNode: 'worker-2' });
+    });
+
+    it('sends a provision body without targetNode when it is omitted', async () => {
+      const { app, calls, adminToken } = await setupApp([[TENANT], [BUNDLE], ALL_COMPONENTS]);
+      await app.inject({
+        method: 'POST',
+        url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {},
+      });
+      const provisionCall = calls.find((c) => c.url.endsWith('/provision'));
+      expect(provisionCall).toBeDefined();
+      expect((provisionCall!.body as Record<string, unknown>).targetNode).toBeUndefined();
     });
   });
 

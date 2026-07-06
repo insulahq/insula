@@ -32,6 +32,16 @@ export const triggerProvisionSchema = z.object({
     memory_limit: z.string().optional(),
     storage_limit: z.string().optional(),
   }).optional(),
+  /**
+   * Optional: place this tenant's resources on a specific cluster node (a
+   * Kubernetes node/hostname). When set, the provisioner validates the node
+   * exists, persists it as `tenants.nodeName`, and pins the file-manager (and,
+   * via the deployment reconciler, tenant workloads) to it. This unlocks
+   * recovering/migrating a tenant onto a chosen node — cross-cluster /
+   * multi-region groundwork (gap G2). Omit → the provisioner auto-picks a
+   * worker for Local-tier tenants and leaves HA-tier placement to the scheduler.
+   */
+  targetNode: z.string().min(1).max(253).optional(),
 });
 
 export type TriggerProvisionInput = z.infer<typeof triggerProvisionSchema>;
