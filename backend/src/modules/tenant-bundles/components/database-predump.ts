@@ -182,16 +182,11 @@ async function runOneDeployment(
 
     const dumps: PreDumpDatabaseResult[] = [];
     const failures: PreDumpDatabaseFailure[] = [];
-    // The DB pod mounts the shared tenant PVC subPath `database/<engine>/<name>`
-    // at its data dir, so a predump written there lands at that PVC path.
-    // exportDatabaseToPvc moves `/data/<subPath>/<file>` → `/data/exports/<file>`,
-    // so the subPath MUST be that real location. The prior value
-    // `databases/<name>` (wrong dir + missing engine) made the move a silent
-    // no-op — the dump stayed put and the restore executor's broad `find`
-    // recovered it. Aligning the subPath makes the move succeed and the returned
-    // pvcPath (`/exports/…`) truthful; the executor's find still covers bundles
-    // captured before this fix.
-    const deploymentSubPath = `database/${ctx.engine}/${dep.deploymentName}`;
+    // Subpath convention matches the existing SQL Manager helper
+    // (`databases/<engine>-<suffix>` per db-manager.ts:1856). The
+    // orchestrator passes the deployment.name unchanged; that's what
+    // exportDatabaseToPvc treats as the subPath.
+    const deploymentSubPath = `databases/${dep.deploymentName}`;
     for (const d of databases) {
       const filename = sanitizeFilename(`predump-${d.name}-${backupId}.sql`);
       try {

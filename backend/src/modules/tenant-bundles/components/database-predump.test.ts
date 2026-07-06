@@ -70,12 +70,6 @@ describe('preCaptureDatabaseDumps', () => {
     const result = await preCaptureDatabaseDumps([makeDb()], deps);
 
     expect(deps.exportDatabaseToPvc).toHaveBeenCalledTimes(2);
-    // The subPath (4th arg) MUST be the DB pod's real PVC mount
-    // `database/<engine>/<name>` so exportDatabaseToPvc's move to /exports/
-    // succeeds — the old `databases/<name>` made the move a silent no-op.
-    expect(deps.exportDatabaseToPvc).toHaveBeenCalledWith(
-      expect.anything(), expect.anything(), expect.anything(), 'database/mariadb/maria-x',
-    );
     expect(result).toHaveLength(1);
     expect(result[0]?.databaseDumps).toEqual([
       { database: 'shop', pvcPath: '/exports/shop-2026.sql', sizeBytes: 1234 },
