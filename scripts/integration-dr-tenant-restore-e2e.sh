@@ -114,8 +114,11 @@ PLAN_ID=$(api GET /plans '' "$TOKEN"|sed '$d'|jq -r '.data[]|select(.name=="Star
 REGION_ID=$(api GET /regions '' "$TOKEN"|sed '$d'|jq -r '.data[0].id')
 [[ -n "$CFG" && -n "$PLAN_ID" && -n "$REGION_ID" ]] || { no "missing cfg/plan/region"; exit 1; }
 ok "cfg=$CFG plan+region resolved"
+# A stale probe pod (restartPolicy:Never sleep ended → phase=Succeeded) can't be
+# exec'd into and `kubectl apply` won't recreate it — delete any non-Running pod
+# before applying a fresh one.
 ssh_node "kubectl -n mail get pod stalwart-probe -o jsonpath='{.status.phase}' 2>/dev/null | grep -q Running" </dev/null 2>/dev/null || \
-ssh_node "cat <<'EOF' | kubectl apply -f - >/dev/null; kubectl -n mail wait --for=condition=ready pod/stalwart-probe --timeout=120s
+ssh_node "kubectl -n mail delete pod stalwart-probe --ignore-not-found --wait=true >/dev/null 2>&1; cat <<'EOF' | kubectl apply -f - >/dev/null; kubectl -n mail wait --for=condition=ready pod/stalwart-probe --timeout=120s
 apiVersion: v1
 kind: Pod
 metadata: {name: stalwart-probe, namespace: mail}
@@ -129,6 +132,7 @@ spec:
     - {name: STALWART_MASTER_PASSWORD, valueFrom: {secretKeyRef: {name: mail-secrets, key: STALWART_MASTER_PASSWORD}}}
     resources: {requests: {cpu: 100m, memory: 128Mi}, limits: {cpu: 500m, memory: 512Mi}}
 EOF" </dev/null 2>&1 | rd
+[[ "$(ssh_node "kubectl -n mail get pod stalwart-probe -o jsonpath='{.status.phase}'" </dev/null 2>/dev/null)" == Running ]] || { no "stalwart-probe not Running"; exit 1; }
 ok "stalwart-probe ready"
 
 cyn "1. create probe tenant + provision"

@@ -243,6 +243,13 @@ RTO, notes. Redact identifiers._
   **assigned it to the `tenant` shim class** (the shim was `assignedClasses:[]` → capture got
   connection-refused until assigned). The first run's "imap-sync SSL EOF" was a cascade of the
   down shim, not a mail defect — it cleared once the shim served the class.
+- **DR tenant-restore E2E — GREEN 13/0 (STAGING, rc.10, 2026-07-06).** Same suite against the
+  shipped release (`backend:2026.7.1-rc.10`, Flux `a1ac0761`): capture completed → loss → recover
+  route (provisioned=true) → FILES SHA + all 12 mail restored. Now validated on BOTH DEV and the
+  release environment. First staging attempt failed at setup on a **stale `Succeeded` stalwart-probe
+  pod** (leftover from a prior mail test — `restartPolicy:Never` sleep ended; `kubectl apply` won't
+  recreate it, so `exec` failed → "mailbox never JMAP-reachable"). Harness fix: delete any
+  non-Running probe pod before applying a fresh one + a real Running assertion. Not a DR/mail defect.
 
 ---
 
