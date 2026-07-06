@@ -376,7 +376,29 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     const execBody = JSON.parse(execRes.body) as { data?: { status?: RestoreJobStatus } };
     const status: RestoreJobStatus = execBody.data?.status ?? 'executing';
 
-    // ── 8. Respond. /execute is synchronous so `status` is already terminal
+    // ── 8. Post-restore reconcile (RE-CREATE path only). A re-created tenant
+    //       has a fresh namespace with NOTHING running; best-effort re-establish
+    //       ingress + mail DKIM + workloads from the just-restored rows so it
+    //       comes back live in this one click. Gated on `recreated` so a normal
+    //       recover into a LIVE tenant never disruptively redeploys its running
+    //       workloads. Never fails the recover — on error we keep the static
+    //       re-create gaps. See `./reconcile.ts`.
+    let reconcile: DrRecoverResponse['reconcile'];
+    if (recreated && status === 'done') {
+      try {
+        const { reconcileRecoveredTenant } = await import('./reconcile.js');
+        const rec = await reconcileRecoveredTenant(app, tenantId);
+        reconcile = rec.report;
+        residualGaps = [...rec.residualGaps]; // dynamic gaps supersede the static list
+      } catch (err) {
+        app.log.warn(
+          { tenantId, err: err instanceof Error ? err.message : String(err) },
+          'dr-recover: post-restore reconcile failed — returning static residual gaps',
+        );
+      }
+    }
+
+    // ── 9. Respond. /execute is synchronous so `status` is already terminal
     //       (done | failed); the client may still GET the cart for per-item
     //       detail. 202 = "recover orchestration accepted + performed". ─────
     const response: DrRecoverResponse = {
@@ -387,6 +409,7 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
       status,
       recreated,
       residualGaps,
+      ...(reconcile ? { reconcile } : {}),
     };
     reply.status(202).send(success(response));
   });

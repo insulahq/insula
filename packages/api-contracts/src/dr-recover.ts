@@ -46,6 +46,34 @@ export const drRecoverRequestSchema = z.object({
 export type DrRecoverRequest = z.infer<typeof drRecoverRequestSchema>;
 
 /**
+ * Post-restore auto-reconcile report. After the restore cart completes the
+ * recover route best-effort re-establishes the platform-side state the bundle
+ * itself cannot carry: k8s Ingress (rebuilt from restored `ingress_routes`),
+ * mail send-readiness (DKIM regenerated in Stalwart per email domain), and the
+ * tenant's workloads (redeployed from their restored spec). Each step is
+ * best-effort — a failure is counted here and surfaced in `residualGaps`, and
+ * NEVER fails the recover. Absent when no reconcile ran (recover failed before
+ * restore, or the cluster clients were unavailable).
+ */
+export const drRecoverReconcileSchema = z.object({
+  /** k8s Ingress rebuild from the restored `ingress_routes` rows. */
+  ingress: z.enum(['reconciled', 'failed', 'skipped']),
+  /** Mail send-readiness: DKIM regenerated in Stalwart per tenant email domain. */
+  mail: z.object({
+    domainsTotal: z.number().int().nonnegative(),
+    dkimRegenerated: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  }),
+  /** Tenant workloads redeployed from their restored `deployments` rows. */
+  workloads: z.object({
+    total: z.number().int().nonnegative(),
+    redeployed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  }),
+});
+export type DrRecoverReconcile = z.infer<typeof drRecoverReconcileSchema>;
+
+/**
  * Response body (wrapped in the standard `{ data }` envelope).
  *
  * The recover route drives the EXISTING synchronous `/execute` endpoint, so by
@@ -78,5 +106,10 @@ export const drRecoverResponseSchema = z.object({
    * sync — the recover route cannot close these gaps on its own.
    */
   residualGaps: z.array(z.string()),
+  /**
+   * Best-effort post-restore reconcile report (ingress / mail DKIM / workloads).
+   * Present when the reconcile ran after a completed restore; absent otherwise.
+   */
+  reconcile: drRecoverReconcileSchema.optional(),
 });
 export type DrRecoverResponse = z.infer<typeof drRecoverResponseSchema>;
