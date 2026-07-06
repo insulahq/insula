@@ -20,8 +20,8 @@ cluster), and this table is the master tracker for the whole program.
 |---|------------------|--------------------|----------------------|---------------------------|
 | S1 | **Single node loss** (server/agent node dies) | Mail-DR failover/failback (dr-watcher); Longhorn replica rebuild (HA mode); stateless reschedule | ✅ mail-DR data-plane GREEN (rc.9); HA replica rebuild covered | Mail-DR card (failover/failback buttons, node-readiness gate). Node status in security-hardening. |
 | S2 | **Complete cluster loss** — platform layer | Cold-restore (`dr-restore.sh`: etcd snapshot + PG dump + secrets bundle + Longhorn volumes) **or** bundle DR (`dr-restore-bundle.sh --mode full`) | ✅ platform layer drilled by `integration-system-dr-drill.sh` (stops at admin login) | `dr-restore*.sh` are CLI/runbook today — **no one-button admin-panel operation yet** (gap) |
-| S3 | **Complete cluster loss — tenant data** | Per-tenant offsite bundle → restore-cart (whole-client) onto rebuilt cluster | ❌ **THIS DRILL** — not yet a validated suite | Restore-cart UI exists for live clusters; **post-rebuild path unproven** |
-| S4 | **Cross-cluster tenant migration** (cheap multi-region: move tenant A→cluster B) | Same bundle-as-transport mechanics as S3, but target cluster is healthy & different | ❌ shares S3 foundation; not yet drilled | Restore-cart + target-node pick; multi-region orchestration UX TBD |
+| S3 | **Complete cluster loss — tenant data** | Per-tenant offsite bundle → **one-button recover route** (`POST /admin/dr/tenants/:id/recover`) → restore-cart files+mail+config (+ `databases-by-id` for add-on DBs) | ✅ **VALIDATED** — `integration-dr-tenant-restore-e2e.sh` (files+mail) + `integration-dr-database-restore-e2e.sh` (DB) GREEN on DEV + staging (rc.11) | Recover route (G1) + `platform-ops dr tenant-restore` CLI; admin-panel DR console still TODO (G3) |
+| S4 | **Cross-cluster tenant migration** (cheap multi-region: move tenant A→cluster B) | Same bundle-as-transport mechanics as S3, but target cluster is healthy & different | 🟡 **half-done** — target-node placement (G2) VALIDATED (recover onto a chosen node); the remaining half is **deleted-client re-create** (restore into a cluster that never had the tenant row) | Restore-cart + target-node pick done; re-create-on-node (RESTORE_SPECIFICATION Phase 4.x) + multi-region orchestration UX still TODO |
 | S5 | **Accidental tenant deletion / data corruption** | Restore-cart from bundle, re-create deleted client, operator picks target node | Partially (live-cluster restore-cart validated in `integration-tenant-bundles-*`) | Restore-cart UI (ADR-034) |
 
 **This document covers S3 first** (it is the hardest and most valuable gap), and is
@@ -162,9 +162,11 @@ non-destructive) → (2) `platform-ops dr tenant-restore` command → (3) harnes
 - Mail restore-cart bug (G0) **fixed + reviewed SAFE + unit-tested**, on `development`
   (`8349cc3f`). Awaiting live validation at the consolidated RC (operator decision:
   build-more-then-one-RC).
-- **DEV cluster (testing box) is degraded** — admin login returns 401 `INVALID_TOKEN` despite a
-  valid active admin + correct clock, plus webmail-reconcile drift. Blocks DEV as the fast
-  validation loop; flagged separately. Validation will happen on staging via the RC.
+- **DEV cluster login: NOT broken (corrected 2026-07-06)** — the 401 `INVALID_TOKEN` was a WRONG
+  PASSWORD, not a defect: `authenticateUser` reuses the generic `INVALID_TOKEN` error for every
+  login failure (incl. bad password, to avoid leaking whether an email exists), so login failures
+  read `INVALID_TOKEN` not `INVALID_CREDENTIALS`. A clean `admin-password-reset.sh --password
+  '<known>'` → login HTTP 200. (DEV does have unrelated webmail-reconcile drift, but login works.)
 - Orchestrator design fixed: new backend route **`POST /api/v1/admin/dr/tenants/:id/recover`**
   reuses the existing provision + restore-cart endpoints via **`app.inject`** (no refactor);
   `platform-ops dr tenant-restore` is a thin client to it. Closes G1; the same route is the
@@ -350,4 +352,9 @@ is stranded because `database-predump.ts` passes the wrong subPath; broken since
 because nothing restored DB dumps until now). Final executor is robust: `find`s the predump wherever
 it is + imports it in place. DEV run: deploy MariaDB → seed 25 rows → capture → delete rows →
 `databases-by-id` → 25 rows restored. Also: add-on DBs need a plan bigger than Starter (quota).
-Next: cut rc.11 → validate G4 + G2 (multi-node target-node test) on staging.
+**Both STAGING-VALIDATED GREEN on rc.11 (2026-07-06):** G4 = MariaDB deploy → seed 25 rows →
+capture → delete → `databases-by-id` → 25 rows restored (11/0); G2 = recover with
+`TARGET_NODE=worker` → file-manager placed on `worker` + files SHA + 12 mail restored (14/0). The
+G2 run exercised the FM-recreate-on-a-different-node path (the tenant was first provisioned
+elsewhere, then recovered onto `worker`). **G2 + G4 are DONE — shipped in rc.11, validated on DEV
+and staging.**

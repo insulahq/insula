@@ -1,8 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { drRecoverRoutes } from './routes.js';
 import { errorHandler } from '../../middleware/error-handler.js';
+
+// The absent-tenant branch dynamic-imports './recreate.js'; stub it so the
+// route tests exercise the branch WIRING (fall-through + response shape)
+// without touching the off-site store. recreate.ts is covered by recreate.test.ts.
+vi.mock('./recreate.js', () => ({ recreateTenantFromBundle: vi.fn() }));
+import { recreateTenantFromBundle } from './recreate.js';
 
 const JWT_SECRET = 'test-jwt-secret-for-dr-recover-routes';
 
@@ -423,6 +429,79 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
       });
       expect(res.statusCode).toBe(202);
       expect(JSON.parse(res.body).data.status).toBe('failed');
+    });
+  });
+
+  describe('deleted-tenant re-create (S4)', () => {
+    it('returns 404 when the tenant is absent AND no bundleId is given', async () => {
+      const { app, adminToken } = await setupApp([[]]); // tenant lookup empty
+      const res = await app.inject({
+        method: 'POST',
+        url: recoverUrl('gone-1'),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {}, // no bundleId
+      });
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body).error.code).toBe('TENANT_NOT_FOUND');
+      expect(vi.mocked(recreateTenantFromBundle)).not.toHaveBeenCalled();
+    });
+
+    it('re-creates from the bundle then falls through to provision + restore', async () => {
+      vi.mocked(recreateTenantFromBundle).mockResolvedValue({ residualGaps: ['redeploy workloads'] });
+      // Queue after the (empty) tenant lookup: §2 bundle row, §3 components.
+      const { app, calls, adminToken } = await setupApp([[], [BUNDLE], ALL_COMPONENTS]);
+      const res = await app.inject({
+        method: 'POST',
+        url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { bundleId: 'bundle-9', targetNode: 'worker-2' },
+      });
+      expect(res.statusCode).toBe(202);
+      const body = JSON.parse(res.body).data;
+      expect(body.recreated).toBe(true);
+      expect(body.residualGaps).toEqual(['redeploy workloads']);
+      expect(body.bundleId).toBe('bundle-9');
+
+      // Re-create ran with the path tenantId + explicit bundleId + node.
+      expect(vi.mocked(recreateTenantFromBundle)).toHaveBeenCalledWith(
+        expect.anything(), 't-1', 'bundle-9', { targetNode: 'worker-2' },
+      );
+      // …and the existing orchestration still ran (provision + cart + execute).
+      const seq = calls.map((c) => `${c.method} ${c.url.replace('/api/v1', '')}`);
+      expect(seq[0]).toBe('POST /admin/tenants/t-1/provision');
+      expect(seq).toContain('POST /admin/restores/carts/rstr-cart-1/execute');
+    });
+
+    it('surfaces the re-create ApiError (e.g. plan/region missing) as-is', async () => {
+      const { ApiError } = await import('../../shared/errors.js');
+      vi.mocked(recreateTenantFromBundle).mockRejectedValue(
+        new ApiError('DR_PLAN_REGION_MISSING', 'plan missing', 400),
+      );
+      const { app, adminToken } = await setupApp([[]]); // tenant absent
+      const res = await app.inject({
+        method: 'POST',
+        url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { bundleId: 'bundle-9' },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error.code).toBe('DR_PLAN_REGION_MISSING');
+    });
+
+    it('normal recover of an EXISTING tenant reports recreated:false', async () => {
+      vi.mocked(recreateTenantFromBundle).mockReset();
+      const { app, adminToken } = await setupApp([[TENANT], [BUNDLE], ALL_COMPONENTS]);
+      const res = await app.inject({
+        method: 'POST',
+        url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {},
+      });
+      expect(res.statusCode).toBe(202);
+      const body = JSON.parse(res.body).data;
+      expect(body.recreated).toBe(false);
+      expect(body.residualGaps).toEqual([]);
+      expect(vi.mocked(recreateTenantFromBundle)).not.toHaveBeenCalled();
     });
   });
 });
