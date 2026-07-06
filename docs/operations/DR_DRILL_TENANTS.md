@@ -162,9 +162,11 @@ non-destructive) → (2) `platform-ops dr tenant-restore` command → (3) harnes
 - Mail restore-cart bug (G0) **fixed + reviewed SAFE + unit-tested**, on `development`
   (`8349cc3f`). Awaiting live validation at the consolidated RC (operator decision:
   build-more-then-one-RC).
-- **DEV cluster (testing box) is degraded** — admin login returns 401 `INVALID_TOKEN` despite a
-  valid active admin + correct clock, plus webmail-reconcile drift. Blocks DEV as the fast
-  validation loop; flagged separately. Validation will happen on staging via the RC.
+- **DEV cluster login: NOT broken (corrected 2026-07-06)** — the 401 `INVALID_TOKEN` was a WRONG
+  PASSWORD, not a defect: `authenticateUser` reuses the generic `INVALID_TOKEN` error for every
+  login failure (incl. bad password, to avoid leaking whether an email exists), so login failures
+  read `INVALID_TOKEN` not `INVALID_CREDENTIALS`. A clean `admin-password-reset.sh --password
+  '<known>'` → login HTTP 200. (DEV does have unrelated webmail-reconcile drift, but login works.)
 - Orchestrator design fixed: new backend route **`POST /api/v1/admin/dr/tenants/:id/recover`**
   reuses the existing provision + restore-cart endpoints via **`app.inject`** (no refactor);
   `platform-ops dr tenant-restore` is a thin client to it. Closes G1; the same route is the

@@ -200,6 +200,75 @@ describe('createTenant', () => {
     expect(insertFn).toHaveBeenCalled();
   });
 
+  it('preserves tenantIdOverride + namespaceOverride (DR re-create)', async () => {
+    const overrideId = '11111111-2222-4333-8444-555555555555';
+    const overrideNs = 'tenant-acme-deadbeef';
+    const createdTenant = { id: overrideId, name: 'Acme', status: 'pending' };
+    // With an override, the FIRST select is the duplicate-id check
+    // (empty = free), THEN plan, region, created-tenant, existing-user.
+    const selects: unknown[][] = [[], [{ id: 'plan' }], [{ id: 'region' }], [createdTenant], []];
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+
+    const insertValuesCalls: Array<Record<string, unknown>> = [];
+    const insertValues = vi.fn((row: Record<string, unknown>) => {
+      insertValuesCalls.push(row);
+      return Promise.resolve(undefined);
+    });
+    const insertFn = vi.fn().mockReturnValue({ values: insertValues });
+
+    const db = { select: selectFn, insert: insertFn } as unknown as Parameters<typeof createTenant>[0];
+
+    const result = await createTenant(db, {
+      name: 'Acme',
+      primary_email: 'admin@acme.test',
+      plan_id: '550e8400-e29b-41d4-a716-446655440000',
+      region_id: '550e8400-e29b-41d4-a716-446655440001',
+    }, 'system', { tenantIdOverride: overrideId, namespaceOverride: overrideNs });
+
+    // The inserted tenant row carries the preserved id + namespace, NOT a
+    // freshly-generated pair.
+    expect(insertValuesCalls[0].id).toBe(overrideId);
+    expect(insertValuesCalls[0].kubernetesNamespace).toBe(overrideNs);
+    expect(result.id).toBe(overrideId);
+  });
+
+  it('throws TENANT_ID_EXISTS when tenantIdOverride already exists', async () => {
+    const overrideId = '11111111-2222-4333-8444-555555555555';
+    // Duplicate-id check returns a row → conflict.
+    const selects: unknown[][] = [[{ id: overrideId }]];
+    const makeWhereResult = () => {
+      const value = selects.shift() ?? [];
+      const promise = Promise.resolve(value);
+      (promise as unknown as { limit: (n: number) => Promise<unknown> }).limit = () => Promise.resolve(value);
+      return promise;
+    };
+    const whereFn = vi.fn().mockImplementation(makeWhereResult);
+    const fromFn = vi.fn().mockReturnValue({ where: whereFn });
+    const selectFn = vi.fn().mockReturnValue({ from: fromFn });
+    const db = { select: selectFn, insert: vi.fn() } as unknown as Parameters<typeof createTenant>[0];
+
+    await expect(createTenant(db, {
+      name: 'Acme', primary_email: 'admin@acme.test', plan_id: '550e8400-e29b-41d4-a716-446655440000',
+    }, 'system', { tenantIdOverride: overrideId })).rejects.toMatchObject({ code: 'TENANT_ID_EXISTS' });
+  });
+
+  it('throws INVALID_TENANT_ID_OVERRIDE for a non-UUID override', async () => {
+    const db = { select: vi.fn(), insert: vi.fn() } as unknown as Parameters<typeof createTenant>[0];
+    await expect(createTenant(db, {
+      name: 'Acme', primary_email: 'admin@acme.test', plan_id: '550e8400-e29b-41d4-a716-446655440000',
+    }, 'system', { tenantIdOverride: 'not-a-uuid' })).rejects.toMatchObject({ code: 'INVALID_TENANT_ID_OVERRIDE' });
+    // The UUID guard fires before any DB call.
+    expect((db as unknown as { select: ReturnType<typeof vi.fn> }).select).not.toHaveBeenCalled();
+  });
+
   it('throws INVALID_PLAN_ID when plan does not exist', async () => {
     const selects: unknown[][] = [[]]; // empty plan lookup
     const makeWhereResult = () => {

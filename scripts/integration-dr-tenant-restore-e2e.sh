@@ -176,11 +176,19 @@ done
 [[ "$BST" == completed ]] || { no "bundle terminal=$BST (expected completed)"; printf '%s' "$BODY"|jq -r '.data.components[]?|"    \(.component) \(.status) \(.lastError//"")"'|rd; exit 1; }
 ok "bundle $BID completed (files+mailboxes+config)"
 
-cyn "4. SIMULATE CLUSTER DATA LOSS (delete namespace + destroy mail)"
-ssh_node "kubectl delete ns $NS --wait=false" </dev/null 2>&1|rd || true
-wait_ns_gone && ok "namespace $NS deleted (files+PVC gone)" || { no "namespace not deleted"; exit 1; }
-jmap_op destroy | rd
-[[ "$(jcount)" == 0 ]] && ok "mailbox emptied (mail gone)" || { no "mailbox not emptied"; exit 1; }
+cyn "4. SIMULATE LOSS"
+if [[ -n "${RECREATE:-}" ]]; then
+  # S4 deleted-client case: delete the WHOLE tenant (row + config + namespace).
+  jmap_op destroy >/dev/null 2>&1 || true
+  api DELETE "/tenants/$TENANT_ID" '' "$TOKEN" >/dev/null 2>&1 || true
+  gone=""; for i in $(seq 1 80); do [[ "$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|tail -n1)" == 404 ]] && { gone=1; break; }; sleep 3; done
+  [[ -n "$gone" ]] && ok "tenant $TENANT_ID DELETED entirely (row+config+ns gone)" || { no "tenant not fully deleted"; exit 1; }
+else
+  ssh_node "kubectl delete ns $NS --wait=false" </dev/null 2>&1|rd || true
+  wait_ns_gone && ok "namespace $NS deleted (files+PVC gone)" || { no "namespace not deleted"; exit 1; }
+  jmap_op destroy | rd
+  [[ "$(jcount)" == 0 ]] && ok "mailbox emptied (mail gone)" || { no "mailbox not emptied"; exit 1; }
+fi
 
 cyn "5. RECOVER from offsite bundle via DR orchestrator route"
 # G2: when TARGET_NODE is set, ask the recover route to place the tenant there.
@@ -190,7 +198,11 @@ parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "$RBODY" "$TOKEN")"
 [[ "$STATUS" =~ ^20 ]] || { no "recover route $STATUS"; echo "$BODY"|rd; exit 1; }
 CID=$(printf '%s' "$BODY"|jq -r '.data.cartId // .data.id // empty')
 [[ -n "$CID" ]] || { no "recover: no cartId in response: $BODY"; exit 1; }
-ok "recover started (cart=$CID, provisioned=$(printf '%s' "$BODY"|jq -r '.data.provisioned // "?"'))"
+ok "recover started (cart=$CID, provisioned=$(printf '%s' "$BODY"|jq -r '.data.provisioned // "?"'), recreated=$(printf '%s' "$BODY"|jq -r '.data.recreated // "?"'))"
+if [[ -n "${RECREATE:-}" ]]; then
+  REC=$(printf '%s' "$BODY"|jq -r '.data.recreated // false')
+  [[ "$REC" == true ]] && ok "re-create: tenant re-created from bundle (recreated=true)" || no "re-create: recreated=$REC (expected true)"
+fi
 CST=timeout; for i in $(seq 1 150); do
   parse "$(api GET "/admin/restores/carts/$CID" '' "$TOKEN")"; s=$(printf '%s' "$BODY"|jq -r '.data.status // empty')
   [[ "$s" == done || "$s" == failed ]] && { CST="$s"; break; }; sleep 4
@@ -199,6 +211,11 @@ done
 ok "restore cart done"
 
 cyn "6. ASSERT user-visible recovery"
+if [[ -n "${RECREATE:-}" ]]; then
+  st2=""; for i in $(seq 1 60); do st2=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.status // empty'); [[ "$st2" == active ]] && break; sleep 3; done
+  [[ "$st2" == active ]] && ok "re-create: tenant $TENANT_ID is back + active (original id preserved)" || no "re-create: tenant not active after recover ($st2)"
+  NS=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.kubernetesNamespace')
+fi
 wait_ns && wait_pvc && ensure_fm || { no "file-manager not back after recover"; exit 1; }
 GOT_SHA=$(fm_exec "sha256sum /data/site/index.html 2>/dev/null"|awk '{print $1}')
 [[ "$GOT_SHA" == "$ORIG_SHA" ]] && ok "FILES: site/index.html SHA matches ($GOT_SHA)" || no "FILES: SHA mismatch want=$ORIG_SHA got=$GOT_SHA"
