@@ -61,6 +61,16 @@ export const backupMetaComponentMailboxesSchema = z.object({
   sizeBytes: z.number().int().nonnegative(),
   mailboxCount: z.number().int().nonnegative(),
   addresses: z.array(z.string()),
+  /**
+   * Restic snapshot id of the whole-tenant `maildir.tar`. Persisted in
+   * meta.json (mirroring the files component's `sha256`) so DR re-create of
+   * a DELETED tenant can repopulate `backup_components.sha256` — the source
+   * cluster's component row was cascade-dropped with the tenant, and the
+   * mailboxes-by-address restore executor resolves the snapshot from that
+   * column. Optional + loosely typed: older bundles omit it (the DB row was
+   * still present then), and the executor re-validates the format on read.
+   */
+  sha256: z.string().regex(/^[0-9a-f]{8,64}$/).optional(),
 });
 
 export const backupMetaComponentConfigSchema = z.object({
