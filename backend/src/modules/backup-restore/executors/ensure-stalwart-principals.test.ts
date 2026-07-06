@@ -5,7 +5,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // the mock in place at that resolution time.
 vi.mock('../../stalwart-jmap/client.js', () => ({
   findMailboxByEmail: vi.fn(),
-  createMailbox: vi.fn(),
+  accountSet: vi.fn(),
+  updatePrincipal: vi.fn(),
   getJmapSession: vi.fn(),
   findDomainByName: vi.fn(),
   createDomain: vi.fn(),
@@ -13,7 +14,8 @@ vi.mock('../../stalwart-jmap/client.js', () => ({
 
 import {
   findMailboxByEmail,
-  createMailbox,
+  accountSet,
+  updatePrincipal,
   getJmapSession,
   findDomainByName,
   createDomain,
@@ -21,10 +23,16 @@ import {
 import { ensureStalwartPrincipals } from './ensure-stalwart-principals.js';
 
 const findMock = findMailboxByEmail as unknown as ReturnType<typeof vi.fn>;
-const createMock = createMailbox as unknown as ReturnType<typeof vi.fn>;
+const acctSetMock = accountSet as unknown as ReturnType<typeof vi.fn>;
+const updPrincMock = updatePrincipal as unknown as ReturnType<typeof vi.fn>;
 const sessionMock = getJmapSession as unknown as ReturnType<typeof vi.fn>;
 const domFindMock = findDomainByName as unknown as ReturnType<typeof vi.fn>;
 const domCreateMock = createDomain as unknown as ReturnType<typeof vi.fn>;
+
+/** Build an x:Account/set success envelope for the 'new-mailbox' create. */
+function acctCreated(id: string) {
+  return { created: { 'new-mailbox': { id, type: 'individual' } }, notCreated: undefined };
+}
 
 function makeApp(dbRows: Array<{
   id: string;
@@ -83,12 +91,12 @@ describe('ensureStalwartPrincipals', () => {
     const result = await ensureStalwartPrincipals({ app, addresses: ['a@example.com'] });
     expect(result.outcomes).toEqual([{ status: 'existing', address: 'a@example.com' }]);
     expect(result.recreated).toBe(0);
-    expect(createMock).not.toHaveBeenCalled();
+    expect(acctSetMock).not.toHaveBeenCalled();
   });
 
-  it('recreates principal when missing in Stalwart but DB row present', async () => {
+  it('recreates principal via x:Account/set (bare local part + domainId) + quota patch', async () => {
     findMock.mockResolvedValue(null);
-    createMock.mockResolvedValue({ id: 'stw-recreated', type: 'individual', name: 'b@example.com', emails: ['b@example.com'] });
+    acctSetMock.mockResolvedValue(acctCreated('stw-recreated'));
     const app = makeApp([{
       id: 'mb-1',
       fullAddress: 'b@example.com',
@@ -103,15 +111,24 @@ describe('ensureStalwartPrincipals', () => {
       address: 'b@example.com',
       stalwartPrincipalId: 'stw-recreated',
     });
-    expect(createMock).toHaveBeenCalledOnce();
-    const callArgs = createMock.mock.calls[0]![0] as { input: { quota?: { storage: number } } };
-    // Quota: 1024 MB → 1024 * 1024 * 1024 bytes.
-    expect(callArgs.input.quota?.storage).toBe(1073741824);
+    // Create payload: BARE local part (not the full address) + the domain's id.
+    expect(acctSetMock).toHaveBeenCalledOnce();
+    const setArgs = acctSetMock.mock.calls[0]![0] as {
+      request: { create: { 'new-mailbox': { '@type': string; name: string; domainId: string } } };
+    };
+    expect(setArgs.request.create['new-mailbox']).toMatchObject({
+      '@type': 'User', name: 'b', domainId: 'dom-existing',
+    });
+    // Quota applied AFTER create via updatePrincipal: 1024 MB → bytes.
+    expect(updPrincMock).toHaveBeenCalledOnce();
+    expect(updPrincMock.mock.calls[0]![0]).toMatchObject({
+      id: 'stw-recreated', patch: { 'quotas/maxDiskQuota': 1073741824 },
+    });
   });
 
-  it('omits quota when DB row has quotaMb=0 (unlimited)', async () => {
+  it('omits the quota patch when DB row has quotaMb=0 (unlimited)', async () => {
     findMock.mockResolvedValue(null);
-    createMock.mockResolvedValue({ id: 'stw-recreated', type: 'individual', name: 'c@example.com', emails: ['c@example.com'] });
+    acctSetMock.mockResolvedValue(acctCreated('stw-recreated'));
     const app = makeApp([{
       id: 'mb-2',
       fullAddress: 'c@example.com',
@@ -121,8 +138,7 @@ describe('ensureStalwartPrincipals', () => {
     }]);
     const result = await ensureStalwartPrincipals({ app, addresses: ['c@example.com'] });
     expect(result.recreated).toBe(1);
-    const callArgs = createMock.mock.calls[0]![0] as { input: { quota?: unknown } };
-    expect(callArgs.input.quota).toBeUndefined();
+    expect(updPrincMock).not.toHaveBeenCalled();
   });
 
   it('returns failed with MAILBOX_ROW_MISSING when both Stalwart AND DB are missing', async () => {
@@ -135,16 +151,16 @@ describe('ensureStalwartPrincipals', () => {
       expect(result.outcomes[0].reason).toContain('MAILBOX_ROW_MISSING');
       expect(result.outcomes[0].reason).toContain('config-tables');
     }
-    expect(createMock).not.toHaveBeenCalled();
+    expect(acctSetMock).not.toHaveBeenCalled();
   });
 
-  it('creates the Stalwart DOMAIN principal when missing before the mailbox (DR re-create)', async () => {
+  it('creates the Stalwart DOMAIN principal when missing, then binds the mailbox to its id (DR re-create)', async () => {
     // Domain principal absent in Stalwart (deleted-tenant re-create) → create it.
     domFindMock.mockResolvedValue(null);
     domCreateMock.mockResolvedValue({ id: 'dom-new', type: 'domain', name: 'reborn.test' });
     // Mailbox principal also absent but DB row present → recreate it too.
     findMock.mockResolvedValue(null);
-    createMock.mockResolvedValue({ id: 'stw-new', type: 'individual', name: 'user@reborn.test', emails: ['user@reborn.test'] });
+    acctSetMock.mockResolvedValue(acctCreated('stw-new'));
     const app = makeApp([{
       id: 'mb-d',
       fullAddress: 'user@reborn.test',
@@ -155,10 +171,14 @@ describe('ensureStalwartPrincipals', () => {
 
     const result = await ensureStalwartPrincipals({ app, addresses: ['user@reborn.test'] });
 
-    // Domain created with the bare domain name (not the address) BEFORE the
-    // mailbox, so createMailbox can validate the local part against it.
+    // Domain created with the bare domain name BEFORE the mailbox…
     expect(domCreateMock).toHaveBeenCalledOnce();
     expect(domCreateMock.mock.calls[0]![0]).toMatchObject({ input: { type: 'domain', name: 'reborn.test' } });
+    // …and the mailbox is bound to the FRESHLY-created domain's id (not a stale one).
+    const setArgs = acctSetMock.mock.calls[0]![0] as {
+      request: { create: { 'new-mailbox': { name: string; domainId: string } } };
+    };
+    expect(setArgs.request.create['new-mailbox']).toMatchObject({ name: 'user', domainId: 'dom-new' });
     expect(result.recreated).toBe(1);
     expect(result.outcomes[0]?.status).toBe('recreated');
   });
@@ -191,7 +211,7 @@ describe('ensureStalwartPrincipals', () => {
       }
       return null;
     });
-    createMock.mockResolvedValue({ id: 'stw-new', type: 'individual', name: 'recreate@example.com', emails: ['recreate@example.com'] });
+    acctSetMock.mockResolvedValue(acctCreated('stw-new'));
     const app = makeApp([{
       id: 'mb-r',
       fullAddress: 'recreate@example.com',
