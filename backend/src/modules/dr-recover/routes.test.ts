@@ -440,6 +440,38 @@ describe('POST /api/v1/admin/dr/tenants/:tenantId/recover', () => {
     });
   });
 
+  describe('reconcile flag (node-loss of an existing tenant)', () => {
+    it('does NOT reconcile a normal recover of an existing tenant by default', async () => {
+      const { app, adminToken } = await setupApp([[TENANT], [BUNDLE], ALL_COMPONENTS]);
+      const res = await app.inject({
+        method: 'POST', url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: {}, // no reconcile flag, tenant exists → recreated=false → gate off
+      });
+      expect(res.statusCode).toBe(202);
+      expect(vi.mocked(reconcileRecoveredTenant)).not.toHaveBeenCalled();
+      expect(JSON.parse(res.body).data.reconcile).toBeUndefined();
+    });
+
+    it('FORCES the reconcile for an existing tenant when reconcile:true (node-loss)', async () => {
+      vi.mocked(reconcileRecoveredTenant).mockResolvedValue({
+        report: RECONCILE_REPORT,
+        residualGaps: ['Cross-cluster DNS: re-point client DNS at this cluster.'],
+      });
+      const { app, adminToken } = await setupApp([[TENANT], [BUNDLE], ALL_COMPONENTS]);
+      const res = await app.inject({
+        method: 'POST', url: recoverUrl(),
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { reconcile: true },
+      });
+      expect(res.statusCode).toBe(202);
+      expect(vi.mocked(reconcileRecoveredTenant)).toHaveBeenCalledWith(expect.anything(), 't-1');
+      const body = JSON.parse(res.body).data;
+      expect(body.reconcile).toEqual(RECONCILE_REPORT);
+      expect(body.residualGaps).toEqual(['Cross-cluster DNS: re-point client DNS at this cluster.']);
+    });
+  });
+
   describe('deleted-tenant re-create (S4)', () => {
     it('returns 404 when the tenant is absent AND no bundleId is given', async () => {
       const { app, adminToken } = await setupApp([[]]); // tenant lookup empty
