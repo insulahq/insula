@@ -53,6 +53,7 @@ import {
   buildDatabaseDumpsSummary,
   type PreDumpDeploymentResult,
 } from './components/database-predump-orchestration.js';
+import { runSqliteCapture } from './components/sqlite-predump.js';
 import { recordResticSnapshot, recordResticRunFailed } from './repo-state.js';
 import {
   buildResticRepoUri,
@@ -260,6 +261,9 @@ export async function runBundle(
   // summary can be built after all component tasks settle. Assigned inside
   // the files task (the dumps must land on the PVC before the files snapshot).
   let dbPredumpResults: ReadonlyArray<PreDumpDeploymentResult> = [];
+  // SQLite files discovered + logically dumped on the PVC (not a catalog DB
+  // deployment). Folded into the database-dump summary as an 'sqlite' entry.
+  let sqliteDump: Awaited<ReturnType<typeof runSqliteCapture>> = null;
 
   const tasks: Array<Promise<void>> = [];
 
@@ -301,6 +305,21 @@ export async function runBundle(
               // eslint-disable-next-line no-console
               console.warn(`[bundle ${bundleId}] pre-dump failed for ${r.deploymentName}: ${r.error}`);
             }
+          }
+          // SQLite files aren't catalog DB deployments — discover + dump them
+          // via the file-manager pod so their `.dump` also lands on the PVC
+          // before the snapshot. Best-effort: a failure here never aborts the
+          // bundle (the raw SQLite file is still captured by the files snapshot).
+          try {
+            sqliteDump = await runSqliteCapture({
+              k8s: deps.k8s,
+              namespace,
+              backupId: bundleId,
+              kubeconfigPath: deps.kubeconfigPath,
+            });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(`[bundle ${bundleId}] sqlite pre-dump error: ${(err as Error).message}`);
           }
         } catch (err) {
           // Non-fatal — log and proceed with the FS snapshot anyway. The DB
@@ -563,7 +582,7 @@ export async function runBundle(
   // to the operator here instead. Null when files weren't requested (the
   // dumps live inside the files snapshot, so there's nothing to summarise).
   const databaseDumps = input.components.files
-    ? buildDatabaseDumpsSummary(dbPredumpResults)
+    ? buildDatabaseDumpsSummary(dbPredumpResults, sqliteDump ? [sqliteDump] : [])
     : null;
 
   // Build + persist meta.json *only* if every requested non-mailbox

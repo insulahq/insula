@@ -152,16 +152,14 @@ export async function runPreCaptureDatabaseDumps(
  */
 export function buildDatabaseDumpsSummary(
   results: ReadonlyArray<PreDumpDeploymentResult>,
+  extraDeployments: ReadonlyArray<BackupDatabaseDumps['deployments'][number]> = [],
 ): BackupDatabaseDumps {
-  let anyDegraded = false;
-
-  const deployments = results.map((r) => {
+  const fromResults = results.map((r) => {
     const databases: BackupDatabaseDumps['deployments'][number]['databases'] = [];
     for (const d of r.databaseDumps) {
       databases.push({ name: d.database, status: 'dumped', sizeBytes: d.sizeBytes });
     }
     for (const f of r.databaseFailures) {
-      anyDegraded = true;
       databases.push({
         name: f.database,
         status: f.benign ? 'degraded' : 'failed',
@@ -171,23 +169,27 @@ export function buildDatabaseDumpsSummary(
     }
     // A deployment-level error (e.g. listDatabases failed, pod not running)
     // means we could not even enumerate its databases — surface it as a
-    // synthetic degraded entry so the gap is visible.
+    // synthetic failed entry so the gap is visible.
     if (r.error) {
-      anyDegraded = true;
       databases.push({ name: '(deployment)', status: 'failed', sizeBytes: 0, error: r.error });
     }
     return {
       deploymentId: r.deploymentId,
       deploymentName: r.deploymentName,
-      engine: r.engine,
+      engine: r.engine as string | null,
       databases,
     };
   });
 
-  const anyDatabase = deployments.some((d) => d.databases.length > 0);
-  const status: BackupDatabaseDumps['status'] = !anyDatabase
+  // extraDeployments carries non-catalog logical dumps (e.g. SQLite files
+  // discovered on the PVC). They fold into the same summary + status.
+  const deployments = [...fromResults, ...extraDeployments];
+
+  // Status is derived from the FINAL per-database statuses so extras count too.
+  const allDbs = deployments.flatMap((d) => d.databases);
+  const status: BackupDatabaseDumps['status'] = allDbs.length === 0
     ? 'none'
-    : anyDegraded
+    : allDbs.some((db) => db.status !== 'dumped')
       ? 'degraded'
       : 'ok';
 
