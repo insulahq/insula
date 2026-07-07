@@ -292,11 +292,26 @@ export async function restoreDatabasesForDeployments<Ctx>(
     const skipped: string[] = [];
     const failed: { database: string; error: string }[] = [];
 
+    // Segregate dumps by engine class. All of a tenant's DB engines share the
+    // ONE tenant PVC, so the (global) dump search returns SIBLING deployments'
+    // dumps too. Restoring a mongo `.archive.gz` with a SQL context (or a
+    // `.sql` with a mongo context) throws UNSUPPORTED_ENGINE. Only restore
+    // dumps whose file type matches THIS deployment's engine; the rest belong
+    // to sibling deployments and are restored under their own target. (Caught
+    // by the multi-engine E2E on DEV 2026-07-07.)
+    const depIsMongo = /mongo/i.test(dep.catalogRuntime ?? dep.catalogCode ?? '');
+
     for (const p of bundleDumps) {
       const b = baseName(p);
       const isMongo = b.endsWith(mongoSuffix);
       const thisSuffix = isMongo ? mongoSuffix : sqlSuffix;
       const sanitizedDb = b.slice(DUMP_PREFIX.length, b.length - thisSuffix.length);
+
+      // Skip a dump whose engine class doesn't match this deployment — it
+      // belongs to a sibling deployment sharing the PVC.
+      if (isMongo !== depIsMongo) {
+        continue;
+      }
 
       // MongoDB: mongorestore recreates the archive's namespaces, so the
       // target db need NOT currently exist — restore unconditionally.
