@@ -13,6 +13,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Tenant add-on databases: two-layer backup + visible dump summary**
+  (ADR-048 Primitive 3 evolution). Every add-on database (MariaDB/MySQL,
+  PostgreSQL, MongoDB, SQLite) is now captured two ways in a bundle: the
+  **raw-files floor** (the `files` restic snapshot always includes each
+  engine's on-disk datadir, which crash-recovers to committed-consistent —
+  so a bundle is never without a recoverable copy) **plus** a best-effort
+  **logical dump** on top for portable / cross-version restore. SQL dumps run
+  `mysqldump`/`mariadb-dump --single-transaction --quick --routines
+  --triggers` (**hot-consistent, no table lock, no write-downtime**);
+  **MongoDB is now covered** via `mongodump --archive --gzip` (was silently
+  unsupported). A **free-space guard** skips the logical dump when the DB
+  pod's volume is >= 90% full or < 200 MiB free, so a dump can never `ENOSPC`
+  the live database. Per-database outcome is recorded in a new
+  `backup_jobs.database_dumps` JSONB column (contract type
+  `BackupDatabaseDumps`), surfaced on `GET /admin/tenant-bundles/:id`, with
+  per-db status `dumped`/`degraded`/`failed` and bundle roll-up
+  `ok`/`degraded`/`none` + `remediation`. This dump summary is a **separate
+  dimension** from the bundle's `status`: a `completed` bundle can carry a
+  `degraded` `database_dumps` and stays fully restorable via the raw-files
+  floor — a degraded/failed logical dump never flips the bundle to `partial`
+  and never blocks restore. Restore re-imports the logical dumps via the
+  `databases-by-id` restore item (SQL through `importSqlFromPvcFile`, MongoDB
+  `.archive.gz` through `mongorestore --archive --gzip --drop`), skipping
+  gracefully when a DB pod is down or no dump exists; raw datadir restore
+  stays available via `files-paths`. New operator runbook:
+  `docs/operations/DATABASE_RECOVERY.md`.
 - **`platform-secrets` mirror drift-guard** — `platform-secrets` lives in the
   `platform` namespace but the sftp-gateway runs in `platform-system` and mounts
   a mirrored copy (k8s has no cross-namespace secret refs). Bootstrap mirrored it
