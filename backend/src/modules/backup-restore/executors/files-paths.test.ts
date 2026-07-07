@@ -6,7 +6,35 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildFilesPathsJobSpec, validateSelector } from './files-paths.js';
+import { buildFilesPathsJobSpec, validateSelector, pathsOverlap } from './files-paths.js';
+
+describe('pathsOverlap (DB-datadir quiesce gate)', () => {
+  const S = 'databases/mysql-abc';
+  it('matches an exact datadir path', () => {
+    expect(pathsOverlap([S], S)).toBe(true);
+  });
+  it('matches a restore path INSIDE the datadir (child)', () => {
+    expect(pathsOverlap([`${S}/ibdata1`], S)).toBe(true);
+  });
+  it('matches a restore path that CONTAINS the datadir (ancestor)', () => {
+    expect(pathsOverlap(['databases'], S)).toBe(true);
+  });
+  it('matches a whole-PVC path', () => {
+    expect(pathsOverlap([''], S)).toBe(true);
+  });
+  it('does NOT match an unrelated path', () => {
+    expect(pathsOverlap(['var/www/html/index.php'], S)).toBe(false);
+  });
+  it('does NOT match a sibling with a shared prefix but different segment', () => {
+    expect(pathsOverlap(['databases/mysql-abcdef'], S)).toBe(false);
+  });
+  it('normalises leading ./ and trailing slashes', () => {
+    expect(pathsOverlap([`./${S}/`], `${S}/`)).toBe(true);
+  });
+  it('is false for an empty storagePath (cannot reason)', () => {
+    expect(pathsOverlap([S], '')).toBe(false);
+  });
+});
 
 describe('buildFilesPathsJobSpec', () => {
   const baseInput = {
