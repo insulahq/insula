@@ -52,6 +52,7 @@ import {
   tenants,
   deployments,
   catalogEntries,
+  backupComponents,
   type RestoreItem,
 } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
@@ -60,10 +61,23 @@ import {
   buildDbContext,
   listDatabases,
   importSqlFromPvcFile,
+  importMongoArchiveFromPvcFile,
   type DbManagerContext,
 } from '../../deployments/db-manager.js';
 import { getReadyFileManagerPod } from '../../file-manager/service.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
+import { buildFilesPathsJobSpec, findNodeAttachingPvc, waitForJob } from './files-paths.js';
+import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
+import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../../tenant-bundles/restic-driver.js';
+import {
+  FILES_CAPTURE_ROOT,
+  buildResticCredsStringData,
+  createResticCredsSecret,
+  wireSecretOwnerRef,
+} from '../../tenant-bundles/components/files.js';
+
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 
 const DUMP_PREFIX = 'predump-';
 /** progress_message column is varchar(500). */
@@ -78,6 +92,8 @@ export interface TargetDeployment {
   readonly catalogCode: string;
   readonly catalogRuntime: string | null;
   readonly configuration: Record<string, unknown> | null;
+  /** PVC subPath = the DB's on-disk datadir; where its predump is captured. */
+  readonly storagePath: string | null;
 }
 
 /** A requested deployment row (kind:'ids' validation input). */
@@ -123,6 +139,17 @@ export interface DatabasesRestoreDeps<Ctx> {
   readonly importSql: (
     ctx: Ctx,
     database: string,
+    filePath: string,
+    deploymentSubPath: string,
+  ) => Promise<{ readonly success: boolean; readonly error?: string }>;
+  /**
+   * Restore a MongoDB `.archive.gz` dump (mongorestore --archive --drop).
+   * No db-name argument — the archive carries its own namespaces and
+   * mongorestore recreates the collections, so the target db need NOT
+   * currently exist. Optional so unit tests + SQL-only call sites can omit it.
+   */
+  readonly importMongoArchive?: (
+    ctx: Ctx,
     filePath: string,
     deploymentSubPath: string,
   ) => Promise<{ readonly success: boolean; readonly error?: string }>;
@@ -215,7 +242,10 @@ export async function restoreDatabasesForDeployments<Ctx>(
   deps: DatabasesRestoreDeps<Ctx>,
   onProgress?: (msg: string) => void | Promise<void>,
 ): Promise<DatabasesRestoreSummary> {
-  const suffix = `-${bundleId}.sql`;
+  // SQL engines dump `predump-<db>-<bundleId>.sql`; MongoDB dumps
+  // `predump-<db>-<bundleId>.archive.gz`. Match either.
+  const sqlSuffix = `-${bundleId}.sql`;
+  const mongoSuffix = `-${bundleId}.archive.gz`;
   const outcomes: DeploymentOutcome[] = [];
 
   for (const dep of targets) {
@@ -245,12 +275,14 @@ export async function restoreDatabasesForDeployments<Ctx>(
     const paths = await deps.listDumpFiles(ctx, dep.deploymentName);
     const bundleDumps = paths.filter((p) => {
       const b = baseName(p);
-      return b.startsWith(DUMP_PREFIX) && b.endsWith(suffix) && b.length > DUMP_PREFIX.length + suffix.length;
+      if (!b.startsWith(DUMP_PREFIX)) return false;
+      return (b.endsWith(sqlSuffix) && b.length > DUMP_PREFIX.length + sqlSuffix.length)
+        || (b.endsWith(mongoSuffix) && b.length > DUMP_PREFIX.length + mongoSuffix.length);
     });
     if (bundleDumps.length === 0) {
       outcomes.push(skippedOutcome(
         dep,
-        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected ${DUMP_PREFIX}*${suffix})`,
+        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected ${DUMP_PREFIX}*${sqlSuffix} or ${DUMP_PREFIX}*${mongoSuffix})`,
       ));
       continue;
     }
@@ -275,9 +307,40 @@ export async function restoreDatabasesForDeployments<Ctx>(
     const skipped: string[] = [];
     const failed: { database: string; error: string }[] = [];
 
+    // Segregate dumps by engine class. All of a tenant's DB engines share the
+    // ONE tenant PVC, so the (global) dump search returns SIBLING deployments'
+    // dumps too. Restoring a mongo `.archive.gz` with a SQL context (or a
+    // `.sql` with a mongo context) throws UNSUPPORTED_ENGINE. Only restore
+    // dumps whose file type matches THIS deployment's engine; the rest belong
+    // to sibling deployments and are restored under their own target. (Caught
+    // by the multi-engine E2E on DEV 2026-07-07.)
+    const depIsMongo = /mongo/i.test(dep.catalogRuntime ?? dep.catalogCode ?? '');
+
     for (const p of bundleDumps) {
       const b = baseName(p);
-      const sanitizedDb = b.slice(DUMP_PREFIX.length, b.length - suffix.length);
+      const isMongo = b.endsWith(mongoSuffix);
+      const thisSuffix = isMongo ? mongoSuffix : sqlSuffix;
+      const sanitizedDb = b.slice(DUMP_PREFIX.length, b.length - thisSuffix.length);
+
+      // Skip a dump whose engine class doesn't match this deployment — it
+      // belongs to a sibling deployment sharing the PVC.
+      if (isMongo !== depIsMongo) {
+        continue;
+      }
+
+      // MongoDB: mongorestore recreates the archive's namespaces, so the
+      // target db need NOT currently exist — restore unconditionally.
+      if (isMongo) {
+        if (!deps.importMongoArchive) {
+          skipped.push(`mongo dump '${sanitizedDb}' in ${dep.deploymentName} skipped — mongorestore path unavailable in this executor`);
+          continue;
+        }
+        const res = await deps.importMongoArchive(ctx, p, dirName(p));
+        if (res.success) imported.push(sanitizedDb);
+        else failed.push({ database: sanitizedDb, error: res.error ?? 'mongorestore failed' });
+        continue;
+      }
+
       const reals = bySanitized.get(sanitizedDb) ?? [];
       if (reals.length === 0) {
         skipped.push(`database '${sanitizedDb}' not present in ${dep.deploymentName} (skipped — recreate it, then re-run this restore)`);
@@ -409,7 +472,32 @@ export async function execDatabasesByIdItem(args: {
       const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath);
       return { success: result.success, error: result.error };
     },
+    importMongoArchive: async (ctx, filePath, deploymentSubPath) => {
+      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath);
+      return { success: result.success, error: result.error };
+    },
   };
+
+  // Snapshot-restore: predumps no longer persist on the live PVC (capture
+  // deletes them after the files snapshot to keep the tenant PVC footprint at
+  // ~0 — a 2-5 GB PVC can't hold a retention window of full dumps). Fetch this
+  // bundle's predumps back from the files restic snapshot into each DB's
+  // datadir BEFORE the import. Safe on the running DB (restores a single dump
+  // FILE, not the datadir). Best-effort: on an old bundle whose predump is
+  // still on the PVC, or a restic hiccup, we fall through to the live-PVC find.
+  await fetchPredumpsFromSnapshot({
+    app,
+    k8s,
+    kubeconfigPath,
+    namespace,
+    tenantId: job.tenantId,
+    bundleId: item.bundleId,
+    storagePaths: targets.map((t) => t.storagePath).filter((s): s is string => Boolean(s)),
+    cartId: item.restoreJobId,
+    itemId: item.id,
+  }).catch(async (err) => {
+    await setProgress(app, item, `predump snapshot fetch fell back to live PVC: ${(err as Error).message.slice(0, 180)}`);
+  });
 
   const summary = await restoreDatabasesForDeployments(
     targets,
@@ -444,6 +532,7 @@ async function resolveTargetDeployments(
         deploymentId: deployments.id,
         deploymentName: deployments.name,
         configuration: deployments.configuration,
+        storagePath: deployments.storagePath,
         catalogCode: catalogEntries.code,
         catalogRuntime: catalogEntries.runtime,
       })
@@ -456,6 +545,7 @@ async function resolveTargetDeployments(
       catalogCode: r.catalogCode,
       catalogRuntime: r.catalogRuntime,
       configuration: r.configuration,
+      storagePath: r.storagePath,
     }));
     return selectTargetDeployments(selector, tenantId, tenantDbDeployments, new Map());
   }
@@ -467,6 +557,7 @@ async function resolveTargetDeployments(
       deploymentId: deployments.id,
       deploymentName: deployments.name,
       configuration: deployments.configuration,
+      storagePath: deployments.storagePath,
       deploymentTenantId: deployments.tenantId,
       catalogCode: catalogEntries.code,
       catalogRuntime: catalogEntries.runtime,
@@ -487,10 +578,104 @@ async function resolveTargetDeployments(
         catalogCode: r.catalogCode ?? '',
         catalogRuntime: r.catalogRuntime ?? null,
         configuration: r.configuration,
+        storagePath: r.storagePath,
       },
     });
   }
   return selectTargetDeployments(selector, tenantId, [], requestedById);
+}
+
+/**
+ * Fetch this bundle's predumps back from the files restic snapshot into each DB
+ * deployment's datadir on the live PVC. Predumps are deleted from the live PVC
+ * after capture (to keep the tenant PVC footprint at ~0 — a 2-5 GB PVC can't
+ * hold a retention window of full dumps), so restore must re-materialise them.
+ * Spawns ONE files-restore Job scoped to the predump paths (reusing
+ * buildFilesPathsJobSpec): the `cp -a` overlay lands each predump at
+ * `/source/<storagePath>/predump-…`, i.e. the DB pod's data dir, where the
+ * import step then finds it. Restoring a single dump FILE onto a running DB is
+ * safe (unlike a datadir overlay — no quiesce needed). Idempotent.
+ */
+async function fetchPredumpsFromSnapshot(args: {
+  app: FastifyInstance;
+  k8s: K8sClients;
+  kubeconfigPath?: string;
+  namespace: string;
+  tenantId: string;
+  bundleId: string;
+  storagePaths: readonly string[];
+  cartId: string;
+  itemId: string;
+}): Promise<void> {
+  const { app, k8s, namespace, tenantId, bundleId } = args;
+  const storagePaths = [...new Set(
+    args.storagePaths.map((s) => s.replace(/^\/+/, '').replace(/\/+$/, '')).filter(Boolean),
+  )];
+  if (storagePaths.length === 0) return;
+
+  // Resolve the files restic snapshot id for this bundle (same source files-paths reads).
+  const [comp] = await app.db.select().from(backupComponents)
+    .where(and(eq(backupComponents.backupJobId, bundleId), eq(backupComponents.component, 'files')))
+    .limit(1);
+  if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) return; // no files snapshot → nothing to fetch
+
+  const secretsKeyHex = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
+  if (!secretsKeyHex) throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
+
+  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
+  const repoUri = buildResticRepoUri(target, tenantId, 'files');
+  const env = buildResticEnv(target);
+
+  // Include this bundle's predump files in each DB's datadir. restic --include
+  // supports the `*` glob (matches the `<db>` segment).
+  const includePaths = storagePaths.flatMap((sp) => [
+    `${FILES_CAPTURE_ROOT}/${sp}/predump-*-${bundleId}.sql`,
+    `${FILES_CAPTURE_ROOT}/${sp}/predump-*-${bundleId}.archive.gz`,
+  ]);
+
+  const safe = bundleId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 40);
+  const jobName = `rs-dbpd-${safe}`.slice(0, 63);
+  const credsSecretName = `rs-dbpd-creds-${safe}`.slice(0, 63);
+  const pvcName = `${namespace}-storage`;
+  const pinToNode = await findNodeAttachingPvc(k8s, namespace, pvcName);
+
+  let credsCreated = false;
+  let ownerRefWired = false;
+  try {
+    await createResticCredsSecret(k8s, namespace, credsSecretName,
+      buildResticCredsStringData({ passwordHex, repoUri, env }), 'restore-files');
+    credsCreated = true;
+
+    const spec = buildFilesPathsJobSpec({
+      jobName, namespace, pvcName, tenantId, cartId: args.cartId, itemId: args.itemId,
+      credsSecretName, snapshotId: comp.sha256, includePaths,
+      jobImage: TOOLS_IMAGE_DEFAULT, pinToNode, activeDeadlineSeconds: 10 * 60,
+    });
+    const createdJob = await (k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
+    }).createNamespacedJob({ namespace, body: spec });
+    const jobUid = createdJob.metadata?.uid;
+    if (jobUid) {
+      try { await wireSecretOwnerRef(k8s, namespace, credsSecretName, jobName, jobUid); ownerRefWired = true; }
+      catch { /* creds GC via the finally-delete */ }
+    }
+    await waitForJob(k8s, namespace, jobName, 10 * 60 * 1000);
+    try {
+      await (k8s.batch as unknown as {
+        deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+      }).deleteNamespacedJob({ name: jobName, namespace, propagationPolicy: 'Background' });
+    } catch { /* ttl GC backstop */ }
+  } finally {
+    if (credsCreated && !ownerRefWired) {
+      try {
+        await (k8s.core as unknown as {
+          deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
+        }).deleteNamespacedSecret({ name: credsSecretName, namespace });
+      } catch { /* best-effort */ }
+    }
+  }
 }
 
 /**
@@ -511,7 +696,7 @@ async function listPredumpFiles(
 ): Promise<string[]> {
   const fmPod = await getReadyFileManagerPod(k8s, namespace);
   const res = await execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
-    ['find', '/data', '-type', 'f', '-name', 'predump-*.sql']);
+    ['find', '/data', '-type', 'f', '(', '-name', 'predump-*.sql', '-o', '-name', 'predump-*.archive.gz', ')']);
   if (res.exitCode !== 0) return [];
   return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
     .map((p) => p.replace(/^\/data\//, ''));

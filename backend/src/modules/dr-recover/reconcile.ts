@@ -194,24 +194,43 @@ async function reconcileWorkloadsStep(
 
   const { redeployWithCurrentConfig } = await import('../deployments/service.js');
   const { redeployCustomDeploymentRow } = await import('../custom-deployments/service.js');
+  // Track the cross-cluster credential case separately: a private-image
+  // workload's registry PAT is envelope-encrypted with the SOURCE cluster's
+  // PLATFORM_ENCRYPTION_KEY, so on a DIFFERENT cluster the deploy throws
+  // PAT_DECRYPT_FAILED. The credential ROW is restored (config component), but
+  // the operator must re-enter the token here — surface that specifically.
+  let credentialBlocked = 0;
   for (const dep of deployable) {
     try {
       if (dep.source === 'custom') {
         await redeployCustomDeploymentRow(app.db, k8s as never, tenantId, dep);
       } else {
-        await redeployWithCurrentConfig(app.db, dep, k8s as never);
+        // armPasswordReset: this is the DR reconcile path — re-stamp each DB's
+        // config-captured root password onto its (restored) datadir so the
+        // platform can always authenticate, even if the datadir carried a
+        // different password than `config` (mixed / rotated restore).
+        await redeployWithCurrentConfig(app.db, dep, k8s as never, { armPasswordReset: true });
       }
       report.workloads.redeployed += 1;
     } catch (err) {
       report.workloads.failed += 1;
+      if ((err as { code?: string })?.code === 'PAT_DECRYPT_FAILED') credentialBlocked += 1;
       app.log.warn({ module: 'dr-reconcile', tenantId, deploymentId: dep.id, err: errMsg(err) }, 'reconcile: workload redeploy failed');
     }
   }
-  if (report.workloads.failed > 0) {
+  if (credentialBlocked > 0) {
     residualGaps.push(
-      `${report.workloads.failed}/${report.workloads.total} workload(s) failed to redeploy `
-      + '(image, registry, or pull credential may be unavailable on this cluster) — inspect '
-      + 'and redeploy them from the tenant’s Deployments page.',
+      `${credentialBlocked} private-image workload(s) could not redeploy: the registry pull `
+      + 'credential was encrypted with the source cluster’s key and cannot be decrypted here '
+      + '(cross-cluster). Re-add the registry credential on each workload (Deployments → Pull '
+      + 'credential), then redeploy.',
+    );
+  }
+  const otherFailed = report.workloads.failed - credentialBlocked;
+  if (otherFailed > 0) {
+    residualGaps.push(
+      `${otherFailed}/${report.workloads.total} workload(s) failed to redeploy (image or registry `
+      + 'unavailable on this cluster) — inspect and redeploy them from the tenant’s Deployments page.',
     );
   }
 }

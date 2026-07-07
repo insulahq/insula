@@ -28,12 +28,17 @@ import { ApiError, missingToken } from '../../shared/errors.js';
 import { tenants, backupJobs, backupComponents } from '../../db/schema.js';
 import {
   drRecoverRequestSchema,
+  drRecoverAllRequestSchema,
   MAILBOX_RESTORE_MODE_DEFAULT,
   type DrRecoverComponent,
   type DrRecoverResponse,
+  type DrRecoverAllTarget,
+  type DrRecoverAllResult,
+  type DrRecoverAllResponse,
   type MailboxRestoreMode,
   type RestoreJobStatus,
 } from '@insula/api-contracts';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // Bounded wait for the async provision task to reach a terminal state before
 // the restore items run against the (now provisioned) namespace/PVC.
@@ -415,4 +420,136 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
     };
     reply.status(202).send(success(response));
   });
+
+  // ── Batch recover-all (S3: cluster rebuilt → restore N tenants at once) ────
+  // Recovers every LOST tenant (has a completed off-site bundle, namespace
+  // absent) in one operation, by injecting the single-tenant recover per
+  // tenant so the exact validated flow (re-create/provision/restore/reconcile)
+  // runs each time. Dry-run previews the target set; scope='missing' (default)
+  // never touches a live tenant.
+  app.post('/admin/dr/tenants/recover-all', {
+    schema: {
+      tags: ['Restore'],
+      summary: 'Batch DR recover — restore all lost tenants from their off-site bundles',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request, reply) => {
+    const parsed = drRecoverAllRequestSchema.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      throw new ApiError(
+        'VALIDATION_ERROR',
+        parsed.error.issues.map((i) => `${i.path.join('.') || '(root)'}: ${i.message}`).join('; '),
+        400,
+      );
+    }
+    const input = parsed.data;
+    const authHeader = request.headers.authorization;
+    if (!authHeader) throw missingToken();
+
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+      ?? process.env.KUBECONFIG_PATH ?? process.env.KUBECONFIG;
+    const existingNamespaces = await listClusterNamespaces(kubeconfigPath);
+    const targets = await resolveRecoverAllTargets(app, input, existingNamespaces);
+
+    if (input.dryRun) {
+      const dry: DrRecoverAllResponse = {
+        dryRun: true, scope: input.scope, total: targets.length, recovered: 0, failed: 0, targets,
+      };
+      return reply.status(200).send(success(dry));
+    }
+
+    // SEQUENTIAL by design: a freshly-rebuilt cluster is fragile and each
+    // provision+restore is heavy; parallel recovers would hammer it.
+    const results: DrRecoverAllResult[] = [];
+    for (const t of targets) {
+      const body: Record<string, unknown> = { bundleId: t.bundleId };
+      if (input.targetNode) body.targetNode = input.targetNode;
+      if (input.components) body.components = input.components;
+
+      let ok = false; let status: RestoreJobStatus | null = null; let recreated = false; let error: string | null = null;
+      try {
+        const res = await app.inject({
+          method: 'POST',
+          url: `/api/v1/admin/dr/tenants/${encodeURIComponent(t.tenantId)}/recover`,
+          headers: { authorization: authHeader, 'content-type': 'application/json' },
+          payload: JSON.stringify(body),
+        });
+        ok = res.statusCode >= 200 && res.statusCode < 300;
+        let pb: { data?: DrRecoverResponse; error?: { message?: string } } | null = null;
+        try { pb = res.json(); } catch { pb = null; }
+        status = pb?.data?.status ?? null;
+        recreated = pb?.data?.recreated ?? false;
+        if (!ok) error = pb?.error?.message ?? `HTTP ${res.statusCode}`;
+        else if (status === 'failed') { ok = false; error = 'restore cart reported failed'; }
+      } catch (err) {
+        ok = false; error = err instanceof Error ? err.message : String(err);
+      }
+      results.push({ ...t, ok, status, recreated, error });
+    }
+
+    const response: DrRecoverAllResponse = {
+      dryRun: false,
+      scope: input.scope,
+      total: results.length,
+      recovered: results.filter((r) => r.ok && r.status === 'done').length,
+      failed: results.filter((r) => !r.ok || r.status === 'failed').length,
+      results,
+    };
+    reply.status(202).send(success(response));
+  });
+}
+
+/** Snapshot the cluster's namespace names (empty set on any API error). */
+async function listClusterNamespaces(kubeconfigPath?: string): Promise<Set<string>> {
+  try {
+    const k8s = createK8sClients(kubeconfigPath);
+    const res = await k8s.core.listNamespace();
+    const out = new Set<string>();
+    for (const ns of (res.items ?? [])) {
+      const n = ns.metadata?.name;
+      if (n) out.add(n);
+    }
+    return out;
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Resolve the tenants a batch recover should target. Candidates are the
+ * explicit `tenantIds`, else every tenant with a completed bundle (a
+ * hard-deleted tenant's backup_jobs rows are cascade-dropped, so this naturally
+ * scopes to the S3 "platform DB restored, namespaces lost" set). Each candidate
+ * resolves to its NEWEST completed bundle; `scope: 'missing'` drops tenants
+ * whose namespace still exists (never restores over a live tenant).
+ */
+async function resolveRecoverAllTargets(
+  app: FastifyInstance,
+  input: { tenantIds?: readonly string[]; scope: 'missing' | 'all' },
+  existingNamespaces: ReadonlySet<string>,
+): Promise<DrRecoverAllTarget[]> {
+  let candidateIds: string[];
+  if (input.tenantIds && input.tenantIds.length > 0) {
+    candidateIds = [...input.tenantIds];
+  } else {
+    const rows = await app.db.selectDistinct({ tenantId: backupJobs.tenantId })
+      .from(backupJobs).where(eq(backupJobs.status, 'completed'));
+    candidateIds = rows.map((r) => r.tenantId);
+  }
+
+  const targets: DrRecoverAllTarget[] = [];
+  for (const tenantId of candidateIds) {
+    const [bundle] = await app.db.select({ id: backupJobs.id })
+      .from(backupJobs)
+      .where(and(eq(backupJobs.tenantId, tenantId), eq(backupJobs.status, 'completed')))
+      .orderBy(desc(backupJobs.createdAt)).limit(1);
+    if (!bundle) continue; // no completed bundle → not recoverable
+    const [t] = await app.db.select({ name: tenants.name, ns: tenants.kubernetesNamespace })
+      .from(tenants).where(eq(tenants.id, tenantId)).limit(1);
+    const ns = t?.ns ?? null;
+    const namespacePresent = ns ? existingNamespaces.has(ns) : false;
+    if (input.scope === 'missing' && namespacePresent) continue; // skip live tenants
+    targets.push({ tenantId, tenantName: t?.name ?? null, bundleId: bundle.id, namespacePresent });
+  }
+  return targets;
 }

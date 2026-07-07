@@ -68,6 +68,10 @@ export const CONFIG_DUMP_TABLES = [
   'sshKeys',
   'sftpUsers',
   'deployments',
+  // Must follow `deployments` — FK deployment_id → deployments.id. Carries the
+  // envelope-encrypted registry PAT so a same-cluster re-create can redeploy a
+  // private-image workload (the cipher decrypts under the same platform key).
+  'customDeploymentImageCredentials',
   'ingressAuthConfigs',
   'sslCertificates',
   'cronJobs',
@@ -248,6 +252,17 @@ async function selectTenantRows(
     }
     case 'deployments': {
       const r = await rawDb.execute(sql`SELECT * FROM deployments WHERE tenant_id = ${tenantId}`);
+      return r.rows;
+    }
+    case 'customDeploymentImageCredentials': {
+      // No direct tenant_id — chain through the parent deployment. Grandchild
+      // (tenant → deployment → credential), which is why the tenant-FK schema
+      // audit didn't force it into this list; captured explicitly here.
+      const r = await rawDb.execute(sql`
+        SELECT c.* FROM custom_deployment_image_credentials c
+        JOIN deployments d ON d.id = c.deployment_id
+        WHERE d.tenant_id = ${tenantId}
+      `);
       return r.rows;
     }
     case 'domains': {

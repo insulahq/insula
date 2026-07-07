@@ -131,9 +131,52 @@ first**.
 `/etc/nginx` config inside the web pod's volume, file-manager home, etc.
 Everything the tenant container writes to its PVC.
 
-**What's not in it.** Application databases are **not** dumped
-separately — they live on this same PVC as datadirs, and are restored
-along with the files. See ADR-028 for rationale.
+**What's not in it (as a separate top-level component).** Application
+databases do **not** get their own bundle component — they live on this
+same PVC as datadirs and are restored along with the files. See ADR-028
+for rationale. They are, however, captured **two ways within this
+component** (see "Application databases" below).
+
+#### Application databases — two-layer capture inside `files`
+
+Add-on databases (MariaDB/MySQL, PostgreSQL, MongoDB, SQLite) are covered
+by two stacked layers, **both landing inside this `files` snapshot** — no
+new top-level component is added (ADR-048 Primitive 3):
+
+1. **Raw-files floor (always).** The on-disk datadir
+   (`databases/<engine>-<suffix>/`) is in every files snapshot,
+   unconditionally. Every engine crash-recovers from it to a
+   committed-consistent state on next start (InnoDB redo / PostgreSQL WAL /
+   MongoDB WiredTiger journal / SQLite WAL). **A bundle is therefore never
+   without a recoverable copy of a database.** Restored via `files-paths`;
+   works for every engine including plain SQLite files.
+2. **Logical dump (best-effort, on top).** A per-database portable dump,
+   also written onto the PVC (so the same snapshot captures it):
+   - MariaDB/MySQL: `mysqldump`/`mariadb-dump --single-transaction --quick
+     --routines --triggers` → **hot-consistent, no table lock, no
+     write-downtime** → `predump-<db>-<bundleId>.sql`.
+   - PostgreSQL: `pg_dump` (already MVCC-consistent, no lock).
+   - MongoDB: `mongodump --archive --gzip` → `predump-<db>-<bundleId>.archive.gz`
+     (**newly covered** — was silently unsupported before).
+   - **Free-space guard:** the logical dump is **skipped** (nothing written)
+     when the DB pod's data volume is **>= 90% full** or **< 200 MiB free**,
+     so a dump can never `ENOSPC` the live database. The floor still covers it.
+
+**Dump outcome summary (`backup_jobs.database_dumps`).** Each database's
+logical-dump result is recorded in a per-bundle JSONB summary (contract type
+`BackupDatabaseDumps` in `packages/api-contracts/src/tenant-bundles.ts`),
+surfaced on `GET /admin/tenant-bundles/:id` as `databaseDumps`. Per-database
+status is `dumped` (fresh dump), `degraded` (skipped for a benign reason —
+tool absent in a BYO image, PVC too full, engine unsupported), or `failed`
+(dump command errored unexpectedly). Bundle-level roll-up is `ok` /
+`degraded` / `none`, with a `remediation` string when degraded.
+
+**Critical invariant:** `database_dumps` is a **separate dimension** from the
+bundle's `status`. A `completed` bundle can carry a `degraded` (or `failed`)
+`database_dumps` summary and stays **fully restorable via the raw-files
+floor** — a degraded/failed logical dump **never** flips the bundle to
+`partial` and **never** blocks restore. Operator runbook:
+`docs/operations/DATABASE_RECOVERY.md`.
 
 ### `mailboxes` — per-mailbox Stalwart exports
 

@@ -172,6 +172,13 @@ WLNAME="drwl-$STAMP"
 WLID=$(api POST "/tenants/$TENANT_ID/custom-deployments" "{\"mode\":\"simple\",\"name\":\"$WLNAME\",\"image\":\"nginx:1.27-alpine\",\"ports\":[{\"containerPort\":80,\"name\":\"http\",\"protocol\":\"TCP\",\"exposeAsService\":true,\"ingressEligible\":true}]}" "$TOKEN"|sed '$d'|jq -r '.data.id // empty')
 [[ -n "$WLID" && "$WLID" != null ]] || { no "workload create failed"; exit 1; }
 wait_wl_pod "$WLNAME" && ok "seeded workload $WLNAME (nginx pod Running)" || { no "workload pod never Running before capture"; exit 1; }
+# Attach a registry pull credential so the config capture/restore of the
+# envelope-encrypted PAT (custom_deployment_image_credentials) is exercised.
+# nginx is public, so a placeholder ghcr.io credential doesn't block the pull.
+SEED_CRED4="wxyz"
+api PUT "/tenants/$TENANT_ID/custom-deployments/$WLID/pull-credentials" "{\"registry_host\":\"ghcr.io\",\"username\":\"dr-probe\",\"token\":\"drpat-$STAMP-$SEED_CRED4\"}" "$TOKEN" >/dev/null 2>&1
+CRED4=$(api GET "/tenants/$TENANT_ID/custom-deployments/$WLID/pull-credentials" '' "$TOKEN"|sed '$d'|jq -r '.data.tokenLastFour // empty' 2>/dev/null)
+[[ "$CRED4" == "$SEED_CRED4" ]] && ok "seeded pull credential (last-four $CRED4)" || echo "  (pull-credential seed skipped: last-four='$CRED4')"
 
 cyn "3. capture whole-client bundle (files+mailboxes+config) offsite"
 parse "$(api POST /admin/tenant-bundles "{\"tenantId\":\"$TENANT_ID\",\"targetConfigId\":\"$CFG\",\"async\":true,\"components\":{\"files\":true,\"mailboxes\":true,\"config\":true,\"secrets\":false}}" "$TOKEN")"
@@ -234,6 +241,13 @@ if [[ -n "${RECREATE:-}" ]]; then
   st2=""; for i in $(seq 1 60); do st2=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.status // empty'); [[ "$st2" == active ]] && break; sleep 3; done
   [[ "$st2" == active ]] && ok "re-create: tenant $TENANT_ID is back + active (original id preserved)" || no "re-create: tenant not active after recover ($st2)"
   NS=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.kubernetesNamespace')
+  # Private-image PAT: the credential row is cascade-dropped with the tenant and
+  # must be restored by the config component (else a private-image workload can't
+  # redeploy). Assert the encrypted PAT round-tripped (same-cluster re-create).
+  if [[ "$CRED4" == "$SEED_CRED4" ]]; then
+    GOT4=$(api GET "/tenants/$TENANT_ID/custom-deployments/$WLID/pull-credentials" '' "$TOKEN"|sed '$d'|jq -r '.data.tokenLastFour // empty' 2>/dev/null)
+    [[ "$GOT4" == "$SEED_CRED4" ]] && ok "CREDENTIAL: pull credential restored (last-four $GOT4)" || no "CREDENTIAL: pull credential not restored (want $SEED_CRED4, got '$GOT4')"
+  fi
 fi
 wait_ns && wait_pvc && ensure_fm || { no "file-manager not back after recover"; exit 1; }
 # Post-restore reconcile — runs on the RECREATE path (auto) AND the node-loss path

@@ -189,6 +189,15 @@ function BundleRow({
       </td>
       <td className="px-3 py-2">
         <StatusBadge status={bundle.status === 'completed' ? 'healthy' : bundle.status === 'failed' || bundle.status === 'partial' ? 'error' : 'pending'} label={bundle.status} />
+        {bundle.databaseDumps?.status === 'degraded' && (
+          <span
+            title={bundle.databaseDumps.remediation ?? 'One or more database logical dumps are degraded; the crash-consistent raw-files snapshot still covers them, so the bundle stays restorable. Open the bundle for per-database detail.'}
+            className="ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300"
+            data-testid="bundle-db-degraded-chip"
+          >
+            DB degraded
+          </span>
+        )}
       </td>
       <td className="px-3 py-2 text-gray-600 dark:text-gray-400">{formatBytes(bundle.sizeBytes)}</td>
       <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400" title={bundle.createdAt}>
