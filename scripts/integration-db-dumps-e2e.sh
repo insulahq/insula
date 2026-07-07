@@ -104,6 +104,11 @@ for i in $(seq 1 30); do mdb "SELECT 1" >/dev/null 2>&1 && break; sleep 5; done
 mdb "CREATE DATABASE IF NOT EXISTS drdata; CREATE TABLE IF NOT EXISTS drdata.t (id INT PRIMARY KEY); DELETE FROM drdata.t;" >/dev/null
 mdb "$(for i in $(seq 1 "$ROWS"); do printf 'INSERT INTO drdata.t VALUES (%d);' "$i"; done)" >/dev/null
 [[ "$(mdb "SELECT COUNT(*) FROM drdata.t"|tr -d '[:space:]')" == "$ROWS" ]] && ok "mariadb seeded $ROWS rows" || { no "mariadb seed failed"; exit 1; }
+# nit B (prune): seed a STALE predump (backdated far beyond any plan retention)
+# + a FRESH one. The capture's predump step must prune the stale one (bounds
+# unbounded predump accumulation → ENOSPC) and keep the fresh one.
+kx "-n $NS exec $MPOD -c $MCON -- sh -c 'touch -d \"200 days ago\" /var/lib/mysql/predump-stale-bkp-OLDBUNDLE.sql; touch /var/lib/mysql/predump-fresh-bkp-NEWBUNDLE.sql'" >/dev/null 2>&1 \
+  && ok "seeded stale(200d)+fresh predump markers" || sk "could not seed predump markers (touch -d unsupported?)"
 
 # ── 3. deploy + seed MongoDB (best-effort — skip if no catalog entry) ─────────
 MONGO_ON=""; MONGO_DOCS=7
@@ -174,6 +179,12 @@ if [[ -n "$FMPOD" ]]; then
   [[ -n "$SQLITE_ON" ]] && { kx "-n $NS exec $FMPOD -c file-manager -- find /data/.backup-sqlite-dumps -type f -name '*app.sqlite*$BID.sqlite.sql'" 2>/dev/null | grep -q sqlite.sql && ok "sqlite .dump on PVC" || no "sqlite .dump not on PVC"; }
 fi
 
+# nit B (prune): capture pruned the 200-day stale predump; the fresh one survived.
+STALE=$(kx "-n $NS exec $MPOD -c $MCON -- sh -c '[ -f /var/lib/mysql/predump-stale-bkp-OLDBUNDLE.sql ] && echo PRESENT || echo GONE'" 2>/dev/null | tr -d '[:space:]')
+[[ "$STALE" == GONE ]] && ok "stale predump pruned on capture (accumulation bounded)" || no "stale predump NOT pruned ($STALE)"
+FRESH=$(kx "-n $NS exec $MPOD -c $MCON -- sh -c '[ -f /var/lib/mysql/predump-fresh-bkp-NEWBUNDLE.sql ] && echo PRESENT || echo GONE'" 2>/dev/null | tr -d '[:space:]')
+[[ "$FRESH" == PRESENT ]] && ok "fresh predump kept (recent bundle stays restorable)" || no "fresh predump wrongly pruned ($FRESH)"
+
 # ── 6. corrupt + restore via databases-by-id ──────────────────────────────────
 cyn "6. corrupt (delete maria rows + drop mongo collection) then restore"
 mdb "DELETE FROM drdata.t" >/dev/null; [[ "$(mdb "SELECT COUNT(*) FROM drdata.t"|tr -d '[:space:]')" == 0 ]] && ok "maria rows deleted" || no "maria delete failed"
@@ -197,6 +208,29 @@ cyn "7. assert rows/docs restored"
 sleep 3
 [[ "$(mdb "SELECT COUNT(*) FROM drdata.t" 2>/dev/null|tr -d '[:space:]')" == "$ROWS" ]] && ok "maria drdata.t restored to $ROWS rows (root password round-trips)" || no "maria not restored"
 [[ -n "$MONGO_ON" ]] && { g=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())"|tr -cd '0-9'); [[ "$g" == "$MONGO_DOCS" ]] && ok "mongo drdata.t restored to $MONGO_DOCS docs" || no "mongo not restored ($g)"; }
+
+# ── 8. password coherence on reconcile (nit A) ────────────────────────────────
+cyn "8. nit A: drift on-disk root pw, recover+reconcile, assert reset init container heals it"
+# Rotate the on-disk root password OUT OF BAND so it differs from the config-
+# captured one (simulates a mixed/rotated restore where the datadir's grant
+# tables disagree with `config`).
+mdb "ALTER USER 'root'@'%' IDENTIFIED BY 'RotatedPw123'; ALTER USER 'root'@'localhost' IDENTIFIED BY 'RotatedPw123'; FLUSH PRIVILEGES;" >/dev/null 2>&1
+# The config (pod-env) password must now be REJECTED — proves the drift is real.
+mdb "SELECT 1" >/dev/null 2>&1 && no "config pw still works after out-of-band rotate (test setup failed)" || ok "config pw rejected — on-disk drifted from config"
+# Recover with reconcile (config-only, no re-provision) → arms the reset init
+# container to re-stamp the config password onto the reused datadir.
+parse "$(api POST "/admin/dr/tenants/$TENANT_ID/recover" "{\"bundleId\":\"$BID\",\"components\":[\"config\"],\"reconcile\":true,\"provision\":false}" "$TOKEN")"
+[[ "$STATUS" =~ ^20 ]] && ok "recover+reconcile accepted (HTTP $STATUS)" || { no "recover+reconcile HTTP $STATUS"; echo "$BODY"|rd; }
+# The maria pod is redeployed; wait until a pod accepts the CONFIG password again
+# (i.e. the reset init container re-stamped it). Poll past the old drifted pod.
+sleep 8; HEAL=""; for i in $(seq 1 48); do
+  MPOD=$(kx "-n $NS get pod -l app=ddmaria --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null||true)
+  [[ -n "$MPOD" ]] && mdb "SELECT 1" >/dev/null 2>&1 && { HEAL=1; break; }; sleep 5
+done
+[[ -n "$HEAL" ]] && ok "config pw restored by reset init container — DB heals after drift" || no "config pw NOT restored after reconcile (drift unhealed)"
+# The redeployed pod must carry the reset-root-password init container.
+kx "-n $NS get pod $MPOD -o jsonpath='{.spec.initContainers[*].name}'" 2>/dev/null | grep -q reset-root-password \
+  && ok "reset-root-password init container armed on reconcile redeploy" || no "reset init container NOT armed on reconcile"
 
 cyn "RESULT: PASS=$pass FAIL=$fail SKIP=$skip"
 [[ "$fail" == 0 ]] && { grn "DB-DUMPS MULTI-ENGINE E2E: GREEN"; exit 0; } || { red "DB-DUMPS MULTI-ENGINE E2E: $fail failure(s)"; exit 1; }

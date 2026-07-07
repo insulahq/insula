@@ -1289,6 +1289,7 @@ export async function redeployWithCurrentConfig(
   db: Database,
   deployment: typeof deployments.$inferSelect,
   k8s: K8sClients,
+  opts: { armPasswordReset?: boolean } = {},
 ): Promise<void> {
   const [entry] = await db
     .select()
@@ -1304,6 +1305,22 @@ export async function redeployWithCurrentConfig(
   const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
   const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
 
+  // Password-coherence on restore (DR reconcile passes armPasswordReset=true).
+  // A DB engine ignores its *_ROOT_PASSWORD env when the datadir already
+  // exists — the on-disk grant tables win. After a restore the datadir may
+  // carry a password that differs from the one captured in `config` (mixed /
+  // rotated-between-steps restore), leaving the platform unable to
+  // authenticate. Arming the reset init container re-stamps the config
+  // password onto the reused datadir (via --skip-grant-tables / trust-auth /
+  // drop-recreate-admin) so the DB always comes up with the config password.
+  // For non-DB deployments passwordEnvVar is undefined → the init container is
+  // a no-op (buildPasswordResetInitContainer returns null); for a fresh
+  // datadir the reset scripts self-skip. Only armed on the reconcile path so a
+  // routine env-var edit doesn't pay the ~15s reset-startup cost.
+  const passwordEnvVar = opts.armPasswordReset
+    ? Object.keys(config).find((k) => /_ROOT_PASSWORD$/.test(k) || k === 'POSTGRES_PASSWORD')
+    : undefined;
+
   await deployCatalogEntry(k8s, {
     deploymentName: deployment.name,
     storagePath: deployment.storagePath ?? '',
@@ -1317,6 +1334,11 @@ export async function redeployWithCurrentConfig(
     configuration: config,
     envVars: { fixed: resolved.fixedEnvVars },
     configurableEnvKeys: resolved.configurableEnvKeys,
+    // Re-stamp the config root password onto the reused datadir on the DR
+    // reconcile path (no-op for non-DB deployments + fresh datadirs).
+    reuseExistingData: opts.armPasswordReset === true,
+    catalogCode: entry.code,
+    passwordEnvVar,
     // Carry the manifest's runtime-firewall block through credential
     // rotations / config redeploys so a host-port app doesn't lose its
     // pod annotations between deploys.

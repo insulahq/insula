@@ -2157,7 +2157,7 @@ export async function exportDatabaseToPvc(
   database: string,
   outputFileName: string,
   deploymentSubPath: string,
-  opts: { moveToExports?: boolean } = {},
+  opts: { moveToExports?: boolean; pruneOlderThanDays?: number } = {},
 ): Promise<{ pvcPath: string; sizeBytes: number }> {
   validateDatabaseName(database);
 
@@ -2165,6 +2165,20 @@ export async function exportDatabaseToPvc(
 
   const exportPath = `${dataRoot}/${outputFileName}`;
   const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
+
+  // Bound predump accumulation on the tenant PVC. Predumps land in the DB
+  // pod's data dir and persist there (captured by the files snapshot). Without
+  // pruning they grow unboundedly — one per database per bundle, forever —
+  // eventually ENOSPC-ing the tenant volume. Prune predumps older than the
+  // longest LIVE bundle's retention (an expired bundle's off-site snapshot is
+  // already gone, so its live-PVC predump can never be restored). Best-effort;
+  // `-maxdepth 1` avoids recursing into the engine's own data subdirs.
+  if (opts.pruneOlderThanDays && opts.pruneOlderThanDays > 0) {
+    await execInPod(
+      ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+      ['sh', '-c', `find ${dataRoot} -maxdepth 1 \\( -name 'predump-*.sql' -o -name 'predump-*.archive.gz' \\) -mtime +${opts.pruneOlderThanDays} -delete 2>/dev/null || true`],
+    ).catch(() => { /* best-effort — accumulation bound, not correctness */ });
+  }
 
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     const dumpCli = ctx.engine === 'mysql' ? 'mysqldump' : 'mariadb-dump';

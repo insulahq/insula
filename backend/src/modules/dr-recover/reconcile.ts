@@ -205,7 +205,11 @@ async function reconcileWorkloadsStep(
       if (dep.source === 'custom') {
         await redeployCustomDeploymentRow(app.db, k8s as never, tenantId, dep);
       } else {
-        await redeployWithCurrentConfig(app.db, dep, k8s as never);
+        // armPasswordReset: this is the DR reconcile path — re-stamp each DB's
+        // config-captured root password onto its (restored) datadir so the
+        // platform can always authenticate, even if the datadir carried a
+        // different password than `config` (mixed / rotated restore).
+        await redeployWithCurrentConfig(app.db, dep, k8s as never, { armPasswordReset: true });
       }
       report.workloads.redeployed += 1;
     } catch (err) {

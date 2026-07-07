@@ -14,7 +14,7 @@
  * remains a thin coordinator that calls this once.
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import type { Database } from '../../../db/index.js';
 import type { K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { deployments, catalogEntries } from '../../../db/schema.js';
@@ -76,6 +76,28 @@ export async function runPreCaptureDatabaseDumps(
     return [];
   }
 
+  // Compute the predump-prune window: prune predumps older than the LONGEST
+  // live bundle's retention (an expired bundle's off-site snapshot is gone → its
+  // live-PVC predump can never be restored). Skip pruning entirely if ANY live
+  // bundle has INFINITE retention (expires_at NULL) — its predump must persist.
+  // The current bundle's row already exists (inserted + reserved before this
+  // hook runs), so its retention is included. Best-effort: a query failure just
+  // leaves this run unpruned (accumulation bound, not correctness).
+  let pruneOlderThanDays: number | undefined;
+  try {
+    const rawDb = args.db as unknown as {
+      execute: (q: ReturnType<typeof sql>) => Promise<{ rows: Array<{ has_infinite: boolean | null; maxret: number | string | null }> }> };
+    const res = await rawDb.execute(sql`
+      SELECT bool_or(expires_at IS NULL) AS has_infinite,
+             COALESCE(max(retention_days) FILTER (WHERE expires_at IS NOT NULL), 0) AS maxret
+      FROM backup_jobs
+      WHERE tenant_id = ${args.tenantId} AND (expires_at IS NULL OR expires_at > now())`);
+    const r = res.rows?.[0];
+    if (r && !r.has_infinite && Number(r.maxret) > 0) {
+      pruneOlderThanDays = Number(r.maxret) + 7; // +7d buffer so a still-restorable predump is never pruned
+    }
+  } catch { /* best-effort */ }
+
   const dumpInputs: PreDumpDeployment[] = rows.map((r) => ({
     deploymentId: r.deploymentId,
     deploymentName: r.deploymentName,
@@ -113,7 +135,9 @@ export async function runPreCaptureDatabaseDumps(
           // Predump: keep the dump IN PLACE (files snapshot captures it; restore
           // finds it there). Skips the file-manager-pod move that would else
           // fail the dump when the on-demand FM pod isn't up at capture time.
-          { moveToExports: false },
+          // pruneOlderThanDays bounds accumulation of prior bundles' predumps
+          // on the tenant PVC (expired-bundle predumps are unrestorable).
+          { moveToExports: false, pruneOlderThanDays },
         ),
       // Free-space probe on the DB pod's data volume. `df -P -k <dataRoot>`
       // prints one data row: "Filesystem 1K-blocks Used Available Capacity%
