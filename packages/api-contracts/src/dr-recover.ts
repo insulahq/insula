@@ -123,3 +123,63 @@ export const drRecoverResponseSchema = z.object({
   reconcile: drRecoverReconcileSchema.optional(),
 });
 export type DrRecoverResponse = z.infer<typeof drRecoverResponseSchema>;
+
+// ─── Batch recover-all (S3: cluster rebuilt → restore N tenants at once) ──────
+
+export const drRecoverAllRequestSchema = z.object({
+  /**
+   * Explicit tenants to recover (each with its newest completed bundle). Omit
+   * to auto-select — see `scope`.
+   */
+  tenantIds: z.array(z.string().min(1)).optional(),
+  /**
+   * Auto-selection scope when `tenantIds` is omitted:
+   *  - 'missing' (default): only tenants that have a completed bundle AND whose
+   *    kubernetes namespace is ABSENT — the post-cluster-rebuild set. NEVER
+   *    touches a live tenant.
+   *  - 'all': every tenant with a completed bundle (disruptive — restores over
+   *    live tenants too; explicit opt-in).
+   */
+  scope: z.enum(['missing', 'all']).default('missing'),
+  /** Preview the target set + resolved bundles WITHOUT executing any recover. */
+  dryRun: z.boolean().default(false),
+  /** Forwarded to each per-tenant recover (node placement for re-created tenants). */
+  targetNode: z.string().min(1).optional(),
+  /** Forwarded to each per-tenant recover; omit → all components in each bundle. */
+  components: z.array(drRecoverComponentSchema).min(1).optional(),
+});
+export type DrRecoverAllRequest = z.infer<typeof drRecoverAllRequestSchema>;
+
+/** One tenant selected for recovery (also the dry-run preview row). */
+export const drRecoverAllTargetSchema = z.object({
+  tenantId: z.string(),
+  tenantName: z.string().nullable(),
+  bundleId: z.string(),
+  /** Whether the tenant's namespace currently exists (false = lost → re-create). */
+  namespacePresent: z.boolean(),
+});
+export type DrRecoverAllTarget = z.infer<typeof drRecoverAllTargetSchema>;
+
+/** Per-tenant outcome of a batch recover. */
+export const drRecoverAllResultSchema = drRecoverAllTargetSchema.extend({
+  ok: z.boolean(),
+  /** Terminal recover status ('done' | 'failed' | null on a transport error). */
+  status: restoreJobStatusSchema.nullable(),
+  recreated: z.boolean(),
+  error: z.string().nullable(),
+});
+export type DrRecoverAllResult = z.infer<typeof drRecoverAllResultSchema>;
+
+export const drRecoverAllResponseSchema = z.object({
+  dryRun: z.boolean(),
+  scope: z.enum(['missing', 'all']),
+  total: z.number().int().nonnegative(),
+  /** Recovered = ok && status==='done'. */
+  recovered: z.number().int().nonnegative(),
+  failed: z.number().int().nonnegative(),
+  /** Present on a dry run: the tenants that WOULD be recovered. */
+  targets: z.array(drRecoverAllTargetSchema).optional(),
+  /** Present on a real run: the per-tenant outcomes. */
+  results: z.array(drRecoverAllResultSchema).optional(),
+});
+export type DrRecoverAllResponse = z.infer<typeof drRecoverAllResponseSchema>;
