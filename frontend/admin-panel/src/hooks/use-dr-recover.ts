@@ -17,11 +17,14 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   DrRecoverRequest,
   DrRecoverResponse,
+  DrRecoverAllRequest,
+  DrRecoverAllResponse,
   RestoreJobDetail,
   RestoreJobStatus,
 } from '@insula/api-contracts';
 
 interface DrRecoverEnvelope { readonly data: DrRecoverResponse }
+interface DrRecoverAllEnvelope { readonly data: DrRecoverAllResponse }
 interface CartDetailEnvelope { readonly data: RestoreJobDetail }
 
 /** Cart statuses at which polling can stop — no further transitions expected. */
@@ -53,6 +56,40 @@ export function useRecoverTenantFromBundle() {
       // Surface the freshly-created cart to any restore-cart consumers.
       void qc.invalidateQueries({ queryKey: ['restore-cart', resp.data.cartId] });
       void qc.invalidateQueries({ queryKey: ['restore-carts'] });
+    },
+  });
+}
+
+/**
+ * Preview (dry-run) which LOST tenants a batch recover would target — resolves
+ * each tenant + its newest bundle + namespace presence, WITHOUT executing any
+ * recover. Lets the operator confirm the set before firing.
+ */
+export function useDrRecoverAllPreview() {
+  return useMutation({
+    mutationFn: (input: Omit<DrRecoverAllRequest, 'dryRun'>) =>
+      apiFetch<DrRecoverAllEnvelope>('/api/v1/admin/dr/tenants/recover-all', {
+        method: 'POST',
+        body: JSON.stringify({ ...input, dryRun: true }),
+      }),
+  });
+}
+
+/**
+ * Execute the batch DR recover-all — recovers each targeted lost tenant
+ * sequentially (re-create / provision / restore / reconcile per tenant).
+ */
+export function useDrRecoverAll() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Omit<DrRecoverAllRequest, 'dryRun'>) =>
+      apiFetch<DrRecoverAllEnvelope>('/api/v1/admin/dr/tenants/recover-all', {
+        method: 'POST',
+        body: JSON.stringify({ ...input, dryRun: false }),
+      }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['restore-carts'] });
+      void qc.invalidateQueries({ queryKey: ['tenants'] });
     },
   });
 }
