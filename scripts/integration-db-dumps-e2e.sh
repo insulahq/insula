@@ -113,7 +113,10 @@ if [[ -n "$MONGO" && "$MONGO" != null ]]; then
   GDEP=$(printf '%s' "$BODY"|jq -r '.data.id'); GPOD=$(wait_dep "$GDEP" ddmongo) || GPOD=""
   if [[ -n "$GPOD" ]]; then
     GCON=$(kx "-n $NS get pod $GPOD -o jsonpath='{.spec.containers[0].name}'" 2>/dev/null)
-    gsh(){ ssh_node "kubectl -n $NS exec '$GPOD' -c '$GCON' -- sh -c 'exec mongosh --quiet -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval \"$1\"'" </dev/null 2>/dev/null; }
+    # Feed the JS via STDIN (kubectl exec -i → mongosh reads a script from
+    # stdin) rather than --eval, so single quotes in the JS don't collide with
+    # the sh -c '…' wrapper.
+    gsh(){ ssh_node "kubectl -n $NS exec -i '$GPOD' -c '$GCON' -- sh -c 'exec mongosh --quiet -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin'" <<<"$1" 2>/dev/null; }
     for i in $(seq 1 30); do gsh 'db.adminCommand("ping").ok' | grep -q 1 && break; sleep 5; done
     gsh "var a=[];for(var i=1;i<=$MONGO_DOCS;i++)a.push({_id:i});db.getSiblingDB('drdata').t.drop();db.getSiblingDB('drdata').t.insertMany(a);" >/dev/null
     GOT=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())" | tr -d '[:space:]')
@@ -123,7 +126,10 @@ else sk "no mongodb catalog entry — mongo capture/restore assertions SKIPPED";
 
 # ── 4. create a SQLite file on the PVC (via the file-manager pod) ─────────────
 cyn "4. create a SQLite file on the tenant PVC"
-FMPOD=""; for i in $(seq 1 30); do FMPOD=$(kx "-n $NS get pod -l app=file-manager --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null||true); [[ -n "$FMPOD" ]] && break; sleep 4; done
+# The file-manager pod is on-demand — start it so we can seed a SQLite file
+# (capture's SQLite discovery would start it too, but the file must exist first).
+api POST "/tenants/$TENANT_ID/files/start" '{}' "$TOKEN" >/dev/null 2>&1 || true
+FMPOD=""; for i in $(seq 1 45); do FMPOD=$(kx "-n $NS get pod -l app=file-manager --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null||true); [[ -n "$FMPOD" ]] && break; sleep 4; done
 SQLITE_ON=""
 if [[ -n "$FMPOD" ]]; then
   kx "-n $NS exec $FMPOD -c file-manager -- sh -c 'sqlite3 /data/app.sqlite \"CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES (1),(2),(3);\"'" >/dev/null 2>&1 \

@@ -110,6 +110,10 @@ export async function runPreCaptureDatabaseDumps(
           database,
           outputFileName,
           deploymentSubPath,
+          // Predump: keep the dump IN PLACE (files snapshot captures it; restore
+          // finds it there). Skips the file-manager-pod move that would else
+          // fail the dump when the on-demand FM pod isn't up at capture time.
+          { moveToExports: false },
         ),
       // Free-space probe on the DB pod's data volume. `df -P -k <dataRoot>`
       // prints one data row: "Filesystem 1K-blocks Used Available Capacity%

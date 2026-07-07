@@ -2157,6 +2157,7 @@ export async function exportDatabaseToPvc(
   database: string,
   outputFileName: string,
   deploymentSubPath: string,
+  opts: { moveToExports?: boolean } = {},
 ): Promise<{ pvcPath: string; sizeBytes: number }> {
   validateDatabaseName(database);
 
@@ -2226,7 +2227,21 @@ export async function exportDatabaseToPvc(
   );
   const sizeBytes = parseInt(sizeOut.trim(), 10) || 0;
 
-  // Move the export from the database subPath to /data/exports/ via file-manager pod
+  // Move the export from the database subPath to /data/exports/ via the
+  // file-manager pod. SKIPPED for the pre-capture predump path
+  // (moveToExports=false): the dump was written into the DB pod's OWN data dir
+  // (exportPath) and is captured by the files snapshot IN PLACE — the restore
+  // executor `find`s it there. Doing the move would (a) require the ON-DEMAND
+  // file-manager pod to be running at capture time and (b) throw + poison the
+  // dump status if it isn't, even though the dump itself succeeded (caught by
+  // the multi-engine E2E on DEV 2026-07-07). The interactive SQL-Manager export
+  // (moveToExports defaults true) still moves the file to /exports for download.
+  if (opts.moveToExports === false) {
+    // In-place path (informational — the predump restore matches by filename).
+    const inPlace = cleanSubPath ? `/${cleanSubPath}/${outputFileName}` : `/${outputFileName}`;
+    return { pvcPath: inPlace, sizeBytes };
+  }
+
   const { getReadyFileManagerPod: getExportFmPod } = await import('../file-manager/service.js');
   const exportFmPodName = await getExportFmPod(ctx.k8s!, ctx.namespace);
   await execInPod(
