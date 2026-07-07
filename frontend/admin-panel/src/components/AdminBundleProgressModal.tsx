@@ -26,6 +26,7 @@ import {
   type BundleComponent,
   type BundleStatus,
 } from '@insula/ui-restore-cart';
+import type { BackupDatabaseDumps } from '@insula/api-contracts';
 
 interface AdminBundleResponse {
   readonly data: {
@@ -38,6 +39,7 @@ interface AdminBundleResponse {
     readonly finishedAt: string | null;
     readonly lastError: string | null;
     readonly components: ReadonlyArray<BundleComponent>;
+    readonly databaseDumps: BackupDatabaseDumps | null;
   };
 }
 
@@ -181,6 +183,61 @@ export function AdminBundleProgressModal({ bundleId, onClose }: Props) {
                 </li>
               ))}
             </ul>
+          )}
+          {bundle?.databaseDumps && bundle.databaseDumps.status !== 'none' && (
+            <div
+              className="mt-3 rounded-md border border-gray-200 px-3 py-2 dark:border-gray-700"
+              data-testid="admin-bundle-db-dumps"
+            >
+              <div className="flex items-center gap-2">
+                <Database className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  Databases (logical dumps)
+                </span>
+                <span
+                  className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                    bundle.databaseDumps.status === 'ok'
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                  }`}
+                >
+                  {bundle.databaseDumps.status === 'ok' ? 'all dumped' : 'degraded'}
+                </span>
+              </div>
+              <ul className="mt-2 space-y-1">
+                {bundle.databaseDumps.deployments.map((d) => (
+                  <li key={`${d.deploymentId}-${d.deploymentName}`} className="text-xs">
+                    <span className="font-medium text-gray-700 dark:text-gray-300">{d.deploymentName}</span>
+                    {d.engine && <span className="text-gray-400 dark:text-gray-500"> ({d.engine})</span>}
+                    <div className="mt-0.5 flex flex-wrap gap-1">
+                      {d.databases.map((db) => (
+                        <span
+                          key={db.name}
+                          title={db.error ?? undefined}
+                          className={`inline-flex items-center rounded px-1.5 py-0.5 ${
+                            db.status === 'dumped'
+                              ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+                              : db.status === 'degraded'
+                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                                : 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                          }`}
+                        >
+                          {db.name}: {db.status}
+                        </span>
+                      ))}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              {bundle.databaseDumps.status === 'degraded' && bundle.databaseDumps.remediation && (
+                <p className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200">
+                  {bundle.databaseDumps.remediation}
+                </p>
+              )}
+              <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500">
+                Raw database files are always captured in the files snapshot — a degraded logical dump does not affect restorability.
+              </p>
+            </div>
           )}
           {bundle?.lastError && (
             <div className="mt-3 rounded-md border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-700 dark:bg-red-900/40 dark:text-red-200">
