@@ -30,8 +30,9 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import type { BackupStore } from '../../tenant-bundles/bundle-store.js';
-import { restoreItems, restoreJobs, tenants, backupComponents, type RestoreItem } from '../../../db/schema.js';
+import { restoreItems, restoreJobs, tenants, backupComponents, deployments, catalogEntries, type RestoreItem } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
+import { scaleDeploymentReplicas } from '../../../shared/scale-deployment.js';
 import { tailJobLog } from '../../storage-lifecycle/job-log-tail.js';
 import { createK8sClients, type K8sClients } from '../../k8s-provisioner/k8s-client.js';
 import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
@@ -115,14 +116,36 @@ export async function execFilesPathsItem(args: {
   // ── Build + dispatch the restore Job ──────────────────────────────
   const jobName = `rs-files-${item.id.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 50)}`;
   const credsSecretName = `rs-files-creds-${item.id.replace(/[^a-z0-9]/gi, '').toLowerCase()}`.slice(0, 63);
-  const pinToNode = await findNodeAttachingPvc(k8s, namespace, pvcName);
 
   // Map DISPLAY paths → in-snapshot absolute include paths (/source/<p>).
   const includePaths = displayPaths.map((p) => `${FILES_CAPTURE_ROOT}/${p}`);
 
+  // Crash-safety: a running DB engine corrupts/crashes if its on-disk datadir
+  // is overwritten underneath it (buffer-pool + open handles disagree with the
+  // new pages). Quiesce every DB deployment whose datadir falls inside this
+  // restore's path set BEFORE the cp -a overlay, then restart them — they
+  // crash-recover on the restored datadir. Non-DB workloads (web servers, …)
+  // tolerate a live file change and stay up.
+  const affectedDbs = await resolveAffectedDbDeployments(app, job.tenantId, displayPaths, selector.kind === 'full');
+  const quiesced: Array<{ name: string; replicas: number }> = [];
+
   let credsCreated = false;
   let ownerRefWired = false;
   try {
+    for (const d of affectedDbs) {
+      await scaleDeploymentReplicas(namespace, d.name, 0);
+      quiesced.push({ name: d.name, replicas: d.replicas });
+    }
+    if (quiesced.length > 0) {
+      await app.db.update(restoreItems)
+        .set({ progressMessage: `quiescing ${quiesced.length} database(s) before datadir overlay…` })
+        .where(eq(restoreItems.id, item.id));
+      await waitForDeploymentsScaledDown(k8s, namespace, quiesced.map((q) => q.name), 120_000);
+    }
+    // Resolve the PVC-attaching node AFTER quiescing — a now-detached PVC
+    // returns null so the Job schedules wherever the PVC re-attaches.
+    const pinToNode = await findNodeAttachingPvc(k8s, namespace, pvcName);
+
     await createResticCredsSecret(
       k8s,
       namespace,
@@ -178,6 +201,19 @@ export async function execFilesPathsItem(args: {
       .set({ progressMessage: `restored ${extracted} item(s) into ${namespace}/${pvcName}` })
       .where(eq(restoreItems.id, item.id));
   } finally {
+    // Unquiesce: scale each quiesced DB back to its original replicas so it
+    // restarts and crash-recovers on the restored datadir. Runs even on a
+    // failed/aborted restore so a DB is never left scaled to 0. Best-effort per
+    // deployment — a scale-up hiccup is logged, not thrown (the operator can
+    // re-scale from the panel).
+    for (const q of quiesced) {
+      try {
+        await scaleDeploymentReplicas(namespace, q.name, q.replicas);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(`[files-paths] unquiesce (scale ${q.name}→${q.replicas}) failed: ${(err as Error).message}`);
+      }
+    }
     // If ownerRef never wired (Job create / patch failed), kube won't GC
     // the per-tenant creds Secret — delete it ourselves.
     if (credsCreated && !ownerRefWired) {
@@ -368,6 +404,88 @@ async function findNodeAttachingPvc(
     return null;
   } catch {
     return null;
+  }
+}
+
+/**
+ * A restore path overlaps a DB datadir when it equals the storagePath, is a
+ * child of it, or is an ancestor of it (a broad/root path that contains the
+ * datadir). Display paths are relative (no leading slash, no `..` — validated).
+ * Exported for unit-testing.
+ */
+export function pathsOverlap(displayPaths: readonly string[], storagePath: string): boolean {
+  const s = storagePath.replace(/^\/+/, '').replace(/\/+$/, '');
+  if (!s) return false;
+  return displayPaths.some((raw) => {
+    const p = raw.replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (p === '') return true; // whole-PVC path
+    return p === s || p.startsWith(`${s}/`) || s.startsWith(`${p}/`);
+  });
+}
+
+/**
+ * Resolve the tenant's DB deployments whose on-PVC datadir falls inside this
+ * restore's path set (or ALL of them on a full restore). These must be
+ * quiesced before the overlay so the running engine's datadir isn't
+ * overwritten underneath it.
+ */
+async function resolveAffectedDbDeployments(
+  app: FastifyInstance,
+  tenantId: string,
+  displayPaths: readonly string[],
+  isFull: boolean,
+): Promise<Array<{ name: string; replicas: number; storagePath: string }>> {
+  const rows = await app.db
+    .select({
+      name: deployments.name,
+      replicas: deployments.replicaCount,
+      storagePath: deployments.storagePath,
+    })
+    .from(deployments)
+    .innerJoin(catalogEntries, eq(deployments.catalogEntryId, catalogEntries.id))
+    .where(and(eq(deployments.tenantId, tenantId), eq(catalogEntries.type, 'database')));
+  const out: Array<{ name: string; replicas: number; storagePath: string }> = [];
+  for (const r of rows) {
+    const sp = (r.storagePath ?? '').replace(/^\/+/, '').replace(/\/+$/, '');
+    if (!sp) continue; // no datadir subpath → can't reason about overlap; skip
+    if (isFull || pathsOverlap(displayPaths, sp)) {
+      out.push({ name: r.name, replicas: r.replicas ?? 1, storagePath: sp });
+    }
+  }
+  return out;
+}
+
+/**
+ * Block until every named deployment has NO Running/Pending pod (its
+ * ReplicaSet fully scaled to 0 → the datadir is released). Bounded; a timeout
+ * THROWS so we never overlay a datadir a DB pod is still holding.
+ */
+async function waitForDeploymentsScaledDown(
+  k8s: K8sClients,
+  namespace: string,
+  names: readonly string[],
+  timeoutMs: number,
+): Promise<void> {
+  const start = Date.now();
+  const wanted = new Set(names);
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const res = await k8s.core.listNamespacedPod({ namespace });
+    const stillUp = (res.items ?? []).some((pod) => {
+      const phase = pod.status?.phase;
+      if (phase !== 'Running' && phase !== 'Pending') return false;
+      const appLabel = (pod.metadata?.labels as Record<string, string> | undefined)?.['app'];
+      return typeof appLabel === 'string' && wanted.has(appLabel);
+    });
+    if (!stillUp) return;
+    if (Date.now() - start > timeoutMs) {
+      throw new ApiError(
+        'DB_QUIESCE_TIMEOUT',
+        `database pod(s) did not scale down within ${Math.round(timeoutMs / 1000)}s before the files restore (aborting to avoid corrupting a live datadir)`,
+        500,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 3000));
   }
 }
 
