@@ -331,22 +331,44 @@ describe('restoreDatabasesForDeployments', () => {
     expect(summary.deployments[0]!.failed[0]!.error).toMatch(/mongorestore/);
   });
 
-  it('matches BOTH sql and mongo dumps for a bundle in one deployment', async () => {
+  it('restoring a SQL deployment SKIPS a sibling mongo .archive.gz (engine-class match)', async () => {
     const importSql = vi.fn(async () => ({ success: true }));
     const importMongoArchive = vi.fn(async () => ({ success: true }));
     const deps = makeDeps({
+      // The global dump search returns THIS SQL deployment's .sql AND a sibling
+      // mongo deployment's .archive.gz (they share the one tenant PVC).
       listDumpFiles: async () => [
         `database/x/dep-a/predump-sqldb${SUFFIX}`,
-        `database/x/dep-a/predump-mongodb${MONGO_SUFFIX}`,
+        `database/x/dep-a/predump-appdb${MONGO_SUFFIX}`,
       ],
       listDatabaseNames: async () => ['sqldb'],
       importSql,
       importMongoArchive,
     });
-    const summary = await restoreDatabasesForDeployments([dep('d1', 'dep-a')], BUNDLE_ID, deps);
+    const summary = await restoreDatabasesForDeployments([dep('d1', 'dep-a', 'mariadb')], BUNDLE_ID, deps);
     expect(importSql).toHaveBeenCalledTimes(1);
+    // The mongo dump belongs to the mongo deployment — NOT mongorestore'd here
+    // (doing so with a mariadb context throws UNSUPPORTED_ENGINE).
+    expect(importMongoArchive).not.toHaveBeenCalled();
+    expect(summary.totalImported).toBe(1);
+  });
+
+  it('restoring a mongo deployment SKIPS a sibling SQL .sql dump', async () => {
+    const importSql = vi.fn(async () => ({ success: true }));
+    const importMongoArchive = vi.fn(async () => ({ success: true }));
+    const deps = makeDeps({
+      listDumpFiles: async () => [
+        `database/x/mongo-a/predump-appdb${MONGO_SUFFIX}`,
+        `database/x/mongo-a/predump-sqldb${SUFFIX}`,
+      ],
+      listDatabaseNames: async () => [],
+      importSql,
+      importMongoArchive,
+    });
+    const summary = await restoreDatabasesForDeployments([dep('d1', 'mongo-a', 'mongodb')], BUNDLE_ID, deps);
     expect(importMongoArchive).toHaveBeenCalledTimes(1);
-    expect(summary.totalImported).toBe(2);
+    expect(importSql).not.toHaveBeenCalled();
+    expect(summary.totalImported).toBe(1);
   });
 });
 
