@@ -275,6 +275,14 @@ PARALLEL=(
   # AGE_KEY isn't the operator recipient (bundle bytes already proven in step 5).
   # Staging-validated 2026-07-01. ~10s.
   "system-backup:integration-system-backup.sh"
+  # Multi-engine tenant-bundle DB logical-dump capture + restore: provisions a
+  # probe tenant with add-on MariaDB + MongoDB (+ a SQLite file on the PVC),
+  # captures one whole-client bundle, asserts the `database_dumps` operator
+  # summary (status=ok, each engine dumped) + the per-engine dump artifacts on
+  # the PVC, then corrupts + re-imports via the databases-by-id restore item.
+  # Self-skips (77) when no offsite BackupStore is assigned to the 'tenant'
+  # class. slow tier (two DB deploys + capture + restore).
+  "db-dumps:integration-db-dumps-e2e.sh"
 )
 SERIAL_POST=(
   # Destructive to platform/postgres CR (deletes + recreates).
@@ -341,13 +349,13 @@ fi
 # suites also require_or_skip internally, so they self-skip when unconfigured).
 declare -A SUITE_TIER=(
   [staging-all]=slow [postgres-pitr]=slow [system-snapshots]=slow
-  [waf-failure]=slow [wal-archive-failure]=slow
+  [waf-failure]=slow [wal-archive-failure]=slow [db-dumps]=slow
   [backup-rclone-shim]=external [dr-drill-shim]=external
 )
 # Per-suite hard-timeout overrides (seconds). Set comfortably ABOVE the
 # expected max so the timeout catches HANGS, never a legitimately long run.
 declare -A SUITE_TIMEOUT=(
-  [staging-all]=3000 [postgres-pitr]=2400 [system-snapshots]=2400
+  [staging-all]=3000 [postgres-pitr]=2400 [system-snapshots]=2400 [db-dumps]=2400
   # monitoring-slo's alert leg legitimately waits out cnpg-down's
   # forSeconds=300 twice (fire + resolve) plus evaluator ticks.
   [monitoring-slo]=1500
