@@ -1,0 +1,13 @@
+-- Per-database logical-dump outcome summary on tenant backup bundles.
+--
+-- The bundle's `files` component always captures each add-on database's raw
+-- on-disk directory (crash-consistent for every engine). On top of that floor
+-- the capture takes a per-database LOGICAL dump (mysqldump / pg_dump /
+-- mongodump / sqlite .dump) for portable, cross-version restore. This column
+-- records the outcome of that logical layer so a degraded dump is VISIBLE to
+-- the operator without blocking the (raw-files-based) restore.
+--
+-- Shape: BackupDatabaseDumps (@insula/api-contracts). Nullable — bundles
+-- captured before this column existed carry NULL (treated as "unknown, floor
+-- still applies"). Idempotent: ADD COLUMN IF NOT EXISTS — safe to re-run.
+ALTER TABLE "backup_jobs" ADD COLUMN IF NOT EXISTS "database_dumps" jsonb;

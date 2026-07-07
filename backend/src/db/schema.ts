@@ -3317,6 +3317,20 @@ export const backupJobs = pgTable('backup_jobs', {
   startedAt: timestamp('started_at'),
   finishedAt: timestamp('finished_at'),
   lastError: text('last_error'),
+  // Per-database logical-dump outcome summary (shape: BackupDatabaseDumps in
+  // @insula/api-contracts). Null on bundles captured before the column
+  // existed. Independent of `status` — a `completed` bundle may carry a
+  // `degraded` dump summary (the raw-files floor keeps it restorable).
+  databaseDumps: jsonb('database_dumps').$type<{
+    status: 'ok' | 'degraded' | 'none';
+    deployments: Array<{
+      deploymentId: string;
+      deploymentName: string;
+      engine: string | null;
+      databases: Array<{ name: string; status: 'dumped' | 'degraded' | 'failed'; sizeBytes: number; error?: string | null }>;
+    }>;
+    remediation?: string | null;
+  } | null>(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

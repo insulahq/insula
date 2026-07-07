@@ -174,6 +174,8 @@ function toBundleSummary(j: typeof backupJobs.$inferSelect): BundleSummary {
     // master-user identity. Admin sees the full message via admin
     // routes; tenants see only the headline.
     lastError: sanitizeTenantVisibleError(j.lastError),
+    // The tenant's own DB dump status (DB names + benign reasons; no creds).
+    databaseDumps: (j.databaseDumps ?? null) as BundleSummary['databaseDumps'],
     createdAt: j.createdAt.toISOString(),
     updatedAt: j.updatedAt.toISOString(),
   };

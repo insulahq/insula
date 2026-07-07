@@ -88,6 +88,20 @@ export interface PreDumpDeps {
     outputFileName: string,
     deploymentSubPath: string,
   ) => Promise<{ readonly pvcPath: string; readonly sizeBytes: number }>;
+  /**
+   * Optional: report free space on the DB pod's data volume so the hook can
+   * refuse to write a logical dump into a nearly-full PVC (which could ENOSPC
+   * the live database). Returns null when it cannot be determined (→ proceed).
+   */
+  readonly checkFreeSpace?: (ctx: {
+    readonly namespace: string;
+    readonly podName: string;
+    readonly containerName: string;
+    readonly engine: Engine;
+    readonly kubeconfigPath: string | undefined;
+    readonly rootPassword: string;
+    readonly rootUsername: string;
+  }) => Promise<{ readonly freeBytes: number; readonly usedPercent: number } | null>;
 }
 
 export interface PreDumpDatabaseResult {
@@ -99,6 +113,14 @@ export interface PreDumpDatabaseResult {
 export interface PreDumpDatabaseFailure {
   readonly database: string;
   readonly error: string;
+  /**
+   * True when the dump could not run for a benign, recoverable reason (dump
+   * tool absent in a bring-your-own image, PVC too full, engine unsupported
+   * for logical dump). The raw-files snapshot still covers the data → the
+   * orchestrator records this as `degraded`, NOT a bundle failure. False =
+   * the dump command errored unexpectedly (`failed`).
+   */
+  readonly benign: boolean;
 }
 
 export interface PreDumpDeploymentResult {
@@ -180,6 +202,28 @@ async function runOneDeployment(
     engine = ctx.engine;
     const databases = await deps.listDatabases(ctx);
 
+    // Guard: refuse to write a logical dump into a nearly-full PVC — the
+    // write could ENOSPC the tenant's LIVE database and take the app down.
+    // Degrade VISIBLY instead; the crash-consistent raw-files snapshot still
+    // captures every database.
+    if (deps.checkFreeSpace) {
+      const space = await deps.checkFreeSpace(ctx).catch(() => null);
+      if (space && (space.usedPercent >= 90 || space.freeBytes < 200 * 1024 * 1024)) {
+        return {
+          deploymentId: dep.deploymentId,
+          deploymentName: dep.deploymentName,
+          namespace: dep.namespace,
+          engine,
+          databaseDumps: [],
+          databaseFailures: databases.map((d) => ({
+            database: d.name,
+            error: `PVC ${space.usedPercent}% full — logical dump skipped to avoid filling the volume and crashing the live database. The crash-consistent raw-files snapshot still captured this database; grow the tenant volume or free space, then re-run the bundle for a fresh logical dump.`,
+            benign: true,
+          })),
+        };
+      }
+    }
+
     const dumps: PreDumpDatabaseResult[] = [];
     const failures: PreDumpDatabaseFailure[] = [];
     // Subpath convention matches the existing SQL Manager helper
@@ -187,13 +231,17 @@ async function runOneDeployment(
     // orchestrator passes the deployment.name unchanged; that's what
     // exportDatabaseToPvc treats as the subPath.
     const deploymentSubPath = `databases/${dep.deploymentName}`;
+    // MongoDB dumps are a self-contained gzip BSON archive (`.archive.gz`);
+    // the SQL engines write a `.sql` text dump. The restore executor keys
+    // off this extension to choose mongorestore vs the SQL import path.
+    const dumpExt = engine === 'mongodb' ? 'archive.gz' : 'sql';
     for (const d of databases) {
-      const filename = sanitizeFilename(`predump-${d.name}-${backupId}.sql`);
+      const filename = sanitizeFilename(`predump-${d.name}-${backupId}.${dumpExt}`);
       try {
         const out = await deps.exportDatabaseToPvc(ctx, d.name, filename, deploymentSubPath);
         dumps.push({ database: d.name, pvcPath: out.pvcPath, sizeBytes: out.sizeBytes });
       } catch (err) {
-        failures.push({ database: d.name, error: errorMessage(err) });
+        failures.push({ database: d.name, error: errorMessage(err), benign: isBenignDumpError(err) });
       }
     }
 
@@ -237,6 +285,20 @@ async function withTimeout<T>(
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/**
+ * Classify a dump error as benign (recoverable → `degraded`) vs. a genuine
+ * failure. Benign = the dump tool is absent (bring-your-own image), the engine
+ * has no logical-dump path, or the PVC was too full to write safely. In every
+ * benign case the crash-consistent raw-files snapshot still covers the data,
+ * so the bundle stays restorable and the operator just sees a degraded dump.
+ */
+function isBenignDumpError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === 'EXPORT_NOT_AVAILABLE' || code === 'UNSUPPORTED_ENGINE') return true;
+  const msg = errorMessage(err).toLowerCase();
+  return /not available in this|not supported|pvc .*full/.test(msg);
 }
 
 function sanitizeFilename(name: string): string {

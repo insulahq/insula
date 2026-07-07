@@ -197,6 +197,57 @@ export const backupComponentInfoSchema = z.object({
 });
 export type BackupComponentInfo = z.infer<typeof backupComponentInfoSchema>;
 
+// ─── Database logical-dump summary (per-bundle, operator surface) ────────────
+//
+// The bundle's `files` component ALWAYS captures each add-on database's raw
+// on-disk directory (crash-consistent — every engine recovers from it), so a
+// bundle is never without a recoverable copy of a database. On TOP of that
+// floor, the capture takes a per-database LOGICAL dump (mysqldump / pg_dump /
+// mongodump / sqlite .dump) for portable, cross-version restore. This block
+// records the outcome of that logical layer so a degraded dump is VISIBLE to
+// the operator WITHOUT blocking the (raw-files-based) restore.
+//
+// Per-database status:
+//   - 'dumped'   → fresh consistent logical dump captured.
+//   - 'degraded' → dump skipped for a benign, recoverable reason (dump tool
+//                  absent in a bring-your-own image, PVC too full to write the
+//                  dump safely, engine unsupported for logical dump). The raw
+//                  crash-consistent directory is still in the files snapshot;
+//                  only the portable logical dump is absent.
+//   - 'failed'   → the dump command errored unexpectedly. Same floor applies.
+export const backupDatabaseDumpStatusSchema = z.enum(['dumped', 'degraded', 'failed']);
+export type BackupDatabaseDumpStatus = z.infer<typeof backupDatabaseDumpStatusSchema>;
+
+export const backupDatabaseDumpEntrySchema = z.object({
+  /** Database name (SQL/mongo) or PVC-relative file path (sqlite). */
+  name: z.string(),
+  status: backupDatabaseDumpStatusSchema,
+  sizeBytes: z.number().int().nonnegative().default(0),
+  /** Present for degraded/failed — plain-English reason + remediation hint. */
+  error: z.string().nullable().optional(),
+});
+
+export const backupDatabaseDumpDeploymentSchema = z.object({
+  /** Deployment id ('' for the synthetic sqlite grouping). */
+  deploymentId: z.string(),
+  deploymentName: z.string(),
+  /** 'mariadb' | 'mysql' | 'postgresql' | 'mongodb' | 'sqlite' | null. */
+  engine: z.string().nullable(),
+  databases: z.array(backupDatabaseDumpEntrySchema),
+});
+
+export const backupDatabaseDumpsSchema = z.object({
+  // 'ok'       → every discovered database has a fresh logical dump.
+  // 'degraded' → at least one dump is degraded/failed; the raw-files floor
+  //              still covers those databases.
+  // 'none'     → the tenant has no add-on databases (nothing to dump).
+  status: z.enum(['ok', 'degraded', 'none']),
+  deployments: z.array(backupDatabaseDumpDeploymentSchema),
+  /** Operator remediation, present iff status='degraded'. */
+  remediation: z.string().nullable().optional(),
+});
+export type BackupDatabaseDumps = z.infer<typeof backupDatabaseDumpsSchema>;
+
 // ─── Bundle summary + detail (admin/tenant list endpoints) ───────────────────
 
 /**
@@ -237,6 +288,13 @@ export const bundleSummarySchema = z.object({
   startedAt: z.string().nullable(),
   finishedAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  /**
+   * Per-database logical-dump outcome (null on bundles captured before this
+   * field existed). Independent of `status`: a bundle can be `completed`
+   * while `databaseDumps.status='degraded'` — the raw-files floor keeps it
+   * restorable; the operator sees the logical-layer gap here.
+   */
+  databaseDumps: backupDatabaseDumpsSchema.nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
