@@ -236,5 +236,31 @@ RC=$(kx "-n $NS get pod $MPOD -o jsonpath=\"{.status.initContainerStatuses[?(@.n
 [[ "$RC" == 0 ]] && ok "reset init container ran + re-stamped config pw (exit 0)" || no "reset init container did not complete cleanly (exitCode=${RC:-none})"
 mdb "SELECT 1" >/dev/null 2>&1 && ok "maria healthy + queryable after reconcile" || no "maria not queryable after reconcile"
 
+# ── 9. files-paths datadir restore on a LIVE tenant quiesces + crash-recovers (Q2) ──
+cyn "9. Q2: files-paths restore of the maria DATADIR (live tenant) must quiesce + heal, not crash"
+MSP=$(api GET "/tenants/$TENANT_ID/deployments/$MDEP" '' "$TOKEN"|sed '$d'|jq -r '.data.storagePath // empty')
+if [[ -z "$MSP" || "$MSP" == null ]]; then sk "no storagePath for maria — Q2 datadir-restore check SKIPPED"; else
+  ok "maria datadir path=$MSP"
+  MPOD=""; for i in $(seq 1 20); do MPOD=$(kx "-n $NS get pod -l app=ddmaria --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null||true); [[ -n "$MPOD" ]] && mdb "SELECT 1" >/dev/null 2>&1 && break; sleep 5; done
+  # Corrupt: delete the rows. The bundle's files snapshot holds the datadir with
+  # all 25 rows, so a datadir overlay must bring them back — IF the DB is
+  # quiesced first (else the overlay under a live mysqld crash-corrupts it).
+  mdb "DELETE FROM drdata.t" >/dev/null 2>&1
+  parse "$(api POST /admin/restores/carts "{\"tenantId\":\"$TENANT_ID\",\"description\":\"q2-datadir\"}" "$TOKEN")"
+  QCID=$(printf '%s' "$BODY"|jq -r '.data.id // empty')
+  parse "$(api POST "/admin/restores/carts/$QCID/items" "{\"bundleId\":\"$BID\",\"type\":\"files-paths\",\"selector\":{\"kind\":\"paths\",\"paths\":[\"$MSP\"]}}" "$TOKEN")"
+  [[ "$STATUS" == 201 ]] && ok "added files-paths datadir item" || { no "add files-paths item $STATUS"; echo "$BODY"|rd; }
+  api POST "/admin/restores/carts/$QCID/execute" '{}' "$TOKEN" >/dev/null
+  QST=timeout; for i in $(seq 1 150); do parse "$(api GET "/admin/restores/carts/$QCID" '' "$TOKEN")"; s=$(printf '%s' "$BODY"|jq -r '.data.status // empty'); [[ "$s" == done || "$s" == failed ]] && { QST="$s"; break; }; sleep 3; done
+  [[ "$QST" == done ]] && ok "files-paths datadir restore cart done (quiesce→overlay→unquiesce)" || { no "files-paths cart=$QST"; printf '%s' "$BODY"|jq -r '.data.items[]?|"    \(.status): \(.lastError//.progressMessage//"-")"'|rd; }
+  # maria must come back Running + queryable + rows restored — i.e. it crash-
+  # RECOVERED on the restored datadir instead of crash-LOOPING on a corrupted one.
+  MPOD=""; for i in $(seq 1 45); do MPOD=$(kx "-n $NS get pod -l app=ddmaria --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null||true); [[ -n "$MPOD" ]] && mdb "SELECT 1" >/dev/null 2>&1 && break; sleep 5; done
+  GOT=$(mdb "SELECT COUNT(*) FROM drdata.t" 2>/dev/null|tr -d '[:space:]')
+  [[ "$GOT" == "$ROWS" ]] && ok "maria healthy after datadir overlay — $GOT rows (crash-recovered, NOT corrupted)" || no "maria datadir restore unhealthy (rows=${GOT:-?})"
+  RST=$(kx "-n $NS get pod $MPOD -o jsonpath='{.status.containerStatuses[0].restartCount}'" 2>/dev/null|tr -d '[:space:]')
+  [[ "${RST:-0}" -le 3 ]] && ok "maria not crash-looping (restartCount=${RST:-0})" || no "maria crash-looping after datadir overlay (restartCount=$RST)"
+fi
+
 cyn "RESULT: PASS=$pass FAIL=$fail SKIP=$skip"
 [[ "$fail" == 0 ]] && { grn "DB-DUMPS MULTI-ENGINE E2E: GREEN"; exit 0; } || { red "DB-DUMPS MULTI-ENGINE E2E: $fail failure(s)"; exit 1; }
