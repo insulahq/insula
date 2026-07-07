@@ -48,7 +48,7 @@ ssh_node(){ ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=12 "
 kx(){ ssh_node "kubectl $*" </dev/null; }
 
 TENANT_ID=""; NS=""; TOKEN="${TOKEN:-}"
-cleanup(){ [[ -n "$TENANT_ID" ]] && { cyn "TEARDOWN: delete probe tenant $TENANT_ID"; api DELETE "/tenants/$TENANT_ID" '' "$TOKEN" >/dev/null 2>&1 || true; }; }
+cleanup(){ [[ "${NO_TEARDOWN:-}" == 1 ]] && { cyn "NO_TEARDOWN=1 — keeping tenant $TENANT_ID ($NS) for inspection"; return; }; [[ -n "$TENANT_ID" ]] && { cyn "TEARDOWN: delete probe tenant $TENANT_ID"; api DELETE "/tenants/$TENANT_ID" '' "$TOKEN" >/dev/null 2>&1 || true; }; }
 trap cleanup EXIT
 
 # ── 0. login + resolve plan/region/backup-cfg + catalog entries ───────────────
@@ -119,7 +119,7 @@ if [[ -n "$MONGO" && "$MONGO" != null ]]; then
     gsh(){ ssh_node "kubectl -n $NS exec -i '$GPOD' -c '$GCON' -- sh -c 'exec mongosh --quiet -u \"\$MONGO_INITDB_ROOT_USERNAME\" -p \"\$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin'" <<<"$1" 2>/dev/null; }
     for i in $(seq 1 30); do gsh 'db.adminCommand("ping").ok' | grep -q 1 && break; sleep 5; done
     gsh "var a=[];for(var i=1;i<=$MONGO_DOCS;i++)a.push({_id:i});db.getSiblingDB('drdata').t.drop();db.getSiblingDB('drdata').t.insertMany(a);" >/dev/null
-    GOT=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())" | tr -d '[:space:]')
+    GOT=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())" | tr -cd '0-9')
     [[ "$GOT" == "$MONGO_DOCS" ]] && { MONGO_ON=1; ok "mongodb seeded $MONGO_DOCS docs"; } || no "mongodb seed failed ($GOT)"
   else no "mongodb not running"; fi
 else sk "no mongodb catalog entry — mongo capture/restore assertions SKIPPED"; fi
@@ -177,7 +177,7 @@ fi
 # ── 6. corrupt + restore via databases-by-id ──────────────────────────────────
 cyn "6. corrupt (delete maria rows + drop mongo collection) then restore"
 mdb "DELETE FROM drdata.t" >/dev/null; [[ "$(mdb "SELECT COUNT(*) FROM drdata.t"|tr -d '[:space:]')" == 0 ]] && ok "maria rows deleted" || no "maria delete failed"
-[[ -n "$MONGO_ON" ]] && { gsh "db.getSiblingDB('drdata').t.drop()" >/dev/null; [[ "$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())"|tr -d '[:space:]')" == 0 ]] && ok "mongo collection dropped" || no "mongo drop failed"; }
+[[ -n "$MONGO_ON" ]] && { gsh "db.getSiblingDB('drdata').t.drop()" >/dev/null; [[ "$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())"|tr -cd '0-9')" == 0 ]] && ok "mongo collection dropped" || no "mongo drop failed"; }
 
 parse "$(api POST /admin/restores/carts "{\"tenantId\":\"$TENANT_ID\",\"description\":\"db-dumps-e2e\"}" "$TOKEN")"
 CID=$(printf '%s' "$BODY"|jq -r '.data.id // empty'); [[ -n "$CID" ]] || { no "cart create $STATUS"; echo "$BODY"|rd; exit 1; }
@@ -189,14 +189,14 @@ CST=timeout; for i in $(seq 1 150); do
   parse "$(api GET "/admin/restores/carts/$CID" '' "$TOKEN")"; s=$(printf '%s' "$BODY"|jq -r '.data.status // empty')
   [[ "$s" == done || "$s" == failed ]] && { CST="$s"; break; }; sleep 3
 done
-[[ "$CST" == done ]] || { no "cart terminal=$CST"; printf '%s' "$BODY"|jq -r '.data.items[]?|"    \(.type) \(.status) \(.progressMessage//.lastError//"")"'|rd; exit 1; }
+[[ "$CST" == done ]] || { no "cart terminal=$CST"; printf '%s' "$BODY"|jq -r '.data.items[]?|"    \(.type) \(.status): lastError=\(.lastError//"-") progress=\(.progressMessage//"-")"'|rd; exit 1; }
 ok "restore cart done"
 
 # ── 7. assert restored (also proves the config-captured root password works) ──
 cyn "7. assert rows/docs restored"
 sleep 3
 [[ "$(mdb "SELECT COUNT(*) FROM drdata.t" 2>/dev/null|tr -d '[:space:]')" == "$ROWS" ]] && ok "maria drdata.t restored to $ROWS rows (root password round-trips)" || no "maria not restored"
-[[ -n "$MONGO_ON" ]] && { g=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())"|tr -d '[:space:]'); [[ "$g" == "$MONGO_DOCS" ]] && ok "mongo drdata.t restored to $MONGO_DOCS docs" || no "mongo not restored ($g)"; }
+[[ -n "$MONGO_ON" ]] && { g=$(gsh "print(db.getSiblingDB('drdata').t.countDocuments())"|tr -cd '0-9'); [[ "$g" == "$MONGO_DOCS" ]] && ok "mongo drdata.t restored to $MONGO_DOCS docs" || no "mongo not restored ($g)"; }
 
 cyn "RESULT: PASS=$pass FAIL=$fail SKIP=$skip"
 [[ "$fail" == 0 ]] && { grn "DB-DUMPS MULTI-ENGINE E2E: GREEN"; exit 0; } || { red "DB-DUMPS MULTI-ENGINE E2E: $fail failure(s)"; exit 1; }
