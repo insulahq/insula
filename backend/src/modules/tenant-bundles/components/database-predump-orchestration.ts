@@ -22,13 +22,16 @@ import {
   buildDbContext,
   exportDatabaseToPvc,
   listDatabases,
+  ENGINE_CONFIG,
   type Engine,
 } from '../../deployments/db-manager.js';
+import { execInPod } from '../../../shared/k8s-exec.js';
 import {
   preCaptureDatabaseDumps,
   type PreDumpDeployment,
   type PreDumpDeploymentResult,
 } from './database-predump.js';
+import type { BackupDatabaseDumps } from '@insula/api-contracts';
 
 export interface RunPreCaptureDumpsArgs {
   readonly db: Database;
@@ -108,12 +111,91 @@ export async function runPreCaptureDatabaseDumps(
           outputFileName,
           deploymentSubPath,
         ),
+      // Free-space probe on the DB pod's data volume. `df -P -k <dataRoot>`
+      // prints one data row: "Filesystem 1K-blocks Used Available Capacity%
+      // Mounted". We read Available (col 4) + Capacity% (col 5). Any parse or
+      // exec failure returns null → the hook proceeds (fail-open: a probe
+      // hiccup must not suppress a dump).
+      checkFreeSpace: async (ctx) => {
+        try {
+          const dataRoot = ENGINE_CONFIG[ctx.engine].dataRoot;
+          const res = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+            ['sh', '-c', `df -P -k ${dataRoot} | tail -1`]);
+          if (res.exitCode !== 0) return null;
+          const parts = res.stdout.trim().split(/\s+/);
+          const availKb = Number.parseInt(parts[3] ?? '', 10);
+          const usedPercent = Number.parseInt((parts[4] ?? '').replace('%', ''), 10);
+          if (!Number.isFinite(availKb) || !Number.isFinite(usedPercent)) return null;
+          return { freeBytes: availKb * 1024, usedPercent };
+        } catch {
+          return null;
+        }
+      },
     },
     {
       backupId: args.backupId,
       onProgress: args.onProgress,
     },
   );
+}
+
+/**
+ * Fold per-deployment pre-dump results into the operator-facing
+ * {@link BackupDatabaseDumps} summary persisted on the bundle.
+ *
+ * The summary is a SEPARATE dimension from the bundle's `status`: a bundle can
+ * be `completed` while its database dumps are `degraded`. The raw-files
+ * component always captures each database's crash-consistent on-disk directory,
+ * so a degraded/failed logical dump never blocks restore — it only means the
+ * portable, cross-version logical layer is absent for those databases, which
+ * the operator surfaces from this summary.
+ */
+export function buildDatabaseDumpsSummary(
+  results: ReadonlyArray<PreDumpDeploymentResult>,
+): BackupDatabaseDumps {
+  let anyDegraded = false;
+
+  const deployments = results.map((r) => {
+    const databases: BackupDatabaseDumps['deployments'][number]['databases'] = [];
+    for (const d of r.databaseDumps) {
+      databases.push({ name: d.database, status: 'dumped', sizeBytes: d.sizeBytes });
+    }
+    for (const f of r.databaseFailures) {
+      anyDegraded = true;
+      databases.push({
+        name: f.database,
+        status: f.benign ? 'degraded' : 'failed',
+        sizeBytes: 0,
+        error: f.error,
+      });
+    }
+    // A deployment-level error (e.g. listDatabases failed, pod not running)
+    // means we could not even enumerate its databases — surface it as a
+    // synthetic degraded entry so the gap is visible.
+    if (r.error) {
+      anyDegraded = true;
+      databases.push({ name: '(deployment)', status: 'failed', sizeBytes: 0, error: r.error });
+    }
+    return {
+      deploymentId: r.deploymentId,
+      deploymentName: r.deploymentName,
+      engine: r.engine,
+      databases,
+    };
+  });
+
+  const anyDatabase = deployments.some((d) => d.databases.length > 0);
+  const status: BackupDatabaseDumps['status'] = !anyDatabase
+    ? 'none'
+    : anyDegraded
+      ? 'degraded'
+      : 'ok';
+
+  const remediation = status === 'degraded'
+    ? 'One or more databases have no fresh logical dump in this bundle. The crash-consistent raw-files snapshot still captures them, so the bundle remains restorable; to also get a portable/cross-version logical dump, resolve the per-database reason shown (install the dump tool in a bring-your-own image, grow a full PVC, or use a supported engine) and re-run the bundle.'
+    : null;
+
+  return { status, deployments, remediation };
 }
 
 // Re-export for orchestrator imports + ergonomic typing.

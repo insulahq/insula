@@ -48,7 +48,11 @@ import {
   FilesComponentSkippedError,
   type FilesComponentResult,
 } from './components/files.js';
-import { runPreCaptureDatabaseDumps } from './components/database-predump-orchestration.js';
+import {
+  runPreCaptureDatabaseDumps,
+  buildDatabaseDumpsSummary,
+  type PreDumpDeploymentResult,
+} from './components/database-predump-orchestration.js';
 import { recordResticSnapshot, recordResticRunFailed } from './repo-state.js';
 import {
   buildResticRepoUri,
@@ -252,6 +256,10 @@ export async function runBundle(
   let configResult: ConfigComponentResult | undefined;
   let secretsResult: SecretsComponentResult | undefined;
   let mailboxesResult: import('./components/mailboxes.js').MailboxesComponentResult | undefined;
+  // Pre-dump results, lifted to orchestrator scope so the database-dump
+  // summary can be built after all component tasks settle. Assigned inside
+  // the files task (the dumps must land on the PVC before the files snapshot).
+  let dbPredumpResults: ReadonlyArray<PreDumpDeploymentResult> = [];
 
   const tasks: Array<Promise<void>> = [];
 
@@ -280,7 +288,7 @@ export async function runBundle(
         // bundle (the file-system snapshot is still valid even if
         // logical dumps fail).
         try {
-          const predumpResults = await runPreCaptureDatabaseDumps({
+          dbPredumpResults = await runPreCaptureDatabaseDumps({
             db: deps.db,
             k8s: deps.k8s,
             tenantId: input.tenantId,
@@ -288,14 +296,16 @@ export async function runBundle(
             backupId: bundleId,
             kubeconfigPath: deps.kubeconfigPath,
           });
-          for (const r of predumpResults) {
+          for (const r of dbPredumpResults) {
             if (r.error) {
               // eslint-disable-next-line no-console
               console.warn(`[bundle ${bundleId}] pre-dump failed for ${r.deploymentName}: ${r.error}`);
             }
           }
         } catch (err) {
-          // Non-fatal — log and proceed with the FS snapshot anyway.
+          // Non-fatal — log and proceed with the FS snapshot anyway. The DB
+          // dump summary built after allSettled will still reflect whatever
+          // dbPredumpResults holds (empty on a total orchestration error).
           // eslint-disable-next-line no-console
           console.warn(`[bundle ${bundleId}] pre-dump orchestration error: ${(err as Error).message}`);
         }
@@ -546,6 +556,16 @@ export async function runBundle(
   // mailboxes still produces a fully-completed bundle.
   const status: 'completed' | 'partial' = errors.length === 0 ? 'completed' : 'partial';
 
+  // Database logical-dump summary — a SEPARATE dimension from `status`. A
+  // degraded/failed logical dump never blocks restore (the raw-files
+  // component always captures each database's crash-consistent on-disk
+  // directory), so it must NOT flip the bundle to `partial`; it is surfaced
+  // to the operator here instead. Null when files weren't requested (the
+  // dumps live inside the files snapshot, so there's nothing to summarise).
+  const databaseDumps = input.components.files
+    ? buildDatabaseDumpsSummary(dbPredumpResults)
+    : null;
+
   // Build + persist meta.json *only* if every requested non-mailbox
   // component succeeded — otherwise the bundle is partial and meta.json
   // is left absent so retention sweeps can GC the in-flight prefix.
@@ -633,6 +653,7 @@ export async function runBundle(
       lastError: errors.length === 0 ? null : errors.join('; '),
       exportMode: input.exportMode ?? null,
       exportArtifact,
+      databaseDumps,
     })
     .where(eq(backupJobs.id, bundleId));
 

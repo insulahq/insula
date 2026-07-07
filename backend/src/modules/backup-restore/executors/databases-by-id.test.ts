@@ -22,6 +22,7 @@ import {
 
 const BUNDLE_ID = 'bkp-abc123';
 const SUFFIX = `-${BUNDLE_ID}.sql`;
+const MONGO_SUFFIX = `-${BUNDLE_ID}.archive.gz`;
 
 function dep(id: string, name: string, runtime = 'mariadb'): TargetDeployment {
   return {
@@ -50,6 +51,7 @@ interface DepsOverrides {
   listDumpFiles?: DatabasesRestoreDeps<Ctx>['listDumpFiles'];
   listDatabaseNames?: DatabasesRestoreDeps<Ctx>['listDatabaseNames'];
   importSql?: DatabasesRestoreDeps<Ctx>['importSql'];
+  importMongoArchive?: DatabasesRestoreDeps<Ctx>['importMongoArchive'];
 }
 
 function makeDeps(o: DepsOverrides = {}): DatabasesRestoreDeps<Ctx> {
@@ -58,6 +60,7 @@ function makeDeps(o: DepsOverrides = {}): DatabasesRestoreDeps<Ctx> {
     listDumpFiles: o.listDumpFiles ?? (async () => []),
     listDatabaseNames: o.listDatabaseNames ?? (async () => []),
     importSql: o.importSql ?? (async () => ({ success: true })),
+    importMongoArchive: o.importMongoArchive ?? (async () => ({ success: true })),
   };
 }
 
@@ -292,6 +295,58 @@ describe('restoreDatabasesForDeployments', () => {
   it('returns an empty summary for zero targets', async () => {
     const summary = await restoreDatabasesForDeployments([], BUNDLE_ID, makeDeps());
     expect(summary).toEqual({ deployments: [], totalImported: 0, totalSkipped: 0, totalFailed: 0 });
+  });
+
+  it('restores a MongoDB .archive.gz dump via importMongoArchive (not importSql)', async () => {
+    const importSql = vi.fn(async () => ({ success: true }));
+    const importMongoArchive = vi.fn(async () => ({ success: true }));
+    const deps = makeDeps({
+      listDumpFiles: async () => [`database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`],
+      // mongorestore recreates namespaces — the db need NOT be present.
+      listDatabaseNames: async () => [],
+      importSql,
+      importMongoArchive,
+    });
+    const summary = await restoreDatabasesForDeployments([dep('d1', 'mongo-a', 'mongodb')], BUNDLE_ID, deps);
+    expect(importSql).not.toHaveBeenCalled();
+    expect(importMongoArchive).toHaveBeenCalledTimes(1);
+    // (ctx, filePath, deploymentSubPath) — no db-name arg for mongo.
+    expect(importMongoArchive).toHaveBeenCalledWith(
+      { pod: 'db-0' }, `database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`, 'database/mongodb/mongo-a',
+    );
+    expect(summary.totalImported).toBe(1);
+    expect(summary.deployments[0]!.status).toBe('imported');
+    expect(summary.deployments[0]!.imported).toEqual(['appdb']);
+  });
+
+  it('FAILS a mongo dump when mongorestore errors', async () => {
+    const deps = makeDeps({
+      listDumpFiles: async () => [`database/mongodb/mongo-a/predump-appdb${MONGO_SUFFIX}`],
+      listDatabaseNames: async () => [],
+      importMongoArchive: async () => ({ success: false, error: 'mongorestore: connection refused' }),
+    });
+    const summary = await restoreDatabasesForDeployments([dep('d1', 'mongo-a', 'mongodb')], BUNDLE_ID, deps);
+    expect(summary.totalFailed).toBe(1);
+    expect(summary.deployments[0]!.status).toBe('failed');
+    expect(summary.deployments[0]!.failed[0]!.error).toMatch(/mongorestore/);
+  });
+
+  it('matches BOTH sql and mongo dumps for a bundle in one deployment', async () => {
+    const importSql = vi.fn(async () => ({ success: true }));
+    const importMongoArchive = vi.fn(async () => ({ success: true }));
+    const deps = makeDeps({
+      listDumpFiles: async () => [
+        `database/x/dep-a/predump-sqldb${SUFFIX}`,
+        `database/x/dep-a/predump-mongodb${MONGO_SUFFIX}`,
+      ],
+      listDatabaseNames: async () => ['sqldb'],
+      importSql,
+      importMongoArchive,
+    });
+    const summary = await restoreDatabasesForDeployments([dep('d1', 'dep-a')], BUNDLE_ID, deps);
+    expect(importSql).toHaveBeenCalledTimes(1);
+    expect(importMongoArchive).toHaveBeenCalledTimes(1);
+    expect(summary.totalImported).toBe(2);
   });
 });
 

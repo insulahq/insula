@@ -1720,6 +1720,7 @@ function toBundleSummary(
     startedAt: j.startedAt ? j.startedAt.toISOString() : null,
     finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null,
     lastError: j.lastError,
+    databaseDumps: (j.databaseDumps ?? null) as BundleSummary['databaseDumps'],
     createdAt: j.createdAt.toISOString(),
     updatedAt: j.updatedAt.toISOString(),
   };

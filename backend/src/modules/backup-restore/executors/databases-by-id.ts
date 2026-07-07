@@ -60,6 +60,7 @@ import {
   buildDbContext,
   listDatabases,
   importSqlFromPvcFile,
+  importMongoArchiveFromPvcFile,
   type DbManagerContext,
 } from '../../deployments/db-manager.js';
 import { getReadyFileManagerPod } from '../../file-manager/service.js';
@@ -123,6 +124,17 @@ export interface DatabasesRestoreDeps<Ctx> {
   readonly importSql: (
     ctx: Ctx,
     database: string,
+    filePath: string,
+    deploymentSubPath: string,
+  ) => Promise<{ readonly success: boolean; readonly error?: string }>;
+  /**
+   * Restore a MongoDB `.archive.gz` dump (mongorestore --archive --drop).
+   * No db-name argument — the archive carries its own namespaces and
+   * mongorestore recreates the collections, so the target db need NOT
+   * currently exist. Optional so unit tests + SQL-only call sites can omit it.
+   */
+  readonly importMongoArchive?: (
+    ctx: Ctx,
     filePath: string,
     deploymentSubPath: string,
   ) => Promise<{ readonly success: boolean; readonly error?: string }>;
@@ -215,7 +227,10 @@ export async function restoreDatabasesForDeployments<Ctx>(
   deps: DatabasesRestoreDeps<Ctx>,
   onProgress?: (msg: string) => void | Promise<void>,
 ): Promise<DatabasesRestoreSummary> {
-  const suffix = `-${bundleId}.sql`;
+  // SQL engines dump `predump-<db>-<bundleId>.sql`; MongoDB dumps
+  // `predump-<db>-<bundleId>.archive.gz`. Match either.
+  const sqlSuffix = `-${bundleId}.sql`;
+  const mongoSuffix = `-${bundleId}.archive.gz`;
   const outcomes: DeploymentOutcome[] = [];
 
   for (const dep of targets) {
@@ -245,12 +260,14 @@ export async function restoreDatabasesForDeployments<Ctx>(
     const paths = await deps.listDumpFiles(ctx, dep.deploymentName);
     const bundleDumps = paths.filter((p) => {
       const b = baseName(p);
-      return b.startsWith(DUMP_PREFIX) && b.endsWith(suffix) && b.length > DUMP_PREFIX.length + suffix.length;
+      if (!b.startsWith(DUMP_PREFIX)) return false;
+      return (b.endsWith(sqlSuffix) && b.length > DUMP_PREFIX.length + sqlSuffix.length)
+        || (b.endsWith(mongoSuffix) && b.length > DUMP_PREFIX.length + mongoSuffix.length);
     });
     if (bundleDumps.length === 0) {
       outcomes.push(skippedOutcome(
         dep,
-        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected ${DUMP_PREFIX}*${suffix})`,
+        `skipped ${dep.deploymentName}: no database dump found on the PVC for this bundle (expected ${DUMP_PREFIX}*${sqlSuffix} or ${DUMP_PREFIX}*${mongoSuffix})`,
       ));
       continue;
     }
@@ -277,7 +294,23 @@ export async function restoreDatabasesForDeployments<Ctx>(
 
     for (const p of bundleDumps) {
       const b = baseName(p);
-      const sanitizedDb = b.slice(DUMP_PREFIX.length, b.length - suffix.length);
+      const isMongo = b.endsWith(mongoSuffix);
+      const thisSuffix = isMongo ? mongoSuffix : sqlSuffix;
+      const sanitizedDb = b.slice(DUMP_PREFIX.length, b.length - thisSuffix.length);
+
+      // MongoDB: mongorestore recreates the archive's namespaces, so the
+      // target db need NOT currently exist — restore unconditionally.
+      if (isMongo) {
+        if (!deps.importMongoArchive) {
+          skipped.push(`mongo dump '${sanitizedDb}' in ${dep.deploymentName} skipped — mongorestore path unavailable in this executor`);
+          continue;
+        }
+        const res = await deps.importMongoArchive(ctx, p, dirName(p));
+        if (res.success) imported.push(sanitizedDb);
+        else failed.push({ database: sanitizedDb, error: res.error ?? 'mongorestore failed' });
+        continue;
+      }
+
       const reals = bySanitized.get(sanitizedDb) ?? [];
       if (reals.length === 0) {
         skipped.push(`database '${sanitizedDb}' not present in ${dep.deploymentName} (skipped — recreate it, then re-run this restore)`);
@@ -409,6 +442,10 @@ export async function execDatabasesByIdItem(args: {
       const result = await importSqlFromPvcFile(ctx, database, '', filePath, deploymentSubPath);
       return { success: result.success, error: result.error };
     },
+    importMongoArchive: async (ctx, filePath, deploymentSubPath) => {
+      const result = await importMongoArchiveFromPvcFile(ctx, filePath, deploymentSubPath);
+      return { success: result.success, error: result.error };
+    },
   };
 
   const summary = await restoreDatabasesForDeployments(
@@ -511,7 +548,7 @@ async function listPredumpFiles(
 ): Promise<string[]> {
   const fmPod = await getReadyFileManagerPod(k8s, namespace);
   const res = await execInPod(kubeconfigPath, namespace, fmPod, 'file-manager',
-    ['find', '/data', '-type', 'f', '-name', 'predump-*.sql']);
+    ['find', '/data', '-type', 'f', '(', '-name', 'predump-*.sql', '-o', '-name', 'predump-*.archive.gz', ')']);
   if (res.exitCode !== 0) return [];
   return res.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
     .map((p) => p.replace(/^\/data\//, ''));

@@ -118,8 +118,10 @@ describe('preCaptureDatabaseDumps', () => {
     expect(result[0]?.databaseDumps).toEqual([
       { database: 'b', pvcPath: '/exports/b.sql', sizeBytes: 99 },
     ]);
+    // A generic dump error is a HARD failure (benign=false) → the orchestrator
+    // records it as `failed`, not `degraded`.
     expect(result[0]?.databaseFailures).toEqual([
-      { database: 'a', error: expect.stringMatching(/locked table/) },
+      { database: 'a', error: expect.stringMatching(/locked table/), benign: false },
     ]);
   });
 
@@ -135,6 +137,63 @@ describe('preCaptureDatabaseDumps', () => {
       perDeploymentTimeoutMs: 10,
     });
     expect(result[0]?.error).toMatch(/timed out/i);
+  });
+
+  it('classifies a benign export error (tool missing / unsupported) as benign=true', async () => {
+    const notAvail = Object.assign(new Error('mongodump is not available in this image'), { code: 'EXPORT_NOT_AVAILABLE' });
+    const deps = stubDeps({
+      listDatabases: vi.fn(async () => [{ name: 'a' }]),
+      exportDatabaseToPvc: vi.fn(async () => { throw notAvail; }),
+    });
+    const result = await preCaptureDatabaseDumps([makeDb()], deps);
+    expect(result[0]?.databaseFailures).toEqual([
+      { database: 'a', error: expect.stringMatching(/not available/), benign: true },
+    ]);
+  });
+
+  it('names MongoDB dumps with a .archive.gz extension (SQL engines use .sql)', async () => {
+    const seen: string[] = [];
+    const deps = stubDeps({
+      buildDbContext: vi.fn(async (dep) => ({
+        kubeconfigPath: undefined, namespace: dep.namespace, podName: 'p', containerName: 'c',
+        engine: 'mongodb' as const, rootPassword: 'pw', rootUsername: 'root',
+      })),
+      listDatabases: vi.fn(async () => [{ name: 'appdb' }]),
+      exportDatabaseToPvc: vi.fn(async (_ctx, _name, outputFileName) => {
+        seen.push(outputFileName);
+        return { pvcPath: `/exports/${outputFileName}`, sizeBytes: 10 };
+      }),
+    });
+    await preCaptureDatabaseDumps([makeDb({ catalogRuntime: 'mongodb', catalogCode: 'mongodb' })], deps, { backupId: 'bkp-1' });
+    expect(seen).toEqual(['predump-appdb-bkp-1.archive.gz']);
+  });
+
+  it('degrades (benign) every database and skips dumps when the PVC is nearly full', async () => {
+    const exportSpy = vi.fn(async () => ({ pvcPath: '/x.sql', sizeBytes: 1 }));
+    const deps = stubDeps({
+      listDatabases: vi.fn(async () => [{ name: 'a' }, { name: 'b' }]),
+      exportDatabaseToPvc: exportSpy,
+      checkFreeSpace: vi.fn(async () => ({ freeBytes: 5 * 1024 * 1024, usedPercent: 97 })),
+    });
+    const result = await preCaptureDatabaseDumps([makeDb()], deps);
+    // No dump attempted — the guard fired before writing to a full volume.
+    expect(exportSpy).not.toHaveBeenCalled();
+    expect(result[0]?.databaseDumps).toEqual([]);
+    expect(result[0]?.databaseFailures.map((f) => f.database)).toEqual(['a', 'b']);
+    expect(result[0]?.databaseFailures.every((f) => f.benign)).toBe(true);
+    expect(result[0]?.databaseFailures[0]?.error).toMatch(/full/i);
+  });
+
+  it('proceeds normally when free space is healthy', async () => {
+    const exportSpy = vi.fn(async () => ({ pvcPath: '/x.sql', sizeBytes: 1 }));
+    const deps = stubDeps({
+      listDatabases: vi.fn(async () => [{ name: 'a' }]),
+      exportDatabaseToPvc: exportSpy,
+      checkFreeSpace: vi.fn(async () => ({ freeBytes: 20 * 1024 * 1024 * 1024, usedPercent: 40 })),
+    });
+    const result = await preCaptureDatabaseDumps([makeDb()], deps);
+    expect(exportSpy).toHaveBeenCalledTimes(1);
+    expect(result[0]?.databaseDumps).toHaveLength(1);
   });
 
   it('returns deployments in input order so the orchestrator can match', async () => {

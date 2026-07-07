@@ -2080,6 +2080,75 @@ export async function importSqlFromPvcFile(
 }
 
 /**
+ * Restore a MongoDB `--archive --gzip` dump (produced by
+ * {@link exportDatabaseToPvc}) from a file on the tenant PVC back into the
+ * running MongoDB pod, via `mongorestore`.
+ *
+ * Mirrors {@link importSqlFromPvcFile}'s file-manager copy pattern: the
+ * archive is copied from its PVC location (`/data/<filePath>` in the
+ * file-manager) into the DB's OWN storage subPath (`/data/<deploymentSubPath>/`,
+ * which maps to the mongo pod's data root), then referenced from inside the
+ * mongo pod at `${dataRoot}/<tempname>` and streamed through mongorestore.
+ *
+ * `--drop` makes the restore idempotent (each collection is dropped before
+ * re-insert). The archive carries its own namespaces (dumped with `--db`),
+ * so we do NOT pass `--db` (mongorestore rejects `--db` with `--archive`).
+ * A bring-your-own image lacking `mongorestore` yields a clear, non-throwing
+ * failure the executor records per-database.
+ */
+export async function importMongoArchiveFromPvcFile(
+  ctx: DbManagerContext,
+  filePath: string,
+  deploymentSubPath: string,
+): Promise<ImportResult> {
+  validatePvcFilePath(filePath);
+  if (ctx.engine !== 'mongodb') {
+    throw new ApiError('UNSUPPORTED_ENGINE', `mongo archive restore called for ${ctx.engine}`, 400);
+  }
+  const dataRoot = ENGINE_CONFIG.mongodb.dataRoot;
+  const cleanFilePath = filePath.replace(/^\/+/, '');
+  const cleanSubPath = deploymentSubPath.replace(/^\/+/, '').replace(/\/+$/, '');
+  const tempName = `_import_${Date.now()}.archive.gz`;
+
+  try {
+    const { getReadyFileManagerPod } = await import('../file-manager/service.js');
+    const fmPodName = await getReadyFileManagerPod(ctx.k8s!, ctx.namespace);
+    const fmSrcPath = `/data/${cleanFilePath}`;
+    const fmDestPath = `/data/${cleanSubPath}/${tempName}`;
+    // Copy the archive into the DB's own mount so the mongo pod can read it
+    // at ${dataRoot}/${tempName} (the DB pod only sees its data root).
+    await execInPod(ctx.kubeconfigPath, ctx.namespace, fmPodName, 'file-manager',
+      ['cp', fmSrcPath, fmDestPath]);
+
+    const inPodPath = `${dataRoot}/${tempName}`;
+    const authArgs = ctx.rootPassword
+      ? `-u ${shellEscape(ctx.rootUsername)} -p ${shellEscape(ctx.rootPassword)} --authenticationDatabase admin`
+      : '';
+    let result: { stdout: string; stderr: string };
+    try {
+      result = await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['sh', '-c', `mongorestore ${authArgs} --archive=${shellEscape(inPodPath)} --gzip --drop`]);
+    } finally {
+      // Best-effort cleanup of the temp copy inside the DB mount.
+      await execInPod(ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['rm', '-f', inPodPath]).catch(() => {});
+    }
+    // mongorestore reports "done" on success; a line containing "Failed" or
+    // "error" (case-insensitive) signals a real failure.
+    if (result.stderr && /\b(failed|error)\b/i.test(result.stderr) && !/0 document\(s\)/i.test(result.stderr)) {
+      return { success: false, error: result.stderr };
+    }
+    return { success: true };
+  } catch (err) {
+    if (isBinaryNotFoundError(err)) {
+      return { success: false, error: 'mongorestore is not available in this MongoDB container image; restore the raw files snapshot instead.' };
+    }
+    if (err instanceof ApiError) throw err;
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Export a database dump to a file on the shared PVC.
  * Returns the PVC path where the file was written (relative to /data/).
  */
@@ -2098,17 +2167,54 @@ export async function exportDatabaseToPvc(
 
   if (ctx.engine === 'mariadb' || ctx.engine === 'mysql') {
     const dumpCli = ctx.engine === 'mysql' ? 'mysqldump' : 'mariadb-dump';
+    // `--single-transaction` takes the dump inside one consistent InnoDB
+    // snapshot (MVCC) so it is point-in-time consistent WITHOUT locking the
+    // tables — a hot backup with zero write-downtime for the tenant app.
+    // `--quick` streams rows instead of buffering a whole table in RAM
+    // (bounds the dump's memory on large tables). Both are the standard
+    // consistent-hot-backup flags; the pre-existing flags stay.
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
-      ['sh', '-c', `${dumpCli} -u root -p${shellEscape(ctx.rootPassword)} --routines --triggers ${shellEscape(database)} > ${shellEscape(exportPath)}`],
+      ['sh', '-c', `${dumpCli} -u root -p${shellEscape(ctx.rootPassword)} --single-transaction --quick --routines --triggers ${shellEscape(database)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
   } else if (ctx.engine === 'postgresql') {
+    // pg_dump already runs in a repeatable-read transaction → consistent
+    // hot snapshot, no lock. No extra flag needed for consistency.
     const { stderr } = await execInPod(
       ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
       ['sh', '-c', `pg_dump -U postgres ${shellEscape(database)} > ${shellEscape(exportPath)}`],
     );
     if (stderr && stderr.includes('ERROR')) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+  } else if (ctx.engine === 'mongodb') {
+    // mongodump --archive writes a single self-contained gzip archive
+    // (BSON) to the PVC. Per-collection consistency; the whole-DB archive
+    // is captured by the files snapshot alongside the raw WiredTiger dir.
+    // `mongodump` may be absent in a bring-your-own MongoDB image — surface
+    // that as EXPORT_NOT_AVAILABLE so the caller can record a VISIBLE
+    // degraded dump (the crash-consistent raw-files snapshot still covers
+    // the data) rather than a silent gap.
+    const authArgs = ctx.rootPassword
+      ? `-u ${shellEscape(ctx.rootUsername)} -p ${shellEscape(ctx.rootPassword)} --authenticationDatabase admin`
+      : '';
+    try {
+      const { stderr } = await execInPod(
+        ctx.kubeconfigPath, ctx.namespace, ctx.podName, ctx.containerName,
+        ['sh', '-c', `mongodump --db ${shellEscape(database)} ${authArgs} --archive=${shellEscape(exportPath)} --gzip`],
+      );
+      // mongodump writes progress to stderr; only a line containing "error"
+      // (case-insensitive, mongodump's own convention) is a real failure.
+      if (stderr && /\berror\b/i.test(stderr)) throw new ApiError('DB_EXPORT_ERROR', stderr, 500);
+    } catch (err) {
+      if (isBinaryNotFoundError(err)) {
+        throw new ApiError(
+          'EXPORT_NOT_AVAILABLE',
+          'mongodump is not available in this MongoDB container image; the crash-consistent raw-files snapshot still captures this database.',
+          400,
+        );
+      }
+      throw err;
+    }
   } else {
     throw new ApiError('UNSUPPORTED_ENGINE', `${ctx.engine} PVC export not supported`, 400);
   }
