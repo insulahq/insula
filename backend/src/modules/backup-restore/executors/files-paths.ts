@@ -382,7 +382,7 @@ function buildScript(opts: { snapshotId: string; includePaths: ReadonlyArray<str
   ].join('\n');
 }
 
-async function findNodeAttachingPvc(
+export async function findNodeAttachingPvc(
   k8s: K8sClients,
   namespace: string,
   pvcName: string,
@@ -489,7 +489,7 @@ async function waitForDeploymentsScaledDown(
   }
 }
 
-async function waitForJob(
+export async function waitForJob(
   k8s: K8sClients,
   namespace: string,
   jobName: string,

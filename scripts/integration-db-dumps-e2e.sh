@@ -172,11 +172,14 @@ if [[ -n "$SQLITE_ON" ]]; then
     && ok "sqlite app.sqlite → dumped" || no "sqlite app.sqlite not 'dumped' in summary"
 fi
 
-# dump artifacts on the PVC
+# Redesign: after the files snapshot captures them, the predumps are DELETED
+# from the live PVC (a 2-5 GB client PVC can't hold a retention window of full
+# dumps). They live in the bundle's snapshot; databases-by-id re-fetches them on
+# restore. So they must be GONE from the live PVC now.
 if [[ -n "$FMPOD" ]]; then
-  kx "-n $NS exec $FMPOD -c file-manager -- find /data -type f -name 'predump-drdata-$BID.sql'" 2>/dev/null | grep -q predump && ok "maria .sql dump on PVC" || no "maria .sql dump not on PVC"
-  [[ -n "$MONGO_ON" ]] && { kx "-n $NS exec $FMPOD -c file-manager -- find /data -type f -name 'predump-drdata-$BID.archive.gz'" 2>/dev/null | grep -q archive.gz && ok "mongo .archive.gz dump on PVC" || no "mongo .archive.gz not on PVC"; }
-  [[ -n "$SQLITE_ON" ]] && { kx "-n $NS exec $FMPOD -c file-manager -- find /data/.backup-sqlite-dumps -type f -name '*app.sqlite*$BID.sqlite.sql'" 2>/dev/null | grep -q sqlite.sql && ok "sqlite .dump on PVC" || no "sqlite .dump not on PVC"; }
+  kx "-n $NS exec $FMPOD -c file-manager -- find /data -type f -name 'predump-drdata-$BID.sql'" 2>/dev/null | grep -q predump && no "maria predump STILL on PVC (should be deleted after snapshot)" || ok "maria predump deleted from live PVC after snapshot"
+  [[ -n "$MONGO_ON" ]] && { kx "-n $NS exec $FMPOD -c file-manager -- find /data -type f -name 'predump-drdata-$BID.archive.gz'" 2>/dev/null | grep -q archive.gz && no "mongo predump STILL on PVC" || ok "mongo predump deleted from live PVC"; }
+  [[ -n "$SQLITE_ON" ]] && { kx "-n $NS exec $FMPOD -c file-manager -- find /data -type f -name '*$BID.sqlite.sql'" 2>/dev/null | grep -q sqlite.sql && no "sqlite predump STILL on PVC" || ok "sqlite predump deleted from live PVC"; }
 fi
 
 # nit B (prune): capture pruned the 200-day stale predump; the fresh one survived.

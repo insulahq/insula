@@ -51,6 +51,7 @@ import {
 import {
   runPreCaptureDatabaseDumps,
   buildDatabaseDumpsSummary,
+  deletePredumpsFromPvc,
   type PreDumpDeploymentResult,
 } from './components/database-predump-orchestration.js';
 import { runSqliteCapture } from './components/sqlite-predump.js';
@@ -348,6 +349,23 @@ export async function runBundle(
           fileCount: filesResult.fileCount,
           sha256: filesResult.sha256,
         };
+
+        // Snapshot has now captured the predumps → delete them from the LIVE
+        // PVC so they never accumulate (a 2-5 GB client PVC can't hold a
+        // retention window of full dumps). databases-by-id re-materialises them
+        // from this snapshot on restore. Best-effort; the retention prune backs
+        // it up. Only after the snapshot is confirmed (filesResult present).
+        try {
+          await deletePredumpsFromPvc({
+            k8s: deps.k8s,
+            namespace,
+            bundleId,
+            kubeconfigPath: deps.kubeconfigPath,
+          });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn(`[bundle ${bundleId}] predump cleanup after snapshot failed: ${(err as Error).message}`);
+        }
 
         // Persist tenant_restic_repo_state so the admin UI + retention
         // sweeper can reach the per-tenant repo without re-resolving
