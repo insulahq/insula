@@ -37,9 +37,12 @@ api(){ local m="$1" p="$2" b="${3:-}" a="${4:-}"; local H=(); [[ -n "$a" ]] && H
 parse(){ STATUS=$(printf '%s' "$1"|tail -n1); BODY=$(printf '%s' "$1"|sed '$d'); }
 ssh_node(){ ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=12 "$NODE" "$@"; }
 kx(){ ssh_node "kubectl $*" </dev/null; }
-wait_ns_gone(){ local ns="$1"; for i in $(seq 1 50); do kx "get ns $ns" >/dev/null 2>&1 || return 0; sleep 3; done; return 1; }
-wait_ns(){ local ns="$1"; for i in $(seq 1 60); do kx "get ns $ns" >/dev/null 2>&1 && return 0; sleep 3; done; return 1; }
-ensure_fm(){ local tid="$1" ns="$2"; api POST "/tenants/$tid/files/start" '{}' "$TOKEN" >/dev/null 2>&1 || true
+# NOTE: these helpers declare `local i` so their internal seq-loops never clobber
+# a CALLER's `i` — otherwise `wait_ns "${NSS[$i]}" && ok "…${NSS[$i]}…"` reads a
+# stale seq value in the second `${NSS[$i]}` and trips `set -u` (unbound array elem).
+wait_ns_gone(){ local ns="$1" i; for i in $(seq 1 50); do kx "get ns $ns" >/dev/null 2>&1 || return 0; sleep 3; done; return 1; }
+wait_ns(){ local ns="$1" i; for i in $(seq 1 60); do kx "get ns $ns" >/dev/null 2>&1 && return 0; sleep 3; done; return 1; }
+ensure_fm(){ local tid="$1" ns="$2" i; api POST "/tenants/$tid/files/start" '{}' "$TOKEN" >/dev/null 2>&1 || true
   for i in $(seq 1 30); do kx "-n $ns get deploy file-manager" >/dev/null 2>&1 && break; api POST "/tenants/$tid/files/start" '{}' "$TOKEN" >/dev/null 2>&1 || true; sleep 4; done
   kx "-n $ns rollout status deploy/file-manager --timeout=200s" >/dev/null 2>&1 || return 1
   local pod=""; for i in $(seq 1 20); do pod=$(kx "-n $ns get pod -l app=file-manager --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null||true); [[ -n "$pod" ]] && break; sleep 3; done
