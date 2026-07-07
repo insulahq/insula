@@ -52,6 +52,7 @@ import {
   tenants,
   deployments,
   catalogEntries,
+  backupComponents,
   type RestoreItem,
 } from '../../../db/schema.js';
 import { ApiError } from '../../../shared/errors.js';
@@ -65,6 +66,18 @@ import {
 } from '../../deployments/db-manager.js';
 import { getReadyFileManagerPod } from '../../file-manager/service.js';
 import { execInPod } from '../../../shared/k8s-exec.js';
+import { buildFilesPathsJobSpec, findNodeAttachingPvc, waitForJob } from './files-paths.js';
+import { resolveShimBackupTarget } from '../../tenant-bundles/resolve-backup-target.js';
+import { buildResticRepoUri, buildResticEnv, deriveResticPassword } from '../../tenant-bundles/restic-driver.js';
+import {
+  FILES_CAPTURE_ROOT,
+  buildResticCredsStringData,
+  createResticCredsSecret,
+  wireSecretOwnerRef,
+} from '../../tenant-bundles/components/files.js';
+
+const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 
 const DUMP_PREFIX = 'predump-';
 /** progress_message column is varchar(500). */
@@ -79,6 +92,8 @@ export interface TargetDeployment {
   readonly catalogCode: string;
   readonly catalogRuntime: string | null;
   readonly configuration: Record<string, unknown> | null;
+  /** PVC subPath = the DB's on-disk datadir; where its predump is captured. */
+  readonly storagePath: string | null;
 }
 
 /** A requested deployment row (kind:'ids' validation input). */
@@ -463,6 +478,27 @@ export async function execDatabasesByIdItem(args: {
     },
   };
 
+  // Snapshot-restore: predumps no longer persist on the live PVC (capture
+  // deletes them after the files snapshot to keep the tenant PVC footprint at
+  // ~0 — a 2-5 GB PVC can't hold a retention window of full dumps). Fetch this
+  // bundle's predumps back from the files restic snapshot into each DB's
+  // datadir BEFORE the import. Safe on the running DB (restores a single dump
+  // FILE, not the datadir). Best-effort: on an old bundle whose predump is
+  // still on the PVC, or a restic hiccup, we fall through to the live-PVC find.
+  await fetchPredumpsFromSnapshot({
+    app,
+    k8s,
+    kubeconfigPath,
+    namespace,
+    tenantId: job.tenantId,
+    bundleId: item.bundleId,
+    storagePaths: targets.map((t) => t.storagePath).filter((s): s is string => Boolean(s)),
+    cartId: item.restoreJobId,
+    itemId: item.id,
+  }).catch(async (err) => {
+    await setProgress(app, item, `predump snapshot fetch fell back to live PVC: ${(err as Error).message.slice(0, 180)}`);
+  });
+
   const summary = await restoreDatabasesForDeployments(
     targets,
     item.bundleId,
@@ -496,6 +532,7 @@ async function resolveTargetDeployments(
         deploymentId: deployments.id,
         deploymentName: deployments.name,
         configuration: deployments.configuration,
+        storagePath: deployments.storagePath,
         catalogCode: catalogEntries.code,
         catalogRuntime: catalogEntries.runtime,
       })
@@ -508,6 +545,7 @@ async function resolveTargetDeployments(
       catalogCode: r.catalogCode,
       catalogRuntime: r.catalogRuntime,
       configuration: r.configuration,
+      storagePath: r.storagePath,
     }));
     return selectTargetDeployments(selector, tenantId, tenantDbDeployments, new Map());
   }
@@ -519,6 +557,7 @@ async function resolveTargetDeployments(
       deploymentId: deployments.id,
       deploymentName: deployments.name,
       configuration: deployments.configuration,
+      storagePath: deployments.storagePath,
       deploymentTenantId: deployments.tenantId,
       catalogCode: catalogEntries.code,
       catalogRuntime: catalogEntries.runtime,
@@ -539,10 +578,104 @@ async function resolveTargetDeployments(
         catalogCode: r.catalogCode ?? '',
         catalogRuntime: r.catalogRuntime ?? null,
         configuration: r.configuration,
+        storagePath: r.storagePath,
       },
     });
   }
   return selectTargetDeployments(selector, tenantId, [], requestedById);
+}
+
+/**
+ * Fetch this bundle's predumps back from the files restic snapshot into each DB
+ * deployment's datadir on the live PVC. Predumps are deleted from the live PVC
+ * after capture (to keep the tenant PVC footprint at ~0 — a 2-5 GB PVC can't
+ * hold a retention window of full dumps), so restore must re-materialise them.
+ * Spawns ONE files-restore Job scoped to the predump paths (reusing
+ * buildFilesPathsJobSpec): the `cp -a` overlay lands each predump at
+ * `/source/<storagePath>/predump-…`, i.e. the DB pod's data dir, where the
+ * import step then finds it. Restoring a single dump FILE onto a running DB is
+ * safe (unlike a datadir overlay — no quiesce needed). Idempotent.
+ */
+async function fetchPredumpsFromSnapshot(args: {
+  app: FastifyInstance;
+  k8s: K8sClients;
+  kubeconfigPath?: string;
+  namespace: string;
+  tenantId: string;
+  bundleId: string;
+  storagePaths: readonly string[];
+  cartId: string;
+  itemId: string;
+}): Promise<void> {
+  const { app, k8s, namespace, tenantId, bundleId } = args;
+  const storagePaths = [...new Set(
+    args.storagePaths.map((s) => s.replace(/^\/+/, '').replace(/\/+$/, '')).filter(Boolean),
+  )];
+  if (storagePaths.length === 0) return;
+
+  // Resolve the files restic snapshot id for this bundle (same source files-paths reads).
+  const [comp] = await app.db.select().from(backupComponents)
+    .where(and(eq(backupComponents.backupJobId, bundleId), eq(backupComponents.component, 'files')))
+    .limit(1);
+  if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) return; // no files snapshot → nothing to fetch
+
+  const secretsKeyHex = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+    ?? process.env.PLATFORM_ENCRYPTION_KEY;
+  if (!secretsKeyHex) throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
+
+  const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+  const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
+  const repoUri = buildResticRepoUri(target, tenantId, 'files');
+  const env = buildResticEnv(target);
+
+  // Include this bundle's predump files in each DB's datadir. restic --include
+  // supports the `*` glob (matches the `<db>` segment).
+  const includePaths = storagePaths.flatMap((sp) => [
+    `${FILES_CAPTURE_ROOT}/${sp}/predump-*-${bundleId}.sql`,
+    `${FILES_CAPTURE_ROOT}/${sp}/predump-*-${bundleId}.archive.gz`,
+  ]);
+
+  const safe = bundleId.replace(/[^a-z0-9]/gi, '').toLowerCase().slice(0, 40);
+  const jobName = `rs-dbpd-${safe}`.slice(0, 63);
+  const credsSecretName = `rs-dbpd-creds-${safe}`.slice(0, 63);
+  const pvcName = `${namespace}-storage`;
+  const pinToNode = await findNodeAttachingPvc(k8s, namespace, pvcName);
+
+  let credsCreated = false;
+  let ownerRefWired = false;
+  try {
+    await createResticCredsSecret(k8s, namespace, credsSecretName,
+      buildResticCredsStringData({ passwordHex, repoUri, env }), 'restore-files');
+    credsCreated = true;
+
+    const spec = buildFilesPathsJobSpec({
+      jobName, namespace, pvcName, tenantId, cartId: args.cartId, itemId: args.itemId,
+      credsSecretName, snapshotId: comp.sha256, includePaths,
+      jobImage: TOOLS_IMAGE_DEFAULT, pinToNode, activeDeadlineSeconds: 10 * 60,
+    });
+    const createdJob = await (k8s.batch as unknown as {
+      createNamespacedJob: (a: { namespace: string; body: unknown }) => Promise<{ metadata?: { uid?: string } }>;
+    }).createNamespacedJob({ namespace, body: spec });
+    const jobUid = createdJob.metadata?.uid;
+    if (jobUid) {
+      try { await wireSecretOwnerRef(k8s, namespace, credsSecretName, jobName, jobUid); ownerRefWired = true; }
+      catch { /* creds GC via the finally-delete */ }
+    }
+    await waitForJob(k8s, namespace, jobName, 10 * 60 * 1000);
+    try {
+      await (k8s.batch as unknown as {
+        deleteNamespacedJob: (a: { name: string; namespace: string; propagationPolicy?: string }) => Promise<unknown>;
+      }).deleteNamespacedJob({ name: jobName, namespace, propagationPolicy: 'Background' });
+    } catch { /* ttl GC backstop */ }
+  } finally {
+    if (credsCreated && !ownerRefWired) {
+      try {
+        await (k8s.core as unknown as {
+          deleteNamespacedSecret: (a: { name: string; namespace: string }) => Promise<unknown>;
+        }).deleteNamespacedSecret({ name: credsSecretName, namespace });
+      } catch { /* best-effort */ }
+    }
+  }
 }
 
 /**

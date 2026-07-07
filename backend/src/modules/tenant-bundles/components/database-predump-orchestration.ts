@@ -228,5 +228,37 @@ export function buildDatabaseDumpsSummary(
   return { status, deployments, remediation };
 }
 
+/**
+ * Delete THIS bundle's predumps from the live tenant PVC AFTER the files
+ * snapshot has captured them. Keeps the tenant PVC footprint at ~0 — a 2-5 GB
+ * client PVC can't hold a retention window of full logical dumps, so we do not
+ * let them persist. The predumps live in the bundle's files restic snapshot;
+ * `databases-by-id` re-materialises them from there on restore. Best-effort:
+ * if the file-manager pod can't be reached, the retention-window prune
+ * (`exportDatabaseToPvc` pruneOlderThanDays) is the backstop that still bounds
+ * accumulation.
+ */
+export async function deletePredumpsFromPvc(args: {
+  k8s: K8sClients;
+  namespace: string;
+  bundleId: string;
+  kubeconfigPath?: string;
+}): Promise<void> {
+  const { getReadyFileManagerPod } = await import('../../file-manager/service.js');
+  let fmPod: string;
+  try {
+    fmPod = await getReadyFileManagerPod(args.k8s, args.namespace);
+  } catch {
+    return; // no file-manager pod → leave the prune as the backstop
+  }
+  const safe = args.bundleId.replace(/[^A-Za-z0-9._-]/g, '_');
+  try {
+    await execInPod(args.kubeconfigPath, args.namespace, fmPod, 'file-manager',
+      ['sh', '-c', `find /data -type f -name 'predump-*-${safe}.*' -delete 2>/dev/null || true`]);
+  } catch {
+    /* best-effort — the retention-window prune bounds accumulation regardless */
+  }
+}
+
 // Re-export for orchestrator imports + ergonomic typing.
 export type { PreDumpDeploymentResult, Engine };
