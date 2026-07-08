@@ -76,6 +76,25 @@ export class LocalHostPathBackupStore implements BackupStore {
     return candidate;
   }
 
+  async listBundleIds(): Promise<string[]> {
+    let entries: string[];
+    try {
+      entries = await readdir(this.normalizedRoot);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+    const ids: string[] = [];
+    for (const name of entries) {
+      if (name.startsWith('.')) continue;
+      try {
+        const s = await fsStat(join(this.normalizedRoot, name));
+        if (s.isDirectory()) ids.push(name);
+      } catch { /* race: entry removed mid-scan — skip */ }
+    }
+    return ids;
+  }
+
   private resolveBackend(handle: BundleHandle): HostPathBackend {
     if (!isHostPathBackend(handle._backend)) {
       throw new Error('LocalHostPathBackupStore: handle is not a hostpath handle');

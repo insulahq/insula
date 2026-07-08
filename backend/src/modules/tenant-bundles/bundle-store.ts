@@ -73,6 +73,17 @@ export interface BackupStore {
   open(backupId: string): Promise<BundleHandle | null>;
 
   /**
+   * List all bundle ids present under this store's root — the immediate
+   * bundle-prefix level, each of which has its own meta.json. Read-only,
+   * does NOT validate that meta.json exists (caller filters via getMeta).
+   *
+   * Used by the cross-cluster MIGRATION flow (R20) to enumerate a SOURCE
+   * target's bundles with no local backup_jobs rows: cluster B mounts
+   * cluster A's tenant backup target read-only and scans it for tenants.
+   */
+  listBundleIds(): Promise<string[]>;
+
+  /**
    * Stream a component artifact into the bundle.
    *
    * `name` must be the on-disk filename (e.g. `archive.tar.gz`,

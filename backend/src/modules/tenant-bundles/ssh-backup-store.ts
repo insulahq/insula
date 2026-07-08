@@ -240,6 +240,25 @@ export class SshBackupStore implements BackupStore {
     return { bundleId: backupId, _backend: { bundlePath } satisfies SshBackend };
   }
 
+  async listBundleIds(): Promise<string[]> {
+    // Each immediate SUBDIRECTORY of basePath is a bundle root
+    // (<basePath>/<bundleId>/). Used by the migration scan (R20).
+    const base = this.config.basePath.replace(/\/+$/, '');
+    return this.withSftp(async (sftp) => {
+      const entries = await new Promise<{ filename: string; attrs: { mode?: number } }[]>((resolve) => {
+        sftp.readdir(base, (err, list) => {
+          if (err) { resolve([]); return; }
+          resolve(list as unknown as { filename: string; attrs: { mode?: number } }[]);
+        });
+      });
+      return entries
+        .filter((e) => e.filename && !e.filename.startsWith('.'))
+        // directories only (S_IFDIR) — bundle roots, not stray files.
+        .filter((e) => ((e.attrs.mode ?? 0) & 0o170000) === 0o040000)
+        .map((e) => e.filename);
+    });
+  }
+
   async writeComponent(
     handle: BundleHandle,
     component: BackupComponentName,

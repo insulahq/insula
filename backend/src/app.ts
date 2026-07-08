@@ -114,6 +114,7 @@ import { backupsV2InternalDownloadRoutes } from './modules/tenant-bundles/intern
 import { backupsV2ClientRoutes } from './modules/tenant-bundles/tenant-routes.js';
 import { backupRestoreRoutes } from './modules/backup-restore/routes.js';
 import { drRecoverRoutes } from './modules/dr-recover/routes.js';
+import { migrationRoutes } from './modules/migration/routes.js';
 import { tenantRestoreRoutes } from './modules/backup-restore/tenant-routes.js';
 import { adminUserRoutes } from './modules/admin-users/routes.js';
 import { healthRoutes } from './modules/health/routes.js';
@@ -543,6 +544,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupsV2ClientRoutes, { prefix: '/api/v1' });
   await app.register(backupRestoreRoutes, { prefix: '/api/v1' });
   await app.register(drRecoverRoutes, { prefix: '/api/v1' });
+  await app.register(migrationRoutes, { prefix: '/api/v1' });
   await app.register(tenantRestoreRoutes, { prefix: '/api/v1' });
   await app.register(adminUserRoutes, { prefix: '/api/v1' });
   await app.register(healthRoutes, { prefix: '/api/v1' });
