@@ -72,6 +72,10 @@ NS=$(api GET "/tenants/$TID" '' "$TOKEN"|sed '$d'|jq -r '.data.kubernetesNamespa
 POD=$(ensure_fm "$TID" "$NS") || { no "file-manager never ready for $NS"; exit 1; }
 fm_write "$NS" "$POD" "migration-probe-$STAMP-payload"
 SHA=$(fm_sha "$NS" "$POD"); [[ -n "$SHA" ]] && ok "tenant=$TID ns=$NS site sha=$SHA" || { no "could not seed/sha site file"; exit 1; }
+# Set a DISTINCTIVE per-tenant override so we can prove customizations survive a
+# cross-cluster migration even when the destination plan differs.
+parse "$(api PATCH "/tenants/$TID" '{"max_mailboxes_override":4242}' "$TOKEN")"
+[[ "$STATUS" =~ ^20 ]] && ok "set max_mailboxes_override=4242 (customization to preserve)" || { no "set override $STATUS"; echo "$BODY"|rd; exit 1; }
 
 cyn "2. capture whole-client bundle to the off-site target"
 parse "$(api POST /admin/tenant-bundles "{\"tenantId\":\"$TID\",\"targetConfigId\":\"$CFG\",\"async\":true,\"components\":{\"files\":true,\"mailboxes\":false,\"config\":true,\"secrets\":false}}" "$TOKEN")"
@@ -92,6 +96,8 @@ printf '%s' "$BODY"|jq -e --arg t "$TID" '.data.tenants[]|select(.tenantId==$t a
   && ok "list-tenants found the deleted tenant $TID (alreadyPresent=false)" || { no "list-tenants did NOT surface $TID"; printf '%s' "$BODY"|jq -r '.data.tenants[]?|"    \(.tenantId) \(.tenantName) present=\(.alreadyPresent)"'|rd; exit 1; }
 LATEST=$(printf '%s' "$BODY"|jq -r --arg t "$TID" '.data.tenants[]|select(.tenantId==$t)|.latestBundleId')
 [[ "$LATEST" == "$BID" ]] && ok "list-tenants resolved the newest bundle ($BID)" || no "list-tenants latestBundleId=$LATEST (expected $BID)"
+EFFMB=$(printf '%s' "$BODY"|jq -r --arg t "$TID" '.data.tenants[]|select(.tenantId==$t)|.effectiveResources.maxMailboxes // empty')
+[[ "$EFFMB" == 4242 ]] && ok "list shows EFFECTIVE maxMailboxes=4242 (override captured + surfaced pre-import)" || no "list effectiveResources.maxMailboxes=$EFFMB (expected 4242)"
 
 cyn "5. migration import — rebuild the tenant from the source (no local row)"
 parse "$(api POST /admin/migration/import "{\"targetConfigId\":\"$CFG\",\"scope\":\"selected\",\"tenantIds\":[\"$TID\"]}" "$TOKEN")"
@@ -106,6 +112,10 @@ wait_ns "$NS" && ok "namespace $NS re-provisioned" || { no "namespace $NS not ba
 POD=$(ensure_fm "$TID" "$NS") || { no "file-manager not ready after import"; exit 1; }
 NOW=$(fm_sha "$NS" "$POD")
 [[ "$NOW" == "$SHA" ]] && ok "site file restored (sha matches $SHA)" || no "site file SHA mismatch (got ${NOW:-none}, want $SHA)"
+# The override must be PINNED on the destination (plan-independent) — proves
+# effective params survive migration even if this cluster's plan differs.
+PINNED=$(api GET "/tenants/$TID" '' "$TOKEN"|sed '$d'|jq -r '.data.maxMailboxesOverride // .data.max_mailboxes_override // empty')
+[[ "$PINNED" == 4242 ]] && ok "override PINNED on import — maxMailboxesOverride=4242 (effective params preserved)" || no "override NOT preserved: maxMailboxesOverride=${PINNED:-none} (expected 4242)"
 
 cyn "RESULT: PASS=$pass FAIL=$fail"
 [[ "$fail" == 0 ]] && { grn "MIGRATION E2E: GREEN"; exit 0; } || { red "MIGRATION E2E: $fail failure(s)"; exit 1; }
