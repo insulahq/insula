@@ -31,7 +31,7 @@ set -euo pipefail
 # Wired into .github/workflows/ci-infrastructure.yml.
 
 OVERLAYS=(
-  "k8s/overlays/dev"
+  "k8s/overlays/dind"
   "k8s/overlays/development"
   "k8s/overlays/production"
 )

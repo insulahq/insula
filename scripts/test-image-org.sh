@@ -31,7 +31,7 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 — predicate failed: $2"; fi;
 # Build a throwaway repo-shaped tree with canonical overlays + workflows.
 make_fixture() {
   local root; root=$(mktemp -d)
-  mkdir -p "$root/k8s/overlays/dev" "$root/k8s/overlays/development" \
+  mkdir -p "$root/k8s/overlays/dind" "$root/k8s/overlays/development" \
            "$root/k8s/overlays/production" "$root/k8s/base/sidecar" \
            "$root/.github/workflows"
   for ov in dev development production; do
@@ -127,9 +127,9 @@ check "guard PASSES on the real repo" "[ \$? -eq 0 ]"
 
 # 7. Guard fails when an overlay carries a non-canonical org.
 req_tmp
-mkdir -p "$T/k8s/overlays/dev" "$T/.github/workflows" "$T/scripts"
+mkdir -p "$T/k8s/overlays/dind" "$T/.github/workflows" "$T/scripts"
 cp "$PREFLIGHT" "$T/scripts/preflight-image-org.sh"
-echo "images: [{name: ghcr.io/evilorg/x/backend}]" > "$T/k8s/overlays/dev/kustomization.yaml"
+echo "images: [{name: ghcr.io/evilorg/x/backend}]" > "$T/k8s/overlays/dind/kustomization.yaml"
 echo "env: { IMAGE: ghcr.io/\${{ github.repository }}/x }" > "$T/.github/workflows/ci-x.yml"
 REPO_ROOT="$T" "$GUARD" >/dev/null 2>&1
 check "guard FAILS on a non-canonical overlay org" "[ \$? -ne 0 ]"
@@ -137,9 +137,9 @@ rm -rf "$T"
 
 # 8. Guard fails when a workflow hardcodes the canonical org instead of deriving it.
 req_tmp
-mkdir -p "$T/k8s/overlays/dev" "$T/.github/workflows" "$T/scripts"
+mkdir -p "$T/k8s/overlays/dind" "$T/.github/workflows" "$T/scripts"
 cp "$PREFLIGHT" "$T/scripts/preflight-image-org.sh"
-echo "images: [{name: $CANONICAL/backend}]" > "$T/k8s/overlays/dev/kustomization.yaml"
+echo "images: [{name: $CANONICAL/backend}]" > "$T/k8s/overlays/dind/kustomization.yaml"
 echo "env: { IMAGE: $CANONICAL/x }" > "$T/.github/workflows/ci-x.yml"
 REPO_ROOT="$T" "$GUARD" >/dev/null 2>&1
 check "guard FAILS on a workflow hardcoding the canonical org" "[ \$? -ne 0 ]"

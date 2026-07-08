@@ -14,7 +14,7 @@
 # IMPORTANT: The issuer URL and redirect URIs must be browser-reachable.
 # In dev, Dex is reached at https://dex.${DOMAIN}:2011/dex through
 # the ingress (was formerly http://dind.local:2015 on a NodePort — see
-# k8s/overlays/dev/dex/ingress.yaml for the transition). Production
+# k8s/overlays/dind/dex/ingress.yaml for the transition). Production
 # bootstrap.sh --domain <FQDN> regenerates this file with real hostnames.
 
 issuer: https://dex.${DOMAIN}:2011/dex

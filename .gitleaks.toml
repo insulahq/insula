@@ -40,7 +40,7 @@ paths = [
   '''.*/__tests__/.*''',
   '''(^|/)package-lock\.json$''',
   '''(^|/)CHANGELOG\.md$''',
-  '''k8s/overlays/dev/.*''',            # local-dev-only secrets (DinD), never prod
+  '''k8s/overlays/dind/.*''',            # local-dev-only secrets (DinD), never prod
   '''k8s/base/cnpg-system/.*''',        # vendored upstream (Barman Cloud Plugin)
   '''scripts/local\.sh''',              # local DinD setup; prints dummy dev creds
   '''scripts/spike-.*\.sh''',           # throwaway spike fixtures

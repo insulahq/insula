@@ -9,7 +9,7 @@ kind: Kustomization
 # applies:
 #
 #   - dev overlay uses `local-ca-issuer` for a self-signed local CA
-#     (see k8s/overlays/dev/cert-manager/)
+#     (see k8s/overlays/dind/cert-manager/)
 #   - staging overlay uses `letsencrypt-staging-http01`
 #   - production overlay uses `letsencrypt-prod-http01` and (if a
 #     PowerDNS API Secret is available) `letsencrypt-prod-dns01-powerdns`

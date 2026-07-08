@@ -92,7 +92,7 @@ function getEnvironment(): CertEnvironment {
 
 /**
  * Default ClusterIssuer names, matching the manifests in
- * k8s/base/cert-manager/ and k8s/overlays/dev/cert-manager/. Can be
+ * k8s/base/cert-manager/ and k8s/overlays/dind/cert-manager/. Can be
  * overridden per-issuer via env vars for custom cluster setups.
  */
 function getConfiguredIssuers(): ConfiguredIssuers {

@@ -29,7 +29,7 @@ kind: Kustomization
 # This top-level kustomization is intentionally NOT included in
 # k8s/base/kustomization.yaml yet — it will be uncommented in M10
 # once all manifests are validated end-to-end on local DinD k3s.
-# Dev overlay wires it directly: k8s/overlays/dev/stalwart-mail/.
+# Dev overlay wires it directly: k8s/overlays/dind/stalwart-mail/.
 
 resources:
   - stalwart/

@@ -72,7 +72,7 @@ Four ClusterIssuers ship in version control:
   production, DNS-01 via RFC2136 against the platform's PowerDNS. Used
   for wildcard issuance when `dnsMode=primary` and a PowerDNS server is
   in the domain's DNS provider group.
-- `k8s/overlays/dev/cert-manager/` — self-signed local CA chain
+- `k8s/overlays/dind/cert-manager/` — self-signed local CA chain
   (`selfsigned-bootstrap` → `local-ca` → `local-ca-issuer`). Used for
   local dev so the backend can exercise the Certificate CR code path
   without reaching the real Let's Encrypt ACME server.

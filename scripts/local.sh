@@ -504,7 +504,7 @@ _apply_dev_overlay() {
   k3s_exec kubectl create namespace tigera-operator 2>/dev/null || true
 
   local rendered
-  rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dev 2>&1) || {
+  rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dind 2>&1) || {
     echo "  kustomize build failed:"
     echo "$rendered" | sed 's/^/    /'
     return 1
@@ -929,13 +929,13 @@ cmd_k3s_status() {
 
 cmd_mail_up() {
   # M13: mail-up now deploys Stalwart 0.16 (stalwart-mail overlay).
-  # The 0.15 overlay (overlays/dev/stalwart/) was removed in M13.
+  # The 0.15 overlay (overlays/dind/stalwart/) was removed in M13.
   # To remove any remaining 0.15 resources, run:
   #   ./scripts/cutover-stalwart-v015-to-v016.sh
   echo "Deploying Stalwart 0.16 mail server..."
   _ensure_k3s_running
   _sync_manifests
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/stalwart-mail
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dind/stalwart-mail
   echo ""
   echo "Waiting for Stalwart 0.16 pod (up to 3 minutes)..."
   k3s_exec kubectl wait --for=condition=Ready pod \
@@ -970,7 +970,7 @@ cmd_mail16_up() { cmd_mail_up "$@"; }
 
 cmd_mail_down() {
   _sync_manifests
-  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/stalwart-mail --ignore-not-found=true
+  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dind/stalwart-mail --ignore-not-found=true
 }
 
 cmd_mail_status() {
@@ -1062,7 +1062,7 @@ cmd_webmail_up() {
   # Seed the roundcube role/db BEFORE the pod waits — the password auth
   # path must be ready the moment Roundcube serves its first request.
   _ensure_roundcube_db
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dev/roundcube
+  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dind/roundcube
   echo ""
   echo "Waiting for Roundcube pod (up to 3 minutes)..."
   k3s_exec kubectl wait --for=condition=Ready pod -l app=roundcube -n mail --timeout=180s || {
@@ -1076,7 +1076,7 @@ cmd_webmail_up() {
 
 cmd_webmail_down() {
   _sync_manifests
-  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dev/roundcube --ignore-not-found=true
+  k3s_exec kubectl delete -k /tmp/k8s-sync/overlays/dind/roundcube --ignore-not-found=true
 }
 
 cmd_webmail_status() {
@@ -1103,7 +1103,7 @@ cmd_webmail_logs() {
 _bulwark_render_apply() {
   local action="$1"  # "apply" or "delete"
   local rendered
-  rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dev/bulwark) || {
+  rendered=$(k3s_exec kubectl kustomize /tmp/k8s-sync/overlays/dind/bulwark) || {
     echo "  kustomize build failed"; return 1; }
   rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
   # Manifests escape $${VAR} for Flux postBuild envsubst (so Flux

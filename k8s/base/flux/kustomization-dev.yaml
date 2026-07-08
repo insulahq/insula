@@ -5,7 +5,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 5m
-  path: ./k8s/overlays/dev
+  path: ./k8s/overlays/dind
   prune: true
   sourceRef:
     kind: GitRepository

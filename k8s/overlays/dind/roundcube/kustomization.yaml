@@ -6,7 +6,7 @@
 #
 # Deploy:
 #   ./scripts/local.sh webmail-up
-#   # equivalent to: kubectl apply -k k8s/overlays/dev/roundcube/
+#   # equivalent to: kubectl apply -k k8s/overlays/dind/roundcube/
 #
 # Differences from base:
 #   1. Service type ClusterIP → NodePort 30017 (mapped to host 2017

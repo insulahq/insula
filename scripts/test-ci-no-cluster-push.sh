@@ -39,7 +39,7 @@ T=$(fixture 'flux reconcile kustomization platform'); run_on "$T"; yes "flux rec
 
 # 3. Read-only cluster commands are allowed.
 T=$(fixture 'kubectl get pods -n platform'); run_on "$T"; yes "kubectl get → PASS" "[ \$? -eq 0 ]"; rm -rf "$T"
-T=$(fixture 'kubectl kustomize k8s/overlays/dev'); run_on "$T"; yes "kubectl kustomize (local) → PASS" "[ \$? -eq 0 ]"; rm -rf "$T"
+T=$(fixture 'kubectl kustomize k8s/overlays/dind'); run_on "$T"; yes "kubectl kustomize (local) → PASS" "[ \$? -eq 0 ]"; rm -rf "$T"
 T=$(fixture 'helm template ./chart'); run_on "$T"; yes "helm template (local) → PASS" "[ \$? -eq 0 ]"; rm -rf "$T"
 
 # 4. A write-verb mentioned only in a comment is not a command.

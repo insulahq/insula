@@ -9,7 +9,7 @@
 # platform-ns opener. Keeps lateral-movement risk from an untrusted
 # mail payload bounded.
 #
-# Sibling of k8s/overlays/dev/allow-mail-to-postgres-netpol.yaml —
+# Sibling of k8s/overlays/dind/allow-mail-to-postgres-netpol.yaml —
 # kept in the main staging overlay root (not under stalwart/) so the
 # stalwart/ kustomization's `namespace: mail` directive doesn't
 # reparent it into the wrong namespace.

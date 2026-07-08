@@ -823,7 +823,7 @@ components:
     tier: "X"
     kind: external
     pinned: "v2.45.1"
-    pin_source: k8s/overlays/dev/dex/deployment.yaml
+    pin_source: k8s/overlays/dind/dex/deployment.yaml
     pin_check: true
     repos: [dexidp/dex]
     watch: { type: github_releases, repo: dexidp/dex, advisories: dexidp/dex }
@@ -918,7 +918,7 @@ components:
     tier: "3"
     kind: image
     pinned: "1.8.0.0"
-    pin_source: k8s/overlays/dev/bulwark/oauth-patch.yaml
+    pin_source: k8s/overlays/dind/bulwark/oauth-patch.yaml
     pin_check: true
     repos: [alpine/socat]
     watch: { type: dockerhub, repo: alpine/socat, advisories: alpine/socat }

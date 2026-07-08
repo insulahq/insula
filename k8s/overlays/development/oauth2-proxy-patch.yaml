@@ -10,7 +10,7 @@
 #     may not issue on a non-public dev domain -> Traefik serves a self-signed
 #     cert -> curl -fsS refuses TLS verify.
 #
-# FIX (mirrors the proven local-DinD pattern, k8s/overlays/dev/
+# FIX (mirrors the proven local-DinD pattern, k8s/overlays/dind/
 # oauth2-proxy-patch.yaml): do all machine-to-machine OIDC over the
 # cluster-internal Dex Service in PLAINTEXT, so there is no public DNS / TLS /
 # CA dependency on the token-redeem + JWKS path:

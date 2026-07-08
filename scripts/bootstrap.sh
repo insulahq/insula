@@ -6730,7 +6730,7 @@ apply_platform_manifests() {
   # env, so the imperative install and Flux never diverge. Mirror the
   # env→overlay mapping from install_flux exactly:
   #   dev        → overlays/development  (the cloud DEV-cluster overlay the
-  #                                       development branch feeds; overlays/dev
+  #                                       development branch feeds; overlays/dind
   #                                       is the local-DinD overlay, NOT this)
   #   staging    → overlays/staging      (the production mirror that release
   #                                       tags feed)

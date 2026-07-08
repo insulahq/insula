@@ -10,12 +10,12 @@ kind: Kustomization
 # RFC2136 PowerDNS, neither of which is reachable from local DinD.
 #
 # Deploy (local dev):
-#   kubectl apply -k k8s/overlays/dev/cert-manager/
+#   kubectl apply -k k8s/overlays/dind/cert-manager/
 #
 # docker-compose.local.yml's k3s-init step currently creates an
 # equivalent self-signed CA issuer inline. Once production rollout
 # is set up, that inline block can be removed in favour of
-# `kubectl apply -k k8s/overlays/dev/cert-manager/`.
+# `kubectl apply -k k8s/overlays/dind/cert-manager/`.
 
 namespace: cert-manager
 

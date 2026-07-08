@@ -126,6 +126,6 @@ Estimated work for the future extension: 2-4 weeks of focused design
   syncer.
 - `backend/src/modules/system-settings/ingress-reconciler.ts` — emits the
   `/oauth2` path rule on protected panel hosts.
-- `k8s/overlays/dev/dex/config.yaml` — shows the two-redirect-URI pattern
+- `k8s/overlays/dind/dex/config.yaml` — shows the two-redirect-URI pattern
   per-panel.
 - `ADR-022-IAM-SEPARATION.md` — why Dex itself is not tenant-scoped.
