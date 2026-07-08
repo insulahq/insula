@@ -31,7 +31,7 @@
 | [R17](#r17--mail-housekeeping-follow-ups-2026-06-10-single-node-green-up) | Mail/snapshot housekeeping follow-ups | P2 | Shipped (PRs #22–#39) — all three follow-ups done incl. Released-PV operator surface |
 | [R18](#r18--operator-script-consolidation-into-the-platform-ops-cli) | Operator-script consolidation → platform-ops CLI | P2 | Shipped (T1–T4 + R18-finish) — released v2026.6.10 |
 | [R19](#r19--tenant-on-server-snapshots--storage-resize-hardening) | Tenant on-server snapshots + storage-resize hardening | P2 | ✅ Shipped — snapshots + in-place/retained-volume restore + destructive-shrink quiesce + force-cancel restore all done (2026-06-17/18) |
-| [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | Design captured, not built |
+| [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | ✅ Shipped 2026-07-08 — mount source read-only → list → import (single/all) + guided UI; DEV E2E 11/0 |
 | [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | ✅ Shipped 2026-06-21 — `cluster upgrade` auto-steps multi-minor (auto-loop chosen) |
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
 
@@ -468,13 +468,21 @@ its prior replicas. **No open items remain in R19.**
 
 ## R20 — Cross-cluster tenant migration
 
-**Design captured, not built.** Tenant backups are already cluster-agnostic
-(keyed by `bundleId` UUID + `meta.json.tenantId`, no cluster in the path), and
-system/mail/etcd backup paths are now namespaced by a stable `cluster_id`
-(2026-06-14) — so the substrate for "export a tenant bundle from cluster A →
-import into cluster B" exists. The actual move feature (the export/import
-orchestration + cutover) is not yet implemented. R1 (Plesk inbound) and
-within-cluster restore exist; cluster-A→B does not.
+**✅ Shipped 2026-07-08.** Tenant backups are cluster-agnostic (keyed by `bundleId`
+UUID + `meta.json.tenantId`, no cluster in the path), so cluster B just needs
+READ access to A's target — no prep on A. Cluster B mounts A's tenant backup
+target read-only (a backup config on B, or sourced from A's secrets bundle on a
+fresh cluster), scans it (`POST /admin/migration/list-tenants`), and imports
+single/all (`POST /admin/migration/import`). Import reuses the DR recover engine
+(`recreateTenantFromBundle` re-creates the tenant from `meta.json` preserving
+id+ns, then reconciles ingress/DKIM/workloads), pointed at the source target
+(`resolveDirectStoreForBundle(..., {classSubpath:'tenant'})` so the direct store
+reads under the shim's `<prefix>/tenant/` layout). Locally-present tenants are
+skipped; dry-run preview. Guided UI: **DR console → Migrate Tenants**. DEV E2E
+`scripts/integration-migration-e2e.sh` 11/0 (capture → delete → list → import →
+namespace back + site SHA match). Cutover (DNS re-point) + source decommission
+stay operator-driven — see [operations/CROSS_CLUSTER_MIGRATION.md](../operations/CROSS_CLUSTER_MIGRATION.md).
+R1 (Plesk inbound) + within-cluster restore already existed; cluster-A→B now does too.
 
 Related DR follow-up: **break-glass shim reachability — addressed 2026-06-16.**
 The etcd restore is now a three-tier ladder that no longer depends on a live
