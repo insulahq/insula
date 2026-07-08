@@ -5,12 +5,12 @@
 # DaemonSet. The shim translates S3 → operator-selected upstream
 # (S3 / SFTP / CIFS / NFS) per the SYSTEM-class target binding.
 #
-# Manifest is vendored verbatim from upstream v0.12.0:
-#   https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.12.0/manifest.yaml
+# Manifest is vendored verbatim from upstream v0.13.0:
+#   https://github.com/cloudnative-pg/plugin-barman-cloud/releases/download/v0.13.0/manifest.yaml
 #
 # Upgrade procedure:
 #   1. Fetch the new release's manifest.yaml
-#   2. Replace `plugin-barman-cloud-v0.12.0.yaml` (keep the version
+#   2. Replace `plugin-barman-cloud-v0.13.0.yaml` (keep the version
 #      suffix so git diff shows the bump)
 #   3. Verify the ObjectStore CRD schema didn't break our reconciler
 #      (backend/src/modules/backup-rclone-shim/postgres-objectstore.ts)
@@ -23,7 +23,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - plugin-barman-cloud-v0.12.0.yaml
+  - plugin-barman-cloud-v0.13.0.yaml
 
 # SECURITY NOTE (review HIGH #2, R-X6):
 #
@@ -36,7 +36,7 @@ resources:
 # every Tier-1 bundle Secret) and escalate via role manipulation.
 #
 # This is upstream's default RBAC. We accept it as a known risk in
-# v0.12.0 because:
+# v0.13.0 because:
 #   - The plugin Deployment runs only one workload (the barman-cloud
 #     plugin server). The image is pinned by digest in the vendored
 #     manifest; tampering requires either a new release pull-through
