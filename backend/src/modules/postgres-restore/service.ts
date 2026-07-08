@@ -1034,6 +1034,96 @@ async function waitClusterFullyStable(
   return { ok: false, phase: lastPhase, ready: lastReady, primary: lastPrimary };
 }
 
+/**
+ * True if a CNPG cluster spec declares an ENABLED barman-cloud WAL
+ * archiver plugin. Mirrors the name-matching in
+ * `getBarmanObjectStoreForRecovery` (inside buildRecoveryCluster) so the
+ * "wait for sidecar" gate and the WAL-source lookup agree on what
+ * "has barman" means. Exported for unit testing.
+ */
+export function specHasBarmanPlugin(
+  // `plugins` is typed `unknown[]` on CnpgCluster.spec — narrow each entry
+  // here so both the live spec and unit-test literals type-check.
+  spec: { readonly plugins?: ReadonlyArray<unknown> } | undefined,
+): boolean {
+  for (const raw of spec?.plugins ?? []) {
+    const p = (raw ?? {}) as { readonly enabled?: boolean; readonly name?: string };
+    if (p.enabled === false) continue;
+    const n = (p.name ?? '').toLowerCase();
+    if (n === 'barman-cloud.cloudnative-pg.io' || n.endsWith('barman-cloud') || n.startsWith('barman-cloud.')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * True if a pod carries the `plugin-barman-cloud` sidecar. CNPG 1.29+
+ * runs plugin sidecars as NATIVE sidecars (restartPolicy:Always
+ * initContainers on k8s 1.28+), so check BOTH container lists — the same
+ * robustness the integration harness (9b) uses. Exported for unit testing.
+ */
+export function podHasBarmanSidecar(
+  pod: {
+    readonly spec?: {
+      readonly containers?: ReadonlyArray<{ readonly name?: string }>;
+      readonly initContainers?: ReadonlyArray<{ readonly name?: string }>;
+    };
+  } | undefined,
+): boolean {
+  const all = [...(pod?.spec?.containers ?? []), ...(pod?.spec?.initContainers ?? [])];
+  return all.some((c) => (c.name ?? '').includes('plugin-barman-cloud'));
+}
+
+/**
+ * Wait until the WAL-archiver plugin sidecar (`plugin-barman-cloud`) is
+ * present on the cluster's CURRENT primary pod.
+ *
+ * WHY (2026-07-08): CNPG 1.29.1 + plugin-barman-cloud v0.12.0 (bumped
+ * 2026-06-12, c413d033) no longer inject the plugin sidecar at first pod
+ * creation via an admission webhook — the operator adds it on a LATER
+ * reconcile that RECREATES the primary pod. So a rebuilt cluster reports
+ * readyInstances>=1 (waitClusterHealthy) BEFORE WAL archiving is
+ * re-established. Declaring a PITR restore "done" in that window leaves
+ * the recovered primary briefly without continuous backup. This wait
+ * closes the gap so chip-green == WAL-archiving-active.
+ *
+ * Only meaningful when the source cluster carries the barman plugin;
+ * callers gate on `specHasBarmanPlugin`. Best-effort: returns ok=false on
+ * timeout (caller records a loud, operator-actionable step) but never
+ * throws — the primary still serves; archiving is merely delayed.
+ */
+async function waitForBarmanSidecar(
+  k8s: K8sClients,
+  namespace: string,
+  clusterName: string,
+  timeoutMs: number,
+): Promise<{ readonly ok: boolean; readonly primary?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let lastPrimary: string | undefined;
+  while (Date.now() < deadline) {
+    try {
+      const c = await getCustom<CnpgCluster>(k8s, {
+        group: CNPG_GROUP, version: CNPG_VERSION, namespace, plural: 'clusters', name: clusterName,
+      });
+      lastPrimary = c.status?.currentPrimary;
+      if (lastPrimary) {
+        const pod = await k8s.core.readNamespacedPod({
+          name: lastPrimary, namespace,
+        } as unknown as Parameters<typeof k8s.core.readNamespacedPod>[0]) as {
+          spec?: {
+            containers?: ReadonlyArray<{ name?: string }>;
+            initContainers?: ReadonlyArray<{ name?: string }>;
+          };
+        };
+        if (podHasBarmanSidecar(pod)) return { ok: true, primary: lastPrimary };
+      }
+    } catch { /* keep polling — pod may be mid-recreation */ }
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
+  return { ok: false, primary: lastPrimary };
+}
+
 async function emitAdminNotification(
   db: Database,
   message: string,
@@ -1303,10 +1393,19 @@ export function buildRecoveryCluster(
   // `kubectl delete pod` to recreate the pod through the admission
   // webhook (caught LIVE on staging1 Phase 3.1 promote 2026-05-23).
   //
-  // Carrying source.spec.plugins INTO the rebuild cluster CR closes
-  // this gap: the first pod is created with the plugin config in spec,
-  // the admission webhook injects the sidecar, instance-manager finds
-  // the plugin connection ready immediately.
+  // Carrying source.spec.plugins INTO the rebuild cluster CR is still
+  // required so the live spec declares the archiver from the start.
+  //
+  // BEHAVIOR CHANGE (2026-07-08, CNPG 1.29.1 + plugin-barman-cloud
+  // v0.12.0, bumped 2026-06-12 c413d033): the sidecar is NO LONGER
+  // injected at first-pod-creation by an admission webhook. The newer
+  // operator adds the plugin sidecar on a subsequent reconcile that
+  // RECREATES the primary pod — so there is a window after the cluster
+  // reports healthy where the primary has no `plugin-barman-cloud`
+  // sidecar (no WAL archiving). The orchestration therefore no longer
+  // relies on this comment's old at-creation guarantee: it explicitly
+  // waits for the sidecar (step 8a.0 `wait-barman-sidecar`, gated on
+  // `specHasBarmanPlugin`) before declaring the restore complete.
   const plugins = isTemp ? undefined : src.spec?.plugins;
 
   // WAL archive source for the temp cluster (2026-05-23 — Task #97):
@@ -1782,6 +1881,33 @@ export async function promotePostgresFromSnapshot(
       detail: `phase=${srcHealth.phase ?? '?'} primary=up pendingReplicas=${pendingReplicas} (CNPG builds replicas in background)`,
     });
     if (!srcHealth.ok) throw new Error(`Recreated source cluster did not become healthy: phase=${srcHealth.phase}`);
+
+    // 8a.0 Wait for the WAL-archiver plugin sidecar (2026-07-08).
+    //
+    // waitClusterHealthy above returns as soon as readyInstances>=1 — but
+    // with CNPG 1.29.1 + plugin-barman-cloud v0.12.0 (bumped 2026-06-12,
+    // c413d033) the operator injects the barman-cloud sidecar on a LATER
+    // reconcile that RECREATES the primary pod. So "cluster healthy" no
+    // longer implies "WAL archiving active" (it did under the pre-bump
+    // admission-webhook-at-pod-creation model the buildRecoveryCluster
+    // comment describes). Releasing the lock here would declare the
+    // restore done while the recovered primary is briefly NOT archiving
+    // WAL — a continuous-backup gap. Block until the sidecar is confirmed
+    // on the live primary. Gated on the source actually using barman;
+    // bounded (5m) + NON-FATAL (records a loud, operator-actionable step
+    // on timeout — data is restored + the primary serves regardless).
+    if (specHasBarmanPlugin(pre.cluster.spec)) {
+      const t8a0 = nowMs();
+      const sidecar = await waitForBarmanSidecar(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 5 * 60_000);
+      recordStep({
+        step: 'wait-barman-sidecar',
+        ok: sidecar.ok,
+        elapsedMs: nowMs() - t8a0,
+        detail: sidecar.ok
+          ? `plugin-barman-cloud sidecar active on ${sidecar.primary ?? 'primary'} — WAL archiving re-established`
+          : `plugin-barman-cloud sidecar NOT observed within 5m on ${sidecar.primary ?? 'primary'}; WAL archiving may be delayed — verify: kubectl -n ${inputs.clusterNamespace} get pod ${sidecar.primary ?? '<primary>'} -o jsonpath='{.spec.initContainers[*].name}' (delete the pod to force plugin injection if the sidecar is absent)`,
+      });
+    }
 
     // 8a. Scale back to the source's original HA instance count.
     // PATCH spec.instances; CNPG schedules the replica build async.

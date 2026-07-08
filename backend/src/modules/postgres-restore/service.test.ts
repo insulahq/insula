@@ -304,6 +304,35 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(noPluginRebuild.spec.plugins).toBeUndefined();
   });
 
+  it('specHasBarmanPlugin detects an enabled barman WAL archiver, ignores disabled/other/none', async () => {
+    // Gate for the post-restore wait-barman-sidecar step: the wait only
+    // runs when the source actually archives via the barman plugin.
+    const { specHasBarmanPlugin } = await import('./service.js');
+    expect(specHasBarmanPlugin({ plugins: [{ enabled: true, name: 'barman-cloud.cloudnative-pg.io' }] })).toBe(true);
+    // enabled defaults true when omitted (CNPG treats absent as enabled).
+    expect(specHasBarmanPlugin({ plugins: [{ name: 'barman-cloud.cloudnative-pg.io' }] })).toBe(true);
+    // explicitly disabled → not archiving → no wait.
+    expect(specHasBarmanPlugin({ plugins: [{ enabled: false, name: 'barman-cloud.cloudnative-pg.io' }] })).toBe(false);
+    // unrelated plugin → no barman.
+    expect(specHasBarmanPlugin({ plugins: [{ enabled: true, name: 'some-other.cnpg.io' }] })).toBe(false);
+    expect(specHasBarmanPlugin({ plugins: [] })).toBe(false);
+    expect(specHasBarmanPlugin({})).toBe(false);
+    expect(specHasBarmanPlugin(undefined)).toBe(false);
+  });
+
+  it('podHasBarmanSidecar checks BOTH containers and native-sidecar initContainers', async () => {
+    // CNPG 1.29+ runs the plugin sidecar as a native sidecar
+    // (restartPolicy:Always initContainer). The recreated primary that
+    // carries WAL archiving may expose it in either list, so both matter.
+    const { podHasBarmanSidecar } = await import('./service.js');
+    expect(podHasBarmanSidecar({ spec: { initContainers: [{ name: 'bootstrap-controller' }, { name: 'plugin-barman-cloud' }] } })).toBe(true);
+    expect(podHasBarmanSidecar({ spec: { containers: [{ name: 'postgres' }, { name: 'plugin-barman-cloud' }] } })).toBe(true);
+    // Post-restore window BEFORE injection: only postgres, no sidecar → false.
+    expect(podHasBarmanSidecar({ spec: { containers: [{ name: 'postgres' }], initContainers: [{ name: 'bootstrap-controller' }] } })).toBe(false);
+    expect(podHasBarmanSidecar({ spec: {} })).toBe(false);
+    expect(podHasBarmanSidecar(undefined)).toBe(false);
+  });
+
   it('buildRecoveryCluster attaches barman archive source to temp cluster when recoveryTargetTime is set (Task #97)', async () => {
     // Phase 1 PITR with recoveryTargetTime needs WAL replay beyond
     // snapshot LSN. The temp cluster's bootstrap.recovery.volumeSnapshots
