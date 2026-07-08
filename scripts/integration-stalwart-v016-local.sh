@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   - Local DinD k3s running (./scripts/local.sh up)
-#   - stalwart-mail overlay applied (kubectl apply -k k8s/overlays/dev/stalwart-mail/)
+#   - stalwart-mail overlay applied (kubectl apply -k k8s/overlays/dind/stalwart-mail/)
 #   - Stalwart data PVC bound (Stalwart RocksDB store)
 #   - stalwart-admin-creds Secret in namespace mail (bootstrap.sh creates it)
 #   - DOCKER_HOST=tcp://dind:2375 set (or DinD accessible)
@@ -101,7 +101,7 @@ if [[ -z "$STALWART_POD" ]]; then
 fi
 if [[ -z "$STALWART_POD" ]]; then
   echo "  FATAL: No stalwart-mail pod found. Deploy the overlay first:"
-  echo "    kubectl apply -k k8s/overlays/dev/stalwart-mail/"
+  echo "    kubectl apply -k k8s/overlays/dind/stalwart-mail/"
   exit 1
 fi
 pass "stalwart-mail pod found: ${STALWART_POD}"

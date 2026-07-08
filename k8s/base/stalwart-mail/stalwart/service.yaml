@@ -35,7 +35,7 @@
 # on testing.example.test 2026-05-17.
 #
 # Dev overlay: patches stalwart-mail → NodePort (no LB controller in
-# DinD k3s). See k8s/overlays/dev/stalwart-mail/kustomization.yaml. The split
+# DinD k3s). See k8s/overlays/dind/stalwart-mail/kustomization.yaml. The split
 # means dev no longer auto-allocates a NodePort for port 80 — fine, dev never
 # used Stalwart-native ACME (local-CA issues all certs in dev).
 ---

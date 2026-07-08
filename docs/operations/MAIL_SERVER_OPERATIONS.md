@@ -18,7 +18,7 @@
 | Management HTTP + Prometheus | `:8080` internal | `mail` | `Service/stalwart-mail-mgmt` (ClusterIP) |
 | Public mail listeners | 25/465/587/143/993/110/995/4190 | `mail` | `Service/stalwart-mail` (LoadBalancer in prod, NodePort in dev) |
 
-All manifests live in `k8s/base/stalwart/`. Dev overlay at `k8s/overlays/dev/stalwart/`.
+All manifests live in `k8s/base/stalwart/`. Dev overlay at `k8s/overlays/dind/stalwart/`.
 
 ---
 
@@ -159,7 +159,7 @@ restart flow the bootstrap helper uses.
 
 The Drizzle migration `0004_stalwart_directory.sql` creates the `stalwart_reader` role with `NOLOGIN` and **no password**. A committed password in a SQL migration would reach production environments via the standard migration runner, so the login step is deliberately separated.
 
-**Local dev:** `scripts/local.sh mail-up` calls `_bootstrap_stalwart_reader` automatically, which sets the LOGIN + dev password (`stalwart-dev-reader-pw`) that matches `k8s/overlays/dev/stalwart/secret.yaml`.
+**Local dev:** `scripts/local.sh mail-up` calls `_bootstrap_stalwart_reader` automatically, which sets the LOGIN + dev password (`stalwart-dev-reader-pw`) that matches `k8s/overlays/dind/stalwart/secret.yaml`.
 
 **Production:** run once, after migrations:
 
