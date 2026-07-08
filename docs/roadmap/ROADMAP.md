@@ -485,8 +485,13 @@ from the real upstream S3 — no kubectl/shim), and **Tier 1b** the original
 kubectl→shim path. `platform-ops dr preflight` checks readiness ahead of a
 disaster. Runbook:
 [BACKUP_RCLONE_SHIM.md → Recover etcd](../operations/BACKUP_RCLONE_SHIM.md#recover-etcd--tiered-break-glass).
-Residual: an `--offline` path for SFTP/CIFS upstreams (S3-only today); postgres/
-mail restores still run after the cluster is back (by design).
+The `--offline` etcd restore speaks **all three shim protocols** — S3, SFTP,
+and CIFS/SMB — directly (rclone renders a 0600 upstream `rclone.conf` from the
+bundled `dr-system-target.json`; creds never touch argv). Verified end-to-end
+2026-07-08: `scripts/integration-dr-protocols.sh` runs the real offline break-glass
+read (`--offline --descriptor --list`, `KUBECTL=/bin/false`) against real S3 +
+SFTP + CIFS stores from a node — **6/6 pass on DEV**. postgres/mail restores still
+run after the cluster is back (by design).
 
 ## R21 — k3s multi-minor auto-step (ADR-045 ↔ implementation gap)
 
