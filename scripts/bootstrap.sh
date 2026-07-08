@@ -365,7 +365,7 @@ LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 # unpinned drift is how the ssa-policy surprise class happens).
 # Latest stable at pin time: v2.8.8 (2026-05-20).
 FLUX_VERSION="2.8.8"
-TRAEFIK_CHART_VERSION="41.0.0"           # app v3.7.5; verify: helm search repo traefik/traefik
+TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
 # Traefik plugin catalog refs. install_traefik wires these into the
 # `experimental.plugins.<name>.{moduleName,version}` helm values so the
 # controller fetches the Yaegi-interpreted plugin source from
@@ -392,9 +392,9 @@ MODSECURITY_PLUGIN_VERSION="v1.6.0"
 # ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
-CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
+CERT_MANAGER_CHART_VERSION="v1.20.3"     # 2026-07-08; fixes GHSA-8rvj-mm4h-c258 (HIGH — ACME solver priv-esc)
 SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
-CNPG_CHART_VERSION="0.28.2"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
+CNPG_CHART_VERSION="0.28.3"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 SKIP_FLUX=false
