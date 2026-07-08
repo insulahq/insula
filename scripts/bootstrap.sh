@@ -6700,20 +6700,33 @@ apply_platform_manifests() {
     # blindly reuse an existing checkout: a stale one from a prior bootstrap
     # can be missing newer overlays (observed 2026-06-10 — an old /opt/insula
     # lacked k8s/overlays/development/kustomization.yaml → "Overlay development
-    # not found"). Refresh an existing git clone to the default-branch tip, or
-    # (re-)clone from scratch.
+    # not found").
+    #
+    # Fetch the SAME git ref Flux will reconcile for this env — NOT origin's
+    # default branch (main). A --env dev bootstrap that refreshed /opt/insula to
+    # origin HEAD (main) applied MAIN's overlays/development (carrying main's
+    # stale system-db storage size) while Flux tracked the `development` branch,
+    # so CNPG rejected the shrink and the platform Kustomization deadlocked
+    # Ready=False ("can't shrink existing storage from 20Gi to 2Gi") — observed
+    # on the 2026-07-08 DEV re-bootstrap. dev → the `development` branch;
+    # staging/production converge via Flux tag pinning, where origin HEAD is an
+    # acceptable imperative seed (overlays match the release lineage).
+    local apply_ref="HEAD"
+    [[ "$PLATFORM_ENV" == "dev" ]] && apply_ref="development"
+    local clone_branch_flag=()
+    [[ "$apply_ref" != "HEAD" ]] && clone_branch_flag=(--branch "$apply_ref")
     if [[ -d "/opt/insula/.git" ]]; then
-      log "Refreshing existing /opt/insula clone to origin HEAD..."
-      if ! { git -C /opt/insula fetch --depth 1 origin HEAD 2>/dev/null \
+      log "Refreshing existing /opt/insula clone to origin ${apply_ref}..."
+      if ! { git -C /opt/insula fetch --depth 1 origin "$apply_ref" 2>/dev/null \
              && git -C /opt/insula reset --hard FETCH_HEAD 2>/dev/null; }; then
         log "  refresh failed — re-cloning"
         rm -rf /opt/insula
-        git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+        git clone --depth 1 "${clone_branch_flag[@]}" "$REPO_URL" /opt/insula 2>/dev/null || true
       fi
     else
-      log "Cloning platform repository..."
+      log "Cloning platform repository (ref=${apply_ref})..."
       rm -rf /opt/insula
-      git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+      git clone --depth 1 "${clone_branch_flag[@]}" "$REPO_URL" /opt/insula 2>/dev/null || true
     fi
     repo_dir="/opt/insula"
   fi
