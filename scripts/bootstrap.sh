@@ -512,7 +512,7 @@ OPTIONS:
                          Smoke runs even if the timeout is hit; on a
                          cold first-bootstrap, raise to 600 if you see
                          spurious FAILs from still-reconciling pods.
-  --acme-email <email>   Email for Let's Encrypt (required for first server)
+  --acme-email <email>   Email for Let's Encrypt (default: admin@<domain>)
   --operator-age-recipient <age1...>
                          Public age recipient for operator-held backup
                          encryption. If omitted, a fresh keypair is
@@ -1021,6 +1021,16 @@ parse_args() {
   fi
   if [[ "$is_first_server" == true ]] && [[ -z "$PLATFORM_DOMAIN" ]]; then
     error "First-server bootstrap requires --domain. Example: --domain example.test"
+  fi
+
+  # ACME/Let's Encrypt registration email defaults to the platform admin
+  # address (admin@<domain>) so --acme-email is never a required flag — the
+  # cert-manager ClusterIssuer (le_email) + fresh-install support-email both
+  # fall back to this same value. Pass --acme-email only to override. Derive
+  # once the domain is known (first server); a join inherits it from the
+  # cluster, so an empty value there is fine.
+  if [[ -z "$ACME_EMAIL" && -n "$PLATFORM_DOMAIN" ]]; then
+    ACME_EMAIL="admin@${PLATFORM_DOMAIN}"
   fi
 
   # Worker join — both --server and --token required.
