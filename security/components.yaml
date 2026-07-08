@@ -30,7 +30,7 @@
 
 meta:
   schema_version: 1
-  updated: "2026-06-08"
+  updated: "2026-07-08"
   adr: ADR-050
   runbook: docs/operations/COMPONENT_WATCH.md
 
@@ -85,7 +85,7 @@ components:
     name: Traefik (ingress / TLS termination / WAF plugin host)
     tier: "0"
     kind: chart
-    pinned: "41.0.0"
+    pinned: "41.0.2"
     app_version: "v3.7.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
@@ -98,7 +98,7 @@ components:
     name: cert-manager (ACME / all platform TLS)
     tier: "0"
     kind: chart
-    pinned: "v1.20.2"
+    pinned: "v1.20.3"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: cert-manager/cert-manager, advisories: cert-manager/cert-manager }
@@ -110,7 +110,7 @@ components:
     name: CloudNativePG operator (platform Postgres lifecycle)
     tier: "0"
     kind: chart
-    pinned: "0.28.2"
+    pinned: "0.28.3"
     app_version: "v1.29.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
@@ -138,7 +138,7 @@ components:
     name: Stalwart mail server (SMTP/IMAP/JMAP)
     tier: "0"
     kind: image
-    pinned: "v0.16.11"
+    pinned: "v0.16.12"
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]
@@ -346,7 +346,7 @@ components:
     name: VictoriaMetrics vmsingle (metrics TSDB + scraper + VMUI)
     tier: "1"
     kind: image
-    pinned: "v1.145.0"
+    pinned: "v1.147.0"
     pin_source: k8s/base/monitoring/vmsingle.yaml
     pin_check: true
     repos: [victoriametrics/victoria-metrics]
@@ -544,8 +544,8 @@ components:
     name: CNPG Barman Cloud plugin (Postgres backups)
     tier: "1"
     kind: image
-    pinned: "v0.12.0"
-    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.12.0.yaml
+    pinned: "v0.13.0"
+    pin_source: k8s/base/cnpg-system/plugin-barman-cloud-v0.13.0.yaml
     pin_check: true
     repos: [cloudnative-pg/plugin-barman-cloud]
     watch: { type: github_releases, repo: cloudnative-pg/plugin-barman-cloud, advisories: cloudnative-pg/plugin-barman-cloud }
