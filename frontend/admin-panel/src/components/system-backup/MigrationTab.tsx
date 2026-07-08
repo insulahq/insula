@@ -354,6 +354,7 @@ function TenantTable({
             <th className="px-3 py-2">Bundles</th>
             <th className="px-3 py-2">Size</th>
             <th className="px-3 py-2">Components</th>
+            <th className="px-3 py-2">Resources</th>
             <th className="px-3 py-2">Status</th>
           </tr>
         </thead>
@@ -400,6 +401,9 @@ function TenantTable({
                   </div>
                 </td>
                 <td className="px-3 py-2">
+                  <ResourceCell resources={t.effectiveResources} />
+                </td>
+                <td className="px-3 py-2">
                   {t.alreadyPresent
                     ? <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200">already present</span>
                     : <span className="inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-medium text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">importable</span>}
@@ -409,6 +413,48 @@ function TenantTable({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/**
+ * Compact display of a tenant's EFFECTIVE resource limits (override ?? plan
+ * baseline) captured in its newest bundle — so the operator sees the real
+ * customized quotas before importing. Legacy bundles have none → muted hint.
+ * Units mirror the plan-editor conventions (cores / GB / counts).
+ */
+function ResourceCell({ resources }: { resources: MigrationTenant['effectiveResources'] }) {
+  if (!resources) {
+    return (
+      <span
+        className="text-xs text-gray-400 dark:text-gray-500"
+        title="No effective resources captured (legacy bundle) — the destination plan's defaults apply on import."
+      >
+        — plan defaults
+      </span>
+    );
+  }
+
+  const chips: readonly { readonly label: string; readonly value: string; readonly title: string }[] = [
+    { label: 'CPU', value: `${resources.cpuLimit}`, title: `${resources.cpuLimit} CPU core(s)` },
+    { label: 'RAM', value: `${resources.memoryLimit} GB`, title: `${resources.memoryLimit} GB memory` },
+    { label: 'Disk', value: `${resources.storageLimit} GB`, title: `${resources.storageLimit} GB storage` },
+    { label: 'Mbx', value: `${resources.maxMailboxes}`, title: `${resources.maxMailboxes} mailboxes` },
+    { label: 'Users', value: `${resources.maxSubUsers}`, title: `${resources.maxSubUsers} sub-users` },
+  ];
+
+  return (
+    <div className="flex flex-wrap gap-1">
+      {chips.map((c) => (
+        <span
+          key={c.label}
+          title={c.title}
+          className="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
+        >
+          <span className="text-gray-400 dark:text-gray-500">{c.label}</span>
+          <span>{c.value}</span>
+        </span>
+      ))}
     </div>
   );
 }
