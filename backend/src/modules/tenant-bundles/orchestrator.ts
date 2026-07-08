@@ -64,7 +64,7 @@ import {
 } from './restic-driver.js';
 import { resolveBackupTarget, resolveShimBackupTarget } from './resolve-backup-target.js';
 import { resolveBaseDomain } from '../../config/domains.js';
-import { backupConfigurations, tenantBackupV2Settings } from '../../db/schema.js';
+import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../../db/schema.js';
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
 
@@ -1000,6 +1000,24 @@ async function captureTenantBlock(
   const numOrNull = (v: unknown): number | null =>
     v === null || v === undefined ? null : Number(v);
 
+  // Resolve the EFFECTIVE resource limits (override ?? plan baseline) at
+  // capture time — the source plan's definition is not in the bundle, so a
+  // cross-cluster import pins these as explicit overrides on the destination
+  // (plan-independent migration). Null when the plan row is missing.
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, c.planId)).limit(1);
+  const eff = (ov: unknown, base: unknown): number => Number(ov ?? base ?? 0);
+  const effectiveResources = plan ? {
+    cpuLimit: eff(c.cpuLimitOverride, plan.cpuLimit),
+    memoryLimit: eff(c.memoryLimitOverride, plan.memoryLimit),
+    storageLimit: eff(c.storageLimitOverride, plan.storageLimit),
+    maxSubUsers: eff(c.maxSubUsersOverride, plan.maxSubUsers),
+    maxMailboxes: eff(c.maxMailboxesOverride, plan.maxMailboxes),
+    maxMailboxSizeMb: eff(c.maxMailboxSizeMbOverride, plan.maxMailboxSizeMb),
+    emailHourlySendLimit: eff(c.emailSendRateLimit, plan.emailHourlySendLimit),
+    emailDailySendLimit: eff(c.emailSendRateLimitDaily, plan.emailDailySendLimit),
+    monthlyPriceUsd: eff(c.monthlyPriceOverride, plan.monthlyPriceUsd),
+  } : null;
+
   return {
     name: c.name,
     primaryEmail: c.primaryEmail,
@@ -1019,6 +1037,7 @@ async function captureTenantBlock(
     monthlyPriceOverride: numOrNull(c.monthlyPriceOverride),
     emailSendRateLimit: c.emailSendRateLimit ?? null,
     subscriptionExpiresAt: c.subscriptionExpiresAt ? c.subscriptionExpiresAt.toISOString() : null,
+    effectiveResources,
     counts: {
       mailboxes: Number(row.mailboxes ?? 0),
       domains: Number(row.domains ?? 0),

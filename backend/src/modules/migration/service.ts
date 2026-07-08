@@ -9,7 +9,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { inArray } from 'drizzle-orm';
+import { inArray, eq } from 'drizzle-orm';
 import { tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import type {
@@ -18,6 +18,19 @@ import type {
 } from '@insula/api-contracts';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 
+/** Effective resource limits resolved at capture (override ?? plan baseline). */
+interface EffectiveResources {
+  readonly cpuLimit: number;
+  readonly memoryLimit: number;
+  readonly storageLimit: number;
+  readonly maxSubUsers: number;
+  readonly maxMailboxes: number;
+  readonly maxMailboxSizeMb: number;
+  readonly emailHourlySendLimit: number;
+  readonly emailDailySendLimit: number;
+  readonly monthlyPriceUsd: number;
+}
+
 /** The subset of meta.json (v2) the migration scan reads. */
 interface SourceMeta {
   readonly bundleId?: string;
@@ -25,7 +38,11 @@ interface SourceMeta {
   readonly tenantName?: string;
   readonly createdAt?: string;
   readonly platformVersion?: string;
-  readonly tenant?: { readonly name?: string; readonly primaryEmail?: string | null };
+  readonly tenant?: {
+    readonly name?: string;
+    readonly primaryEmail?: string | null;
+    readonly effectiveResources?: EffectiveResources | null;
+  };
   readonly components?: Readonly<Record<string, { readonly sizeBytes?: number } | undefined>>;
 }
 
@@ -118,6 +135,7 @@ export async function listMigrationTenants(
       components: componentNames,
       platformVersion: v.meta.platformVersion ?? null,
       alreadyPresent: presentSet.has(tid),
+      effectiveResources: v.meta.tenant?.effectiveResources ?? null,
     };
   }).sort((a, b) => a.tenantName.localeCompare(b.tenantName));
 
@@ -165,9 +183,31 @@ export async function importMigrationTenants(
       };
       if (res.statusCode >= 200 && res.statusCode < 300) {
         const d = body.data ?? {};
+        const ok = (d.status ?? '') !== 'failed';
+        // Pin the captured effective resources as EXPLICIT overrides on this
+        // cluster, so the tenant's quotas stay identical to the source
+        // regardless of how THIS cluster's plans are defined (plan-independent
+        // migration). Legacy bundles without effectiveResources are left to
+        // inherit the restored plan_id + whatever overrides the config carried.
+        if (ok && t.effectiveResources) {
+          const e = t.effectiveResources;
+          await app.db.update(tenants).set({
+            cpuLimitOverride: String(e.cpuLimit),
+            memoryLimitOverride: String(e.memoryLimit),
+            storageLimitOverride: String(e.storageLimit),
+            maxSubUsersOverride: e.maxSubUsers,
+            maxMailboxesOverride: e.maxMailboxes,
+            maxMailboxSizeMbOverride: e.maxMailboxSizeMb,
+            emailSendRateLimit: e.emailHourlySendLimit,
+            emailSendRateLimitDaily: e.emailDailySendLimit,
+            monthlyPriceOverride: String(e.monthlyPriceUsd),
+          }).where(eq(tenants.id, t.tenantId)).catch((err: unknown) => {
+            app.log.warn({ err, tenantId: t.tenantId }, 'migration: failed to pin effective-resource overrides');
+          });
+        }
         results.push({
           tenantId: t.tenantId, tenantName: t.tenantName, bundleId: t.latestBundleId,
-          ok: (d.status ?? '') !== 'failed', status: d.status ?? 'done',
+          ok, status: d.status ?? 'done',
           recreated: !!d.recreated, alreadyPresent: false, cartId: d.cartId ?? null,
           residualGaps: d.residualGaps ?? [], error: null,
         });
