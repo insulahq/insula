@@ -32,7 +32,9 @@ interface SourceMeta {
 async function openSourceStore(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
   const { resolveDirectStoreForBundle } = await import('../backup-restore/shared.js');
   try {
-    return await resolveDirectStoreForBundle(app, targetConfigId);
+    // Tenant bundles live under <prefix>/tenant/<bundleId> (the shim class
+    // segment) — scan there, not the bare prefix.
+    return await resolveDirectStoreForBundle(app, targetConfigId, { classSubpath: 'tenant' });
   } catch (err) {
     throw new ApiError(
       'MIGRATION_SOURCE_INVALID',

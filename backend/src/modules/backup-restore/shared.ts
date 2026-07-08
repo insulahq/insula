@@ -96,9 +96,23 @@ export async function resolveStoreForBundle(app: FastifyInstance, bundleId: stri
   );
 }
 
-export async function resolveDirectStoreForBundle(app: FastifyInstance, targetConfigId: string): Promise<BackupStore> {
+export async function resolveDirectStoreForBundle(
+  app: FastifyInstance,
+  targetConfigId: string,
+  opts: { readonly classSubpath?: string } = {},
+): Promise<BackupStore> {
   const [cfg] = await app.db.select().from(backupConfigurations).where(eq(backupConfigurations.id, targetConfigId)).limit(1);
   if (!cfg) throw new ApiError('NOT_FOUND', 'Backup target not found', 404);
+  // The shim writes each backup class under a `<prefix>/<class>/<bundleId>`
+  // segment; a DIRECT store (this fallback / the migration source, R20) must add
+  // the same segment or it scans/opens the wrong path. Callers reading tenant
+  // bundles via the direct path pass classSubpath='tenant'.
+  const classSub = (opts.classSubpath ?? '').replace(/^\/+|\/+$/g, '');
+  const withClass = (base: string | null | undefined): string | undefined => {
+    const b = (base ?? '').replace(/\/+$/, '');
+    const joined = [b, classSub].filter((s) => s.length > 0).join('/');
+    return joined.length > 0 ? joined : undefined;
+  };
   const configuredKey = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
     ?? process.env.PLATFORM_ENCRYPTION_KEY;
   if (!configuredKey && process.env.NODE_ENV === 'production') {
@@ -125,7 +139,7 @@ export async function resolveDirectStoreForBundle(app: FastifyInstance, targetCo
       endpoint: cfg.s3Endpoint ?? undefined,
       accessKeyId: accessKey,
       secretAccessKey: secretKey,
-      pathPrefix: cfg.s3Prefix ?? undefined,
+      pathPrefix: withClass(cfg.s3Prefix),
     });
   }
   if (cfg.storageType === 'ssh') {
@@ -144,7 +158,7 @@ export async function resolveDirectStoreForBundle(app: FastifyInstance, targetCo
       port: cfg.sshPort ?? 22,
       user: cfg.sshUser,
       privateKey,
-      basePath: cfg.sshPath,
+      basePath: withClass(cfg.sshPath) ?? cfg.sshPath,
       logFn: (level, ctx, msg) => app.log[level](ctx, msg),
     });
   }
