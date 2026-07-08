@@ -1316,6 +1316,7 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         monthlyPriceOverride: null,
         emailSendRateLimit: null,
         subscriptionExpiresAt: overrides.subscription_expires_at ?? null,
+        effectiveResources: null,
         counts: { mailboxes: 0, domains: 0, deployments: 0 }, // restore-cart will fill these
       },
       domainsSummary: [...((sourceMeta.domainsSummary as Array<import('@insula/api-contracts').BackupMetaDomainSummary> | undefined) ?? [])],

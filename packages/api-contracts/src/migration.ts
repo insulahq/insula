@@ -29,6 +29,23 @@ export const migrationTenantSchema = z.object({
   platformVersion: z.string().nullable(),
   /** A tenant with this id ALREADY exists on THIS (destination) cluster. */
   alreadyPresent: z.boolean(),
+  /**
+   * The tenant's EFFECTIVE resource limits at capture time (override ?? plan
+   * baseline), from the bundle's meta. Shown pre-import so the operator sees
+   * real customized quotas + spots a plan mismatch; the import pins these as
+   * explicit overrides on the destination. Null for legacy bundles.
+   */
+  effectiveResources: z.object({
+    cpuLimit: z.number(),
+    memoryLimit: z.number(),
+    storageLimit: z.number(),
+    maxSubUsers: z.number().int(),
+    maxMailboxes: z.number().int(),
+    maxMailboxSizeMb: z.number().int(),
+    emailHourlySendLimit: z.number().int(),
+    emailDailySendLimit: z.number().int(),
+    monthlyPriceUsd: z.number(),
+  }).nullable(),
 });
 export type MigrationTenant = z.infer<typeof migrationTenantSchema>;
 
