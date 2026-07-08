@@ -98,6 +98,33 @@ export class S3BackupStore implements BackupStore {
     return { bundleId: backupId, _backend: { prefix: this.prefixFor(backupId) } };
   }
 
+  async listBundleIds(): Promise<string[]> {
+    // List the immediate "directories" under the configured pathPrefix —
+    // each CommonPrefix is a bundle root (<pathPrefix>/<bundleId>/). Used
+    // by the migration scan (R20); NO existence/meta validation here.
+    const { ListObjectsV2Command } = await import('@aws-sdk/client-s3');
+    const base = (this.config.pathPrefix ?? '').replace(/^\/+|\/+$/g, '');
+    const prefix = base ? `${base}/` : '';
+    const c = await this.client();
+    const ids: string[] = [];
+    let continuationToken: string | undefined;
+    do {
+      const r = await c.send(new ListObjectsV2Command({
+        Bucket: this.config.bucket,
+        Prefix: prefix,
+        Delimiter: '/',
+        ContinuationToken: continuationToken,
+      }));
+      for (const cp of r.CommonPrefixes ?? []) {
+        if (!cp.Prefix) continue;
+        const id = cp.Prefix.slice(prefix.length).replace(/\/+$/, '');
+        if (id) ids.push(id);
+      }
+      continuationToken = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return ids;
+  }
+
   async writeComponent(
     handle: BundleHandle,
     component: BackupComponentName,
