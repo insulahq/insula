@@ -38,6 +38,15 @@ export const drRecoverRequestSchema = z.object({
    * See `backend/src/modules/dr-recover/routes.ts`.
    */
   targetNode: z.string().min(1).optional(),
+  /**
+   * Cross-cluster MIGRATION source (R20): a backup target config id that this
+   * cluster has for ANOTHER cluster's tenant backup target (mounted read-only).
+   * When set, the bundle is opened + the re-created tenant's backup_jobs row is
+   * registered against THIS target instead of the local tenant-class store — so
+   * cluster B imports cluster A's tenant straight from A's target with no prep
+   * on A. Omit → the local tenant-class store (normal same-cluster recover).
+   */
+  targetConfigId: z.string().min(1).optional(),
   /** Mailbox merge strategy for the mailboxes item. Default `merge-skip-duplicates`. */
   mailboxMode: mailboxRestoreModeSchema.optional(),
   /** Re-provision namespace/PVC/file-manager before restoring. Default `true`. */

@@ -365,7 +365,7 @@ LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 # unpinned drift is how the ssa-policy surprise class happens).
 # Latest stable at pin time: v2.8.8 (2026-05-20).
 FLUX_VERSION="2.8.8"
-TRAEFIK_CHART_VERSION="41.0.0"           # app v3.7.5; verify: helm search repo traefik/traefik
+TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
 # Traefik plugin catalog refs. install_traefik wires these into the
 # `experimental.plugins.<name>.{moduleName,version}` helm values so the
 # controller fetches the Yaegi-interpreted plugin source from
@@ -392,9 +392,9 @@ MODSECURITY_PLUGIN_VERSION="v1.6.0"
 # ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
-CERT_MANAGER_CHART_VERSION="v1.20.2"     # 2026-04-11
+CERT_MANAGER_CHART_VERSION="v1.20.3"     # 2026-07-08; fixes GHSA-8rvj-mm4h-c258 (HIGH — ACME solver priv-esc)
 SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
-CNPG_CHART_VERSION="0.28.2"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
+CNPG_CHART_VERSION="0.28.3"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 SKIP_FLUX=false
@@ -512,7 +512,7 @@ OPTIONS:
                          Smoke runs even if the timeout is hit; on a
                          cold first-bootstrap, raise to 600 if you see
                          spurious FAILs from still-reconciling pods.
-  --acme-email <email>   Email for Let's Encrypt (required for first server)
+  --acme-email <email>   Email for Let's Encrypt (default: admin@<domain>)
   --operator-age-recipient <age1...>
                          Public age recipient for operator-held backup
                          encryption. If omitted, a fresh keypair is
@@ -1021,6 +1021,16 @@ parse_args() {
   fi
   if [[ "$is_first_server" == true ]] && [[ -z "$PLATFORM_DOMAIN" ]]; then
     error "First-server bootstrap requires --domain. Example: --domain example.test"
+  fi
+
+  # ACME/Let's Encrypt registration email defaults to the platform admin
+  # address (admin@<domain>) so --acme-email is never a required flag — the
+  # cert-manager ClusterIssuer (le_email) + fresh-install support-email both
+  # fall back to this same value. Pass --acme-email only to override. Derive
+  # once the domain is known (first server); a join inherits it from the
+  # cluster, so an empty value there is fine.
+  if [[ -z "$ACME_EMAIL" && -n "$PLATFORM_DOMAIN" ]]; then
+    ACME_EMAIL="admin@${PLATFORM_DOMAIN}"
   fi
 
   # Worker join — both --server and --token required.
@@ -6690,20 +6700,33 @@ apply_platform_manifests() {
     # blindly reuse an existing checkout: a stale one from a prior bootstrap
     # can be missing newer overlays (observed 2026-06-10 — an old /opt/insula
     # lacked k8s/overlays/development/kustomization.yaml → "Overlay development
-    # not found"). Refresh an existing git clone to the default-branch tip, or
-    # (re-)clone from scratch.
+    # not found").
+    #
+    # Fetch the SAME git ref Flux will reconcile for this env — NOT origin's
+    # default branch (main). A --env dev bootstrap that refreshed /opt/insula to
+    # origin HEAD (main) applied MAIN's overlays/development (carrying main's
+    # stale system-db storage size) while Flux tracked the `development` branch,
+    # so CNPG rejected the shrink and the platform Kustomization deadlocked
+    # Ready=False ("can't shrink existing storage from 20Gi to 2Gi") — observed
+    # on the 2026-07-08 DEV re-bootstrap. dev → the `development` branch;
+    # staging/production converge via Flux tag pinning, where origin HEAD is an
+    # acceptable imperative seed (overlays match the release lineage).
+    local apply_ref="HEAD"
+    [[ "$PLATFORM_ENV" == "dev" ]] && apply_ref="development"
+    local clone_branch_flag=()
+    [[ "$apply_ref" != "HEAD" ]] && clone_branch_flag=(--branch "$apply_ref")
     if [[ -d "/opt/insula/.git" ]]; then
-      log "Refreshing existing /opt/insula clone to origin HEAD..."
-      if ! { git -C /opt/insula fetch --depth 1 origin HEAD 2>/dev/null \
+      log "Refreshing existing /opt/insula clone to origin ${apply_ref}..."
+      if ! { git -C /opt/insula fetch --depth 1 origin "$apply_ref" 2>/dev/null \
              && git -C /opt/insula reset --hard FETCH_HEAD 2>/dev/null; }; then
         log "  refresh failed — re-cloning"
         rm -rf /opt/insula
-        git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+        git clone --depth 1 "${clone_branch_flag[@]}" "$REPO_URL" /opt/insula 2>/dev/null || true
       fi
     else
-      log "Cloning platform repository..."
+      log "Cloning platform repository (ref=${apply_ref})..."
       rm -rf /opt/insula
-      git clone --depth 1 "$REPO_URL" /opt/insula 2>/dev/null || true
+      git clone --depth 1 "${clone_branch_flag[@]}" "$REPO_URL" /opt/insula 2>/dev/null || true
     fi
     repo_dir="/opt/insula"
   fi
@@ -6730,7 +6753,7 @@ apply_platform_manifests() {
   # env, so the imperative install and Flux never diverge. Mirror the
   # env→overlay mapping from install_flux exactly:
   #   dev        → overlays/development  (the cloud DEV-cluster overlay the
-  #                                       development branch feeds; overlays/dev
+  #                                       development branch feeds; overlays/dind
   #                                       is the local-DinD overlay, NOT this)
   #   staging    → overlays/staging      (the production mirror that release
   #                                       tags feed)

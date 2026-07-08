@@ -123,6 +123,23 @@ export const backupMetaTenantSchema = z.object({
   monthlyPriceOverride: z.number().nullable(),
   emailSendRateLimit: z.number().int().nullable(),
   subscriptionExpiresAt: z.string().nullable(),
+  // Effective resource limits RESOLVED at capture time (override ?? plan
+  // baseline). LOAD-BEARING for cross-cluster migration: the source plan's
+  // definition is NOT in the bundle, so these let the destination pin the
+  // tenant's real quotas as explicit overrides regardless of how ITS plans
+  // are defined — keeping resources byte-identical across clusters. Nullable
+  // + default null so legacy bundles (pre-2026-07-08) still parse.
+  effectiveResources: z.object({
+    cpuLimit: z.number(),
+    memoryLimit: z.number(),
+    storageLimit: z.number(),
+    maxSubUsers: z.number().int(),
+    maxMailboxes: z.number().int(),
+    maxMailboxSizeMb: z.number().int(),
+    emailHourlySendLimit: z.number().int(),
+    emailDailySendLimit: z.number().int(),
+    monthlyPriceUsd: z.number(),
+  }).nullable().default(null),
   // Counts for the import-preview UI; never load-bearing for restore
   // (config component carries authoritative rows).
   counts: z.object({

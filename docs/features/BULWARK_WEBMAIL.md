@@ -298,6 +298,6 @@ E2E: `./scripts/integration-webmail-feature-toggle.sh`.
 - `scripts/ci-stalwart-hostname-check.sh` — post-deploy guard
 - `k8s/base/bulwark/` — production manifest
 - `k8s/base/bulwark-impersonator/` — JWT-signed handoff sidecar
-- `k8s/overlays/dev/bulwark/` + `k8s/overlays/dev/bulwark-impersonator/` —
+- `k8s/overlays/dind/bulwark/` + `k8s/overlays/dind/bulwark-impersonator/` —
   DinD-specific overrides (rewriter, NodePort, dev secrets)
 - `memory/project_bulwark_eval_2026_05_15.md` — eval findings (14 items)

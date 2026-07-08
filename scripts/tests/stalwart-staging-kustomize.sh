@@ -149,7 +149,7 @@ assert_dev_overlay_unchanged_type() {
   # Dev Stalwart is deployed via its own kustomization (not the main dev
   # overlay) — matches how ./scripts/local.sh mail-up applies it.
   local devbuild
-  devbuild=$(docker run --rm -v "$REPO_ROOT:/repo" -w /repo bitnami/kubectl:latest kustomize k8s/overlays/dev/stalwart 2>&1)
+  devbuild=$(docker run --rm -v "$REPO_ROOT:/repo" -w /repo bitnami/kubectl:latest kustomize k8s/overlays/dind/stalwart 2>&1)
   local t
   t=$(yq_eval 'select(.kind=="Service" and .metadata.name=="stalwart-mail") | .spec.type' <<< "$devbuild")
   if [[ "$t" == "NodePort" ]]; then

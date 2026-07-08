@@ -217,8 +217,19 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
         );
       }
       const { recreateTenantFromBundle } = await import('./recreate.js');
+      const migrationTargetId = input.targetConfigId;
       const result = await recreateTenantFromBundle(app, tenantId, input.bundleId, {
         targetNode: input.targetNode,
+        // Cross-cluster migration (R20): open the bundle from — and register the
+        // local backup_jobs row against — the SOURCE cluster's target, so the
+        // fall-through restore-cart (§3) reads components straight from it.
+        ...(migrationTargetId ? {
+          resolveStore: async (a: typeof app) => {
+            const { resolveDirectStoreForBundle } = await import('../backup-restore/shared.js');
+            const store = await resolveDirectStoreForBundle(a, migrationTargetId, { classSubpath: 'tenant' });
+            return { store, targetConfigId: migrationTargetId };
+          },
+        } : {}),
       });
       recreated = true;
       residualGaps = result.residualGaps;

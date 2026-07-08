@@ -32,19 +32,22 @@ import {
   Check,
   AlertTriangle,
   RotateCcw,
+  ArrowRightLeft,
 } from 'lucide-react';
 import SecretsBundleTab from '@/components/system-backup/SecretsBundleTab';
 import DrDrillTab from '@/components/system-backup/DrDrillTab';
 import TenantRecoverTab from '@/components/system-backup/TenantRecoverTab';
 import RecoverAllTab from '@/components/system-backup/RecoverAllTab';
+import MigrationTab from '@/components/system-backup/MigrationTab';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { useRuntimeInfo } from '@/hooks/use-runtime-info';
 
-type Section = 'recover' | 'recover-all' | 'secrets' | 'drill' | 'instructions';
+type Section = 'recover' | 'recover-all' | 'migrate' | 'secrets' | 'drill' | 'instructions';
 
 const SECTIONS: ReadonlyArray<{ id: Section; label: string; icon: typeof ShieldCheck }> = [
   { id: 'recover',      label: 'Recover Tenant',       icon: RotateCcw },
   { id: 'recover-all',  label: 'Recover All',          icon: LifeBuoy },
+  { id: 'migrate',      label: 'Migrate Tenants',      icon: ArrowRightLeft },
   { id: 'secrets',      label: 'Secrets Bundle',       icon: ShieldCheck },
   { id: 'drill',        label: 'DR Drill',             icon: Stethoscope },
   { id: 'instructions', label: 'Restore Instructions', icon: BookOpen },
@@ -115,6 +118,7 @@ export default function DisasterRecoveryPage() {
       >
         {section === 'recover' && <TenantRecoverTab />}
         {section === 'recover-all' && <RecoverAllTab />}
+        {section === 'migrate' && <MigrationTab />}
         {section === 'secrets' && <SecretsBundleTab />}
         {section === 'drill' && <DrDrillTab />}
         {section === 'instructions' && <RestoreInstructions />}

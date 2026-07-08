@@ -3,7 +3,7 @@
 #
 # Standalone kustomization. Deploy with:
 #
-#   kubectl apply -k k8s/overlays/dev/stalwart-mail/
+#   kubectl apply -k k8s/overlays/dind/stalwart-mail/
 #
 # Or via local.sh (once wired):
 #   ./scripts/local.sh mail16-up

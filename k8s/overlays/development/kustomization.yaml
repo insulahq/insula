@@ -135,9 +135,12 @@ patches:
   # longhorn-ui-patch.yaml was REMOVED 2026-06-12: the Longhorn UI now
   # rides the admin host as /longhorn (path route, no own Certificate),
   # so there is no issuerRef to override anymore.
-  # Staging-only: system-db at 10Gi (existing cluster from pre-Phase-1
-  # 10Gi base default). Base now defaults to 5Gi for fresh installs.
-  - path: system-db-storage-patch.yaml
+  # system-db-storage-patch.yaml (20Gi) was REMOVED 2026-07-08: it was a
+  # leftover from the 2026-06-02 staging WAL-runaway incident (staging grown
+  # 10→20Gi) back when this overlay fed staging+testing. Post-ADR-053 staging
+  # inherits the PRODUCTION overlay, not this one, and the DEV cluster is
+  # re-bootstrapped fresh onto the 2Gi longhorn-system-local base. Operators
+  # grow via Settings → System DB Storage / SystemPvcResize as needed.
   # M1: same affinity-patch as the system-node-affinity component,
   # applied to dex which is overlay-only (so it can't live inside the
   # shared component without breaking the production overlay, which
@@ -170,11 +173,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20260707200148-6412132" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260708225625-2f81fc1" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20260707200148-6412132" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260708225622-2f81fc1" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20260707200149-6412132" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260708225622-2f81fc1" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only

@@ -38,6 +38,7 @@ const VALID_META: BackupMetaV1 = {
     monthlyPriceOverride: null,
     emailSendRateLimit: null,
     subscriptionExpiresAt: null,
+    effectiveResources: null,
     counts: { mailboxes: 0, domains: 0, deployments: 0 },
   },
   domainsSummary: [],
