@@ -226,7 +226,7 @@ export async function drRecoverRoutes(app: FastifyInstance): Promise<void> {
         ...(migrationTargetId ? {
           resolveStore: async (a: typeof app) => {
             const { resolveDirectStoreForBundle } = await import('../backup-restore/shared.js');
-            const store = await resolveDirectStoreForBundle(a, migrationTargetId);
+            const store = await resolveDirectStoreForBundle(a, migrationTargetId, { classSubpath: 'tenant' });
             return { store, targetConfigId: migrationTargetId };
           },
         } : {}),
