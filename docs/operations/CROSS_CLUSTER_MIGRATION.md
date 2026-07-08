@@ -36,7 +36,10 @@ reconcile of ingress / DKIM / workloads), pointed at the migration source target
   target (`status: completed`).
 - Plan + region ids referenced by A's tenants must **exist on B** (seed the same
   catalog/plans/regions first — the import fails fast with a clear error if a
-  plan/region id is missing, rather than a raw FK error).
+  plan/region id is missing, rather than a raw FK error). The plans only need to
+  **exist** (FK) — their **parameters need not match A's**: the bundle captures
+  each tenant's resolved effective quotas and the import pins them as explicit
+  overrides, so resources are preserved regardless of B's plan definitions.
 
 ## Migrate (UI)
 
