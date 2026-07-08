@@ -145,6 +145,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   by best-effort tenant-delete cleanup.
 
 ### Security
+- **cert-manager upgraded `v1.20.2 → v1.20.3`** (component-watch tier-0) — fixes
+  **GHSA-8rvj-mm4h-c258** (HIGH): the default `cert-manager-edit` ClusterRole let
+  namespace users create ACME `Challenge`/`Order` resources directly, enabling a
+  crafted Challenge to supply attacker-controlled solver config (with acme-dns,
+  disclosing DNS creds). Low reachability in our model (tenants have no kube-API
+  access — all mutations go through platform-api), but a tier-0 HIGH with "all
+  users should upgrade", so patched promptly. Tracked in `security/cve-ledger.yaml`.
 - **undici upgraded to 6.27.0** (`npm audit fix`, within range) — clears the four
   backend HIGH advisories (Set-Cookie header injection, WS DoS, response-queue
   poisoning, SameSite downgrade) on the transitive `<=6.26.0` copy. The other
@@ -159,6 +166,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   SMTP/IMAP/JMAP + webmail).
 
 ### Changed
+- **Component-watch upstream-drift sweep (ADR-050).** Bumped six swept components
+  to current upstream: **Stalwart `v0.16.11 → v0.16.12`** (DKIM2/DMARCbis +
+  DANE/OIDC fixes), **VictoriaMetrics `v1.145.0 → v1.147.0`** (base Alpine
+  3.23.4→3.24.1 security bump), **CNPG barman-plugin `v0.12.0 → v0.13.0`** (lz4
+  base-backups, WAL-restore error classification; ObjectStore CRD schema
+  unchanged), **Traefik chart `41.0.0 → 41.0.2`** (app v3.7.5→v3.7.6), and **CNPG
+  chart `0.28.2 → 0.28.3`** (operator patch). The three Flux-managed images
+  reconcile onto existing clusters automatically; the three `bootstrap.sh` chart
+  pins reach existing clusters via host-migration `2026.7.1/0001`, which upgrades
+  each release in place with `helm upgrade --reuse-values --version` (reuse-values
+  is mandatory — a bare `--set` upgrade would reset Traefik's DaemonSet/hostPort/
+  plugin/trustedIP values and tear down the ingress perimeter). Registry pins +
+  `updated:` stamp refreshed. DEV-validated (all six live, system-db WAL archiving
+  healthy through the barman + cnpg-operator rolls, ingress serves HTTP 200 through
+  the rolled Traefik, migration idempotent on re-run). rclone `1.74.1 → 1.74.4`
+  deliberately deferred (spans three coupled sites the code requires kept aligned).
 - **Integration-test sprawl cleanup + coverage guard.** An audit found 33 of 71
   `scripts/integration-*.sh` wired into no orchestrator — ~half the E2E suite never
   ran and **8 scripts had bit-rotted** (testing removed routes: `mail/node-selector`,
