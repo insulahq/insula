@@ -478,9 +478,18 @@ single/all (`POST /admin/migration/import`). Import reuses the DR recover engine
 id+ns, then reconciles ingress/DKIM/workloads), pointed at the source target
 (`resolveDirectStoreForBundle(..., {classSubpath:'tenant'})` so the direct store
 reads under the shim's `<prefix>/tenant/` layout). Locally-present tenants are
-skipped; dry-run preview. Guided UI: **DR console → Migrate Tenants**. DEV E2E
-`scripts/integration-migration-e2e.sh` 11/0 (capture → delete → list → import →
-namespace back + site SHA match). Cutover (DNS re-point) + source decommission
+skipped; dry-run preview. Guided UI: **DR console → Migrate Tenants** (shows each
+tenant's effective quotas before import).
+
+**Plan-independent** (2026-07-08): a tenant's effective params = per-tenant
+override ?? plan baseline, but the SOURCE plan isn't in the bundle — so the meta
+now captures the RESOLVED `effectiveResources` (cpu/memory/storage/maxSubUsers/
+maxMailboxes/mailboxSize/email-rate/price), list-tenants surfaces them, and import
+PINS them as explicit `*_override` columns on the destination. A migrated client's
+quotas stay byte-identical regardless of how the destination's plans are defined.
+DEV E2E `scripts/integration-migration-e2e.sh` 14/0 (capture → delete → list [asserts
+effective override surfaced] → import → namespace back + site SHA match + override
+PINNED on the destination). Cutover (DNS re-point) + source decommission
 stay operator-driven — see [operations/CROSS_CLUSTER_MIGRATION.md](../operations/CROSS_CLUSTER_MIGRATION.md).
 R1 (Plesk inbound) + within-cluster restore already existed; cluster-A→B now does too.
 
