@@ -333,6 +333,62 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(podHasBarmanSidecar(undefined)).toBe(false);
   });
 
+  it('barmanPluginDeploymentReady reflects cnpg-system/barman-cloud readyReplicas (error → false)', async () => {
+    const { barmanPluginDeploymentReady } = await import('./service.js');
+    const ready = { apps: { readNamespacedDeployment: vi.fn().mockResolvedValue({ status: { readyReplicas: 1 } }) } } as unknown as K8sClients;
+    const notReady = { apps: { readNamespacedDeployment: vi.fn().mockResolvedValue({ status: { readyReplicas: 0 } }) } } as unknown as K8sClients;
+    const errored = { apps: { readNamespacedDeployment: vi.fn().mockRejectedValue(new Error('unreachable')) } } as unknown as K8sClients;
+    expect(await barmanPluginDeploymentReady(ready)).toBe(true);
+    expect(await barmanPluginDeploymentReady(notReady)).toBe(false);
+    expect(await barmanPluginDeploymentReady(errored)).toBe(false);
+  });
+
+  it('waitForBarmanSidecar forces ONE primary recreate when injection stalls and the plugin Deployment is Ready', async () => {
+    // Reproduces the staging rc.16 fast-path stall: the rebuilt primary comes up
+    // WITHOUT the sidecar; CNPG injects it only on a pod recreate. The wait must
+    // force that recreate (once the plugin Deployment is Ready) rather than block.
+    const { waitForBarmanSidecar } = await import('./service.js');
+    let deleted = false;
+    const deleteSpy = vi.fn().mockImplementation(() => { deleted = true; return Promise.resolve({}); });
+    const k8s = {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue({ status: { currentPrimary: 'db-1' } }) },
+      core: {
+        // sidecar-less until the recreate; sidecar present afterwards.
+        readNamespacedPod: vi.fn().mockImplementation(() => Promise.resolve(
+          deleted
+            ? { spec: { initContainers: [{ name: 'plugin-barman-cloud' }], containers: [{ name: 'postgres' }] } }
+            : { spec: { containers: [{ name: 'postgres' }] } },
+        )),
+        deleteNamespacedPod: deleteSpy,
+      },
+      apps: { readNamespacedDeployment: vi.fn().mockResolvedValue({ status: { readyReplicas: 1 } }) },
+    } as unknown as K8sClients;
+    const r = await waitForBarmanSidecar(k8s, 'platform', 'db', 5_000, { nudgeGraceMs: 0, pollMs: 5 });
+    expect(r.ok).toBe(true);
+    expect(r.nudged).toBe(true);
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+    expect(deleteSpy).toHaveBeenCalledWith({ name: 'db-1', namespace: 'platform' });
+  });
+
+  it('waitForBarmanSidecar does NOT nudge while the plugin Deployment is not Ready (non-fatal timeout)', async () => {
+    // If the plugin Deployment is itself mid-rollout, a recreate would not get
+    // the sidecar — so withhold the nudge and time out loudly instead.
+    const { waitForBarmanSidecar } = await import('./service.js');
+    const deleteSpy = vi.fn();
+    const k8s = {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue({ status: { currentPrimary: 'db-1' } }) },
+      core: {
+        readNamespacedPod: vi.fn().mockResolvedValue({ spec: { containers: [{ name: 'postgres' }] } }),
+        deleteNamespacedPod: deleteSpy,
+      },
+      apps: { readNamespacedDeployment: vi.fn().mockResolvedValue({ status: { readyReplicas: 0 } }) },
+    } as unknown as K8sClients;
+    const r = await waitForBarmanSidecar(k8s, 'platform', 'db', 40, { nudgeGraceMs: 0, pollMs: 10 });
+    expect(r.ok).toBe(false);
+    expect(r.nudged).toBe(false);
+    expect(deleteSpy).not.toHaveBeenCalled();
+  });
+
   it('buildRecoveryCluster attaches barman archive source to temp cluster when recoveryTargetTime is set (Task #97)', async () => {
     // Phase 1 PITR with recoveryTargetTime needs WAL replay beyond
     // snapshot LSN. The temp cluster's bootstrap.recovery.volumeSnapshots

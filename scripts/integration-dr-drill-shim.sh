@@ -121,12 +121,21 @@ resp=$(api GET /api/v1/admin/backup-rclone-shim/assignments)
 [[ "$(http_code "$resp")" == "200" ]] && pass "A1: admin token + super_admin" || { fail "A1: api unreachable"; exit 1; }
 
 if $K -n platform get ds backup-rclone-shim >/dev/null 2>&1; then
-  desired=$($K -n platform get ds backup-rclone-shim -o jsonpath='{.status.desiredNumberScheduled}')
-  ready=$($K -n platform get ds backup-rclone-shim -o jsonpath='{.status.numberReady}')
-  if [[ "$desired" == "$ready" && "$ready" != "0" ]]; then
+  # Poll, don't snapshot: earlier destructive suites (drain/node-terminal) cordon
+  # nodes, so a shim DaemonSet pod can be mid-reschedule at this instant. A single
+  # read caught a transient 3/4 and false-failed (2026-07-09). Wait up to 90s for
+  # the DaemonSet to settle to desired==ready before judging.
+  desired=""; ready=""
+  for _ in $(seq 1 18); do   # 18 × 5s = 90s
+    desired=$($K -n platform get ds backup-rclone-shim -o jsonpath='{.status.desiredNumberScheduled}' 2>/dev/null)
+    ready=$($K -n platform get ds backup-rclone-shim -o jsonpath='{.status.numberReady}' 2>/dev/null)
+    [[ -n "$desired" && "$desired" == "$ready" && "$ready" != "0" ]] && break
+    sleep 5
+  done
+  if [[ -n "$desired" && "$desired" == "$ready" && "$ready" != "0" ]]; then
     pass "A2: shim DaemonSet $ready/$desired Ready"
   else
-    fail "A2: shim DaemonSet $ready/$desired (not all Ready)"
+    fail "A2: shim DaemonSet $ready/$desired (not all Ready after 90s)"
   fi
 else
   skip "A2: kubectl unavailable or DaemonSet absent"
