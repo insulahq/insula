@@ -405,19 +405,24 @@ if [[ -n "$JOB_NAME" ]]; then
   log "9b) Plugin sidecar propagation (no manual pod-bounce)"
   PLUGINS_IN_SPEC=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.plugins}' 2>/dev/null || echo "")
   if [[ -n "$PLUGINS_IN_SPEC" && "$PLUGINS_IN_SPEC" != "null" && "$PLUGINS_IN_SPEC" != "[]" ]]; then
-    # Poll, don't snapshot. The orchestration's wait-barman-sidecar step now
-    # forces the injecting recreate before it returns, so the sidecar is normally
-    # already present on the first read — but CNPG re-creates the primary pod to
-    # inject it, so re-resolve currentPrimary each tick and allow a bounded grace
-    # before judging. A single snapshot false-failed on the staging rc.16 stall
-    # (2026-07-09). CNPG plugins run as native sidecars (restartPolicy:Always
-    # initContainers on k8s 1.28+) — check both container lists.
+    # Poll, don't snapshot. The orchestration's wait-barman-sidecar step (10d) now
+    # forces the injecting recreate + confirms stability before it returns, so the
+    # sidecar is normally already present on the first read — but re-resolve
+    # currentPrimary each tick and allow a bounded grace before judging.
+    #
+    # Detect via `-o yaml | grep`, NOT a jsonpath: the suite's $KUBECTL is
+    # `$SSH kubectl` (line 77) which does NOT shell-quote remote args, so a
+    # jsonpath containing spaces/pipes ({range ...}{" "}{end}|...) is word-split by
+    # the remote shell into "unclosed action" errors → a FALSE miss even when the
+    # sidecar is present (root-caused 2026-07-09 — this made 9b unreliable since it
+    # was added). -o yaml has no shell-special chars and survives. plugin-barman-
+    # cloud is a native sidecar: an initContainer named `plugin-barman-cloud`.
     SIDE_OK=0; SIDE_PRIMARY=""
     for _ in $(seq 1 36); do   # 36 × 5s = 3 min
       SIDE_PRIMARY=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}' 2>/dev/null || echo "")
       if [[ -n "$SIDE_PRIMARY" ]]; then
-        ALL_CONTAINERS=$($KUBECTL get pod -n platform "$SIDE_PRIMARY" -o jsonpath='{range .spec.containers[*]}{.name}{" "}{end}|{range .spec.initContainers[*]}{.name}{" "}{end}' 2>/dev/null || echo "")
-        printf '%s' "$ALL_CONTAINERS" | grep -q "plugin-barman-cloud" && { SIDE_OK=1; break; }
+        $KUBECTL get pod -n platform "$SIDE_PRIMARY" -o yaml 2>/dev/null \
+          | grep -q "name: plugin-barman-cloud" && { SIDE_OK=1; break; }
       fi
       sleep 5
     done
