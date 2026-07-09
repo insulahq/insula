@@ -1126,14 +1126,22 @@ export async function waitForBarmanSidecar(
   namespace: string,
   clusterName: string,
   timeoutMs: number,
-  opts: { readonly nudgeGraceMs?: number; readonly pollMs?: number } = {},
+  opts: { readonly nudgeGraceMs?: number; readonly pollMs?: number; readonly stableChecks?: number } = {},
 ): Promise<{ readonly ok: boolean; readonly primary?: string; readonly nudged: boolean }> {
   const pollMs = opts.pollMs ?? 5_000;
+  // Require the sidecar on N CONSECUTIVE polls before declaring ok. Post-restore,
+  // CNPG/Flux roll the primary MORE than once (normalize-bootstrap spec patch,
+  // then the resume-flux manifest re-apply), each roll briefly dropping the
+  // sidecar — a single sighting can be a false pass that the next roll undoes.
+  const stableChecks = Math.max(1, opts.stableChecks ?? 1);
   const start = Date.now();
   const deadline = start + timeoutMs;
   const nudgeAfter = start + (opts.nudgeGraceMs ?? 60_000);
+  const nudgeCooldownMs = 90_000;   // re-armable: each successive roll can be nudged
   let lastPrimary: string | undefined;
   let nudged = false;
+  let lastNudgeAt = 0;
+  let seen = 0;
   while (Date.now() < deadline) {
     try {
       const c = await getCustom<CnpgCluster>(k8s, {
@@ -1149,18 +1157,25 @@ export async function waitForBarmanSidecar(
             initContainers?: ReadonlyArray<{ name?: string }>;
           };
         };
-        if (podHasBarmanSidecar(pod)) return { ok: true, primary: lastPrimary, nudged };
-        // Nudge: CNPG injects the sidecar only when it (re)creates the instance
-        // pod. If the passive grace elapsed and the pod still lacks it, force ONE
-        // recreate — but only once the plugin Deployment is Ready (else the new
-        // pod would still be sidecar-less; keep waiting for the plugin instead).
-        if (!nudged && Date.now() >= nudgeAfter && await barmanPluginDeploymentReady(k8s)) {
-          try {
-            await (k8s.core as unknown as {
-              deleteNamespacedPod: (a: { name: string; namespace: string }) => Promise<unknown>;
-            }).deleteNamespacedPod({ name: lastPrimary, namespace });
-            nudged = true;
-          } catch { /* pod may already be terminating — keep polling */ }
+        if (podHasBarmanSidecar(pod)) {
+          if (++seen >= stableChecks) return { ok: true, primary: lastPrimary, nudged };
+        } else {
+          // A roll dropped the sidecar (or it was never injected). Restart the
+          // stability count and, once past the grace, force a recreate to trigger
+          // injection — but only when the plugin Deployment is Ready (else the new
+          // pod is still sidecar-less; keep waiting for the plugin instead).
+          // Rate-limited so successive post-restore rolls each get nudged.
+          seen = 0;
+          const now = Date.now();
+          if (now >= nudgeAfter && now - lastNudgeAt >= nudgeCooldownMs && await barmanPluginDeploymentReady(k8s)) {
+            try {
+              await (k8s.core as unknown as {
+                deleteNamespacedPod: (a: { name: string; namespace: string }) => Promise<unknown>;
+              }).deleteNamespacedPod({ name: lastPrimary, namespace });
+              nudged = true;
+              lastNudgeAt = now;
+            } catch { /* pod may already be terminating — keep polling */ }
+          }
         }
       }
     } catch { /* keep polling — pod may be mid-recreation */ }
@@ -1927,35 +1942,14 @@ export async function promotePostgresFromSnapshot(
     });
     if (!srcHealth.ok) throw new Error(`Recreated source cluster did not become healthy: phase=${srcHealth.phase}`);
 
-    // 8a.0 Wait for the WAL-archiver plugin sidecar (2026-07-08).
-    //
-    // waitClusterHealthy above returns as soon as readyInstances>=1 — but
-    // with CNPG 1.29.1 + plugin-barman-cloud v0.12.0 (bumped 2026-06-12,
-    // c413d033) the operator injects the barman-cloud sidecar on a LATER
-    // reconcile that RECREATES the primary pod. So "cluster healthy" no
-    // longer implies "WAL archiving active" (it did under the pre-bump
-    // admission-webhook-at-pod-creation model the buildRecoveryCluster
-    // comment describes). Releasing the lock here would declare the
-    // restore done while the recovered primary is briefly NOT archiving
-    // WAL — a continuous-backup gap. Block until the sidecar is confirmed
-    // on the live primary. Gated on the source actually using barman;
-    // bounded (5m) + NON-FATAL (records a loud, operator-actionable step
-    // on timeout — data is restored + the primary serves regardless).
-    if (specHasBarmanPlugin(pre.cluster.spec)) {
-      const t8a0 = nowMs();
-      // 8 min: the passive grace (~1m) plus headroom for the plugin Deployment
-      // to finish its own rollout before we force the recreate that injects the
-      // sidecar (the 30-min stall on staging rc.16 was the plugin mid-bump).
-      const sidecar = await waitForBarmanSidecar(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 8 * 60_000);
-      recordStep({
-        step: 'wait-barman-sidecar',
-        ok: sidecar.ok,
-        elapsedMs: nowMs() - t8a0,
-        detail: sidecar.ok
-          ? `plugin-barman-cloud sidecar active on ${sidecar.primary ?? 'primary'} — WAL archiving re-established${sidecar.nudged ? ' (forced a primary recreate to trigger injection)' : ''}`
-          : `plugin-barman-cloud sidecar NOT observed within 8m on ${sidecar.primary ?? 'primary'}${sidecar.nudged ? ' (forced a primary recreate; still absent — the plugin Deployment cnpg-system/barman-cloud may be unhealthy)' : ' (could not force injection — plugin Deployment cnpg-system/barman-cloud not Ready)'}; WAL archiving may be delayed — verify: kubectl -n ${inputs.clusterNamespace} get pod ${sidecar.primary ?? '<primary>'} -o jsonpath='{.spec.initContainers[*].name}'`,
-      });
-    }
+    // 8a.0 (barman-sidecar wait) INTENTIONALLY MOVED to step 10d — see there.
+    // It used to run HERE, right after recreate-source, and correctly saw the
+    // sidecar. But normalize-bootstrap (spec patch) and resume-flux (manifest
+    // re-apply) roll the primary AGAIN afterwards, each briefly dropping the
+    // sidecar; for single-instance clusters wait-ha-stable is skipped, so the
+    // orchestration returned during that re-injection gap (staging rc.17
+    // postgres-pitr 9b). The wait must be the FINAL gate, after every step that
+    // can roll the pod. Same pattern + reason as wait-ha-stable (Task #105).
 
     // 8a. Scale back to the source's original HA instance count.
     // PATCH spec.instances; CNPG schedules the replica build async.
@@ -2190,6 +2184,36 @@ export async function promotePostgresFromSnapshot(
       });
       // Non-fatal — primary is up + serving even if CNPG/Flux are
       // still rolling some replicas in background.
+    }
+
+    // 10d. Wait for the WAL-archiver plugin sidecar — FINAL gate (2026-07-09).
+    //
+    // Runs LAST, after every step that can roll the primary (recreate-source,
+    // scale-up-to-source-ha, normalize-bootstrap, resume-flux, wait-ha-stable),
+    // so it validates archiving on the pod the cluster actually SETTLES on.
+    // CNPG 1.29.1 + plugin-barman-cloud injects the sidecar only when it
+    // (re)creates the instance pod, on a reconcile AFTER "cluster healthy" — so
+    // each post-restore roll briefly leaves the primary NOT archiving WAL.
+    // Declaring the restore done in that window is a continuous-backup gap.
+    // waitForBarmanSidecar: requires the sidecar STABLY present (rides out a
+    // roll), and once the plugin Deployment is Ready forces a recreate to trigger
+    // injection (re-armable across successive rolls). Gated on the source using
+    // barman; bounded (8m) + NON-FATAL (loud, operator-actionable step on
+    // timeout — data is restored + the primary serves regardless).
+    if (specHasBarmanPlugin(pre.cluster.spec)) {
+      const t10d = nowMs();
+      const sidecar = await waitForBarmanSidecar(
+        deps.k8s, inputs.clusterNamespace, inputs.clusterName, 8 * 60_000,
+        { stableChecks: 3 },   // ~15s continuously present → survived the post-restore rolls
+      );
+      recordStep({
+        step: 'wait-barman-sidecar',
+        ok: sidecar.ok,
+        elapsedMs: nowMs() - t10d,
+        detail: sidecar.ok
+          ? `plugin-barman-cloud sidecar stable on ${sidecar.primary ?? 'primary'} — WAL archiving re-established${sidecar.nudged ? ' (forced a primary recreate to trigger injection)' : ''}`
+          : `plugin-barman-cloud sidecar NOT stable within 8m on ${sidecar.primary ?? 'primary'}${sidecar.nudged ? ' (forced a recreate; still absent — the plugin Deployment cnpg-system/barman-cloud may be unhealthy)' : ' (could not force injection — plugin Deployment cnpg-system/barman-cloud not Ready)'}; WAL archiving may be delayed — verify: kubectl -n ${inputs.clusterNamespace} get pod ${sidecar.primary ?? '<primary>'} -o jsonpath='{.spec.initContainers[*].name}'`,
+      });
     }
 
     // 11. Notify — NON-FATAL.

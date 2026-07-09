@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.17] - 2026-07-09
-
 ### Added
 - **Tenant add-on databases: two-layer backup + visible dump summary**
   (ADR-048 Primitive 3 evolution). Every add-on database (MariaDB/MySQL,
