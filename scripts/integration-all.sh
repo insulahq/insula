@@ -445,13 +445,18 @@ run_serial_group() {
     local args=("${parts[@]:1}")
     local to start; to="$(suite_timeout_of "$name")"; start=$(date +%s)
     log "Suite: $name (tier=$(suite_tier_of "$name"), hard-timeout ${to}s)"
-    # #130: refresh the shared token before each suite. mint_token is
-    # cache-backed (get_admin_token), so this is ~0s unless the token is near
-    # expiry — in which case it re-mints once (with 429 backoff). Stops a long
-    # serial run (which can outlive a single 30-min token) from handing a stale
-    # token to late suites (the rc.* runs failed backup-rclone-shim / dr-drill
-    # / node-terminal at preflight 401 for exactly this reason).
-    INTEGRATION_TOKEN="$(mint_token)" && export INTEGRATION_TOKEN || warn "$name: token refresh failed (continuing with prior token)"
+    # #130 + 2026-07-09: FORCE a fresh, full-TTL token before EACH suite.
+    # Must be force_mint, NOT mint_token: mint_token is cache-backed
+    # (get_admin_token) and reuses the shared token while it's merely >120s from
+    # expiry — so before a LONG suite it can hand back a near-dead token (as
+    # little as ~2 min of life). staging-all runs ~12 min on a SINGLE token
+    # (integration-staging.sh sets TOKEN once, never re-logs-in), so a near-dead
+    # token expires mid-suite → early scenarios pass, `mail`/`hostname`/late ones
+    # 401 with INVALID_TOKEN (root-caused 2026-07-09: the rc.18 staging-all
+    # failure; only reproduces via the shared cache, never standalone). force_mint
+    # ignores the cache → every suite starts with the full 30-min TTL. ~20 logins
+    # across a full run is not a storm and force_mint has its own 429 backoff.
+    INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "$name: token refresh failed (continuing with prior token)"
     set +e
     ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
