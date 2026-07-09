@@ -569,6 +569,56 @@ emit_report_json() {
   printf '\n  ],\n  "reachabilityBreaks": %d\n}\n' "${#reachability_breaks[@]}"
 }
 
+# ─── Host-config converger preflight (2026-07-09) ─────────────────────
+# Drive the platform-ops host-config converger on the control plane BEFORE any
+# suite, so the cluster is at the DEPLOYED release's host state — most importantly
+# the host-migrations (chart bumps etc.) that Flux does NOT apply (they reach a
+# node only via the converger). Closes the gap where a suite validated a release
+# whose host-migrations had never run on the cluster (e.g. rc.16: cert-manager/
+# traefik/cnpg chart bumps were only Flux-half-applied on staging until this ran).
+# Blocks until the converge COMPLETES (host-migrations 0 pending). Skips cleanly
+# for local/DinD (no SSH_HOST) or INTEGRATION_SKIP_CONVERGE=1. Non-fatal by
+# default (loud warn); INTEGRATION_REQUIRE_CONVERGE=1 makes a failure abort.
+converge_host_config() {
+  [[ "${INTEGRATION_SKIP_CONVERGE:-0}" == "1" ]] && { log "host-config converge SKIPPED (INTEGRATION_SKIP_CONVERGE=1)"; return 0; }
+  { [[ -n "${SSH_HOST:-}" ]] && [[ -n "${KUBECTL:-}" ]]; } || { log "host-config converge SKIPPED (no SSH_HOST/KUBECTL — local/DinD run)"; return 0; }
+  log "Host-config converge: apply the deployed release's host-migrations on the control plane"
+  local remote_ssh=(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o LogLevel=ERROR "$SSH_HOST")
+
+  # Resolve the version actually DEPLOYED (platform-api image tag) — not the
+  # cluster platform-version CM (can read "unknown"). self-upgrade's releases
+  # fallback targets STABLE only, so an RC binary must be requested by explicit
+  # --version or the converger would embed the wrong release's migrations.
+  local deployed
+  deployed=$($KUBECTL -n platform get deploy platform-api -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null | sed -E 's/.*:([^:]+)$/\1/')
+  [[ -n "$deployed" ]] || { warn "host-config converge: could not resolve deployed platform-api version — skipping"; return 0; }
+  log "  target release: ${deployed}"
+
+  # 1) Ensure the control-plane binary embeds THIS release's migrations
+  #    (no-op if already current; upgrades cosign-verified otherwise).
+  "${remote_ssh[@]}" "platform-ops self-upgrade --version=${deployed}" 2>&1 \
+    | grep -vE 'DeprecationWarning|trace-deprecation' | sed 's/^/    self-upgrade: /' || true
+
+  # 2) Converge host state (sysctls/packages/host-migrations) in enforce mode,
+  #    then assert the host-migrations line reports 0 pending.
+  local out rc mig_line pending
+  out=$("${remote_ssh[@]}" "platform-ops host-config apply --apply" 2>&1 | grep -vE 'DeprecationWarning|trace-deprecation'); rc=$?
+  printf '%s\n' "$out" | grep -iE 'host-config (host-migrations|sysctls|packages|modules)' | sed 's/^/    /'
+  mig_line=$(printf '%s\n' "$out" | grep -i 'host-config host-migrations' | tail -1)
+  pending=$(printf '%s' "$mig_line" | sed -nE 's/.*, ([0-9]+) pending,.*/\1/p')
+  if [[ "$rc" == "0" && ( -z "$pending" || "$pending" == "0" ) ]]; then
+    pass "host-config converge complete — host-migrations 0 pending (${deployed})"
+    return 0
+  fi
+  warn "host-config converge INCOMPLETE (rc=$rc pending=${pending:-?}) — cluster may not be at ${deployed} host state: ${mig_line}"
+  if [[ "${INTEGRATION_REQUIRE_CONVERGE:-0}" == "1" ]]; then
+    fail "host-config converge required (INTEGRATION_REQUIRE_CONVERGE=1) but did not complete — aborting"
+    [[ -n "$REPORT_JSON" ]] && emit_report_json > "$REPORT_JSON"
+    exit 1
+  fi
+}
+converge_host_config
+
 # ─── Execute ──────────────────────────────────────────────────────
 # Smoke gate (P3): a fast health check BEFORE the long suites — fail in
 # seconds, not 40 minutes, if the platform is already broken. --no-smoke skips.
