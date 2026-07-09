@@ -640,6 +640,18 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // here for parity with the previous startup-warm pattern.
       getRedis();
 
+      // Best-effort startup reconciliation (PITR-lock recovery + ingress / host /
+      // secrets-mirror reconcilers). These do DB + k8s work that MUST NOT block
+      // readiness: when postgres is transiently unreachable — e.g. a PITR restore
+      // deletes+recreates system-db mid-run, or a backup-target toggle restarts
+      // this pod during that window — awaiting them in onReady blows past
+      // Fastify's onReady timeout → the readiness probe starves → CrashLoopBackOff,
+      // and every crash fails the in-flight requests of whatever integration suite
+      // is running (the "different flake every run" symptom). Fire-and-forget, the
+      // same pattern the quota reconciler below already uses; each block keeps its
+      // own try/catch so one failing reconciler never affects the others.
+      void (async () => {
+
       // Crash-safe PITR lock recovery. If the previous platform-api
       // process died mid-restore, the persisted lock row in
       // platform_settings tells us so — emit a sticky admin
@@ -754,6 +766,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       } catch (err) {
         app.log.warn({ err }, 'startup: platform-secrets mirror reconcile skipped (k8s unavailable)');
       }
+      })().catch((err) => app.log.error({ err }, 'startup: best-effort reconciliation task crashed (non-fatal)'));
 
       // PR 2 (network-access two-tier): re-reconcile every tenant
       // ResourceQuota on boot to ensure the new scopeSelector + plan-
