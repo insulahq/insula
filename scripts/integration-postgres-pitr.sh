@@ -404,17 +404,30 @@ if [[ -n "$JOB_NAME" ]]; then
 
   log "9b) Plugin sidecar propagation (no manual pod-bounce)"
   PLUGINS_IN_SPEC=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.plugins}' 2>/dev/null || echo "")
-  if [[ -n "$PLUGINS_IN_SPEC" && "$PLUGINS_IN_SPEC" != "null" && "$PLUGINS_IN_SPEC" != "[]" && -n "$NEW_PRIMARY" ]]; then
-    # CNPG plugins run as native sidecars (restartPolicy:Always initContainers
-    # on k8s 1.28+) — check both container lists so the assertion is robust.
-    ALL_CONTAINERS=$($KUBECTL get pod -n platform "$NEW_PRIMARY" -o jsonpath='{range .spec.containers[*]}{.name}{" "}{end}|{range .spec.initContainers[*]}{.name}{" "}{end}' 2>/dev/null || echo "")
-    if printf '%s' "$ALL_CONTAINERS" | grep -q "plugin-barman-cloud"; then
-      pass "plugin-barman-cloud sidecar PRESENT on recreated primary (no manual bounce needed)"
+  if [[ -n "$PLUGINS_IN_SPEC" && "$PLUGINS_IN_SPEC" != "null" && "$PLUGINS_IN_SPEC" != "[]" ]]; then
+    # Poll, don't snapshot. The orchestration's wait-barman-sidecar step now
+    # forces the injecting recreate before it returns, so the sidecar is normally
+    # already present on the first read — but CNPG re-creates the primary pod to
+    # inject it, so re-resolve currentPrimary each tick and allow a bounded grace
+    # before judging. A single snapshot false-failed on the staging rc.16 stall
+    # (2026-07-09). CNPG plugins run as native sidecars (restartPolicy:Always
+    # initContainers on k8s 1.28+) — check both container lists.
+    SIDE_OK=0; SIDE_PRIMARY=""
+    for _ in $(seq 1 36); do   # 36 × 5s = 3 min
+      SIDE_PRIMARY=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}' 2>/dev/null || echo "")
+      if [[ -n "$SIDE_PRIMARY" ]]; then
+        ALL_CONTAINERS=$($KUBECTL get pod -n platform "$SIDE_PRIMARY" -o jsonpath='{range .spec.containers[*]}{.name}{" "}{end}|{range .spec.initContainers[*]}{.name}{" "}{end}' 2>/dev/null || echo "")
+        printf '%s' "$ALL_CONTAINERS" | grep -q "plugin-barman-cloud" && { SIDE_OK=1; break; }
+      fi
+      sleep 5
+    done
+    if [[ "$SIDE_OK" == "1" ]]; then
+      pass "plugin-barman-cloud sidecar PRESENT on recreated primary ${SIDE_PRIMARY} — WAL archiving re-established"
     else
-      fail "plugin-barman-cloud sidecar MISSING — buildRecoveryCluster did not propagate spec.plugins"
+      fail "plugin-barman-cloud sidecar MISSING on ${SIDE_PRIMARY:-primary} after 3m — wait-barman-sidecar did not re-establish WAL archiving"
     fi
   else
-    warn "source cluster had no spec.plugins (or no primary) — skipping sidecar check"
+    warn "source cluster had no spec.plugins — skipping sidecar check"
   fi
 
   log "9c) Task-center chip persistence (modal-reopen must render history)"
