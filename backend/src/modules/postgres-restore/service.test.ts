@@ -389,6 +389,29 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(deleteSpy).not.toHaveBeenCalled();
   });
 
+  it('waitForBarmanSidecar requires the sidecar STABLY present (a mid-window roll resets the count)', async () => {
+    // Post-restore the primary rolls more than once; a single sighting can be a
+    // false pass a later roll undoes. stableChecks makes the gate ride it out.
+    const { waitForBarmanSidecar } = await import('./service.js');
+    const WITH = { spec: { initContainers: [{ name: 'plugin-barman-cloud' }], containers: [{ name: 'postgres' }] } };
+    const WITHOUT = { spec: { containers: [{ name: 'postgres' }] } };
+    // present, present, ROLL(absent), present, present, present → ok only on the 3rd CONSECUTIVE
+    const seq = [WITH, WITH, WITHOUT, WITH, WITH, WITH];
+    let i = 0;
+    const readSpy = vi.fn().mockImplementation(() => Promise.resolve(seq[Math.min(i++, seq.length - 1)]));
+    const deleteSpy = vi.fn();
+    const k8s = {
+      custom: { getNamespacedCustomObject: vi.fn().mockResolvedValue({ status: { currentPrimary: 'db-1' } }) },
+      core: { readNamespacedPod: readSpy, deleteNamespacedPod: deleteSpy },
+      apps: { readNamespacedDeployment: vi.fn().mockResolvedValue({ status: { readyReplicas: 1 } }) },
+    } as unknown as K8sClients;
+    const r = await waitForBarmanSidecar(k8s, 'platform', 'db', 5_000, { nudgeGraceMs: 10_000_000, pollMs: 1, stableChecks: 3 });
+    expect(r.ok).toBe(true);
+    // the absent read at index 2 reset the counter → needed indices 3,4,5 → >= 6 reads
+    expect(readSpy.mock.calls.length).toBeGreaterThanOrEqual(6);
+    expect(deleteSpy).not.toHaveBeenCalled();   // grace never reached → no nudge
+  });
+
   it('buildRecoveryCluster attaches barman archive source to temp cluster when recoveryTargetTime is set (Task #97)', async () => {
     // Phase 1 PITR with recoveryTargetTime needs WAL replay beyond
     // snapshot LSN. The temp cluster's bootstrap.recovery.volumeSnapshots
