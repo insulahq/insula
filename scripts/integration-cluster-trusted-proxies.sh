@@ -214,33 +214,32 @@ fi
 
 # ── Phase 7: admin-panel pod's rendered nginx config ──────────────────
 phase "Phase 7: admin-panel pod has the CIDR in its mounted ConfigMap"
-ADMIN_POD=$(kctl -n platform get pods -l app=admin-panel -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-if [[ -z "$ADMIN_POD" ]]; then
-  fail "no admin-panel pod found — skipping"
-else
-  # Phase 6 confirms the ConfigMap OBJECT is updated, but the kubelet
-  # propagates that into the pod's mounted volume only on its sync cycle
-  # (up to ~60-90s + the configmap cache TTL — and longer when the kubelet /
-  # cluster is still settling right after a platform roll). Poll instead of
-  # checking once — a single read races the kubelet and flakes (observed:
-  # Phase 6 green, Phase 7 red against the multi-node cluster, incl. a >120s
-  # propagation right after the rc.11 roll on 2026-06-29). Budget is tunable
-  # via TP_MOUNT_WAIT (default 180s) — it's a kubelet-timing concern, not a
-  # product latency.
-  TP_MOUNT_WAIT="${TP_MOUNT_WAIT:-180}"
-  MOUNTED=""; _m_ok=0
+  # Phase 6's ConfigMap write triggers a Stakater Reloader ROLLING RESTART of
+  # admin-panel, so the pod tearing/replacing right now is what serves the mount.
+  # RE-RESOLVE the newest Running admin-panel pod EACH tick — a pod name pinned
+  # before the loop is the one Reloader kills, so every exec into it fails and the
+  # check false-misses (observed rc.18 on multi-node staging: the roll + nginx
+  # startup outran the old 180s window; the replacement pod came up 3s after the
+  # wait expired). The fresh pod mounts the UPDATED ConfigMap on startup, so once a
+  # Running replacement is up the CIDR shows. Budget tunable via TP_MOUNT_WAIT.
+  TP_MOUNT_WAIT="${TP_MOUNT_WAIT:-300}"
+  MOUNTED=""; _m_ok=0; _m_pod=""
   for _m_try in $(seq 1 "$(( TP_MOUNT_WAIT / 5 ))"); do
-    MOUNTED=$(kctl -n platform exec "$ADMIN_POD" -- cat /etc/nginx/conf.d/trusted-proxies.d/trusted-proxies.conf 2>/dev/null || echo "")
-    if echo "$MOUNTED" | grep -q "$TEST_CIDR"; then _m_ok=1; break; fi
+    _m_pod=$(kctl -n platform get pods -l app=admin-panel --field-selector=status.phase=Running --sort-by=.metadata.creationTimestamp -o name 2>/dev/null | tail -1 | sed 's#pod/##')
+    if [[ -n "$_m_pod" ]]; then
+      MOUNTED=$(kctl -n platform exec "$_m_pod" -- cat /etc/nginx/conf.d/trusted-proxies.d/trusted-proxies.conf 2>/dev/null || echo "")
+      if echo "$MOUNTED" | grep -q "$TEST_CIDR"; then _m_ok=1; break; fi
+    fi
     sleep 5
   done
   if [[ "$_m_ok" == "1" ]]; then
-    ok "Mounted ConfigMap visible in pod (/etc/nginx/conf.d/trusted-proxies.d/) after $((_m_try * 5))s"
+    ok "Mounted ConfigMap visible in pod $_m_pod (/etc/nginx/conf.d/trusted-proxies.d/) after $((_m_try * 5))s"
+  elif [[ -z "$_m_pod" ]]; then
+    fail "no Running admin-panel pod within ${TP_MOUNT_WAIT}s (Reloader roll didn't settle)"
   else
-    fail "Mounted ConfigMap does NOT contain $TEST_CIDR after ${TP_MOUNT_WAIT}s"
+    fail "Mounted ConfigMap does NOT contain $TEST_CIDR after ${TP_MOUNT_WAIT}s (newest pod $_m_pod)"
     log "Mount content: $MOUNTED"
   fi
-fi
 
 # ── Phase 8: DELETE → 200, then GET no longer shows it ────────────────
 phase "Phase 8: DELETE the operator row"
