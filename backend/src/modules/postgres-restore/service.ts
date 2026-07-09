@@ -1076,31 +1076,64 @@ export function podHasBarmanSidecar(
 }
 
 /**
+ * True if the plugin-barman-cloud operator Deployment
+ * (`cnpg-system/barman-cloud`) has >=1 ready replica — the precondition for
+ * CNPG injecting the WAL-archiver sidecar into a (re)created instance pod. When
+ * the plugin Deployment is itself mid-rollout (e.g. a component-version bump), a
+ * pod recreate would NOT get the sidecar, so `waitForBarmanSidecar` withholds
+ * the nudge until this is true. Exported for unit testing. Best-effort: any read
+ * error → false (treat as not-ready, keep waiting).
+ */
+export async function barmanPluginDeploymentReady(k8s: K8sClients): Promise<boolean> {
+  try {
+    const d = await (k8s.apps as unknown as {
+      readNamespacedDeployment: (a: { namespace: string; name: string }) => Promise<{ status?: { readyReplicas?: number } }>;
+    }).readNamespacedDeployment({ namespace: 'cnpg-system', name: 'barman-cloud' });
+    return (d.status?.readyReplicas ?? 0) >= 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Wait until the WAL-archiver plugin sidecar (`plugin-barman-cloud`) is
- * present on the cluster's CURRENT primary pod.
+ * present on the cluster's CURRENT primary pod — nudging CNPG if it stalls.
  *
- * WHY (2026-07-08): CNPG 1.29.1 + plugin-barman-cloud v0.12.0 (bumped
+ * WHY (2026-07-08): CNPG 1.29.1 + plugin-barman-cloud v0.12.0+ (bumped
  * 2026-06-12, c413d033) no longer inject the plugin sidecar at first pod
  * creation via an admission webhook — the operator adds it on a LATER
  * reconcile that RECREATES the primary pod. So a rebuilt cluster reports
  * readyInstances>=1 (waitClusterHealthy) BEFORE WAL archiving is
- * re-established. Declaring a PITR restore "done" in that window leaves
- * the recovered primary briefly without continuous backup. This wait
- * closes the gap so chip-green == WAL-archiving-active.
+ * re-established. Declaring a PITR restore "done" in that window leaves the
+ * recovered primary briefly without continuous backup.
  *
- * Only meaningful when the source cluster carries the barman plugin;
- * callers gate on `specHasBarmanPlugin`. Best-effort: returns ok=false on
- * timeout (caller records a loud, operator-actionable step) but never
- * throws — the primary still serves; archiving is merely delayed.
+ * A purely passive wait was insufficient (2026-07-09, staging rc.16): when the
+ * plugin Deployment is ITSELF mid-rollout, CNPG's injecting reconcile can lag
+ * ~30 min — far past any sane budget. Fix: after a short passive grace, once the
+ * plugin Deployment is Ready, force ONE primary pod recreate. Verified live —
+ * with the plugin Deployment Ready, the recreated primary carries the sidecar
+ * within ~6s. Safe: this step runs while the cluster is instances=1 (before
+ * scale-up-to-source-ha), so the delete is a plain recreate, not a switchover.
+ *
+ * Only meaningful when the source cluster carries the barman plugin; callers
+ * gate on `specHasBarmanPlugin`. Best-effort: returns ok=false on timeout
+ * (caller records a loud, operator-actionable step) but never throws — the
+ * primary still serves; archiving is merely delayed. Exported for unit testing;
+ * `opts` lets tests drive grace/poll without real time.
  */
-async function waitForBarmanSidecar(
+export async function waitForBarmanSidecar(
   k8s: K8sClients,
   namespace: string,
   clusterName: string,
   timeoutMs: number,
-): Promise<{ readonly ok: boolean; readonly primary?: string }> {
-  const deadline = Date.now() + timeoutMs;
+  opts: { readonly nudgeGraceMs?: number; readonly pollMs?: number } = {},
+): Promise<{ readonly ok: boolean; readonly primary?: string; readonly nudged: boolean }> {
+  const pollMs = opts.pollMs ?? 5_000;
+  const start = Date.now();
+  const deadline = start + timeoutMs;
+  const nudgeAfter = start + (opts.nudgeGraceMs ?? 60_000);
   let lastPrimary: string | undefined;
+  let nudged = false;
   while (Date.now() < deadline) {
     try {
       const c = await getCustom<CnpgCluster>(k8s, {
@@ -1116,12 +1149,24 @@ async function waitForBarmanSidecar(
             initContainers?: ReadonlyArray<{ name?: string }>;
           };
         };
-        if (podHasBarmanSidecar(pod)) return { ok: true, primary: lastPrimary };
+        if (podHasBarmanSidecar(pod)) return { ok: true, primary: lastPrimary, nudged };
+        // Nudge: CNPG injects the sidecar only when it (re)creates the instance
+        // pod. If the passive grace elapsed and the pod still lacks it, force ONE
+        // recreate — but only once the plugin Deployment is Ready (else the new
+        // pod would still be sidecar-less; keep waiting for the plugin instead).
+        if (!nudged && Date.now() >= nudgeAfter && await barmanPluginDeploymentReady(k8s)) {
+          try {
+            await (k8s.core as unknown as {
+              deleteNamespacedPod: (a: { name: string; namespace: string }) => Promise<unknown>;
+            }).deleteNamespacedPod({ name: lastPrimary, namespace });
+            nudged = true;
+          } catch { /* pod may already be terminating — keep polling */ }
+        }
       }
     } catch { /* keep polling — pod may be mid-recreation */ }
-    await new Promise((r) => setTimeout(r, 5_000));
+    await new Promise((r) => setTimeout(r, pollMs));
   }
-  return { ok: false, primary: lastPrimary };
+  return { ok: false, primary: lastPrimary, nudged };
 }
 
 async function emitAdminNotification(
@@ -1898,14 +1943,17 @@ export async function promotePostgresFromSnapshot(
     // on timeout — data is restored + the primary serves regardless).
     if (specHasBarmanPlugin(pre.cluster.spec)) {
       const t8a0 = nowMs();
-      const sidecar = await waitForBarmanSidecar(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 5 * 60_000);
+      // 8 min: the passive grace (~1m) plus headroom for the plugin Deployment
+      // to finish its own rollout before we force the recreate that injects the
+      // sidecar (the 30-min stall on staging rc.16 was the plugin mid-bump).
+      const sidecar = await waitForBarmanSidecar(deps.k8s, inputs.clusterNamespace, inputs.clusterName, 8 * 60_000);
       recordStep({
         step: 'wait-barman-sidecar',
         ok: sidecar.ok,
         elapsedMs: nowMs() - t8a0,
         detail: sidecar.ok
-          ? `plugin-barman-cloud sidecar active on ${sidecar.primary ?? 'primary'} — WAL archiving re-established`
-          : `plugin-barman-cloud sidecar NOT observed within 5m on ${sidecar.primary ?? 'primary'}; WAL archiving may be delayed — verify: kubectl -n ${inputs.clusterNamespace} get pod ${sidecar.primary ?? '<primary>'} -o jsonpath='{.spec.initContainers[*].name}' (delete the pod to force plugin injection if the sidecar is absent)`,
+          ? `plugin-barman-cloud sidecar active on ${sidecar.primary ?? 'primary'} — WAL archiving re-established${sidecar.nudged ? ' (forced a primary recreate to trigger injection)' : ''}`
+          : `plugin-barman-cloud sidecar NOT observed within 8m on ${sidecar.primary ?? 'primary'}${sidecar.nudged ? ' (forced a primary recreate; still absent — the plugin Deployment cnpg-system/barman-cloud may be unhealthy)' : ' (could not force injection — plugin Deployment cnpg-system/barman-cloud not Ready)'}; WAL archiving may be delayed — verify: kubectl -n ${inputs.clusterNamespace} get pod ${sidecar.primary ?? '<primary>'} -o jsonpath='{.spec.initContainers[*].name}'`,
       });
     }
 
