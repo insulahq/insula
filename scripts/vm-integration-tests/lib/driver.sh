@@ -114,8 +114,10 @@ XML
   # (paths INSIDE the XML are host paths — qemu on the host reads those).
   local xmlf="${VMTEST_TMP_DIR:-/tmp}/net-${name}.xml"
   printf '%s\n' "$xml" > "$xmlf"
-  VIRSH net-define "$xmlf"
-  VIRSH net-start "$name"
+  # virsh mutation output -> stderr: callers capture a sibling function's stdout
+  # (e.g. boot_node's `echo "$ip"`), so "Network … started" must not pollute it.
+  VIRSH net-define "$xmlf" >&2
+  VIRSH net-start "$name" >&2
 }
 vm_net_destroy() {
   local name="insula-test-${1}"
@@ -163,8 +165,9 @@ XML
   # XML read client-side (see vm_net_create) — write it LOCAL; disk/seed paths inside are host paths.
   local xmlf="${VMTEST_TMP_DIR:-/tmp}/dom-${name}.xml"
   printf '%s\n' "$xml" > "$xmlf"
-  VIRSH define "$xmlf"
-  VIRSH start  "$name"
+  # virsh output -> stderr so boot_node's `echo "$ip"` capture stays clean (see vm_net_create).
+  VIRSH define "$xmlf" >&2
+  VIRSH start  "$name" >&2
 }
 
 # vm_ip <name> <net> — resolve the lease IP by MAC via the network's DHCP leases.
