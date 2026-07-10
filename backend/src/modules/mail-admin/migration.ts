@@ -1205,12 +1205,41 @@ async function runMigrationStateMachine(
   // restoreMailOnSource on any failure below (declared at function scope
   // so it's reachable from the later scale-up/verify failure branches).
   let retainedSourcePv: string | null = null;
+  // Deployments (beyond the mail-stack list) that we scale to 0 to release the
+  // PVC; restored after the swap + on any failure path below.
+  let extraPvcMounters: Record<string, number> = {};
   try {
     retainedSourcePv = await retainSourcePvBeforeDelete(core, log);
   } catch (err) {
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to retain source PV before swap: ${(err as Error).message}`, taskId);
     return;
+  }
+
+  // FORCE-RELEASE all PVC mounters BEFORE the delete (2026-07-10).
+  //
+  // The pvc-protection controller keeps (and re-adds, even after our manual
+  // force-strip) the finalizer while ANY pod mounts the PVC, so the delete
+  // wedges — root cause of the staging mail-migration timeout: Bulwark
+  // co-mounts mail-stack-data (subPath, A2.5) and, though the mail-stack
+  // scale-down patched it to 0, its pod can still be Terminating (mounting) when
+  // the delete runs, and forceDeleteMailPodsMountingPvc's default only evicts
+  // ALREADY-Terminating pods. Here: (1) scale to 0 every OTHER Deployment that
+  // mounts the PVC (robust to future co-mounters), (2) force-delete EVERY
+  // mounting pod — running or terminating — now that no owning Deployment will
+  // recreate it, (3) wait until the volume is truly unmounted. Only then delete.
+  try {
+    extraPvcMounters = await scaleDownPvcMounterDeployments(apps, MAIL_PVC_NAME, log);
+  } catch (err) {
+    log.warn('[migration] force-release: extra-mounter scan/scale failed (non-fatal):', err);
+  }
+  await forceDeleteMailPodsMountingPvc(core, MAIL_PVC_NAME, { onlyTerminating: false });
+  const release = await waitForNoPvcMounters(core, MAIL_PVC_NAME, 60);
+  if (!release.clear) {
+    log.warn(
+      `[migration] force-release: ${release.lingering.length} pod(s) still mount ${MAIL_PVC_NAME} after 60s `
+      + `(${release.lingering.join(', ')}) — proceeding; the Retained-PV + finalizer force-strip is the backstop`,
+    );
   }
 
   try {
@@ -1223,6 +1252,7 @@ async function runMigrationStateMachine(
     // Delete failed → PVC + (now Retained) data still intact. Bring mail
     // back up on the source node rather than leaving it scaled to 0.
     await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
+    await restorePvcMounterDeployments(apps, extraPvcMounters, log);
     await failRun(db, runId, `failed to delete source PVC: ${(err as Error).message}`, taskId);
     // Re-enable the snapshot CronJob even on failure so backups resume.
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
@@ -1241,11 +1271,19 @@ async function runMigrationStateMachine(
   } catch (err) {
     // Source PVC already deleted — re-bind the retained PV so no data is lost.
     await restoreMailOnSource(core, apps, retainedSourcePv, sourceNode, log);
+    await restorePvcMounterDeployments(apps, extraPvcMounters, log);
     // Resume snapshot CronJob before bailing — was suspended at step 4a.
     await resumeSnapshotCronJob(deps).catch(() => { /* best-effort */ });
     await failRun(db, runId, `failed to recreate PVC on target node: ${(err as Error).message}`, taskId);
     return;
   }
+
+  // PVC recreated on the target node — restore any EXTRA co-mounters we scaled
+  // down for the delete (the mail stack itself comes back at the scaling-up step
+  // below). No-op today (only Stalwart+Bulwark mount the PVC, both handled by the
+  // mail-stack scaling-up); future-proofs against a new co-mounting Deployment.
+  await restorePvcMounterDeployments(apps, extraPvcMounters, log);
+  extraPvcMounters = {};
 
   try {
     await applyDeploymentAffinity(
@@ -2044,6 +2082,92 @@ export async function forceDeleteMailPodsMountingPvc(
       } as unknown as Parameters<typeof core.deleteNamespacedPod>[0]);
     } catch {
       // best-effort; the caller's re-wait logs a clean timeout if needed
+    }
+  }
+}
+
+/**
+ * Wait until NO pod in the mail namespace mounts `pvcName`. K8s' pvc-protection
+ * controller keeps (and re-adds, even after a manual force-strip) the finalizer
+ * while ANY pod references the PVC — so the source-PVC delete wedges until the
+ * volume is truly unmounted. Callers scale + force-delete mounters first, then
+ * wait here so the delete has no blockers. Best-effort: returns after timeout
+ * with the lingering pod names so the caller can log a clean diagnostic.
+ */
+export async function waitForNoPvcMounters(
+  core: CoreV1Api,
+  pvcName: string,
+  timeoutSeconds: number,
+): Promise<{ readonly clear: boolean; readonly lingering: string[] }> {
+  type PodShape = { metadata?: { name?: string }; spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> } };
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  let lingering: string[] = [];
+  do {
+    const list = await core.listNamespacedPod({ namespace: MAIL_NAMESPACE }) as { items?: PodShape[] };
+    lingering = (list.items ?? [])
+      .filter((p) => (p.spec?.volumes ?? []).some((v) => v.persistentVolumeClaim?.claimName === pvcName))
+      .map((p) => p.metadata?.name ?? '?');
+    if (lingering.length === 0) return { clear: true, lingering: [] };
+    await new Promise((r) => setTimeout(r, 3000));
+  } while (Date.now() < deadline);
+  return { clear: false, lingering };
+}
+
+/**
+ * Force-release the PVC ahead of the source-PVC delete: scale to 0 EVERY
+ * Deployment in the mail namespace whose pod template mounts `pvcName`, robust
+ * to co-mounters beyond the hard-coded mail-stack list (Bulwark shares
+ * mail-stack-data via subPath since A2.5; a future webmail/sidecar could too).
+ * Returns {deployment: originalReplicas} for ONLY the deployments this call
+ * actually scaled DOWN (replicas>0 → 0) so the caller can restore them; the
+ * mail-stack deployments already at 0 (scaled by the earlier scaling-down step,
+ * restored by scaling-up) are patched idempotently and excluded from the map.
+ */
+export async function scaleDownPvcMounterDeployments(
+  apps: AppsV1Api,
+  pvcName: string,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+): Promise<Record<string, number>> {
+  type DeployShape = {
+    metadata?: { name?: string };
+    spec?: { replicas?: number; template?: { spec?: { volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> } } };
+  };
+  const list = await (apps as unknown as {
+    listNamespacedDeployment: (a: { namespace: string }) => Promise<{ items?: DeployShape[] }>;
+  }).listNamespacedDeployment({ namespace: MAIL_NAMESPACE });
+  const scaledDown: Record<string, number> = {};
+  for (const d of list.items ?? []) {
+    const name = d.metadata?.name;
+    if (!name) continue;
+    const mounts = (d.spec?.template?.spec?.volumes ?? []).some(
+      (v) => v.persistentVolumeClaim?.claimName === pvcName,
+    );
+    if (!mounts) continue;
+    const orig = d.spec?.replicas ?? 0;
+    if (orig > 0) {
+      scaledDown[name] = orig;
+      await patchDeploymentReplicasOne(apps, name, 0);
+      log.info(`[migration] force-release: scaled Deployment ${name} ${orig}→0 (mounts ${pvcName})`);
+    }
+  }
+  return scaledDown;
+}
+
+/** Restore the deployments scaled down by scaleDownPvcMounterDeployments to their
+ * original replica counts. Best-effort — a failure to restore an extra mounter
+ * is logged but never fails the migration (the mail stack itself is restored
+ * separately by the scaling-up step / restoreMailOnSource). */
+async function restorePvcMounterDeployments(
+  apps: AppsV1Api,
+  scaledDown: Record<string, number>,
+  log: { warn: (...a: unknown[]) => void; info: (...a: unknown[]) => void },
+): Promise<void> {
+  for (const [name, replicas] of Object.entries(scaledDown)) {
+    try {
+      await patchDeploymentReplicasOne(apps, name, replicas);
+      log.info(`[migration] force-release: restored Deployment ${name} →${replicas}`);
+    } catch (err) {
+      log.warn(`[migration] force-release: failed to restore Deployment ${name} →${replicas} (non-fatal):`, err);
     }
   }
 }
