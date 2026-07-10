@@ -4060,7 +4060,10 @@ install_sealed_secrets() {
   fi
 
   log "Installing Sealed Secrets..."
-  helm_cmd repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets 2>/dev/null || true
+  # Repo migrated bitnami-labs -> bitnami org (2026-06-15); the old GitHub Pages URL
+  # 404s (Pages URLs don't redirect). Fresh-install-only fix — existing clusters
+  # already have the controller. Caught by the ephemeral-VM bootstrap tier.
+  helm_cmd repo add sealed-secrets https://bitnami.github.io/sealed-secrets 2>/dev/null || true
   helm_cmd repo update
 
   helm_cmd upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
