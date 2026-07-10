@@ -140,19 +140,46 @@ exactly the signal we want.
 
 ---
 
+## Multi-OS compatibility (what VMs uniquely unlock)
+
+The platform supports a matrix (CLAUDE.md → *Supported OSes*): **Tier-1** Debian 12/13,
+Ubuntu 22.04/24.04 LTS; **Tier-2** RHEL/Rocky/Alma 9, CentOS Stream 9/10, Amazon Linux 2023.
+`bootstrap.sh` dispatches `apt` vs `dnf` by `OS_FAMILY` and fails fast on EOL.
+
+`scripts/test-bootstrap-os-matrix.sh` already covers this **in containers** — but a container
+can only prove the *dispatch logic* (`check_os`, apt-vs-dnf branch selection). It cannot boot a
+real kernel, run systemd, install k3s, mount Longhorn, or apply host-migrations. **The VM tier
+is the only place the full install is proven per OS.** So:
+
+- `lib/os-registry.sh` maps each supported OS id → its **stock generic cloud image** (no baked
+  content — `bootstrap.sh` does the install, so the real per-OS path runs). Amazon Linux 2023
+  has no stable `latest` symlink, so its URL is a `PIN_…` placeholder to fill from the current
+  build.
+- `os-images.sh <os|all>` caches one golden per OS; `spawn-cluster.sh` clones the per-OS golden.
+- **`run-matrix.sh`** runs the full throw-away flow **once per OS**, each in its own fresh
+  cluster + teardown (same isolation principle as per-run teardown, applied across the matrix),
+  and prints a pass/fail table. Root login is enabled uniformly by the cloud-init seed, so
+  `bootstrap.sh --remote` (SSHes as root) works on every family unchanged.
+
+Config: `VMTEST_OS` (single-run default) and `VMTEST_OS_MATRIX` (the sweep set — default is both
+tier-1 families + one tier-2 for a strong signal without paying for all 8). Cheap PR runs stay
+single-OS (Debian); the nightly does the matrix; a pre-release does the full 8.
+
 ## Layout
 
 ```
 scripts/vmtest/
   README.md                 # quickstart + enablement
-  config.example.env        # tunables (driver, apex, node count, pins-source)
+  config.example.env        # tunables (driver, OS, matrix, node count, ACME, backup)
   lib/
+    os-registry.sh          # supported-OS → stock cloud-image map (the matrix)
     driver.sh               # libvirt-sock | ssh-host backends (the contract above)
     waitfor.sh              # wait-for-ssh, wait-for-k3s-ready, wait-for-flux
-  build-golden.sh           # Debian cloud image → cloud-init → golden.qcow2 (cached)
+  os-images.sh              # fetch/cache the per-OS golden base image(s) (list|<os>|all)
   net-services.sh           # per-run NAT net + PowerDNS + Pebble + MinIO containers
-  spawn-cluster.sh          # overlay-clone N VMs, bootstrap.sh --remote, wait ready
-  run.sh                    # end-to-end: golden→net→spawn→integration-all→report→teardown
+  spawn-cluster.sh          # overlay-clone N VMs (per-OS golden), bootstrap.sh --remote
+  run.sh                    # one run: golden→net→spawn→integration-all→report→teardown
+  run-matrix.sh             # multi-OS sweep: run.sh once per OS, aggregate table
   teardown.sh               # throw everything away (trap-safe)
 ```
 

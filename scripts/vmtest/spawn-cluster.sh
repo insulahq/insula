@@ -18,6 +18,8 @@ RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
 SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
 export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-/tmp/vmtest-${RUN}.key}"
+# golden backing file is per-OS (built by os-images.sh)
+GOLDEN="${VMTEST_POOL_DIR%/}/golden-${VMTEST_OS:?set VMTEST_OS}.qcow2"
 
 # 0) ephemeral ssh key for this run (thrown away at teardown)
 [[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q
@@ -53,7 +55,7 @@ boot_node() {
   local host="$1" idx="$2"
   local overlay="${VMTEST_POOL_DIR}/${host}.qcow2"
   local mac; mac=$(printf '52:54:00:%02x:%02x:%02x' "$OCTET" "$((RANDOM%256))" "$idx")
-  img_clone "$VMTEST_GOLDEN" "$overlay" "$VMTEST_DISK_GB"
+  img_clone "$GOLDEN" "$overlay" "$VMTEST_DISK_GB"
   seed_for "" "$host"
   vm_create "$host" "$overlay" "${VMTEST_POOL_DIR}/seed-${RUN}-${host}.iso" \
             "$RUN" "$VMTEST_VCPU" "$VMTEST_RAM_MB" "$mac"
@@ -62,7 +64,8 @@ boot_node() {
   echo "$ip"
 }
 
-echo "== spawn: ${VMTEST_SERVERS} server + ${VMTEST_WORKERS} worker on ${SUB}.0/24 =="
+echo "== spawn [${VMTEST_OS}]: ${VMTEST_SERVERS} server + ${VMTEST_WORKERS} worker on ${SUB}.0/24 =="
+[[ -f "$GOLDEN" ]] || on_host "test -f '$GOLDEN'" || { echo "golden missing: $GOLDEN — run: os-images.sh ${VMTEST_OS}" >&2; exit 1; }
 
 # 1) control-plane
 CP="vmt-${RUN}-cp1"
