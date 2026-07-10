@@ -1,59 +1,96 @@
 #!/usr/bin/env bash
-# scripts/vmtest/net-services.sh — per-run network services: authoritative DNS
-# (PowerDNS), test ACME CA (Pebble), and an S3 backup target (MinIO).
+# scripts/vmtest/net-services.sh — per-run network services on a THROW-AWAY VM.
 #
-# These run as Docker containers on the SAME host as the VMs, attached to the
-# per-run NAT bridge so the cluster resolves <apex> internally and gets certs
-# from a rate-limit-free CA. The platform ALREADY overlay-switches ClusterIssuers
-# and points DNS provider groups at a configurable endpoint, so this is config,
-# not new code paths. See docs/development/EPHEMERAL_VM_INTEGRATION_TESTING.md.
+# Creates the run's isolated NAT net, then boots ONE small "services" VM whose OWN
+# Docker runs the three services: authoritative DNS (PowerDNS), test ACME CA
+# (Pebble), and an S3 backup target (MinIO). This deliberately avoids the HOST's
+# Docker — docker.sock is root-equivalent, and host containers wouldn't share the
+# host-libvirt VMs' network anyway. The services VM sits on the SAME NAT net as the
+# cluster nodes, so they reach it by IP; it is torn down with the run. Net effect:
+# libvirt is the ONLY host privilege this rig needs — no host Docker, no docker.sock.
 #
-# ⚠ UNTESTED until a VMTEST_DRIVER is enabled.
+# (Alternative: colocate this Docker on the control-plane VM to save one VM's RAM —
+# VMTEST_SVC_MODE=colocate. Default is a dedicated VM so cluster nodes stay pristine
+# for the bootstrap-fidelity test. Colocate wiring is a documented follow-up.)
+#
+# ⚠ UNTESTED until a VMTEST_DRIVER is enabled. Exact PowerDNS gsqlite3 schema-init
+#   is first-run-tunable (marked below).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${VMTEST_CONFIG:-$HERE/config.env}"
+source "$HERE/lib/os-registry.sh"
 source "$HERE/lib/driver.sh"
+source "$HERE/lib/waitfor.sh"
 
-RUN="${1:?usage: net-services.sh <run-id> <apex> <subnet-third-octet>}"
+RUN="${1:?usage: net-services.sh <run-id> <apex> <octet>}"
 APEX="${2:?}"; OCTET="${3:?}"
-NET="insula-test-${RUN}"; SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
-DNS_IP="${SUB}.2"; PEBBLE_IP="${SUB}.3"; MINIO_IP="${SUB}.4"
+SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
+SVC_OS="${VMTEST_SVC_OS:-debian-13}"
+export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-/tmp/vmtest-${RUN}.key}"
+[[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q >&2
+PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 
-echo "== net-services for ${APEX} on ${NET} (${SUB}.0/24) =="
+echo "== net-services for ${APEX} on ${SUB}.0/24 (services VM, own Docker — no host Docker) ==" >&2
 
-# PowerDNS: authoritative for <apex> + resolver for the VMs. Seeded so
-# admin.<apex>, mail.<apex>, *.ingress.<apex> resolve to the ingress IP.
-svc_run "pdns-${RUN}" "$NET" \
-  "--network '$NET' --ip '$DNS_IP' \
-   -e PDNS_api=yes -e PDNS_api_key=vmtest \
-   -e PDNS_launch=gsqlite3 -e PDNS_gsqlite3_database=/var/lib/powerdns/pdns.sqlite3 \
-   powerdns/pdns-auth-49:latest"
-echo "  PowerDNS @ ${DNS_IP} (REST api-key=vmtest) — point the DNS provider group here"
+# 1) the per-run isolated NAT network (this is the sole creator of the net)
+vm_net_create "$RUN" "${SUB}.0" >&2
 
-if [[ "$VMTEST_ACME_TIER" == "pebble" ]]; then
-  # Pebble: local ACME test CA, no rate limits, no public reachability needed.
-  # -dnsserver points Pebble's challenge validation at our PowerDNS.
-  svc_run "pebble-${RUN}" "$NET" \
-    "--network '$NET' --ip '$PEBBLE_IP' \
-     -e PEBBLE_VA_NOSLEEP=1 \
-     letsencrypt/pebble:latest pebble -dnsserver ${DNS_IP}:53"
-  echo "  Pebble ACME @ https://${PEBBLE_IP}:14000/dir — switch ClusterIssuer to pebble-* overlay"
-  echo "  (export the Pebble CA to CURL_CA_BUNDLE so suite curl/openssl trust the chain)"
-else
-  echo "  ACME tier = le-staging (real LE staging; needs a publicly delegated ${APEX})"
-fi
+# 2) services VM golden (Debian; services don't need OS randomisation)
+SGOLD="${VMTEST_POOL_DIR%/}/golden-${SVC_OS}.qcow2"
+on_host "test -f '$SGOLD'" || img_pull_golden "$(os_url "$SVC_OS")" "$SGOLD" >&2
 
-if [[ "$VMTEST_BACKUP" == "minio" ]]; then
-  svc_run "minio-${RUN}" "$NET" \
-    "--network '$NET' --ip '$MINIO_IP' \
-     -e MINIO_ROOT_USER=vmtest -e MINIO_ROOT_PASSWORD=vmtestvmtest \
-     minio/minio:latest server /data"
-  echo "  MinIO S3 @ http://${MINIO_IP}:9000 (Longhorn BackupTarget + restic bundles)"
-fi
+# 3) cloud-init: install Docker in the guest, run the three services on the VM's
+#    own host network (so they bind the VM IP directly: :53 :8081 :14000 :9000).
+SVC="vmt-${RUN}-svc"
+cat > "/tmp/ud-${RUN}-svc.yaml" <<UD
+#cloud-config
+hostname: ${SVC}
+users:
+  - name: root
+    ssh_authorized_keys: ["${PUBKEY}"]
+disable_root: false
+ssh_pwauth: false
+package_update: true
+packages: [docker.io, ca-certificates, qemu-guest-agent]
+runcmd:
+  - [systemctl, enable, --now, qemu-guest-agent]
+  - [systemctl, enable, --now, docker]
+  # PowerDNS (authoritative for <apex> + REST API for the platform's provider group).
+  # NB: gsqlite3 schema init is first-run-tunable (seed /var/lib/powerdns/pdns.sqlite3
+  # from the image's schema.sql before first start).
+  - docker run -d --name pdns --restart=always --network host
+      -e PDNS_api=yes -e PDNS_api_key=vmtest
+      -e PDNS_launch=gsqlite3 -e PDNS_gsqlite3_database=/var/lib/powerdns/pdns.sqlite3
+      powerdns/pdns-auth-49:latest
+  - docker run -d --name pebble --restart=always --network host
+      -e PEBBLE_VA_NOSLEEP=1
+      letsencrypt/pebble:latest pebble -dnsserver 127.0.0.1:53
+  - docker run -d --name minio --restart=always --network host
+      -e MINIO_ROOT_USER=vmtest -e MINIO_ROOT_PASSWORD=vmtestvmtest
+      minio/minio:latest server /data --console-address :9001
+UD
+cat > "/tmp/md-${RUN}-svc.yaml" <<MD
+instance-id: ${SVC}
+local-hostname: ${SVC}
+MD
+seed_iso "/tmp/seed-${RUN}-svc" "/tmp/ud-${RUN}-svc.yaml" "/tmp/md-${RUN}-svc.yaml" \
+         "${VMTEST_POOL_DIR}/seed-${RUN}-svc.iso" >&2
 
-# Emit the service coordinates for run.sh to consume.
+# 4) boot + wait for Docker/containers (cloud-init --wait blocks until runcmd done)
+img_clone "$SGOLD" "${VMTEST_POOL_DIR}/${SVC}.qcow2" 20 >&2
+vm_create "$SVC" "${VMTEST_POOL_DIR}/${SVC}.qcow2" "${VMTEST_POOL_DIR}/seed-${RUN}-svc.iso" \
+          "$RUN" "${VMTEST_SVC_VCPU:-1}" "${VMTEST_SVC_RAM_MB:-1536}" \
+          "$(printf '52:54:00:%02x:%02x:02' "$OCTET" "$((RANDOM%256))")" >&2
+SVC_IP=""; for _ in $(seq 1 30); do SVC_IP=$(vm_ip "$SVC" "$RUN"); [[ -n "$SVC_IP" ]] && break; sleep 4; done
+[[ -n "$SVC_IP" ]] || { echo "no lease for services VM" >&2; exit 1; }
+wait_ssh "$SVC_IP" 180 >&2; wait_cloudinit "$SVC_IP" 300 >&2   # cloud-init done ⇒ containers launched
+
+echo "  services VM @ ${SVC_IP}: PowerDNS :53/:8081  Pebble :14000  MinIO :9000" >&2
+
+# 5) coordinates for run.sh (all three live on the one services-VM IP, distinct ports)
 cat <<EOF
-VMTEST_DNS_IP=${DNS_IP}
-VMTEST_PEBBLE_IP=${PEBBLE_IP}
-VMTEST_MINIO_IP=${MINIO_IP}
+VMTEST_DNS_IP=${SVC_IP}
+VMTEST_PEBBLE_IP=${SVC_IP}
+VMTEST_MINIO_IP=${SVC_IP}
+VMTEST_SVC_IP=${SVC_IP}
 EOF

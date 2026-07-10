@@ -143,7 +143,8 @@ vm_destroy() {
   VIRSH undefine "$1" --remove-all-storage >/dev/null 2>&1 || true
 }
 
-# ── service containers (dns/le/minio) run as Docker on the same host ─
-# svc_run <name> <net-bridge> <docker-args...>
-svc_run() { on_host "docker rm -f '$1' >/dev/null 2>&1; docker run -d --name '$1' ${*:2}"; }
-svc_rm()  { on_host "docker rm -f '$1' >/dev/null 2>&1 || true"; }
+# NOTE: the DNS/ACME/S3 service containers deliberately do NOT run on the host's
+# Docker (that would need docker.sock = root-equivalent, and it splits networking
+# from the host-libvirt VMs). They run in a THROW-AWAY services VM's own Docker
+# (net-services.sh) on the same NAT net — so libvirt is the ONLY host privilege
+# this rig needs. The services VM is torn down like any other domain.
