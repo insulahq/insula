@@ -17,11 +17,20 @@ source "$VMTEST_CONFIG"
 
 [[ -n "${VMTEST_DRIVER:-}" ]] || { echo "set VMTEST_DRIVER (see $HERE/config.example.env)"; exit 2; }
 
+# --os <id> overrides the configured OS (run-matrix.sh uses this to sweep OSes).
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --os) VMTEST_OS="$2"; shift 2 ;;
+    *) VMTEST_INTEGRATION_ARGS="${VMTEST_INTEGRATION_ARGS} $1"; shift ;;
+  esac
+done
+export VMTEST_OS   # spawn-cluster.sh derives the per-OS golden from this
+
 RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"        # unique per run
 OCTET="$(( (16#${RUN:0:2}) % 90 + 1 ))"               # 10.98.<1..90>.0/24
 APEX="$(printf "$VMTEST_APEX_TMPL" "$RUN")"
-REPORT="${VMTEST_POOL_DIR%/}/report-${RUN}.json"
-echo "════ vmtest run ${RUN}  apex=${APEX}  net=10.98.${OCTET}.0/24  mode=${VMTEST_MODE} ════"
+REPORT="${VMTEST_POOL_DIR%/}/report-${VMTEST_OS}-${RUN}.json"
+echo "════ vmtest run ${RUN}  os=${VMTEST_OS}  apex=${APEX}  net=10.98.${OCTET}.0/24  mode=${VMTEST_MODE} ════"
 
 cleanup() {
   local rc=$?
@@ -34,8 +43,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1) golden (cached), 2) per-run services
-"$HERE/build-golden.sh"
+# 1) golden for this OS (cached), 2) per-run services
+"$HERE/os-images.sh" "$VMTEST_OS"
 eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" | grep -E '^VMTEST_(DNS|PEBBLE|MINIO)_IP=')"
 
 # 3) spawn + bootstrap the cluster
