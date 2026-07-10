@@ -47,14 +47,14 @@ gate* (Tier 1). Match the substrate to what each can honestly do.
 ## The throw-away model
 
 ```
-build-golden.sh   (once, cached)      spawn-cluster.sh (per run)         teardown.sh (per run)
+os-images.sh   (once, cached/OS)      spawn-cluster.sh (per run)         teardown.sh (per run)
 ──────────────────────────────       ──────────────────────────         ────────────────────
-Debian 13 cloud image                 qcow2 OVERLAY per VM  ────┐         virsh destroy + undefine
-  + cloud-init (ssh key, qemu-guest    (backing = golden,        │          --remove-all-storage
-    -agent, growpart)                   copy-on-write, ~seconds)  │        rm overlays/
-  → golden.qcow2  ◀── backing file ─────────────────────────────┘        net-destroy insula-test-<run>
-                                       boot N VMs on a PER-RUN               docker rm -f dns/le/minio
-  (optional) --warm: snapshot AFTER    NAT net (isolated subnet)          (trap EXIT → always cleans)
+per-OS cloud image (registry)         qcow2 OVERLAY per VM  ────┐         virsh destroy + undefine
+  + cloud-init (ssh key, qemu-guest    (backing = golden,        │          --remove-all-storage (all
+    -agent, growpart)                   copy-on-write, ~seconds)  │          domains incl. services VM)
+  → golden-<os>.qcow2 ◀ backing ───────────────────────────────┘        rm overlays/ ; net-destroy
+                                       + 1 services VM (own Docker:        (no host Docker to clean)
+  (optional) --warm: snapshot AFTER    DNS/ACME/S3); random OS/node        (trap EXIT → always cleans)
    bootstrap → skip 5-min install       run bootstrap.sh --remote
    for app-tier runs                    → wait k3s ready
 ```
@@ -93,20 +93,29 @@ vm_create <name> <overlay> <mac> <net> <vcpu> <ram_mb>
 vm_ip <name>                      vm_ssh <ip> <cmd...>
 vm_wait_ssh <ip> <deadline_s>     vm_destroy <name>
 img_clone <golden> <overlay>      img_snapshot <name> <tag>   (warm mode)
-svc_run <name> <image> <args...>  svc_rm <name>               (dns/le/minio containers)
 ```
+
+The DNS/ACME/S3 services are **NOT** host containers — see below. There is no
+`svc_run`/host-Docker verb: **libvirt is the only host privilege the rig needs.**
 
 ---
 
 ## DNS + Let's Encrypt (self-contained, no rate limits)
 
 The platform **already overlay-switches ClusterIssuers** (`letsencrypt-staging-http01`,
-`letsencrypt-prod-dns01-powerdns`, …). Adding a `pebble-*` issuer is one manifest. Two fidelity
-tiers:
+`letsencrypt-prod-dns01-powerdns`, …). Adding a `pebble-*` issuer is one manifest.
+
+**Where these run — NOT the host's Docker.** PowerDNS, Pebble, and MinIO run in a small
+**throw-away services VM's own Docker** (`net-services.sh`), on the run's NAT net. Using the
+host's Docker would need `docker.sock` (root-equivalent) and wouldn't share the host-libvirt
+VMs' network anyway; a services VM is isolated *and* network-coherent, and dies with the run. So
+the rig needs **no host Docker at all — libvirt is the only host privilege.** (RAM-saving
+alternative: `VMTEST_SVC_MODE=colocate` runs this Docker on the control-plane VM instead of a
+dedicated one.) Two fidelity tiers:
 
 | Tier | ACME CA | DNS | Use | Rate limit |
 |---|---|---|---|---|
-| **fast** (default, every run) | **Pebble** container (test CA) | **PowerDNS** container, authoritative for the test apex + resolver for the VM net | every ephemeral run | none |
+| **fast** (default, every run) | **Pebble** (in the services VM) test CA | **PowerDNS** (in the services VM), authoritative for the apex + resolver for the VM net | every ephemeral run | none |
 | **fidelity** (nightly/weekly) | **LE staging** endpoint | PowerDNS on a *publicly-delegated* subzone, real DNS-01 | catch real ACME/DNS-01 quirks | LE-staging (generous) |
 
 - **PowerDNS** (`scripts/vmtest/net-services.sh`) is authoritative for the run's apex (e.g.
@@ -188,7 +197,7 @@ scripts/vmtest/
     driver.sh               # libvirt-sock | ssh-host backends (the contract above)
     waitfor.sh              # wait-for-ssh, wait-for-k3s-ready, wait-for-flux
   os-images.sh              # fetch/cache golden base image(s) (list|<os>|all=pool)
-  net-services.sh           # per-run NAT net + PowerDNS + Pebble + MinIO containers
+  net-services.sh           # per-run NAT net + services VM (own Docker: PowerDNS/Pebble/MinIO)
   spawn-cluster.sh          # draw a RANDOM OS per node, overlay-clone, bootstrap.sh --remote
   run.sh                    # one run: net→spawn(mixed-OS)→integration-all→report→teardown
   teardown.sh               # throw everything away (trap-safe)

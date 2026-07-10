@@ -12,13 +12,12 @@ source "$HERE/lib/driver.sh"
 RUN="${1:?usage: teardown.sh <run-id>}"
 echo "== teardown run ${RUN} =="
 
-# domains (VM disks removed with --remove-all-storage)
+# domains — includes the services VM (vmt-${RUN}-svc); its Docker + the
+# DNS/ACME/S3 containers die WITH the VM, so there is no host-side cleanup.
+# Disks removed with --remove-all-storage.
 for d in $(VIRSH list --all --name 2>/dev/null | grep "vmt-${RUN}-" || true); do
   echo "  destroy domain $d"; vm_destroy "$d"
 done
-
-# service containers
-for svc in "pdns-${RUN}" "pebble-${RUN}" "minio-${RUN}"; do svc_rm "$svc"; done
 
 # per-run NAT net
 vm_net_destroy "$RUN"

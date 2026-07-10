@@ -18,10 +18,14 @@ caused our "passes standalone, fails in the full run" flakiness.
 
 ## Enablement (pick one, one-time)
 
+`ssh-host` is **recommended** (auditable, revocable, command-restrictable; see the design
+doc's host-access notes). Either way the rig needs **only libvirt on the host — no host
+Docker**: the DNS/ACME/S3 services run in a throw-away services VM's own Docker.
+
 | `VMTEST_DRIVER` | Do this |
 |---|---|
+| `ssh-host` *(recommended)* | put an SSH key to the Unraid host at `VMTEST_HOST_SSH_KEY`; ensure `virsh`/`qemu-img` exist on the host (no host Docker needed) |
 | `libvirt-sock` | bind-mount the host's `/var/run/libvirt/libvirt-sock` into this env; `apt install libvirt-clients qemu-utils genisoimage`; bind-mount `VMTEST_POOL_DIR` at the same path both sides |
-| `ssh-host` | put an SSH key to the Unraid host at `VMTEST_HOST_SSH_KEY`; ensure `virsh`/`qemu-img`/`docker` exist on the host |
 
 Then:
 
@@ -50,7 +54,7 @@ is seeded and printed (`os-seed=…`) so any failure is exactly reproducible.
 | `lib/driver.sh` | `libvirt-sock`/`ssh-host` backends — domains, net, images, service containers |
 | `lib/waitfor.sh` | bounded ssh / cloud-init / k3s-Ready waits (fail-fast) |
 | `os-images.sh` | fetch + cache golden cloud images (`list` \| `<os>` \| `all`=pool) |
-| `net-services.sh` | per-run NAT net + PowerDNS + Pebble (ACME) + MinIO |
+| `net-services.sh` | per-run NAT net + a throw-away **services VM** whose own Docker runs PowerDNS/Pebble/MinIO (no host Docker) |
 | `spawn-cluster.sh` | draw a **random OS per node**, overlay-clone, `bootstrap.sh --remote`, wait Ready |
 | `run.sh` | one run (random-OS cluster; `--os`/`--seed` to pin/replay); calls `integration-all.sh` unchanged |
 | `teardown.sh` | throw the whole run away (trap-safe, idempotent) |
