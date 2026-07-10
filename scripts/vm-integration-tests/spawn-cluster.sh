@@ -64,7 +64,10 @@ ssh_pwauth: false
 packages: [qemu-guest-agent, curl, ca-certificates]
 runcmd:
   - [systemctl, enable, --now, qemu-guest-agent]
-  - "echo 'nameserver ${DNS_IP}' > /etc/resolv.conf"
+  # Resolver = the services-VM dnsmasq (apex -> PowerDNS, else -> upstream). A plain
+  # echo is clobbered by systemd-resolved/NetworkManager, so replace the symlink and
+  # pin it immutable (family-agnostic: works on Debian/Ubuntu AND RHEL random draws).
+  - "rm -f /etc/resolv.conf; echo 'nameserver ${DNS_IP}' > /etc/resolv.conf; chattr +i /etc/resolv.conf 2>/dev/null || true"
 UD
   cat > "${VMTEST_TMP_DIR}/md-${RUN}-${host}.yaml" <<MD
 instance-id: ${host}
@@ -106,16 +109,18 @@ echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
 # bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
 bootstrap_node() {
   local host="$1" ip="$2" role="$3"; shift 3
-  wait_ssh "$ip" 180; wait_cloudinit "$ip" 240
+  wait_ssh "$ip" 180; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
     --join-as "$role" --domain "$APEX" --env dev "$@"
 }
 
-# 1) first server = etcd init. Pre-enroll the whole subnet so the other servers
-#    + worker (cluster peers) attach without the reconciler reverting them.
+# 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet
+#    in the firewall so the other servers + worker attach as peers (a bare
+#    --pre-enroll-peer takes individual IPs — /32 — which we don't know yet; the CIDR
+#    mesh-whitelist is the right primitive for a known test subnet).
 S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
-bootstrap_node "$S1" "$S1_IP" server --acme-email "admin@${APEX}" --pre-enroll-peer "${SUB}.0/24"
+bootstrap_node "$S1" "$S1_IP" server --acme-email "admin@${APEX}" --cluster-network-cidr "${SUB}.0/24"
 wait_k3s_ready "$S1_IP" 360
 
 # 2) join token, then servers 2..N (etcd HA) and workers — each on its drawn OS.
@@ -123,11 +128,11 @@ TOKEN=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@$S1_IP" \
           "cat /var/lib/rancher/k3s/server/node-token")
 for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
   SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
-  bootstrap_node "$SH" "$SIP" server --server "https://${S1_IP}:6443" --token "$TOKEN"
+  bootstrap_node "$SH" "$SIP" server --server "https://${S1_IP}:6443" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
 done
 for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
   WH="vmt-${RUN}-w${w}"; WIP=$(boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
-  bootstrap_node "$WH" "$WIP" worker --server "https://${S1_IP}:6443" --token "$TOKEN"
+  bootstrap_node "$WH" "$WIP" worker --server "https://${S1_IP}:6443" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
 done
 wait_k3s_ready "$S1_IP" 360
 
