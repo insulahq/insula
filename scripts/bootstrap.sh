@@ -2591,13 +2591,15 @@ apply_longhorn_node_tag() {
 
   log "Tagging Longhorn node ${node_name} with 'system' (node + all disks)..."
 
-  # Up to 6 attempts (30 + a few jq seconds each = ~3 min cap). Each
-  # attempt re-reads the node, applies the tags via SSA (so additions
-  # merge cleanly on re-runs), then verifies via fresh re-read. The
-  # config-map controller occasionally clobbers spec.tags shortly
-  # after manager startup, so verify-and-retry is mandatory.
-  local attempt nodetag disktag
-  for attempt in 1 2 3 4 5 6; do
+  # Up to ${max} attempts (~8s each ⇒ ~3 min cap). Each attempt re-reads the
+  # node, applies the tags via SSA (so additions merge cleanly on re-runs),
+  # then verifies via fresh re-read. Two things need waiting-out: the
+  # config-map controller occasionally clobbers spec.tags shortly after
+  # manager startup, AND on a freshly-JOINED node (esp. constrained/slow
+  # hardware) the node.longhorn.io CR + its discovered disks take a while to
+  # register, so early attempts see an empty CR (node='' disks='').
+  local attempt nodetag disktag max=24
+  for attempt in $(seq 1 "$max"); do
     kubectl get node.longhorn.io -n longhorn-system "$node_name" -o json \
       | jq '.spec.tags = ["system"] | .spec.disks |= map_values(.tags = ["system"])' \
       | kubectl apply --server-side --force-conflicts \
@@ -2614,11 +2616,11 @@ apply_longhorn_node_tag() {
       log "  longhorn ${node_name} tagged on attempt ${attempt} (node='${nodetag}', disks contain 'system')."
       return 0
     fi
-    log "  attempt ${attempt}/6: tag did not stick (node='${nodetag}', disks='${disktag}'); retrying..."
+    log "  attempt ${attempt}/${max}: tag did not stick (node='${nodetag}', disks='${disktag}'); retrying..."
     sleep 5
   done
 
-  error "  longhorn node tag never stuck after 6 attempts — system-tier PVCs will fail to provision."
+  error "  longhorn node tag never stuck after ${max} attempts — system-tier PVCs will fail to provision."
 }
 
 # Public entry: idempotent, safe to re-run. Workers stay untagged

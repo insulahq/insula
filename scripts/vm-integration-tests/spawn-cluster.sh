@@ -120,7 +120,7 @@ bootstrap_node() {
 #    --pre-enroll-peer takes individual IPs — /32 — which we don't know yet; the CIDR
 #    mesh-whitelist is the right primitive for a known test subnet).
 S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
-bootstrap_node "$S1" "$S1_IP" server --acme-email "admin@${APEX}" --cluster-network-cidr "${SUB}.0/24"
+bootstrap_node "$S1" "$S1_IP" server --acme-email "${VMTEST_ACME_EMAIL:-admin@${APEX}}" --cluster-network-cidr "${SUB}.0/24"
 wait_k3s_ready "$S1_IP" 360
 
 # 2) join token, then servers 2..N (etcd HA) and workers — each on its drawn OS.
