@@ -87,41 +87,53 @@ boot_node() {
   echo "$ip"
 }
 
-# ── assign OSes and announce (reproducible) ─────────────────────────
-CP="vmt-${RUN}-cp1"; CP_OS="$(pick_os)"
-declare -A NODE_OS=([${CP}]="$CP_OS")
-ASSIGN="cp1=${CP_OS}"
-for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="  w${w}=${o}"; done
-echo "== spawn: ${VMTEST_SERVERS} server + ${VMTEST_WORKERS} worker on ${SUB}.0/24 =="
+# ── assign OSes to every node and announce (reproducible) ───────────
+# Default is 3 servers + 1 worker: the platform's HA mode REQUIRES >=3 server
+# nodes (etcd quorum + CNPG 1->3 instances + Deployments 2->3 with per-node
+# topologySpread; the Apply-HA button is disabled below 3 servers — see
+# docs/architecture/HA_MODE.md). 1 server can't exercise HA at all.
+declare -A NODE_OS
+ASSIGN=""
+S1="vmt-${RUN}-s1"
+for s in $(seq 1 "${VMTEST_SERVERS:-1}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-s${s}"]="$o"; ASSIGN+="s${s}=${o}  "; done
+for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="w${w}=${o}  "; done
+echo "== spawn: ${VMTEST_SERVERS} server(s) + ${VMTEST_WORKERS} worker(s) on ${SUB}.0/24 =="
 echo "   os-seed=${OS_SEED}  (reproduce with VMTEST_OS_SEED=${OS_SEED})  pool=[${OS_POOL[*]}]"
-echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+   (PINNED to ${VMTEST_OS})}"
+echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
 
-# 1) control-plane
-CP_IP=$(boot_node "$CP" 11 "$CP_OS")
-wait_ssh "$CP_IP" 180; wait_cloudinit "$CP_IP" 240
-echo "  bootstrapping control-plane @ ${CP_IP} [${CP_OS}] (--join-as server, --env dev)"
-"$REPO/scripts/bootstrap.sh" --remote "$CP_IP" --ssh-key "$VMTEST_SSH_KEY" \
-  --join-as server --domain "$APEX" --env dev --acme-email "admin@${APEX}" \
-  ${VMTEST_WORKERS:+--pre-enroll-peer "${SUB}.0/24"}
-wait_k3s_ready "$CP_IP" 360
+# bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
+bootstrap_node() {
+  local host="$1" ip="$2" role="$3"; shift 3
+  wait_ssh "$ip" 180; wait_cloudinit "$ip" 240
+  echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
+  "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
+    --join-as "$role" --domain "$APEX" --env dev "$@"
+}
 
-# 2) join token + workers (each on its drawn OS)
-TOKEN=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@$CP_IP" \
+# 1) first server = etcd init. Pre-enroll the whole subnet so the other servers
+#    + worker (cluster peers) attach without the reconciler reverting them.
+S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
+bootstrap_node "$S1" "$S1_IP" server --acme-email "admin@${APEX}" --pre-enroll-peer "${SUB}.0/24"
+wait_k3s_ready "$S1_IP" 360
+
+# 2) join token, then servers 2..N (etcd HA) and workers — each on its drawn OS.
+TOKEN=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@$S1_IP" \
           "cat /var/lib/rancher/k3s/server/node-token")
-for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
-  WH="vmt-${RUN}-w${w}"; WOS="${NODE_OS[$WH]}"; WIP=$(boot_node "$WH" "$((20+w))" "$WOS")
-  wait_ssh "$WIP" 180; wait_cloudinit "$WIP" 240
-  echo "  joining worker ${w} @ ${WIP} [${WOS}]"
-  "$REPO/scripts/bootstrap.sh" --remote "$WIP" --ssh-key "$VMTEST_SSH_KEY" \
-    --join-as worker --server "https://${CP_IP}:6443" --token "$TOKEN" --domain "$APEX" --env dev
+for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
+  SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
+  bootstrap_node "$SH" "$SIP" server --server "https://${S1_IP}:6443" --token "$TOKEN"
 done
-wait_k3s_ready "$CP_IP" 300
+for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
+  WH="vmt-${RUN}-w${w}"; WIP=$(boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
+  bootstrap_node "$WH" "$WIP" worker --server "https://${S1_IP}:6443" --token "$TOKEN"
+done
+wait_k3s_ready "$S1_IP" 360
 
 cat <<EOF
-VMTEST_CP_IP=${CP_IP}
+VMTEST_CP_IP=${S1_IP}
 VMTEST_APEX=${APEX}
 VMTEST_SSH_KEY=${VMTEST_SSH_KEY}
 VMTEST_OS_SEED=${OS_SEED}
 VMTEST_OS_ASSIGN=${ASSIGN}
 EOF
-echo "cluster up (heterogeneous: ${ASSIGN})."
+echo "cluster up (${VMTEST_SERVERS}-server HA control plane; heterogeneous: ${ASSIGN})."

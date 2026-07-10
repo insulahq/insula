@@ -213,19 +213,24 @@ construction.
 
 ## Phased implementation
 
-- **P0 — single node, cold.** `build-golden.sh` + `driver.sh` (one backend) + `spawn-cluster.sh`
-  for 1 server + `bootstrap.sh --cold` + `make smoke`. Proves the substrate.
-- **P1 — full gate.** Multi-node (server + workers via `--join-as worker` + `ClusterPendingPeer`
-  pre-enroll), Longhorn on virtual disks, PowerDNS+Pebble, MinIO backup target, `run.sh` →
-  full `integration-all` green.
+- **P0 — single node, cold.** `os-images.sh` + `driver.sh` (one backend) + `spawn-cluster.sh` for
+  1 server (`VMTEST_SERVERS=1`) + `bootstrap.sh --cold` + `make smoke`. Proves the substrate.
+- **P1 — full HA gate.** Default topology (**3 servers + 1 worker**): etcd HA control plane via
+  `--join-as server` joins + `ClusterPendingPeer` pre-enroll, Longhorn on virtual disks,
+  PowerDNS+Pebble, MinIO backup target, `run.sh` → full `integration-all` green **including HA mode**
+  (CNPG 1→3, Deployments 2→3, topologySpread).
 - **P2 — automation.** Nightly cron on the Unraid host (or a self-hosted GH runner) → cold full
   run + weekly LE-staging fidelity run; upload the report JSON. PR tier stays Tier 0 (fast).
 
 ## Resource budget
 
-Per the persistent-dev doc's headroom (10 VM slots on Unraid): a run uses **1 server + 3 workers**
-(2 vCPU / 4 GB / 40 GB each ≈ 8 vCPU, 16 GB, on overlays that start near-zero and grow). Ephemeral
-→ reclaimed on teardown, so no standing commitment. `--warm` single-node runs use ~2 vCPU / 4 GB.
+Default topology is **3 servers + 1 worker** — HA mode requires ≥3 server nodes (etcd quorum + CNPG
+1→3 + topologySpread; the Apply-HA button is disabled below 3, see `HA_MODE.md`), so 1 server can't
+test HA. That's still **4 cluster nodes** (2 vCPU / 4 GB / 40 GB each) + a **services VM** (1 vCPU /
+1.5 GB) ≈ **9 vCPU, 17.5 GB RAM**, 5 VMs — on overlays that start near-zero and grow. It sits near
+the persistent-dev doc's ~18 GB / 10-slot headroom, so one run at a time by default. Ephemeral →
+reclaimed on teardown, no standing commitment. Tighter budgets: `VMTEST_SVC_MODE=colocate` (drop the
+services VM) or trim `VMTEST_RAM_MB`; drop to `VMTEST_SERVERS=1` only when *not* exercising HA.
 
 ## Non-goals
 
