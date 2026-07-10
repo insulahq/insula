@@ -26,7 +26,9 @@ RUN="${1:?usage: net-services.sh <run-id> <apex> <octet>}"
 APEX="${2:?}"; OCTET="${3:?}"
 SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
 SVC_OS="${VMTEST_SVC_OS:-debian-13}"
-export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-/tmp/vmtest-${RUN}.key}"
+export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
+mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
+on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage
 [[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q >&2
 PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 
@@ -36,13 +38,13 @@ echo "== net-services for ${APEX} on ${SUB}.0/24 (services VM, own Docker — no
 vm_net_create "$RUN" "${SUB}.0" >&2
 
 # 2) services VM golden (Debian; services don't need OS randomisation)
-SGOLD="${VMTEST_POOL_DIR%/}/golden-${SVC_OS}.qcow2"
+SGOLD="${VMTEST_IMAGE_CACHE_DIR%/}/golden-${SVC_OS}.qcow2"
 on_host "test -f '$SGOLD'" || img_pull_golden "$(os_url "$SVC_OS")" "$SGOLD" >&2
 
 # 3) cloud-init: install Docker in the guest, run the three services on the VM's
 #    own host network (so they bind the VM IP directly: :53 :8081 :14000 :9000).
 SVC="vmt-${RUN}-svc"
-cat > "/tmp/ud-${RUN}-svc.yaml" <<UD
+cat > "${VMTEST_TMP_DIR}/ud-${RUN}-svc.yaml" <<UD
 #cloud-config
 hostname: ${SVC}
 users:
@@ -69,16 +71,16 @@ runcmd:
       -e MINIO_ROOT_USER=vmtest -e MINIO_ROOT_PASSWORD=vmtestvmtest
       minio/minio:latest server /data --console-address :9001
 UD
-cat > "/tmp/md-${RUN}-svc.yaml" <<MD
+cat > "${VMTEST_TMP_DIR}/md-${RUN}-svc.yaml" <<MD
 instance-id: ${SVC}
 local-hostname: ${SVC}
 MD
-seed_iso "/tmp/seed-${RUN}-svc" "/tmp/ud-${RUN}-svc.yaml" "/tmp/md-${RUN}-svc.yaml" \
-         "${VMTEST_POOL_DIR}/seed-${RUN}-svc.iso" >&2
+seed_iso "${VMTEST_DISK_DIR}/seed-${RUN}-svc" "${VMTEST_TMP_DIR}/ud-${RUN}-svc.yaml" \
+         "${VMTEST_TMP_DIR}/md-${RUN}-svc.yaml" "${VMTEST_DISK_DIR}/seed-${RUN}-svc.iso" >&2
 
 # 4) boot + wait for Docker/containers (cloud-init --wait blocks until runcmd done)
-img_clone "$SGOLD" "${VMTEST_POOL_DIR}/${SVC}.qcow2" 20 >&2
-vm_create "$SVC" "${VMTEST_POOL_DIR}/${SVC}.qcow2" "${VMTEST_POOL_DIR}/seed-${RUN}-svc.iso" \
+img_clone "$SGOLD" "${VMTEST_DISK_DIR}/${SVC}.qcow2" "${VMTEST_SVC_DISK_GB:-20}" >&2
+vm_create "$SVC" "${VMTEST_DISK_DIR}/${SVC}.qcow2" "${VMTEST_DISK_DIR}/seed-${RUN}-svc.iso" \
           "$RUN" "${VMTEST_SVC_VCPU:-1}" "${VMTEST_SVC_RAM_MB:-1536}" \
           "$(printf '52:54:00:%02x:%02x:02' "$OCTET" "$((RANDOM%256))")" >&2
 SVC_IP=""; for _ in $(seq 1 30); do SVC_IP=$(vm_ip "$SVC" "$RUN"); [[ -n "$SVC_IP" ]] && break; sleep 4; done

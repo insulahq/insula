@@ -22,9 +22,11 @@ done
 # per-run NAT net
 vm_net_destroy "$RUN"
 
-# overlays, seed ISOs, seed workdirs, ephemeral key, generated XML/yaml
-on_host "rm -f ${VMTEST_POOL_DIR}/vmt-${RUN}-*.qcow2 ${VMTEST_POOL_DIR}/seed-${RUN}-*.iso" || true
-on_host "rm -rf /tmp/seed-${RUN}-* /tmp/ud-${RUN}-* /tmp/md-${RUN}-* /tmp/dom-vmt-${RUN}-*.xml /tmp/net-insula-test-${RUN}.xml" || true
-rm -f "/tmp/vmtest-${RUN}.key" "/tmp/vmtest-${RUN}.key.pub" 2>/dev/null || true
+# HOST disk dir: overlays, seed ISOs, seed workdirs, libvirt XML (goldens in the
+# IMAGE CACHE are deliberately KEPT for the next run).
+on_host "rm -rf ${VMTEST_DISK_DIR}/vmt-${RUN}-*.qcow2 ${VMTEST_DISK_DIR}/seed-${RUN}-* ${VMTEST_DISK_DIR}/dom-vmt-${RUN}-*.xml ${VMTEST_DISK_DIR}/net-insula-test-${RUN}.xml" || true
+# LOCAL scratch: cloud-init user/meta-data + the ephemeral ssh key.
+rm -rf "${VMTEST_TMP_DIR}/ud-${RUN}-"* "${VMTEST_TMP_DIR}/md-${RUN}-"* 2>/dev/null || true
+rm -f  "${VMTEST_TMP_DIR}/vmtest-${RUN}.key" "${VMTEST_TMP_DIR}/vmtest-${RUN}.key.pub" 2>/dev/null || true
 
-echo "  run ${RUN} reclaimed (golden image kept for next run)."
+echo "  run ${RUN} reclaimed (cached OS images in ${VMTEST_IMAGE_CACHE_DIR} kept)."

@@ -25,7 +25,9 @@ source "$HERE/lib/waitfor.sh"
 RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
 SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
-export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-/tmp/vmtest-${RUN}.key}"
+export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
+mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
+on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage
 
 # ── OS draw (seeded, reproducible) ──────────────────────────────────
 read -ra OS_POOL <<<"${VMTEST_OS_POOL:-$(os_pool_default)}"
@@ -36,7 +38,7 @@ pick_os() { [[ -n "${VMTEST_OS:-}" ]] && { echo "$VMTEST_OS"; return; }; echo "$
 # ensure_golden <os> — fetch the per-OS base image if this run's draw needs one.
 ensure_golden() {
   local os="$1" url
-  local g="${VMTEST_POOL_DIR%/}/golden-${os}.qcow2"
+  local g="${VMTEST_IMAGE_CACHE_DIR%/}/golden-${os}.qcow2"
   os_known "$os" || { echo "unknown OS '$os' in pool" >&2; return 1; }
   on_host "test -f '$g'" && { echo "$g"; return; }
   url="$(os_url "$os")"; [[ "$url" == PIN_* ]] && { echo "OS '$os' image URL not pinned" >&2; return 1; }
@@ -50,7 +52,7 @@ PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 
 seed_for() {  # cloud-init: root key, guest-agent, our resolver (uniform across families)
   local host="$1"
-  cat > "/tmp/ud-${RUN}-${host}.yaml" <<UD
+  cat > "${VMTEST_TMP_DIR}/ud-${RUN}-${host}.yaml" <<UD
 #cloud-config
 hostname: ${host}
 manage_etc_hosts: true
@@ -64,23 +66,23 @@ runcmd:
   - [systemctl, enable, --now, qemu-guest-agent]
   - "echo 'nameserver ${DNS_IP}' > /etc/resolv.conf"
 UD
-  cat > "/tmp/md-${RUN}-${host}.yaml" <<MD
+  cat > "${VMTEST_TMP_DIR}/md-${RUN}-${host}.yaml" <<MD
 instance-id: ${host}
 local-hostname: ${host}
 MD
-  seed_iso "/tmp/seed-${RUN}-${host}" "/tmp/ud-${RUN}-${host}.yaml" "/tmp/md-${RUN}-${host}.yaml" \
-           "${VMTEST_POOL_DIR}/seed-${RUN}-${host}.iso"
+  seed_iso "${VMTEST_DISK_DIR}/seed-${RUN}-${host}" "${VMTEST_TMP_DIR}/ud-${RUN}-${host}.yaml" \
+           "${VMTEST_TMP_DIR}/md-${RUN}-${host}.yaml" "${VMTEST_DISK_DIR}/seed-${RUN}-${host}.iso"
 }
 
 # boot_node <host> <idx> <os> → echoes the node IP
 boot_node() {
   local host="$1" idx="$2" os="$3" golden overlay mac ip=""
   golden="$(ensure_golden "$os")"
-  overlay="${VMTEST_POOL_DIR}/${host}.qcow2"
+  overlay="${VMTEST_DISK_DIR}/${host}.qcow2"
   mac=$(printf '52:54:00:%02x:%02x:%02x' "$OCTET" "$((RANDOM%256))" "$idx")
   img_clone "$golden" "$overlay" "$VMTEST_DISK_GB"
   seed_for "$host"
-  vm_create "$host" "$overlay" "${VMTEST_POOL_DIR}/seed-${RUN}-${host}.iso" \
+  vm_create "$host" "$overlay" "${VMTEST_DISK_DIR}/seed-${RUN}-${host}.iso" \
             "$RUN" "$VMTEST_VCPU" "$VMTEST_RAM_MB" "$mac"
   for _ in $(seq 1 30); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
   [[ -n "$ip" ]] || { echo "no lease for $host" >&2; return 1; }
