@@ -137,3 +137,68 @@ il_run_cleanups() {
   done
   IL_CLEANUPS=()
 }
+
+# ─── idempotent-retry (genuine-transient tolerance) ──────────────────
+# il_retry <attempts> <sleep_s> <desc> <cmd-string>
+#   Runs <cmd-string> (eval'd) up to <attempts> times; success = exit 0.
+#   Between failures it sleeps <sleep_s>. On success it echoes the command's
+#   STDOUT (so callers can capture:  out=$(il_retry 3 2 "read x" "kubectl …")).
+#   ALL diagnostics go to stderr so stdout capture stays clean.
+#   Use ONLY for IDEMPOTENT reads/probes — a dropped `kubectl exec` (EOF), a
+#   momentary API-server blip. NEVER for a mutation that isn't safe to repeat.
+#   This is the antidote to "a single dropped exec fails the whole suite":
+#   a real operator would just re-run it, and so does this.
+il_retry() {
+  local attempts="$1" nap="$2" desc="$3" cmd="$4"
+  local n=0 out rc
+  while :; do
+    n=$((n+1))
+    out="$(eval "$cmd" 2>/dev/null)"; rc=$?
+    if (( rc == 0 )); then
+      (( n > 1 )) && printf '  %s•%s %s — ok on attempt %d/%d\n' "$IL_CYAN" "$IL_RESET" "$desc" "$n" "$attempts" >&2
+      printf '%s' "$out"; return 0
+    fi
+    if (( n >= attempts )); then
+      printf '  %s✗%s %s — failed after %d attempts (last rc=%d)\n' "$IL_RED" "$IL_RESET" "$desc" "$n" "$rc" >&2
+      return "$rc"
+    fi
+    printf '  %s⋯%s %s — attempt %d/%d rc=%d, retrying in %ss\n' "$IL_YELLOW" "$IL_RESET" "$desc" "$n" "$attempts" "$rc" "$nap" >&2
+    sleep "$nap"
+  done
+}
+
+# ─── webmail-engine baseline (cross-suite / cross-run isolation) ──────
+# The two webmail engines are MUTUALLY EXCLUSIVE: activating one scales the
+# other's Deployment to 0 (webmail-reconciler). BULWARK is the canonical
+# default. A suite that flips the engine and fails to restore it leaks
+# "roundcube scaled to 0" into every later scenario AND into the next run on
+# the long-lived cluster — the real cause behind "passes standalone, fails in
+# the full run". So: suites needing a specific engine MUST establish it
+# themselves (not assume), and flip-suites MUST restore to canonical.
+IL_WEBMAIL_CANONICAL_ENGINE="${IL_WEBMAIL_CANONICAL_ENGINE:-bulwark}"
+
+# il_webmail_engine_get <api_base> <token> → echoes 'bulwark'|'roundcube' (or empty on error)
+il_webmail_engine_get() {
+  local body
+  body=$(curl -sk -m 15 -H "Authorization: Bearer $2" "$1/api/v1/admin/webmail-settings" 2>/dev/null) || return 1
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$body" | jq -r '.data.defaultWebmailEngine // .defaultWebmailEngine // empty' 2>/dev/null
+  else
+    printf '%s' "$body" | sed -n 's/.*"defaultWebmailEngine"[[:space:]]*:[[:space:]]*"\([a-z]*\)".*/\1/p' | head -1
+  fi
+}
+
+# il_webmail_engine_set <api_base> <token> <engine> [settle_s]
+#   Idempotent: no-op if already at <engine>. PATCHes then sleeps <settle_s>
+#   (default 15s) so the reconciler applies the scale + annotations before the
+#   caller reads them. Returns non-zero only on a failed PATCH.
+il_webmail_engine_set() {
+  local base="$1" token="$2" want="$3" settle="${4:-15}" cur
+  cur=$(il_webmail_engine_get "$base" "$token")
+  [[ "$cur" == "$want" ]] && return 0
+  curl -sk -m 30 -X PATCH "$base/api/v1/admin/webmail-settings" \
+    -H "Authorization: Bearer $token" -H 'content-type: application/json' \
+    -d "{\"defaultWebmailEngine\":\"$want\"}" -o /dev/null 2>/dev/null || return 1
+  sleep "$settle"
+  return 0
+}

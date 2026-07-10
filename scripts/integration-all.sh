@@ -624,6 +624,48 @@ converge_host_config() {
 }
 converge_host_config
 
+# ─── Cluster-state baseline gate (2026-07-10) ────────────────────────
+# The suites share ONE long-lived cluster — and staging/production behave the
+# SAME way: Flux rolls new images in place, nothing is wiped between runs. So a
+# scenario that mutates shared state and fails to restore it poisons later
+# scenarios AND the next run. That is the real mechanism behind "passes
+# standalone, fails in the full run" — NOT randomness, NOT infra flake.
+#
+# This gate asserts the canonical baseline BEFORE the first suite. Per the
+# operator decision (2026-07-10): report any drift LOUDLY (so drift arriving
+# from a NON-test source — a genuine upgrade bug — is never silently masked),
+# then self-heal reversible config so the run proceeds. Bypass: INTEGRATION_SKIP_BASELINE=1.
+BASELINE_DRIFT_FOUND=0
+assert_baseline_state() {
+  [[ "${INTEGRATION_SKIP_BASELINE:-0}" == "1" ]] && { warn "baseline gate SKIPPED (INTEGRATION_SKIP_BASELINE=1)"; return 0; }
+  log "Cluster-state baseline gate"
+  local base="${PLATFORM_API_URL:-https://${DOMAIN}}" tok="${INTEGRATION_TOKEN:-}"
+  [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true)
+  if [[ -z "$tok" ]]; then warn "baseline gate: no admin token — cannot assert baseline (continuing)"; return 0; fi
+
+  # (1) Webmail engine must be canonical. A prior run's engine flip that failed
+  #     to restore leaks roundcube-scaled-to-0 into webmail-feature-toggle etc.
+  local eng; eng=$(il_webmail_engine_get "$base" "$tok")
+  if [[ -z "$eng" ]]; then
+    warn "baseline: could not read default_webmail_engine (skipping engine check)"
+  elif [[ "$eng" == "$IL_WEBMAIL_CANONICAL_ENGINE" ]]; then
+    pass "baseline: webmail engine = $eng (canonical)"
+  else
+    BASELINE_DRIFT_FOUND=$((BASELINE_DRIFT_FOUND+1))
+    warn "baseline DRIFT: webmail engine = '$eng' (expected '$IL_WEBMAIL_CANONICAL_ENGINE') — a prior run left it flipped; self-healing"
+    if il_webmail_engine_set "$base" "$tok" "$IL_WEBMAIL_CANONICAL_ENGINE" 20; then
+      pass "baseline: webmail engine reset → $IL_WEBMAIL_CANONICAL_ENGINE"
+    else
+      warn "baseline: engine reset PATCH failed — suites may inherit drift"
+    fi
+  fi
+
+  (( BASELINE_DRIFT_FOUND > 0 )) \
+    && warn "baseline gate: ${BASELINE_DRIFT_FOUND} drift item(s) found+healed — a prior run leaked state (see above)" \
+    || pass "baseline gate: cluster is at canonical baseline (no drift)"
+}
+assert_baseline_state
+
 # ─── Execute ──────────────────────────────────────────────────────
 # Smoke gate (P3): a fast health check BEFORE the long suites — fail in
 # seconds, not 40 minutes, if the platform is already broken. --no-smoke skips.
