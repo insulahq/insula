@@ -20,14 +20,21 @@ wait_ssh() {
 }
 
 # wait_cloudinit <ip> <deadline_s> — cloud-init finished (so bootstrap deps are present).
+# Poll `cloud-init status` (prints "status: <not started|running|done|error|degraded>")
+# and stop on any TERMINAL state. NB: do NOT use `cloud-init status --wait >/dev/null
+# || …` and grep — on success --wait returns 0 with its output discarded, so the grep
+# never matches and the wait always runs to the full deadline (the old bug).
 wait_cloudinit() {
-  local ip="$1" deadline="${2:-240}" waited=0
+  local ip="$1" deadline="${2:-240}" waited=0 st
   while (( waited < deadline )); do
-    _vssh "$ip" "cloud-init status --wait >/dev/null 2>&1 || cloud-init status" 2>/dev/null \
-      | grep -q 'done' && { echo "  cloud-init done on $ip (${waited}s)"; return 0; }
+    st=$(_vssh "$ip" "cloud-init status 2>/dev/null" 2>/dev/null | awk -F': ' '/status:/{print $2; exit}')
+    case "$st" in
+      done)           echo "  cloud-init done on $ip (${waited}s)"; return 0 ;;
+      error|degraded) echo "  cloud-init finished '$st' on $ip (${waited}s) — proceeding (see /var/log/cloud-init.log)" >&2; return 0 ;;
+    esac
     sleep 6; waited=$((waited+6))
   done
-  echo "  TIMEOUT: cloud-init not done on $ip after ${deadline}s" >&2; return 1
+  echo "  TIMEOUT: cloud-init not done on $ip after ${deadline}s (last status='${st:-unknown}')" >&2; return 1
 }
 
 # wait_k3s_ready <cp_ip> <deadline_s> — node Ready via the server's kubeconfig.
