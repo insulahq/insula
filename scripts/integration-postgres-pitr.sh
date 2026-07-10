@@ -104,6 +104,26 @@ $sql
 EOF
 }
 
+# psql_ro — RETRIED read-only query. The ssh→kubectl-exec hop can drop a
+# connection mid-flight ("unexpected EOF"): a genuine, rare transient that was
+# turning a valid SELECT into a suite failure (the rc.20 9b false red). Retries
+# up to 3× with a 3s backoff. SAFE FOR READS ONLY — never route an INSERT/DDL
+# through this (a committed-then-dropped write would double on retry). This
+# also removes a hazard at the call sites: they used `psql_pg … || echo "0"`,
+# which masks a dropped exec AS the data value 0 — i.e. a transient could read
+# "marker lost" and FALSELY fail a correctness assertion. Retrying first, then
+# falling back, keeps the fallback as a genuine-last-resort rather than a
+# transient-swallower.
+psql_ro() {
+  local sql="$1" n=0 out
+  while :; do
+    n=$((n+1))
+    if out=$(psql_pg "$sql" 2>/dev/null); then printf '%s' "$out"; return 0; fi
+    (( n >= 3 )) && return 1
+    sleep 3
+  done
+}
+
 # Force a WAL segment switch so a freshly-inserted row is flushed into
 # the archived WAL — required in WITH_WAL mode so the temp cluster can
 # replay it from the barman object store up to recoveryTargetTime.
@@ -360,19 +380,19 @@ fi
 pass "source healthy: $PHASE_AFTER"
 
 log "9) Round-trip assertion"
-ROW_PRE=$(psql_pg "SELECT label FROM e2e_pitr_marker WHERE id=1;" 2>/dev/null || echo "")
+ROW_PRE=$(psql_ro "SELECT label FROM e2e_pitr_marker WHERE id=1;" || echo "")
 echo "  pre-snapshot row: '$ROW_PRE' (expect 'pre-snapshot')"
 [[ "$ROW_PRE" = "pre-snapshot" ]] || fail "pre-snapshot row missing — restore lost data!"
 if [[ "$WITH_WAL" = "1" ]]; then
-  ROW_A=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=500;" 2>/dev/null || echo "0")
-  ROW_B=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" 2>/dev/null || echo "0")
+  ROW_A=$(psql_ro "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=500;" || echo "0")
+  ROW_B=$(psql_ro "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" || echo "0")
   echo "  marker A (id=500, pre-target) count: $ROW_A (expect 1 — WAL replayed up to target)"
   echo "  marker B (id=999, post-target) count: $ROW_B (expect 0 — replay stopped at target)"
   [[ "$ROW_A" = "1" ]] || fail "marker A missing — WAL replay didn't reach target time (target too early?)"
   [[ "$ROW_B" = "0" ]] || fail "marker B survived — WAL replayed BEYOND recoveryTargetTime!"
   pass "WAL round-trip verified: replay reached target (A present) + stopped there (B gone)"
 else
-  ROW_POST=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" 2>/dev/null || echo "0")
+  ROW_POST=$(psql_ro "SELECT COUNT(*) FROM e2e_pitr_marker WHERE id=999;" || echo "0")
   echo "  post-snapshot row count: $ROW_POST (expect 0)"
   [[ "$ROW_POST" = "0" ]] || fail "post-snapshot row survived — restore did NOT roll back!"
   pass "round-trip verified: only pre-snapshot data present"
@@ -387,7 +407,7 @@ if [[ -n "$JOB_NAME" ]]; then
   NEW_PRIMARY=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}' 2>/dev/null || echo "")
 
   log "9a) Path selection: create-temp-cluster SKIPPED?"
-  CHIP_STEPS_RAW=$(psql_pg "SELECT details->'steps' FROM tasks WHERE ref_id='$JOB_NAME';" 2>/dev/null || echo "")
+  CHIP_STEPS_RAW=$(psql_ro "SELECT details->'steps' FROM tasks WHERE ref_id='$JOB_NAME';" || echo "")
   if [[ "$WITH_WAL" = "1" ]]; then
     if printf '%s' "$CHIP_STEPS_RAW" | grep -q 'SKIPPED'; then
       fail "WAL mode took the fast-path (SKIPPED) — slow-path required for WAL replay"
@@ -436,7 +456,7 @@ if [[ -n "$JOB_NAME" ]]; then
   fi
 
   log "9c) Task-center chip persistence (modal-reopen must render history)"
-  CHIP_ROW=$(psql_pg "SELECT status || '|' || jsonb_array_length(COALESCE(details->'steps','[]'::jsonb)) FROM tasks WHERE ref_id='$JOB_NAME';" 2>/dev/null || echo "")
+  CHIP_ROW=$(psql_ro "SELECT status || '|' || jsonb_array_length(COALESCE(details->'steps','[]'::jsonb)) FROM tasks WHERE ref_id='$JOB_NAME';" || echo "")
   CHIP_STATUS="${CHIP_ROW%%|*}"
   CHIP_STEPS_LEN="${CHIP_ROW##*|}"
   echo "  chip: status=$CHIP_STATUS steps=$CHIP_STEPS_LEN"

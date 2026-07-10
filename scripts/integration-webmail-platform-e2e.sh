@@ -115,7 +115,27 @@ ORIG_WEBMAIL_URL=""             # populated in --hostname-rename mode
 WEBMAIL_URL_RESTORE_NEEDED=0
 trap 'cleanup_on_exit' EXIT
 
+# Re-mint the admin token. A full --engine-loop run (two flips + settle +
+# provisioning) can outlive the 30-min access-token TTL, and EVERY restore in
+# cleanup is Bearer-auth'd with `|| true`. Without a fresh token the engine
+# restore would silently 401 and LEAK the flipped engine into the next run —
+# the cross-run state leak behind roundcube-scaled-to-0. Best-effort: on a
+# failed re-mint we keep the existing token (it may still be valid).
+remint_admin_token() {
+  local resp new
+  resp=$(curl "${CURL_OPTS[@]}" -X POST "${API_BASE}/api/v1/auth/login" \
+    -H 'content-type: application/json' \
+    -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}" 2>/dev/null || true)
+  new=$(echo "$resp" | jq -r '.data.token // empty' 2>/dev/null || true)
+  [[ -n "$new" ]] && ADMIN_TOKEN="$new"
+}
+
 cleanup_on_exit() {
+  # Re-mint FIRST so the restores below actually land (see remint_admin_token).
+  if [[ ( "$WEBMAIL_URL_RESTORE_NEEDED" == "1" || "$ENGINE_RESTORE_NEEDED" == "1" || -n "$TENANT_ID" ) \
+        && -n "${ADMIN_EMAIL:-}" && -n "${ADMIN_PASSWORD:-}" ]]; then
+    remint_admin_token
+  fi
   # Restore the webmail URL FIRST — a non-default value left behind would
   # point the tenant panel at a host the ingress no longer serves.
   if [[ "$WEBMAIL_URL_RESTORE_NEEDED" == "1" && -n "$ORIG_WEBMAIL_URL" && -n "${ADMIN_TOKEN:-}" ]]; then
