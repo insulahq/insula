@@ -59,23 +59,32 @@ users:
 disable_root: false
 ssh_pwauth: false
 package_update: true
-packages: [docker.io, ca-certificates, qemu-guest-agent]
+packages: [docker.io, ca-certificates, qemu-guest-agent, dnsmasq-base, sqlite3]
 runcmd:
   - [systemctl, enable, --now, qemu-guest-agent]
   - [systemctl, enable, --now, docker]
-  # PowerDNS (authoritative for <apex> + REST API for the platform's provider group).
-  # NB: gsqlite3 schema init is first-run-tunable (seed /var/lib/powerdns/pdns.sqlite3
-  # from the image's schema.sql before first start).
-  - docker run -d --name pdns --restart=always --network host
-      -e PDNS_api=yes -e PDNS_api_key=${PDNS_KEY}
-      -e PDNS_launch=gsqlite3 -e PDNS_gsqlite3_database=/var/lib/powerdns/pdns.sqlite3
-      powerdns/pdns-auth-49:latest
-  - docker run -d --name pebble --restart=always --network host
-      -e PEBBLE_VA_NOSLEEP=1
-      letsencrypt/pebble:latest pebble -dnsserver 127.0.0.1:53
-  - docker run -d --name minio --restart=always --network host
-      -e MINIO_ROOT_USER=${MINIO_USER} -e MINIO_ROOT_PASSWORD=${MINIO_PW}
-      minio/minio:latest server /data --console-address :9001
+  # --- PowerDNS: authoritative for <apex> + REST API for the platform's DNS provider
+  #     group. Binds loopback:5300 (unprivileged; no clash with systemd-resolved's
+  #     127.0.0.53:53 stub). gsqlite3 needs its schema seeded before first start. ---
+  - mkdir -p /var/lib/powerdns
+  # --entrypoint cat: bypass the image's pdns_server-startup entrypoint to read the file.
+  - "docker run --rm --entrypoint cat powerdns/pdns-auth-49:latest /usr/local/share/doc/pdns/schema.sqlite3.sql > /var/lib/powerdns/schema.sql"
+  - "test -s /var/lib/powerdns/pdns.sqlite3 || sqlite3 /var/lib/powerdns/pdns.sqlite3 < /var/lib/powerdns/schema.sql"
+  # The container's non-root pdns user must WRITE the sqlite DB (+ dir, for -wal/-journal)
+  # or it dies with "attempt to write a readonly database". Throwaway VM → world-writable.
+  - chmod -R 0777 /var/lib/powerdns
+  # Config via CLI flags (passed through pdns_server-startup), NOT PDNS_* env — this
+  # image's startup wrapper does not map them, so env-only left pdns on the 0.0.0.0:53 default.
+  - "docker run -d --name pdns --restart=always --network host -v /var/lib/powerdns:/var/lib/powerdns powerdns/pdns-auth-49:latest --launch=gsqlite3 --gsqlite3-database=/var/lib/powerdns/pdns.sqlite3 --local-address=127.0.0.1 --local-port=5300 --api=yes --api-key=${PDNS_KEY} --webserver=yes --webserver-address=0.0.0.0 --webserver-port=8081 --webserver-allow-from=0.0.0.0/0"
+  # --- dnsmasq split-horizon resolver = this VM's IP (VMTEST_DNS_IP for cluster nodes):
+  #     <apex> -> PowerDNS:5300 (authoritative); everything else -> upstream. Binds the
+  #     VM IP + loopback (Pebble queries 127.0.0.1:53); leaves resolved's stub alone. ---
+  - "/usr/sbin/dnsmasq --listen-address=127.0.0.1,\$(hostname -I | awk '{print \$1}') --bind-interfaces --no-resolv --server=/${APEX}/127.0.0.1#5300 --server=${VMTEST_UPSTREAM_DNS:-1.1.1.1}"
+  # --- Pebble test ACME CA (ghcr — docker-hub letsencrypt/pebble does NOT exist).
+  #     Image entrypoint is already the pebble binary (/app), so pass only its flags. ---
+  - "docker run -d --name pebble --restart=always --network host -e PEBBLE_VA_NOSLEEP=1 ghcr.io/letsencrypt/pebble:latest -dnsserver 127.0.0.1:53"
+  # --- MinIO S3 backup target ---
+  - "docker run -d --name minio --restart=always --network host -e MINIO_ROOT_USER=${MINIO_USER} -e MINIO_ROOT_PASSWORD=${MINIO_PW} minio/minio:latest server /data --console-address :9001"
 UD
 cat > "${VMTEST_TMP_DIR}/md-${RUN}-svc.yaml" <<MD
 instance-id: ${SVC}
@@ -91,7 +100,7 @@ vm_create "$SVC" "${VMTEST_DISK_DIR}/${SVC}.qcow2" "${VMTEST_DISK_DIR}/seed-${RU
           "$(printf '52:54:00:%02x:%02x:02' "$OCTET" "$((RANDOM%256))")" >&2
 SVC_IP=""; for _ in $(seq 1 30); do SVC_IP=$(vm_ip "$SVC" "$RUN"); [[ -n "$SVC_IP" ]] && break; sleep 4; done
 [[ -n "$SVC_IP" ]] || { echo "no lease for services VM" >&2; exit 1; }
-wait_ssh "$SVC_IP" 180 >&2; wait_cloudinit "$SVC_IP" 300 >&2   # cloud-init done ⇒ containers launched
+wait_ssh "$SVC_IP" 180 >&2; wait_cloudinit "$SVC_IP" 900 >&2   # cloud-init done ⇒ containers launched (docker install + 4 image pulls on 1 vCPU is slow)
 
 echo "  services VM @ ${SVC_IP}: PowerDNS :53/:8081  Pebble :14000  MinIO :9000" >&2
 

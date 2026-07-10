@@ -90,17 +90,23 @@ vm_net_create() {
   local name="insula-test-${run}" gw="${cidr%.*}.1"
   VIRSH net-info "$name" >/dev/null 2>&1 && return 0
   local xml; xml=$(cat <<XML
-<network>
+<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>${name}</name>
   <forward mode='nat'/>
   <bridge name='vtest${run:0:6}' stp='on' delay='0'/>
   <!-- DHCP only, DNS off: a host-wide resolver (AdGuardHome/pi-hole) commonly binds
        *:53, so libvirt's per-net dnsmasq can't bind gw:53 ("Address already in use").
-       VMs get their resolver via cloud-init (PowerDNS in the full rig). -->
+       Instead we ADVERTISE an upstream resolver via DHCP option 6 (no libvirt DNS
+       process → no :53 conflict), so every VM can resolve external names for its
+       cloud-init (docker/apt) and bootstrap.sh. Cluster nodes override to PowerDNS
+       via cloud-init for split-horizon apex resolution. -->
   <dns enable='no'/>
   <ip address='${gw}' netmask='255.255.255.0'>
     <dhcp><range start='${cidr%.*}.10' end='${cidr%.*}.99'/></dhcp>
   </ip>
+  <dnsmasq:options>
+    <dnsmasq:option value='dhcp-option=6,${VMTEST_UPSTREAM_DNS:-1.1.1.1}'/>
+  </dnsmasq:options>
 </network>
 XML
 )
