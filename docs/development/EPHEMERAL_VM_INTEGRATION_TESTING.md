@@ -149,21 +149,33 @@ Ubuntu 22.04/24.04 LTS; **Tier-2** RHEL/Rocky/Alma 9, CentOS Stream 9/10, Amazon
 `scripts/test-bootstrap-os-matrix.sh` already covers this **in containers** — but a container
 can only prove the *dispatch logic* (`check_os`, apt-vs-dnf branch selection). It cannot boot a
 real kernel, run systemd, install k3s, mount Longhorn, or apply host-migrations. **The VM tier
-is the only place the full install is proven per OS.** So:
+is the only place the full install is proven per OS.**
 
+**Strategy: random OS per node — no fixed set, never all-at-once.** Every node in a run draws a
+random OS from the supported pool (`lib/os-registry.sh`), so a single run is a **heterogeneous
+cluster** — e.g. a Debian control-plane with Rocky + Ubuntu + Alma workers. That is both:
+
+- a **real-world scenario** — operators add nodes over time on whatever OS is current, so mixed-OS
+  clusters happen in production and deserve direct testing; and
+- **statistically self-covering** — over many runs the draws sample the whole matrix, so coverage
+  accumulates without any run paying for all 8 (which a fixed exhaustive sweep would).
+
+**PR, nightly, and pre-release all use this same random-per-node model.** They differ only in
+node count / suite scope / how many runs — *not* in OS strategy. More nodes and more nightly runs
+simply sample more of the matrix faster.
+
+Mechanics:
 - `lib/os-registry.sh` maps each supported OS id → its **stock generic cloud image** (no baked
-  content — `bootstrap.sh` does the install, so the real per-OS path runs). Amazon Linux 2023
-  has no stable `latest` symlink, so its URL is a `PIN_…` placeholder to fill from the current
-  build.
-- `os-images.sh <os|all>` caches one golden per OS; `spawn-cluster.sh` clones the per-OS golden.
-- **`run-matrix.sh`** runs the full throw-away flow **once per OS**, each in its own fresh
-  cluster + teardown (same isolation principle as per-run teardown, applied across the matrix),
-  and prints a pass/fail table. Root login is enabled uniformly by the cloud-init seed, so
-  `bootstrap.sh --remote` (SSHes as root) works on every family unchanged.
-
-Config: `VMTEST_OS` (single-run default) and `VMTEST_OS_MATRIX` (the sweep set — default is both
-tier-1 families + one tier-2 for a strong signal without paying for all 8). Cheap PR runs stay
-single-OS (Debian); the nightly does the matrix; a pre-release does the full 8.
+  content — `bootstrap.sh` does the install, so the real per-OS path runs). Amazon Linux 2023 has
+  no stable `latest` symlink, so its URL is a `PIN_…` placeholder excluded from the pool until filled.
+- `spawn-cluster.sh` draws a random OS per node from `VMTEST_OS_POOL` (empty ⇒ **all** supported
+  OSes) and fetches only the goldens it drew. Root login is enabled uniformly by the cloud-init
+  seed, so `bootstrap.sh --remote` (SSHes as root) works on every family; bootstrap auto-detects
+  `OS_FAMILY` itself.
+- **Reproducible:** the draw is seeded. `spawn-cluster` prints `os-seed=<n>` and the full
+  assignment (`cp1=debian-13  w1=rocky-9  …`); a failed `run.sh` echoes the exact
+  `VMTEST_OS_SEED=<n>` to replay that same cluster. Pin every node to one OS with `VMTEST_OS=<id>`
+  (or `run.sh --os <id>`) to isolate an OS-specific bug.
 
 ## Layout
 
@@ -175,11 +187,10 @@ scripts/vmtest/
     os-registry.sh          # supported-OS → stock cloud-image map (the matrix)
     driver.sh               # libvirt-sock | ssh-host backends (the contract above)
     waitfor.sh              # wait-for-ssh, wait-for-k3s-ready, wait-for-flux
-  os-images.sh              # fetch/cache the per-OS golden base image(s) (list|<os>|all)
+  os-images.sh              # fetch/cache golden base image(s) (list|<os>|all=pool)
   net-services.sh           # per-run NAT net + PowerDNS + Pebble + MinIO containers
-  spawn-cluster.sh          # overlay-clone N VMs (per-OS golden), bootstrap.sh --remote
-  run.sh                    # one run: golden→net→spawn→integration-all→report→teardown
-  run-matrix.sh             # multi-OS sweep: run.sh once per OS, aggregate table
+  spawn-cluster.sh          # draw a RANDOM OS per node, overlay-clone, bootstrap.sh --remote
+  run.sh                    # one run: net→spawn(mixed-OS)→integration-all→report→teardown
   teardown.sh               # throw everything away (trap-safe)
 ```
 

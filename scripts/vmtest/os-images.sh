@@ -3,7 +3,7 @@
 #
 # Usage:  os-images.sh [list | <os-id> | all]
 #   (no arg) → the configured VMTEST_OS      list → print the supported matrix
-#   <os-id>  → one OS from lib/os-registry.sh  all → every OS in VMTEST_OS_MATRIX
+#   <os-id>  → one OS from lib/os-registry.sh  all → every OS in the pool (default)
 #
 # A "golden" is just the STOCK generic cloud image for an OS, cached read-only as
 # the qcow2 BACKING file for per-run overlays. Nothing platform-specific is baked:
@@ -35,17 +35,20 @@ fetch_one() {
     && echo "  OK (qcow2)" || { echo "  '${dest}' is not a valid qcow2" >&2; return 1; }
 }
 
-case "${1:-$VMTEST_OS}" in
+# No arg → pre-warm the whole randomisation pool (spawn-cluster also fetches per
+# drawn OS on demand, so this is just an optional warm-up).
+case "${1:-all}" in
   list)
     printf '%-20s %-8s %s\n' OS FAMILY TIER
     while read -r os; do printf '%-20s %-8s %s\n' "$os" "$(os_family "$os")" "$(os_tier "$os")"; done < <(os_list)
     ;;
   all)
-    rc=0; for os in $VMTEST_OS_MATRIX; do fetch_one "$os" || rc=1; done
-    echo "done (matrix: ${VMTEST_OS_MATRIX})."; exit "$rc"
+    pool="${VMTEST_OS_POOL:-$(os_pool_default)}"
+    rc=0; for os in $pool; do fetch_one "$os" || rc=1; done
+    echo "done (pool: ${pool})."; exit "$rc"
     ;;
   *)
-    fetch_one "${1:-$VMTEST_OS}"
+    fetch_one "$1"
     echo "done. Overlays clone from this backing file at spawn time (seconds each)."
     ;;
 esac
