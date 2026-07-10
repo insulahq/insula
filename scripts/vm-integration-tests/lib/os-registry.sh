@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/lib/os-registry.sh — the supported-OS → cloud-image map.
+# scripts/vm-integration-tests/lib/os-registry.sh — the supported-OS → cloud-image map.
 #
 # Mirrors the platform's OS support matrix (CLAUDE.md → "Supported OSes";
 # bootstrap.sh dispatches apt vs dnf via OS_FAMILY and fails fast on EOL). These

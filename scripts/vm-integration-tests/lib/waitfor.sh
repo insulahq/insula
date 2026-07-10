@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/lib/waitfor.sh — bounded readiness waits for the VM tier.
+# scripts/vm-integration-tests/lib/waitfor.sh — bounded readiness waits for the VM tier.
 # Mirrors the fail-fast philosophy of scripts/lib/integration-lib.sh: never wait
 # the full deadline on a terminal failure, always report elapsed time.
 set -euo pipefail

@@ -4,7 +4,7 @@
 > (keep-the-VMs, `br0`+DHCP). For the **throw-away, fresh-per-run integration-test**
 > substrate — the CI/nightly gate — see
 > [`EPHEMERAL_VM_INTEGRATION_TESTING.md`](./EPHEMERAL_VM_INTEGRATION_TESTING.md) and
-> `scripts/vmtest/`. Same machinery (`virsh`+cloud-init+`bootstrap.sh`), different
+> `scripts/vm-integration-tests/`. Same machinery (`virsh`+cloud-init+`bootstrap.sh`), different
 > lifecycle. NB: the version-pin list below has drifted (the platform is **Traefik**,
 > not ingress-nginx) — always read pins from `scripts/bootstrap.sh`, never hardcode.
 

@@ -1,4 +1,4 @@
-# `scripts/vmtest/` — ephemeral VM integration-test tier
+# `scripts/vm-integration-tests/` — ephemeral VM integration-test tier
 
 Throw-away KVM cluster per run, `bootstrap.sh` verbatim, then the full
 `integration-all.sh`. Design: [`docs/development/EPHEMERAL_VM_INTEGRATION_TESTING.md`](../../docs/development/EPHEMERAL_VM_INTEGRATION_TESTING.md).
@@ -30,14 +30,14 @@ Docker**: the DNS/ACME/S3 services run in a throw-away services VM's own Docker.
 Then:
 
 ```bash
-cp scripts/vmtest/config.example.env scripts/vmtest/config.env
-$EDITOR scripts/vmtest/config.env          # set VMTEST_DRIVER + enablement + apex + OS
+cp scripts/vm-integration-tests/config.example.env scripts/vm-integration-tests/config.env
+$EDITOR scripts/vm-integration-tests/config.env          # set VMTEST_DRIVER + enablement + apex + OS
 
-./scripts/vmtest/os-images.sh list         # show the supported-OS matrix
-./scripts/vmtest/os-images.sh all          # pre-warm all pool goldens (optional)
-./scripts/vmtest/run.sh                     # one run: RANDOM OS per node (heterogeneous cluster)
-./scripts/vmtest/run.sh --os debian-13      # pin every node to one OS (debug an OS-specific bug)
-./scripts/vmtest/run.sh --seed 12345        # replay a past run's exact OS assignment
+./scripts/vm-integration-tests/os-images.sh list         # show the supported-OS matrix
+./scripts/vm-integration-tests/os-images.sh all          # pre-warm all pool goldens (optional)
+./scripts/vm-integration-tests/run.sh                     # one run: RANDOM OS per node (heterogeneous cluster)
+./scripts/vm-integration-tests/run.sh --os debian-13      # pin every node to one OS (debug an OS-specific bug)
+./scripts/vm-integration-tests/run.sh --seed 12345        # replay a past run's exact OS assignment
 ```
 
 Every run draws a **random OS per node** from the supported pool, so a single cluster

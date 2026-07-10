@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/run.sh — one throw-away integration run, end to end:
+# scripts/vm-integration-tests/run.sh — one throw-away integration run, end to end:
 #   golden → per-run net+DNS+ACME+S3 → spawn+bootstrap cluster → integration-all
 #   → report JSON → teardown (always, via trap).
 #

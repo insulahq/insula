@@ -1,6 +1,6 @@
 # Ephemeral VM Integration Testing (Unraid / libvirt)
 
-> **Status:** DESIGN — scripts scaffolded under `scripts/vmtest/`, NOT yet wired to live
+> **Status:** DESIGN — scripts scaffolded under `scripts/vm-integration-tests/`, NOT yet wired to live
 > orchestration (needs one operator enablement step, below).
 > **Last updated:** 2026-07-10
 > **Supersedes for the *test* use case:** [`LOCAL_MULTINODE_VM_SETUP.md`](./LOCAL_MULTINODE_VM_SETUP.md)
@@ -74,7 +74,7 @@ per-OS cloud image (registry)         qcow2 OVERLAY per VM  ────┐     
 ## Driver abstraction (resolves the "sandbox has no KVM" blocker)
 
 This sandbox has **no `/dev/kvm`** — but it doesn't need it. KVM runs on the Unraid host; the
-sandbox is only the libvirt *client*. `scripts/vmtest/lib/driver.sh` abstracts the transport so
+sandbox is only the libvirt *client*. `scripts/vm-integration-tests/lib/driver.sh` abstracts the transport so
 the enablement choice is a one-line config, and the rest of the tooling is transport-agnostic:
 
 | `VMTEST_DRIVER` | How | Enablement (operator, one-time) |
@@ -118,7 +118,7 @@ dedicated one.) Two fidelity tiers:
 | **fast** (default, every run) | **Pebble** (in the services VM) test CA | **PowerDNS** (in the services VM), authoritative for the apex + resolver for the VM net | every ephemeral run | none |
 | **fidelity** (nightly/weekly) | **LE staging** endpoint | PowerDNS on a *publicly-delegated* subzone, real DNS-01 | catch real ACME/DNS-01 quirks | LE-staging (generous) |
 
-- **PowerDNS** (`scripts/vmtest/net-services.sh`) is authoritative for the run's apex (e.g.
+- **PowerDNS** (`scripts/vm-integration-tests/net-services.sh`) is authoritative for the run's apex (e.g.
   `t<runid>.insula.test`) **and** is set as the VMs' resolver (cloud-init `/etc/resolv.conf`), so
   `admin.<apex>`, `mail.<apex>`, `*.ingress.<apex>` resolve internally. The platform's DNS
   provider group points at this PowerDNS REST endpoint — exercising the real record-CRUD path.
@@ -141,7 +141,7 @@ DOMAIN=admin.<apex>     API_BASE=https://admin.<apex>   PLATFORM_API_URL=…
 ADMIN_EMAIL / ADMIN_PASSWORD    CURL_CA_BUNDLE=<pebble-ca> | CURL_INSECURE=1
 ```
 
-`scripts/vmtest/run.sh` sets these, runs the host-config converger preflight + **baseline gate**
+`scripts/vm-integration-tests/run.sh` sets these, runs the host-config converger preflight + **baseline gate**
 (both already in `integration-all.sh`), then the suites, and writes `--report-json`. On a fresh
 cluster the baseline gate should always report *no drift* — if it ever reports drift on a
 brand-new VM, that's a **real bug** (bootstrap/host-migration left the cluster non-canonical),
@@ -189,7 +189,7 @@ Mechanics:
 ## Layout
 
 ```
-scripts/vmtest/
+scripts/vm-integration-tests/
   README.md                 # quickstart + enablement
   config.example.env        # tunables (driver, OS, matrix, node count, ACME, backup)
   lib/

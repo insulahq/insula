@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/spawn-cluster.sh — clone overlays, boot N VMs, run bootstrap.sh
+# scripts/vm-integration-tests/spawn-cluster.sh — clone overlays, boot N VMs, run bootstrap.sh
 # VERBATIM inside them, wait for a Ready k3s cluster. Echoes the cluster coords.
 #
 # EACH NODE gets a RANDOM OS drawn from the supported pool (not a fixed set) — so a
