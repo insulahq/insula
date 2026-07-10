@@ -31,7 +31,8 @@ export VMTEST_OS VMTEST_OS_POOL VMTEST_OS_SEED   # spawn-cluster.sh draws per-no
 RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"        # unique per run
 OCTET="$(( (16#${RUN:0:2}) % 90 + 1 ))"               # 10.98.<1..90>.0/24
 APEX="$(printf "$VMTEST_APEX_TMPL" "$RUN")"
-REPORT="${VMTEST_POOL_DIR%/}/report-${RUN}.json"
+mkdir -p "$VMTEST_REPORT_DIR"                          # local (report written by local integration-all)
+REPORT="${VMTEST_REPORT_DIR%/}/report-${RUN}.json"
 echo "════ vmtest run ${RUN}  apex=${APEX}  net=10.98.${OCTET}.0/24  mode=${VMTEST_MODE}${VMTEST_OS:+  OS-PINNED=${VMTEST_OS}} ════"
 
 cleanup() {

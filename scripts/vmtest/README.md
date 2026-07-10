@@ -25,7 +25,7 @@ Docker**: the DNS/ACME/S3 services run in a throw-away services VM's own Docker.
 | `VMTEST_DRIVER` | Do this |
 |---|---|
 | `ssh-host` *(recommended)* | put an SSH key to the Unraid host at `VMTEST_HOST_SSH_KEY`; ensure `virsh`/`qemu-img` exist on the host (no host Docker needed) |
-| `libvirt-sock` | bind-mount the host's `/var/run/libvirt/libvirt-sock` into this env; `apt install libvirt-clients qemu-utils genisoimage`; bind-mount `VMTEST_POOL_DIR` at the same path both sides |
+| `libvirt-sock` | bind-mount the host's `/var/run/libvirt/libvirt-sock` into this env; `apt install libvirt-clients qemu-utils genisoimage`; bind-mount the host storage dirs (`VMTEST_IMAGE_CACHE_DIR` + `VMTEST_DISK_DIR`) at the same path both sides |
 
 Then:
 
@@ -44,6 +44,18 @@ Every run draws a **random OS per node** from the supported pool, so a single cl
 is heterogeneous (e.g. Debian control-plane + Rocky/Ubuntu workers). Coverage over
 the whole matrix accumulates across runs — no fixed set, never all-at-once. The draw
 is seeded and printed (`os-seed=…`) so any failure is exactly reproducible.
+
+## Config
+
+Everything lives in `config.env` (copied from `config.example.env`) — VM specs
+(`VMTEST_VCPU`/`RAM_MB`/`DISK_GB`, and `VMTEST_SVC_*` for the services VM) and all
+storage paths. Two path classes:
+
+- **HOST** (qemu reads): `VMTEST_IMAGE_CACHE_DIR` (cached OS goldens, persistent) and
+  `VMTEST_DISK_DIR` (per-run VM disk overlays + seed ISOs, ephemeral). Both default
+  under `VMTEST_POOL_DIR` but are independently overridable — e.g. cache OS images on
+  bulk storage, put churny VM disks on SSD.
+- **LOCAL** (this env): `VMTEST_TMP_DIR` (ssh keys, cloud-init) and `VMTEST_REPORT_DIR`.
 
 ## Files
 

@@ -82,10 +82,11 @@ vm_net_create() {
 </network>
 XML
 )
-  on_host "cat > /tmp/net-${name}.xml <<'NETXML'
+  local xmlf="${VMTEST_DISK_DIR:-/tmp}/net-${name}.xml"
+  on_host "cat > '${xmlf}' <<'NETXML'
 ${xml}
 NETXML"
-  VIRSH net-define "/tmp/net-${name}.xml"
+  VIRSH net-define "$xmlf"
   VIRSH net-start "$name"
 }
 vm_net_destroy() {
@@ -125,10 +126,11 @@ vm_create() {
 </domain>
 XML
 )
-  on_host "cat > /tmp/dom-${name}.xml <<'DOMXML'
+  local xmlf="${VMTEST_DISK_DIR:-/tmp}/dom-${name}.xml"
+  on_host "cat > '${xmlf}' <<'DOMXML'
 ${xml}
 DOMXML"
-  VIRSH define "/tmp/dom-${name}.xml"
+  VIRSH define "$xmlf"
   VIRSH start  "$name"
 }
 

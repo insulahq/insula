@@ -18,7 +18,7 @@ source "${VMTEST_CONFIG:-$HERE/config.env}"
 source "$HERE/lib/os-registry.sh"
 source "$HERE/lib/driver.sh"
 
-golden_path() { echo "${VMTEST_POOL_DIR%/}/golden-$1.qcow2"; }
+golden_path() { echo "${VMTEST_IMAGE_CACHE_DIR%/}/golden-$1.qcow2"; }
 
 fetch_one() {
   local os="$1" url dest
