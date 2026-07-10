@@ -128,11 +128,11 @@ TOKEN=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@$S1_IP" \
           "cat /var/lib/rancher/k3s/server/node-token")
 for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
   SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
-  bootstrap_node "$SH" "$SIP" server --server "https://${S1_IP}:6443" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
+  bootstrap_node "$SH" "$SIP" server --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
 done
 for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
   WH="vmt-${RUN}-w${w}"; WIP=$(boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
-  bootstrap_node "$WH" "$WIP" worker --server "https://${S1_IP}:6443" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
+  bootstrap_node "$WH" "$WIP" worker --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
 done
 wait_k3s_ready "$S1_IP" 360
 
