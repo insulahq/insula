@@ -30,11 +30,16 @@ cp scripts/vmtest/config.example.env scripts/vmtest/config.env
 $EDITOR scripts/vmtest/config.env          # set VMTEST_DRIVER + enablement + apex + OS
 
 ./scripts/vmtest/os-images.sh list         # show the supported-OS matrix
-./scripts/vmtest/os-images.sh debian-13    # cache one OS golden (or: all)
-./scripts/vmtest/run.sh                     # one throw-away run on VMTEST_OS
-./scripts/vmtest/run.sh --os ubuntu-24.04   # …on a specific OS
-./scripts/vmtest/run-matrix.sh              # sweep VMTEST_OS_MATRIX, one run per OS
+./scripts/vmtest/os-images.sh all          # pre-warm all pool goldens (optional)
+./scripts/vmtest/run.sh                     # one run: RANDOM OS per node (heterogeneous cluster)
+./scripts/vmtest/run.sh --os debian-13      # pin every node to one OS (debug an OS-specific bug)
+./scripts/vmtest/run.sh --seed 12345        # replay a past run's exact OS assignment
 ```
+
+Every run draws a **random OS per node** from the supported pool, so a single cluster
+is heterogeneous (e.g. Debian control-plane + Rocky/Ubuntu workers). Coverage over
+the whole matrix accumulates across runs — no fixed set, never all-at-once. The draw
+is seeded and printed (`os-seed=…`) so any failure is exactly reproducible.
 
 ## Files
 
@@ -44,11 +49,10 @@ $EDITOR scripts/vmtest/config.env          # set VMTEST_DRIVER + enablement + ap
 | `lib/os-registry.sh` | supported-OS → stock cloud-image map (Debian/Ubuntu/Rocky/Alma/CentOS/AL2023) |
 | `lib/driver.sh` | `libvirt-sock`/`ssh-host` backends — domains, net, images, service containers |
 | `lib/waitfor.sh` | bounded ssh / cloud-init / k3s-Ready waits (fail-fast) |
-| `os-images.sh` | fetch + cache the per-OS golden cloud image (`list` \| `<os>` \| `all`) |
+| `os-images.sh` | fetch + cache golden cloud images (`list` \| `<os>` \| `all`=pool) |
 | `net-services.sh` | per-run NAT net + PowerDNS + Pebble (ACME) + MinIO |
-| `spawn-cluster.sh` | overlay-clone N VMs (per-OS golden), `bootstrap.sh --remote`, wait Ready |
-| `run.sh` | one run (`--os <id>` optional); calls `integration-all.sh` unchanged |
-| `run-matrix.sh` | multi-OS compatibility sweep — one full run per OS + summary table |
+| `spawn-cluster.sh` | draw a **random OS per node**, overlay-clone, `bootstrap.sh --remote`, wait Ready |
+| `run.sh` | one run (random-OS cluster; `--os`/`--seed` to pin/replay); calls `integration-all.sh` unchanged |
 | `teardown.sh` | throw the whole run away (trap-safe, idempotent) |
 
 ## Guarantees / discipline

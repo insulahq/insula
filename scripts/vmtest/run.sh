@@ -17,20 +17,22 @@ source "$VMTEST_CONFIG"
 
 [[ -n "${VMTEST_DRIVER:-}" ]] || { echo "set VMTEST_DRIVER (see $HERE/config.example.env)"; exit 2; }
 
-# --os <id> overrides the configured OS (run-matrix.sh uses this to sweep OSes).
+# Nodes get RANDOM OSes by default (see config). Overrides for debugging:
+#   --os <id>   pin EVERY node to one OS      --seed <n>  replay a past assignment
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --os) VMTEST_OS="$2"; shift 2 ;;
+    --os)   VMTEST_OS="$2"; shift 2 ;;
+    --seed) VMTEST_OS_SEED="$2"; shift 2 ;;
     *) VMTEST_INTEGRATION_ARGS="${VMTEST_INTEGRATION_ARGS} $1"; shift ;;
   esac
 done
-export VMTEST_OS   # spawn-cluster.sh derives the per-OS golden from this
+export VMTEST_OS VMTEST_OS_POOL VMTEST_OS_SEED   # spawn-cluster.sh draws per-node from these
 
 RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"        # unique per run
 OCTET="$(( (16#${RUN:0:2}) % 90 + 1 ))"               # 10.98.<1..90>.0/24
 APEX="$(printf "$VMTEST_APEX_TMPL" "$RUN")"
-REPORT="${VMTEST_POOL_DIR%/}/report-${VMTEST_OS}-${RUN}.json"
-echo "════ vmtest run ${RUN}  os=${VMTEST_OS}  apex=${APEX}  net=10.98.${OCTET}.0/24  mode=${VMTEST_MODE} ════"
+REPORT="${VMTEST_POOL_DIR%/}/report-${RUN}.json"
+echo "════ vmtest run ${RUN}  apex=${APEX}  net=10.98.${OCTET}.0/24  mode=${VMTEST_MODE}${VMTEST_OS:+  OS-PINNED=${VMTEST_OS}} ════"
 
 cleanup() {
   local rc=$?
@@ -43,12 +45,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 1) golden for this OS (cached), 2) per-run services
-"$HERE/os-images.sh" "$VMTEST_OS"
+# 1) per-run services (spawn-cluster fetches only the per-node goldens it draws)
 eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" | grep -E '^VMTEST_(DNS|PEBBLE|MINIO)_IP=')"
 
-# 3) spawn + bootstrap the cluster
-eval "$("$HERE/spawn-cluster.sh" "$RUN" "$APEX" "$OCTET" "$VMTEST_DNS_IP" | grep -E '^VMTEST_(CP_IP|APEX|SSH_KEY)=')"
+# 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed
+SPAWN_OUT="$("$HERE/spawn-cluster.sh" "$RUN" "$APEX" "$OCTET" "$VMTEST_DNS_IP" | tee /dev/stderr)"
+eval "$(grep -E '^VMTEST_(CP_IP|APEX|SSH_KEY)=' <<<"$SPAWN_OUT")"
+OS_SEED="$(grep -E '^VMTEST_OS_SEED=' <<<"$SPAWN_OUT" | cut -d= -f2)"
+OS_ASSIGN="$(grep -E '^VMTEST_OS_ASSIGN=' <<<"$SPAWN_OUT" | cut -d= -f2-)"
+echo "  cluster OS assignment: ${OS_ASSIGN}  (os-seed=${OS_SEED})"
 
 # 4) admin password reset (fresh cluster) + token — same path integration-all uses
 API_BASE="https://admin.${APEX}"; ADMIN_EMAIL="admin@${APEX}"
@@ -69,4 +74,6 @@ echo "── integration-all against the fresh cluster ──"
 INTEGRATION_REQUIRE_CONVERGE=1 \
   "$REPO/scripts/integration-all.sh" --report-json "$REPORT" ${VMTEST_INTEGRATION_ARGS} || rc=$?
 echo "report: ${REPORT}  (rc=${rc:-0})"
+echo "cluster was: ${OS_ASSIGN}"
+[[ "${rc:-0}" -ne 0 ]] && echo "reproduce this exact OS assignment:  VMTEST_OS_SEED=${OS_SEED} $HERE/run.sh"
 exit "${rc:-0}"

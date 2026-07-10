@@ -43,3 +43,12 @@ os_family() { os_field "$1" 2; }
 os_tier()   { os_field "$1" 3; }
 os_list()   { printf '%s\n' "${!VMTEST_OS_IMAGES[@]}" | sort; }
 os_known()  { [[ -n "${VMTEST_OS_IMAGES[$1]:-}" ]]; }
+
+# os_pool_default — every supported OS with a real (non-PIN) image URL, space-
+# separated. This is the DEFAULT randomisation universe: each node's OS is drawn
+# from here, so runs sample the WHOLE supported matrix over time, not a fixed set.
+os_pool_default() {
+  local os out=""
+  while read -r os; do [[ "$(os_url "$os")" == PIN_* ]] || out+="${os} "; done < <(os_list)
+  echo "${out% }"
+}
