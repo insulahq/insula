@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/lib/driver.sh — transport abstraction for the ephemeral VM tier.
+# scripts/vm-integration-tests/lib/driver.sh — transport abstraction for the ephemeral VM tier.
 #
 # KVM always runs on the Unraid HOST; this env is only the libvirt CLIENT, so no
 # nested virt is needed. Both backends funnel through `virsh -c <uri>` (libvirt

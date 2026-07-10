@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/net-services.sh — per-run network services on a THROW-AWAY VM.
+# scripts/vm-integration-tests/net-services.sh — per-run network services on a THROW-AWAY VM.
 #
 # Creates the run's isolated NAT net, then boots ONE small "services" VM whose OWN
 # Docker runs the three services: authoritative DNS (PowerDNS), test ACME CA
@@ -44,6 +44,12 @@ on_host "test -f '$SGOLD'" || img_pull_golden "$(os_url "$SVC_OS")" "$SGOLD" >&2
 # 3) cloud-init: install Docker in the guest, run the three services on the VM's
 #    own host network (so they bind the VM IP directly: :53 :8081 :14000 :9000).
 SVC="vmt-${RUN}-svc"
+# Per-run throwaway service creds — generated, never hardcoded. The services VM is
+# isolated on the NAT net and destroyed with the run; these are emitted below so the
+# cluster (DNS provider group, Longhorn BackupTarget) can consume them.
+PDNS_KEY="k$(printf '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
+MINIO_USER="svc$(printf '%04x' "$RANDOM")"
+MINIO_PW="$(printf '%04x%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
 cat > "${VMTEST_TMP_DIR}/ud-${RUN}-svc.yaml" <<UD
 #cloud-config
 hostname: ${SVC}
@@ -61,14 +67,14 @@ runcmd:
   # NB: gsqlite3 schema init is first-run-tunable (seed /var/lib/powerdns/pdns.sqlite3
   # from the image's schema.sql before first start).
   - docker run -d --name pdns --restart=always --network host
-      -e PDNS_api=yes -e PDNS_api_key=vmtest
+      -e PDNS_api=yes -e PDNS_api_key=${PDNS_KEY}
       -e PDNS_launch=gsqlite3 -e PDNS_gsqlite3_database=/var/lib/powerdns/pdns.sqlite3
       powerdns/pdns-auth-49:latest
   - docker run -d --name pebble --restart=always --network host
       -e PEBBLE_VA_NOSLEEP=1
       letsencrypt/pebble:latest pebble -dnsserver 127.0.0.1:53
   - docker run -d --name minio --restart=always --network host
-      -e MINIO_ROOT_USER=vmtest -e MINIO_ROOT_PASSWORD=vmtestvmtest
+      -e MINIO_ROOT_USER=${MINIO_USER} -e MINIO_ROOT_PASSWORD=${MINIO_PW}
       minio/minio:latest server /data --console-address :9001
 UD
 cat > "${VMTEST_TMP_DIR}/md-${RUN}-svc.yaml" <<MD
@@ -89,10 +95,14 @@ wait_ssh "$SVC_IP" 180 >&2; wait_cloudinit "$SVC_IP" 300 >&2   # cloud-init done
 
 echo "  services VM @ ${SVC_IP}: PowerDNS :53/:8081  Pebble :14000  MinIO :9000" >&2
 
-# 5) coordinates for run.sh (all three live on the one services-VM IP, distinct ports)
+# 5) coordinates + per-run creds for run.sh (all three services live on the one
+#    services-VM IP, distinct ports).
 cat <<EOF
 VMTEST_DNS_IP=${SVC_IP}
 VMTEST_PEBBLE_IP=${SVC_IP}
 VMTEST_MINIO_IP=${SVC_IP}
 VMTEST_SVC_IP=${SVC_IP}
+VMTEST_PDNS_API_KEY=${PDNS_KEY}
+VMTEST_MINIO_USER=${MINIO_USER}
+VMTEST_MINIO_PW=${MINIO_PW}
 EOF

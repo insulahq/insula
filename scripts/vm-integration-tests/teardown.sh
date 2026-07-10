@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/teardown.sh — throw the whole run away. Idempotent + best-effort:
+# scripts/vm-integration-tests/teardown.sh — throw the whole run away. Idempotent + best-effort:
 # safe to call twice, and safe to call on a half-built run. This is the feature,
 # not a chore — throw-away-per-run is what makes drift structurally impossible.
 #

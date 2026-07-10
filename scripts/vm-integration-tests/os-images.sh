@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/vmtest/os-images.sh — fetch/cache the per-OS golden base images.
+# scripts/vm-integration-tests/os-images.sh — fetch/cache the per-OS golden base images.
 #
 # Usage:  os-images.sh [list | <os-id> | all]
 #   (no arg) → the configured VMTEST_OS      list → print the supported matrix
