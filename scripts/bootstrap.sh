@@ -2579,12 +2579,15 @@ apply_longhorn_node_tag() {
     sleep 5
   done
 
-  # Wait for Longhorn Node CR (created asynchronously by longhorn-manager).
+  # Wait for Longhorn Node CR (created asynchronously by longhorn-manager). On a
+  # freshly-JOINED node the manager DaemonSet pod must schedule + start + register
+  # first, which on constrained/slow hardware takes well over a minute — so wait
+  # generously (4 min) rather than fail the join.
   i=0
   while ! kubectl get node.longhorn.io -n longhorn-system "$node_name" >/dev/null 2>&1; do
     i=$((i + 2))
-    if [[ "$i" -ge 60 ]]; then
-      error "  longhorn node.${node_name} did not register within 60s."
+    if [[ "$i" -ge 240 ]]; then
+      error "  longhorn node.${node_name} did not register within 240s."
     fi
     sleep 2
   done
