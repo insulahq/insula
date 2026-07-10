@@ -112,7 +112,7 @@ bootstrap_node() {
   wait_ssh "$ip" 180; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
-    --join-as "$role" --domain "$APEX" --env dev "$@"
+    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
 }
 
 # 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet
