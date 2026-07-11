@@ -205,6 +205,14 @@ export BACKUP_S3_ENDPOINT=http://s3.${APEX}:9000 BACKUP_S3_BUCKET=$(printf %q "$
 export BACKUP_S3_ACCESS_KEY=$(printf %q "${VMTEST_MINIO_USER:-}") BACKUP_S3_SECRET_KEY=$(printf %q "${VMTEST_MINIO_PW:-}")
 export BACKUP_SFTP_HOST=sftp.${APEX} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
 export BACKUP_CIFS_HOST=cifs.${APEX} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIFS_SHARE:-backups}") BACKUP_CIFS_USER=$(printf %q "${VMTEST_CIFS_USER:-}") BACKUP_CIFS_PASSWORD=$(printf %q "${VMTEST_CIFS_PW:-}")
+# Settle gate: right after bootstrap (and the platform-api trust reload above), warming
+# endpoints (dashboard/metrics, node-health probe, audit-logs, eol-scanner) briefly 5xx,
+# which trips integration-all's zero-tolerance smoke gate and aborts before any suite runs.
+# Poll smoke-test.sh (the SAME check the gate uses) until it's green — so the suites run on a
+# settled platform and the gate passes. Bounded ~6 min; proceed anyway on timeout (the gate
+# will then surface the real problem).
+echo "── settle gate: waiting for the platform to be smoke-green ──"
+for _ in \$(seq 1 36); do bash scripts/smoke-test.sh >/dev/null 2>&1 && { echo "  platform smoke-green after settle"; break; }; sleep 10; done
 bash scripts/integration-all.sh --report-json $(printf %q "$CP_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$CP_RUNNER" \
