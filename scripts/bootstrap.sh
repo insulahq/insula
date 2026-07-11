@@ -2600,13 +2600,17 @@ apply_longhorn_node_tag() {
 
   # Wait for Longhorn Node CR (created asynchronously by longhorn-manager). On a
   # freshly-JOINED node the manager DaemonSet pod must schedule + start + register
-  # first, which on constrained/slow hardware takes well over a minute — so wait
-  # generously (4 min) rather than fail the join.
+  # first. On constrained/slow hardware that races the EXISTING managers reconciling
+  # shared Longhorn settings (e.g. guaranteed-instance-manager-cpu): the joiner hits an
+  # optimistic-concurrency conflict ("the object has been modified") and crash-loops a
+  # few times before it wins the write and registers — SELF-HEALING, but it can take
+  # 5-8 min on a loaded VM host. Wait 10 min rather than fail an otherwise-fine join.
+  # (Observed 2026-07-11 on the VM tier's HA join; the node registered after 5 restarts.)
   i=0
   while ! kubectl get node.longhorn.io -n longhorn-system "$node_name" >/dev/null 2>&1; do
     i=$((i + 2))
-    if [[ "$i" -ge 240 ]]; then
-      error "  longhorn node.${node_name} did not register within 240s."
+    if [[ "$i" -ge 600 ]]; then
+      error "  longhorn node.${node_name} did not register within 600s."
     fi
     sleep 2
   done
