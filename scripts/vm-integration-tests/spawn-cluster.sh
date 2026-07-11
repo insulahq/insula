@@ -120,7 +120,14 @@ bootstrap_node() {
 #    --pre-enroll-peer takes individual IPs — /32 — which we don't know yet; the CIDR
 #    mesh-whitelist is the right primitive for a known test subnet).
 S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
-bootstrap_node "$S1" "$S1_IP" server --acme-email "${VMTEST_ACME_EMAIL:-admin@${APEX}}" --cluster-network-cidr "${SUB}.0/24"
+# Point cert-manager at the run's Pebble (test ACME CA) so the platform's certs ISSUE
+# for the private apex — real LE can't validate it. Same ACME issuance path as prod,
+# just a test CA; the harness trusts Pebble's root so it VERIFIES certs (no blanket -k).
+# Only the first server installs cert-manager, so only it needs the flag.
+ACME_ARGS=()
+[[ -n "${VMTEST_PEBBLE_IP:-}" ]] && ACME_ARGS=(--acme-server "https://${VMTEST_PEBBLE_IP}:14000/dir" --acme-skip-tls-verify)
+bootstrap_node "$S1" "$S1_IP" server --acme-email "${VMTEST_ACME_EMAIL:-admin@${APEX}}" \
+  --cluster-network-cidr "${SUB}.0/24" ${ACME_ARGS[@]+"${ACME_ARGS[@]}"}
 wait_k3s_ready "$S1_IP" 360
 
 # 2) join token, then servers 2..N (etcd HA) and workers — each on its drawn OS.

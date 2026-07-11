@@ -74,6 +74,9 @@ seed_apex_dns() {
 #    below) + MinIO creds (for backup suites, when wired).
 eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" \
         | grep -E '^VMTEST_(DNS_IP|PEBBLE_IP|MINIO_IP|MINIO_USER|MINIO_PW|PDNS_API_KEY)=')"
+# spawn-cluster.sh runs as a child and reads VMTEST_PEBBLE_IP to hand the first server
+# --acme-server (Pebble). Export so it's inherited.
+export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
 
 # 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed
 SPAWN_OUT="$("$HERE/spawn-cluster.sh" "$RUN" "$APEX" "$OCTET" "$VMTEST_DNS_IP" | tee /dev/stderr)"
@@ -87,6 +90,30 @@ echo "  cluster OS assignment: ${OS_ASSIGN}  (os-seed=${OS_SEED})"
 #    tries to reach a *.<apex> URL.
 seed_apex_dns "$VMTEST_DNS_IP" "${VMTEST_PDNS_API_KEY:?net-services did not emit VMTEST_PDNS_API_KEY}" \
               "$APEX" "$VMTEST_CP_IP"
+
+# 3b) With Pebble as the ACME CA, trust its ROOT on the CP (the harness host) so curls
+#     VERIFY the platform's Pebble-issued certs rather than skipping with -k — a bad or
+#     missing cert then FAILS a suite, exactly as on a real cluster. Pebble regenerates
+#     its root each restart, so fetch it fresh from the management API. OS-agnostic trust
+#     store (Debian vs RHEL). Then wait (bounded, advisory) for the platform ingress cert
+#     to actually issue, so verifying curls don't race first issuance.
+if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
+  echo "── trusting Pebble root CA on the CP (TLS verification ON) ──"
+  ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
+    "if command -v update-ca-certificates >/dev/null 2>&1; then F=/usr/local/share/ca-certificates/pebble-root.crt; U=update-ca-certificates; \
+     else F=/etc/pki/ca-trust/source/anchors/pebble-root.pem; U=update-ca-trust; fi; \
+     curl -sk --max-time 15 https://${VMTEST_PEBBLE_IP}:15000/roots/0 -o \"\$F\" && \$U >/dev/null 2>&1 || true" || true
+  echo "── waiting for the platform TLS cert (Pebble) to issue ──"
+  ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<'WAITCERT' || true
+    R=""
+    for _ in $(seq 1 60); do
+      R=$(k3s kubectl -n platform get certificate platform-ingress -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+      [ "$R" = "True" ] && { echo "  platform-ingress cert Ready (Pebble-issued)"; break; }
+      sleep 5
+    done
+    [ "$R" = "True" ] || echo "  WARN: platform-ingress cert not Ready after 300s — verifying suites may fail"
+WAITCERT
+fi
 
 # 4) admin password reset (fresh cluster) + token — same path integration-all uses
 API_BASE="https://admin.${APEX}"; ADMIN_EMAIL="admin@${APEX}"
@@ -126,6 +153,11 @@ ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
      dnf install -y -q nodejs bind-utils vim-common httpd-tools nmap-ncat socat >/dev/null 2>&1; fi
    command -v node >/dev/null || { echo "FATAL: could not provision node on CP for the harness" >&2; exit 1; }'
 
+# TLS verification: with Pebble wired + its root trusted on the CP (above), leave
+# CURL_INSECURE EMPTY so the harness VERIFIES the platform's real (Pebble-issued) certs —
+# a bad/missing cert fails a suite, as on a real cluster. Fall back to insecure (-k) only
+# when Pebble ISN'T wired, or on explicit VMTEST_CURL_INSECURE=1.
+CURL_INSECURE_VAL="${VMTEST_CURL_INSECURE:-$([[ -n "${VMTEST_PEBBLE_IP:-}" ]] && echo "" || echo 1)}"
 CP_REPORT="/root/report-${RUN}.json"
 CP_RUNNER="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
 cat > "$CP_RUNNER" <<RUN
@@ -134,7 +166,7 @@ cd /root/insula
 export ADMIN_HOST=$(printf %q "$API_BASE") API_BASE=$(printf %q "$API_BASE") PLATFORM_API_URL=$(printf %q "$API_BASE")
 export ADMIN_EMAIL=$(printf %q "$ADMIN_EMAIL") ADMIN_PASSWORD=$(printf %q "$ADMIN_PASSWORD")
 export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX} MAIL_DOMAIN_APEX=${APEX}
-export CURL_INSECURE=1 LOCAL_KUBECTL=1 INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
+export CURL_INSECURE=${CURL_INSECURE_VAL} LOCAL_KUBECTL=1 INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
 bash scripts/integration-all.sh --report-json $(printf %q "$CP_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$CP_RUNNER" \
