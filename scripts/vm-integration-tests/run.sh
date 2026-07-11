@@ -59,9 +59,21 @@ trap cleanup EXIT
 # then forwards apex queries to it; the cluster nodes already use that dnsmasq as resolver.
 seed_apex_dns() {
   local svc="$1" apikey="$2" apex="$3" ip="$4" json
-  json=$(printf '{"name":"%s.","kind":"Native","soa_edit_api":"INCEPTION-INCREMENT","nameservers":["ns1.%s."],"rrsets":[{"name":"ns1.%s.","type":"A","ttl":60,"changetype":"REPLACE","records":[{"content":"%s","disabled":false}]},{"name":"%s.","type":"A","ttl":60,"changetype":"REPLACE","records":[{"content":"%s","disabled":false}]},{"name":"*.%s.","type":"A","ttl":60,"changetype":"REPLACE","records":[{"content":"%s","disabled":false}]}]}' \
-    "$apex" "$apex" "$apex" "$svc" "$apex" "$ip" "$apex" "$ip")
-  echo "── seeding PowerDNS ${apex}: apex + *.${apex} → ${ip} (wildcard) ──"
+  # _rr <fqdn-with-trailing-dot> <ip> — one A rrset. apex + wildcard → the ingress node;
+  # s3|sftp|cifs.<apex> → the services VM (explicit records OVERRIDE the wildcard). The
+  # backup suites point backup-configs at these HOSTNAMES, not the services-VM private IP —
+  # the platform's WAF rejects RFC1918 IPs in the endpoint field (SSRF guard) but allows
+  # hostnames, and pods resolve them via the same dnsmasq→PowerDNS path.
+  _rr() { printf '{"name":"%s","type":"A","ttl":60,"changetype":"REPLACE","records":[{"content":"%s","disabled":false}]}' "$1" "$2"; }
+  json=$(printf '{"name":"%s.","kind":"Native","soa_edit_api":"INCEPTION-INCREMENT","nameservers":["ns1.%s."],"rrsets":[%s,%s,%s,%s,%s,%s]}' \
+    "$apex" "$apex" \
+    "$(_rr "ns1.${apex}." "$svc")" \
+    "$(_rr "${apex}." "$ip")" \
+    "$(_rr "*.${apex}." "$ip")" \
+    "$(_rr "s3.${apex}." "$svc")" \
+    "$(_rr "sftp.${apex}." "$svc")" \
+    "$(_rr "cifs.${apex}." "$svc")")
+  echo "── seeding PowerDNS ${apex}: apex + *.${apex} → ${ip};  s3|sftp|cifs.${apex} → ${svc} (backup targets) ──"
   ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${svc}" \
     "A=http://127.0.0.1:8081/api/v1/servers/localhost; \
      curl -s -X DELETE -H 'X-API-Key: ${apikey}' \"\$A/zones/${apex}.\" >/dev/null 2>&1 || true; \
@@ -186,10 +198,13 @@ export CURL_INSECURE=${CURL_INSECURE_VAL} LOCAL_KUBECTL=1 INTEGRATION_REQUIRE_CO
 # external protocol (s3/ssh/cifs). Suites build backup-configs pointing the shim OUT to
 # these; the cluster reaches them on the NAT-net services-VM IP. Setting BACKUP_S3_* also
 # satisfies the require_or_skip in the DR bundle suite so it stops skipping.
-export BACKUP_S3_ENDPOINT=http://${VMTEST_MINIO_IP}:9000 BACKUP_S3_BUCKET=$(printf %q "${VMTEST_MINIO_BUCKET:-backups}") BACKUP_S3_REGION=us-east-1
+# Hostnames (s3|sftp|cifs.<apex>), NOT the services-VM private IP — the platform's WAF
+# rejects RFC1918 IPs in backup-config endpoint fields (SSRF guard); pods resolve these via
+# dnsmasq→PowerDNS (seeded above) to the services VM.
+export BACKUP_S3_ENDPOINT=http://s3.${APEX}:9000 BACKUP_S3_BUCKET=$(printf %q "${VMTEST_MINIO_BUCKET:-backups}") BACKUP_S3_REGION=us-east-1
 export BACKUP_S3_ACCESS_KEY=$(printf %q "${VMTEST_MINIO_USER:-}") BACKUP_S3_SECRET_KEY=$(printf %q "${VMTEST_MINIO_PW:-}")
-export BACKUP_SFTP_HOST=${VMTEST_SFTP_IP:-} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
-export BACKUP_CIFS_HOST=${VMTEST_CIFS_IP:-} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIFS_SHARE:-backups}") BACKUP_CIFS_USER=$(printf %q "${VMTEST_CIFS_USER:-}") BACKUP_CIFS_PASSWORD=$(printf %q "${VMTEST_CIFS_PW:-}")
+export BACKUP_SFTP_HOST=sftp.${APEX} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
+export BACKUP_CIFS_HOST=cifs.${APEX} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIFS_SHARE:-backups}") BACKUP_CIFS_USER=$(printf %q "${VMTEST_CIFS_USER:-}") BACKUP_CIFS_PASSWORD=$(printf %q "${VMTEST_CIFS_PW:-}")
 bash scripts/integration-all.sh --report-json $(printf %q "$CP_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$CP_RUNNER" \
