@@ -406,6 +406,12 @@ ACME_EMAIL=""
 ACME_SERVER=""
 ACME_SKIP_TLS_VERIFY=false
 ACME_CA_FILE=""
+# --trust-ca <pem>: extra root CA(s) platform components must TRUST for their server-side
+# https clients (e.g. platform-api → Dex OIDC discovery). Populates the imperatively-created
+# platform-extra-ca-trust secret (mounted into platform-api via NODE_EXTRA_CA_CERTS). Needed
+# when ingress certs are signed by a private/test CA a public trust store lacks (bootstrap
+# --acme-server, e.g. the VM integration tier's Pebble). Empty by default → built-in roots only.
+TRUST_CA_FILE=""
 SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_LONGHORN=false
@@ -960,6 +966,7 @@ parse_args() {
       --acme-server)     ACME_SERVER="$2"; CLUSTER_ISSUER_NAME="acme-custom-http01"; shift 2 ;;
       --acme-skip-tls-verify) ACME_SKIP_TLS_VERIFY=true; shift ;;
       --acme-ca)         ACME_CA_FILE="$2"; shift 2 ;;
+      --trust-ca)        TRUST_CA_FILE="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
       --force-domain-change) FORCE_DOMAIN_CHANGE=true; shift ;;
@@ -5232,6 +5239,19 @@ create_platform_configmap() {
   local issuer_name
   issuer_name=$(select_cluster_issuer "${PLATFORM_DOMAIN:-}" "${PLATFORM_ENV}")
   log "ClusterIssuer for platform-config: ${issuer_name}"
+
+  # Extra CA trust bundle for platform-api's server-side https clients — see
+  # k8s/base/backend-deployment.yaml (NODE_EXTRA_CA_CERTS + the optional
+  # platform-extra-ca-trust mount). Created imperatively (NOT in the Flux overlay) so its
+  # contents survive reconciles and a later imperative update (the VM tier populates it
+  # with the run's Pebble root post-bootstrap). Empty by default: platform-api then trusts
+  # only its built-in roots (public-LE clusters), and an EMPTY bundle avoids a Node
+  # "missing NODE_EXTRA_CA_CERTS file" warning. --trust-ca <pem> seeds a private/test root.
+  local extra_ca_src=/dev/null
+  [[ -n "${TRUST_CA_FILE:-}" && -f "${TRUST_CA_FILE}" ]] && extra_ca_src="${TRUST_CA_FILE}"
+  kctl create secret generic platform-extra-ca-trust --namespace=platform \
+    --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  log "platform-extra-ca-trust secret ready ($([[ "$extra_ca_src" == /dev/null ]] && echo 'empty — built-in roots only' || echo "seeded from ${TRUST_CA_FILE}"))."
 
   # Support-email default: reuse the operator's ACME email if available —
   # that's already a verified contact address, and the operator typically

@@ -113,6 +113,21 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
     done
     [ "$R" = "True" ] || echo "  WARN: platform-ingress cert not Ready after 300s — verifying suites may fail"
 WAITCERT
+  # Inject the Pebble ROOT into platform-api's trust (platform-extra-ca-trust secret,
+  # mounted optional in the base Deployment + NODE_EXTRA_CA_CERTS). platform-api makes a
+  # SERVER-SIDE https fetch to Dex (OIDC discovery) that validates TLS against Node's
+  # default trust store; without this, that fetch fails on the Pebble-signed cert and
+  # oidc-dex fails. The secret is created imperatively (NOT in the Flux overlay), so its
+  # contents stick; reload platform-api so the new pod mounts it.
+  echo "── injecting Pebble root into platform-api trust (oidc-dex server-side TLS) ──"
+  ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<PICA || true
+    curl -sk --max-time 15 https://${VMTEST_PEBBLE_IP}:15000/roots/0 -o /tmp/pebble-root.crt
+    k3s kubectl -n platform create secret generic platform-extra-ca-trust \
+      --from-file=ca-bundle.crt=/tmp/pebble-root.crt --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null
+    k3s kubectl -n platform delete pod \$(k3s kubectl -n platform get pod -o name 2>/dev/null | grep '/platform-api-') --ignore-not-found >/dev/null 2>&1 || true
+    k3s kubectl -n platform rollout status deploy/platform-api --timeout=120s >/dev/null 2>&1 || true
+    echo "  platform-api reloaded with Pebble trust"
+PICA
 fi
 
 # 4) admin password reset (fresh cluster) + token — same path integration-all uses
