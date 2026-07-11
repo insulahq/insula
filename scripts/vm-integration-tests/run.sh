@@ -112,6 +112,20 @@ echo "── shipping harness to CP + running integration-all on-node (${VMTEST_
 tar czf - -C "$REPO" scripts | ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no \
     "root@${VMTEST_CP_IP}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
 
+# Provision the (bare) CP with the harness's HOST tool deps. ~38 integration-*.sh suites
+# shell out to `node` for JSON on the machine RUNNING the harness (+ host/xxd/htpasswd/…).
+# These are WORKSTATION/test deps, NOT platform runtime deps — the platform runs in
+# containers and bootstrap installs only the node's real CLIs (jq/curl/openssl). The CP is
+# a throwaway test node, so installing test tooling HERE is correct; it never reaches
+# production nodes (which stay minimal). OS-agnostic: apt on Debian/Ubuntu, dnf on RHEL-alikes.
+ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
+  'export DEBIAN_FRONTEND=noninteractive
+   if command -v apt-get >/dev/null; then apt-get update -qq >/dev/null 2>&1
+     apt-get install -y -qq nodejs bind9-host xxd apache2-utils netcat-openbsd socat >/dev/null 2>&1
+   elif command -v dnf >/dev/null; then
+     dnf install -y -q nodejs bind-utils vim-common httpd-tools nmap-ncat socat >/dev/null 2>&1; fi
+   command -v node >/dev/null || { echo "FATAL: could not provision node on CP for the harness" >&2; exit 1; }'
+
 CP_REPORT="/root/report-${RUN}.json"
 CP_RUNNER="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
 cat > "$CP_RUNNER" <<RUN
