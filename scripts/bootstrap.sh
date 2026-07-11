@@ -397,6 +397,15 @@ SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
 CNPG_CHART_VERSION="0.28.3"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
+# --acme-server: point cert-manager at a custom ACME directory (test CA like Pebble, or
+# an alternate real ACME endpoint) instead of Let's Encrypt. When set, bootstrap creates
+# the `acme-custom-http01` ClusterIssuer and pins CLUSTER_ISSUER_NAME to it. Same HTTP-01
+# solver shape as the LE issuers, so the REAL ACME issuance path is exercised against a
+# different CA. --acme-skip-tls-verify for a test CA whose API cert isn't publicly trusted;
+# --acme-ca <pem> to pin a private-but-real CA's bundle instead.
+ACME_SERVER=""
+ACME_SKIP_TLS_VERIFY=false
+ACME_CA_FILE=""
 SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_LONGHORN=false
@@ -948,6 +957,9 @@ parse_args() {
       --require-smoke-pass) REQUIRE_SMOKE_PASS=true; shift ;;
       --smoke-wait)      SMOKE_WAIT_SECONDS="$2"; shift 2 ;;
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
+      --acme-server)     ACME_SERVER="$2"; CLUSTER_ISSUER_NAME="acme-custom-http01"; shift 2 ;;
+      --acme-skip-tls-verify) ACME_SKIP_TLS_VERIFY=true; shift ;;
+      --acme-ca)         ACME_CA_FILE="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
       --force-domain-change) FORCE_DOMAIN_CHANGE=true; shift ;;
@@ -4054,6 +4066,51 @@ spec:
                   value: "true"
                   effect: NoSchedule
 EOF
+
+  # Optional custom ACME issuer (--acme-server). Points cert-manager at any ACME
+  # directory instead of Let's Encrypt — a test CA (Pebble) for ephemeral/air-gapped
+  # clusters, or an alternate real ACME endpoint. CLUSTER_ISSUER_NAME was pinned to
+  # acme-custom-http01 at parse time, so every platform Certificate uses this issuer.
+  # Same HTTP-01 solver as the LE issuers (ingressClassName traefik + server-only
+  # toleration + quota-exempt priorityClass), so the REAL ACME issuance path runs,
+  # just against a different CA. skipTLSVerify for a test CA whose API cert isn't
+  # publicly trusted; caBundle to pin a private CA. (Future: a dns01 solver keyed off
+  # an --acme-solver flag drives real DNS-01 LE issuance via a deployed PowerDNS API,
+  # matching a production cluster — the issuer scaffold below is where that plugs in.)
+  if [[ -n "${ACME_SERVER:-}" ]]; then
+    local acme_tls_line=""
+    if [[ "${ACME_SKIP_TLS_VERIFY:-false}" == "true" ]]; then
+      acme_tls_line="    skipTLSVerify: true"
+    elif [[ -n "${ACME_CA_FILE:-}" && -f "${ACME_CA_FILE}" ]]; then
+      acme_tls_line="    caBundle: $(base64 -w0 < "${ACME_CA_FILE}")"
+    fi
+    kctl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: acme-custom-http01
+spec:
+  acme:
+    server: ${ACME_SERVER}
+    email: ${le_email}
+${acme_tls_line}
+    privateKeySecretRef:
+      name: acme-custom-account-key
+    solvers:
+    - http01:
+        ingress:
+          ingressClassName: traefik
+          podTemplate:
+            spec:
+              priorityClassName: platform-tenant-overhead
+              tolerations:
+                - key: insula.host/server-only
+                  operator: Equal
+                  value: "true"
+                  effect: NoSchedule
+EOF
+    log "cert-manager: custom ACME issuer 'acme-custom-http01' → ${ACME_SERVER} (skipTLSVerify=${ACME_SKIP_TLS_VERIFY:-false}, caBundle=$([[ -n "${ACME_CA_FILE:-}" ]] && echo yes || echo no))."
+  fi
 
   log "cert-manager installed with Let's Encrypt issuers (email=${le_email})."
 }
