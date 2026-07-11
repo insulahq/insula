@@ -7044,14 +7044,21 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
       apply_ok=true
       break
     fi
-    # Webhook flake OR CRD-discovery race → retry. Any other error → fail fast.
-    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first'; then
+    # Webhook flake, CRD-discovery race, OR a transient apiserver-unavailable/openapi
+    # flake → retry. Any other error → fail fast. The openapi/"unable to handle the
+    # request" class shows up when the (single, still-warming) k3s apiserver can't serve
+    # its discovery/openapi document under load — kubectl's client-side validation then
+    # fails the whole apply. It clears within seconds, so it belongs with the other
+    # transients (observed on the VM tier's constrained first-server bootstrap 2026-07-11).
+    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first|failed to download openapi|the server is currently unable to handle the request|the server could not find the requested resource|etcdserver: request timed out|connection refused'; then
       echo "$apply_err" >&2
       error "kubectl apply -k failed with non-retriable error"
     fi
     local race_kind="transient webhook error"
     if echo "$apply_err" | grep -qE 'no matches for kind|ensure CRDs are installed first'; then
       race_kind="CRD-discovery race (CRD applied but not yet in REST mapper)"
+    elif echo "$apply_err" | grep -qE 'failed to download openapi|the server is currently unable to handle the request|etcdserver: request timed out|connection refused'; then
+      race_kind="apiserver transient (discovery/openapi unavailable under load)"
     fi
     log "  apply attempt ${apply_attempt}/6 hit ${race_kind} — retrying in 10s..."
     sleep 10
