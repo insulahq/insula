@@ -38,14 +38,18 @@
 : "${INTEGRATION_SKIP_RC:=77}"
 
 # load_integration_env — source the operator's gitignored profile if present.
-# Search order (first hit wins):
+# Search order (FIRST HIT WINS — later candidates are NOT consulted):
 #   1. $INTEGRATION_ENV               (explicit override)
 #   2. scripts/integration.env        (repo-local, gitignored)
 #   3. ~/.config/insula/integration.env
-# Values already exported in the environment are NOT clobbered (the file uses
-# `: "${VAR:=...}"`-style or plain assignments; we source it so the operator
-# controls precedence). Sourcing happens before the harness evaluates its own
-# `${VAR:-default}` lines, so profile values take effect.
+# PRECEDENCE (read carefully): the chosen profile is sourced under `set -a`, so its
+# assignments EXPORT and — for plain `VAR=value` lines — OVERRIDE whatever is already
+# in the environment. That is deliberate: the operator's profile is meant to win over a
+# harness's `${VAR:-default}`. But it also means a caller that has ALREADY exported the
+# correct targets (e.g. the VM tier pointing at an ephemeral cluster) CANNOT rely on its
+# exports surviving a repo-local integration.env full of plain assignments — that file
+# would clobber them. Such a caller MUST set $INTEGRATION_ENV to its own profile so
+# candidate #1 wins and #2/#3 are never reached (see scripts/vm-integration-tests/run.sh).
 load_integration_env() {
   local script_dir candidate
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # scripts/
