@@ -48,7 +48,9 @@ SVC="vmt-${RUN}-svc"
 # isolated on the NAT net and destroyed with the run; these are emitted below so the
 # cluster (DNS provider group, Longhorn BackupTarget) can consume them.
 PDNS_KEY="k$(printf '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
-MINIO_USER="svc$(printf '%04x' "$RANDOM")"
+# MINIO_USER doubles as the s3_access_key in backup-configs, whose schema requires >=16
+# chars — so it must be long enough (the old svc<4hex> = 7 chars 400'd on create).
+MINIO_USER="svc$(printf '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
 MINIO_PW="$(printf '%04x%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
 MINIO_BUCKET="backups"
 # SFTP + CIFS backup-target creds — the rclone shim connects OUT to these external
