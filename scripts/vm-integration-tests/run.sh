@@ -73,7 +73,7 @@ seed_apex_dns() {
 #    Capture the service IPs AND the PowerDNS API key (used to seed the apex zone
 #    below) + MinIO creds (for backup suites, when wired).
 eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" \
-        | grep -E '^VMTEST_(DNS_IP|PEBBLE_IP|MINIO_IP|MINIO_USER|MINIO_PW|PDNS_API_KEY)=')"
+        | grep -E '^VMTEST_(DNS_IP|PEBBLE_IP|MINIO_IP|MINIO_USER|MINIO_PW|MINIO_BUCKET|PDNS_API_KEY|SFTP_IP|SFTP_PORT|SFTP_USER|SFTP_PW|SFTP_PATH|CIFS_IP|CIFS_SHARE|CIFS_USER|CIFS_PW)=')"
 # spawn-cluster.sh runs as a child and reads VMTEST_PEBBLE_IP to hand the first server
 # --acme-server (Pebble). Export so it's inherited.
 export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
@@ -182,6 +182,14 @@ export ADMIN_HOST=$(printf %q "$API_BASE") API_BASE=$(printf %q "$API_BASE") PLA
 export ADMIN_EMAIL=$(printf %q "$ADMIN_EMAIL") ADMIN_PASSWORD=$(printf %q "$ADMIN_PASSWORD")
 export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX} MAIL_DOMAIN_APEX=${APEX}
 export CURL_INSECURE=${CURL_INSECURE_VAL} LOCAL_KUBECTL=1 INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
+# Backup-target endpoints the services VM exposes for the rclone shim — one per supported
+# external protocol (s3/ssh/cifs). Suites build backup-configs pointing the shim OUT to
+# these; the cluster reaches them on the NAT-net services-VM IP. Setting BACKUP_S3_* also
+# satisfies the require_or_skip in the DR bundle suite so it stops skipping.
+export BACKUP_S3_ENDPOINT=http://${VMTEST_MINIO_IP}:9000 BACKUP_S3_BUCKET=$(printf %q "${VMTEST_MINIO_BUCKET:-backups}") BACKUP_S3_REGION=us-east-1
+export BACKUP_S3_ACCESS_KEY=$(printf %q "${VMTEST_MINIO_USER:-}") BACKUP_S3_SECRET_KEY=$(printf %q "${VMTEST_MINIO_PW:-}")
+export BACKUP_SFTP_HOST=${VMTEST_SFTP_IP:-} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
+export BACKUP_CIFS_HOST=${VMTEST_CIFS_IP:-} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIFS_SHARE:-backups}") BACKUP_CIFS_USER=$(printf %q "${VMTEST_CIFS_USER:-}") BACKUP_CIFS_PASSWORD=$(printf %q "${VMTEST_CIFS_PW:-}")
 bash scripts/integration-all.sh --report-json $(printf %q "$CP_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$CP_RUNNER" \

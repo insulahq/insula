@@ -50,6 +50,11 @@ SVC="vmt-${RUN}-svc"
 PDNS_KEY="k$(printf '%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
 MINIO_USER="svc$(printf '%04x' "$RANDOM")"
 MINIO_PW="$(printf '%04x%04x%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM" "$RANDOM")"
+MINIO_BUCKET="backups"
+# SFTP + CIFS backup-target creds — the rclone shim connects OUT to these external
+# endpoints (protocols ssh/cifs), same as it does to MinIO for s3. Throwaway per-run.
+SFTP_USER="backup"; SFTP_PW="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
+SMB_USER="backup";  SMB_PW="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
 cat > "${VMTEST_TMP_DIR}/ud-${RUN}-svc.yaml" <<UD
 #cloud-config
 hostname: ${SVC}
@@ -92,8 +97,18 @@ runcmd:
   # --- Pebble test ACME CA (ghcr — docker-hub letsencrypt/pebble does NOT exist).
   #     Image entrypoint is already the pebble binary (/app), so pass only its flags. ---
   - "docker run -d --name pebble --restart=always --network host -e PEBBLE_VA_NOSLEEP=1 -v /root/pebble-config.json:/test/config/pebble-config.json:ro ghcr.io/letsencrypt/pebble:latest -config /test/config/pebble-config.json -dnsserver 127.0.0.1:53"
-  # --- MinIO S3 backup target ---
+  # --- Backup targets for the rclone shim: the platform's backup-configs point the shim
+  #     OUT to one of these external endpoints, one per supported protocol (s3/ssh/cifs).
+  #     All three live on this services-VM IP, so the cluster reaches them over the NAT net.
+  # S3 (MinIO) + its bucket (retry: MinIO takes a moment to accept connections). ---
   - "docker run -d --name minio --restart=always --network host -e MINIO_ROOT_USER=${MINIO_USER} -e MINIO_ROOT_PASSWORD=${MINIO_PW} minio/minio:latest server /data --console-address :9001"
+  - "for i in \$(seq 1 30); do docker run --rm --network host --entrypoint sh minio/mc:latest -c 'mc alias set l http://127.0.0.1:9000 ${MINIO_USER} ${MINIO_PW} && mc mb -p l/${MINIO_BUCKET}' && break || sleep 2; done"
+  # SFTP (atmoz/sftp) — user ${SFTP_USER}, share /upload. Bridge-mapped to :2222 so it does
+  # NOT clash with the VM's own sshd on :22. Password auth (backup-config ssh_password). ---
+  - "docker run -d --name sftp --restart=always -p 2222:22 atmoz/sftp:latest ${SFTP_USER}:${SFTP_PW}:::upload"
+  # CIFS/SMB (dperson/samba) — user ${SMB_USER}, writable share 'backups' at /share on :445. ---
+  - "mkdir -p /srv/smb && chmod 0777 /srv/smb"
+  - "docker run -d --name samba --restart=always --network host -v /srv/smb:/share dperson/samba:latest -p -u '${SMB_USER};${SMB_PW}' -s 'backups;/share;yes;no;no;${SMB_USER};${SMB_USER}' -w WORKGROUP"
 UD
 cat > "${VMTEST_TMP_DIR}/md-${RUN}-svc.yaml" <<MD
 instance-id: ${SVC}
@@ -111,7 +126,7 @@ SVC_IP=""; for _ in $(seq 1 30); do SVC_IP=$(vm_ip "$SVC" "$RUN"); [[ -n "$SVC_I
 [[ -n "$SVC_IP" ]] || { echo "no lease for services VM" >&2; exit 1; }
 wait_ssh "$SVC_IP" 180 >&2; wait_cloudinit "$SVC_IP" 900 >&2   # cloud-init done ⇒ containers launched (docker install + 4 image pulls on 1 vCPU is slow)
 
-echo "  services VM @ ${SVC_IP}: PowerDNS :53/:8081  Pebble :14000  MinIO :9000" >&2
+echo "  services VM @ ${SVC_IP}: PowerDNS :53/:8081  Pebble :14000  MinIO :9000(s3)  SFTP :2222  CIFS :445" >&2
 
 # 5) coordinates + per-run creds for run.sh (all three services live on the one
 #    services-VM IP, distinct ports).
@@ -123,4 +138,14 @@ VMTEST_SVC_IP=${SVC_IP}
 VMTEST_PDNS_API_KEY=${PDNS_KEY}
 VMTEST_MINIO_USER=${MINIO_USER}
 VMTEST_MINIO_PW=${MINIO_PW}
+VMTEST_MINIO_BUCKET=${MINIO_BUCKET}
+VMTEST_SFTP_IP=${SVC_IP}
+VMTEST_SFTP_PORT=2222
+VMTEST_SFTP_USER=${SFTP_USER}
+VMTEST_SFTP_PW=${SFTP_PW}
+VMTEST_SFTP_PATH=upload
+VMTEST_CIFS_IP=${SVC_IP}
+VMTEST_CIFS_SHARE=backups
+VMTEST_CIFS_USER=${SMB_USER}
+VMTEST_CIFS_PW=${SMB_PW}
 EOF
