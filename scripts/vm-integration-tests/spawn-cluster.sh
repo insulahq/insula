@@ -112,7 +112,12 @@ echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
 # bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
 bootstrap_node() {
   local host="$1" ip="$2" role="$3"; shift 3
-  wait_ssh "$ip" 180; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
+  # ssh ceiling 360s (was 180): the WORKER spawns LAST, onto a host already running the
+  # 3-server HA cluster (k3s + Longhorn + platform pods), so its first boot + cloud-init
+  # ssh-host-key generation runs much slower than the servers' and overran 180s (VM tier
+  # 2026-07-12: bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
+  # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
+  wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
     --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
