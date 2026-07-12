@@ -115,6 +115,34 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
     "if command -v update-ca-certificates >/dev/null 2>&1; then F=/usr/local/share/ca-certificates/pebble-root.crt; U=update-ca-certificates; \
      else F=/etc/pki/ca-trust/source/anchors/pebble-root.pem; U=update-ca-trust; fi; \
      curl -sk --max-time 15 https://${VMTEST_PEBBLE_IP}:15000/roots/0 -o \"\$F\" && \$U >/dev/null 2>&1 || true" || true
+  # Force the platform onto the custom ACME (Pebble) issuer. The dev/staging/prod overlays
+  # HARDCODE platform-config cluster-issuer-name=letsencrypt-prod-http01 and ship no
+  # cert-issuer-* keys (intentional: the real DEV/staging/prod clusters have public apexes
+  # and want LE). bootstrap patches platform-config to acme-custom-http01 imperatively, but
+  # platform-config is Flux-managed (kustomize.toolkit.fluxcd.io/name=platform) so Flux
+  # reconciles it straight back to LE — leaving every reconciler cert (platform-ingress/
+  # dex/webmail/admin/tenant) + overlay cert on LE, which can NEVER validate the private
+  # test apex → all NotReady → smoke gate rc=60 before any suite runs (VM tier 2026-07-12).
+  # This cluster is DISPOSABLE, so: suspend the platform Kustomization (stop the revert),
+  # pin platform-config to the custom ACME issuer, restart platform-api to pick up
+  # CERT_ISSUER_*, and re-point every LE/local-ca cert at acme-custom-http01. Verified: all
+  # certs then issue via Pebble and smoke passes 35/0. jq-free (jq isn't provisioned yet).
+  echo "── forcing platform certs onto the custom ACME issuer (Flux-suspended; disposable cluster) ──"
+  ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<'FORCEACME' || true
+    K="k3s kubectl"
+    $K -n flux-system patch kustomization platform --type merge -p '{"spec":{"suspend":true}}' >/dev/null 2>&1 || true
+    $K -n platform patch cm platform-config --type merge -p '{"data":{"cluster-issuer-name":"acme-custom-http01","cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
+    $K -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
+    $K -n platform rollout status deploy/platform-api --timeout=120s >/dev/null 2>&1 || true
+    for iss in letsencrypt-prod-http01 letsencrypt-staging-http01 local-ca-issuer; do
+      $K get certificate -A -o jsonpath="{range .items[?(@.spec.issuerRef.name=='${iss}')]}{.metadata.namespace}/{.metadata.name}/{.spec.secretName}{'\n'}{end}" 2>/dev/null
+    done | while IFS=/ read -r ns nm sec; do
+      [ -n "$nm" ] || continue
+      $K -n "$ns" patch certificate "$nm" --type merge -p '{"spec":{"issuerRef":{"name":"acme-custom-http01","kind":"ClusterIssuer","group":"cert-manager.io"}}}' >/dev/null 2>&1 || true
+      [ -n "$sec" ] && $K -n "$ns" delete secret "$sec" --ignore-not-found >/dev/null 2>&1 || true
+    done
+    echo "  platform-config → acme-custom-http01; platform-api restarted; stuck certs reissued"
+FORCEACME
   echo "── waiting for the platform TLS cert (Pebble) to issue ──"
   ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<'WAITCERT' || true
     R=""
