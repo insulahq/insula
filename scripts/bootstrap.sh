@@ -2831,11 +2831,16 @@ select_cluster_issuer() {
   # 2026-05-17 fresh bootstrap.
   local domain="$1" env="$2"
   # 0. --acme-server: the custom ACME issuer signs EVERYTHING (its whole point is a private
-  #    apex real LE can't validate). Key on ACME_SERVER, not the CLUSTER_ISSUER_NAME pin —
-  #    that pin can be lost across the --remote re-exec, but ACME_SERVER reliably survives
-  #    (it also gates creating the issuer). Without this, select falls through to the DNS
-  #    check → LE-staging → certs never issue for the private apex (VM tier 2026-07-11).
-  if [[ -n "${ACME_SERVER:-}" ]]; then
+  #    apex real LE can't validate). Prefer the ACME_SERVER var, but ALSO detect the
+  #    acme-custom-http01 ClusterIssuer directly: ACME_SERVER has been observed EMPTY in the
+  #    platform-apply phase even though the cert-manager phase of the SAME run created the
+  #    issuer (VM tier 2026-07-12: platform-config rendered issuer=local-ca-issuer AND the
+  #    reconciler cert-issuer override was skipped, so platform-ingress stuck on LE → rc=60
+  #    at the smoke gate). The ClusterIssuer is a persistent cluster resource created in
+  #    install_cert_manager (before every select_cluster_issuer call site), so its existence
+  #    is a reliable signal that survives whatever loses the shell var. Backward-compatible:
+  #    when no custom issuer exists (or no cluster/kubectl yet), the check is simply false.
+  if [[ -n "${ACME_SERVER:-}" ]] || kctl get clusterissuer acme-custom-http01 >/dev/null 2>&1; then
     echo "acme-custom-http01"
     return 0
   fi
@@ -5332,8 +5337,12 @@ create_platform_configmap() {
   # reads CERT_ISSUER_* env (LE defaults) — NOT the Flux CLUSTER_ISSUER_NAME. So without this
   # the custom ACME issuer signs only the Flux/overlay certs; the reconciler-made ones still
   # try LE and fail on the private apex. The backend Deployment maps these keys to
-  # CERT_ISSUER_* env (optional). (VM tier 2026-07-11: platform-ingress stuck on LE → NXDOMAIN.)
-  if [[ -n "${ACME_SERVER:-}" ]]; then
+  # CERT_ISSUER_* env (optional). Key on ACME_SERVER OR the acme-custom-http01 ClusterIssuer's
+  # existence — ACME_SERVER has been seen EMPTY here despite the issuer being created earlier
+  # this run, which silently skipped this patch and left every reconciler cert on LE (VM tier
+  # 2026-07-12: platform-ingress/dex/webmail stuck on LE → smoke gate rc=60). The issuer is
+  # created in install_cert_manager, before this function, so its existence is reliable here.
+  if [[ -n "${ACME_SERVER:-}" ]] || kctl get clusterissuer acme-custom-http01 >/dev/null 2>&1; then
     kctl patch configmap platform-config -n platform --type merge -p \
       '{"data":{"cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
     log "  reconciler cert issuers overridden → acme-custom-http01 (signs via the custom ACME server)."
