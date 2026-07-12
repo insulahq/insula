@@ -6622,11 +6622,17 @@ bootstrap_stalwart_v016() {
   # admin-creds Secret is already valid, the live endpoint is just mid-roll. (VM tier
   # 2026-07-11: stalwart-mail restarted 2× and only stabilised after ~6 min; 50×6s gave up
   # too early → 000 → "refusing to bootstrap".)
+  # NB curl prints the http_code (000 on a failed connection) AND can EXIT non-zero (28 on
+  # --max-time). The old `$(... || echo "000")` APPENDED a second "000" on that non-zero exit
+  # → admin_code="000\n000", so the `!= 000` guard saw a non-000 value and BROKE on attempt 1,
+  # never riding out the Reloader roll (VM tier 2026-07-11: probe reported "000000"). Use
+  # assign-then-|| (replaces, not appends) and normalise to the last 3 digits.
   for probe_attempt in $(seq 1 100); do
     admin_code=$(kctl exec -n platform "$probe_pod" -- \
       curl -s -o /dev/null -w '%{http_code}' \
       -u "admin:${stalwart_admin_pw}" --max-time 5 \
-      "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+      "${mgmt_url}/jmap/session" 2>/dev/null) || admin_code="000"
+    admin_code="$(printf '%s' "$admin_code" | tr -dc '0-9' | tail -c 3)"; admin_code="${admin_code:-000}"
     [[ "$admin_code" != "000" ]] && break
     log "  Stalwart admin endpoint not reachable yet (000, attempt ${probe_attempt}/100) — retrying in 6s..."
     sleep 6
@@ -6634,7 +6640,8 @@ bootstrap_stalwart_v016() {
   recovery_code=$(kctl exec -n platform "$probe_pod" -- \
     curl -s -o /dev/null -w '%{http_code}' \
     -u "admin:${stalwart_recovery_pw}" --max-time 5 \
-    "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+    "${mgmt_url}/jmap/session" 2>/dev/null) || recovery_code="000"
+  recovery_code="$(printf '%s' "$recovery_code" | tr -dc '0-9' | tail -c 3)"; recovery_code="${recovery_code:-000}"
 
   log "  Auth probe: adminPassword=${admin_code} recoveryPassword=${recovery_code}"
 
