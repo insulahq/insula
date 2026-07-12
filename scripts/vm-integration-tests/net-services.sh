@@ -124,8 +124,8 @@ img_clone "$SGOLD" "${VMTEST_DISK_DIR}/${SVC}.qcow2" "${VMTEST_SVC_DISK_GB:-20}"
 vm_create "$SVC" "${VMTEST_DISK_DIR}/${SVC}.qcow2" "${VMTEST_DISK_DIR}/seed-${RUN}-svc.iso" \
           "$RUN" "${VMTEST_SVC_VCPU:-1}" "${VMTEST_SVC_RAM_MB:-1536}" \
           "$(printf '52:54:00:%02x:%02x:02' "$OCTET" "$((RANDOM%256))")" >&2
-SVC_IP=""; for _ in $(seq 1 30); do SVC_IP=$(vm_ip "$SVC" "$RUN"); [[ -n "$SVC_IP" ]] && break; sleep 4; done
-[[ -n "$SVC_IP" ]] || { echo "no lease for services VM" >&2; exit 1; }
+SVC_IP=""; for _ in $(seq 1 75); do SVC_IP=$(vm_ip "$SVC" "$RUN"); [[ -n "$SVC_IP" ]] && break; sleep 4; done  # 5 min: slow first-boot DHCP
+[[ -n "$SVC_IP" ]] || { echo "no lease for services VM after 5 min" >&2; exit 1; }
 wait_ssh "$SVC_IP" 180 >&2; wait_cloudinit "$SVC_IP" 900 >&2   # cloud-init done ⇒ containers launched (docker install + 4 image pulls on 1 vCPU is slow)
 
 echo "  services VM @ ${SVC_IP}: PowerDNS :53/:8081  Pebble :14000  MinIO :9000(s3)  SFTP :2222  CIFS :445" >&2
