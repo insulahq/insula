@@ -190,7 +190,7 @@ CP_RUNNER="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
 cat > "$CP_RUNNER" <<RUN
 #!/usr/bin/env bash
 cd /root/insula
-export ADMIN_HOST=$(printf %q "$API_BASE") API_BASE=$(printf %q "$API_BASE") PLATFORM_API_URL=$(printf %q "$API_BASE")
+export ADMIN_HOST=$(printf %q "$API_BASE") API_BASE=$(printf %q "$API_BASE") PLATFORM_API_URL=$(printf %q "$API_BASE") API_URL=$(printf %q "$API_BASE")
 export ADMIN_EMAIL=$(printf %q "$ADMIN_EMAIL") ADMIN_PASSWORD=$(printf %q "$ADMIN_PASSWORD")
 export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX} MAIL_DOMAIN_APEX=${APEX}
 export CURL_INSECURE=${CURL_INSECURE_VAL} LOCAL_KUBECTL=1 INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
