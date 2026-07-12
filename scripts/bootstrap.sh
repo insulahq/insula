@@ -6617,13 +6617,18 @@ bootstrap_stalwart_v016() {
   # the rollout-status wait above, and on constrained/slow hardware that roll can
   # outlast a 60s window (the mail pod is a heavy singleton with a host-port gap).
   # Healthy nodes still return on attempt 1, so this only costs time on a real roll.
-  for probe_attempt in $(seq 1 50); do
+  # 100×6s = 10 min: on constrained VMs the secret write can trigger TWO back-to-back
+  # Reloader rolls of the heavy mail singleton, and 2 rolls + settle outlast 5 min — the
+  # admin-creds Secret is already valid, the live endpoint is just mid-roll. (VM tier
+  # 2026-07-11: stalwart-mail restarted 2× and only stabilised after ~6 min; 50×6s gave up
+  # too early → 000 → "refusing to bootstrap".)
+  for probe_attempt in $(seq 1 100); do
     admin_code=$(kctl exec -n platform "$probe_pod" -- \
       curl -s -o /dev/null -w '%{http_code}' \
       -u "admin:${stalwart_admin_pw}" --max-time 5 \
       "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
     [[ "$admin_code" != "000" ]] && break
-    log "  Stalwart admin endpoint not reachable yet (000, attempt ${probe_attempt}/50) — retrying in 6s..."
+    log "  Stalwart admin endpoint not reachable yet (000, attempt ${probe_attempt}/100) — retrying in 6s..."
     sleep 6
   done
   recovery_code=$(kctl exec -n platform "$probe_pod" -- \
