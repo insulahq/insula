@@ -87,8 +87,11 @@ boot_node() {
   seed_for "$host"
   vm_create "$host" "$overlay" "${VMTEST_DISK_DIR}/seed-${RUN}-${host}.iso" \
             "$RUN" "$VMTEST_VCPU" "$VMTEST_RAM_MB" "$mac"
-  for _ in $(seq 1 30); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
-  [[ -n "$ip" ]] || { echo "no lease for $host" >&2; return 1; }
+  # 75×4s = 5 min: a fresh cloud image's first boot (kernel + cloud-init network bring-up)
+  # can take minutes on a loaded VM host before it DHCPs a lease; 2 min occasionally lost the
+  # race (VM tier 2026-07-11: "no lease for …s1" at first-boot). Only costs time on a slow boot.
+  for _ in $(seq 1 75); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
+  [[ -n "$ip" ]] || { echo "no lease for $host after 5 min" >&2; return 1; }
   echo "$ip"
 }
 
