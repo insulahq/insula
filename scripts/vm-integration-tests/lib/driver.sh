@@ -134,7 +134,16 @@ vm_create() {
   <name>${name}</name>
   <memory unit='MiB'>${ram}</memory>
   <vcpu>${vcpu}</vcpu>
-  <os><type arch='x86_64' machine='q35'>hvm</type><boot dev='hd'/></os>
+  <os><type arch='x86_64' machine='q35'>hvm</type><boot dev='hd'/><smbios mode='sysinfo'/></os>
+  <!-- Force the NoCloud datasource via the SMBIOS system serial. cloud-init's early
+       ds-identify generator matches "ds=nocloud" in the DMI product serial and selects
+       NoCloud UNCONDITIONALLY, skipping its device probe. Without this, older cloud-init
+       (e.g. Debian 12 / cloud-init 22.4.2) races the SATA CD-ROM enumeration, finds no
+       datasource, writes /run/cloud-init/disabled, and short-circuits ALL cloud-init
+       services — so the node never gets a hostname, network, or DHCP lease (spawn then
+       fails with "no lease after 5 min"). The cidata seed is still found by the later
+       cloud-init-local blkid scan. Image-agnostic: every distro image we draw uses NoCloud. -->
+  <sysinfo type='smbios'><system><entry name='serial'>ds=nocloud</entry></system></sysinfo>
   <features><acpi/><apic/></features>
   <cpu mode='host-passthrough'/>
   <devices>
