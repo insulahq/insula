@@ -54,6 +54,28 @@ spec:
             # warning; a missing file is tolerated (optional volume) with a benign warning.
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/ssl/platform-extra-ca/ca-bundle.crt
+            # Cert-issuer overrides for the reconciler's issuer-selector (certificates/service.ts
+            # getConfiguredIssuers). Optional: unset on normal clusters → LE defaults. bootstrap
+            # --acme-server sets these platform-config keys to the custom ACME issuer so the
+            # reconciler-created platform Certificates issue from it too (not just Flux overlay certs).
+            - name: CERT_ISSUER_STAGING_HTTP01
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-staging-http01
+                  optional: true
+            - name: CERT_ISSUER_PROD_HTTP01
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-prod-http01
+                  optional: true
+            - name: CERT_ISSUER_FALLBACK
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-fallback
+                  optional: true
             - name: PORT
               value: "3000"
             - name: LOG_LEVEL
