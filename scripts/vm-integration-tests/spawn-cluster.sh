@@ -151,11 +151,27 @@ for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
 done
 wait_k3s_ready "$S1_IP" 360
 
+# 3) DEDICATED test-runner VM — a small, non-cluster node on the SAME run network. The
+#    harness runs HERE (not on a control-plane node), driving the cluster over SSH
+#    (CONTROL_HOST/ssh_cp) + kubectl-via-kubeconfig, exactly like an operator running the
+#    suite from a workstation against staging. WHY: reusing a cluster node as the runner
+#    conflates the system-under-test with the runner and inherits an under-provisioned,
+#    under-load node (EOL distro `node`, no node_modules, no peer SSH key) → false
+#    positives AND false negatives. Being on the run network, the runner resolves *.<apex>
+#    via the services-VM dnsmasq and routes to the ingress just like a node — WITHOUT being
+#    one. Fixed OS (debian-13 → modern node) so tooling doesn't vary with the random draw;
+#    run.sh provisions it. Small (2 vCPU / 2 GiB by default) to spare host RAM.
+RUNNER_H="vmt-${RUN}-runner"
+RUNNER_IP=$(VMTEST_VCPU="${VMTEST_RUNNER_VCPU:-2}" VMTEST_RAM_MB="${VMTEST_RUNNER_RAM_MB:-2048}" \
+            boot_node "$RUNNER_H" 30 "${VMTEST_RUNNER_OS:-debian-13}")
+echo "  runner VM up @ ${RUNNER_IP} (${VMTEST_RUNNER_OS:-debian-13}, drives the cluster over SSH)" >&2
+
 cat <<EOF
 VMTEST_CP_IP=${S1_IP}
+VMTEST_RUNNER_IP=${RUNNER_IP}
 VMTEST_APEX=${APEX}
 VMTEST_SSH_KEY=${VMTEST_SSH_KEY}
 VMTEST_OS_SEED=${OS_SEED}
 VMTEST_OS_ASSIGN=${ASSIGN}
 EOF
-echo "cluster up (${VMTEST_SERVERS}-server HA control plane; heterogeneous: ${ASSIGN})."
+echo "cluster up (${VMTEST_SERVERS}-server HA control plane; heterogeneous: ${ASSIGN}); runner @ ${RUNNER_IP}."
