@@ -92,7 +92,7 @@ export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
 
 # 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed
 SPAWN_OUT="$("$HERE/spawn-cluster.sh" "$RUN" "$APEX" "$OCTET" "$VMTEST_DNS_IP" | tee /dev/stderr)"
-eval "$(grep -E '^VMTEST_(CP_IP|APEX|SSH_KEY)=' <<<"$SPAWN_OUT")"
+eval "$(grep -E '^VMTEST_(CP_IP|RUNNER_IP|APEX|SSH_KEY)=' <<<"$SPAWN_OUT")"
 OS_SEED="$(grep -E '^VMTEST_OS_SEED=' <<<"$SPAWN_OUT" | cut -d= -f2)"
 OS_ASSIGN="$(grep -E '^VMTEST_OS_ASSIGN=' <<<"$SPAWN_OUT" | cut -d= -f2-)"
 echo "  cluster OS assignment: ${OS_ASSIGN}  (os-seed=${OS_SEED})"
@@ -103,15 +103,17 @@ echo "  cluster OS assignment: ${OS_ASSIGN}  (os-seed=${OS_SEED})"
 seed_apex_dns "$VMTEST_DNS_IP" "${VMTEST_PDNS_API_KEY:?net-services did not emit VMTEST_PDNS_API_KEY}" \
               "$APEX" "$VMTEST_CP_IP"
 
-# 3b) With Pebble as the ACME CA, trust its ROOT on the CP (the harness host) so curls
+# 3b) With Pebble as the ACME CA, trust its ROOT on the RUNNER (the harness host) so curls
 #     VERIFY the platform's Pebble-issued certs rather than skipping with -k — a bad or
 #     missing cert then FAILS a suite, exactly as on a real cluster. Pebble regenerates
 #     its root each restart, so fetch it fresh from the management API. OS-agnostic trust
 #     store (Debian vs RHEL). Then wait (bounded, advisory) for the platform ingress cert
-#     to actually issue, so verifying curls don't race first issuance.
+#     to actually issue, so verifying curls don't race first issuance. The cluster-side
+#     steps below (acme enforce, cert-wait, platform-api trust) still SSH to the CP — they
+#     run kubectl against the cluster, not curl.
 if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
-  echo "── trusting Pebble root CA on the CP (TLS verification ON) ──"
-  ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
+  echo "── trusting Pebble root CA on the runner (TLS verification ON) ──"
+  ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_RUNNER_IP}" \
     "if command -v update-ca-certificates >/dev/null 2>&1; then F=/usr/local/share/ca-certificates/pebble-root.crt; U=update-ca-certificates; \
      else F=/etc/pki/ca-trust/source/anchors/pebble-root.pem; U=update-ca-trust; fi; \
      curl -sk --max-time 15 https://${VMTEST_PEBBLE_IP}:15000/roots/0 -o \"\$F\" && \$U >/dev/null 2>&1 || true" || true
@@ -178,50 +180,63 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$REPO/scripts/admin-passwo
 ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
     "chmod +x /tmp/admin-password-reset.sh && /tmp/admin-password-reset.sh --email $(printf %q "$ADMIN_EMAIL") --password $(printf %q "$ADMIN_PASSWORD") >/dev/null 2>&1" || true
 
-# 5) run the FULL suite ON the control-plane node. The api()/curl helpers hit
-#    https://admin.<apex> LOCALLY; only the cluster nodes can both RESOLVE the private
-#    apex (node resolver = services-VM dnsmasq → PowerDNS wildcard) and ROUTE to the
-#    in-cluster ingress. THIS env (the sandbox) can do neither — it reaches the NAT'd
-#    nodes only through an SSH ProxyJump, with no route or resolver for the run subnet or
-#    <apex>. So ship scripts/ to the CP and run there (the harness's `ssh_cp` +
-#    LOCAL_KUBECTL "run on the control host" path), then pull the report back. Running on
-#    the CP ALSO isolates the run from the operator's real integration.env: a fresh node
-#    has neither scripts/integration.env (moved out of the repo) nor
-#    ~/.config/insula/integration.env, and we pass INTEGRATION_ENV= to force even the
-#    search to no-op. (Cert-chain-asserting suites still need Pebble wired as the ACME
-#    server — deferred; curl runs -k, so the rest are unaffected.)
-echo "── shipping harness to CP + running integration-all on-node (${VMTEST_CP_IP}) ──"
-tar czf - -C "$REPO" scripts | ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no \
-    "root@${VMTEST_CP_IP}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
+# 5) run the FULL suite from the DEDICATED RUNNER VM (not a cluster node). The runner is on
+#    the run network, so its api()/curl helpers RESOLVE the private apex (services-VM dnsmasq
+#    → PowerDNS wildcard) and ROUTE to the ingress just like a node — but it drives the
+#    cluster over SSH (SSH_HOST/ssh_cp) + a copied kubeconfig, exactly as an operator runs the
+#    suite from a workstation against staging. This decouples the system-under-test from the
+#    runner: a control-plane node reused as the runner is under-provisioned (EOL distro node,
+#    no node_modules, no peer SSH key) + under platform load, which yields false pos/neg.
+#    INTEGRATION_ENV= forces the profile search to no-op (no operator integration.env leaks in).
+RUNNER_IP="${VMTEST_RUNNER_IP:?spawn-cluster did not emit VMTEST_RUNNER_IP}"
+SSHR=(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${RUNNER_IP}")
+echo "── provisioning runner ${RUNNER_IP} (node+ws, version-matched kubectl+kubeconfig, cli tools) ──"
+# a) harness scripts
+tar czf - -C "$REPO" scripts | "${SSHR[@]}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
+# b) the run's SSH key → runner, at the harness's DEFAULT SSH_KEY path, so the runner can SSH
+#    to cluster nodes (ssh_cp kubectl probes + the node-terminal/firewall/drain SSH suites).
+scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
+    "root@${RUNNER_IP}:/root/hosting-platform.key" >/dev/null
+# c) host tooling + the ONE local node module the harness needs (ws — node-terminal's WS
+#    client; fast-jwt/jose/bcrypt all run IN-POD via `kubectl exec`). debian-13 → modern node.
+#    kubectl is the cluster's OWN k3s binary (version-matched) copied from the CP over the fast
+#    NAT L2, plus a kubeconfig with the API server rewritten to the CP's run-net IP.
+"${SSHR[@]}" bash -s <<PROVISION || { echo "FATAL: runner provisioning failed" >&2; exit 1; }
+  set -e
+  export DEBIAN_FRONTEND=noninteractive
+  chmod 600 /root/hosting-platform.key
+  apt-get update -qq >/dev/null 2>&1
+  apt-get install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd socat rsync >/dev/null 2>&1
+  ( cd /root/insula && npm install --no-audit --no-fund --silent ws >/dev/null 2>&1 ) || true
+  SK=(-i /root/hosting-platform.key -o StrictHostKeyChecking=no -o ConnectTimeout=10)
+  scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/usr/local/bin/k3s" /usr/local/bin/kubectl >/dev/null 2>&1
+  chmod +x /usr/local/bin/kubectl
+  mkdir -p /root/.kube
+  ssh "\${SK[@]}" "root@${VMTEST_CP_IP}" 'cat /etc/rancher/k3s/k3s.yaml' | sed 's/127.0.0.1/${VMTEST_CP_IP}/' > /root/.kube/config
+  command -v node >/dev/null && command -v jq >/dev/null && kubectl version --client >/dev/null 2>&1 \
+    || { echo "runner tooling incomplete (node=\$(command -v node) jq=\$(command -v jq) kubectl=\$(command -v kubectl))" >&2; exit 1; }
+  echo "  runner ready: node \$(node --version), $(kubectl version --client -o yaml 2>/dev/null | grep -m1 gitVersion | awk '{print \$2}')"
+PROVISION
 
-# Provision the (bare) CP with the harness's HOST tool deps. ~38 integration-*.sh suites
-# shell out to `node` for JSON on the machine RUNNING the harness (+ host/xxd/htpasswd/…).
-# These are WORKSTATION/test deps, NOT platform runtime deps — the platform runs in
-# containers and bootstrap installs only the node's real CLIs (jq/curl/openssl). The CP is
-# a throwaway test node, so installing test tooling HERE is correct; it never reaches
-# production nodes (which stay minimal). OS-agnostic: apt on Debian/Ubuntu, dnf on RHEL-alikes.
-ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
-  'export DEBIAN_FRONTEND=noninteractive
-   if command -v apt-get >/dev/null; then apt-get update -qq >/dev/null 2>&1
-     apt-get install -y -qq nodejs bind9-host xxd apache2-utils netcat-openbsd socat >/dev/null 2>&1
-   elif command -v dnf >/dev/null; then
-     dnf install -y -q nodejs bind-utils vim-common httpd-tools nmap-ncat socat >/dev/null 2>&1; fi
-   command -v node >/dev/null || { echo "FATAL: could not provision node on CP for the harness" >&2; exit 1; }'
-
-# TLS verification: with Pebble wired + its root trusted on the CP (above), leave
+# TLS verification: with Pebble wired + its root trusted on the RUNNER (step 3b), leave
 # CURL_INSECURE EMPTY so the harness VERIFIES the platform's real (Pebble-issued) certs —
 # a bad/missing cert fails a suite, as on a real cluster. Fall back to insecure (-k) only
 # when Pebble ISN'T wired, or on explicit VMTEST_CURL_INSECURE=1.
 CURL_INSECURE_VAL="${VMTEST_CURL_INSECURE:-$([[ -n "${VMTEST_PEBBLE_IP:-}" ]] && echo "" || echo 1)}"
-CP_REPORT="/root/report-${RUN}.json"
-CP_RUNNER="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
-cat > "$CP_RUNNER" <<RUN
+RUNNER_REPORT="/root/report-${RUN}.json"
+RUNNER_SCRIPT="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
+cat > "$RUNNER_SCRIPT" <<RUN
 #!/usr/bin/env bash
 cd /root/insula
 export ADMIN_HOST=$(printf %q "$API_BASE") API_BASE=$(printf %q "$API_BASE") PLATFORM_API_URL=$(printf %q "$API_BASE") API_URL=$(printf %q "$API_BASE")
 export ADMIN_EMAIL=$(printf %q "$ADMIN_EMAIL") ADMIN_PASSWORD=$(printf %q "$ADMIN_PASSWORD")
 export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX} MAIL_DOMAIN_APEX=${APEX}
-export CURL_INSECURE=${CURL_INSECURE_VAL} LOCAL_KUBECTL=1 INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
+export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
+# Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
+# version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
+# CONTROL_HOST point at the first control-plane node; SSH_KEY is present so ssh_cp uses SSH.
+export SSH_HOST=root@${VMTEST_CP_IP} CONTROL_HOST=${VMTEST_CP_IP} SSH_KEY=/root/hosting-platform.key
+export KUBECONFIG=/root/.kube/config KUBECTL=kubectl LOCAL_KUBECTL=1 NODE_PATH=/root/insula/node_modules
 # Backup-target endpoints the services VM exposes for the rclone shim — one per supported
 # external protocol (s3/ssh/cifs). Suites build backup-configs pointing the shim OUT to
 # these; the cluster reaches them on the NAT-net services-VM IP. Setting BACKUP_S3_* also
@@ -241,14 +256,14 @@ export BACKUP_CIFS_HOST=cifs.${APEX} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIF
 # will then surface the real problem).
 echo "── settle gate: waiting for the platform to be smoke-green ──"
 for _ in \$(seq 1 36); do bash scripts/smoke-test.sh >/dev/null 2>&1 && { echo "  platform smoke-green after settle"; break; }; sleep 10; done
-bash scripts/integration-all.sh --report-json $(printf %q "$CP_REPORT") ${VMTEST_INTEGRATION_ARGS}
+bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
-scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$CP_RUNNER" \
-    "root@${VMTEST_CP_IP}:/root/run-integration.sh" >/dev/null
-ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
-    "bash /root/run-integration.sh" || rc=$?
+scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$RUNNER_SCRIPT" \
+    "root@${RUNNER_IP}:/root/run-integration.sh" >/dev/null
+echo "── running integration-all on the runner ${RUNNER_IP} (drives cluster @ ${VMTEST_CP_IP} over SSH) ──"
+"${SSHR[@]}" "bash /root/run-integration.sh" || rc=$?
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no \
-    "root@${VMTEST_CP_IP}:${CP_REPORT}" "$REPORT" 2>/dev/null || true
+    "root@${RUNNER_IP}:${RUNNER_REPORT}" "$REPORT" 2>/dev/null || true
 
 echo "report: ${REPORT}  (rc=${rc:-0})"
 echo "cluster was: ${OS_ASSIGN}"
