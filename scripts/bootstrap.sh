@@ -2830,6 +2830,15 @@ select_cluster_issuer() {
   # fails with "did not find expected key"). Caught on testing.example.test
   # 2026-05-17 fresh bootstrap.
   local domain="$1" env="$2"
+  # 0. --acme-server: the custom ACME issuer signs EVERYTHING (its whole point is a private
+  #    apex real LE can't validate). Key on ACME_SERVER, not the CLUSTER_ISSUER_NAME pin —
+  #    that pin can be lost across the --remote re-exec, but ACME_SERVER reliably survives
+  #    (it also gates creating the issuer). Without this, select falls through to the DNS
+  #    check → LE-staging → certs never issue for the private apex (VM tier 2026-07-11).
+  if [[ -n "${ACME_SERVER:-}" ]]; then
+    echo "acme-custom-http01"
+    return 0
+  fi
   # 1. Explicit override
   if [[ -n "${CLUSTER_ISSUER_NAME:-}" ]]; then
     echo "$CLUSTER_ISSUER_NAME"
@@ -5317,6 +5326,18 @@ create_platform_configmap() {
     --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},tenant.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
+
+  # --acme-server: override the RECONCILER's cert issuers too. platform-api creates most
+  # platform Certificates (admin/tenant/dex/per-tenant) itself via issuer-selector.ts, which
+  # reads CERT_ISSUER_* env (LE defaults) — NOT the Flux CLUSTER_ISSUER_NAME. So without this
+  # the custom ACME issuer signs only the Flux/overlay certs; the reconciler-made ones still
+  # try LE and fail on the private apex. The backend Deployment maps these keys to
+  # CERT_ISSUER_* env (optional). (VM tier 2026-07-11: platform-ingress stuck on LE → NXDOMAIN.)
+  if [[ -n "${ACME_SERVER:-}" ]]; then
+    kctl patch configmap platform-config -n platform --type merge -p \
+      '{"data":{"cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
+    log "  reconciler cert issuers overridden → acme-custom-http01 (signs via the custom ACME server)."
+  fi
 }
 
 generate_operator_recipient() {
