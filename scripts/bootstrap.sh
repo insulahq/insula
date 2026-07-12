@@ -3380,26 +3380,40 @@ install_calico() {
 
   log "Installing Calico ${CALICO_VERSION}..."
 
-  kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" || true
-
-  log "Waiting for Calico operator..."
-  kubectl wait --for=condition=available --timeout=120s \
-    deployment/tigera-operator -n tigera-operator 2>/dev/null || true
-
-  # The tigera-operator manifest declares its own CRDs (Installation,
-  # APIServer, etc.) but they register asynchronously after the operator
-  # Deployment reports Available. Poll until the CRDs exist, then wait
-  # for them to be Established.
-  log "Waiting for Calico CRDs to register..."
-  for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
-    for _ in $(seq 1 60); do
-      kubectl get crd "$crd" &>/dev/null && break
-      sleep 2
+  # The tigera-operator installs its own operator.tigera.io CRDs at RUNTIME (the manifest
+  # declares NONE — apply creates only ns/SA/roles/Deployment). On a constrained/loaded
+  # apiserver the operator's startup CRD-install/leader-election can stall (it logs only its
+  # version then goes quiet), so the CRDs are slow to appear and a stuck operator won't
+  # self-recover. `apply --server-side` (idempotent, sidesteps the client-side size limit on
+  # Calico's later CRDs), wait generously for the CRDs, and if they're still missing midway
+  # RESTART the operator once to kick a hung startup. (VM tier centos-stream-10 first-server
+  # bootstrap 2026-07-11: operator stalled → CRDs never registered → "no matches for kind
+  # Installation".)
+  local calico_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+  log "Installing tigera-operator (its runtime CRDs can take a few min on slow hardware)..."
+  kubectl apply --server-side --force-conflicts -f "$calico_url" >/dev/null 2>&1 || true
+  kubectl wait --for=condition=available --timeout=180s \
+    deployment/tigera-operator -n tigera-operator >/dev/null 2>&1 || true
+  local _crd _kicked=false calico_ok=true
+  for _crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
+    local ci=0 got=false
+    while (( ci < 300 )); do
+      kubectl get crd "$_crd" &>/dev/null && { got=true; break; }
+      if (( ci >= 150 )) && [[ "$_kicked" == "false" ]]; then
+        warn "  tigera-operator has not created its CRDs after 150s — restarting it once to kick startup..."
+        kubectl -n tigera-operator delete pod -l k8s-app=tigera-operator --ignore-not-found >/dev/null 2>&1 || true
+        _kicked=true
+      fi
+      sleep 5; ci=$((ci + 5))
     done
-    kubectl wait --for=condition=established --timeout=60s crd/"$crd" || {
-      warn "CRD $crd not established after 60s — will try anyway"
-    }
+    if [[ "$got" == "true" ]]; then
+      kubectl wait --for=condition=established --timeout=60s crd/"$_crd" >/dev/null 2>&1 || calico_ok=false
+    else
+      calico_ok=false
+    fi
   done
+  [[ "$calico_ok" == "true" ]] || \
+    error "Calico CRDs (installations/apiservers.operator.tigera.io) never registered after 5 min + an operator restart."
 
   # Calico networking config (M14, 2026-04-26):
   #   * encapsulation: VXLAN — Calico's pod-network packet format. Stays
