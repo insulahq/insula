@@ -29,6 +29,24 @@ export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
 mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
 on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage
 
+# ── host-memory guard: NEVER over-allocate the operator's host (no host OOM) ──
+# Sum the planned guest footprint (servers + workers + services VM + runner) and refuse to
+# spawn if it wouldn't leave VMTEST_HOST_MEM_MARGIN_MB of the host's CURRENTLY-AVAILABLE
+# memory (free -m "available" — RAM reclaimable without swapping). qemu allocates lazily so
+# the real squeeze is at the bootstrap peak; this conservative up-front check aborts cleanly
+# with guidance instead of letting the host OOM-killer reap a VM mid-run.
+_worker_ram="${VMTEST_WORKER_RAM_MB:-${VMTEST_RAM_MB}}"
+_planned=$(( VMTEST_SERVERS * VMTEST_RAM_MB + ${VMTEST_WORKERS:-0} * _worker_ram \
+             + ${VMTEST_SVC_RAM_MB:-1536} + ${VMTEST_RUNNER_RAM_MB:-2048} ))
+_avail=$(on_host "free -m | awk '/^Mem:/{print \$7}'" 2>/dev/null | tr -dc '0-9')
+_margin="${VMTEST_HOST_MEM_MARGIN_MB:-3072}"
+echo "── host-memory guard: planned guests=${_planned}MB, host available=${_avail:-?}MB, margin=${_margin}MB ──" >&2
+if [[ -n "$_avail" && "$_avail" -gt 0 && $(( _planned + _margin )) -gt "$_avail" ]]; then
+  echo "ABORT: planned guest memory ${_planned}MB + ${_margin}MB margin exceeds host available ${_avail}MB." >&2
+  echo "  Lower VMTEST_RAM_MB / VMTEST_WORKER_RAM_MB / VMTEST_WORKERS / VMTEST_SERVERS, or free host RAM." >&2
+  exit 1
+fi
+
 # ── OS draw (seeded, reproducible) ──────────────────────────────────
 read -ra OS_POOL <<<"${VMTEST_OS_POOL:-$(os_pool_default)}"
 [[ ${#OS_POOL[@]} -gt 0 ]] || { echo "empty OS pool" >&2; exit 1; }
@@ -146,7 +164,11 @@ for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
   bootstrap_node "$SH" "$SIP" server --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
 done
 for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
-  WH="vmt-${RUN}-w${w}"; WIP=$(boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
+  # Workers carry no etcd/control-plane and few system pods, so they run comfortably smaller
+  # than servers — default them to VMTEST_WORKER_RAM_MB (< VMTEST_RAM_MB) to spare host RAM.
+  WH="vmt-${RUN}-w${w}"
+  WIP=$(VMTEST_RAM_MB="${VMTEST_WORKER_RAM_MB:-${VMTEST_RAM_MB}}" VMTEST_VCPU="${VMTEST_WORKER_VCPU:-${VMTEST_VCPU}}" \
+        boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
   bootstrap_node "$WH" "$WIP" worker --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
 done
 wait_k3s_ready "$S1_IP" 360
