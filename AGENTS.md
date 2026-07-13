@@ -246,10 +246,13 @@ blog.example.test → <slug>.ingress.<apex> → <node>.<apex> → <IP>
 These are **separate projects** — this platform only consumes their APIs, with configurable
 endpoints in the admin panel. Do not add their deployment concerns here.
 - **DNS:** PowerDNS REST API · **VPN mesh:** NetBird · **IAM/Auth:** Dex OIDC
-- **Catalog:** one unified catalog of mixed entry types (runtimes/databases/services AND
-  self-contained app stacks like WordPress/Nextcloud) fed by one or more catalog repositories. A
-  default **Official Catalog** (`github.com/insulahq/application-catalog`) is seeded active and
-  removable; admins manage repos under **Applications → Repositories**. Custom containers (ADR-036,
+- **Catalog:** one unified catalog model of mixed entry types fed by one or more catalog
+  repositories. The default **Official Catalog** (`github.com/insulahq/application-catalog`) is
+  seeded active and removable and ships **primitives only** — runtimes, databases, services, static.
+  Self-contained **app stacks** (WordPress/Nextcloud/Gitea/…) live in the separate, **opt-in**
+  `github.com/insulahq/application-catalog-community` repo (not seeded; admins add it under
+  **Applications → Repositories**). Rationale: keep the default catalog lean, first-party, and
+  hardenable — every Official image is one we build/control. Custom containers (ADR-036,
   bring-your-own image) are a separate, non-catalog path.
 
 ### DNS provider groups
