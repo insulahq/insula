@@ -132,6 +132,14 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
   echo "── forcing platform certs onto the custom ACME issuer (Flux-suspended; disposable cluster) ──"
   ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<'FORCEACME' || true
     K="k3s kubectl"
+    # STOP Flux entirely (scale its controllers to 0) — `flux suspend kustomization platform`
+    # does NOT hold here: the platform Kustomization is itself reconciled from git, so Flux
+    # un-suspends it within minutes and reverts platform-config back to LE mid-suite (VM tier
+    # 2026-07-13: dex/platform-ingress found back on letsencrypt-prod-http01, oidc-dex
+    # discovery fetch 502). On this DISPOSABLE, already-deployed cluster nothing else needs
+    # to reconcile during the test, so scaling the controllers to 0 makes the imperative cert
+    # config below STICK for the whole run.
+    $K -n flux-system scale deploy --all --replicas=0 >/dev/null 2>&1 || true
     $K -n flux-system patch kustomization platform --type merge -p '{"spec":{"suspend":true}}' >/dev/null 2>&1 || true
     $K -n platform patch cm platform-config --type merge -p '{"data":{"cluster-issuer-name":"acme-custom-http01","cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
     $K -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
@@ -212,7 +220,11 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/usr/local/bin/k3s" /usr/local/bin/kubectl >/dev/null 2>&1
   chmod +x /usr/local/bin/kubectl
   mkdir -p /root/.kube
-  ssh "\${SK[@]}" "root@${VMTEST_CP_IP}" 'cat /etc/rancher/k3s/k3s.yaml' | sed 's/127.0.0.1/${VMTEST_CP_IP}/' > /root/.kube/config
+  # k3s.yaml's server: is 127.0.0.1 OR 0.0.0.0 depending on the bind-address — rewrite BOTH
+  # to the CP's run-net IP, else the runner's local kubectl dials an unreachable loopback
+  # (every direct-kubectl suite fails with "dial tcp 0.0.0.0:6443: connection refused").
+  ssh "\${SK[@]}" "root@${VMTEST_CP_IP}" 'cat /etc/rancher/k3s/k3s.yaml' \
+    | sed -E 's#https://(0\.0\.0\.0|127\.0\.0\.1):6443#https://${VMTEST_CP_IP}:6443#' > /root/.kube/config
   command -v node >/dev/null && command -v jq >/dev/null && kubectl version --client >/dev/null 2>&1 \
     || { echo "runner tooling incomplete (node=\$(command -v node) jq=\$(command -v jq) kubectl=\$(command -v kubectl))" >&2; exit 1; }
   echo "  runner ready: node \$(node --version), $(kubectl version --client -o yaml 2>/dev/null | grep -m1 gitVersion | awk '{print \$2}')"
@@ -231,6 +243,11 @@ cd /root/insula
 export ADMIN_HOST=$(printf %q "$API_BASE") API_BASE=$(printf %q "$API_BASE") PLATFORM_API_URL=$(printf %q "$API_BASE") API_URL=$(printf %q "$API_BASE")
 export ADMIN_EMAIL=$(printf %q "$ADMIN_EMAIL") ADMIN_PASSWORD=$(printf %q "$ADMIN_PASSWORD")
 export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX} MAIL_DOMAIN_APEX=${APEX}
+# HTTPS/mtls tenant-provisioning scenarios mint <name>.<HTTPS_TEST_DOMAIN_BASE> and expect it
+# to wildcard-resolve to the ingress. Point them at the run apex (whose *.<apex> record is
+# seeded → ingress) + give curl the ingress IP for --resolve, else they default to
+# staging.example.test and abort "cannot resolve ingress IP (set RESOLVE_IP)".
+export HTTPS_TEST_DOMAIN_BASE=${APEX} RESOLVE_IP=${VMTEST_CP_IP}
 export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
 # version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
