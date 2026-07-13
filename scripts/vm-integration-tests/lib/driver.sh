@@ -148,15 +148,12 @@ vm_create() {
   <cpu mode='host-passthrough'/>
   <devices>
     <disk type='file' device='disk'>
-      <!-- cache='unsafe' + io='threads': these are DISPOSABLE test VMs on a single shared
-           host disk, so the honest bottleneck vs staging (dedicated per-VPS disks) is disk
-           I/O — Longhorn PVC attach + pod startup then run slower than the suites' staging-
-           calibrated timeouts (e.g. grow's 120s file-manager wait; the suite even documents
-           this as "timing/environment-sensitive on a constrained cluster"). unsafe cache
-           ignores guest flushes → near-RAM speed; the only cost is data loss on a HOST crash,
-           which is irrelevant for a throwaway per-run cluster. This closes most of the VM-vs-
-           staging speed gap without touching any test's assertions. -->
-      <driver name='qemu' type='qcow2' cache='unsafe' io='threads'/>
+      <!-- io='threads' parallelises guest disk I/O across the shared host disk (no memory
+           cost). NOT cache='unsafe': on a MEMORY-constrained host it buffers writes in host
+           RAM, worsening the real bottleneck (host memory pressure → postgres/CNPG stalls,
+           502s, flaky cascades) — tried in run10, reverted. The honest constraint here is
+           RAM, not disk speed. -->
+      <driver name='qemu' type='qcow2' io='threads'/>
       <source file='${overlay}'/><target dev='vda' bus='virtio'/>
     </disk>
     <disk type='file' device='cdrom'>
