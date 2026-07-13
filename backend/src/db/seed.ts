@@ -159,7 +159,14 @@ await db.insert(users).values([
 ]).onConflictDoUpdate({ target: users.email, set: { fullName: sql`excluded.full_name` } });
 console.log(`  Seeded default admin user (${adminEmail})`);
 
-// Catalog Repositories (unified — workloads + applications)
+// Catalog Repositories.
+// The Official Catalog ships PRIMITIVES ONLY (runtimes, databases, services, static).
+// Self-contained application stacks (WordPress, Nextcloud, Gitea, …) live in a separate,
+// opt-in repo that is intentionally NOT seeded — operators add
+//   https://github.com/insulahq/application-catalog-community
+// under Applications → Repositories when they want managed apps. (There is no "disabled"
+// repo status — catalog_repo_status is active|error|syncing — so a seeded repo is always
+// synced; leaving the community repo unseeded is what keeps the default install lean.)
 await db.insert(catalogRepositories).values([{
   id: crypto.randomUUID(),
   name: 'Official Catalog',
