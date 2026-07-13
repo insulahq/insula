@@ -227,7 +227,7 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
     | sed -E 's#https://(0\.0\.0\.0|127\.0\.0\.1):6443#https://${VMTEST_CP_IP}:6443#' > /root/.kube/config
   command -v node >/dev/null && command -v jq >/dev/null && kubectl version --client >/dev/null 2>&1 \
     || { echo "runner tooling incomplete (node=\$(command -v node) jq=\$(command -v jq) kubectl=\$(command -v kubectl))" >&2; exit 1; }
-  echo "  runner ready: node \$(node --version), $(kubectl version --client -o yaml 2>/dev/null | grep -m1 gitVersion | awk '{print \$2}')"
+  echo "  runner ready: node \$(node --version); kubectl + kubeconfig in place"
 PROVISION
 
 # TLS verification: with Pebble wired + its root trusted on the RUNNER (step 3b), leave
