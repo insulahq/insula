@@ -271,6 +271,28 @@ export BACKUP_CIFS_HOST=cifs.${APEX} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIF
 # Poll smoke-test.sh (the SAME check the gate uses) until it's green — so the suites run on a
 # settled platform and the gate passes. Bounded ~6 min; proceed anyway on timeout (the gate
 # will then surface the real problem).
+# STORAGE settle gate (runs BEFORE the smoke gate). On a fresh multi-node cluster the
+# longhorn-managers crashloop on a settings optimistic-concurrency conflict
+# (guaranteed-instance-manager-cpu / default-replica-count — "the object has been modified")
+# and self-heal in ~5-8 min. WHILE they crashloop, Longhorn volume ATTACH stalls
+# (FailedAttachVolume DeadlineExceeded for minutes) → the CNPG system-db loses its volume →
+# platform-api 502 → auth fails → the suite cascade-fails. The old 6-min smoke gate expired
+# INSIDE that window, so the suite raced a still-settling storage layer (flaky run-to-run:
+# clean when Longhorn happened to be healed, cascade when not). Wait until the storage layer
+# is genuinely stable — every longhorn-manager Ready, no volume stuck attaching/faulted, and
+# the system-db primary ready — and hold it 40s so a mid-crashloop blip can't pass. Bounded
+# ~20 min; proceed anyway on timeout (the smoke gate then surfaces the real state).
+echo "── storage settle gate: waiting for Longhorn control-plane + system-db to stabilise ──"
+STABLE=0
+for _ in \$(seq 1 120); do
+  MGR_NOTREADY=\$(kubectl -n longhorn-system get pods -l app=longhorn-manager --no-headers 2>/dev/null | awk '{split(\$2,a,"/"); if(a[1]!=a[2]) c++} END{print c+0}')
+  VOL_BAD=\$(kubectl -n longhorn-system get volumes.longhorn.io -o jsonpath='{range .items[*]}{.status.state}={.status.robustness} {end}' 2>/dev/null | tr ' ' '\n' | grep -icE 'attaching|faulted|=unknown')
+  DB_READY=\$(kubectl -n platform get cluster system-db -o jsonpath='{.status.readyInstances}' 2>/dev/null)
+  if [ "\${MGR_NOTREADY:-1}" = "0" ] && [ "\${VOL_BAD:-1}" = "0" ] && [ "\${DB_READY:-0}" -ge 1 ] 2>/dev/null; then
+    STABLE=\$((STABLE+1)); [ "\$STABLE" -ge 4 ] && { echo "  storage settled (longhorn managers ready, volumes healthy, db primary ready)"; break; }
+  else STABLE=0; fi
+  sleep 10
+done
 echo "── settle gate: waiting for the platform to be smoke-green ──"
 for _ in \$(seq 1 36); do bash scripts/smoke-test.sh >/dev/null 2>&1 && { echo "  platform smoke-green after settle"; break; }; sleep 10; done
 bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
