@@ -65,6 +65,31 @@ img_clone() {
 img_snapshot() { on_host "qemu-img snapshot -c '$2' '$1'"; }
 img_rm()       { on_host "rm -f '$1'"; }
 
+# ensure_fast_disk — back the per-run VM OVERLAY dir with an ext4 loop mounted `nobarrier`,
+# for hosts whose pool FS/drive has slow fsync. Measured on the Unraid host: the NVMe (Samsung
+# PM9A1, consumer, no power-loss-protection) streams 1.1 GB/s but every fsync/FLUSH persists to
+# NAND (~9ms on btrfs, ~20ms through qcow2 in-guest). Longhorn replica writes + postgres WAL
+# fsync constantly, so at ~20ms/sync volume ATTACH stalls and the DB crawls (the real cause of
+# the flaky storage suites). An ext4 loop with nobarrier drops fsync to ~0.05ms (180x). These
+# are DISPOSABLE per-run VMs so the only exposure is a HOST power-loss (cluster is thrown away
+# anyway), and unlike qemu cache='unsafe' it survives guest pod restarts.
+# MUST run BEFORE any VM disk is created — net-services (svc VM) runs first, so it calls this;
+# spawn-cluster calls it too (idempotent). Toggle off with VMTEST_FAST_DISK=0.
+ensure_fast_disk() {
+  [[ "${VMTEST_FAST_DISK:-1}" == "1" ]] || return 0
+  local bk="${VMTEST_POOL_DIR%/}/vmdisk-ext4.img"
+  on_host "
+    if mountpoint -q '${VMTEST_DISK_DIR}'; then exit 0; fi
+    mkdir -p '${VMTEST_DISK_DIR}' || exit 1
+    if [ ! -f '${bk}' ]; then
+      truncate -s ${VMTEST_DISK_BACKING_GB:-220}G '${bk}' && chattr +C '${bk}' 2>/dev/null
+      mkfs.ext4 -q -F '${bk}' || exit 1
+    fi
+    mount -o loop,nobarrier '${bk}' '${VMTEST_DISK_DIR}' || exit 1
+    echo '  fast-disk: ext4-loop(nobarrier) mounted at ${VMTEST_DISK_DIR} (fsync ~0.05ms vs ~9ms btrfs pool)' >&2
+  " >&2 || echo "  WARN: fast-disk setup failed — using the pool FS (slow fsync). VMTEST_FAST_DISK=0 to silence." >&2
+}
+
 # ── seed ISO (cloud-init nocloud) ───────────────────────────────────
 # seed_iso <workdir> <user-data> <meta-data> <out.iso> — build a nocloud seed ISO
 # LOCALLY (in this env) then place it where host qemu reads it. Built here, not on

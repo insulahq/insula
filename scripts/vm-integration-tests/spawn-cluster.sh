@@ -29,28 +29,9 @@ export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
 mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
 on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage (goldens stay on the pool FS)
 
-# Fast-fsync backing for the per-run VM OVERLAYS. Measured on the Unraid host: the NVMe
-# (Samsung PM9A1, consumer, no power-loss-protection) streams 1.1 GB/s but every fsync/FLUSH
-# persists to NAND → ~9ms on the btrfs pool, ~20ms through qcow2 in-guest. Longhorn replica
-# writes + postgres WAL fsync CONSTANTLY, so at 20ms/sync volume-attach stalls and the DB
-# crawls — the real cause of the flaky storage suites (grow/tier-flip/drain/pvc) + the
-# longhorn-manager attach timeouts. Benchmark: an ext4 loop mounted `nobarrier` drops fsync to
-# ~0.05ms (180×). These are DISPOSABLE per-run VMs, so skipping the drive flush only risks data
-# on a HOST power-loss (cluster is thrown away regardless) — and unlike qemu cache='unsafe' it
-# survives guest pod restarts. Idempotent + toggleable (VMTEST_FAST_DISK=0 to keep plain btrfs).
-if [[ "${VMTEST_FAST_DISK:-1}" == "1" ]]; then
-  _bk="${VMTEST_POOL_DIR%/}/vmdisk-ext4.img"
-  on_host "set -e
-    if ! mountpoint -q '${VMTEST_DISK_DIR}'; then
-      if [ ! -f '${_bk}' ]; then
-        truncate -s ${VMTEST_DISK_BACKING_GB:-220}G '${_bk}'
-        chattr +C '${_bk}' 2>/dev/null || true
-        mkfs.ext4 -q -F '${_bk}'
-      fi
-      mount -o loop,nobarrier '${_bk}' '${VMTEST_DISK_DIR}'
-      echo '  fast-disk: ext4-loop(nobarrier) mounted at ${VMTEST_DISK_DIR} (fsync ~0.05ms vs ~9ms btrfs)' >&2
-    fi" >&2 || echo "  WARN: fast-disk setup failed — falling back to the btrfs pool (slow fsync)" >&2
-fi
+# ext4-loop(nobarrier) overlay backing for fast fsync — idempotent; net-services already
+# mounted it before the svc VM, this covers a standalone spawn-cluster run. See driver.sh.
+ensure_fast_disk
 
 # ── host-memory guard: NEVER over-allocate the operator's host (no host OOM) ──
 # Sum the planned guest footprint (servers + workers + services VM + runner) and refuse to

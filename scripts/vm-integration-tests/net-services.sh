@@ -29,6 +29,7 @@ SVC_OS="${VMTEST_SVC_OS:-debian-13}"
 export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
 mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
 on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage
+ensure_fast_disk   # mount the ext4-loop(nobarrier) overlay backing BEFORE the svc VM disk is created
 [[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q >&2
 PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 
