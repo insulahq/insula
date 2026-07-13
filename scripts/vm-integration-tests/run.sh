@@ -213,8 +213,12 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   set -e
   export DEBIAN_FRONTEND=noninteractive
   chmod 600 /root/hosting-platform.key
-  apt-get update -qq >/dev/null 2>&1
-  apt-get install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd socat rsync >/dev/null 2>&1
+  # -o DPkg::Lock::Timeout=300: a fresh debian-13 runs apt-daily/unattended-upgrades at first
+  # boot, which holds the dpkg lock; without waiting, our install races it and dies ("runner
+  # provisioning failed"). Make apt wait for the lock instead of failing.
+  APTO="-o DPkg::Lock::Timeout=300"
+  apt-get \$APTO update -qq >/dev/null 2>&1
+  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd socat rsync >/dev/null 2>&1
   ( cd /root/insula && npm install --no-audit --no-fund --silent ws >/dev/null 2>&1 ) || true
   SK=(-i /root/hosting-platform.key -o StrictHostKeyChecking=no -o ConnectTimeout=10)
   scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/usr/local/bin/k3s" /usr/local/bin/kubectl >/dev/null 2>&1
