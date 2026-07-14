@@ -290,7 +290,12 @@ echo "── storage settle gate: waiting for Longhorn control-plane + system-db
 STABLE=0
 for _ in \$(seq 1 120); do
   MGR_NOTREADY=\$(kubectl -n longhorn-system get pods -l app=longhorn-manager --no-headers 2>/dev/null | awk '{split(\$2,a,"/"); if(a[1]!=a[2]) c++} END{print c+0}')
-  VOL_BAD=\$(kubectl -n longhorn-system get volumes.longhorn.io -o jsonpath='{range .items[*]}{.status.state}={.status.robustness} {end}' 2>/dev/null | tr ' ' '\n' | grep -icE 'attaching|faulted|=unknown')
+  # A DETACHED volume reports robustness=unknown (robustness is only meaningful while ATTACHED),
+  # which is normal for any baseline-unmounted PVC (e.g. tenant-system-storage with no pod, or
+  # roundcube scaled to 0). Match 'attached=unknown' (attached but not yet healthy) — NOT a bare
+  # '=unknown', which flags those normal detached volumes and makes the gate burn the full ~20min
+  # timeout every run on a healthy cluster.
+  VOL_BAD=\$(kubectl -n longhorn-system get volumes.longhorn.io -o jsonpath='{range .items[*]}{.status.state}={.status.robustness} {end}' 2>/dev/null | tr ' ' '\n' | grep -icE 'attaching|faulted|attached=unknown')
   DB_READY=\$(kubectl -n platform get cluster system-db -o jsonpath='{.status.readyInstances}' 2>/dev/null)
   if [ "\${MGR_NOTREADY:-1}" = "0" ] && [ "\${VOL_BAD:-1}" = "0" ] && [ "\${DB_READY:-0}" -ge 1 ] 2>/dev/null; then
     STABLE=\$((STABLE+1)); [ "\$STABLE" -ge 4 ] && { echo "  storage settled (longhorn managers ready, volumes healthy, db primary ready)"; break; }
