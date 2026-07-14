@@ -178,7 +178,16 @@ NC_ID=$(curl -fsSL "$ADMIN_HOST/api/v1/catalog" -H "Authorization: Bearer $TOKEN
   // empty')
 
 if [[ -z "$NC_ID" ]]; then
-  fail "Neither Nextcloud nor WordPress in catalog — can't test multi-component"
+  # No application-type (multi-component) entry in the catalog. Since the 2026-07
+  # catalog split, self-contained app stacks (Nextcloud/WordPress/…) live in the
+  # opt-in community catalog, NOT the default primitives-only catalog — so a fresh
+  # cluster (the VM test tier and future staging) has none. Skip the multi-component
+  # + plan-cap-at-admission assertions (they require a deployable app stack) rather
+  # than fail; the quota-SHAPE assertions above are the core burstable-QoS check and
+  # still run. Re-enable by adding the community catalog to the target cluster
+  # (Applications → Repositories) or seeding an app stack.
+  echo "SKIP: no application-type entry in catalog (app stacks are community-only) — skipping multi-component + plan-cap assertions"
+  DEP_ID=""
 else
   echo "→ Deploying multi-component app with cpu=1 (was failing before ADR-037)..."
   DEPLOY_RESP=$(curl -fsSL -X POST "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments" \
@@ -256,7 +265,7 @@ fi
 # event that the reconciler turns into deployment status=failed
 # (k8s-deployer.ts formatQuotaExceededMessage). Assert on that real path — an
 # over-alloc that pushes namespace requests.cpu past the 2-core cap.
-if [[ -n "$DEP_ID" && -n "$NC_ID" ]]; then
+if [[ -n "${DEP_ID:-}" && -n "$NC_ID" ]]; then
   echo "→ Asserting plan cap rejects over-allocation at pod-admission..."
   OVER_RESP=$(curl -sS -X POST "$ADMIN_HOST/api/v1/tenants/$TENANT_ID/deployments" \
     -H "Authorization: Bearer $TOKEN" \
