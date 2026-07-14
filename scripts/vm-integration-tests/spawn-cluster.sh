@@ -32,6 +32,7 @@ on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host stora
 # ext4-loop(nobarrier) overlay backing for fast fsync — idempotent; net-services already
 # mounted it before the svc VM, this covers a standalone spawn-cluster run. See driver.sh.
 ensure_fast_disk
+ensure_ksm   # dedup identical pages across the run's near-identical guests (VMTEST_KSM=0 off)
 
 # ── host-memory guard: NEVER over-allocate the operator's host (no host OOM) ──
 # Sum the planned guest footprint (servers + workers + services VM + runner) and refuse to
