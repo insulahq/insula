@@ -5283,6 +5283,12 @@ create_platform_configmap() {
   [[ -n "${TRUST_CA_FILE:-}" && -f "${TRUST_CA_FILE}" ]] && extra_ca_src="${TRUST_CA_FILE}"
   kctl create secret generic platform-extra-ca-trust --namespace=platform \
     --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  # Mirror into the mail namespace: Bulwark (mail ns) makes the same server-side https fetch
+  # to Stalwart JMAP and needs the identical extra-CA trust (NODE_EXTRA_CA_CERTS + the
+  # optional mount in k8s/base/bulwark/deployment.yaml). Cross-namespace secret mounts are
+  # not allowed, so each namespace carries its own copy. Best-effort: the mount is optional.
+  kctl create secret generic platform-extra-ca-trust --namespace=mail \
+    --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null 2>&1 || true
   log "platform-extra-ca-trust secret ready ($([[ "$extra_ca_src" == /dev/null ]] && echo 'empty — built-in roots only' || echo "seeded from ${TRUST_CA_FILE}"))."
 
   # Support-email default: reuse the operator's ACME email if available —

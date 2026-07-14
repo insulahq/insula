@@ -176,7 +176,14 @@ WAITCERT
       --from-file=ca-bundle.crt=/tmp/pebble-root.crt --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null
     k3s kubectl -n platform delete pod \$(k3s kubectl -n platform get pod -o name 2>/dev/null | grep '/platform-api-') --ignore-not-found >/dev/null 2>&1 || true
     k3s kubectl -n platform rollout status deploy/platform-api --timeout=120s >/dev/null 2>&1 || true
-    echo "  platform-api reloaded with Pebble trust"
+    # Bulwark (mail ns) makes the same server-side https fetch to Stalwart JMAP and needs the
+    # same trust, or bulwark-impersonate / webmail-platform fail UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+    # → JMAP 500. Mirror the secret into the mail namespace + reload bulwark.
+    k3s kubectl -n mail create secret generic platform-extra-ca-trust \
+      --from-file=ca-bundle.crt=/tmp/pebble-root.crt --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null
+    k3s kubectl -n mail delete pod \$(k3s kubectl -n mail get pod -o name 2>/dev/null | grep '/bulwark-') --ignore-not-found >/dev/null 2>&1 || true
+    k3s kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
+    echo "  platform-api + bulwark reloaded with Pebble trust"
 PICA
 fi
 

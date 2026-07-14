@@ -389,6 +389,14 @@ spec:
             # both sides).
             - name: BULWARK_JWT_AUTH_ISSUER
               value: "platform-api/webmail"
+            # Trust extra root CAs (optional platform-extra-ca-trust secret, mounted below)
+            # for Bulwark's server-side https fetch to Stalwart JMAP (JMAP_SERVER_URL =
+            # https://stalwart.${DOMAIN}). On private/test-CA clusters (bootstrap
+            # --acme-server, e.g. the VM integration tier's Pebble) the public trust store
+            # lacks that root and the passthrough fails TLS (UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+            # → JMAP 500). Empty/absent bundle is fine on public-LE clusters.
+            - name: NODE_EXTRA_CA_CERTS
+              value: /etc/ssl/platform-extra-ca/ca-bundle.crt
           ports:
             - containerPort: 3000
               name: http
@@ -407,6 +415,12 @@ spec:
             # only; this mount replaces it for the running Pod.
             - name: css-overlay
               mountPath: /app/.next/static/css
+              readOnly: true
+            # Extra root-CA bundle for NODE_EXTRA_CA_CERTS (see env above). Optional:
+            # absent on public-LE clusters, seeded (--trust-ca / VM-tier Pebble) on
+            # private-CA clusters.
+            - name: extra-ca-trust
+              mountPath: /etc/ssl/platform-extra-ca
               readOnly: true
           resources:
             requests:
@@ -468,3 +482,10 @@ spec:
         - name: restore-tmp
           emptyDir:
             sizeLimit: 200Mi
+        # Optional extra root-CA trust bundle (mirrored into the mail namespace by
+        # bootstrap alongside the platform-namespace copy). Empty/absent on public-LE
+        # clusters; seeded with the private/test root on --acme-server clusters.
+        - name: extra-ca-trust
+          secret:
+            secretName: platform-extra-ca-trust
+            optional: true
