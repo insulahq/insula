@@ -44,7 +44,7 @@ jobs:
         run: python3 documentation/gen/changelog.py
       - name: Build (broken nav/links fail)
         run: mkdocs build --strict -f documentation/mkdocs.yml
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         if: github.event_name == 'push'
         with:
           path: documentation/site
