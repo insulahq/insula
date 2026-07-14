@@ -90,6 +90,25 @@ ensure_fast_disk() {
   " >&2 || echo "  WARN: fast-disk setup failed — using the pool FS (slow fsync). VMTEST_FAST_DISK=0 to silence." >&2
 }
 
+# ensure_ksm — enable Kernel Same-page Merging on the HOST so the run's near-identical guests
+# (shared OS goldens + k3s/containerd + the same base container images on every node) dedup
+# their identical anonymous pages down to one physical copy. qemu marks guest RAM MADV_MERGEABLE
+# by default (machine mem-merge=on; we never set <memoryBacking><nosharepages/>), so flipping the
+# host KSM switch is all that's needed. Idempotent; a clean no-op if the kernel lacks KSM. The
+# scan-CPU cost and the theoretical cross-VM dedup timing side-channel are both irrelevant for a
+# throw-away test rig — the reclaim across a homogeneous-ish 6-VM fleet is the point. Toggle off
+# with VMTEST_KSM=0. Runs before any domain is created (called next to ensure_fast_disk).
+ensure_ksm() {
+  [[ "${VMTEST_KSM:-1}" == "1" ]] || return 0
+  on_host "
+    [ -w /sys/kernel/mm/ksm/run ] || { echo '  ksm: not available on this kernel — skipped' >&2; exit 0; }
+    echo 1    > /sys/kernel/mm/ksm/run
+    echo 1000 > /sys/kernel/mm/ksm/pages_to_scan   2>/dev/null || true  # scan briskly during churn
+    echo 20   > /sys/kernel/mm/ksm/sleep_millisecs 2>/dev/null || true
+    echo '  ksm: enabled (pages_to_scan=1000, sleep=20ms) — dedups identical guest pages across the fleet' >&2
+  " >&2 || true
+}
+
 # ── seed ISO (cloud-init nocloud) ───────────────────────────────────
 # seed_iso <workdir> <user-data> <meta-data> <out.iso> — build a nocloud seed ISO
 # LOCALLY (in this env) then place it where host qemu reads it. Built here, not on
@@ -154,6 +173,11 @@ vm_net_destroy() {
 # vm_create <name> <overlay> <seed_iso> <net> <vcpu> <ram_mb> <mac>
 vm_create() {
   local name="$1" overlay="$2" seed="$3" net="$4" vcpu="$5" ram="$6" mac="$7"
+  # VMTEST_BALLOON=0 falls back to libvirt's implicit plain virtio balloon (prior behaviour:
+  # dommemstat still works, but no page reclaim). =1 (default) turns on free-page-reporting.
+  local MEMBALLOON="<memballoon model='virtio'/>"
+  [[ "${VMTEST_BALLOON:-1}" == "1" ]] && \
+    MEMBALLOON="<memballoon model='virtio' freePageReporting='on'><stats period='10'/></memballoon>"
   local xml; xml=$(cat <<XML
 <domain type='kvm'>
   <name>${name}</name>
@@ -206,6 +230,19 @@ vm_create() {
          diagnosing a failed boot (kernel/console output goes to tty0, not ttyS0). -->
     <video><model type='vga' vram='16384'/></video>
     <graphics type='vnc' port='-1' autoport='yes' listen='127.0.0.1'/>
+    <!-- virtio-balloon with FREE-PAGE-REPORTING: qemu allocates guest RAM lazily but never
+         RECLAIMS it once a page is touched, so after the bootstrap peak (buildkit build storm
+         + every pod starting at once) each settled node keeps HOLDING its peak footprint for
+         the rest of the run — the churn OOM. free-page-reporting has the guest continuously
+         hand FREED pages back to the host with NO host-driven balloon target (passive; safe
+         for this workload, unlike host-set deflation which can starve a live guest). We do NOT
+         set <currentMemory> below <memory>, so the guest still boots with full RAM and nothing
+         is force-ballooned during the fragile bootstrap — only genuinely-free pages are
+         returned. <stats period> surfaces real usage via `virsh dommemstat` so the host-memory
+         guard can be re-tuned from data instead of the peak. Requires guest kernel >=5.7 (all
+         supported OSes qualify) + libvirt >=6.9 / qemu >=5.1 (Unraid 6.12+ ships both). Toggle
+         off with VMTEST_BALLOON=0. -->
+    ${MEMBALLOON}
   </devices>
 </domain>
 XML
