@@ -316,7 +316,10 @@ export async function finalizeByRef(
         finishedAt: sql`NOW()`,
         updatedAt: sql`NOW()`,
         errorMessage: args.error ?? null,
-        progressPct: args.status === 'succeeded' ? 100 : sql`progress_pct`,
+        // Qualify the column (`"tasks"."progress_pct"`, like the sibling `details` line) — a bare
+        // `progress_pct` is ambiguous under PostgreSQL 18's stricter ON CONFLICT DO UPDATE scoping
+        // (target vs. EXCLUDED) and errors 42702, breaking every non-succeeded task progress write.
+        progressPct: args.status === 'succeeded' ? 100 : sql`${tasks.progressPct}`,
         ...(args.text !== undefined ? { progressText: args.text } : {}),
         ...(finishedDetails !== null
           ? { details: sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(finishedDetails)}::jsonb` }
