@@ -45,7 +45,7 @@
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.8.5",
     "handlebars": "^4.7.9",
-    "js-yaml": "^4.2.0",
+    "js-yaml": "^5.2.1",
     "lru-cache": "^11.5.1",
     "mjml": "^5.3.0",
     "nodemailer": "^8.0.10",
