@@ -1892,7 +1892,27 @@ export async function promotePostgresFromSnapshot(
     markInFlight('delete-source');
     await deleteCustom(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName });
     sourceDeleted = true;
-    // CNPG finalizer cleanup takes 30-60s
+    // PERF: force-delete the source cluster's pods (gracePeriodSeconds=0). Otherwise
+    // CNPG's finalizer waits out postgres's graceful smart-shutdown before releasing the
+    // pod name, and the new SAME-NAMED primary in recreate-source (step 8) cannot be
+    // created until the old one is gone. On the VM tier this "<cluster>-1 Terminating"
+    // wait was ~136s — the single largest chunk of the restore wall-clock. We are
+    // restoring FROM a snapshot taken earlier, so the current primary's post-snapshot
+    // data is intentionally discarded: a clean shutdown buys nothing. PVCs survive via
+    // Retain reclaim (same force-delete pattern as quiesce.ts).
+    try {
+      const pods = await deps.k8s.core.listNamespacedPod({ namespace: inputs.clusterNamespace });
+      const items = (pods as { items?: Array<{ metadata?: { name?: string; labels?: Record<string, string> } }> }).items ?? [];
+      for (const p of items) {
+        const name = p.metadata?.name;
+        if (name && p.metadata?.labels?.['cnpg.io/cluster'] === inputs.clusterName) {
+          await (deps.k8s.core as unknown as {
+            deleteNamespacedPod: (a: { name: string; namespace: string; gracePeriodSeconds?: number }) => Promise<unknown>;
+          }).deleteNamespacedPod({ name, namespace: inputs.clusterNamespace, gracePeriodSeconds: 0 }).catch(() => undefined);
+        }
+      }
+    } catch { /* best-effort — the finalizer-wait loop below still bounds the delete */ }
+    // CNPG finalizer cleanup takes 30-60s (seconds once the pods are force-gone)
     for (let i = 0; i < 90; i++) {
       try {
         await getCustom<CnpgCluster>(deps.k8s, { group: CNPG_GROUP, version: CNPG_VERSION, namespace: inputs.clusterNamespace, plural: 'clusters', name: inputs.clusterName });
