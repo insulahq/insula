@@ -163,11 +163,11 @@ vm_create() {
   <!-- Force the NoCloud datasource via the SMBIOS system serial. cloud-init's early
        ds-identify generator matches "ds=nocloud" in the DMI product serial and selects
        NoCloud UNCONDITIONALLY, skipping its device probe. Without this, older cloud-init
-       (e.g. Debian 12 / cloud-init 22.4.2) races the SATA CD-ROM enumeration, finds no
+       (e.g. Debian 12 / cloud-init 22.4.2) races the seed-CD enumeration, finds no
        datasource, writes /run/cloud-init/disabled, and short-circuits ALL cloud-init
        services — so the node never gets a hostname, network, or DHCP lease (spawn then
-       fails with "no lease after 5 min"). The cidata seed is still found by the later
-       cloud-init-local blkid scan. Image-agnostic: every distro image we draw uses NoCloud. -->
+       fails with "no lease after 5 min"). The cidata seed itself is attached on virtio-blk
+       (see below) so it is present when NoCloud's blkid scan runs. Image-agnostic. -->
   <sysinfo type='smbios'><system><entry name='serial'>ds=nocloud</entry></system></sysinfo>
   <features><acpi/><apic/></features>
   <cpu mode='host-passthrough'/>
@@ -181,9 +181,18 @@ vm_create() {
       <driver name='qemu' type='qcow2' io='threads'/>
       <source file='${overlay}'/><target dev='vda' bus='virtio'/>
     </disk>
-    <disk type='file' device='cdrom'>
+    <!-- cidata seed on VIRTIO-BLK, not a SATA CD-ROM. A SATA cdrom enumerates late
+         (its AHCI/ATAPI probe finishes well after cloud-init-local runs at ~Up 10s),
+         so under host load cloud-init's blkid scan for LABEL=cidata found NOTHING and —
+         because the SMBIOS serial had already forced NoCloud — committed to an EMPTY seed
+         (user-data length 0). The node then boots as localhost with no hostname and no
+         injected SSH key, so spawn fails with no ssh after 360s. virtio-blk is probed
+         synchronously with the root disk (vda), so /dev/vdb (the iso9660 cidata fs) is
+         present before init-local scans. Read-only raw image; cloud-init NoCloud finds it
+         by filesystem LABEL/TYPE regardless of bus or device class. -->
+    <disk type='file' device='disk'>
       <driver name='qemu' type='raw'/>
-      <source file='${seed}'/><target dev='sda' bus='sata'/><readonly/>
+      <source file='${seed}'/><target dev='vdb' bus='virtio'/><readonly/>
     </disk>
     <interface type='network'>
       <source network='insula-test-${net}'/><model type='virtio'/>
