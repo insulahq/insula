@@ -5,6 +5,8 @@ import { sftpUsers, sftpAuditLog, sftpUserSshKeys, sshKeys, platformSettings } f
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { CreateSftpUserInput, UpdateSftpUserInput } from './schema.js';
+import { resolveBaseDomain, sftpHost } from '../../config/domains.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 
 const BCRYPT_COST = 12;
 const HOME_PATH_REGEX = /^[a-zA-Z0-9/_.-]*$/;
@@ -328,7 +330,16 @@ export async function getSftpConnectionInfo(db: Database) {
   const settings = await db.select().from(platformSettings);
   const settingsMap = new Map(settings.map((s) => [s.key, s.value]));
 
-  const host = settingsMap.get('sftp_gateway_host') ?? 'sftp.k8s-platform.test';
+  // Derive the gateway hostname from the platform apex — the same chain every
+  // other platform hostname uses (getPlatformApex → env → dev default), rather
+  // than hard-coding one. `sftp_gateway_host` stays an operator override for
+  // deployments that expose the gateway somewhere else entirely (a dedicated
+  // LB hostname, a bastion), but it is not required for a correct default:
+  // nothing ever WROTE that key, so the old literal fallback was the only value
+  // this endpoint could return — it advertised the local dev hostname to
+  // tenants on every real deployment.
+  const apex = (await getPlatformApex(db)) || resolveBaseDomain(process.env);
+  const host = settingsMap.get('sftp_gateway_host') || sftpHost({ PLATFORM_BASE_DOMAIN: apex });
   const port = Number(settingsMap.get('sftp_gateway_port') ?? '2222');
   const ftpsPort = Number(settingsMap.get('sftp_gateway_ftps_port') ?? '2121');
 

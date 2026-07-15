@@ -11,6 +11,8 @@
  *   dex.<base>        — Dex OIDC issuer
  *   webmail.<base>    — platform-wide Roundcube (per-tenant-domain
  *                       `webmail.<clientdomain>` ingresses are separate)
+ *   sftp.<base>       — SFTP/SCP/rsync/FTPS gateway (advertised to tenants
+ *                       by the sftp-users connection-info endpoint)
  *
  * The base domain comes from env (`PLATFORM_BASE_DOMAIN`), populated by
  * bootstrap.sh (prod: operator-provided) or the dev overlay ConfigMap
@@ -53,3 +55,4 @@ export const mailHost = (cfg: BaseDomainConfig): string => subdomain('mail', cfg
 export const stalwartHost = (cfg: BaseDomainConfig): string => subdomain('stalwart', cfg);
 export const dexHost = (cfg: BaseDomainConfig): string => subdomain('dex', cfg);
 export const webmailHost = (cfg: BaseDomainConfig): string => subdomain('webmail', cfg);
+export const sftpHost = (cfg: BaseDomainConfig): string => subdomain('sftp', cfg);
