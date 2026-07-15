@@ -70,6 +70,11 @@ components:
   - ../../components/admin-auth-gate-cookie
 
 patches:
+  # Release version → platform-version ConfigMap (stamped by cut-release.sh).
+  # staging bases on this overlay and inherits it, so platform-ops on staging
+  # targets the RC the cluster is actually running.
+  - path: platform-version-patch.yaml
+
   - path: platform-config-patch.yaml
   # ingress-patch.yaml was REMOVED in the Traefik migration. platform-ingress
   # is now reconciler-managed (backend/src/modules/system-settings/
