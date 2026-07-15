@@ -399,20 +399,40 @@ func execAndPipe(sshSess ssh.Session, namespace, podName string, command []strin
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 
-	var wg sync.WaitGroup
+	// ONLY the stdout copier is waited on. The stdin copier MUST NOT be, or
+	// rsync deadlocks:
+	//
+	//   io.Copy(stdinWriter, sshSess) blocks READING from the SSH session until
+	//   the CLIENT closes its stdin. rsync's client never does — it finishes
+	//   sending, then waits for the server's exit-status. But we only send
+	//   exit-status (sshSess.Exit, in the caller) AFTER this function returns.
+	//   Waiting on the stdin copier therefore means: client waits for
+	//   exit-status → we wait for client EOF → forever.
+	//
+	//   Closing stdinReader does not rescue it: the copier is parked in a READ
+	//   on sshSess, and only notices the closed pipe on its next WRITE.
+	//
+	//   sftp and scp hid this bug because both close the channel when they are
+	//   done, which unblocks the read. rsync transferred the file correctly and
+	//   then hung forever — verified on staging 2026-07-15, payload on the PVC,
+	//   client killed by timeout.
+	//
+	// The stdin copier is left running: it unblocks and exits on its own when
+	// the caller sends exit-status and the SSH channel closes. It holds only the
+	// two pipe ends, both of which are closed below.
+	var outWg sync.WaitGroup
 
-	// Goroutine: SSH session -> exec stdin.
-	wg.Add(1)
+	// Goroutine: SSH session -> exec stdin. Deliberately NOT in outWg.
 	go func() {
-		defer wg.Done()
 		defer stdinWriter.Close()
 		_, _ = io.Copy(stdinWriter, sshSess)
 	}()
 
-	// Goroutine: exec stdout -> SSH session.
-	wg.Add(1)
+	// Goroutine: exec stdout -> SSH session. This one IS waited on, so every
+	// byte the server produced reaches the client before we report exit.
+	outWg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer outWg.Done()
 		defer stdoutReader.Close()
 		_, _ = io.Copy(sshSess, stdoutReader)
 	}()
@@ -420,11 +440,12 @@ func execAndPipe(sshSess ssh.Session, namespace, podName string, command []strin
 	// Run exec (blocking).
 	err := ExecInPod(namespace, podName, "file-manager", command, stdinReader, stdoutWriter, sshSess.Stderr())
 
-	// Close the writer side so the stdout goroutine finishes.
+	// Close the writer side so the stdout goroutine finishes, and the stdin read
+	// side so the stdin copier errors out on its next write.
 	stdoutWriter.Close()
 	stdinReader.Close()
 
-	wg.Wait()
+	outWg.Wait()
 
 	if err != nil {
 		log.Printf("exec error: %v", err)
