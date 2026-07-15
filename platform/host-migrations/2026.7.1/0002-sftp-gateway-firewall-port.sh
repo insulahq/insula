@@ -36,9 +36,43 @@ if [[ ! -f "$CONF" ]]; then
 fi
 
 conf_has_accept() { grep -qE "^[[:space:]]*tcp dport ${SFTP_PORT} accept" "$CONF"; }
-live_has_accept() { nft list chain inet filter input 2>/dev/null | grep -qE "dport ${SFTP_PORT}.*accept"; }
 
-if conf_has_accept && live_has_accept; then
+# Handle of the input chain's trailing catch-all drop.
+#
+# NOTE the rendering gap: bootstrap.sh WRITES `counter drop`, but `nft list`
+# RENDERS it with its counters — `counter packets 1303181 bytes 196133577 drop`.
+# Matching the literal source text finds nothing in the live chain, which is
+# exactly how the first cut of this migration appended the accept AFTER the drop
+# (a dead rule: the port stayed closed while the migration reported success, and
+# a naive "does an accept exist" guard then said "already open" forever). Match
+# the LIVE rendering, with the counters optional.
+drop_handle() {
+  nft -a list chain inet filter input 2>/dev/null \
+    | awk '/^[[:space:]]*counter( packets [0-9]+ bytes [0-9]+)? drop[[:space:]]*#[[:space:]]*handle [0-9]+$/ { print $NF; exit }'
+}
+
+# The accept is only EFFECTIVE if it precedes that catch-all drop. Existence is
+# not enough — an accept after the drop is unreachable.
+live_accept_effective() {
+  local chain accept_line drop_line
+  chain="$(nft list chain inet filter input 2>/dev/null)" || return 1
+  accept_line="$(awk "/tcp dport ${SFTP_PORT} accept/ { print NR; exit }" <<<"$chain")"
+  drop_line="$(awk '/^[[:space:]]*counter( packets [0-9]+ bytes [0-9]+)? drop[[:space:]]*$/ { print NR; exit }' <<<"$chain")"
+  [[ -n "$accept_line" && -n "$drop_line" && "$accept_line" -lt "$drop_line" ]]
+}
+
+# Delete an accept that exists but sits after the drop, so we can re-insert it
+# in the right place (self-heals a node that ran the first cut of this script).
+delete_dead_accept() {
+  local h
+  h="$(nft -a list chain inet filter input 2>/dev/null \
+       | awk "/tcp dport ${SFTP_PORT} accept[[:space:]]*#[[:space:]]*handle [0-9]+$/ { print \$NF; exit }")"
+  [[ -n "$h" ]] || return 0
+  nft delete rule inet filter input handle "$h" 2>/dev/null || true
+  echo "host-migration: removed a dead ${SFTP_PORT}/tcp accept that sat after the catch-all drop"
+}
+
+if conf_has_accept && live_accept_effective; then
   echo "host-migration: SFTP port ${SFTP_PORT} already open in config + kernel; nothing to do."
   exit 0
 fi
@@ -82,17 +116,30 @@ fi
 # flushes the runtime-managed sets (tenant_ports_*, blacklist_v*, cluster_peers_*)
 # that firewall-reconciler owns, briefly dropping tenant traffic and operator
 # bans until it re-converges.
-if ! live_has_accept; then
-  # Insert BEFORE the trailing `counter drop` so the accept is actually reached.
-  # `nft add rule` appends after it, which would make the rule dead.
-  handle="$(nft -a list chain inet filter input 2>/dev/null | awk '/counter drop/ { print $NF; exit }')"
+if ! live_accept_effective; then
+  # An accept may exist but be unreachable (after the drop) — drop it first so
+  # the re-insert below lands in the right place instead of adding a duplicate.
+  delete_dead_accept
+
+  # Insert BEFORE the trailing catch-all drop so the accept is actually reached.
+  # `nft add rule` APPENDS (after the drop) — that is what made the rule dead.
+  handle="$(drop_handle)"
   if [[ -n "$handle" ]]; then
     nft insert rule inet filter input handle "$handle" tcp dport "$SFTP_PORT" accept
   else
-    # No trailing drop found (non-standard chain) — append is then correct.
+    # No catch-all drop found (non-standard chain, e.g. policy accept) — append
+    # is then correct and reachable.
     nft add rule inet filter input tcp dport "$SFTP_PORT" accept
   fi
-  echo "host-migration: opened ${SFTP_PORT}/tcp in the live ruleset"
+
+  # Never report success on a rule that is not actually reachable.
+  if live_accept_effective; then
+    echo "host-migration: opened ${SFTP_PORT}/tcp in the live ruleset"
+  else
+    echo "host-migration: FAILED to place a reachable ${SFTP_PORT}/tcp accept in the live input chain." >&2
+    echo "  The persisted $CONF is correct, so a reload/reboot would open it; refusing to report success." >&2
+    exit 1
+  fi
 fi
 
 # ── 3. Keep the operator-facing port inventory truthful ───────────────────────
