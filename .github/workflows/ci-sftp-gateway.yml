@@ -64,10 +64,22 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+            # Gate on `development`, NOT {{is_default_branch}}: ADR-053 made
+            # `development` the branch that builds+pins, but the repo's DEFAULT
+            # branch is still `main` — so is_default_branch is FALSE here and
+            # emitted neither tag. The "Extract immutable timestamp tag" step
+            # then found nothing and exit 1'd, failing the build job and
+            # skipping the pin. Every development run of this workflow had
+            # failed since the 2026-06-22 cutover, so the sftp-gateway image
+            # was last pinned 2026-06-10. The sibling image workflows
+            # (ci-security-probe, ci-firewall-reconciler, ci-backup-rclone,
+            # ci-host-config-reconciler) were all migrated to this gate at the
+            # cutover; this one was missed. Nothing surfaced it because tenant
+            # SFTP was unreachable anyway, so a stale gateway had no symptom.
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
 
-      # Build to local cache for PR scanning; push only on main
+      # Build to local cache for PR scanning; push only on development
       - uses: docker/build-push-action@v6
         id: build
         with:
