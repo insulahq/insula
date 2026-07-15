@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.21] - 2026-07-15
+
 ### BREAKING
 - **Tenant SFTP is reachable for the first time — new host, new port, FTPS
   removed.** Tenant file upload never worked on any real deployment: the
