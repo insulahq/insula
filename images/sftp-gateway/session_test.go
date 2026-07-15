@@ -221,6 +221,71 @@ func contains(ss []string, want string) bool {
 	return false
 }
 
+// TestRewriteRsyncCommand_FlagAllowlist: the exec runs unchrooted as root, so a
+// dangerous server-side flag must REFUSE the session (nil), not run confined.
+func TestRewriteRsyncCommand_FlagAllowlist(t *testing.T) {
+	refused := []struct {
+		name string
+		cmd  string
+	}{
+		{"rogue daemon", "rsync --server --daemon --config=/dev/null ."},
+		{"config file", "rsync --server --config=/data/x . /dest"},
+		{"remote shell -e token", "rsync --server -e sh . /dest"},
+		{"remote shell --rsh", "rsync --server --rsh=/bin/sh . /dest"},
+		{"read device nodes", "rsync --server --copy-devices . /dest"},
+		{"write device nodes", "rsync --server --write-devices . /dev/sda"},
+		{"munge links off", "rsync --server --munge-links . /dest"},
+		{"delete after send", "rsync --server --sender --remove-source-files . /data/x"},
+		{"unexpected long flag", "rsync --server --made-up-flag . /dest"},
+	}
+	for _, tt := range refused {
+		t.Run("refuse/"+tt.name, func(t *testing.T) {
+			if got := rewriteRsyncCommand(tt.cmd, "/data"); got != nil {
+				t.Errorf("expected REFUSAL (nil) for %q, got %v", tt.cmd, got)
+			}
+		})
+	}
+
+	allowed := []string{
+		"rsync --server -logDtpre.iLsfxCIvu . /some/path",      // normal receive
+		"rsync --server --sender -logDtpre.iLsfxC . /some/dir", // normal send
+		"rsync --server -e.LsfxCIvu . /dest",                   // bundled caps marker, NOT -e/--rsh
+		"rsync --server --files-from=/x . /dest",               // path-bearing, confined not refused
+	}
+	for _, cmd := range allowed {
+		t.Run("allow/"+cmd, func(t *testing.T) {
+			if got := rewriteRsyncCommand(cmd, "/data"); got == nil {
+				t.Errorf("expected a rewritten command for a legitimate call %q, got refusal", cmd)
+			}
+		})
+	}
+}
+
+// TestRewriteSCPCommand_FlagAllowlist: legacy scp exec runs unchrooted as root
+// too — only the direction/recursion/verbosity flags are permitted.
+func TestRewriteSCPCommand_FlagAllowlist(t *testing.T) {
+	if got := rewriteSCPCommand("scp -t /dest", "/data"); got == nil {
+		t.Error("scp -t (to) must be allowed")
+	}
+	if got := rewriteSCPCommand("scp -f /src", "/data"); got == nil {
+		t.Error("scp -f (from) must be allowed")
+	}
+	if got := rewriteSCPCommand("scp -rp -t /dest", "/data"); got == nil {
+		t.Error("scp -rp -t (bundled recursion+preserve) must be allowed")
+	}
+	// A path must still be confined.
+	got := rewriteSCPCommand("scp -t /etc/shadow", "/data")
+	if !contains(got, "/data/etc/shadow") {
+		t.Errorf("scp path not confined: %v", got)
+	}
+	// An unknown/dangerous flag letter must refuse the whole session.
+	for _, cmd := range []string{"scp -S /bin/sh -t /dest", "scp -o ProxyCommand=x -t /d", "scp -X -t /d"} {
+		if got := rewriteSCPCommand(cmd, "/data"); got != nil {
+			t.Errorf("expected REFUSAL for %q, got %v", cmd, got)
+		}
+	}
+}
+
 func TestBuildCommand_Unknown(t *testing.T) {
 	got := buildCommand("unknown", nil, "/")
 	if got != nil {
