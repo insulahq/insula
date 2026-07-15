@@ -510,13 +510,29 @@ HA_SEL=$(ssh_cp "kubectl -n $HA_NS get deploy $HA_DEPL -o jsonpath='{.spec.templ
 # currentNodeID). We assert the pod's destination node ≠ W and that
 # the volume is attached on a non-W node — the platform invariant —
 # without insisting on a specific node identity.
-log "── verifying Longhorn Volume placement after drain ──"
-LOCAL_VOL_CURR=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $LOCAL_PV -o jsonpath='{.status.currentNodeID}'" 2>/dev/null || true)
+# Longhorn re-attaches the volume on the new node ASYNCHRONOUSLY after the pod
+# reschedules — it is NOT instantaneous with the pod move. On slow storage (the
+# ephemeral VM tier's loop-backed disk) the HA volume was observed reaching
+# status.currentNodeID ~12 s AFTER the LOCAL one; a single point-in-time read then
+# reports a correct-but-still-settling relocation as a failure (flaky on slow disks,
+# green on staging's SSD purely by timing). Poll until the volume lands on a non-W
+# node, bounded ~120 s, instead of reading once.
+wait_vol_off_worker() {  # <pv> — echoes the final currentNodeID (last value on timeout)
+  local pv="$1" curr=""
+  for _ in $(seq 1 40); do
+    curr=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $pv -o jsonpath='{.status.currentNodeID}'" 2>/dev/null || true)
+    [[ -n "$curr" && "$curr" != "$WORKER_NODE" ]] && { echo "$curr"; return 0; }
+    sleep 3
+  done
+  echo "$curr"; return 1
+}
+log "── verifying Longhorn Volume placement after drain (polling async re-attach, ≤120s) ──"
+LOCAL_VOL_CURR=$(wait_vol_off_worker "$LOCAL_PV")
 [[ -n "$LOCAL_VOL_CURR" && "$LOCAL_VOL_CURR" != "$WORKER_NODE" ]] \
   && ok "LOCAL Volume.status.currentNodeID=$LOCAL_VOL_CURR (≠ W)" \
   || fail "LOCAL Volume.status.currentNodeID=$LOCAL_VOL_CURR (expected ≠ $WORKER_NODE)"
 
-HA_VOL_CURR=$(ssh_cp "kubectl -n longhorn-system get volumes.longhorn.io $HA_PV -o jsonpath='{.status.currentNodeID}'" 2>/dev/null || true)
+HA_VOL_CURR=$(wait_vol_off_worker "$HA_PV")
 [[ -n "$HA_VOL_CURR" && "$HA_VOL_CURR" != "$WORKER_NODE" ]] \
   && ok "HA Volume.status.currentNodeID=$HA_VOL_CURR (≠ W)" \
   || fail "HA Volume.status.currentNodeID=$HA_VOL_CURR (expected ≠ $WORKER_NODE)"
