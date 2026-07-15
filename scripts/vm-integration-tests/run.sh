@@ -225,7 +225,9 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   # provisioning failed"). Make apt wait for the lock instead of failing.
   APTO="-o DPkg::Lock::Timeout=300"
   apt-get \$APTO update -qq >/dev/null 2>&1
-  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd socat rsync >/dev/null 2>&1
+  # `ncat` (its OWN Debian package — the staging-all suite requires it; `netcat-openbsd` ships only
+  # `nc`, and the `nmap` package does NOT bundle `ncat` on Debian).
+  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd ncat socat rsync >/dev/null 2>&1
   ( cd /root/insula && npm install --no-audit --no-fund --silent ws >/dev/null 2>&1 ) || true
   SK=(-i /root/hosting-platform.key -o StrictHostKeyChecking=no -o ConnectTimeout=10)
   scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/usr/local/bin/k3s" /usr/local/bin/kubectl >/dev/null 2>&1
@@ -311,6 +313,29 @@ for _ in \$(seq 1 120); do
 done
 echo "── settle gate: waiting for the platform to be smoke-green ──"
 for _ in \$(seq 1 36); do bash scripts/smoke-test.sh >/dev/null 2>&1 && { echo "  platform smoke-green after settle"; break; }; sleep 10; done
+# Cert-forcing DURABILITY re-assert (immediately before the suites, on the now-settled cluster).
+# Flux SELF-MANAGES — it re-applies its own controllers from git — so the scale-to-0 + platform-config
+# patch done during cert-forcing back at cluster-up can be REVERTED while the runner provisions and the
+# storage/smoke gates settle (several minutes). When it reverts, dex/platform-ingress/platform-webmail
+# flip back to letsencrypt-prod-http01, which can NEVER validate the PRIVATE test apex (ACME NXDOMAIN)
+# → those certs go NotReady → every TLS/JMAP-dependent suite (webmail-platform + bulwark-impersonate
+# JMAP "fetch failed", oidc-dex discovery, monitoring email delivery, pitr ACME noise) fails. Re-assert
+# here: scale-to-0 holds once Longhorn/db are quiescent (unlike at cluster-up), re-point any reverted
+# cert at the custom issuer + delete its secret to force reissue, bounce the JMAP consumers, and wait.
+echo "── re-asserting the custom ACME issuer before the suites (Flux self-heals scale-to-0 → LE revert) ──"
+kubectl -n flux-system scale deploy --all --replicas=0 >/dev/null 2>&1 || true
+kubectl -n platform patch cm platform-config --type merge -p '{"data":{"cluster-issuer-name":"acme-custom-http01","cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
+for cns in platform:dex platform:platform-ingress mail:platform-webmail; do
+  ns=\${cns%%:*}; nm=\${cns##*:}
+  [ "\$(kubectl -n \$ns get certificate \$nm -o jsonpath='{.spec.issuerRef.name}' 2>/dev/null)" = acme-custom-http01 ] && continue
+  sec=\$(kubectl -n \$ns get certificate \$nm -o jsonpath='{.spec.secretName}' 2>/dev/null)
+  kubectl -n \$ns patch certificate \$nm --type merge -p '{"spec":{"issuerRef":{"name":"acme-custom-http01","kind":"ClusterIssuer","group":"cert-manager.io"}}}' >/dev/null 2>&1 || true
+  [ -n "\$sec" ] && kubectl -n \$ns delete secret "\$sec" --ignore-not-found >/dev/null 2>&1 || true
+done
+kubectl -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
+kubectl -n mail rollout restart deploy/bulwark >/dev/null 2>&1 || true
+for _ in \$(seq 1 36); do [ "\$(kubectl -n platform get certificate platform-ingress -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && { echo "  certs re-issued on the custom issuer"; break; }; sleep 5; done
+kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
 bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$RUNNER_SCRIPT" \
