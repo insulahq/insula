@@ -156,11 +156,14 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 		return
 	}
 
-	// Build exec command.
+	// Build exec command. buildCommand returns nil for a command we refuse:
+	// either an unrecognised protocol, or an scp/rsync invocation carrying a
+	// disallowed flag (the rewriters allowlist flags — the exec runs unchrooted
+	// as root, so a rogue --daemon / -e / --write-devices must never reach it).
 	command := buildCommand(protocol, rawCmd, authResult.HomePath)
 	if command == nil {
-		log.Printf("session %s: rejected unsupported command: %s", sess.ID, protocol)
-		fmt.Fprintf(sshSess.Stderr(), "unsupported command — only SFTP, SCP, and rsync are allowed\n")
+		log.Printf("session %s: rejected command (protocol=%s)", sess.ID, protocol)
+		fmt.Fprintf(sshSess.Stderr(), "refused — only plain SFTP, SCP, and rsync file transfers are permitted\n")
 		_ = sshSess.Exit(1)
 		return
 	}
@@ -291,17 +294,39 @@ func sanitizePath(arg, dataRoot string) string {
 	return joined
 }
 
-// rewriteSCPCommand rewrites scp path arguments to be under dataRoot.
-// scp commands look like: scp -t /some/path or scp -f /some/path
+// scpAllowedFlags are the ONLY flags a legitimate legacy `scp` server call
+// carries. Modern scp (OpenSSH 9+) uses the SFTP protocol and goes through the
+// chrooted sftp-serve instead, so this exec path is legacy-only. A real server
+// invocation is `scp [-v] [-r] [-p] [-d] {-t|-f} <path>`; -t (to) and -f (from)
+// are mandatory-direction flags. Anything else is refused.
+var scpAllowedFlags = map[string]bool{
+	"-t": true, "-f": true, "-r": true, "-p": true, "-d": true, "-v": true, "-E": true,
+}
+
+// rewriteSCPCommand confines a legacy `scp` server invocation: it rewrites path
+// arguments under dataRoot AND refuses any flag outside the allowlist (returns
+// nil → caller rejects the session). scp over SSH runs unchrooted as root, so
+// like rsync this rewrite is the only boundary. Previously all flags were
+// skipped without inspection.
 func rewriteSCPCommand(cmd, dataRoot string) []string {
 	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return nil
+	}
 	rewritten := make([]string, len(parts))
 	copy(rewritten, parts)
 
 	for i := 1; i < len(rewritten); i++ {
 		arg := rewritten[i]
-		// Skip flags.
 		if strings.HasPrefix(arg, "-") {
+			// scp flags are single-dash, may be bundled (e.g. "-rp"). Each
+			// letter must be in the allowlist.
+			for _, c := range arg[1:] {
+				if !scpAllowedFlags["-"+string(c)] {
+					log.Printf("scp: refusing unexpected flag %q in %q", string(c), arg)
+					return nil
+				}
+			}
 			continue
 		}
 		rewritten[i] = sanitizePath(arg, dataRoot)
@@ -309,51 +334,117 @@ func rewriteSCPCommand(cmd, dataRoot string) []string {
 	return rewritten
 }
 
-// rewriteRsyncCommand rewrites rsync paths so they are confined under
-// dataRoot. rsync over SSH runs UNCHROOTED in the file-manager pod (as
-// root), so this rewrite is the ONLY confinement boundary — it must be
-// robust against any client-supplied argument vector.
+// rsyncDeniedLongFlags are `--flag` forms that a legitimate SFTP-gateway rsync
+// transfer NEVER needs and that are dangerous when the server runs unchrooted as
+// root. Denied outright (the session is refused), not sanitised:
 //
-// Typical server invocation: rsync --server -logDtpre.iLsfxCIvu . /some/path
-// where "." is the source placeholder and the trailing token(s) are paths.
+//	--daemon / --config       — turn the exec into a rogue rsync daemon
+//	--rsh / -e (see below)     — spawn an arbitrary remote shell
+//	--copy-devices / --write-devices — read/clobber /dev nodes on the host pod
+//	--munge-links             — defeats symlink munging in a way that can aid escape
+//	--remove-source-files     — lets a --sender delete after reading
+//	--sockopts / --protect-args flips that change parsing semantics
 //
-// Earlier this only sanitized arguments AFTER a literal "." token, so a
-// crafted command that omitted "." (e.g. `rsync --server --sender -e.LsfxC
-// /etc/shadow`) slipped its path through completely unsanitized and ran as
-// root with no chroot. We now sanitize EVERY non-flag, non-"." token (the
-// same shape as rewriteSCPCommand) regardless of whether a "." appears, so
-// there is no argument position that escapes confinement.
+// A real client never sends these on the SERVER side; only a hand-crafted
+// command does. Path-bearing long flags (--files-from= &c) are still
+// sanitised below, not denied.
+var rsyncDeniedLongFlags = map[string]bool{
+	"--daemon": true, "--config": true, "--rsh": true, "--server-alias": true,
+	"--copy-devices": true, "--write-devices": true, "--munge-links": true,
+	"--remove-source-files": true, "--remove-sent-files": true,
+	"--sockopts": true, "--rsync-path": true, "--log-file-format": true,
+}
+
+// rsyncPathBearingLongFlags take a filesystem path after "=" that MUST be
+// confined under dataRoot (the flag itself is legitimate).
+var rsyncPathBearingLongFlags = map[string]bool{
+	"--files-from": true, "--exclude-from": true, "--include-from": true,
+	"--log-file": true, "--partial-dir": true, "--temp-dir": true,
+	"--compare-dest": true, "--copy-dest": true, "--link-dest": true, "--backup-dir": true,
+}
+
+// rewriteRsyncCommand confines an `rsync --server` invocation. rsync over SSH
+// runs UNCHROOTED in the file-manager pod (as root), so this is the ONLY
+// boundary — unlike SFTP/SCP, which now go through the chrooted sftp-serve.
+//
+// It does TWO things, in order of importance:
+//
+//  1. FLAG ALLOWLIST. A legitimate server call is always
+//     `rsync --server [--sender] -<bundled short opts> . <path>...`. Anything
+//     with a denied flag (a rogue --daemon, an -e/--rsh remote shell, a device
+//     read) is REFUSED — the function returns nil and the caller rejects the
+//     session. Previously flags were not inspected at all, so a hand-crafted
+//     `rsync --server --daemon ...` or `rsync --server -e"sh -c id" ...` reached
+//     the exec (it failed only by luck — verified on staging 2026-07-15).
+//  2. PATH CONFINEMENT. Every positional path, and the value of every
+//     path-bearing long flag, is rewritten under dataRoot. A crafted command
+//     that omits the "." placeholder does not escape, because every non-flag
+//     token is confined regardless of position.
+//
+// Returns nil to signal "refuse this session".
 func rewriteRsyncCommand(cmd, dataRoot string) []string {
 	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return nil
+	}
 	rewritten := make([]string, len(parts))
 	copy(rewritten, parts)
 
 	for i := 1; i < len(rewritten); i++ {
 		arg := rewritten[i]
-		if strings.HasPrefix(arg, "-") {
-			// Flags. Most are pure options (incl. bundled short flags like
-			// "-logDtpre.iLsfxC", which contain a "." but are not the source
-			// placeholder). But long flags can embed a filesystem path after
-			// "=" — e.g. --files-from=, --exclude-from=, --include-from=,
-			// --log-file=. Those paths must be confined too, or they escape
-			// the dataRoot boundary just like a positional arg would. Sanitize
-			// the value portion in place, leaving the flag name intact.
-			if eqIdx := strings.Index(arg, "="); eqIdx != -1 {
-				val := arg[eqIdx+1:]
-				if val != "" && !strings.HasPrefix(val, "-") {
-					rewritten[i] = arg[:eqIdx+1] + sanitizePath(val, dataRoot)
-				}
+		if !strings.HasPrefix(arg, "-") {
+			// The lone "." source placeholder is the rsync reference dir, not a
+			// filesystem target — leave it so the wire protocol still parses.
+			if arg == "." {
+				continue
 			}
+			rewritten[i] = sanitizePath(arg, dataRoot)
 			continue
 		}
-		// The lone "." source placeholder is harmless (it's the rsync
-		// reference dir, not a filesystem target) — leave it intact so the
-		// rsync wire protocol still parses.
-		if arg == "." {
-			continue
+
+		// Long flag: split off any "=value".
+		if strings.HasPrefix(arg, "--") {
+			name := arg
+			if eq := strings.Index(arg, "="); eq != -1 {
+				name = arg[:eq]
+			}
+			if rsyncDeniedLongFlags[name] {
+				log.Printf("rsync: refusing dangerous flag %q", name)
+				return nil
+			}
+			if rsyncPathBearingLongFlags[name] {
+				if eq := strings.Index(arg, "="); eq != -1 {
+					val := arg[eq+1:]
+					if val != "" {
+						rewritten[i] = arg[:eq+1] + sanitizePath(val, dataRoot)
+					}
+				}
+				// The `--flag value` (space-separated) form is confined when the
+				// value is reached as a positional token above.
+				continue
+			}
+			// --server and --sender are the ONLY long flags a legitimate rsync
+			// server invocation carries (--server is mandatory; --sender marks a
+			// download). Everything else it needs is bundled into the short-flag
+			// string. Allow exactly these two; refuse any other long flag rather
+			// than pass an unknown to a root, unchrooted rsync.
+			if name == "--server" || name == "--sender" {
+				continue
+			}
+			log.Printf("rsync: refusing unexpected long flag %q", name)
+			return nil
 		}
-		// Everything else is a path — confine it under dataRoot.
-		rewritten[i] = sanitizePath(arg, dataRoot)
+
+		// Short-flag bundle, e.g. "-logDtpre.iLsfxCIvu". A bundled "e" here is
+		// the rsync protocol's own remote-shell-capabilities marker (part of the
+		// negotiated option string), NOT the -e/--rsh remote-shell flag, which
+		// on the server side only ever appears as its own token. But a bundle
+		// that IS exactly "-e" (its own token) is the remote-shell flag — deny.
+		if arg == "-e" {
+			log.Printf("rsync: refusing -e/--rsh remote-shell flag")
+			return nil
+		}
+		// Otherwise it is a bundle of transfer options — safe, no path.
 	}
 	return rewritten
 }

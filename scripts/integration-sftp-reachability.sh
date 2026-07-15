@@ -443,11 +443,38 @@ fi
 for CMD in "sh -c id" "/bin/sh" "id"; do
   OUT=$(timeout 40 sshpass -p "$SFTP_PASS" ssh -p "$ADV_PORT" -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 "${SFTP_USER}@${CONNECT_HOST}" "$CMD" </dev/null 2>&1 || true)
-  if ! grep -qi 'unsupported command' <<<"$OUT"; then
+  if ! grep -qiE 'unsupported command|refused' <<<"$OUT"; then
     bad "ARBITRARY EXEC ALLOWED: '${CMD}' was not refused — got: $(head -1 <<<"$OUT")"
   fi
 done
 ok "shell exec attempts refused (sh -c id, /bin/sh, id)"
+
+# scp and rsync exec UNCHROOTED as root, confined only by the gateway's flag
+# allowlist + path rewriting. A crafted server command with a dangerous flag
+# (rogue rsync --daemon, an -e/--rsh remote shell, scp -S/-o) must be REFUSED,
+# not run. These are the vectors a normal client never sends — only a hand-
+# crafted `ssh host "rsync --server --daemon ..."` does.
+echo "Phase 10b — dangerous scp/rsync server flags are refused"
+declare -a DANGER=(
+  'rsync --server --daemon --config=/dev/null .'
+  'rsync --server -e sh . /dest'
+  'rsync --server --rsh=/bin/sh . /dest'
+  'rsync --server --write-devices . /dev/sda'
+  'scp -S /bin/sh -t /dest'
+  'scp -o ProxyCommand=x -t /dest'
+)
+DANGER_OK=1
+for CMD in "${DANGER[@]}"; do
+  OUT=$(timeout 40 sshpass -p "$SFTP_PASS" ssh -p "$ADV_PORT" -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 "${SFTP_USER}@${CONNECT_HOST}" "$CMD" </dev/null 2>&1 || true)
+  # Refusal shows as our stderr line; a passthrough would instead produce rsync/scp
+  # protocol chatter or actually run. Accept only an explicit refusal.
+  if ! grep -qiE 'refused|unsupported command' <<<"$OUT"; then
+    bad "DANGEROUS FLAG NOT REFUSED: '${CMD}' — got: $(head -1 <<<"$OUT")"
+    DANGER_OK=0
+  fi
+done
+[[ "$DANGER_OK" -eq 1 ]] && ok "dangerous scp/rsync server flags refused (--daemon, -e/--rsh, --write-devices, scp -S/-o)"
 
 echo ""
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
