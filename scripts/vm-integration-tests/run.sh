@@ -336,6 +336,11 @@ kubectl -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
 kubectl -n mail rollout restart deploy/bulwark >/dev/null 2>&1 || true
 for _ in \$(seq 1 36); do [ "\$(kubectl -n platform get certificate platform-ingress -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && { echo "  certs re-issued on the custom issuer"; break; }; sleep 5; done
 kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
+# ALWAYS bind the services-VM object store as the cluster's backup target before the suites — the
+# services VM exists to provide it, and every backup/DR suite fails its precondition without it
+# (grow NO_SNAPSHOT_TARGET, dr-drill-shim suspended ScheduledBackup, backup-rclone-shim, dr-bundle).
+echo "── configuring backup targets (services-VM S3 → tenant/system/mail classes) ──"
+bash scripts/vm-integration-tests/setup-backup-targets.sh || true
 bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$RUNNER_SCRIPT" \
