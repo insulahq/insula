@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.23] - 2026-07-15
+
 ### Fixed
 - **Staging now follows RC host-migrations.** `platform-ops self-upgrade` picks
   its target from the `platform-version` ConfigMap, but the base ships
