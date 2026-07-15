@@ -25,8 +25,24 @@
 //                      across the setuid via PR_SET_KEEPCAPS)
 //   - pkg/sftp       ⇒ never opens /dev/null
 //
-// So the chroot root IS the tenant's PVC: the tenant's "/" is exactly their own
-// data, and there is nothing else in there to hide, read, or corrupt.
+// So the chroot root IS the tenant's data, and there is nothing else in there
+// to hide, read, or corrupt.
+//
+// HOME_PATH IS A REAL BOUNDARY HERE. Each sftp_user carries a home_path (e.g.
+// "/public_html"). It USED to be nothing but a starting directory — OpenSSH's
+// -d, which does not confine: a user scoped to /public_html could simply
+// `cd /home` and see the tenant's entire PVC (verified against the shipping
+// design on staging, 2026-07-15). Because we now own the server, we chroot into
+// root+home instead, so the scope is enforced by the kernel and a scoped account
+// physically cannot name a path outside its subdirectory.
+//
+// THAT MOVES THE CHROOT TARGET INSIDE TENANT-CONTROLLED SPACE, which is a new
+// attack surface: tenants can create symlinks over SFTP, so a planted
+// `public_html -> /` would redirect a naive chroot(root+"/public_html") straight
+// out to the POD root. Resolution therefore goes through openat2(2) with
+// RESOLVE_BENEATH — the kernel refuses any resolution that escapes `root`,
+// atomically, with no TOCTOU window — and we then fchdir + chroot(".") on the
+// returned descriptor rather than re-walking the path by name.
 //
 // ORDERING IS SECURITY-CRITICAL — do not reorder without reading this:
 //
@@ -57,6 +73,7 @@ import (
 	"unsafe"
 
 	"github.com/pkg/sftp"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -125,6 +142,89 @@ func confineStart(sub string) string {
 		return "/"
 	}
 	return clean
+}
+
+
+// openScopeBeneath resolves `scope` (the sftp_user's home_path) underneath
+// `root` (the platform-controlled PVC mount) and returns a directory fd for it.
+//
+// SECURITY: `root` is platform-controlled, but everything under it is TENANT
+// data — and tenants can create symlinks over SFTP. A plain
+// chroot(root + scope) would follow a planted `public_html -> /` right out to
+// the pod's root filesystem. openat2(2) with RESOLVE_BENEATH makes the kernel
+// reject ANY resolution that leaves `root`, atomically — no TOCTOU window that
+// a path-then-verify check would leave open. Caller chroots the returned fd
+// directly (fchdir + chroot(".")), never re-walking by name.
+//
+// A missing scope directory is CREATED rather than treated as fatal: nothing in
+// the platform pre-creates public_html, so failing closed would break every
+// scoped account on a fresh tenant. Creation is itself done beneath the same
+// RESOLVE_BENEATH guarantee.
+func openScopeBeneath(root, scope string) (int, error) {
+	rootFd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open root %q: %w", root, err)
+	}
+	defer unix.Close(rootFd)
+
+	rel := strings.TrimPrefix(scope, "/")
+	if rel == "" {
+		// The scope IS the PVC root — dup so the caller owns a closable fd.
+		dup, err := unix.Dup(rootFd)
+		if err != nil {
+			return -1, fmt.Errorf("dup root fd: %w", err)
+		}
+		return dup, nil
+	}
+
+	how := &unix.OpenHow{
+		Flags:   uint64(unix.O_RDONLY | unix.O_DIRECTORY | unix.O_CLOEXEC),
+		Resolve: unix.RESOLVE_BENEATH,
+	}
+	fd, err := unix.Openat2(rootFd, rel, how)
+	if err == nil {
+		return fd, nil
+	}
+	if !errors.Is(err, unix.ENOENT) {
+		// EXDEV/ELOOP here means the resolution tried to escape `root` — i.e. a
+		// symlink or ".." pointing out of the PVC. Fail CLOSED and say so: this
+		// is the attack this function exists to stop, and silently falling back
+		// to the PVC root would hand the tenant exactly the scope escape we are
+		// trying to prevent.
+		return -1, fmt.Errorf("openat2 %q beneath %q (escape attempt or unusable path): %w", rel, root, err)
+	}
+
+	// ENOENT — create the scope, one component at a time, each step still
+	// beneath `root`. mkdirat cannot follow a symlink out because every lookup
+	// is relative to rootFd and re-checked by the final openat2 below.
+	if err := mkdirAllBeneath(rootFd, rel); err != nil {
+		return -1, fmt.Errorf("creating home %q: %w", rel, err)
+	}
+	fd, err = unix.Openat2(rootFd, rel, how)
+	if err != nil {
+		return -1, fmt.Errorf("openat2 %q after create: %w", rel, err)
+	}
+	return fd, nil
+}
+
+// mkdirAllBeneath creates each component of `rel` under rootFd. Existing
+// components are fine; anything that is not a directory is fatal.
+func mkdirAllBeneath(rootFd int, rel string) error {
+	cur := ""
+	for _, part := range strings.Split(rel, "/") {
+		if part == "" {
+			continue
+		}
+		if cur == "" {
+			cur = part
+		} else {
+			cur = cur + "/" + part
+		}
+		if err := unix.Mkdirat(rootFd, cur, 0o755); err != nil && !errors.Is(err, unix.EEXIST) {
+			return fmt.Errorf("mkdirat %q: %w", cur, err)
+		}
+	}
+	return nil
 }
 
 // dropPrivileges drops root → nobody while KEEPING exactly CAP_DAC_OVERRIDE.
@@ -246,23 +346,34 @@ func effectiveCaps() (effective, permitted, inheritable uint64, err error) {
 }
 
 func main() {
-	var root, startSub string
-	flag.StringVar(&root, "root", "", "directory to chroot into (the tenant PVC mount)")
-	flag.StringVar(&startSub, "d", "/", "start directory INSIDE the chroot")
+	var root, home string
+	flag.StringVar(&root, "root", "", "the tenant PVC mount (platform-controlled)")
+	flag.StringVar(&home, "home", "/", "the sftp_user's home_path; becomes the chroot root, enforcing the scope")
 	flag.Parse()
 
 	if root == "" {
 		fatalf("--root is required")
 	}
-	// Purely lexical — no filesystem access — so this is equivalent before or
-	// after the chroot. Done here to keep main()'s privileged section minimal.
-	start := confineStart(startSub)
+	// Purely lexical — no filesystem access. Sanitises the DB value before it
+	// reaches a syscall; openat2(RESOLVE_BENEATH) below is the real guarantee.
+	scope := confineStart(home)
 
-	// 1. chroot + chdir, while still privileged.
-	if err := syscall.Chroot(root); err != nil {
-		fatalf("chroot(%s): %v", root, err)
+	// 1. Resolve the scope BENEATH root and chroot onto the resulting fd, while
+	//    still privileged. Fails closed on a symlink that escapes.
+	jailFd, err := openScopeBeneath(root, scope)
+	if err != nil {
+		fatalf("resolving home %q beneath %q: %v", scope, root, err)
 	}
-	// chdir MUST come after chroot — a cwd outside the new root is an escape.
+	// chroot the fd we just resolved, NOT the path — re-walking by name would
+	// reopen the TOCTOU window openat2 just closed.
+	if err := syscall.Fchdir(jailFd); err != nil {
+		fatalf("fchdir(jail): %v", err)
+	}
+	if err := syscall.Chroot("."); err != nil {
+		fatalf("chroot(.): %v", err)
+	}
+	syscall.Close(jailFd)
+	// chdir MUST follow chroot — a cwd outside the new root is an escape.
 	if err := syscall.Chdir("/"); err != nil {
 		fatalf("chdir(/): %v", err)
 	}
@@ -275,18 +386,11 @@ func main() {
 		fatalf("privilege drop did not take effect: %v", err)
 	}
 
-	// The start dir may not exist (a tenant can delete their own public_html);
-	// fall back to the PVC root rather than failing the session.
-	if err := syscall.Chdir(start); err != nil {
-		if err := syscall.Chdir("/"); err != nil {
-			fatalf("chdir(/): %v", err)
-		}
-		start = "/"
-	}
-
 	// 6. serve. Everything past this point parses tenant-controlled bytes as an
-	// unprivileged, chrooted process.
-	srv, err := sftp.NewServer(stdio{os.Stdin, os.Stdout}, sftp.WithServerWorkingDirectory(start))
+	// unprivileged, chrooted process. There is no start-directory fallback to
+	// reason about any more: the scope IS the root, so "/" is always correct and
+	// can never silently widen to the whole PVC.
+	srv, err := sftp.NewServer(stdio{os.Stdin, os.Stdout}, sftp.WithServerWorkingDirectory("/"))
 	if err != nil {
 		fatalf("sftp server init: %v", err)
 	}
