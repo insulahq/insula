@@ -1925,6 +1925,14 @@ ${calico_wg_rule}
     tcp dport 995 accept     # POP3S
     tcp dport 4190 accept    # ManageSieve
 
+    # Tenant SFTP/SCP/rsync gateway (files.<apex>). Opened on every node for
+    # the same reason as the mail ports above: the gateway is a DaemonSet on
+    # the control-plane servers, and the apex A records round-robin across
+    # them, so any of them may take the connection. Cannot be left to
+    # firewall-reconciler — that only opens hostPorts for TENANT namespaces
+    # (client-*), and the gateway runs in platform-system.
+    tcp dport 23022 accept   # SFTP gateway (hostPort, see k8s/base/sftp-gateway.yaml)
+
     # Runtime-managed tenant host ports — populated by
     # firewall-reconciler DaemonSet at runtime as Pods land
     # with hostPort or the platform.io/firewall-{tcp,udp}-ports
@@ -1959,7 +1967,7 @@ NFT
   cat > /etc/hosting-platform/firewall.conf <<HPFW
 # Written by bootstrap.sh — DO NOT EDIT BY HAND.
 # Re-run bootstrap with appropriate flags to change posture.
-PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190
+PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190 23022
 PUBLIC_UDP_PORTS=51820 29899
 SSH_VIA_MESH=${ssh_via_mesh_persist}
 SSH_VIA_MESH_INTERFACE=${SSH_VIA_MESH_IFACE}

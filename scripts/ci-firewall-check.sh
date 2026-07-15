@@ -29,7 +29,12 @@ fi
 # Ports that are intentionally exposed to the public internet.
 # Mail ports (25/465/587/143/993/110/995/4190) are needed on every node
 # in case the Stalwart StatefulSet reschedules.
-PUBLIC_TCP_PORTS=(80 443 22 25 465 587 143 993 110 995 4190)
+# 23022 is the tenant SFTP/SCP/rsync gateway (files.<apex>) — a hostPort
+# DaemonSet on the control-plane servers. It is PUBLIC by nature: tenants
+# upload from arbitrary client addresses, so it cannot be saddr-scoped to
+# @cluster_peers/@trusted_ranges. Auth is per-tenant password or SSH key
+# against the platform backend, and every session is chroot-jailed (ADR-027).
+PUBLIC_TCP_PORTS=(80 443 22 25 465 587 143 993 110 995 4190 23022)
 
 is_public_port() {
   local port="$1"

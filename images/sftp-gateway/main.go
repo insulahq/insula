@@ -23,10 +23,6 @@ type Config struct {
 	InternalSecret string
 	SSHHostKeyPath string
 	SSHPort        string
-	FTPSPort       string
-	FTPSCertPath   string
-	FTPSKeyPath    string
-	FTPSPassiveIP  string
 	IdleTimeout    time.Duration
 	MaxConnections int
 	Kubeconfig     string
@@ -37,12 +33,10 @@ func loadConfig() Config {
 		BackendURL:     envOrDefault("BACKEND_URL", "http://backend.platform-system:3000"),
 		InternalSecret: os.Getenv("INTERNAL_SECRET"),
 		SSHHostKeyPath: envOrDefault("SSH_HOST_KEY_PATH", "/etc/ssh/keys/ssh_host_ed25519_key"),
-		SSHPort:        envOrDefault("SSH_PORT", "2222"),
-		FTPSPort:       envOrDefault("FTPS_PORT", "2121"),
-		FTPSCertPath:   envOrDefault("FTPS_CERT_PATH", "/etc/tls/tls.crt"),
-		FTPSKeyPath:    envOrDefault("FTPS_KEY_PATH", "/etc/tls/tls.key"),
-		FTPSPassiveIP:  os.Getenv("FTPS_PASSIVE_IP"),
-		Kubeconfig:     os.Getenv("KUBECONFIG"),
+		// Must match the DaemonSet's hostPort (k8s/base/sftp-gateway.yaml) and
+		// the port advertised by the connection-info API.
+		SSHPort:    envOrDefault("SSH_PORT", "23022"),
+		Kubeconfig: os.Getenv("KUBECONFIG"),
 	}
 
 	idleStr := envOrDefault("IDLE_TIMEOUT", "15m")
@@ -116,26 +110,6 @@ func main() {
 			log.Fatalf("SSH server error: %v", err)
 		}
 	}()
-
-	// Start optional FTPS listener (only if TLS cert exists).
-	if cfg.FTPSPort != "" {
-		if _, err := os.Stat(cfg.FTPSCertPath); err == nil {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				port, err := strconv.Atoi(cfg.FTPSPort)
-				if err != nil {
-					log.Fatalf("invalid FTPS_PORT %q: %v", cfg.FTPSPort, err)
-				}
-				log.Printf("FTPS server listening on :%d", port)
-				if err := StartFTPS(port, cfg.FTPSCertPath, cfg.FTPSKeyPath, cfg.FTPSPassiveIP, sessionMgr); err != nil {
-					log.Fatalf("FTPS server error: %v", err)
-				}
-			}()
-		} else {
-			log.Printf("FTPS disabled: TLS cert not found at %s", cfg.FTPSCertPath)
-		}
-	}
 
 	// Start health server.
 	wg.Add(1)
