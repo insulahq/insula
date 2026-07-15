@@ -49,7 +49,7 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 1, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -66,7 +66,7 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 0, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -97,7 +97,7 @@ describe('File Manager K8s Lifecycle', () => {
       (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
         spec: { replicas: 1, template: { spec: {
           volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { cpu: '500m', memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -116,7 +116,7 @@ describe('File Manager K8s Lifecycle', () => {
         spec: { replicas: 1, template: { spec: {
           nodeSelector: { 'kubernetes.io/hostname': 'node-a' },
           volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -133,7 +133,7 @@ describe('File Manager K8s Lifecycle', () => {
         spec: { replicas: 1, template: { spec: {
           nodeSelector: { 'kubernetes.io/hostname': 'node-a' },
           volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
-          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
         } } },
       });
       (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
@@ -141,6 +141,29 @@ describe('File Manager K8s Lifecycle', () => {
       await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.deleteNamespacedDeployment).not.toHaveBeenCalled();
       expect(mockK8s.apps.createNamespacedDeployment).not.toHaveBeenCalled();
+    });
+
+    it('recreates a pod still carrying MKNOD (the pre-sftp-serve jail cap set)', async () => {
+      // MKNOD existed ONLY so the entrypoint could mknod /jail/dev/null for the
+      // old chroot-then-exec design. sftp-serve chroots into the PVC and serves
+      // in-process, so there is no jail and no /dev/null to create. Pods live on
+      // clusters right now still hold it; the exact-match caps check must catch
+      // the EXTRA cap and recreate them ONCE onto the narrower set.
+      //
+      // The mirror of this is guarded by the "skip recreation" test above: once
+      // recreated, a 6-cap pod must NOT churn. If allowedCaps ever disagrees
+      // with the deployBody caps, one of these two tests fails — which is the
+      // point, because a mismatch would recreate the file-manager forever.
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>).mockResolvedValue({
+        spec: { replicas: 1, template: { spec: {
+          volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
+          containers: [{ image: 'file-manager:latest', securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+        } } },
+      });
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
+      expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
     });
 
     it('should recreate if existing deployment carries the old 3-cap set (pre-/jail/home migration)', async () => {

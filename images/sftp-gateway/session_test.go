@@ -11,47 +11,50 @@ func TestBuildCommand_SFTP(t *testing.T) {
 		homePath string
 		wantDir  string // expected -d argument
 	}{
-		{"root homePath", "/", "/home"},
-		{"subdirectory homePath", "/public_html", "/home/public_html"},
-		{"nested subdirectory homePath", "/public_html/uploads", "/home/public_html/uploads"},
-		{"empty homePath defaults to root", "", "/home"},
-		{"trailing slash trimmed", "/public_html/", "/home/public_html"},
-		{"leading-dot dir is valid", "/.well-known", "/home/.well-known"},
-		{"traversal into .platform clamped", "/../.platform", "/home"},
-		{"double traversal clamped", "/../../etc", "/home"},
-		{"relative traversal clamped", "../../etc/passwd", "/home"},
-		{"embedded traversal clamped", "/public_html/../../etc", "/home"},
-		{"null byte clamped", "/pub\x00lic", "/home"},
+		{"root homePath", "/", "/"},
+		{"subdirectory homePath", "/public_html", "/public_html"},
+		{"nested subdirectory homePath", "/public_html/uploads", "/public_html/uploads"},
+		{"empty homePath defaults to root", "", "/"},
+		{"trailing slash trimmed", "/public_html/", "/public_html"},
+		{"leading-dot dir is valid", "/.well-known", "/.well-known"},
+		{"leading traversal clamped", "/../etc", "/"},
+		{"double traversal clamped", "/../../etc", "/"},
+		{"relative traversal clamped", "../../etc/passwd", "/"},
+		{"embedded traversal clamped", "/public_html/../../etc", "/"},
+		{"null byte clamped", "/pub\x00lic", "/"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := buildCommand("sftp", nil, tt.homePath)
-			// Must be direct argument array, NOT sh -c (prevents shell injection)
+			// Must be a direct argument array, NOT sh -c (prevents shell injection)
 			if got[0] == "sh" {
-				t.Fatal("SFTP must not use sh -c — use sftp-chroot binary directly")
+				t.Fatal("SFTP must not use sh -c — use the sftp-serve binary directly")
 			}
-			if got[0] != "sftp-chroot" {
-				t.Fatalf("expected sftp-chroot, got %q", got[0])
+			if got[0] != "sftp-serve" {
+				t.Fatalf("expected sftp-serve, got %q", got[0])
 			}
-			// Chroot into /jail; the PVC is mounted at /jail/home by the pod
-			// spec, so there is NO runtime --bind (that needed CAP_SYS_ADMIN).
+			// Chroot root is the tenant PVC mount itself — there is no /jail and
+			// no runtime --bind (that would need CAP_SYS_ADMIN).
 			assertContains(t, got, "--root")
-			assertContains(t, got, "/jail")
+			assertContains(t, got, "/data")
 			for _, a := range got {
 				if a == "--bind" {
 					t.Error("sftp command must not use --bind (no runtime mount)")
 				}
+				if a == "/jail" || strings.Contains(a, ".platform") {
+					t.Errorf("sftp command must not reference the retired jail scaffolding: %q", a)
+				}
 			}
-			// Check -d flag value
+			// --home is the ENFORCED scope: sftp-serve chroots into root+home.
 			for i, arg := range got {
-				if arg == "-d" && i+1 < len(got) {
+				if arg == "--home" && i+1 < len(got) {
 					if got[i+1] != tt.wantDir {
-						t.Errorf("-d = %q, want %q", got[i+1], tt.wantDir)
+						t.Errorf("--home = %q, want %q", got[i+1], tt.wantDir)
 					}
 					return
 				}
 			}
-			t.Error("missing -d flag in command")
+			t.Error("missing --home flag in command")
 		})
 	}
 }
@@ -62,22 +65,22 @@ func TestConfineHome(t *testing.T) {
 		homePath string
 		want     string
 	}{
-		{"root", "/", "/home"},
-		{"empty", "", "/home"},
-		{"subdir", "/public_html", "/home/public_html"},
-		{"subdir no leading slash", "public_html", "/home/public_html"},
-		{"nested", "/public_html/uploads", "/home/public_html/uploads"},
-		{"trailing slash", "/public_html/", "/home/public_html"},
-		{"dot component collapsed", "/public_html/./img", "/home/public_html/img"},
-		{"double slash collapsed", "/public_html//img", "/home/public_html/img"},
-		{"leading-dot dir kept", "/.well-known", "/home/.well-known"},
-		{"triple-dot dir kept", "/.../weird", "/home/.../weird"},
-		{"leading traversal clamped", "/../.platform", "/home"},
-		{"double traversal clamped", "/../../etc", "/home"},
-		{"relative traversal clamped", "../../etc/passwd", "/home"},
-		{"embedded traversal clamped", "/public_html/../../etc", "/home"},
-		{"lone dotdot clamped", "..", "/home"},
-		{"null byte clamped", "/pub\x00lic", "/home"},
+		{"root", "/", "/"},
+		{"empty", "", "/"},
+		{"subdir", "/public_html", "/public_html"},
+		{"subdir no leading slash", "public_html", "/public_html"},
+		{"nested", "/public_html/uploads", "/public_html/uploads"},
+		{"trailing slash", "/public_html/", "/public_html"},
+		{"dot component collapsed", "/public_html/./img", "/public_html/img"},
+		{"double slash collapsed", "/public_html//img", "/public_html/img"},
+		{"leading-dot dir kept", "/.well-known", "/.well-known"},
+		{"triple-dot dir kept", "/.../weird", "/.../weird"},
+		{"leading traversal clamped", "/../etc", "/"},
+		{"double traversal clamped", "/../../etc", "/"},
+		{"relative traversal clamped", "../../etc/passwd", "/"},
+		{"embedded traversal clamped", "/public_html/../../etc", "/"},
+		{"lone dotdot clamped", "..", "/"},
+		{"null byte clamped", "/pub\x00lic", "/"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -85,9 +88,19 @@ func TestConfineHome(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("confineHome(%q) = %q, want %q", tt.homePath, got, tt.want)
 			}
-			// Invariant: the start dir can never escape the PVC mount at /home.
-			if got != "/home" && !strings.HasPrefix(got, "/home/") {
-				t.Errorf("confineHome(%q) = %q escapes /home", tt.homePath, got)
+			// Invariant: the scope is always PVC-root-relative and can never
+			// climb out. Check ".." as a path COMPONENT, not a substring — a
+			// directory legitimately named "..." contains ".." and must pass.
+			// (sftp-serve additionally resolves the result with
+			// openat2(RESOLVE_BENEATH), which is the real guarantee — this is
+			// defence in depth.)
+			if !strings.HasPrefix(got, "/") {
+				t.Errorf("confineHome(%q) = %q is not PVC-root-relative", tt.homePath, got)
+			}
+			for _, part := range strings.Split(got, "/") {
+				if part == ".." {
+					t.Errorf("confineHome(%q) = %q escapes the PVC root", tt.homePath, got)
+				}
 			}
 		})
 	}

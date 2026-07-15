@@ -209,7 +209,7 @@ export async function ensureFileManagerRunning(
                 securityContext: {
                   // All of these are in the Pod Security "baseline" allowed set
                   // (SYS_ADMIN is NOT, which is why the jail uses a pod-spec PVC
-                  // mount at /jail/home instead of a runtime bind mount):
+                  // chroots into the PVC mounted at /data):
                   //   DAC_OVERRIDE — read/write/delete files owned by any UID
                   //                  (HTTP file-manager runs as root; the chrooted
                   //                  sftp-server keeps it as an ambient cap)
@@ -227,7 +227,7 @@ export async function ensureFileManagerRunning(
                   seccompProfile: { type: 'RuntimeDefault' },
                   capabilities: {
                     drop: ['ALL'],
-                    add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'],
+                    add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'],
                   },
                 },
                 resources: {
@@ -243,13 +243,12 @@ export async function ensureFileManagerRunning(
                   limits: { memory: '128Mi' },
                 },
                 volumeMounts: [
+                  // The ONLY mount the SFTP path needs. sftp-serve chroots into
+                  // this PVC directly (into <mount>/<home_path> for a scoped
+                  // sftp_user) and serves in-process, so there is no jail
+                  // emptyDir and no nested /jail/home mount any more — the
+                  // tenant's "/" IS their own data.
                   { name: 'tenant-storage', mountPath: '/data' },
-                  { name: 'sftp-jail', mountPath: '/jail' },
-                  // The tenant PVC is also mounted INSIDE the jail at /jail/home
-                  // (nested under the sftp-jail emptyDir). sftp-chroot chroots to
-                  // /jail and the user lands in /home = their PVC data — no
-                  // runtime bind mount, so no CAP_SYS_ADMIN.
-                  { name: 'tenant-storage', mountPath: '/jail/home' },
                 ],
                 livenessProbe: {
                   httpGet: { path: '/health', port: FM_PORT },
@@ -266,10 +265,6 @@ export async function ensureFileManagerRunning(
                 {
                   name: 'tenant-storage',
                   persistentVolumeClaim: { claimName: `${namespace}-storage` },
-                },
-                {
-                  name: 'sftp-jail',
-                  emptyDir: { sizeLimit: '10Mi' },
                 },
               ],
             },
@@ -307,16 +302,26 @@ export async function ensureFileManagerRunning(
       ?.nodeSelector?.['kubernetes.io/hostname'];
 
     const expectedPvcClaim = `${namespace}-storage`;
-    // The SFTP jail mounts the tenant PVC at /jail/home via the pod spec and
-    // sftp-chroot only chroots + drops to nobody (keeping DAC_OVERRIDE ambient),
-    // so NO bind mount is performed and CAP_SYS_ADMIN is not needed — every cap
-    // below is in the PSS "baseline" allowed set (SYS_ADMIN is not). The mismatch
-    // check catches BOTH a missing expected cap AND an extra unexpected one (e.g.
-    // a pod still carrying SYS_ADMIN, or the pre-/jail/home 3-cap set) so old
-    // deployments are recreated with the new spec. An exact-match check is
-    // required: a too-narrow check left SYS_ADMIN behind and broke /files/start
-    // (caught 2026-05-14).
-    const allowedCaps = ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID', 'MKNOD'];
+    // sftp-serve chroots into the tenant PVC (mounted at /data) and serves SFTP
+    // in-process, so NO bind mount is performed and CAP_SYS_ADMIN is not needed
+    // — every cap below is in the PSS "baseline" allowed set (SYS_ADMIN is not).
+    //
+    // This list MUST stay exactly equal to the capabilities in deployBody above:
+    // the check is exact-match in BOTH directions, so a cap listed here but not
+    // in the spec makes capsMissingExpected permanently true and the reconciler
+    // recreates the file-manager on every pass, forever.
+    //
+    // MKNOD is gone: it existed ONLY so the entrypoint could mknod /jail/dev/null
+    // for the old exec-into-the-jail design. There is no jail any more. Existing
+    // pods still carry it, which trips capsHasUnexpected — that is intended and
+    // recreates them ONCE onto the narrower set.
+    //
+    // The mismatch check catches BOTH a missing expected cap AND an extra
+    // unexpected one (e.g. a pod still carrying SYS_ADMIN, or the pre-/jail/home
+    // 3-cap set) so old deployments are recreated with the new spec. An
+    // exact-match check is required: a too-narrow check left SYS_ADMIN behind and
+    // broke /files/start (caught 2026-05-14).
+    const allowedCaps = ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'];
 
     const pvcMismatch = existingPvcClaim !== expectedPvcClaim;
     const capsMissingExpected = allowedCaps.some(c => !existingCaps.includes(c));

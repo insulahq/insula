@@ -211,16 +211,23 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 
 	switch protocol {
 	case "sftp":
-		// sftp-chroot (static Go binary) chroots into /jail + drops to nobody
-		// (keeping DAC_OVERRIDE ambient) + exec — no shell interpolation, no
-		// injection. The tenant PVC is mounted at /jail/home by the file-manager
-		// pod spec (no runtime bind mount → no CAP_SYS_ADMIN). The user sees only
-		// /home/ (their PVC data); platform dirs are mode 711/700 and invisible.
-		chrootHome := confineHome(homePath)
+		// sftp-serve (static Go binary) chroots into the tenant PVC and serves
+		// SFTP IN-PROCESS — no exec after the chroot, so the jail needs no
+		// scaffolding at all: the tenant's "/" is exactly their own data. It
+		// drops to nobody keeping only DAC_OVERRIDE (no ambient caps; ambient
+		// only matters across execve, and there is no execve).
+		//
+		// --home is the sftp_user's home_path and is ENFORCED: sftp-serve
+		// chroots into root+home, so a scoped account physically cannot name a
+		// path outside its subdirectory. It used to be OpenSSH's -d, which only
+		// sets a STARTING directory — a user scoped to /public_html could just
+		// `cd /` and see the tenant's whole PVC. Pass it raw: sftp-serve
+		// sanitises it and resolves it with openat2(RESOLVE_BENEATH), so a
+		// tenant-planted symlink cannot redirect the chroot out of the PVC.
 		return []string{
-			"sftp-chroot",
-			"--root", "/jail",
-			"/.platform/sftp-server", "-e", "-d", chrootHome,
+			"sftp-serve",
+			"--root", "/data",
+			"--home", confineHome(homePath),
 		}
 	case "scp":
 		if rawCmd != nil {
@@ -238,34 +245,36 @@ func buildCommand(protocol string, rawCmd *string, homePath string) []string {
 	}
 }
 
-// confineHome computes the SFTP start directory inside the chroot. The tenant
-// PVC is mounted at /home by the file-manager pod spec (not a runtime bind
-// mount); after sftp-chroot chroots, the user's data lives under /home, so this
-// returns "/home" plus the user's configured home sub-path.
+// confineHome sanitises the sftp_user's home_path into a PVC-relative scope.
 //
-// homePath comes from the trusted sftp-user record (e.g. "/" or "/public_html"),
-// but we sanitize defensively so the start directory can never point outside the
-// PVC mount: any ".." path component, a null byte, or a result that would escape
-// /home falls back to "/home" (the PVC root). A valid sub-path (e.g.
-// "/public_html") resolves to "/home/public_html".
+// It returns a path relative to the PVC ROOT ("/" or "/public_html") — NOT the
+// old "/home/..." form. That prefix existed because the old design chrooted to
+// /jail with the PVC mounted at /jail/home; sftp-serve chroots into the PVC
+// itself, so a "/home/" prefix would name a directory that does not exist.
+//
+// homePath comes from the trusted sftp-user record, but is sanitised anyway:
+// any ".." component or null byte falls back to "/" (the PVC root). This is
+// defence in depth — sftp-serve re-sanitises and, crucially, resolves the
+// result with openat2(RESOLVE_BENEATH), which is what actually guarantees a
+// tenant symlink cannot escape the PVC.
 func confineHome(homePath string) string {
 	if strings.ContainsRune(homePath, 0) {
-		return "/home"
+		return "/"
 	}
 	sub := strings.Trim(homePath, "/")
 	if sub == "" {
-		return "/home"
+		return "/"
 	}
 	for _, part := range strings.Split(sub, "/") {
 		if part == ".." {
-			return "/home"
+			return "/"
 		}
 	}
-	candidate := filepath.Clean("/home/" + sub)
-	if candidate == "/home" || strings.HasPrefix(candidate, "/home/") {
+	candidate := filepath.Clean("/" + sub)
+	if candidate == "/" || strings.HasPrefix(candidate, "/") {
 		return candidate
 	}
-	return "/home"
+	return "/"
 }
 
 // sanitizePath cleans a path argument and confines it under dataRoot.
