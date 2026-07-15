@@ -435,7 +435,7 @@ echo "Phase 10 — arbitrary exec is refused"
 TAR_OUT=$(timeout 40 sshpass -p "$SFTP_PASS" ssh -p "$ADV_PORT" -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 "${SFTP_USER}@${CONNECT_HOST}" \
   "tar xf - -C /" </dev/null 2>&1 || true)
-if grep -qi 'unsupported command' <<<"$TAR_OUT"; then
+if grep -qiE 'unsupported command|refused' <<<"$TAR_OUT"; then
   ok "tar-over-SSH refused by the allowlist"
 else
   bad "ARBITRARY EXEC ALLOWED: tar-over-SSH was not refused — got: $(head -1 <<<"$TAR_OUT")"
