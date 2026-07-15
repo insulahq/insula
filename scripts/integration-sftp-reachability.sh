@@ -23,6 +23,16 @@
 # never localhost. If it cannot reach the advertised endpoint, the feature is
 # broken for tenants, and this must FAIL.
 #
+# Phases 7 and 8 exist because of two further things this suite once missed:
+#   * The jail check only looked for HOST-root dirs, so it passed while a tenant
+#     could read AND WRITE the platform's own scaffolding (/.platform/sftp-server,
+#     /.platform/lib/ld-musl-x86_64.so.1, a stub /etc/passwd) — and could brick
+#     their own SFTP by overwriting that passwd. Phase 7 now asserts POSITIVELY
+#     that "/" holds tenant data and nothing else.
+#   * home_path looked like a per-user scope but was only OpenSSH's -d, a
+#     STARTING directory: a user scoped to /public_html could just `cd /` and read
+#     the whole PVC (verified on staging). Phase 8 proves the scope is enforced.
+#
 # Asserts:
 #   Phase 1 — Auth
 #   Phase 2 — Provision a probe tenant (pinned so FM + workload co-locate)
@@ -30,8 +40,10 @@
 #             NOT advertised (it was removed — it never actually ran)
 #   Phase 4 — Create an SFTP user (password auth)
 #   Phase 5 — TCP reachability to the ADVERTISED host:port (SSH banner)
+#   Phase 5b— Warm the on-demand file-manager
 #   Phase 6 — Real SFTP login + upload + download round-trip, content verified
-#   Phase 7 — Jail: `ls /` must not expose the host root
+#   Phase 7 — The jail contains ONLY tenant data (no platform scaffolding)
+#   Phase 8 — home_path is a REAL boundary, not a starting directory
 #
 # Env overrides (same convention as other integration scripts):
 #   ADMIN_HOST      default: http://admin.k8s-platform.test:2010
@@ -259,22 +271,106 @@ else
   bad "content mismatch — upload/download did not round-trip"
 fi
 
-# ── Phase 7: jail ─────────────────────────────────────────────────────────────
-echo "Phase 7 — chroot jail"
+# ── Phase 7: the jail contains ONLY tenant data ───────────────────────────────
+# This is the assertion the operator's 2026-07-15 report needed and the old check
+# did not make. The previous version only looked for HOST-root directories
+# (etc|usr|proc|root|sbin), so it passed happily while the tenant could see — and
+# WRITE — the platform's own jail scaffolding: /.platform/sftp-server,
+# /.platform/lib/ld-musl-x86_64.so.1, a stub /etc/passwd and /dev/null. A tenant
+# could brick their own SFTP by overwriting that /etc/passwd.
+#
+# sftp-serve chroots into the tenant PVC and serves SFTP in-process, so there is
+# no exec and therefore NOTHING to put in the jail. Assert that positively: "/"
+# must contain tenant data and nothing else. Anything else reappearing here is a
+# regression, whatever it is.
+echo "Phase 7 — the jail contains ONLY tenant data"
 sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/ls.log" 2>&1 <<EOF || true
-ls /
+ls -la /
 bye
 EOF
-# Only assert on a session that actually listed something — a FAILED session
-# writes errors ("Connection closed", "failed to prepare file system: ...") into
-# the same log, and a naive grep for etc|usr|var|proc matches that prose and
-# reports a phantom jail leak (it did, 2026-07-15).
-if grep -qiE 'connection closed|permission denied|failed to' "$WORK/ls.log"; then
-  info "jail check skipped — the listing session did not complete: $(head -1 "$WORK/ls.log")"
-elif grep -qE '^(d|-|l).*[[:space:]](etc|usr|proc|root|sbin)$' "$WORK/ls.log"; then
-  bad "jail LEAK: 'ls /' exposed host-root directories"
+if grep -qiE 'connection closed|permission denied|failed to prepare' "$WORK/ls.log"; then
+  bad "jail check inconclusive — the listing session did not complete: $(head -1 "$WORK/ls.log")"
 else
-  ok "jail holds ('ls /' shows no host root)"
+  # Names only, minus "." / ".." and sftp's own echoed prompt lines.
+  JAIL_ENTRIES=$(awk '/^[dlrwx-]{10}/ { print $NF }' "$WORK/ls.log" | sed 's|.*/||' | grep -vxE '\.|\.\.' | sort -u | tr '\n' ' ')
+  info "jail root contains: [${JAIL_ENTRIES}]"
+  LEAKED=""
+  for forbidden in .platform dev etc lib lib64 usr bin sbin proc sys root var tmp; do
+    if grep -qxF "$forbidden" <<<"$(tr ' ' '\n' <<<"$JAIL_ENTRIES")"; then
+      LEAKED="${LEAKED} ${forbidden}"
+    fi
+  done
+  if [[ -n "$LEAKED" ]]; then
+    bad "SCAFFOLDING IN THE JAIL:${LEAKED} — the tenant's / must contain only their own data"
+  else
+    ok "jail root has no platform scaffolding (no .platform/dev/etc/lib/...)"
+  fi
+fi
+
+# The specific files the operator reported. Belt-and-braces: even if a listing
+# hid them, fetching them must fail.
+sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/scaffold.log" 2>&1 <<EOF || true
+get /.platform/lib/ld-musl-x86_64.so.1 $WORK/leaked-loader
+get /.platform/sftp-server $WORK/leaked-server
+get /etc/passwd $WORK/leaked-passwd
+bye
+EOF
+LEAKED_FILES=""
+for f in leaked-loader leaked-server leaked-passwd; do
+  [[ -s "$WORK/$f" ]] && LEAKED_FILES="${LEAKED_FILES} ${f}"
+done
+if [[ -n "$LEAKED_FILES" ]]; then
+  bad "tenant fetched platform files from the jail:${LEAKED_FILES}"
+else
+  ok "/.platform/* and /etc/passwd are not fetchable (they do not exist)"
+fi
+
+# ── Phase 8: home_path is a REAL boundary ─────────────────────────────────────
+# home_path used to be OpenSSH's -d — a STARTING directory that confines nothing.
+# Verified against the shipping design on staging 2026-07-15: a user scoped to
+# /public_html could simply `cd /` and read the tenant's whole PVC. sftp-serve
+# chroots into root+home, so the scope is kernel-enforced. Prove it: a scoped
+# user must NOT be able to see a marker sitting at the PVC root.
+echo "Phase 8 — home_path is enforced, not advisory"
+SCOPED_DIR="scoped-${SUFFIX}"
+sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/mk.log" 2>&1 <<EOF || true
+mkdir /${SCOPED_DIR}
+put $WORK/up.txt /${SCOPED_DIR}/inside.txt
+bye
+EOF
+SCOPED_JSON=$(curl -s -X POST "${API}/tenants/${TENANT_ID}/sftp-users" -H "$AUTH" \
+  -H 'Content-Type: application/json' \
+  -d "{\"auth_method\":\"password\",\"description\":\"scope probe\",\"home_path\":\"/${SCOPED_DIR}\",\"allow_write\":true}")
+if ! jq -e . >/dev/null 2>&1 <<<"$SCOPED_JSON"; then
+  bad "scoped sftp-user create returned a non-JSON body: $(head -c 120 <<<"$SCOPED_JSON")"
+else
+  SCOPED_USER=$(jq -r '.data.username // empty' <<<"$SCOPED_JSON")
+  SCOPED_PASS=$(jq -r '.data.password // empty' <<<"$SCOPED_JSON")
+  if [[ -z "$SCOPED_USER" || -z "$SCOPED_PASS" ]]; then
+    bad "scoped sftp-user create failed: $(sed -e 's/"password":"[^"]*"/"password":"<redacted>"/' <<<"$SCOPED_JSON" | head -c 200)"
+  else
+    ok "scoped sftp user created (${SCOPED_USER}, home_path=/${SCOPED_DIR})"
+    sshpass -p "$SCOPED_PASS" sftp "${SFTP_OPTS[@]}" "${SCOPED_USER}@${CONNECT_HOST}" >"$WORK/scope.log" 2>&1 <<EOF || true
+ls /
+ls /../..
+bye
+EOF
+    # probe.txt sits at the PVC ROOT (uploaded in Phase 6). A correctly scoped
+    # user must NOT see it — from inside the scope, "/" IS ${SCOPED_DIR}.
+    if grep -q 'probe.txt' "$WORK/scope.log"; then
+      bad "SCOPE LEAK: home_path=/${SCOPED_DIR} user can see the PVC root (found probe.txt)"
+    elif grep -q 'inside.txt' "$WORK/scope.log"; then
+      ok "scoped user's / is their subdirectory only (sees inside.txt, not the PVC root)"
+    else
+      bad "scoped session listed neither its own file nor the PVC root: $(head -2 "$WORK/scope.log" | tr '\n' ' ')"
+    fi
+    # Traversal out of the scope must not reach the PVC root either.
+    if awk '/ls \/\.\.\/\.\./,0' "$WORK/scope.log" | grep -q 'probe.txt'; then
+      bad "SCOPE ESCAPE: /../.. from a scoped user reaches the PVC root"
+    else
+      ok "/../.. cannot climb out of the scope"
+    fi
+  fi
 fi
 
 echo ""
