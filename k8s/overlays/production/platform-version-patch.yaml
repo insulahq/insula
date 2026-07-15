@@ -1,0 +1,30 @@
+# Release version for the RELEASE overlays (production + staging, which bases
+# on production).
+#
+# STAMPED BY scripts/cut-release.sh — do not edit by hand; a cut overwrites it.
+# The base ships version: "unknown" and expects each environment to overlay it
+# (k8s/base/platform-version.yaml); the development overlay gets its own patch
+# from build-deploy.yml. Production/staging had NO patch, so both ran with
+# "unknown" — which broke two things:
+#
+#  1. `platform-ops self-upgrade` resolves its target from THIS ConfigMap
+#     (self-upgrade/index.ts readRunningVersion). "unknown" fails isValidVersion,
+#     so it fell back to GitHub `/releases/latest` — an endpoint that EXCLUDES
+#     prereleases. Staging therefore targeted the newest STABLE while running an
+#     RC, so an RC's host-migrations were NEVER exercised on the cluster whose
+#     whole job is validating RCs (found 2026-07-15: staging ran platform-ops
+#     rc.20/2026.6.18 while Flux had rc.21 applied).
+#  2. The admin panel reported the platform version as "unknown" on staging and
+#     production.
+#
+# With this stamped, staging's ConfigMap says the RC it is actually running, so
+# platform-ops self-upgrades to that RC and its converger runs the RC's
+# host-migrations. No update-channel concept needed: the cluster's own running
+# version IS the target, which is what the self-upgrade design already intends.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-version
+  namespace: platform
+data:
+  version: "0.0.0-unstamped"

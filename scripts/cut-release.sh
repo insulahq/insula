@@ -388,10 +388,40 @@ sys.stderr.write(f"cut-release: stamped {changed} image pin(s) in production ove
                  f"(3 platform → {version}, 6 internal → development snapshot)\n")
 PY
 
+# Stamp the release version into the production overlay's platform-version
+# ConfigMap (staging bases on production and inherits it).
+#
+# This is what makes `platform-ops self-upgrade` resolve the RIGHT target: it
+# reads this ConfigMap first (self-upgrade readRunningVersion) and only falls
+# back to GitHub `/releases/latest` — which EXCLUDES prereleases — when the
+# value isn't a valid version. The base ships "unknown", and production/staging
+# had no patch, so staging permanently targeted the newest STABLE while running
+# an RC: an RC's host-migrations were never exercised on the RC-validation
+# cluster (found 2026-07-15). Now staging's ConfigMap names the RC it runs, so
+# platform-ops upgrades to that RC and its converger applies the RC's
+# host-migrations.
+PV_PATCH="$ROOT/k8s/overlays/production/platform-version-patch.yaml"
+if [ -f "$PV_PATCH" ]; then
+  VERSION="$VERSION" PV_PATCH="$PV_PATCH" python3 - <<'PY'
+import os, re, sys
+version, path = os.environ["VERSION"], os.environ["PV_PATCH"]
+src = open(path).read()
+new, n = re.subn(r'(^\s*version:\s*)"[^"]*"', lambda m: f'{m.group(1)}"{version}"', src, count=1, flags=re.M)
+if n != 1:
+    sys.stderr.write(f"cut-release: could not stamp the version into {path} — refusing to cut a release "
+                     "whose platform-version would stay unstamped\n")
+    sys.exit(1)
+open(path, "w").write(new)
+sys.stderr.write(f"cut-release: stamped platform-version → {version} in production overlay "
+                 "(staging inherits; drives platform-ops self-upgrade + host-migrations)\n")
+PY
+fi
+
 git -C "$ROOT" add platform/VERSION CHANGELOG.md
 # Only stage the release overlay when it exists (absent in the minimal test fixture).
 [ -f "$ROOT/k8s/overlays/production/kustomization.yaml" ] \
   && git -C "$ROOT" add k8s/overlays/production/kustomization.yaml
+[ -f "$PV_PATCH" ] && git -C "$ROOT" add k8s/overlays/production/platform-version-patch.yaml
 git -C "$ROOT" commit -qm "chore(release): ${TAG}"
 git -C "$ROOT" tag -a "$TAG" -m "Release ${TAG}"
 
