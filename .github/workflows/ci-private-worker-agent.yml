@@ -56,7 +56,7 @@ jobs:
       # Build to local cache for PR scanning; push only on main / tags.
       # PR builds are amd64-only because `load: true` cannot accept a
       # multi-platform manifest list. Push builds publish multi-arch.
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         id: build
         with:
           context: images/private-worker-agent

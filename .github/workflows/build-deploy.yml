@@ -95,7 +95,7 @@ jobs:
             type=raw,value=latest
             type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: backend/Dockerfile
@@ -156,7 +156,7 @@ jobs:
             type=raw,value=latest
             type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: frontend/admin-panel/Dockerfile
@@ -213,7 +213,7 @@ jobs:
             type=raw,value=latest
             type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: frontend/tenant-panel/Dockerfile
