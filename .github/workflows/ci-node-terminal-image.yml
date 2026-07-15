@@ -51,8 +51,15 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+            # Gate on `development`, NOT {{is_default_branch}}: ADR-053 made
+            # `development` the branch that builds, but the repo's DEFAULT branch
+            # is still `main`, so is_default_branch is FALSE here and NEITHER tag
+            # was emitted — every consumer pulls :latest, which therefore froze at
+            # its pre-cutover build on 2026-06-22. Fixed across all image
+            # workflows; see ci-sftp-gateway (bc278063) and ci-file-manager
+            # (5c30f200) for the two that were caught first.
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
 
       - uses: docker/build-push-action@v6
         id: build
