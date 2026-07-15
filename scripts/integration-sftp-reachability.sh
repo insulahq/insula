@@ -44,6 +44,9 @@
 #   Phase 6 — Real SFTP login + upload + download round-trip, content verified
 #   Phase 7 — The jail contains ONLY tenant data (no platform scaffolding)
 #   Phase 8 — home_path is a REAL boundary, not a starting directory
+#   Phase 9 — The OTHER advertised protocols actually work (scp, rsync) — and
+#             EXIT, which is how the rsync hang hid
+#   Phase 10— Arbitrary exec (tar-over-SSH, shells) is refused by the allowlist
 #
 # Env overrides (same convention as other integration scripts):
 #   ADMIN_HOST      default: http://admin.k8s-platform.test:2010
@@ -372,6 +375,79 @@ EOF
     fi
   fi
 fi
+
+# ── Phase 9: the OTHER advertised protocols ───────────────────────────────────
+# connection-info advertises sftp, scp AND rsync. Only sftp was ever tested, and
+# rsync was quietly broken: it transferred the file correctly and then HUNG
+# forever waiting for an exit-status the gateway never sent (the stdin copier
+# blocked on the client's EOF, which rsync never sends). sftp and scp hid it
+# because both close the channel when done. If we advertise it, we test it.
+echo "Phase 9 — the other advertised protocols (scp, rsync)"
+if ! command -v rsync >/dev/null 2>&1; then
+  info "rsync not installed on the runner — skipping the rsync leg"
+else
+  RS_MARK="rsync-$(date +%s)-${SUFFIX}"
+  echo "$RS_MARK" > "$WORK/rs.txt"
+  # A HANG is the failure mode we are hunting, so bound it and treat a timeout
+  # as a failure rather than waiting forever.
+  if timeout 90 rsync -q -e "sshpass -p ${SFTP_PASS} ssh -p ${ADV_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20" \
+      "$WORK/rs.txt" "${SFTP_USER}@${CONNECT_HOST}:/rsync-probe.txt" >"$WORK/rsync.log" 2>&1; then
+    ok "rsync upload completed AND exited cleanly"
+  else
+    rc=$?
+    if [[ "$rc" -eq 124 || "$rc" -eq 143 ]]; then
+      bad "rsync HUNG (no exit-status) — the transfer may have succeeded but the client never returns"
+    else
+      bad "rsync failed (rc=$rc): $(tail -1 "$WORK/rsync.log")"
+    fi
+  fi
+  # Assert the bytes actually landed, via sftp (independent of rsync's own exit).
+  sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/rsget.log" 2>&1 <<EOF || true
+get /rsync-probe.txt $WORK/rs-down.txt
+bye
+EOF
+  if [[ -s "$WORK/rs-down.txt" ]] && grep -q "$RS_MARK" "$WORK/rs-down.txt"; then
+    ok "rsync payload is on the PVC with the right content"
+  else
+    bad "rsync payload missing or corrupt on the PVC"
+  fi
+fi
+
+SCP_MARK="scp-$(date +%s)-${SUFFIX}"
+echo "$SCP_MARK" > "$WORK/scp.txt"
+if timeout 90 sshpass -p "$SFTP_PASS" scp -P "$ADV_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o ConnectTimeout=20 "$WORK/scp.txt" "${SFTP_USER}@${CONNECT_HOST}:/scp-probe.txt" >"$WORK/scp.log" 2>&1; then
+  ok "scp upload completed AND exited cleanly"
+else
+  rc=$?
+  if [[ "$rc" -eq 124 || "$rc" -eq 143 ]]; then
+    bad "scp HUNG (no exit-status)"
+  else
+    bad "scp failed (rc=$rc): $(tail -1 "$WORK/scp.log")"
+  fi
+fi
+
+# ── Phase 10: the exec allowlist ──────────────────────────────────────────────
+# The gateway must run ONLY sftp/scp/rsync. Arbitrary exec (tar-over-SSH is the
+# classic) must be refused — otherwise the whole chroot/scope model is moot,
+# because the client could just run a shell.
+echo "Phase 10 — arbitrary exec is refused"
+TAR_OUT=$(timeout 40 sshpass -p "$SFTP_PASS" ssh -p "$ADV_PORT" -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 "${SFTP_USER}@${CONNECT_HOST}" \
+  "tar xf - -C /" </dev/null 2>&1 || true)
+if grep -qi 'unsupported command' <<<"$TAR_OUT"; then
+  ok "tar-over-SSH refused by the allowlist"
+else
+  bad "ARBITRARY EXEC ALLOWED: tar-over-SSH was not refused — got: $(head -1 <<<"$TAR_OUT")"
+fi
+for CMD in "sh -c id" "/bin/sh" "id"; do
+  OUT=$(timeout 40 sshpass -p "$SFTP_PASS" ssh -p "$ADV_PORT" -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 "${SFTP_USER}@${CONNECT_HOST}" "$CMD" </dev/null 2>&1 || true)
+  if ! grep -qi 'unsupported command' <<<"$OUT"; then
+    bad "ARBITRARY EXEC ALLOWED: '${CMD}' was not refused — got: $(head -1 <<<"$OUT")"
+  fi
+done
+ok "shell exec attempts refused (sh -c id, /bin/sh, id)"
 
 echo ""
 echo "RESULT: ${PASS} passed, ${FAIL} failed"
