@@ -203,6 +203,60 @@ echo "scratch" > "$R/dirty.txt"; git -C "$R" add dirty.txt
 yes "dirty tree → refuses to cut (no tag)" "! git -C '$R' rev-parse v2026.6.1 >/dev/null 2>&1"
 rm -rf "$R"
 
+# ── platform-version stamping (staging follows RC host-migrations) ───────────
+# The release overlay's platform-version ConfigMap is what `platform-ops
+# self-upgrade` reads to pick its target (readRunningVersion). It shipped
+# permanently "unknown" on production+staging, so platform-ops fell back to
+# GitHub /releases/latest — which EXCLUDES prereleases — and staging targeted
+# the newest STABLE while running an RC: an RC's host-migrations were never
+# exercised on the RC-validation cluster. Guard the stamp so that cannot regress.
+R=$(make_repo)
+mkdir -p "$R/k8s/overlays/production"
+cat > "$R/k8s/overlays/production/platform-version-patch.yaml" <<'PVEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-version
+  namespace: platform
+data:
+  version: "0.0.0-unstamped"
+PVEOF
+git -C "$R" add k8s >/dev/null 2>&1
+git -C "$R" commit -qm "add platform-version patch" >/dev/null 2>&1
+"$CUT" --root "$R" --version 2026.6.5 --yes >/dev/null 2>&1
+yes "cut stamps the release version into platform-version-patch.yaml" \
+  "grep -q 'version: \"2026.6.5\"' '$R/k8s/overlays/production/platform-version-patch.yaml'"
+yes "the stamped platform-version patch is committed by the cut" \
+  "git -C '$R' show --stat HEAD --format= | grep -q platform-version-patch.yaml"
+rm -rf "$R"
+
+# A prerelease cut must stamp the RC version verbatim — that is the whole point:
+# staging's ConfigMap must name the RC it runs so platform-ops upgrades to it.
+R=$(make_repo)
+mkdir -p "$R/k8s/overlays/production"
+cat > "$R/k8s/overlays/production/platform-version-patch.yaml" <<'PVEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-version
+  namespace: platform
+data:
+  version: "0.0.0-unstamped"
+PVEOF
+git -C "$R" add k8s >/dev/null 2>&1
+git -C "$R" commit -qm "add platform-version patch" >/dev/null 2>&1
+"$CUT" --root "$R" --prerelease --year-month 2026.6 --yes >/dev/null 2>&1
+yes "a prerelease cut stamps the rc version (not the stable one)" \
+  "grep -qE 'version: \"2026\\.6\\.[0-9]+-rc\\.[0-9]+\"' '$R/k8s/overlays/production/platform-version-patch.yaml'"
+rm -rf "$R"
+
+# Absent overlay (the minimal fixture) must not break the cut.
+R=$(make_repo)
+"$CUT" --root "$R" --version 2026.6.7 --yes >/dev/null 2>&1
+yes "cut still succeeds when the release overlay is absent" \
+  "git -C '$R' rev-parse v2026.6.7 >/dev/null 2>&1"
+rm -rf "$R"
+
 echo
 echo "cut-release tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

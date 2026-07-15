@@ -12,7 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.21] - 2026-07-15
+### Fixed
+- **Staging now follows RC host-migrations.** `platform-ops self-upgrade` picks
+  its target from the `platform-version` ConfigMap, but the base ships
+  `version: "unknown"` and only the development overlay patched it — so
+  production and staging both ran with `"unknown"`. That failed `isValidVersion`,
+  and the fallback is GitHub `/releases/latest`, an endpoint that **excludes
+  prereleases**. Staging therefore targeted the newest STABLE while Flux had an
+  RC applied, so an RC's host-migrations were **never exercised on the cluster
+  whose entire job is validating RCs** (observed 2026-07-15: staging ran
+  platform-ops rc.20 / 2026.6.18 with rc.21 deployed). `cut-release.sh` now
+  stamps the release version into a production-overlay `platform-version` patch,
+  which staging inherits — so each cluster's platform-ops targets the version it
+  is actually running, no update-channel concept needed. Production benefits
+  too: its platform-ops now matches the admin-pinned release instead of jumping
+  to the newest stable, which is what the admin-controlled pull model intends.
+  Side effect: the admin panel no longer reports the platform version as
+  "unknown" on staging/production.
 
 ### BREAKING
 - **Tenant SFTP is reachable for the first time — new host, new port, FTPS
