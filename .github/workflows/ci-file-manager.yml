@@ -53,8 +53,18 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable={{is_default_branch}}
+            # Gate on `development`, NOT {{is_default_branch}}: ADR-053 made
+            # `development` the branch that builds, but the repo's DEFAULT branch
+            # is still `main` — so is_default_branch is FALSE here and NEITHER tag
+            # was emitted. Unlike ci-sftp-gateway (which had an extract-tag step
+            # that exit 1'd, so it failed loudly), this workflow just SUCCEEDED
+            # while silently publishing nothing but the sha tag. Both overlays
+            # pin `file-manager:latest`, so `latest` has been frozen at its
+            # pre-cutover build since 2026-06-22 and no file-manager change has
+            # reached a cluster since. Caught while cutting the RC that ships the
+            # sftp-serve jail rewrite — which would have been inert on staging.
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
+            type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
 
       - uses: docker/build-push-action@v6
         id: build
