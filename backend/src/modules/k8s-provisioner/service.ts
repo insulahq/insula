@@ -1108,12 +1108,20 @@ export async function runProvisionNamespace(
     // Step 5: Start file-manager sidecar (Deployment + Service)
     if (!(await guardTenantExists())) return;
     await updateProgress('Start File Manager', 'running');
-    // Gap G2: pin the file-manager to the operator-chosen node so it shares
-    // the tenant's RWO PVC on the same node the workloads are pinned to.
-    // Passing the default initialReplicas (0) explicitly since targetNode is
-    // the fifth argument. Omitting targetNode leaves FM unpinned (unchanged
-    // behaviour) — it relies on its preferred podAffinity as before.
-    await ensureFileManagerRunning(k8s, namespace, getFileManagerImage(), 0, targetNode);
+    // Gap G2: pin the file-manager to the SAME node the deployment reconciler
+    // pins this tenant's workloads to — they share one RWO PVC, which can only
+    // attach on a single node. Pass the EFFECTIVE node, not just
+    // options.targetNode: a node chosen in the tenant-create form lands on
+    // tenants.nodeName (and so does the Local-tier auto-pick), while
+    // options.targetNode is only ever set by DR recovery. Reading just the
+    // option left FM unpinned for every normally-created tenant, so it could
+    // grab the PVC on another node and deadlock the workloads with
+    // `Multi-Attach error`. tenant.nodeName is already reconciled above (the
+    // explicit target is assigned to it); null → FM stays unpinned (HA tier /
+    // no pin) and relies on its preferred podAffinity, as before.
+    const fileManagerNode = targetNode ?? tenant.nodeName ?? undefined;
+    // initialReplicas (0) is passed explicitly — the node pin is the 5th arg.
+    await ensureFileManagerRunning(k8s, namespace, getFileManagerImage(), 0, fileManagerNode);
     await updateProgress('Start File Manager', 'completed');
 
     // All done — mark task and tenant as provisioned

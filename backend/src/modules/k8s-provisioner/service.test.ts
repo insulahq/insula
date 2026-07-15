@@ -1,5 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { K8sClients } from './k8s-client.js';
+import * as schema from '../../db/schema.js';
+
+// The file-manager lifecycle is unit-tested on its own
+// (file-manager/k8s-lifecycle.test.ts); here we only assert which node the
+// provisioning orchestrator hands it.
+const ensureFileManagerRunningMock = vi.fn().mockResolvedValue(undefined);
+vi.mock('../file-manager/k8s-lifecycle.js', () => ({
+  ensureFileManagerRunning: (...args: unknown[]) => ensureFileManagerRunningMock(...args),
+}));
+vi.mock('../file-manager/image.js', () => ({
+  getFileManagerImage: () => 'ghcr.io/insulahq/file-manager:test',
+}));
 
 // ─── Mock K8s API responses ────────────────────────────────────────────────
 
@@ -63,6 +75,7 @@ describe('K8s Provisioner Service', () => {
   beforeEach(() => {
     mockK8s = createMockK8sTenants();
     mockDb = createMockDb();
+    ensureFileManagerRunningMock.mockClear();
   });
 
   describe('provisionNamespace', () => {
@@ -291,6 +304,87 @@ describe('K8s Provisioner Service', () => {
       expect(labels['platform/owner']).toBe('tenant-abc12345');
       expect(labels['platform/canonical-name']).toBe('tenant-acme-abc12345-storage');
       expect(labels['platform/managed-by']).toBe('platform-api');
+    });
+  });
+
+  describe('runProvisionNamespace — file-manager node pin (gap G2)', () => {
+    // Regression cover for the file-manager/workload split-brain: the
+    // tenant's RWO PVC can only attach on ONE node, so the file-manager
+    // MUST land on the same node the deployment reconciler pins workloads
+    // to (tenants.nodeName). Before this, only ProvisionOptions.targetNode
+    // was threaded through — and the ONLY caller that sets it is DR
+    // recovery, so every normally-created tenant got an unpinned FM that
+    // could grab the PVC on another node and deadlock every workload with
+    // `Multi-Attach error` (observed on a 3-node staging cluster).
+    //
+    // These assert the ARGUMENT the orchestrator passes; the pinning
+    // behaviour itself is covered in file-manager/k8s-lifecycle.test.ts.
+    function makeProvisionDb(tenantRow: Record<string, unknown>) {
+      const planRow = { id: 'plan-1', cpuLimit: '1', memoryLimit: '1', storageLimit: '10' };
+      return {
+        select: vi.fn().mockImplementation(() => ({
+          from: vi.fn().mockImplementation((table: unknown) => ({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockImplementation(async () => {
+                if (table === schema.tenants) return [tenantRow];
+                if (table === schema.hostingPlans) return [planRow];
+                // provisioningTasks → mirrorProvisioningToTaskTracker
+                // early-returns on a missing/startedBy-less row.
+                return [];
+              }),
+            }),
+          })),
+        })),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+        }),
+        insert: vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue(undefined) }),
+      };
+    }
+
+    function fmPinArg(): string | undefined {
+      const call = (ensureFileManagerRunningMock as ReturnType<typeof vi.fn>).mock.calls[0];
+      return call?.[4] as string | undefined;
+    }
+
+    async function provision(tenantRow: Record<string, unknown>, options?: { targetNode?: string }) {
+      const { runProvisionNamespace } = await import('./service.js');
+      const db = makeProvisionDb(tenantRow);
+      await runProvisionNamespace(
+        db as unknown as Parameters<typeof runProvisionNamespace>[0],
+        mockK8s,
+        'task-1',
+        'tenant-123',
+        options,
+      );
+    }
+
+    const baseTenant = {
+      id: 'tenant-123',
+      planId: 'plan-1',
+      kubernetesNamespace: 'tenant-acme-1234',
+      storageTier: 'local' as const,
+      nodeName: null as string | null,
+      cpuLimitOverride: null,
+      memoryLimitOverride: null,
+      storageLimitOverride: null,
+    };
+
+    it('pins the file-manager to tenants.nodeName chosen by the operator at tenant-create', async () => {
+      // THE REGRESSION: operator picked a node in the create form → it lands
+      // on tenants.nodeName, NOT ProvisionOptions.targetNode. FM must still pin.
+      await provision({ ...baseTenant, nodeName: 'worker-2' });
+      expect(fmPinArg()).toBe('worker-2');
+    });
+
+    it('pins the file-manager to an explicit ProvisionOptions.targetNode (DR-recover path)', async () => {
+      await provision({ ...baseTenant, nodeName: null }, { targetNode: 'worker-2' });
+      expect(fmPinArg()).toBe('worker-2');
+    });
+
+    it('leaves the file-manager unpinned when the tenant has no node (HA tier, scheduler picks)', async () => {
+      await provision({ ...baseTenant, storageTier: 'ha', nodeName: null });
+      expect(fmPinArg()).toBeUndefined();
     });
   });
 
