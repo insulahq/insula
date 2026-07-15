@@ -55,7 +55,7 @@ jobs:
             type=ref,event=branch
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
 
-      - uses: docker/build-push-action@v5
+      - uses: docker/build-push-action@v7
         with:
           context: images/claim-validator
           push: ${{ github.event_name != 'pull_request' }}
