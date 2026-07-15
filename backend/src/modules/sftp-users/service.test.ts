@@ -210,10 +210,10 @@ describe('getSftpConnectionInfo — advertised host', () => {
 
   it('derives the host from the platform apex when no override is set', async () => {
     const info = await connectionInfo({ apex: 'acme.example' });
-    expect(info.host).toBe('sftp.acme.example');
+    expect(info.host).toBe('files.acme.example');
     // The advertised instructions must carry the same host — they are what the
     // tenant copy-pastes.
-    expect(info.instructions.sftp).toContain('sftp.acme.example');
+    expect(info.instructions.sftp).toContain('files.acme.example');
   });
 
   it('never advertises the local dev apex on a configured deployment', async () => {
@@ -235,7 +235,7 @@ describe('getSftpConnectionInfo — advertised host', () => {
     process.env.PLATFORM_BASE_DOMAIN = 'boot.example';
     try {
       const info = await connectionInfo({ apex: null });
-      expect(info.host).toBe('sftp.boot.example');
+      expect(info.host).toBe('files.boot.example');
     } finally {
       if (prev === undefined) delete process.env.PLATFORM_BASE_DOMAIN;
       else process.env.PLATFORM_BASE_DOMAIN = prev;

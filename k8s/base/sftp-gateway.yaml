@@ -1,9 +1,29 @@
 # SFTP Gateway — K8s Exec-based architecture (ADR-027)
 #
-# Accepts SFTP/SCP/rsync/FTPS connections, authenticates against the
-# platform backend, then execs sftp-server inside the tenant's
-# file-manager pod via the K8s API. No PVC mounts needed — fully
-# multi-node compatible.
+# Accepts SFTP/SCP/rsync connections, authenticates against the platform
+# backend, then execs sftp-server inside the tenant's file-manager pod via
+# the K8s API. No PVC mounts needed — fully multi-node compatible.
+#
+# EXPOSURE: a DaemonSet with a hostPort on every control-plane server,
+# mirroring the stalwart-haproxy mail DaemonSet — the platform's pattern for
+# raw TCP. It is NOT a LoadBalancer Service: bootstrap runs k3s with
+# `--disable=servicelb` and there is no cloud LB on self-managed VPS nodes, so
+# a LoadBalancer Service sits at `EXTERNAL-IP <pending>` forever and NOTHING
+# ever binds the port (which is exactly what shipped — tenant SFTP was
+# unreachable on every real deployment). The firewall accept for the port
+# lives in bootstrap.sh + a host-migration: firewall-reconciler only opens
+# hostPorts for TENANT namespaces (client-*), not platform-system.
+#
+# Clients reach it at files.<apex>:23022 — a CNAME to the apex, whose A
+# records already point at the control-plane servers, so DNS round-robins
+# across exactly the nodes running this DaemonSet.
+#
+# FTPS was REMOVED: it never actually ran (the optional sftp-tls-certs Secret
+# was never created, so the listener self-disabled on every deployment while
+# the API still advertised it). Passive mode needs a 100-port firewall range
+# and a per-node PublicIP a DaemonSet cannot supply; active mode is unusable
+# behind NAT, and doubly so with TLS hiding PORT from nf_conntrack_ftp.
+# SFTP/SCP/rsync over this same gateway cover the use case with better auth.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -44,7 +64,7 @@ subjects:
 # only. No cluster-wide exec ClusterRole exists.
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: sftp-gateway
   namespace: platform-system
@@ -56,7 +76,6 @@ metadata:
     # healed internal-secret — otherwise a stale env keeps every SFTP auth 403ing.
     secret.reloader.stakater.com/reload: "platform-secrets"
 spec:
-  replicas: 1
   selector:
     matchLabels:
       app: sftp-gateway
@@ -66,20 +85,32 @@ spec:
         app: sftp-gateway
     spec:
       serviceAccountName: sftp-gateway
+      # Every control-plane server exposes the port. `insula.host/node-role`
+      # is stamped by bootstrap.sh, so this needs no per-node opt-in label
+      # (unlike stalwart-haproxy, where mail is deliberately placed).
+      nodeSelector:
+        insula.host/node-role: server
+      tolerations:
+        - key: insula.host/server-only
+          operator: Exists
+          effect: NoSchedule
       containers:
         - name: gateway
           image: ghcr.io/insulahq/insula/sftp-gateway:latest # {"$imagepolicy": "flux-system:sftp-gateway"}
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 2222
+            # hostPort == containerPort so the node binds the advertised port
+            # directly (no portmap remap). 23022 is deliberate: it must stay
+            # BELOW 32768 (the ephemeral range 32768-60999 — a hostPort there
+            # can collide with outbound source ports) and OUTSIDE 30000-32767
+            # (the NodePort range), which leaves 1024-29999. It also keeps the
+            # gateway off 22/2222, the ports bots sweep by default.
+            - containerPort: 23022
+              hostPort: 23022
               name: sftp
-            - containerPort: 2121
-              name: ftps
+            # Health stays pod-local — no hostPort, nothing to firewall.
             - containerPort: 8080
               name: health
-            # FTPS passive data ports (30000-30099) are negotiated directly
-            # via the FTPS protocol. The LoadBalancer with externalTrafficPolicy
-            # handles them without explicit containerPort entries.
           env:
             - name: BACKEND_URL
               value: "http://platform-api.platform.svc.cluster.local:3000"
@@ -91,13 +122,7 @@ spec:
             - name: SSH_HOST_KEY_PATH
               value: "/etc/ssh/keys/ssh_host_ed25519_key"
             - name: SSH_PORT
-              value: "2222"
-            - name: FTPS_PORT
-              value: "2121"
-            - name: FTPS_CERT_PATH
-              value: "/etc/tls/tls.crt"
-            - name: FTPS_KEY_PATH
-              value: "/etc/tls/tls.key"
+              value: "23022"
             - name: IDLE_TIMEOUT
               value: "15m"
             - name: MAX_CONNECTIONS
@@ -105,9 +130,6 @@ spec:
           volumeMounts:
             - name: ssh-host-keys
               mountPath: /etc/ssh/keys
-              readOnly: true
-            - name: tls-certs
-              mountPath: /etc/tls
               readOnly: true
           securityContext:
             allowPrivilegeEscalation: false
@@ -140,29 +162,24 @@ spec:
           secret:
             secretName: sftp-host-keys
             defaultMode: 0444  # readable by nobody (65534); Secret is RBAC-protected
-        - name: tls-certs
-          secret:
-            secretName: sftp-tls-certs
-            defaultMode: 0444
-            optional: true
 ---
+# ClusterIP only — external clients reach the gateway via the DaemonSet's
+# hostPort on files.<apex>:23022, NOT through this Service. It exists for
+# in-cluster callers (health probes from tests, future internal consumers).
+# Deliberately NOT a LoadBalancer: see the exposure note at the top.
 apiVersion: v1
 kind: Service
 metadata:
   name: sftp-gateway
   namespace: platform-system
 spec:
-  type: LoadBalancer
+  type: ClusterIP
   selector:
     app: sftp-gateway
   ports:
-    - port: 2222
-      targetPort: 2222
+    - port: 23022
+      targetPort: 23022
       name: sftp
-    - port: 2121
-      targetPort: 2121
-      name: ftps
-    # FTPS passive data ports (30000-30099) are handled by the
-    # LoadBalancer with externalTrafficPolicy. They do not need
-    # individual Service port entries — the FTP client negotiates
-    # the data port directly with the gateway pod's IP.
+    - port: 8080
+      targetPort: 8080
+      name: health

@@ -2,8 +2,39 @@
 
 **Document Version:** 1.0  
 **Last Updated:** 2026-03-01  
-**Status:** DRAFT — Ready for implementation  
+**Status:** DRAFT — superseded in part by AS-BUILT below  
 **Audience:** Backend developers, DevOps engineers, platform architects, support team
+
+---
+
+## ⚠️ AS-BUILT (2026-07-15) — read this before the spec below
+
+The original spec (FTP/FTPS/implicit-TLS/ports 21/990) is **aspirational and
+partly obsolete**. What actually ships:
+
+| | As-built |
+|---|---|
+| **Protocols** | **SFTP / SCP / rsync only.** FTP and FTPS are **not** implemented. |
+| **Endpoint** | **`files.<apex>:23022`** — operators add `files.<apex>` CNAME → `<apex>`. Reserved platform hostname (ADR-040). |
+| **Exposure** | **hostPort DaemonSet on every control-plane server** (mirrors the `stalwart-haproxy` mail DaemonSet). **Not** a LoadBalancer: bootstrap runs k3s with `--disable=servicelb` and self-managed VPS nodes have no cloud LB, so a LoadBalancer Service never binds a port at all. |
+| **Firewall** | `23022/tcp` — `bootstrap.sh` (fresh installs) + host-migration `2026.7.1/0002-sftp-gateway-firewall-port.sh` (existing clusters). `firewall-reconciler` only opens hostPorts for tenant namespaces (`client-*`), never `platform-system`. |
+| **Port choice** | Must stay outside 30000-32767 (NodePort range) and below 32768 (ephemeral range — a hostPort there can collide with outbound source ports) ⇒ usable window 1024-29999. Override via the `sftp_gateway_port` setting. |
+| **Auth** | Per-tenant password or SSH key against the platform backend; sessions chroot-jailed via k8s exec into the file-manager pod (ADR-027). |
+
+**Why FTPS was dropped:** it never actually ran — the listener is gated on a TLS
+Secret that is `optional: true` and was never created, so it self-disabled on
+every deployment while the API still advertised FTPS to tenants. It also cannot
+be exposed sanely here: passive mode needs a 100-port range (the old
+`30000-30099` default collided with the NodePort range) plus a per-node public
+IP a DaemonSet cannot supply, and active mode is unusable behind NAT — doubly so
+with TLS hiding `PORT` from `nf_conntrack_ftp`.
+
+**Historical note:** tenant SFTP was unreachable on every real deployment until
+2026-07-15 (pending LoadBalancer + no firewall accept), and the connection-info
+API advertised the local dev hostname `sftp.k8s-platform.test`. No test caught
+it: the only e2e script port-forwarded past both the Service and the firewall.
+Any test for this feature MUST connect to the **advertised** host:port from
+off-cluster.
 
 ---
 

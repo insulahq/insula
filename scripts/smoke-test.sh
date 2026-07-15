@@ -892,10 +892,29 @@ if [[ -n "$SFTP_TENANT_ID" ]]; then
 fi
 
 if [[ -n "$SFTP_TENANT_ID" ]]; then
-  # Connection info
+  # Connection info. NOTE: this used to be `-o /dev/null` + assert 200, which
+  # threw the body away — so it happily passed for months while the endpoint
+  # advertised the LOCAL DEV hostname (sftp.k8s-platform.test) to tenants on
+  # every real deployment. A 200 is not a correct answer: assert the CONTENT.
+  CONN_BODY=$(curl -s -H "$AUTH_HEADER" \
+    "${API_URL}/api/v1/tenants/${SFTP_TENANT_ID}/sftp-users/connection-info")
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \
     "${API_URL}/api/v1/tenants/${SFTP_TENANT_ID}/sftp-users/connection-info")
   check_status "GET /sftp-users/connection-info" "200" "$STATUS"
+
+  # The advertised host must never be the dev apex on a configured deployment.
+  if grep -q 'k8s-platform\.test' <<<"$CONN_BODY"; then
+    check_status "connection-info host is not the dev apex" "clean" "leaked-dev-hostname"
+  else
+    check_status "connection-info host is not the dev apex" "clean" "clean"
+  fi
+
+  # FTPS was removed from the gateway — it must not be advertised any more.
+  if grep -q '"ftps' <<<"$CONN_BODY"; then
+    check_status "connection-info does not advertise removed FTPS" "clean" "ftps-still-advertised"
+  else
+    check_status "connection-info does not advertise removed FTPS" "clean" "clean"
+  fi
 
   # List (empty or populated)
   STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "$AUTH_HEADER" \

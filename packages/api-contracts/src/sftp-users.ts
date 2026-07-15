@@ -51,17 +51,20 @@ export const sftpUserResponseSchema = z.object({
   updatedAt: z.string(),
 });
 
+// FTPS was removed from the gateway: it never actually ran (its optional TLS
+// Secret was never created, so the listener self-disabled everywhere) and it
+// cannot be exposed sanely — passive mode needs a 100-port range plus a
+// per-node public IP, active mode is unusable behind NAT. `ftps_port` and the
+// `ftps` instruction are gone with it; SFTP/SCP/rsync cover the use case.
 export const sftpConnectionInfoSchema = z.object({
   host: z.string(),
   port: z.number(),
-  ftps_port: z.number(),
   protocols: z.array(z.string()),
   username_format: z.string(),
   instructions: z.object({
     sftp: z.string(),
     scp: z.string(),
     rsync: z.string(),
-    ftps: z.string(),
     sftp_key: z.string(),
     scp_key: z.string(),
     rsync_key: z.string(),

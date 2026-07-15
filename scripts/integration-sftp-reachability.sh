@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# integration-sftp-reachability.sh — proves a tenant can actually REACH and USE
+# the SFTP gateway at the endpoint the product ADVERTISES.
+#
+# WHY THIS EXISTS
+# ---------------
+# Tenant SFTP upload never worked on any real deployment until 2026-07-15, and
+# no test caught it, because every existing test routed AROUND the broken layer:
+#
+#   * integration-sftp-gateway-e2e.sh does `kubectl port-forward svc/sftp-gateway`
+#     and connects to 127.0.0.1 — that goes straight to the pod endpoint,
+#     bypassing the Service type AND the host firewall, which is exactly where
+#     both bugs lived (a `type: LoadBalancer` Service stuck at
+#     `EXTERNAL-IP <pending>` forever because bootstrap runs k3s with
+#     `--disable=servicelb`, so NOTHING bound the port; and no firewall accept).
+#     It is also registered `manual`, so it never runs.
+#   * smoke-test.sh asserted `connection-info` returned HTTP 200 with
+#     `-o /dev/null` — the body was discarded, so it passed while the endpoint
+#     advertised the LOCAL DEV hostname `sftp.k8s-platform.test` to tenants.
+#
+# So this suite has ONE rule: it must learn the host+port from the API the
+# tenant reads, and connect to THAT — never a port-forward, never a ClusterIP,
+# never localhost. If it cannot reach the advertised endpoint, the feature is
+# broken for tenants, and this must FAIL.
+#
+# Asserts:
+#   Phase 1 — Auth
+#   Phase 2 — Provision a probe tenant (pinned so FM + workload co-locate)
+#   Phase 3 — connection-info: host is NOT the dev apex, resolves, and FTPS is
+#             NOT advertised (it was removed — it never actually ran)
+#   Phase 4 — Create an SFTP user (password auth)
+#   Phase 5 — TCP reachability to the ADVERTISED host:port (SSH banner)
+#   Phase 6 — Real SFTP login + upload + download round-trip, content verified
+#   Phase 7 — Jail: `ls /` must not expose the host root
+#
+# Env overrides (same convention as other integration scripts):
+#   ADMIN_HOST      default: http://admin.k8s-platform.test:2010
+#   ADMIN_EMAIL     default: admin@k8s-platform.test
+#   ADMIN_PASSWORD  default: admin
+#   SFTP_HOST_OVERRIDE  test the gateway at this host instead of the advertised
+#                       one (ONLY for rigs whose DNS cannot resolve the apex —
+#                       the port still comes from the API). Using this weakens
+#                       the guarantee; it is logged loudly.
+#
+# Skips (77) rather than fails when `sftp` is not installed on the runner.
+set -euo pipefail
+
+ADMIN_HOST="${ADMIN_HOST:-http://admin.k8s-platform.test:2010}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"
+API="${ADMIN_HOST}/api/v1"
+
+PASS=0; FAIL=0
+ok()   { echo "  ✓ $1"; PASS=$((PASS+1)); }
+bad()  { echo "  ✗ $1"; FAIL=$((FAIL+1)); }
+info() { echo "  · $1"; }
+
+WORK="$(mktemp -d)"
+TENANT_ID=""
+cleanup() {
+  # tmpfs leftovers pin node RAM — always clean up (AGENTS.md).
+  rm -rf "$WORK"
+  if [[ -n "$TENANT_ID" ]]; then
+    curl -s -X DELETE -H "Authorization: Bearer ${TOKEN:-}" \
+      "${API}/tenants/${TENANT_ID}?force=true" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+command -v sftp >/dev/null 2>&1 || { echo "SKIP: openssh-client (sftp) not installed on the runner"; exit 77; }
+command -v sshpass >/dev/null 2>&1 || { echo "SKIP: sshpass not installed on the runner"; exit 77; }
+
+# ── Phase 1: Auth ─────────────────────────────────────────────────────────────
+echo "Phase 1 — Auth"
+TOKEN=$(curl -s -X POST "${API}/auth/login" -H 'Content-Type: application/json' \
+  -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}" \
+  | sed -n 's/.*"accessToken":"\([^"]*\)".*/\1/p')
+[[ -n "$TOKEN" ]] || { echo "FATAL: login failed against ${API}"; exit 1; }
+AUTH="Authorization: Bearer ${TOKEN}"
+ok "authenticated"
+
+# ── Phase 2: probe tenant ─────────────────────────────────────────────────────
+echo "Phase 2 — Probe tenant"
+SUFFIX="$RANDOM$RANDOM"
+PLAN_ID=$(curl -s -H "$AUTH" "${API}/hosting-plans?limit=1" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+[[ -n "$PLAN_ID" ]] || { echo "FATAL: no hosting plan found"; exit 1; }
+
+TENANT_ID=$(curl -s -X POST "${API}/tenants" -H "$AUTH" -H 'Content-Type: application/json' \
+  -d "{\"name\":\"sftp-probe-${SUFFIX}\",\"primary_email\":\"sftp-probe-${SUFFIX}@example.test\",\"plan_id\":\"${PLAN_ID}\"}" \
+  | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -1)
+[[ -n "$TENANT_ID" ]] || { echo "FATAL: tenant create failed"; exit 1; }
+ok "tenant created ($TENANT_ID)"
+
+curl -s -X POST -H "$AUTH" "${API}/admin/tenants/${TENANT_ID}/provision" >/dev/null 2>&1 || true
+for _ in $(seq 1 60); do
+  ST=$(curl -s -H "$AUTH" "${API}/tenants/${TENANT_ID}" | sed -n 's/.*"provisioningStatus":"\([^"]*\)".*/\1/p')
+  [[ "$ST" == "provisioned" ]] && break
+  [[ "$ST" == "failed" ]] && { echo "FATAL: provisioning failed"; exit 1; }
+  sleep 5
+done
+[[ "$ST" == "provisioned" ]] && ok "tenant provisioned" || { bad "tenant not provisioned (status=$ST)"; exit 1; }
+
+# ── Phase 3: what does the product ADVERTISE? ─────────────────────────────────
+echo "Phase 3 — connection-info (the endpoint the tenant reads)"
+CONN=$(curl -s -H "$AUTH" "${API}/tenants/${TENANT_ID}/sftp-users/connection-info")
+ADV_HOST=$(sed -n 's/.*"host":"\([^"]*\)".*/\1/p' <<<"$CONN")
+ADV_PORT=$(sed -n 's/.*"port":\([0-9]*\).*/\1/p' <<<"$CONN")
+[[ -n "$ADV_HOST" && -n "$ADV_PORT" ]] || { bad "connection-info missing host/port: $CONN"; exit 1; }
+info "advertised endpoint: ${ADV_HOST}:${ADV_PORT}"
+
+# The exact bug that shipped: the dev apex advertised to real tenants.
+if grep -q 'k8s-platform\.test' <<<"$ADV_HOST"; then
+  bad "advertised host is the LOCAL DEV apex (${ADV_HOST}) — tenants cannot use this"
+else
+  ok "advertised host is not the dev apex"
+fi
+
+# FTPS was removed (it never ran); it must not be advertised.
+if grep -q '"ftps' <<<"$CONN"; then
+  bad "connection-info still advertises FTPS, which the gateway does not run"
+else
+  ok "FTPS not advertised"
+fi
+
+CONNECT_HOST="$ADV_HOST"
+if [[ -n "${SFTP_HOST_OVERRIDE:-}" ]]; then
+  echo "  !! SFTP_HOST_OVERRIDE set — connecting to ${SFTP_HOST_OVERRIDE} instead of the advertised host."
+  echo "  !! This WEAKENS the guarantee: it no longer proves the advertised host resolves."
+  CONNECT_HOST="$SFTP_HOST_OVERRIDE"
+elif getent hosts "$ADV_HOST" >/dev/null 2>&1; then
+  ok "advertised host resolves in DNS"
+else
+  bad "advertised host ${ADV_HOST} does NOT resolve — tenants cannot reach it (add the files.<apex> CNAME)"
+fi
+
+# ── Phase 4: SFTP user ────────────────────────────────────────────────────────
+echo "Phase 4 — SFTP user"
+USER_JSON=$(curl -s -X POST "${API}/tenants/${TENANT_ID}/sftp-users" -H "$AUTH" \
+  -H 'Content-Type: application/json' -d '{"auth_method":"password","home_path":"/"}')
+SFTP_USER=$(sed -n 's/.*"username":"\([^"]*\)".*/\1/p' <<<"$USER_JSON" | head -1)
+SFTP_PASS=$(sed -n 's/.*"password":"\([^"]*\)".*/\1/p' <<<"$USER_JSON" | head -1)
+[[ -n "$SFTP_USER" && -n "$SFTP_PASS" ]] || { bad "sftp user create failed: $USER_JSON"; exit 1; }
+ok "sftp user created ($SFTP_USER)"
+
+# ── Phase 5: is the advertised port actually OPEN? ────────────────────────────
+# This is the assertion that a port-forward can never make. A LoadBalancer stuck
+# at <pending>, or a missing firewall accept, fails HERE — as it should.
+echo "Phase 5 — TCP reachability to ${CONNECT_HOST}:${ADV_PORT}"
+BANNER=""
+for _ in $(seq 1 5); do
+  BANNER=$(timeout 10 bash -c "exec 3<>/dev/tcp/${CONNECT_HOST}/${ADV_PORT} && head -c 20 <&3" 2>/dev/null || true)
+  [[ -n "$BANNER" ]] && break
+  sleep 3
+done
+if grep -qi 'ssh' <<<"$BANNER"; then
+  ok "SSH banner received from the advertised endpoint (${BANNER%%$'\r'*})"
+else
+  bad "NO SSH banner from ${CONNECT_HOST}:${ADV_PORT} — the advertised endpoint is unreachable"
+  bad "  (a connect timeout here = firewall drop; 'connection refused' = nothing listening)"
+  echo "RESULT: ${PASS} passed, ${FAIL} failed"
+  exit 1
+fi
+
+# ── Phase 6: real upload/download round-trip ──────────────────────────────────
+echo "Phase 6 — SFTP upload/download round-trip"
+MARKER="insula-sftp-probe-${SUFFIX}"
+echo "$MARKER" > "$WORK/up.txt"
+SFTP_OPTS=(-P "$ADV_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15)
+
+if sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/up.log" 2>&1 <<EOF
+put $WORK/up.txt /probe.txt
+bye
+EOF
+then ok "upload succeeded"; else bad "upload FAILED: $(tail -3 "$WORK/up.log")"; fi
+
+if sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/down.log" 2>&1 <<EOF
+get /probe.txt $WORK/down.txt
+bye
+EOF
+then ok "download succeeded"; else bad "download FAILED: $(tail -3 "$WORK/down.log")"; fi
+
+if [[ -f "$WORK/down.txt" ]] && grep -q "$MARKER" "$WORK/down.txt"; then
+  ok "round-tripped content matches (user-visible outcome)"
+else
+  bad "content mismatch — upload/download did not round-trip"
+fi
+
+# ── Phase 7: jail ─────────────────────────────────────────────────────────────
+echo "Phase 7 — chroot jail"
+sshpass -p "$SFTP_PASS" sftp "${SFTP_OPTS[@]}" "${SFTP_USER}@${CONNECT_HOST}" >"$WORK/ls.log" 2>&1 <<EOF || true
+ls /
+bye
+EOF
+if grep -qE '\b(etc|usr|var|proc)\b' "$WORK/ls.log"; then
+  bad "jail LEAK: 'ls /' exposed host-root directories"
+else
+  ok "jail holds ('ls /' shows no host root)"
+fi
+
+echo ""
+echo "RESULT: ${PASS} passed, ${FAIL} failed"
+[[ "$FAIL" -eq 0 ]]

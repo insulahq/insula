@@ -206,6 +206,14 @@ PARALLEL=(
   # trap. ~1-2 min.
   "mailbox-quota:integration-mailbox-quota-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
+  # Tenant SFTP reachability at the ADVERTISED files.<apex>:23022 — provisions
+  # its own probe tenant, then connects from OFF-cluster and round-trips a file.
+  # Deliberately does NOT port-forward: the pre-2026-07-15 bugs (LoadBalancer
+  # stuck <pending> with servicelb disabled, no firewall accept, dev hostname
+  # advertised) all lived in exactly the layers a port-forward skips, which is
+  # why the port-forwarding sftp-gateway-e2e suite never caught them. Self-skips
+  # (77) when the runner lacks sftp/sshpass. ~1-2 min.
+  "sftp-reachability:integration-sftp-reachability.sh"
   "firewall:integration-firewall-e2e.sh"
   "drain:integration-drain-e2e.sh"
   # WAF + CrowdSec IP-blocking coverage on every Traefik DS pod.

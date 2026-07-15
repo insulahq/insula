@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/gliderlabs/ssh v0.3.8
-	goftp.io/server/v2 v2.0.3
 	golang.org/x/crypto v0.52.0
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1

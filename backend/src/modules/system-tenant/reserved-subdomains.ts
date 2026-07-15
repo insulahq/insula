@@ -44,7 +44,7 @@ import {
   stalwartHost,
   dexHost,
   webmailHost,
-  sftpHost,
+  filesHost,
   resolveBaseDomain,
 } from '../../config/domains.js';
 import type { Database } from '../../db/index.js';
@@ -149,7 +149,7 @@ export async function getReservedPlatformHostnames(db: Database): Promise<Reserv
       [normalize(stalwartHost(cfgEnv)), 'platform Stalwart web-admin'],
       [normalize(dexHost(cfgEnv)), 'platform Dex OIDC issuer'],
       [normalize(webmailHost(cfgEnv)), 'platform webmail'],
-      [normalize(sftpHost(cfgEnv)), 'platform SFTP/FTPS gateway'],
+      [normalize(filesHost(cfgEnv)), 'platform SFTP file-transfer gateway'],
     ];
     for (const [host, reason] of staticHostnames) {
       if (host && !fqdns.has(host)) fqdns.set(host, reason);
