@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# scripts/vm-integration-tests/spawn-cluster.sh — clone overlays, boot N VMs, run bootstrap.sh
+# VERBATIM inside them, wait for a Ready k3s cluster. Echoes the cluster coords.
+#
+# EACH NODE gets a RANDOM OS drawn from the supported pool (not a fixed set) — so a
+# single run is a HETEROGENEOUS cluster (e.g. Debian control-plane + Rocky/Ubuntu
+# workers), which is both a real-world scenario (operators add nodes over time on
+# whatever OS is current) and a stronger test than a homogeneous cluster. Coverage
+# over the full matrix accumulates across runs via the randomisation. The draw is
+# SEEDED (VMTEST_OS_SEED) and the assignment is logged + emitted, so any failure is
+# exactly reproducible. Pin all nodes to one OS with VMTEST_OS=<id> for debugging.
+#
+# Fidelity is the whole point: bootstrap.sh is the SAME script staging/prod use
+# (--join-as server|worker); its pins are read from that file, never duplicated.
+#
+# ⚠ UNTESTED until a VMTEST_DRIVER is enabled.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+source "${VMTEST_CONFIG:-$HERE/config.env}"
+source "$HERE/lib/os-registry.sh"
+source "$HERE/lib/driver.sh"
+source "$HERE/lib/waitfor.sh"
+
+RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
+APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
+SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
+export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
+mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
+on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage (goldens stay on the pool FS)
+
+# ext4-loop(nobarrier) overlay backing for fast fsync — idempotent; net-services already
+# mounted it before the svc VM, this covers a standalone spawn-cluster run. See driver.sh.
+ensure_fast_disk
+ensure_ksm   # dedup identical pages across the run's near-identical guests (VMTEST_KSM=0 off)
+
+# ── host-memory guard: NEVER over-allocate the operator's host (no host OOM) ──
+# Sum the planned guest footprint (servers + workers + services VM + runner) and refuse to
+# spawn if it wouldn't leave VMTEST_HOST_MEM_MARGIN_MB of the host's CURRENTLY-AVAILABLE
+# memory (free -m "available" — RAM reclaimable without swapping). qemu allocates lazily so
+# the real squeeze is at the bootstrap peak; this conservative up-front check aborts cleanly
+# with guidance instead of letting the host OOM-killer reap a VM mid-run.
+_worker_ram="${VMTEST_WORKER_RAM_MB:-${VMTEST_RAM_MB}}"
+_planned=$(( VMTEST_SERVERS * VMTEST_RAM_MB + ${VMTEST_WORKERS:-0} * _worker_ram \
+             + ${VMTEST_SVC_RAM_MB:-1536} + ${VMTEST_RUNNER_RAM_MB:-2048} ))
+_avail=$(on_host "free -m | awk '/^Mem:/{print \$7}'" 2>/dev/null | tr -dc '0-9')
+_margin="${VMTEST_HOST_MEM_MARGIN_MB:-3072}"
+echo "── host-memory guard: planned guests=${_planned}MB, host available=${_avail:-?}MB, margin=${_margin}MB ──" >&2
+if [[ -n "$_avail" && "$_avail" -gt 0 && $(( _planned + _margin )) -gt "$_avail" ]]; then
+  echo "ABORT: planned guest memory ${_planned}MB + ${_margin}MB margin exceeds host available ${_avail}MB." >&2
+  echo "  Lower VMTEST_RAM_MB / VMTEST_WORKER_RAM_MB / VMTEST_WORKERS / VMTEST_SERVERS, or free host RAM." >&2
+  exit 1
+fi
+
+# ── OS draw (seeded, reproducible) ──────────────────────────────────
+read -ra OS_POOL <<<"${VMTEST_OS_POOL:-$(os_pool_default)}"
+[[ ${#OS_POOL[@]} -gt 0 ]] || { echo "empty OS pool" >&2; exit 1; }
+OS_SEED="${VMTEST_OS_SEED:-$RANDOM}"; RANDOM="$OS_SEED"
+pick_os() { [[ -n "${VMTEST_OS:-}" ]] && { echo "$VMTEST_OS"; return; }; echo "${OS_POOL[$((RANDOM % ${#OS_POOL[@]}))]}"; }
+
+# ensure_golden <os> — fetch the per-OS base image if this run's draw needs one.
+ensure_golden() {
+  local os="$1" url
+  local g="${VMTEST_IMAGE_CACHE_DIR%/}/golden-${os}.qcow2"
+  os_known "$os" || { echo "unknown OS '$os' in pool" >&2; return 1; }
+  on_host "test -f '$g'" && { echo "$g"; return; }
+  url="$(os_url "$os")"; [[ "$url" == PIN_* ]] && { echo "OS '$os' image URL not pinned" >&2; return 1; }
+  img_pull_golden "$url" "$g" >&2
+  echo "$g"
+}
+
+# 0) ephemeral ssh key for this run (thrown away at teardown)
+[[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q
+PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
+
+seed_for() {  # cloud-init: root key, guest-agent, our resolver (uniform across families)
+  local host="$1"
+  cat > "${VMTEST_TMP_DIR}/ud-${RUN}-${host}.yaml" <<UD
+#cloud-config
+hostname: ${host}
+manage_etc_hosts: true
+users:
+  - name: root
+    ssh_authorized_keys: ["${PUBKEY}"]
+disable_root: false
+ssh_pwauth: false
+packages: [qemu-guest-agent, curl, ca-certificates]
+runcmd:
+  - [systemctl, enable, --now, qemu-guest-agent]
+  # Resolver = the services-VM dnsmasq (apex -> PowerDNS, else -> upstream). A plain
+  # echo is clobbered by systemd-resolved/NetworkManager, so replace the symlink and
+  # pin it immutable (family-agnostic: works on Debian/Ubuntu AND RHEL random draws).
+  - "rm -f /etc/resolv.conf; echo 'nameserver ${DNS_IP}' > /etc/resolv.conf; chattr +i /etc/resolv.conf 2>/dev/null || true"
+UD
+  cat > "${VMTEST_TMP_DIR}/md-${RUN}-${host}.yaml" <<MD
+instance-id: ${host}
+local-hostname: ${host}
+MD
+  seed_iso "${VMTEST_DISK_DIR}/seed-${RUN}-${host}" "${VMTEST_TMP_DIR}/ud-${RUN}-${host}.yaml" \
+           "${VMTEST_TMP_DIR}/md-${RUN}-${host}.yaml" "${VMTEST_DISK_DIR}/seed-${RUN}-${host}.iso"
+}
+
+# boot_node <host> <idx> <os> → echoes the node IP
+boot_node() {
+  local host="$1" idx="$2" os="$3" golden overlay mac ip=""
+  golden="$(ensure_golden "$os")"
+  overlay="${VMTEST_DISK_DIR}/${host}.qcow2"
+  mac=$(printf '52:54:00:%02x:%02x:%02x' "$OCTET" "$((RANDOM%256))" "$idx")
+  img_clone "$golden" "$overlay" "$VMTEST_DISK_GB"
+  seed_for "$host"
+  vm_create "$host" "$overlay" "${VMTEST_DISK_DIR}/seed-${RUN}-${host}.iso" \
+            "$RUN" "$VMTEST_VCPU" "$VMTEST_RAM_MB" "$mac"
+  # 75×4s = 5 min: a fresh cloud image's first boot (kernel + cloud-init network bring-up)
+  # can take minutes on a loaded VM host before it DHCPs a lease; 2 min occasionally lost the
+  # race (VM tier 2026-07-11: "no lease for …s1" at first-boot). Only costs time on a slow boot.
+  for _ in $(seq 1 75); do ip=$(vm_ip "$host" "$RUN"); [[ -n "$ip" ]] && break; sleep 4; done
+  [[ -n "$ip" ]] || { echo "no lease for $host after 5 min" >&2; return 1; }
+  echo "$ip"
+}
+
+# ── assign OSes to every node and announce (reproducible) ───────────
+# Default is 3 servers + 1 worker: the platform's HA mode REQUIRES >=3 server
+# nodes (etcd quorum + CNPG 1->3 instances + Deployments 2->3 with per-node
+# topologySpread; the Apply-HA button is disabled below 3 servers — see
+# docs/architecture/HA_MODE.md). 1 server can't exercise HA at all.
+declare -A NODE_OS
+ASSIGN=""
+S1="vmt-${RUN}-s1"
+for s in $(seq 1 "${VMTEST_SERVERS:-1}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-s${s}"]="$o"; ASSIGN+="s${s}=${o}  "; done
+for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do o="$(pick_os)"; NODE_OS["vmt-${RUN}-w${w}"]="$o"; ASSIGN+="w${w}=${o}  "; done
+echo "== spawn: ${VMTEST_SERVERS} server(s) + ${VMTEST_WORKERS} worker(s) on ${SUB}.0/24 =="
+echo "   os-seed=${OS_SEED}  (reproduce with VMTEST_OS_SEED=${OS_SEED})  pool=[${OS_POOL[*]}]"
+echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
+
+# bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
+bootstrap_node() {
+  local host="$1" ip="$2" role="$3"; shift 3
+  # ssh ceiling 360s (was 180): the WORKER spawns LAST, onto a host already running the
+  # 3-server HA cluster (k3s + Longhorn + platform pods), so its first boot + cloud-init
+  # ssh-host-key generation runs much slower than the servers' and overran 180s (VM tier
+  # 2026-07-12: bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
+  # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
+  wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
+  echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
+  "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
+    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
+}
+
+# 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet
+#    in the firewall so the other servers + worker attach as peers (a bare
+#    --pre-enroll-peer takes individual IPs — /32 — which we don't know yet; the CIDR
+#    mesh-whitelist is the right primitive for a known test subnet).
+S1_IP=$(boot_node "$S1" 11 "${NODE_OS[$S1]}")
+# Point cert-manager at the run's Pebble (test ACME CA) so the platform's certs ISSUE
+# for the private apex — real LE can't validate it. Same ACME issuance path as prod,
+# just a test CA; the harness trusts Pebble's root so it VERIFIES certs (no blanket -k).
+# Only the first server installs cert-manager, so only it needs the flag.
+ACME_ARGS=()
+[[ -n "${VMTEST_PEBBLE_IP:-}" ]] && ACME_ARGS=(--acme-server "https://${VMTEST_PEBBLE_IP}:14000/dir" --acme-skip-tls-verify)
+bootstrap_node "$S1" "$S1_IP" server --acme-email "${VMTEST_ACME_EMAIL:-admin@${APEX}}" \
+  --cluster-network-cidr "${SUB}.0/24" ${ACME_ARGS[@]+"${ACME_ARGS[@]}"}
+wait_k3s_ready "$S1_IP" 360
+
+# 2) join token, then servers 2..N (etcd HA) and workers — each on its drawn OS.
+TOKEN=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@$S1_IP" \
+          "cat /var/lib/rancher/k3s/server/node-token")
+for s in $(seq 2 "${VMTEST_SERVERS:-1}"); do
+  SH="vmt-${RUN}-s${s}"; SIP=$(boot_node "$SH" "$((10+s))" "${NODE_OS[$SH]}")
+  bootstrap_node "$SH" "$SIP" server --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
+done
+for w in $(seq 1 "${VMTEST_WORKERS:-0}"); do
+  # Workers carry no etcd/control-plane and few system pods, so they run comfortably smaller
+  # than servers — default them to VMTEST_WORKER_RAM_MB (< VMTEST_RAM_MB) to spare host RAM.
+  WH="vmt-${RUN}-w${w}"
+  WIP=$(VMTEST_RAM_MB="${VMTEST_WORKER_RAM_MB:-${VMTEST_RAM_MB}}" VMTEST_VCPU="${VMTEST_WORKER_VCPU:-${VMTEST_VCPU}}" \
+        boot_node "$WH" "$((20+w))" "${NODE_OS[$WH]}")
+  bootstrap_node "$WH" "$WIP" worker --server "${S1_IP}" --token "$TOKEN" --cluster-network-cidr "${SUB}.0/24"
+done
+wait_k3s_ready "$S1_IP" 360
+
+# 3) DEDICATED test-runner VM — a small, non-cluster node on the SAME run network. The
+#    harness runs HERE (not on a control-plane node), driving the cluster over SSH
+#    (CONTROL_HOST/ssh_cp) + kubectl-via-kubeconfig, exactly like an operator running the
+#    suite from a workstation against staging. WHY: reusing a cluster node as the runner
+#    conflates the system-under-test with the runner and inherits an under-provisioned,
+#    under-load node (EOL distro `node`, no node_modules, no peer SSH key) → false
+#    positives AND false negatives. Being on the run network, the runner resolves *.<apex>
+#    via the services-VM dnsmasq and routes to the ingress just like a node — WITHOUT being
+#    one. Fixed OS (debian-13 → modern node) so tooling doesn't vary with the random draw;
+#    run.sh provisions it. Small (2 vCPU / 2 GiB by default) to spare host RAM.
+RUNNER_H="vmt-${RUN}-runner"
+RUNNER_IP=$(VMTEST_VCPU="${VMTEST_RUNNER_VCPU:-2}" VMTEST_RAM_MB="${VMTEST_RUNNER_RAM_MB:-2048}" \
+            boot_node "$RUNNER_H" 30 "${VMTEST_RUNNER_OS:-debian-13}")
+echo "  runner VM up @ ${RUNNER_IP} (${VMTEST_RUNNER_OS:-debian-13}, drives the cluster over SSH)" >&2
+
+cat <<EOF
+VMTEST_CP_IP=${S1_IP}
+VMTEST_RUNNER_IP=${RUNNER_IP}
+VMTEST_APEX=${APEX}
+VMTEST_SSH_KEY=${VMTEST_SSH_KEY}
+VMTEST_OS_SEED=${OS_SEED}
+VMTEST_OS_ASSIGN=${ASSIGN}
+EOF
+echo "cluster up (${VMTEST_SERVERS}-server HA control plane; heterogeneous: ${ASSIGN}); runner @ ${RUNNER_IP}."

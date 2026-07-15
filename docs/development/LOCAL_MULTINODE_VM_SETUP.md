@@ -1,5 +1,13 @@
 # Local Multi-Node VM Setup (Unraid)
 
+> **Scope note (2026-07-10):** this doc is the **persistent dev-iteration** cluster
+> (keep-the-VMs, `br0`+DHCP). For the **throw-away, fresh-per-run integration-test**
+> substrate — the CI/nightly gate — see
+> [`EPHEMERAL_VM_INTEGRATION_TESTING.md`](./EPHEMERAL_VM_INTEGRATION_TESTING.md) and
+> `scripts/vm-integration-tests/`. Same machinery (`virsh`+cloud-init+`bootstrap.sh`), different
+> lifecycle. NB: the version-pin list below has drifted (the platform is **Traefik**,
+> not ingress-nginx) — always read pins from `scripts/bootstrap.sh`, never hardcode.
+
 > **Status:** PLANNED — not yet implemented.
 > **Owner:** (unassigned)
 > **Last updated:** 2026-04-21

@@ -7,6 +7,7 @@ import {
   stalwartHost,
   dexHost,
   webmailHost,
+  filesHost,
   DEV_DEFAULT_BASE_DOMAIN,
 } from './domains.js';
 
@@ -62,6 +63,10 @@ describe('subdomain helpers', () => {
 
   it('webmailHost → webmail.<base>', () => {
     expect(webmailHost(cfg)).toBe('webmail.acme.example');
+  });
+
+  it('filesHost → files.<base>', () => {
+    expect(filesHost(cfg)).toBe('files.acme.example');
   });
 
   it('all helpers use the dev default when no override is set', () => {

@@ -27,6 +27,11 @@ scripts/integration.env.*
 # is scripts/dr-drill.env.example (placeholders only).
 scripts/dr-drill.env
 
+# Ephemeral-VM-test profile — operator's real Unraid storage paths + driver /
+# host-SSH coordinates. Local-only; committed template is
+# scripts/vm-integration-tests/config.example.env (placeholders only).
+scripts/vm-integration-tests/config.env
+
 # Vite
 frontend/*/dist/
 

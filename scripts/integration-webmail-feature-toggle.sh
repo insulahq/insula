@@ -116,6 +116,30 @@ wait_for_hash_change() {
   return 1
 }
 
+# Poll a Deployment's feature-css-hash annotation until the reconciler has
+# stamped it (bounded). BOTH engine Deployments carry this annotation even
+# when scaled to 0 — bulwark is the canonical-active engine, roundcube sits at
+# replicas=0 — but the CSS reconciler stamps it ASYNCHRONOUSLY. A single-shot
+# read can race a just-restarted platform-api, or an engine reconcile kicked
+# off by an EARLIER suite in a full run, and momentarily see it empty. Waiting
+# converts that transient into a pass while still failing on genuine absence.
+# Echoes the hash on success; nothing (return 1) on timeout. A truly ABSENT
+# Deployment returns immediately — that is not transient and deserves its own
+# error. All diagnostics go to stderr so $(…) capture stays clean.
+wait_for_annotation() {
+  local deployment="$1" budget="${2:-45}" i hash
+  if ! $KUBECTL -n "$NAMESPACE" get deployment "$deployment" -o name >/dev/null 2>&1; then
+    red "  (deployment/$deployment ABSENT in $NAMESPACE — cannot read annotation)" >&2
+    return 1
+  fi
+  for (( i=0; i<budget; i+=3 )); do
+    hash=$(deployment_hash "$deployment" 2>/dev/null || true)
+    [ -n "$hash" ] && { printf '%s' "$hash"; return 0; }
+    sleep 3
+  done
+  return 1
+}
+
 # ─── Phase A ──────────────────────────────────────────────────────
 blue "Phase A — default state"
 
@@ -136,8 +160,11 @@ echo "$roundcube_default" | grep -q 'a.button.contacts' \
   && green "  PASS  roundcube CSS hides a.button.contacts (default)" \
   || { red "  FAIL  roundcube CSS does NOT hide a.button.contacts (default)"; FAIL=$((FAIL+1)); }
 
-bulwark_hash_A=$(deployment_hash bulwark 2>/dev/null || true)
-roundcube_hash_A=$(deployment_hash roundcube 2>/dev/null || true)
+# Bounded wait (not single-shot): the reconciler stamps these asynchronously,
+# so reading once races the settle window — the exact cause of the rc.20
+# "roundcube Deployment carries feature-css-hash annotation" false failure.
+bulwark_hash_A=$(wait_for_annotation bulwark 45 || true)
+roundcube_hash_A=$(wait_for_annotation roundcube 45 || true)
 assert "bulwark Deployment carries feature-css-hash annotation" \
   test -n "$bulwark_hash_A"
 assert "roundcube Deployment carries feature-css-hash annotation" \

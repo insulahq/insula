@@ -5,8 +5,20 @@ import { sftpUsers, sftpAuditLog, sftpUserSshKeys, sshKeys, platformSettings } f
 import { ApiError } from '../../shared/errors.js';
 import type { Database } from '../../db/index.js';
 import type { CreateSftpUserInput, UpdateSftpUserInput } from './schema.js';
+import { resolveBaseDomain, filesHost } from '../../config/domains.js';
+import { getPlatformApex } from '../system-settings/platform-domain.js';
 
 const BCRYPT_COST = 12;
+
+/**
+ * Default gateway port advertised to tenants. Kept OUT of 30000-32767 (the
+ * k3s NodePort range) and BELOW 32768 (the ephemeral range 32768-60999, where
+ * a hostPort can collide with outbound source ports) — so the usable window is
+ * 1024-29999. Also keeps the gateway off 22/2222, which bots sweep by default.
+ * MUST match the DaemonSet hostPort in k8s/base/sftp-gateway.yaml and SSH_PORT
+ * in images/sftp-gateway. Overridable via the `sftp_gateway_port` setting.
+ */
+export const DEFAULT_SFTP_GATEWAY_PORT = 23022;
 const HOME_PATH_REGEX = /^[a-zA-Z0-9/_.-]*$/;
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -328,26 +340,33 @@ export async function getSftpConnectionInfo(db: Database) {
   const settings = await db.select().from(platformSettings);
   const settingsMap = new Map(settings.map((s) => [s.key, s.value]));
 
-  const host = settingsMap.get('sftp_gateway_host') ?? 'sftp.k8s-platform.test';
-  const port = Number(settingsMap.get('sftp_gateway_port') ?? '2222');
-  const ftpsPort = Number(settingsMap.get('sftp_gateway_ftps_port') ?? '2121');
+  // Derive the gateway hostname from the platform apex — the same chain every
+  // other platform hostname uses (getPlatformApex → env → dev default), rather
+  // than hard-coding one. `sftp_gateway_host` stays an operator override for
+  // deployments that expose the gateway somewhere else entirely (a dedicated
+  // LB hostname, a bastion), but it is not required for a correct default:
+  // nothing ever WROTE that key, so the old literal fallback was the only value
+  // this endpoint could return — it advertised the local dev hostname to
+  // tenants on every real deployment.
+  const apex = (await getPlatformApex(db)) || resolveBaseDomain(process.env);
+  const host = settingsMap.get('sftp_gateway_host') || filesHost({ PLATFORM_BASE_DOMAIN: apex });
+  // Must match the gateway DaemonSet's hostPort (k8s/base/sftp-gateway.yaml).
+  const port = Number(settingsMap.get('sftp_gateway_port') ?? String(DEFAULT_SFTP_GATEWAY_PORT));
 
   return {
     host,
     port,
-    ftps_port: ftpsPort,
-    protocols: ['sftp', 'scp', 'rsync', 'ftps'],
+    protocols: ['sftp', 'scp', 'rsync'],
     username_format: '<sftp_username>',
     instructions: {
       sftp: `sftp -P ${port} <username>:<password>@${host}`,
       scp: `scp -P ${port} file.txt <username>:<password>@${host}:/path/`,
       rsync: `rsync -e "ssh -p ${port}" file.txt <username>:<password>@${host}:/path/`,
-      ftps: `ftps://<username>:<password>@${host}:${ftpsPort}/`,
       sftp_key: `sftp -P ${port} -i ~/.ssh/id_ed25519 <username>@${host}`,
       scp_key: `scp -P ${port} -i ~/.ssh/id_ed25519 file.txt <username>@${host}:/path/`,
       rsync_key: `rsync -e "ssh -p ${port} -i ~/.ssh/id_ed25519" file.txt <username>@${host}:/path/`,
     },
-    ssh_key_note: 'SSH keys uploaded on the SSH Keys page can be used for password-less authentication with SFTP, SCP, and rsync. FTPS only supports password authentication.',
+    ssh_key_note: 'SSH keys uploaded on the SSH Keys page can be used for password-less authentication with SFTP, SCP, and rsync.',
   };
 }
 

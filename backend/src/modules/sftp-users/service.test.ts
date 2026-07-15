@@ -182,3 +182,63 @@ describe('rotateSftpPassword', () => {
       .rejects.toThrow('SFTP user');
   });
 });
+
+// ─── Connection info: advertised gateway host ──────────────────────────────
+
+describe('getSftpConnectionInfo — advertised host', () => {
+  // Regression: `sftp_gateway_host` is an OVERRIDE that nothing ever writes —
+  // no seed, no bootstrap, no migration, no admin UI. It used to fall back to
+  // a hard-coded `sftp.k8s-platform.test`, which is the LOCAL DEV apex, so
+  // every real deployment advertised the dev hostname to tenants. The fallback
+  // must derive from the platform apex like every other platform hostname.
+  async function connectionInfo(opts: {
+    settings?: Array<{ key: string; value: string }>;
+    apex?: string | null;
+  }) {
+    vi.resetModules();
+    vi.doMock('../system-settings/platform-domain.js', () => ({
+      getPlatformApex: vi.fn().mockResolvedValue(opts.apex ?? null),
+    }));
+    const { getSftpConnectionInfo } = await import('./service.js');
+    const mockDb = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockResolvedValue(opts.settings ?? []),
+      }),
+    };
+    return getSftpConnectionInfo(mockDb as never);
+  }
+
+  it('derives the host from the platform apex when no override is set', async () => {
+    const info = await connectionInfo({ apex: 'acme.example' });
+    expect(info.host).toBe('files.acme.example');
+    // The advertised instructions must carry the same host — they are what the
+    // tenant copy-pastes.
+    expect(info.instructions.sftp).toContain('files.acme.example');
+  });
+
+  it('never advertises the local dev apex on a configured deployment', async () => {
+    const info = await connectionInfo({ apex: 'acme.example' });
+    expect(info.host).not.toContain('k8s-platform.test');
+    expect(JSON.stringify(info.instructions)).not.toContain('k8s-platform.test');
+  });
+
+  it('honours an explicit sftp_gateway_host override', async () => {
+    const info = await connectionInfo({
+      apex: 'acme.example',
+      settings: [{ key: 'sftp_gateway_host', value: 'files.acme.example' }],
+    });
+    expect(info.host).toBe('files.acme.example');
+  });
+
+  it('falls back to the env base domain when the apex is not yet in settings', async () => {
+    const prev = process.env.PLATFORM_BASE_DOMAIN;
+    process.env.PLATFORM_BASE_DOMAIN = 'boot.example';
+    try {
+      const info = await connectionInfo({ apex: null });
+      expect(info.host).toBe('files.boot.example');
+    } finally {
+      if (prev === undefined) delete process.env.PLATFORM_BASE_DOMAIN;
+      else process.env.PLATFORM_BASE_DOMAIN = prev;
+    }
+  });
+});

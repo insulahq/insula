@@ -138,8 +138,15 @@ trap cleanup EXIT
 CATALOG_ENTRY_ID=$(api GET "/catalog?limit=100" \
   | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(next((e['id'] for e in d if e['code']=='$CATALOG_CODE'), ''))")
 if [[ -z "$CATALOG_ENTRY_ID" ]]; then
-  fail "catalog entry '$CATALOG_CODE' not found in catalog — is the application catalog synced?"
-  exit 1
+  # coturn — the only default-catalog entry that exposed UDP host ports, and the
+  # basis of this port-exposure e2e — was removed from the default application
+  # catalog. It is now absent on every current/future cluster (VM tier AND
+  # staging), so this suite can no longer deploy a host-port workload. SKIP (77)
+  # rather than fail: the firewall gate logic itself stays covered by the unit
+  # tests (backend/src/modules/deployments/firewall-gate.test.ts). Re-enable by
+  # pointing CATALOG_CODE at a replacement UDP host-port catalog entry.
+  echo "SKIP: catalog entry '$CATALOG_CODE' not in the default catalog (coturn removed); port-exposure e2e needs a UDP host-port entry"
+  exit 77
 fi
 ok "catalog entry $CATALOG_CODE → $CATALOG_ENTRY_ID"
 

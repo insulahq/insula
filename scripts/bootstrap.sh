@@ -397,6 +397,21 @@ SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
 CNPG_CHART_VERSION="0.28.3"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
+# --acme-server: point cert-manager at a custom ACME directory (test CA like Pebble, or
+# an alternate real ACME endpoint) instead of Let's Encrypt. When set, bootstrap creates
+# the `acme-custom-http01` ClusterIssuer and pins CLUSTER_ISSUER_NAME to it. Same HTTP-01
+# solver shape as the LE issuers, so the REAL ACME issuance path is exercised against a
+# different CA. --acme-skip-tls-verify for a test CA whose API cert isn't publicly trusted;
+# --acme-ca <pem> to pin a private-but-real CA's bundle instead.
+ACME_SERVER=""
+ACME_SKIP_TLS_VERIFY=false
+ACME_CA_FILE=""
+# --trust-ca <pem>: extra root CA(s) platform components must TRUST for their server-side
+# https clients (e.g. platform-api → Dex OIDC discovery). Populates the imperatively-created
+# platform-extra-ca-trust secret (mounted into platform-api via NODE_EXTRA_CA_CERTS). Needed
+# when ingress certs are signed by a private/test CA a public trust store lacks (bootstrap
+# --acme-server, e.g. the VM integration tier's Pebble). Empty by default → built-in roots only.
+TRUST_CA_FILE=""
 SKIP_FLUX=false
 SKIP_HARDENING=false
 SKIP_LONGHORN=false
@@ -948,6 +963,10 @@ parse_args() {
       --require-smoke-pass) REQUIRE_SMOKE_PASS=true; shift ;;
       --smoke-wait)      SMOKE_WAIT_SECONDS="$2"; shift 2 ;;
       --acme-email)      ACME_EMAIL="$2"; shift 2 ;;
+      --acme-server)     ACME_SERVER="$2"; CLUSTER_ISSUER_NAME="acme-custom-http01"; shift 2 ;;
+      --acme-skip-tls-verify) ACME_SKIP_TLS_VERIFY=true; shift ;;
+      --acme-ca)         ACME_CA_FILE="$2"; shift 2 ;;
+      --trust-ca)        TRUST_CA_FILE="$2"; shift 2 ;;
       --operator-age-recipient) OPERATOR_AGE_RECIPIENT="$2"; shift 2 ;;
       --force-rotate-operator-key) FORCE_ROTATE_OPERATOR_KEY=true; shift ;;
       --force-domain-change) FORCE_DOMAIN_CHANGE=true; shift ;;
@@ -1906,6 +1925,14 @@ ${calico_wg_rule}
     tcp dport 995 accept     # POP3S
     tcp dport 4190 accept    # ManageSieve
 
+    # Tenant SFTP/SCP/rsync gateway (files.<apex>). Opened on every node for
+    # the same reason as the mail ports above: the gateway is a DaemonSet on
+    # the control-plane servers, and the apex A records round-robin across
+    # them, so any of them may take the connection. Cannot be left to
+    # firewall-reconciler — that only opens hostPorts for TENANT namespaces
+    # (client-*), and the gateway runs in platform-system.
+    tcp dport 23022 accept   # SFTP gateway (hostPort, see k8s/base/sftp-gateway.yaml)
+
     # Runtime-managed tenant host ports — populated by
     # firewall-reconciler DaemonSet at runtime as Pods land
     # with hostPort or the platform.io/firewall-{tcp,udp}-ports
@@ -1940,7 +1967,7 @@ NFT
   cat > /etc/hosting-platform/firewall.conf <<HPFW
 # Written by bootstrap.sh — DO NOT EDIT BY HAND.
 # Re-run bootstrap with appropriate flags to change posture.
-PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190
+PUBLIC_TCP_PORTS=$( [[ -n "$SSH_VIA_MESH_IFACE" ]] && echo "80 443" || echo "80 443 22" ) 25 465 587 143 993 110 995 4190 23022
 PUBLIC_UDP_PORTS=51820 29899
 SSH_VIA_MESH=${ssh_via_mesh_persist}
 SSH_VIA_MESH_INTERFACE=${SSH_VIA_MESH_IFACE}
@@ -2579,25 +2606,34 @@ apply_longhorn_node_tag() {
     sleep 5
   done
 
-  # Wait for Longhorn Node CR (created asynchronously by longhorn-manager).
+  # Wait for Longhorn Node CR (created asynchronously by longhorn-manager). On a
+  # freshly-JOINED node the manager DaemonSet pod must schedule + start + register
+  # first. On constrained/slow hardware that races the EXISTING managers reconciling
+  # shared Longhorn settings (e.g. guaranteed-instance-manager-cpu): the joiner hits an
+  # optimistic-concurrency conflict ("the object has been modified") and crash-loops a
+  # few times before it wins the write and registers — SELF-HEALING, but it can take
+  # 5-8 min on a loaded VM host. Wait 10 min rather than fail an otherwise-fine join.
+  # (Observed 2026-07-11 on the VM tier's HA join; the node registered after 5 restarts.)
   i=0
   while ! kubectl get node.longhorn.io -n longhorn-system "$node_name" >/dev/null 2>&1; do
     i=$((i + 2))
-    if [[ "$i" -ge 60 ]]; then
-      error "  longhorn node.${node_name} did not register within 60s."
+    if [[ "$i" -ge 600 ]]; then
+      error "  longhorn node.${node_name} did not register within 600s."
     fi
     sleep 2
   done
 
   log "Tagging Longhorn node ${node_name} with 'system' (node + all disks)..."
 
-  # Up to 6 attempts (30 + a few jq seconds each = ~3 min cap). Each
-  # attempt re-reads the node, applies the tags via SSA (so additions
-  # merge cleanly on re-runs), then verifies via fresh re-read. The
-  # config-map controller occasionally clobbers spec.tags shortly
-  # after manager startup, so verify-and-retry is mandatory.
-  local attempt nodetag disktag
-  for attempt in 1 2 3 4 5 6; do
+  # Up to ${max} attempts (~8s each ⇒ ~3 min cap). Each attempt re-reads the
+  # node, applies the tags via SSA (so additions merge cleanly on re-runs),
+  # then verifies via fresh re-read. Two things need waiting-out: the
+  # config-map controller occasionally clobbers spec.tags shortly after
+  # manager startup, AND on a freshly-JOINED node (esp. constrained/slow
+  # hardware) the node.longhorn.io CR + its discovered disks take a while to
+  # register, so early attempts see an empty CR (node='' disks='').
+  local attempt nodetag disktag max=24
+  for attempt in $(seq 1 "$max"); do
     kubectl get node.longhorn.io -n longhorn-system "$node_name" -o json \
       | jq '.spec.tags = ["system"] | .spec.disks |= map_values(.tags = ["system"])' \
       | kubectl apply --server-side --force-conflicts \
@@ -2614,11 +2650,11 @@ apply_longhorn_node_tag() {
       log "  longhorn ${node_name} tagged on attempt ${attempt} (node='${nodetag}', disks contain 'system')."
       return 0
     fi
-    log "  attempt ${attempt}/6: tag did not stick (node='${nodetag}', disks='${disktag}'); retrying..."
+    log "  attempt ${attempt}/${max}: tag did not stick (node='${nodetag}', disks='${disktag}'); retrying..."
     sleep 5
   done
 
-  error "  longhorn node tag never stuck after 6 attempts — system-tier PVCs will fail to provision."
+  error "  longhorn node tag never stuck after ${max} attempts — system-tier PVCs will fail to provision."
 }
 
 # Public entry: idempotent, safe to re-run. Workers stay untagged
@@ -2802,6 +2838,20 @@ select_cluster_issuer() {
   # fails with "did not find expected key"). Caught on testing.example.test
   # 2026-05-17 fresh bootstrap.
   local domain="$1" env="$2"
+  # 0. --acme-server: the custom ACME issuer signs EVERYTHING (its whole point is a private
+  #    apex real LE can't validate). Prefer the ACME_SERVER var, but ALSO detect the
+  #    acme-custom-http01 ClusterIssuer directly: ACME_SERVER has been observed EMPTY in the
+  #    platform-apply phase even though the cert-manager phase of the SAME run created the
+  #    issuer (VM tier 2026-07-12: platform-config rendered issuer=local-ca-issuer AND the
+  #    reconciler cert-issuer override was skipped, so platform-ingress stuck on LE → rc=60
+  #    at the smoke gate). The ClusterIssuer is a persistent cluster resource created in
+  #    install_cert_manager (before every select_cluster_issuer call site), so its existence
+  #    is a reliable signal that survives whatever loses the shell var. Backward-compatible:
+  #    when no custom issuer exists (or no cluster/kubectl yet), the check is simply false.
+  if [[ -n "${ACME_SERVER:-}" ]] || kctl get clusterissuer acme-custom-http01 >/dev/null 2>&1; then
+    echo "acme-custom-http01"
+    return 0
+  fi
   # 1. Explicit override
   if [[ -n "${CLUSTER_ISSUER_NAME:-}" ]]; then
     echo "$CLUSTER_ISSUER_NAME"
@@ -3352,26 +3402,40 @@ install_calico() {
 
   log "Installing Calico ${CALICO_VERSION}..."
 
-  kubectl create -f "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml" || true
-
-  log "Waiting for Calico operator..."
-  kubectl wait --for=condition=available --timeout=120s \
-    deployment/tigera-operator -n tigera-operator 2>/dev/null || true
-
-  # The tigera-operator manifest declares its own CRDs (Installation,
-  # APIServer, etc.) but they register asynchronously after the operator
-  # Deployment reports Available. Poll until the CRDs exist, then wait
-  # for them to be Established.
-  log "Waiting for Calico CRDs to register..."
-  for crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
-    for _ in $(seq 1 60); do
-      kubectl get crd "$crd" &>/dev/null && break
-      sleep 2
+  # The tigera-operator installs its own operator.tigera.io CRDs at RUNTIME (the manifest
+  # declares NONE — apply creates only ns/SA/roles/Deployment). On a constrained/loaded
+  # apiserver the operator's startup CRD-install/leader-election can stall (it logs only its
+  # version then goes quiet), so the CRDs are slow to appear and a stuck operator won't
+  # self-recover. `apply --server-side` (idempotent, sidesteps the client-side size limit on
+  # Calico's later CRDs), wait generously for the CRDs, and if they're still missing midway
+  # RESTART the operator once to kick a hung startup. (VM tier centos-stream-10 first-server
+  # bootstrap 2026-07-11: operator stalled → CRDs never registered → "no matches for kind
+  # Installation".)
+  local calico_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+  log "Installing tigera-operator (its runtime CRDs can take a few min on slow hardware)..."
+  kubectl apply --server-side --force-conflicts -f "$calico_url" >/dev/null 2>&1 || true
+  kubectl wait --for=condition=available --timeout=180s \
+    deployment/tigera-operator -n tigera-operator >/dev/null 2>&1 || true
+  local _crd _kicked=false calico_ok=true
+  for _crd in installations.operator.tigera.io apiservers.operator.tigera.io; do
+    local ci=0 got=false
+    while (( ci < 300 )); do
+      kubectl get crd "$_crd" &>/dev/null && { got=true; break; }
+      if (( ci >= 150 )) && [[ "$_kicked" == "false" ]]; then
+        warn "  tigera-operator has not created its CRDs after 150s — restarting it once to kick startup..."
+        kubectl -n tigera-operator delete pod -l k8s-app=tigera-operator --ignore-not-found >/dev/null 2>&1 || true
+        _kicked=true
+      fi
+      sleep 5; ci=$((ci + 5))
     done
-    kubectl wait --for=condition=established --timeout=60s crd/"$crd" || {
-      warn "CRD $crd not established after 60s — will try anyway"
-    }
+    if [[ "$got" == "true" ]]; then
+      kubectl wait --for=condition=established --timeout=60s crd/"$_crd" >/dev/null 2>&1 || calico_ok=false
+    else
+      calico_ok=false
+    fi
   done
+  [[ "$calico_ok" == "true" ]] || \
+    error "Calico CRDs (installations/apiservers.operator.tigera.io) never registered after 5 min + an operator restart."
 
   # Calico networking config (M14, 2026-04-26):
   #   * encapsulation: VXLAN — Calico's pod-network packet format. Stays
@@ -4050,6 +4114,51 @@ spec:
                   effect: NoSchedule
 EOF
 
+  # Optional custom ACME issuer (--acme-server). Points cert-manager at any ACME
+  # directory instead of Let's Encrypt — a test CA (Pebble) for ephemeral/air-gapped
+  # clusters, or an alternate real ACME endpoint. CLUSTER_ISSUER_NAME was pinned to
+  # acme-custom-http01 at parse time, so every platform Certificate uses this issuer.
+  # Same HTTP-01 solver as the LE issuers (ingressClassName traefik + server-only
+  # toleration + quota-exempt priorityClass), so the REAL ACME issuance path runs,
+  # just against a different CA. skipTLSVerify for a test CA whose API cert isn't
+  # publicly trusted; caBundle to pin a private CA. (Future: a dns01 solver keyed off
+  # an --acme-solver flag drives real DNS-01 LE issuance via a deployed PowerDNS API,
+  # matching a production cluster — the issuer scaffold below is where that plugs in.)
+  if [[ -n "${ACME_SERVER:-}" ]]; then
+    local acme_tls_line=""
+    if [[ "${ACME_SKIP_TLS_VERIFY:-false}" == "true" ]]; then
+      acme_tls_line="    skipTLSVerify: true"
+    elif [[ -n "${ACME_CA_FILE:-}" && -f "${ACME_CA_FILE}" ]]; then
+      acme_tls_line="    caBundle: $(base64 -w0 < "${ACME_CA_FILE}")"
+    fi
+    kctl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: acme-custom-http01
+spec:
+  acme:
+    server: ${ACME_SERVER}
+    email: ${le_email}
+${acme_tls_line}
+    privateKeySecretRef:
+      name: acme-custom-account-key
+    solvers:
+    - http01:
+        ingress:
+          ingressClassName: traefik
+          podTemplate:
+            spec:
+              priorityClassName: platform-tenant-overhead
+              tolerations:
+                - key: insula.host/server-only
+                  operator: Equal
+                  value: "true"
+                  effect: NoSchedule
+EOF
+    log "cert-manager: custom ACME issuer 'acme-custom-http01' → ${ACME_SERVER} (skipTLSVerify=${ACME_SKIP_TLS_VERIFY:-false}, caBundle=$([[ -n "${ACME_CA_FILE:-}" ]] && echo yes || echo no))."
+  fi
+
   log "cert-manager installed with Let's Encrypt issuers (email=${le_email})."
 }
 
@@ -4060,7 +4169,10 @@ install_sealed_secrets() {
   fi
 
   log "Installing Sealed Secrets..."
-  helm_cmd repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets 2>/dev/null || true
+  # Repo migrated bitnami-labs -> bitnami org (2026-06-15); the old GitHub Pages URL
+  # 404s (Pages URLs don't redirect). Fresh-install-only fix — existing clusters
+  # already have the controller. Caught by the ephemeral-VM bootstrap tier.
+  helm_cmd repo add sealed-secrets https://bitnami.github.io/sealed-secrets 2>/dev/null || true
   helm_cmd repo update
 
   helm_cmd upgrade --install sealed-secrets sealed-secrets/sealed-secrets \
@@ -5168,6 +5280,25 @@ create_platform_configmap() {
   issuer_name=$(select_cluster_issuer "${PLATFORM_DOMAIN:-}" "${PLATFORM_ENV}")
   log "ClusterIssuer for platform-config: ${issuer_name}"
 
+  # Extra CA trust bundle for platform-api's server-side https clients — see
+  # k8s/base/backend-deployment.yaml (NODE_EXTRA_CA_CERTS + the optional
+  # platform-extra-ca-trust mount). Created imperatively (NOT in the Flux overlay) so its
+  # contents survive reconciles and a later imperative update (the VM tier populates it
+  # with the run's Pebble root post-bootstrap). Empty by default: platform-api then trusts
+  # only its built-in roots (public-LE clusters), and an EMPTY bundle avoids a Node
+  # "missing NODE_EXTRA_CA_CERTS file" warning. --trust-ca <pem> seeds a private/test root.
+  local extra_ca_src=/dev/null
+  [[ -n "${TRUST_CA_FILE:-}" && -f "${TRUST_CA_FILE}" ]] && extra_ca_src="${TRUST_CA_FILE}"
+  kctl create secret generic platform-extra-ca-trust --namespace=platform \
+    --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null
+  # Mirror into the mail namespace: Bulwark (mail ns) makes the same server-side https fetch
+  # to Stalwart JMAP and needs the identical extra-CA trust (NODE_EXTRA_CA_CERTS + the
+  # optional mount in k8s/base/bulwark/deployment.yaml). Cross-namespace secret mounts are
+  # not allowed, so each namespace carries its own copy. Best-effort: the mount is optional.
+  kctl create secret generic platform-extra-ca-trust --namespace=mail \
+    --from-file=ca-bundle.crt="${extra_ca_src}" --dry-run=client -o yaml | kctl apply -f - >/dev/null 2>&1 || true
+  log "platform-extra-ca-trust secret ready ($([[ "$extra_ca_src" == /dev/null ]] && echo 'empty — built-in roots only' || echo "seeded from ${TRUST_CA_FILE}"))."
+
   # Support-email default: reuse the operator's ACME email if available —
   # that's already a verified contact address, and the operator typically
   # wants support requests to route to them on a fresh install. Override
@@ -5214,6 +5345,22 @@ create_platform_configmap() {
     --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},tenant.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
+
+  # --acme-server: override the RECONCILER's cert issuers too. platform-api creates most
+  # platform Certificates (admin/tenant/dex/per-tenant) itself via issuer-selector.ts, which
+  # reads CERT_ISSUER_* env (LE defaults) — NOT the Flux CLUSTER_ISSUER_NAME. So without this
+  # the custom ACME issuer signs only the Flux/overlay certs; the reconciler-made ones still
+  # try LE and fail on the private apex. The backend Deployment maps these keys to
+  # CERT_ISSUER_* env (optional). Key on ACME_SERVER OR the acme-custom-http01 ClusterIssuer's
+  # existence — ACME_SERVER has been seen EMPTY here despite the issuer being created earlier
+  # this run, which silently skipped this patch and left every reconciler cert on LE (VM tier
+  # 2026-07-12: platform-ingress/dex/webmail stuck on LE → smoke gate rc=60). The issuer is
+  # created in install_cert_manager, before this function, so its existence is reliable here.
+  if [[ -n "${ACME_SERVER:-}" ]] || kctl get clusterissuer acme-custom-http01 >/dev/null 2>&1; then
+    kctl patch configmap platform-config -n platform --type merge -p \
+      '{"data":{"cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
+    log "  reconciler cert issuers overridden → acme-custom-http01 (signs via the custom ACME server)."
+  fi
 }
 
 generate_operator_recipient() {
@@ -6509,20 +6656,36 @@ bootstrap_stalwart_v016() {
   # listener comes up a few seconds late. A single 000 previously fell through to
   # the `*)` case below and made bootstrap "refuse to bootstrap" + exit 1
   # (observed on the ADR-053 staging rebuild, 2026-06-22 — a bootstrap re-run
-  # then succeeded once Stalwart settled). Up to 10×6s = 60s before giving up.
-  for probe_attempt in $(seq 1 10); do
+  # then succeeded once Stalwart settled). Up to 50×6s = 5 min before giving up:
+  # writing the stalwart-webadmin secret triggers a SECOND (Reloader) roll AFTER
+  # the rollout-status wait above, and on constrained/slow hardware that roll can
+  # outlast a 60s window (the mail pod is a heavy singleton with a host-port gap).
+  # Healthy nodes still return on attempt 1, so this only costs time on a real roll.
+  # 100×6s = 10 min: on constrained VMs the secret write can trigger TWO back-to-back
+  # Reloader rolls of the heavy mail singleton, and 2 rolls + settle outlast 5 min — the
+  # admin-creds Secret is already valid, the live endpoint is just mid-roll. (VM tier
+  # 2026-07-11: stalwart-mail restarted 2× and only stabilised after ~6 min; 50×6s gave up
+  # too early → 000 → "refusing to bootstrap".)
+  # NB curl prints the http_code (000 on a failed connection) AND can EXIT non-zero (28 on
+  # --max-time). The old `$(... || echo "000")` APPENDED a second "000" on that non-zero exit
+  # → admin_code="000\n000", so the `!= 000` guard saw a non-000 value and BROKE on attempt 1,
+  # never riding out the Reloader roll (VM tier 2026-07-11: probe reported "000000"). Use
+  # assign-then-|| (replaces, not appends) and normalise to the last 3 digits.
+  for probe_attempt in $(seq 1 100); do
     admin_code=$(kctl exec -n platform "$probe_pod" -- \
       curl -s -o /dev/null -w '%{http_code}' \
       -u "admin:${stalwart_admin_pw}" --max-time 5 \
-      "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+      "${mgmt_url}/jmap/session" 2>/dev/null) || admin_code="000"
+    admin_code="$(printf '%s' "$admin_code" | tr -dc '0-9' | tail -c 3)"; admin_code="${admin_code:-000}"
     [[ "$admin_code" != "000" ]] && break
-    log "  Stalwart admin endpoint not reachable yet (000, attempt ${probe_attempt}/10) — retrying in 6s..."
+    log "  Stalwart admin endpoint not reachable yet (000, attempt ${probe_attempt}/100) — retrying in 6s..."
     sleep 6
   done
   recovery_code=$(kctl exec -n platform "$probe_pod" -- \
     curl -s -o /dev/null -w '%{http_code}' \
     -u "admin:${stalwart_recovery_pw}" --max-time 5 \
-    "${mgmt_url}/jmap/session" 2>/dev/null || echo "000")
+    "${mgmt_url}/jmap/session" 2>/dev/null) || recovery_code="000"
+  recovery_code="$(printf '%s' "$recovery_code" | tr -dc '0-9' | tail -c 3)"; recovery_code="${recovery_code:-000}"
 
   log "  Auth probe: adminPassword=${admin_code} recoveryPassword=${recovery_code}"
 
@@ -6955,14 +7118,21 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
       apply_ok=true
       break
     fi
-    # Webhook flake OR CRD-discovery race → retry. Any other error → fail fast.
-    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first'; then
+    # Webhook flake, CRD-discovery race, OR a transient apiserver-unavailable/openapi
+    # flake → retry. Any other error → fail fast. The openapi/"unable to handle the
+    # request" class shows up when the (single, still-warming) k3s apiserver can't serve
+    # its discovery/openapi document under load — kubectl's client-side validation then
+    # fails the whole apply. It clears within seconds, so it belongs with the other
+    # transients (observed on the VM tier's constrained first-server bootstrap 2026-07-11).
+    if ! echo "$apply_err" | grep -qE 'failed calling webhook|no endpoints available for service|no matches for kind|ensure CRDs are installed first|failed to download openapi|the server is currently unable to handle the request|the server could not find the requested resource|etcdserver: request timed out|connection refused'; then
       echo "$apply_err" >&2
       error "kubectl apply -k failed with non-retriable error"
     fi
     local race_kind="transient webhook error"
     if echo "$apply_err" | grep -qE 'no matches for kind|ensure CRDs are installed first'; then
       race_kind="CRD-discovery race (CRD applied but not yet in REST mapper)"
+    elif echo "$apply_err" | grep -qE 'failed to download openapi|the server is currently unable to handle the request|etcdserver: request timed out|connection refused'; then
+      race_kind="apiserver transient (discovery/openapi unavailable under load)"
     fi
     log "  apply attempt ${apply_attempt}/6 hit ${race_kind} — retrying in 10s..."
     sleep 10

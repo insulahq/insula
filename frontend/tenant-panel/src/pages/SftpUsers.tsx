@@ -76,12 +76,8 @@ function ConnectionInfoCard({ tenantId }: { tenantId: string }) {
             <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.host}<CopyButton value={info.host} /></div>
           </div>
           <div>
-            <span className="text-gray-500 dark:text-gray-400">SSH Port</span>
+            <span className="text-gray-500 dark:text-gray-400">Port</span>
             <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.port}<CopyButton value={String(info.port)} /></div>
-          </div>
-          <div>
-            <span className="text-gray-500 dark:text-gray-400">FTPS Port</span>
-            <div className="font-mono text-gray-900 dark:text-gray-100 flex items-center">{info.ftps_port}<CopyButton value={String(info.ftps_port)} /></div>
           </div>
           <div>
             <span className="text-gray-500 dark:text-gray-400">Protocols</span>
@@ -121,10 +117,6 @@ function ConnectionInfoCard({ tenantId }: { tenantId: string }) {
               <div className="flex items-center gap-1">
                 <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">RSYNC</span> {info.instructions.rsync}
                 <CopyButton value={info.instructions.rsync} />
-              </div>
-              <div className="flex items-center gap-1">
-                <span className="font-sans font-bold text-gray-700 dark:text-gray-300 w-14 shrink-0">FTPS</span> {info.instructions.ftps}
-                <CopyButton value={info.instructions.ftps} />
               </div>
             </div>
 
@@ -359,7 +351,7 @@ export default function SftpUsers() {
       </div>
 
       <p className="text-sm text-gray-500 dark:text-gray-400">
-        Manage file transfer users for your deployments. Supports SFTP, SCP, rsync (with password or SSH key), and FTPS (password only).
+        Manage file transfer users for your deployments. Supports SFTP, SCP and rsync, with password or SSH key.
         Files uploaded here appear in the web file manager and vice versa.
       </p>
 

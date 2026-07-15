@@ -12,7 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.20] - 2026-07-10
+### BREAKING
+- **Tenant SFTP is reachable for the first time — new host, new port, FTPS
+  removed.** Tenant file upload never worked on any real deployment: the
+  gateway Service was `type: LoadBalancer`, but bootstrap runs k3s with
+  `--disable=servicelb` and self-managed VPS nodes have no cloud LB, so it sat
+  at `EXTERNAL-IP <pending>` forever and **nothing ever bound the port**. It is
+  now a **hostPort DaemonSet on every control-plane server**, mirroring the
+  `stalwart-haproxy` mail DaemonSet — the platform's pattern for raw TCP.
+  - **Connect to `files.<apex>:23022`** (was: an unreachable `sftp.<apex>:2222`
+    — and before that the connection-info API literally advertised the local
+    dev hostname `sftp.k8s-platform.test`, because the `sftp_gateway_host`
+    setting it read was never written by anything). The port stays overridable
+    via `sftp_gateway_port`. 23022 is constrained: a hostPort must stay outside
+    30000-32767 (NodePort range) and below 32768 (the ephemeral range, where it
+    can collide with outbound source ports).
+  - **Operators must add DNS:** `files.<apex>` CNAME → `<apex>`, whose A records
+    already point at the control-plane servers, so it round-robins across
+    exactly the nodes running the DaemonSet. `files.<apex>` is now a reserved
+    platform hostname (ADR-040) and can no longer be claimed by a tenant.
+  - **Firewall:** fresh installs get the `23022/tcp` accept from `bootstrap.sh`;
+    existing clusters are backfilled by host-migration
+    `2026.7.1/0002-sftp-gateway-firewall-port.sh` (ADR-045 W10c).
+    `firewall-reconciler` cannot do this — it only opens hostPorts for tenant
+    namespaces (`client-*`), not `platform-system`.
+  - **FTPS is REMOVED** (`ftps_port` and the `ftps` instruction are gone from
+    the connection-info API). It never actually ran — its TLS Secret is
+    `optional: true` and nothing ever created it, so the listener self-disabled
+    on every deployment while the API still advertised FTPS to tenants. It also
+    cannot be exposed sanely: passive mode needs a 100-port range (whose old
+    `30000-30099` default collided with the NodePort range) plus a per-node
+    public IP a DaemonSet cannot supply, and active mode is unusable behind NAT
+    — doubly so with TLS hiding `PORT` from `nf_conntrack_ftp`. SFTP/SCP/rsync
+    over the same gateway cover the use case with stronger auth.
 
 ### Added
 - **Tenant add-on databases: two-layer backup + visible dump summary**
