@@ -95,6 +95,21 @@ async function main(): Promise<void> {
     );
     console.log(JSON.stringify({ msg: 'pitr-job complete', result }));
 
+    // The restore itself is DONE. Everything below (barman side-cluster
+    // cleanup, task-chip finalize, DB close) is best-effort bookkeeping — and
+    // on a self-cluster restore (system-db rebuilding system-db) it runs
+    // against a DB that is briefly unreachable while CNPG settles. Those calls
+    // can HANG (not throw), which the try/catch below does NOT cover, and used
+    // to keep the Job pod Running long past its work (until activeDeadline).
+    // Arm a watchdog that force-exits 0 so the pod always terminates promptly;
+    // the clean path clears it and exits normally.
+    const finalizeWatchdog = setTimeout(() => {
+      console.warn(JSON.stringify({
+        msg: 'pitr-job: post-restore finalization exceeded 30s — force-exiting 0 (restore already complete)',
+      }));
+      process.exit(0);
+    }, 30_000);
+
     // Phase 3.1 (2026-05-23): when invoked from barman-restore promote,
     // delete the side-by-side restored cluster after the PITR completes
     // successfully. Best-effort — failure here is non-fatal (source is
@@ -219,6 +234,7 @@ async function main(): Promise<void> {
     }
 
     await closeDb();
+    clearTimeout(finalizeWatchdog);
     process.exit(0);
   } catch (err) {
     const e = err as Error & { steps?: readonly PitrStep[]; code?: number; cause?: Error };
