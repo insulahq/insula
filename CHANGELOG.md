@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A system-db PITR restore no longer 502s the live API.** The PITR restore
+  Job pod carried `app: platform-api` (so a NetworkPolicy would let it reach
+  postgres for its DB lock), which also matched the platform-api Service
+  selector — the Job pod joined the Service endpoints and ~50% of live API
+  traffic round-robined to a pod that does not serve `:3000`, returning 502.
+  Because the pod lingers past its CLI exit, the degradation persisted, and the
+  self-inflicted 502s also made the restore's own status-poll unreachable, so a
+  restore that actually succeeded was reported as a false failure. The Job pod
+  now reaches postgres via its `app.kubernetes.io/component: pitr-job` label
+  (the same mechanism the dr-backup CronJob pods use) and no longer joins the
+  Service.
 - **Staging now follows RC host-migrations.** `platform-ops self-upgrade` picks
   its target from the `platform-version` ConfigMap, but the base ships
   `version: "unknown"` and only the development overlay patched it — so
