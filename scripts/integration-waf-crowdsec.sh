@@ -1512,8 +1512,31 @@ else
     local overrides; overrides=$(printf '{"spec":{"nodeName":"%s"}}' "$L_TRAEFIK_NODE")
     local out; out=$(kubectl_run "run waf-l-https-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -D - -H 'X-Forwarded-Host: $L_HOSTNAME' -H 'X-Forwarded-For: $xff' -H 'X-Real-Ip: $xff' --resolve '$L_HOSTNAME:8443:$L_TRAEFIK_IP' -w 'STATUS=%{http_code}\n' --max-time 8 $extra https://$L_HOSTNAME:8443/" 2>&1)
     local code; code=$(printf '%s' "$out" | grep -oE 'STATUS=[0-9]+' | head -1 | cut -d= -f2)
-    local headers_b64; headers_b64=$(printf '%s' "$out" | grep -iE '^[A-Z][a-zA-Z-]+:' | base64 -w0 2>/dev/null || true)
+    # Capture response header LINES. The class MUST allow digits — real header
+    # names carry them (e.g. X-Harness-L7), and the old `^[A-Z][a-zA-Z-]+:`
+    # silently dropped any such header, false-failing L7 while the platform was
+    # correctly emitting it.
+    local headers_b64; headers_b64=$(printf '%s' "$out" | grep -iE '^[A-Za-z][A-Za-z0-9-]*:' | base64 -w0 2>/dev/null || true)
     printf '%s|%s' "${code:-000}" "$headers_b64"
+  }
+
+  # Fire N HTTPS requests from a SINGLE pod (one source IP) and echo the count
+  # of 429s. Traefik's rateLimit has no sourceCriterion, so it keys on the
+  # connection's remote address — per-request ephemeral pods (each a new IP)
+  # can NEVER trip a per-IP limit. curl repeats the URL over one keep-alive
+  # connection, so all N requests share the pod's source IP.
+  probe_https_burst() {
+    local n="${1:-30}" rnd; rnd=$(next_nonce)
+    local overrides; overrides=$(printf '{"spec":{"nodeName":"%s"}}' "$L_TRAEFIK_NODE")
+    local urls="" _i
+    for _i in $(seq 1 "$n"); do urls="$urls https://$L_HOSTNAME:8443/"; done
+    local out; out=$(kubectl_run "run waf-l6-$rnd -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --overrides='$overrides' --command -- curl -sk -o /dev/null -H 'X-Forwarded-Host: $L_HOSTNAME' --resolve '$L_HOSTNAME:8443:$L_TRAEFIK_IP' -w 'C=%{http_code} ' --max-time 12 $urls" 2>&1)
+    # Marker + grep -oE (NOT a '\n'-anchored line count): curl's '-w …\n' newline
+    # does not survive the kubectl→ssh transit, so the codes arrive concatenated
+    # on one line — an anchored '^429$' would count zero even when every request
+    # 429'd. A space-delimited 'C=%{http_code}' marker survives and grep -oE
+    # counts occurrences regardless of line breaks.
+    printf '%s' "$out" | grep -oE 'C=429' | wc -l | tr -d ' '
   }
 
   # ─── L1: Force HTTPS ON → HTTP returns 301 to HTTPS ──────────────
@@ -1547,8 +1570,11 @@ else
   fi
 
   # ─── L3: Custom redirect URL → HTTPS returns 301 to URL ──────────
+  # Field is redirect_url (per @insula/api-contracts). The old
+  # "custom_redirect_url" is not in the schema → Zod stripped it → redirect_url
+  # stayed null → no redirect → 200 (false failure; the feature works).
   api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" \
-    '{"custom_redirect_url":"https://harness-target.example.invalid/"}' >/dev/null
+    '{"redirect_url":"https://harness-target.example.invalid/"}' >/dev/null
   sleep 4
   l3_result=$(probe_https)
   l3_code=$(echo "$l3_result" | cut -d'|' -f1)
@@ -1560,7 +1586,7 @@ else
   fi
 
   # ─── L4: Clear custom redirect → HTTPS returns non-301 ───────────
-  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" '{"custom_redirect_url":null}' >/dev/null
+  api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/redirects" '{"redirect_url":null}' >/dev/null
   sleep 4
   l4_result=$(probe_https)
   l4_code=$(echo "$l4_result" | cut -d'|' -f1)
@@ -1594,12 +1620,8 @@ else
   # (the first ~5 are accepted), but at least one 429 must appear.
   api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"rate_limit_rps":1}' >/dev/null
   sleep 4
-  l6_429_seen=0
-  for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    l6_result=$(probe_https)
-    l6_code=$(echo "$l6_result" | cut -d'|' -f1)
-    if [[ "$l6_code" == "429" ]]; then l6_429_seen=$((l6_429_seen + 1)); fi
-  done
+  l6_429_seen=$(probe_https_burst 30)
+  [[ "$l6_429_seen" =~ ^[0-9]+$ ]] || l6_429_seen=0
   if (( l6_429_seen > 0 )); then
     ok "L6: rate_limit_rps=1 — saw $l6_429_seen × 429 in 20 burst requests"
   else
