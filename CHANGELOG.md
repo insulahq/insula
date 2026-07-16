@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.27] - 2026-07-16
+
 ### Fixed
 - **Tenant DR restore now works on SFTP/CIFS storage-box BackupStores.** Restore
   from an off-site bundle failed with restic `NoSuchKey` on a snapshot that was
