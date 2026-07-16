@@ -172,6 +172,17 @@ data:
     # include POSIX-backed (SFTP/SMB) upstreams. For S3-only operators,
     # the cache is effectively unused (vfs-write-back 0s flushes
     # immediately; cache files are evicted within seconds).
+    #
+    # --dir-cache-time 3s: read-after-write CONSISTENCY. The shim is a per-node
+    # DaemonSet (internalTrafficPolicy: Local), so a capture and a later restore
+    # can hit DIFFERENT pods, each with its own VFS directory cache. At rclone's
+    # 5m default, a restore issued minutes after a capture was served a STALE
+    # `snapshots/` listing that omitted the just-written snapshot, so restic
+    # restore failed with NoSuchKey on an object that WAS durably on the backend
+    # (SFTP has no ChangeNotify, so only dir-cache-time refreshes it). 3s bounds
+    # that window well under any capture→restore gap; listings are small + rare
+    # during a restore, so the extra re-list cost is negligible. (2026-07-16:
+    # broke tenant DR restore on the staging SSH-storagebox tenant store.)
     log "launching rclone serve s3 combined:"
     # Mark Ready just before exec. There's a sub-millisecond window where the
     # pod is Ready but rclone hasn't bound :9000 yet; backup clients (barman /
@@ -187,6 +198,7 @@ data:
       --vfs-cache-max-age 24h \
       --vfs-cache-poll-interval 1m \
       --vfs-write-back 0s \
+      --dir-cache-time 3s \
       --vfs-read-ahead 0 \
       --buffer-size 2M \
       --no-modtime \
