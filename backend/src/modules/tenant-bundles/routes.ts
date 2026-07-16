@@ -5,6 +5,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success, paginated } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
+import { filesSnapshotReachable } from '../backup-restore/browse-files-restic.js';
 import { backupJobs, backupComponents, backupConfigurations, tenants, hostingPlans } from '../../db/schema.js';
 import {
   BACKUP_META_SCHEMA_VERSION,
@@ -1399,11 +1400,12 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
 
     const components: Record<string, unknown> = {};
 
-    // files component — Phase 3 deferred, listed here so the operator
-    // sees that the verifier is aware of it.
+    // files component — the raw-files floor is a restic snapshot in a
+    // per-(tenant,component) repo, NOT a tarball object under the bundle
+    // handle. Probe restic-repo reachability (metadata-only snapshot listing)
+    // instead of statting a non-existent archive.tar.gz, which always failed.
     if (meta.components.files) {
-      const stat = await store.stat(handle, 'files', 'archive.tar.gz').catch(() => null);
-      components.files = { reachable: !!stat, sizeBytes: stat?.sizeBytes ?? 0 };
+      components.files = await filesSnapshotReachable(app, id, job.tenantId);
     }
 
     // config component — gunzip + JSON.parse + count rows per table
@@ -1522,6 +1524,27 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
         for (const component of (['files', 'mailboxes', 'config', 'secrets'] as const)) {
           const declared = meta.components[component];
           if (!declared) continue;
+          if (component === 'files') {
+            // files is a per-tenant restic snapshot, not a store artifact
+            // under the bundle handle — probe restic reachability instead of
+            // listArtifacts (which always returns 0 for it and would fail
+            // every files-bearing bundle).
+            const fr = await filesSnapshotReachable(app, row.id, row.tenantId);
+            if (!fr.reachable) {
+              results.push({ bundleId: row.id, status: 'failed', reason: `files restic snapshot not reachable${fr.error ? `: ${fr.error}` : ''}`, durationMs: Date.now() - start });
+              componentChecked = true;
+              break;
+            }
+            componentChecked = true;
+            continue;
+          }
+          if (component === 'mailboxes') {
+            // mailboxes is also a restic component (separate mail-class repo);
+            // the batch verifier doesn't deep-probe it — the per-bundle mail-DR
+            // tooling owns mailbox reachability. Skip the store-artifact check
+            // that would otherwise false-fail it.
+            continue;
+          }
           const refs = await store.listArtifacts(handle, component);
           if (refs.length === 0) {
             results.push({ bundleId: row.id, status: 'failed', reason: `meta declares ${component} but no artifacts on store`, durationMs: Date.now() - start });

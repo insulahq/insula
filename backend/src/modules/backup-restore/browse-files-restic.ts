@@ -26,6 +26,7 @@ import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client
 import { resolveShimBackupTarget } from '../tenant-bundles/resolve-backup-target.js';
 import {
   runResticLs,
+  listResticSnapshots,
   buildResticRepoUri,
   deriveResticPassword,
   type ResticLsNode,
@@ -81,6 +82,83 @@ export interface BrowseFilesTreeResult {
   bundleId: string;
   path: string;
   entries: BundleBrowseFileEntry[];
+}
+
+export interface FilesReachability {
+  /** The files restic snapshot is present + listable in the per-tenant repo. */
+  readonly reachable: boolean;
+  /** The recorded files snapshot id (backup_components.sha256), or null. */
+  readonly snapshotId: string | null;
+  /** Recorded on-disk size of the files component (backup_components.size_bytes). */
+  readonly sizeBytes: number;
+  /** Populated when reachable=false so the operator sees why. */
+  readonly error?: string;
+}
+
+/**
+ * Prove the files component's restic snapshot is actually reachable on the
+ * off-site target — the round-trip check the bundle verifier reports as
+ * `components.files`. It resolves the recorded snapshot id
+ * (backup_components.sha256, component='files'), opens the per-tenant files
+ * restic repo through the SAME shim target the browse path uses, lists its
+ * snapshots (metadata-only, no tree walk), and confirms the recorded snapshot
+ * is present.
+ *
+ * Why not `store.stat('files','archive.tar.gz')`: the files component is a
+ * restic snapshot in a per-(tenant,component) repo, NOT a tarball object under
+ * the bundle handle — that stat could never succeed, which is why the old
+ * verifier always reported "files: not reachable".
+ *
+ * Never throws: any failure (no snapshot recorded, repo unreachable, restic
+ * error) resolves to `{ reachable: false, error }` so a verify call always
+ * returns a component report.
+ */
+export async function filesSnapshotReachable(
+  app: FastifyInstance,
+  bundleId: string,
+  tenantId: string,
+): Promise<FilesReachability> {
+  try {
+    const [comp] = await app.db.select({
+      sha256: backupComponents.sha256,
+      sizeBytes: backupComponents.sizeBytes,
+    })
+      .from(backupComponents)
+      .innerJoin(backupJobs, eq(backupJobs.id, backupComponents.backupJobId))
+      .where(and(
+        eq(backupComponents.backupJobId, bundleId),
+        eq(backupJobs.tenantId, tenantId),
+        eq(backupComponents.component, 'files'),
+      ))
+      .limit(1);
+    const sizeBytes = comp?.sizeBytes ?? 0;
+    if (!comp?.sha256 || !RESTIC_SNAPSHOT_ID_RE.test(comp.sha256)) {
+      return { reachable: false, snapshotId: null, sizeBytes, error: 'no files restic snapshot recorded for this bundle' };
+    }
+    const snapshotId = comp.sha256;
+
+    const secretsKeyHex = (app.config as Record<string, unknown>).PLATFORM_ENCRYPTION_KEY as string | undefined
+      ?? process.env.PLATFORM_ENCRYPTION_KEY;
+    if (!secretsKeyHex) {
+      return { reachable: false, snapshotId, sizeBytes, error: 'PLATFORM_ENCRYPTION_KEY not configured' };
+    }
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+      ?? process.env.KUBECONFIG_PATH;
+    const k8s = sharedK8sClients(kubeconfigPath);
+    const target = await resolveShimBackupTarget(k8s.core, 'tenant', app.log);
+    const passwordHex = deriveResticPassword(secretsKeyHex, tenantId);
+    const repoUri = buildResticRepoUri(target, tenantId, 'files');
+
+    // Metadata-only listing (no file-tree walk) — cheap reachability probe.
+    const snaps = await listResticSnapshots({ target, passwordHex, repoUri, readOnly: true });
+    const present = snaps.some((s) =>
+      s.id === snapshotId || s.shortId === snapshotId || s.id.startsWith(snapshotId));
+    return present
+      ? { reachable: true, snapshotId, sizeBytes }
+      : { reachable: false, snapshotId, sizeBytes, error: `recorded snapshot ${snapshotId.slice(0, 12)}… not found among ${snaps.length} repo snapshot(s)` };
+  } catch (err) {
+    return { reachable: false, snapshotId: null, sizeBytes: 0, error: (err as Error).message };
+  }
 }
 
 /**

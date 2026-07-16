@@ -13,6 +13,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Bundle verifier now actually probes files reachability.** The
+  `POST /admin/tenant-bundles/:id/verify` (and `verify-all`) endpoints reported
+  the `files` component by statting a `files/archive.tar.gz` object under the
+  bundle handle — but since the raw-files floor became a **restic snapshot** in a
+  per-(tenant,component) repo, that object never exists, so verify always said
+  "files: not reachable" (and verify-all would fail every files-bearing bundle).
+  Both now resolve the recorded files snapshot id
+  (`backup_components.sha256`) and list the per-tenant restic repo's snapshots
+  through the same shim target the browse path uses (metadata-only, no tree
+  walk), reporting reachable=true only when that snapshot is present.
+  `listResticSnapshots` gained an explicit `repoUri` arg so a caller can target
+  a specific tenant/component repo (a SHIM target otherwise resolves only to the
+  class-root repo). mailboxes (also restic) is no longer false-failed by the
+  batch verifier's store-artifact probe.
 - **Staging now follows RC host-migrations.** `platform-ops self-upgrade` picks
   its target from the `platform-version` ConfigMap, but the base ships
   `version: "unknown"` and only the development overlay patched it — so
