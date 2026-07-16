@@ -1242,6 +1242,14 @@ export interface ListResticSnapshotsArgs {
   readonly target: BackupTarget;
   readonly passwordHex: string;
   readonly readOnly: boolean;
+  /**
+   * Explicit per-(tenant,component) repo URI (from `buildResticRepoUri`).
+   * When omitted we derive it from the target via
+   * `buildResticRepoUriForRestore`, which for a SHIM target only yields the
+   * class-root repo (no per-tenant prefix) — so callers listing a specific
+   * tenant's component repo (e.g. the bundle verifier) MUST pass this.
+   */
+  readonly repoUri?: string;
   /** Server-side narrowing: every filter becomes `--tag <k=v>`. */
   readonly tagFilters?: ReadonlyArray<string>;
   readonly semaphore?: ResticConcurrencySemaphore;
@@ -1260,7 +1268,7 @@ export async function listResticSnapshots(args: ListResticSnapshotsArgs): Promis
     // URI rewrite and use the target's repo path directly. Implementation
     // detail: callers always invoke via resolveExternalRepoUri which
     // yields the exact repo URI — listing is a thin shim around that.
-    const repoUri = buildResticRepoUriForRestore(args.target, 'list-only');
+    const repoUri = args.repoUri ?? buildResticRepoUriForRestore(args.target, 'list-only');
     const env = {
       ...buildResticEnv(args.target),
       RESTIC_PASSWORD: args.passwordHex,
