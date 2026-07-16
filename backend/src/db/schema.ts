@@ -3297,9 +3297,14 @@ export const tenantBackupScheduleFreqEnum = pgEnum('tenant_backup_schedule_freq'
 
 export const backupJobs = pgTable('backup_jobs', {
   id: varchar('id', { length: 64 }).primaryKey(),
+  // LOOSE reference to tenants.id — deliberately NO `.references()`/ON DELETE
+  // CASCADE (2026-07-16). Deleting a tenant RETAINS its backup_jobs rows so the
+  // retention reaper can still expire the off-site bundles by expires_at, and a
+  // deleted tenant stays recoverable (DR recover + cross-cluster migration
+  // import) for its retention window. The restic password derives from this
+  // preserved tenant_id. See the tenant-bundles-cleanup lifecycle hook.
   tenantId: varchar('tenant_id', { length: 36 })
-    .notNull()
-    .references(() => tenants.id, { onDelete: 'cascade' }),
+    .notNull(),
   initiator: backupInitiatorEnum('initiator').notNull(),
   systemTrigger: backupSystemTriggerEnum('system_trigger'),
   status: backupJobStatusEnum('status').notNull().default('pending'),
