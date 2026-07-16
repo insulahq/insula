@@ -114,7 +114,13 @@ FMPOD=$(ssh_node "kubectl -n $NS get pod -l app=file-manager --field-selector=st
 DUMP="predump-drdata-$BID.sql"
 # The predump lands in the DB pod's OWN storage subPath (exportDatabaseToPvc's
 # move to exports/ is a silent no-op for DBs), so find it wherever it is.
-if [[ -n "$FMPOD" ]]; then ssh_node "kubectl -n $NS exec $FMPOD -c file-manager -- find /data -type f -name '$DUMP'" </dev/null 2>/dev/null | grep -qF "$DUMP" && ok "predump present on PVC ($DUMP)" || no "predump $DUMP NOT found on PVC"; fi
+# The predump lands in the DB pod's OWN storage subPath (database/<engine>/
+# <name>/), NOT the file-manager tenant PVC — so search the DB pod first (that's
+# where the restore executor finds it), then the FM PVC as a fallback.
+_pd_found=""
+if ssh_node "kubectl -n $NS exec $DB_POD -c $DB_CONTAINER -- sh -c 'find / -type f -name \"$DUMP\" 2>/dev/null | head -1'" </dev/null 2>/dev/null | grep -qF "$DUMP"; then _pd_found=1; fi
+if [[ -z "$_pd_found" && -n "$FMPOD" ]] && ssh_node "kubectl -n $NS exec $FMPOD -c file-manager -- find /data -type f -name '$DUMP'" </dev/null 2>/dev/null | grep -qF "$DUMP"; then _pd_found=1; fi
+[[ -n "$_pd_found" ]] && ok "predump present on PVC ($DUMP)" || no "predump $DUMP NOT found on PVC (DB pod + FM PVC)"
 
 cyn "5. SIMULATE CORRUPTION: delete the rows (DB stays running)"
 db_sql "DELETE FROM drdata.t" >/dev/null
