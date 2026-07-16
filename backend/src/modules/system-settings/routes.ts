@@ -47,6 +47,11 @@ const updateSchema = z.object({
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   // On-server tenant volume-snapshot retention (hours). 1h..720h (30d).
   snapshotExpiryHours: z.number().int().min(1).max(720).optional(),
+  // Off-site backup-bundle retention (grace window) for a DELETED tenant, in
+  // days (migration 0071). 1..3650 days (10y). Read by the
+  // tenant-bundles-cleanup lifecycle hook to floor each retained bundle's
+  // expires_at on delete.
+  deletedTenantBundleRetentionDays: z.number().int().min(1).max(3650).optional(),
   // IANA timezone string. Used as the fallback on new tenants that don't
   // specify their own timezone, and as the global default for UI date
   // rendering when a user has no per-user override.

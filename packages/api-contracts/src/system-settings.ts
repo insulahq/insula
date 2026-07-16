@@ -37,6 +37,10 @@ export const updateSystemSettingsSchema = z.object({
   apiRateLimit: z.number().int().min(1).max(10000).optional(),
   // On-server tenant volume-snapshot retention (hours). 1h..720h (30d).
   snapshotExpiryHours: z.number().int().min(1).max(720).optional(),
+  // Off-site backup-bundle retention (grace window) for a DELETED tenant, in
+  // days (migration 0071). On delete the bundles are retained (not purged) and
+  // reaped once this window passes. 1..3650 days (10y, for compliance holds).
+  deletedTenantBundleRetentionDays: z.number().int().min(1).max(3650).optional(),
   timezone: z.string().min(1).max(50).optional(),
   currency: currencyCodeSchema.optional(),
   // Deprecated — moved to /admin/webmail-settings. Retained here so
@@ -88,6 +92,7 @@ export const systemSettingsResponseSchema = z.object({
   webmailUrl: z.string().nullable(),
   apiRateLimit: z.number(),
   snapshotExpiryHours: z.number(),
+  deletedTenantBundleRetentionDays: z.number(),
   currencySymbol: z.string(),
   currency: z.string(),
   timezone: z.string(),
