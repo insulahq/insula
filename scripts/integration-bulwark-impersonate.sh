@@ -81,7 +81,11 @@ pass()  { echo -e "  ${GREEN}✓${NC} $1"; PASS_COUNT=$((PASS_COUNT+1)); }
 fail()  { echo -e "  ${RED}✗${NC} $1"; FAIL_COUNT=$((FAIL_COUNT+1)); }
 warn()  { echo -e "  ${YELLOW}!${NC} $1"; }
 
-KCTL=(kubectl --namespace="$NAMESPACE")
+# Use the remote-kubectl shim ($KUBECTL from integration.env) when set — bare
+# `kubectl` isn't installed/authed on the workstation, so it exit-127'd and the
+# preflight mis-reported "no bulwark Deployment" → the suite silently SKIPPED
+# staging's PRIMARY webmail. Falls back to plain kubectl for in-cluster/local use.
+KCTL=("${KUBECTL:-kubectl}" --namespace="$NAMESPACE")
 
 # Resolve a READY bulwark pod. On a roundcube-active cluster bulwark is scaled to
 # 0 → self-skip (77) rather than fail. Right after a webmail-feature-toggle roll

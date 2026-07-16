@@ -402,7 +402,7 @@ if [[ $NEG_ONLY -eq 0 ]]; then
   phase "C. Pod GC"
   GONE=0
   for i in 1 2 3 4 5 6 7 8 9 10; do
-    if ! kubectl --namespace="$NAMESPACE" get pod "$POD_NAME" >/dev/null 2>&1; then
+    if ! ${KUBECTL:-kubectl} --namespace="$NAMESPACE" get pod "$POD_NAME" >/dev/null 2>&1; then
       GONE=1; break
     fi
     sleep 1
@@ -1088,7 +1088,7 @@ if [[ $RUN_IDLE -eq 1 ]]; then
   POD_NAME_I="$(echo "$CREATE_JSON_I" | jq -r '.data.podName')"
   echo "  waiting 16 minutes for idle timeout sweep..."
   sleep 960
-  if ! kubectl --namespace="$NAMESPACE" get pod "$POD_NAME_I" >/dev/null 2>&1; then
+  if ! ${KUBECTL:-kubectl} --namespace="$NAMESPACE" get pod "$POD_NAME_I" >/dev/null 2>&1; then
     pass "I1 pod GC'd by idle sweep after 15min"
   else
     fail "I1 pod still alive after 16min wait"
