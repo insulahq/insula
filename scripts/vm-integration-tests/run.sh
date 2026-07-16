@@ -248,6 +248,14 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   # (every direct-kubectl suite fails with "dial tcp 0.0.0.0:6443: connection refused").
   ssh "\${SK[@]}" "root@${VMTEST_CP_IP}" 'cat /etc/rancher/k3s/k3s.yaml' \
     | sed -E 's#https://(0\.0\.0\.0|127\.0\.0\.1):6443#https://${VMTEST_CP_IP}:6443#' > /root/.kube/config
+  # Operator AGE private key → runner, so dr-bundle's external-tier decrypt
+  # ACTUALLY RUNS instead of self-skipping. bootstrap wrote it 0600 on the CP at
+  # a fixed path; age tolerates the '# …' header lines in the file.
+  if scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/var/lib/hosting-platform/operator-key/operator-private.key" /root/operator-age.key >/dev/null 2>&1; then
+    chmod 600 /root/operator-age.key; echo "  operator AGE key captured → /root/operator-age.key (dr-bundle decrypt enabled)"
+  else
+    echo "  (operator AGE key not found on CP — dr-bundle external-tier will self-skip)"
+  fi
   command -v node >/dev/null && command -v jq >/dev/null && kubectl version --client >/dev/null 2>&1 \
     || { echo "runner tooling incomplete (node=\$(command -v node) jq=\$(command -v jq) kubectl=\$(command -v kubectl))" >&2; exit 1; }
   echo "  runner ready: node \$(node --version); kubectl + kubeconfig in place"
@@ -284,6 +292,9 @@ export KUBECONFIG=/root/.kube/config KUBECTL=kubectl LOCAL_KUBECTL=1 NODE_PATH=/
 # Hostnames (s3|sftp|cifs.<apex>), NOT the services-VM private IP — the platform's WAF
 # rejects RFC1918 IPs in backup-config endpoint fields (SSRF guard); pods resolve these via
 # dnsmasq→PowerDNS (seeded above) to the services VM.
+# Operator AGE private key captured from the CP during runner provisioning →
+# dr-bundle's external-tier decrypt (Phase B) runs instead of self-skipping.
+export AGE_KEY_FILE=/root/operator-age.key
 export BACKUP_S3_ENDPOINT=http://s3.${APEX}:9000 BACKUP_S3_BUCKET=$(printf %q "${VMTEST_MINIO_BUCKET:-backups}") BACKUP_S3_REGION=us-east-1
 export BACKUP_S3_ACCESS_KEY=$(printf %q "${VMTEST_MINIO_USER:-}") BACKUP_S3_SECRET_KEY=$(printf %q "${VMTEST_MINIO_PW:-}")
 export BACKUP_SFTP_HOST=sftp.${APEX} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
