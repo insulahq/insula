@@ -297,6 +297,31 @@ PARALLEL=(
   # Self-skips (77) when no offsite BackupStore is assigned to the 'tenant'
   # class. slow tier (two DB deploys + capture + restore).
   "db-dumps:integration-db-dumps-e2e.sh"
+  # ─── Previously-manual suites, now wired (2026-07-16) ───────────────
+  # All self-provision a disposable probe tenant and self-clean via trap, so
+  # they're PARALLEL-safe (destructive only to their OWN tenant). They need an
+  # offsite BackupStore assigned to the relevant shim class (present on staging)
+  # and reach the cluster over SSH (SSH_HOST) or the $KUBECTL shim; they self-
+  # skip (77) when a precondition (BackupStore, add-on plan, image) is absent.
+  #
+  # DR restore family — capture→simulate-loss→recover from the offsite bundle.
+  # Restore uses the backup-rclone-shim; the 2026-07-16 --dir-cache-time fix is
+  # required for SFTP/CIFS stores (else restore 404s on a durable snapshot).
+  "dr-tenant-restore:integration-dr-tenant-restore-e2e.sh"
+  "dr-database-restore:integration-dr-database-restore-e2e.sh"
+  "dr-recover-all:integration-dr-recover-all-e2e.sh"
+  "migration:integration-migration-e2e.sh"
+  # Tenant-bundle restic round-trip (external-tier: soft-skips without S3 egress).
+  "tenant-bundles-restic:integration-tenant-bundles-restic.sh"
+  # Custom deployments (ADR-036) + private worker — provision workloads.
+  "custom-deployments:integration-custom-deployments.sh"
+  "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
+  "private-worker:integration-private-worker.sh"
+  # Orchestrator-level mailbox bundle capture+restore (seeds its own mailbox).
+  "mailbox-aux:integration-mailbox-aux-orchestrator-e2e.sh"
+  # System backup bundle coverage + backups admin UI.
+  "bundle-coverage:integration-bundle-coverage.sh"
+  "backups-ui:integration-backups-ui.sh"
 )
 SERIAL_POST=(
   # waf-crowdsec BANS the shared harness outbound IP (Phase 4, ~3 min) to verify
@@ -309,11 +334,18 @@ SERIAL_POST=(
   # cluster. (The cap that fixed the storage-suite contention shifted the ban
   # window onto sibling logins, surfacing this latent interference.)
   "waf-crowdsec:integration-waf-crowdsec.sh"
-  # Destructive to platform/postgres CR (deletes + recreates).
-  # Source PVCs are reclaimPolicy=Retain so data survives, but other
-  # suites should run against the unmolested cluster first. Uses CNPG's
-  # native WAL-archive PITR (independent of the storage-lifecycle
-  # snapshot store), so unaffected by the PSA-baseline snapshot block.
+  # ─── Global-state mutators that are SAFE to auto-run (serial, restore via
+  # trap, before the destructive DB op). The staging-destabilizing globals
+  # (mail-exposure toggle, master-cred rotation, barman system-db wipe) are
+  # NOT here — see the INTEGRATION_INCLUDE_DISRUPTIVE block below.
+  #   firewall-blacklist: bans reserved TEST-NET 203.0.113.222, self-lockout
+  #     422-guarded, trap-unban. Touches the cluster firewall → serial.
+  "firewall-blacklist:integration-firewall-blacklist.sh"
+  #   dr-protocols: offline etcd break-glass READ path over S3/SFTP/CIFS
+  #     (never restores etcd). Non-destructive; self-skips without node creds.
+  "dr-protocols:integration-dr-protocols.sh"
+  # ─── Destructive to system-db — deletes + recreates it (reclaimPolicy=Retain
+  # so data survives) via native WAL-archive PITR. Runs LAST.
   "postgres-pitr:integration-postgres-pitr.sh"
 )
 
@@ -347,6 +379,46 @@ if [[ "${INTEGRATION_INCLUDE_FAILURE_SUITES:-}" == "1" ]]; then
     "${SERIAL_POST[@]}"
   )
 fi
+# Staging-destabilizing global mutators — WIRED but opt-in
+# (INTEGRATION_INCLUDE_DISRUPTIVE=1). Kept out of the default run because a
+# mid-run failure degrades the SHARED cluster for other work (and the authors
+# flagged them so): master-user-rotation tampers the webmail master (mail down
+# until the ≤5m auto-heal); mail-external-reachability toggles mail
+# port-exposure (golden-rule-4 territory); postgres-barman-restore WIPES +
+# rebuilds the system-db (a 2nd destructive DB op on top of postgres-pitr).
+# All self-restore; run them deliberately. Prepended to SERIAL_POST.
+if [[ "${INTEGRATION_INCLUDE_DISRUPTIVE:-}" == "1" ]]; then
+  SERIAL_POST=(
+    "mail-external-reachability:integration-mail-external-reachability.sh"
+    "master-user-rotation:integration-master-user-rotation.sh"
+    "postgres-barman-restore:integration-postgres-barman-restore.sh"
+    "${SERIAL_POST[@]}"
+  )
+fi
+# Setup-heavy manual suites — WIRED but opt-in, because they need pre-run setup
+# the auto-runner does NOT perform (would fail their preconditions otherwise).
+# Prepended to SERIAL_POST (serial + before the destructive DB ops).
+#   • mail-dr-* : need a labeled standby node + a mail-placement PATCH
+#     (autoFailoverEnabled, secondaryNode) and mail off the DB/api node; they
+#     STOP k3s on the active mail node to drive a real failover.
+#     Env: MAIL_DR_NODE_MAP="name=ip,…". See the suite headers + registry notes.
+if [[ "${INTEGRATION_INCLUDE_MAIL_DR:-}" == "1" ]]; then
+  SERIAL_POST=(
+    "mail-dr-failover:integration-mail-dr-failover.sh"
+    "mail-dr-dataplane:integration-mail-dr-dataplane.sh"
+    "mail-mobility:integration-mail-mobility-e2e.sh"
+    "${SERIAL_POST[@]}"
+  )
+fi
+#   • platform-domain-rename : needs RENAME_TARGET set (else read-only) + the
+#     target apex to resolve; renames the shared platform apex mid-run.
+if [[ "${INTEGRATION_INCLUDE_DOMAIN_RENAME:-}" == "1" ]]; then
+  SERIAL_POST=("platform-domain-rename:integration-platform-domain-rename-e2e.sh" "${SERIAL_POST[@]}")
+fi
+#   • system-dr-drill : full platform cold-restore; run on a dedicated VM.
+if [[ "${INTEGRATION_INCLUDE_SYSTEM_DR:-}" == "1" ]]; then
+  SERIAL_POST=("system-dr-drill:integration-system-dr-drill.sh" "${SERIAL_POST[@]}")
+fi
 # Also skip the bundle + restore SCENARIOS inside the staging-all suite —
 # they exercise the same snapshot path through the tenant-backup-v2
 # bundle orchestrator. The existing SKIP_BUNDLE_SCENARIO=1 /
@@ -375,6 +447,15 @@ declare -A SUITE_TIER=(
   [staging-all]=slow [postgres-pitr]=slow [system-snapshots]=slow
   [waf-failure]=slow [wal-archive-failure]=slow [db-dumps]=slow
   [backup-rclone-shim]=external [dr-drill-shim]=external
+  # 2026-07-16 newly-wired manual suites
+  [dr-tenant-restore]=slow [dr-database-restore]=slow [dr-recover-all]=slow
+  [migration]=slow [postgres-barman-restore]=slow [custom-deployments]=slow
+  [custom-deployments-phase2]=slow [private-worker]=slow [mailbox-aux]=slow
+  [mail-external-reachability]=slow [master-user-rotation]=slow
+  [mail-dr-failover]=slow [mail-dr-dataplane]=slow [mail-mobility]=slow
+  [system-dr-drill]=slow [platform-domain-rename]=slow
+  [tenant-bundles-restic]=external [dr-protocols]=external
+  [bundle-coverage]=external [backups-ui]=external
 )
 # Per-suite hard-timeout overrides (seconds). Set comfortably ABOVE the
 # expected max so the timeout catches HANGS, never a legitimately long run.
@@ -383,6 +464,15 @@ declare -A SUITE_TIMEOUT=(
   # monitoring-slo's alert leg legitimately waits out cnpg-down's
   # forSeconds=300 twice (fire + resolve) plus evaluator ticks.
   [monitoring-slo]=1500
+  # 2026-07-16 newly-wired manual suites (above expected max → catch HANGs)
+  [dr-tenant-restore]=1800 [dr-database-restore]=1800 [dr-recover-all]=1800
+  [migration]=1800 [postgres-barman-restore]=2400 [custom-deployments]=1500
+  [custom-deployments-phase2]=1500 [private-worker]=1200 [mailbox-aux]=1200
+  [tenant-bundles-restic]=1200 [bundle-coverage]=1200 [backups-ui]=600
+  [mail-external-reachability]=1200 [master-user-rotation]=900
+  [firewall-blacklist]=600 [dr-protocols]=900
+  [mail-dr-failover]=2400 [mail-dr-dataplane]=2400 [mail-mobility]=1800
+  [platform-domain-rename]=1800 [system-dr-drill]=3000
 )
 suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
 suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }
@@ -486,7 +576,7 @@ run_serial_group() {
     # directly (webmail-feature-toggle, bulwark-impersonate, node-terminal,
     # webmail-platform, …) otherwise silently SKIP their token-gated phases in
     # the full run — they don't consume the INTEGRATION_TOKEN cache.
-    ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
     set -e
     SUITE_SECS["$name"]=$(( $(date +%s) - start )); SUITE_RC["$name"]=$rc
@@ -535,7 +625,7 @@ run_parallel_group() {
     local to; to="$(suite_timeout_of "$name")"
     (
       _s=$(date +%s)
-      ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
       _rc=$?
       echo "$_rc" > "$rcf"
       echo $(( $(date +%s) - _s )) > "$rcf.secs"
