@@ -42,6 +42,12 @@ set -euo pipefail
 # openssl (TLS handshakes), ncat (port-open + plain banner), python3
 # (dnspython SRV/TXT + PTR), curl (ACME path), jq. DNS A/AAAA uses
 # getent; SRV/TXT/PTR use dnspython (bootstrapped just below).
+# Auto-install the workstation tools this harness needs before the hard check
+# below (so a fresh workstation doesn't fail on a missing ncat/dnspython).
+# Warm path is a no-op; opt out with INTEGRATION_SKIP_DEP_INSTALL=1.
+# shellcheck source=scripts/lib/ensure-workstation-deps.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/ensure-workstation-deps.sh"
+ensure_workstation_deps openssl ncat python3 curl jq
 for _tool in openssl ncat python3 curl jq; do
   command -v "$_tool" >/dev/null 2>&1 || {
     echo "ERROR: required tool '$_tool' not found in PATH — install it before running this harness" >&2

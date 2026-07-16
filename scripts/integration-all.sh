@@ -42,6 +42,13 @@ load_integration_env
 # shellcheck source=scripts/lib/integration-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-lib.sh"
 
+# Auto-install the workstation CLI tools the suites need (ncat, age, sshpass,
+# restic, dnspython, …) so a fresh checkout runs with no manual apt-get. Warm
+# path is a no-op; opt out with INTEGRATION_SKIP_DEP_INSTALL=1.
+# shellcheck source=scripts/lib/ensure-workstation-deps.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/ensure-workstation-deps.sh"
+ensure_workstation_deps
+
 # ─── runner options (P3 selection + per-suite hard timeout · P4 report) ─
 # Backward-compatible: with no flags the run behaves exactly as before
 # (smoke gate + every suite). Flags let you slice the suite and bound
