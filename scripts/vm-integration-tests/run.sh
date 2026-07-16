@@ -220,11 +220,21 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   set -e
   export DEBIAN_FRONTEND=noninteractive
   chmod 600 /root/hosting-platform.key
-  # -o DPkg::Lock::Timeout=300: a fresh debian-13 runs apt-daily/unattended-upgrades at first
-  # boot, which holds the dpkg lock; without waiting, our install races it and dies ("runner
-  # provisioning failed"). Make apt wait for the lock instead of failing.
+  # Wait out the runner's FIRST BOOT before touching apt. run.sh reaches provisioning the instant
+  # the cluster is up; on a FAST bootstrap (e.g. single-server) the runner is still mid-cloud-init —
+  # network/DNS not fully up AND apt-daily/unattended-upgrades holding the dpkg lock — so apt-get
+  # update raced an unresolvable mirror / a held lock and FATAL'd. The DPkg::Lock::Timeout below is
+  # NOT enough on its own: `apt-get update` doesn't take that lock, and a held lock can outlast 300s.
+  # Multi-server bootstraps slower so it usually missed this window — a latent race single-server
+  # surfaced. Block until cloud-init finishes, then stop the periodic apt units so they can't re-grab
+  # the lock mid-install.
+  cloud-init status --wait >/dev/null 2>&1 || true
+  systemctl stop apt-daily.service apt-daily-upgrade.service unattended-upgrades.service >/dev/null 2>&1 || true
+  systemctl disable --now apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
+  # -o DPkg::Lock::Timeout=300: belt-and-suspenders in case a stray apt job still holds the lock.
   APTO="-o DPkg::Lock::Timeout=300"
-  apt-get \$APTO update -qq >/dev/null 2>&1
+  # Retry update — a just-up runner's mirror/DNS can 5xx/timeout on the first hit.
+  for _ in 1 2 3; do apt-get \$APTO update -qq >/dev/null 2>&1 && break; sleep 5; done
   # `ncat` (its OWN Debian package — the staging-all suite requires it; `netcat-openbsd` ships only
   # `nc`, and the `nmap` package does NOT bundle `ncat` on Debian).
   apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd ncat socat rsync >/dev/null 2>&1
@@ -336,6 +346,11 @@ kubectl -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
 kubectl -n mail rollout restart deploy/bulwark >/dev/null 2>&1 || true
 for _ in \$(seq 1 36); do [ "\$(kubectl -n platform get certificate platform-ingress -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)" = True ] && { echo "  certs re-issued on the custom issuer"; break; }; sleep 5; done
 kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
+# ALWAYS bind the services-VM object store as the cluster's backup target before the suites — the
+# services VM exists to provide it, and every backup/DR suite fails its precondition without it
+# (grow NO_SNAPSHOT_TARGET, dr-drill-shim suspended ScheduledBackup, backup-rclone-shim, dr-bundle).
+echo "── configuring backup targets (services-VM S3 → tenant/system/mail classes) ──"
+bash scripts/vm-integration-tests/setup-backup-targets.sh || true
 bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$RUNNER_SCRIPT" \

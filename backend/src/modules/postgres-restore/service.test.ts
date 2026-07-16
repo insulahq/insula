@@ -243,9 +243,13 @@ describe('promotePostgresFromSnapshot — preflight only (real K8s ops mocked)',
     expect(createCall[0].namespace).toBe('platform');
     expect(createCall[0].body.metadata.labels['insula.host/pitr-restore']).toBe('true');
     expect(createCall[0].body.metadata.labels['insula.host/pitr-namespace']).toBe('platform');
-    // Pod-template MUST carry app=platform-api so the existing
-    // allow-platform-internal NetworkPolicy lets the Job reach postgres.
-    expect(createCall[0].body.spec.template.metadata.labels.app).toBe('platform-api');
+    // Pod-template MUST NOT carry app=platform-api — that would add the Job
+    // pod to the platform-api Service endpoints and 502 ~50% of live API
+    // traffic. It reaches postgres via the pitr-job component label instead
+    // (allow-platform-internal NetworkPolicy). Regression guard for the
+    // 2026-07-16 postgres-pitr endpoint-pollution bug.
+    expect(createCall[0].body.spec.template.metadata.labels.app).toBeUndefined();
+    expect(createCall[0].body.spec.template.metadata.labels['app.kubernetes.io/component']).toBe('pitr-job');
     const envByName: Record<string, string | undefined> = {};
     for (const e of createCall[0].body.spec.template.spec.containers[0].env) {
       if (e.value !== undefined) envByName[e.name] = e.value;

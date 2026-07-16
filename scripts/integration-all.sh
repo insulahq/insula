@@ -216,10 +216,9 @@ PARALLEL=(
   "sftp-reachability:integration-sftp-reachability.sh"
   "firewall:integration-firewall-e2e.sh"
   "drain:integration-drain-e2e.sh"
-  # WAF + CrowdSec IP-blocking coverage on every Traefik DS pod.
-  # Each phase 4 round takes ~70s for bouncer cache refresh, so the
-  # whole suite is ~3 min; safely parallel with everything else.
-  "waf-crowdsec:integration-waf-crowdsec.sh"
+  # (waf-crowdsec moved to SERIAL_POST — it BANS the shared harness outbound IP
+  #  to verify enforcement from the banned vantage, which collateral-403s every
+  #  concurrent sibling's auth. It must run isolated, not in this batch.)
   # Admin node-terminal: full A→E flow + F (HA replica handoff) + G
   # (reconnect contract). Requires NODE_TERMINAL_ENABLED=true on the
   # target platform-api and step-up freshness — pass --bump-freshness
@@ -293,6 +292,16 @@ PARALLEL=(
   "db-dumps:integration-db-dumps-e2e.sh"
 )
 SERIAL_POST=(
+  # waf-crowdsec BANS the shared harness outbound IP (Phase 4, ~3 min) to verify
+  # ban enforcement from the banned vantage, then unbans + waits for cache flush.
+  # While that ban is live, EVERY sibling suite authenticating from the same
+  # harness IP gets collateral 403s — proven 2026-07-16 (dr-drill-shim B1
+  # "create target HTTP 403", node-terminal K1, db-dumps/system-backup/
+  # webmail-platform login 403). So it CANNOT run in the parallel batch; it runs
+  # here, isolated, and before the destructive postgres-pitr so it sees a healthy
+  # cluster. (The cap that fixed the storage-suite contention shifted the ban
+  # window onto sibling logins, surfacing this latent interference.)
+  "waf-crowdsec:integration-waf-crowdsec.sh"
   # Destructive to platform/postgres CR (deletes + recreates).
   # Source PVCs are reclaimPolicy=Retain so data survives, but other
   # suites should run against the unmolested cluster first. Uses CNPG's
@@ -466,7 +475,11 @@ run_serial_group() {
     # across a full run is not a storm and force_mint has its own 429 backoff.
     INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "$name: token refresh failed (continuing with prior token)"
     set +e
-    ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
+    # Export the shared bearer as ADMIN_TOKEN too: suites that read ADMIN_TOKEN
+    # directly (webmail-feature-toggle, bulwark-impersonate, node-terminal,
+    # webmail-platform, …) otherwise silently SKIP their token-gated phases in
+    # the full run — they don't consume the INTEGRATION_TOKEN cache.
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
     set -e
     SUITE_SECS["$name"]=$(( $(date +%s) - start )); SUITE_RC["$name"]=$rc
@@ -493,6 +506,16 @@ run_parallel_group() {
   local tmpdir
   tmpdir=$(mktemp -d)
   local -a pids=() names=() rcfiles=() logfiles=()
+  # Concurrency cap. Launching all ~20 suites at once thundering-herds a
+  # small cluster: the heavy tenant/PVC/FM/Longhorn suites (tier-flip, grow,
+  # pvc, burstable-qos) then miss their tail poll-timeouts (FM pod slow to
+  # schedule, ResourceQuota/API pressure) and fail in the FULL run while
+  # passing standalone. A rolling window keeps peak load bounded without
+  # serialising the whole phase. Tune via INTEGRATION_MAX_PARALLEL (0/unset
+  # → default 6; set high to restore the old launch-everything behaviour).
+  local max_par="${INTEGRATION_MAX_PARALLEL:-6}"
+  [[ "$max_par" =~ ^[0-9]+$ ]] && (( max_par >= 1 )) || max_par=6
+  local running=0
   for entry in "$@"; do
     local name="${entry%%:*}" cmd="${entry#*:}"
     local logf="$tmpdir/$name.log" rcf="$tmpdir/$name.rc"
@@ -505,7 +528,7 @@ run_parallel_group() {
     local to; to="$(suite_timeout_of "$name")"
     (
       _s=$(date +%s)
-      ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
       _rc=$?
       echo "$_rc" > "$rcf"
       echo $(( $(date +%s) - _s )) > "$rcf.secs"
@@ -515,6 +538,13 @@ run_parallel_group() {
     rcfiles+=("$rcf")
     logfiles+=("$logf")
     log "  launched: $name (pid=$!)"
+    # Throttle: once the window is full, block until one suite finishes
+    # before launching the next. Peak concurrency stays at max_par.
+    running=$((running + 1))
+    if (( running >= max_par )); then
+      wait -n 2>/dev/null || true
+      running=$((running - 1))
+    fi
   done
   log "  waiting for $n parallel suite(s) to finish…"
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
@@ -647,7 +677,10 @@ BASELINE_DRIFT_FOUND=0
 assert_baseline_state() {
   [[ "${INTEGRATION_SKIP_BASELINE:-0}" == "1" ]] && { warn "baseline gate SKIPPED (INTEGRATION_SKIP_BASELINE=1)"; return 0; }
   log "Cluster-state baseline gate"
-  local base="${PLATFORM_API_URL:-https://${DOMAIN}}" tok="${INTEGRATION_TOKEN:-}"
+  # ADMIN_HOST is the harness-canonical base (defaulted at top of file); the
+  # old ${DOMAIN} fallback was never set and crashed this gate under `set -u`
+  # before any suite ran.
+  local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
   [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true)
   if [[ -z "$tok" ]]; then warn "baseline gate: no admin token — cannot assert baseline (continuing)"; return 0; fi
 
