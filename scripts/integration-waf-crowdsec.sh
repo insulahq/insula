@@ -1620,12 +1620,13 @@ else
   # (the first ~5 are accepted), but at least one 429 must appear.
   api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"rate_limit_rps":1}' >/dev/null
   sleep 4
-  l6_429_seen=$(probe_https_burst 30)
+  L6_BURST=30
+  l6_429_seen=$(probe_https_burst "$L6_BURST")
   [[ "$l6_429_seen" =~ ^[0-9]+$ ]] || l6_429_seen=0
   if (( l6_429_seen > 0 )); then
-    ok "L6: rate_limit_rps=1 — saw $l6_429_seen × 429 in 20 burst requests"
+    ok "L6: rate_limit_rps=1 — saw $l6_429_seen × 429 in $L6_BURST burst requests"
   else
-    fail "L6: rate_limit_rps=1 — no 429 in 20 burst requests (rate limit not enforcing?)"
+    fail "L6: rate_limit_rps=1 — no 429 in $L6_BURST burst requests (rate limit not enforcing?)"
   fi
   api_internal PATCH "/tenants/$L_TENANT_ID/routes/$L_ROUTE_ID/security" '{"rate_limit_rps":null}' >/dev/null
   sleep 3
