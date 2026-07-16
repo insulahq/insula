@@ -466,7 +466,11 @@ run_serial_group() {
     # across a full run is not a storm and force_mint has its own 429 backoff.
     INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "$name: token refresh failed (continuing with prior token)"
     set +e
-    ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
+    # Export the shared bearer as ADMIN_TOKEN too: suites that read ADMIN_TOKEN
+    # directly (webmail-feature-toggle, bulwark-impersonate, node-terminal,
+    # webmail-platform, …) otherwise silently SKIP their token-gated phases in
+    # the full run — they don't consume the INTEGRATION_TOKEN cache.
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
     local rc=$?
     set -e
     SUITE_SECS["$name"]=$(( $(date +%s) - start )); SUITE_RC["$name"]=$rc
@@ -505,7 +509,7 @@ run_parallel_group() {
     local to; to="$(suite_timeout_of "$name")"
     (
       _s=$(date +%s)
-      ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}" >"$logf" 2>&1
       _rc=$?
       echo "$_rc" > "$rcf"
       echo $(( $(date +%s) - _s )) > "$rcf.secs"
@@ -647,7 +651,10 @@ BASELINE_DRIFT_FOUND=0
 assert_baseline_state() {
   [[ "${INTEGRATION_SKIP_BASELINE:-0}" == "1" ]] && { warn "baseline gate SKIPPED (INTEGRATION_SKIP_BASELINE=1)"; return 0; }
   log "Cluster-state baseline gate"
-  local base="${PLATFORM_API_URL:-https://${DOMAIN}}" tok="${INTEGRATION_TOKEN:-}"
+  # ADMIN_HOST is the harness-canonical base (defaulted at top of file); the
+  # old ${DOMAIN} fallback was never set and crashed this gate under `set -u`
+  # before any suite ran.
+  local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
   [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true)
   if [[ -z "$tok" ]]; then warn "baseline gate: no admin token — cannot assert baseline (continuing)"; return 0; fi
 
