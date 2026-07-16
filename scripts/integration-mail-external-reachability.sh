@@ -27,7 +27,10 @@
 set -u
 
 SSH_KEY=${SSH_KEY:-/home/dev/hosting-platform.key}
-BASTION=${BASTION:-root@staging2.example.test}
+# Prefer the harness-canonical SSH_HOST (what integration-all/the VM runner
+# export) so this suite reaches the SAME cluster as the rest of the run; BASTION
+# stays overridable, and the example.test default is the last resort.
+BASTION=${BASTION:-${SSH_HOST:-root@staging2.example.test}}
 PORTS_SMTP=(25 465 587)
 PORTS_IMAP=(143 993 4190)
 ALL_PORTS=("${PORTS_SMTP[@]}" "${PORTS_IMAP[@]}")
