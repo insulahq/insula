@@ -93,6 +93,10 @@ ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [[ "$LIST" == 1 ]] || require_env ADMIN_PASSWORD
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
+# Some suites (private-worker, …) key off TENANT_BASE for the tenant wildcard;
+# default it to the same wildcard the rest of the run uses (HTTPS_TEST_DOMAIN_BASE)
+# so it resolves to the cluster ingress instead of the unresolvable example.test.
+export TENANT_BASE="${TENANT_BASE:-${HTTPS_TEST_DOMAIN_BASE:-}}"
 
 CYAN='\033[36m'
 GREEN='\033[32m'
@@ -317,8 +321,8 @@ PARALLEL=(
   "custom-deployments:integration-custom-deployments.sh"
   "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
   "private-worker:integration-private-worker.sh"
-  # Orchestrator-level mailbox bundle capture+restore (seeds its own mailbox).
-  "mailbox-aux:integration-mailbox-aux-orchestrator-e2e.sh"
+  # (mailbox-aux moved to opt-in — it needs node-side seed files /tmp/mpw +
+  #  /tmp/mfqdn that the auto-runner does not create; see the INCLUDE block.)
   # System backup bundle coverage + backups admin UI.
   "bundle-coverage:integration-bundle-coverage.sh"
   "backups-ui:integration-backups-ui.sh"
@@ -418,6 +422,12 @@ fi
 #   • system-dr-drill : full platform cold-restore; run on a dedicated VM.
 if [[ "${INTEGRATION_INCLUDE_SYSTEM_DR:-}" == "1" ]]; then
   SERIAL_POST=("system-dr-drill:integration-system-dr-drill.sh" "${SERIAL_POST[@]}")
+fi
+#   • mailbox-aux : orchestrator-level mailbox bundle E2E, but needs node-side
+#     seed files (/tmp/mpw = STALWART_MASTER_PASSWORD, /tmp/mfqdn) written on the
+#     target node before the run — the auto-runner doesn't create them.
+if [[ "${INTEGRATION_INCLUDE_MAILBOX_AUX:-}" == "1" ]]; then
+  PARALLEL+=("mailbox-aux:integration-mailbox-aux-orchestrator-e2e.sh")
 fi
 # Also skip the bundle + restore SCENARIOS inside the staging-all suite —
 # they exercise the same snapshot path through the tenant-backup-v2
