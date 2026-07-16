@@ -40,6 +40,14 @@
 # Job actually executes.
 set -euo pipefail
 
+# Route every bare `kubectl` through the remote shim when KUBECTL is set (a
+# workstation driving a REMOTE staging cluster via scripts/lib/kubectl-remote.sh,
+# which SSHes to a node and forwards args + stdin). Falls back to a real kubectl
+# on PATH for local runs. `command` bypasses this function so there is no
+# recursion, and stdin (e.g. `kubectl apply -f -` fed by a heredoc) is forwarded
+# by ssh, so heredoc-driven applies keep working unchanged.
+kubectl() { command "${KUBECTL:-kubectl}" "$@"; }
+
 NS=mail
 HOST_TMP=${HOST_TMP:-/tmp}
 MPW=$(cat "$HOST_TMP/mpw")
