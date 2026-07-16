@@ -2494,24 +2494,26 @@ export async function createPitrJob(
   // shares the ServiceAccount, secrets, and config. Source cluster
   // namespace is passed as a Job env var; not necessarily 'platform'.
   const jobNamespace = 'platform';
-  // The pod-template labels also include `app: platform-api` so the
-  // existing NetworkPolicy `allow-platform-internal` (selector
-  // `app in (dex,platform-api,postgres,redis)`) lets the Job pod
-  // reach postgres for its DB-backed lock. Without this, the Job pod
-  // hangs at SELECT 1 with "Connection terminated due to connection
-  // timeout" because default-deny-ingress on postgres blocks the
-  // unlabeled Job. The Job-CR-level labels (used by harness +
-  // recoverInterruptedRestore) only need pitr-restore + pitr-namespace.
+  // The Job pod must NOT carry `app: platform-api`: that label would add it
+  // to the platform-api Service endpoints, so ~50% of live API traffic
+  // round-robins to a pod that doesn't serve :3000 → 502s (and the Job pod
+  // lingers past its CLI exit, making the outage permanent). Caught
+  // 2026-07-16 during a full-suite postgres-pitr run, where the resulting
+  // 502s also made the suite's own status-poll unreachable → false failure.
+  //
+  // The pod still needs to reach postgres for its DB-backed lock (SELECT 1).
+  // It gets that via the `app.kubernetes.io/component: pitr-job` ingress rule
+  // in NetworkPolicy `allow-platform-internal` — the same component-label
+  // mechanism the dr-backup CronJob pods use, not the app allow-list. The
+  // Job-CR-level labels (used by harness + recoverInterruptedRestore) only
+  // need pitr-restore + pitr-namespace.
   const jobLabels = {
     'insula.host/pitr-restore': 'true',
     'insula.host/pitr-namespace': inputs.clusterNamespace,
     'app.kubernetes.io/part-of': 'hosting-platform',
     'app.kubernetes.io/component': 'pitr-job',
   };
-  const podLabels = {
-    ...jobLabels,
-    app: 'platform-api',
-  };
+  const podLabels = { ...jobLabels };
 
   const env: Array<Record<string, unknown>> = [
     { name: 'NODE_ENV', value: 'production' },
