@@ -93,7 +93,12 @@ patch_settings() {
     red "ADMIN_TOKEN env var not set — skipping PATCH"
     return 1
   fi
-  local url="${PLATFORM_API_URL:-https://${DOMAIN:?DOMAIN env var not set}}/api/v1/admin/webmail-settings"
+  # Base URL: PLATFORM_API_URL, else the harness-canonical ADMIN_HOST (exported
+  # from integration.env), else https://${DOMAIN}. The bare ${DOMAIN} fallback
+  # used to hard-fail Phase B here — nothing sets DOMAIN — but that only ever
+  # surfaced once the full runner started exporting ADMIN_TOKEN (before that,
+  # Phase B/C/D silently skipped and never reached this line).
+  local url="${PLATFORM_API_URL:-${ADMIN_HOST:-https://${DOMAIN:?set PLATFORM_API_URL, ADMIN_HOST, or DOMAIN}}}/api/v1/admin/webmail-settings"
   curl -sS -fX PATCH \
     -H "Authorization: Bearer $ADMIN_TOKEN" \
     -H "Content-Type: application/json" \
