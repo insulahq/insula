@@ -620,8 +620,14 @@ run_parallel_group() {
   # passing standalone. A rolling window keeps peak load bounded without
   # serialising the whole phase. Tune via INTEGRATION_MAX_PARALLEL (0/unset
   # → default 6; set high to restore the old launch-everything behaviour).
-  local max_par="${INTEGRATION_MAX_PARALLEL:-6}"
-  [[ "$max_par" =~ ^[0-9]+$ ]] && (( max_par >= 1 )) || max_par=6
+  # Default 4 (was 6): the full run now wires ~40 suites, many of which
+  # PROVISION a tenant (namespace + quota + pods) or capture/restore bundles.
+  # At 6 concurrent, that provisioning storm caused transient API 500s
+  # (custom-deployments create) and pod-scheduling timeouts (drain warm-up) that
+  # don't happen standalone. 4 keeps the storage-suite contention fixed too.
+  # Tune with INTEGRATION_MAX_PARALLEL.
+  local max_par="${INTEGRATION_MAX_PARALLEL:-4}"
+  [[ "$max_par" =~ ^[0-9]+$ ]] && (( max_par >= 1 )) || max_par=4
   local running=0
   for entry in "$@"; do
     local name="${entry%%:*}" cmd="${entry#*:}"
