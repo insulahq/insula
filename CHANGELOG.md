@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.26] - 2026-07-16
+
 ### Fixed
 - **A system-db PITR restore no longer 502s the live API.** The PITR restore
   Job pod carried `app: platform-api` (so a NetworkPolicy would let it reach
