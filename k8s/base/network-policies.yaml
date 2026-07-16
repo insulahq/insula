@@ -171,6 +171,15 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/component: dr-backup
+        # PITR restore Job pods reach postgres for their DB-backed lock via
+        # this component label — NOT via `app: platform-api`. Carrying the
+        # `app: platform-api` label would add the Job pod to the platform-api
+        # Service endpoints, so ~50% of live API traffic round-robins to a pod
+        # that doesn't serve :3000 → 502s (and the Job lingers, making it
+        # permanent). Caught 2026-07-16 during a full-suite postgres-pitr run.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: pitr-job
       ports:
         - protocol: TCP
           port: 5432  # postgres
