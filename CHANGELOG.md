@@ -65,6 +65,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     over the same gateway cover the use case with stronger auth.
 
 ### Added
+- **Deleted-tenant backup retention is now an admin setting.** Deleting a tenant
+  RETAINS its off-site backup bundles (they are the deleted tenant's only DR /
+  cross-cluster-migration recovery path) instead of purging them — the
+  `retention.ts` reaper deletes them once their grace window passes. That window
+  is now operator-configurable at **Platform → Limits → Deleted-Tenant Backup
+  Retention** (`system_settings.deleted_tenant_bundle_retention_days`, migration
+  0071; default 30 days, 1–3650). On delete the `tenant-bundles-cleanup`
+  lifecycle hook *floors* every reap-eligible bundle's `expires_at` to
+  `now + N days` (extend-never-shorten: a retain-forever bundle finally gets an
+  expiry; a bundle already scheduled to live longer keeps its later date, so a
+  recovery copy is never destroyed earlier than already planned). Pairs with the
+  migration-0070 loose FK that lets the bundle rows survive the tenant row.
 - **Tenant add-on databases: two-layer backup + visible dump summary**
   (ADR-048 Primitive 3 evolution). Every add-on database (MariaDB/MySQL,
   PostgreSQL, MongoDB, SQLite) is now captured two ways in a bundle: the

@@ -13,6 +13,10 @@ export interface SystemSettings {
   readonly apiRateLimit: number;
   // On-server tenant volume-snapshot retention (hours). Admin-adjustable.
   readonly snapshotExpiryHours: number;
+  // Off-site backup-bundle retention (grace window) for a DELETED tenant, in
+  // days. On delete the bundles are retained (not purged) and reaped once this
+  // window passes. Admin-adjustable (1–3650 days).
+  readonly deletedTenantBundleRetentionDays: number;
   readonly timezone: string;
   readonly currencySymbol: string;
   // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat in

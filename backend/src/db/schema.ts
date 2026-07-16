@@ -2558,6 +2558,16 @@ export const systemSettings = pgTable('system_settings', {
   // after this many hours so they don't accumulate Longhorn space. Admin-
   // adjustable; the tenant panel surfaces the limit. Default 48h.
   snapshotExpiryHours: integer('snapshot_expiry_hours').notNull().default(48),
+  // Off-site backup-bundle retention for a DELETED tenant (migration 0071).
+  // When a tenant is deleted its bundles are RETAINED (not purged) so they
+  // remain the tenant's only DR / cross-cluster-migration recovery path; the
+  // retention.ts reaper then deletes them once expires_at passes. This admin-
+  // adjustable value is the deletion grace window: on delete, the
+  // tenant-bundles-cleanup hook floors every reap-eligible bundle's expires_at
+  // to now + this many days (extend-never-shorten — a bundle already scheduled
+  // to live longer keeps its later expiry; a retain-forever bundle finally
+  // gets one). Default 30 days.
+  deletedTenantBundleRetentionDays: integer('deleted_tenant_bundle_retention_days').notNull().default(30),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
   // ISO 4217 currency code (USD, EUR, GBP, …). Drives Intl.NumberFormat
   // across both panels for any monetary amount display. The older
