@@ -13,6 +13,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Tenant DR restore now works on SFTP/CIFS storage-box BackupStores.** Restore
+  from an off-site bundle failed with restic `NoSuchKey` on a snapshot that was
+  durably present on the backend: the backup-rclone-shim's `rclone serve s3`
+  used rclone's default 5-minute VFS directory cache, so a restore issued
+  minutes after a capture (often on a different node's shim pod — the shim is a
+  per-node DaemonSet) was served a stale `snapshots/` listing. Setting
+  `--dir-cache-time 3s` makes listings fresh well within any capture→restore
+  gap. S3-backed stores were unaffected. Validated end-to-end on staging.
+- **A system-db PITR Job pod no longer lingers after the restore completes.**
+  The post-restore chip-finalize + DB-close can hang against a briefly-
+  unreachable just-restored system-db; a 30s watchdog now force-exits the Job
+  so its pod terminates promptly instead of running until its activeDeadline.
 - **Staging now follows RC host-migrations.** `platform-ops self-upgrade` picks
   its target from the `platform-version` ConfigMap, but the base ships
   `version: "unknown"` and only the development overlay patched it — so
