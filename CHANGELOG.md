@@ -12,21 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.27] - 2026-07-16
-
 ### Fixed
-- **Tenant DR restore now works on SFTP/CIFS storage-box BackupStores.** Restore
-  from an off-site bundle failed with restic `NoSuchKey` on a snapshot that was
-  durably present on the backend: the backup-rclone-shim's `rclone serve s3`
-  used rclone's default 5-minute VFS directory cache, so a restore issued
-  minutes after a capture (often on a different node's shim pod — the shim is a
-  per-node DaemonSet) was served a stale `snapshots/` listing. Setting
-  `--dir-cache-time 3s` makes listings fresh well within any capture→restore
-  gap. S3-backed stores were unaffected. Validated end-to-end on staging.
-- **A system-db PITR Job pod no longer lingers after the restore completes.**
-  The post-restore chip-finalize + DB-close can hang against a briefly-
-  unreachable just-restored system-db; a 30s watchdog now force-exits the Job
-  so its pod terminates promptly instead of running until its activeDeadline.
+- **Bundle verifier now actually probes files reachability.** The
+  `POST /admin/tenant-bundles/:id/verify` (and `verify-all`) endpoints reported
+  the `files` component by statting a `files/archive.tar.gz` object under the
+  bundle handle — but since the raw-files floor became a **restic snapshot** in a
+  per-(tenant,component) repo, that object never exists, so verify always said
+  "files: not reachable" (and verify-all would fail every files-bearing bundle).
+  Both now resolve the recorded files snapshot id
+  (`backup_components.sha256`) and list the per-tenant restic repo's snapshots
+  through the same shim target the browse path uses (metadata-only, no tree
+  walk), reporting reachable=true only when that snapshot is present.
+  `listResticSnapshots` gained an explicit `repoUri` arg so a caller can target
+  a specific tenant/component repo (a SHIM target otherwise resolves only to the
+  class-root repo). mailboxes (also restic) is no longer false-failed by the
+  batch verifier's store-artifact probe.
 - **Staging now follows RC host-migrations.** `platform-ops self-upgrade` picks
   its target from the `platform-version` ConfigMap, but the base ships
   `version: "unknown"` and only the development overlay patched it — so
@@ -79,6 +79,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     over the same gateway cover the use case with stronger auth.
 
 ### Added
+- **Deleted-tenant backup retention is now an admin setting.** Deleting a tenant
+  RETAINS its off-site backup bundles (they are the deleted tenant's only DR /
+  cross-cluster-migration recovery path) instead of purging them — the
+  `retention.ts` reaper deletes them once their grace window passes. That window
+  is now operator-configurable at **Platform → Limits → Deleted-Tenant Backup
+  Retention** (`system_settings.deleted_tenant_bundle_retention_days`, migration
+  0071; default 30 days, 1–3650). On delete the `tenant-bundles-cleanup`
+  lifecycle hook *floors* every reap-eligible bundle's `expires_at` to
+  `now + N days` (extend-never-shorten: a retain-forever bundle finally gets an
+  expiry; a bundle already scheduled to live longer keeps its later date, so a
+  recovery copy is never destroyed earlier than already planned). Pairs with the
+  migration-0070 loose FK that lets the bundle rows survive the tenant row.
 - **Tenant add-on databases: two-layer backup + visible dump summary**
   (ADR-048 Primitive 3 evolution). Every add-on database (MariaDB/MySQL,
   PostgreSQL, MongoDB, SQLite) is now captured two ways in a bundle: the

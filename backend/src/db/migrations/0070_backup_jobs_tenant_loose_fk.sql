@@ -1,0 +1,11 @@
+-- Retain a deleted tenant's off-site backup bundles for their retention window
+-- (2026-07-16). They are a deleted tenant's ONLY recovery path — the DR
+-- recover-tenant flow and cross-cluster migration import both read them back.
+--
+-- Drop the ON DELETE CASCADE FK on backup_jobs.tenant_id so the tracking rows
+-- SURVIVE the tenant row's deletion. tenant_id becomes a LOOSE reference (kept
+-- NOT NULL, value preserved). The retention.ts reaper then expires the off-site
+-- bundles by expires_at (retentionDays, default 30) instead of the delete hook
+-- purging them immediately. The restic password derives from the preserved
+-- tenant_id, so migration import can still read the bundle.
+ALTER TABLE "backup_jobs" DROP CONSTRAINT IF EXISTS "backup_jobs_tenant_id_tenants_id_fk";

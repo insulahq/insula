@@ -18,6 +18,7 @@ export default function LimitsPage() {
 
   const [apiRateLimit, setApiRateLimit] = useState(100);
   const [snapshotExpiryHours, setSnapshotExpiryHours] = useState(48);
+  const [deletedTenantBundleRetentionDays, setDeletedTenantBundleRetentionDays] = useState(30);
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
   const [saved, setSaved] = useState(false);
@@ -27,6 +28,7 @@ export default function LimitsPage() {
     if (settings) {
       setApiRateLimit(settings.apiRateLimit);
       setSnapshotExpiryHours(settings.snapshotExpiryHours);
+      setDeletedTenantBundleRetentionDays(settings.deletedTenantBundleRetentionDays ?? 30);
       setTimezone(settings.timezone ?? 'UTC');
       setCurrency(settings.currency ?? 'USD');
     }
@@ -36,7 +38,7 @@ export default function LimitsPage() {
     setSaved(false);
     setSaveError(null);
     updateSettings.mutate(
-      { apiRateLimit, snapshotExpiryHours, timezone, currency },
+      { apiRateLimit, snapshotExpiryHours, deletedTenantBundleRetentionDays, timezone, currency },
       {
         onSuccess: () => {
           setSaved(true);
@@ -109,6 +111,24 @@ export default function LimitsPage() {
             </div>
             <p className="text-xs text-gray-400 mt-1">
               How long on-server tenant volume snapshots are kept before auto-deletion. These are short-term PVC recovery points, not backups (1–720 h).
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Deleted-Tenant Backup Retention</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={deletedTenantBundleRetentionDays}
+                onChange={(e) => setDeletedTenantBundleRetentionDays(Math.max(1, Math.min(3650, Number(e.target.value) || 1)))}
+                className={INPUT_CLASS}
+                min={1}
+                max={3650}
+                data-testid="deleted-tenant-bundle-retention-input"
+              />
+              <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">days</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              When a tenant is deleted its off-site backup bundles are retained (not purged) for at least this many days — they are the deleted tenant&apos;s only DR / migration recovery path — then auto-reaped. Existing bundles already scheduled to live longer keep their later expiry (1–3650 days).
             </p>
           </div>
           <div>
