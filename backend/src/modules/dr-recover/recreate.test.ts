@@ -42,6 +42,8 @@ function makeDb(selectQueue: readonly Row[][]) {
         return Promise.resolve(undefined);
       },
     }),
+    // Idempotent pre-clear of any retained catalog rows before re-registration.
+    delete: () => ({ where: () => Promise.resolve(undefined) }),
   };
   return { db, inserts };
 }

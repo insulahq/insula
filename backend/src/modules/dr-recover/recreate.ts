@@ -244,8 +244,17 @@ export async function recreateTenantFromBundle(
   // ── 5. Register a local backup_jobs + backup_components index for the
   //       bundle so the EXISTING recover flow (§2 bundle lookup, §3 component
   //       detection, and every restore-cart executor's resolveStoreForBundle)
-  //       finds it — the source cluster's job row was cascade-dropped with the
-  //       tenant. Mirrors POST /admin/tenant-bundles/import-finalize. ─────────
+  //       finds it. Mirrors POST /admin/tenant-bundles/import-finalize.
+  //
+  //       Idempotency: on a CROSS-cluster import the destination has no catalog
+  //       rows for this bundle, but for a SAME-cluster recover/import of a
+  //       DELETED tenant the rows now SURVIVE (retain-bundles: backup_jobs has a
+  //       loose FK so the bundle stays recoverable), which used to abort here
+  //       with `backup_jobs_pkey` (and duplicated component rows). Clear any
+  //       existing catalog rows for this bundle first so the re-registration is
+  //       idempotent + authoritative for the recovered tenant. ────────────────
+  await app.db.delete(backupComponents).where(eq(backupComponents.backupJobId, bundleId));
+  await app.db.delete(backupJobs).where(eq(backupJobs.id, bundleId));
   const now = new Date();
   await app.db.insert(backupJobs).values({
     id: bundleId,
