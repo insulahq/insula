@@ -84,24 +84,24 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "2026.7.1-rc.29"
+    newTag: "2026.6.16"
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "2026.7.1-rc.29"
+    newTag: "2026.6.16"
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "2026.7.1-rc.29"
+    newTag: "2026.6.16"
   # Internal DaemonSet/sidecar images — timestamp-sha tagged by each image's own
   # CI (.github/scripts/pin-image-tag.sh pins them in overlays/development).
   # cut-release.sh snapshots the current development pins here at cut time so the
   # release tag is reproducible (placeholders until the first cut).
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20260622122941-6554a7c"
+    newTag: "20260610095807-ab58b4d"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260624145651-862bae3"
+    newTag: "20260610095843-ab58b4d"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20260622123045-6554a7c"
+    newTag: "20260610095804-ab58b4d"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260622122902-6554a7c"
+    newTag: "20260610095620-ab58b4d"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260715225805-1e122f3"
+    newTag: "20260610095545-ab58b4d"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260715221725-c2c0ad7"
+    newTag: "20260616013149-3c95ecd"
