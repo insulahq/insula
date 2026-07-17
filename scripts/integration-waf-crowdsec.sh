@@ -1319,15 +1319,22 @@ except Exception:
   fi
 
   # K7: reconciler picked it up — modsec-crs ConfigMap contains the
-  # rendered SecRule. Same retry pattern as Phase H.
+  # rendered SecRule. Mirror Phase H4's poll budget (~3 min + final re-fetch):
+  # at the tail of a full serial pass on the churned single-node cluster the
+  # reconcile→ConfigMap propagation needs well over the old ~10s window
+  # (f3a48d49 widened H4 but left K7 at the tight budget → false failure).
   k_cm=""
-  for _i in 1 2 3 4 5; do
+  for _i in $(seq 1 90); do
     sleep 2
     k_cm=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
     if echo "$k_cm" | grep -qE "ctl:ruleRemoveTargetById=$K_RULE_ID;ARGS_NAMES"; then
       break
     fi
   done
+  # Final re-fetch so the assertion reads the freshest CM state (mirrors H4).
+  if ! echo "$k_cm" | grep -qE "ctl:ruleRemoveTargetById=$K_RULE_ID;ARGS_NAMES"; then
+    k_cm=$(kubectl_run "get configmap -n traefik modsec-crs-exclusions-dynamic -o jsonpath='{.data.REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC\\.conf}'" 2>&1)
+  fi
   if echo "$k_cm" | grep -qE "ctl:ruleRemoveTargetById=$K_RULE_ID;ARGS_NAMES"; then
     ok "K7: ConfigMap rendered SecRule for tenant-scoped exclusion"
   else

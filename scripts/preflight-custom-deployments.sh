@@ -69,11 +69,11 @@ api() {
 }
 
 remote_kubectl() {
-  if [[ -n "$SSH_HOST" ]]; then
-    ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_HOST" "$KUBECTL $(printf '%q ' "$@")"
-  else
-    $KUBECTL "$@"
-  fi
+  # $KUBECTL is already cluster-reachable (scripts/lib/kubectl-remote.sh does the
+  # SSH hop + arg-quoting itself). Do NOT wrap it in another ssh — that would try
+  # to exec the LOCAL shim path on the remote node ("No such file or directory")
+  # and every pod-status probe would silently read an empty phase, timing out.
+  $KUBECTL "$@"
 }
 
 TOKEN=$(login_token)

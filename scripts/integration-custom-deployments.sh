@@ -103,11 +103,11 @@ api_status() {
 }
 
 remote_kubectl() {
-  if [[ -n "$SSH_HOST" ]]; then
-    ssh -i "$SSH_KEY" $SSH_OPTS "$SSH_HOST" "$KUBECTL $(printf '%q ' "$@")"
-  else
-    $KUBECTL "$@"
-  fi
+  # $KUBECTL is already cluster-reachable (scripts/lib/kubectl-remote.sh does the
+  # SSH hop + arg-quoting itself). Do NOT wrap it in another ssh — that would try
+  # to exec the LOCAL shim path on the remote node ("No such file or directory")
+  # and every pod-status probe would silently read an empty phase, timing out.
+  $KUBECTL "$@"
 }
 
 # Wait for a Pod with label `app=<name>` in `<ns>` to reach Running
@@ -155,6 +155,29 @@ import json,sys; print(json.load(sys.stdin)['data']['kubernetesNamespace'])
 " 2>/dev/null)
 [[ -z "$TENANT_NS" ]] && { echo "FATAL: client has no kubernetesNamespace" >&2; exit 2; }
 info "Tenant namespace: $TENANT_NS"
+
+# Pre-run sweep: a prior run that crashed BEFORE its delete scenario leaks its
+# cd-* Deployment, whose Running pod holds tenant quota — so on the reused test
+# client the quota fills up and NEW deployment pods get "forbidden: exceeded
+# quota" (the pod then never reaches Running and the run fails). Delete any
+# leftover custom deployments for this tenant up front so the run starts from a
+# clean quota, regardless of how previous runs exited.
+sweep_existing_custom_deployments() {
+  local ids id n=0
+  ids=$(api GET "/tenants/$TENANT_ID/custom-deployments" | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin).get('data',[])
+except Exception: d=[]
+for x in (d if isinstance(d,list) else d.get('items',[])):
+    if isinstance(x,dict) and x.get('id'): print(x['id'])
+" 2>/dev/null)
+  for id in $ids; do
+    [[ -z "$id" ]] && continue
+    api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$id" "" >/dev/null 2>&1 && n=$((n+1))
+  done
+  if [[ "$n" -gt 0 ]]; then info "pre-run sweep: deleted $n leftover custom deployment(s) — waiting for quota release"; sleep 8; else info "pre-run sweep: no leftovers"; fi
+}
+sweep_existing_custom_deployments
 
 STAMP=$(date +%s)
 SIMPLE_NAME="cd-simple-$STAMP"
