@@ -143,21 +143,29 @@ export async function resolveDirectStoreForBundle(
     });
   }
   if (cfg.storageType === 'ssh') {
-    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted || !cfg.sshPath) {
-      throw new ApiError('CONFIG_INVALID', 'SSH backup target missing required fields', 400);
+    // SSH targets authenticate by private KEY or PASSWORD (the DB enforces at
+    // least one) — e.g. Hetzner storageboxes use a password. Direct reads
+    // (migration source, DR) must honour BOTH, mirroring the backup-rclone-shim
+    // write path; requiring the key alone rejected valid password targets with
+    // "missing required fields".
+    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshPath || (!cfg.sshKeyEncrypted && !cfg.sshPasswordEncrypted)) {
+      throw new ApiError('CONFIG_INVALID', 'SSH backup target missing required fields (host, user, path, and a key or password)', 400);
     }
-    let privateKey: string;
+    let privateKey: string | undefined;
+    let password: string | undefined;
     try {
-      privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
+      if (cfg.sshKeyEncrypted) privateKey = decrypt(cfg.sshKeyEncrypted, encKey);
+      if (cfg.sshPasswordEncrypted) password = decrypt(cfg.sshPasswordEncrypted, encKey);
     } catch (err) {
-      app.log.error({ err, configId: cfg.id }, 'tenant-backup-restore: SSH private-key decryption failed');
-      throw new ApiError('CONFIG_INVALID', 'SSH key decryption failed (encryption key may have rotated)', 500);
+      app.log.error({ err, configId: cfg.id }, 'tenant-backup-restore: SSH credential decryption failed');
+      throw new ApiError('CONFIG_INVALID', 'SSH credential decryption failed (encryption key may have rotated)', 500);
     }
     return new SshBackupStore({
       host: cfg.sshHost,
       port: cfg.sshPort ?? 22,
       user: cfg.sshUser,
       privateKey,
+      password,
       basePath: withClass(cfg.sshPath) ?? cfg.sshPath,
       logFn: (level, ctx, msg) => app.log[level](ctx, msg),
     });
