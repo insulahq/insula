@@ -64,12 +64,19 @@ TUNNEL_BASE="${TUNNEL_BASE:-tunnels.${TENANT_BASE}}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -q}"
 
-# Prefer STAGING_SSH_HOST; fall back to first IP in ~/k8s-staging/servers.txt;
-# last resort is the historical staging1 IP. Strip user@ prefix if present.
+# CONTROL_HOST is the cluster control host that ssh_cp probes over SSH. Prefer
+# the standardized SSH_HOST (root@<ip>, set by integration.env / integration-all);
+# then the legacy STAGING_SSH_HOST; then ~/servers.txt; last resort the doc
+# placeholder. Strip any user@ prefix. (The var was renamed to SSH_HOST during
+# the harness standardization — the old STAGING_SSH_HOST-only derivation left
+# CONTROL_HOST empty here, so EVERY ssh_cp probe silently failed and cluster-state
+# waits timed out despite the namespace/deployment being ready.)
 if [[ -z "${STAGING_SSH_HOST:-}" ]]; then
-  if [[ -r "$HOME/k8s-staging/servers.txt" ]]; then
-    STAGING_SSH_HOST=$(awk '/^staging[0-9]+\.example\.test/ {print $2; exit}' \
-      "$HOME/k8s-staging/servers.txt" 2>/dev/null || true)
+  STAGING_SSH_HOST="${SSH_HOST:-}"
+fi
+if [[ -z "${STAGING_SSH_HOST:-}" ]]; then
+  if [[ -r "$HOME/servers.txt" ]]; then
+    STAGING_SSH_HOST=$(awk '/staging[0-9]/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9.]+$/) {print $i; exit}}' "$HOME/servers.txt" 2>/dev/null || true)
   fi
   STAGING_SSH_HOST="${STAGING_SSH_HOST:-192.0.2.58}"
 fi
@@ -190,7 +197,9 @@ phase1_provision() {
   provision_tenant "$cid" || { fail "private-worker: client provisioning failed"; return 1; }
 
   # Namespace only exists once provisioning ran — assert it from the cluster.
-  wait_for 90 "namespace exists for cid=$cid" "Active" \
+  # 180s is a comfortable margin for provisioning on a loaded single-node cluster
+  # (the ns itself goes Active in seconds once ssh_cp can actually reach the host).
+  wait_for 180 "namespace exists for cid=$cid" "Active" \
     "ssh_cp 'kubectl get ns -l tenant=$cid --no-headers 2>/dev/null'" || return 1
 
   # Resolve the K8s namespace via label (the API returns
@@ -250,9 +259,11 @@ phase1_provision() {
     "ssh_cp \"kubectl -n $ns get deployment private-worker-server -o jsonpath='{.status.readyReplicas}' 2>/dev/null\"" \
     || return 1
 
-  # USER-VISIBLE: per-client tunnel Ingress in platform-system.
-  wait_for 60 "per-client tunnel ingress tunnel-$slug exists in platform-system" "tunnel-$slug" \
-    "ssh_cp \"kubectl -n platform-system get ingress tunnel-$slug --no-headers 2>/dev/null\"" \
+  # USER-VISIBLE: per-client tunnel route in platform-system. The reconciler
+  # exposes the tunnel as a Traefik IngressRoute (CRD), not a core/v1 Ingress —
+  # `kubectl get ingress` never matches it, so probe the IngressRoute.
+  wait_for 60 "per-client tunnel ingressroute tunnel-$slug exists in platform-system" "tunnel-$slug" \
+    "ssh_cp \"kubectl -n platform-system get ingressroute tunnel-$slug --no-headers 2>/dev/null\"" \
     || return 1
 
   # USER-VISIBLE: ExternalName service in platform-system points at the client ns.
@@ -519,19 +530,22 @@ phase4_revoke() {
     docker logs "$DOCKER_AGENT_NAME" 2>&1 | tail -30 >&2 || true
   fi
 
-  # USER-VISIBLE: tenant URL now returns 502 (no upstream).
+  # USER-VISIBLE: after revoke the tenant URL no longer serves the tunnel —
+  # either 5xx (the route lingers but its upstream is gone) or 404 (revoke reaped
+  # the tunnel IngressRoute, so Traefik has no matching route). Both mean the
+  # tunnel is down; which one shows depends on how fast the reconciler reaps.
   if [[ -n "$host" ]]; then
     local code last_code="000"
     for _ in $(seq 1 12); do
       code=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 "https://$host/" 2>/dev/null || echo "000")
       last_code="$code"
-      [[ "$code" == "502" || "$code" == "503" || "$code" == "504" ]] && break
+      [[ "$code" == "502" || "$code" == "503" || "$code" == "504" || "$code" == "404" ]] && break
       sleep 5
     done
-    if [[ "$last_code" == "502" || "$last_code" == "503" || "$last_code" == "504" ]]; then
-      ok "https://$host/ returned $last_code after revoke (upstream gone)"
+    if [[ "$last_code" == "502" || "$last_code" == "503" || "$last_code" == "504" || "$last_code" == "404" ]]; then
+      ok "https://$host/ returned $last_code after revoke (tunnel down)"
     else
-      fail "https://$host/ still returning $last_code after revoke (expected 5xx)"
+      fail "https://$host/ still returning $last_code after revoke (expected 404 or 5xx)"
     fi
   fi
 
@@ -578,11 +592,14 @@ phase5_cleanup() {
   fi
 
   # USER-VISIBLE: cluster-side resources gone.
-  # Reconciler teardown is fire-and-forget after the DELETE returns —
-  # eventual consistency, can take >60s on a busy reconciler.
+  # Reconciler teardown is fire-and-forget after the DELETE returns — eventual
+  # consistency. On a single-node cluster the reap of the private-worker-server
+  # Deployment + tunnel IngressRoute has been observed to take several minutes
+  # (async, scheduler-assisted), so allow a generous 600s. (If reap routinely
+  # exceeds this, treat it as a product-side reap-promptness bug, not a test knob.)
   if [[ -n "$ns" ]]; then
     local ten=0
-    while (( ten < 360 )); do
+    while (( ten < 600 )); do
       if ssh_cp "kubectl -n $ns get deployment private-worker-server 2>&1" \
           | grep -qE 'NotFound|not found'; then
         ok "Deployment private-worker-server in $ns is gone"
@@ -591,23 +608,23 @@ phase5_cleanup() {
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 360 )); then
-      fail "Deployment private-worker-server still exists in $ns after 360s"
+    if (( ten >= 600 )); then
+      fail "Deployment private-worker-server still exists in $ns after 600s"
     fi
   fi
   if [[ -n "$slug" ]]; then
     local ten=0
-    while (( ten < 360 )); do
-      if ssh_cp "kubectl -n platform-system get ingress tunnel-$slug 2>&1" \
+    while (( ten < 600 )); do
+      if ssh_cp "kubectl -n platform-system get ingressroute tunnel-$slug 2>&1" \
           | grep -qE 'NotFound|not found'; then
-        ok "Ingress tunnel-$slug in platform-system is gone"
+        ok "IngressRoute tunnel-$slug in platform-system is gone"
         break
       fi
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 360 )); then
-      fail "Ingress tunnel-$slug still present in platform-system after 360s"
+    if (( ten >= 600 )); then
+      fail "IngressRoute tunnel-$slug still present in platform-system after 600s"
     fi
   fi
 
