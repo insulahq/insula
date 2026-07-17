@@ -13,6 +13,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Cross-cluster migration now reads password-authenticated SSH sources.** The
+  migration source direct-read (`resolveDirectStoreForBundle` → `SshBackupStore`,
+  used by `POST /admin/migration/list-tenants` + import and by DR direct reads)
+  only accepted SSH targets with an inline private KEY, and rejected
+  password-authenticated SSH targets (e.g. Hetzner storageboxes, which the
+  backup-rclone-shim write path and backup-target test-connection already
+  support) with `SSH backup target missing required fields`. It now honours
+  `ssh_password_encrypted` as well as `ssh_key_encrypted` (the DB already
+  requires at least one), so a migration source using SSH password auth is
+  read directly with no rebind. Direct-read target coverage is now: S3
+  (access+secret key), SSH (key **or** password). CIFS remains shim-only —
+  the backend has no in-process SMB client — so a CIFS migration source still
+  returns `NOT_IMPLEMENTED` rather than a confusing "missing fields" error.
 - **Bundle verifier now actually probes files reachability.** The
   `POST /admin/tenant-bundles/:id/verify` (and `verify-all`) endpoints reported
   the `files` component by statting a `files/archive.tar.gz` object under the

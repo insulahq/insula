@@ -71,13 +71,18 @@ export interface SshBackupStoreConfig {
   readonly port?: number;
   readonly user: string;
   /**
-   * SSH private key in PLAINTEXT PEM/OpenSSH format. Decryption
-   * happens in the route layer (resolveStore) before construction;
-   * this module never sees the encrypted blob.
+   * SSH private key in PLAINTEXT PEM/OpenSSH format, OR omit and set
+   * `password` for password auth. Decryption happens in the route layer
+   * (resolveStore) before construction; this module never sees the encrypted
+   * blob. At least one of `privateKey` / `password` must be set — SSH backup
+   * targets authenticate by key OR password (Hetzner storageboxes use a
+   * password), mirroring the backup-rclone-shim's SFTP upstreams.
    */
-  readonly privateKey: string;
+  readonly privateKey?: string;
   /** Optional passphrase for the private key (almost always empty). */
   readonly passphrase?: string;
+  /** Plaintext SSH password (alternative to privateKey). */
+  readonly password?: string;
   /** Absolute base path on the remote host (e.g. `/backups/k8s-staging`). */
   readonly basePath: string;
   /** Optional logger — `(level, ctx, msg) => app.log[level](ctx, msg)`. */
@@ -135,8 +140,12 @@ export class SshBackupStore implements BackupStore {
       host: this.config.host,
       port: this.config.port ?? 22,
       username: this.config.user,
-      privateKey: this.config.privateKey,
-      passphrase: this.config.passphrase,
+      // Key OR password auth — pass only what's configured so ssh2 doesn't
+      // attempt key auth with an empty key on a password-only target.
+      ...(this.config.privateKey
+        ? { privateKey: this.config.privateKey, passphrase: this.config.passphrase }
+        : {}),
+      ...(this.config.password ? { password: this.config.password } : {}),
       readyTimeout: 15_000,
       keepaliveInterval: 5_000,
       // Trust-on-first-use is intentional for an operator-configured
@@ -313,8 +322,11 @@ export class SshBackupStore implements BackupStore {
         host: this.config.host,
         port: this.config.port ?? 22,
         username: this.config.user,
-        privateKey: this.config.privateKey,
-        passphrase: this.config.passphrase,
+        // Key OR password auth (see withSftp).
+        ...(this.config.privateKey
+          ? { privateKey: this.config.privateKey, passphrase: this.config.passphrase }
+          : {}),
+        ...(this.config.password ? { password: this.config.password } : {}),
         readyTimeout: 15_000,
         hostVerifier: () => true,
       });
