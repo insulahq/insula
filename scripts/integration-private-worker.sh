@@ -55,7 +55,11 @@ ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 TENANT_BASE="${TENANT_BASE:-staging.example.test}"
-TUNNEL_BASE="${TUNNEL_BASE:-tunnels.staging.example.test}"
+# Derive the tunnel anchor from the resolved TENANT_BASE (apex), not a fixed
+# example.test placeholder — otherwise the DNS prereq aborts against the real
+# staging apex. TUNNEL_BASE is gate-only (agent dial-in uses PRIVATE_WORKER_TOKEN),
+# so tunnels.<apex> just needs to fall under the tenant wildcard, which it does.
+TUNNEL_BASE="${TUNNEL_BASE:-tunnels.${TENANT_BASE}}"
 
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 -q}"
