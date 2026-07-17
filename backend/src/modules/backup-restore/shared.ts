@@ -160,13 +160,19 @@ export async function resolveDirectStoreForBundle(
       app.log.error({ err, configId: cfg.id }, 'tenant-backup-restore: SSH credential decryption failed');
       throw new ApiError('CONFIG_INVALID', 'SSH credential decryption failed (encryption key may have rotated)', 500);
     }
+    // The shim writes tenant bundles HOME-RELATIVE on the SFTP target
+    // (rclone-config's upstreamRootPath → stripSlashes drops the LEADING slash;
+    // storagebox SFTP is chrooted to $HOME). `withClass` keeps the leading slash,
+    // so a direct read would hit an absolute path the shim never wrote to and
+    // find 0 bundles. Strip both slashes here to match the shim's write path.
+    const sshBase = [cfg.sshPath.replace(/^\/+|\/+$/g, ''), classSub].filter((s) => s.length > 0).join('/');
     return new SshBackupStore({
       host: cfg.sshHost,
       port: cfg.sshPort ?? 22,
       user: cfg.sshUser,
       privateKey,
       password,
-      basePath: withClass(cfg.sshPath) ?? cfg.sshPath,
+      basePath: sshBase || cfg.sshPath,
       logFn: (level, ctx, msg) => app.log[level](ctx, msg),
     });
   }

@@ -48,7 +48,8 @@ describe('resolveDirectStoreForBundle — target types + auth variations', () =>
     const c = sshctor.mock.calls[0][0] as Record<string, unknown>;
     expect(c.privateKey).toBe('dec(KEY)');
     expect(c.password).toBeUndefined();
-    expect(c.basePath).toBe('/backups/tenant');
+    // HOME-RELATIVE (leading slash stripped) to match the shim's SFTP write path.
+    expect(c.basePath).toBe('backups/tenant');
   });
 
   it('SSH PASSWORD target → SshBackupStore with password (no privateKey)', async () => {
