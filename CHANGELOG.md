@@ -13,6 +13,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **DR-recover / migration-import of a DELETED tenant is idempotent again.** Since
+  deleted tenants now RETAIN their bundle catalog (loose FK — the `backup_jobs`
+  row survives so the bundle stays recoverable), re-importing/recovering that
+  tenant on the SAME cluster aborted with `backup_jobs_pkey` (and duplicated
+  `backup_components` rows) — the recover re-registered a bundle index that
+  assumed the source row had been cascade-dropped. `dr-recover` now clears any
+  existing catalog rows for the bundle before re-registering, so both
+  cross-cluster import (nothing to clear) and same-cluster recover work.
 - **Cross-cluster migration now reads password-authenticated SSH sources.** The
   migration source direct-read (`resolveDirectStoreForBundle` → `SshBackupStore`,
   used by `POST /admin/migration/list-tenants` + import and by DR direct reads)
