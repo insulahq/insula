@@ -56,10 +56,19 @@ if [[ -n "${TOKEN:-}" ]]; then ok "using preset TOKEN"; else
   [[ "$STATUS" == 200 ]] || { no "login $STATUS"; echo "$BODY"|rd; exit 1; }
   TOKEN=$(printf '%s' "$BODY"|jq -r '.data.token'); ok "admin login"
 fi
-parse "$(api GET /admin/backup-configs '' "$TOKEN")"
-CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.active==true or .isActive==true)|.id'|head -1)
-[[ -n "$CFG" && "$CFG" != null ]] || { echo "  SKIP (77): no active off-site BackupStore" >&2; exit 77; }
-ok "off-site target (migration source) = $CFG"
+# The migration SOURCE must be the target the tenant class actually WRITES to:
+# tenant-bundle capture routes by CLASS through the backup-rclone-shim and ignores
+# the request's targetConfigId, so scanning any other "active" target finds nothing
+# (scanned=0). Resolve the tenant-class binding from the shim; fall back to
+# first-active only when the shim isn't present (local/dev, no class routing).
+parse "$(api GET /admin/backup-rclone-shim/assignments '' "$TOKEN")"
+CFG=$(printf '%s' "$BODY"|jq -r '.data.assignments[]?|select(.className=="tenant")|.targetId'|head -1)
+if [[ -z "$CFG" || "$CFG" == null ]]; then
+  parse "$(api GET /admin/backup-configs '' "$TOKEN")"
+  CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.active==true or .isActive==true)|.id'|head -1)
+fi
+[[ -n "$CFG" && "$CFG" != null ]] || { echo "  SKIP (77): no tenant-class backup binding / active off-site BackupStore" >&2; exit 77; }
+ok "off-site target (migration source, tenant-class binding) = $CFG"
 parse "$(api GET /plans '' "$TOKEN")"; PLAN=$(printf '%s' "$BODY"|jq -r '.data[]|select(.name=="Premium" or .name=="Business").id'|head -1); [[ -n "$PLAN" && "$PLAN" != null ]] || PLAN=$(printf '%s' "$BODY"|jq -r '.data[-1].id')
 parse "$(api GET '/regions?limit=1' '' "$TOKEN")"; REGION=$(printf '%s' "$BODY"|jq -r '.data[0].id')
 
@@ -91,6 +100,17 @@ wait_ns_gone "$NS" && ok "tenant + namespace $NS gone (now exists only as an off
 
 cyn "4. migration list-tenants — scan the mounted source target"
 parse "$(api POST /admin/migration/list-tenants "{\"targetConfigId\":\"$CFG\"}" "$TOKEN")"
+# Migration reads the source target DIRECTLY (a foreign cluster's store), so it
+# needs inline credentials on the target row. A tenant class bound to a shim-only
+# target (e.g. an SSH storagebox whose DB row has no inline ssh key — the shim
+# authenticates via a mounted secret) cannot be a direct migration source. That's
+# an environment precondition, not a product defect — skip with a clear reason.
+if printf '%s' "$BODY" | grep -q MIGRATION_SOURCE_INVALID; then
+  echo "  SKIP (77): tenant-class target $CFG is not a valid DIRECT migration source" >&2
+  echo "  (its DB row lacks inline read credentials — e.g. an SSH storagebox written via the shim)." >&2
+  echo "  Bind the tenant class to a directly-readable target (S3/SFTP with inline creds) to exercise migration." >&2
+  exit 77
+fi
 [[ "$STATUS" =~ ^20 ]] || { no "list-tenants $STATUS"; echo "$BODY"|rd; exit 1; }
 printf '%s' "$BODY"|jq -e --arg t "$TID" '.data.tenants[]|select(.tenantId==$t and .alreadyPresent==false)' >/dev/null \
   && ok "list-tenants found the deleted tenant $TID (alreadyPresent=false)" || { no "list-tenants did NOT surface $TID"; printf '%s' "$BODY"|jq -r '.data.tenants[]?|"    \(.tenantId) \(.tenantName) present=\(.alreadyPresent)"'|rd; exit 1; }

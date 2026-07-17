@@ -109,18 +109,18 @@ BST=timeout; for i in $(seq 1 150); do
 done
 [[ "$BST" == completed ]] || { no "bundle terminal=$BST"; printf '%s' "$BODY"|jq -r '.data.components[]?|"    \(.component) \(.status) \(.lastError//"")"'|rd; exit 1; }
 ok "bundle $BID completed"
-# confirm the predump landed in the flat exports/ dir on the PVC
+# Redesign (20c16753): after the files snapshot captures it, the predump is
+# DELETED from the live tenant PVC (a 2-5 GB PVC can't hold a retention window of
+# full dumps). databases-by-id re-fetches it from the files restic snapshot on
+# restore (fetchPredumpsFromSnapshot) — which is why step 6 below still succeeds.
+# So assert the predump is GONE from the live PVC now (DB-pod subPath and FM /data
+# are the same tenant PVC), mirroring integration-db-dumps-e2e.sh.
 FMPOD=$(ssh_node "kubectl -n $NS get pod -l app=file-manager --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'" </dev/null 2>/dev/null||true)
 DUMP="predump-drdata-$BID.sql"
-# The predump lands in the DB pod's OWN storage subPath (exportDatabaseToPvc's
-# move to exports/ is a silent no-op for DBs), so find it wherever it is.
-# The predump lands in the DB pod's OWN storage subPath (database/<engine>/
-# <name>/), NOT the file-manager tenant PVC — so search the DB pod first (that's
-# where the restore executor finds it), then the FM PVC as a fallback.
-_pd_found=""
-if ssh_node "kubectl -n $NS exec $DB_POD -c $DB_CONTAINER -- sh -c 'find / -type f -name \"$DUMP\" 2>/dev/null | head -1'" </dev/null 2>/dev/null | grep -qF "$DUMP"; then _pd_found=1; fi
-if [[ -z "$_pd_found" && -n "$FMPOD" ]] && ssh_node "kubectl -n $NS exec $FMPOD -c file-manager -- find /data -type f -name '$DUMP'" </dev/null 2>/dev/null | grep -qF "$DUMP"; then _pd_found=1; fi
-[[ -n "$_pd_found" ]] && ok "predump present on PVC ($DUMP)" || no "predump $DUMP NOT found on PVC (DB pod + FM PVC)"
+_pd_present=""
+if ssh_node "kubectl -n $NS exec $DB_POD -c $DB_CONTAINER -- sh -c 'find / -type f -name \"$DUMP\" 2>/dev/null | head -1'" </dev/null 2>/dev/null | grep -qF "$DUMP"; then _pd_present=1; fi
+if [[ -z "$_pd_present" && -n "$FMPOD" ]] && ssh_node "kubectl -n $NS exec $FMPOD -c file-manager -- find /data -type f -name '$DUMP'" </dev/null 2>/dev/null | grep -qF "$DUMP"; then _pd_present=1; fi
+[[ -z "$_pd_present" ]] && ok "predump deleted from live PVC after snapshot ($DUMP lives only in the restic snapshot; restore re-fetches it)" || no "predump $DUMP STILL on live PVC (should be deleted after snapshot)"
 
 cyn "5. SIMULATE CORRUPTION: delete the rows (DB stays running)"
 db_sql "DELETE FROM drdata.t" >/dev/null
@@ -129,8 +129,9 @@ db_sql "DELETE FROM drdata.t" >/dev/null
 cyn "6. RESTORE via restore cart: databases-by-id"
 parse "$(api POST /admin/restores/carts "{\"tenantId\":\"$TENANT_ID\",\"description\":\"dr-db\"}" "$TOKEN")"
 CID=$(printf '%s' "$BODY"|jq -r '.data.id // empty'); [[ -n "$CID" ]] || { no "cart create $STATUS"; echo "$BODY"|rd; exit 1; }
-# The predump persists on the live PVC in the DB's data dir, so databases-by-id
-# finds + imports it in place — no files-paths (which would overwrite live DB files).
+# databases-by-id re-fetches the predump from the files restic snapshot into each
+# DB's data dir and imports it in place — no files-paths (which would overwrite
+# live DB files). (The predump no longer persists on the live PVC — see step 4.)
 parse "$(api POST "/admin/restores/carts/$CID/items" "{\"bundleId\":\"$BID\",\"type\":\"databases-by-id\",\"selector\":{\"kind\":\"ids\",\"deploymentIds\":[\"$DEP_ID\"]}}" "$TOKEN")"
 [[ "$STATUS" == 201 ]] || { no "add databases-by-id item $STATUS"; echo "$BODY"|rd; exit 1; }
 parse "$(api POST "/admin/restores/carts/$CID/execute" '{}' "$TOKEN")"
