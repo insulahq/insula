@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.28] - 2026-07-17
+
 ### Fixed
 - **Bundle verifier now actually probes files reachability.** The
   `POST /admin/tenant-bundles/:id/verify` (and `verify-all`) endpoints reported
