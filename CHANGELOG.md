@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.29] - 2026-07-17
+
 ### Fixed
 - **Cross-cluster migration now reads password-authenticated SSH sources.** The
   migration source direct-read (`resolveDirectStoreForBundle` → `SshBackupStore`,
