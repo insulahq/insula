@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.31] - 2026-07-17
+
 ### Fixed
 - **DR-recover / migration-import of a DELETED tenant is idempotent again.** Since
   deleted tenants now RETAIN their bundle catalog (loose FK — the `backup_jobs`
