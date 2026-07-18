@@ -179,6 +179,40 @@ for x in (d if isinstance(d,list) else d.get('items',[])):
 }
 sweep_existing_custom_deployments
 
+# Ensure the picked tenant has enough memory quota for the compose scenario.
+# Compose stands up 2 services (128Mi each by default) ON TOP of the tenant's
+# existing catalog workload — ~320Mi vs the 256Mi default-plan quota. This suite
+# auto-picks the FIRST active client, so depending on a hand-tuned tenant made it
+# pass standalone but risk the compose quota wall in a full run whenever a
+# different (default-plan) client is picked. Bump this tenant's memory override to
+# 1Gi so the suite is self-sufficient. Idempotent: a no-op when the override is
+# already ≥1Gi, so it never shrinks a tenant another suite sized larger. Response
+# is camelCase (memoryLimitOverride, a string Gi); the PATCH body is snake_case
+# (updateTenantSchema); override values are in Gi.
+ensure_tenant_quota() {
+  local need_gi=1 cur
+  cur=$(api GET "/tenants/$TENANT_ID" | python3 -c "
+import json,sys
+try: v=json.load(sys.stdin)['data'].get('memoryLimitOverride')
+except Exception: v=None
+print(v if v not in (None,'') else 0)
+" 2>/dev/null)
+  if python3 -c "import sys; sys.exit(0 if float('${cur:-0}') >= $need_gi else 1)" 2>/dev/null; then
+    info "tenant memory override already ${cur}Gi (≥${need_gi}Gi) — compose fits"
+    return 0
+  fi
+  info "bumping tenant memory override → ${need_gi}Gi (compose needs ~320Mi > 256Mi default plan)"
+  local st
+  st=$(api_status PATCH "/tenants/$TENANT_ID" "{\"memory_limit_override\":$need_gi,\"cpu_limit_override\":1}")
+  if [[ "$st" =~ ^20 ]]; then
+    info "override PATCH → $st; waiting ~15s for the quota-reconciler to push the ResourceQuota"
+    sleep 15
+  else
+    info "override PATCH returned $st (continuing; compose may hit the quota wall)"
+  fi
+}
+ensure_tenant_quota
+
 STAMP=$(date +%s)
 SIMPLE_NAME="cd-simple-$STAMP"
 COMPOSE_NAME="cd-cmp-$STAMP"
