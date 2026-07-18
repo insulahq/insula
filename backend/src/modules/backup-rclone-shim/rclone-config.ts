@@ -371,7 +371,7 @@ export function upstreamRootPath(t: BackupTargetConfig): string {
  * Returns the conf section content + any sshKey/posixMount hints for
  * the reconciler.
  */
-function renderUpstreamSection(
+export function renderUpstreamSection(
   sectionName: string,
   t: BackupTargetConfig,
 ): {

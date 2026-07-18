@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // bypassing the backup-rclone-shim). It must support every target type + auth
 // variation the platform can store: S3 (access+secret key), SSH by KEY, and SSH
 // by PASSWORD. CIFS has no in-backend SMB client, so it stays NOT_IMPLEMENTED.
-const { s3ctor, sshctor } = vi.hoisted(() => ({ s3ctor: vi.fn(), sshctor: vi.fn() }));
+const { s3ctor, sshctor, rclonector } = vi.hoisted(() => ({ s3ctor: vi.fn(), sshctor: vi.fn(), rclonector: vi.fn() }));
 
 vi.mock('../oidc/crypto.js', () => ({ decrypt: (v: string) => `dec(${v})` }));
 vi.mock('../tenant-bundles/s3-backup-store.js', () => ({
@@ -13,6 +13,9 @@ vi.mock('../tenant-bundles/s3-backup-store.js', () => ({
 }));
 vi.mock('../tenant-bundles/ssh-backup-store.js', () => ({
   SshBackupStore: class { constructor(c: unknown) { sshctor(c); } },
+}));
+vi.mock('../tenant-bundles/rclone-backup-store.js', () => ({
+  RcloneBackupStore: class { constructor(c: unknown) { rclonector(c); } },
 }));
 
 import { resolveDirectStoreForBundle } from './shared.js';
@@ -27,7 +30,7 @@ function makeApp(cfg: Record<string, unknown> | null) {
 
 const sshBase = { id: 'c1', storageType: 'ssh', sshHost: 'box', sshUser: 'u1', sshPath: '/backups', sshPort: 23 };
 
-beforeEach(() => { s3ctor.mockReset(); sshctor.mockReset(); });
+beforeEach(() => { s3ctor.mockReset(); sshctor.mockReset(); rclonector.mockReset(); });
 
 describe('resolveDirectStoreForBundle — target types + auth variations', () => {
   it('S3 target → S3BackupStore with decrypted keys + class-prefixed path', async () => {
@@ -73,8 +76,29 @@ describe('resolveDirectStoreForBundle — target types + auth variations', () =>
     expect(sshctor).not.toHaveBeenCalled();
   });
 
-  it('CIFS target → NOT_IMPLEMENTED (no in-backend SMB client; shim-only)', async () => {
+  it('CIFS target → RcloneBackupStore (smb via rclone), home-relative to the share', async () => {
+    await resolveDirectStoreForBundle(makeApp({
+      id: 'c1', name: 'cifsbox', storageType: 'cifs',
+      cifsHost: 'nas.example', cifsShare: 'backups', cifsPath: 'sub', cifsUser: 'u1',
+      cifsPasswordEncrypted: 'PW', cifsDomain: 'WG', cifsPort: 445,
+    }), 'c1', { classSubpath: 'tenant' });
+    expect(rclonector).toHaveBeenCalledTimes(1);
+    const c = rclonector.mock.calls[0][0] as { rcloneEnv: Record<string, string>; remoteName: string; basePath: string };
+    expect(c.remoteName).toBe('src');
+    // basePath = <share>[/<path>]/<class> (upstreamRootPath + classSubpath).
+    expect(c.basePath).toBe('backups/sub/tenant');
+    // Config passed as RCLONE_CONFIG_SRC_* env, from the shim's own renderer.
+    expect(c.rcloneEnv.RCLONE_CONFIG_SRC_TYPE).toBe('smb');
+    expect(c.rcloneEnv.RCLONE_CONFIG_SRC_HOST).toBe('nas.example');
+    expect(c.rcloneEnv.RCLONE_CONFIG_SRC_USER).toBe('u1');
+    // password is present + rclone-obscured (not the plaintext dec(PW)).
+    expect(c.rcloneEnv.RCLONE_CONFIG_SRC_PASS).toBeDefined();
+    expect(c.rcloneEnv.RCLONE_CONFIG_SRC_PASS).not.toBe('dec(PW)');
+  });
+
+  it('CIFS target missing required fields → CONFIG_INVALID', async () => {
     await expect(resolveDirectStoreForBundle(makeApp({ id: 'c1', storageType: 'cifs', cifsHost: 'h', cifsShare: 's' }), 'c1'))
-      .rejects.toMatchObject({ code: 'NOT_IMPLEMENTED' });
+      .rejects.toMatchObject({ code: 'CONFIG_INVALID' });
+    expect(rclonector).not.toHaveBeenCalled();
   });
 });

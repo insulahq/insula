@@ -29,6 +29,12 @@ import type {
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from '../tenant-bundles/s3-backup-store.js';
 import { SshBackupStore } from '../tenant-bundles/ssh-backup-store.js';
+import { RcloneBackupStore } from '../tenant-bundles/rclone-backup-store.js';
+import {
+  renderUpstreamSection,
+  upstreamRootPath,
+  type BackupTargetConfig,
+} from '../backup-rclone-shim/rclone-config.js';
 import type { BackupStore } from '../tenant-bundles/bundle-store.js';
 import { resolveShimFirstBackupStore } from '../tenant-bundles/shim-backup-store.js';
 import { execConfigTablesItem } from './executors/config-tables.js';
@@ -176,7 +182,62 @@ export async function resolveDirectStoreForBundle(
       logFn: (level, ctx, msg) => app.log[level](ctx, msg),
     });
   }
+  if (cfg.storageType === 'cifs') {
+    // CIFS/SMB has no native BackupStore (Node has no SMB client) — read it
+    // via the rclone CLI, reusing the shim's own target-agnostic section
+    // renderer so obscured-password + SMB semantics match the write path
+    // exactly. This is what lets a CIFS source be a valid migration/DR source.
+    if (!cfg.cifsHost || !cfg.cifsShare || !cfg.cifsUser || !cfg.cifsPasswordEncrypted) {
+      throw new ApiError('CONFIG_INVALID', 'CIFS backup target missing required fields (host, share, user, password)', 400);
+    }
+    let cifsPassword: string;
+    try {
+      cifsPassword = decrypt(cfg.cifsPasswordEncrypted, encKey);
+    } catch (err) {
+      app.log.error({ err, configId: cfg.id }, 'tenant-backup-restore: CIFS password decryption failed');
+      throw new ApiError('CONFIG_INVALID', 'CIFS credential decryption failed (encryption key may have rotated)', 500);
+    }
+    const target: BackupTargetConfig = {
+      id: cfg.id,
+      name: cfg.name ?? cfg.id,
+      storageType: 'cifs',
+      cifsHost: cfg.cifsHost,
+      cifsPort: cfg.cifsPort ?? null,
+      cifsShare: cfg.cifsShare,
+      cifsUser: cfg.cifsUser,
+      cifsPassword,
+      cifsDomain: cfg.cifsDomain ?? null,
+      cifsPath: cfg.cifsPath ?? null,
+    };
+    const REMOTE = 'src';
+    const rendered = renderUpstreamSection(REMOTE, target);
+    // basePath = the target's root (share[/path]) + the class subpath, matching
+    // the shim's combined alias `root/<class>` and the direct stores' withClass.
+    const basePath = [upstreamRootPath(target), classSub].filter((s) => s.length > 0).join('/');
+    return new RcloneBackupStore({
+      rcloneEnv: rcloneEnvFromSection(REMOTE, rendered.conf),
+      remoteName: REMOTE,
+      basePath,
+      logFn: (level, ctx, msg) => app.log[level](ctx, msg),
+    });
+  }
   throw new ApiError('NOT_IMPLEMENTED', `Store kind '${cfg.storageType}' not supported`, 501);
+}
+
+/**
+ * Turn a shim-rendered rclone.conf `[section]` block into
+ * `RCLONE_CONFIG_<REMOTE>_<KEY>` env vars so rclone reads the remote's config
+ * from the environment (no secret written to disk). The rendered section is
+ * `[name]\n key = value\n …` (SMB/SFTP passwords already `rclone obscure`d).
+ */
+function rcloneEnvFromSection(remoteName: string, conf: string): Record<string, string> {
+  const env: Record<string, string> = {};
+  const prefix = `RCLONE_CONFIG_${remoteName.toUpperCase()}_`;
+  for (const line of conf.split('\n')) {
+    const m = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.*)$/);
+    if (m) env[`${prefix}${m[1].toUpperCase()}`] = m[2];
+  }
+  return env;
 }
 
 export async function readConfigDump(app: FastifyInstance, bundleId: string): Promise<{ tables: Record<string, unknown[]> }> {

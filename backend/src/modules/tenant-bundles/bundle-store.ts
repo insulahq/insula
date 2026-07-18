@@ -53,8 +53,9 @@ export interface WriteComponentOptions {
 }
 
 export interface BackupStore {
-  /** Backend kind — useful for logging and error attribution. */
-  readonly kind: 'hostpath' | 's3' | 'ssh';
+  /** Backend kind — useful for logging and error attribution. `rclone` is the
+   *  READ-ONLY reader used for migration/DR CIFS sources (see RcloneBackupStore). */
+  readonly kind: 'hostpath' | 's3' | 'ssh' | 'rclone';
 
   /**
    * Reserve a new bundle directory. Idempotent on `(bundleId)`.
@@ -146,4 +147,17 @@ export interface BackupStore {
 
   /** Delete the entire bundle (used by retention enforcement). */
   delete(handle: BundleHandle): Promise<void>;
+}
+
+/**
+ * Coerce a store `kind` to the `backup_target_kind` DB enum (`hostpath|s3|ssh`).
+ * The read-only `rclone` reader (migration/DR CIFS source) has no enum value; it
+ * presents an object-storage-style read view, so record it as `s3` — the same
+ * face the shim already records for CIFS-via-shim writes. The orchestrator never
+ * produces an `rclone` store, so on the write path this is a no-op.
+ */
+export function storeKindToTargetKind(
+  kind: BackupStore['kind'],
+): 'hostpath' | 's3' | 'ssh' {
+  return kind === 'rclone' ? 's3' : kind;
 }

@@ -54,7 +54,15 @@ FROM node:22-alpine
 # this, SFTP-target backups fail with "exec: ssh: executable not
 # found in $PATH". S3-target backups don't need it. Caught from
 # staging 2026-05-10.
-RUN apk add --no-cache openssl age postgresql18-client restic openssh-client
+#
+# rclone is used by modules/tenant-bundles/rclone-backup-store.ts — spawned
+# to READ a FOREIGN backup target of ANY type (S3/SFTP/CIFS) during
+# cross-cluster migration + DR-recover, where the shared backup-rclone-shim
+# (which is scoped to THIS cluster's class bindings) can't reach the source.
+# It's the same rclone the shim uses, but run one-shot against a single
+# rendered target so CIFS/SMB sources are readable (the native S3/SSH stores
+# can't do SMB). Config is passed via RCLONE_CONFIG_* env, never a file.
+RUN apk add --no-cache openssl age postgresql18-client restic openssh-client rclone
 
 WORKDIR /app
 
