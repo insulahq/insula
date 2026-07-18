@@ -383,17 +383,20 @@ if [[ "${INTEGRATION_INCLUDE_FAILURE_SUITES:-}" == "1" ]]; then
     "${SERIAL_POST[@]}"
   )
 fi
-# Staging-destabilizing global mutators — WIRED but opt-in
-# (INTEGRATION_INCLUDE_DISRUPTIVE=1). Kept out of the default run because a
-# mid-run failure degrades the SHARED cluster for other work (and the authors
-# flagged them so): master-user-rotation tampers the webmail master (mail down
-# until the ≤5m auto-heal); mail-external-reachability toggles mail
-# port-exposure (golden-rule-4 territory); postgres-barman-restore WIPES +
-# rebuilds the system-db (a 2nd destructive DB op on top of postgres-pitr);
-# migration-cifs switches the tenant backup class to a CIFS target (rolls the
-# backup-rclone-shim DaemonSet) to prove CIFS-source migration, then restores.
-# All self-restore; run them deliberately. Prepended to SERIAL_POST.
-if [[ "${INTEGRATION_INCLUDE_DISRUPTIVE:-}" == "1" ]]; then
+# Staging-destabilizing global mutators — run BY DEFAULT as part of the canonical
+# full run (2026-07-18, operator decision). Opt OUT with
+# INTEGRATION_INCLUDE_DISRUPTIVE=0 for a lighter sweep that leaves shared globals
+# untouched. They run LAST (prepended to SERIAL_POST, before the terminal
+# postgres-pitr) and every one self-restores, BUT a mid-run failure degrades the
+# SHARED cluster for other work — so don't kick off a full suite while another
+# agent depends on staging. master-user-rotation tampers the webmail master (mail
+# down until the ≤5m auto-heal); mail-external-reachability toggles mail
+# port-exposure (golden-rule-4 — permitted here only as a self-restoring test);
+# postgres-barman-restore WIPES + rebuilds the system-db (a 2nd destructive DB op
+# on top of postgres-pitr); migration-cifs switches the tenant backup class to a
+# CIFS target (rolls the backup-rclone-shim DaemonSet) to prove CIFS-source
+# migration, then restores.
+if [[ "${INTEGRATION_INCLUDE_DISRUPTIVE:-1}" != "0" ]]; then
   SERIAL_POST=(
     "mail-external-reachability:integration-mail-external-reachability.sh"
     "master-user-rotation:integration-master-user-rotation.sh"
