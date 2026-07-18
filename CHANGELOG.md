@@ -12,7 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.31] - 2026-07-17
+### Added
+- **Cross-cluster migration now supports CIFS/SMB sources (all target types
+  covered).** Migration/DR read a *foreign* backup target directly (bypassing the
+  local backup-rclone-shim, which only routes THIS cluster's class bindings). The
+  native direct-read covered S3 + SSH but had no SMB client, so a CIFS source was
+  unusable as a migration source. New `RcloneBackupStore` reads a CIFS (and any
+  future) source via the `rclone` CLI — the same rclone the shim runs, but one-shot
+  against a single target rendered by the shim's own `renderUpstreamSection`
+  (obscured-password + SMB semantics identical to the write path), with config
+  passed via `RCLONE_CONFIG_*` env (never written to disk) and *no* changes to the
+  shared shim (no DaemonSet roll, no taxonomy/CI-guard churn). `rclone` is added to
+  the backend image (like `restic`). Direct-read migration coverage is now **S3
+  (access+secret key), SSH (key or password), and CIFS/SMB** — matching what backup
+  + restore already do through the shim.
 
 ### Fixed
 - **DR-recover / migration-import of a DELETED tenant is idempotent again.** Since
@@ -32,10 +45,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   support) with `SSH backup target missing required fields`. It now honours
   `ssh_password_encrypted` as well as `ssh_key_encrypted` (the DB already
   requires at least one), so a migration source using SSH password auth is
-  read directly with no rebind. Direct-read target coverage is now: S3
-  (access+secret key), SSH (key **or** password). CIFS remains shim-only —
-  the backend has no in-process SMB client — so a CIFS migration source still
-  returns `NOT_IMPLEMENTED` rather than a confusing "missing fields" error.
+  read directly with no rebind.
 - **Bundle verifier now actually probes files reachability.** The
   `POST /admin/tenant-bundles/:id/verify` (and `verify-all`) endpoints reported
   the `files` component by statting a `files/archive.tar.gz` object under the
