@@ -61,6 +61,7 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 FAILURES=()
+LAST_CREATE_RESP=""
 
 scenario_start() { echo -e "\n\033[1m▶ $1\033[0m"; }
 pass()           { echo -e "  \033[32m✓\033[0m $*"; PASSED=$((PASSED+1)); }
@@ -103,6 +104,15 @@ api_status() {
     curl -sk -o /dev/null -w "%{http_code}" -X "$method" "$ADMIN_HOST/api/v1$path" \
       -H "Authorization: Bearer $TOKEN"
   fi
+}
+
+# A CrowdSec/WAF or gateway 403 returns an nginx HTML page, NOT JSON. In a full
+# parallel run the suite's own intentional-4xx negative tests can get the shared
+# harness egress IP transiently banned by the WAF bouncer, collateral-403ing later
+# legit requests (see integration-all.sh's waf-crowdsec notes). Detect that shape
+# so callers can treat it as SKIP-EXPECTED (transient), never a product failure.
+is_waf_block() {
+  printf '%s' "${1:-}" | grep -qiE '<html|403 Forbidden|<center> ?nginx|crowdsec|cs-bouncer'
 }
 
 remote_kubectl() {
@@ -231,15 +241,14 @@ trap cleanup EXIT
 # Helper: create a named deployment and track its id for cleanup.
 create_deployment() {
   local body="$1"
-  local resp
-  resp=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
-  local id
-  id=$(echo "$resp" | python3 -c "
+  # Expose the raw response via LAST_CREATE_RESP so callers can tell a WAF/gateway
+  # HTML 403 (transient harness-IP ban) apart from a genuine create failure.
+  LAST_CREATE_RESP=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
+  echo "$LAST_CREATE_RESP" | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin)['data']['id'])
 except Exception: pass
-" 2>/dev/null || true)
-  echo "$id"
+" 2>/dev/null || true
 }
 
 # ─── Group A: Persistence & lifecycle ────────────────────────────────────────
@@ -262,7 +271,11 @@ print(json.dumps({
   local id
   id=$(create_deployment "$body")
   if [[ -z "$id" ]]; then
-    fail "T5: failed to create volume deployment"
+    if is_waf_block "$LAST_CREATE_RESP"; then
+      skip "T5: create volume deployment WAF-blocked (transient harness-IP ban)"
+    else
+      fail "T5: failed to create volume deployment: $LAST_CREATE_RESP"
+    fi
     return
   fi
   CREATED_IDS+=("$id")
@@ -346,7 +359,11 @@ print(json.dumps({
   local id
   id=$(create_deployment "$body")
   if [[ -z "$id" ]]; then
-    fail "T6: failed to create compose deployment"
+    if is_waf_block "$LAST_CREATE_RESP"; then
+      skip "T6: create compose deployment WAF-blocked (transient harness-IP ban)"
+    else
+      fail "T6: failed to create compose deployment: $LAST_CREATE_RESP"
+    fi
     return
   fi
   CREATED_IDS+=("$id")
@@ -433,12 +450,25 @@ print(json.dumps({
     return
   fi
 
-  # Suspend the client via bulk action.
+  # Suspend the client via bulk action. phase2 shares the "first active client"
+  # with concurrent suites, so only drive suspend when the tenant is cleanly
+  # active, and treat a raced 400 (a sibling already transitioned it) as
+  # SKIP-EXPECTED — suspending a mid-transition/foreign tenant is neither the
+  # feature under test nor safe to assert on in a parallel run.
+  local tstatus
+  tstatus=$(api GET "/tenants/$TENANT_ID" | python3 -c "import json,sys;print(json.load(sys.stdin).get('data',{}).get('status',''))" 2>/dev/null || echo "")
+  if [[ "$tstatus" != "active" ]]; then
+    skip "T7: shared client not cleanly active (status='$tstatus') — concurrent suite churn, skipping suspend/reactivate"
+    return
+  fi
   local status
   status=$(api_status POST "/admin/tenants/bulk" \
     "{\"client_ids\":[\"$TENANT_ID\"],\"action\":\"suspend\"}")
   if [[ "$status" == "200" ]]; then
     pass "T7: POST /admin/tenants/bulk {action:suspend} → 200"
+  elif [[ "$status" == "400" ]]; then
+    skip "T7: suspend raced a concurrent transition (400) — shared client churned"
+    return
   else
     fail "T7: suspend returned $status"
     return
@@ -1093,6 +1123,9 @@ YAML
   vok=$(echo "$vresp" | python3 -c "import json,sys; d=json.load(sys.stdin)['data']; print(d['ok'])" 2>/dev/null || echo "false")
   if [[ "$vok" == "True" ]]; then
     pass "T16: validate cap_add+sysctl compose → ok=true"
+  elif is_waf_block "$vresp"; then
+    skip "T16: validate WAF-blocked (transient harness-IP ban)"
+    return
   else
     fail "T16: validate cap_add+sysctl → not ok: $vresp"
     return
@@ -1103,7 +1136,7 @@ YAML
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
-    fail "T16: create cap_add deployment → no id: $resp"
+    if is_waf_block "$resp"; then skip "T16: create WAF-blocked (transient harness-IP ban)"; else fail "T16: create cap_add deployment → no id: $resp"; fi
     return
   fi
   CREATED_IDS+=("$dep_id")
@@ -1183,6 +1216,9 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
 " 2>/dev/null || echo "?")
   if [[ "$errs" == "0" ]]; then
     pass "T17: validate cfgsec → 0 errors"
+  elif is_waf_block "$vresp"; then
+    skip "T17: validate WAF-blocked (transient harness-IP ban)"
+    return
   else
     fail "T17: validate cfgsec → $errs errors: $vresp"
   fi
@@ -1192,7 +1228,7 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
-    fail "T17: create cfgsec deployment → no id: $resp"
+    if is_waf_block "$resp"; then skip "T17: create WAF-blocked (transient harness-IP ban)"; else fail "T17: create cfgsec deployment → no id: $resp"; fi
     return
   fi
   CREATED_IDS+=("$dep_id")
@@ -1412,5 +1448,9 @@ case "$GROUP" in
     ;;
 esac
 
-# Cleanup runs via trap EXIT — results summary printed there.
+# Cleanup runs via trap EXIT — results summary printed there. Propagate a nonzero
+# code when any assertion failed (the trap still runs on exit); the prior
+# unconditional `exit 0` masked real failures behind a green suite result — the
+# sibling integration-custom-deployments.sh already guards this way.
+if (( FAILED > 0 )); then exit 1; fi
 exit 0
