@@ -41,7 +41,7 @@ import {
   backupTargetAssignments,
 } from '../../db/schema.js';
 import type { BackupComponentName, BackupMetaV2, CreateTenantInput } from '@insula/api-contracts';
-import type { BackupStore } from '../tenant-bundles/bundle-store.js';
+import { storeKindToTargetKind, type BackupStore } from '../tenant-bundles/bundle-store.js';
 
 /**
  * Residual manual steps the recover route CANNOT close on its own after a
@@ -262,7 +262,7 @@ export async function recreateTenantFromBundle(
     initiator: 'admin',
     systemTrigger: null,
     status: 'completed',
-    targetKind: store.kind,
+    targetKind: storeKindToTargetKind(store.kind),
     targetUri: `${store.kind}://${targetConfigId}`,
     targetConfigId,
     label: meta.label,

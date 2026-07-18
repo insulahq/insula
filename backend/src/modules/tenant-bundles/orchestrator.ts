@@ -35,7 +35,7 @@ import {
   type NewBackupComponent,
 } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { BackupStore } from './bundle-store.js';
+import { storeKindToTargetKind, type BackupStore } from './bundle-store.js';
 import {
   BACKUP_META_SCHEMA_VERSION,
   type BackupMetaV1,
@@ -186,7 +186,7 @@ export async function runBundle(
     initiator: input.initiator,
     systemTrigger: input.systemTrigger ?? null,
     status: 'pending',
-    targetKind: deps.store.kind,
+    targetKind: storeKindToTargetKind(deps.store.kind),
     targetUri: input.targetUri,
     targetConfigId: input.targetConfigId ?? null,
     label: input.label ?? null,
