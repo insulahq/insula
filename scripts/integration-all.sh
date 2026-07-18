@@ -389,13 +389,16 @@ fi
 # flagged them so): master-user-rotation tampers the webmail master (mail down
 # until the ≤5m auto-heal); mail-external-reachability toggles mail
 # port-exposure (golden-rule-4 territory); postgres-barman-restore WIPES +
-# rebuilds the system-db (a 2nd destructive DB op on top of postgres-pitr).
+# rebuilds the system-db (a 2nd destructive DB op on top of postgres-pitr);
+# migration-cifs switches the tenant backup class to a CIFS target (rolls the
+# backup-rclone-shim DaemonSet) to prove CIFS-source migration, then restores.
 # All self-restore; run them deliberately. Prepended to SERIAL_POST.
 if [[ "${INTEGRATION_INCLUDE_DISRUPTIVE:-}" == "1" ]]; then
   SERIAL_POST=(
     "mail-external-reachability:integration-mail-external-reachability.sh"
     "master-user-rotation:integration-master-user-rotation.sh"
     "postgres-barman-restore:integration-postgres-barman-restore.sh"
+    "migration-cifs:integration-migration-cifs-e2e.sh"
     "${SERIAL_POST[@]}"
   )
 fi
