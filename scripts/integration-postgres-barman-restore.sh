@@ -47,7 +47,10 @@ set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@staging.example.test}"
-STAGING_SSH="${STAGING_SSH:-root@staging1.example.test}"
+# Honor the operator profile's SSH_HOST (real node) before the redacted public
+# placeholder — otherwise a full integration-all run SSHes to the unresolvable
+# example.test default and dies rc=255 (the 2026-07-18 full-run failure).
+STAGING_SSH="${STAGING_SSH:-${SSH_HOST:-root@staging1.example.test}}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 CLUSTER_NS="${CLUSTER_NS:-platform}"
 CLUSTER_NAME="${CLUSTER_NAME:-system-db}"

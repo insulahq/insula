@@ -595,11 +595,17 @@ phase5_cleanup() {
   # Reconciler teardown is fire-and-forget after the DELETE returns. On an idle
   # cluster this reap is PROMPT — measured ~1s for both the Deployment and the
   # tunnel IngressRoute. It only lags when the single-node cluster is saturated
-  # (e.g. several private-worker/custom-deploy runs back-to-back), so allow a
-  # generous 600s and treat an overrun as non-fatal load noise, not a bug.
+  # (e.g. several private-worker/custom-deploy runs back-to-back). These two reap
+  # waits are SEQUENTIAL and NON-FATAL, so their budgets ADD UP: at the old 600s
+  # each they could burn 1200s of pure waiting and blow the suite's own 1200s hard
+  # timeout in a full run — turning a feature that PASSED phases 1–4 into a
+  # spurious rc=124 TIMEOUT (the 2026-07-18 full-run failure). Keep the observation
+  # window short (120s each; override PRIVATE_WORKER_REAP_WAIT); an overrun is
+  # logged as load noise, never a failure.
+  local reap_deadline="${PRIVATE_WORKER_REAP_WAIT:-120}"
   if [[ -n "$ns" ]]; then
     local ten=0
-    while (( ten < 600 )); do
+    while (( ten < reap_deadline )); do
       if ssh_cp "kubectl -n $ns get deployment private-worker-server 2>&1" \
           | grep -qE 'NotFound|not found'; then
         ok "Deployment private-worker-server in $ns is gone"
@@ -608,16 +614,16 @@ phase5_cleanup() {
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 600 )); then
-      # Non-fatal: reap is normally ~1s; a 600s overrun means the single-node
-      # cluster is saturated, not that teardown is broken (feature validated in
-      # phases 1–4). The Deployment does get reaped once load subsides.
-      warn "Deployment private-worker-server still in $ns after 600s — cluster overloaded; reap is normally ~1s"
+    if (( ten >= reap_deadline )); then
+      # Non-fatal: reap is normally ~1s; an overrun means the single-node cluster
+      # is saturated, not that teardown is broken (feature validated in phases
+      # 1–4). The Deployment does get reaped once load subsides.
+      warn "Deployment private-worker-server still in $ns after ${reap_deadline}s — cluster overloaded; reap is normally ~1s"
     fi
   fi
   if [[ -n "$slug" ]]; then
     local ten=0
-    while (( ten < 600 )); do
+    while (( ten < reap_deadline )); do
       if ssh_cp "kubectl -n platform-system get ingressroute tunnel-$slug 2>&1" \
           | grep -qE 'NotFound|not found'; then
         ok "IngressRoute tunnel-$slug in platform-system is gone"
@@ -626,10 +632,10 @@ phase5_cleanup() {
       sleep 5
       ten=$((ten + 5))
     done
-    if (( ten >= 600 )); then
+    if (( ten >= reap_deadline )); then
       # Non-fatal (same rationale as the Deployment reap above): reap is normally
-      # ~1s; a 600s overrun is cluster saturation, not a teardown bug.
-      warn "IngressRoute tunnel-$slug still in platform-system after 600s — cluster overloaded; reap is normally ~1s"
+      # ~1s; an overrun is cluster saturation, not a teardown bug.
+      warn "IngressRoute tunnel-$slug still in platform-system after ${reap_deadline}s — cluster overloaded; reap is normally ~1s"
     fi
   fi
 
