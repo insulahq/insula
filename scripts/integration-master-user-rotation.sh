@@ -117,8 +117,14 @@ rotate_master() {
   local token="$1" out="" n=0
   while :; do
     n=$((n+1))
+    # MUST send a body: Content-Type: application/json with an EMPTY body makes
+    # Fastify reject the request with FST_ERR_CTP_EMPTY_JSON_BODY (400) before the
+    # handler runs — a well-formed JSON 400 that contains neither
+    # WEBMAIL_MASTER_DOMAIN_MISMATCH nor rotatedAt, so §2/§3 failed with "no match".
+    # (Same Fastify gotcha as DELETE-with-Content-Type; the endpoint takes no input
+    # so `{}` satisfies the parser. Latent until this suite went default-on.)
     out=$(s "curl -sk -X POST '${ADMIN_HOST}/api/v1/admin/mail/rotate-webmail-master-password' \
-      -H 'Authorization: Bearer $token' -H 'Content-Type: application/json'" || true)
+      -H 'Authorization: Bearer $token' -H 'Content-Type: application/json' -d '{}'" || true)
     if [[ -n "$out" ]] && ! printf '%s' "$out" | grep -qiE '<html|<center>|502 Bad|503 Service|504 Gateway'; then
       printf '%s' "$out"; return 0
     fi
