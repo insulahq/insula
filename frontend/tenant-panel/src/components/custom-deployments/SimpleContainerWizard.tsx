@@ -244,6 +244,28 @@ export function SimpleContainerWizard({ tenantId, existingNames, onClose, onCrea
             ))}
           </section>
 
+          {/* Real client IP guidance — only when a port is externally reachable */}
+          {ports.some((p) => p.ingressEligible) && (
+            <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 dark:border-blue-900 dark:bg-blue-950/40 dark:text-blue-200">
+              <AlertCircle size={14} className="mt-0.5 flex-shrink-0" />
+              <div>
+                <span className="font-medium">Seeing the real visitor IP.</span>{' '}
+                External requests reach your container through the platform reverse proxy, so your
+                app&apos;s client address is the proxy (in{' '}
+                <code className="rounded bg-blue-100 px-1 dark:bg-blue-900">10.42.0.0/16</code>), not
+                the visitor — unless your app is told to trust it. Configure your framework/web server to
+                trust the proxy ranges{' '}
+                <code className="rounded bg-blue-100 px-1 dark:bg-blue-900">10.0.0.0/8</code>,{' '}
+                <code className="rounded bg-blue-100 px-1 dark:bg-blue-900">172.16.0.0/12</code>,{' '}
+                <code className="rounded bg-blue-100 px-1 dark:bg-blue-900">192.168.0.0/16</code>{' '}
+                (plus your external load balancer&apos;s IP, if you enabled one) and read the real
+                address from the{' '}
+                <code className="rounded bg-blue-100 px-1 dark:bg-blue-900">X-Forwarded-For</code>{' '}
+                header.
+              </div>
+            </div>
+          )}
+
           {/* Volumes */}
           <section>
             <SectionHeader
