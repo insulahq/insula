@@ -1602,6 +1602,29 @@ install_packages_dnf() {
   # admin/backup JSON bodies). RHEL-9 family + AL2023 ship it in baseos.
   # tmux: required by the admin node-terminal feature (ADR-041) for
   # cross-reconnect shell continuity. In RHEL-9-family base repos.
+
+  # kube-proxy and Calico Felix program iptables rules using the legacy xtables
+  # 'conntrack' match (`iptables -m conntrack`); its kernel module xt_conntrack
+  # ships in kernel-modules-extra. CentOS Stream 10 does NOT install that package
+  # by default (el9 does), so on el10 kube-proxy's Sync fails with "Extension
+  # conntrack revision 0 not supported, missing kernel module" → it programs zero
+  # KUBE-SVC rules → the API service ClusterIP (10.43.0.1:443) is unreachable →
+  # a joining node's calico install-cni can't mint its ServiceAccount token and
+  # the node never goes Ready (validated 2026-07-19 on centos-stream-10). Install
+  # the running-kernel package and load the module BEFORE k3s starts (Phase 2).
+  # Harmless no-op where already present (el9). Best-effort so a variant without
+  # the exact package (e.g. amzn2023, handled separately) never aborts bootstrap.
+  if [[ "$OS_VARIANT" != "amzn2023" ]]; then
+    dnf install -y -q "kernel-modules-extra-$(uname -r)" >/dev/null 2>&1 \
+      || dnf install -y -q kernel-modules-extra >/dev/null 2>&1 \
+      || warn "kernel-modules-extra unavailable — kube-proxy may fail to program service rules (missing xt_conntrack) on this RHEL-family node."
+    modprobe xt_conntrack 2>/dev/null \
+      || warn "modprobe xt_conntrack failed — kube-proxy/Calico service routing may not converge on this node."
+    # Persist so it reloads on reboot, before k3s's kube-proxy needs it.
+    install -d -m 0755 /etc/modules-load.d
+    printf 'xt_conntrack\n' > /etc/modules-load.d/platform-netfilter.conf
+  fi
+
   if [[ "$OS_VARIANT" != "amzn2023" ]]; then
     # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age + rclone; install
     # them via dnf so we get distro-managed updates. amzn2023 (no EPEL) takes
