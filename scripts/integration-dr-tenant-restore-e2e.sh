@@ -155,12 +155,22 @@ ORIG_SHA=$(fm_exec "sha256sum /data/site/index.html"|awk '{print $1}')
 ok "seeded site/index.html sha=$ORIG_SHA"
 # mail: domain -> email enable -> mailbox
 DID=$(api POST "/tenants/$TENANT_ID/domains" "{\"domain_name\":\"$DOMAIN\",\"dns_mode\":\"primary\"}" "$TOKEN"|sed '$d'|jq -r '.data.id // empty')
-EDID=$(api POST "/tenants/$TENANT_ID/email/domains/$DID/enable" '{}' "$TOKEN"|sed '$d'|jq -r '.data.id // empty')
+ENABLE_RESP=$(api POST "/tenants/$TENANT_ID/email/domains/$DID/enable" '{}' "$TOKEN"|sed '$d')
+EDID=$(printf '%s' "$ENABLE_RESP"|jq -r '.data.id // empty')
 [[ -n "$EDID" && "$EDID" != null ]] || { no "email-domain enable failed"; exit 1; }
+# If enable didn't synchronously create the Stalwart x:Domain (stalwartDomainId
+# null), mailbox-create DEFERS the JMAP principal to the 5-min principals-sync
+# reconciler (mailboxes/service.ts) yet still returns success — so the mailbox
+# isn't JMAP-reachable in a short window (the rc.32 full-run flake). Note it; the
+# extended poll below (>2x the reconciler interval) covers the deferred case.
+SDID=$(printf '%s' "$ENABLE_RESP"|jq -r '.data.stalwartDomainId // empty')
+[[ -n "$SDID" && "$SDID" != null ]] || echo "  ! enable returned stalwartDomainId=null — JMAP principal deferred to the 5-min reconciler; extended poll engaged"
 MBX=$(api POST "/tenants/$TENANT_ID/email/domains/$EDID/mailboxes" '{"local_part":"dr-probe"}' "$TOKEN"|sed '$d'|jq -r '.data.id // empty')
 [[ -n "$MBX" && "$MBX" != null ]] || { no "mailbox create failed"; exit 1; }
 TEST_ADDR="dr-probe@$DOMAIN"
-RDY=""; for i in $(seq 1 25); do c=$(jcount 2>/dev/null); [[ -n "$c" ]] && { RDY=1; break; }; force_reconcile; sleep 12; done
+# Poll ~600s (>2x the 5-min principals-sync interval) so a DEFERRED principal
+# reliably materializes; the old 300s window == the reconciler interval → a coin flip.
+RDY=""; for i in $(seq 1 40); do c=$(jcount 2>/dev/null); [[ -n "$c" ]] && { RDY=1; break; }; force_reconcile; sleep 15; done
 [[ -n "$RDY" ]] || { no "mailbox never JMAP-reachable"; exit 1; }
 ssh_node "kubectl -n mail exec stalwart-probe -- /usr/local/bin/jmap-seed.py --endpoint http://stalwart-mgmt.mail.svc.cluster.local:8080 --account-address $TEST_ADDR --master-user master@local.host --auth-pass-env STALWART_MASTER_PASSWORD --count $COUNT --marker $MARK --flagged-every-n 5" </dev/null 2>&1 | tail -2 | rd
 SEED=$(jcount); [[ "$SEED" -ge "$COUNT" ]] || { no "mail seed short: $SEED<$COUNT"; exit 1; }
