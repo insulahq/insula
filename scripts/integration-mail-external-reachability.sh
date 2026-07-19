@@ -71,14 +71,22 @@ const { SignJWT } = require("jose");
 # Reach the API IN-POD (127.0.0.1:3000) via the platform-api container: a node
 # HOST cannot route a ClusterIP on Calico (curl times out ~134s). Mirrors the
 # mail-mobility ClusterIP->in-pod fix + the token-minting exec above.
-kubectl exec -n platform "$AP" -- env TOK="$TOK" BODY="$body" node -e '
+# Retry the PATCH exec: the ssh->kubelet exec stream can drop mid-call ("EOF")
+# under full-run load (same class as the pitr write-exec EOF). The port-exposure
+# PATCH is idempotent (sets a mode), so re-applying on a dropped stream is safe.
+for _pe in 1 2 3 4; do
+  if _peout=$(kubectl exec -n platform "$AP" -- env TOK="$TOK" BODY="$body" node -e '
 const { TOK, BODY } = process.env;
 fetch("http://127.0.0.1:3000/api/v1/admin/mail/port-exposure", {
   method: "PATCH",
   headers: { Authorization: "Bearer " + TOK, "Content-Type": "application/json" },
   body: BODY,
 }).then(async (r) => { process.stdout.write(await r.text()); })
-  .catch((e) => { process.stderr.write(String(e)); process.exit(1); });'
+  .catch((e) => { process.stderr.write(String(e)); process.exit(1); });' 2>/dev/null); then
+    printf '%s' "$_peout"; break
+  fi
+  sleep 5
+done
 SSH
 }
 
