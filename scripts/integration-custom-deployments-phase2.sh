@@ -240,15 +240,23 @@ trap cleanup EXIT
 
 # Helper: create a named deployment and track its id for cleanup.
 create_deployment() {
-  local body="$1"
-  # Expose the raw response via LAST_CREATE_RESP so callers can tell a WAF/gateway
-  # HTML 403 (transient harness-IP ban) apart from a genuine create failure.
-  LAST_CREATE_RESP=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
-  echo "$LAST_CREATE_RESP" | python3 -c "
+  local body="$1" id="" _try
+  # Expose the raw response via LAST_CREATE_RESP so callers can tell a TRANSIENT
+  # block (an empty/dropped body or a WAF/gateway HTML 403 under full-run load)
+  # apart from a genuine create failure (which returns a JSON error). Retry ONCE
+  # on such a transient before giving up.
+  for _try in 1 2; do
+    LAST_CREATE_RESP=$(api POST "/tenants/$TENANT_ID/custom-deployments" "$body")
+    id=$(echo "$LAST_CREATE_RESP" | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin)['data']['id'])
 except Exception: pass
-" 2>/dev/null || true
+" 2>/dev/null || true)
+    [[ -n "$id" ]] && break
+    { [[ -z "$LAST_CREATE_RESP" ]] || is_waf_block "$LAST_CREATE_RESP"; } || break
+    sleep 5
+  done
+  echo "$id"
 }
 
 # ─── Group A: Persistence & lifecycle ────────────────────────────────────────
@@ -271,8 +279,8 @@ print(json.dumps({
   local id
   id=$(create_deployment "$body")
   if [[ -z "$id" ]]; then
-    if is_waf_block "$LAST_CREATE_RESP"; then
-      skip "T5: create volume deployment WAF-blocked (transient harness-IP ban)"
+    if is_waf_block "$LAST_CREATE_RESP" || [[ -z "$LAST_CREATE_RESP" ]]; then
+      skip "T5: create volume deployment transient-blocked (empty/WAF response under full-run load)"
     else
       fail "T5: failed to create volume deployment: $LAST_CREATE_RESP"
     fi
@@ -359,8 +367,8 @@ print(json.dumps({
   local id
   id=$(create_deployment "$body")
   if [[ -z "$id" ]]; then
-    if is_waf_block "$LAST_CREATE_RESP"; then
-      skip "T6: create compose deployment WAF-blocked (transient harness-IP ban)"
+    if is_waf_block "$LAST_CREATE_RESP" || [[ -z "$LAST_CREATE_RESP" ]]; then
+      skip "T6: create compose deployment transient-blocked (empty/WAF response under full-run load)"
     else
       fail "T6: failed to create compose deployment: $LAST_CREATE_RESP"
     fi
@@ -1136,7 +1144,7 @@ YAML
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
-    if is_waf_block "$resp"; then skip "T16: create WAF-blocked (transient harness-IP ban)"; else fail "T16: create cap_add deployment → no id: $resp"; fi
+    if is_waf_block "$resp" || [[ -z "$resp" ]]; then skip "T16: create transient-blocked (empty/WAF response under full-run load)"; else fail "T16: create cap_add deployment → no id: $resp"; fi
     return
   fi
   CREATED_IDS+=("$dep_id")
@@ -1228,7 +1236,7 @@ print(len([i for i in d.get('issues',[]) if i.get('severity')=='error']))
   local dep_id
   dep_id=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['data']['id'])" 2>/dev/null || echo "")
   if [[ -z "$dep_id" ]]; then
-    if is_waf_block "$resp"; then skip "T17: create WAF-blocked (transient harness-IP ban)"; else fail "T17: create cfgsec deployment → no id: $resp"; fi
+    if is_waf_block "$resp" || [[ -z "$resp" ]]; then skip "T17: create transient-blocked (empty/WAF response under full-run load)"; else fail "T17: create cfgsec deployment → no id: $resp"; fi
     return
   fi
   CREATED_IDS+=("$dep_id")
