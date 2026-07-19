@@ -462,7 +462,9 @@ func rewriteRsyncCommand(cmd, dataRoot string) []string {
 var fileManagerReadyTimeout = parseReadyTimeout(envOrDefault("FILE_MANAGER_READY_TIMEOUT", "90s"))
 
 // fileManagerReadyInterval is the poll cadence while waiting for readiness.
-const fileManagerReadyInterval = 2 * time.Second
+// 1s keeps the first-connect cold-start wait tight (the pod's readiness probe
+// now also runs every 1s), at the cost of a few extra cheap pod LISTs.
+const fileManagerReadyInterval = 1 * time.Second
 
 func parseReadyTimeout(s string) time.Duration {
 	d, err := time.ParseDuration(s)

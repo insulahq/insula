@@ -258,7 +258,10 @@ export async function ensureFileManagerRunning(
                 readinessProbe: {
                   httpGet: { path: '/health', port: FM_PORT },
                   initialDelaySeconds: 1,
-                  periodSeconds: 3,
+                  // 1s (not 3s) so a cold-started FM is marked Ready promptly —
+                  // the SFTP gateway blocks the first connection until this probe
+                  // passes, so a slow period directly adds to cold-start latency.
+                  periodSeconds: 1,
                 },
               }],
               volumes: [
