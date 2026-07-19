@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gliderlabs/ssh"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -147,8 +148,9 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 		})
 	}()
 
-	// Ensure file-manager pod is running.
-	podName, err := resolveFileManagerPod(sess.Namespace)
+	// Ensure file-manager pod is running (scales the Deployment up from its idle
+	// replicas=0 and waits, bounded, for the cold-started pod to become Ready).
+	podName, err := resolveFileManagerPod(sshSess.Context(), sess.Namespace)
 	if err != nil {
 		log.Printf("session %s: pod resolution failed: %v", sess.ID, err)
 		fmt.Fprintf(sshSess.Stderr(), "failed to prepare file system: %v\n", err)
@@ -449,39 +451,113 @@ func rewriteRsyncCommand(cmd, dataRoot string) []string {
 	return rewritten
 }
 
-// resolveFileManagerPod ensures the file-manager is running and finds its pod.
-func resolveFileManagerPod(namespace string) (string, error) {
-	// First ask the backend to ensure the pod is ready.
-	podName, err := EnsureFileManager(namespace)
-	if err != nil {
-		log.Printf("ensure-file-manager call failed: %v, falling back to direct pod lookup", err)
-	}
-	if podName != "" {
-		return podName, nil
-	}
+// fileManagerReadyTimeout bounds how long a new session waits for the file-manager
+// pod to become Ready after EnsureFileManager scales its Deployment up. The
+// Deployment idles at replicas=0 (the idle-cleanup loop scales it to 0 after
+// ~10 min), so the FIRST connection after an idle period triggers a cold start —
+// schedule + Longhorn volume attach + image pull + container start — which the
+// backend ensure call does NOT wait out. Without this poll that first connect
+// failed ("pod is Pending, not Running") and the user had to retry by hand.
+// Override with FILE_MANAGER_READY_TIMEOUT (a Go duration) on slow nodes.
+var fileManagerReadyTimeout = parseReadyTimeout(envOrDefault("FILE_MANAGER_READY_TIMEOUT", "90s"))
 
-	// Fallback: list pods with label selector.
-	return findFileManagerPod(namespace)
+// fileManagerReadyInterval is the poll cadence while waiting for readiness.
+const fileManagerReadyInterval = 2 * time.Second
+
+func parseReadyTimeout(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		log.Printf("invalid FILE_MANAGER_READY_TIMEOUT %q, using 90s: %v", s, err)
+		return 90 * time.Second
+	}
+	return d
 }
 
-// findFileManagerPod searches for a running file-manager pod in the namespace.
-func findFileManagerPod(namespace string) (string, error) {
-	pods, err := kubeClientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{
+// resolveFileManagerPod scales the file-manager Deployment up (via the backend)
+// and returns a Ready pod's name, polling up to fileManagerReadyTimeout so a
+// cold-started pod no longer fails the session on the first connect. The poll
+// stops early if ctx (the SSH session context) is cancelled by a disconnect.
+func resolveFileManagerPod(ctx context.Context, namespace string) (string, error) {
+	// Ask the backend to ensure the Deployment is scaled to 1. This is the
+	// trigger that creates the pod; it may return before the pod is Ready (or
+	// return an empty name), which is why we poll for readiness below rather
+	// than trusting its return value.
+	if _, err := EnsureFileManager(namespace); err != nil {
+		log.Printf("ensure-file-manager call failed: %v, falling back to direct pod lookup", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, fileManagerReadyTimeout)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		podName, err := findReadyFileManagerPod(ctx, namespace)
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("file-manager pod %s Ready in namespace %s after %d poll(s)", podName, namespace, attempt)
+			}
+			return podName, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("file-manager not Ready after %s: %w", fileManagerReadyTimeout, lastErr)
+		case <-time.After(fileManagerReadyInterval):
+		}
+	}
+}
+
+// findReadyFileManagerPod returns the name of a Running, Ready, non-terminating
+// file-manager pod in the namespace, or an error describing why none is usable
+// yet (so resolveFileManagerPod can retry). Readiness (the PodReady condition),
+// not merely Phase==Running, is required: a Running pod whose container has not
+// finished starting cannot be exec'd into. This matches the backend's own
+// getReadyFileManagerPodName definition.
+func findReadyFileManagerPod(ctx context.Context, namespace string) (string, error) {
+	pods, err := kubeClientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=file-manager",
-		Limit:         1,
 	})
 	if err != nil {
 		return "", fmt.Errorf("list file-manager pods: %w", err)
 	}
-	if len(pods.Items) == 0 {
+	return pickReadyFileManagerPod(namespace, pods.Items)
+}
+
+// pickReadyFileManagerPod selects a Running, Ready, non-terminating pod from the
+// listed file-manager pods, or returns an error describing why none is usable
+// yet. Split out from the List call so the selection logic is unit-testable.
+func pickReadyFileManagerPod(namespace string, pods []corev1.Pod) (string, error) {
+	if len(pods) == 0 {
 		return "", fmt.Errorf("no file-manager pod found in namespace %s", namespace)
 	}
 
-	pod := pods.Items[0]
-	if pod.Status.Phase != "Running" {
-		return "", fmt.Errorf("file-manager pod %s is %s, not Running", pod.Name, pod.Status.Phase)
+	lastState := "none"
+	for i := range pods {
+		pod := &pods[i]
+		// A pod being deleted still reports Ready=True until the kubelet tears it
+		// down (e.g. right after quiesce scaled the Deployment to 0). Exec'ing
+		// into it would race the teardown — skip it.
+		if pod.DeletionTimestamp != nil {
+			lastState = "terminating"
+			continue
+		}
+		if pod.Status.Phase != corev1.PodRunning {
+			lastState = string(pod.Status.Phase)
+			continue
+		}
+		ready := false
+		for _, c := range pod.Status.Conditions {
+			if c.Type == corev1.PodReady {
+				ready = c.Status == corev1.ConditionTrue
+				break
+			}
+		}
+		if ready {
+			return pod.Name, nil
+		}
+		lastState = "Running/NotReady"
 	}
-	return pod.Name, nil
+	return "", fmt.Errorf("no Ready file-manager pod in namespace %s (last observed: %s)", namespace, lastState)
 }
 
 // execAndPipe runs a command in the file-manager pod and pipes stdin/stdout/stderr
