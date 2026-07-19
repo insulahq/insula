@@ -56,7 +56,11 @@ CLUSTER_NS="${CLUSTER_NS:-platform}"
 CLUSTER_NAME="${CLUSTER_NAME:-system-db}"
 OBJECT_STORE="${OBJECT_STORE:-system-postgres-objectstore}"
 SKIP_PROMOTE="${SKIP_PROMOTE:-0}"
-CURL_OPTS=(-s --max-time 60)
+# 180s (not 60): the barman catalogue GET is an S3 object-store LISTING (normally
+# ~5s) that can exceed 60s under full-run load + S3 latency, and the restore
+# trigger is heavy too. The per-call timeout is a HANG guard, not a latency
+# assertion; the suite's own 2400s hard timeout bounds the whole run.
+CURL_OPTS=(-s --max-time 180)
 if [[ "${CURL_INSECURE:-0}" == "1" ]]; then
   CURL_OPTS+=(-k)
 fi

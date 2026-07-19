@@ -317,8 +317,13 @@ fi
 # ── Phase 11: RBAC — non-admin POST → 403 ────────────────────────────
 phase "Phase 11: RBAC — invalid token → 401/403"
 # This asserts the AUTH outcome (401/403), so retry through transient gateway
-# blips (504/502/000) — a one-off ingress timeout otherwise red-flags a healthy
-# auth gate (observed: a single 504 on the multi-node staging cluster).
+# blips — a one-off ingress artifact otherwise red-flags a healthy auth gate. The
+# earlier Phase 3/8 CIDR add+delete ROLL the Traefik DaemonSet; a request landing
+# mid-roll gets 000 (no pod reachable), 502/504 (pod up, upstream not ready), OR
+# 404 (pod up, route not yet reconciled) — all gateway artifacts, never the app: a
+# registered + auth-gated route returns 401 for a bad token (Fastify onRequest
+# fires only after a route matches). Retry all of them; a persistent 404 after 5×
+# backoff would still fail. (rc.32 full-run: Phase 8's DELETE roll → 000-then-404.)
 RBAC_STATUS=""
 for _rbac_try in 1 2 3 4 5; do
   RBAC_RESP=$(curl -sk --max-time 15 -X POST "$API_BASE/api/v1/admin/cluster-network/trusted-proxies" \
@@ -326,7 +331,7 @@ for _rbac_try in 1 2 3 4 5; do
     -H 'Content-Type: application/json' \
     -d '{"cidr":"1.2.3.4/32","description":"x"}' -w '\nHTTP_STATUS=%{http_code}' || true)
   RBAC_STATUS=$(extract_status "$RBAC_RESP")
-  [[ "$RBAC_STATUS" == "504" || "$RBAC_STATUS" == "502" || "$RBAC_STATUS" == "000" ]] || break
+  [[ "$RBAC_STATUS" == "504" || "$RBAC_STATUS" == "502" || "$RBAC_STATUS" == "000" || "$RBAC_STATUS" == "404" ]] || break
   log "Phase 11: transient gateway $RBAC_STATUS on unauth POST — retry ${_rbac_try}/5 in 3s"
   sleep 3
 done

@@ -124,6 +124,23 @@ psql_ro() {
   done
 }
 
+# psql_w — RETRIED write. The ssh→kubectl-exec hop can drop the connection
+# mid-write ("unexpected EOF") under full-run load, exactly as psql_ro documents
+# for reads — this turned a valid marker INSERT into a false "wrong row count"
+# failure (rc.32 full-run). Safe to retry ONLY because every caller passes an
+# IDEMPOTENT statement (fixed-id `INSERT … ON CONFLICT (id) DO NOTHING`, or
+# `DROP/CREATE … IF [NOT] EXISTS`): a committed-then-dropped write re-applies as a
+# no-op. NEVER route a non-idempotent write through this.
+psql_w() {
+  local sql="$1" n=0
+  while :; do
+    n=$((n+1))
+    if psql_pg "$sql" >/dev/null 2>&1; then return 0; fi
+    (( n >= 3 )) && return 1
+    sleep 3
+  done
+}
+
 # Force a WAL segment switch so a freshly-inserted row is flushed into
 # the archived WAL — required in WITH_WAL mode so the temp cluster can
 # replay it from the barman object store up to recoveryTargetTime.
@@ -160,9 +177,9 @@ echo "  phase=$PHASE primary=$PRIMARY_BEFORE instances=$INSTANCES_BEFORE"
 [[ "$PHASE" = "Cluster in healthy state" ]] || fail "cluster not healthy: $PHASE"
 
 log "3) Drop+recreate sentinel table BEFORE snapshot, insert pre-snapshot row"
-psql_pg "DROP TABLE IF EXISTS e2e_pitr_marker;" >/dev/null
-psql_pg "CREATE TABLE e2e_pitr_marker (id INT PRIMARY KEY, label TEXT, inserted_at TIMESTAMPTZ DEFAULT now());" >/dev/null
-psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (1, 'pre-snapshot');" >/dev/null
+psql_w "DROP TABLE IF EXISTS e2e_pitr_marker;"
+psql_w "CREATE TABLE IF NOT EXISTS e2e_pitr_marker (id INT PRIMARY KEY, label TEXT, inserted_at TIMESTAMPTZ DEFAULT now());"
+psql_w "INSERT INTO e2e_pitr_marker (id, label) VALUES (1, 'pre-snapshot') ON CONFLICT (id) DO NOTHING;"
 PRE_COUNT=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker;")
 echo "  pre-snapshot rows: $PRE_COUNT"
 [[ "$PRE_COUNT" = "1" ]] || fail "expected 1 pre-snapshot row, got $PRE_COUNT"
@@ -191,7 +208,7 @@ if [[ "$WITH_WAL" = "1" ]]; then
   log "5) WAL mode: wrap recoveryTargetTime with markers A (pre, survives) + B (post, lost)"
   # Marker A: post-snapshot, BEFORE target. Flush its WAL so it is
   # durable in the archive, THEN capture the target time.
-  psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (500, 'marker-A-pre-target-MUST-SURVIVE');" >/dev/null
+  psql_w "INSERT INTO e2e_pitr_marker (id, label) VALUES (500, 'marker-A-pre-target-MUST-SURVIVE') ON CONFLICT (id) DO NOTHING;"
   flush_wal
   echo "  marker A (id=500) inserted + WAL flushed"
   # Capture target from postgres NOW() (avoids harness/cluster clock skew).
@@ -201,7 +218,7 @@ if [[ "$WITH_WAL" = "1" ]]; then
   [[ -n "$RECOVERY_TARGET_TIME" ]] || fail "failed to capture recoveryTargetTime"
   # Marker B: AFTER the target — must be replayed-past and dropped.
   sleep 3
-  psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'marker-B-post-target-MUST-BE-LOST');" >/dev/null
+  psql_w "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'marker-B-post-target-MUST-BE-LOST') ON CONFLICT (id) DO NOTHING;"
   flush_wal
   echo "  marker B (id=999) inserted POST-target + WAL flushed"
   POST_COUNT=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker;")
@@ -209,7 +226,7 @@ if [[ "$WITH_WAL" = "1" ]]; then
   [[ "$POST_COUNT" = "3" ]] || fail "expected 3 rows in WAL mode, got $POST_COUNT"
 else
   log "5) Insert POST-snapshot row that MUST be lost on restore"
-  psql_pg "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'post-snapshot-MUST-BE-LOST');" >/dev/null
+  psql_w "INSERT INTO e2e_pitr_marker (id, label) VALUES (999, 'post-snapshot-MUST-BE-LOST') ON CONFLICT (id) DO NOTHING;"
   POST_COUNT=$(psql_pg "SELECT COUNT(*) FROM e2e_pitr_marker;")
   echo "  post-snapshot rows: $POST_COUNT (should be 2)"
   [[ "$POST_COUNT" = "2" ]] || fail "expected 2 rows after second insert"
