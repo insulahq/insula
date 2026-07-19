@@ -3,6 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestBuildCommand_SFTP(t *testing.T) {
@@ -314,5 +318,81 @@ func TestSanitizePath(t *testing.T) {
 				t.Errorf("sanitizePath(%q, %q) = %q, want %q", tt.arg, tt.dataRoot, got, tt.want)
 			}
 		})
+	}
+}
+
+// fmPod builds a file-manager pod fixture for the readiness-selection tests.
+func fmPod(name string, phase corev1.PodPhase, ready, terminating bool) corev1.Pod {
+	status := corev1.ConditionFalse
+	if ready {
+		status = corev1.ConditionTrue
+	}
+	p := corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.PodStatus{
+			Phase:      phase,
+			Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: status}},
+		},
+	}
+	if terminating {
+		now := metav1.Now()
+		p.ObjectMeta.DeletionTimestamp = &now
+	}
+	return p
+}
+
+func TestPickReadyFileManagerPod(t *testing.T) {
+	tests := []struct {
+		name    string
+		pods    []corev1.Pod
+		want    string
+		wantErr bool
+	}{
+		{"no pods", nil, "", true},
+		{"pending only", []corev1.Pod{fmPod("fm", corev1.PodPending, false, false)}, "", true},
+		{"running not ready", []corev1.Pod{fmPod("fm", corev1.PodRunning, false, false)}, "", true},
+		{"running ready", []corev1.Pod{fmPod("fm", corev1.PodRunning, true, false)}, "fm", false},
+		{"terminating ready is skipped", []corev1.Pod{fmPod("fm", corev1.PodRunning, true, true)}, "", true},
+		{
+			"terminating + fresh ready picks the fresh one",
+			[]corev1.Pod{fmPod("old", corev1.PodRunning, true, true), fmPod("new", corev1.PodRunning, true, false)},
+			"new", false,
+		},
+		{
+			"pending + ready picks the ready one",
+			[]corev1.Pod{fmPod("cold", corev1.PodPending, false, false), fmPod("hot", corev1.PodRunning, true, false)},
+			"hot", false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pickReadyFileManagerPod("tenant-x", tt.pods)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("pickReadyFileManagerPod err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("pickReadyFileManagerPod = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseReadyTimeout(t *testing.T) {
+	tests := []struct {
+		in   string
+		want time.Duration
+	}{
+		{"90s", 90 * time.Second},
+		{"30s", 30 * time.Second},
+		{"2m", 2 * time.Minute},
+		{"", 90 * time.Second},    // ParseDuration error → default
+		{"bad", 90 * time.Second}, // ParseDuration error → default
+		{"0s", 90 * time.Second},  // non-positive → default
+		{"-5s", 90 * time.Second}, // non-positive → default
+	}
+	for _, tt := range tests {
+		if got := parseReadyTimeout(tt.in); got != tt.want {
+			t.Errorf("parseReadyTimeout(%q) = %v, want %v", tt.in, got, tt.want)
+		}
 	}
 }
