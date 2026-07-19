@@ -60,6 +60,11 @@ const DEFAULT_COMPOSE = `# Deployable as-is for testing. Docs: docs/features/CUS
 # All declared ports become cluster-internal ClusterIP Services.
 # To expose a port externally, add an Ingress Route in the Routes tab after deploying.
 #
+# Real visitor IP: traffic reaches you through the platform reverse proxy, so your
+# app sees the proxy (10.42.0.0/16), not the client — unless you trust it. Make your
+# app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external
+# LB IP if enabled) and read X-Forwarded-For. See the guide above for snippets.
+#
 # Services in the same stack reach each other by service name:
 #   http://api:3000  •  redis://cache:6379
 services:
@@ -225,7 +230,7 @@ export function ComposeEditor({ tenantId, existingNames, onClose, onCreated, exi
           <div className="flex w-2/3 flex-col border-r border-gray-200 dark:border-gray-700">
             <div className="flex items-center gap-1 border-b border-gray-200 px-4 py-1.5 text-xs font-medium text-gray-700 dark:border-gray-700 dark:text-gray-300">
               compose.yaml
-              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes. Bind mounts and most advanced Compose features are rejected for security reasons." />
+              <Tooltip text="Paste a Compose 3.7–3.9 file here. Supported: services, image, ports, environment, depends_on, healthcheck, named volumes. Bind mounts and most advanced Compose features are rejected for security reasons. To see the real visitor IP, make your app trust proxy ranges 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 (+ your external LB IP if enabled) and read X-Forwarded-For." />
             </div>
             <EditorErrorBoundary fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>
               <Suspense fallback={<TextareaFallback value={yaml} onChange={setYaml} />}>

@@ -180,6 +180,50 @@ The result is a pill per row:
 Pre-release tags (`1.0.0-rc1`) are NOT suggested as upgrade targets
 — only stable tags greater than the current.
 
+## Seeing the real visitor IP
+
+Your container runs **behind the platform's reverse proxy** (Traefik). The
+proxy already receives the visitor's real IP and forwards it in the
+`X-Forwarded-For` and `X-Real-IP` request headers — **but** the TCP
+connection your app accepts comes *from the proxy*, so the client address
+your app reads directly (`REMOTE_ADDR`, `req.socket.remoteAddress`, the
+default access-log `%h`/`$remote_addr`) is a proxy pod IP in the cluster
+pod network **`10.42.0.0/16`**, not the visitor.
+
+To recover the real IP, tell your app/web server to **trust the in-cluster
+proxy range and read the forwarded header**. Trust the RFC1918 super-set the
+platform edge uses:
+
+```
+10.0.0.0/8      172.16.0.0/12      192.168.0.0/16      fd00::/8   (IPv6)
+```
+
+> If you front the whole cluster with your **own external load balancer**,
+> also trust that LB's public CIDR — otherwise your app will see the LB as
+> the client.
+
+Framework snippets (trust the ranges above, then read the client IP):
+
+| Stack | Configure |
+|-------|-----------|
+| **nginx** | `set_real_ip_from 10.0.0.0/8;` (repeat per range) · `real_ip_header X-Forwarded-For;` · `real_ip_recursive on;` |
+| **Apache** (`mod_remoteip`) | `RemoteIPHeader X-Forwarded-For` · `RemoteIPTrustedProxy 10.0.0.0/8` (repeat per range) |
+| **Node / Express, Koa** | `app.set('trust proxy', '10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16')` then read `req.ip` |
+| **Node / Fastify** | `Fastify({ trustProxy: '10.0.0.0/8' })` (or a hop count) then read `request.ip` |
+| **PHP** | behind nginx/Apache configured as above, `$_SERVER['REMOTE_ADDR']` is already corrected; otherwise parse `$_SERVER['HTTP_X_FORWARDED_FOR']` yourself |
+| **Other** | set the framework's "trusted proxies" option to the ranges above and read its proxy-aware client-IP accessor |
+
+Why trust a *range* and not a single IP: the proxy runs as a DaemonSet, so
+requests can arrive from any proxy pod in `10.42.0.0/16`. `real_ip_recursive`
+/ trusted-proxy handling also walk the `X-Forwarded-For` chain right-to-left,
+so a client that forges a leading `X-Forwarded-For` entry can't spoof its
+source — the first *untrusted* address from the right wins.
+
+> **Catalog runtimes already do this.** If you deploy on an Official Catalog
+> runtime (`static-nginx`, `nginx-php`, `apache-php`, `static-apache`) the
+> real-IP config is baked in — this section is for **bring-your-own images**
+> and language runtimes where your own code owns the listening socket.
+
 ## What's NOT supported
 
 - **Building images on the platform** (compose `build:`). Build in
