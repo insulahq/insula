@@ -240,7 +240,36 @@ func TestRewriteRsyncCommand_FlagAllowlist(t *testing.T) {
 		{"write device nodes", "rsync --server --write-devices . /dev/sda"},
 		{"munge links off", "rsync --server --munge-links . /dest"},
 		{"delete after send", "rsync --server --sender --remove-source-files . /data/x"},
-		{"unexpected long flag", "rsync --server --made-up-flag . /dest"},
+		// --protect-args/--secluded-args route file args through the rsync protocol
+		// instead of the command line, so sanitizePath never confines them — deny
+		// the long forms AND the short "-s" whether standalone or bundled.
+		{"protect-args long", "rsync --server --protect-args . /dest"},
+		{"secluded-args long", "rsync --server --secluded-args . /dest"},
+		{"secluded-args -s short", "rsync --server -s . /dest"},
+		{"secluded-args -s bundled", "rsync --server -slogDtpre.iLsfxC . /dest"},
+		// -e/--rsh remote shell, including the glued -e<value> form (no space).
+		{"rsh glued -e<value>", "rsync --server -e/bin/sh . /dest"},
+		{"rsh bundled e not before dot", "rsync --server -eD . /dest"},
+		// Symlink-following options — long AND short (standalone or bundled): they
+		// read/write a referent outside dataRoot (e.g. the FM pod's SA token).
+		{"copy-links long", "rsync --server --copy-links . /dest"},
+		{"copy-links -L short", "rsync --server -L . /dest"},
+		{"copy-links -L bundled", "rsync --server -logDtprL . /dest"},
+		{"keep-dirlinks -K short", "rsync --server -K . /dest"},
+		{"copy-dirlinks -k short", "rsync --server -k . /dest"},
+		{"trust-sender", "rsync --server --trust-sender . /dest"},
+		// --filter merge-file rules are an arbitrary out-of-root read (long + -f).
+		{"filter long", "rsync --server --filter=._ /etc/x . /dest"},
+		{"filter -f short", "rsync --server -f . /dest"},
+		// A "-" value means "read the file list from STDIN" — off the command line,
+		// bypassing sanitizePath. Refuse in both space and = forms.
+		{"files-from stdin space", "rsync --server --files-from - . /dest"},
+		{"files-from stdin equals", "rsync --server --files-from=- . /dest"},
+		// --remote-option (-M) opaque option string; --temp-dir (-T) short form with
+		// a dash-leading value bypasses value-confinement.
+		{"remote-option long", "rsync --server --remote-option=--rsync-path=sh . /dest"},
+		{"remote-option -M short", "rsync --server -Mabcd . /dest"},
+		{"temp-dir -T dash value", "rsync --server -T -abcd . /dest"},
 	}
 	for _, tt := range refused {
 		t.Run("refuse/"+tt.name, func(t *testing.T) {
@@ -255,6 +284,18 @@ func TestRewriteRsyncCommand_FlagAllowlist(t *testing.T) {
 		"rsync --server --sender -logDtpre.iLsfxC . /some/dir", // normal send
 		"rsync --server -e.LsfxCIvu . /dest",                   // bundled caps marker, NOT -e/--rsh
 		"rsync --server --files-from=/x . /dest",               // path-bearing, confined not refused
+		// Plain transfer options a real client propagates to the server side. These
+		// were wrongly refused by the old --server/--sender-only allowlist (the
+		// 2026-07-20 `rsync -a --delete` failure); they can't escape confinement.
+		"rsync --server --delete -logDtprze.iLsfxCIvu . /some/path",
+		"rsync --server --delete-during --numeric-ids -logDtpre.iLsfxC . /dest",
+		"rsync --server --sender --partial --inplace -logDtpre.iLsfxC . /dest",
+		// Space-form path-bearing flag with a normal value: allowed (value confined,
+		// not refused — only a "-" stdin value is refused).
+		"rsync --server --files-from /some/list -logDtpre.iLsfxC . /dest",
+		// The legit remote-shell marker ("e" right before the ".") must NOT trip the
+		// short-flag letter check.
+		"rsync --server -logDtpre.iLsfxCIvu . /dest",
 	}
 	for _, cmd := range allowed {
 		t.Run("allow/"+cmd, func(t *testing.T) {
@@ -263,6 +304,19 @@ func TestRewriteRsyncCommand_FlagAllowlist(t *testing.T) {
 			}
 		})
 	}
+
+	// --delete is now allowed, but the positional path must STILL be confined under
+	// dataRoot — allowing the flag must not weaken path rewriting.
+	t.Run("delete-still-confines-path", func(t *testing.T) {
+		got := rewriteRsyncCommand("rsync --server --delete -logDtpre.iLsfxC . ../../etc", "/data")
+		if got == nil {
+			t.Fatal("expected the --delete transfer to be allowed, got refusal")
+		}
+		last := got[len(got)-1]
+		if !strings.HasPrefix(last, "/data") {
+			t.Errorf("path escaped confinement with --delete present: %q (full: %v)", last, got)
+		}
+	})
 }
 
 // TestRewriteSCPCommand_FlagAllowlist: legacy scp exec runs unchrooted as root

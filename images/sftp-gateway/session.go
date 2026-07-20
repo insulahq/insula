@@ -355,6 +355,30 @@ var rsyncDeniedLongFlags = map[string]bool{
 	"--copy-devices": true, "--write-devices": true, "--munge-links": true,
 	"--remove-source-files": true, "--remove-sent-files": true,
 	"--sockopts": true, "--rsync-path": true, "--log-file-format": true,
+	// --protect-args / --secluded-args route the file args through the rsync
+	// PROTOCOL instead of the command line, so sanitizePath (which only sees the
+	// command line) never confines them — a full escape of the path boundary.
+	// The -s short form is denied in the short-flag section below.
+	"--protect-args": true, "--secluded-args": true,
+	// Symlink-following options make the UNCHROOTED root exec read/write the
+	// symlink REFERENT, which can point outside dataRoot (e.g. a symlink to the
+	// file-manager pod's service-account token). Path rewriting confines the
+	// command-line paths but not what a followed symlink resolves to, so deny
+	// them — a legitimate transfer copies symlinks as symlinks (the default).
+	"--copy-links": true, "--copy-unsafe-links": true,
+	"--copy-dirlinks": true, "--keep-dirlinks": true,
+	// --trust-sender disables the receiver's guard against a malicious sender's
+	// file list escaping the destination root; never needed for a server call.
+	"--trust-sender": true,
+	// --filter merge/dir-merge rules ("merge <path>", ". <path>") read an
+	// arbitrary file as filter rules — an out-of-root read primitive. A gateway
+	// transfer never needs client-supplied filter rules. (-f short form + the
+	// stdin "-" value of the --*-from flags are handled below.)
+	"--filter": true,
+	// --remote-option (-M) carries an OPAQUE option string the letter-scan can't
+	// inspect; a gateway single-hop transfer never needs it. (-M/-T short forms
+	// are denied in the short-flag section below.)
+	"--remote-option": true,
 }
 
 // rsyncPathBearingLongFlags take a filesystem path after "=" that MUST be
@@ -416,37 +440,79 @@ func rewriteRsyncCommand(cmd, dataRoot string) []string {
 			}
 			if rsyncPathBearingLongFlags[name] {
 				if eq := strings.Index(arg, "="); eq != -1 {
+					// --flag=value form.
 					val := arg[eq+1:]
+					if val == "-" {
+						log.Printf("rsync: refusing %s with stdin ('-') value (routes the file list off the command line)", name)
+						return nil
+					}
 					if val != "" {
 						rewritten[i] = arg[:eq+1] + sanitizePath(val, dataRoot)
 					}
+					continue
 				}
-				// The `--flag value` (space-separated) form is confined when the
-				// value is reached as a positional token above.
+				// --flag value form: the value is the NEXT token. Confine it HERE —
+				// relying on the positional pass fails when the value starts with "-"
+				// (it is misread as a flag and passed through raw). In particular a
+				// value of "-" means "read the list from STDIN" (wired straight to the
+				// client's stream), which would feed the server arbitrary absolute
+				// paths that sanitizePath never sees — a full confinement bypass.
+				if i+1 < len(rewritten) {
+					val := rewritten[i+1]
+					if val == "-" {
+						log.Printf("rsync: refusing %s with stdin ('-') value (routes the file list off the command line)", name)
+						return nil
+					}
+					rewritten[i+1] = sanitizePath(val, dataRoot)
+					i++ // value consumed; do not re-process it as a positional
+				}
 				continue
 			}
-			// --server and --sender are the ONLY long flags a legitimate rsync
-			// server invocation carries (--server is mandatory; --sender marks a
-			// download). Everything else it needs is bundled into the short-flag
-			// string. Allow exactly these two; refuse any other long flag rather
-			// than pass an unknown to a root, unchrooted rsync.
-			if name == "--server" || name == "--sender" {
-				continue
-			}
-			log.Printf("rsync: refusing unexpected long flag %q", name)
-			return nil
+			// Any long flag that survived the denylist and isn't path-bearing is a
+			// plain transfer option — --delete (and --delete-during/-before/-after),
+			// --numeric-ids, --chmod=, --partial, --inplace, --compress-level=, etc.
+			// These act only on the already-confined paths and can't route args off
+			// the command line (the parsing-changing flags --protect-args /
+			// --secluded-args are denied above), so the denylist + path-confinement
+			// remain the full boundary and it is safe to allow them through.
+			//
+			// Allowing ONLY --server/--sender used to refuse every real-world
+			// `rsync -a --delete` (server side carries `--delete`) — the transfers
+			// failed with "refusing unexpected long flag" (staging, 2026-07-20).
+			continue
 		}
 
-		// Short-flag bundle, e.g. "-logDtpre.iLsfxCIvu". A bundled "e" here is
-		// the rsync protocol's own remote-shell-capabilities marker (part of the
-		// negotiated option string), NOT the -e/--rsh remote-shell flag, which
-		// on the server side only ever appears as its own token. But a bundle
-		// that IS exactly "-e" (its own token) is the remote-shell flag — deny.
-		if arg == "-e" {
-			log.Printf("rsync: refusing -e/--rsh remote-shell flag")
+		// Short-flag bundle, e.g. "-logDtpre.iLsfxCIvu". rsync splits the token into
+		// individual short options exactly like a typed `-xyz`, so a dangerous letter
+		// reaches the unchrooted-root server whether it stands alone (-L), is bundled
+		// (-logDtprL), or is glued to a value (-e/bin/sh). We must therefore inspect
+		// the OPTION letters, not compare whole tokens.
+		//
+		// Only the part BEFORE the first "." is real options; everything after the
+		// "." is the negotiated capability/flist-flag string (markers like iLsfxCIvu —
+		// NOT options) and is ignored. The one subtlety is "e": a legitimate server
+		// call encodes "client used a remote shell" as an "e" immediately before the
+		// "." (…pre.iLsfx…). That trailing marker "e" is fine; any OTHER "e" —
+		// "-e", "-e<value>", or an "e" not right before "." — is the -e/--rsh
+		// remote-shell flag (arbitrary exec) and must be denied.
+		opts := arg[1:]
+		check := opts
+		if dot := strings.IndexByte(opts, '.'); dot != -1 {
+			check = strings.TrimSuffix(opts[:dot], "e") // drop the "e." remote-shell marker
+		}
+		// s=--secluded-args (paths off cmdline), L=--copy-links, k=--copy-dirlinks,
+		// K=--keep-dirlinks (symlink/dir-link following out of root), f=--filter
+		// (arbitrary merge-file read), e=-e/--rsh (arbitrary exec), M=--remote-option
+		// (opaque option string), T=--temp-dir (dash-leading value escapes the
+		// value-confinement that only the long path-bearing flags get; the long
+		// --temp-dir=<path> form still works and is confined). "F" (cvs-exclude /
+		// dir-merge of the fixed in-tree ".rsync-filter") is intentionally NOT here:
+		// its merge target stays inside dataRoot, so it is not an out-of-root read.
+		if bad := strings.IndexAny(check, "esLKkfMT"); bad != -1 {
+			log.Printf("rsync: refusing short-flag bundle %q (dangerous option letter %q)", arg, string(check[bad]))
 			return nil
 		}
-		// Otherwise it is a bundle of transfer options — safe, no path.
+		// Otherwise it is a bundle of pure transfer options — safe, no path.
 	}
 	return rewritten
 }
