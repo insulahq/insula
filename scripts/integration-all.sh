@@ -854,6 +854,32 @@ fi
 # concurrency made it WORSE (it's a control-plane event, not load). Gate on a
 # DB-BACKED endpoint (healthz is SHALLOW — returns 200 even while postgres is
 # down) being stably 200 so the batch runs against a settled control plane.
+# report_system_db_health — name the REAL cause when the control plane / login is
+# down. A system-db (CNPG) outage surfaces only as generic "control plane not
+# stable" / "login rate-limited", so a platform-DB brick used to get mis-filed as
+# a harness flake (that is how the CNPG single-instance primary-roll wedge hid for
+# so long — 2026-07-20). Prints the CNPG cluster phase + platform-api readiness.
+# Returns 1 (and a loud banner) when system-db is NOT healthy; 0 otherwise (incl.
+# when $KUBECTL can't reach the cluster — never let diagnostics abort the run).
+report_system_db_health() {
+  local k="${KUBECTL:-kubectl}" phase ready
+  command -v "${k%% *}" >/dev/null 2>&1 || { echo "  [system-db health] \$KUBECTL unavailable — cannot diagnose" >&2; return 0; }
+  phase=$($k -n platform get cluster system-db -o jsonpath='{.status.phase}' 2>/dev/null)
+  ready=$($k -n platform get pods -l app=platform-api -o jsonpath='{.items[*].status.containerStatuses[*].ready}' 2>/dev/null)
+  if [[ -z "$phase" ]]; then
+    echo "  [system-db health] CNPG cluster system-db NOT FOUND / unreachable via \$KUBECTL" >&2
+    return 0
+  fi
+  echo "  [system-db health] CNPG phase: '$phase' | platform-api ready: '${ready:-none}'" >&2
+  if [[ "$phase" != *"healthy"* ]]; then
+    echo "  >>> system-db (platform DB) is NOT HEALTHY — this is a PLATFORM/DB OUTAGE, not a harness/rate-limit flake." >&2
+    echo "  >>> A wedged single-instance CNPG primary is a KNOWN failure (see project_cnpg_barman_plugin_restart_loop + the CNPG upstream issue)." >&2
+    echo "  >>> Debug: \$KUBECTL -n platform get cluster system-db ; \$KUBECTL -n cnpg-system logs deploy/cnpg-cloudnative-pg" >&2
+    return 1
+  fi
+  return 0
+}
+
 wait_for_control_plane_stable() {
   local need=6 ok=0 i max=180 code   # 6 consecutive DB-backed 200s (~30s stable), up to 15 min
   log "Barrier: waiting for platform-api + DB to stabilize after SERIAL_PRE before the parallel batch…"
@@ -873,6 +899,13 @@ wait_for_control_plane_stable() {
     fi
     sleep 5
   done
+  # 15-min timeout. A transient blip → proceed (absorb it). But a PERSISTENT
+  # failure with a wedged system-db is a real DB outage — fail loudly + correctly
+  # attributed, instead of hiding it as "may flake".
+  if ! report_system_db_health; then
+    fail "control plane not stable within $((max*5))s BECAUSE system-db (platform DB) is wedged — NOT a harness flake (see health above)"
+    exit 1
+  fi
   warn "control plane not stable within $((max*5))s — proceeding anyway (parallel group may flake)"
   return 0
 }
@@ -888,7 +921,7 @@ fi
 # INVALID_TOKEN cascade observed 2026-06-25). force_mint guarantees a full TTL.
 log "Force-minting a fresh INTEGRATION_TOKEN before the parallel group"
 INTEGRATION_TOKEN="$(force_mint)"
-[[ -n "$INTEGRATION_TOKEN" ]] || { fail "mid-run re-login failed — aborting"; exit 1; }
+[[ -n "$INTEGRATION_TOKEN" ]] || { report_system_db_health || true; fail "mid-run re-login failed — aborting (check system-db health above; a wedged platform DB fails login, it is not necessarily rate-limiting)"; exit 1; }
 export INTEGRATION_TOKEN
 
 # Background refresher: while the parallel group runs, keep the SHARED cache
