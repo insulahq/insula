@@ -426,19 +426,39 @@ export async function readClusterState(
   // count). desiredReplicas comes from the same REPLICAS_FOR table
   // so the column stays consistent across PVC sources, and the
   // existing patchLonghornVolumes() loop handles reconcile.
-  // CNPG PVCs use Longhorn replicas=1 INDEPENDENTLY of the system
-  // tier. CNPG streaming replication is the HA mechanism for postgres
-  // — having N postgres instances across N servers with N×N Longhorn
-  // replicas would pay quadratic write amplification for redundancy
-  // that already exists at the CNPG layer. Each CNPG instance's PVC
-  // only needs 1 replica (single-node disk-failure tolerance via the
-  // CNPG instance failover, not via Longhorn). The CNPG instance
-  // count itself scales with min(readyServerCount, 3) via
-  // cnpgInstancesForSystemTier so a 3-server cluster gets 3 postgres
-  // instances (1-server-loss tolerance with quorum) and a 4+ server
-  // cluster still gets 3 — the extra servers provide failover headroom
-  // for tenant workloads rather than additional postgres instances.
-  const CNPG_DESIRED_REPLICAS = 1;
+  // CNPG PVC Longhorn replica count is TIER-DEPENDENT:
+  //
+  //   HA tier   → 1 replica per PVC. CNPG streaming replication IS the
+  //               HA mechanism (N postgres instances across N servers via
+  //               cnpgInstancesForSystemTier). N instances × N Longhorn
+  //               replicas would pay quadratic write amplification for
+  //               redundancy that already exists at the CNPG layer, so
+  //               each instance's PVC keeps a single replica (single-node
+  //               disk-failure tolerance comes from CNPG instance failover,
+  //               not Longhorn).
+  //
+  //   local tier → min(readyServerCount, MAX_HA_REPLICAS) replicas for the
+  //               SINGLE instance's PVC. In local tier there is exactly ONE
+  //               postgres instance, so replicating its one volume across
+  //               servers is NOT quadratic — and it is REQUIRED to avoid a
+  //               brick: a single-instance primary that is rolled (barman
+  //               plugin add on backup-target bind, a config/probe edit, an
+  //               operator/PG upgrade) is deleted + recreated by CNPG, and
+  //               the new pod can land on ANY server (affinity nodeSelector
+  //               = server). With only 1 replica the new pod pays a slow
+  //               CROSS-NODE Longhorn re-attach that exceeds CNPG's ~30s
+  //               recreate window, so it recreates again (bouncing nodes)
+  //               and the roll NEVER converges → system-db wedged →
+  //               platform-api crashloop (project_cnpg_barman_plugin_restart_loop,
+  //               2026-07-20; upstream CNPG issue open). Replicating the
+  //               volume onto every server means each recreate finds a LOCAL
+  //               replica → fast attach → the roll converges. No pinning, so
+  //               drain/relocation still work (any server has the data). On
+  //               a single-server install min(1,3)=1 (can't do more, and it
+  //               can't bounce anyway).
+  const cnpgDesiredReplicas = policy.systemTier === 'local'
+    ? Math.max(1, Math.min(readyServerCount, MAX_HA_REPLICAS))
+    : 1;
   for (const c of CNPG_CLUSTERS) {
     const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({
       namespace: c.namespace,
@@ -464,7 +484,7 @@ export async function readClusterState(
         pvcName: name,
         volumeName: lhVolName,
         currentReplicas,
-        desiredReplicas: CNPG_DESIRED_REPLICAS,
+        desiredReplicas: cnpgDesiredReplicas,
         healthy,
         phase: state,
         replicaNodes,
@@ -899,10 +919,11 @@ async function precheckCapacityForInstances(
     }
     perNode.push({ name, freeBytes, canFit: freeBytes >= sizeBytesPer });
   }
-  // Each of the new instances will have its OWN PVC with replicas=1
-  // (CNPG_DESIRED_REPLICAS) — and CNPG anti-affinity steers each
-  // instance onto a distinct server. So we need (addedInstances)
-  // DISTINCT system nodes with freeBytes >= sizeBytesPer.
+  // Each of the new instances will have its OWN PVC with 1 Longhorn
+  // replica (the HA-tier CNPG replica count — see cnpgDesiredReplicas;
+  // this headroom check is for HA scale-up, so tier is 'ha' here) — and
+  // CNPG anti-affinity steers each instance onto a distinct server. So we
+  // need (addedInstances) DISTINCT system nodes with freeBytes >= sizeBytesPer.
   const fittingNodes = perNode.filter((n) => n.canFit).length;
   const ok = fittingNodes >= addedInstances;
   return {
