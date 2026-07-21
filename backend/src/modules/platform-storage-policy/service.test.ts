@@ -162,13 +162,15 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     expect(pg1?.namespace).toBe('platform');
     expect(pg1?.volumeName).toBe('pvc-pg-1');
 
-    // CNPG-managed PVCs always desiredReplicas=1 INDEPENDENTLY of
-    // the system tier — CNPG streaming replication is the HA layer
-    // (4 servers = 4 postgres instances, not 4 Longhorn replicas of
-    // each instance's PVC). StatefulSet PVCs (Stalwart) still scale
-    // with readyServerCount because Stalwart is a single pod whose
-    // HA comes from Longhorn replicas.
-    expect(pg1?.desiredReplicas).toBe(1); // CNPG: always 1 regardless of tier
+    // CNPG PVC desiredReplicas is TIER-DEPENDENT. In HA tier each PVC
+    // stays at 1 Longhorn replica — CNPG streaming replication is the HA
+    // layer (3 servers = 3 postgres instances, not 3 Longhorn replicas of
+    // each instance's PVC; N×N would be quadratic write amplification).
+    // In LOCAL tier the single instance's PVC is replicated across servers
+    // instead (see the local-tier multi-server test below). StatefulSet
+    // PVCs (Stalwart) scale with readyServerCount regardless (single pod,
+    // Longhorn-HA).
+    expect(pg1?.desiredReplicas).toBe(1); // HA tier → 1 (CNPG streaming HA)
     expect(stalwart?.desiredReplicas).toBe(3); // StatefulSet HA: 3 in this test (3 servers, ha tier)
 
     // Longhorn-observed numbers carried through verbatim.
@@ -203,7 +205,37 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
     expect(state.volumes).toHaveLength(1);
     expect(state.volumes[0].pvcName).toBe('system-db-1');
     expect(state.volumes[0].kind).toBe('cnpg');
-    expect(state.volumes[0].desiredReplicas).toBe(1); // local tier
+    expect(state.volumes[0].desiredReplicas).toBe(1); // local tier, single server → min(1,3)=1
+  });
+
+  it('replicates the single CNPG instance across servers in local tier (fixes the single-instance primary-roll wedge)', async () => {
+    const db = makeDbReturningPolicy('local');
+    const k8s = makeK8sMock({
+      nodes: [
+        { name: 's1', role: 'server', ready: true },
+        { name: 's2', role: 'server', ready: true },
+        { name: 's3', role: 'server', ready: true },
+      ],
+      pvcsByNs: { mail: [] },
+      pvcsByLabel: {
+        'platform|cnpg.io/cluster=system-db': [
+          { metadata: { name: 'system-db-1' }, spec: { volumeName: 'pvc-pg-1' } },
+        ],
+      },
+      lhVolumes: {
+        'pvc-pg-1': { numberOfReplicas: 1, robustness: 'healthy', state: 'attached' },
+      },
+    });
+
+    const state = await readClusterState(k8s, db);
+    const pg1 = state.volumes.find((v) => v.pvcName === 'system-db-1');
+    // local tier + 3 servers: the ONE postgres instance's PVC replicates
+    // to all 3 servers so a rolled primary always re-attaches to a LOCAL
+    // replica (no cross-node re-attach stall → the roll converges instead
+    // of wedging). Capped at MAX_HA_REPLICAS=3. This is the fix for the
+    // single-instance primary-roll wedge (2026-07-20).
+    expect(pg1?.desiredReplicas).toBe(3);
+    expect(pg1?.kind).toBe('cnpg');
   });
 
   it('totalNodeCount counts only server-tagged nodes — workers are excluded', async () => {

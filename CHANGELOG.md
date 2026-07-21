@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.32] - 2026-07-18
-
 ### Added
 - **Cross-cluster migration now supports CIFS/SMB sources (all target types
   covered).** Migration/DR read a *foreign* backup target directly (bypassing the
@@ -30,6 +28,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   + restore already do through the shim.
 
 ### Fixed
+- **CloudNative-PG operator bumped to latest stable `v1.30.0` (chart `0.28.3 →
+  0.29.0`).** Version hygiene + a partial mitigation of a barman-cloud
+  WAL-archiver plugin-roll bug: when the postgres-objectstore reconciler ADDS the
+  barman-cloud plugin to a running `system-db` cluster (on a SYSTEM backup-target
+  bind), CNPG must roll the primary to inject the archiver sidecar, and that roll
+  can loop forever (`Primary instance is being restarted without a switchover` /
+  `PodSpec differ … has been added`). 1.30.0 fixes this for the **HA / multi-instance
+  `primaryUpdateMethod: switchover`** path — it now recreates the primary Pod in
+  place so the sidecar is injected (cnpg#11032/#11059). **It does NOT resolve the
+  platform's single-instance (`instances: 1`) case** — any roll of a running
+  single-instance primary (plugin add, and even a probe/config change) still
+  wedges on both 1.29.1 and 1.30.0. That is a distinct CNPG limitation, reported
+  upstream and tracked separately (fix candidates: pin the primary to its PVC node
+  so the RWO re-attach stays local, or run system-db HA). plugin-barman-cloud
+  `v0.13.0` (already latest) is unchanged. The pin reaches existing clusters via
+  host-migration `2026.7.1/0003` (`helm upgrade --reuse-values`; the chart
+  templates its CRDs, so they roll too).
 - **DR-recover / migration-import of a DELETED tenant is idempotent again.** Since
   deleted tenants now RETAIN their bundle catalog (loose FK — the `backup_jobs`
   row survives so the bundle stays recoverable), re-importing/recovering that

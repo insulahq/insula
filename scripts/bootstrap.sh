@@ -394,7 +394,7 @@ CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
 CERT_MANAGER_CHART_VERSION="v1.20.3"     # 2026-07-08; fixes GHSA-8rvj-mm4h-c258 (HIGH — ACME solver priv-esc)
 SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
-CNPG_CHART_VERSION="0.28.3"              # CloudNative-PG operator v1.29.1 (PG 14-18 support; 1.24/1.27 EOL)
+CNPG_CHART_VERSION="0.29.0"              # CloudNative-PG operator v1.30.0 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""
 # --acme-server: point cert-manager at a custom ACME directory (test CA like Pebble, or
@@ -1602,6 +1602,29 @@ install_packages_dnf() {
   # admin/backup JSON bodies). RHEL-9 family + AL2023 ship it in baseos.
   # tmux: required by the admin node-terminal feature (ADR-041) for
   # cross-reconnect shell continuity. In RHEL-9-family base repos.
+
+  # kube-proxy and Calico Felix program iptables rules using the legacy xtables
+  # 'conntrack' match (`iptables -m conntrack`); its kernel module xt_conntrack
+  # ships in kernel-modules-extra. CentOS Stream 10 does NOT install that package
+  # by default (el9 does), so on el10 kube-proxy's Sync fails with "Extension
+  # conntrack revision 0 not supported, missing kernel module" → it programs zero
+  # KUBE-SVC rules → the API service ClusterIP (10.43.0.1:443) is unreachable →
+  # a joining node's calico install-cni can't mint its ServiceAccount token and
+  # the node never goes Ready (validated 2026-07-19 on centos-stream-10). Install
+  # the running-kernel package and load the module BEFORE k3s starts (Phase 2).
+  # Harmless no-op where already present (el9). Best-effort so a variant without
+  # the exact package (e.g. amzn2023, handled separately) never aborts bootstrap.
+  if [[ "$OS_VARIANT" != "amzn2023" ]]; then
+    dnf install -y -q "kernel-modules-extra-$(uname -r)" >/dev/null 2>&1 \
+      || dnf install -y -q kernel-modules-extra >/dev/null 2>&1 \
+      || warn "kernel-modules-extra unavailable — kube-proxy may fail to program service rules (missing xt_conntrack) on this RHEL-family node."
+    modprobe xt_conntrack 2>/dev/null \
+      || warn "modprobe xt_conntrack failed — kube-proxy/Calico service routing may not converge on this node."
+    # Persist so it reloads on reboot, before k3s's kube-proxy needs it.
+    install -d -m 0755 /etc/modules-load.d
+    printf 'xt_conntrack\n' > /etc/modules-load.d/platform-netfilter.conf
+  fi
+
   if [[ "$OS_VARIANT" != "amzn2023" ]]; then
     # On RHEL/Rocky/Alma/CentOS-Stream, EPEL provides age + rclone; install
     # them via dnf so we get distro-managed updates. amzn2023 (no EPEL) takes

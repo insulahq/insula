@@ -22,8 +22,12 @@
 # followed by a brief description.
 set -euo pipefail
 
-HOST="${HOST:-root@staging1.example.test}"
-PLATFORM_APEX="${PLATFORM_APEX:-staging.example.test}"
+# Node SSH target + platform apex. In a full integration-all run the operator's
+# profile exports SSH_HOST (real node) and PLATFORM_DOMAIN (real apex); honor them
+# before the redacted public placeholder so the suite isn't left SSHing to the
+# unresolvable example.test default (the 2026-07-18 full-run rc=255 failure).
+HOST="${HOST:-${SSH_HOST:-root@staging1.example.test}}"
+PLATFORM_APEX="${PLATFORM_APEX:-${PLATFORM_DOMAIN:-${PLATFORM_BASE_DOMAIN:-staging.example.test}}}"
 # Public admin API base. Env-overridable for non-staging clusters (the old
 # `https://staging.${PLATFORM_APEX#staging.}` construction was staging-only).
 ADMIN_HOST="${ADMIN_HOST:-https://admin.${PLATFORM_APEX}}"
@@ -91,9 +95,46 @@ s "kubectl -n mail patch secret mail-secrets --type=json -p='[{\"op\":\"replace\
 # recreates them from the current template. NEVER `kubectl rollout restart` on a
 # Flux-managed cluster: Flux treats the restart annotation as drift and scales the
 # new ReplicaSet back to 0 (CLAUDE.md golden rule).
+recreate_platform_api() {
+  # `rollout status` ALONE is not a real readiness gate here: `delete pod` doesn't
+  # bump the Deployment generation, so it can return immediately from STALE status
+  # while old (stale-cache) replicas still serve the Service — the rotate POST then
+  # lands on a stale/not-ready pod (the rc.32 §2/§3 false-fail on 2 replicas). Wait
+  # for the old pods to actually go, then for the new ones to be Ready + endpoints
+  # to settle.
+  s "kubectl -n platform delete pod -l app=platform-api --wait=true >/dev/null 2>&1 || true"
+  sleep 5   # let the ReplicaSet create replacement pods before waiting on Ready
+  s "kubectl -n platform rollout status deploy/platform-api --timeout=180s >/dev/null 2>&1 || true"
+  s "kubectl -n platform wait --for=condition=Ready pod -l app=platform-api --timeout=180s >/dev/null 2>&1 || true"
+  sleep 3   # brief settle for Service endpoints to converge to the fresh pods
+}
+
+# Retry the rotate POST: right after a recreate the request can still hit a
+# not-yet-ready replica (empty body / gateway HTML). A JSON body (the mismatch
+# error OR success) is authoritative and returned immediately; only an empty or
+# HTML/gateway body retries, up to 5×.
+rotate_master() {
+  local token="$1" out="" n=0
+  while :; do
+    n=$((n+1))
+    # MUST send a body: Content-Type: application/json with an EMPTY body makes
+    # Fastify reject the request with FST_ERR_CTP_EMPTY_JSON_BODY (400) before the
+    # handler runs — a well-formed JSON 400 that contains neither
+    # WEBMAIL_MASTER_DOMAIN_MISMATCH nor rotatedAt, so §2/§3 failed with "no match".
+    # (Same Fastify gotcha as DELETE-with-Content-Type; the endpoint takes no input
+    # so `{}` satisfies the parser. Latent until this suite went default-on.)
+    out=$(s "curl -sk -X POST '${ADMIN_HOST}/api/v1/admin/mail/rotate-webmail-master-password' \
+      -H 'Authorization: Bearer $token' -H 'Content-Type: application/json' -d '{}'" || true)
+    if [[ -n "$out" ]] && ! printf '%s' "$out" | grep -qiE '<html|<center>|502 Bad|503 Service|504 Gateway'; then
+      printf '%s' "$out"; return 0
+    fi
+    (( n >= 5 )) && { printf '%s' "$out"; return 0; }
+    sleep 5
+  done
+}
+
 echo "  recreating platform-api pods to flush master-user cache"
-s "kubectl -n platform delete pod -l app=platform-api >/dev/null"
-s "kubectl -n platform rollout status deploy/platform-api --timeout=120s >/dev/null"
+recreate_platform_api
 
 # Acquire an admin JWT (mail-admin routes are Bearer-only — no cookie fallback).
 admin_email="${ADMIN_EMAIL:-admin@${PLATFORM_APEX}}"
@@ -114,8 +155,7 @@ else
     (( failed+=1 ))
   else
     echo "  admin login OK"
-    rotate_resp=$(s "curl -sk -X POST '${ADMIN_HOST}/api/v1/admin/mail/rotate-webmail-master-password' \
-      -H 'Authorization: Bearer $TOKEN' -H 'Content-Type: application/json'" || true)
+    rotate_resp=$(rotate_master "$TOKEN")
     assert_contains "tampered Secret -> rotation rejected with WEBMAIL_MASTER_DOMAIN_MISMATCH" \
       "WEBMAIL_MASTER_DOMAIN_MISMATCH" "$rotate_resp"
   fi
@@ -124,8 +164,7 @@ fi
 echo
 echo "  restoring Secret to original FQDN"
 s "kubectl -n mail patch secret mail-secrets --type=json -p='[{\"op\":\"replace\",\"path\":\"/data/STALWART_MASTER_USER\",\"value\":\"$(echo -n "$ORIG_FQDN" | base64)\"}]' >/dev/null"
-s "kubectl -n platform delete pod -l app=platform-api >/dev/null"   # Flux-safe restart (never rollout-restart)
-s "kubectl -n platform rollout status deploy/platform-api --timeout=120s >/dev/null"
+recreate_platform_api   # Flux-safe restart (never rollout-restart)
 
 echo
 echo "=== §3: rotation succeeds with valid Secret ==="
@@ -136,8 +175,7 @@ if [[ -n "$admin_password" ]] && [[ "$login_status" == "200" ]]; then
     -d '{\"email\":\"$admin_email\",\"password\":\"$admin_password\"}'" || true)
   TOKEN2=$(printf '%s' "$login_out2" | sed -nE 's/.*"token":"([^"]+)".*/\1/p' | head -1)
   if [[ -n "$TOKEN2" ]]; then
-    rotate_ok=$(s "curl -sk -X POST '${ADMIN_HOST}/api/v1/admin/mail/rotate-webmail-master-password' \
-      -H 'Authorization: Bearer $TOKEN2' -H 'Content-Type: application/json'" || true)
+    rotate_ok=$(rotate_master "$TOKEN2")
     assert_contains "valid Secret -> rotation succeeded (response contains rotatedAt)" \
       "rotatedAt" "$rotate_ok"
     # §4 (Stalwart-side master verification) is DEFERRED, not fake-fixed: it uses a

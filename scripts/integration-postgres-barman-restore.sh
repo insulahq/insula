@@ -47,13 +47,20 @@ set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@staging.example.test}"
-STAGING_SSH="${STAGING_SSH:-root@staging1.example.test}"
+# Honor the operator profile's SSH_HOST (real node) before the redacted public
+# placeholder — otherwise a full integration-all run SSHes to the unresolvable
+# example.test default and dies rc=255 (the 2026-07-18 full-run failure).
+STAGING_SSH="${STAGING_SSH:-${SSH_HOST:-root@staging1.example.test}}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 CLUSTER_NS="${CLUSTER_NS:-platform}"
 CLUSTER_NAME="${CLUSTER_NAME:-system-db}"
 OBJECT_STORE="${OBJECT_STORE:-system-postgres-objectstore}"
 SKIP_PROMOTE="${SKIP_PROMOTE:-0}"
-CURL_OPTS=(-s --max-time 60)
+# 180s (not 60): the barman catalogue GET is an S3 object-store LISTING (normally
+# ~5s) that can exceed 60s under full-run load + S3 latency, and the restore
+# trigger is heavy too. The per-call timeout is a HANG guard, not a latency
+# assertion; the suite's own 2400s hard timeout bounds the whole run.
+CURL_OPTS=(-s --max-time 180)
 if [[ "${CURL_INSECURE:-0}" == "1" ]]; then
   CURL_OPTS+=(-k)
 fi
@@ -156,8 +163,21 @@ if [[ "${WITH_WAL:-0}" == "1" ]]; then
   # CNPG's barman archiver runs every few seconds; give it time.
   sleep 10
 else
+  # A restore to LATEST replays ALL archived WAL (null recoveryTargetTime =
+  # restore-to-latest — backend service.ts), which legitimately replays a
+  # post-backup marker back in. So "restored lacks marker" only holds against a
+  # TARGET-BOUNDED restore. Capture a recovery target BEFORE the marker (mirroring
+  # WITH_WAL's proven fencing) so the target-bounded restore AND the promote/cutover
+  # that snapshots it both correctly EXCLUDE the marker.
+  sleep 3
+  RECOVERY_TARGET_TIME=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -t -A -c \"SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"');\"" 2>&1 | tr -d ' ')
+  flush_wal
+  info "recoveryTargetTime captured (pre-marker): $RECOVERY_TARGET_TIME"
+  sleep 5
   ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -d platform -c \"INSERT INTO platform_settings (setting_key, setting_value) VALUES ('e2e_barman_marker', '$MARKER_VALUE') ON CONFLICT (setting_key) DO UPDATE SET setting_value=EXCLUDED.setting_value, updated_at=NOW();\"" >/dev/null
-  info "marker '$MARKER_VALUE' inserted in source (POST-barman-backup)"
+  flush_wal
+  info "marker '$MARKER_VALUE' inserted POST-target (must be excluded by a target-bounded restore)"
+  sleep 10
 fi
 
 # ─── Phase 3 — side-by-side restore ──────────────────────────────────
@@ -167,7 +187,8 @@ if [[ "${WITH_WAL:-0}" == "1" ]]; then
   RESTORE_BODY="{\"namespace\":\"$CLUSTER_NS\",\"sourceClusterName\":\"$CLUSTER_NAME\",\"newClusterName\":\"$NEW_NAME\",\"instances\":1,\"recoveryTargetTime\":\"$RECOVERY_TARGET_TIME\"}"
   info "WAL mode: CNPG bootstrap.recovery with recoveryTarget.targetTime=$RECOVERY_TARGET_TIME"
 else
-  RESTORE_BODY="{\"namespace\":\"$CLUSTER_NS\",\"sourceClusterName\":\"$CLUSTER_NAME\",\"newClusterName\":\"$NEW_NAME\",\"instances\":1}"
+  # Target-bounded (see the pre-marker capture above) so the marker is excluded.
+  RESTORE_BODY="{\"namespace\":\"$CLUSTER_NS\",\"sourceClusterName\":\"$CLUSTER_NAME\",\"newClusterName\":\"$NEW_NAME\",\"instances\":1,\"recoveryTargetTime\":\"$RECOVERY_TARGET_TIME\"}"
 fi
 TRIGGER=$(api POST '/api/v1/admin/postgres-barman-restore' "$RESTORE_BODY")
 TRIGGER_CODE=$(printf '%s' "$TRIGGER" | tail -n1)

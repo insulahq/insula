@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gliderlabs/ssh"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -147,8 +148,9 @@ func (m *SessionManager) HandleSession(sshSess ssh.Session, protocol string, raw
 		})
 	}()
 
-	// Ensure file-manager pod is running.
-	podName, err := resolveFileManagerPod(sess.Namespace)
+	// Ensure file-manager pod is running (scales the Deployment up from its idle
+	// replicas=0 and waits, bounded, for the cold-started pod to become Ready).
+	podName, err := resolveFileManagerPod(sshSess.Context(), sess.Namespace)
 	if err != nil {
 		log.Printf("session %s: pod resolution failed: %v", sess.ID, err)
 		fmt.Fprintf(sshSess.Stderr(), "failed to prepare file system: %v\n", err)
@@ -353,6 +355,30 @@ var rsyncDeniedLongFlags = map[string]bool{
 	"--copy-devices": true, "--write-devices": true, "--munge-links": true,
 	"--remove-source-files": true, "--remove-sent-files": true,
 	"--sockopts": true, "--rsync-path": true, "--log-file-format": true,
+	// --protect-args / --secluded-args route the file args through the rsync
+	// PROTOCOL instead of the command line, so sanitizePath (which only sees the
+	// command line) never confines them — a full escape of the path boundary.
+	// The -s short form is denied in the short-flag section below.
+	"--protect-args": true, "--secluded-args": true,
+	// Symlink-following options make the UNCHROOTED root exec read/write the
+	// symlink REFERENT, which can point outside dataRoot (e.g. a symlink to the
+	// file-manager pod's service-account token). Path rewriting confines the
+	// command-line paths but not what a followed symlink resolves to, so deny
+	// them — a legitimate transfer copies symlinks as symlinks (the default).
+	"--copy-links": true, "--copy-unsafe-links": true,
+	"--copy-dirlinks": true, "--keep-dirlinks": true,
+	// --trust-sender disables the receiver's guard against a malicious sender's
+	// file list escaping the destination root; never needed for a server call.
+	"--trust-sender": true,
+	// --filter merge/dir-merge rules ("merge <path>", ". <path>") read an
+	// arbitrary file as filter rules — an out-of-root read primitive. A gateway
+	// transfer never needs client-supplied filter rules. (-f short form + the
+	// stdin "-" value of the --*-from flags are handled below.)
+	"--filter": true,
+	// --remote-option (-M) carries an OPAQUE option string the letter-scan can't
+	// inspect; a gateway single-hop transfer never needs it. (-M/-T short forms
+	// are denied in the short-flag section below.)
+	"--remote-option": true,
 }
 
 // rsyncPathBearingLongFlags take a filesystem path after "=" that MUST be
@@ -414,74 +440,192 @@ func rewriteRsyncCommand(cmd, dataRoot string) []string {
 			}
 			if rsyncPathBearingLongFlags[name] {
 				if eq := strings.Index(arg, "="); eq != -1 {
+					// --flag=value form.
 					val := arg[eq+1:]
+					if val == "-" {
+						log.Printf("rsync: refusing %s with stdin ('-') value (routes the file list off the command line)", name)
+						return nil
+					}
 					if val != "" {
 						rewritten[i] = arg[:eq+1] + sanitizePath(val, dataRoot)
 					}
+					continue
 				}
-				// The `--flag value` (space-separated) form is confined when the
-				// value is reached as a positional token above.
+				// --flag value form: the value is the NEXT token. Confine it HERE —
+				// relying on the positional pass fails when the value starts with "-"
+				// (it is misread as a flag and passed through raw). In particular a
+				// value of "-" means "read the list from STDIN" (wired straight to the
+				// client's stream), which would feed the server arbitrary absolute
+				// paths that sanitizePath never sees — a full confinement bypass.
+				if i+1 < len(rewritten) {
+					val := rewritten[i+1]
+					if val == "-" {
+						log.Printf("rsync: refusing %s with stdin ('-') value (routes the file list off the command line)", name)
+						return nil
+					}
+					rewritten[i+1] = sanitizePath(val, dataRoot)
+					i++ // value consumed; do not re-process it as a positional
+				}
 				continue
 			}
-			// --server and --sender are the ONLY long flags a legitimate rsync
-			// server invocation carries (--server is mandatory; --sender marks a
-			// download). Everything else it needs is bundled into the short-flag
-			// string. Allow exactly these two; refuse any other long flag rather
-			// than pass an unknown to a root, unchrooted rsync.
-			if name == "--server" || name == "--sender" {
-				continue
-			}
-			log.Printf("rsync: refusing unexpected long flag %q", name)
-			return nil
+			// Any long flag that survived the denylist and isn't path-bearing is a
+			// plain transfer option — --delete (and --delete-during/-before/-after),
+			// --numeric-ids, --chmod=, --partial, --inplace, --compress-level=, etc.
+			// These act only on the already-confined paths and can't route args off
+			// the command line (the parsing-changing flags --protect-args /
+			// --secluded-args are denied above), so the denylist + path-confinement
+			// remain the full boundary and it is safe to allow them through.
+			//
+			// Allowing ONLY --server/--sender used to refuse every real-world
+			// `rsync -a --delete` (server side carries `--delete`) — the transfers
+			// failed with "refusing unexpected long flag" (staging, 2026-07-20).
+			continue
 		}
 
-		// Short-flag bundle, e.g. "-logDtpre.iLsfxCIvu". A bundled "e" here is
-		// the rsync protocol's own remote-shell-capabilities marker (part of the
-		// negotiated option string), NOT the -e/--rsh remote-shell flag, which
-		// on the server side only ever appears as its own token. But a bundle
-		// that IS exactly "-e" (its own token) is the remote-shell flag — deny.
-		if arg == "-e" {
-			log.Printf("rsync: refusing -e/--rsh remote-shell flag")
+		// Short-flag bundle, e.g. "-logDtpre.iLsfxCIvu". rsync splits the token into
+		// individual short options exactly like a typed `-xyz`, so a dangerous letter
+		// reaches the unchrooted-root server whether it stands alone (-L), is bundled
+		// (-logDtprL), or is glued to a value (-e/bin/sh). We must therefore inspect
+		// the OPTION letters, not compare whole tokens.
+		//
+		// Only the part BEFORE the first "." is real options; everything after the
+		// "." is the negotiated capability/flist-flag string (markers like iLsfxCIvu —
+		// NOT options) and is ignored. The one subtlety is "e": a legitimate server
+		// call encodes "client used a remote shell" as an "e" immediately before the
+		// "." (…pre.iLsfx…). That trailing marker "e" is fine; any OTHER "e" —
+		// "-e", "-e<value>", or an "e" not right before "." — is the -e/--rsh
+		// remote-shell flag (arbitrary exec) and must be denied.
+		opts := arg[1:]
+		check := opts
+		if dot := strings.IndexByte(opts, '.'); dot != -1 {
+			check = strings.TrimSuffix(opts[:dot], "e") // drop the "e." remote-shell marker
+		}
+		// s=--secluded-args (paths off cmdline), L=--copy-links, k=--copy-dirlinks,
+		// K=--keep-dirlinks (symlink/dir-link following out of root), f=--filter
+		// (arbitrary merge-file read), e=-e/--rsh (arbitrary exec), M=--remote-option
+		// (opaque option string), T=--temp-dir (dash-leading value escapes the
+		// value-confinement that only the long path-bearing flags get; the long
+		// --temp-dir=<path> form still works and is confined). "F" (cvs-exclude /
+		// dir-merge of the fixed in-tree ".rsync-filter") is intentionally NOT here:
+		// its merge target stays inside dataRoot, so it is not an out-of-root read.
+		if bad := strings.IndexAny(check, "esLKkfMT"); bad != -1 {
+			log.Printf("rsync: refusing short-flag bundle %q (dangerous option letter %q)", arg, string(check[bad]))
 			return nil
 		}
-		// Otherwise it is a bundle of transfer options — safe, no path.
+		// Otherwise it is a bundle of pure transfer options — safe, no path.
 	}
 	return rewritten
 }
 
-// resolveFileManagerPod ensures the file-manager is running and finds its pod.
-func resolveFileManagerPod(namespace string) (string, error) {
-	// First ask the backend to ensure the pod is ready.
-	podName, err := EnsureFileManager(namespace)
-	if err != nil {
-		log.Printf("ensure-file-manager call failed: %v, falling back to direct pod lookup", err)
-	}
-	if podName != "" {
-		return podName, nil
-	}
+// fileManagerReadyTimeout bounds how long a new session waits for the file-manager
+// pod to become Ready after EnsureFileManager scales its Deployment up. The
+// Deployment idles at replicas=0 (the idle-cleanup loop scales it to 0 after
+// ~10 min), so the FIRST connection after an idle period triggers a cold start —
+// schedule + Longhorn volume attach + image pull + container start — which the
+// backend ensure call does NOT wait out. Without this poll that first connect
+// failed ("pod is Pending, not Running") and the user had to retry by hand.
+// Override with FILE_MANAGER_READY_TIMEOUT (a Go duration) on slow nodes.
+var fileManagerReadyTimeout = parseReadyTimeout(envOrDefault("FILE_MANAGER_READY_TIMEOUT", "90s"))
 
-	// Fallback: list pods with label selector.
-	return findFileManagerPod(namespace)
+// fileManagerReadyInterval is the poll cadence while waiting for readiness.
+// 1s keeps the first-connect cold-start wait tight (the pod's readiness probe
+// now also runs every 1s), at the cost of a few extra cheap pod LISTs.
+const fileManagerReadyInterval = 1 * time.Second
+
+func parseReadyTimeout(s string) time.Duration {
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		log.Printf("invalid FILE_MANAGER_READY_TIMEOUT %q, using 90s: %v", s, err)
+		return 90 * time.Second
+	}
+	return d
 }
 
-// findFileManagerPod searches for a running file-manager pod in the namespace.
-func findFileManagerPod(namespace string) (string, error) {
-	pods, err := kubeClientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{
+// resolveFileManagerPod scales the file-manager Deployment up (via the backend)
+// and returns a Ready pod's name, polling up to fileManagerReadyTimeout so a
+// cold-started pod no longer fails the session on the first connect. The poll
+// stops early if ctx (the SSH session context) is cancelled by a disconnect.
+func resolveFileManagerPod(ctx context.Context, namespace string) (string, error) {
+	// Ask the backend to ensure the Deployment is scaled to 1. This is the
+	// trigger that creates the pod; it may return before the pod is Ready (or
+	// return an empty name), which is why we poll for readiness below rather
+	// than trusting its return value.
+	if _, err := EnsureFileManager(namespace); err != nil {
+		log.Printf("ensure-file-manager call failed: %v, falling back to direct pod lookup", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, fileManagerReadyTimeout)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		podName, err := findReadyFileManagerPod(ctx, namespace)
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("file-manager pod %s Ready in namespace %s after %d poll(s)", podName, namespace, attempt)
+			}
+			return podName, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("file-manager not Ready after %s: %w", fileManagerReadyTimeout, lastErr)
+		case <-time.After(fileManagerReadyInterval):
+		}
+	}
+}
+
+// findReadyFileManagerPod returns the name of a Running, Ready, non-terminating
+// file-manager pod in the namespace, or an error describing why none is usable
+// yet (so resolveFileManagerPod can retry). Readiness (the PodReady condition),
+// not merely Phase==Running, is required: a Running pod whose container has not
+// finished starting cannot be exec'd into. This matches the backend's own
+// getReadyFileManagerPodName definition.
+func findReadyFileManagerPod(ctx context.Context, namespace string) (string, error) {
+	pods, err := kubeClientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app=file-manager",
-		Limit:         1,
 	})
 	if err != nil {
 		return "", fmt.Errorf("list file-manager pods: %w", err)
 	}
-	if len(pods.Items) == 0 {
+	return pickReadyFileManagerPod(namespace, pods.Items)
+}
+
+// pickReadyFileManagerPod selects a Running, Ready, non-terminating pod from the
+// listed file-manager pods, or returns an error describing why none is usable
+// yet. Split out from the List call so the selection logic is unit-testable.
+func pickReadyFileManagerPod(namespace string, pods []corev1.Pod) (string, error) {
+	if len(pods) == 0 {
 		return "", fmt.Errorf("no file-manager pod found in namespace %s", namespace)
 	}
 
-	pod := pods.Items[0]
-	if pod.Status.Phase != "Running" {
-		return "", fmt.Errorf("file-manager pod %s is %s, not Running", pod.Name, pod.Status.Phase)
+	lastState := "none"
+	for i := range pods {
+		pod := &pods[i]
+		// A pod being deleted still reports Ready=True until the kubelet tears it
+		// down (e.g. right after quiesce scaled the Deployment to 0). Exec'ing
+		// into it would race the teardown — skip it.
+		if pod.DeletionTimestamp != nil {
+			lastState = "terminating"
+			continue
+		}
+		if pod.Status.Phase != corev1.PodRunning {
+			lastState = string(pod.Status.Phase)
+			continue
+		}
+		ready := false
+		for _, c := range pod.Status.Conditions {
+			if c.Type == corev1.PodReady {
+				ready = c.Status == corev1.ConditionTrue
+				break
+			}
+		}
+		if ready {
+			return pod.Name, nil
+		}
+		lastState = "Running/NotReady"
 	}
-	return pod.Name, nil
+	return "", fmt.Errorf("no Ready file-manager pod in namespace %s (last observed: %s)", namespace, lastState)
 }
 
 // execAndPipe runs a command in the file-manager pod and pipes stdin/stdout/stderr
