@@ -44,11 +44,11 @@ describe('collectMailHealthOnce', () => {
     expect(setDepth).toHaveBeenCalledWith(-1);
   });
 
-  it('publishes NOTHING when mail is not deployed (no enabled email domains)', async () => {
+  it('publishes -1 (unknown, never 0/down) and does not probe when mail is not deployed', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await collectMailHealthOnce(dbWithDomainCount(0) as any, log);
-    expect(setUp).not.toHaveBeenCalled();
-    expect(setDepth).not.toHaveBeenCalled();
+    expect(setUp).toHaveBeenCalledWith(-1);
+    expect(setDepth).toHaveBeenCalledWith(-1);
     expect(queuedMessageCount).not.toHaveBeenCalled();
   });
 

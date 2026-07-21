@@ -48,7 +48,14 @@ export async function collectMailHealthOnce(db: Database, log: MailHealthCollect
     log.warn({ err }, 'mail-health-collector: presence gate query failed; skipping pass');
     return;
   }
-  if (!expected) return; // mail not deployed — publish nothing.
+  if (!expected) {
+    // Mail not deployed — report "unknown" (-1), never 0 (which the rule
+    // reads as "down"). Explicit set covers the case where mail was up and
+    // then all email domains were disabled.
+    mailServerUp.set(-1);
+    mailOutboundQueueDepth.set(-1);
+    return;
+  }
 
   try {
     const depth = await queuedMessageCount({ cap: 2000 });
