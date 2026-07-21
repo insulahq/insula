@@ -124,6 +124,20 @@ provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Retain
 volumeBindingMode: Immediate
+# Defense-in-depth for the tenant-writable filesystem. SFTP/SCP/rsync into the
+# tenant PVC runs as root (unchrooted) in the file-manager pod, so harden the
+# mount itself:
+#   nodev  — device nodes on the volume are never honored, so a `rsync --devices`
+#            can't turn a tenant-planted node into a readable host block device.
+#   nosuid — setuid/setgid bits are ignored (no privilege escalation from a
+#            planted binary on tenant-writable storage).
+# NOT noexec — tenant runtimes legitimately execute their own code from the
+# volume. These are VFS-level options (fine on XFS) and are baked into the PV at
+# provision time, so they apply to NEW tenant volumes only — existing PVs keep
+# their options, so there is no remount and no regression.
+mountOptions:
+  - nodev
+  - nosuid
 parameters:
   # Initial value only. The k8s-provisioner patches Volume.spec.
   # numberOfReplicas to the per-tenant tier setting after PVC binding.
@@ -191,6 +205,11 @@ provisioner: driver.longhorn.io
 allowVolumeExpansion: true
 reclaimPolicy: Delete
 volumeBindingMode: Immediate
+# Mirror longhorn-tenant's mount hardening so tests exercise the same fs
+# semantics as production tenant storage (see the longhorn-tenant SC above).
+mountOptions:
+  - nodev
+  - nosuid
 parameters:
   numberOfReplicas: "1"
   staleReplicaTimeout: "30"
