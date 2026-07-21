@@ -67,6 +67,8 @@ export const OPERATOR_ERROR_CODES = {
   DRAIN_PIN_CONFLICT: 'DRAIN_PIN_CONFLICT',
   // Admission control
   ADMISSION_WEBHOOK_DENIED: 'ADMISSION_WEBHOOK_DENIED',
+  // Tenant create
+  EMAIL_IN_USE: 'EMAIL_IN_USE',
   // Generic
   UNKNOWN: 'UNKNOWN',
 } as const;
