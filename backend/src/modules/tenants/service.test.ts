@@ -370,14 +370,18 @@ describe('createTenant', () => {
     const deleteWhere = vi.fn().mockResolvedValue(undefined);
     const deleteFn = vi.fn().mockReturnValue({ where: deleteWhere });
     const db = { select: selectFn, insert: insertFn, delete: deleteFn } as unknown as Parameters<typeof createTenant>[0];
-    await expect(createTenant(db, {
+    const err = await createTenant(db, {
       name: 'X', primary_email: 'taken@x.test',
       contact_name: 'Test Contact',
       phone_e164: '+14155552671',
       billing_address: { street_address: '123 Main St', postal_address: 'PO Box 1', city: 'SF', country: 'US' },
       plan_id: '00000000-0000-0000-0000-000000000000',
       region_id: '00000000-0000-0000-0000-000000000001',
-    }, 'creator')).rejects.toMatchObject({ code: 'EMAIL_IN_USE' });
+    }, 'creator').catch((e: unknown) => e);
+    // Duplicate owner email is a CLIENT fault: must be an ApiError(409), not a
+    // plain Error that falls through to a misleading 500.
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err).toMatchObject({ code: 'EMAIL_IN_USE', status: 409 });
     // Verify the rollback fired.
     expect(deleteFn).toHaveBeenCalled();
   });

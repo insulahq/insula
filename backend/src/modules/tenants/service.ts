@@ -250,9 +250,30 @@ export async function createTenant(
     // across kubernetesNamespace generation (nondeterministic), so a
     // post-insert delete is the cleanest atomic-ish fallback.
     await db.delete(tenants).where(eq(tenants.id, id));
-    const err = new Error(`a user with email '${input.primary_email}' already exists; pick a different email`) as Error & { code?: string };
-    err.code = 'EMAIL_IN_USE';
-    throw err;
+    // A duplicate owner email is a CLIENT fault (409), not a server error.
+    // Throw an ApiError so the global handler maps it to 409 and renders an
+    // <ErrorPanel> envelope, instead of the plain Error falling through to a
+    // misleading 500 (the create route calls this service outside any catch).
+    throw new ApiError(
+      'EMAIL_IN_USE',
+      `a user with email '${input.primary_email}' already exists; pick a different email`,
+      409,
+      {
+        field: 'primary_email',
+        email: input.primary_email,
+        operatorError: {
+          code: 'EMAIL_IN_USE',
+          title: 'Email address already in use',
+          detail: `The email '${input.primary_email}' already belongs to another user account, so it can't be reused as this tenant's admin login.`,
+          remediation: [
+            'Pick a different admin email for the tenant.',
+            'If the existing account should own this tenant, remove or reassign it first under Users.',
+          ],
+          retryable: false,
+        },
+      },
+      'Pick a different admin email for the tenant.',
+    );
   }
 
   await db.insert(users).values({
