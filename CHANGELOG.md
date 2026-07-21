@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.33] - 2026-07-21
+
 ### Added
 - **Cross-cluster migration now supports CIFS/SMB sources (all target types
   covered).** Migration/DR read a *foreign* backup target directly (bypassing the
