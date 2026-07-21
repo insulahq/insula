@@ -85,6 +85,48 @@ export const stalwartAcmeTaskQueueDepth = new Gauge({
 });
 
 /**
+ * Mail-server liveness as observed by the platform-api mail-health
+ * collector (modules/mail-events/mail-health-collector.ts), refreshed
+ * every 60s: 1 = Stalwart JMAP mgmt reachable, 0 = expected-but-
+ * unreachable. The gauge is ONLY published when mail is expected (≥1
+ * enabled email domain) — on a cluster/dev without mail the series is
+ * absent, so the `mail-server-down` rule sees an empty vector and never
+ * false-fires. Publishing 0 (not simply dropping the series) on a real
+ * outage keeps the alert firing instead of going stale after ~5min.
+ */
+export const mailServerUp = new Gauge({
+  name: 'platform_mail_server_up',
+  help: '1 when the Stalwart JMAP mgmt endpoint is reachable, 0 when expected-but-down',
+  registers: [metricsRegistry],
+});
+
+/**
+ * Outbound mail queue depth (messages awaiting delivery) from Stalwart's
+ * x:QueuedMessage/query total, refreshed with mailServerUp. -1 when the
+ * probe couldn't read it (server down) so the backlog rule (which fires
+ * on `> $T`) never treats "unknown" as a backlog.
+ */
+export const mailOutboundQueueDepth = new Gauge({
+  name: 'platform_mail_outbound_queue_depth',
+  help: 'Outbound mail messages queued for delivery (-1 = probe failed)',
+  registers: [metricsRegistry],
+});
+
+/**
+ * Count of active mailboxes at or above 100% of their storage quota,
+ * refreshed by the mailbox quota-threshold pass (mail-stats, ~15min).
+ * Feeds the `mail-mailbox-over-quota` rule so an operator sees full
+ * mailboxes in aggregate even when the tenant-side owner can't be
+ * notified (no mailbox_access rows). Cardinality: a single global gauge,
+ * never per-mailbox.
+ */
+export const mailMailboxesOverQuota = new Gauge({
+  name: 'platform_mail_mailboxes_over_quota',
+  help: 'Active mailboxes at or above 100% of their storage quota',
+  registers: [metricsRegistry],
+});
+
+/**
  * Count of Flux resources whose Ready condition is False, by kind.
  * Refreshed every 60s by modules/monitoring/flux-status-collector.ts on
  * EVERY replica (the vmsingle scrape is per-pod), each computing the

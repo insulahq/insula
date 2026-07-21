@@ -326,6 +326,45 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
   },
+  // ── Mail monitoring (2026-07): outbound send-limit saturation + blocklist ──
+  {
+    id: 'admin.email_abuse_warning',
+    displayName: 'Outbound send-limit saturation',
+    description: 'A tenant is generating an abnormal volume of rate-limited / quota-rejected '
+      + 'outbound mail (>= the warning threshold in the last hour) — a runaway sender or early '
+      + 'abuse. Investigate before it becomes a complaint/reputation problem. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.email_abuse_critical',
+    displayName: 'Outbound send-limit saturation (critical)',
+    description: 'A tenant crossed the CRITICAL rate-limited / quota-rejected volume threshold in '
+      + 'the last hour — almost certainly a compromised account or a broken loop hammering the send '
+      + 'limit. Consider suspending outbound for the tenant. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.mail_blocklisted',
+    displayName: 'Mail IP on a DNS blocklist',
+    description: 'A server-role node IP that sends mail is listed on a DNS blocklist (DNSBL). '
+      + 'Outbound deliverability is degraded until the IP is delisted. See Monitoring → Mail → '
+      + 'Deliverability.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 43200, // at most once / 12h per (ip,list) via dedupeKey; cap the fan-out too
+    rateLimitMax: 8,
+  },
 ];
 
 /**

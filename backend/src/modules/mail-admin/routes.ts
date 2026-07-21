@@ -61,6 +61,7 @@ import {
   rotateResticPassword,
 } from './snapshot-settings.js';
 import { getMailPlacement, updateMailPlacement } from './placement.js';
+import { resolveServerNodeIps } from './server-node-ips.js';
 import {
   startMailMigration,
   getMailMigrationStatus,
@@ -84,8 +85,6 @@ import {
   getMailboxBackupSettingsView,
   setMailboxBackupSettings,
 } from '../tenant-bundles/mailbox-backup-engine.js';
-
-const NODE_ROLE_LABEL_KEY = 'insula.host/node-role';
 
 /**
  * Lazy-load a CoreV1Api for the rotate-webmail-master flow's Secret
@@ -138,66 +137,6 @@ async function getCoreV1ApiForRotation(
  * probes silently dropped the worker IP and the operator had no visibility
  * into PTR/DNSBL/SMTP-banner health for the actually-public IP.
  */
-async function resolveServerNodeIps(
-  k8s: { core: { listNode: (q?: object) => Promise<unknown> } },
-  db: import('../../db/index.js').Database,
-): Promise<string[]> {
-  type NodeAddress = { type?: string; address?: string };
-  type Node = {
-    metadata?: { name?: string; labels?: Record<string, string> };
-    status?: { addresses?: NodeAddress[] };
-  };
-  const { systemSettings } = await import('../../db/schema.js');
-  const { eq } = await import('drizzle-orm');
-  const [settings] = await db
-    .select({
-      mode: systemSettings.mailPortExposureMode,
-      activeNode: systemSettings.mailActiveNode,
-    })
-    .from(systemSettings)
-    .where(eq(systemSettings.id, 'system'));
-  const mode = settings?.mode ?? 'allServerNodes';
-  const activeNode = settings?.activeNode ?? null;
-
-  const list = await k8s.core.listNode({}) as { items?: Node[] };
-  const items = list.items ?? [];
-  const nodeIp = (n: Node): string | null => {
-    const addrs = n.status?.addresses ?? [];
-    const ext = addrs.find((a) => a.type === 'ExternalIP')?.address;
-    const internal = addrs.find((a) => a.type === 'InternalIP')?.address;
-    return ext ?? internal ?? null;
-  };
-
-  if (mode === 'thisNodeOnly') {
-    // Only the active node binds public hostPorts in this mode.
-    if (!activeNode) return [];
-    const node = items.find((n) => n.metadata?.name === activeNode);
-    if (!node) return [];
-    const ip = nodeIp(node);
-    return ip ? [ip] : [];
-  }
-
-  // allServerNodes: collect every server-role node's IP (haproxy
-  // DaemonSet targets) AND the active node's IP if it's not already
-  // included (e.g. active=worker). The active node IS where Stalwart
-  // actually runs and where the cert lives — deliverability probes
-  // need to verify PTR/DNSBL/SMTP-banner for it too, even though
-  // external clients reach mail through the server-role IPs.
-  const ips: string[] = [];
-  for (const node of items) {
-    const role = node.metadata?.labels?.[NODE_ROLE_LABEL_KEY] ?? '';
-    if (role !== 'server') continue;
-    const ip = nodeIp(node);
-    if (ip && !ips.includes(ip)) ips.push(ip);
-  }
-  if (activeNode) {
-    const node = items.find((n) => n.metadata?.name === activeNode);
-    const ip = node ? nodeIp(node) : null;
-    if (ip && !ips.includes(ip)) ips.push(ip);
-  }
-  return ips;
-}
-
 export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('onRequest', authenticate);
   app.addHook('onRequest', requireRole('super_admin', 'admin', 'support'));

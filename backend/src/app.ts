@@ -1032,6 +1032,25 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
       }
 
+      // Mail monitoring (2026-07): publish mail-server-up + outbound
+      // queue-depth first-party gauges every 60s (feeds the mail-server-
+      // down / mail-queue-backlog alert rules on the already-scraped
+      // :9090 /metrics — no Stalwart scrape/port change), and run the
+      // hourly DNSBL blocklist watch that alerts an admin when a sending
+      // IP is listed. Both degrade to a logged skip when mail is absent.
+      {
+        const { startMailHealthCollector } = await import('./modules/mail-events/mail-health-collector.js');
+        const { startMailBlocklistScheduler } = await import('./modules/mail-admin/blocklist-scheduler.js');
+        const stopMailHealth = startMailHealthCollector(app.db, app.log);
+        const stopBlocklist = startMailBlocklistScheduler(app.db, app.log, {
+          kubeconfigPath: process.env.KUBECONFIG_PATH,
+        });
+        app.addHook('onClose', () => {
+          stopMailHealth();
+          stopBlocklist();
+        });
+      }
+
       // Mail archive scheduler — ticks every 60s, fires
       // startMailArchive({ mode: 'no_downtime' }) when the
       // operator-configured interval (system_settings.mail_archive_

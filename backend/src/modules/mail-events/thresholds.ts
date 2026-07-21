@@ -25,7 +25,7 @@
  *     24h while still above threshold.
  */
 
-import { eq, gte, lt, sql } from 'drizzle-orm';
+import { eq, gte, lt, sql, inArray } from 'drizzle-orm';
 import {
   tenants,
   hostingPlans,
@@ -48,6 +48,15 @@ export const COMPLAINT_WARNING_RATE = 0.001; // 0.1% (7d)
 export const COMPLAINT_CRITICAL_RATE = 0.003; // 0.3% (7d)
 const COMPLAINT_REFIRE_MS = 24 * 3_600_000;
 const QUOTA_EVENT_RETENTION_DAYS = 7;
+/**
+ * Send-limit-saturation admin alert (workstream A). Combined rate-limited
+ * + quota-rejected outbound in the CURRENT hour bucket, per (tenant,
+ * domain). Warning surfaces a runaway/abusive sender to the operator;
+ * critical is compromise territory. Both configurable via platform_settings
+ * (`mail_abuse_warn_threshold` / `mail_abuse_critical_threshold`).
+ */
+export const ABUSE_WARN_DEFAULT = 50;
+export const ABUSE_CRITICAL_DEFAULT = 500;
 /** Auto-throttle floor — never halve below this. */
 const AUTO_THROTTLE_FLOOR = 1;
 
@@ -341,12 +350,112 @@ async function applyAutoAction(
   }
 }
 
+// ── Send-limit saturation (abuse) ───────────────────────────────────────────
+
+/** Pure: combined reject volume + thresholds → severity. */
+export function abuseLevel(total: number, warn: number, critical: number): 'critical' | 'warning' | null {
+  if (total >= critical) return 'critical';
+  if (total >= warn) return 'warning';
+  return null;
+}
+
+async function getAbuseThresholds(db: Database): Promise<{ warn: number; critical: number }> {
+  const rows = await db
+    .select({ key: platformSettings.key, value: platformSettings.value })
+    .from(platformSettings)
+    .where(inArray(platformSettings.key, ['mail_abuse_warn_threshold', 'mail_abuse_critical_threshold']));
+  const byKey = new Map(rows.map((r) => [r.key, r.value]));
+  const parse = (v: string | undefined, fallback: number): number => {
+    const n = v === undefined ? NaN : Number.parseInt(v, 10);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  };
+  const warn = parse(byKey.get('mail_abuse_warn_threshold'), ABUSE_WARN_DEFAULT);
+  const critical = parse(byKey.get('mail_abuse_critical_threshold'), ABUSE_CRITICAL_DEFAULT);
+  // Keep critical ≥ warn so a mis-set pair can't invert severities.
+  return { warn, critical: Math.max(critical, warn) };
+}
+
+interface AbuseRow {
+  readonly tenantId: string;
+  readonly domain: string | null;
+  readonly rateLimited: number;
+  readonly quotaRejected: number;
+}
+
+/**
+ * Admin alert: a tenant/domain producing an abnormal volume of
+ * rate-limited / quota-rejected outbound in the current hour. Reads the
+ * already-metered emailSendCounters — no new ingestion. Dedupe is the
+ * dispatcher's (admin recipient, dedupeKey) idempotency; the hour-bucket
+ * key re-fires hourly while the burst persists.
+ */
+async function evaluateSendingAbuse(db: Database, logger: OutboundReconcileLogger): Promise<number> {
+  const { warn, critical } = await getAbuseThresholds(db);
+
+  const rows = (await db
+    .select({
+      tenantId: emailSendCounters.tenantId,
+      domain: emailSendCounters.domain,
+      rateLimited: sql<number>`COALESCE(SUM(${emailSendCounters.rateLimitedCount}), 0)`,
+      quotaRejected: sql<number>`COALESCE(SUM(${emailSendCounters.quotaRejectedCount}), 0)`,
+    })
+    .from(emailSendCounters)
+    .where(gte(emailSendCounters.bucketStart, sql`date_trunc('hour', NOW())`))
+    .groupBy(emailSendCounters.tenantId, emailSendCounters.domain)) as AbuseRow[];
+
+  const offending = rows.filter((r) => Number(r.rateLimited) + Number(r.quotaRejected) >= warn);
+  if (offending.length === 0) return 0;
+
+  const nameRows = await db
+    .select({ id: tenants.id, name: tenants.name })
+    .from(tenants)
+    .where(inArray(tenants.id, [...new Set(offending.map((r) => r.tenantId))]));
+  const names = new Map(nameRows.map((r) => [r.id, r.name]));
+
+  const hourBucket = new Date().toISOString().slice(0, 13); // YYYY-MM-DDTHH
+  let fired = 0;
+
+  for (const r of offending) {
+    const rateLimited = Number(r.rateLimited);
+    const quotaRejected = Number(r.quotaRejected);
+    const total = rateLimited + quotaRejected;
+    const level = abuseLevel(total, warn, critical);
+    if (!level) continue;
+    const domain = r.domain ?? 'unattributed';
+    try {
+      const { notifyAdminEmailSendingAbuse } = await import('../notifications/events.js');
+      await notifyAdminEmailSendingAbuse(
+        db,
+        level,
+        {
+          tenantLabel: names.get(r.tenantId) ?? r.tenantId,
+          domain,
+          rateLimited: String(rateLimited),
+          quotaRejected: String(quotaRejected),
+          total: String(total),
+          window: 'hour',
+          recommendedAction: level === 'critical'
+            ? 'suspend outbound mail for the tenant (TenantDetail → Outbound Mail) — likely a compromised account or a runaway loop'
+            : 'throttle the tenant’s hourly send limit and investigate the sender',
+        },
+        `abuse:${r.tenantId}:${domain}:${level}:${hourBucket}`,
+      );
+      fired += 1;
+    } catch (err) {
+      logger.error({ err, tenantId: r.tenantId, domain }, 'mail thresholds: abuse notification failed');
+    }
+  }
+
+  return fired;
+}
+
 // ── Entry point ─────────────────────────────────────────────────────────────
 
 export interface ThresholdEvaluationResult {
   readonly mode: MailEnforcementMode;
   readonly quotaNotifications: number;
   readonly complaintNotifications: number;
+  readonly abuseNotifications: number;
 }
 
 export async function evaluateMailThresholds(
@@ -355,7 +464,7 @@ export async function evaluateMailThresholds(
 ): Promise<ThresholdEvaluationResult> {
   const mode = await getMailEnforcementMode(db);
   if (mode === 'off') {
-    return { mode, quotaNotifications: 0, complaintNotifications: 0 };
+    return { mode, quotaNotifications: 0, complaintNotifications: 0, abuseNotifications: 0 };
   }
 
   const quotaNotifications = await evaluateQuotaUsage(db, logger).catch((err) => {
@@ -366,9 +475,13 @@ export async function evaluateMailThresholds(
     logger.error({ err }, 'mail thresholds: complaint evaluation failed');
     return 0;
   });
+  const abuseNotifications = await evaluateSendingAbuse(db, logger).catch((err) => {
+    logger.error({ err }, 'mail thresholds: abuse evaluation failed');
+    return 0;
+  });
 
-  if (quotaNotifications + complaintNotifications > 0) {
-    logger.info({ mode, quotaNotifications, complaintNotifications }, 'mail thresholds: evaluated');
+  if (quotaNotifications + complaintNotifications + abuseNotifications > 0) {
+    logger.info({ mode, quotaNotifications, complaintNotifications, abuseNotifications }, 'mail thresholds: evaluated');
   }
-  return { mode, quotaNotifications, complaintNotifications };
+  return { mode, quotaNotifications, complaintNotifications, abuseNotifications };
 }
