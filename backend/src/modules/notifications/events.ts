@@ -528,3 +528,50 @@ export async function notifyAdminEmailComplaint(
     : 'admin.email_complaint_warning';
   await dispatchSafe(db, categoryId, { kind: 'admin' }, payload);
 }
+
+// ── Mail monitoring (2026-07): send-limit saturation + blocklist ───────────
+
+export interface AdminEmailAbusePayload {
+  readonly tenantLabel: string;
+  readonly domain: string;
+  readonly rateLimited: string;
+  readonly quotaRejected: string;
+  readonly total: string;
+  readonly window: string;
+  readonly recommendedAction: string;
+}
+/**
+ * A tenant is producing abnormal rate-limited / quota-rejected outbound
+ * volume. `dedupeKey` (caller passes tenant+level+hour bucket) makes it
+ * fire at most once per tenant/level/hour while the burst persists.
+ */
+export async function notifyAdminEmailSendingAbuse(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminEmailAbusePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'admin.email_abuse_critical'
+    : 'admin.email_abuse_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminMailBlocklistedPayload {
+  readonly ip: string;
+  readonly list: string;
+  readonly severity: string;
+  readonly lookupUrl?: string;
+}
+/**
+ * A server-role sending IP is listed on a DNSBL. `dedupeKey` (caller
+ * passes ip+list+day bucket) fires it at most once per (ip,list) per day
+ * while the listing persists.
+ */
+export async function notifyAdminMailBlocklisted(
+  db: Database,
+  payload: AdminMailBlocklistedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.mail_blocklisted', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}

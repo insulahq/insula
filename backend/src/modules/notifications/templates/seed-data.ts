@@ -842,6 +842,88 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'actionTaken', type: 'string', required: false },
     ],
   },
+
+  // ── admin.email_abuse_warning / _critical (send-limit saturation) ──
+  ...(['admin.email_abuse_warning', 'admin.email_abuse_critical'] as const).flatMap((categoryId): SeedTemplate[] => {
+    const crit = categoryId.endsWith('critical');
+    const tag = crit ? '[MAIL CRITICAL]' : '[MAIL]';
+    const abuseVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'domain', type: 'string', required: true },
+      { name: 'rateLimited', type: 'string', required: true },
+      { name: 'quotaRejected', type: 'string', required: true },
+      { name: 'total', type: 'string', required: true },
+      { name: 'window', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId,
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: `${tag} Outbound send-limit saturation: {{tenantLabel}}`,
+        bodyTemplate: emailMjml(
+          'Outbound send-limit saturation: {{tenantLabel}}',
+          'Tenant {{tenantLabel}} (domain {{domain}}) generated {{total}} rate-limited / quota-rejected '
+          + 'outbound messages in the last {{window}} ({{rateLimited}} rate-limited, {{quotaRejected}} '
+          + 'quota-rejected). This is a runaway sender or early abuse. Recommended action: {{recommendedAction}}.',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: abuseVars,
+      },
+      {
+        categoryId,
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: `${tag} Send-limit saturation: {{tenantLabel}}`,
+        bodyTemplate: '{{tenantLabel}} ({{domain}}): {{total}} rate-limited/quota-rejected in {{window}} '
+          + '({{rateLimited}} RL / {{quotaRejected}} QR). {{recommendedAction}}.',
+        bodyFormat: 'plaintext',
+        variablesSchema: abuseVars,
+      },
+    ];
+  }),
+
+  // ── admin.mail_blocklisted (DNSBL listing) ──
+  {
+    categoryId: 'admin.mail_blocklisted',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[MAIL] Sending IP {{ip}} listed on {{list}}',
+    bodyTemplate: emailMjml(
+      'Mail IP blocklisted: {{ip}}',
+      'Server-role node IP {{ip}} is listed on the {{list}} DNS blocklist ({{severity}}). Outbound mail '
+      + 'to some providers will be rejected or junked until the IP is delisted. Check the listing and '
+      + 'request delisting: {{lookupUrl}}',
+      'Open listing',
+      '{{lookupUrl}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'ip', type: 'string', required: true },
+      { name: 'list', type: 'string', required: true },
+      { name: 'severity', type: 'string', required: true },
+      { name: 'lookupUrl', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mail_blocklisted',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[MAIL] {{ip}} listed on {{list}}',
+    bodyTemplate: 'Sending IP {{ip}} is listed on {{list}} ({{severity}}). Outbound deliverability is '
+      + 'degraded — request delisting. {{lookupUrl}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'ip', type: 'string', required: true },
+      { name: 'list', type: 'string', required: true },
+      { name: 'severity', type: 'string', required: true },
+      { name: 'lookupUrl', type: 'string', required: false },
+    ],
+  },
 ];
 
 const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(

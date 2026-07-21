@@ -18,6 +18,7 @@
 
 import { sql } from 'drizzle-orm';
 import { notifyUser } from '../notifications/service.js';
+import { mailMailboxesOverQuota } from '../../shared/metrics.js';
 import type { Database } from '../../db/index.js';
 
 const THRESHOLDS = [80, 90, 100] as const;
@@ -93,14 +94,24 @@ export async function checkQuotaThresholds(
       AND (m.used_mb::numeric / m.quota_mb::numeric) * 100 >= 75
   `);
 
+  // Aggregate admin-visibility gauge: mailboxes at/over 100% of quota.
+  // Candidates already contain every active mailbox ≥75%, so the ≥100%
+  // subset is exact. Published even when a mailbox has no mailbox_access
+  // owner to notify — the `mail-mailbox-over-quota` rule is the operator's
+  // safety net for the "nobody to notify" case below.
+  const overQuota = (candidates.rows ?? []).filter(
+    (r) => r.quota_mb > 0 && (r.used_mb / r.quota_mb) * 100 >= 100,
+  ).length;
+  mailMailboxesOverQuota.set(overQuota);
+
   let fired = 0;
   let skipped = 0;
 
   for (const row of candidates.rows ?? []) {
     if (!row.recipient_user_ids || row.recipient_user_ids.length === 0) {
-      // Nobody to notify — log it as skipped so the operator can
-      // investigate. (We could also default to the platform admin
-      // here; left as a follow-up.)
+      // Nobody on the tenant side to notify. The over-quota gauge above
+      // still surfaces this mailbox to the operator via the
+      // mail-mailbox-over-quota alert rule (no silent drop).
       skipped += 1;
       continue;
     }

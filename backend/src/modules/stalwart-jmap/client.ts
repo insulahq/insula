@@ -791,6 +791,34 @@ export async function queuedMessageList(params: {
   return get.list ?? [];
 }
 
+interface XQueuedQueryResponse {
+  readonly ids?: readonly string[];
+  readonly total?: number;
+}
+
+/**
+ * Count queued outbound messages without fetching their bodies — a
+ * lightweight liveness + backlog probe for the mail-health collector.
+ * Uses `calculateTotal` (the count is the JMAP query `total`); falls back
+ * to the returned id-page length (bounded by `cap`) when a Stalwart build
+ * doesn't populate `total`, so the backlog alert still trips above `cap/2`.
+ */
+export async function queuedMessageCount(params: {
+  cap?: number;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<number> {
+  const { cap = 2000, baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [['x:QueuedMessage/query', { calculateTotal: true, limit: cap }, 'q']],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const q = extractResponse<XQueuedQueryResponse>(res, 'x:QueuedMessage/query', 'q');
+  return typeof q.total === 'number' ? q.total : (q.ids?.length ?? 0);
+}
+
 // ── Actions (R6 PR 2) ──────────────────────────────────────────────────────
 //
 // Stalwart loads most registry config (MTA throttles/quotas, report
