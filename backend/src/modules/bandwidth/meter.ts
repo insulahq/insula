@@ -16,6 +16,7 @@
 import { eq } from 'drizzle-orm';
 import { tenants, platformSettings } from '../../db/schema.js';
 import { queryInstant } from '../monitoring/vm-client.js';
+import { evaluateBandwidthThresholds } from './thresholds.js';
 import type { Database } from '../../db/index.js';
 
 const LAST_RUN_KEY = 'bandwidth_meter_last_run';
@@ -145,9 +146,13 @@ export function startBandwidthMeter(
   intervalMs = 3_600_000,
 ): () => void {
   const runOnce = (): void => {
-    meterBandwidthOnce(db, logger).catch((err: unknown) => {
-      logger.warn?.({ err }, 'bandwidth-meter: pass failed');
-    });
+    // Accumulate usage, then evaluate 80/90/100% thresholds (BW-3) + flip the
+    // cap flag (BW-4) — independent so a threshold error can't skip metering.
+    meterBandwidthOnce(db, logger)
+      .then(() => evaluateBandwidthThresholds(db, logger))
+      .catch((err: unknown) => {
+        logger.warn?.({ err }, 'bandwidth-meter: pass failed');
+      });
   };
   const bootKick = setTimeout(runOnce, 90_000);
   bootKick.unref?.();

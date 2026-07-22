@@ -604,3 +604,37 @@ export async function notifyAdminTenantResourceSaturation(
     : 'admin.tenant_resource_saturation_warning';
   await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
+
+// ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
+
+export interface AdminBandwidthPayload {
+  readonly tenantLabel: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+}
+export async function notifyAdminTenantBandwidth(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminBandwidthPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical' ? 'admin.tenant_bandwidth_critical' : 'admin.tenant_bandwidth_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface TenantBandwidthPayload {
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+}
+export async function notifyTenantBandwidth(
+  db: Database,
+  tenantId: string,
+  level: 'warning' | 'critical',
+  payload: TenantBandwidthPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical' ? 'tenant.bandwidth_exceeded' : 'tenant.bandwidth_warning';
+  await dispatchSafe(db, categoryId, { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
