@@ -528,3 +528,113 @@ export async function notifyAdminEmailComplaint(
     : 'admin.email_complaint_warning';
   await dispatchSafe(db, categoryId, { kind: 'admin' }, payload);
 }
+
+// ── Mail monitoring (2026-07): send-limit saturation + blocklist ───────────
+
+export interface AdminEmailAbusePayload {
+  readonly tenantLabel: string;
+  readonly domain: string;
+  readonly rateLimited: string;
+  readonly quotaRejected: string;
+  readonly total: string;
+  readonly window: string;
+  readonly recommendedAction: string;
+}
+/**
+ * A tenant is producing abnormal rate-limited / quota-rejected outbound
+ * volume. `dedupeKey` (caller passes tenant+level+hour bucket) makes it
+ * fire at most once per tenant/level/hour while the burst persists.
+ */
+export async function notifyAdminEmailSendingAbuse(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminEmailAbusePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'admin.email_abuse_critical'
+    : 'admin.email_abuse_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface AdminMailBlocklistedPayload {
+  readonly ip: string;
+  readonly list: string;
+  readonly severity: string;
+  readonly lookupUrl?: string;
+}
+/**
+ * A server-role sending IP is listed on a DNSBL. `dedupeKey` (caller
+ * passes ip+list+day bucket) fires it at most once per (ip,list) per day
+ * while the listing persists.
+ */
+export async function notifyAdminMailBlocklisted(
+  db: Database,
+  payload: AdminMailBlocklistedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.mail_blocklisted', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+// ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ─
+
+export interface AdminTenantSaturationPayload {
+  readonly tenantLabel: string;
+  /** 'CPU' | 'memory' | 'storage' */
+  readonly resource: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+  /** e.g. ' cores', ' GiB' — leading space kept so "4 GiB" renders cleanly. */
+  readonly unit: string;
+}
+/**
+ * A tenant crossed a warning/critical fraction of its CPU/memory/storage
+ * allocation. `dedupeKey` (caller passes tenant+resource+level+hour bucket)
+ * fires it at most once per tenant/resource/level/hour while sustained.
+ */
+export async function notifyAdminTenantResourceSaturation(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminTenantSaturationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'admin.tenant_resource_saturation_critical'
+    : 'admin.tenant_resource_saturation_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+// ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
+
+export interface AdminBandwidthPayload {
+  readonly tenantLabel: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+}
+export async function notifyAdminTenantBandwidth(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminBandwidthPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical' ? 'admin.tenant_bandwidth_critical' : 'admin.tenant_bandwidth_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface TenantBandwidthPayload {
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+}
+export async function notifyTenantBandwidth(
+  db: Database,
+  tenantId: string,
+  level: 'warning' | 'critical',
+  payload: TenantBandwidthPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical' ? 'tenant.bandwidth_exceeded' : 'tenant.bandwidth_warning';
+  await dispatchSafe(db, categoryId, { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}

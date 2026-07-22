@@ -326,6 +326,125 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
   },
+  // ── Mail monitoring (2026-07): outbound send-limit saturation + blocklist ──
+  {
+    id: 'admin.email_abuse_warning',
+    displayName: 'Outbound send-limit saturation',
+    description: 'A tenant is generating an abnormal volume of rate-limited / quota-rejected '
+      + 'outbound mail (>= the warning threshold in the last hour) — a runaway sender or early '
+      + 'abuse. Investigate before it becomes a complaint/reputation problem. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.email_abuse_critical',
+    displayName: 'Outbound send-limit saturation (critical)',
+    description: 'A tenant crossed the CRITICAL rate-limited / quota-rejected volume threshold in '
+      + 'the last hour — almost certainly a compromised account or a broken loop hammering the send '
+      + 'limit. Consider suspending outbound for the tenant. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
+  {
+    id: 'admin.mail_blocklisted',
+    displayName: 'Mail IP on a DNS blocklist',
+    description: 'A server-role node IP that sends mail is listed on a DNS blocklist (DNSBL). '
+      + 'Outbound deliverability is degraded until the IP is delisted. See Monitoring → Mail → '
+      + 'Deliverability.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 43200, // at most once / 12h per (ip,list) via dedupeKey; cap the fan-out too
+    rateLimitMax: 8,
+  },
+  // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ──
+  {
+    id: 'admin.tenant_resource_saturation_warning',
+    displayName: 'Tenant resource usage high',
+    description: 'A tenant crossed the warning threshold (≈90%) of its CPU, memory, or storage '
+      + 'allocation. May indicate a runaway workload or a tenant that needs a bigger plan. See the '
+      + 'tenant\'s Resource Limits.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600, // dedupe is per (tenant,resource,hour); cap total fan-out too
+    rateLimitMax: 20,
+  },
+  {
+    id: 'admin.tenant_resource_saturation_critical',
+    displayName: 'Tenant resource usage at limit',
+    description: 'A tenant reached its CPU/memory/storage limit — workloads may be throttled, '
+      + 'OOM-killed, or unable to write. Raise the tenant\'s limit/plan or investigate the workload.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 20,
+  },
+  // ── Monthly bandwidth (BW-3): 80/90 warning, 100 critical (cap active) ──
+  {
+    id: 'admin.tenant_bandwidth_warning',
+    displayName: 'Tenant bandwidth usage high',
+    description: 'A tenant crossed 80%/90% of its monthly bandwidth allowance. At 100% the '
+      + 'tenant\'s sites are capped (509) until the month resets — raise the limit/plan if this '
+      + 'is expected growth.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 20,
+  },
+  {
+    id: 'admin.tenant_bandwidth_critical',
+    displayName: 'Tenant bandwidth cap active',
+    description: 'A tenant reached 100% of its monthly bandwidth allowance — its sites are now '
+      + 'capped (HTTP 509) until the calendar month resets. Raise the limit/plan to restore '
+      + 'serving immediately.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 20,
+  },
+  {
+    id: 'tenant.bandwidth_warning',
+    displayName: 'Bandwidth usage high',
+    description: 'Your monthly data-transfer usage crossed 80%/90% of your allowance. If you reach '
+      + '100%, your sites will be temporarily unavailable until the month resets — upgrade your '
+      + 'plan to increase the allowance.',
+    audience: 'tenant',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tenant.bandwidth_exceeded',
+    displayName: 'Bandwidth limit reached',
+    description: 'You reached your monthly data-transfer limit. Your sites are temporarily '
+      + 'unavailable (HTTP 509) until the month resets. Upgrade your plan to restore them now.',
+    audience: 'tenant',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
 ];
 
 /**

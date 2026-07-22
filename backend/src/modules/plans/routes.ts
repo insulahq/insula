@@ -42,6 +42,10 @@ export async function planRoutes(app: FastifyInstance) {
       monthlyPriceUsd: parsed.data.monthly_price_usd,
       maxSubUsers: (body.max_sub_users as number) ?? 3,
       maxMailboxes: (body.max_mailboxes as number) ?? 50,
+      // Omitted -> DB default (100 GB/month).
+      ...(parsed.data.bandwidth_gb_limit !== undefined
+        ? { bandwidthGbLimit: parsed.data.bandwidth_gb_limit }
+        : {}),
       // Omitted -> DB default (1024 MB / 1 GiB). Use the Zod-parsed value so
       // the min(50)/max(102400) bounds are enforced (a sub-50 value would
       // otherwise disable mailbox creation for every tenant on the plan).
@@ -88,6 +92,7 @@ export async function planRoutes(app: FastifyInstance) {
     if (parsed.data.cpu_limit !== undefined) updateValues.cpuLimit = parsed.data.cpu_limit;
     if (parsed.data.memory_limit !== undefined) updateValues.memoryLimit = parsed.data.memory_limit;
     if (parsed.data.storage_limit !== undefined) updateValues.storageLimit = parsed.data.storage_limit;
+    if (parsed.data.bandwidth_gb_limit !== undefined) updateValues.bandwidthGbLimit = parsed.data.bandwidth_gb_limit;
     if (parsed.data.monthly_price_usd !== undefined) updateValues.monthlyPriceUsd = parsed.data.monthly_price_usd;
     if (body.max_sub_users !== undefined) updateValues.maxSubUsers = body.max_sub_users;
     if (body.max_mailboxes !== undefined) updateValues.maxMailboxes = body.max_mailboxes;

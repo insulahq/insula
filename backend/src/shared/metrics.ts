@@ -85,6 +85,58 @@ export const stalwartAcmeTaskQueueDepth = new Gauge({
 });
 
 /**
+ * Mail-server liveness as observed by the platform-api mail-health
+ * collector (modules/mail-events/mail-health-collector.ts), refreshed
+ * every 60s: 1 = Stalwart JMAP mgmt reachable, 0 = expected-but-
+ * unreachable. The gauge is ONLY published when mail is expected (≥1
+ * enabled email domain) — on a cluster/dev without mail the series is
+ * absent, so the `mail-server-down` rule sees an empty vector and never
+ * false-fires. Publishing 0 (not simply dropping the series) on a real
+ * outage keeps the alert firing instead of going stale after ~5min.
+ */
+export const mailServerUp = new Gauge({
+  name: 'platform_mail_server_up',
+  help: '1 reachable / 0 expected-but-down / -1 unknown (mail not deployed or not yet probed)',
+  registers: [metricsRegistry],
+});
+// CRITICAL: an unlabelled prom-client gauge exports as 0 the moment it is
+// registered, even if never .set(). Since 0 is our "down" value, leaving it
+// at that default would make `mail-server-down` false-fire on a cluster with
+// no mail (or before the collector's first pass). Seed -1 (unknown) so only a
+// real probe failure yields 0; the rule matches `== 0` exactly.
+mailServerUp.set(-1);
+
+/**
+ * Outbound mail queue depth (messages awaiting delivery) from Stalwart's
+ * x:QueuedMessage/query total, refreshed with mailServerUp. -1 when the
+ * probe couldn't read it (server down) so the backlog rule (which fires
+ * on `> $T`) never treats "unknown" as a backlog.
+ */
+export const mailOutboundQueueDepth = new Gauge({
+  name: 'platform_mail_outbound_queue_depth',
+  help: 'Outbound mail messages queued for delivery (-1 = unknown/probe failed)',
+  registers: [metricsRegistry],
+});
+// Seed -1 (unknown) rather than the prom-client default 0: the backlog rule
+// filters `>= 0`, so an un-probed cluster contributes no sample instead of a
+// misleading "0 backlog".
+mailOutboundQueueDepth.set(-1);
+
+/**
+ * Count of active mailboxes at or above 100% of their storage quota,
+ * refreshed by the mailbox quota-threshold pass (mail-stats, ~15min).
+ * Feeds the `mail-mailbox-over-quota` rule so an operator sees full
+ * mailboxes in aggregate even when the tenant-side owner can't be
+ * notified (no mailbox_access rows). Cardinality: a single global gauge,
+ * never per-mailbox.
+ */
+export const mailMailboxesOverQuota = new Gauge({
+  name: 'platform_mail_mailboxes_over_quota',
+  help: 'Active mailboxes at or above 100% of their storage quota',
+  registers: [metricsRegistry],
+});
+
+/**
  * Count of Flux resources whose Ready condition is False, by kind.
  * Refreshed every 60s by modules/monitoring/flux-status-collector.ts on
  * EVERY replica (the vmsingle scrape is per-pod), each computing the

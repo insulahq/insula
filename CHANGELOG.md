@@ -12,9 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.1-rc.34] - 2026-07-21
-
 ### Added
+- **Resource monitoring: node-CPU alerts + per-tenant CPU/memory/storage
+  saturation alerts.** New `node-cpu`/`node-cpu-critical` SLO rules read the
+  already-scraped `container_cpu_usage_seconds_total{id="/"}` (previously
+  unused) — zero new scrape cost. A backend evaluator, running off the metrics
+  the hourly metrics-scheduler already collects, alerts admins
+  (`admin.tenant_resource_saturation_warning/critical`) when a tenant crosses
+  ~90%/100% of its CPU/mem/storage allocation — no per-tenant time-series
+  (low-footprint by design).
+- **Monthly per-tenant bandwidth cap.** Bandwidth is now a subscription-plan
+  setting (`hosting_plans.bandwidth_gb_limit`, default 100 GB/mo) with a
+  per-tenant override, editable in the admin plan editor + tenant Resource
+  Limits card. An hourly meter accumulates month-to-date served bandwidth
+  (Traefik-scraped cadvisor transmit bytes via vmsingle `increase()`), resetting
+  on the 1st. At 80/90/100% it alerts BOTH admin and tenant, and at 100% it caps
+  serving via a reconcile-durable redirect to a "Bandwidth limit reached"
+  maintenance page (`platform-bandwidth-exceeded`), lifted automatically at the
+  month rollover. Covered by `integration-bandwidth-e2e.sh`.
 - **Cross-cluster migration now supports CIFS/SMB sources (all target types
   covered).** Migration/DR read a *foreign* backup target directly (bypassing the
   local backup-rclone-shim, which only routes THIS cluster's class bindings). The

@@ -9,6 +9,7 @@ export interface Plan {
   readonly cpuLimit: string;
   readonly memoryLimit: string;
   readonly storageLimit: string;
+  readonly bandwidthGbLimit: number;
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
   readonly maxMailboxes: number;

@@ -52,8 +52,12 @@ data:
           - source_labels: [__meta_kubernetes_node_name]
             target_label: node
         metric_relabel_configs:
+          # container_network_transmit_bytes_total: per-tenant bandwidth
+          # metering (namespace-labelled; the backend sums per namespace via
+          # increase(), which absorbs counter resets + pod churn). Bounded
+          # extra cardinality (~pods×interfaces); everything else stays dropped.
           - source_labels: [__name__]
-            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes)|machine_memory_bytes|machine_cpu_cores'
+            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes|network_transmit_bytes_total)|machine_memory_bytes|machine_cpu_cores'
             action: keep
 
       # ── kubelet: pod/container requests-level resource metrics ──

@@ -120,6 +120,28 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     threshold: 0.95,
     forSeconds: 600,
   },
+  // Node CPU utilisation — reads the root-cgroup CPU counter + machine_cpu_cores
+  // that are ALREADY scraped (cadvisor allowlist) but were previously unused.
+  // Zero new scrape cost. Longer forSeconds than memory: short CPU spikes are
+  // normal, so alert only on SUSTAINED saturation.
+  {
+    id: 'node-cpu',
+    name: 'Node CPU saturation',
+    description: 'Node CPU utilisation ratio (root cgroup rate ÷ machine cores) has been sustained above the threshold.',
+    severity: 'warning',
+    expr: 'max(rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    threshold: 0.85,
+    forSeconds: 900,
+  },
+  {
+    id: 'node-cpu-critical',
+    name: 'Node CPU saturation — critical',
+    description: 'Node CPU utilisation ratio has been sustained above the critical threshold.',
+    severity: 'critical',
+    expr: 'max(rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    threshold: 0.95,
+    forSeconds: 900,
+  },
   {
     id: 'cnpg-down',
     name: 'system-db instance down',
@@ -181,6 +203,62 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     expr: 'max(platform_stalwart_acme_task_queue_depth) > $T',
     threshold: 15,
     forSeconds: 600,
+  },
+  // ── Mail operation (mail-health-collector + mail-stats gauges) ──────────
+  // These read FIRST-PARTY platform-api gauges (published on the already-
+  // scraped :9090 /metrics), so no Stalwart scrape job / port change is
+  // needed. Each gauge is absent when mail is not deployed, so the rule
+  // sees an empty vector and never false-fires on a mail-less cluster.
+  {
+    id: 'mail-server-down',
+    name: 'Mail server unreachable',
+    description: 'The Stalwart JMAP mgmt endpoint has been unreachable (platform_mail_server_up==0) — inbound/outbound mail and webmail are affected.',
+    severity: 'critical',
+    // count(==0) so an absent series (mail not deployed) yields 0, not a fire.
+    expr: '(count(platform_mail_server_up == 0) or vector(0)) > $T',
+    threshold: 0,
+    forSeconds: 300,
+  },
+  {
+    id: 'mail-queue-backlog',
+    name: 'Outbound mail queue backlog',
+    description: 'Messages are piling up in Stalwart\'s outbound delivery queue (platform_mail_outbound_queue_depth) — delivery is stalled or a tenant is flooding.',
+    severity: 'warning',
+    // >= 0 filter drops the -1 "probe failed" sentinel so a down server
+    // (already covered by mail-server-down) can\'t double-fire here.
+    expr: 'max(platform_mail_outbound_queue_depth >= 0) > $T',
+    threshold: 500,
+    forSeconds: 900,
+  },
+  {
+    id: 'mail-cert-expiry',
+    name: 'Mail TLS certificate expiring',
+    description: 'The served mail TLS certificate expires within the threshold window (seconds). Reads the platform-served-cert gauge (mail TLS is issued outside cert-manager), which cert-expiry does not cover.',
+    severity: 'critical',
+    // `>= 0` filter drops the -1 "probe inconclusive" sentinel; the
+    // self-signed bootstrap cert reports a year-4096 expiry so it never
+    // trips this rule (it has its own mail-cert-self-signed rule).
+    expr: 'min(platform_mail_tls_cert_expiry_seconds >= 0) < $T',
+    threshold: 14 * 86400,
+    forSeconds: 3600,
+  },
+  {
+    id: 'mail-cert-self-signed',
+    name: 'Mail TLS certificate self-signed',
+    description: 'The served mail TLS certificate is still the rcgen self-signed bootstrap cert — ACME issuance never completed, so external servers reject the TLS.',
+    severity: 'warning',
+    expr: 'max(platform_mail_tls_cert_self_signed) > $T',
+    threshold: 0,
+    forSeconds: 1800,
+  },
+  {
+    id: 'mail-mailbox-over-quota',
+    name: 'Mailboxes over storage quota',
+    description: 'One or more active mailboxes are at 100% of their storage quota (platform_mail_mailboxes_over_quota) — new mail to them is being rejected by Stalwart.',
+    severity: 'warning',
+    expr: 'max(platform_mail_mailboxes_over_quota) > $T',
+    threshold: 0,
+    forSeconds: 900,
   },
 ];
 

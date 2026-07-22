@@ -44,6 +44,10 @@ const SERIES_PANELS: Record<string, { expr: string; unit: string }> = {
     expr: 'max by (node) (container_memory_working_set_bytes{id="/"} / on (node) machine_memory_bytes)',
     unit: 'ratio',
   },
+  'node-cpu-ratio': {
+    expr: 'max by (node) (rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores)',
+    unit: 'ratio',
+  },
   'cnpg-up': {
     expr: 'sum(up{job="cnpg"})',
     unit: 'instances',

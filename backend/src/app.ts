@@ -956,6 +956,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const metricsTimer = startMetricsScheduler(app.db);
       app.addHook('onClose', () => clearInterval(metricsTimer));
 
+      // BW-2: per-tenant monthly bandwidth meter — hourly accumulates each
+      // tenant namespace's transmit-byte delta (from vmsingle) into
+      // tenants.bandwidth_gb_used, resetting at the UTC month boundary.
+      {
+        const { startBandwidthMeter } = await import('./modules/bandwidth/meter.js');
+        const stopBandwidthMeter = startBandwidthMeter(app.db, app.log);
+        app.addHook('onClose', () => stopBandwidthMeter());
+      }
+
       // Phase 3.D.2: mailbox used_mb reconciliation (15 min default,
       // configurable via platform_settings key
       // `mailbox_usage_sync_interval_minutes`)
@@ -1029,6 +1038,25 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => {
           clearTimeout(bootKick);
           clearInterval(sendLimitTimer);
+        });
+      }
+
+      // Mail monitoring (2026-07): publish mail-server-up + outbound
+      // queue-depth first-party gauges every 60s (feeds the mail-server-
+      // down / mail-queue-backlog alert rules on the already-scraped
+      // :9090 /metrics — no Stalwart scrape/port change), and run the
+      // hourly DNSBL blocklist watch that alerts an admin when a sending
+      // IP is listed. Both degrade to a logged skip when mail is absent.
+      {
+        const { startMailHealthCollector } = await import('./modules/mail-events/mail-health-collector.js');
+        const { startMailBlocklistScheduler } = await import('./modules/mail-admin/blocklist-scheduler.js');
+        const stopMailHealth = startMailHealthCollector(app.db, app.log);
+        const stopBlocklist = startMailBlocklistScheduler(app.db, app.log, {
+          kubeconfigPath: process.env.KUBECONFIG_PATH,
+        });
+        app.addHook('onClose', () => {
+          stopMailHealth();
+          stopBlocklist();
         });
       }
 

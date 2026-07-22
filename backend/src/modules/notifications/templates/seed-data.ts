@@ -842,6 +842,157 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'actionTaken', type: 'string', required: false },
     ],
   },
+
+  // ── admin.email_abuse_warning / _critical (send-limit saturation) ──
+  ...(['admin.email_abuse_warning', 'admin.email_abuse_critical'] as const).flatMap((categoryId): SeedTemplate[] => {
+    const crit = categoryId.endsWith('critical');
+    const tag = crit ? '[MAIL CRITICAL]' : '[MAIL]';
+    const abuseVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'domain', type: 'string', required: true },
+      { name: 'rateLimited', type: 'string', required: true },
+      { name: 'quotaRejected', type: 'string', required: true },
+      { name: 'total', type: 'string', required: true },
+      { name: 'window', type: 'string', required: true },
+      { name: 'recommendedAction', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId,
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: `${tag} Outbound send-limit saturation: {{tenantLabel}}`,
+        bodyTemplate: emailMjml(
+          'Outbound send-limit saturation: {{tenantLabel}}',
+          'Tenant {{tenantLabel}} (domain {{domain}}) generated {{total}} rate-limited / quota-rejected '
+          + 'outbound messages in the last {{window}} ({{rateLimited}} rate-limited, {{quotaRejected}} '
+          + 'quota-rejected). This is a runaway sender or early abuse. Recommended action: {{recommendedAction}}.',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: abuseVars,
+      },
+      {
+        categoryId,
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: `${tag} Send-limit saturation: {{tenantLabel}}`,
+        bodyTemplate: '{{tenantLabel}} ({{domain}}): {{total}} rate-limited/quota-rejected in {{window}} '
+          + '({{rateLimited}} RL / {{quotaRejected}} QR). {{recommendedAction}}.',
+        bodyFormat: 'plaintext',
+        variablesSchema: abuseVars,
+      },
+    ];
+  }),
+
+  // ── admin.mail_blocklisted (DNSBL listing) ──
+  {
+    categoryId: 'admin.mail_blocklisted',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[MAIL] Sending IP {{ip}} listed on {{list}}',
+    bodyTemplate: emailMjml(
+      'Mail IP blocklisted: {{ip}}',
+      'Server-role node IP {{ip}} is listed on the {{list}} DNS blocklist ({{severity}}). Outbound mail '
+      + 'to some providers will be rejected or junked until the IP is delisted. Check the listing and '
+      + 'request delisting: {{lookupUrl}}',
+      'Open listing',
+      '{{lookupUrl}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'ip', type: 'string', required: true },
+      { name: 'list', type: 'string', required: true },
+      { name: 'severity', type: 'string', required: true },
+      { name: 'lookupUrl', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mail_blocklisted',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[MAIL] {{ip}} listed on {{list}}',
+    bodyTemplate: 'Sending IP {{ip}} is listed on {{list}} ({{severity}}). Outbound deliverability is '
+      + 'degraded — request delisting. {{lookupUrl}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'ip', type: 'string', required: true },
+      { name: 'list', type: 'string', required: true },
+      { name: 'severity', type: 'string', required: true },
+      { name: 'lookupUrl', type: 'string', required: false },
+    ],
+  },
+
+  // ── admin.tenant_resource_saturation_warning / _critical ──
+  ...(['admin.tenant_resource_saturation_warning', 'admin.tenant_resource_saturation_critical'] as const).flatMap((categoryId): SeedTemplate[] => {
+    const crit = categoryId.endsWith('critical');
+    const tag = crit ? '[RESOURCE]' : '[RESOURCE]';
+    const satVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'resource', type: 'string', required: true },
+      { name: 'usedPct', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+      { name: 'unit', type: 'string', required: true },
+    ];
+    const verb = crit ? 'reached its' : 'is approaching its';
+    return [
+      {
+        categoryId,
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: `${tag} ${crit ? 'Tenant at resource limit' : 'Tenant resource usage high'}: {{tenantLabel}} ({{resource}})`,
+        bodyTemplate: emailMjml(
+          `${crit ? 'Tenant at resource limit' : 'Tenant resource usage high'}: {{tenantLabel}}`,
+          `Tenant {{tenantLabel}} ${verb} {{resource}} limit — {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%). `
+          + `${crit ? 'Workloads may be throttled, OOM-killed, or unable to write. Raise the limit/plan or investigate the workload.' : 'Consider raising the limit/plan or checking for a runaway workload.'}`,
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: satVars,
+      },
+      {
+        categoryId,
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: `${tag} {{tenantLabel}} {{resource}} {{usedPct}}%`,
+        bodyTemplate: `{{tenantLabel}} ${verb} {{resource}} limit: {{used}}{{unit}} / {{limit}}{{unit}} ({{usedPct}}%).`,
+        bodyFormat: 'plaintext',
+        variablesSchema: satVars,
+      },
+    ];
+  }),
+
+  // ── Monthly bandwidth (BW-3): admin (with tenantLabel) + tenant variants ──
+  ...([
+    { categoryId: 'admin.tenant_bandwidth_warning', admin: true, crit: false },
+    { categoryId: 'admin.tenant_bandwidth_critical', admin: true, crit: true },
+    { categoryId: 'tenant.bandwidth_warning', admin: false, crit: false },
+    { categoryId: 'tenant.bandwidth_exceeded', admin: false, crit: true },
+  ] as const).flatMap(({ categoryId, admin, crit }): SeedTemplate[] => {
+    const vars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      ...(admin ? [{ name: 'tenantLabel', type: 'string' as const, required: true }] : []),
+      { name: 'usedPct', type: 'string' as const, required: true },
+      { name: 'used', type: 'string' as const, required: true },
+      { name: 'limit', type: 'string' as const, required: true },
+    ];
+    const who = admin ? 'Tenant {{tenantLabel}} has' : 'You have';
+    const subj = admin
+      ? (crit ? '[BANDWIDTH] Cap active: {{tenantLabel}}' : '[BANDWIDTH] Usage high: {{tenantLabel}}')
+      : (crit ? 'Your sites are paused — bandwidth limit reached' : 'Bandwidth usage at {{usedPct}}%');
+    const body = crit
+      ? `${who} reached the monthly bandwidth limit ({{used}} of {{limit}} GB, {{usedPct}}%). `
+        + `${admin ? 'The tenant\'s sites are capped (HTTP 509) until the month resets — raise the limit/plan to restore serving now.' : 'Your sites are temporarily unavailable (HTTP 509) until the month resets. Upgrade your plan to restore them now.'}`
+      : `${who} used {{usedPct}}% of the monthly bandwidth allowance ({{used}} of {{limit}} GB). `
+        + `${admin ? 'At 100% the tenant is capped until the month resets.' : 'At 100% your sites will be temporarily unavailable until the month resets — upgrade your plan to avoid interruption.'}`;
+    return [
+      { categoryId, channel: 'email', locale: 'en', subjectTemplate: subj, bodyTemplate: emailMjml(subj.replace(/^\[BANDWIDTH\] /, ''), body), bodyFormat: 'mjml', variablesSchema: vars },
+      { categoryId, channel: 'in_app', locale: 'en', subjectTemplate: subj, bodyTemplate: body, bodyFormat: 'plaintext', variablesSchema: vars },
+    ];
+  }),
 ];
 
 const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(
