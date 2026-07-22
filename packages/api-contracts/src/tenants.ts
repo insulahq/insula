@@ -89,6 +89,8 @@ export const updateTenantSchema = z.object({
   cpu_limit_override: z.number().min(0.1).max(64).nullable().optional(),
   memory_limit_override: z.number().min(0.1).max(256).nullable().optional(),
   storage_limit_override: z.number().min(1).max(10000).nullable().optional(),
+  /** Per-tenant monthly bandwidth cap override (GB). null = inherit plan. */
+  bandwidth_limit_override: z.number().int().min(1).max(1_000_000).nullable().optional(),
   max_sub_users_override: z.number().int().min(1).max(100).nullable().optional(),
   // Per-tenant mailbox count override. null = inherit from the plan's
   // max_mailboxes. Min 1 (blocking via 0 is handled by tenant.status).
@@ -171,6 +173,9 @@ export const tenantResponseSchema = z.object({
   cpuLimitOverride: z.string().nullable(),
   memoryLimitOverride: z.string().nullable(),
   storageLimitOverride: z.string().nullable(),
+  bandwidthLimitOverride: z.number().nullable().optional(),
+  bandwidthGbUsed: z.string().nullable().optional(), // numeric column → string
+  bandwidthCapped: z.boolean().nullable().optional(),
   maxSubUsersOverride: z.number().nullable(),
   maxMailboxesOverride: z.number().nullable().optional(),
   maxMailboxSizeMbOverride: z.number().nullable().optional(),

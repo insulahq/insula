@@ -20,6 +20,8 @@ export const hostingPlanSchema = z.object({
   cpuLimit: z.string(),
   memoryLimit: z.string(),
   storageLimit: z.string(),
+  /** Monthly data-transfer cap in GB (default 100). */
+  bandwidthGbLimit: z.number().default(100),
   monthlyPriceUsd: z.string(),
   maxSubUsers: z.number(),
   // Phase 1 (tenant-panel email parity round 2): per-plan cap on

@@ -280,6 +280,11 @@ export const hostingPlans = pgTable('hosting_plans', {
   cpuLimit: numeric('cpu_limit', { precision: 5, scale: 2 }).notNull(),
   memoryLimit: numeric('memory_limit', { precision: 5, scale: 2 }).notNull(),
   storageLimit: numeric('storage_limit', { precision: 10, scale: 2 }).notNull(),
+  // Plan-level MONTHLY data-transfer cap (GB). Metered from Traefik router
+  // response bytes month-to-date; at 100% the tenant's HTTP serving is capped
+  // (509 page) until the calendar month rolls over. Per-tenant override lives
+  // on tenants.bandwidth_limit_override. Default 100 GB/month on every plan.
+  bandwidthGbLimit: integer('bandwidth_gb_limit').notNull().default(100),
   monthlyPriceUsd: numeric('monthly_price_usd', { precision: 10, scale: 2 }).notNull(),
   maxSubUsers: integer('max_sub_users').notNull().default(3),
   // Plan-level cap on total mailboxes across all the tenant
@@ -353,6 +358,19 @@ export const tenants = pgTable('tenants', {
   cpuLimitOverride: numeric('cpu_limit_override', { precision: 5, scale: 2 }),
   memoryLimitOverride: numeric('memory_limit_override', { precision: 5, scale: 2 }),
   storageLimitOverride: numeric('storage_limit_override', { precision: 10, scale: 2 }),
+  // Per-tenant MONTHLY bandwidth cap override (GB). null = inherit
+  // hosting_plans.bandwidth_gb_limit. Effective = override ?? plan ?? 100.
+  bandwidthLimitOverride: integer('bandwidth_limit_override'),
+  // Month-to-date served bandwidth (GB), accumulated hourly by the
+  // bandwidth-meter scheduler from Traefik router response bytes and reset at
+  // the UTC calendar-month boundary (bandwidthCycleStart).
+  bandwidthGbUsed: numeric('bandwidth_gb_used', { precision: 14, scale: 4 }).notNull().default('0'),
+  bandwidthCycleStart: timestamp('bandwidth_cycle_start'),
+  // Enforcement flag: TRUE once month-to-date crosses 100% of the effective
+  // limit. Drives the durable Traefik 509 middleware in the ingress reconciler;
+  // cleared at the month rollover or by an admin lift.
+  bandwidthCapped: boolean('bandwidth_capped').notNull().default(false),
+  bandwidthCappedAt: timestamp('bandwidth_capped_at'),
   maxSubUsersOverride: integer('max_sub_users_override'),
   monthlyPriceOverride: numeric('monthly_price_override', { precision: 10, scale: 2 }),
   // Phase A.1 of backup UI consolidation: per-tenant override.
