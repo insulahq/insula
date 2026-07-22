@@ -150,7 +150,7 @@ spec:
         # transient backend outage. The case we're catching here is
         # the DELIBERATE-looking-but-actually-accidental wipe.
         - name: protect-from-silent-data-loss
-          image: curlimages/curl:8.20.0
+          image: curlimages/curl:8.21.0
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -597,7 +597,7 @@ spec:
               readOnly: true
       containers:
         - name: stalwart
-          image: docker.io/stalwartlabs/stalwart:v0.16.12
+          image: docker.io/stalwartlabs/stalwart:v0.16.14
           imagePullPolicy: IfNotPresent
           # The upstream image ENTRYPOINT passes --config /etc/stalwart/config.json.
           # The ConfigMap is mounted directly at /etc/stalwart so Stalwart

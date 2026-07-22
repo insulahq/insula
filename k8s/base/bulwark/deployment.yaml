@@ -246,7 +246,7 @@ spec:
             - name: restore-tmp
               mountPath: /restore-tmp
         - name: feature-css-injector
-          image: ghcr.io/bulwarkmail/webmail@sha256:fa41d82ce5a4331241d501bb9a3f83c554bd647ce6ef17e3055daaa860a00470
+          image: ghcr.io/bulwarkmail/webmail@sha256:8c93a6af6abf1b0e6595015dd8236ad83c4cbb2a1dce51966deaecb4d93ffeea
           imagePullPolicy: IfNotPresent
           # busybox-style sh is available in the Bulwark image (Alpine
           # base). The script is intentionally tiny + has no error
@@ -286,10 +286,10 @@ spec:
               readOnly: true
       containers:
         - name: bulwark
-          # ghcr.io/bulwarkmail/webmail@sha256:fa41d82c... — Bulwark
-          # 1.7.6 stable (2026-06; resolved via docker pull + RepoDigests). Bump
+          # ghcr.io/bulwarkmail/webmail@sha256:8c93a6af... — Bulwark
+          # 1.7.7 stable (2026-07; resolved via docker pull + RepoDigests). Bump
           # per ADR-039.
-          image: ghcr.io/bulwarkmail/webmail@sha256:fa41d82ce5a4331241d501bb9a3f83c554bd647ce6ef17e3055daaa860a00470
+          image: ghcr.io/bulwarkmail/webmail@sha256:8c93a6af6abf1b0e6595015dd8236ad83c4cbb2a1dce51966deaecb4d93ffeea
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
