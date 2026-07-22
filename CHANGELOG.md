@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.1-rc.39] - 2026-07-22
+
 ### Added
 - **Resource monitoring: node-CPU alerts + per-tenant CPU/memory/storage
   saturation alerts.** New `node-cpu`/`node-cpu-critical` SLO rules read the
