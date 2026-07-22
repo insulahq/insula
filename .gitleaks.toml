@@ -32,6 +32,12 @@ regexes = [
   '''whsec_[A-Za-z0-9]+''',              # webhook-secret placeholder in API docs
   # rclone's well-known PUBLIC obscure key (shipped in rclone's own source).
   '''9c935b48730a554d6bfd7c63c886a92bd390198eb8128afbf4de162b8b95f638''',
+  # Code field-reference, not a secret: the S3 secret is READ from an encrypted
+  # column (`secretKey = cfg.s3SecretKeyEncrypted ? decrypt(...) : ''`). The
+  # generic-api-key rule matches the identifier, not any literal value.
+  '''cfg\.s3SecretKeyEncrypted''',
+  # platform_config ConfigMap key NAME referenced via configMapKeyRef — not a value.
+  '''ingress-default-ipv4''',
 ]
 paths = [
   '''.*\.example(\.\w+)?$''',           # *.example, *.example.yaml, …

@@ -34,7 +34,7 @@ make_fixture() {
   mkdir -p "$root/k8s/overlays/dind" "$root/k8s/overlays/development" \
            "$root/k8s/overlays/production" "$root/k8s/base/sidecar" \
            "$root/.github/workflows"
-  for ov in dev development production; do
+  for ov in dind development production; do
     cat >"$root/k8s/overlays/$ov/kustomization.yaml" <<EOF
 images:
   - name: $CANONICAL/backend
