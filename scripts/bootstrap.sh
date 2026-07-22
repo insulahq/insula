@@ -392,7 +392,7 @@ MODSECURITY_PLUGIN_VERSION="v1.6.0"
 # ingress-reconciler.ts.
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
-CERT_MANAGER_CHART_VERSION="v1.20.3"     # 2026-07-08; fixes GHSA-8rvj-mm4h-c258 (HIGH — ACME solver priv-esc)
+CERT_MANAGER_CHART_VERSION="v1.21.0"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
 SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
 CNPG_CHART_VERSION="0.29.0"              # CloudNative-PG operator v1.30.0 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this

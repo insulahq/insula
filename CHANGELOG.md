@@ -327,6 +327,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   healthy through the barman + cnpg-operator rolls, ingress serves HTTP 200 through
   the rolled Traefik, migration idempotent on re-run). rclone `1.74.1 → 1.74.4`
   deliberately deferred (spans three coupled sites the code requires kept aligned).
+- **Component-watch upstream-drift sweep — round 2 (ADR-050).** Continuation of the
+  sweep above (registry pins synced so the drift/coverage guard stays honest).
+  Flux-managed image bumps (reconcile onto existing clusters automatically,
+  DEV-validated live): **Stalwart `v0.16.12 → v0.16.14`**, **VictoriaMetrics
+  `v1.147.0 → v1.148.0`**, **ModSecurity-CRS `4.25.0 → 4.28.0`**, **Bulwark webmail
+  `1.7.6 → 1.7.7`**, **Roundcube `1.7.1 → 1.7.2`** (fpm-alpine, digest-pinned),
+  **nginx (platform-suspended) `1.30 → 1.31-alpine`**, **frp `v0.69.1 → v0.70.0`**,
+  **curl `8.20.0 → 8.21.0`**, and **rclone image `1.74.1 → 1.74.4`** — closing out
+  the deferred rclone bump. Host binaries (fresh-install pins, not in the
+  migration-coverage guarded set): **age `v1.2.1 → v1.3.1`** and the **rclone
+  binary `v1.74.1 → v1.74.4`** (kept in lockstep with the rclone image). And a
+  guarded chart bump: **cert-manager `v1.20.3 → v1.21.0`** (ACME Renewal
+  Information + security hardening) — reaches existing clusters via host-migration
+  `2026.7.1/0004` (`helm upgrade --reuse-values`). The v1.21 chart drops the
+  default `tokenrequest` RBAC, which is a no-op here (our ClusterIssuers are ACME
+  http01/dns01 only — no `serviceAccountRef`).
 - **Integration-test sprawl cleanup + coverage guard.** An audit found 33 of 71
   `scripts/integration-*.sh` wired into no orchestrator — ~half the E2E suite never
   ran and **8 scripts had bit-rotted** (testing removed routes: `mail/node-selector`,

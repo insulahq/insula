@@ -98,7 +98,7 @@ components:
     name: cert-manager (ACME / all platform TLS)
     tier: "0"
     kind: chart
-    pinned: "v1.20.3"
+    pinned: "v1.21.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: cert-manager/cert-manager, advisories: cert-manager/cert-manager }
