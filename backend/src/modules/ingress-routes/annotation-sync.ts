@@ -544,13 +544,37 @@ export async function buildRouteSpec(
     { name: 'crowdsec', namespace: 'traefik' },
   ];
 
+  // Bandwidth cap (BW-4): a tenant over its monthly transfer allowance is
+  // redirected to the platform "bandwidth exceeded" maintenance page. Built
+  // from INSIDE the reconciler (not an out-of-band patch), so every
+  // re-reconcile re-applies it — unlike the lifecycle suspend patch, which a
+  // reconcile silently wipes. The meter lifts the flag at the month rollover
+  // and triggers a reconcile, restoring normal serving.
+  const bandwidthCapMiddlewares: MiddlewareBody[] = [];
+  const bandwidthCapRefs: Array<{ name: string; namespace: string }> = [];
+  if (tenant.bandwidthCapped) {
+    const bwUrl = process.env.BANDWIDTH_EXCEEDED_REDIRECT_URL ?? 'https://bandwidth-exceeded.platform.local/';
+    const mwName = `bw-cap-${routeId.slice(0, 8)}`;
+    bandwidthCapMiddlewares.push(buildMiddleware({
+      name: mwName,
+      namespace,
+      // `.*` → the static maintenance page. permanent:false → 307 so browsers
+      // re-check once the cap is lifted at the month rollover.
+      spec: redirectRegexSpec({ regex: '.*', replacement: bwUrl, permanent: false }),
+      labels: { 'hosting-platform/bandwidth-cap': 'true' },
+    }));
+    bandwidthCapRefs.push({ name: mwName, namespace });
+  }
+
   // Combined ref order (left-to-right execution):
+  //   0. bandwidth-cap (when over allowance — short-circuits to the page)
   //   1. crowdsec (platform-wide IP gate)
   //   2. settings (forceHttps, ipAllow, rate-limit, in-flight, headers,
   //      redirect, WAF when wafEnabled=1, errors)
   //   3. mTLS forward-cert
   //   4. OIDC ForwardAuth
   const combinedRefs = [
+    ...bandwidthCapRefs,
     ...platformRefs,
     ...settingsRefs,
     ...mtlsResult.refs,
@@ -574,6 +598,7 @@ export async function buildRouteSpec(
 
   return {
     middlewares: [
+      ...bandwidthCapMiddlewares,
       ...settingsMws,
       ...mtlsResult.middlewares,
       ...oidcRefs.middlewares,
