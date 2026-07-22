@@ -1,0 +1,143 @@
+# platform-bandwidth-exceeded — static maintenance page shown in place of a
+# tenant's site when it exceeds its MONTHLY bandwidth allowance. The ingress
+# reconciler (backend/src/modules/ingress-routes/annotation-sync.ts) prepends a
+# RedirectRegex Middleware to a capped tenant's IngressRoute that 307-redirects
+# every path here; the bandwidth meter lifts the cap + reconciles at the month
+# rollover, restoring the real site. Soft page (HTTP 200 body) — the account
+# stays fully provisioned, only HTTP serving is paused.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-bandwidth-exceeded-content
+  namespace: platform
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <title>Bandwidth limit reached</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1" />
+      <style>
+        body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0;
+               display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+        .card { max-width: 560px; padding: 2.5rem; background: #1e293b; border-radius: 12px;
+                border: 1px solid #334155; text-align: center; }
+        h1 { margin: 0 0 .5rem; font-size: 1.5rem; }
+        p { margin: .5rem 0; line-height: 1.55; color: #cbd5e1; }
+        .code { font-family: ui-monospace, SFMono-Regular, monospace; color: #60a5fa; font-size: .9rem; }
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <h1>Bandwidth limit reached</h1>
+        <p>This site has used its monthly data-transfer allowance and is
+           temporarily paused. It will be available again at the start of the
+           next month, or sooner if the plan is upgraded.</p>
+        <p class="code">status=bandwidth_exceeded</p>
+      </div>
+    </body>
+    </html>
+  nginx.conf: |
+    server {
+      listen 80 default_server;
+      server_name _;
+      root /usr/share/nginx/html;
+      index index.html;
+      # JSON endpoint for programmatic clients.
+      location = /api/status {
+        default_type application/json;
+        return 200 '{"status":"bandwidth_exceeded","message":"This site has reached its monthly bandwidth limit"}';
+      }
+      location / {
+        try_files $uri /index.html;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: platform-bandwidth-exceeded
+  namespace: platform
+  labels:
+    app: platform-bandwidth-exceeded
+    platform.io/system: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: platform-bandwidth-exceeded
+  template:
+    metadata:
+      labels:
+        app: platform-bandwidth-exceeded
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.30-alpine
+          ports:
+            - containerPort: 80
+              name: http
+          resources:
+            # LimitRange floor is 32Mi (see platform-suspended.yaml note).
+            requests: { cpu: "10m", memory: "32Mi" }
+            limits:   { memory: "64Mi" }
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            periodSeconds: 10
+      volumes:
+        - name: content
+          configMap:
+            name: platform-bandwidth-exceeded-content
+            items:
+              - key: index.html
+                path: index.html
+        - name: conf
+          configMap:
+            name: platform-bandwidth-exceeded-content
+            items:
+              - key: nginx.conf
+                path: default.conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-bandwidth-exceeded
+  namespace: platform
+  labels:
+    app: platform-bandwidth-exceeded
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+  selector:
+    app: platform-bandwidth-exceeded
+---
+# IngressRoute for the centralized bandwidth-exceeded page. Capped tenant
+# IngressRoutes get a RedirectRegex Middleware that 30x-redirects to this
+# hostname. Overlays override the hostname via JSON Patch on routes[0].match
+# (mirrors platform-suspended), and set BANDWIDTH_EXCEEDED_REDIRECT_URL on the
+# backend Deployment to the matching URL.
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: platform-bandwidth-exceeded
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: "Host(`bandwidth-exceeded.platform.local`)"
+      kind: Rule
+      services:
+        - name: platform-bandwidth-exceeded
+          port: 80

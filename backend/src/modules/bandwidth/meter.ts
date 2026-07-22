@@ -103,6 +103,7 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
       namespace: tenants.kubernetesNamespace,
       used: tenants.bandwidthGbUsed,
       cycleStart: tenants.bandwidthCycleStart,
+      capped: tenants.bandwidthCapped,
       provisioningStatus: tenants.provisioningStatus,
     })
     .from(tenants);
@@ -127,6 +128,19 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
     }
     await db.update(tenants).set(set).where(eq(tenants.id, t.id));
     updated += 1;
+
+    // A month rollover that lifted an active cap must reconcile the tenant's
+    // Ingress to REMOVE the maintenance-page redirect and restore serving.
+    if (rollover && t.capped && t.namespace) {
+      try {
+        const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+        const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+        await reconcileIngress(db, createK8sClients(process.env.KUBECONFIG_PATH), t.id, t.namespace);
+        logger.info?.({ tenantId: t.id }, 'bandwidth: cap lifted at month rollover — ingress restored');
+      } catch (err) {
+        logger.warn?.({ err, tenantId: t.id }, 'bandwidth: cap-lift ingress reconcile failed (will retry next tick)');
+      }
+    }
   }
 
   await setLastRun(db, now);

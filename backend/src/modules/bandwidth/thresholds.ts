@@ -41,6 +41,7 @@ export async function evaluateBandwidthThresholds(db: Database, logger: BwLogger
     .select({
       id: tenants.id,
       name: tenants.name,
+      namespace: tenants.kubernetesNamespace,
       used: tenants.bandwidthGbUsed,
       override: tenants.bandwidthLimitOverride,
       planLimit: hostingPlans.bandwidthGbLimit,
@@ -67,12 +68,22 @@ export async function evaluateBandwidthThresholds(db: Database, logger: BwLogger
     const usedStr = String(Math.round(used * 100) / 100);
     const limitStr = String(limit);
 
-    // At 100%: enable the cap (BW-4's ingress reconciler serves the 509). The
-    // meter lifts it at the month rollover. Guard so we stamp cappedAt once.
+    // At 100%: enable the cap and reconcile the tenant's Ingress so the
+    // maintenance-page redirect is applied. The meter lifts it at the month
+    // rollover. Guard so we stamp cappedAt + reconcile once per cap.
     if (threshold >= 100 && !t.capped) {
       await db.update(tenants)
         .set({ bandwidthCapped: true, bandwidthCappedAt: now })
         .where(eq(tenants.id, t.id));
+      if (t.namespace) {
+        try {
+          const { createK8sClients } = await import('../k8s-provisioner/k8s-client.js');
+          const { reconcileIngress } = await import('../domains/k8s-ingress.js');
+          await reconcileIngress(db, createK8sClients(process.env.KUBECONFIG_PATH), t.id, t.namespace);
+        } catch (err) {
+          logger.warn?.({ err, tenantId: t.id }, 'bandwidth cap: ingress reconcile failed (will retry next tick)');
+        }
+      }
     }
 
     try {
