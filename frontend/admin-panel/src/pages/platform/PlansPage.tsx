@@ -16,6 +16,7 @@ interface PlanRow {
   readonly cpuLimit: string;
   readonly memoryLimit: string;
   readonly storageLimit: string;
+  readonly bandwidthGbLimit: number;
   readonly monthlyPriceUsd: string;
   readonly maxSubUsers: number;
   readonly maxMailboxes: number;
@@ -73,6 +74,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     code: initial?.code ?? '', name: initial?.name ?? '', description: initial?.description ?? '',
     cpu_limit: initial?.cpuLimit ?? '0.50', memory_limit: initial?.memoryLimit ?? '1.00',
     storage_limit: initial?.storageLimit ?? '10.00', monthly_price_usd: initial?.monthlyPriceUsd ?? '5.00',
+    bandwidth_gb_limit: String(initial?.bandwidthGbLimit ?? 100),
     max_sub_users: String(initial?.maxSubUsers ?? 3),
     max_mailboxes: String(initial?.maxMailboxes ?? 50),
     max_mailbox_size_mb: String(initial?.maxMailboxSizeMb ?? 1024),
@@ -85,6 +87,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     e.preventDefault();
     const payload = {
       ...form,
+      bandwidth_gb_limit: Number(form.bandwidth_gb_limit),
       max_sub_users: Number(form.max_sub_users),
       max_mailboxes: Number(form.max_mailboxes),
       max_mailbox_size_mb: Number(form.max_mailbox_size_mb),
@@ -113,6 +116,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">CPU Limit (cores)</label><input type="text" className={INPUT_CLASS} value={form.cpu_limit} onChange={(e) => setForm({ ...form, cpu_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Memory Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.memory_limit} onChange={(e) => setForm({ ...form, memory_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Storage Limit (GB)</label><input type="text" className={INPUT_CLASS} value={form.storage_limit} onChange={(e) => setForm({ ...form, storage_limit: e.target.value })} required /></div>
+        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Bandwidth (GB/mo)</label><input type="number" min="1" step="1" className={INPUT_CLASS} value={form.bandwidth_gb_limit} onChange={(e) => setForm({ ...form, bandwidth_gb_limit: e.target.value })} required /></div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Max Sub-Users</label><input type="number" className={INPUT_CLASS} value={form.max_sub_users} onChange={(e) => setForm({ ...form, max_sub_users: e.target.value })} /></div>
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
@@ -216,6 +220,7 @@ function PlanRowComp({ plan }: { readonly plan: PlanRow }) {
           <span>{plan.cpuLimit} CPU</span>
           <span>{plan.memoryLimit}GB RAM</span>
           <span>{plan.storageLimit}GB disk</span>
+          <span>{plan.bandwidthGbLimit}GB/mo transfer</span>
           <span>{plan.maxSubUsers} users</span>
           <span>{plan.maxMailboxes} mailboxes · {plan.maxMailboxSizeMb} MB each</span>
           <span>{plan.emailHourlySendLimit}/h · {plan.emailDailySendLimit}/d mail</span>
