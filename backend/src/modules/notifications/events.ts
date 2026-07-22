@@ -605,6 +605,27 @@ export async function notifyAdminTenantResourceSaturation(
   await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+// ── Per-tenant OOM kill (Phase 1d) ──────────────────────────────────────────
+
+export interface AdminOomPayload {
+  readonly tenantLabel: string;
+  readonly podName: string;
+  readonly containerName: string;
+  readonly restartCount: string;
+}
+/**
+ * A tenant container was OOM-killed. `dedupeKey` (caller passes
+ * tenant+pod+container+restartCount) fires once per distinct kill — a new kill
+ * bumps restartCount and re-alerts; a still-Running-after-old-kill pod does not.
+ */
+export async function notifyAdminTenantOom(
+  db: Database,
+  payload: AdminOomPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 // ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
 
 export interface AdminBandwidthPayload {

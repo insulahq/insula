@@ -393,6 +393,21 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitWindowS: 3600,
     rateLimitMax: 20,
   },
+  // ── Phase 1d: per-tenant OOM-kill alert ──
+  {
+    id: 'admin.tenant_pod_oom',
+    displayName: 'Tenant workload OOM-killed',
+    description: 'A tenant container was killed by the kernel out-of-memory killer. Repeated kills '
+      + 'usually mean the workload needs a larger memory limit/plan or has a leak — check the '
+      + 'tenant\'s Resource Limits and the deployment.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 30,
+  },
   // ── Monthly bandwidth (BW-3): 80/90 warning, 100 critical (cap active) ──
   {
     id: 'admin.tenant_bandwidth_warning',

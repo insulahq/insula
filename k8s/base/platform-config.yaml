@@ -39,5 +39,5 @@ data:
   # Overlays MUST patch tunnel-base-url with the real public hostname
   # (the wildcard DNS entry must point at cluster ingress).
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
-  private-worker-frps-image: "fatedier/frps:v0.69.1"
+  private-worker-frps-image: "fatedier/frps:v0.70.0"
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"

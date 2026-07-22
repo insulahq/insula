@@ -965,6 +965,43 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ];
   }),
 
+  // ── admin.tenant_pod_oom (Phase 1d) ──
+  ...((): SeedTemplate[] => {
+    const oomVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'podName', type: 'string', required: true },
+      { name: 'containerName', type: 'string', required: true },
+      { name: 'restartCount', type: 'string', required: true },
+    ];
+    return [
+      {
+        categoryId: 'admin.tenant_pod_oom',
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: '[OOM] Tenant workload OOM-killed: {{tenantLabel}} ({{containerName}})',
+        bodyTemplate: emailMjml(
+          'Tenant workload OOM-killed: {{tenantLabel}}',
+          'Container {{containerName}} in pod {{podName}} (tenant {{tenantLabel}}) was killed by the '
+          + 'kernel OOM killer — restart count {{restartCount}}. Repeated OOM kills usually mean the '
+          + 'workload needs a larger memory limit/plan or has a memory leak. Check the tenant\'s '
+          + 'Resource Limits and the deployment.',
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: oomVars,
+      },
+      {
+        categoryId: 'admin.tenant_pod_oom',
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: '[OOM] {{tenantLabel}}: {{containerName}} OOM-killed',
+        bodyTemplate: '{{tenantLabel}} — {{containerName}} in {{podName}} was OOM-killed (restarts: {{restartCount}}).',
+        bodyFormat: 'plaintext',
+        variablesSchema: oomVars,
+      },
+    ];
+  })(),
+
   // ── Monthly bandwidth (BW-3): admin (with tenantLabel) + tenant variants ──
   ...([
     { categoryId: 'admin.tenant_bandwidth_warning', admin: true, crit: false },

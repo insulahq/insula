@@ -34,6 +34,7 @@ import { createCacheMiddleware, cacheOnSendHook } from './middleware/cache.js';
 import { tenantRoutes } from './modules/tenants/routes.js';
 import { domainRoutes } from './modules/domains/routes.js';
 import { subscriptionRoutes } from './modules/subscriptions/routes.js';
+import { bandwidthRoutes } from './modules/bandwidth/routes.js';
 import { backupRoutes } from './modules/backups/routes.js';
 import { metricsRoutes } from './modules/metrics/routes.js';
 import { cronJobRoutes } from './modules/cron-jobs/routes.js';
@@ -461,6 +462,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(tenantRoutes, { prefix: '/api/v1' });
   await app.register(domainRoutes, { prefix: '/api/v1' });
   await app.register(subscriptionRoutes, { prefix: '/api/v1' });
+  await app.register(bandwidthRoutes, { prefix: '/api/v1' });
   await app.register(backupRoutes, { prefix: '/api/v1' });
   await app.register(metricsRoutes, { prefix: '/api/v1' });
   await app.register(cronJobRoutes, { prefix: '/api/v1' });
@@ -955,6 +957,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
       const metricsTimer = startMetricsScheduler(app.db);
       app.addHook('onClose', () => clearInterval(metricsTimer));
+
+      // Phase 2: daily reaper that folds hourly usage_metrics rows (>30d) into
+      // daily rows (kept 1y) and purges — keeps the rollup store bounded.
+      {
+        const { startUsageReaper } = await import('./modules/metrics/usage-reaper-scheduler.js');
+        const usageReaperTimer = startUsageReaper(app.db);
+        app.addHook('onClose', () => clearInterval(usageReaperTimer));
+      }
 
       // BW-2: per-tenant monthly bandwidth meter — hourly accumulates each
       // tenant namespace's transmit-byte delta (from vmsingle) into
