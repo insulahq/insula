@@ -1004,6 +1004,9 @@ export async function updateTenant(
   if (input.cpu_limit_override !== undefined) updateValues.cpuLimitOverride = input.cpu_limit_override === null ? null : String(input.cpu_limit_override);
   if (input.memory_limit_override !== undefined) updateValues.memoryLimitOverride = input.memory_limit_override === null ? null : String(input.memory_limit_override);
   if (input.storage_limit_override !== undefined) updateValues.storageLimitOverride = input.storage_limit_override === null ? null : String(input.storage_limit_override);
+  // Integer GB — no String() wrap (mirrors max_mailboxes_override). No k8s
+  // ResourceQuota sync: bandwidth is not a k8s quota dimension.
+  if (input.bandwidth_limit_override !== undefined) updateValues.bandwidthLimitOverride = input.bandwidth_limit_override;
   if (input.max_sub_users_override !== undefined) updateValues.maxSubUsersOverride = input.max_sub_users_override;
   if (input.max_mailboxes_override !== undefined) updateValues.maxMailboxesOverride = input.max_mailboxes_override;
   if (input.max_mailbox_size_mb_override !== undefined) updateValues.maxMailboxSizeMbOverride = input.max_mailbox_size_mb_override;

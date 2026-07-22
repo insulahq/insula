@@ -7,6 +7,8 @@ export const createPlanSchema = z.object({
   cpu_limit: z.string().min(1).max(20),
   memory_limit: z.string().min(1).max(20),
   storage_limit: z.string().min(1).max(20),
+  /** Monthly data-transfer cap in GB (default 100 when omitted). */
+  bandwidth_gb_limit: z.number().int().min(1).max(1_000_000).optional(),
   monthly_price_usd: z.string().min(1).max(20),
   max_sub_users: z.number().int().min(0).max(100).optional(),
   max_mailboxes: z.number().int().min(0).max(10000).optional(),
