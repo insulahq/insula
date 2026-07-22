@@ -17,6 +17,7 @@ import { eq } from 'drizzle-orm';
 import { tenants, platformSettings } from '../../db/schema.js';
 import { queryInstant } from '../monitoring/vm-client.js';
 import { evaluateBandwidthThresholds } from './thresholds.js';
+import { recordHourlyUsage } from '../metrics/usage-rollup.js';
 import type { Database } from '../../db/index.js';
 
 const LAST_RUN_KEY = 'bandwidth_meter_last_run';
@@ -128,6 +129,12 @@ export async function meterBandwidthOnce(db: Database, logger: MeterLogger = {})
     }
     await db.update(tenants).set(set).where(eq(tenants.id, t.id));
     updated += 1;
+
+    // Phase 2: persist the hour's bandwidth delta into the rollup store (SUM-
+    // folded to daily for billing history). Skip zero-delta hours to stay lean.
+    if (deltaGb > 0) {
+      await recordHourlyUsage(db, t.id, { bandwidth_gb: deltaGb }, now);
+    }
 
     // A month rollover that lifted an active cap must reconcile the tenant's
     // Ingress to REMOVE the maintenance-page redirect and restore serving.

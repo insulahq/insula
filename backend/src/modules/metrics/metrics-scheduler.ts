@@ -3,6 +3,9 @@ import { hostingPlans, tenants, platformSettings } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectTenantMetrics } from './resource-metrics.js';
 import { evaluateTenantSaturation } from './tenant-saturation.js';
+import { scanTenantOom } from './oom-scan.js';
+import { notifyAdminTenantOom } from '../notifications/events.js';
+import { recordHourlyUsage } from './usage-rollup.js';
 import type { Database } from '../../db/index.js';
 
 /** Admin per-tenant saturation alerts are on unless explicitly set to 'off'. */
@@ -70,11 +73,37 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
 
         try {
           const metrics = await collectTenantMetrics(db, k8s, tenant.id, tenant.namespace, planLimits);
-          if (alertsOn && metrics) {
-            await evaluateTenantSaturation(db, tenant.id, tenant.name, metrics, console);
+          if (metrics) {
+            if (alertsOn) {
+              await evaluateTenantSaturation(db, tenant.id, tenant.name, metrics, console);
+            }
+            // Phase 2: persist the hourly per-tenant sample (aggregate, one row
+            // per metric — no per-pod series). Reaped by the usage-reaper.
+            await recordHourlyUsage(db, tenant.id, {
+              cpu_cores: metrics.cpu.inUse,
+              memory_gb: metrics.memory.inUse,
+              storage_gb: metrics.storage.inUse,
+            });
           }
         } catch (err) {
           console.warn(`[metrics-scheduler] Failed for ${tenant.id}:`, err instanceof Error ? err.message : String(err));
+        }
+
+        // Phase 1d: per-tenant OOM alerts off the same loop (no extra scheduler,
+        // no time-series). Deduped per (tenant, pod, container, restartCount).
+        if (tenant.namespace) {
+          try {
+            const ooms = await scanTenantOom(k8s, tenant.namespace);
+            for (const o of ooms) {
+              await notifyAdminTenantOom(
+                db,
+                { tenantLabel: tenant.name, podName: o.podName, containerName: o.containerName, restartCount: String(o.restartCount) },
+                `oom:${tenant.id}:${o.podName}:${o.containerName}:${o.restartCount}`,
+              );
+            }
+          } catch (err) {
+            console.warn(`[metrics-scheduler] OOM scan failed for ${tenant.id}:`, err instanceof Error ? err.message : String(err));
+          }
         }
 
         // Stagger to avoid overwhelming K8s API

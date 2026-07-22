@@ -1,9 +1,10 @@
-import { Cpu, MemoryStick, HardDrive, Gauge, Mail, Loader2, RefreshCw } from 'lucide-react';
+import { Cpu, MemoryStick, HardDrive, Gauge, Mail, ArrowUpDown, Loader2, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
 import { useMailboxUsage } from '@/hooks/use-email';
 import { useSubscription } from '@/hooks/use-subscription';
+import { useBandwidth, type TenantBandwidthUsage } from '@/hooks/use-bandwidth';
 
 /**
  * Round-4 Phase C: dedicated Resource Usage dashboard.
@@ -28,9 +29,11 @@ export default function ResourceUsage() {
   const refresh = useRefreshMetrics();
   const { data: mailboxUsageData } = useMailboxUsage(tenantId ?? undefined);
   const { data: subscriptionData } = useSubscription(tenantId ?? undefined);
+  const { data: bandwidthData } = useBandwidth();
 
   const metrics = metricsData?.data;
   const mailboxUsage = mailboxUsageData?.data;
+  const bandwidth = bandwidthData?.data;
   const subscription = subscriptionData?.data;
   const plan = subscription?.plan;
 
@@ -125,6 +128,7 @@ export default function ResourceUsage() {
               />
             </div>
           )}
+          {bandwidth && <BandwidthCard usage={bandwidth} />}
         </div>
       )}
 
@@ -269,6 +273,71 @@ function MailProgressBar({
         {source === 'tenant_override' ? 'Limit set by per-tenant override' : 'Limit from hosting plan'}
       </p>
     </>
+  );
+}
+
+function BandwidthCard({ usage }: { readonly usage: TenantBandwidthUsage }) {
+  const pct = Math.min(100, usage.usedPct);
+  const atCritical = usage.capped || usage.usedPct >= 100;
+  const atWarning = usage.usedPct >= 80;
+  const barColor = atCritical
+    ? 'bg-red-500 dark:bg-red-400'
+    : atWarning
+      ? 'bg-amber-500 dark:bg-amber-400'
+      : 'bg-brand-500 dark:bg-brand-400';
+  const resetDate = usage.cycleStart
+    ? new Date(new Date(usage.cycleStart).getUTCFullYear(), new Date(usage.cycleStart).getUTCMonth() + 1, 1)
+    : null;
+
+  return (
+    <div
+      className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm"
+      data-testid="bandwidth-card"
+    >
+      <div className="mb-3 flex items-center gap-2">
+        <ArrowUpDown size={18} className="text-cyan-500 dark:text-cyan-400" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Bandwidth</h2>
+        <span className="ml-auto text-xs text-gray-400 dark:text-gray-500">this month</span>
+      </div>
+
+      <div className="mb-3 flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+          {usage.usedGb.toFixed(usage.usedGb >= 10 ? 0 : 1)}
+        </span>
+        <span className="text-sm text-gray-500 dark:text-gray-400">/ {usage.limitGb} GB</span>
+        <span className="ml-auto text-sm font-medium text-gray-600 dark:text-gray-300">
+          {usage.usedPct.toFixed(0)}%
+        </span>
+      </div>
+
+      <div className="h-3 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+        <div
+          className={clsx('h-3 rounded-full transition-all', barColor)}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      <p className="mt-2 text-xs text-gray-400 dark:text-gray-500">
+        {usage.source === 'override'
+          ? 'Limit set by per-tenant override'
+          : usage.source === 'plan'
+            ? 'Limit from hosting plan'
+            : 'Default monthly allowance'}
+        {resetDate && <> · resets {resetDate.toLocaleDateString()}</>}
+      </p>
+
+      {usage.capped && (
+        <p className="mt-3 rounded-md bg-red-50 dark:bg-red-900/20 px-3 py-1.5 text-xs text-red-600 dark:text-red-400">
+          Monthly bandwidth cap reached — your sites show a maintenance page until the month resets.
+          Upgrade your plan or raise the limit to restore serving.
+        </p>
+      )}
+      {atWarning && !usage.capped && (
+        <p className="mt-3 rounded-md bg-amber-50 dark:bg-amber-900/20 px-3 py-1.5 text-xs text-amber-600 dark:text-amber-400">
+          Approaching your monthly bandwidth allowance.
+        </p>
+      )}
+    </div>
   );
 }
 

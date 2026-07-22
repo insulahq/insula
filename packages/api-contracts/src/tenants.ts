@@ -278,3 +278,16 @@ export const tenantStoragePlacementSchema = z.object({
 });
 export type TenantStoragePlacement = z.infer<typeof tenantStoragePlacementSchema>;
 export type TenantStoragePlacementRow = TenantStoragePlacement['pvcs'][number];
+
+// ─── Tenant bandwidth usage (GET /tenants/:id/bandwidth) ────────────────────
+// Month-to-date egress vs the effective monthly limit + cap state. Tenant-
+// readable (tenant-panel Resource Usage card); admin surfaces edit the limit.
+export const tenantBandwidthUsageSchema = z.object({
+  usedGb: z.number(),
+  limitGb: z.number(),
+  usedPct: z.number(),
+  capped: z.boolean(),
+  cycleStart: z.string().nullable(),
+  source: z.enum(['override', 'plan', 'default']),
+});
+export type TenantBandwidthUsage = z.infer<typeof tenantBandwidthUsageSchema>;
