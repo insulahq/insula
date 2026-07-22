@@ -575,3 +575,32 @@ export async function notifyAdminMailBlocklisted(
 ): Promise<void> {
   await dispatchSafe(db, 'admin.mail_blocklisted', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
+
+// ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ─
+
+export interface AdminTenantSaturationPayload {
+  readonly tenantLabel: string;
+  /** 'CPU' | 'memory' | 'storage' */
+  readonly resource: string;
+  readonly usedPct: string;
+  readonly used: string;
+  readonly limit: string;
+  /** e.g. ' cores', ' GiB' — leading space kept so "4 GiB" renders cleanly. */
+  readonly unit: string;
+}
+/**
+ * A tenant crossed a warning/critical fraction of its CPU/memory/storage
+ * allocation. `dedupeKey` (caller passes tenant+resource+level+hour bucket)
+ * fires it at most once per tenant/resource/level/hour while sustained.
+ */
+export async function notifyAdminTenantResourceSaturation(
+  db: Database,
+  level: 'warning' | 'critical',
+  payload: AdminTenantSaturationPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = level === 'critical'
+    ? 'admin.tenant_resource_saturation_critical'
+    : 'admin.tenant_resource_saturation_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}

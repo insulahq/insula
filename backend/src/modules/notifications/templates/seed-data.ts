@@ -924,6 +924,46 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'lookupUrl', type: 'string', required: false },
     ],
   },
+
+  // ── admin.tenant_resource_saturation_warning / _critical ──
+  ...(['admin.tenant_resource_saturation_warning', 'admin.tenant_resource_saturation_critical'] as const).flatMap((categoryId): SeedTemplate[] => {
+    const crit = categoryId.endsWith('critical');
+    const tag = crit ? '[RESOURCE]' : '[RESOURCE]';
+    const satVars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'resource', type: 'string', required: true },
+      { name: 'usedPct', type: 'string', required: true },
+      { name: 'used', type: 'string', required: true },
+      { name: 'limit', type: 'string', required: true },
+      { name: 'unit', type: 'string', required: true },
+    ];
+    const verb = crit ? 'reached its' : 'is approaching its';
+    return [
+      {
+        categoryId,
+        channel: 'email',
+        locale: 'en',
+        subjectTemplate: `${tag} ${crit ? 'Tenant at resource limit' : 'Tenant resource usage high'}: {{tenantLabel}} ({{resource}})`,
+        bodyTemplate: emailMjml(
+          `${crit ? 'Tenant at resource limit' : 'Tenant resource usage high'}: {{tenantLabel}}`,
+          `Tenant {{tenantLabel}} ${verb} {{resource}} limit — {{used}}{{unit}} of {{limit}}{{unit}} ({{usedPct}}%). `
+          + `${crit ? 'Workloads may be throttled, OOM-killed, or unable to write. Raise the limit/plan or investigate the workload.' : 'Consider raising the limit/plan or checking for a runaway workload.'}`,
+        ),
+        bodyFormat: 'mjml',
+        variablesSchema: satVars,
+      },
+      {
+        categoryId,
+        channel: 'in_app',
+        locale: 'en',
+        subjectTemplate: `${tag} {{tenantLabel}} {{resource}} {{usedPct}}%`,
+        bodyTemplate: `{{tenantLabel}} ${verb} {{resource}} limit: {{used}}{{unit}} / {{limit}}{{unit}} ({{usedPct}}%).`,
+        bodyFormat: 'plaintext',
+        variablesSchema: satVars,
+      },
+    ];
+  }),
 ];
 
 const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(
