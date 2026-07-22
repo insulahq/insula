@@ -1686,6 +1686,7 @@ function ResourceLimitsCard({
   const [cpuOverride, setCpuOverride] = useState<string>('');
   const [memOverride, setMemOverride] = useState<string>('');
   const [storageOverride, setStorageOverride] = useState<string>('');
+  const [bandwidthOverride, setBandwidthOverride] = useState<string>('');
   const [subUsersOverride, setSubUsersOverride] = useState<string>('');
   const [mailboxesOverride, setMailboxesOverride] = useState<string>('');
   const [mailboxSizeOverride, setMailboxSizeOverride] = useState<string>('');
@@ -1693,6 +1694,7 @@ function ResourceLimitsCard({
   const [cpuCustom, setCpuCustom] = useState(false);
   const [memCustom, setMemCustom] = useState(false);
   const [storageCustom, setStorageCustom] = useState(false);
+  const [bandwidthCustom, setBandwidthCustom] = useState(false);
   const [subUsersCustom, setSubUsersCustom] = useState(false);
   const [mailboxesCustom, setMailboxesCustom] = useState(false);
   const [mailboxSizeCustom, setMailboxSizeCustom] = useState(false);
@@ -1721,6 +1723,7 @@ function ResourceLimitsCard({
   const effectiveCpu = tenant.cpuLimitOverride ?? plan?.cpuLimit ?? '—';
   const effectiveMem = tenant.memoryLimitOverride ?? plan?.memoryLimit ?? '—';
   const effectiveStorage = tenant.storageLimitOverride ?? plan?.storageLimit ?? '—';
+  const effectiveBandwidth = tenant.bandwidthLimitOverride ?? plan?.bandwidthGbLimit ?? '—';
   const effectiveSubUsers = tenant.maxSubUsersOverride ?? plan?.maxSubUsers ?? '—';
   const effectiveMailboxes = tenant.maxMailboxesOverride ?? plan?.maxMailboxes ?? '—';
   const effectiveMailboxSize = tenant.maxMailboxSizeMbOverride ?? plan?.maxMailboxSizeMb ?? '—';
@@ -1732,6 +1735,7 @@ function ResourceLimitsCard({
     const hasCpu = tenant.cpuLimitOverride != null;
     const hasMem = tenant.memoryLimitOverride != null;
     const hasStorage = tenant.storageLimitOverride != null;
+    const hasBandwidth = tenant.bandwidthLimitOverride != null;
     const hasSubUsers = tenant.maxSubUsersOverride != null;
     const hasMailboxes = tenant.maxMailboxesOverride != null;
     const hasMailboxSize = tenant.maxMailboxSizeMbOverride != null;
@@ -1739,6 +1743,7 @@ function ResourceLimitsCard({
     setCpuCustom(hasCpu);
     setMemCustom(hasMem);
     setStorageCustom(hasStorage);
+    setBandwidthCustom(hasBandwidth);
     setSubUsersCustom(hasSubUsers);
     setMailboxesCustom(hasMailboxes);
     setMailboxSizeCustom(hasMailboxSize);
@@ -1746,6 +1751,7 @@ function ResourceLimitsCard({
     setCpuOverride(hasCpu ? String(tenant.cpuLimitOverride) : (plan?.cpuLimit ?? ''));
     setMemOverride(hasMem ? String(tenant.memoryLimitOverride) : (plan?.memoryLimit ?? ''));
     setStorageOverride(hasStorage ? String(tenant.storageLimitOverride) : (plan?.storageLimit ?? ''));
+    setBandwidthOverride(hasBandwidth ? String(tenant.bandwidthLimitOverride) : String(plan?.bandwidthGbLimit ?? ''));
     setSubUsersOverride(hasSubUsers ? String(tenant.maxSubUsersOverride) : String(plan?.maxSubUsers ?? ''));
     setMailboxesOverride(hasMailboxes ? String(tenant.maxMailboxesOverride) : String(plan?.maxMailboxes ?? ''));
     setMailboxSizeOverride(hasMailboxSize ? String(tenant.maxMailboxSizeMbOverride) : String(plan?.maxMailboxSizeMb ?? ''));
@@ -1766,6 +1772,7 @@ function ResourceLimitsCard({
         cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
         memory_limit_override: memCustom ? Number(memOverride) : null,
         storage_limit_override: storageCustom ? Number(storageOverride) : null,
+        bandwidth_limit_override: bandwidthCustom ? Number(bandwidthOverride) : null,
         max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
         max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
@@ -1808,6 +1815,7 @@ function ResourceLimitsCard({
         cpu_limit_override: cpuCustom ? Number(cpuOverride) : null,
         memory_limit_override: memCustom ? Number(memOverride) : null,
         storage_limit_override: storageCustom ? Number(storageOverride) : null,
+        bandwidth_limit_override: bandwidthCustom ? Number(bandwidthOverride) : null,
         max_sub_users_override: subUsersCustom ? Number(subUsersOverride) : null,
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
         max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
@@ -1906,6 +1914,7 @@ function ResourceLimitsCard({
           {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, tenant.cpuLimitOverride != null, 'number', '0.25')}
           {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, 'number', '0.5')}
           {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, 'number', '1')}
+          {renderField('Bandwidth', 'GB/mo', effectiveBandwidth, bandwidthCustom, setBandwidthCustom, bandwidthOverride, setBandwidthOverride, tenant.bandwidthLimitOverride != null, 'number', '1')}
           {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, 'number', '1')}
           {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, 'number', '1')}
           {renderField('Max Mailbox Size', 'MB', effectiveMailboxSize, mailboxSizeCustom, setMailboxSizeCustom, mailboxSizeOverride, setMailboxSizeOverride, tenant.maxMailboxSizeMbOverride != null, 'number', '1')}

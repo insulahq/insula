@@ -8,6 +8,7 @@ interface CreatePlanInput {
   readonly cpu_limit: string;
   readonly memory_limit: string;
   readonly storage_limit: string;
+  readonly bandwidth_gb_limit?: number;
   readonly monthly_price_usd: string;
   readonly max_sub_users?: number;
   readonly max_mailboxes?: number;
