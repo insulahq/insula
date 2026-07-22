@@ -393,6 +393,58 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitWindowS: 3600,
     rateLimitMax: 20,
   },
+  // ── Monthly bandwidth (BW-3): 80/90 warning, 100 critical (cap active) ──
+  {
+    id: 'admin.tenant_bandwidth_warning',
+    displayName: 'Tenant bandwidth usage high',
+    description: 'A tenant crossed 80%/90% of its monthly bandwidth allowance. At 100% the '
+      + 'tenant\'s sites are capped (509) until the month resets — raise the limit/plan if this '
+      + 'is expected growth.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 20,
+  },
+  {
+    id: 'admin.tenant_bandwidth_critical',
+    displayName: 'Tenant bandwidth cap active',
+    description: 'A tenant reached 100% of its monthly bandwidth allowance — its sites are now '
+      + 'capped (HTTP 509) until the calendar month resets. Raise the limit/plan to restore '
+      + 'serving immediately.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 20,
+  },
+  {
+    id: 'tenant.bandwidth_warning',
+    displayName: 'Bandwidth usage high',
+    description: 'Your monthly data-transfer usage crossed 80%/90% of your allowance. If you reach '
+      + '100%, your sites will be temporarily unavailable until the month resets — upgrade your '
+      + 'plan to increase the allowance.',
+    audience: 'tenant',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tenant.bandwidth_exceeded',
+    displayName: 'Bandwidth limit reached',
+    description: 'You reached your monthly data-transfer limit. Your sites are temporarily '
+      + 'unavailable (HTTP 509) until the month resets. Upgrade your plan to restore them now.',
+    audience: 'tenant',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
 ];
 
 /**

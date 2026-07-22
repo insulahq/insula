@@ -964,6 +964,35 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
       },
     ];
   }),
+
+  // ── Monthly bandwidth (BW-3): admin (with tenantLabel) + tenant variants ──
+  ...([
+    { categoryId: 'admin.tenant_bandwidth_warning', admin: true, crit: false },
+    { categoryId: 'admin.tenant_bandwidth_critical', admin: true, crit: true },
+    { categoryId: 'tenant.bandwidth_warning', admin: false, crit: false },
+    { categoryId: 'tenant.bandwidth_exceeded', admin: false, crit: true },
+  ] as const).flatMap(({ categoryId, admin, crit }): SeedTemplate[] => {
+    const vars: readonly NotificationTemplateVariable[] = [
+      ...COMMON_VARS,
+      ...(admin ? [{ name: 'tenantLabel', type: 'string' as const, required: true }] : []),
+      { name: 'usedPct', type: 'string' as const, required: true },
+      { name: 'used', type: 'string' as const, required: true },
+      { name: 'limit', type: 'string' as const, required: true },
+    ];
+    const who = admin ? 'Tenant {{tenantLabel}} has' : 'You have';
+    const subj = admin
+      ? (crit ? '[BANDWIDTH] Cap active: {{tenantLabel}}' : '[BANDWIDTH] Usage high: {{tenantLabel}}')
+      : (crit ? 'Your sites are paused — bandwidth limit reached' : 'Bandwidth usage at {{usedPct}}%');
+    const body = crit
+      ? `${who} reached the monthly bandwidth limit ({{used}} of {{limit}} GB, {{usedPct}}%). `
+        + `${admin ? 'The tenant\'s sites are capped (HTTP 509) until the month resets — raise the limit/plan to restore serving now.' : 'Your sites are temporarily unavailable (HTTP 509) until the month resets. Upgrade your plan to restore them now.'}`
+      : `${who} used {{usedPct}}% of the monthly bandwidth allowance ({{used}} of {{limit}} GB). `
+        + `${admin ? 'At 100% the tenant is capped until the month resets.' : 'At 100% your sites will be temporarily unavailable until the month resets — upgrade your plan to avoid interruption.'}`;
+    return [
+      { categoryId, channel: 'email', locale: 'en', subjectTemplate: subj, bodyTemplate: emailMjml(subj.replace(/^\[BANDWIDTH\] /, ''), body), bodyFormat: 'mjml', variablesSchema: vars },
+      { categoryId, channel: 'in_app', locale: 'en', subjectTemplate: subj, bodyTemplate: body, bodyFormat: 'plaintext', variablesSchema: vars },
+    ];
+  }),
 ];
 
 const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warning', 'legacy.error', 'legacy.success'].flatMap(
