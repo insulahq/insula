@@ -47,3 +47,19 @@ describe('SLO_RULES — mail monitoring additions', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 });
+
+describe('SLO_RULES — node CPU', () => {
+  it('registers node-cpu and node-cpu-critical against the already-scraped cadvisor CPU metric', () => {
+    for (const id of ['node-cpu', 'node-cpu-critical']) {
+      const rule = ruleById(id);
+      expect(rule, id).toBeDefined();
+      expect(rule!.expr).toContain('container_cpu_usage_seconds_total{id="/"}');
+      expect(rule!.expr).toContain('machine_cpu_cores');
+      expect(renderExpr(rule!, undefined)).not.toContain('$T');
+    }
+    expect(ruleById('node-cpu')!.severity).toBe('warning');
+    expect(ruleById('node-cpu-critical')!.severity).toBe('critical');
+    // Sustained-only: CPU spikes are normal, so the window is longer than memory's.
+    expect(ruleById('node-cpu')!.forSeconds).toBeGreaterThanOrEqual(600);
+  });
+});

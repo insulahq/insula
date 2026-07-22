@@ -120,6 +120,28 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     threshold: 0.95,
     forSeconds: 600,
   },
+  // Node CPU utilisation — reads the root-cgroup CPU counter + machine_cpu_cores
+  // that are ALREADY scraped (cadvisor allowlist) but were previously unused.
+  // Zero new scrape cost. Longer forSeconds than memory: short CPU spikes are
+  // normal, so alert only on SUSTAINED saturation.
+  {
+    id: 'node-cpu',
+    name: 'Node CPU saturation',
+    description: 'Node CPU utilisation ratio (root cgroup rate ÷ machine cores) has been sustained above the threshold.',
+    severity: 'warning',
+    expr: 'max(rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    threshold: 0.85,
+    forSeconds: 900,
+  },
+  {
+    id: 'node-cpu-critical',
+    name: 'Node CPU saturation — critical',
+    description: 'Node CPU utilisation ratio has been sustained above the critical threshold.',
+    severity: 'critical',
+    expr: 'max(rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    threshold: 0.95,
+    forSeconds: 900,
+  },
   {
     id: 'cnpg-down',
     name: 'system-db instance down',

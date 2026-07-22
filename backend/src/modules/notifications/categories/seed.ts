@@ -365,6 +365,34 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitWindowS: 43200, // at most once / 12h per (ip,list) via dedupeKey; cap the fan-out too
     rateLimitMax: 8,
   },
+  // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ──
+  {
+    id: 'admin.tenant_resource_saturation_warning',
+    displayName: 'Tenant resource usage high',
+    description: 'A tenant crossed the warning threshold (≈90%) of its CPU, memory, or storage '
+      + 'allocation. May indicate a runaway workload or a tenant that needs a bigger plan. See the '
+      + 'tenant\'s Resource Limits.',
+    audience: 'admin',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600, // dedupe is per (tenant,resource,hour); cap total fan-out too
+    rateLimitMax: 20,
+  },
+  {
+    id: 'admin.tenant_resource_saturation_critical',
+    displayName: 'Tenant resource usage at limit',
+    description: 'A tenant reached its CPU/memory/storage limit — workloads may be throttled, '
+      + 'OOM-killed, or unable to write. Raise the tenant\'s limit/plan or investigate the workload.',
+    audience: 'admin',
+    defaultSeverity: 'critical',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600,
+    rateLimitMax: 20,
+  },
 ];
 
 /**

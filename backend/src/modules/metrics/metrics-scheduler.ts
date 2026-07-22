@@ -1,7 +1,22 @@
-import { hostingPlans, tenants } from '../../db/schema.js';
+import { eq } from 'drizzle-orm';
+import { hostingPlans, tenants, platformSettings } from '../../db/schema.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { collectTenantMetrics } from './resource-metrics.js';
+import { evaluateTenantSaturation } from './tenant-saturation.js';
 import type { Database } from '../../db/index.js';
+
+/** Admin per-tenant saturation alerts are on unless explicitly set to 'off'. */
+async function saturationAlertsEnabled(db: Database): Promise<boolean> {
+  try {
+    const [row] = await db
+      .select({ value: platformSettings.value })
+      .from(platformSettings)
+      .where(eq(platformSettings.key, 'resource_saturation_alerts'));
+    return row?.value !== 'off';
+  } catch {
+    return true;
+  }
+}
 
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour total cycle
 const STAGGER_DELAY_MS = 2000; // 2 seconds between each tenant
@@ -24,6 +39,7 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
       // Get all provisioned tenants
       const allTenants = await db.select({
         id: tenants.id,
+        name: tenants.name,
         namespace: tenants.kubernetesNamespace,
         planId: tenants.planId,
         cpuLimitOverride: tenants.cpuLimitOverride,
@@ -38,6 +54,10 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
       const allPlans = await db.select().from(hostingPlans);
       const planMap = new Map(allPlans.map(p => [p.id, p]));
 
+      // Per-tenant saturation admin alerts run off the SAME fresh collection
+      // (no extra metrics-server load, no time-series). Gate read once/cycle.
+      const alertsOn = await saturationAlertsEnabled(db);
+
       for (let i = 0; i < provisioned.length; i++) {
         const tenant = provisioned[i];
         const plan = planMap.get(tenant.planId);
@@ -49,7 +69,10 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
         };
 
         try {
-          await collectTenantMetrics(db, k8s, tenant.id, tenant.namespace, planLimits);
+          const metrics = await collectTenantMetrics(db, k8s, tenant.id, tenant.namespace, planLimits);
+          if (alertsOn && metrics) {
+            await evaluateTenantSaturation(db, tenant.id, tenant.name, metrics, console);
+          }
         } catch (err) {
           console.warn(`[metrics-scheduler] Failed for ${tenant.id}:`, err instanceof Error ? err.message : String(err));
         }
