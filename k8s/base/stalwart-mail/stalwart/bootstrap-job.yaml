@@ -2,10 +2,15 @@
 #
 # ci-flux-escape: ignore-file
 #   This Job is annotated `kustomize.toolkit.fluxcd.io/reconcile: disabled`
-#   and applied directly by bootstrap.sh (patches suspend=false to start it
-#   on the cluster's first install). Flux postBuild.substituteFrom NEVER
-#   runs over this manifest, so the bash heredoc's bare ${VAR} references
-#   are safe — bash inside the container expands them at runtime, not Flux.
+#   (Flux stops re-reconciling it) AND, critically,
+#   `kustomize.toolkit.fluxcd.io/substitute: disabled` so Flux SKIPS
+#   postBuild.substituteFrom over this manifest entirely. Every ${VAR} in
+#   the heredoc below is a bash runtime variable sourced from
+#   /plan/plan.json (rendered by bootstrap.sh) — NOT a Flux placeholder,
+#   so bash inside the container expands them at runtime. Without
+#   substitute:disabled, Flux 2.9's STRICT envsubst hard-fails the whole
+#   platform Kustomization on the first unknown ${VAR} (e.g. ${HOSTNAME});
+#   Flux 2.8 silently tolerated undefined vars, which masked this.
 #
 # PURPOSE: Seeds the empty Stalwart RocksDB with the initial configuration
 # (server hostname, default domain) via a direct JMAP x:Bootstrap/set call.
@@ -55,6 +60,11 @@ metadata:
     # reconciliation needed. The reconcile:disabled annotation only
     # disables ongoing reconcile — Flux still creates it on first apply.
     kustomize.toolkit.fluxcd.io/reconcile: disabled
+    # Skip Flux postBuild envsubst for this Job: every ${VAR} in its heredoc
+    # is a bash runtime var read from /plan/plan.json, not a Flux placeholder.
+    # Flux 2.9 runs envsubst in STRICT mode, so without this it hard-fails the
+    # Kustomization on the first unknown ${VAR} (e.g. ${HOSTNAME}).
+    kustomize.toolkit.fluxcd.io/substitute: disabled
     kustomize.toolkit.fluxcd.io/ssa: merge
 spec:
   # Suspended by default — bootstrap.sh patches suspend=false when ready.
