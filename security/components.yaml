@@ -110,8 +110,8 @@ components:
     name: CloudNativePG operator (platform Postgres lifecycle)
     tier: "0"
     kind: chart
-    pinned: "0.28.3"
-    app_version: "v1.29.1"
+    pinned: "0.29.0"
+    app_version: "v1.30.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: cloudnative-pg/cloudnative-pg, advisories: cloudnative-pg/cloudnative-pg }
