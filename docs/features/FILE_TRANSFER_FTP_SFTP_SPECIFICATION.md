@@ -557,7 +557,7 @@ POST /api/v1/customers/{customer_id}/ftp/users
     "max_download_monthly_mb": 2000,
     "expires_at": "2026-06-01T00:00:00Z",
     "protocols": ["SFTP", "FTPS"],
-    "temporary_password": "X7kM9pL2qR4sTv6wY8zAb"
+    "temporary_password": "<generated-password>"
     // ⚠️ Password only returned on creation; customer must save it
   }
 }
@@ -645,7 +645,7 @@ POST /api/v1/customers/{customer_id}/ftp/users/{user_id}/rotate-password
   "data": {
     "id": 4,
     "username": "dev-staging",
-    "new_password": "X7kM9pL2qR4sTv6wY8zAb",
+    "new_password": "<generated-password>",
     "password_rotated_at": "2026-03-01T12:30:00Z",
     "message": "Password rotated successfully. Please save the new password."
   }

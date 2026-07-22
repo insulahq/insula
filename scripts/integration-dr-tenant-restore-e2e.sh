@@ -62,7 +62,7 @@ force_reconcile(){ api POST /admin/mail/stalwart-reprovision '{}' "$TOKEN" >/dev
 
 # JMAP op in the mail probe pod (master-proxy impersonation of TEST_ADDR): count | destroy
 jmap_op(){ local op="$1"
-ssh_node "kubectl -n mail exec -i stalwart-probe -- env ADDR='$TEST_ADDR' OP='$op' python3 - " </dev/null <<'PY'
+ssh_node "kubectl -n mail exec -i stalwart-probe -- env ADDR='$TEST_ADDR' OP='$op' python3 - " <<'PY'
 import base64,json,os,urllib.request,urllib.error
 ADDR=os.environ["ADDR"]; OP=os.environ["OP"]; pw=os.environ["STALWART_MASTER_PASSWORD"]
 EP="http://stalwart-mgmt.mail.svc.cluster.local:8080/.well-known/jmap"

@@ -17,23 +17,34 @@ bad() { echo "  ✗ $1" >&2; fail=$((fail + 1)); }
 # with a real tag, --root the real repo so ci-migration-coverage.sh resolves.
 echo "[A] verdict matrix (--dry-run, AUDIT_* overrides)"
 
-out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=0 "$CUT" --dry-run --yes --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
+# Section A dry-runs hit cut-release's breaking-gate against the REAL CHANGELOG.
+# Pass --breaking iff [Unreleased] currently carries a '### BREAKING' heading, so
+# this test (which exercises the host-migration audit matrix, not the gate) stays
+# green whether or not unreleased breaking changes are pending. cut-release errors
+# BOTH ways — --breaking without a heading, and a heading without --breaking — so
+# the flag must track the CHANGELOG state.
+BRK=""
+if awk '/^## \[Unreleased\]/{f=1;next} f&&/^## /{exit} f' "$REPO_ROOT/CHANGELOG.md" 2>/dev/null | grep -qiE '^#{3,4} +BREAKING'; then
+  BRK="--breaking"
+fi
+
+out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=0 "$CUT" --dry-run --yes $BRK --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
 echo "$out" | grep -q 'firewall shape unchanged ✓' && ok "unchanged" || bad "unchanged: $out"
 
-out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=2 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
+out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=2 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes $BRK --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
 echo "$out" | grep -q 'CHANGED — covered by 2 host-migration' && ok "covered" || bad "covered: $out"
 
-out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=1 "$CUT" --dry-run --yes --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
+out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=1 "$CUT" --dry-run --yes $BRK --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
 echo "$out" | grep -q '1 \[no-host-migration\] waiver(s) acknowledged' && ok "waived" || bad "waived: $out"
 
-out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
+out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes $BRK --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
 echo "$out" | grep -q '⚠ UNCOVERED' && ok "uncovered verdict shown" || bad "uncovered verdict: $out"
 echo "$out" | grep -q 'WOULD BLOCK' && ok "uncovered → dry-run WOULD-BLOCK note" || bad "no would-block note: $out"
 
-out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes --allow-uncovered-host-changes --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
+out=$(AUDIT_PREV_TAG=v9999.1.1 AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes $BRK --allow-uncovered-host-changes --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
 echo "$out" | grep -q '⚠ UNCOVERED' && ! echo "$out" | grep -q 'WOULD BLOCK' && ok "--allow suppresses the block note" || bad "--allow: $out"
 
-out=$(AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes --skip-host-migration-audit --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
+out=$(AUDIT_SHAPE_CHANGED=1 AUDIT_MIGRATIONS=0 AUDIT_WAIVERS=0 "$CUT" --dry-run --yes $BRK --skip-host-migration-audit --version 9999.1.2 --root "$REPO_ROOT" 2>&1)
 echo "$out" | grep -q 'host-migration audit : skipped' && ok "--skip-host-migration-audit" || bad "skip: $out"
 
 echo "[B] real-path gate (throwaway git repo)"
