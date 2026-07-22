@@ -66,12 +66,16 @@ if [ "$have" != "$TARGET" ]; then
 fi
 
 # --- upgrade the controllers to match the CLI (idempotent server-side apply) ---
-# Skip the apply only if the source-controller already runs a v2.9.x image.
+# Skip only if the controllers are already on the Flux 2.9 distribution. NB: the
+# CONTROLLER images are versioned independently of the flux2 DISTRIBUTION — Flux
+# 2.9 ships source-controller v1.9.x (NOT v2.9). `flux install` is itself
+# idempotent (server-side apply of unchanged manifests), so even without this skip
+# a re-run is a no-op; the check just avoids the needless apply.
 sc_img="$($KUBECTL -n flux-system get deploy source-controller \
   -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
 case "$sc_img" in
-  *:v2.9.*)
-    echo "flux-2-9-bump: flux controllers already on the v2.9 distribution (${sc_img}) — nothing to do."
+  *:v1.9.*)
+    echo "flux-2-9-bump: flux controllers already on the v2.9 distribution (source-controller ${sc_img}) — nothing to do."
     exit 0 ;;
 esac
 

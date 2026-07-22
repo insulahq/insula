@@ -25,11 +25,16 @@ set -euo pipefail
 # platform issues exclusively via ACME ClusterIssuers (http01 + dns01/Cloudflare)
 # — no serviceAccountRef anywhere in k8s/ — so the removal is a no-op for us.
 #
-# WHY --reuse-values (not --set): the release carries bootstrap-computed values.
-# A bare `helm upgrade --version` WITHOUT --reuse-values resets them to chart
-# defaults. --reuse-values carries the prior release's values forward and only
-# swaps the chart version. The cert-manager chart carries crds.enabled=true, so
-# `helm upgrade` rolls the CRDs with the release (no separate CRD apply needed).
+# WHY --reset-then-reuse-values (NOT --reuse-values): the v1.21 chart tightened its
+# values SCHEMA — it removed `prometheus.podmonitor.path` and
+# `prometheus.servicemonitor.{targetPort,path}`, which are v1.20 chart DEFAULTS.
+# Plain --reuse-values carries the *fully-computed* prior values (user + old chart
+# defaults) forward, so those now-invalid keys fail v1.21 schema validation
+# ("additional properties 'path' not allowed"). --reset-then-reuse-values resets to
+# the NEW chart's defaults and re-applies only the USER-supplied values (bootstrap
+# sets just crds.enabled=true + prometheus.enabled=true), dropping the stale chart
+# defaults. Requires helm >= 3.14 (nodes ship 3.21). The chart carries
+# crds.enabled=true, so `helm upgrade` rolls the CRDs with the release.
 #
 # Blast radius (documented, by design): the controller/webhook/cainjector
 # Deployments roll (RollingUpdate); brief in-flight certificate reconciliation
@@ -74,11 +79,11 @@ if [ "$cur" = "$TARGET_CHART" ]; then
   exit 0
 fi
 
-echo "cert-manager-1-21-bump: upgrading cert-manager chart ${cur} -> ${TARGET_CHART} (--reuse-values) ..."
+echo "cert-manager-1-21-bump: upgrading cert-manager chart ${cur} -> ${TARGET_CHART} (--reset-then-reuse-values) ..."
 "$HELM" upgrade cert-manager jetstack/cert-manager \
   --namespace cert-manager \
   --version "$TARGET_CHART" \
-  --reuse-values \
+  --reset-then-reuse-values \
   --wait \
   --timeout 300s
 
