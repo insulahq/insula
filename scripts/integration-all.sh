@@ -270,6 +270,11 @@ PARALLEL=(
   # pod-admission by the quota (not a sync 4xx). Disposable tenant, trap cleanup.
   # Uses SSH kubectl (SSH_HOST from integration.env). Staging-validated 10/10. ~2 min.
   "burstable-qos:integration-burstable-qos.sh"
+  # Resource-monitoring / monthly-bandwidth E2E (2026-07): plan bandwidth setting
+  # + override, node-cpu SLO rules, bandwidth/saturation notification categories,
+  # and the cap-enforcement redirect Middleware (inject on cap, remove on uncap)
+  # on a disposable tenant's live IngressRoute. Self-provisions + trap cleanup.
+  "bandwidth:integration-bandwidth-e2e.sh"
   # Platform-driven webmail E2E: provision tenant→domain→email→mailbox, mint the
   # webmail token, follow the SSO URL, and (bulwark) run the SPA-equivalent JMAP
   # probe — the real "open webmail as a tenant" path incl. master-user
