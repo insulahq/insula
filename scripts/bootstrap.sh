@@ -250,8 +250,8 @@ PLATFORM_DOMAIN=""
 STALWART_MASTER_DOMAIN="local.host"
 K3S_SERVER_IP=""
 K3S_TOKEN=""
-K3S_VERSION="v1.35.5+k3s1"
-CALICO_VERSION="v3.31.6"
+K3S_VERSION="v1.36.2+k3s1"
+CALICO_VERSION="v3.32.1"
 
 # Pod CIDR — passed to k3s as --cluster-cidr and used in the firewall
 # allow-list so pods can reach the host's control-plane ports via
@@ -356,7 +356,7 @@ DRY_RUN=false
 #   2. All Helm chart versions are published at their respective repos
 #   3. Run `kubectl kustomize` on all overlays + redeploy staging before prod
 # Latest-stable checks done against GitHub releases for each project.
-LONGHORN_VERSION="v1.11.1"               # 2026-03-13
+LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) so the v1.12 V2-backing-image removal is a no-op here
 # Flux CLI + controllers (flux install deploys controller versions
 # matching the CLI). Pinned 2026-06-12 — the GitOps engine was the
 # LAST unpinned core component: every bootstrap silently took whatever
@@ -364,7 +364,7 @@ LONGHORN_VERSION="v1.11.1"               # 2026-03-13
 # week apart could run different reconciler behaviour (R15 lesson —
 # unpinned drift is how the ssa-policy surprise class happens).
 # Latest stable at pin time: v2.8.8 (2026-05-20).
-FLUX_VERSION="2.8.8"
+FLUX_VERSION="2.9.2"
 TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
 # Traefik plugin catalog refs. install_traefik wires these into the
 # `experimental.plugins.<name>.{moduleName,version}` helm values so the
@@ -393,7 +393,7 @@ MODSECURITY_PLUGIN_VERSION="v1.6.0"
 CORAZA_PLUGIN_MODULE=""
 CORAZA_PLUGIN_VERSION=""
 CERT_MANAGER_CHART_VERSION="v1.21.0"     # 2026-07; ARI + security hardening. The v1.21 chart drops the default tokenrequest RBAC — safe here: our ClusterIssuers are ACME http01/dns01 only (no serviceAccountRef/ambient). Prior: v1.20.3 fixed GHSA-8rvj-mm4h-c258 (ACME solver priv-esc)
-SEALED_SECRETS_CHART_VERSION="2.18.6"    # controller v0.37.0
+SEALED_SECRETS_CHART_VERSION="2.19.1"    # controller v0.38.4
 CNPG_CHART_VERSION="0.29.0"              # CloudNative-PG operator v1.30.0 (latest stable; PG 14-18). Bumped from 0.28.3/v1.29.1: 1.30.0 fixes the barman-cloud WAL-archiver plugin-roll deadlock on the HA switchover path (cnpg#11032/#11059) but does NOT fix the single-instance (instances:1) system-db wedge — that CNPG limitation is reported upstream + tracked separately (node-pin / HA). So this is version hygiene + a partial mitigation, not the wedge fix.
 SKIP_CNPG=false                          # --skip-cnpg flag sets this
 ACME_EMAIL=""

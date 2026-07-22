@@ -57,7 +57,7 @@ components:
     name: k3s (Kubernetes distribution / kube-apiserver, kubelet, etcd, kube-proxy)
     tier: "0"
     kind: binary
-    pinned: "v1.35.5+k3s1"
+    pinned: "v1.36.2+k3s1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: k3s-io/k3s, advisories: kubernetes/kubernetes }
@@ -73,7 +73,7 @@ components:
     name: Calico CNI (network policy + WireGuard)
     tier: "0"
     kind: binary
-    pinned: "v3.31.6"
+    pinned: "v3.32.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: projectcalico/calico, advisories: projectcalico/calico }
@@ -151,8 +151,8 @@ components:
     name: Sealed Secrets controller (secret-at-rest decryption)
     tier: "0"
     kind: chart
-    pinned: "2.18.6"
-    app_version: "v0.36.6"
+    pinned: "2.19.1"
+    app_version: "v0.38.4"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: bitnami-labs/sealed-secrets, advisories: bitnami-labs/sealed-secrets }
@@ -317,7 +317,7 @@ components:
     name: Longhorn (distributed block storage — all PVs)
     tier: "1"
     kind: chart
-    pinned: "v1.11.1"
+    pinned: "v1.12.0"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: longhorn/longhorn, advisories: longhorn/longhorn }
@@ -329,7 +329,7 @@ components:
     name: Flux v2 (GitOps reconciler — supply chain)
     tier: "1"
     kind: binary
-    pinned: "2.8.8"
+    pinned: "2.9.2"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: fluxcd/flux2, advisories: fluxcd/flux2 }

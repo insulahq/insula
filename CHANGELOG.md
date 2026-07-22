@@ -112,6 +112,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   "unknown" on staging/production.
 
 ### BREAKING
+- **k3s upgraded `v1.35.5+k3s1 → v1.36.2+k3s1` (Kubernetes 1.36).** Existing
+  clusters roll through `platform-ops cluster upgrade` (system-upgrade-controller
+  Plans, one sequential minor — the Plan generator refuses skip-a-minor/downgrade).
+  The upgrade pre-flight surfaces this entry and **requires acknowledgment before
+  draining any node**. Kubernetes 1.36 removes long-deprecated beta APIs; the
+  platform's manifests use current stable apiVersions (nothing in `k8s/` references
+  a removed API), and k3s runs with `--disable=traefik` so the bundled-Traefik
+  chart change in the k3s release notes does not apply. Node drains are sequential
+  (cordon → drain → upgrade → uncordon); a single-node cluster sees a brief
+  control-plane pause (see the k3s minor-upgrade downtime target).
 - **Tenant SFTP is reachable for the first time — new host, new port, FTPS
   removed.** Tenant file upload never worked on any real deployment: the
   gateway Service was `type: LoadBalancer`, but bootstrap runs k3s with
@@ -343,6 +353,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `2026.7.1/0004` (`helm upgrade --reuse-values`). The v1.21 chart drops the
   default `tokenrequest` RBAC, which is a no-op here (our ClusterIssuers are ACME
   http01/dns01 only — no `serviceAccountRef`).
+- **Component-watch drift sweep — infra tranche (ADR-050).** The guarded
+  bootstrap-pinned infra components, each reaching existing clusters via a
+  host-migration under `platform/host-migrations/2026.7.1/` (verified on staging
+  via RC before promotion): **sealed-secrets chart `2.18.6 → 2.19.1`** (controller
+  `v0.37.0 → v0.38.4`; `0005`, `helm upgrade --reuse-values`), **Calico
+  `v3.31.6 → v3.32.1`** (`0006`, re-applies the tigera-operator manifest; operator
+  rolls calico-node), **Longhorn `v1.11.1 → v1.12.0`** (`0007`, `helm upgrade
+  --reuse-values`; v1.12 removes V2/SPDK backing images — a no-op here, this
+  platform runs the default V1 engine only), and **Flux `2.8.8 → 2.9.2`** (`0008`,
+  pins the CLI + `flux install`; Flux 2.9 drops EOL beta CRD apiVersions — a no-op
+  here, all our objects use `*.toolkit.fluxcd.io/v1`; min-k8s `>= 1.35.0` is met by
+  our current k3s so there is no ordering dependency on the k3s bump). **k3s
+  `v1.35.5+k3s1 → v1.36.2+k3s1`** ships as a pin only — existing clusters upgrade
+  through `platform-ops cluster upgrade` (system-upgrade-controller Plans, one
+  minor step), not a host-migration; see BREAKING below.
 - **Integration-test sprawl cleanup + coverage guard.** An audit found 33 of 71
   `scripts/integration-*.sh` wired into no orchestrator — ~half the E2E suite never
   ran and **8 scripts had bit-rotted** (testing removed routes: `mail/node-selector`,
