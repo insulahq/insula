@@ -24,6 +24,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
 import { notifyAdminNodeDown } from '../notifications/events.js';
+import { readNodeDiskStats } from './kubelet-disk.js';
 import {
   buildEntry,
   computeClusterBaseline,
@@ -113,6 +114,16 @@ export async function reconcileNodeHealth(
   }
 
   // ── 3. Build NodeFacts for each node ────────────────────────────
+  // Phase 1b: read root-fs fill % per node from kubelet /stats/summary so the
+  // 75/90 % thresholds (service.ts) fire BEFORE the kernel raises DiskPressure
+  // (~88% in the 2026-05-08 incident). Best-effort: a node absent from the map
+  // stays diskUsedPct:null ("unknown"), never a false alert. ~250 ms/node over a
+  // 5-min tick, so the roundtrip cost is immaterial.
+  const nodeNames = (nodeList.items ?? [])
+    .map((n) => n.metadata?.name)
+    .filter((name): name is string => Boolean(name));
+  const diskPctByNode = await readNodeDiskStats(nodeNames);
+
   const facts: NodeFacts[] = [];
   for (const n of nodeList.items ?? []) {
     const name = n.metadata?.name;
@@ -129,13 +140,7 @@ export async function reconcileNodeHealth(
       pidPressure: cond('PIDPressure'),
       csiDrivers: csiByNode.get(name) ?? [],
       evictionsLastHour: evictionsByNode.get(name) ?? 0,
-      // Phase-1 ships without kubelet /stats/summary integration —
-      // it requires nodes/proxy roundtrips (one per node, ~250ms each)
-      // which would dominate tick cost. The kubelet-reported
-      // DiskPressure flag covers the high-impact case (the
-      // 2026-05-08 incident hit DiskPressure=True at ~88%; we'd
-      // alert on that regardless). We can extend in a follow-up.
-      diskUsedPct: null,
+      diskUsedPct: diskPctByNode.get(name) ?? null,
     });
   }
 

@@ -106,6 +106,8 @@ export const storageTypeEnum = pgEnum('storage_type', ['ssh', 's3', 'cifs']);
 export const backupTypeEnum = pgEnum('backup_type', ['auto', 'manual', 'scheduled']);
 export const backupStatusEnum = pgEnum('backup_status', ['pending', 'in_progress', 'completed', 'failed']);
 export const metricTypeEnum = pgEnum('metric_type', ['cpu_cores', 'memory_gb', 'storage_gb', 'bandwidth_gb']);
+/** Phase 2 rollup resolution: hourly rows kept 30d, folded to daily kept 1y. */
+export const usageResolutionEnum = pgEnum('usage_resolution', ['hourly', 'daily']);
 export const cronJobTypeEnum = pgEnum('cron_job_type', ['webcron', 'deployment']);
 export const httpMethodEnum = pgEnum('http_method', ['GET', 'POST', 'PUT']);
 export const lastRunStatusEnum = pgEnum('last_run_status', ['success', 'failed', 'running']);
@@ -924,12 +926,20 @@ export const usageMetrics = pgTable('usage_metrics', {
     .references(() => tenants.id, { onDelete: 'cascade' }),
   metricType: metricTypeEnum().notNull(),
   deploymentId: varchar('deployment_id', { length: 36 }),
-  value: numeric('value', { precision: 10, scale: 4 }).notNull(),
+  value: numeric('value', { precision: 14, scale: 4 }).notNull(),
+  // Phase 2: bucketed rollups. Rows are tenant-aggregate (deploymentId null);
+  // one per (tenant, metricType, resolution, bucket-start).
+  resolution: usageResolutionEnum().notNull().default('hourly'),
   measurementTimestamp: timestamp('measurement_timestamp').notNull().defaultNow(),
 }, (table) => [
   index('usage_metrics_tenant_idx').on(table.tenantId),
   index('usage_metrics_type_idx').on(table.metricType),
   index('usage_metrics_ts_idx').on(table.measurementTimestamp),
+  // Upsert target for the hourly writer + daily fold. Aggregate rows only
+  // (deploymentId null), so it need not include deploymentId.
+  uniqueIndex('usage_metrics_bucket_uniq').on(
+    table.tenantId, table.metricType, table.resolution, table.measurementTimestamp,
+  ),
 ]);
 
 
