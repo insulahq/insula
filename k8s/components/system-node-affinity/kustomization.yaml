@@ -52,8 +52,12 @@ patches:
   # redis was removed in M14 (replaced by per-pod lru-cache).
 
   # ── platform-system namespace ─────────────────────────────────────
-  - target: { kind: Deployment, name: sftp-gateway, namespace: platform-system }
-    path: affinity-patch.yaml
+  # sftp-gateway is a DaemonSet (files.<apex>:23022 hostPort per server) with
+  # its own inline nodeSelector (insula.host/node-role=server in
+  # k8s/base/sftp-gateway.yaml), so it self-manages server placement and does
+  # not use this shared Deployment-targeted component. A patch here targeting
+  # `kind: Deployment, name: sftp-gateway` matched nothing (a dead no-op) and
+  # was removed; ci-system-affinity-check.sh likewise excludes it.
 
   # ── mail namespace ────────────────────────────────────────────────
   - target: { kind: Deployment, name: roundcube, namespace: mail }
