@@ -33,7 +33,12 @@ WORKLOADS=(
   "platform|Deployment|tenant-panel|0"
   "platform|Deployment|platform-suspended|0"
   "platform|Deployment|oauth2-proxy|0"
-  "platform-system|Deployment|sftp-gateway|0"
+  # sftp-gateway is intentionally NOT listed: it's a DaemonSet
+  # (files.<apex>:23022 hostPort per server, k8s/base/sftp-gateway.yaml), not a
+  # Deployment/StatefulSet using the shared system-node-affinity component. It
+  # pins to server nodes via its OWN inline nodeSelector
+  # (insula.host/node-role=server), so it self-manages placement — this
+  # Deployment+nodeAffinity guardrail doesn't apply to it.
   # stalwart-mail + dex are overlay-specific — only in staging for now.
   # Cut 3 (2026-05-04): the v015 StatefulSet `stalwart-mail` was retired;
   # the v016 Deployment `stalwart-mail` replaces it.
