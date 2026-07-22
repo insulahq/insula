@@ -17,5 +17,8 @@ ALTER TABLE usage_metrics ADD COLUMN IF NOT EXISTS resolution usage_resolution N
 
 -- Upsert target for the hourly writer + daily fold. Rollup rows are
 -- tenant-aggregate (deployment_id NULL), so the key omits deployment_id.
+-- NB: the enum column is "metricType" (camelCase — only tenant_id/deployment_id/
+-- measurement_timestamp were explicitly snake_cased in the Drizzle schema), so it
+-- MUST be double-quoted here or Postgres folds it to a non-existent metric_type.
 CREATE UNIQUE INDEX IF NOT EXISTS usage_metrics_bucket_uniq
-  ON usage_metrics (tenant_id, metric_type, resolution, measurement_timestamp);
+  ON usage_metrics (tenant_id, "metricType", resolution, measurement_timestamp);

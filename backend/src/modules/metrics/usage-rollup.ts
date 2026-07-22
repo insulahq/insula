@@ -100,15 +100,17 @@ export async function recordHourlyUsage(
 export async function reapUsageMetrics(db: Database, now: Date = new Date()): Promise<void> {
   const { hourlyCutoff, dailyCutoff } = reapCutoffs(now);
   await db.transaction(async (tx) => {
+    // NB: the enum column is "metricType" (camelCase in the Drizzle schema) — it
+    // must be double-quoted in raw SQL or Postgres folds it to metric_type.
     await tx.execute(sql`
-      INSERT INTO usage_metrics (id, tenant_id, metric_type, resolution, measurement_timestamp, value)
-      SELECT gen_random_uuid(), tenant_id, metric_type, 'daily'::usage_resolution,
+      INSERT INTO usage_metrics (id, tenant_id, "metricType", resolution, measurement_timestamp, value)
+      SELECT gen_random_uuid(), tenant_id, "metricType", 'daily'::usage_resolution,
              date_trunc('day', measurement_timestamp),
-             CASE WHEN metric_type = 'bandwidth_gb' THEN sum(value) ELSE max(value) END
+             CASE WHEN "metricType" = 'bandwidth_gb' THEN sum(value) ELSE max(value) END
       FROM usage_metrics
       WHERE resolution = 'hourly' AND measurement_timestamp < ${hourlyCutoff}
-      GROUP BY tenant_id, metric_type, date_trunc('day', measurement_timestamp)
-      ON CONFLICT (tenant_id, metric_type, resolution, measurement_timestamp)
+      GROUP BY tenant_id, "metricType", date_trunc('day', measurement_timestamp)
+      ON CONFLICT (tenant_id, "metricType", resolution, measurement_timestamp)
       DO UPDATE SET value = excluded.value
     `);
     await tx.execute(sql`
