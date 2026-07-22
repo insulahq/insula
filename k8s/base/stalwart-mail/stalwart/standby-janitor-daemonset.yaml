@@ -70,7 +70,7 @@ spec:
                     cleaned=$((cleaned + 1))
                   else
                     age_days=$(( ( $(date +%s) - $(stat -c %Y "$d") ) / 86400 ))
-                    echo "[janitor] keeping $d (${age_days}d old, within 48h recovery window)"
+                    echo "[janitor] keeping $d ($${age_days}d old, within 48h recovery window)"
                   fi
                 done
                 echo "[janitor] done — found=$found cleaned=$cleaned, sleeping 6h"

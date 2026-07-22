@@ -161,11 +161,12 @@ spec:
               # the operator knowing.
               #
               # $$ ESCAPING: Bulwark's manifest goes through Flux
-              # postBuild substituteFrom. Plain ${VAR} gets substituted
-              # away (live bug observed 2026-05-25 — age + limit
-              # appeared as empty in the rejection log). Double-$$
-              # tells Flux to emit a literal $; the shell sees $VAR
-              # at runtime.
+              # postBuild substituteFrom, which in Flux 2.9 runs envsubst
+              # in STRICT mode. A plain dollar-brace reference gets
+              # substituted away and, if unknown, hard-fails the build
+              # (live bug observed 2026-05-25 — age + limit appeared as
+              # empty in the rejection log). Double-$$ tells Flux to emit
+              # a literal dollar; the shell sees the reference at runtime.
               STANDBY_MAX_AGE_SECONDS=$${FAST_PATH_MAX_AGE_SECONDS:-1800}
               standby_age_ok=true
               if [ -f "$$STANDBY_COMPLETE" ]; then
