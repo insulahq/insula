@@ -18,8 +18,15 @@ set -euo pipefail
 #     No breaking chart changes (minor bump). The controller decrypts the same
 #     SealedSecrets; sealing keys are untouched.
 #
-# WHY --reuse-values: the release carries `fullnameOverride=sealed-secrets-controller`
-# from bootstrap. --reuse-values carries it forward and only swaps the chart version.
+# WHY --reset-then-reuse-values + --force-update: (1) clusters bootstrapped before
+# the repo URL was corrected have `sealed-secrets` pointing at the stale
+# `bitnami-LABS.github.io` mirror (stuck at 2.18.6); a plain `helm repo add` is a
+# no-op when the name already exists, so `--force-update` is required to repoint it
+# to `bitnami.github.io` (which serves 2.19.1). (2) --reset-then-reuse-values is
+# defensive against chart-schema tightening (same class as cert-manager 0004): it
+# resets to the new chart defaults and re-applies only the USER value
+# (fullnameOverride=sealed-secrets-controller), which bootstrap sets. Requires helm
+# >= 3.14 (nodes ship 3.21).
 
 # --- resolve an ADMIN kubeconfig (control-plane only; helm needs cluster-admin) ---
 if [ -r /etc/rancher/k3s/k3s.yaml ]; then
@@ -39,7 +46,7 @@ done
 TARGET_CHART="2.19.1"
 
 # Add/refresh the upstream chart repo (idempotent). Mirrors scripts/bootstrap.sh.
-"$HELM" repo add sealed-secrets https://bitnami.github.io/sealed-secrets 2>/dev/null || true
+"$HELM" repo add sealed-secrets https://bitnami.github.io/sealed-secrets --force-update 2>/dev/null || true
 "$HELM" repo update sealed-secrets >/dev/null 2>&1 || "$HELM" repo update >/dev/null 2>&1 || true
 
 # Deployed chart version for release 'sealed-secrets' in kube-system, or "" if absent.
@@ -59,11 +66,11 @@ if [ "$cur" = "$TARGET_CHART" ]; then
   exit 0
 fi
 
-echo "sealed-secrets-2-19-bump: upgrading sealed-secrets chart ${cur} -> ${TARGET_CHART} (--reuse-values) ..."
+echo "sealed-secrets-2-19-bump: upgrading sealed-secrets chart ${cur} -> ${TARGET_CHART} (--reset-then-reuse-values) ..."
 "$HELM" upgrade sealed-secrets sealed-secrets/sealed-secrets \
   --namespace kube-system \
   --version "$TARGET_CHART" \
-  --reuse-values \
+  --reset-then-reuse-values \
   --wait \
   --timeout 300s
 
