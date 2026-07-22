@@ -1651,7 +1651,7 @@ install_age_if_missing() {
     aarch64|arm64) arch="arm64" ;;
     *) error "install_age_if_missing: unsupported arch '$(uname -m)'" ;;
   esac
-  local age_ver="v1.2.1"
+  local age_ver="v1.3.1"
   local url="https://github.com/FiloSottile/age/releases/download/${age_ver}/age-${age_ver}-linux-${arch}.tar.gz"
   log "  age package not available — installing static binary ${age_ver}/${arch} from upstream..."
   local tmpdir
@@ -1685,9 +1685,9 @@ install_rclone_if_missing() {
     *) error "install_rclone_if_missing: unsupported arch '$(uname -m)'" ;;
   esac
   # Pinned to the same line the backup-rclone-shim DaemonSet runs
-  # (rclone/rclone:1.74.1) so host-side restore and pod-side upload speak an
+  # (rclone/rclone:1.74.4) so host-side restore and pod-side upload speak an
   # identical rclone. Bump both together.
-  local rclone_ver="v1.74.1"
+  local rclone_ver="v1.74.4"
   local base="rclone-${rclone_ver}-linux-${arch}"
   local url="https://github.com/rclone/rclone/releases/download/${rclone_ver}/${base}.zip"
   log "  rclone package not available — installing static binary ${rclone_ver}/${arch} from upstream..."

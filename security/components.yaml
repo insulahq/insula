@@ -467,7 +467,7 @@ components:
     name: rclone (host binary installed by bootstrap.sh)
     tier: "1"
     kind: binary
-    pinned: "v1.74.1"
+    pinned: "v1.74.4"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     repos: [rclone/rclone]
@@ -596,7 +596,7 @@ components:
     name: age (secrets-bundle encryption tool)
     tier: "1"
     kind: binary
-    pinned: "v1.2.1"
+    pinned: "v1.3.1"
     pin_source: scripts/bootstrap.sh
     pin_check: true
     watch: { type: github_releases, repo: FiloSottile/age, advisories: FiloSottile/age }
