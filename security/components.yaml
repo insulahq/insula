@@ -138,7 +138,7 @@ components:
     name: Stalwart mail server (SMTP/IMAP/JMAP)
     tier: "0"
     kind: image
-    pinned: "v0.16.12"
+    pinned: "v0.16.14"
     pin_source: k8s/base/stalwart-mail/stalwart/deployment.yaml
     pin_check: true
     repos: [stalwartlabs/stalwart]
@@ -190,7 +190,7 @@ components:
     name: OWASP ModSecurity Core Rule Set (WAF sidecar)
     tier: "0"
     kind: image
-    pinned: "4.25.0-nginx-alpine-202605200705"
+    pinned: "4.28.0-nginx-alpine-202607160307"
     pin_source: k8s/base/modsecurity-crs/deployment.yaml
     pin_check: true
     repos: [owasp/modsecurity-crs]
@@ -273,7 +273,7 @@ components:
     name: Bulwark webmail (JMAP-native SPA)
     tier: "0"
     kind: image
-    pinned: "sha256:fa41d82ce5a4331241d501bb9a3f83c554bd647ce6ef17e3055daaa860a00470"
+    pinned: "sha256:8c93a6af6abf1b0e6595015dd8236ad83c4cbb2a1dce51966deaecb4d93ffeea"
     pin_source: k8s/base/bulwark/deployment.yaml
     pin_check: true
     repos: [bulwarkmail/webmail]
@@ -286,7 +286,7 @@ components:
     name: Roundcube webmail
     tier: "0"
     kind: image
-    pinned: "sha256:6f52dff5624c7dc887cea389d58e1cd47f9eb4707e14ff68a01ffbc55df7dbfd"
+    pinned: "sha256:65a14c31e1a4897855aeec89b6af231f6de87d88b95d6cc6f83002766f650938"
     pin_source: k8s/base/roundcube/deployment.yaml
     pin_check: true
     repos: [roundcube/roundcubemail]
@@ -346,7 +346,7 @@ components:
     name: VictoriaMetrics vmsingle (metrics TSDB + scraper + VMUI)
     tier: "1"
     kind: image
-    pinned: "v1.147.0"
+    pinned: "v1.148.0"
     pin_source: k8s/base/monitoring/vmsingle.yaml
     pin_check: true
     repos: [victoriametrics/victoria-metrics]
@@ -429,7 +429,7 @@ components:
     name: frp / frps (reverse-tunnel server + client binary)
     tier: "1"
     kind: image
-    pinned: "v0.69.1"
+    pinned: "v0.70.0"
     pin_source: k8s/base/platform-config.yaml
     pin_check: true
     watch: { type: github_releases, repo: fatedier/frp, advisories: fatedier/frp }
@@ -454,7 +454,7 @@ components:
     name: rclone (upstream binary/image)
     tier: "1"
     kind: image
-    pinned: "1.74.1"
+    pinned: "1.74.4"
     pin_source: k8s/base/backup/etcd-snap-via-shim-cronjob.yaml
     pin_check: true
     repos: [rclone/rclone]
@@ -622,7 +622,7 @@ components:
     name: nginx (suspended-tenant + error pages)
     tier: "2"
     kind: image
-    pinned: "1.30-alpine"
+    pinned: "1.31-alpine"
     pin_source: k8s/base/platform-suspended.yaml
     pin_check: true
     watch: { type: github_releases, repo: nginx/nginx, advisories: nginx/nginx }
@@ -675,7 +675,7 @@ components:
     name: curlimages/curl (probe/init utility)
     tier: "3"
     kind: image
-    pinned: "8.20.0"
+    pinned: "8.21.0"
     pin_source: k8s/base
     pin_check: false
     repos: [curlimages/curl]
