@@ -323,8 +323,11 @@ PARALLEL=(
   # Tenant-bundle restic round-trip (external-tier: soft-skips without S3 egress).
   "tenant-bundles-restic:integration-tenant-bundles-restic.sh"
   # Custom deployments (ADR-036) + private worker — provision workloads.
+  # NB: custom-deployments-phase2 is in SERIAL_POST, NOT here — it toggles the
+  # GLOBAL customDeploymentsEnabled kill-switch, which 403s phase1's concurrent
+  # creates with CUSTOM_DEPLOYMENTS_DISABLED (observed 2026-07-22 isolation run).
+  # The two MUST NOT run in parallel.
   "custom-deployments:integration-custom-deployments.sh"
-  "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
   "private-worker:integration-private-worker.sh"
   # (mailbox-aux moved to opt-in — it needs node-side seed files /tmp/mpw +
   #  /tmp/mfqdn that the auto-runner does not create; see the INCLUDE block.)
@@ -350,6 +353,12 @@ SERIAL_POST=(
   #   firewall-blacklist: bans reserved TEST-NET 203.0.113.222, self-lockout
   #     422-guarded, trap-unban. Touches the cluster firewall → serial.
   "firewall-blacklist:integration-firewall-blacklist.sh"
+  #   custom-deployments-phase2: exercises the 6 custom-deployment kill switches
+  #     (customDeploymentsEnabled=false et al.) — GLOBAL system-settings toggles
+  #     restored via EXIT trap. Serial + isolated from the parallel batch's
+  #     custom-deployments (phase1), whose concurrent creates the kill-switch
+  #     would otherwise 403 (CUSTOM_DEPLOYMENTS_DISABLED, 2026-07-22).
+  "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
   #   dr-protocols: offline etcd break-glass READ path over S3/SFTP/CIFS
   #     (never restores etcd). Non-destructive; self-skips without node creds.
   "dr-protocols:integration-dr-protocols.sh"
