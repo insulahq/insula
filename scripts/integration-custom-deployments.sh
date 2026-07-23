@@ -273,23 +273,33 @@ except Exception: pass
   # allowHostPortsWorker is on (to admit hostPort pods), and enforce=baseline
   # when both are off. So derive the expectation from the live global setting
   # rather than hardcoding one — the assertion must hold on any cluster.
-  local host_ports_on expected_enforce enforce
-  host_ports_on=$(api GET "/admin/system-settings" | python3 -c "
+  # The reconciler re-patches every tenant namespace's enforce label on each
+  # allowHostPorts toggle, but a CONCURRENT suite (firewall-e2e flips
+  # allowHostPorts ON for its test, then restores it via an EXIT trap) opens a
+  # transient window where the GLOBAL setting has already changed while THIS
+  # namespace's label has not yet been re-patched. A single read of
+  # (global, ns-label) can catch them mid-flux (2026-07-23 fullrun: got
+  # 'privileged' while the global read 'no'). Poll until the namespace label
+  # AGREES with the LIVE global setting — re-reading BOTH each round so we track
+  # the reconciler to convergence (seconds) — and fail only if they never
+  # reconcile. custom-deployments itself never mutates allowHostPorts.
+  local host_ports_on expected_enforce enforce ok=0
+  for _ in $(seq 1 15); do   # 15 × 3s = 45s
+    host_ports_on=$(api GET "/admin/system-settings" | python3 -c "
 import json,sys
 d=json.load(sys.stdin).get('data',{})
 print('yes' if (d.get('allowHostPortsServer') or d.get('allowHostPortsWorker')) else 'no')
 " 2>/dev/null || echo no)
-  if [[ "$host_ports_on" == "yes" ]]; then
-    expected_enforce="privileged"
-  else
-    expected_enforce="baseline"
-  fi
-  enforce=$(remote_kubectl get ns "$TENANT_NS" \
-    -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null || true)
-  if [[ "$enforce" == "$expected_enforce" ]]; then
+    [[ "$host_ports_on" == "yes" ]] && expected_enforce="privileged" || expected_enforce="baseline"
+    enforce=$(remote_kubectl get ns "$TENANT_NS" \
+      -o jsonpath='{.metadata.labels.pod-security\.kubernetes\.io/enforce}' 2>/dev/null || true)
+    [[ "$enforce" == "$expected_enforce" ]] && { ok=1; break; }
+    sleep 3
+  done
+  if [[ "$ok" == "1" ]]; then
     pass "Namespace PSS enforce=$enforce matches global allowHostPorts=$host_ports_on (PR-1)"
   else
-    fail "Namespace PSS enforce mismatch (got '$enforce', expected '$expected_enforce' for allowHostPorts=$host_ports_on)"
+    fail "Namespace PSS enforce mismatch (got '$enforce', expected '$expected_enforce' for allowHostPorts=$host_ports_on) — did NOT reconcile within 45s"
   fi
 }
 
