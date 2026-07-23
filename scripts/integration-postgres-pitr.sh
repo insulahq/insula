@@ -473,9 +473,19 @@ if [[ -n "$JOB_NAME" ]]; then
   fi
 
   log "9c) Task-center chip persistence (modal-reopen must render history)"
-  CHIP_ROW=$(psql_ro "SELECT status || '|' || jsonb_array_length(COALESCE(details->'steps','[]'::jsonb)) FROM tasks WHERE ref_id='$JOB_NAME';" || echo "")
-  CHIP_STATUS="${CHIP_ROW%%|*}"
-  CHIP_STEPS_LEN="${CHIP_ROW##*|}"
+  # The task-center chip is finalized to 'succeeded' by an ASYNC finishByRef that
+  # commits shortly AFTER the orchestration status endpoint reports done — so POLL
+  # rather than single-shot. Observed 2026-07-22: a single immediate read returned
+  # an empty row (chip not yet inserted), while the DB showed status='succeeded'
+  # seconds later. The backend is correct; only the read was too eager.
+  CHIP_ROW=""; CHIP_STATUS=""; CHIP_STEPS_LEN=0
+  for _ in $(seq 1 24); do   # 24 × 5s = 2 min
+    CHIP_ROW=$(psql_ro "SELECT status || '|' || jsonb_array_length(COALESCE(details->'steps','[]'::jsonb)) FROM tasks WHERE ref_id='$JOB_NAME';" || echo "")
+    CHIP_STATUS="${CHIP_ROW%%|*}"
+    CHIP_STEPS_LEN="${CHIP_ROW##*|}"
+    [[ "$CHIP_STATUS" = "succeeded" ]] && break
+    sleep 5
+  done
   echo "  chip: status=$CHIP_STATUS steps=$CHIP_STEPS_LEN"
   if [[ "$CHIP_STATUS" = "succeeded" ]]; then
     pass "chip.status='succeeded' (finalized via finishByRef)"

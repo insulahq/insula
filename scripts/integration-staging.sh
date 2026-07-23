@@ -2811,10 +2811,12 @@ except Exception as e:
   # Step 9a — reachability (cheap, always runs).
   local wm_http; wm_http=$(curl -sk -o /dev/null -w "%{http_code}" \
     --max-time 15 "$webmail_url" 2>/dev/null || echo "000")
-  if [[ "$wm_http" == "200" || "$wm_http" == "302" || "$wm_http" == "301" ]]; then
+  # Bulwark 1.7.8 307-redirects the SPA root to the locale path (/ → /en);
+  # 301/302/307/308 are all valid "reachable" outcomes for the webmail root.
+  if [[ "$wm_http" == "200" || "$wm_http" == "301" || "$wm_http" == "302" || "$wm_http" == "307" || "$wm_http" == "308" ]]; then
     ok "mail/webmail: $webmail_url responded HTTP $wm_http"
   else
-    fail "mail/webmail: expected 200/302 from $webmail_url, got $wm_http"
+    fail "mail/webmail: expected 200/301/302/307/308 from $webmail_url, got $wm_http"
   fi
 
   # Step 9b — functional login probe, ENGINE-AWARE. Roundcube has the
@@ -3322,11 +3324,15 @@ scenario_webmail() {
 
   # ── 2. Curl reachability with full chain validation (no -k) ──
   local http
+  # The KEY assertion here is ssl_verify_result=0 (real LE chain, not the fake
+  # ingress cert). The HTTP code may be 200 OR a redirect — Bulwark 1.7.8 307s
+  # the root to /en and ignores Roundcube's ?_task=login query. Accept any
+  # success/redirect code as long as the chain validates.
   http=$(curl -s -m 8 -o /dev/null -w "%{http_code}/%{ssl_verify_result}" "${webmail_url}/?_task=login")
-  if [[ "$http" == "200/0" ]]; then
-    ok "webmail/http: ${webmail_url}/?_task=login → HTTP 200, ssl_verify=0 (chain validates)"
+  if [[ "$http" =~ ^(200|301|302|307|308)/0$ ]]; then
+    ok "webmail/http: ${webmail_url}/?_task=login → HTTP ${http%%/*}, ssl_verify=0 (chain validates)"
   else
-    fail "webmail/http: expected 200/0, got ${http} — fake cert OR HTTP error"
+    fail "webmail/http: expected 200|301|302|307|308 with ssl_verify=0, got ${http} — fake cert OR HTTP error"
   fi
 
   # ── 3. SSL-status endpoint surfaces a webmail row ──

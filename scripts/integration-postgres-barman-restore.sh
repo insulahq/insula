@@ -180,6 +180,30 @@ else
   sleep 10
 fi
 
+# ─── Gate: archiver must cover RECOVERY_TARGET_TIME before we restore ──
+# The target-bounded restore replays WAL up to RECOVERY_TARGET_TIME; that WAL
+# must already be in the OFFSITE archive. Under heavy concurrent load the barman
+# archiver can fall far behind (observed 2026-07-22 full/isolation runs: the
+# source archive stalled ~1h behind while sibling suites hammered the object-store
+# shim, so the restore FATAL'd "recovery ended before configured recovery target
+# was reached"). A fixed sleep is not enough — poll the SOURCE archiver until it
+# has archived a segment AT/AFTER the target, switching WAL each round so an idle
+# DB still advances. Same to_char format on both sides → lexicographic == chrono.
+info "waiting for source archiver to reach recoveryTargetTime=$RECOVERY_TARGET_TIME ..."
+ARCH_OK=0 LAST_ARCH=""
+for _ in $(seq 1 30); do   # 30 × 6s = 3 min
+  flush_wal
+  LAST_ARCH=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -t -A -c \"SELECT to_char(last_archived_time AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"') FROM pg_stat_archiver;\"" 2>/dev/null | tr -d ' ')
+  if [[ -n "$LAST_ARCH" && "$LAST_ARCH" > "$RECOVERY_TARGET_TIME" ]]; then ARCH_OK=1; break; fi
+  sleep 6
+done
+if [[ "$ARCH_OK" == "1" ]]; then
+  pass "source archiver caught up (last_archived=$LAST_ARCH ≥ target) — target is reachable"
+else
+  fail "source archiver did NOT reach target within 3m (last_archived=${LAST_ARCH:-none}, target=$RECOVERY_TARGET_TIME) — WAL archiving is lagging/stalled"
+  exit 1
+fi
+
 # ─── Phase 3 — side-by-side restore ──────────────────────────────────
 hdr "Phase 3 — POST /admin/postgres-barman-restore (side-by-side)"
 NEW_NAME="${CLUSTER_NAME}-restored-e2e-$(date +%s | tail -c 6)"
