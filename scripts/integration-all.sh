@@ -743,9 +743,16 @@ classify_rc() {
 # INTEGRATION_RETRY_FAILED=0 (or it self-skips when there is nothing to retry).
 retry_failed_serially() {
   [[ "${INTEGRATION_RETRY_FAILED:-1}" == "0" ]] && { log "serial retry pass DISABLED (INTEGRATION_RETRY_FAILED=0)"; return 0; }
-  local -a to_retry=() ; local name rc
-  for name in "${!SUITE_RC[@]}"; do
-    rc="${SUITE_RC[$name]}"
+  # Collect failures in GROUP order (SERIAL_PRE → PARALLEL → SERIAL_POST) rather
+  # than SUITE_RC hash order, so the destructive SERIAL_POST suites retry LAST.
+  # postgres-pitr/barman-restore RECREATE system-db (a ~2-3min primary restart);
+  # retrying one BEFORE a sibling 502s that sibling's retry as collateral while
+  # the platform DB is down (observed 2026-07-23: barman-restore's retry cutover
+  # → custom-deployments retry PUT /upgrade-tag → 502). Destructive-last avoids it.
+  local -a to_retry=() ; local name rc e
+  for e in "${SERIAL_PRE[@]:-}" "${PARALLEL[@]:-}" "${SERIAL_POST[@]:-}"; do
+    [[ -z "$e" ]] && continue
+    name="${e%%:*}"; rc="${SUITE_RC[$name]:-0}"
     [[ "$rc" != "0" && "$rc" != "$SKIP_RC" ]] && to_retry+=("$name")
   done
   (( ${#to_retry[@]} )) || return 0
