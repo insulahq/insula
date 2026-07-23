@@ -234,6 +234,21 @@ done
 if ! printf '%s' "$STATE" | grep -qE "ready=[1-9].*phase=Cluster in healthy state"; then
   fail "side-by-side cluster $NEW_NAME did NOT become healthy"
   ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $NEW_NAME" || true
+  # Self-diagnose — the recovery Job pod carries the actual FATAL. The most
+  # common NON-restore cause is a WAL-archive GAP/discontinuity on the SOURCE:
+  # replay stops BEFORE recoveryTargetTime because the WAL chain from the base
+  # backup to the target is broken (source recently recreated, archiving stalled,
+  # or an idle window with no committed WAL up to the target). Surface both so
+  # the failure is attributable at a glance — a "recovery ended before configured
+  # recovery target was reached" FATAL whose "last completed transaction" is far
+  # behind the target == a discontinuous source archive, NOT a broken restore.
+  rp=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get pods -l cnpg.io/cluster=$NEW_NAME -o name 2>/dev/null | grep full-recovery | tail -1")
+  if [[ -n "$rp" ]]; then
+    echo "  ── recovery pod FATAL (why the restore aborted) ──" >&2
+    ssh_cmd "k3s kubectl -n $CLUSTER_NS logs $rp -c full-recovery --tail=25 2>/dev/null | grep -iE 'FATAL|recovery ended|last completed transaction|error while interacting|restore error' | tail -6" >&2 || true
+  fi
+  echo "  ── SOURCE archiver state (a large last_archived_time↔now gap == discontinuous/stale archive) ──" >&2
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -tAc \"SELECT 'archived='||archived_count||' failed='||failed_count||' last_archived_wal='||last_archived_wal||' last_archived_time='||last_archived_time||' now='||now() FROM pg_stat_archiver;\"" >&2 2>/dev/null || true
   exit 1
 fi
 pass "$NEW_NAME healthy after ${i} polls (~$((i*15))s)"
