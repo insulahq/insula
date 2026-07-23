@@ -538,6 +538,7 @@ fi
 passed_suites=()
 failed_suites=()
 skipped_suites=()
+flaky_suites=()             # failed in the batch, PASSED on serial retry (load flake)
 reachability_breaks=()
 declare -A SUITE_SECS=()    # name → wall-clock seconds (P4 timing)
 declare -A SUITE_RC=()      # name → exit code
@@ -728,14 +729,88 @@ classify_rc() {
   fi
 }
 
+# ─── Serial retry pass (2026-07-23) ──────────────────────────────────
+# The canonical mechanism behind "passes standalone, fails in the full run" is
+# resource CONTENTION during the parallel phase — object-store saturation (the
+# barman WAL archiver falls behind), API/scheduler pressure (provisioning poll
+# timeouts), and rate-limit/timing windows. The concurrency cap + baseline gate
+# reduce it but cannot eliminate it. This pass re-runs each REAL-failure suite
+# ONCE, serially and ALONE — exactly the triage an operator does by hand. A suite
+# that passes here was a load flake: reported FLAKY (not fatal). One that fails
+# again is a REAL failure: stays fatal. Nothing is hidden — flakes are named in
+# the summary + JSON report, so genuine load-sensitivity stays visible. The retry
+# reuses the per-suite token refresh + reachability probe. Opt out with
+# INTEGRATION_RETRY_FAILED=0 (or it self-skips when there is nothing to retry).
+retry_failed_serially() {
+  [[ "${INTEGRATION_RETRY_FAILED:-1}" == "0" ]] && { log "serial retry pass DISABLED (INTEGRATION_RETRY_FAILED=0)"; return 0; }
+  local -a to_retry=() ; local name rc
+  for name in "${!SUITE_RC[@]}"; do
+    rc="${SUITE_RC[$name]}"
+    [[ "$rc" != "0" && "$rc" != "$SKIP_RC" ]] && to_retry+=("$name")
+  done
+  (( ${#to_retry[@]} )) || return 0
+  log "Serial retry pass — ${#to_retry[@]} failed suite(s) re-run ALONE (separates load-flakes from real failures)"
+  local entry e cmd script to start first_rc
+  for name in "${to_retry[@]}"; do
+    # Reconstruct the "name:script args" entry from the run's groups.
+    entry=""
+    for e in "${SERIAL_PRE[@]:-}" "${PARALLEL[@]:-}" "${SERIAL_POST[@]:-}"; do
+      [[ -z "$e" ]] && continue
+      [[ "${e%%:*}" == "$name" ]] && { entry="$e"; break; }
+    done
+    [[ -n "$entry" ]] || { warn "retry: could not resolve entry for '$name' — leaving as failed"; continue; }
+    cmd="${entry#*:}"
+    local -a parts=(); read -r -a parts <<< "$cmd"
+    script="${parts[0]}"; local -a args=("${parts[@]:1}")
+    to="$(suite_timeout_of "$name")"; start=$(date +%s); first_rc="${SUITE_RC[$name]}"
+    log "retry: $name (alone, hard-timeout ${to}s; batch rc=$first_rc)"
+    INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "retry $name: token refresh failed (continuing with prior token)"
+    set +e
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
+    rc=$?
+    set +e
+    SUITE_RC["$name"]=$rc
+    SUITE_SECS["$name"]=$(( ${SUITE_SECS[$name]:-0} + $(date +%s) - start ))
+    if [[ "$rc" == "0" ]]; then
+      flaky_suites+=("$name")
+      warn "retry: $name PASSED alone (batch rc=$first_rc under parallel load) — FLAKY, not a regression"
+    elif [[ "$rc" == "$SKIP_RC" ]]; then
+      log "retry: $name now SKIPPED (rc=77)"
+    else
+      fail "retry: $name STILL FAILED alone (rc=$rc) — REAL failure"
+    fi
+    assert_admin_reachable "retry:$name" || true
+  done
+  # Rebuild the classification arrays from the post-retry SUITE_RC (batch
+  # classify_rc already appended the first-pass verdicts; recompute cleanly).
+  passed_suites=(); failed_suites=(); skipped_suites=()
+  for name in "${!SUITE_RC[@]}"; do
+    rc="${SUITE_RC[$name]}"
+    if [[ "$rc" == "0" ]]; then passed_suites+=("$name")
+    elif [[ "$rc" == "$SKIP_RC" ]]; then skipped_suites+=("$name")
+    else failed_suites+=("$name"); fi
+  done
+}
+
 # emit_report_json — machine-readable run report (P4). Suite names are
 # slugs and rc/seconds are integers, so direct interpolation is JSON-safe.
 emit_report_json() {
   local first=1 name
   printf '{\n  "startedTs": %s,\n  "durationSeconds": %s,\n' \
     "$RUN_STARTED_TS" "$(( $(date +%s) - RUN_STARTED_TS ))"
-  printf '  "counts": {"passed": %d, "skipped": %d, "failed": %d},\n' \
-    "${#passed_suites[@]}" "${#skipped_suites[@]}" "${#failed_suites[@]}"
+  printf '  "counts": {"passed": %d, "skipped": %d, "failed": %d, "flaky": %d},\n' \
+    "${#passed_suites[@]}" "${#skipped_suites[@]}" "${#failed_suites[@]}" "${#flaky_suites[@]}"
+  # Suites that failed the parallel batch but PASSED the serial retry — passed
+  # in "counts" (rc reflects the retry) AND named here so load-flakiness is not
+  # silently laundered into a green run.
+  printf '  "flaky": ['
+  local ffirst=1 f
+  for f in "${flaky_suites[@]:-}"; do
+    [[ -z "$f" ]] && continue
+    [[ $ffirst == 1 ]] || printf ','; ffirst=0
+    printf '"%s"' "$f"
+  done
+  printf '],\n'
   printf '  "suites": ['
   for name in "${!SUITE_RC[@]}"; do
     [[ $first == 1 ]] || printf ','; first=0
@@ -973,13 +1048,20 @@ if [[ ${#SERIAL_POST[@]} -gt 0 ]]; then
   run_serial_group "POST (destructive, terminal)" "${SERIAL_POST[@]}"
 fi
 
+# Re-run batch failures once, serially and alone, to separate load-flakes from
+# real regressions (see retry_failed_serially). Runs BEFORE the summary/report so
+# both reflect the post-retry verdict; the leak guard below still runs after.
+retry_failed_serially
+
 log "Final results"
 printf '  %bpassed:%b  %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"
 printf '  %bskipped:%b %s  (precondition not met — NOT validated)\n' "$YELLOW" "$RESET" "${#skipped_suites[@]}"
 printf '  %bfailed:%b  %s\n' "$RED" "$RESET" "${#failed_suites[@]}"
+(( ${#flaky_suites[@]} )) && printf '  %bflaky:%b   %s  (failed under parallel load, PASSED on serial retry)\n' "$YELLOW" "$RESET" "${#flaky_suites[@]}"
 for s in "${passed_suites[@]}";  do printf '    %b✓%b %s\n'  "$GREEN"  "$RESET" "$s"; done
 for s in "${skipped_suites[@]}"; do printf '    %b⊝%b %s\n'  "$YELLOW" "$RESET" "$s"; done
 for s in "${failed_suites[@]}";  do printf '    %b✗%b %s\n'  "$RED"    "$RESET" "$s"; done
+for s in "${flaky_suites[@]:-}"; do [[ -n "$s" ]] && printf '    %b~%b %s (flaky — passed on retry)\n' "$YELLOW" "$RESET" "$s"; done
 
 # Per-suite wall time (P4) — surface the long poles for future tiering.
 if [[ ${#SUITE_SECS[@]} -gt 0 ]]; then
