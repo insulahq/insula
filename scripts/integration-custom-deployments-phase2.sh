@@ -133,6 +133,20 @@ wait_pod_running() {
     if [[ "$phase" == "Running" ]]; then return 0; fi
     sleep 3
   done
+  # Self-diagnose on timeout: is the pod NEVER CREATED (a ResourceQuota rejection
+  # on the ReplicaSet — the tenant's 1 CPU / 1Gi cap — surfaces as a FailedCreate
+  # 'forbidden: exceeded quota' event and NO pod), or CREATED-BUT-STUCK
+  # (Pending/Init/ImagePull)? Surface both so "did not reach Running" is
+  # attributable at a glance rather than a bare timeout.
+  {
+    echo "  ── wait_pod_running TIMEOUT (ns=$ns -l $label_selector, ${deadline}s) ──"
+    echo "     pods matching selector:"
+    remote_kubectl get pods -n "$ns" -l "$label_selector" -o wide 2>/dev/null | sed 's/^/       /' || true
+    echo "     ResourceQuota (used vs hard — if used==hard the ReplicaSet cannot create the pod):"
+    remote_kubectl get resourcequota -n "$ns" -o jsonpath='{range .items[*]}{.metadata.name}: used={.status.used} hard={.status.hard}{"\n"}{end}' 2>/dev/null | sed 's/^/       /' || true
+    echo "     recent quota/create events:"
+    remote_kubectl get events -n "$ns" --sort-by=.lastTimestamp 2>/dev/null | grep -iE 'quota|failedcreate|forbidden|exceeded' | tail -5 | sed 's/^/       /' || true
+  } >&2
   return 1
 }
 
@@ -1437,6 +1451,34 @@ run_group_d() {
   scenario_quota
 }
 
+# Delete every deployment created so far + reset tracking. Called between scenario
+# groups so their deployments don't ACCUMULATE against the tenant ResourceQuota
+# (1 CPU / 1Gi). By group-e, ~10 deployments at 100m/128Mi each exhaust it, so a
+# group-e pod (e.g. T18 multi-port) can't be admitted by the ReplicaSet and never
+# reaches Running — ROOT CAUSE of the 2026-07-23 T18 flake (confirmed: the same
+# multi-port deployment reaches Running in ~17s in a quota-free tenant). Groups are
+# independent (none reuses a prior group's deployment) so draining between them is
+# safe. Failed deletes stay tracked so the EXIT-trap cleanup retries them.
+drain_deployments() {
+  local id keep=() s
+  for id in "${CREATED_IDS[@]:-}"; do
+    [[ -z "$id" ]] && continue
+    s=$(api_status DELETE "/tenants/$TENANT_ID/custom-deployments/$id" "")
+    [[ "$s" == "204" || "$s" == "200" || "$s" == "404" ]] || keep+=("$id")
+  done
+  CREATED_IDS=("${keep[@]}")
+  # The ResourceQuota only releases a deployment's requests once its pods have
+  # fully TERMINATED — a fixed sleep can race a slow graceful shutdown and leave
+  # the next group starved. Poll the tenant NS until its (non-Completed) pods
+  # drain (this tenant is phase2-dedicated during SERIAL_POST), 45s cap.
+  local waited=0 n
+  while (( waited < 45 )); do
+    n=$(remote_kubectl get pods -n "$TENANT_NS" --no-headers 2>/dev/null | grep -vcE 'Completed' || echo 0)
+    [[ "${n:-0}" -le 0 ]] && break
+    sleep 3; waited=$((waited+3))
+  done
+}
+
 case "$GROUP" in
   group-a) run_group_a ;;
   group-b) run_group_b ;;
@@ -1444,10 +1486,10 @@ case "$GROUP" in
   group-d) run_group_d ;;
   group-e) run_group_e ;;
   all)
-    run_group_a
-    run_group_b
-    run_group_c
-    run_group_d
+    run_group_a; drain_deployments
+    run_group_b; drain_deployments
+    run_group_c; drain_deployments
+    run_group_d; drain_deployments
     run_group_e
     ;;
   *)
