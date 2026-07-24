@@ -111,6 +111,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Side effect: the admin panel no longer reports the platform version as
   "unknown" on staging/production.
 
+### Changed
+- **Admin node-terminal is now enabled in PRODUCTION by default** (operator
+  decision 2026-07-24). The old "off until an HA-stickiness path exists" caveat
+  was obsolete: the `wsToken` is validated against the Postgres
+  `node_terminal_sessions` table, so any platform-api replica can serve any
+  session. `bootstrap.sh`, the production overlay, and the runbook now agree;
+  the in-code default stays off (opt-in flag invariant).
+- **Dependency currency sweep ahead of the first stable production release**
+  (resolves all 16 open Dependabot PRs). npm: the 31-package minor/patch group
+  plus majors @fastify/rate-limit 11, nodemailer 9 (closes the
+  GHSA-p6gq-j5cr-w38f ledger entry for real), js-yaml 5 (default imports
+  migrated to named imports — v5's CJS build has no default export — and
+  @types/js-yaml dropped since v5 bundles types), @fastify/swagger-ui 6,
+  @types/node 26. TypeScript 7 is deferred until typescript-eslint supports it
+  (`.github/dependabot.yml` ignore rule documents why). Go images: k8s.io
+  client bumps + `go 1.26.5` directives across all five first-party images,
+  clearing the 100 osv stdlib advisories on component-watch #99 (the two
+  remaining x/crypto-openpgp findings are ledger-waived — the openpgp
+  subpackage is never imported and upstream ships no fixed release). GitHub
+  Actions: setup-node 7, codeql 4, docker login 4 / build-push 7,
+  upload-pages-artifact 5. `images/file-manager` added to the Dependabot gomod
+  watch — it was the one Go image missing from it.
+
 ### BREAKING
 - **k3s upgraded `v1.35.5+k3s1 → v1.36.2+k3s1` (Kubernetes 1.36).** Existing
   clusters roll through `platform-ops cluster upgrade` (system-upgrade-controller
