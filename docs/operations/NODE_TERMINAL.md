@@ -13,16 +13,18 @@ The feature is gated by `platform-config` ConfigMap key
 |--------------|---------|----------------------------------------------|
 | dev          | `true`  | Integration harness needs it on.             |
 | staging      | `true`  | Operators have a break-glass tool on day 1.  |
-| production   | `false` | Opt-in — flip when stickiness is in place.   |
+| production   | `true`  | Operator decision 2026-07-24 — break-glass shell in every env. HA-safe: `wsToken` is validated against the Postgres `node_terminal_sessions` table, so any platform-api replica serves any session (no stickiness config needed). |
 
-Flip on staging/production via the System Settings UI OR:
+To turn it OFF (or back on) in any environment, use the System Settings UI OR:
 
 ```bash
 kubectl -n platform patch configmap platform-config \
-  --type merge -p '{"data":{"node-terminal-enabled":"true"}}'
+  --type merge -p '{"data":{"node-terminal-enabled":"false"}}'
 
-# Roll platform-api so the env var takes effect (~60s)
-kubectl -n platform rollout restart deployment/platform-api
+# Recreate the platform-api pods so the env var takes effect (~60s).
+# (Never `rollout restart` on a Flux-managed cluster — Flux treats the
+# restart annotation as drift and scales the new ReplicaSet to 0.)
+kubectl -n platform delete pod -l app=platform-api
 ```
 
 `bootstrap.sh` writes `node-terminal-enabled` into `platform-config`

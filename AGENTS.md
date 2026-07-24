@@ -299,7 +299,8 @@ filters). Reserved platform subdomains are refused at domain/DNS-record creation
 **Admin node-terminal (ADR-041).** `super_admin`-only one-shot privileged Pod →
 `nsenter`-into-PID-1 host shell on a target node. 30-min step-up freshness gate (OIDC-only users get
 `STEP_UP_UNAVAILABLE 409`); 256-bit single-use 60s `wsToken`. Feature flag `node-terminal-enabled`
-(dev/staging ON, production OFF). CI guard `ci-node-terminal-check.sh` (12 invariants). Runbook:
+(ON in all environments incl. production — operator decision 2026-07-24; HA-safe: `wsToken` is
+validated against the Postgres `node_terminal_sessions` table, so any replica serves any session). CI guard `ci-node-terminal-check.sh` (12 invariants). Runbook:
 `docs/operations/NODE_TERMINAL.md`.
 
 **Security / firewall / node hardening** — `/settings/security-hardening` (super_admin),
