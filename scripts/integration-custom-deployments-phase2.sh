@@ -156,15 +156,26 @@ TOKEN=$(login_token)
 [[ -z "$TOKEN" ]] && { echo "FATAL: admin login failed" >&2; exit 2; }
 info "Admin login OK"
 
+# Tenant isolation (2026-07-24): provision our OWN ephemeral tenant instead of
+# borrowing the first active client — the root of the shared-client churn (T5/T6/T7
+# "concurrent transition" SKIP-EXPECTED) and the quota accumulation. Torn down in
+# cleanup() (cascades its deployments). CUSTOM_DEPLOY_TENANT_ID still overrides.
+OWN_TENANT=0
 TENANT_ID="${CUSTOM_DEPLOY_TENANT_ID:-}"
 if [[ -z "$TENANT_ID" ]]; then
-  TENANT_ID=$(api GET "/tenants?limit=20" | python3 -c "
-import json,sys
-d = json.load(sys.stdin).get('data', [])
-for c in d:
-  if c.get('status') == 'active':
-    print(c['id']); break
-" 2>/dev/null || true)
+  _S=$(date +%s)
+  _PLAN=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(next((p['id'] for p in d if p.get('name')=='Starter'), d[0]['id']))" 2>/dev/null)
+  _REGION=$(api GET "/regions" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null)
+  [[ -z "$_PLAN" || -z "$_REGION" ]] && { echo "FATAL: could not resolve plan/region for own tenant" >&2; exit 2; }
+  TENANT_ID=$(api POST "/tenants" "{\"name\":\"p2-e2e-$_S\",\"primary_email\":\"p2-e2e-$_S@example.test\",\"plan_id\":\"$_PLAN\",\"region_id\":\"$_REGION\"}" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
+  [[ -z "$TENANT_ID" ]] && { echo "FATAL: own-tenant create failed" >&2; exit 2; }
+  OWN_TENANT=1
+  # Early guard until the full cleanup() trap is installed further below.
+  trap '[[ "$OWN_TENANT" == "1" ]] && curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$TENANT_ID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true' EXIT
+  api POST "/admin/tenants/$TENANT_ID/provision" "{}" >/dev/null 2>&1 || true
+  _i=0; while (( _i < 180 )); do case "$(api GET "/tenants/$TENANT_ID")" in *'"status":"active"'*) break;; esac; sleep 4; _i=$((_i+4)); done
+  api GET "/tenants/$TENANT_ID" | grep -q '"status":"active"' || { echo "FATAL: own tenant $TENANT_ID did not reach active" >&2; exit 2; }
+  info "provisioned own tenant $TENANT_ID (p2-e2e-$_S)"
 fi
 [[ -z "$TENANT_ID" ]] && { echo "FATAL: no active client" >&2; exit 2; }
 info "Client: $TENANT_ID"
@@ -226,6 +237,13 @@ cleanup() {
     info "$cnt lingering Phase-2 resources — removing…"
     remote_kubectl delete all,configmap,secret -n "$TENANT_NS" \
       -l "insula.host/e2e-phase2=$STAMP" 2>/dev/null || true
+  fi
+
+  # Delete our own ephemeral tenant (cascades namespace + deployments + quota).
+  # The global kill-switch reset above still runs regardless (those are global).
+  if [[ "${OWN_TENANT:-0}" == "1" ]]; then
+    local ts; ts=$(api_status DELETE "/tenants/$TENANT_ID" "")
+    info "Cleanup: deleted own tenant $TENANT_ID → $ts"
   fi
 
   # Verify defaults restored.

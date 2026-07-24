@@ -119,6 +119,48 @@ if [[ "$PRE_PHASE" != "Cluster in healthy state" ]]; then
 fi
 pass "source cluster healthy"
 
+# ─── Self-sufficiency: take a FRESH base backup before restoring ─────
+# The restore targets NOW() and must replay a continuous WAL chain from the base
+# backup it picks. If it picks a STALE catalog entry (an older timeline, or one
+# preceding an archiving gap left by a prior run), replay stalls with the FATAL
+# "recovery ended before configured recovery target was reached". Triggering a
+# fresh base backup on the CURRENT timeline — seconds before the restore — makes
+# this test self-sufficient: it no longer depends on ambient catalog/archive
+# state. NB `kubectl get backup` resolves to Longhorn's CRD; use the fully
+# qualified CNPG name `backups.postgresql.cnpg.io`.
+hdr "Fresh base backup (clean restore chain)"
+# Prune old self-check Backup CRs first (the backup DATA stays in the object
+# store, governed by retention — deleting the CR never removes archived data).
+ssh_cmd "k3s kubectl -n $CLUSTER_NS get backups.postgresql.cnpg.io -o name 2>/dev/null | grep predr-selfcheck | xargs -r k3s kubectl -n $CLUSTER_NS delete >/dev/null 2>&1" || true
+BK_NAME="predr-selfcheck-$(date +%s | tail -c 7)"
+ssh_cmd "cat <<YAML | k3s kubectl apply -f - >/dev/null 2>&1
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: $BK_NAME
+  namespace: $CLUSTER_NS
+spec:
+  cluster:
+    name: $CLUSTER_NAME
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+    parameters:
+      barmanObjectName: $OBJECT_STORE
+YAML" || true
+BK_PHASE=""
+for _bi in $(seq 1 50); do
+  BK_PHASE=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get backups.postgresql.cnpg.io $BK_NAME -o jsonpath='{.status.phase}' 2>/dev/null" || true)
+  [[ "$BK_PHASE" == "completed" ]] && break
+  [[ "$BK_PHASE" == "failed" ]] && break
+  sleep 6
+done
+if [[ "$BK_PHASE" == "completed" ]]; then
+  pass "fresh base backup $BK_NAME completed on the current timeline — restore chain is clean"
+else
+  fail "fresh base backup did not complete (phase=${BK_PHASE:-none}) — restore may hit a stale/gapped chain"
+fi
+
 CAT_OUT=$(api GET "/api/v1/admin/cnpg-backup-catalogue/$CLUSTER_NS/$OBJECT_STORE")
 CAT_BODY=$(printf '%s' "$CAT_OUT" | sed '$d')
 CAT_CODE=$(printf '%s' "$CAT_OUT" | tail -n1)
