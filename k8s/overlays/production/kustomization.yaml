@@ -1,7 +1,9 @@
-# Production overlay — Flux pull-based deployment from `stable` branch.
+# Production overlay — admin-controlled pull model (ADR-053).
 #
-# Image tags are pinned to semver. The release.yml workflow creates a PR to
-# the `stable` branch with updated tags. Human merges the PR → Flux deploys.
+# Image tags are pinned to semver by cut-release.sh. Production clusters pin
+# Flux's GitRepository to a signed release TAG (never a branch); platform-ops
+# verifies each release on-node (cosign) and re-pins the tag on operator-
+# approved upgrades. There is no `stable` branch.
 #
 # NEVER use :latest here. ADR-053: scripts/cut-release.sh stamps these
 # newTags as part of cutting a release (the 3 platform images → the release
@@ -63,10 +65,12 @@ resources:
 components:
   - ../../components/system-node-affinity
   # Admin-only UIs (Stalwart web-admin, Longhorn, future) MUST be
-  # gated by an auth-gate component. Production currently uses the
-  # cookie-based gate (matches staging); flip to admin-auth-gate-oauth2
-  # when production cuts over to oauth2-proxy. Without one of these
-  # the ci-admin-auth-check.sh guardrail fails the build.
+  # gated by an auth-gate component. Production DEFAULT is the
+  # cookie-based gate (operator decision 2026-07-24; matches staging).
+  # Swapping to admin-auth-gate-oauth2 (oauth2-proxy + an EXTERNAL
+  # OIDC IdP — in-cluster Dex is dev/staging-only) is an optional,
+  # supported configuration, not a pending cutover step. Without one
+  # of these the ci-admin-auth-check.sh guardrail fails the build.
   - ../../components/admin-auth-gate-cookie
 
 patches:
@@ -84,24 +88,24 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "2026.7.1-rc.40"
+    newTag: "2026.6.16"
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "2026.7.1-rc.40"
+    newTag: "2026.6.16"
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "2026.7.1-rc.40"
+    newTag: "2026.6.16"
   # Internal DaemonSet/sidecar images — timestamp-sha tagged by each image's own
   # CI (.github/scripts/pin-image-tag.sh pins them in overlays/development).
   # cut-release.sh snapshots the current development pins here at cut time so the
   # release tag is reproducible (placeholders until the first cut).
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20260622122941-6554a7c"
+    newTag: "20260610095807-ab58b4d"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260624145651-862bae3"
+    newTag: "20260610095843-ab58b4d"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20260622123045-6554a7c"
+    newTag: "20260610095804-ab58b4d"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260622122902-6554a7c"
+    newTag: "20260610095620-ab58b4d"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260720233537-5deaa27"
+    newTag: "20260610095545-ab58b4d"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260715221725-c2c0ad7"
+    newTag: "20260616013149-3c95ecd"

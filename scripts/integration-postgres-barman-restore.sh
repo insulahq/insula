@@ -119,6 +119,48 @@ if [[ "$PRE_PHASE" != "Cluster in healthy state" ]]; then
 fi
 pass "source cluster healthy"
 
+# ─── Self-sufficiency: take a FRESH base backup before restoring ─────
+# The restore targets NOW() and must replay a continuous WAL chain from the base
+# backup it picks. If it picks a STALE catalog entry (an older timeline, or one
+# preceding an archiving gap left by a prior run), replay stalls with the FATAL
+# "recovery ended before configured recovery target was reached". Triggering a
+# fresh base backup on the CURRENT timeline — seconds before the restore — makes
+# this test self-sufficient: it no longer depends on ambient catalog/archive
+# state. NB `kubectl get backup` resolves to Longhorn's CRD; use the fully
+# qualified CNPG name `backups.postgresql.cnpg.io`.
+hdr "Fresh base backup (clean restore chain)"
+# Prune old self-check Backup CRs first (the backup DATA stays in the object
+# store, governed by retention — deleting the CR never removes archived data).
+ssh_cmd "k3s kubectl -n $CLUSTER_NS get backups.postgresql.cnpg.io -o name 2>/dev/null | grep predr-selfcheck | xargs -r k3s kubectl -n $CLUSTER_NS delete >/dev/null 2>&1" || true
+BK_NAME="predr-selfcheck-$(date +%s | tail -c 7)"
+ssh_cmd "cat <<YAML | k3s kubectl apply -f - >/dev/null 2>&1
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: $BK_NAME
+  namespace: $CLUSTER_NS
+spec:
+  cluster:
+    name: $CLUSTER_NAME
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+    parameters:
+      barmanObjectName: $OBJECT_STORE
+YAML" || true
+BK_PHASE=""
+for _bi in $(seq 1 50); do
+  BK_PHASE=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get backups.postgresql.cnpg.io $BK_NAME -o jsonpath='{.status.phase}' 2>/dev/null" || true)
+  [[ "$BK_PHASE" == "completed" ]] && break
+  [[ "$BK_PHASE" == "failed" ]] && break
+  sleep 6
+done
+if [[ "$BK_PHASE" == "completed" ]]; then
+  pass "fresh base backup $BK_NAME completed on the current timeline — restore chain is clean"
+else
+  fail "fresh base backup did not complete (phase=${BK_PHASE:-none}) — restore may hit a stale/gapped chain"
+fi
+
 CAT_OUT=$(api GET "/api/v1/admin/cnpg-backup-catalogue/$CLUSTER_NS/$OBJECT_STORE")
 CAT_BODY=$(printf '%s' "$CAT_OUT" | sed '$d')
 CAT_CODE=$(printf '%s' "$CAT_OUT" | tail -n1)
@@ -180,6 +222,30 @@ else
   sleep 10
 fi
 
+# ─── Gate: archiver must cover RECOVERY_TARGET_TIME before we restore ──
+# The target-bounded restore replays WAL up to RECOVERY_TARGET_TIME; that WAL
+# must already be in the OFFSITE archive. Under heavy concurrent load the barman
+# archiver can fall far behind (observed 2026-07-22 full/isolation runs: the
+# source archive stalled ~1h behind while sibling suites hammered the object-store
+# shim, so the restore FATAL'd "recovery ended before configured recovery target
+# was reached"). A fixed sleep is not enough — poll the SOURCE archiver until it
+# has archived a segment AT/AFTER the target, switching WAL each round so an idle
+# DB still advances. Same to_char format on both sides → lexicographic == chrono.
+info "waiting for source archiver to reach recoveryTargetTime=$RECOVERY_TARGET_TIME ..."
+ARCH_OK=0 LAST_ARCH=""
+for _ in $(seq 1 30); do   # 30 × 6s = 3 min
+  flush_wal
+  LAST_ARCH=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -t -A -c \"SELECT to_char(last_archived_time AT TIME ZONE 'UTC', 'YYYY-MM-DD\\\"T\\\"HH24:MI:SS.US\\\"Z\\\"') FROM pg_stat_archiver;\"" 2>/dev/null | tr -d ' ')
+  if [[ -n "$LAST_ARCH" && "$LAST_ARCH" > "$RECOVERY_TARGET_TIME" ]]; then ARCH_OK=1; break; fi
+  sleep 6
+done
+if [[ "$ARCH_OK" == "1" ]]; then
+  pass "source archiver caught up (last_archived=$LAST_ARCH ≥ target) — target is reachable"
+else
+  fail "source archiver did NOT reach target within 3m (last_archived=${LAST_ARCH:-none}, target=$RECOVERY_TARGET_TIME) — WAL archiving is lagging/stalled"
+  exit 1
+fi
+
 # ─── Phase 3 — side-by-side restore ──────────────────────────────────
 hdr "Phase 3 — POST /admin/postgres-barman-restore (side-by-side)"
 NEW_NAME="${CLUSTER_NAME}-restored-e2e-$(date +%s | tail -c 6)"
@@ -210,6 +276,21 @@ done
 if ! printf '%s' "$STATE" | grep -qE "ready=[1-9].*phase=Cluster in healthy state"; then
   fail "side-by-side cluster $NEW_NAME did NOT become healthy"
   ssh_cmd "k3s kubectl -n $CLUSTER_NS get cluster $NEW_NAME" || true
+  # Self-diagnose — the recovery Job pod carries the actual FATAL. The most
+  # common NON-restore cause is a WAL-archive GAP/discontinuity on the SOURCE:
+  # replay stops BEFORE recoveryTargetTime because the WAL chain from the base
+  # backup to the target is broken (source recently recreated, archiving stalled,
+  # or an idle window with no committed WAL up to the target). Surface both so
+  # the failure is attributable at a glance — a "recovery ended before configured
+  # recovery target was reached" FATAL whose "last completed transaction" is far
+  # behind the target == a discontinuous source archive, NOT a broken restore.
+  rp=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get pods -l cnpg.io/cluster=$NEW_NAME -o name 2>/dev/null | grep full-recovery | tail -1")
+  if [[ -n "$rp" ]]; then
+    echo "  ── recovery pod FATAL (why the restore aborted) ──" >&2
+    ssh_cmd "k3s kubectl -n $CLUSTER_NS logs $rp -c full-recovery --tail=25 2>/dev/null | grep -iE 'FATAL|recovery ended|last completed transaction|error while interacting|restore error' | tail -6" >&2 || true
+  fi
+  echo "  ── SOURCE archiver state (a large last_archived_time↔now gap == discontinuous/stale archive) ──" >&2
+  ssh_cmd "k3s kubectl -n $CLUSTER_NS exec -i $PRE_PRIMARY -c postgres -- psql -U postgres -tAc \"SELECT 'archived='||archived_count||' failed='||failed_count||' last_archived_wal='||last_archived_wal||' last_archived_time='||last_archived_time||' now='||now() FROM pg_stat_archiver;\"" >&2 2>/dev/null || true
   exit 1
 fi
 pass "$NEW_NAME healthy after ${i} polls (~$((i*15))s)"

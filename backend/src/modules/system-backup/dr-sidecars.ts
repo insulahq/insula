@@ -22,12 +22,12 @@
  * travel — operator reconfigures via UI / fresh defaults activate.
  */
 
-import yaml from 'js-yaml';
+import { load as yamlLoad, dump as yamlDump, JSON_SCHEMA as YAML_JSON_SCHEMA, type LoadOptions as YamlLoadOptions } from 'js-yaml';
 // js-yaml 4.x defaults to CORE_SCHEMA which already rejects unsafe
 // tags like !!js/function and !!js/regexp. We pass JSON_SCHEMA
 // explicitly to signal intent and protect against an accidental
 // downgrade to a pre-4.x version that allowed those tags.
-const SAFE_LOAD_OPTS: yaml.LoadOptions = { schema: yaml.JSON_SCHEMA };
+const SAFE_LOAD_OPTS: YamlLoadOptions = { schema: YAML_JSON_SCHEMA };
 import {
   DR_BUNDLE_VERSION,
   drInputsSchema,
@@ -322,7 +322,7 @@ export async function buildDrRows(db: Database): Promise<DrRows> {
 export function serializeDrInputs(inputs: DrInputs): Buffer {
   // YAML for human readability inside the bundle. The exporter still
   // schema-validates first via buildDrInputs.
-  return Buffer.from(yaml.dump(inputs), 'utf8');
+  return Buffer.from(yamlDump(inputs), 'utf8');
 }
 
 export function serializeDrRows(rows: DrRows): Buffer {
@@ -335,7 +335,7 @@ export function serializeDrRows(rows: DrRows): Buffer {
 
 export function parseDrInputs(raw: Buffer | string): DrInputs {
   const text = typeof raw === 'string' ? raw : raw.toString('utf8');
-  const parsed: unknown = yaml.load(text, SAFE_LOAD_OPTS);
+  const parsed: unknown = yamlLoad(text, SAFE_LOAD_OPTS);
   // Version-check BEFORE the full Zod parse so we emit a precise error
   // for forward-incompatible bundles instead of a noisy schema diff.
   const v = (parsed as { drBundleVersion?: unknown })?.drBundleVersion;

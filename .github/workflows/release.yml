@@ -21,7 +21,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -44,21 +44,21 @@ jobs:
           echo "tag matches platform/VERSION: $FILE_VERSION"
 
       # Build all 3 images with semver tag only (no :latest — that's build-deploy.yml's job)
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: backend/Dockerfile
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: frontend/admin-panel/Dockerfile
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
 
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: frontend/tenant-panel/Dockerfile
@@ -71,7 +71,7 @@ jobs:
       # assets that bootstrap.sh fetches + verifies. If COSIGN_PRIVATE_KEY is not
       # set the binaries ship UNSIGNED and the bootstrap auto-install stays
       # dormant (fail-closed) — see scripts/lib/bootstrap-phases.sh.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - run: npm ci

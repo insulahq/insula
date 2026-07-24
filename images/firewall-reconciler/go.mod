@@ -1,12 +1,12 @@
 module github.com/insulahq/insula/firewall-reconciler
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/google/nftables v0.3.0
-	k8s.io/api v0.36.1
-	k8s.io/apimachinery v0.36.1
-	k8s.io/client-go v0.36.1
+	k8s.io/api v0.36.2
+	k8s.io/apimachinery v0.36.2
+	k8s.io/client-go v0.36.2
 )
 
 require (

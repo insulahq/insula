@@ -323,8 +323,11 @@ PARALLEL=(
   # Tenant-bundle restic round-trip (external-tier: soft-skips without S3 egress).
   "tenant-bundles-restic:integration-tenant-bundles-restic.sh"
   # Custom deployments (ADR-036) + private worker — provision workloads.
+  # NB: custom-deployments-phase2 is in SERIAL_POST, NOT here — it toggles the
+  # GLOBAL customDeploymentsEnabled kill-switch, which 403s phase1's concurrent
+  # creates with CUSTOM_DEPLOYMENTS_DISABLED (observed 2026-07-22 isolation run).
+  # The two MUST NOT run in parallel.
   "custom-deployments:integration-custom-deployments.sh"
-  "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
   "private-worker:integration-private-worker.sh"
   # (mailbox-aux moved to opt-in — it needs node-side seed files /tmp/mpw +
   #  /tmp/mfqdn that the auto-runner does not create; see the INCLUDE block.)
@@ -350,6 +353,12 @@ SERIAL_POST=(
   #   firewall-blacklist: bans reserved TEST-NET 203.0.113.222, self-lockout
   #     422-guarded, trap-unban. Touches the cluster firewall → serial.
   "firewall-blacklist:integration-firewall-blacklist.sh"
+  #   custom-deployments-phase2: exercises the 6 custom-deployment kill switches
+  #     (customDeploymentsEnabled=false et al.) — GLOBAL system-settings toggles
+  #     restored via EXIT trap. Serial + isolated from the parallel batch's
+  #     custom-deployments (phase1), whose concurrent creates the kill-switch
+  #     would otherwise 403 (CUSTOM_DEPLOYMENTS_DISABLED, 2026-07-22).
+  "custom-deployments-phase2:integration-custom-deployments-phase2.sh"
   #   dr-protocols: offline etcd break-glass READ path over S3/SFTP/CIFS
   #     (never restores etcd). Non-destructive; self-skips without node creds.
   "dr-protocols:integration-dr-protocols.sh"
@@ -497,6 +506,40 @@ declare -A SUITE_TIMEOUT=(
 )
 suite_tier_of()    { echo "${SUITE_TIER[$1]:-core}"; }
 suite_timeout_of() { echo "${SUITE_TIMEOUT[$1]:-$DEFAULT_SUITE_TIMEOUT}"; }
+
+# ─── isolation contract (2026-07-24) ─────────────────────────────────
+# A suite is `exclusive` when it MUTATES cluster-wide GLOBAL state (a platform
+# setting that reconciles across every tenant/node) or DESTROYS shared substrate
+# (system-db). Its blast radius is the WHOLE cluster, not its own tenant, so it
+# MUST run alone — never concurrently with any sibling. This is now a first-class
+# ENFORCED contract: run_parallel_group refuses an exclusive suite into the batch
+# (it runs in a serial exclusive pass), and a startup guard fails fast if one is
+# left in PARALLEL — replacing the old convention of "remember to drop it in a
+# SERIAL bucket", which is exactly how new mutators kept re-learning the lesson by
+# racing a sibling (the allowHostPorts/PSS race, the kill-switch 403s). Default is
+# `parallel`. Pair this with the global-state leak gate (assert_global_state),
+# which fails the CULPRIT exclusive suite if it leaks unrestored global state.
+declare -A SUITE_ISOLATION=(
+  # global-setting mutators — a PATCH/POST that reconciles cluster-wide
+  [firewall]=exclusive                   # allowHostPorts → cluster-wide PSS enforce
+  [trusted-proxies]=exclusive            # rolls the shared Traefik DaemonSet args
+  [webmail-feature-toggle]=exclusive     # webmail_show_* → rolls both webmail pods
+  [bulwark-impersonate]=exclusive        # flips defaultWebmailEngine (scales other → 0)
+  [tenant-bundles-engine]=exclusive      # global mailbox_backup_engine
+  [oidc-dex]=exclusive                   # proxy-gate + Dex static providers
+  [waf-crowdsec]=exclusive               # bans the shared harness egress IP
+  [firewall-blacklist]=exclusive         # cluster firewall nft drop sets
+  [custom-deployments-phase2]=exclusive  # the 6 customDeployments* kill-switches
+  [mail-external-reachability]=exclusive # mail port-exposure mode (HAProxy DS)
+  [mail-mobility]=exclusive              # mail port-exposure + mail-stack migration
+  [master-user-rotation]=exclusive       # mail-secrets master cred + platform-api roll
+  [migration-cifs]=exclusive             # switches backup class (rolls the shim DS)
+  # destructive to shared substrate — recreate/wipe the live system-db
+  [postgres-pitr]=exclusive
+  [postgres-barman-restore]=exclusive
+  [system-snapshots]=exclusive           # mutates the system-db cluster
+)
+suite_isolation_of() { echo "${SUITE_ISOLATION[$1]:-parallel}"; }
 _csv_has() { local IFS=','; local x; for x in $1; do [[ "$x" == "$2" ]] && return 0; done; return 1; }
 suite_selected() {
   local name="$1" tier; tier="$(suite_tier_of "$name")"
@@ -521,15 +564,18 @@ if [[ "$LIST" == 1 ]]; then
     "${TIER_FILTER:-<all>}" "${ONLY:-<none>}" "${EXCLUDE:-<none>}" "$RUN_SMOKE"
   for grp in SERIAL_PRE PARALLEL SERIAL_POST; do
     declare -n _g="$grp"; printf '  [%s]\n' "$grp"
-    for e in "${_g[@]:-}"; do [[ -z "$e" ]] && continue; n="${e%%:*}"; printf '    %-22s tier=%-8s timeout=%ss\n' "$n" "$(suite_tier_of "$n")" "$(suite_timeout_of "$n")"; done
+    for e in "${_g[@]:-}"; do [[ -z "$e" ]] && continue; n="${e%%:*}"; iso="$(suite_isolation_of "$n")"; printf '    %-22s tier=%-8s iso=%-9s timeout=%ss\n' "$n" "$(suite_tier_of "$n")" "$iso" "$(suite_timeout_of "$n")"; done
   done
+  echo "  (iso=exclusive suites always run ALONE — enforced by run_parallel_group, never concurrent with a sibling)"
   exit 0
 fi
 
 passed_suites=()
 failed_suites=()
 skipped_suites=()
+flaky_suites=()             # failed in the batch, PASSED on serial retry (load flake)
 reachability_breaks=()
+global_state_leaks=()       # suites that mutated a cluster-wide global + didn't restore it (fatal)
 declare -A SUITE_SECS=()    # name → wall-clock seconds (P4 timing)
 declare -A SUITE_RC=()      # name → exit code
 
@@ -603,6 +649,7 @@ run_serial_group() {
     SUITE_SECS["$name"]=$(( $(date +%s) - start )); SUITE_RC["$name"]=$rc
     classify_rc "$name" "$rc"
     assert_admin_reachable "$name" || true
+    assert_global_state "$name"   # attribute + heal any unrestored global-state leak
   done
   # Restore the top-level default (the script runs `set -uo pipefail`, NOT
   # -e). The per-suite `set -e`/`set +e` dance above otherwise leaks -e to
@@ -619,6 +666,19 @@ run_serial_group() {
 # is in plain view at the bottom of the operator's terminal scroll.
 run_parallel_group() {
   local group_label="$1"; shift
+  # Enforce the isolation contract: an `exclusive` suite must NEVER run inside a
+  # parallel batch — its blast radius is the whole cluster, not its own tenant.
+  # Partition it out (regardless of which group array declared it) and run it
+  # ALONE, serially, AFTER the batch. This is the automatic guardrail behind
+  # SUITE_ISOLATION: even if a global-mutator is mistakenly left in PARALLEL
+  # (e.g. firewall/allowHostPorts), it can no longer race a sibling.
+  local -a _par=() _excl=(); local _e
+  for _e in "$@"; do
+    [[ -z "$_e" ]] && continue
+    if [[ "$(suite_isolation_of "${_e%%:*}")" == "exclusive" ]]; then _excl+=("$_e"); else _par+=("$_e"); fi
+  done
+  (( ${#_excl[@]} )) && warn "isolation: pulled ${#_excl[@]} exclusive suite(s) from the parallel batch to run ALONE: $(printf '%s ' "${_excl[@]%%:*}")"
+  set -- "${_par[@]}"
   local n=$#
   log "Group [$group_label] (parallel, $n suite(s))"
   local tmpdir
@@ -699,7 +759,18 @@ run_parallel_group() {
   for name in "${names[@]}"; do
     assert_admin_reachable "parallel:$name" || true
   done
+  # Parallel-safe suites must NOT touch cluster-wide globals (that's the contract).
+  # One batch-level check catches a violator (can't attribute to a single suite
+  # since many ran concurrently) + self-heals before the exclusive pass.
+  assert_global_state "parallel-batch"
   rm -rf "$tmpdir"
+  # Now run the exclusive suites that were pulled from this batch — serially and
+  # ALONE, via the serial runner (so they get the same token-refresh, reachability
+  # probe, and global-state leak gate). They never overlap the parallel batch
+  # (which has fully drained above) or each other.
+  if (( ${#_excl[@]} )); then
+    run_serial_group "${group_label} → exclusive (isolated)" "${_excl[@]}"
+  fi
 }
 
 classify_rc() {
@@ -719,21 +790,104 @@ classify_rc() {
   fi
 }
 
+# ─── Serial retry pass (2026-07-23) ──────────────────────────────────
+# The canonical mechanism behind "passes standalone, fails in the full run" is
+# resource CONTENTION during the parallel phase — object-store saturation (the
+# barman WAL archiver falls behind), API/scheduler pressure (provisioning poll
+# timeouts), and rate-limit/timing windows. The concurrency cap + baseline gate
+# reduce it but cannot eliminate it. This pass re-runs each REAL-failure suite
+# ONCE, serially and ALONE — exactly the triage an operator does by hand. A suite
+# that passes here was a load flake: reported FLAKY (not fatal). One that fails
+# again is a REAL failure: stays fatal. Nothing is hidden — flakes are named in
+# the summary + JSON report, so genuine load-sensitivity stays visible. The retry
+# reuses the per-suite token refresh + reachability probe. Opt out with
+# INTEGRATION_RETRY_FAILED=0 (or it self-skips when there is nothing to retry).
+retry_failed_serially() {
+  [[ "${INTEGRATION_RETRY_FAILED:-1}" == "0" ]] && { log "serial retry pass DISABLED (INTEGRATION_RETRY_FAILED=0)"; return 0; }
+  # Collect failures in GROUP order (SERIAL_PRE → PARALLEL → SERIAL_POST) rather
+  # than SUITE_RC hash order, so the destructive SERIAL_POST suites retry LAST.
+  # postgres-pitr/barman-restore RECREATE system-db (a ~2-3min primary restart);
+  # retrying one BEFORE a sibling 502s that sibling's retry as collateral while
+  # the platform DB is down (observed 2026-07-23: barman-restore's retry cutover
+  # → custom-deployments retry PUT /upgrade-tag → 502). Destructive-last avoids it.
+  local -a to_retry=() ; local name rc e
+  for e in "${SERIAL_PRE[@]:-}" "${PARALLEL[@]:-}" "${SERIAL_POST[@]:-}"; do
+    [[ -z "$e" ]] && continue
+    name="${e%%:*}"; rc="${SUITE_RC[$name]:-0}"
+    [[ "$rc" != "0" && "$rc" != "$SKIP_RC" ]] && to_retry+=("$name")
+  done
+  (( ${#to_retry[@]} )) || return 0
+  log "Serial retry pass — ${#to_retry[@]} failed suite(s) re-run ALONE (separates load-flakes from real failures)"
+  local entry e cmd script to start first_rc
+  for name in "${to_retry[@]}"; do
+    # Reconstruct the "name:script args" entry from the run's groups.
+    entry=""
+    for e in "${SERIAL_PRE[@]:-}" "${PARALLEL[@]:-}" "${SERIAL_POST[@]:-}"; do
+      [[ -z "$e" ]] && continue
+      [[ "${e%%:*}" == "$name" ]] && { entry="$e"; break; }
+    done
+    [[ -n "$entry" ]] || { warn "retry: could not resolve entry for '$name' — leaving as failed"; continue; }
+    cmd="${entry#*:}"
+    local -a parts=(); read -r -a parts <<< "$cmd"
+    script="${parts[0]}"; local -a args=("${parts[@]:1}")
+    to="$(suite_timeout_of "$name")"; start=$(date +%s); first_rc="${SUITE_RC[$name]}"
+    log "retry: $name (alone, hard-timeout ${to}s; batch rc=$first_rc)"
+    INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "retry $name: token refresh failed (continuing with prior token)"
+    set +e
+    ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"
+    rc=$?
+    set +e
+    SUITE_RC["$name"]=$rc
+    SUITE_SECS["$name"]=$(( ${SUITE_SECS[$name]:-0} + $(date +%s) - start ))
+    if [[ "$rc" == "0" ]]; then
+      flaky_suites+=("$name")
+      warn "retry: $name PASSED alone (batch rc=$first_rc under parallel load) — FLAKY, not a regression"
+    elif [[ "$rc" == "$SKIP_RC" ]]; then
+      log "retry: $name now SKIPPED (rc=77)"
+    else
+      fail "retry: $name STILL FAILED alone (rc=$rc) — REAL failure"
+    fi
+    assert_admin_reachable "retry:$name" || true
+    assert_global_state "retry:$name"
+  done
+  # Rebuild the classification arrays from the post-retry SUITE_RC (batch
+  # classify_rc already appended the first-pass verdicts; recompute cleanly).
+  passed_suites=(); failed_suites=(); skipped_suites=()
+  for name in "${!SUITE_RC[@]}"; do
+    rc="${SUITE_RC[$name]}"
+    if [[ "$rc" == "0" ]]; then passed_suites+=("$name")
+    elif [[ "$rc" == "$SKIP_RC" ]]; then skipped_suites+=("$name")
+    else failed_suites+=("$name"); fi
+  done
+}
+
 # emit_report_json — machine-readable run report (P4). Suite names are
 # slugs and rc/seconds are integers, so direct interpolation is JSON-safe.
 emit_report_json() {
   local first=1 name
   printf '{\n  "startedTs": %s,\n  "durationSeconds": %s,\n' \
     "$RUN_STARTED_TS" "$(( $(date +%s) - RUN_STARTED_TS ))"
-  printf '  "counts": {"passed": %d, "skipped": %d, "failed": %d},\n' \
-    "${#passed_suites[@]}" "${#skipped_suites[@]}" "${#failed_suites[@]}"
+  printf '  "counts": {"passed": %d, "skipped": %d, "failed": %d, "flaky": %d},\n' \
+    "${#passed_suites[@]}" "${#skipped_suites[@]}" "${#failed_suites[@]}" "${#flaky_suites[@]}"
+  # Suites that failed the parallel batch but PASSED the serial retry — passed
+  # in "counts" (rc reflects the retry) AND named here so load-flakiness is not
+  # silently laundered into a green run.
+  printf '  "flaky": ['
+  local ffirst=1 f
+  for f in "${flaky_suites[@]:-}"; do
+    [[ -z "$f" ]] && continue
+    [[ $ffirst == 1 ]] || printf ','; ffirst=0
+    printf '"%s"' "$f"
+  done
+  printf '],\n'
   printf '  "suites": ['
   for name in "${!SUITE_RC[@]}"; do
     [[ $first == 1 ]] || printf ','; first=0
     printf '\n    {"name": "%s", "tier": "%s", "rc": %s, "seconds": %s}' \
       "$name" "$(suite_tier_of "$name")" "${SUITE_RC[$name]:-0}" "${SUITE_SECS[$name]:-0}"
   done
-  printf '\n  ],\n  "reachabilityBreaks": %d\n}\n' "${#reachability_breaks[@]}"
+  printf '\n  ],\n  "reachabilityBreaks": %d,\n  "globalStateLeaks": %d\n}\n' \
+    "${#reachability_breaks[@]}" "${#global_state_leaks[@]}"
 }
 
 # ─── Host-config converger preflight (2026-07-09) ─────────────────────
@@ -797,6 +951,111 @@ converge_host_config
 # operator decision (2026-07-10): report any drift LOUDLY (so drift arriving
 # from a NON-test source — a genuine upgrade bug — is never silently masked),
 # then self-heal reversible config so the run proceeds. Bypass: INTEGRATION_SKIP_BASELINE=1.
+# ─── Global-state leak gate (2026-07-24) ─────────────────────────────
+# The #1 mechanism behind "passes standalone, fails in the full run" is a suite
+# that mutates a CLUSTER-WIDE global and fails to restore it — the leak then
+# fails a DIFFERENT, innocent suite minutes later. This gate snapshots the
+# reversible globals once (canonical, after the baseline gate heals startup
+# drift), then re-checks after every serially-run suite (all exclusive suites
+# run serially). If the snapshot drifted, the JUST-FINISHED suite is the CULPRIT:
+# it is recorded as a fatal `global-state-leak`, and the drift is SELF-HEALED
+# back to canonical so it can't cascade onto the next suite (which is exactly how
+# leaks used to blame innocents). Bypass: INTEGRATION_SKIP_LEAKGATE=1.
+GLOBAL_STATE_CANONICAL=""
+# Every reversible cluster-wide global this gate tracks. The system-settings keys
+# are the observed leak sources (allowHostPorts PSS driver + 6 custom-deployment
+# kill-switches); the rest cover the OTHER exclusive global-mutators — webmail
+# engine/show-flags, mail port-exposure mode, mailbox-backup engine, the OIDC
+# proxy-gate, and trusted-proxies. DETECTION covers ALL of them (so any leaker is
+# attributed); HEALING covers the safe single-value PATCH groups (the same fields
+# the suites restore themselves). A drift the heal can't undo (the trusted-proxies
+# LIST) is absorbed by advancing the canonical after a heal, so it still cannot
+# cascade-blame the next suite.
+_GS_SS_KEYS='allowHostPortsServer allowHostPortsWorker customDeploymentsEnabled customDeploymentsAllowCompose customDeploymentsAllowPrivateRegistries customDeploymentsImagePullAudit customDeploymentsScanOnPull customDeploymentsWarnUnpinnedTags'
+
+snapshot_global_state() {
+  # → stable "k=v;…" over every tracked global, or ""/*READ_ERR* if any endpoint
+  # is unreadable (never false-flag on a transient read failure).
+  local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
+  [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true)
+  [[ -n "$tok" ]] || { echo ""; return; }
+  local a=(-sk --max-time 15 -H "Authorization: Bearer $tok")
+  { curl "${a[@]}" "$base/api/v1/admin/system-settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/webmail-settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/mail/port-exposure"; echo
+    curl "${a[@]}" "$base/api/v1/admin/mailbox-backup-settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/oidc/settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/cluster-network/trusted-proxies"; } 2>/dev/null | python3 -c "
+import json,sys
+b=sys.stdin.read().split('\n')
+def d(i):
+    try: return json.loads(b[i]).get('data',{})
+    except Exception: return None
+ss,wm,mp,mb,oi,tp=[d(i) for i in range(6)]
+if any(x is None for x in (ss,wm,mp,mb,oi,tp)): print('READ_ERR'); sys.exit()
+o={}
+for k in '''$_GS_SS_KEYS'''.split(): o['ss.'+k]=ss.get(k)
+for k in 'defaultWebmailEngine webmailShowContacts webmailShowCalendar webmailShowFiles defaultWebmailUrl mailEnforcementMode'.split(): o['wm.'+k]=wm.get(k)
+o['mail.mode']=mp.get('mode'); o['mbe.engine']=mb.get('engine')
+for k in 'protectAdminViaProxy protectTenantViaProxy disableLocalAuthAdmin disableLocalAuthTenant breakGlassPath'.split(): o['oidc.'+k]=oi.get(k)
+rr=tp.get('ranges',[]) if isinstance(tp,dict) else []
+o['tp.operator']=','.join(sorted(str(r.get('cidr')) for r in rr if isinstance(r,dict) and r.get('source')=='operator'))
+print(';'.join('%s=%s'%(k,o[k]) for k in sorted(o)))
+" 2>/dev/null || echo READ_ERR
+}
+
+heal_global_state() {
+  # Re-apply canonical to the SAFE single-value PATCH groups (idempotent — the
+  # same fields the mutating suites restore themselves). Skips the trusted-proxies
+  # list (absorbed by advancing the canonical in assert_global_state).
+  local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
+  [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true); [[ -n "$tok" ]] || return 0
+  printf '%s' "$GLOBAL_STATE_CANONICAL" | python3 -c "
+import sys,json
+kv=dict(x.split('=',1) for x in sys.stdin.read().split(';') if '=' in x)
+def cv(v):
+    if v in ('True','False'): return v=='True'
+    if v in ('None',''): return None
+    return v
+def grp(pfx,keys):
+    o={}
+    for k in keys:
+        v=cv(kv.get(pfx+'.'+k))
+        if v is not None: o[k]=v
+    return o
+G=[('/admin/system-settings', grp('ss','''$_GS_SS_KEYS'''.split())),
+   ('/admin/webmail-settings', grp('wm','defaultWebmailEngine webmailShowContacts webmailShowCalendar webmailShowFiles'.split())),
+   ('/admin/mail/port-exposure', grp('mail',['mode'])),
+   ('/admin/mailbox-backup-settings', grp('mbe',['engine'])),
+   ('/admin/oidc/settings', grp('oidc','protectAdminViaProxy protectTenantViaProxy disableLocalAuthAdmin disableLocalAuthTenant breakGlassPath'.split()))]
+for path,body in G:
+    if body: print(path+chr(9)+json.dumps(body))
+" 2>/dev/null | while IFS=$'\t' read -r path body; do
+    [[ -n "$path" && -n "$body" ]] && curl -sk --max-time 15 -X PATCH "$base/api/v1$path" \
+      -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d "$body" -o /dev/null 2>/dev/null || true
+  done
+}
+
+# assert_global_state <culprit-label> — seed canonical on first call, else diff.
+assert_global_state() {
+  [[ "${INTEGRATION_SKIP_LEAKGATE:-0}" == "1" ]] && return 0
+  local culprit="$1" cur; cur=$(snapshot_global_state)
+  [[ -z "$cur" || "$cur" == *READ_ERR* ]] && return 0        # unreadable → don't false-flag
+  if [[ -z "$GLOBAL_STATE_CANONICAL" ]]; then GLOBAL_STATE_CANONICAL="$cur"; return 0; fi
+  if [[ "$cur" != "$GLOBAL_STATE_CANONICAL" ]]; then
+    global_state_leaks+=("$culprit")
+    fail "GLOBAL-STATE LEAK attributed to '$culprit': a cluster-wide global drifted and was not restored"
+    echo "     canonical: $GLOBAL_STATE_CANONICAL" >&2
+    echo "     after     : $cur" >&2
+    heal_global_state
+    # Advance canonical to post-heal reality: healable drift is now restored; any
+    # residual un-healable drift (trusted-proxies list) is absorbed here so it
+    # can't cascade-blame the next suite. The culprit is already attributed above.
+    local healed; healed=$(snapshot_global_state)
+    [[ -n "$healed" && "$healed" != *READ_ERR* ]] && GLOBAL_STATE_CANONICAL="$healed"
+  fi
+}
+
 BASELINE_DRIFT_FOUND=0
 assert_baseline_state() {
   [[ "${INTEGRATION_SKIP_BASELINE:-0}" == "1" ]] && { warn "baseline gate SKIPPED (INTEGRATION_SKIP_BASELINE=1)"; return 0; }
@@ -830,6 +1089,9 @@ assert_baseline_state() {
     || pass "baseline gate: cluster is at canonical baseline (no drift)"
 }
 assert_baseline_state
+# Seed the canonical global-state snapshot AFTER the baseline gate has healed any
+# startup drift — this becomes the reference every serial suite is checked against.
+assert_global_state "startup-baseline"
 
 # ─── Execute ──────────────────────────────────────────────────────
 # Smoke gate (P3): a fast health check BEFORE the long suites — fail in
@@ -964,13 +1226,21 @@ if [[ ${#SERIAL_POST[@]} -gt 0 ]]; then
   run_serial_group "POST (destructive, terminal)" "${SERIAL_POST[@]}"
 fi
 
+# Re-run batch failures once, serially and alone, to separate load-flakes from
+# real regressions (see retry_failed_serially). Runs BEFORE the summary/report so
+# both reflect the post-retry verdict; the leak guard below still runs after.
+retry_failed_serially
+
 log "Final results"
 printf '  %bpassed:%b  %s\n' "$GREEN" "$RESET" "${#passed_suites[@]}"
 printf '  %bskipped:%b %s  (precondition not met — NOT validated)\n' "$YELLOW" "$RESET" "${#skipped_suites[@]}"
 printf '  %bfailed:%b  %s\n' "$RED" "$RESET" "${#failed_suites[@]}"
+(( ${#flaky_suites[@]} )) && printf '  %bflaky:%b   %s  (failed under parallel load, PASSED on serial retry)\n' "$YELLOW" "$RESET" "${#flaky_suites[@]}"
+(( ${#global_state_leaks[@]} )) && printf '  %bleaks:%b   %s  (mutated a cluster-wide global + did not restore it)\n' "$RED" "$RESET" "${#global_state_leaks[@]}"
 for s in "${passed_suites[@]}";  do printf '    %b✓%b %s\n'  "$GREEN"  "$RESET" "$s"; done
 for s in "${skipped_suites[@]}"; do printf '    %b⊝%b %s\n'  "$YELLOW" "$RESET" "$s"; done
 for s in "${failed_suites[@]}";  do printf '    %b✗%b %s\n'  "$RED"    "$RESET" "$s"; done
+for s in "${flaky_suites[@]:-}"; do [[ -n "$s" ]] && printf '    %b~%b %s (flaky — passed on retry)\n' "$YELLOW" "$RESET" "$s"; done
 
 # Per-suite wall time (P4) — surface the long poles for future tiering.
 if [[ ${#SUITE_SECS[@]} -gt 0 ]]; then
@@ -986,6 +1256,16 @@ if [[ ${#reachability_breaks[@]} -gt 0 ]]; then
   echo ""
   echo "  A suite left global state in a broken condition (proxy gate enabled with no provider,"
   echo "  Flux suspended, ingress misconfigured, etc.). Look at the named suite's EXIT trap."
+  echo ""
+fi
+
+if [[ ${#global_state_leaks[@]} -gt 0 ]]; then
+  fail "global-state LEAK after ${#global_state_leaks[@]} suite(s) — a cluster-wide setting was changed and NOT restored:"
+  for b in "${global_state_leaks[@]}"; do printf '    %b⚠%b %s\n' "$RED" "$RESET" "$b"; done
+  echo ""
+  echo "  The named suite mutated a global (allowHostPorts / a custom-deployment kill-switch /"
+  echo "  webmail engine) and its EXIT-trap restore did not run or did not stick. The gate has"
+  echo "  already self-healed to canonical so later suites weren't cascaded — fix the culprit's restore."
   echo ""
 fi
 
@@ -1021,4 +1301,4 @@ if [[ -n "$REPORT_JSON" ]]; then
 fi
 
 # Real failures + reachability breaks both fatal.
-[[ ${#failed_suites[@]} -eq 0 && ${#reachability_breaks[@]} -eq 0 ]] || exit 1
+[[ ${#failed_suites[@]} -eq 0 && ${#reachability_breaks[@]} -eq 0 && ${#global_state_leaks[@]} -eq 0 ]] || exit 1

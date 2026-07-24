@@ -5357,12 +5357,13 @@ create_platform_configmap() {
     --from-literal=passkey-origins="https://admin.${PLATFORM_DOMAIN:-localhost},https://tenant.${PLATFORM_DOMAIN:-localhost}" \
     `# Admin node-terminal (ADR-041 — privileged root shell on cluster` \
     `# nodes via nsenter into host PID 1). super_admin-only, 30-min` \
-    `# step-up freshness, fully audited. Defaults to ON outside of` \
-    `# production so operators have a break-glass shell from day 1;` \
-    `# production overlay flips to OFF by default — flip back here` \
-    `# (or via the System Settings UI) once an HA-stickiness path is` \
-    `# in place. See docs/operations/NODE_TERMINAL.md.` \
-    --from-literal=node-terminal-enabled="$([[ "$PLATFORM_ENV" == "production" ]] && echo false || echo true)" \
+    `# step-up freshness, fully audited. ON in ALL environments incl.` \
+    `# production (operator decision 2026-07-24): it's the break-glass` \
+    `# shell operators need, HA-safe with no stickiness config (wsToken` \
+    `# validated against the Postgres node_terminal_sessions table, any` \
+    `# replica serves any session). Matches the production overlay's` \
+    `# platform-config-patch.yaml. See docs/operations/NODE_TERMINAL.md.` \
+    --from-literal=node-terminal-enabled="true" \
     `# Allowlist for publicWssOrigin — host portion of cors-origins.` \
     `# Belt-and-braces against X-Forwarded-Host spoofing.` \
     --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},tenant.${PLATFORM_DOMAIN:-localhost}" \
