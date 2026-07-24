@@ -133,20 +133,33 @@ TOKEN=$(login_token)
 [[ -z "$TOKEN" ]] && { echo "FATAL: admin login failed" >&2; exit 2; }
 info "Admin login OK"
 
-# Pick a tenant client. CUSTOM_DEPLOY_TENANT_ID overrides; otherwise the
-# first active client is used. The harness creates / cleans-up its own
-# deployments under that client.
+# Tenant isolation (2026-07-24): provision our OWN ephemeral tenant instead of
+# borrowing the first active client. Sharing a live client was the root of the
+# cross-suite CHURN (a concurrent suite suspends/deletes the shared client
+# mid-test → SKIP-EXPECTED) AND the quota accumulation (a sibling's deployments
+# filling the shared 1-CPU/1Gi quota → "exceeded quota"). Our own tenant is
+# uncontended and torn down (cascading its deployments) on exit.
+# CUSTOM_DEPLOY_TENANT_ID still overrides for a manual run against a fixed client.
+OWN_TENANT=0
 TENANT_ID="${CUSTOM_DEPLOY_TENANT_ID:-}"
 if [[ -z "$TENANT_ID" ]]; then
-  TENANT_ID=$(api GET "/tenants?limit=20" | python3 -c "
-import json,sys
-d = json.load(sys.stdin).get('data', [])
-for c in d:
-  if c.get('status') == 'active':
-    print(c['id']); break
-" 2>/dev/null)
+  _S=$(date +%s)
+  _PLAN=$(api GET "/plans" | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(next((p['id'] for p in d if p.get('name')=='Starter'), d[0]['id']))" 2>/dev/null)
+  _REGION=$(api GET "/regions" | python3 -c "import json,sys;print(json.load(sys.stdin)['data'][0]['id'])" 2>/dev/null)
+  [[ -z "$_PLAN" || -z "$_REGION" ]] && { echo "FATAL: could not resolve plan/region for own tenant" >&2; exit 2; }
+  TENANT_ID=$(api POST "/tenants" "{\"name\":\"cd-e2e-$_S\",\"primary_email\":\"cd-e2e-$_S@example.test\",\"plan_id\":\"$_PLAN\",\"region_id\":\"$_REGION\"}" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['id'])" 2>/dev/null)
+  [[ -z "$TENANT_ID" ]] && { echo "FATAL: own-tenant create failed" >&2; exit 2; }
+  OWN_TENANT=1
+  # Delete our own tenant on exit (cascades: deployments, namespace, quota).
+  _own_cleanup() { [[ "$OWN_TENANT" == "1" ]] && curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$TENANT_ID" -H "Authorization: Bearer $TOKEN" >/dev/null 2>&1 || true; }
+  trap _own_cleanup EXIT
+  # Provision to active (this script doesn't source integration-env.sh's provision_tenant).
+  api POST "/admin/tenants/$TENANT_ID/provision" "{}" >/dev/null 2>&1 || true
+  _i=0; while (( _i < 180 )); do case "$(api GET "/tenants/$TENANT_ID")" in *'"status":"active"'*) break;; esac; sleep 4; _i=$((_i+4)); done
+  api GET "/tenants/$TENANT_ID" | grep -q '"status":"active"' || { echo "FATAL: own tenant $TENANT_ID did not reach active" >&2; exit 2; }
+  info "provisioned own tenant $TENANT_ID (cd-e2e-$_S)"
 fi
-[[ -z "$TENANT_ID" ]] && { echo "FATAL: no active client found" >&2; exit 2; }
+[[ -z "$TENANT_ID" ]] && { echo "FATAL: no tenant" >&2; exit 2; }
 info "Using client $TENANT_ID"
 
 # Resolve the tenant namespace once.

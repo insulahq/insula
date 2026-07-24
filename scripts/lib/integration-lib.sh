@@ -202,3 +202,28 @@ il_webmail_engine_set() {
   sleep "$settle"
   return 0
 }
+
+# il_poll_until <desc> <timeout_s> <interval_s> <cmd...>
+#
+# Run <cmd> repeatedly until it succeeds (exit 0), or <timeout_s> elapses.
+# Returns 0 on convergence, 1 on timeout (with a diagnostic on stderr).
+#
+# This codifies "poll, don't snapshot" — the DEFAULT assertion shape for the
+# integration suites. The cluster is eventually-consistent and reconciler-driven
+# (Flux, CNPG, the tenant-PSA reconciler, quota admission all reconcile
+# continuously), so a read-ONCE assertion flakes purely by timing — the single
+# biggest recurring class of test-level non-determinism this codebase has fought
+# (pitr task-center chip, barman archiver catch-up, tenant PSS enforce label, a
+# pod reaching Running). Any new check that asserts an eventually-true condition
+# should wrap it here instead of reading once. Example:
+#   il_poll_until "chip succeeded" 120 5 bash -c '[[ "$(read_chip_status)" == succeeded ]]'
+il_poll_until() {
+  local desc="$1" timeout="$2" interval="$3"; shift 3
+  local waited=0
+  while (( waited < timeout )); do
+    if "$@"; then return 0; fi
+    sleep "$interval"; waited=$((waited + interval))
+  done
+  echo "il_poll_until: '$desc' did not converge within ${timeout}s" >&2
+  return 1
+}
