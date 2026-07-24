@@ -37,7 +37,7 @@
 // `validateCustomSpec` runs after this layer and applies semantic
 // checks (ref integrity, depends_on cycles, etc.).
 
-import yaml from 'js-yaml';
+import { load as yamlLoad, JSON_SCHEMA as YAML_JSON_SCHEMA } from 'js-yaml';
 import {
   CUSTOM_SPEC_VERSION,
   CUSTOM_NAME_RE,
@@ -119,8 +119,8 @@ export function parseCompose(input: ComposeParseInput): ComposeParseResult {
     // Numeric extensions `.nan` / `.inf` ARE parsed as `NaN` /
     // `Infinity`; downstream code that consumes numbers must
     // guard with `Number.isFinite` (see `parseHealthcheck`).
-    doc = yaml.load(input.composeYaml, {
-      schema: yaml.JSON_SCHEMA,
+    doc = yamlLoad(input.composeYaml, {
+      schema: YAML_JSON_SCHEMA,
       json: true, // strict-mode JSON-compat: throws on duplicate keys
     });
   } catch (err) {
