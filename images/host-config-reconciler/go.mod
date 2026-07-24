@@ -1,6 +1,6 @@
 module github.com/insulahq/insula/host-config-reconciler
 
-go 1.26.0
+go 1.26.5
 
 require (
 	k8s.io/api v0.36.2

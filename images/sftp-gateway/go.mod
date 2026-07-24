@@ -1,6 +1,6 @@
 module github.com/insulahq/sftp-gateway
 
-go 1.26.0
+go 1.26.5
 
 require (
 	github.com/gliderlabs/ssh v0.3.8
