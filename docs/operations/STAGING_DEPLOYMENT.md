@@ -136,20 +136,23 @@ For the first staging bootstrap, **hostpath is acceptable** — archives land at
 ## Pipeline overview
 
 ```
-  Developer push to main
+  Developer push to `development`  (the upstream integration branch, ADR-053)
     └─> ci-backend / ci-admin-panel / ci-tenant-panel / ci-infrastructure
-    └─> build-deploy.yml — builds + pushes images to GHCR with tags:
-          SHA, latest, YYYYMMDDHHmmss-SHA
-    └─> Flux on DEV cluster picks up `latest`
+    └─> build-deploy.yml — builds images + auto-pins them in the
+        development overlay (chore(development) commit)
+    └─> Flux on DEV cluster reconciles the pinned images
 
-  Merge main → staging  (manual or automated QA gate)
-    └─> Flux on STAGING cluster picks up YYYYMMDDHHmmss-SHA pattern
-    └─> Auto-reconciles new images onto staging
+  Promote development → main  (reviewed PR / tree-snapshot; no cluster tracks main)
 
-  Tag release (v1.2.3)
-    └─> release.yml publishes semver-tagged images
-    └─> release.yml opens PR to `stable` branch with pinned versions
-    └─> Merge to `stable` → Flux on PRODUCTION reconciles
+  Cut release from main  (cut-release.sh [--prerelease] — stamps VERSION +
+                          staging/production overlay pins, signs the tag)
+    └─> release.yml publishes semver-tagged images + cosign-signed
+        platform-ops binaries + release-manifest.json
+    └─> STAGING: Flux `ref.semver: ">=0.0.0-0"` auto-follows the newest
+        RC/stable tag
+    └─> PRODUCTION: admin-controlled pull — platform-ops polls GitHub
+        Releases, cosign-verifies on-node, operator approves the re-pin
+        (no `stable` branch exists)
 ```
 
 ---
@@ -319,13 +322,20 @@ Before the first deploy, confirm:
 - [x] `ci-infrastructure.yml` — **now builds all three overlays (base, dev, staging, production)** + shellcheck + catalog image builds
 - [x] `build-deploy.yml` — publishes backend, admin-panel, tenant-panel to GHCR with `<sha>`, `latest`, and `<timestamp>-<sha>` tags on `main`
 - [x] `ci-sftp-gateway.yml` + `ci-file-manager.yml` — publish their own images with Trivy scans
-- [x] `release.yml` — on `v*.*.*` tag: publishes semver-tagged images, creates GitHub Release, opens PR to `stable` branch
+- [x] `release.yml` — on `v*.*.*` tag: publishes semver-tagged images, creates a GitHub Release with cosign-signed platform-ops binaries + release-manifest.json (production pulls the signed tag; ADR-053 — no `stable` branch)
 
 Gaps to fix before production rollout (not blocking staging):
 
-- [ ] No image signing (cosign / SLSA provenance) — acceptable for staging, should be added before production
-- [ ] No automated security scan on backend/panel images (only sftp-gateway + file-manager have Trivy)
-- [ ] No integration test that exercises the Longhorn storage path end-to-end in CI (the platform test suite skips anything requiring a live k3s + Longhorn)
+- [x] Image/release signing — SHIPPED: release.yml cosign-signs the platform-ops
+      binaries + release-manifest.json (which pins the image set); platform-ops
+      verifies on-node against /etc/platform/cosign.pub before any upgrade.
+- [ ] No container-level Trivy scan on the backend/panel images themselves
+      (sftp-gateway + file-manager have per-image Trivy; upstream images get the
+      weekly image-cve-scan.yml; backend/panel *dependencies* are covered by the
+      osv-scanner component-watch gate — the remaining gap is base-image CVEs).
+- [x] Longhorn storage path E2E — covered by the staging integration suite
+      (pvc / tier-flip / snapshots / postgres-restore run against real
+      k3s + Longhorn on every full sweep), not by per-PR CI; accepted.
 
 ---
 
