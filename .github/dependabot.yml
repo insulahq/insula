@@ -17,6 +17,15 @@ updates:
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # TypeScript 7 (the new native compiler) is deferred 2026-07-24:
+      # typescript-eslint 8.65 (latest) caps its TS peer below 7, so
+      # adopting it forces a split install — TS 6 at root for the linter,
+      # TS 7 nested per workspace for builds — meaning lint would parse
+      # with a different compiler than the one compiling. Drop this
+      # ignore once typescript-eslint supports TS 7.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     labels: ["dependencies", "security-watch"]
 
   # ── Go modules (first-party reconcilers + sftp-gateway) ──
@@ -37,6 +46,13 @@ updates:
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/sftp-gateway
+    schedule: { interval: weekly }
+    groups: { gomod: { update-types: [minor, patch] } }
+    labels: ["dependencies", "security-watch"]
+  # file-manager was missing from this list (added 2026-07-24) — its
+  # go.mod deps (x/crypto for sftp/ssh) went unwatched by Dependabot.
+  - package-ecosystem: gomod
+    directory: /images/file-manager
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
     labels: ["dependencies", "security-watch"]
