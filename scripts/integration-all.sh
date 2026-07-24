@@ -962,46 +962,78 @@ converge_host_config
 # back to canonical so it can't cascade onto the next suite (which is exactly how
 # leaks used to blame innocents). Bypass: INTEGRATION_SKIP_LEAKGATE=1.
 GLOBAL_STATE_CANONICAL=""
-# Tracked /admin/system-settings keys = the observed leak sources: the
-# allowHostPorts PSS driver + the 6 custom-deployment kill-switches.
-_GS_KEYS='allowHostPortsServer allowHostPortsWorker customDeploymentsEnabled customDeploymentsAllowCompose customDeploymentsAllowPrivateRegistries customDeploymentsImagePullAudit customDeploymentsScanOnPull customDeploymentsWarnUnpinnedTags'
+# Every reversible cluster-wide global this gate tracks. The system-settings keys
+# are the observed leak sources (allowHostPorts PSS driver + 6 custom-deployment
+# kill-switches); the rest cover the OTHER exclusive global-mutators — webmail
+# engine/show-flags, mail port-exposure mode, mailbox-backup engine, the OIDC
+# proxy-gate, and trusted-proxies. DETECTION covers ALL of them (so any leaker is
+# attributed); HEALING covers the safe single-value PATCH groups (the same fields
+# the suites restore themselves). A drift the heal can't undo (the trusted-proxies
+# LIST) is absorbed by advancing the canonical after a heal, so it still cannot
+# cascade-blame the next suite.
+_GS_SS_KEYS='allowHostPortsServer allowHostPortsWorker customDeploymentsEnabled customDeploymentsAllowCompose customDeploymentsAllowPrivateRegistries customDeploymentsImagePullAudit customDeploymentsScanOnPull customDeploymentsWarnUnpinnedTags'
 
 snapshot_global_state() {
-  # → stable "k=v;k=v;…|engine=X" string, or "" if unreadable (never false-flag).
+  # → stable "k=v;…" over every tracked global, or ""/*READ_ERR* if any endpoint
+  # is unreadable (never false-flag on a transient read failure).
   local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
   [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true)
   [[ -n "$tok" ]] || { echo ""; return; }
-  local ss eng
-  ss=$(curl -sk --max-time 15 "$base/api/v1/admin/system-settings" -H "Authorization: Bearer $tok" 2>/dev/null \
-    | python3 -c "
+  local a=(-sk --max-time 15 -H "Authorization: Bearer $tok")
+  { curl "${a[@]}" "$base/api/v1/admin/system-settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/webmail-settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/mail/port-exposure"; echo
+    curl "${a[@]}" "$base/api/v1/admin/mailbox-backup-settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/oidc/settings"; echo
+    curl "${a[@]}" "$base/api/v1/admin/cluster-network/trusted-proxies"; } 2>/dev/null | python3 -c "
 import json,sys
-try: d=json.load(sys.stdin).get('data',{})
-except Exception: print('READ_ERR'); sys.exit()
-print(';'.join('%s=%s'%(k,d.get(k)) for k in '''$_GS_KEYS'''.split()))
-" 2>/dev/null || echo READ_ERR)
-  eng=$(il_webmail_engine_get "$base" "$tok" 2>/dev/null || echo "")
-  echo "${ss}|engine=${eng}"
+b=sys.stdin.read().split('\n')
+def d(i):
+    try: return json.loads(b[i]).get('data',{})
+    except Exception: return None
+ss,wm,mp,mb,oi,tp=[d(i) for i in range(6)]
+if any(x is None for x in (ss,wm,mp,mb,oi,tp)): print('READ_ERR'); sys.exit()
+o={}
+for k in '''$_GS_SS_KEYS'''.split(): o['ss.'+k]=ss.get(k)
+for k in 'defaultWebmailEngine webmailShowContacts webmailShowCalendar webmailShowFiles defaultWebmailUrl mailEnforcementMode'.split(): o['wm.'+k]=wm.get(k)
+o['mail.mode']=mp.get('mode'); o['mbe.engine']=mb.get('engine')
+for k in 'protectAdminViaProxy protectTenantViaProxy disableLocalAuthAdmin disableLocalAuthTenant breakGlassPath'.split(): o['oidc.'+k]=oi.get(k)
+rr=tp.get('ranges',[]) if isinstance(tp,dict) else []
+o['tp.operator']=','.join(sorted(str(r.get('cidr')) for r in rr if isinstance(r,dict) and r.get('source')=='operator'))
+print(';'.join('%s=%s'%(k,o[k]) for k in sorted(o)))
+" 2>/dev/null || echo READ_ERR
 }
 
 heal_global_state() {
-  # Restore the tracked system-settings keys + webmail engine to canonical.
+  # Re-apply canonical to the SAFE single-value PATCH groups (idempotent — the
+  # same fields the mutating suites restore themselves). Skips the trusted-proxies
+  # list (absorbed by advancing the canonical in assert_global_state).
   local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
   [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true); [[ -n "$tok" ]] || return 0
-  local body; body=$(printf '%s' "${GLOBAL_STATE_CANONICAL%%|*}" | python3 -c "
+  printf '%s' "$GLOBAL_STATE_CANONICAL" | python3 -c "
 import sys,json
-out={}
-for p in sys.stdin.read().split(';'):
-    if '=' not in p: continue
-    k,v=p.split('=',1)
-    if v in ('True','False'): out[k]=(v=='True')
-    elif v=='None' or v=='': continue
-    else: out[k]=v
-print(json.dumps(out))
-" 2>/dev/null)
-  [[ -n "$body" && "$body" != '{}' ]] && curl -sk --max-time 15 -X PATCH "$base/api/v1/admin/system-settings" \
-    -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d "$body" -o /dev/null 2>/dev/null || true
-  local ceng="${GLOBAL_STATE_CANONICAL##*|engine=}"
-  [[ -n "$ceng" && "$ceng" != "None" ]] && il_webmail_engine_set "$base" "$tok" "$ceng" 20 >/dev/null 2>&1 || true
+kv=dict(x.split('=',1) for x in sys.stdin.read().split(';') if '=' in x)
+def cv(v):
+    if v in ('True','False'): return v=='True'
+    if v in ('None',''): return None
+    return v
+def grp(pfx,keys):
+    o={}
+    for k in keys:
+        v=cv(kv.get(pfx+'.'+k))
+        if v is not None: o[k]=v
+    return o
+G=[('/admin/system-settings', grp('ss','''$_GS_SS_KEYS'''.split())),
+   ('/admin/webmail-settings', grp('wm','defaultWebmailEngine webmailShowContacts webmailShowCalendar webmailShowFiles'.split())),
+   ('/admin/mail/port-exposure', grp('mail',['mode'])),
+   ('/admin/mailbox-backup-settings', grp('mbe',['engine'])),
+   ('/admin/oidc/settings', grp('oidc','protectAdminViaProxy protectTenantViaProxy disableLocalAuthAdmin disableLocalAuthTenant breakGlassPath'.split()))]
+for path,body in G:
+    if body: print(path+chr(9)+json.dumps(body))
+" 2>/dev/null | while IFS=$'\t' read -r path body; do
+    [[ -n "$path" && -n "$body" ]] && curl -sk --max-time 15 -X PATCH "$base/api/v1$path" \
+      -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d "$body" -o /dev/null 2>/dev/null || true
+  done
 }
 
 # assert_global_state <culprit-label> — seed canonical on first call, else diff.
@@ -1015,7 +1047,12 @@ assert_global_state() {
     fail "GLOBAL-STATE LEAK attributed to '$culprit': a cluster-wide global drifted and was not restored"
     echo "     canonical: $GLOBAL_STATE_CANONICAL" >&2
     echo "     after     : $cur" >&2
-    heal_global_state   # restore so the leak cannot cascade onto the next suite
+    heal_global_state
+    # Advance canonical to post-heal reality: healable drift is now restored; any
+    # residual un-healable drift (trusted-proxies list) is absorbed here so it
+    # can't cascade-blame the next suite. The culprit is already attributed above.
+    local healed; healed=$(snapshot_global_state)
+    [[ -n "$healed" && "$healed" != *READ_ERR* ]] && GLOBAL_STATE_CANONICAL="$healed"
   fi
 }
 
