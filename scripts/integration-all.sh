@@ -275,6 +275,14 @@ PARALLEL=(
   # and the cap-enforcement redirect Middleware (inject on cap, remove on uncap)
   # on a disposable tenant's live IngressRoute. Self-provisions + trap cleanup.
   "bandwidth:integration-bandwidth-e2e.sh"
+  # Node memory protection (2026-07-25, ships v2026.7.2): kubelet eviction
+  # headroom (allocatable gap + drop-in + swap-off + doctor), tenant-first
+  # PriorityClasses, SystemOOM-event → reconciler → API → notification
+  # pipeline (dedupe asserted), and the cgroup-OOM metric path via a
+  # 64Mi-LIMITED hog (kills inside its own cgroup — zero node pressure, so
+  # parallel-safe; the node-level OOM storm stays a DEV-only exercise).
+  # Self-SKIPs (77) while the deployed release predates the feature.
+  "node-memory-protection:integration-node-memory-protection.sh"
   # Platform-driven webmail E2E: provision tenant→domain→email→mailbox, mint the
   # webmail token, follow the SSO URL, and (bulwark) run the SPA-equivalent JMAP
   # probe — the real "open webmail as a tenant" path incl. master-user
@@ -498,6 +506,8 @@ declare -A SUITE_TIMEOUT=(
   [dr-tenant-restore]=1800 [dr-database-restore]=1800 [dr-recover-all]=1800
   [migration]=1800 [postgres-barman-restore]=2400 [custom-deployments]=1500
   [custom-deployments-phase2]=1500 [private-worker]=1200 [mailbox-aux]=1200
+  # node-memory-protection: worst case ~4 min (metric-ingest polling)
+  [node-memory-protection]=900
   [tenant-bundles-restic]=1200 [bundle-coverage]=1200 [backups-ui]=600
   [mail-external-reachability]=1200 [master-user-rotation]=900
   [firewall-blacklist]=600 [dr-protocols]=900
