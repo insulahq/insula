@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # The catalog
@@ -17,7 +17,16 @@ all just entries in the same catalog.
 A default catalog — the **Official Catalog**
 ([`github.com/insulahq/application-catalog`](https://github.com/insulahq/application-catalog))
 — is registered and active on a fresh install, so tenants can deploy from day
-one with nothing to set up first.
+one with nothing to set up first. It deliberately ships **primitives only**:
+runtimes, databases, services, and static sites — every image in it is built
+and hardened by the Insula project itself.
+
+Complete app stacks (WordPress, Nextcloud, Gitea, and friends) live in a
+separate, **opt-in** community catalog
+([`github.com/insulahq/application-catalog-community`](https://github.com/insulahq/application-catalog-community)).
+Admins add it in one step under **Applications → Repositories** when they want
+to offer those products — keeping the default surface small, first-party, and
+auditable.
 
 You stay in control of which catalogs exist:
 
@@ -38,7 +47,7 @@ Entries cover the full spectrum, and the panel's **type** filter separates them:
 | **Runtimes** | A blank environment you put your own code into (upload via SFTP, Git, or the file manager) | PHP (Apache or Nginx), Node.js, Python, Ruby, Go, Java, .NET, Bun |
 | **Static** | A web server for static files | static site |
 | **Databases / Services** | Data stores and helpers a site can use | MariaDB, PostgreSQL, MongoDB, Redis, Memcached, MinIO |
-| **Applications** | Complete, self-contained products deployed as one unit (their own database, cache and ingress bundled) | WordPress, Nextcloud, Jitsi, Gitea, Matomo |
+| **Applications** | Complete, self-contained products deployed as one unit (their own database, cache and ingress bundled) — from the opt-in community catalog | WordPress, Nextcloud, Jitsi, Gitea, Matomo |
 
 A tenant browses the catalog, deploys an entry onto one of their domains, and —
 for a runtime — uploads their code. A runtime can be **switched** later (for
@@ -88,8 +97,10 @@ page.
 
 ??? info "Under the hood"
     - Catalog repositories are rows in the `catalog_repositories` table; a
-      default **Official Catalog** row (`insulahq/application-catalog`) is seeded
-      active at install and can be removed. Synced entries land in the
+      default **Official Catalog** row (`insulahq/application-catalog`,
+      primitives only) is seeded active at install and can be removed. The
+      community app-stack repo (`insulahq/application-catalog-community`) is
+      NOT seeded — admins opt in. Synced entries land in the
       `container_images` table keyed by `(code, source_repo_id)`.
     - Deployments live on a `deployments` table whose `source` column
       discriminates `catalog` vs `custom` rows, so lifecycle hooks, backups, and

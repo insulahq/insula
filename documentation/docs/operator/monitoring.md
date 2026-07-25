@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Monitoring & health
@@ -57,6 +57,23 @@ The same severity badge appears on the node's card under **Cluster → Nodes**
 (see [Nodes & cluster](nodes-and-cluster.md)). Use **Reconcile now** to force a
 fresh check instead of waiting out the 5-minute tick.
 
+### Memory events
+
+Below the node table, a **Memory events** card lists every memory incident of
+the last 30 days — kernel **SystemOOM** events, kubelet **pod evictions**, and
+containers **OOM-killed** at their memory limit — with the node, the workload
+hit, and when. The platform is engineered so that under memory pressure
+**tenant workloads are always sacrificed before system workloads** (priority
+tiers + kubelet eviction headroom on every node), so the card doubles as a
+verdict: amber tenant rows are the designed backpressure at work; a red
+**SYSTEM** row means a platform component lost a fight it should never lose —
+investigate.
+
+Admins are notified on new events (critical for system workloads, warning for
+tenant evictions), rate-limited so a sustained incident doesn't flood the
+inbox. Two SLO rules back this at the metrics layer: **Kernel OOM killer
+fired** (warning) and **SYSTEM container OOM-killed** (critical).
+
 ## Cluster health
 
 The **Cluster → Nodes** page carries a compact cluster health bar: how many
@@ -79,15 +96,32 @@ attention. The model is **Sources × Providers**, managed on
 
 | Tab | What it configures |
 |---|---|
-| **Sources** | What triggers a notification — per-event (security, subscription, tenant lifecycle, backups, node health…), with default channels and rate limits |
+| **Sources** | What triggers a notification — per-event (security, subscription, tenant lifecycle, backups, node health, node memory events, bandwidth, mail health…), with default channels and rate limits |
 | **Providers** | The transports that deliver them (SMTP relays today — your own Stalwart, Postmark, Brevo, …) |
 | **Templates** | Operator-editable Handlebars templates per source/channel/locale |
 | **Delivery Log** | Per-channel delivery outcomes, for audit and triage |
 
 Node-health transitions, backup failures, security-hardening drift, and tenant
-lifecycle events all flow through here. Each source can be enabled, disabled, and
-routed independently. Email is sent asynchronously, so a slow relay never blocks
-the platform.
+lifecycle events all flow through here — as do the resource and mail alert
+families:
+
+- **Bandwidth** — tenants and admins are told at 80/90/100% of a tenant's
+  monthly allowance; at 100% the tenant's sites soft-switch to a maintenance
+  page ([details](../admin/plans-and-subscriptions.md#the-monthly-bandwidth-cap)).
+- **Tenant resource saturation** — a tenant sitting at ~90%/100% of its CPU,
+  memory, or storage allocation alerts the admins (time to upsell or resize
+  before things break).
+- **Node CPU** — sustained node-level CPU saturation fires warning/critical
+  SLO alerts.
+- **Node memory events** — SystemOOM / evictions / OOM-kills, see
+  [Memory events](#memory-events) above.
+- **Mail health** — outbound send-abuse saturation, spam-complaint rates,
+  mailbox quota, the mail IP appearing on a DNS blocklist, and certificate
+  expiry all reach you as notifications, not just as panel banners
+  ([mail operations](mail-operations.md)).
+
+Each source can be enabled, disabled, and routed independently. Email is sent
+asynchronously, so a slow relay never blocks the platform.
 
 !!! tip "Wire up a Provider on day one"
     Configure at least one SMTP Provider and confirm a test notification arrives.

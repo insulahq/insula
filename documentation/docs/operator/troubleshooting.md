@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Troubleshooting
@@ -99,6 +99,17 @@ hooks. A failing hook can leave a tenant mid-transition.
    exists (`LIFECYCLE_HOOK_<NAME>=disable`) — use it only during the outage.
    Details:
    [ADR-033](https://github.com/insulahq/insula/blob/main/docs/architecture/adr/ADR-033-tenant-lifecycle-hook-registry.md).
+
+## Tenant pods are being evicted / OOM-killed
+
+Under real memory pressure this is the platform working as designed: nodes
+run swap-less with reserved headroom, and tenant workloads are always
+reclaimed before system components. Check **Monitoring → Node Health →
+Memory events** for exactly what was hit and when (you'll also have been
+notified). Chronic tenant evictions mean the node is oversubscribed — add a
+node, or move/upsize the noisy tenant. A **SYSTEM** row in that card is
+different: platform components should never lose the memory fight — treat it
+as an incident and check node sizing immediately.
 
 ## A node is running out of disk
 

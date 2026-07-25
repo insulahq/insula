@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Nodes & cluster
@@ -125,6 +125,29 @@ If a node was removed from k3s out-of-band, its inventory row survives as an
 **Orphaned** card with no live Kubernetes node behind it. Use **Remove orphan**
 to delete just the stale row — no cluster action is taken.
 
+## How nodes behave under memory pressure
+
+Insula nodes are deliberately configured so that running out of memory hurts
+tenants before it ever hurts the platform:
+
+- **No swap.** The installer disables swap and keeps it off (`cluster doctor`
+  flags drift). On a hosting node, swap doesn't prevent memory problems — it
+  converts them from a quick, visible pod restart into minutes of node-wide
+  slowness that pages nobody.
+- **Reserved headroom.** Each node reserves ~1.28 GB of RAM for the operating
+  system and the Kubernetes machinery, so tenant workloads can never starve
+  the node itself. Factor this into sizing — see
+  [Requirements](../getting-started/requirements.md).
+- **Tenants are evicted first.** Platform components run at a higher scheduling
+  priority than tenant workloads. When a node genuinely runs short, the kubelet
+  reclaims tenant pods (which restart or reschedule automatically) while the
+  control plane, databases, and mail keep running.
+
+Every memory incident — evictions, kernel OOM kills, containers hitting their
+memory limits — lands in the **Memory events** card on
+[Monitoring → Node Health](monitoring.md#memory-events) and notifies the
+admins.
+
 ## The node terminal
 
 The **Terminal** button (red, on every Ready node card) opens a **root shell on
@@ -163,5 +186,7 @@ operator-disable switch are in the
     Traefik sticky cookie plus `Service.sessionAffinity: ClientIP` keep the
     WebSocket on the replica that created the session; a **Reconnect** button
     recovers from a mid-session pod roll. The feature flag is
-    `node-terminal-enabled` in the `platform-config` ConfigMap — default ON in
-    dev/staging, OFF in production.
+    `node-terminal-enabled` in the `platform-config` ConfigMap — ON by default
+    in every environment, production included (it's the break-glass shell you
+    want most exactly when things are broken); flip it off there if your
+    compliance posture demands it.

@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # The catalog & applications
@@ -11,10 +11,14 @@ bringing **their own container** image or compose file. As the admin you decide
 *which catalogs exist* (the repositories that feed the catalog), curate what's
 featured, and oversee what tenants have actually installed.
 
-A default **Official Catalog** (`insulahq/application-catalog`) is registered and
-active out of the box, so tenants can deploy from day one. You can remove it and
-add your own catalog repositories at any time — see the **Repositories** tab
-below. (Concept overview: [The catalog](../concepts/catalog.md).)
+A default **Official Catalog** (`insulahq/application-catalog`) is registered
+and active out of the box, so tenants can deploy from day one. It contains
+**primitives only** — runtimes, databases, services, static sites — all
+first-party images. To offer full app stacks (WordPress, Nextcloud, Gitea, …),
+add the **community catalog** (`insulahq/application-catalog-community`) on the
+**Repositories** tab; it's opt-in by design so the default catalog stays small
+and auditable. You can remove either and add your own catalog repositories at
+any time. (Concept overview: [The catalog](../concepts/catalog.md).)
 
 ## The Applications page
 

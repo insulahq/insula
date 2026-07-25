@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Mail operations
@@ -93,6 +93,25 @@ Work the checklist:
     Forward DNS and TLS are handled for you. **PTR / FCrDNS is set at your VPS
     provider, not in Insula** — it's the most common reason fresh mail nodes get
     rejected. Set it for every node that sends mail.
+
+## Mail alerts — the platform watches for you
+
+The checks above are also wired into the
+[notification system](monitoring.md#notifications), so mail health reaches
+your inbox instead of waiting to be noticed on a dashboard:
+
+- **Outbound send-abuse** — a tenant saturating their sending limits fires
+  warning/critical alerts (paired with the per-tenant sending-protection
+  throttle).
+- **Spam-complaint rate** — feedback-loop complaints per domain, with
+  optional automatic throttling of the offender.
+- **Mailbox quota** — tenants are warned as mailboxes approach their size cap.
+- **DNS blocklist listing** — your sending IP appearing on a DNSBL alerts
+  admins immediately, before customers notice bounces.
+- **Certificate expiry / renewal failure** — covers the mail TLS endpoints.
+
+Each source is individually routable and rate-limited under
+**Platform Settings → Notifications**.
 
 ## Mail snapshots and storage
 
