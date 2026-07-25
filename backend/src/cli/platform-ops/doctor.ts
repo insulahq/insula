@@ -110,6 +110,27 @@ async function checkHostMigrations(deps: Deps): Promise<Check> {
   };
 }
 
+function checkSwapOff(deps: Deps): Check {
+  // K8s nodes run swap-less (operator decision 2026-07-25): paging turns a
+  // fast, alertable pod OOM-kill into un-alertable node-wide thrash under
+  // the co-located etcd/CNPG/Longhorn, and the eviction design
+  // (eviction-hard=memory.available<256Mi + platform-critical PriorityClass)
+  // assumes real memory pressure is visible to the kubelet. bootstrap +
+  // host-migration 2026.7.2/0001 disable swap; this flags later drift.
+  const swaps = deps.readFile('/proc/swaps');
+  if (swaps === null) return { name: 'swap disabled', status: 'ok', detail: '/proc/swaps unreadable — assuming no swap' };
+  const devices = swaps.trim().split('\n').slice(1).filter(Boolean);
+  if (devices.length > 0) {
+    const names = devices.map((l) => l.split(/\s+/)[0]).join(', ');
+    return {
+      name: 'swap disabled',
+      status: 'warn',
+      detail: `ACTIVE swap: ${names} — k8s nodes must run swap-less (swapoff -a + comment /etc/fstab; see host-migration 2026.7.2/0001)`,
+    };
+  }
+  return { name: 'swap disabled', status: 'ok', detail: 'no active swap devices' };
+}
+
 async function checkNodesReady(deps: Deps, kc: { path: string } | null): Promise<Check> {
   const r = await deps.exec(
     KUBECTL,
@@ -147,6 +168,7 @@ export async function clusterDoctor(args: string[], deps: Deps): Promise<number>
     await checkReachable(deps, kc),
     await checkRclone(deps),
     await checkHostMigrations(deps),
+    checkSwapOff(deps),
     await checkNodesReady(deps, kc),
   ];
 

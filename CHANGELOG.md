@@ -111,6 +111,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Side effect: the admin panel no longer reports the platform version as
   "unknown" on staging/production.
 
+### Added
+- **Node memory protection + OOM/eviction observability** (operator decision
+  2026-07-25). Nodes run swap-less (bootstrap + host-migration `2026.7.2/0001`
+  enforce it; `cluster doctor` flags drift) with kubelet
+  `eviction-hard=memory.available<256Mi` + `system-reserved=1Gi` via a k3s
+  config drop-in shared by servers and agents. Eviction order is now
+  tenant-first by construction: platform Deployments/StatefulSets/CronJobs +
+  CNPG system-db carry the new `platform-critical` PriorityClass (host-agent
+  DaemonSets keep `system-node-critical`), while tenant pods stay at
+  priority 0. Kernel SystemOOM and kubelet-eviction events are recorded by
+  the node-health reconciler (`node_memory_events`, 30-day window), listed on
+  Monitoring → Node health, and dispatched as categorized admin notifications
+  — critical when a SYSTEM workload is hit (abnormal by design), warning for
+  tenant evictions (the intended backpressure).
+
 ### Changed
 - **Admin node-terminal is now enabled in PRODUCTION by default** (operator
   decision 2026-07-24). The old "off until an HA-stickiness path exists" caveat

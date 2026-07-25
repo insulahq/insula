@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Wrench } from 'lucide-react';
+import { Loader2, RefreshCw, AlertCircle, AlertTriangle, CheckCircle2, Wrench, Flame } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
-import { useNodeHealth, useReconcileNodeHealth, type NodeHealthEntry, type NodeHealthSeverity } from '@/hooks/use-node-health';
+import { useNodeHealth, useNodeMemoryEvents, useReconcileNodeHealth, type NodeHealthEntry, type NodeHealthSeverity, type NodeMemoryEvent } from '@/hooks/use-node-health';
 import NodeRecoveryModal from '@/components/NodeRecoveryModal';
 
 const SEVERITY_BADGE: Record<NodeHealthSeverity, 'error' | 'warning' | 'healthy'> = {
@@ -195,6 +195,8 @@ export default function NodeHealthPanel() {
         </div>
       )}
 
+      <MemoryEventsCard />
+
       <div className="text-xs text-gray-500 dark:text-gray-400">
         Reconciler runs every 5 min. Notifications fire on severity transitions and re-fire every 24 h while a node remains warning/critical. Recovery actions audit-log every run; see{' '}
         <code className="rounded bg-gray-100 px-1 py-0.5 text-[10px] dark:bg-gray-800">docs/operations/NODE_HEALTH_MONITORING.md</code> for the action catalogue.
@@ -202,6 +204,93 @@ export default function NodeHealthPanel() {
 
       {recoveryNode && (
         <NodeRecoveryModal entry={recoveryNode} onClose={() => setRecoveryNode(null)} />
+      )}
+    </div>
+  );
+}
+
+function memoryEventLabel(e: NodeMemoryEvent): string {
+  if (e.kind === 'system-oom') return 'SystemOOM';
+  return e.systemWorkload ? 'Evicted (SYSTEM)' : 'Evicted';
+}
+
+/**
+ * Recent SystemOOM / pod-eviction events (30-day window). The eviction
+ * design takes tenant pods first (platform-critical PriorityClass +
+ * eviction-hard=memory.available<256Mi), so system-workload rows are
+ * highlighted red — they should not be happening.
+ */
+function MemoryEventsCard() {
+  const { data, isLoading, isError } = useNodeMemoryEvents();
+
+  const events = data?.data.events ?? [];
+
+  return (
+    <div className="space-y-2" data-testid="memory-events-card">
+      <div className="flex items-center gap-2">
+        <Flame size={14} className="text-gray-500 dark:text-gray-400" />
+        <span className="text-sm font-medium text-gray-900 dark:text-gray-100">Memory events</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">SystemOOM + kubelet evictions, last 30 days</span>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center gap-2 p-3 text-xs text-gray-500 dark:text-gray-400">
+          <Loader2 className="animate-spin" size={12} /> loading memory events…
+        </div>
+      ) : isError ? (
+        <div className="rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+          Failed to load memory events.
+        </div>
+      ) : events.length === 0 ? (
+        <div className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
+          No SystemOOM or eviction events in the last 30 days — memory headroom is holding.
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-700">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-left text-xs uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+              <tr>
+                <th className="px-3 py-2 font-medium">When</th>
+                <th className="px-3 py-2 font-medium">Kind</th>
+                <th className="px-3 py-2 font-medium">Node</th>
+                <th className="px-3 py-2 font-medium">Workload</th>
+                <th className="px-3 py-2 font-medium">Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((e) => (
+                <tr key={e.id} className="border-t border-gray-100 dark:border-gray-700/40" data-testid={`memory-event-row-${e.id}`}>
+                  <td className="whitespace-nowrap px-3 py-2 text-xs text-gray-600 dark:text-gray-300">{formatRelative(e.occurredAt)}</td>
+                  <td className="px-3 py-2">
+                    <span
+                      className={
+                        e.systemWorkload
+                          ? 'inline-block rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800 dark:bg-red-900/40 dark:text-red-300'
+                          : 'inline-block rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                      }
+                    >
+                      {memoryEventLabel(e)}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 font-mono text-xs">{e.nodeName}</td>
+                  <td className="px-3 py-2 font-mono text-xs">
+                    {e.podName ? (
+                      <>
+                        {e.podName}
+                        {e.namespace && <span className="text-gray-400 dark:text-gray-500">@{e.namespace}</span>}
+                      </>
+                    ) : (
+                      <span className="text-gray-400">node</span>
+                    )}
+                  </td>
+                  <td className="max-w-md truncate px-3 py-2 text-xs text-gray-600 dark:text-gray-300" title={e.message}>
+                    {e.message || '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );

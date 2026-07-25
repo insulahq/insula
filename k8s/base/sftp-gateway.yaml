@@ -84,6 +84,9 @@ spec:
       labels:
         app: sftp-gateway
     spec:
+      # Data-plane hostPort agent — same eviction tier as the other host
+      # DaemonSets (never shed before tenant/platform workloads).
+      priorityClassName: system-node-critical
       serviceAccountName: sftp-gateway
       # Every control-plane server exposes the port. `insula.host/node-role`
       # is stamped by bootstrap.sh, so this needs no per-node opt-in label

@@ -3,9 +3,10 @@ import { apiFetch } from '@/lib/api-client';
 import type {
   NodeHealthEntry,
   NodeHealthSeverity,
+  NodeMemoryEvent,
 } from '@insula/api-contracts';
 
-export type { NodeHealthEntry, NodeHealthSeverity };
+export type { NodeHealthEntry, NodeHealthSeverity, NodeMemoryEvent };
 
 interface NodeHealthSummaryEnvelope {
   readonly data: {
@@ -27,6 +28,23 @@ export function useNodeHealth() {
   return useQuery({
     queryKey: ['node-health', 'summary'],
     queryFn: () => apiFetch<NodeHealthSummaryEnvelope>('/api/v1/admin/node-health/summary'),
+    refetchInterval: 30_000,
+  });
+}
+
+/**
+ * Recent distinct memory events (kernel SystemOOM, kubelet pod
+ * evictions) recorded by the reconciler — 30-day window, newest
+ * first. `systemWorkload: true` rows are the abnormal ones: the
+ * eviction design takes tenant pods first.
+ */
+export function useNodeMemoryEvents(limit = 50) {
+  return useQuery({
+    queryKey: ['node-health', 'memory-events', limit],
+    queryFn: () =>
+      apiFetch<{ data: { events: readonly NodeMemoryEvent[] } }>(
+        `/api/v1/admin/node-health/memory-events?limit=${limit}`,
+      ),
     refetchInterval: 30_000,
   });
 }

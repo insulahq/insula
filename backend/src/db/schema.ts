@@ -3762,6 +3762,28 @@ export const nodeHealthState = pgTable('node_health_state', {
 export type NodeHealthState = typeof nodeHealthState.$inferSelect;
 export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
 
+// Distinct node memory events (kernel SystemOOM on a node, kubelet pod
+// evictions) recorded by the node-health reconciler for the admin UI +
+// categorized admin notifications (migration 0074, operator decision
+// 2026-07-25). dedupe_key = k8s event uid + aggregation count, so a
+// re-observed (aggregated) event lands once per occurrence. Pruned to a
+// 30-day window on each reconcile tick.
+export const nodeMemoryEvents = pgTable('node_memory_events', {
+  id: varchar('id', { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  dedupeKey: text('dedupe_key').notNull().unique(),
+  kind: varchar('kind', { length: 16 }).notNull(), // 'system-oom' | 'pod-evicted'
+  nodeName: text('node_name').notNull(),
+  namespace: text('namespace'),
+  podName: text('pod_name'),
+  systemWorkload: boolean('system_workload').notNull().default(false),
+  message: text('message').notNull().default(''),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type NodeMemoryEventRow = typeof nodeMemoryEvents.$inferSelect;
+export type NewNodeMemoryEventRow = typeof nodeMemoryEvents.$inferInsert;
+
 // ─── Operator-managed trusted upstream proxies (migration 0020) ──────────────
 //
 // CIDRs whose X-Forwarded-For chain is honored by nginx (admin-panel +

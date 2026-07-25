@@ -170,6 +170,9 @@ spec:
   # other system Deployment. CNPG `Cluster.spec.affinity` has its
   # own schema (no nodeAffinity sub-field through 1.21), so we set
   # nodeSelector here instead of patching via the component.
+  # Evicted only after every tenant-tier pod (operator decision
+  # 2026-07-25) — the platform DB is the spine, tenants go first.
+  priorityClassName: platform-critical
   affinity:
     nodeSelector:
       insula.host/node-role: server

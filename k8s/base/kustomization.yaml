@@ -158,3 +158,31 @@ resources:
   # end-to-end validation on local DinD k3s. Until then the dev overlay
   # wires it directly via k8s/overlays/dind/stalwart-mail/.
   # - stalwart-mail/
+
+# ── platform-critical eviction protection (operator decision 2026-07-25) ──
+# Every base Deployment/StatefulSet/CronJob gets priorityClassName
+# platform-critical so kubelet memory eviction always takes tenant pods
+# (tenant-default, priority 0) first. DaemonSets are deliberately NOT
+# blanket-patched — the host agents carry system-node-critical (2e9)
+# explicitly and a blanket add would DOWNGRADE them. See
+# k8s/base/priority-classes.yaml. The production overlay applies the
+# same patches to its mail/webmail resources.
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: CronJob
+    patch: |-
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/priorityClassName
+        value: platform-critical

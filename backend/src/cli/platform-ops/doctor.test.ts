@@ -119,6 +119,28 @@ describe('clusterDoctor', () => {
     expect(out.join('\n')).toMatch(/\[WARN\] platform-ops version .*self-upgrade pending/);
   });
 
+  it('active swap → WARN with the device name (k8s nodes run swap-less)', async () => {
+    const files = {
+      ...HEALTHY.files,
+      '/proc/swaps': 'Filename\t\tType\t\tSize\tUsed\tPriority\n/swapfile\tfile\t2097148\t0\t-2\n',
+    };
+    const { deps, out } = fakeDeps({ ...HEALTHY, files });
+    expect(await clusterDoctor([], deps)).toBe(0);
+    const text = out.join('\n');
+    expect(text).toMatch(/\[WARN\] swap disabled\s+ACTIVE swap: \/swapfile/);
+    expect(text).toMatch(/Overall: healthy, 1 WARN/);
+  });
+
+  it('header-only /proc/swaps → swap check OK', async () => {
+    const files = {
+      ...HEALTHY.files,
+      '/proc/swaps': 'Filename\t\tType\t\tSize\tUsed\tPriority\n',
+    };
+    const { deps, out } = fakeDeps({ ...HEALTHY, files });
+    expect(await clusterDoctor([], deps)).toBe(0);
+    expect(out.join('\n')).toMatch(/\[ OK \] swap disabled\s+no active swap devices/);
+  });
+
   it('--json emits the structured check list + correct exit', async () => {
     const files = { ...HEALTHY.files };
     delete files['/etc/platform/cosign.pub'];

@@ -24,6 +24,7 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { nodeHealthState, notifications, users } from '../../db/schema.js';
 import { notifyAdminNodeDown } from '../notifications/events.js';
+import { recordMemoryEvents } from './memory-events.js';
 import { readNodeDiskStats } from './kubelet-disk.js';
 import {
   buildEntry,
@@ -61,10 +62,12 @@ interface RawCSINode {
 interface RawEvent {
   readonly reason?: string;
   readonly type?: string;
-  readonly involvedObject?: { readonly kind?: string };
+  readonly message?: string;
+  readonly count?: number;
+  readonly involvedObject?: { readonly kind?: string; readonly name?: string; readonly namespace?: string };
   readonly source?: { readonly host?: string };
   readonly reportingInstance?: string;
-  readonly metadata?: { readonly creationTimestamp?: string };
+  readonly metadata?: { readonly uid?: string; readonly creationTimestamp?: string };
   readonly eventTime?: string;
   readonly lastTimestamp?: string;
   readonly firstTimestamp?: string;
@@ -84,11 +87,17 @@ export async function reconcileNodeHealth(
   readonly notified: ReadonlyArray<string>;
 }> {
   // ── 1. Pull all data sources in parallel ────────────────────────
-  const [nodeList, csiNodeList, eventList] = await Promise.all([
+  const [nodeList, csiNodeList, eventList, oomEventList] = await Promise.all([
     k8s.core.listNode({}) as Promise<{ items?: ReadonlyArray<RawNode> }>,
     k8s.storage.listCSINode({}) as Promise<{ items?: ReadonlyArray<RawCSINode> }>,
     k8s.core.listEventForAllNamespaces({
       fieldSelector: 'reason=Evicted',
+    } as Parameters<typeof k8s.core.listEventForAllNamespaces>[0])
+      .catch(() => ({ items: [] as RawEvent[] })) as Promise<{ items?: ReadonlyArray<RawEvent> }>,
+    // Kernel OOM kills surface as kubelet-posted SystemOOM events on the
+    // NODE object (operator decision 2026-07-25: must be visible + alerted).
+    k8s.core.listEventForAllNamespaces({
+      fieldSelector: 'reason=SystemOOM',
     } as Parameters<typeof k8s.core.listEventForAllNamespaces>[0])
       .catch(() => ({ items: [] as RawEvent[] })) as Promise<{ items?: ReadonlyArray<RawEvent> }>,
   ]);
@@ -209,6 +218,10 @@ export async function reconcileNodeHealth(
   if (stale.length > 0) {
     await db.delete(nodeHealthState).where(inArray(nodeHealthState.nodeName, stale.map((s) => s.nodeName)));
   }
+
+  // ── 6. Record distinct memory events + notify admins ───────────
+  // (never throws — a notification hiccup must not fail the tick)
+  await recordMemoryEvents(db, eventList.items ?? [], oomEventList.items ?? [], now);
 
   return { entries, notified };
 }
