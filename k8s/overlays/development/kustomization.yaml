@@ -212,7 +212,7 @@ images:
   - name: ghcr.io/insulahq/insula/firewall-reconciler
     newTag: "20260724194244-81b03ac"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20260724194204-81b03ac"
+    newTag: "20260725204454-64c3d24"
   - name: ghcr.io/insulahq/insula/backup-rclone
     newTag: "20260725204115-d4c533d"
   - name: ghcr.io/insulahq/insula/sftp-gateway
