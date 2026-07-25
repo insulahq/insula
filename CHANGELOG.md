@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Worker nodes missed the kubelet memory-protection drop-in** — host-migration
+  `2026.7.2/0001` skipped any node without `/etc/rancher/k3s`, which k3s AGENT
+  installs never create (workers only have `/etc/rancher/node`). Caught live by
+  the new `node-memory-protection` integration suite on staging (worker
+  allocatable gap 0 vs the servers' 1280Mi). Follow-up migration
+  `2026.7.3/0001` re-applies with a unit-existence guard + `install -d`;
+  content-compare makes it a no-op on already-converged nodes.
+
 ### Added
 - **Node memory protection + OOM/eviction observability** (operator decision
   2026-07-25). Nodes run swap-less (bootstrap + host-migration `2026.7.2/0001`
