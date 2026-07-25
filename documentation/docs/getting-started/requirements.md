@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Requirements
@@ -25,6 +25,18 @@ Hetzner CX32): the full platform plus ~10 starter tenants fits with headroom.
 Because tenant pods request little (≈50m CPU / 64Mi each on Starter) and can
 scale to zero when idle, a single 4 vCPU / 8 GB worker comfortably hosts ~50
 starter sites.
+
+Two memory notes for capacity planning:
+
+- **Each node reserves ~1.28 GB of RAM** for the OS and the Kubernetes
+  machinery (so tenant load can never starve the node itself). An 8 GB node
+  offers roughly 6.7 GB to workloads; on a 4 GB "try it" node the reservation
+  is proportionally chunky — fine for evaluation, tight for production.
+- **Don't provision swap.** The installer disables it and keeps it off:
+  Kubernetes nodes run swap-less so memory pressure resolves as a fast,
+  visible pod eviction (tenants first, platform last) instead of node-wide
+  thrashing. See
+  [how nodes behave under memory pressure](../operator/nodes-and-cluster.md#how-nodes-behave-under-memory-pressure).
 
 !!! tip "Add storage before adding nodes"
     When storage runs low but you still have CPU/RAM headroom, attaching a cloud
@@ -103,7 +115,8 @@ Running `bootstrap.sh` installs and configures, on the node:
     - The platform database is **PostgreSQL via CloudNativePG**; the platform
       cache is in-memory (no Redis). Storage is **Longhorn** (single-node falls
       back to local-path when `--skip-longhorn` is used).
-    - Optional `--with-monitoring` adds Prometheus + Loki + Grafana.
+    - Monitoring is built in (a single lightweight VictoriaMetrics pod + an
+      in-platform SLO evaluator) — no separate monitoring stack to install.
     - Authoritative sources:
       [INFRASTRUCTURE_SIZING.md](https://github.com/insulahq/insula/blob/main/docs/operations/INFRASTRUCTURE_SIZING.md),
       `check_os()` in

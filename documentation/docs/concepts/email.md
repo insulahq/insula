@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Email
@@ -55,10 +55,12 @@ permanent zone fixtures (ADR-047).
 Tenants and their users read mail in a browser. Two webmail engines are
 available:
 
-- **Roundcube** — the classic, battle-tested webmail.
-- **Bulwark** — a modern JMAP-native client (ADR-039).
+- **Bulwark** — a modern JMAP-native client, and the **default** on a fresh
+  install.
+- **Roundcube** — the classic, battle-tested webmail, available as an
+  alternative.
 
-A platform-wide default selects which engine new users get; both can coexist.
+A platform-wide selector chooses which engine serves webmail; both can coexist.
 Webmail is reachable at `webmail.<domain>` (auto-provisioned) and at a
 platform-wide webmail address. Optional Contacts/Calendar/Files surfaces can be
 toggled on per platform; native DAV clients (Thunderbird, iOS, macOS) keep

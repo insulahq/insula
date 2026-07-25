@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Backups & restore
@@ -110,6 +110,12 @@ three sections:
   drill runs, so you can prove recovery works before you need it.
 - **Restore Instructions** — context-aware, pre-filled runbook steps for
   applying the secrets bundle and restoring Postgres and mail.
+- **Migrate Tenants** — import tenants from *another* Insula cluster's backup
+  target: point this cluster (read-only) at the source target, scan it, and
+  import one tenant or all of them. Each import recreates the tenant from its
+  latest bundle with its exact resource limits pinned, so a customer moves
+  between clusters byte-identical — the only step left to you is repointing
+  DNS.
 
 The deep operator runbooks for these live in the
 [Operator guide](../operator/system-backups-dr.md).

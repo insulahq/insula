@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # System backups & disaster recovery
@@ -129,6 +129,20 @@ bundle decrypts with the key you have *before* you touch anything destructive.
 The full, scripted cold-restore (etcd → Postgres → secrets → Longhorn → smoke
 test) is in the
 [Disaster Recovery runbook](https://github.com/insulahq/insula/blob/main/docs/operations/DISASTER_RECOVERY.md).
+
+## Moving tenants between clusters
+
+Tenant backups are cluster-agnostic, which makes cluster-to-cluster moves a
+read-only operation on the source: on the **destination** cluster, open
+**Backups → Disaster Recovery → Migrate Tenants**, point it (read-only) at the
+source cluster's tenant backup target, scan, and import a single tenant or all
+of them. Each import rebuilds the tenant from its latest bundle — namespace,
+sites, databases, mail — with its exact resource limits pinned, regardless of
+how the destination's plans are defined. Cutover is then just DNS: repoint the
+tenant's records at the new cluster and decommission at your leisure.
+
+This is also the escape hatch for evacuating a failing cluster and the
+mechanism for splitting tenants across regions.
 
 ## Drills — practise before you need it
 

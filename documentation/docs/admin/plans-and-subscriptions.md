@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Plans & subscriptions
@@ -35,11 +35,26 @@ Each plan has these fields:
 | **Storage Limit (GB)** | Max persistent storage. |
 | **Max Sub-Users** | How many additional logins the tenant may create. |
 | **Max Mailboxes** | How many mailboxes the tenant may create. |
+| **Bandwidth (GB/month)** | Monthly served-traffic allowance (default 100 GB). See [the monthly bandwidth cap](#the-monthly-bandwidth-cap) below. |
 | **Weekly AI Budget (cents)** | The tenant's weekly spend cap for AI-assisted file editing (below). Shown live as a per-week currency figure. |
 | **Description** | Optional free text. |
 
 The currency that prices are shown in comes from
 [Platform → Limits & Regional](platform-settings.md).
+
+## The monthly bandwidth cap
+
+Every plan carries a monthly bandwidth allowance, and each tenant can be given
+an individual override on their **Resource Limits** card. The platform meters
+each tenant's served traffic hourly and resets the counter on the 1st of the
+month:
+
+- At **80%** and **90%**, both the tenant and the admins get a notification.
+- At **100%**, the tenant's sites switch to a friendly **"bandwidth limit
+  reached"** maintenance page instead of serving traffic — a *soft* cap: no
+  data is touched, mail keeps flowing, and the panel stays reachable.
+- Serving resumes automatically at the month rollover, or immediately when you
+  raise the tenant's limit.
 
 !!! note "Deprecating instead of deleting"
     A plan in `deprecated` status is greyed out in the list and won't be

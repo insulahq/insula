@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Files & SFTP
@@ -70,14 +70,23 @@ changes for you instead of editing by hand:
 
 To upload with a desktop tool (FileZilla, Cyberduck, WinSCP) or automate
 transfers, create a **file-transfer account** under **SFTP Access**. These
-accounts support **SFTP, SCP, rsync, and FTPS**.
+accounts support **SFTP, SCP, and rsync** — all over one SSH connection.
 
 ### Connection details
 
 The **SFTP Access** page shows a **Connection Details** box with the **Host**,
-**Port**, FTPS port, and supported **Protocols** — each with a copy button.
-Expand **Usage Examples** for ready-to-paste command lines for every protocol,
-using either password or SSH-key authentication.
+**Port**, and supported **Protocols** — each with a copy button. On a standard
+install the host is **`files.<your provider's domain>`** on port **23022**
+(the platform runs the gateway on every server node, so the hostname keeps
+working through node changes). Expand **Usage Examples** for ready-to-paste
+command lines for every protocol, using either password or SSH-key
+authentication.
+
+!!! note "No FTP/FTPS"
+    The gateway deliberately speaks only SSH-based protocols. Plain FTP and
+    FTPS are not offered — SFTP/SCP/rsync cover the same use cases with
+    stronger authentication and none of FTP's firewall pain. Any modern
+    client (FileZilla included) supports SFTP out of the box.
 
 ### Create a file-transfer user
 
