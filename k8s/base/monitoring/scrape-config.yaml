@@ -56,8 +56,14 @@ data:
           # metering (namespace-labelled; the backend sums per namespace via
           # increase(), which absorbs counter resets + pod churn). Bounded
           # extra cardinality (~pods×interfaces); everything else stays dropped.
+          # container_oom_events_total: kernel OOM detection (2026-07-25) —
+          # sourced from cgroup memory.events, so it works even where the
+          # kubelet's kmsg oomparser is broken ("/dev/kmsg: broken pipe",
+          # observed live on DEV: kernel OOM kills produced NO SystemOOM
+          # event). id="/" = global kernel OOMs; per-namespace series feed
+          # the system-container-oom SLO rule. One series per container.
           - source_labels: [__name__]
-            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes|network_transmit_bytes_total)|machine_memory_bytes|machine_cpu_cores'
+            regex: 'container_(memory_working_set_bytes|cpu_usage_seconds_total|fs_usage_bytes|network_transmit_bytes_total|oom_events_total)|machine_memory_bytes|machine_cpu_cores'
             action: keep
 
       # ── kubelet: pod/container requests-level resource metrics ──

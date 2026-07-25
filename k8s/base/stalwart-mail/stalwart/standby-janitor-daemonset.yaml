@@ -43,6 +43,7 @@ spec:
         app: mail-standby-janitor
         app.kubernetes.io/component: mail-standby-janitor
     spec:
+      priorityClassName: platform-critical
       tolerations:
         - operator: Exists
       restartPolicy: Always

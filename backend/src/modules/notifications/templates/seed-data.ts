@@ -574,6 +574,65 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
   },
 
   {
+    categoryId: 'admin.node_memory_event_critical',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Node memory event on {{nodeName}} (system impact)',
+    bodyTemplate: emailMjml(
+      'Node memory event (system)',
+      '{{summary}} on node {{nodeName}}. System workloads should not be losing this fight — check Monitoring \u2192 Node health.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'summary', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.node_memory_event_critical',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Node memory event (system)',
+    bodyTemplate: '{{summary}} on node {{nodeName}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'summary', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.node_memory_event_warning',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Tenant evictions on {{nodeName}} (memory pressure)',
+    bodyTemplate: emailMjml(
+      'Node memory event (tenant evictions)',
+      '{{summary}} on node {{nodeName}}. This is the designed backpressure under memory pressure \u2014 review node headroom / tenant sizing if it repeats.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'summary', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.node_memory_event_warning',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Tenant evictions (memory pressure)',
+    bodyTemplate: '{{summary}} on node {{nodeName}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nodeName', type: 'string', required: true },
+      { name: 'summary', type: 'string', required: true },
+    ],
+  },
+
+  {
     categoryId: 'admin.security_hardening_drift',
     channel: 'email',
     locale: 'en',

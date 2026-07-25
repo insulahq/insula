@@ -74,6 +74,28 @@ components:
   - ../../components/admin-auth-gate-cookie
 
 patches:
+  # ── platform-critical eviction protection (operator decision 2026-07-25) ──
+  # Re-applies the base blanket (harmless) and covers the mail/webmail
+  # resources added at THIS overlay level (stalwart, roundcube, bulwark).
+  # DaemonSets keep their explicit system-node-critical — not patched.
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: CronJob
+    patch: |-
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/priorityClassName
+        value: platform-critical
   # Release version → platform-version ConfigMap (stamped by cut-release.sh).
   # staging bases on this overlay and inherits it, so platform-ops on staging
   # targets the RC the cluster is actually running.
@@ -88,24 +110,24 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "2026.7.1"
+    newTag: "2026.6.16"
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "2026.7.1"
+    newTag: "2026.6.16"
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "2026.7.1"
+    newTag: "2026.6.16"
   # Internal DaemonSet/sidecar images — timestamp-sha tagged by each image's own
   # CI (.github/scripts/pin-image-tag.sh pins them in overlays/development).
   # cut-release.sh snapshots the current development pins here at cut time so the
   # release tag is reproducible (placeholders until the first cut).
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20260724194212-81b03ac"
+    newTag: "20260610095807-ab58b4d"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260724194244-81b03ac"
+    newTag: "20260610095843-ab58b4d"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20260724194204-81b03ac"
+    newTag: "20260610095804-ab58b4d"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260724194017-81b03ac"
+    newTag: "20260610095620-ab58b4d"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260724193955-81b03ac"
+    newTag: "20260610095545-ab58b4d"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260724193944-81b03ac"
+    newTag: "20260616013149-3c95ecd"

@@ -4,6 +4,7 @@ import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { readNodeHealthSummary, reconcileNodeHealth } from './scheduler.js';
+import { readMemoryEvents } from './memory-events.js';
 import {
   recyclePod,
   cleanStalePodsOnNode,
@@ -35,6 +36,32 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async () => {
     return success(await readNodeHealthSummary(app.db));
+  });
+
+  /**
+   * GET /api/v1/admin/node-health/memory-events?limit=50
+   *
+   * Recent distinct SystemOOM / pod-eviction events (30-day window,
+   * recorded by the reconciler — operator decision 2026-07-25: memory
+   * incidents must be UI-visible). Newest first. `systemWorkload: true`
+   * rows are the abnormal ones — the eviction design takes tenants
+   * first, so a system casualty deserves attention.
+   */
+  app.get('/admin/node-health/memory-events', {
+    schema: {
+      tags: ['NodeHealth'],
+      summary: 'Recent node memory events (SystemOOM, pod evictions)',
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 200, default: 50 },
+        },
+      },
+    },
+  }, async (request) => {
+    const { limit = 50 } = request.query as { limit?: number };
+    return success({ events: await readMemoryEvents(app.db, limit) });
   });
 
   /**

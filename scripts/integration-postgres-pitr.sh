@@ -170,11 +170,30 @@ else
 fi
 
 log "2) Pre-flight: confirm CNPG cluster system-db is healthy"
-PHASE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}')
+# POLL, don't snapshot: after a PITR recreate (a destructive sibling suite, or
+# this suite's own previous run — e.g. the serial retry pass), CNPG performs one
+# more spec-convergence roll of the primary ("Primary instance is being
+# restarted without a switchover", ~2-5 min incl. the post-restore shutdown
+# checkpoint) AFTER first reporting healthy. A single read during that window
+# fails an otherwise healthy cluster.
+wait_cluster_healthy() { # <desc> <timeout_s>
+  local desc="$1" timeout="$2" start phase
+  start=$(date +%s)
+  while :; do
+    phase=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
+    [[ "$phase" = "Cluster in healthy state" ]] && { echo "  $desc: healthy after $(( $(date +%s) - start ))s"; return 0; }
+    if (( $(date +%s) - start >= timeout )); then
+      echo "  $desc: still '$phase' after ${timeout}s"
+      return 1
+    fi
+    sleep 10
+  done
+}
+wait_cluster_healthy "pre-flight" 360 || fail "cluster not healthy (held ≥360s): $($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}')"
+PHASE="Cluster in healthy state"
 PRIMARY_BEFORE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.currentPrimary}')
 INSTANCES_BEFORE=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.spec.instances}')
 echo "  phase=$PHASE primary=$PRIMARY_BEFORE instances=$INSTANCES_BEFORE"
-[[ "$PHASE" = "Cluster in healthy state" ]] || fail "cluster not healthy: $PHASE"
 
 log "3) Drop+recreate sentinel table BEFORE snapshot, insert pre-snapshot row"
 psql_w "DROP TABLE IF EXISTS e2e_pitr_marker;"
@@ -387,14 +406,14 @@ done
 TOTAL_ELAPSED=$(( $(date +%s) - START ))
 ELAPSED=$TOTAL_ELAPSED  # for final log line
 
-log "8) Confirm source healthy (already verified by status poll above)"
-PHASE_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
-if [[ "$PHASE_AFTER" != "Cluster in healthy state" ]]; then
+log "8) Confirm source healthy (poll — CNPG may roll the primary once more after handoff)"
+if ! wait_cluster_healthy "post-restore" 360; then
+  PHASE_AFTER=$($KUBECTL get cluster -n platform system-db -o jsonpath='{.status.phase}' 2>/dev/null || echo "missing")
   dump_diagnostics
   recover_best_effort
-  fail "source not healthy: $PHASE_AFTER"
+  fail "source not healthy (held ≥360s): $PHASE_AFTER"
 fi
-pass "source healthy: $PHASE_AFTER"
+pass "source healthy: Cluster in healthy state"
 
 log "9) Round-trip assertion"
 ROW_PRE=$(psql_ro "SELECT label FROM e2e_pitr_marker WHERE id=1;" || echo "")

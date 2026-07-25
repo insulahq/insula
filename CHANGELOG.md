@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Node memory protection + OOM/eviction observability** (operator decision
+  2026-07-25). Nodes run swap-less (bootstrap + host-migration `2026.7.2/0001`
+  enforce it; `cluster doctor` flags drift) with kubelet
+  `eviction-hard=memory.available<256Mi` + `system-reserved=1Gi` via a k3s
+  config drop-in shared by servers and agents. Eviction order is now
+  tenant-first by construction: platform Deployments/StatefulSets/CronJobs +
+  CNPG system-db carry the new `platform-critical` PriorityClass (host-agent
+  DaemonSets keep `system-node-critical`), while tenant pods stay at
+  priority 0. Kernel SystemOOM and kubelet-eviction events are recorded by
+  the node-health reconciler (`node_memory_events`, 30-day window), listed on
+  Monitoring → Node health, and dispatched as categorized admin notifications
+  — critical when a SYSTEM workload is hit (abnormal by design), warning for
+  tenant evictions (the intended backpressure).
+- **Integration suite `node-memory-protection`** (wired into `integration-all`,
+  PARALLEL): host layer, eviction ordering, the SystemOOM event pipeline
+  (exactly-once + notification), and the OOM metric path via a contained
+  64Mi-limited hog with a kernel-truth cgroup assert. Feature-gated: SKIPs
+  on clusters running a release older than v2026.7.2.
+
 ## [2026.7.1] - 2026-07-24
 
 ### Added

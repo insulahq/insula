@@ -437,6 +437,30 @@ export async function notifyAdminNodeDown(
   await dispatchSafe(db, 'admin.node_down', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminNodeMemoryEventPayload {
+  readonly nodeName: string;
+  /** Human summary, e.g. "3 tenant pod(s) evicted" or "kernel SystemOOM (2 events)". */
+  readonly summary: string;
+}
+/**
+ * Node memory events (operator decision 2026-07-25): SystemOOM / evictions
+ * touching SYSTEM workloads dispatch critical; tenant-only evictions
+ * dispatch warning. Caller supplies an hour-scoped dedupeKey so a
+ * sustained incident notifies at most once per node/class/hour (the
+ * category rate limits back-stop bursts).
+ */
+export async function notifyAdminNodeMemoryEvents(
+  db: Database,
+  severity: 'critical' | 'warning',
+  payload: AdminNodeMemoryEventPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  const categoryId = severity === 'critical'
+    ? 'admin.node_memory_event_critical'
+    : 'admin.node_memory_event_warning';
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminSecurityHardeningDriftPayload {
   readonly nodeName: string;
   readonly driftSummary?: string;

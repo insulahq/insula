@@ -136,7 +136,9 @@ describe('monitoring evaluator', () => {
 
   it('holds for forSeconds before firing, then resolves with a notification', async () => {
     const db = dbStub();
-    const fetchFn = vmFetchStub({ cnpg: [1] }); // cnpg-down: forSeconds=300
+    // Match the cnpg-down expr by its job selector — a bare 'cnpg' substring
+    // would also hit the system-container-oom rule's cnpg-system namespace.
+    const fetchFn = vmFetchStub({ 'job="cnpg"': [1] }); // cnpg-down: forSeconds=300
     const t0 = new Date('2026-06-12T10:00:00Z');
     await evaluateOnce(db as never, logger, { fetchFn, baseUrl: 'http://vm' }, t0);
     expect(db._rows.get('cnpg-down')?.state ?? 'absent').not.toBe('firing'); // pending

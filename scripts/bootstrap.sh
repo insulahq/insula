@@ -1342,6 +1342,77 @@ EOF
   log "Node logging caps configured (cores=disabled, journal=2GB cap, calico=daily rotate)."
 }
 
+configure_memory_protection() {
+  # Node memory-pressure protection (2026-07-25, operator decision):
+  #
+  #   1. NO swap, ever. Etcd + CNPG Postgres + Longhorn share every
+  #      node; paging turns a fast, alertable pod OOM-kill into
+  #      un-alertable node-wide thrash (missed etcd heartbeats, WAL
+  #      fsync stalls, Longhorn engine timeouts that can fault
+  #      volumes) — and with the default NoSwap kubelet behavior pods
+  #      get zero swap anyway, so a swapfile only masks pressure from
+  #      the eviction manager. Swap being ON is treated as host drift:
+  #      swapoff + comment the fstab entries. `platform-ops cluster
+  #      doctor` flags it too.
+  #
+  #   2. Earlier, tenant-first kubelet eviction instead. The sizing
+  #      model deliberately overcommits (requests << limits), so the
+  #      kubelet must shed tenant pods BEFORE the kernel OOM killer
+  #      picks a victim (which can be k3s or postgres). Written as a
+  #      k3s config.yaml.d drop-in (NOT more --kubelet-arg flags) so
+  #      servers and agents share one file and host-migration
+  #      2026.7.2/0001 can converge existing nodes with the identical
+  #      content. `kubelet-arg+:` APPENDS to the CLI-provided args.
+  #
+  #      eviction-hard REPLACES kubelet's whole default map, so the
+  #      nodefs/imagefs disk-pressure defaults are restated — the
+  #      platform relies on DiskPressure eviction (see
+  #      configure_node_logging_caps).
+  #
+  #      system-reserved shrinks Node Allocatable (default
+  #      enforceNodeAllocatable=pods — no cgroup enforcement on the
+  #      system slice, so it cannot OOM host daemons) reserving
+  #      headroom for k3s/etcd/sshd/journald.
+  #
+  #      Eviction ORDER (tenants first) comes from the
+  #      platform-critical PriorityClass on system workloads
+  #      (k8s/base/priorityclass.yaml) — kubelet evicts
+  #      exceeds-requests pods by ascending priority, and tenant pods
+  #      run at priority 0.
+  if marker_exists "memory-protection" && [[ ! -s /proc/swaps || $(wc -l < /proc/swaps) -le 1 ]]; then
+    log "Memory protection already configured and swap off, skipping."
+    return 0
+  fi
+
+  log "Configuring node memory protection (swap off, kubelet eviction)..."
+
+  # 1. Swap off — re-checked every bootstrap run, not just first.
+  if [[ $(wc -l < /proc/swaps) -gt 1 ]]; then
+    warn "Active swap detected — disabling (k8s nodes must run swap-less; see docs/operations/INFRASTRUCTURE_SIZING.md)."
+    swapoff -a || warn "swapoff -a failed — disable swap manually and re-run."
+  fi
+  if grep -qE '^[^#].*\bswap\b' /etc/fstab 2>/dev/null; then
+    sed -i.platform-bak -E 's|^([^#].*\bswap\b.*)$|# disabled by insula bootstrap (k8s nodes run swap-less): \1|' /etc/fstab
+    log "  fstab swap entries commented (backup: /etc/fstab.platform-bak)."
+  fi
+
+  # 2. kubelet eviction + reservations drop-in (server AND agent read it).
+  install -d -m 0755 /etc/rancher/k3s/config.yaml.d
+  cat > /etc/rancher/k3s/config.yaml.d/50-memory-protection.yaml <<'EOF'
+# Written by bootstrap.sh (configure_memory_protection) and converged on
+# existing clusters by host-migration 2026.7.2/0001-node-memory-protection.
+# kubelet-arg+ APPENDS to CLI-provided kubelet args.
+# eviction-hard replaces the kubelet default map — disk-pressure
+# defaults are deliberately restated.
+kubelet-arg+:
+  - eviction-hard=memory.available<256Mi,nodefs.available<10%,imagefs.available<15%,nodefs.inodesFree<5%
+  - system-reserved=cpu=500m,memory=1Gi
+EOF
+
+  marker_set "memory-protection"
+  log "Memory protection configured (swap off, eviction-hard memory.available<256Mi, system-reserved 1Gi)."
+}
+
 configure_node_net_tuning() {
   # Raise the kernel UDP receive limits so VXLAN, WireGuard, and any
   # tenant UDP workload don't hit rcvbuf overflow under gigabit bursts.
@@ -7745,6 +7816,7 @@ main() {
   install_packages
   if [[ "$DRY_RUN" != true ]]; then
     configure_node_logging_caps
+    configure_memory_protection
     configure_node_net_tuning
   fi
   if [[ "$DRY_RUN" == true ]]; then
