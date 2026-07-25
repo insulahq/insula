@@ -12,14 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Durable container-OOM detection.** The node-health reconciler now records
+  containers OOM-killed at their memory limit (from container status, which is
+  reliable even where cadvisor's kmsg OOM parser is broken and where a
+  short-lived kill's metric series is torn down before the next scrape). These
+  appear in the **Memory events** card and dispatch the same admin
+  notifications as evictions — critical for system workloads, warning for
+  tenant ones.
+
 ### Fixed
-- **Worker nodes missed the kubelet memory-protection drop-in** — host-migration
+- **Worker nodes missed the kubelet memory-protection drop-in.** Host-migration
   `2026.7.2/0001` skipped any node without `/etc/rancher/k3s`, which k3s AGENT
-  installs never create (workers only have `/etc/rancher/node`). Caught live by
-  the new `node-memory-protection` integration suite on staging (worker
-  allocatable gap 0 vs the servers' 1280Mi). Follow-up migration
-  `2026.7.3/0001` re-applies with a unit-existence guard + `install -d`;
-  content-compare makes it a no-op on already-converged nodes.
+  installs never create (workers only have `/etc/rancher/node`), so worker
+  nodes got neither the eviction headroom nor the swap-off. Follow-up migration
+  `2026.7.3/0001` re-applies with a unit-existence guard; it's a no-op on
+  already-converged nodes. Caught by the `node-memory-protection` integration
+  suite (worker allocatable gap 0 vs the servers' 1280Mi).
+
+### Changed
+- **Dependency currency + CI hardening.** The weekly npm/Go dependency groups
+  are current (`@fastify/static` 10.1.2 override for the route-guard advisories,
+  `golang.org/x/net`/`x/text` bumps, k8s client patches, GitHub Actions v7); the
+  documentation manual-impact CI guard is now **enforcing** (a change to a
+  user-visible surface must update the manual or carry a `Manual-Impact: none`
+  trailer); and the build-deploy change-detection checkout fetches full history
+  to stop an intermittent shallow-clone failure.
+
+## [2026.7.2] - 2026-07-25
 
 ### Added
 - **Node memory protection + OOM/eviction observability** (operator decision
