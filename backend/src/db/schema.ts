@@ -3771,7 +3771,7 @@ export type NewNodeHealthState = typeof nodeHealthState.$inferInsert;
 export const nodeMemoryEvents = pgTable('node_memory_events', {
   id: varchar('id', { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
   dedupeKey: text('dedupe_key').notNull().unique(),
-  kind: varchar('kind', { length: 16 }).notNull(), // 'system-oom' | 'pod-evicted'
+  kind: varchar('kind', { length: 16 }).notNull(), // 'system-oom' | 'pod-evicted' | 'container-oom' (0075)
   nodeName: text('node_name').notNull(),
   namespace: text('namespace'),
   podName: text('pod_name'),

@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
+  collectOomKilledContainers,
   normalizeMemoryEvents,
   summarizeForNotification,
   type RawMemoryEvent,
+  type RawPod,
 } from './memory-events.js';
 
 const NOW = new Date('2026-07-25T12:00:00Z');
@@ -107,5 +109,92 @@ describe('summarizeForNotification', () => {
 
   it('returns nothing for an empty batch', () => {
     expect(summarizeForNotification([])).toHaveLength(0);
+  });
+});
+
+function oomPod(overrides: Partial<{
+  uid: string; pod: string; ns: string; node: string; container: string;
+  restarts: number; reason: string; exitCode: number; finishedAt: string; terminal: boolean;
+}> = {}): RawPod {
+  const term = {
+    reason: overrides.reason ?? 'OOMKilled',
+    exitCode: overrides.exitCode ?? 137,
+    finishedAt: overrides.finishedAt ?? '2026-07-25T11:00:00Z',
+  };
+  return {
+    metadata: { uid: overrides.uid ?? 'pod-uid-1', name: overrides.pod ?? 'web-x', namespace: overrides.ns ?? 'client-t1' },
+    spec: { nodeName: overrides.node ?? 'worker' },
+    status: {
+      containerStatuses: [{
+        name: overrides.container ?? 'app',
+        restartCount: overrides.restarts ?? 1,
+        ...(overrides.terminal
+          ? { state: { terminated: term } }
+          : { lastState: { terminated: term } }),
+      }],
+    },
+  };
+}
+
+describe('collectOomKilledContainers', () => {
+  it('records an OOMKilled lastState with a stable dedupe key', () => {
+    const [e] = collectOomKilledContainers([oomPod()], NOW);
+    expect(e).toMatchObject({
+      kind: 'container-oom',
+      nodeName: 'worker',
+      namespace: 'client-t1',
+      podName: 'web-x',
+      systemWorkload: false,
+    });
+    expect(e?.dedupeKey).toBe(`oomk:pod-uid-1:app:1:${new Date('2026-07-25T11:00:00Z').getTime()}`);
+    expect(e?.message).toContain('OOM-killed at its memory limit');
+  });
+
+  it('records a terminal-state kill (restartPolicy Never)', () => {
+    const out = collectOomKilledContainers([oomPod({ terminal: true })], NOW);
+    expect(out).toHaveLength(1);
+  });
+
+  it('classifies system namespaces as systemWorkload', () => {
+    const [e] = collectOomKilledContainers([oomPod({ ns: 'platform', pod: 'platform-api-x' })], NOW);
+    expect(e?.systemWorkload).toBe(true);
+  });
+
+  it('includes Error/137 as an inferred cgroup group-kill', () => {
+    const [e] = collectOomKilledContainers([oomPod({ reason: 'Error', exitCode: 137 })], NOW);
+    expect(e?.kind).toBe('container-oom');
+    expect(e?.message).toContain('SIGKILLed exit 137');
+  });
+
+  it('ignores non-OOM terminations and stale kills', () => {
+    const cleanExit = oomPod({ reason: 'Completed', exitCode: 0 });
+    const crash = oomPod({ reason: 'Error', exitCode: 1 });
+    const ancient = oomPod({ finishedAt: '2026-05-01T00:00:00Z' });
+    expect(collectOomKilledContainers([cleanExit, crash, ancient], NOW)).toHaveLength(0);
+  });
+
+  it('same termination in state AND lastState yields one record', () => {
+    const p = oomPod({ terminal: true });
+    const both: RawPod = {
+      ...p,
+      status: {
+        containerStatuses: [{
+          ...p.status!.containerStatuses![0],
+          lastState: p.status!.containerStatuses![0].state,
+        }],
+      },
+    };
+    expect(collectOomKilledContainers([both], NOW)).toHaveLength(1);
+  });
+
+  it('summaries count container-ooms separately per class', () => {
+    const events = collectOomKilledContainers([
+      oomPod({ uid: 'u1', ns: 'client-t1', node: 'worker' }),
+      oomPod({ uid: 'u2', ns: 'platform', pod: 'platform-api-x', node: 'staging1' }),
+    ], NOW);
+    const summaries = summarizeForNotification(events);
+    expect(summaries.find((s) => s.nodeName === 'worker')?.summary).toContain('1 tenant container(s) OOM-killed');
+    expect(summaries.find((s) => s.nodeName === 'staging1')?.summary).toContain('1 SYSTEM container(s) OOM-killed');
+    expect(summaries.find((s) => s.nodeName === 'staging1')?.severity).toBe('critical');
   });
 });

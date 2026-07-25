@@ -82,8 +82,17 @@ export type NodeHealthSummaryResponse = z.infer<typeof nodeHealthSummaryResponse
 // node itself — those should be rare and are dispatched as critical
 // (the eviction design shields system pods; see
 // k8s/base/priority-classes.yaml).
+//
+// Kinds: `system-oom` = kernel global OOM (kubelet SystemOOM event);
+// `pod-evicted` = kubelet eviction; `container-oom` = a container was
+// OOM-killed at its cgroup limit, detected from containerStatuses
+// lastState/state.terminated (containerd-sourced — deliberately NOT from
+// kubelet events or cadvisor metrics, both of which ride the kmsg
+// oomparser and miss kills entirely when it is broken, and whose
+// per-container metric series are torn down before the 60s scrape can
+// capture short-lived kills).
 
-export const nodeMemoryEventKindSchema = z.enum(['system-oom', 'pod-evicted']);
+export const nodeMemoryEventKindSchema = z.enum(['system-oom', 'pod-evicted', 'container-oom']);
 export type NodeMemoryEventKind = z.infer<typeof nodeMemoryEventKindSchema>;
 
 export const nodeMemoryEventSchema = z.object({

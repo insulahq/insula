@@ -15,10 +15,13 @@
 #      the node-health reconciler exactly once (dedupe on re-reconcile),
 #      served by GET /admin/node-health/memory-events, and an admin
 #      notification exists within the dedupe window.
-#   4. Metric alerting: node-kernel-oom + system-container-oom SLO rules are
+#   4. OOM alerting: node-kernel-oom + system-container-oom SLO rules are
 #      registered, container_oom_events_total flows into vmsingle, and a
 #      CONTAINED cgroup OOM (64Mi-limited hog — kills inside its own limit,
-#      ZERO node pressure, parallel-safe by design) increments it.
+#      ZERO node pressure, parallel-safe by design) is caught by the
+#      DURABLE container-oom status watcher (>= v2026.7.3) with a
+#      kernel-truth cgroup assert; the cadvisor metric is an opportunistic
+#      bonus layer (parser-fed + short-lived-series race).
 #
 # Deliberately NOT tested here: a real node-level OOM/eviction storm. A
 # limit-less burst was E2E-proven on DEV (2026-07-25: three kernel OOMs all
@@ -327,22 +330,46 @@ else
   fail "pod cgroup memory.events oom_kill not incremented (got '${CG_OOM:-unreadable}')"
 fi
 
+# The DURABLE signal: the container-oom event recorded from pod STATUS
+# (containerd-sourced; ships in v2026.7.3). Strict on >=2026.7.3; NOTE on
+# the 2026.7.2 backend which predates the watcher.
+PLATFORM_VER=$(k get cm -n platform platform-version -o jsonpath='{.data.version}' 2>/dev/null)
+ver_ge_273() { [[ "$(printf '%s\n' "2026.7.3" "${PLATFORM_VER%%-*}" | sort -V | head -1)" == "2026.7.3" ]]; }
+EVENT_OK=""
+for i in $(seq 1 8); do
+  api -X POST "$ADMIN_HOST/api/v1/admin/node-health/reconcile" >/dev/null
+  HIT=$(api "$ADMIN_HOST/api/v1/admin/node-health/memory-events?limit=100" \
+    | jq -r --arg p "${RUN_ID}-hog" '[.data.events[] | select(.kind=="container-oom" and .podName==$p)] | length')
+  [[ "${HIT:-0}" -ge 1 ]] && { EVENT_OK=1; break; }
+  sleep 10
+done
+if [[ -n "$EVENT_OK" ]]; then
+  pass "container-oom event recorded from pod status (the durable, parser-independent signal)"
+elif ver_ge_273; then
+  fail "container-oom event never recorded on a >=2026.7.3 backend (platform-version $PLATFORM_VER)"
+else
+  echo "NOTE: backend $PLATFORM_VER predates the container-oom status watcher (ships v2026.7.3) — event-path assert skipped"
+fi
+
+# The metric layer is OPPORTUNISTIC, never a hard fail: cadvisor's
+# container_oom_events_total is fed by its kmsg oomparser AND the killed
+# container's cgroup (with its metric series) is torn down within seconds
+# of each restart — a 60s scrape rarely captures a short-lived kill even
+# with a healthy parser (proven on staging 2026-07-25). The kernel-truth
+# cgroup assert above and the container-oom event path are the reliable
+# layers; the SLO rules still catch durable-series cases (root-cgroup
+# global OOMs, long-lived containers).
 METRIC_OK=""
-for i in $(seq 1 12); do
+for i in $(seq 1 6); do
   INC=$(vm_query "sum%28increase%28container_oom_events_total%7Bnamespace%3D%22${E2E_NS}%22%7D%5B10m%5D%29%29")
   if echo "$INC" | jq -e '.[0].value[1] | tonumber > 0' >/dev/null 2>&1; then METRIC_OK=1; break; fi
   sleep 15
 done
 k delete pod -n "$E2E_NS" "${RUN_ID}-hog" --wait=false >/dev/null 2>&1
 if [[ -n "$METRIC_OK" ]]; then
-  pass "container_oom_events_total incremented for the hog namespace (metric alert path live)"
+  pass "container_oom_events_total incremented for the hog namespace (metric bonus layer captured it)"
 else
-  PARSER_DEAD=$(sshc "journalctl -u k3s -u k3s-agent --since '-14d' --no-pager 2>/dev/null | grep -c 'exiting analyzeLines'" 2>/dev/null | tr -d '[:space:]')
-  if [[ "${PARSER_DEAD:-0}" -ge 1 ]]; then
-    echo "NOTE: cadvisor kmsg oomparser is dead on $CONTROL_NODE ($PARSER_DEAD 'exiting analyzeLines' hits in 14d) — container_oom_events_total cannot increment there (known upstream cadvisor gap; the kernel-truth cgroup assert above covers the invariant)"
-  else
-    fail "hog OOM never surfaced in container_oom_events_total with a HEALTHY oomparser (waited 3 min) — metric pipeline regression"
-  fi
+  echo "NOTE: container_oom_events_total did not capture the short-lived kill (known cadvisor limitation: parser-fed counter + container cgroup torn down before the 60s scrape) — kernel-truth cgroup + container-oom event layers above are the reliable signals"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
