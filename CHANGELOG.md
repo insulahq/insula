@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.3] - 2026-07-25
+
 ### Added
 - **Durable container-OOM detection.** The node-health reconciler now records
   containers OOM-killed at their memory limit (from container status, which is
