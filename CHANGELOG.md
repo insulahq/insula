@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.2] - 2026-07-25
+
 ### Added
 - **Node memory protection + OOM/eviction observability** (operator decision
   2026-07-25). Nodes run swap-less (bootstrap + host-migration `2026.7.2/0001`
