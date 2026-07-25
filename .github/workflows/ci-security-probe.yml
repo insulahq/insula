@@ -37,7 +37,11 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          # Track the module's go directive — a hard-coded version here went
+          # stale at the Go 1.26 move and only kept working because setup-go
+          # <v6 left GOTOOLCHAIN=auto (the old binary silently downloaded the
+          # right toolchain). v7 pins GOTOOLCHAIN=local, which exposed it.
+          go-version-file: images/security-probe/go.mod
           cache-dependency-path: images/security-probe/go.sum
 
       - name: go mod download
