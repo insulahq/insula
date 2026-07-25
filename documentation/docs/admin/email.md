@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.2
 ---
 
 # Email
@@ -71,8 +71,8 @@ just changes which backend serves it.
 
 | Engine | Notes |
 |--------|-------|
-| **Roundcube** | The classic, widely-known webmail. |
-| **Bulwark** | A modern JMAP-native client; supports master-user impersonation so a tenant admin can open any of their mailboxes SSO-style. |
+| **Bulwark** *(default)* | A modern JMAP-native client; supports master-user impersonation so a tenant admin can open any of their mailboxes SSO-style. |
+| **Roundcube** | The classic, widely-known webmail, for teams that prefer it. |
 
 Switching engines triggers a rollout (tracked in the Task Center).
 

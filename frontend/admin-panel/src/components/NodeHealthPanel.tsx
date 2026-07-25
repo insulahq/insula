@@ -211,6 +211,7 @@ export default function NodeHealthPanel() {
 
 function memoryEventLabel(e: NodeMemoryEvent): string {
   if (e.kind === 'system-oom') return 'SystemOOM';
+  if (e.kind === 'container-oom') return e.systemWorkload ? 'OOM-killed (SYSTEM)' : 'OOM-killed';
   return e.systemWorkload ? 'Evicted (SYSTEM)' : 'Evicted';
 }
 
