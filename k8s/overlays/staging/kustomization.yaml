@@ -25,6 +25,28 @@ resources:
   - dex/
 
 patches:
+  # ── platform-critical eviction protection (operator decision 2026-07-25) ──
+  # Covers resources added at THIS overlay level (dex) — the base +
+  # production blankets only reach resources rendered in their own
+  # kustomization. Re-applying to inherited resources is a harmless no-op.
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: CronJob
+    patch: |-
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/priorityClassName
+        value: platform-critical
   # Same affinity patch the dev overlay carries (development/kustomization.yaml):
   # dex is overlay-only, so it can't ride the shared system-node-affinity
   # component (which ../production pulls in but must exclude dex from). Inlined
