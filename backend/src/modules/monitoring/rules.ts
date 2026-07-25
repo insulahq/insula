@@ -39,6 +39,31 @@ export interface SloRule {
 // 99.5% availability SLO ⇒ error budget 0.5%. Burn-rate multipliers per
 // the standard multiwindow guidance (14.4x fast / 6x slow).
 export const SLO_RULES: ReadonlyArray<SloRule> = [
+  // ── Node memory / kernel OOM (operator decision 2026-07-25) ─────────────
+  // Sourced from cadvisor's container_oom_events_total (cgroup
+  // memory.events) — deliberately NOT from kubelet SystemOOM events, whose
+  // kmsg oomparser was observed permanently broken on a live node
+  // ("/dev/kmsg: broken pipe → OOM events will not be reported"). The
+  // node-health reconciler still records SystemOOM/Evicted *events* for
+  // the per-pod detail view; these rules are the reliable alert path.
+  {
+    id: 'node-kernel-oom',
+    name: 'Kernel OOM killer fired',
+    description: 'The kernel global OOM killer fired on a node (root-cgroup oom event counter). The backstop layer behind kubelet eviction — normally means an unlimited allocation burst outran the 256Mi eviction threshold. Victims follow oom_score_adj, so tenants die first; check Monitoring → Node health for what was hit.',
+    severity: 'warning',
+    expr: 'sum(increase(container_oom_events_total{id="/"}[15m])) > $T',
+    threshold: 0,
+    forSeconds: 0,
+  },
+  {
+    id: 'system-container-oom',
+    name: 'SYSTEM container OOM-killed',
+    description: 'A container in a platform/system namespace was OOM-killed. The tenant-first eviction design (platform-critical PriorityClass + eviction-hard) makes this abnormal — investigate immediately.',
+    severity: 'critical',
+    expr: 'sum(increase(container_oom_events_total{namespace=~"platform|platform-system|platform-tenant-ops|mail|kube-system|flux-system|longhorn-system|cert-manager|cnpg-system"}[15m])) > $T',
+    threshold: 0,
+    forSeconds: 0,
+  },
   {
     id: 'api-availability-fast-burn',
     name: 'API availability — fast burn',
