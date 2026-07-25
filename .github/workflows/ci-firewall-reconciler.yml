@@ -33,11 +33,15 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
-          go-version: '1.22'
+          # Track the module's go directive — a hard-coded version here went
+          # stale at the Go 1.26 move and only kept working because setup-go
+          # <v6 left GOTOOLCHAIN=auto (the old binary silently downloaded the
+          # right toolchain). v7 pins GOTOOLCHAIN=local, which exposed it.
+          go-version-file: images/firewall-reconciler/go.mod
           cache-dependency-path: images/firewall-reconciler/go.sum
 
       - name: go mod download
@@ -144,7 +148,7 @@ jobs:
       group: pin-development-${{ github.ref }}
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0

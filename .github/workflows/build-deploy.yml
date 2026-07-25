@@ -53,7 +53,15 @@ jobs:
       admin_panel: ${{ steps.filter.outputs.admin_panel }}
       tenant_panel: ${{ steps.filter.outputs.tenant_panel }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          # Full history — NOT an optimization opportunity. dorny/paths-filter
+          # hunts for merge-base(main, development), which is ANCIENT here
+          # (dev→main promotes are tree-snapshot commits, never merges), so a
+          # shallow clone triggers iterative `fetch --deepen` calls that race
+          # the shallow file ("fatal: shallow file has changed since we read
+          # it" — flaked live 2026-07-25). One full fetch is deterministic.
+          fetch-depth: 0
       - id: filter
         uses: dorny/paths-filter@v4
         with:
@@ -78,7 +86,7 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/login-action@v4
         with:
@@ -139,7 +147,7 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/login-action@v4
         with:
@@ -196,7 +204,7 @@ jobs:
     outputs:
       timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/login-action@v4
         with:
@@ -292,7 +300,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
