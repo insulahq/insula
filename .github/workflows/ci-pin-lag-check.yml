@@ -40,7 +40,7 @@ jobs:
     name: Verify development pin is current
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Always verify the `development` branch's pin. Per ADR-053 development
           # is the auto-pinned integration branch — build-deploy pins it on every

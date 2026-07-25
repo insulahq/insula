@@ -28,7 +28,7 @@ jobs:
       security-events: write   # Trivy SARIF upload
       id-token: write          # cosign keyless signing (main, non-PR)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: docker/setup-buildx-action@v3
 
