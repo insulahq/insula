@@ -1,6 +1,10 @@
 # Cluster-wide PriorityClasses for the multi-tenant platform.
 #
-# Three classes implement the two-tier system-pod placement model:
+# Four classes implement the tiered eviction/placement model
+# (ascending: tenants are ALWAYS evicted before platform workloads —
+# operator decision 2026-07-25; pairs with the kubelet
+# eviction-hard=memory.available<256Mi drop-in from bootstrap
+# configure_memory_protection / host-migration 2026.7.2/0001):
 #
 #   tenant-default            (priority 0, globalDefault=true)
 #     Default for every Pod that doesn't set priorityClassName explicitly.
@@ -17,8 +21,21 @@
 #   platform-storage-ops      (priority 1000)
 #     For storage-lifecycle Jobs (fsck / snapshot / restore) and other
 #     short-lived recovery operations that run in `platform-tenant-ops`
-#     namespace. Highest of the three because these are recovery
+#     namespace. Above tenant tiers because these are recovery
 #     actions — losing them mid-flight risks data integrity.
+#
+#   platform-critical         (priority 10000)
+#     The platform's long-running system workloads (platform-api,
+#     panels, CNPG system-db, mail, webmail, monitoring, …). Without
+#     this they fell to tenant-default (globalDefault) priority 0 and
+#     ranked EQUAL to tenant pods in kubelet eviction. Assigned by
+#     blanket kustomize patches (base + production overlay) on
+#     Deployments/StatefulSets/CronJobs; host-agent DaemonSets keep
+#     their explicit system-node-critical (2e9) and are deliberately
+#     NOT blanket-patched. Kubelet eviction ranks exceeds-requests
+#     pods by ascending priority, so tenant pods (0/100) always go
+#     first. Above platform-storage-ops: a storage Job is retryable,
+#     the API/DB spine is not.
 #
 # Cluster-system / node-critical Pods retain their own existing
 # PriorityClasses (system-cluster-critical 2_000_000_000 etc.); those
@@ -49,4 +66,13 @@ metadata:
 value: 1000
 globalDefault: false
 description: "Short-lived storage-lifecycle Jobs (fsck / snapshot / restore) running in the platform-tenant-ops namespace."
+preemptionPolicy: PreemptLowerPriority
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: platform-critical
+value: 10000
+globalDefault: false
+description: "Insula platform system workloads. Evicted only after every tenant-tier pod; below system-node-critical host agents."
 preemptionPolicy: PreemptLowerPriority

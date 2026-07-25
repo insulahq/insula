@@ -71,3 +71,39 @@ export const nodeHealthSummaryResponseSchema = z.object({
   }),
 });
 export type NodeHealthSummaryResponse = z.infer<typeof nodeHealthSummaryResponseSchema>;
+
+// ─── Node memory events (SystemOOM / pod evictions) ─────────────────────────
+//
+// Operator decision 2026-07-25: kernel OOM and kubelet-eviction activity
+// must be UI-visible and reach admins as notifications. The node-health
+// reconciler records each distinct event (dedupe on k8s event uid+count)
+// and GET /admin/node-health/memory-events serves the recent window.
+// `systemWorkload` marks events touching platform/system namespaces or the
+// node itself — those should be rare and are dispatched as critical
+// (the eviction design shields system pods; see
+// k8s/base/priority-classes.yaml).
+
+export const nodeMemoryEventKindSchema = z.enum(['system-oom', 'pod-evicted']);
+export type NodeMemoryEventKind = z.infer<typeof nodeMemoryEventKindSchema>;
+
+export const nodeMemoryEventSchema = z.object({
+  id: z.string(),
+  kind: nodeMemoryEventKindSchema,
+  nodeName: z.string(),
+  /** Pod namespace for evictions; null for node-level SystemOOM. */
+  namespace: z.string().nullable(),
+  /** Evicted pod name; null for node-level SystemOOM. */
+  podName: z.string().nullable(),
+  /** True when the event touches a system namespace or the node itself. */
+  systemWorkload: z.boolean(),
+  message: z.string(),
+  occurredAt: z.string().datetime(),
+});
+export type NodeMemoryEvent = z.infer<typeof nodeMemoryEventSchema>;
+
+export const nodeMemoryEventsResponseSchema = z.object({
+  data: z.object({
+    events: z.array(nodeMemoryEventSchema),
+  }),
+});
+export type NodeMemoryEventsResponse = z.infer<typeof nodeMemoryEventsResponseSchema>;

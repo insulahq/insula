@@ -50,6 +50,7 @@ spec:
         app.kubernetes.io/component: mail-stack-standby-replicate
         app.kubernetes.io/part-of: hosting-platform
     spec:
+      priorityClassName: platform-critical
       # Only run on standby-labelled nodes. With no candidate, the
       # DaemonSet schedules zero pods — that's the correct quiescent
       # state when HA hasn't been configured.

@@ -140,6 +140,30 @@ Most web hosting clients use a fraction of their allocated resources most of the
 | --- | --- |
 | **Low requests, higher limits** | Set CPU request to 50m, limit to 500m-2000m. Pods get burst capacity without reserving resources. |
 | **Memory request < limit** | Request 128Mi, limit 512Mi. Allows node-level overcommit. |
+
+### Memory pressure & swap (operator decision 2026-07-25)
+
+The overcommit model above is deliberately protected by **eviction, not swap**:
+
+- **No swap, ever, on cluster nodes.** Etcd + CNPG Postgres + Longhorn share
+  every node; paging turns a fast, alertable pod OOM-kill into un-alertable
+  node-wide thrash (missed etcd heartbeats, WAL fsync stalls, Longhorn engine
+  timeouts). With the default `NoSwap` kubelet behavior pods get zero swap
+  anyway — a swapfile only masks pressure from the eviction manager.
+  `bootstrap.sh` (configure_memory_protection) and host-migration
+  `2026.7.2/0001` disable swap; `platform-ops cluster doctor` flags drift.
+- **Kubelet headroom:** `eviction-hard=memory.available<256Mi` (disk defaults
+  restated) + `system-reserved=cpu=500m,memory=1Gi`, via the k3s drop-in
+  `/etc/rancher/k3s/config.yaml.d/50-memory-protection.yaml` (servers and
+  agents).
+- **Tenants are evicted first:** system workloads carry the
+  `platform-critical` PriorityClass (host-agent DaemonSets:
+  `system-node-critical`); tenant pods run at `tenant-default` (0). Kubelet
+  ranks exceeds-requests pods by ascending priority.
+- **Visibility:** SystemOOM + eviction events are recorded by the node-health
+  reconciler, listed on Monitoring → Node health, and dispatched as admin
+  notifications (`admin.node_memory_event_critical` when a SYSTEM workload is
+  hit — abnormal by design — `…_warning` for tenant evictions).
 | **QoS class: Burstable** | All client pods run as Burstable (not Guaranteed). Platform services run as Guaranteed. |
 | **Scale-to-zero (KEDA)** | Idle dedicated pods scale to zero after configurable timeout, reducing active pod count by 30-50% during off-peak. |
 | **Database as add-on** | Only ~10% of clients need databases. Per-client MariaDB StatefulSet (~100-150Mi) provisioned only when add-on is enabled. See ADR-024. |

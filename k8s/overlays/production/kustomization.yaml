@@ -74,6 +74,28 @@ components:
   - ../../components/admin-auth-gate-cookie
 
 patches:
+  # ── platform-critical eviction protection (operator decision 2026-07-25) ──
+  # Re-applies the base blanket (harmless) and covers the mail/webmail
+  # resources added at THIS overlay level (stalwart, roundcube, bulwark).
+  # DaemonSets keep their explicit system-node-critical — not patched.
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: StatefulSet
+    patch: |-
+      - op: add
+        path: /spec/template/spec/priorityClassName
+        value: platform-critical
+  - target:
+      kind: CronJob
+    patch: |-
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/priorityClassName
+        value: platform-critical
   # Release version → platform-version ConfigMap (stamped by cut-release.sh).
   # staging bases on this overlay and inherits it, so platform-ops on staging
   # targets the RC the cluster is actually running.
