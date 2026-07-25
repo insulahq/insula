@@ -34,7 +34,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.7.0",
     "jsdom": "^29.1.1",
-    "lucide-react": "1.25",
+    "lucide-react": "1.26",
     "postcss": "^8.5.10",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
