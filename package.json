@@ -16,7 +16,8 @@
     "node": ">=22.0.0"
   },
   "overrides": {
-    "dompurify": "3.4.8"
+    "dompurify": "3.4.8",
+    "@fastify/static": "^10.1.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
