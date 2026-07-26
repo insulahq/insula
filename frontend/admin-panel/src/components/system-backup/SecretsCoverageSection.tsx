@@ -65,7 +65,7 @@ export default function SecretsCoverageSection() {
         <div>
           <strong>Bundle-everything mode.</strong> Every Secret in the cluster that isn&apos;t auto-managed
           by a controller will be included in the next bundle. Use <em>Skip at restore</em> on the rows below
-          to exclude specific entries from being re-applied by <code>bootstrap.sh --restore-profile=…</code>.
+          to exclude specific entries from being re-applied by <code>insula bootstrap --restore-profile=…</code>.
         </div>
       </div>
 

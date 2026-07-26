@@ -48,7 +48,7 @@ The card actions are **Edit**, **Terminal** (super_admin, Ready nodes only),
 
 ## Adding a node
 
-New nodes are joined by running `bootstrap.sh` against the new host. The safe,
+New nodes are joined by running `insula bootstrap` against the new host. The safe,
 supported path **pre-authorises the new node first** so its k3s join handshake
 gets through the host firewall.
 
@@ -58,8 +58,8 @@ gets through the host firewall.
 2. Paste the new node's public IP, pick its role (server/worker), and set a TTL.
    This creates a `ClusterPendingPeer` and opens the control-plane ports to
    that IP across every existing node within ~30 s.
-3. Click **Get bootstrap command** and run the rendered `bootstrap.sh` on your
-   workstation. You supply the join token from an existing server:
+3. Click **Get bootstrap command** and run the rendered `insula bootstrap`
+   command on your workstation. You supply the join token from an existing server:
    ```bash
    cat /var/lib/rancher/k3s/server/node-token
    ```

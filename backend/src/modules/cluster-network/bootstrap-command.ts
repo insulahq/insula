@@ -2,8 +2,8 @@
  * Bootstrap command generator.
  *
  * Given a ClusterPendingPeer name, returns the operator-paste-ready
- * bootstrap.sh invocation for the new node + an optional break-glass
- * peer-firewall-add command for each existing peer.
+ * `insula bootstrap` invocation for the new node (ADR-055 single binary) +
+ * an optional break-glass peer-firewall-add command for each existing peer.
  *
  * The command includes:
  *   --remote <new-node-public-ip>     (so operator runs from workstation)
@@ -98,7 +98,10 @@ export async function generateBootstrapCommand(
   const serverIp = (sameFamily ?? ready[0]).internalIp;
 
   const parts = [
-    'bootstrap.sh',
+    // ADR-055: operators run the signed `insula` binary, not a checkout's
+    // bootstrap.sh — the binary carries the installer and copies itself to
+    // the --remote target. `insula bootstrap …` is one paste-ready token here.
+    'insula bootstrap',
     '--remote', shellQuote(cpp.ip),
     '--ssh-key', '~/.ssh/id_ed25519', // operator fills in
     '--join-as', cpp.role,
