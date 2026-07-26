@@ -65,7 +65,7 @@ The flow (per node):
    you can still SSH from a trusted range.
 3. **Lock down** by re-running bootstrap with the mesh interface:
    ```bash
-   bash bootstrap.sh --rejoin --ssh-via-mesh wt0    # or tailscale0, wg0
+   sudo insula bootstrap --rejoin --ssh-via-mesh wt0    # or tailscale0, wg0
    ```
    This rewrites the firewall so port 22 is accepted only on the mesh interface
    **and** from your trusted ranges, persists the new posture, and reloads
@@ -73,7 +73,7 @@ The flow (per node):
 4. **Verify** — wait ~60 s, refresh Posture; the node's SSH badge flips from
    `public` to `mesh + trusted`, and a connection from the public IP is refused.
 
-To undo it, re-run `bootstrap.sh --rejoin` **without** `--ssh-via-mesh`. Full
+To undo it, re-run `insula bootstrap --rejoin` **without** `--ssh-via-mesh`. Full
 break-glass recovery (rescue mode, console) is in the
 [Security Hardening runbook](https://github.com/insulahq/insula/blob/main/docs/operations/SECURITY_HARDENING.md).
 

@@ -11,8 +11,8 @@ disaster, or you're driving an upgrade from SSH. It talks to the database and
 the Kubernetes API directly, so the privileged commands keep working even when
 nothing else does.
 
-It arrives as a self-contained signed binary — installed by `bootstrap.sh`,
-kept current by its own `self-upgrade` (signature-verified against the
+It arrives as a self-contained signed binary — the same one `insula bootstrap`
+installs, kept current by its own `self-upgrade` (signature-verified against the
 platform's release key).
 
 ## Commands

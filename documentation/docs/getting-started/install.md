@@ -5,14 +5,14 @@ verified: 2026.7.4
 # Install a single node
 
 One command turns a fresh server into a running Insula platform. This page walks
-the single-node install end to end: what the script does, how to run it, your
-first login, and a quick health check.
+the single-node install end to end: what `insula bootstrap` does, how to run it,
+your first login, and a quick health check.
 
 Before you start, confirm you meet the [requirements](requirements.md): a
 supported OS, a domain you control with DNS access, root/SSH on the server, and
 the [needed ports](requirements.md#ports) open.
 
-## What `bootstrap.sh` does
+## What `insula bootstrap` does
 
 On the target node, in one run, it:
 

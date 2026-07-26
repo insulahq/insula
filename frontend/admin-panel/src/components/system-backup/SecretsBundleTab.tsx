@@ -371,7 +371,7 @@ function DownloadModal({ run, onClose }: DownloadModalProps) {
                 Expires: {run.downloadUrlExpiresAt ? new Date(run.downloadUrlExpiresAt).toLocaleString() : '?'}.
                 Decrypt with <code className="font-mono">age -d -i operator-private.key &lt; bundle.tar.age | tar xv</code>.
                 Restore with <code className="font-mono">make secrets-restore BUNDLE=… KEY=…</code> or
-                <code className="font-mono"> bootstrap.sh --secrets-bundle …</code> (Phase 1.4).
+                <code className="font-mono"> insula bootstrap --secrets-bundle …</code> (Phase 1.4).
               </p>
             </>
           )}

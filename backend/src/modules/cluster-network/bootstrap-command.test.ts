@@ -20,7 +20,7 @@ function fakeTenants(opts: {
 }
 
 describe('generateBootstrapCommand', () => {
-  it('happy path: builds bootstrap.sh + preAuth + picks v4 ready peer', async () => {
+  it('happy path: builds insula bootstrap + preAuth + picks v4 ready peer', async () => {
     const c = fakeTenants({
       cpp: {
         metadata: { name: 'new-worker', creationTimestamp: '2026-05-08T12:00:00Z' },
@@ -47,6 +47,10 @@ describe('generateBootstrapCommand', () => {
     expect(cmd.serverIp).toBe('10.0.0.1');
     expect(cmd.role).toBe('worker');
     expect(cmd.nodeIp).toBe('10.0.0.50');
+    // ADR-055: the paste-ready command drives the signed `insula` binary,
+    // not a checkout's bootstrap.sh (operators no longer clone the repo).
+    expect(cmd.bootstrapCommand.startsWith('insula bootstrap ')).toBe(true);
+    expect(cmd.bootstrapCommand).not.toContain('bootstrap.sh');
     expect(cmd.bootstrapCommand).toContain("--remote '10.0.0.50'");
     expect(cmd.bootstrapCommand).toContain("--server '10.0.0.1'");
     expect(cmd.bootstrapCommand).toContain("--join-as worker");

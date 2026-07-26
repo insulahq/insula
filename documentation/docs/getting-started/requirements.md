@@ -45,7 +45,7 @@ Two memory notes for capacity planning:
 
 ## Supported operating systems
 
-The installer (`bootstrap.sh`) detects your OS and **fails fast** on anything
+The installer (`insula bootstrap`) detects your OS and **fails fast** on anything
 unsupported. These are the exact tiers it accepts:
 
 === "Tier 1 (CI-tested)"
@@ -100,7 +100,7 @@ routed via a relay — see the mail operations guide.
 
 ## What gets installed
 
-Running `bootstrap.sh` installs and configures, on the node:
+Running `insula bootstrap` installs and configures, on the node:
 
 - **k3s** (lightweight Kubernetes) + **Calico** CNI
 - **Traefik v3** ingress (ports 80/443) with CrowdSec + ModSecurity-CRS

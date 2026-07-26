@@ -144,7 +144,7 @@ export default function PosturePage() {
         <p className="text-sm text-gray-600 dark:text-gray-400 max-w-3xl">
           Per-node SSH posture, mesh detection, firewall observability, and CIS-style hardening checks.
           Read-mostly &mdash; destructive changes (e.g. moving SSH off public :22) surface as guided runbooks
-          driven by <code>bootstrap.sh --ssh-via-mesh</code>. Pending peers and trusted ranges are managed
+          driven by <code>insula bootstrap --ssh-via-mesh</code>. Pending peers and trusted ranges are managed
           on the <Link to="/security/network-trust" className="text-brand-600 hover:underline dark:text-brand-400">Network Trust</Link> page.
           CrowdSec bans, WAF events, and L4 enforcement live on
           <Link to="/security/web-defense" className="text-brand-600 hover:underline dark:text-brand-400 ml-1">Web Defense</Link>.
@@ -456,7 +456,7 @@ function MeshTab({ snapshot }: { snapshot: SecurityHardeningSnapshot }) {
       <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100 mb-3">Install mesh agent on a node</h3>
         <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
-          The platform doesn't bundle these — install on each node manually, then run <code>bootstrap.sh --ssh-via-mesh &lt;iface&gt;</code>.
+          The platform doesn't bundle these — install on each node manually, then run <code>insula bootstrap --ssh-via-mesh &lt;iface&gt;</code>.
         </p>
         <InstallSnippets />
       </div>
@@ -1185,12 +1185,12 @@ function SshLockdownModal({ node, onClose }: { node: NodeSecuritySnapshot; onClo
   const [typedHostname, setTypedHostname] = useState('');
   const [ackConsole, setAckConsole] = useState(false);
   // Require a concrete interface name — provider name alone is not
-  // valid input for `bootstrap.sh --ssh-via-mesh <iface>`. Without
+  // valid input for `insula bootstrap --ssh-via-mesh <iface>`. Without
   // an interfaceName the runbook can't generate a working command.
   const mesh = node.mesh.provider !== 'none' && node.mesh.interfaceName !== null ? node.mesh : null;
   const canReveal = mesh !== null && typedHostname === node.name && ackConsole;
   const command = mesh
-    ? `bash bootstrap.sh \\\n  --rejoin \\\n  --ssh-via-mesh ${mesh.interfaceName}`
+    ? `sudo insula bootstrap \\\n  --rejoin \\\n  --ssh-via-mesh ${mesh.interfaceName}`
     : '';
 
   return (

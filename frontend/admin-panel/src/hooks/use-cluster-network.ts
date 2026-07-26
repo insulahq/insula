@@ -6,7 +6,7 @@
  *   ClusterPendingPeer  — pre-authorise a node about to bootstrap (TTL'd)
  *
  * Plus a derived endpoint:
- *   GET /admin/cluster/bootstrap-command/:name → paste-ready bootstrap.sh
+ *   GET /admin/cluster/bootstrap-command/:name → paste-ready insula bootstrap
  *
  * Every mutation invalidates its sibling list query. Caches are short
  * (15s) since the reconciler rewrites status fields on every tick and
