@@ -55,6 +55,13 @@ yes "self-upgrade rejects an invalid --version (exit 2)" \
   "'$BIN' self-upgrade --version not.a.version >/dev/null 2>&1; [ \$? -eq 2 ]"
 yes "help documents the self-upgrade flags"     "'$BIN' help | grep -qi 'cosign-verified atomic replace'"
 yes "help lists snapshot + dr rescue"           "'$BIN' help | grep -qi 'snapshot capture' && '$BIN' help | grep -qi 'dr rescue'"
+# ADR-055 single-binary bootstrap: the subcommand is wired, and --help-full
+# EXTRACTS the embedded install tree and runs the real bootstrap.sh --help
+# (proving bootstrap.sh + its libs + the k8s tree all embedded + laid out so
+# bootstrap.sh sources its siblings).
+yes "bootstrap subcommand help"                 "'$BIN' bootstrap --help | grep -qi 'single-binary install'"
+yes "bootstrap --help-full extracts + runs the embedded installer" \
+  "'$BIN' bootstrap --help-full 2>&1 | grep -qi 'Usage: bootstrap.sh'"
 yes "snapshot (no sub) → usage error exit 2"    "'$BIN' snapshot >/dev/null 2>&1; [ \$? -eq 2 ]"
 yes "snapshot capture over-long --description → exit 2" \
   "'$BIN' snapshot capture --description \"\$(printf 'x%.0s' \$(seq 1 300))\" >/dev/null 2>&1; [ \$? -eq 2 ]"
