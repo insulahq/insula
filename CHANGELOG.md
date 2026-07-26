@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Fresh single-binary production install** (found in the first production
+  cutover test). `insula bootstrap` deleted its own extracted installer tree
+  the instant `bootstrap.sh` was spawned — a missing `await` in the SEA
+  extraction — so every fresh install died at `cd .../scripts: No such file or
+  directory`. Additionally, `install_sealed_secrets` now uses `helm repo add
+  --force-update`, so re-bootstrapping a host that had a pre-migration install
+  no longer retains a dead Sealed-Secrets chart-repo URL (404).
+- **oauth2-proxy no longer deployed in production.** It depends on Dex OIDC —
+  which runs only in dev/staging (production uses external IAM + the cookie
+  gate) — but was shipped from the base into every overlay, so production's
+  oauth2-proxy pod wedged in `Init:0/1` forever on a `wait-for-dex-discovery`
+  that can never resolve. It now ships only with the Dex overlays (development,
+  dind, staging); production renders zero oauth2-proxy and zero Dex.
+- **system-pod-placement RBAC.** Granted the `platform-api` ServiceAccount
+  `get/list/watch/patch` on `installations.operator.tigera.io` so it can pin
+  Calico's control-plane components (Installation CR) — silences a `403 cannot
+  list installations` logged every reconcile tick.
+
 ## [2026.7.4] - 2026-07-26
 
 ### Added
