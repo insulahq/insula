@@ -30,6 +30,13 @@ scripts/cut-release.sh --dry-run       # preview, no changes
 - writes `platform/VERSION`;
 - creates a commit `chore(release): v<version>` and an **annotated** tag `v<version>`.
 
+!!! note "The CHANGELOG promotion happens on `main` only"
+    `cut-release` runs from `main` (ADR-053), so it promotes the CHANGELOG on the
+    trunk. `development` is **auto-reconciled** after the release publishes (see
+    [What the tag fires](#what-the-tag-fires), step 5) — you do **not** hand-edit
+    `development`'s CHANGELOG. Historically this drift was fixed by hand every cut;
+    the release pipeline now does it.
+
 It does **not** push. Review, then:
 
 ```bash
@@ -46,7 +53,13 @@ git push && git push origin v<version>
    (key-based, offline — `--tlog-upload=false`), and attaches the binaries +
    `.sig` files as Release assets that bootstrap fetches and verifies;
 4. creates a GitHub Release whose notes are the matching `CHANGELOG.md` section
-   (prereleases — tags containing `-` — are marked accordingly).
+   (prereleases — tags containing `-` — are marked accordingly);
+5. **syncs `development`'s CHANGELOG** (stable tags only) via
+   `scripts/sync-development-changelog.sh`: it rebuilds `development`'s CHANGELOG
+   from the tag (authoritative released history) and scopes `[Unreleased]` to
+   only the bullets NOT in the new `[<version>]` section — i.e. work added after
+   the cut. Idempotent; commits `[skip ci]` and pushes with rebase-retry.
+   (Unit-tested: `scripts/test-sync-development-changelog.sh`.)
 
 ## platform-ops signing key (one-time operator setup)
 

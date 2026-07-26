@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.4] - 2026-07-26
+
 ### Added
 - **Single-binary install (`insula bootstrap`) + product-branded operator CLI**
   (ADR-055). The installer now ships *inside* the signed `insula` binary — the

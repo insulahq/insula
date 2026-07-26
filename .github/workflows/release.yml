@@ -192,3 +192,45 @@ jobs:
             dist-release/release-manifest.json.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # After the release publishes, reconcile the `development` branch's CHANGELOG
+  # so it isn't left carrying the just-released content under [Unreleased] with
+  # no [version] section (ADR-053: cut-release promotes the CHANGELOG on `main`
+  # only). Idempotent — a no-op once synced. Only CHANGELOG.md changes, so this
+  # push does not (and must not) re-trigger build-deploy.
+  sync-development-changelog:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    # Skip prereleases: an -rc.N tag does not promote a stable [version] section.
+    if: ${{ !contains(github.ref_name, '-') }}
+    permissions:
+      contents: write
+    concurrency:
+      group: sync-development-changelog
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: development
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Reconcile development CHANGELOG against the release tag
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" 2>/dev/null || true
+          rc=0
+          ./scripts/sync-development-changelog.sh --tag "${GITHUB_REF_NAME}" --write || rc=$?
+          if [ "$rc" = "2" ]; then echo "CHANGELOG already in sync — nothing to push."; exit 0; fi
+          if [ "$rc" != "0" ]; then echo "::error::sync-development-changelog failed (rc=$rc)"; exit 1; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git commit -m "docs(changelog): sync development with ${GITHUB_REF_NAME} release [skip ci]"
+          # Concurrency-safe push: rebase onto the latest development before pushing.
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:development; then echo "pushed."; exit 0; fi
+            echo "push rejected (attempt $attempt) — rebasing onto development…"
+            git fetch origin development
+            git rebase origin/development || { echo "::error::rebase conflict syncing CHANGELOG"; exit 1; }
+          done
+          echo "::error::could not push CHANGELOG sync after retries"; exit 1
