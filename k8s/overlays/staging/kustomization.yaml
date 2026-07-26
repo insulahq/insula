@@ -23,6 +23,10 @@ kind: Kustomization
 resources:
   - ../production
   - dex/
+  # oauth2-proxy ships with Dex (moved out of base — see base/kustomization.yaml).
+  # Staging renders ../production (no oauth2-proxy) then adds Dex + oauth2-proxy
+  # here; Dex being reachable un-sticks the wait-for-dex-discovery init.
+  - ../../base/oauth2-proxy
 
 patches:
   # ── platform-critical eviction protection (operator decision 2026-07-25) ──

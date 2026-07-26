@@ -234,6 +234,17 @@ rules:
   - apiGroups: ["longhorn.io"]
     resources: ["volumeattachments"]
     verbs: ["get", "list", "patch"]
+  # system-pod-placement patches the Calico `Installation` CR (Tigera
+  # operator-managed — direct edits to the calico-* Deployments/DaemonSets are
+  # reverted by the operator on its next reconcile) to pin Calico's control-
+  # plane components with the platform-critical priority + topology. Reconciler:
+  # backend/src/modules/system-pod-placement/scheduler.ts::reconcileCalicoInstallation.
+  # Without this the tick logs a 403 ("cannot list installations.operator.tigera.io")
+  # every cycle. `list` is required because the customObjects client lists before
+  # patching the singleton `default`.
+  - apiGroups: ["operator.tigera.io"]
+    resources: ["installations"]
+    verbs: ["get", "list", "watch", "patch"]
   # M14: Apply HA also scales the CNPG Cluster CR. apps/deployments
   # is already covered by the broader apps verbs:["*"] rule above.
   # PITR adds create+delete: the auto-promote path provisions a temp

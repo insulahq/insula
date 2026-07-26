@@ -23,6 +23,8 @@ resources:
   - ingress-upload.yaml
   # Dev-only sub-stacks (core only — mail/webmail are opt-in via local.sh)
   - dex/
+  # oauth2-proxy ships with Dex (moved out of base — see base/kustomization.yaml).
+  - ../../base/oauth2-proxy
   - cert-manager/
 
 patches:
