@@ -4292,9 +4292,12 @@ install_sealed_secrets() {
 
   log "Installing Sealed Secrets..."
   # Repo migrated bitnami-labs -> bitnami org (2026-06-15); the old GitHub Pages URL
-  # 404s (Pages URLs don't redirect). Fresh-install-only fix — existing clusters
-  # already have the controller. Caught by the ephemeral-VM bootstrap tier.
-  helm_cmd repo add sealed-secrets https://bitnami.github.io/sealed-secrets 2>/dev/null || true
+  # 404s (Pages URLs don't redirect). --force-update is REQUIRED: a re-bootstrap of a
+  # host that had a pre-migration install keeps the stale `sealed-secrets` repo pointing
+  # at the dead bitnami-labs URL, and a plain `helm repo add` refuses to overwrite an
+  # existing name (the error was being swallowed by `|| true`, leaving the 404 URL →
+  # `repo update` fails → chart not found). --force-update always corrects the URL.
+  helm_cmd repo add --force-update sealed-secrets https://bitnami.github.io/sealed-secrets 2>/dev/null || true
   helm_cmd repo update
 
   helm_cmd upgrade --install sealed-secrets sealed-secrets/sealed-secrets \

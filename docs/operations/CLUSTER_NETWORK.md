@@ -50,10 +50,13 @@ Operator passes their workstation IP at first install so they can
 `kubectl` before the admin UI exists:
 
 ```
-bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.test --acme-email ops@... \
   --allow-source 198.51.100.7    # operator workstation
 ```
+
+> `insula bootstrap` is the signed installer binary (ADR-055); a repo
+> checkout's `./scripts/bootstrap.sh` takes the same flags.
 
 `--allow-source` is repeatable, comma-tolerant, and accepts IPv4/v6
 single addresses (auto-normalized to `/32` or `/128`) or CIDRs.
@@ -213,14 +216,14 @@ apt-get install -y netbird   # or curl -fsSL https://pkgs.netbird.io/install.sh 
 netbird up --management-url https://vpn.example.com --setup-key <UUID>
 
 # Then run bootstrap — auto-detect picks wt0 → 100.64.0.0/10:
-./scripts/bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.com --acme-email ops@example.com
 ```
 
 ### Persona-B example: Hetzner Cloud VLAN / AWS VPC / generic private network
 
 ```bash
-./scripts/bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.com --acme-email ops@example.com \
   --cluster-network-cidr 10.0.0.0/16 \
   --cluster-network-cidr-v6 fd00:10::/48
@@ -230,7 +233,7 @@ If you want Calico WireGuard scoped to your VLAN as well (default is
 public, since that's the only safe choice on mesh underlays):
 
 ```bash
-./scripts/bootstrap.sh --join-as server ... \
+sudo insula bootstrap --join-as server ... \
   --cluster-network-cidr 10.0.0.0/16 \
   --calico-wg-public false
 ```

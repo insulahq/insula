@@ -32,7 +32,11 @@ WORKLOADS=(
   "platform|Deployment|platform-api|0"
   "platform|Deployment|tenant-panel|0"
   "platform|Deployment|platform-suspended|0"
-  "platform|Deployment|oauth2-proxy|0"
+  # oauth2-proxy is dev/staging-ONLY (like dex): it depends on Dex OIDC, which
+  # never runs in production (external IAM + cookie gate). Moved out of the base
+  # into the Dex overlays — so it's staging-only=1 here (checked in development,
+  # skipped in production). See base/kustomization.yaml + ci-no-dex-in-production.
+  "platform|Deployment|oauth2-proxy|1"
   # sftp-gateway is intentionally NOT listed: it's a DaemonSet
   # (files.<apex>:23022 hostPort per server, k8s/base/sftp-gateway.yaml), not a
   # Deployment/StatefulSet using the shared system-node-affinity component. It

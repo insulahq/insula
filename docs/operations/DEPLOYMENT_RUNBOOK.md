@@ -10,6 +10,11 @@ This document provides step-by-step instructions for first-time deployment of th
 
 ## 1. Prerequisites
 
+> **Cutting over to production?** Work through the
+> [Production Pre-Flight Checklist](./PRODUCTION_PREFLIGHT_CHECKLIST.md) first —
+> it is the distilled go/no-go (stable-tag pin, mail deliverability, signing,
+> DR rehearsal). This runbook is the full procedure behind it.
+
 Before starting, ensure the following are in place:
 
 ### Infrastructure Requirements
@@ -65,7 +70,9 @@ tar -xvzf kubeseal-*.tar.gz kubeseal && sudo mv kubeseal /usr/local/bin/
 
 `scripts/bootstrap.sh` is the single entry point for all deployment tasks. It handles server hardening (SSH, firewall, fail2ban), k3s + Calico CNI installation, Helm charts (NGINX Ingress, cert-manager, Sealed Secrets), Flux v2 GitOps, platform secrets, and Kustomize manifest application.
 
-Run `./scripts/bootstrap.sh --help` for the full list of options.
+> **Canonical install (ADR-055):** operators install by downloading the signed `insula` binary and running `insula bootstrap <flags>` — no repo clone. A repo checkout + `./scripts/bootstrap.sh <flags>` is the development alternative; the flags are identical either way (`bootstrap.sh` runs unchanged inside the binary).
+
+Run `insula bootstrap --help` for the full list of options (`./scripts/bootstrap.sh --help` from a checkout).
 
 ### Supported operating systems
 
@@ -98,29 +105,29 @@ If `wt0` / `tailscale0` is up with an IP in `100.64.0.0/10` when bootstrap runs,
 ```bash
 ssh root@<VPS_IP>
 
-# Clone and run (bootstrap.sh sources scripts/lib/, so it must run from a
-# checkout — the legacy single-file `curl | bash` one-liner is unsupported):
-git clone https://github.com/insulahq/insula.git
-cd insula
-./scripts/bootstrap.sh --domain example.test --env production
+# Download the signed installer binary:
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64 && chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
+
+# Run bootstrap (flags identical to scripts/bootstrap.sh):
+sudo insula bootstrap --domain example.test --env production
 ```
 
 ### Option B: Run from your workstation (remote mode)
 
 ```bash
-./scripts/bootstrap.sh \
+insula bootstrap \
   --remote <VPS_IP> \
   --ssh-key ~/.ssh/id_rsa \
   --domain example.test \
   --env production
 ```
 
-This copies the script to the server via SCP and executes it over SSH.
+The binary copies itself to the server and executes over SSH.
 
 ### Adding a worker node
 
 ```bash
-./scripts/bootstrap.sh \
+insula bootstrap \
   --remote <worker-ip> \
   --ssh-key ~/.ssh/id_rsa \
   --role worker \

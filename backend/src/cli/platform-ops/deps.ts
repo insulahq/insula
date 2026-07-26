@@ -909,7 +909,12 @@ async function realRunBootstrap(args: string[]): Promise<number> {
       // scripts/*.sh must be executable; everything else 0644.
       writeFileSync(dest, body, { mode: rel.startsWith('scripts/') && rel.endsWith('.sh') ? 0o700 : 0o644 });
     }
-    return spawnBootstrap(join(root, 'scripts', 'bootstrap.sh'), args, process.execPath);
+    // MUST await: the finally below deletes `root`. Without await, the async
+    // function's return schedules cleanup the instant bootstrap.sh is spawned,
+    // yanking the extracted tree out from under it (bootstrap.sh resolves its
+    // own dir from BASH_SOURCE early and fails `cd .../scripts`). Awaiting keeps
+    // the tree alive until bootstrap.sh exits.
+    return await spawnBootstrap(join(root, 'scripts', 'bootstrap.sh'), args, process.execPath);
   } catch (err) {
     process.stderr.write(`platform-ops: bootstrap extraction failed: ${err instanceof Error ? err.message : String(err)}\n`);
     return 70;

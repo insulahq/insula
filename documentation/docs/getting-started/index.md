@@ -15,16 +15,16 @@ wearing all three — the separation just keeps access and tooling clean.
 
 | Hat | Owns | Works in | Start at |
 |---|---|---|---|
-| **Operator** | The servers | The terminal (`bootstrap.sh`) + admin panel | [Requirements](requirements.md) → [Install](install.md) |
+| **Operator** | The servers | The terminal (`insula bootstrap`) + admin panel | [Requirements](requirements.md) → [Install](install.md) |
 | **Admin** | The hosting business | The **admin panel** | [Your first tenant](first-tenant.md) |
 | **Tenant** | One customer account | The **tenant panel** | the tenant guide |
 
 ## What the path looks like
 
 ```text
- 1. Check          2. Run            3. First login    4. Add a catalog   5. Create a tenant
-    requirements  ─►  bootstrap.sh ─►   to the admin  ─►   repo + a plan ─►   + domain + site
-    (server,          (one command)     panel                                    │
+ 1. Check          2. Run              3. First login    4. Add a catalog   5. Create a tenant
+    requirements  ─►  insula bootstrap ─►  to the admin  ─►  repo + a plan  ─►  + domain + site
+    (server,          (one command)       panel                                    │
      OS, DNS)                                                                     ▼
                                                                       Live site with auto TLS
 ```
@@ -33,7 +33,7 @@ The first install is roughly a 15-minute path on a fresh server:
 
 1. **Confirm prerequisites** — one supported Linux server, a domain you
    control, and DNS access. See [Requirements](requirements.md).
-2. **Run `bootstrap.sh`** — one command installs k3s, the firewall, the full
+2. **Run `insula bootstrap`** — one command installs k3s, the firewall, the full
    platform, and prints your first admin login. See
    [Install a single node](install.md).
 3. **Log in** to the admin panel and verify the install.

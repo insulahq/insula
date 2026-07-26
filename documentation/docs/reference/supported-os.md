@@ -4,7 +4,7 @@ verified: 2026.6.7
 
 # Supported operating systems
 
-`bootstrap.sh` checks the host OS before touching anything and **refuses
+`insula bootstrap` checks the host OS before touching anything and **refuses
 unsupported or end-of-life systems outright** — better a clear error at minute
 zero than a half-installed platform.
 
