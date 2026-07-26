@@ -10,6 +10,11 @@ This document provides step-by-step instructions for first-time deployment of th
 
 ## 1. Prerequisites
 
+> **Cutting over to production?** Work through the
+> [Production Pre-Flight Checklist](./PRODUCTION_PREFLIGHT_CHECKLIST.md) first —
+> it is the distilled go/no-go (stable-tag pin, mail deliverability, signing,
+> DR rehearsal). This runbook is the full procedure behind it.
+
 Before starting, ensure the following are in place:
 
 ### Infrastructure Requirements
