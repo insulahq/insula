@@ -158,9 +158,47 @@ for (const { key, file } of embedEntries) {
   assets[key] = p;
   if (key.startsWith('dr/')) drCount++; else opsCount++;
 }
+
+// Single-binary bootstrap (ADR-055): embed the install tree so `insula bootstrap`
+// runs a fresh install with NO repo clone. The extractor lays these back out as a
+// mini-repo (<root>/scripts/bootstrap.sh + <root>/scripts/lib/* + <root>/k8s/** +
+// <root>/platform/{VERSION,cosign.pub}) and execs scripts/bootstrap.sh — matching
+// the git-clone relative structure bootstrap.sh resolves against. SEA has no asset
+// enumeration, so we emit bootstrap/manifest.json listing the keys (same pattern as
+// host-migrations). Keys are the path RELATIVE to the mini-repo root.
+const bootstrapKeys = [];
+const addBootstrap = (relPath, absPath) => {
+  assets[`bootstrap/${relPath}`] = absPath;
+  bootstrapKeys.push(relPath);
+};
+const walkDir = (absDir, relPrefix) => {
+  for (const ent of fs.readdirSync(absDir, { withFileTypes: true })) {
+    const abs = path.join(absDir, ent.name);
+    const rel = relPrefix ? `${relPrefix}/${ent.name}` : ent.name;
+    if (ent.isDirectory()) walkDir(abs, rel);
+    else if (ent.isFile()) addBootstrap(rel, abs);
+  }
+};
+// bootstrap.sh + its sibling libraries (the only scripts/ files it sources).
+addBootstrap('scripts/bootstrap.sh', path.join(repoRoot, 'scripts', 'bootstrap.sh'));
+walkDir(path.join(repoRoot, 'scripts', 'lib'), 'scripts/lib');
+// The full k8s kustomize tree — bootstrap seed-applies overlays/<env> locally
+// before Flux reconciles. base + overlays + components.
+walkDir(path.join(repoRoot, 'k8s'), 'k8s');
+// Version + trust anchor: bootstrap reads platform/VERSION (flux tag + platform-ops
+// phase) and needs platform/cosign.pub as pub_src for the self-install handshake.
+addBootstrap('platform/VERSION', path.join(repoRoot, 'platform', 'VERSION'));
+const cosignPub = path.join(repoRoot, 'platform', 'cosign.pub');
+if (fs.existsSync(cosignPub)) addBootstrap('platform/cosign.pub', cosignPub);
+const bootstrapManifestPath = path.join(work, 'bootstrap-manifest.json');
+// bootstrap.sh + *.sh under scripts/ must be executable when extracted.
+fs.writeFileSync(bootstrapManifestPath, JSON.stringify({ files: bootstrapKeys.sort() }));
+assets['bootstrap/manifest.json'] = bootstrapManifestPath;
+
 const cfg = { main: bundle, output: blob, disableExperimentalSEAWarning: true, assets };
 fs.writeFileSync(path.join(work, 'sea-config.json'), JSON.stringify(cfg));
 console.error(`build-platform-ops: embedding ${scripts.length} host-migration + ${drCount} DR restore + ${opsCount} housekeeping script(s)`);
+console.error(`build-platform-ops: embedding ${bootstrapKeys.length} bootstrap tree file(s) (bootstrap.sh + libs + k8s + version)`);
 NODEGEN
 node --experimental-sea-config "${work}/sea-config.json"
 
