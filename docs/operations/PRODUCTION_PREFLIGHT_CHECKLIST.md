@@ -131,6 +131,12 @@ the target (or drive `--remote` from your workstation) and run:
 ```bash
 # On the target node — signed installer binary (ADR-055), no repo clone:
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+
+# Verify the signed binary BEFORE running it (production: do not skip):
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
+curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
+cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig insula-linux-amd64
+
 chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
 
 sudo insula bootstrap \
