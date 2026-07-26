@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.6] - 2026-07-26
+
 ### Fixed
 - **Calico Installation placement reconcile** (`system-pod-placement`) issued a
   namespaced custom-object call with an empty namespace against the
