@@ -20,6 +20,7 @@ import {
   rollbackCommand,
 } from './commands.js';
 import { clusterDoctor } from './doctor.js';
+import { bootstrapCommand } from './bootstrap.js';
 import { drCommand } from './dr.js';
 import { snapshotCommand } from './snapshot.js';
 import { adminCommand } from './admin.js';
@@ -38,6 +39,8 @@ const HELP = `platform-ops — Insula operator CLI
 Usage: platform-ops <command> [args]
 
 Commands:
+  bootstrap [flags]       Install Insula on this node (fresh single-binary install;
+                         no repo clone). 'bootstrap --help' for flags.
   version [--json]        Show installed / running / available platform version
   cluster status         Cluster node + control-plane health (kubectl)
   cluster diagnostics    Best-effort support bundle (nodes, pods, events, flux)
@@ -195,6 +198,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return backupCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
+    case 'bootstrap':
+      return bootstrapCommand(rest, deps);
     default:
       deps.err(`unknown command: ${cmd}`);
       printHelp(deps);

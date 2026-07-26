@@ -21,8 +21,13 @@ import { runSelfUpgrade } from './upgrade.js';
 import type { SelfUpgradeDeps } from './types.js';
 
 const DEFAULT_REPO = 'insulahq/insula';
-const DEFAULT_BIN = '/usr/local/bin/platform-ops';
+const DEFAULT_BIN = '/usr/local/bin/insula';
 const DEFAULT_PUBKEY = '/etc/platform/cosign.pub';
+// The binary was renamed platform-ops→insula (ADR-055). Accept EITHER name as a
+// valid self-upgrade target so a node mid-transition (old binary still at
+// /usr/local/bin/platform-ops, or a PLATFORM_OPS_BIN pointing there) is never
+// stranded. New installs are `insula`.
+const BINARY_NAME_RE = /(^|[-/])(insula|platform-ops)$/;
 const GITHUB_API = 'https://api.github.com';
 // Release assets must come from GitHub (SSRF guard on the download URL).
 // github.com 302s a release-asset download to a pre-signed CDN URL; GitHub
@@ -178,7 +183,11 @@ async function downloadAsset(
   arch: string,
   kind: 'bin' | 'sig',
 ): Promise<Buffer | null> {
-  let url = `${downloadBaseFor(env, version)}/platform-ops-linux-${arch}${kind === 'sig' ? '.sig' : ''}`;
+  // Fetch the `insula-linux-<arch>` asset (ADR-055). Every release from the
+  // transition onward publishes it; older binaries that still fetch
+  // `platform-ops-linux-<arch>` keep working because the transition release
+  // publishes BOTH names.
+  let url = `${downloadBaseFor(env, version)}/insula-linux-${arch}${kind === 'sig' ? '.sig' : ''}`;
   try {
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
       if (!isAllowedHost(url)) return null;
@@ -215,19 +224,20 @@ function readPublicKey(env: NodeJS.ProcessEnv): string | null {
 }
 
 /** Resolve the binary to replace: explicit override → the running SEA binary →
- * the conventional install path. An override must be an absolute path whose name
- * contains 'platform-ops' so a hostile PLATFORM_OPS_BIN can't redirect the
- * (verified) write over an unrelated root binary like /bin/sh. Never returns
- * `node` (a `node dist/...` dev run would otherwise clobber the interpreter). */
+ * the conventional install path. An override must be an absolute path named
+ * `insula` or `platform-ops` (ADR-055 transition) so a hostile PLATFORM_OPS_BIN
+ * can't redirect the (verified) write over an unrelated root binary like /bin/sh.
+ * Never returns `node` (a `node dist/...` dev run would otherwise clobber the
+ * interpreter). */
 function resolveTargetBinary(env: NodeJS.ProcessEnv): string {
   const override = env.PLATFORM_OPS_BIN?.trim();
   if (override) {
-    if (override.startsWith('/') && basename(override).includes('platform-ops')) return override;
+    if (override.startsWith('/') && BINARY_NAME_RE.test(basename(override))) return override;
     process.stderr.write(`[warn] ignoring unsafe PLATFORM_OPS_BIN='${override}' — using ${DEFAULT_BIN}\n`);
     return DEFAULT_BIN;
   }
   const exec = process.execPath;
-  if (exec && basename(exec).includes('platform-ops')) return exec;
+  if (exec && BINARY_NAME_RE.test(basename(exec))) return exec;
   return DEFAULT_BIN;
 }
 

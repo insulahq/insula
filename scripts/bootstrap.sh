@@ -791,6 +791,34 @@ error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $*" >&2; exit 1; }
 marker_exists() { [[ -f "${MARKER_DIR}/.${1}" ]]; }
 marker_set()    { mkdir -p "$MARKER_DIR"; touch "${MARKER_DIR}/.${1}"; }
 
+# ADR-055: the canonical on-disk roots are branded /var/lib/insula + /etc/insula.
+# The historical generic roots become back-compat SYMLINKS into the branded ones,
+# so every existing code path (host-migration markers, the secrets bundle, the
+# cosign anchor, credentials, firewall.conf) writes through unchanged while
+# operators get one branded tree. Symlink-based, never a move — so the
+# host-migration marker path stays name-stable (a real move would strand markers
+# and re-run the whole backlog). Existing nodes get the equivalent via
+# host-migration <ver>/NNNN-rebrand-to-insula.sh. MUST run before any write to a
+# generic root (marker_set / /etc/platform credentials).
+configure_branded_paths() {
+  [[ "$DRY_RUN" == true ]] && return 0
+  install -d -m 0755 /var/lib/insula
+  install -d -m 0700 /etc/insula
+  local pair generic branded
+  for pair in \
+      "/var/lib/platform:/var/lib/insula" \
+      "/var/lib/hosting-platform:/var/lib/insula" \
+      "/etc/platform:/etc/insula" \
+      "/etc/hosting-platform:/etc/insula"; do
+    generic="${pair%%:*}"; branded="${pair#*:}"
+    # Only create the compat symlink on a clean root. If the generic already
+    # exists (fresh-install re-run, or a pre-ADR-055 node), leave it — the
+    # rebrand host-migration converts an existing real dir on those.
+    [[ -e "$generic" || -L "$generic" ]] || ln -s "$branded" "$generic"
+  done
+  log "Branded host paths ready (/var/lib/insula + /etc/insula; generic roots symlinked for compat)."
+}
+
 # Source the extractable phase library (platform-ops install; future phases).
 # scripts/lib/ travels with bootstrap.sh on every supported invocation: the
 # git-clone path (sibling on disk) and --remote (SCP'd alongside — see the
@@ -7795,6 +7823,10 @@ main() {
   parse_args "$@"
   check_root
   check_os
+
+  # ADR-055: lay down the branded /var/lib/insula + /etc/insula roots (+ generic
+  # compat symlinks) BEFORE any phase writes markers/credentials into them.
+  configure_branded_paths
 
   log "════════════════════════════════════════════════"
   log "  Hosting Platform — Bootstrap (${NODE_ROLE}, ${PLATFORM_ENV})"

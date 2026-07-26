@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Single-binary install (`insula bootstrap`) + product-branded operator CLI**
+  (ADR-055). The installer now ships *inside* the signed `insula` binary — the
+  full `bootstrap.sh` + libraries + the k8s manifest tree travel as embedded
+  assets (the mechanism host-migrations already use), so a fresh install is
+  `curl` the binary + `insula bootstrap`, with no repo clone. The operator CLI
+  is renamed `platform-ops` → **`insula`** (the internal module keeps its name);
+  releases publish both `insula-linux-<arch>` and (for one transition) the legacy
+  `platform-ops-linux-<arch>` so existing nodes' self-upgrade is never stranded.
+  Host state consolidates under branded `/var/lib/insula` + `/etc/insula` roots,
+  with the historical generic paths kept as compatibility symlinks (no data is
+  moved and no host-migration re-runs — the code path constants are unchanged).
+  Existing clusters converge via host-migration `2026.7.4/0001-rebrand-to-insula`.
+
 ## [2026.7.3] - 2026-07-25
 
 ### Added
