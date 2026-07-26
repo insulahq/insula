@@ -34,6 +34,7 @@
 | [R20](#r20--cross-cluster-tenant-migration) | Cross-cluster tenant migration | P3 | ✅ Shipped 2026-07-08 — mount source read-only → list → import (single/all) + guided UI; DEV E2E 11/0 |
 | [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | ✅ Shipped 2026-06-21 — `cluster upgrade` auto-steps multi-minor (auto-loop chosen) |
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
+| [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 
 ---
 
@@ -581,3 +582,41 @@ include-prereleases poller flag, or `platform-ops self-upgrade --version <rc>
 **Build Mode B** (Flux `spec.ref.tag` re-pinned to the latest `-rc.N` by the
 version-poller on staging) to get continuous, hands-off RC rollout testing that
 exercises cosign verify + migrations + the k3s stepping before a stable cut.
+
+## R23 — `insula` single-binary install + branding
+
+**Proposed 2026-07-26 — see [ADR-055](../architecture/adr/ADR-055-insula-single-binary-install-and-branding.md).**
+Finishes the operator-tooling consolidation ([R18](#r18--operator-script-consolidation-into-the-platform-ops-cli)):
+fold the last bash installer into the signed `platform-ops` binary and rebrand
+the operator footprint to the product name.
+
+Three changes, one delivery mechanism (a transition host-migration + a dual-name
+release), sequenced together while the installed base is a single staging
+cluster (pre-production — the cheapest window):
+
+1. **Single-binary bootstrap.** Embed `bootstrap.sh` + `scripts/lib/*` + the
+   `k8s/` overlay tree as SEA assets (the mechanism host-migrations already use)
+   and add an `insula bootstrap` subcommand that extracts-and-`exec`s the bash.
+   Install becomes `curl` a signed binary + run — no repo clone, cosign-verified,
+   `curl`-and-run safe. **No host bash is ported to TypeScript** (reaffirms the
+   R18/ADR-045 keep-as-bash line — it's about the logic, not the distribution).
+   The repo path stays for dev/CI via the filesystem-dir fallback.
+2. **Rename the artifact to `insula`** — release asset, install path, systemd
+   `ExecStart`, docs, command examples — **keeping the internal
+   `backend/src/cli/platform-ops/` module** (artifact rename, not a codebase
+   refactor).
+3. **Consolidate the host footprint** from five inconsistent roots
+   (`/etc/platform`, `/var/lib/hosting-platform`, `/etc/hosting-platform`,
+   `/var/lib/platform`, `/run/hosting-platform`) into `/var/lib/insula` +
+   `/etc/insula` via `old → new` **symlinks** (not moves — the paths hold
+   migration markers, DR bundles, and the cosign anchor; a physical move would
+   re-trigger migrations / strand DR).
+
+**Delivery:** fresh installs get the new names/paths from bootstrap; existing
+clusters via one host-migration that re-points the systemd units + symlinks the
+old names, on a transition release that ships **both** asset names so an old
+node's self-upgrade can still fetch it. Host-migration markers are
+name-independent, so the binary rename cannot re-trigger migrations; the path
+rebrand preserves that invariant only because it uses symlinks — load-bearing,
+CI-guardable. Full design + risks: ADR-055.
+
