@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.4
 ---
 
 # Install a single node
@@ -24,20 +24,21 @@ On the target node, in one run, it:
 3. **Deploys the platform** — API, admin/tenant panels, PostgreSQL (CNPG), and
    the mail server, reconciled by Flux.
 4. **Generates your first admin login** and writes an **age-encrypted Tier-1
-   secrets bundle** to `/var/lib/hosting-platform/bundles/`.
+   secrets bundle** to `/var/lib/insula/bundles/`.
 5. **Runs an advisory smoke test** at the end.
 
 ## Run it
 
-Clone the repository onto the server (the installer needs its sibling
-`scripts/lib/` directory — a piped `curl | bash` one-liner is not supported),
-then run `bootstrap.sh` as root.
+Download the signed **`insula`** binary onto the server and run
+`insula bootstrap` as root. That's the whole install — no repository clone.
 
 ```bash
-git clone https://github.com/insulahq/insula.git
-cd insula
+# Pick your CPU arch: amd64 (x86-64) or arm64.
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+chmod +x insula-linux-amd64
+sudo mv insula-linux-amd64 /usr/local/bin/insula
 
-sudo ./scripts/bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain hosting.example.com \
   --acme-email ops@example.com \
   --allow-source 198.51.100.7
@@ -53,18 +54,39 @@ sudo ./scripts/bootstrap.sh --join-as server \
 The OS detection and package install (apt vs dnf) are automatic — the same
 command works on Debian/Ubuntu and on RHEL-family / Amazon Linux 2023.
 
+!!! tip "The binary is the whole installer"
+    `insula` is a single cosign-signed executable. The installer (OS prep, k3s,
+    firewall, cert-manager, Flux, the platform manifests) travels *inside* it, so
+    there is nothing else to fetch. On first run it seeds the cluster from those
+    embedded manifests, then hands ongoing reconciliation to Flux (which pulls
+    from GitHub), and installs *itself* to `/usr/local/bin/insula` with a daily
+    self-upgrade timer. Verify the download before running with the published
+    `.sig` if your policy requires it.
+
+??? info "Prefer to run from a checkout? (development)"
+    The classic repo path still works and is what contributors use:
+    ```bash
+    git clone https://github.com/insulahq/insula.git
+    cd insula
+    sudo ./scripts/bootstrap.sh --join-as server --domain … --acme-email …
+    ```
+    Only `scripts/` + `k8s/` + `platform/VERSION` are consumed — the rest of the
+    repo (backend/frontend/images) ships as prebuilt images and is not needed at
+    install time. `./scripts/bootstrap.sh --help` is the authoritative flag list
+    for both paths (`insula bootstrap --help-full` prints the same).
+
 ### Useful options
 
 | Flag | When to use |
 |---|---|
 | `--env <dev\|staging\|production>` | Defaults to `production`. |
-| `--with-monitoring` | Also install Prometheus + Loki + Grafana. |
 | `--skip-longhorn` | Use k3s `local-path` storage instead of Longhorn (fine for a single node). |
 | `--operator-age-recipient <age1…>` | Supply your own backup-encryption public key. If omitted, a keypair is generated and the **private key is printed once** — save it. |
 | `--require-smoke-pass` | Make the post-install smoke test fatal (for automated installs). |
 | `--remote <host> --ssh-key <path>` | Run the whole thing against a remote server from your workstation. |
 
-Run `./scripts/bootstrap.sh --help` for the complete, authoritative flag list.
+Run `insula bootstrap --help` for the common flags, or `insula bootstrap
+--help-full` for the complete, authoritative list.
 
 !!! warning "Save the backup-encryption key"
     If you don't pass `--operator-age-recipient`, bootstrap generates an age
@@ -86,11 +108,11 @@ When bootstrap finishes it prints a summary like:
     API:     https://api.hosting.example.com
 ```
 
-Your seeded admin credentials are written to **`/etc/platform/admin-credentials`**
+Your seeded admin credentials are written to **`/etc/insula/admin-credentials`**
 on the server (and logged once during the run):
 
 ```bash
-sudo cat /etc/platform/admin-credentials
+sudo cat /etc/insula/admin-credentials
 # ADMIN_EMAIL=admin@hosting.example.com
 # ADMIN_PASSWORD=<generated>
 ```
