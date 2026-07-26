@@ -99,8 +99,8 @@ if command -v "$COSIGN" >/dev/null 2>&1; then
   # Full install via the real phase_platform_ops, from a local file:// release.
   REL="$K/rel"; mkdir -p "$REL"
   ARCHTOK="$(case "$(uname -m)" in x86_64|amd64) echo amd64;; aarch64|arm64) echo arm64;; esac)"
-  cp "$BIN" "$REL/platform-ops-linux-${ARCHTOK}"
-  cp "$K/sig" "$REL/platform-ops-linux-${ARCHTOK}.sig"
+  cp "$BIN" "$REL/insula-linux-${ARCHTOK}"
+  cp "$K/sig" "$REL/insula-linux-${ARCHTOK}.sig"
   REPO="$K/repo"; mkdir -p "$REPO/platform"; echo 2026.6.1 > "$REPO/platform/VERSION"; cp "$K/cosign.pub" "$REPO/platform/cosign.pub"
   PLATFORM_OPS_BIN="$K/bin/platform-ops" \
   PLATFORM_OPS_RELEASE_BASE="$REL" \
