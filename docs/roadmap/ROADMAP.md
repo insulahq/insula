@@ -35,6 +35,7 @@
 | [R21](#r21--k3s-multi-minor-auto-step-adr-045--implementation-gap) | k3s multi-minor auto-step (ADR-045 ↔ code gap) | P3 | ✅ Shipped 2026-06-21 — `cluster upgrade` auto-steps multi-minor (auto-loop chosen) |
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
+| [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
 
 ---
 
@@ -619,4 +620,61 @@ node's self-upgrade can still fetch it. Host-migration markers are
 name-independent, so the binary rename cannot re-trigger migrations; the path
 rebrand preserves that invariant only because it uses symlinks — load-bearing,
 CI-guardable. Full design + risks: ADR-055.
+
+## R24 — PROXY-protocol support for cloud load balancers
+
+**Proposed 2026-07-26.** Lets an operator front the cluster with a cloud
+load balancer (Hetzner CCM, AWS NLB, …) **without losing the real client IP**.
+
+**Problem.** Most cloud LBs SNAT inbound connections and convey the true client
+only via **PROXY protocol**. This platform accepts inbound PROXY protocol on
+**neither** edge, so a SNAT-ing LB makes every client appear as the LB's own IP.
+That silently collapses per-client rate limits, CrowdSec decisions, audit-log
+attribution, and — the expensive one — **mail SPF/DKIM alignment and sender
+reputation** (Stalwart keys anti-abuse off the connecting IP). See the
+[Production Pre-Flight Checklist § mail exposure](../operations/PRODUCTION_PREFLIGHT_CHECKLIST.md)
+and [CLUSTER_NETWORK.md](../operations/CLUSTER_NETWORK.md).
+
+**Why it's a gap — the two edges today:**
+- **Web** — Traefik is a `hostPort` DaemonSet; its entrypoints carry only
+  `forwardedHeaders.trustedIPs` (X-Forwarded-For trust), wired from the operator
+  CIDR list by the `cluster-trusted-proxies` reconciler and surfaced in the admin
+  UI (**Security → Network Trust → Trusted Proxies**). There is **no**
+  `proxyProtocol.trustedIPs`. So an **L7 / XFF** LB works today (add its CIDR); an
+  **L4 / PROXY-protocol** LB does not.
+- **Mail** — the HAProxy `hostNetwork` DaemonSet frontends `bind *:25` (etc.) with
+  **no `accept-proxy`**, and Stalwart's `-proxy` listeners trust only the pod CIDR
+  (`mail-admin/proxy-networks-reconciler.ts`, reconciler-managed, **no operator
+  knob**). Real IP survives **only** if the LB does source-preserving L4 passthrough.
+
+**Proposed change (two symmetric parts + one gate):**
+1. **Web** — extend the `cluster-trusted-proxies` reconciler to also emit
+   `--entryPoints.{web,websecure}.proxyProtocol.trustedIPs=<csv>` from the same
+   operator CIDR list (or a per-row "PROXY protocol" flag), so Traefik unwraps
+   PROXY frames from a trusted LB.
+2. **Mail** — add (gated) `accept-proxy` to the HAProxy frontend `bind` lines and
+   an operator input that adds the LB's egress CIDR to Stalwart's
+   `overrideProxyTrustedNetworks`. Surface both in the same **Trusted Proxies**
+   admin tab so the config is discoverable, not YAML-only.
+3. Optionally a new mail **port-exposure mode** (`externalLoadBalancer`) that
+   selects the PROXY-protocol front instead of node-bound hostPorts.
+
+**Delivery / risk.** PROXY protocol is all-or-nothing per listener — turning on
+`accept-proxy` breaks every *non*-PROXY connection to that port (in-cluster
+health probes, Roundcube/Bulwark, direct clients — the 2026-05-17 `errno=104`
+class of regression). So it MUST sit behind an explicit "front me with a
+PROXY-protocol LB" toggle and never default on; the hostPort/hostNetwork + XFF
+path stays the default and remains fully supported.
+
+**Why P2, not P1 — there is a zero-code workaround today:** DNS multi-A straight
+to node IPs (no LB) **or** a source-preserving **L4-passthrough** LB both keep
+real client IPs intact. This item is for operators who specifically want a
+SNAT-style cloud LB VIP in front.
+
+**Gate:** part 2 changes **mail port-exposure**, which is a "don't touch without
+asking" area — this item ships only after an **ADR + operator sign-off**; the
+write-up here is the proposal, not an approval to build. Related:
+[R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename)
+(real-client-IP recovery groundwork), the mail HA path in
+[HA_MODE](../architecture/HA_MODE.md).
 
