@@ -236,9 +236,21 @@ phase_platform_ops() {
   pub_src="${PLATFORM_OPS_COSIGN_PUB_SRC:-${root}/platform/cosign.pub}"
   pub_dst="${PLATFORM_OPS_COSIGN_PUB_DST:-/etc/platform/cosign.pub}"
 
+  # ALWAYS ensure the cosign trust anchor is persisted — even when the binary is
+  # already at the target version and we skip below. Operators `mv` the signed
+  # binary to ${bin} and THEN run `insula bootstrap`, so the version check almost
+  # always short-circuits; the anchor install used to live only in the self-
+  # install block past that early-return, leaving self-upgrade dead with no
+  # /etc/platform/cosign.pub (doctor: "cosign trust anchor MISSING").
+  if [ -r "$pub_src" ] && [ ! -f "$pub_dst" ]; then
+    mkdir -p "$(dirname "$pub_dst")"
+    chmod 700 "$(dirname "$pub_dst")" 2>/dev/null || true
+    install -m 644 "$pub_src" "$pub_dst" && log "platform-ops: cosign trust anchor → ${pub_dst}."
+  fi
+
   # Idempotency: already at the target version → nothing to do, no re-fetch.
   if [ "$(platform_ops_installed_version "$bin")" = "$version" ]; then
-    log "platform-ops: already at ${version} — skipping."
+    log "platform-ops: already at ${version} — skipping (cosign anchor ensured above)."
     return 0
   fi
 

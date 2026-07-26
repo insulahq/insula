@@ -194,11 +194,14 @@ async function reconcileCalicoInstallation(k8s: K8sClients): Promise<{ readonly 
   }
   let inst: RawInstallation | null = null;
   try {
-    inst = await k8s.custom.getNamespacedCustomObject({
+    // Installation is CLUSTER-scoped — must use the cluster variant. The old
+    // getNamespacedCustomObject with namespace:'' produced a malformed request
+    // (apiserver read it as list `default` in namespace `installations` → a 403
+    // no RBAC could satisfy, so the Calico placement reconcile never worked).
+    inst = await k8s.custom.getClusterCustomObject({
       group: 'operator.tigera.io', version: 'v1',
       plural: 'installations', name: 'default',
-      namespace: '',
-    } as unknown as Parameters<typeof k8s.custom.getNamespacedCustomObject>[0]) as RawInstallation;
+    } as unknown as Parameters<typeof k8s.custom.getClusterCustomObject>[0]) as RawInstallation;
   } catch (err) {
     const status = (err as { code?: number; statusCode?: number }).code
       ?? (err as { statusCode?: number }).statusCode;
@@ -246,15 +249,14 @@ async function reconcileCalicoInstallation(k8s: K8sClients): Promise<{ readonly 
 
   try {
     await (k8s.custom as unknown as {
-      patchNamespacedCustomObject: (
-        a: { group: string; version: string; namespace: string; plural: string; name: string; body: unknown },
+      patchClusterCustomObject: (
+        a: { group: string; version: string; plural: string; name: string; body: unknown },
         mw: typeof MERGE_PATCH,
       ) => Promise<unknown>;
-    }).patchNamespacedCustomObject(
+    }).patchClusterCustomObject(
       {
         group: 'operator.tigera.io', version: 'v1',
         plural: 'installations', name: 'default',
-        namespace: '',
         body: patch,
       },
       MERGE_PATCH,
