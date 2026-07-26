@@ -9,6 +9,10 @@ tradeoffs, configuration, and what you can and cannot mix.
 For the firewall mechanics + nft set design that all three modes share,
 see [CLUSTER_NETWORK.md](CLUSTER_NETWORK.md).
 
+> The `sudo insula bootstrap …` commands below use the signed installer
+> binary (ADR-055) — download it per node, no repo clone. A repo checkout's
+> `./scripts/bootstrap.sh …` takes identical flags (the dev path).
+
 ## TL;DR — pick one
 
 | You're running… | Pick |
@@ -85,13 +89,13 @@ the only thing keeping the control plane safe.
 
 ```bash
 # First server (no --cluster-network-cidr → public mode)
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
     --domain example.test \
     --acme-email ops@... \
     --allow-source <operator-IP>/32
 
 # Subsequent servers / workers — same shape
-./bootstrap.sh --join-as worker \
+sudo insula bootstrap --join-as worker \
     --server <existing-server-public-IP> \
     --token K10...
 ```
@@ -162,19 +166,19 @@ running bootstrap.
 
 ```bash
 # First server
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
     --cluster-network-cidr 10.0.0.0/16 \
     --domain example.test \
     --acme-email ops@... \
     --allow-source 10.0.0.0/16    # implicit; the CIDR also gets added
 
 # Subsequent servers + workers
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
     --cluster-network-cidr 10.0.0.0/16 \
     --server 10.0.1.5 \
     --token K10...
 
-./bootstrap.sh --join-as worker \
+sudo insula bootstrap --join-as worker \
     --cluster-network-cidr 10.0.0.0/16 \
     --server 10.0.1.5 \
     --token K10...
@@ -261,7 +265,7 @@ netbird up --management-url https://vpn.platform.net --setup-key <KEY>
 ip -br addr show wt0    # confirm 100.64.x.y bound
 
 # Then bootstrap:
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
     --domain example.test \
     --acme-email ops@... \
     --allow-source 100.64.0.0/10
@@ -269,7 +273,7 @@ ip -br addr show wt0    # confirm 100.64.x.y bound
     # Calico autodetect inherits, MTU auto = wt0_mtu - 110
 
 # Subsequent server / worker (including NAT'd home boxes!)
-./bootstrap.sh --join-as worker \
+sudo insula bootstrap --join-as worker \
     --server 100.64.1.5 \
     --token K10...
 ```

@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.4
 ---
 
 # Grow to multiple nodes
@@ -48,10 +48,16 @@ sudo cat /var/lib/rancher/k3s/server/node-token
 # → K10abc...:server:def...
 ```
 
-Then bootstrap the new host. Add a server (control plane):
+Then, on the **new host**, download the signed `insula` binary and run
+`insula bootstrap` — same single binary as the first node, no repo clone.
+
+Add a server (control plane):
 
 ```bash
-sudo ./scripts/bootstrap.sh --join-as server \
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
+
+sudo insula bootstrap --join-as server \
   --server <existing-server-ip> \
   --token K10abc...:server:def... \
   --domain hosting.example.com \
@@ -61,12 +67,18 @@ sudo ./scripts/bootstrap.sh --join-as server \
 Or add a worker (tenant capacity):
 
 ```bash
-sudo ./scripts/bootstrap.sh --join-as worker \
+sudo insula bootstrap --join-as worker \
   --server <existing-server-ip> \
   --token K10abc...:server:def...
 ```
 
-You can also drive this remotely with `--remote <host> --ssh-key <path>`.
+You can also drive this from your workstation with `--remote <host> --ssh-key <path>`
+(the binary is copied to the target for you).
+
+!!! tip "Match the arch"
+    Use `insula-linux-arm64` on ARM hosts. A checkout still works too — see the
+    [single-node install](install.md#run-it) for the `./scripts/bootstrap.sh`
+    alternative.
 
 After the script finishes, the node appears in the admin panel under
 **Cluster → Nodes** (the node-sync reconciler picks it up within ~60 seconds),

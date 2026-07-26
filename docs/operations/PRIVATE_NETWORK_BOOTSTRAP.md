@@ -4,6 +4,11 @@
 > public-IP-only VPS (Hetzner / Vultr / OVH / etc.) or any topology
 > where the nodes are not on a single L2 segment.
 
+> **Install path (ADR-055):** the commands below run through the signed
+> `insula` binary (`insula bootstrap …`) — download it per node, no repo
+> clone. A repo checkout's `./scripts/bootstrap.sh` is the dev-path
+> equivalent; flags are identical either way.
+
 ## Why
 
 Without a private underlay, every cross-node K8s flow — etcd peer
@@ -44,21 +49,21 @@ range is `100.64.0.0/10`. Bootstrap can bring NetBird up itself:
 
 ```bash
 # First server:
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.test --acme-email ops@example.test \
   --netbird-management-url https://vpn.example.test \
   --netbird-setup-key <UUID>
 
 # Second + third servers (note: --server is the FIRST server's wt0
 # IP, NOT its public IP):
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --server 100.64.1.5 --token K10abc...:server:def... \
   --domain example.test --acme-email ops@example.test \
   --netbird-management-url https://vpn.example.test \
   --netbird-setup-key <UUID>
 
 # Worker:
-./bootstrap.sh --join-as worker \
+sudo insula bootstrap --join-as worker \
   --server 100.64.1.5 --token K10abc...:server:def... \
   --netbird-management-url https://vpn.example.test \
   --netbird-setup-key <UUID>
@@ -80,7 +85,7 @@ tailscale up --auth-key tskey-auth-...
 Then:
 
 ```bash
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.test --acme-email ops@example.test \
   --cluster-network-cidr 100.64.0.0/10
 ```
@@ -94,7 +99,7 @@ Operator attaches the private interface (`eth1` or whatever) before
 bootstrap. The interface needs an IP in a stable CIDR:
 
 ```bash
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.test --acme-email ops@example.test \
   --cluster-network-cidr 10.0.0.0/16
 ```
@@ -106,7 +111,7 @@ to the public; you get a single-server install with no path to add
 peers later. **Going to HA from this state requires a full rebuild.**
 
 ```bash
-./bootstrap.sh --join-as server \
+sudo insula bootstrap --join-as server \
   --domain example.test --acme-email ops@example.test
 ```
 
@@ -178,6 +183,7 @@ k3s + clearing `/var/lib/rancher/k3s/`. Plan accordingly.
 
 ## See also
 
-- `scripts/bootstrap.sh --help` — flag reference + worked examples
+- `insula bootstrap --help` — flag reference + worked examples
+  (`scripts/bootstrap.sh --help` from a checkout)
 - `docs/operations/HA_MIGRATION_RUNBOOK.md` — HA growth path (1 → 3 → 5 servers)
 - `docs/operations/MULTI_NODE_RUNBOOK.md` — operator runbooks for node lifecycle

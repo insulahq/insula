@@ -34,10 +34,13 @@ to a list of recipients in one pass, so pass a comma-separated list to
 
 ## Bootstrap flows
 
+> These commands use the signed `insula` binary (`insula bootstrap …`,
+> ADR-055); a repo checkout's `./scripts/bootstrap.sh` takes identical flags.
+
 ### First-time install, generate a fresh keypair
 
 ```bash
-./scripts/bootstrap.sh --domain example.test --env production
+sudo insula bootstrap --domain example.test --env production
 ```
 
 The script will emit:
@@ -64,20 +67,20 @@ If you already generated a key elsewhere (e.g. on your workstation with
 `age-keygen -o ~/operator.key` and extracted the public half):
 
 ```bash
-./scripts/bootstrap.sh --domain example.test --env production \
+sudo insula bootstrap --domain example.test --env production \
   --operator-age-recipient age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 Team setup (multiple recipients):
 
 ```bash
-./scripts/bootstrap.sh --domain example.test --env production \
+sudo insula bootstrap --domain example.test --env production \
   --operator-age-recipient age1aaaaaaaaaaaa,age1bbbbbbbbbbbb
 ```
 
 ### Re-bootstrap (idempotent)
 
-Re-running `./scripts/bootstrap.sh` does **not** regenerate the key.
+Re-running `insula bootstrap` does **not** regenerate the key.
 The script checks for the existing `platform-operator-recipient`
 ConfigMap and skips the generation step if present. To rotate, see
 below.
@@ -92,7 +95,7 @@ they were encrypted to the old recipient. Plan accordingly:
    works end-to-end.
 2. Run bootstrap with `--force-rotate-operator-key`:
    ```bash
-   ./scripts/bootstrap.sh --domain example.test --env production \
+   sudo insula bootstrap --domain example.test --env production \
      --force-rotate-operator-key
    ```
 3. Save the new private key (same banner as first-time install).

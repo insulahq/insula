@@ -93,16 +93,19 @@ Admin panel: `https://admin.k8s-platform.test:2011` · login `admin@k8s-platform
 ### Deploy to a server
 
 SSH into a fresh **Debian 12+/13**, **Ubuntu 22.04+/24.04**, or RHEL 9-family
-host and bootstrap in one pass (k3s, Calico, Traefik, Longhorn, cert-manager,
-Flux, and the platform):
+host, download the signed `insula` binary, and bootstrap in one pass (k3s,
+Calico, Traefik, Longhorn, cert-manager, Flux, and the platform) — no repo
+clone; the installer travels inside the binary:
 
 ```bash
-git clone https://github.com/insulahq/insula.git && cd insula
-./scripts/bootstrap.sh --domain hosting.example.com
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
+sudo insula bootstrap --join-as server --domain hosting.example.com --acme-email ops@example.com
 ```
 
-Add worker nodes, scale to HA, and harden via the same script and the admin
-UI. See the deployment docs below.
+Add worker nodes, scale to HA, and harden via the same binary and the admin
+UI. (A repo checkout + `./scripts/bootstrap.sh` still works for development.)
+See the deployment docs below.
 
 ### Running from a fork
 

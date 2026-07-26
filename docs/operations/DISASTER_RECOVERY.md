@@ -37,9 +37,11 @@ You need:
    - S3: access key + secret + bucket + endpoint + region.
    - SSH: private SSH key + destination `user@host:/path`.
 
-3. **A freshly-bootstrapped k3s VM.** Run `./scripts/bootstrap.sh
+3. **A freshly-bootstrapped k3s VM.** Run `sudo insula bootstrap
    --domain <FQDN> --env production --operator-age-recipient <age1…>`
-   FIRST. Bootstrap is a prerequisite, not scope of this runbook.
+   FIRST (signed installer binary, ADR-055; a checkout's
+   `./scripts/bootstrap.sh` takes the same flags). Bootstrap is a
+   prerequisite, not scope of this runbook.
 
 4. **Binaries on the restore host:** `age kubectl tar gzip aws` (or
    `scp ssh rsync` for SSH target), `pg_restore`. The `dr-restore.sh`
@@ -198,7 +200,7 @@ systemctl stop k3s
 k3s-uninstall.sh
 # Re-bootstrap from scratch, same --operator-age-recipient so the
 # existing backups stay decryptable.
-./scripts/bootstrap.sh --domain <FQDN> --env production \
+sudo insula bootstrap --domain <FQDN> --env production \
   --operator-age-recipient "$(head -1 ~/operator.key | awk ...)"
 # Re-run dr-restore.
 ```
