@@ -2577,3 +2577,17 @@ Decision — restore full enforcement:
 RBAC: the platform-api ClusterRole must include `tlsoptions` alongside
 `ingressroutes`/`middlewares` (same class of gap ADR-038's inline comment warns
 about). Validated E2E on DEV: no-cert rejected, valid accepted, revoked → 403.
+
+## ADR-055: `insula` single-binary install + host-footprint branding
+
+See [ADR-055-insula-single-binary-install-and-branding.md](ADR-055-insula-single-binary-install-and-branding.md).
+
+Proposed (2026-07-26): fold the bash `bootstrap.sh` into the signed `platform-ops`
+SEA as an `insula bootstrap` subcommand (embed + `exec`, no TypeScript rewrite),
+rename the user-facing artifact `platform-ops`→`insula` (keeping the internal
+module), and consolidate five inconsistent host roots into `/var/lib/insula` +
+`/etc/insula` via `old → new` symlinks. Delivered to existing clusters by one
+transition host-migration on a dual-asset-name release; host-migration markers
+are name-independent, and symlinks (not moves) preserve that so no migration
+re-runs. Completes R18 / ADR-045 W10c consolidation.
+
