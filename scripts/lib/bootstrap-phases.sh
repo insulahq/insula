@@ -238,6 +238,32 @@ phase_platform_ops() {
     return 0
   fi
 
+  # Single-binary bootstrap (ADR-055): when `insula bootstrap` runs the installer
+  # from inside the signed binary, that binary is already the operator's trusted,
+  # verified artifact — install IT rather than re-fetching the same asset from
+  # GitHub. PLATFORM_OPS_SELF_BIN is set by the bootstrap subcommand to the running
+  # executable. Still persist the (embedded) cosign anchor so later self-upgrades
+  # have their trust root.
+  if [ -n "${PLATFORM_OPS_SELF_BIN:-}" ] && [ -x "${PLATFORM_OPS_SELF_BIN}" ]; then
+    log "platform-ops: self-installing the running binary (${PLATFORM_OPS_SELF_BIN}) → ${bin} (single-binary bootstrap)."
+    if [ -r "$pub_src" ]; then
+      mkdir -p "$(dirname "$pub_dst")"
+      chmod 700 "$(dirname "$pub_dst")" 2>/dev/null || true
+      install -m 644 "$pub_src" "$pub_dst"
+    else
+      warn "platform-ops: no cosign anchor at ${pub_src} — installed the binary but self-upgrade will be dormant until one is present."
+    fi
+    mkdir -p "$(dirname "$bin")"
+    local self_staged="${bin}.new.$$"
+    if install -m 755 "${PLATFORM_OPS_SELF_BIN}" "$self_staged" && mv -f "$self_staged" "$bin"; then
+      log "platform-ops: installed ${version} → ${bin} (from the running binary); pubkey → ${pub_dst}."
+      platform_ops_install_timer || warn "platform-ops: self-upgrade timer install failed (non-fatal)."
+      return 0
+    fi
+    rm -f "$self_staged"
+    warn "platform-ops: self-install failed — falling back to the release-asset fetch."
+  fi
+
   # Dormancy gate (the real state until the release pipeline lands): without an
   # in-repo signing key there is no trust anchor and no published asset.
   if [ ! -r "$pub_src" ]; then

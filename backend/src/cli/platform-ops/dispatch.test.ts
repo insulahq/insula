@@ -45,6 +45,7 @@ function fakeDeps(over: Partial<Deps> = {}): { deps: Deps; out: string[]; err: s
     resetAdminPassword: vi.fn(async () => ({ ok: true, userId: 'u1' })),
     readStdin: vi.fn(async () => ''),
     runEmbeddedScript: vi.fn(async () => 0),
+    runBootstrap: vi.fn(async () => 0),
     renameDomain: vi.fn(async () => ({
       ok: true,
       result: {

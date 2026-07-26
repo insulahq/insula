@@ -9,9 +9,9 @@
  * guaranteeing zero version-logic duplication.
  */
 import { spawn } from 'node:child_process';
-import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { realDrOps } from './dr-ops.js';
 import { realSnapshotOps } from './snapshot-ops.js';
 import { realSelfUpgradeOps } from './self-upgrade/index.js';
@@ -513,6 +513,13 @@ export interface Deps {
    */
   runEmbeddedScript: (assetKey: EmbeddedScriptKey, args: string[]) => Promise<number>;
   /**
+   * Single-binary bootstrap (ADR-055): extract the embedded install tree
+   * (bootstrap.sh + libs + k8s overlays + version) and exec `scripts/bootstrap.sh`
+   * from it with stdio inherited — a fresh install with no repo clone. Falls back
+   * to the on-disk checkout in dev/non-SEA. Returns bootstrap's exit code.
+   */
+  runBootstrap: (args: string[]) => Promise<number>;
+  /**
    * After a successful self-upgrade, converge this release's host-migrations
    * immediately — by invoking the JUST-REPLACED binary (`process.execPath`, which
    * self-upgrade atomically overwrote on disk) as `host-config apply`. The running
@@ -854,6 +861,91 @@ async function realRunEmbeddedScript(assetKey: string, args: string[]): Promise<
 }
 
 /**
+ * Single-binary bootstrap (ADR-055): extract the embedded install tree
+ * (bootstrap.sh + scripts/lib/* + k8s/** + platform/{VERSION,cosign.pub}) into a
+ * private temp mini-repo and exec `scripts/bootstrap.sh` from it — no repo clone.
+ * stdio is inherited (bootstrap is long-running + prompts). `PLATFORM_OPS_SELF_BIN`
+ * points bootstrap's platform-ops phase at the RUNNING binary so it installs
+ * itself instead of re-fetching the release asset over the network.
+ *
+ * Dev / non-SEA: exec the on-disk `scripts/bootstrap.sh` from the checkout the
+ * running `platform-ops.ts` lives in, so `./scripts/build-platform-ops.sh`-less
+ * dev runs still work from source.
+ */
+async function realRunBootstrap(args: string[]): Promise<number> {
+  let sea: typeof import('node:sea') | null = null;
+  try {
+    sea = await import('node:sea');
+  } catch {
+    sea = null;
+  }
+
+  // Dev / non-SEA: run bootstrap.sh straight from the checkout.
+  if (!sea?.isSea()) {
+    const devRoot = process.env.PLATFORM_OPS_BOOTSTRAP_DIR?.trim() || findRepoRootFromSource();
+    if (!devRoot) {
+      process.stderr.write('platform-ops: `bootstrap` requires the signed binary (or a checkout with scripts/bootstrap.sh)\n');
+      return 70;
+    }
+    return spawnBootstrap(join(devRoot, 'scripts', 'bootstrap.sh'), args, process.execPath);
+  }
+
+  // SEA: extract the embedded mini-repo, then exec scripts/bootstrap.sh from it.
+  let manifest: { files?: string[] };
+  try {
+    manifest = JSON.parse(sea.getAsset('bootstrap/manifest.json', 'utf8') as string) as { files?: string[] };
+  } catch {
+    process.stderr.write('platform-ops: embedded bootstrap tree not found in this build (corrupt binary?)\n');
+    return 70;
+  }
+  const root = mkdtempSync(join(tmpdir(), 'insula-bootstrap-'));
+  try {
+    for (const rel of manifest.files ?? []) {
+      const body = sea.getAsset(`bootstrap/${rel}`, 'utf8') as string;
+      const dest = join(root, rel);
+      // Contain path traversal from a tampered manifest before writing as root.
+      if (!dest.startsWith(root + '/')) throw new Error(`bootstrap asset escapes root: ${rel}`);
+      mkdirSync(dirname(dest), { recursive: true });
+      // scripts/*.sh must be executable; everything else 0644.
+      writeFileSync(dest, body, { mode: rel.startsWith('scripts/') && rel.endsWith('.sh') ? 0o700 : 0o644 });
+    }
+    return spawnBootstrap(join(root, 'scripts', 'bootstrap.sh'), args, process.execPath);
+  } catch (err) {
+    process.stderr.write(`platform-ops: bootstrap extraction failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    return 70;
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function spawnBootstrap(scriptPath: string, args: string[], selfBin: string): Promise<number> {
+  return new Promise<number>((resolve) => {
+    const child = spawn('bash', [scriptPath, ...args], {
+      stdio: 'inherit',
+      env: { ...process.env, PLATFORM_OPS_SELF_BIN: selfBin },
+    });
+    child.on('error', () => resolve(127));
+    child.on('close', (code) => resolve(code ?? 0));
+  });
+}
+
+/**
+ * Walk up from this source file to the repo root (the dir with scripts/bootstrap.sh)
+ * for dev/non-SEA runs. Returns null if not found (e.g. running the bundled CJS
+ * outside a checkout).
+ */
+function findRepoRootFromSource(): string | null {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, 'scripts', 'bootstrap.sh'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
  * apply-on-Apply (ADR-045 W10c): converge host-migrations right after a
  * successful self-upgrade. Re-execs the NEW binary (process.execPath was
  * atomically replaced on disk) as `host-config apply` so the freshly-installed
@@ -917,6 +1009,7 @@ export function realDeps(): Deps {
       return Buffer.concat(chunks).toString('utf8');
     },
     runEmbeddedScript: (assetKey, args) => realRunEmbeddedScript(assetKey, args),
+    runBootstrap: (args) => realRunBootstrap(args),
     convergeAfterSelfUpgrade: () => realConvergeAfterSelfUpgrade(env),
   };
 }
