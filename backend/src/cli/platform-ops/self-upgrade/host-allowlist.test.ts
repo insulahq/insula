@@ -3,7 +3,7 @@ import { isAllowedHost } from './index.js';
 
 describe('self-upgrade isAllowedHost', () => {
   it('allows github.com and BOTH release-asset CDN hosts (old + new)', () => {
-    expect(isAllowedHost('https://github.com/insulahq/insula/releases/download/v1/platform-ops-linux-amd64')).toBe(true);
+    expect(isAllowedHost('https://github.com/insulahq/insula/releases/download/v1/insula-linux-amd64')).toBe(true);
     expect(isAllowedHost('https://objects.githubusercontent.com/foo')).toBe(true);
     // the 2025 CDN host — the regression this fix addresses
     expect(isAllowedHost('https://release-assets.githubusercontent.com/github-production-release-asset/x?sig=y')).toBe(true);

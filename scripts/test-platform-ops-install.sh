@@ -62,8 +62,8 @@ make_signed_release() {
   local rel="$1" ver="$2" key="$3" a
   mkdir -p "$rel"
   for a in amd64 arm64; do
-    make_fake_binary "$rel/platform-ops-linux-$a" "$ver"
-    sign_b64 "$key" "$rel/platform-ops-linux-$a" > "$rel/platform-ops-linux-$a.sig"
+    make_fake_binary "$rel/insula-linux-$a" "$ver"
+    sign_b64 "$key" "$rel/insula-linux-$a" > "$rel/insula-linux-$a.sig"
   done
 }
 
@@ -154,8 +154,8 @@ rm -rf "$SB"
 # 4c. FAIL-CLOSED: binary present, signature missing → refuse.
 SB=$(sandbox); REL="$SB/rel"; mkdir -p "$REL"
 cp "$KEYDIR/pub.pem" "$SB/repo/platform/cosign.pub"
-make_fake_binary "$REL/platform-ops-linux-amd64" 2026.6.1
-make_fake_binary "$REL/platform-ops-linux-arm64" 2026.6.1
+make_fake_binary "$REL/insula-linux-amd64" 2026.6.1
+make_fake_binary "$REL/insula-linux-arm64" 2026.6.1
 # (no .sig files written)
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
@@ -212,8 +212,8 @@ yes "service is hardened (NoNewPrivileges + ProtectSystem)" "grep -q 'NoNewPrivi
 
 # 4f. IDEMPOTENCY: re-run with the binary already at target version → skip.
 # Corrupt the release so a re-fetch would FAIL the verify; a true skip never refetches.
-printf 'BAD' > "$REL/platform-ops-linux-amd64.sig"
-printf 'BAD' > "$REL/platform-ops-linux-arm64.sig"
+printf 'BAD' > "$REL/insula-linux-amd64.sig"
+printf 'BAD' > "$REL/insula-linux-arm64.sig"
 before=$(stat -c '%Y' "$SB/bin/platform-ops")
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \

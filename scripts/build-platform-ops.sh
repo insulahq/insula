@@ -233,3 +233,12 @@ if [ "$ARCH" = "$(case "$(uname -m)" in x86_64|amd64) echo amd64;; aarch64|arm64
 fi
 
 echo "build-platform-ops: wrote ${out} ($(du -h "$out" | cut -f1))"
+
+# ADR-055: the canonical artifact name is `insula`. Publish the SAME bytes under
+# insula-linux-<arch> too. The transition release ships BOTH names so an existing
+# node's old self-upgrade/bootstrap (which fetch platform-ops-linux-<arch>) is
+# never stranded; new installs + self-upgrades fetch insula-linux-<arch>.
+insula_out="${OUT_DIR}/insula-linux-${ARCH}"
+cp "$out" "$insula_out"
+chmod +x "$insula_out"
+echo "build-platform-ops: wrote ${insula_out} (insula-branded copy of the same bytes)"
