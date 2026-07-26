@@ -35,6 +35,14 @@ Download the signed **`insula`** binary onto the server and run
 ```bash
 # Pick your CPU arch: amd64 (x86-64) or arm64.
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+
+# (recommended) VERIFY the signed binary before you run it — fetch the trust
+# anchor + signature first, then cosign-verify. Never execute an unverified
+# installer. `cosign.pub` is the project's public trust anchor (in the repo).
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
+curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
+cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig insula-linux-amd64
+
 chmod +x insula-linux-amd64
 sudo mv insula-linux-amd64 /usr/local/bin/insula
 
@@ -60,8 +68,11 @@ command works on Debian/Ubuntu and on RHEL-family / Amazon Linux 2023.
     there is nothing else to fetch. On first run it seeds the cluster from those
     embedded manifests, then hands ongoing reconciliation to Flux (which pulls
     from GitHub), and installs *itself* to `/usr/local/bin/insula` with a daily
-    self-upgrade timer. Verify the download before running with the published
-    `.sig` if your policy requires it.
+    self-upgrade timer. Two trust-anchor roles, don't conflate them: the
+    `cosign.pub` you fetch **above** verifies the binary *before you run it*
+    (recommended); separately, bootstrap persists that same anchor to
+    `/etc/platform/cosign.pub` on the node so the daily self-upgrade can verify
+    future releases — you don't install that one by hand.
 
 ??? info "Prefer to run from a checkout? (development)"
     The classic repo path still works and is what contributors use:
