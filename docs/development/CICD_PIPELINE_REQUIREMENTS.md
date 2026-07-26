@@ -119,7 +119,12 @@ MariaDB/Redis containers).
    writes `platform/VERSION`, and creates an annotated tag (`RELEASING.md`).
 3. Push the tag → `release.yml` validates `tag == platform/VERSION`, builds +
    pushes `:<version>` images, and publishes a GitHub Release from the CHANGELOG
-   section. Prereleases are `-rc.N`.
+   section. Prereleases are `-rc.N`. For stable tags it then **auto-syncs
+   `development`'s CHANGELOG** (`sync-development-changelog` job →
+   `scripts/sync-development-changelog.sh`): `cut-release` promotes the CHANGELOG
+   on `main` only, so without this `development` keeps the released content under
+   `[Unreleased]` and lacks the `[<version>]` section. The job rebuilds it from
+   the tag and re-scopes `[Unreleased]` to post-cut work; idempotent, `[skip ci]`.
 4. **Production deploy:** there is no stable branch. A production install
    (`bootstrap.sh --env production`) pins its Flux GitRepository to a release
    **tag** — `v<platform/VERSION>` of the bootstrapping checkout, or
