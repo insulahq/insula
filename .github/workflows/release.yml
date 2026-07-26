@@ -99,13 +99,18 @@ jobs:
           ./scripts/build-platform-ops.sh --version "$VERSION" --arch amd64
           ./scripts/build-platform-ops.sh --version "$VERSION" --arch arm64 --node-binary /tmp/node-arm64/bin/node
           if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
-            for a in amd64 arm64; do
-              cosign sign-blob --key env://COSIGN_PRIVATE_KEY --tlog-upload=false --yes \
-                "dist-platform-ops/platform-ops-linux-${a}" > "dist-platform-ops/platform-ops-linux-${a}.sig"
+            # Sign BOTH the canonical `insula-linux-<arch>` (ADR-055) and the
+            # legacy `platform-ops-linux-<arch>` (kept so a not-yet-migrated
+            # node's old self-upgrade/bootstrap can still fetch + verify).
+            for name in insula platform-ops; do
+              for a in amd64 arm64; do
+                cosign sign-blob --key env://COSIGN_PRIVATE_KEY --tlog-upload=false --yes \
+                  "dist-platform-ops/${name}-linux-${a}" > "dist-platform-ops/${name}-linux-${a}.sig"
+              done
             done
-            echo "platform-ops: signed amd64 + arm64"
+            echo "platform-ops: signed insula + platform-ops (amd64 + arm64)"
           else
-            echo "::warning::COSIGN_PRIVATE_KEY not set — uploading UNSIGNED platform-ops binaries; bootstrap auto-install stays dormant (fail-closed)."
+            echo "::warning::COSIGN_PRIVATE_KEY not set — uploading UNSIGNED binaries; bootstrap auto-install stays dormant (fail-closed)."
           fi
 
       # W11 version-poller trust artifact: a tiny cosign-signed manifest naming
@@ -175,6 +180,10 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: false
           files: |
+            dist-platform-ops/insula-linux-amd64
+            dist-platform-ops/insula-linux-amd64.sig
+            dist-platform-ops/insula-linux-arm64
+            dist-platform-ops/insula-linux-arm64.sig
             dist-platform-ops/platform-ops-linux-amd64
             dist-platform-ops/platform-ops-linux-amd64.sig
             dist-platform-ops/platform-ops-linux-arm64

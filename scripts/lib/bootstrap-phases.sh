@@ -9,7 +9,7 @@
 # workstreams (W9 migration registry, W17 CLI subcommands) grow into.
 #
 # platform-ops is the operator CLI (a self-contained, cosign-signed binary at
-# /usr/local/bin/platform-ops). bootstrap installs it on first run. Until the
+# /usr/local/bin/insula). bootstrap installs it on first run. Until the
 # release pipeline that builds + signs it lands (a later PR), there is no asset
 # and no signing key in the repo, so phase_platform_ops is a deliberate,
 # logged NO-OP. It is best-effort: it never aborts a bootstrap. Its ONE hard
@@ -19,7 +19,7 @@
 # all defaulting to the real production value:
 #   PLATFORM_OPS_REPO            GitHub owner/repo            (insulahq/insula)
 #   PLATFORM_OPS_RELEASE_BASE    release asset base URL/dir   (derived from repo+version)
-#   PLATFORM_OPS_BIN             install destination          (/usr/local/bin/platform-ops)
+#   PLATFORM_OPS_BIN             install destination          (/usr/local/bin/insula)
 #   PLATFORM_OPS_OPENSSL_BIN     openssl executable (verify)  (openssl)
 #   PLATFORM_OPS_COSIGN_PUB_SRC  in-repo trust anchor         (<root>/platform/cosign.pub)
 #   PLATFORM_OPS_COSIGN_PUB_DST  persisted pubkey             (/etc/platform/cosign.pub)
@@ -63,10 +63,14 @@ platform_ops_target_version() {
 }
 
 # Echo the version reported by an already-installed binary (empty if absent).
+# The banner's first line is "<tool-name> <version>" (e.g. "insula 2026.7.3");
+# take the LAST field so the idempotency compare (against the bare version) works
+# regardless of the tool-name string — the platform-ops→insula rename does not
+# change what this returns.
 platform_ops_installed_version() {
-  local bin="${1:-${PLATFORM_OPS_BIN:-/usr/local/bin/platform-ops}}"
+  local bin="${1:-${PLATFORM_OPS_BIN:-/usr/local/bin/insula}}"
   [ -x "$bin" ] || return 0
-  "$bin" version 2>/dev/null | head -n1 | tr -d '[:space:]'
+  "$bin" version 2>/dev/null | head -n1 | awk '{print $NF}'
 }
 
 # Fetch src→dest. The production RELEASE_BASE is always https. http:// is only
@@ -123,7 +127,7 @@ platform_ops_verify_blob() {
 # Lay down (and, unless skipped, enable) the daily self-upgrade systemd timer.
 platform_ops_install_timer() {
   local dir="${PLATFORM_OPS_SYSTEMD_DIR:-/etc/systemd/system}"
-  local bin="${PLATFORM_OPS_BIN:-/usr/local/bin/platform-ops}"
+  local bin="${PLATFORM_OPS_BIN:-/usr/local/bin/insula}"
   mkdir -p "$dir" || { warn "platform-ops: cannot create unit dir ${dir} — skipping timer."; return 1; }
   cat > "${dir}/platform-ops-update.service" <<UNIT
 [Unit]
@@ -228,7 +232,7 @@ phase_platform_ops() {
     warn "platform-ops: unsupported arch '$(uname -m)' — skipping install."
     return 0
   }
-  bin="${PLATFORM_OPS_BIN:-/usr/local/bin/platform-ops}"
+  bin="${PLATFORM_OPS_BIN:-/usr/local/bin/insula}"
   pub_src="${PLATFORM_OPS_COSIGN_PUB_SRC:-${root}/platform/cosign.pub}"
   pub_dst="${PLATFORM_OPS_COSIGN_PUB_DST:-/etc/platform/cosign.pub}"
 
@@ -272,7 +276,7 @@ phase_platform_ops() {
   fi
 
   base="${PLATFORM_OPS_RELEASE_BASE:-https://github.com/${PLATFORM_OPS_REPO:-insulahq/insula}/releases/download/v${version}}"
-  asset="${base}/platform-ops-linux-${arch}"
+  asset="${base}/insula-linux-${arch}"
   sig_url="${asset}.sig"
 
   tmp="$(mktemp -d)"
