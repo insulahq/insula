@@ -17,6 +17,11 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
 
 ## Growing the cluster
 
+> Node-join commands below run through the signed `insula` binary
+> (`insula bootstrap …`, ADR-055) — download it to your workstation once
+> and it copies itself to each target over SSH; no repo clone. A checkout's
+> `./scripts/bootstrap.sh` is the dev-path equivalent with identical flags.
+
 ### Add a 2nd server (1 → 2 servers; DEGRADED HA, not fully HA)
 
 Two servers don't form a real HA setup (can't tolerate loss — etcd
@@ -32,7 +37,7 @@ ssh root@<server-1> cat /var/lib/rancher/k3s/server/node-token
 # Provision a new VPS, DNS, firewall rules.
 
 # Run bootstrap against the new host:
-./scripts/bootstrap.sh \
+insula bootstrap \
   --remote <server-2-ip> --ssh-key ~/hosting-platform.key \
   --role server \
   --domain example.test \
@@ -67,7 +72,7 @@ Same flow. Once done, the cluster has real HA:
 Workers don't join etcd; they just take tenant workloads.
 
 ```bash
-./scripts/bootstrap.sh \
+insula bootstrap \
   --remote <worker-ip> --ssh-key ~/hosting-platform.key \
   --role worker \
   --server <any-server-ip> \
@@ -147,7 +152,7 @@ ETCDCTL_API=3 etcdctl member remove <unhealthy-member-id>
 ```
 
 Then `kubectl delete node <unhealthy-nodename>` from the k8s side,
-replace the VPS, and re-run `bootstrap.sh --join-as server --server …
+replace the VPS, and re-run `insula bootstrap --join-as server --server …
 --token …` to join a fresh etcd member.
 
 ## Monitoring
