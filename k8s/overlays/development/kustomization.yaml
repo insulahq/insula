@@ -17,6 +17,9 @@ resources:
   - ../../base/monitoring
   - ../../base/backup
   - dex/
+  # oauth2-proxy ships with Dex (moved out of base — see base/kustomization.yaml).
+  # Its wait-for-dex-discovery init needs a reachable OIDC issuer, patched below.
+  - ../../base/oauth2-proxy
   # Stalwart 0.16 mail server (Cut 3 cutover, 2026-05-04). Replaces the
   # 0.15 StatefulSet that lived under stalwart/. The cutover script
   # scripts/cutover-stalwart-v015-to-v016.sh removes the 0.15 resources

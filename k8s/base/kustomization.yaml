@@ -93,7 +93,13 @@ resources:
   # materialises the per-Cluster ObjectStore CR + ScheduledBackup CR
   # from the SYSTEM-class target binding.
   - cnpg-system/
-  - oauth2-proxy/
+  # oauth2-proxy is DELIBERATELY NOT in the base — it depends on Dex OIDC,
+  # which runs ONLY in dev/dind/staging (production uses external IAM / the
+  # cookie gate, and ci-no-dex-in-production forbids Dex there). Deploying it
+  # in the base wedged production's oauth2-proxy Init:0/1 forever on a Dex
+  # `wait-for-dex-discovery` that can never succeed. It is now pulled in
+  # explicitly by exactly the overlays that ship Dex (development, dind,
+  # staging → `../../base/oauth2-proxy`). Do NOT re-add it here.
   # private-worker-tunnel — cluster-wide singletons for the Private
   # Worker feature: cert-manager Certificate for tunnels.${DOMAIN} and
   # the anchor Ingress that holds the TLS cert + catch-all backend.
