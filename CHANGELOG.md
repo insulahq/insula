@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Calico Installation placement reconcile** (`system-pod-placement`) issued a
+  namespaced custom-object call with an empty namespace against the
+  cluster-scoped `Installation` CR — a malformed request that returned 403 on
+  every tick, so Calico's control-plane components were never pinned to server
+  nodes. Now uses the cluster-scoped get/patch, backed by a new
+  `operator.tigera.io/installations` rule on the platform-api ClusterRole.
+- **cosign trust anchor is now installed on every bootstrap.** It was written to
+  `/etc/platform/cosign.pub` only inside the binary-install path, past the
+  "already at `<version>`" early-return. Operators place the signed binary at
+  `/usr/local/bin/insula` and *then* run `insula bootstrap`, so that check
+  short-circuited and the anchor was never persisted — leaving self-upgrade dead
+  (`doctor: cosign trust anchor MISSING`). The anchor is now persisted before the
+  version check.
+
+### Changed
+- **Install docs recommend verifying the signed binary before running it** — fetch
+  the project trust anchor (`platform/cosign.pub`) + the release `.sig` and
+  `cosign verify-blob` the download before `chmod`/`mv`/run.
+
 ## [2026.7.5] - 2026-07-26
 
 ### Fixed
