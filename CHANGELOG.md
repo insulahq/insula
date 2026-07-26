@@ -25,6 +25,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   with the historical generic paths kept as compatibility symlinks (no data is
   moved and no host-migration re-runs — the code path constants are unchanged).
   Existing clusters converge via host-migration `2026.7.4/0001-rebrand-to-insula`.
+
+## [2026.7.3] - 2026-07-25
+
+### Added
 - **Durable container-OOM detection.** The node-health reconciler now records
   containers OOM-killed at their memory limit (from container status, which is
   reliable even where cadvisor's kmsg OOM parser is broken and where a
