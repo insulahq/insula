@@ -77,7 +77,7 @@ to recover. See [`MAIL_SERVER_OPERATIONS.md § 2`](./MAIL_SERVER_OPERATIONS.md).
 - [ ] SPF, DKIM, DMARC records planned/published for the apex and any customer mail domains
 - [ ] Clean IP confirmed against major blocklists (`dig -x <ip>`; check Spamhaus etc.)
 - [ ] Warm-up plan for outbound volume (R7 auto-warmup is **not built** — this is manual)
-- [ ] **Multi-node only:** a real LB (MetalLB / cloud CCM) is in place for mail hostPorts — single-node uses node externalIPs, which does **not** survive to multi-node
+- [ ] **Multi-node mail exposure decided.** The default needs **no load balancer**: the HAProxy `hostNetwork` DaemonSet binds the public mail ports on nodes and DNS multi-A records handle failover. If you *do* front the cluster with an LB, it **MUST be L4 TCP passthrough that preserves the client source IP** — a SNAT'ing or L7 LB destroys the real sender IP for mail (HAProxy frontends don't `accept-proxy`, and Stalwart's PROXY-protocol trust is reconciler-managed to the pod CIDR with **no operator knob** to trust an external LB), which breaks SPF/DKIM alignment and reputation. MetalLB (universal) or a cloud CCM is only needed if you want a single external VIP for the `type: LoadBalancer` mail Service — and even then it must preserve source IP.
 
 ## 5. Signing & the pull model
 
@@ -112,6 +112,7 @@ Bootstrap auto-generates platform secrets, but two keys are the operator's to ow
 - [ ] Inbound allowed: `80/tcp`, `443/tcp`, mail (`25,465,587,143,993`), and `6443/tcp` scoped to peers (never `0.0.0.0/0`)
 - [ ] **Multi-node:** every joining node's IP pre-enrolled via `--pre-enroll-peer <ip>` (first server) or the **`ClusterPendingPeer`** CR / admin UI — a manual `nft` edit is reverted within seconds
 - [ ] Your workstation IP added via `--allow-source <ip>` so `kubectl`/SSH work before the admin panel exists
+- [ ] **Fronting web with an LB/CDN?** Add its egress CIDR under **Security → Network Trust → Trusted Proxies** (admin UI) so Traefik + the panels honor its `X-Forwarded-For` and clients don't all appear as the LB IP. This is the **only** proxy-trust surface exposed to operators, and it applies to **web (XFF) only** — it does *not* configure PROXY-protocol trust for Traefik or anything on the mail path. A pure L4-passthrough LB (preserving client IP) needs no entry here.
 
 ## 10. Operator readiness
 
