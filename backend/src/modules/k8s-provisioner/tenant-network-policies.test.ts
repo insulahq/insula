@@ -9,13 +9,31 @@ describe('buildTenantNetworkPolicies', () => {
   const specOf = (name: string) =>
     (byName[name] as { spec: Record<string, unknown> }).spec;
 
-  it('emits exactly the four expected policies', () => {
+  it('emits exactly the five expected policies', () => {
     expect(policies.map((p) => p.name).sort()).toEqual([
+      'allow-backup-jobs-egress-to-platform-api',
       'allow-intra-namespace',
       'allow-platform-api',
       'default-deny-ingress',
       'tenant-egress',
     ]);
+  });
+
+  it('allow-backup-jobs-egress lets ONLY backup/restore Jobs egress to platform-api:3000', () => {
+    const spec = specOf('allow-backup-jobs-egress-to-platform-api');
+    expect(spec.policyTypes).toEqual(['Egress']);
+    // scoped to the backup/restore component label, not all pods
+    expect(spec.podSelector).toEqual({
+      matchExpressions: [
+        { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files'] },
+      ],
+    });
+    const egress = spec.egress as Array<{ to: Array<Record<string, unknown>>; ports: unknown[] }>;
+    expect(egress[0].to[0]).toEqual({
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
+      podSelector: { matchLabels: { app: 'platform-api' } },
+    });
+    expect(egress[0].ports).toEqual([{ protocol: 'TCP', port: 3000 }]);
   });
 
   it('default-deny-ingress allows ONLY the traefik namespace — NO pod-CIDR ipBlock', () => {

@@ -237,6 +237,16 @@ check_status "GET /plans (public)" "200" "$STATUS"
 STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${API_URL}/api/v1/regions")
 check_status "GET /regions (public)" "200" "$STATUS"
 
+# M5: /regions is public reference data but must NOT leak the internal
+# kubernetes_api_endpoint (which would hand anonymous callers the API-server
+# address). Assert the field is absent from the public response.
+REGIONS_BODY=$(curl -s "${API_URL}/api/v1/regions")
+if echo "$REGIONS_BODY" | grep -qi "kubernetes_api_endpoint\|kubernetesApiEndpoint"; then
+  fail "GET /regions leaks kubernetes_api_endpoint" "internal API endpoint disclosed to anonymous caller"
+else
+  pass "GET /regions does not leak kubernetes_api_endpoint"
+fi
+
 # container-images endpoint removed in catalog consolidation
 
 # ─── Admin Endpoints ───────────────────────────────────────────────────────────
