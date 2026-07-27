@@ -50,15 +50,20 @@ var (
 	internalSecret string
 	httpClient     *http.Client
 
-	// Rate limiting: track failed auth attempts per IP AND per username.
-	rateLimiterIP       rateLimitStore
-	rateLimiterUsername rateLimitStore
+	// Rate limiting: track failed auth attempts per SOURCE IP only.
+	//
+	// LOW-hardening (2026-07-27): the previous per-USERNAME lockout was removed.
+	// A hard account lockout that any third party can trigger (fail auth N times
+	// for a known username from a couple of IPs) is a targeted denial-of-service
+	// on the legitimate user and is an OWASP anti-pattern. Per-IP throttling
+	// stops brute force from any single source, and platform-api validates every
+	// password with bcrypt (slow by design); those are the brute-force defences.
+	rateLimiterIP rateLimitStore
 )
 
 const (
-	rateLimitWindow          = 5 * time.Minute
-	rateLimitMaxFailsIP      = 5  // per source IP
-	rateLimitMaxFailsUser    = 10 // per username (higher — shared NAT users)
+	rateLimitWindow     = 5 * time.Minute
+	rateLimitMaxFailsIP = 5 // per source IP
 )
 
 // rateLimitEntry tracks failures for a single IP.
@@ -78,7 +83,6 @@ func InitAuth(url, secret string) {
 	internalSecret = secret
 	httpClient = &http.Client{Timeout: 10 * time.Second}
 	rateLimiterIP = rateLimitStore{entries: make(map[string]*rateLimitEntry)}
-	rateLimiterUsername = rateLimitStore{entries: make(map[string]*rateLimitEntry)}
 
 	// Background goroutine to evict stale rate-limit entries.
 	go func() {
@@ -86,26 +90,11 @@ func InitAuth(url, secret string) {
 		defer ticker.Stop()
 		for range ticker.C {
 			rateLimiterIP.cleanup()
-			rateLimiterUsername.cleanup()
 		}
 	}()
 }
 
 // ---- rate limiter ----------------------------------------------------------
-
-func (r *rateLimitStore) isBlockedAt(key string, maxFails int) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	entry, ok := r.entries[key]
-	if !ok {
-		return false
-	}
-	if time.Since(entry.firstFail) > rateLimitWindow {
-		delete(r.entries, key)
-		return false
-	}
-	return entry.count >= maxFails
-}
 
 func (r *rateLimitStore) isBlocked(ip string) bool {
 	r.mu.Lock()
@@ -155,7 +144,7 @@ func (r *rateLimitStore) cleanup() {
 
 // AuthenticatePassword authenticates a user with username + password.
 func AuthenticatePassword(username, password, sourceIP string) (*AuthResult, error) {
-	if rateLimiterIP.isBlocked(sourceIP) || rateLimiterUsername.isBlockedAt(username, rateLimitMaxFailsUser) {
+	if rateLimiterIP.isBlocked(sourceIP) {
 		return &AuthResult{Allowed: false}, nil
 	}
 
@@ -168,15 +157,12 @@ func AuthenticatePassword(username, password, sourceIP string) (*AuthResult, err
 	result, err := callAuthEndpoint("/api/v1/internal/sftp/auth", body)
 	if err != nil {
 		rateLimiterIP.recordFailure(sourceIP)
-		rateLimiterUsername.recordFailure(username)
 		return nil, err
 	}
 	if !result.Allowed {
 		rateLimiterIP.recordFailure(sourceIP)
-		rateLimiterUsername.recordFailure(username)
 	} else {
 		rateLimiterIP.resetIP(sourceIP)
-		rateLimiterUsername.resetIP(username)
 		go UpdateLogin(username, sourceIP)
 	}
 	return result, nil
@@ -184,7 +170,7 @@ func AuthenticatePassword(username, password, sourceIP string) (*AuthResult, err
 
 // AuthenticateKey authenticates a user with an SSH public key fingerprint.
 func AuthenticateKey(username, keyFingerprint, sourceIP string) (*AuthResult, error) {
-	if rateLimiterIP.isBlocked(sourceIP) || rateLimiterUsername.isBlockedAt(username, rateLimitMaxFailsUser) {
+	if rateLimiterIP.isBlocked(sourceIP) {
 		return &AuthResult{Allowed: false}, nil
 	}
 
@@ -197,15 +183,12 @@ func AuthenticateKey(username, keyFingerprint, sourceIP string) (*AuthResult, er
 	result, err := callAuthEndpoint("/api/v1/internal/sftp/auth-key", body)
 	if err != nil {
 		rateLimiterIP.recordFailure(sourceIP)
-		rateLimiterUsername.recordFailure(username)
 		return nil, err
 	}
 	if !result.Allowed {
 		rateLimiterIP.recordFailure(sourceIP)
-		rateLimiterUsername.recordFailure(username)
 	} else {
 		rateLimiterIP.resetIP(sourceIP)
-		rateLimiterUsername.resetIP(username)
 		go UpdateLogin(username, sourceIP)
 	}
 	return result, nil
