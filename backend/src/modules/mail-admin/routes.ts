@@ -1947,10 +1947,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // 2026-05-25 + 2026-05-28 dev incidents both hit.
   //
   // Anonymous (no bearer token) — the response carries no sensitive
-  // data (just integer counts) and the endpoint is reachable only
-  // from inside the cluster (platform-api Service is ClusterIP +
-  // not exposed via Ingress). A future hardening pass could move
-  // this behind an mTLS service mesh, but the network boundary is
+  // data (just integer counts) and the endpoint is reachable only from
+  // inside the cluster: platform-api's Service is ClusterIP, and both
+  // panel nginx templates refuse `/api/v1/internal/*` at the edge (M6),
+  // so the only callers are in-cluster components (here, the Stalwart
+  // init container) that hit the Service directly. A future hardening
+  // pass could move this behind mTLS, but the network boundary is
   // sufficient for the threat model (operator-action-only failures).
   app.get(
     '/internal/mail/stalwart-data-expectation',

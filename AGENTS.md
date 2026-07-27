@@ -261,8 +261,13 @@ Domains bind to a provider **group**; a group holds servers with `role` (`primar
 hosted (PowerDNS/BIND) and cloud (Cloudflare/Route53) both fit the abstraction (ADR-022).
 
 ### Admin-UI auth gate (platform_session)
-Login/refresh also sets an HttpOnly **`platform_session`** cookie (`Domain=.<apex>`, SameSite=Lax,
-Secure) used solely to gate subdomain-hosted admin UIs via nginx `auth_request`.
+Login/refresh also sets an HttpOnly **`platform_session`** cookie used solely to gate subdomain-
+hosted admin UIs via nginx `auth_request`. Its attributes depend on `SESSION_COOKIE_DOMAIN`
+(`auth/routes.ts:buildSessionCookie`): **production leaves it host-only** (`admin.<apex>` only) with
+`SameSite=Lax; Secure`. When `SESSION_COOKIE_DOMAIN=.<apex>` is set (the dev/dind overlays, to share
+the session across subdomains for the iframe-hosted admin tools) it becomes `Domain=.<apex>;
+SameSite=None; Secure` — `None` is required for the cross-subdomain request. Mutating endpoints are
+Bearer-only regardless, so `SameSite=None` on dev does not open a state-changing CSRF path.
 - Mutating endpoints use `authenticate` (**Bearer-only, no cookie fallback** — CSRF-safe; don't add
   one). Only idempotent read gates use `authenticateSession`.
 - Every Ingress exposing an admin-only UI MUST be labelled `insula.host/admin-ui: "true"` **and**

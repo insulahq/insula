@@ -228,13 +228,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             '/api/v1/system-backup/secrets/download/[REDACTED]',
           );
           // Node-terminal WebSocket upgrade URL — the `token` query
-          // param is the single-use, sessionId-bound ws-token. Logging
-          // it would let any operator with log-read access harvest
-          // tokens within the 60s TTL. Strip token AND replica (the
-          // replica anchor names a platform-api pod hostname — not
-          // sensitive but no value in logs).
+          // param is the single-use, sessionId-bound ws-token, and `jwt`
+          // is the 30-min access JWT (browsers can't set Authorization on
+          // a WebSocket, so it rides the query string). Logging either
+          // would let anyone with log-read access harvest a live
+          // credential. Strip token, jwt, AND replica (the replica anchor
+          // names a platform-api pod hostname — not sensitive but no value
+          // in logs).
           out = out.replace(
-            /([?&])(token|replica)=([^&#]+)/g,
+            /([?&])(token|jwt|replica)=([^&#]+)/g,
             '$1$2=[REDACTED]',
           );
           return out;
@@ -368,13 +370,22 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     },
   });
 
-  await app.register(fastifySwaggerUi, {
-    routePrefix: '/api/docs',
-    uiConfig: {
-      docExpansion: 'list',
-      deepLinking: true,
-    },
-  });
+  // LOW-hardening: serve the interactive Swagger UI (which also exposes the
+  // full OpenAPI document at /api/docs/json) only OUTSIDE production. The spec
+  // is generated from the code, so on a live deployment it's an unauthenticated
+  // enumeration of every endpoint + shape for no operator benefit. The
+  // `fastifySwagger` plugin above still runs so `app.swagger()` works in tests
+  // and dev; only the public UI route is withheld in production.
+  const isProd = (deps.config.PLATFORM_ENV ?? deps.config.NODE_ENV) === 'production';
+  if (!isProd) {
+    await app.register(fastifySwaggerUi, {
+      routePrefix: '/api/docs',
+      uiConfig: {
+        docExpansion: 'list',
+        deepLinking: true,
+      },
+    });
+  }
 
   // Unauthenticated liveness probe for Docker/K8s health checks
   app.get('/api/v1/healthz', async () => ({ status: 'ok' }));

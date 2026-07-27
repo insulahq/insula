@@ -226,6 +226,36 @@ Phase-2 surface from the hardening epic, on the Security → Posture page:
 - **In-cluster Trivy scanning UI** — deferred until operator demand surfaces. The
   CI scan above covers the actual CVE-detection need; an in-panel UI is cosmetic.
 
+**Deferred from the 2026-07-27 security review** (medium/low items whose fix is a
+redesign or carries regression risk disproportionate to the current, mitigated
+exposure — recorded here so they are not lost):
+
+- **Per-tenant hostPort opt-in (was M8).** Flipping the cluster-wide
+  `allowHostPorts{Server,Worker}` toggle relabels **every** tenant namespace to
+  PodSecurity `enforce: privileged` (`tenant-psa-reconciler.ts`). Not exploitable
+  today — tenants cannot submit raw pod specs (the custom-deployment schema has no
+  hostPath/privileged, `capAdd` is allowlisted to `NET_BIND_SERVICE`, `allowRoot`
+  is admin-only) — but it removes the PSA backstop cluster-wide instead of only
+  for the tenants that actually need a hostPort. Proper fix: track hostPort opt-in
+  per tenant and label only those namespaces `privileged`, leaving the rest
+  `baseline`. Feature-flag redesign; deferred.
+
+- **rsync flag allowlist (was low).** The sftp-gateway confines `rsync --server`
+  with a comprehensive, repeatedly-hardened **denylist** (`session.go`) on the
+  unchrooted-root exec path. It is sound, but a denylist must chase every new
+  dangerous rsync flag; an allowlist ("only these server flags are permitted")
+  fails safe against future rsync releases. Convert once it can be exhaustively
+  tested against a matrix of real rsync client versions (regression risk otherwise).
+
+- **Rate-limit key hardening (was low, trustProxy).** Fastify runs with
+  `trustProxy: true` (load-bearing: OIDC needs `request.protocol==='https'`), so
+  the login rate limiter keys on the leftmost `X-Forwarded-For`. This is currently
+  unspoofable because Traefik pins `forwardedHeaders.trustedIPs=127.0.0.1/32` and
+  overwrites client-supplied XFF — but it is one Traefik config change from
+  bypassable. Follow-up: key the limiter on the Traefik-set `X-Real-IP` (already
+  treated as unspoofable in `security-hardening/crowdsec-l4.ts`) and/or add a CI
+  guard asserting the Traefik `trustedIPs` value stays pinned.
+
 ## R12 — Service-to-service mTLS
 
 In-cluster platform-service traffic is NetworkPolicy-segmented but

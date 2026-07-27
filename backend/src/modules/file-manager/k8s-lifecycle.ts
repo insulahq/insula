@@ -136,6 +136,11 @@ export async function ensureFileManagerRunning(
           template: {
             metadata: { labels: FM_LABELS },
             spec: {
+              // M9: the file-manager sidecar is a plain file server — it never
+              // talks to the Kubernetes API, so it must not mount a
+              // ServiceAccount token. Removing it means a token can't be read
+              // out of the sidecar and replayed against the apiserver.
+              automountServiceAccountToken: false,
               // Gap G2: hard-pin FM to the operator-chosen node so it lands
               // on the same node as the tenant workloads and shares the RWO
               // `tenant-storage` PVC. Only added when targetNode is provided;

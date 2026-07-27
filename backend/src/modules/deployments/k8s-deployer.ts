@@ -704,6 +704,9 @@ async function deployK8sDeployment(
   const podSpec: Record<string, unknown> = {
     ...(initContainers ? { initContainers } : {}),
     containers: [containerWithMounts],
+    // M9: tenant workloads never call the Kubernetes API — don't mount a
+    // ServiceAccount token they could exfiltrate + replay.
+    automountServiceAccountToken: false,
     ...(spec ? { volumes: spec.podVolumes } : {}),
   };
   if (nodeName) {
@@ -797,6 +800,8 @@ async function deployK8sCronJob(
             spec: {
               ...(initContainers ? { initContainers } : {}),
               containers: [containerWithMounts],
+              // M9: tenant cron pods never call the Kubernetes API.
+              automountServiceAccountToken: false,
               restartPolicy: 'OnFailure',
               ...(spec ? { volumes: spec.podVolumes } : {}),
             },
@@ -838,6 +843,8 @@ async function deployK8sJob(
         spec: {
           ...(initContainers ? { initContainers } : {}),
           containers: [containerWithMounts],
+          // M9: tenant job pods never call the Kubernetes API.
+          automountServiceAccountToken: false,
           restartPolicy: 'Never',
           ...(spec ? { volumes: spec.podVolumes } : {}),
         },

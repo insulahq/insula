@@ -223,6 +223,9 @@ export async function generateTenantManifests(
             },
           },
           spec: {
+            // M9: tenant workloads never call the Kubernetes API — don't mount
+            // a ServiceAccount token they could exfiltrate + replay.
+            automountServiceAccountToken: false,
             containers: [
               {
                 name: deployment.name,
