@@ -37,8 +37,6 @@ import {
   useDkimKeys,
   useRotateDkimKey,
   useActivateDkimKey,
-  useMailSubmitCredential,
-  useRotateMailSubmitCredential,
   useImapSyncJobs,
   useCreateImapSyncJob,
   useCancelImapSyncJob,
@@ -53,7 +51,6 @@ import {
   type DnsRecordDisplay,
   type DkimKey,
   type DkimRotateResult,
-  type MailSubmitRotateResult,
   type ImapSyncJob,
   type CreateLoginPasswordResult,
 } from '@/hooks/use-email';
@@ -1150,7 +1147,6 @@ function SettingsTab({
       <DomainSettingsCard tenantId={tenantId} domain={current} />
       <DnsRecordsCard tenantId={tenantId} domain={current} />
       <DkimKeysCard tenantId={tenantId} domain={current} />
-      <SendmailCredentialCard tenantId={tenantId} />
       <RateLimitCard tenantId={tenantId} />
       {/* Round-4 Phase 1: Danger zone — disable email for the current domain */}
       <DisableEmailCard tenantId={tenantId} domain={current} />
@@ -1645,126 +1641,6 @@ function DkimStatusBadge({ status }: { readonly status: 'pending' | 'active' | '
     <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ${styles[status]}`}>
       {status}
     </span>
-  );
-}
-
-// ─── Sendmail submission credential card (Phase 3) ────────────────────
-
-function SendmailCredentialCard({ tenantId }: { readonly tenantId: string }) {
-  const { data, isLoading } = useMailSubmitCredential(tenantId);
-  const rotate = useRotateMailSubmitCredential(tenantId);
-  const [latest, setLatest] = useState<MailSubmitRotateResult | null>(null);
-  const [copied, setCopied] = useState(false);
-  const cred = data?.data;
-
-  const handleRotate = async (pushToPvc: boolean) => {
-    setLatest(null);
-    try {
-      const res = await rotate.mutateAsync({ pushToPvc });
-      setLatest(res.data);
-    } catch {
-      // shown below
-    }
-  };
-
-  const copyPassword = async () => {
-    if (!latest?.password) return;
-    try {
-      await navigator.clipboard.writeText(latest.password);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // clipboard API unavailable
-    }
-  };
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-3" data-testid="sendmail-card">
-      <div className="flex items-center gap-2">
-        <Mail size={16} className="text-brand-500" />
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Sendmail compatibility credential</h3>
-      </div>
-      <p className="text-xs text-gray-500 dark:text-gray-400">
-        Per-customer SMTP credentials used by legacy apps (WordPress, PHP <code>mail()</code>) to relay mail
-        through the platform. The auth file is written to your workload PVC at <code>.platform/sendmail-auth</code>
-        and hidden from the file manager.
-      </p>
-
-      {isLoading && <div className="py-2 text-center"><Loader2 size={16} className="inline animate-spin text-brand-500" /></div>}
-
-      {!isLoading && cred && cred.exists && (
-        <div className="grid grid-cols-[100px_1fr] gap-1 rounded-md border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs">
-          <span className="text-gray-500 dark:text-gray-400">Username</span>
-          <code className="font-mono text-gray-900 dark:text-gray-100">{cred.username}</code>
-          <span className="text-gray-500 dark:text-gray-400">Created</span>
-          <span className="text-gray-700 dark:text-gray-300">{cred.createdAt ? new Date(cred.createdAt).toLocaleString() : '—'}</span>
-          <span className="text-gray-500 dark:text-gray-400">Last used</span>
-          <span className="text-gray-700 dark:text-gray-300">{cred.lastUsedAt ? new Date(cred.lastUsedAt).toLocaleString() : 'never'}</span>
-        </div>
-      )}
-
-      {!isLoading && cred && !cred.exists && (
-        <p className="text-xs italic text-gray-500 dark:text-gray-400">No credentials provisioned yet.</p>
-      )}
-
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => handleRotate(true)}
-          disabled={rotate.isPending}
-          className="inline-flex items-center gap-1 rounded-md bg-brand-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="sendmail-rotate-push"
-        >
-          {rotate.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          Rotate &amp; push to PVC
-        </button>
-        <button
-          type="button"
-          onClick={() => handleRotate(false)}
-          disabled={rotate.isPending}
-          className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
-        >
-          Rotate only
-        </button>
-      </div>
-
-      {latest && (
-        <div className="rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs">
-          <p className="mb-2 font-medium text-amber-900 dark:text-amber-100">
-            New credential generated. The plain password is shown ONCE — copy it now if you need it for manual configuration.
-          </p>
-          <div className="grid grid-cols-[80px_1fr] gap-1 font-mono">
-            <span className="text-gray-500 dark:text-gray-400">Username</span>
-            <code className="break-all text-gray-900 dark:text-gray-100">{latest.username}</code>
-            <span className="text-gray-500 dark:text-gray-400">Password</span>
-            <div className="flex items-start gap-1">
-              <code className="flex-1 break-all text-gray-900 dark:text-gray-100">{latest.password}</code>
-              <button
-                type="button"
-                onClick={copyPassword}
-                className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700"
-                title="Copy password"
-                data-testid="sendmail-copy-password"
-              >
-                {copied ? <CheckCircle size={12} className="text-green-500" /> : <Copy size={12} />}
-              </button>
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
-            {latest.pushedToPvc
-              ? '✓ Auth file written to your PVC. Workload pods will pick it up on next mail send.'
-              : `⚠ PVC write skipped or failed${latest.pushError ? `: ${latest.pushError}` : ''}.`}
-          </p>
-        </div>
-      )}
-
-      {rotate.error && !latest && (
-        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
-          <AlertCircle size={14} />
-          {rotate.error instanceof Error ? rotate.error.message : 'Rotation failed'}
-        </div>
-      )}
-    </div>
   );
 }
 

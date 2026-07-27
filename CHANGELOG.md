@@ -12,6 +12,44 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Tenant network isolation hardened (critical).** The per-tenant
+  `default-deny-ingress` and `allow-platform-api` NetworkPolicies carried an
+  `ipBlock: 10.42.0.0/16` — the whole k3s pod CIDR — alongside their
+  namespaceSelector. That matched *every* pod in the cluster, so tenants were
+  not isolated from each other: any tenant container could reach another
+  tenant's pods, and the file-manager sidecar's root file API on `:8111` was
+  reachable cluster-wide. The ipBlock was a stale workaround for the old
+  hostNetwork ingress-nginx; Traefik runs hostPort and Calico preserves its pod
+  source IP cross-node (verified live), so the namespaceSelector alone is
+  correct. The ipBlock is removed and `:8111` is scoped to the platform-api pod.
+- **Tenant egress default-deny added.** Every tenant namespace now gets a
+  `tenant-egress` NetworkPolicy allowing DNS, intra-namespace traffic, and the
+  public internet *minus* the cluster pod/service CIDRs and the cloud metadata
+  IP (`169.254.169.254`). Tenant containers can no longer reach the Longhorn /
+  CNPG / cert-manager APIs or cloud metadata; outbound internet and
+  `mail.<apex>` (public) still work. CIDRs read from `platform-cluster-cidrs`
+  with sane k3s defaults.
+- **File-manager sidecar now authenticates every request (defense in depth).**
+  `:8111` required no request auth (it relied entirely on the — broken —
+  NetworkPolicy). It now requires the per-tenant derived secret in
+  `X-Platform-Internal` on every route except `/health`; `.platform` hidden
+  paths are never exposed over HTTP.
+- **Webcron SSRF closed (H-4).** The tenant-configured webcron URL was fetched
+  from platform-api with no destination check and the response reflected back.
+  Outbound webcron fetches now go through an SSRF guard that refuses internal /
+  loopback / link-local / CGNAT / metadata destinations at connect time
+  (DNS-rebind safe) and only allows http/https.
+- Existing tenants converge on the new policies via a boot-time reconciler
+  (`reconcileAllTenantNetworkPolicies`), no reprovision required.
+
+### Removed
+- **PHP sendmail-compat credential provisioning (mail-submit).** Obsolete and
+  never production-tested. Apps that send mail configure an external SMTP relay
+  or the platform mail server (`mail.<apex>`, ports 587/465) with a mailbox's
+  credentials directly. The `mail_submit_credentials` table is retained
+  (non-destructive) so older backup bundles restore cleanly.
+
 ## [2026.7.6] - 2026-07-26
 
 ### Fixed

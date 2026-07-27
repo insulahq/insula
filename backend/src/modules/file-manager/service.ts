@@ -287,6 +287,30 @@ interface ProxyResult {
  * caller passed directUrl. No TLS, no tenant certs — the request
  * stays on the pod-network and Network Policies enforce isolation.
  */
+/**
+ * The per-tenant derived secret every file-manager request carries
+ * (`X-Platform-Internal`). The sidecar's auth gate (2026-07-27) rejects any
+ * request without it. Derived per-namespace (F5) so the global master never
+ * lands in a tenant-namespace pod.
+ *
+ * Degrades symmetrically with the sidecar: when `PLATFORM_INTERNAL_SECRET` is
+ * unset (only ever true in unit tests / an unusual secret-less local setup) we
+ * send NO header — and the sidecar, also secret-less in that case, disables its
+ * own enforcement. On any bootstrapped cluster both sides have the secret and
+ * the header is required + sent.
+ *
+ * NOTE the `platformInternal` option on the proxy functions is now a no-op:
+ * auth is ALWAYS sent when a secret exists, and the sidecar no longer exposes
+ * hidden `.platform` paths to anyone (its only consumer, mail-submit, was
+ * removed). The option is retained on the signatures only to avoid churning
+ * callers.
+ */
+function internalAuthHeader(namespace: string): Record<string, string> {
+  const master = process.env.PLATFORM_INTERNAL_SECRET;
+  if (!master) return {};
+  return { 'X-Platform-Internal': deriveFmSecret(master, namespace) };
+}
+
 async function proxyDirect(
   baseUrl: string,
   pathAndQuery: string,
@@ -298,19 +322,8 @@ async function proxyDirect(
   },
   namespace: string,
 ): Promise<ProxyResult> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...internalAuthHeader(namespace) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
-  if (options.platformInternal) {
-    const master = process.env.PLATFORM_INTERNAL_SECRET;
-    if (!master) {
-      throw new Error(
-        'PLATFORM_INTERNAL_SECRET is required for platform-internal file-manager requests',
-      );
-    }
-    // Per-tenant derived secret (F5) — never send the global master to a
-    // tenant-namespace pod.
-    headers['X-Platform-Internal'] = deriveFmSecret(master, namespace);
-  }
   if (options.body) {
     const bodyLen = Buffer.isBuffer(options.body) ? options.body.length : Buffer.byteLength(options.body);
     headers['Content-Length'] = String(bodyLen);
@@ -402,19 +415,8 @@ export async function proxyToFileManager(
   const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
   const httpsOpts = ctx.httpsOpts;
 
-  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
+  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}), ...internalAuthHeader(namespace) };
   if (options.contentType) headers['Content-Type'] = options.contentType;
-  if (options.platformInternal) {
-    const master = process.env.PLATFORM_INTERNAL_SECRET;
-    if (!master) {
-      throw new Error(
-        'PLATFORM_INTERNAL_SECRET is required for platform-internal file-manager requests',
-      );
-    }
-    // Per-tenant derived secret (F5) — never send the global master to a
-    // tenant-namespace pod.
-    headers['X-Platform-Internal'] = deriveFmSecret(master, namespace);
-  }
 
   // Set Content-Length for bodies to avoid chunked encoding issues
   if (options.body) {
@@ -548,6 +550,7 @@ export async function proxyToFileManagerStream(
 
   const headers: Record<string, string> = {
     ...(httpsOpts.headers ?? {}),
+    ...internalAuthHeader(namespace),
     'Content-Type': 'application/json',
     'Content-Length': String(Buffer.byteLength(body)),
   };
@@ -670,7 +673,7 @@ export async function streamFromFileManager(
 
   const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
   const httpsOpts = ctx.httpsOpts;
-  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}) };
+  const headers: Record<string, string> = { ...(httpsOpts.headers ?? {}), ...internalAuthHeader(namespace) };
   const _tok = getBearerTokenFromContext(ctx); if (_tok) headers["Authorization"] = `Bearer ${_tok}`;
 
   const { default: https } = await import('node:https');
@@ -770,7 +773,7 @@ export async function streamToFileManager(
 
   const proxyPath = `/api/v1/namespaces/${namespace}/services/${FM_SERVICE}:${FM_PORT}/proxy${sidecarPath}${queryStr}`;
   const httpsOpts = ctx.httpsOpts;
-  const headers = buildHeaders({ ...(httpsOpts.headers ?? {}) });
+  const headers = buildHeaders({ ...(httpsOpts.headers ?? {}), ...internalAuthHeader(namespace) });
   const _tok = getBearerTokenFromContext(ctx); if (_tok) headers["Authorization"] = `Bearer ${_tok}`;
 
   const { default: https } = await import('node:https');

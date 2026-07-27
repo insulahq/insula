@@ -12,6 +12,7 @@ import { JSON_PATCH, STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { start as startTask, finishByRef } from '../tasks/service.js';
 import { tenantStoragePvcLabelsFromNamespace } from '../../lib/canonical-labels.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { applyTenantNetworkPolicies } from './tenant-network-policies.js';
 
 /**
  * Render a raw provisioning error into either a JSON-stringified
@@ -467,123 +468,19 @@ function isQuotaScopeImmutable(err: unknown): boolean {
   return /scope.*immutable|scopeSelector.*immutable|spec\.scope/i.test(err.message);
 }
 
+/**
+ * Apply the per-tenant NetworkPolicy set (default-deny ingress scoped to
+ * Traefik, intra-namespace, platform-api→file-manager, and the tenant-egress
+ * default-deny+allowlist). Delegates to tenant-network-policies.ts, which
+ * owns the policy shape + a create-OR-replace apply so a changed body
+ * converges on existing tenants. See that module for the isolation model
+ * and why the old pod-CIDR ipBlock was removed (2026-07-27).
+ */
 export async function applyNetworkPolicy(
   k8s: K8sClients,
   namespace: string,
 ): Promise<void> {
-  // Two NetworkPolicies per tenant namespace:
-  //
-  // 1. default-deny-ingress — blanket deny for cross-namespace ingress,
-  //    except from traefik (so the user's web app remains reachable
-  //    from the ingress controller).
-  //
-  // 2. allow-intra-namespace — pods within the same tenant namespace may
-  //    freely reach each other. Required for multi-component apps (e.g.
-  //    WordPress's wordpress pod connects to the mariadb sibling on :3306,
-  //    Immich's immich-server calls immich-ml, etc). Without this, the
-  //    default-deny rule blocks pod-to-pod traffic inside the tenant.
-  //
-  // Cross-tenant isolation is preserved — the podSelector/namespaceSelector
-  // here scopes to the same namespace only.
-  const policies: Array<{ name: string; body: Record<string, unknown> }> = [
-    {
-      name: 'default-deny-ingress',
-      body: {
-        metadata: { name: 'default-deny-ingress', namespace },
-        spec: {
-          podSelector: {},
-          policyTypes: ['Ingress'],
-          ingress: [
-            {
-              _from: [
-                {
-                  namespaceSelector: {
-                    matchLabels: { 'kubernetes.io/metadata.name': 'traefik' },
-                  },
-                },
-                // Traefik runs hostPort (not hostNetwork); when it
-                // forwards cross-node to a tenant pod, Linux re-sources
-                // the packet via vxlan.calico — the tenant pod sees a
-                // source IP in the cluster pod CIDR (10.42.0.0/16),
-                // NOT the traefik namespace. Without this ipBlock the
-                // namespaceSelector above never matches for cross-node
-                // traffic, and tenant HTTP (including LE HTTP-01
-                // challenges via Traefik's ingress-acme path) times out
-                // at 504. Same fix shape as k8s/base/network-policies.
-                // yaml: allow-ingress-to-platform. (Migrated from
-                // namespace=ingress-nginx to namespace=traefik
-                // 2026-05-15; the ipBlock fallback masked the dead
-                // selector during the migration window.)
-                {
-                  ipBlock: { cidr: '10.42.0.0/16' },
-                },
-              ],
-            },
-          ],
-        },
-      },
-    },
-    {
-      name: 'allow-intra-namespace',
-      body: {
-        metadata: { name: 'allow-intra-namespace', namespace },
-        spec: {
-          podSelector: {},
-          policyTypes: ['Ingress'],
-          ingress: [{ _from: [{ podSelector: {} }] }],
-        },
-      },
-    },
-    {
-      // platform-api → tenant pods (file-manager sidecar, future
-      // tenant-side admin operations). Without this, default-deny-
-      // ingress blocks the cross-namespace HTTP call that
-      // fileManagerRequest makes via the apiserver services/proxy
-      // (the proxy runs in-apiserver but the destination tenant pod
-      // sees the source as the cluster pod CIDR after vxlan re-source).
-      // Scoped tightly: only platform-api pods, only the FM port.
-      name: 'allow-platform-api',
-      body: {
-        metadata: { name: 'allow-platform-api', namespace },
-        spec: {
-          podSelector: {},
-          policyTypes: ['Ingress'],
-          ingress: [{
-            _from: [
-              {
-                namespaceSelector: {
-                  matchLabels: { 'kubernetes.io/metadata.name': 'platform' },
-                },
-                podSelector: {
-                  matchLabels: { app: 'platform-api' },
-                },
-              },
-              // ipBlock catches the host-network re-source case (when
-              // platform-api sits on a different node than the FM pod
-              // and Linux rewrites the source IP to vxlan.calico's
-              // tunnel address inside the cluster pod CIDR). Mirrors
-              // the same pattern in k8s/base/network-policies.yaml.
-              { ipBlock: { cidr: '10.42.0.0/16' } },
-            ],
-            ports: [{ protocol: 'TCP', port: 8111 }],
-          }],
-        },
-      },
-    },
-  ];
-
-  for (const policy of policies) {
-    try {
-      await k8s.networking.createNamespacedNetworkPolicy({
-        namespace,
-        body: policy.body as Parameters<typeof k8s.networking.createNamespacedNetworkPolicy>[0]['body'],
-      });
-    } catch (err: unknown) {
-      // Already exists — safe to ignore (policies are effectively immutable;
-      // if their spec ever changes, operators can delete + recreate).
-      if (!isK8s409(err)) throw err;
-    }
-  }
+  await applyTenantNetworkPolicies(k8s, namespace);
 }
 
 export async function applyPVC(

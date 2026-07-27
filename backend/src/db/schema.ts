@@ -1773,6 +1773,13 @@ export const imapSyncJobs = pgTable('imap_sync_jobs', {
   index('imap_sync_jobs_mailbox_idx').on(table.mailboxId),
 ]);
 
+// DEPRECATED 2026-07-27 — the mail-submit (PHP sendmail-compat) feature was
+// removed (obsolete + never production-tested). No code writes this table any
+// more; tenant apps configure an external SMTP relay (or mail.<apex> with
+// manual credentials) directly. The table + its tenant-bundles backup component
+// are kept (non-destructive) so restoring an older bundle does not error; a
+// follow-up migration can drop it.
+//
 // Phase 3 T5.1 — per-tenant SMTP submission credentials used by
 // sendmail-compatible wrappers in workload pods. Stored twice:
 // encrypted (for writing to the customer PVC) + bcrypt hash (for

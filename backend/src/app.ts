@@ -127,7 +127,6 @@ import { exportImportRoutes } from './modules/export-import/routes.js';
 import { emailDomainRoutes } from './modules/email-domains/routes.js';
 import { emailDkimStatusRoutes } from './modules/email-dkim/jmap-status.js';
 import { emailDkimRotateRoutes } from './modules/email-dkim/rotate-routes.js';
-import { mailSubmitRoutes } from './modules/mail-submit/routes.js';
 import { mailImapsyncRoutes } from './modules/mail-imapsync/routes.js';
 import { mailAdminRoutes } from './modules/mail-admin/routes.js';
 import { registerMailDriftRoutes } from './modules/mail-drift/routes.js';
@@ -558,7 +557,10 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(emailDomainRoutes, { prefix: '/api/v1' });
   await app.register(emailDkimStatusRoutes, { prefix: '/api/v1' }); // M12: read-only DKIM status via Stalwart JMAP
   await app.register(emailDkimRotateRoutes, { prefix: '/api/v1' }); // 2026-05-06: manual DKIM rotation endpoint
-  await app.register(mailSubmitRoutes, { prefix: '/api/v1' });
+  // mail-submit (PHP sendmail-compat credential provisioning) removed 2026-07-27:
+  // obsolete + never production-tested. Tenant apps that need to send mail
+  // configure an external SMTP relay (or mail.<apex> with manual credentials)
+  // directly in the application. See CHANGELOG.
   await app.register(mailImapsyncRoutes, { prefix: '/api/v1' });
   await app.register(mailAdminRoutes, { prefix: '/api/v1' });
   // R6 PR 2: Stalwart webhook ingest (HMAC-authed, netpol-scoped) +
@@ -789,6 +791,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           await reconcileAllTenantQuotas(app.db, quotaK8s, app.log);
         } catch (err) {
           app.log.warn({ err }, 'startup: quota reconcile skipped (k8s unavailable)');
+        }
+      })();
+
+      // Converge the per-tenant NetworkPolicies on boot so the tenant-isolation
+      // hardening (drop the cross-tenant pod-CIDR ipBlock + add the tenant-egress
+      // default-deny) reaches PRE-EXISTING tenants without waiting for each to be
+      // touched by a provisioning op. Fire-and-forget for the same reason as the
+      // quota sweep above — walking every tenant namespace round-trips the kube
+      // API per row and must not block readiness.
+      void (async () => {
+        try {
+          const { createK8sClients: createK8s } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { reconcileAllTenantNetworkPolicies } = await import('./modules/k8s-provisioner/tenant-network-policies.js');
+          const netpolK8s = createK8s((app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined);
+          await reconcileAllTenantNetworkPolicies(app.db, netpolK8s, app.log);
+        } catch (err) {
+          app.log.warn({ err }, 'startup: tenant network-policy reconcile skipped (k8s unavailable)');
         }
       })();
 

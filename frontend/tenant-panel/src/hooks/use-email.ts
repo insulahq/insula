@@ -415,46 +415,7 @@ export function useActivateDkimKey(tenantId: string, domainId: string) {
   });
 }
 
-// ─── Phase 3 T5.1 — Mail submit credentials (sendmail compat) ─────
-
-export interface MailSubmitCredentialInfo {
-  readonly exists: boolean;
-  readonly id?: string;
-  readonly username?: string;
-  readonly createdAt?: string;
-  readonly lastUsedAt?: string | null;
-}
-
-export interface MailSubmitRotateResult {
-  readonly id: string;
-  readonly username: string;
-  readonly password: string;
-  readonly pushedToPvc: boolean;
-  readonly pushError?: string;
-}
-
-export function useMailSubmitCredential(tenantId?: string) {
-  return useQuery({
-    queryKey: ['mail-submit-credential', tenantId],
-    queryFn: () =>
-      apiFetch<{ data: MailSubmitCredentialInfo }>(`/api/v1/tenants/${tenantId}/mail/submit-credential`),
-    enabled: !!tenantId,
-  });
-}
-
-export function useRotateMailSubmitCredential(tenantId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: { note?: string; pushToPvc?: boolean }) =>
-      apiFetch<{ data: MailSubmitRotateResult }>(
-        `/api/v1/tenants/${tenantId}/mail/submit-credential/rotate`,
-        { method: 'POST', body: JSON.stringify(input) },
-      ),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['mail-submit-credential', tenantId] });
-    },
-  });
-}
+// mail-submit (PHP sendmail-compat credentials) removed 2026-07-27 — see CHANGELOG.
 
 // ─── Phase 3 T2.1 — IMAPSync job runner ───────────────────────────
 

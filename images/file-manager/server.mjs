@@ -1,6 +1,8 @@
 // File Manager Sidecar — Minimal REST API for PVC file operations
 // Runs inside client K8s namespace, mounted PVC at /data
-// No auth — protected by NetworkPolicy (only platform namespace can reach it)
+// Auth: every non-/health request requires the per-tenant derived secret in
+// the X-Platform-Internal header (see isAuthenticated). Defense-in-depth on top
+// of the NetworkPolicy that scopes :8111 to platform-api.
 
 import { createServer } from 'node:http';
 import * as fs from 'node:fs';
@@ -187,6 +189,7 @@ async function safePath(userPath, opts = {}) {
 // Constant-time comparison prevents timing attacks against the
 // secret value.
 const PLATFORM_INTERNAL_SECRET = process.env.PLATFORM_INTERNAL_SECRET || '';
+let warnedNoSecret = false;
 
 function constantTimeEquals(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string') return false;
@@ -198,12 +201,28 @@ function constantTimeEquals(a, b) {
   return diff === 0;
 }
 
-function isPlatformBypass(req) {
-  // Fail closed if the sidecar was started without a secret.
+// Authentication gate (2026-07-27). Every request to the sidecar MUST carry
+// the per-tenant derived secret in `X-Platform-Internal`. platform-api sends
+// it on every call (file-manager/service.ts). Previously the sidecar had NO
+// request auth — its comment claimed "protected by NetworkPolicy", but the
+// generated allow-platform-api policy opened :8111 to the whole pod CIDR, so
+// any tenant container could read/write another tenant's PVC unauthenticated.
+// The NetworkPolicy is now narrowed to platform-api only; this header check is
+// defense-in-depth so a policy regression or a platform-api compromise is not
+// an instant cross-tenant root-file breach.
+function isAuthenticated(req) {
   if (!PLATFORM_INTERNAL_SECRET) return false;
   const provided = req.headers['x-platform-internal'];
   if (typeof provided !== 'string' || provided.length === 0) return false;
   return constantTimeEquals(provided, PLATFORM_INTERNAL_SECRET);
+}
+
+// Hidden platform paths (.platform/*) are NEVER exposed over HTTP. The only
+// caller that ever needed them (mail-submit's sendmail-cred writer) was removed
+// 2026-07-27, so this now always denies — `.platform` stays filtered for every
+// request. Kept as a named function so the ~16 safePath call sites are unchanged.
+function isPlatformBypass(_req) {
+  return false;
 }
 
 function sendJson(res, status, data) {
@@ -1365,6 +1384,22 @@ const server = createServer(async (req, res) => {
     if (path === '/health' && method === 'GET') {
       return sendJson(res, 200, { status: 'ok' });
     }
+
+    // Authentication gate — every non-health route requires the platform
+    // secret. Enforced whenever the sidecar has a secret configured (always
+    // true on a bootstrapped cluster: platform-api derives + injects it per
+    // tenant namespace). When the secret is somehow absent we log loudly and
+    // continue serving so an unusual secret-less local setup is not bricked —
+    // the narrowed NetworkPolicy remains the primary control in that case.
+    if (PLATFORM_INTERNAL_SECRET) {
+      if (!isAuthenticated(req)) {
+        return sendError(res, 403, 'Forbidden');
+      }
+    } else if (!warnedNoSecret) {
+      warnedNoSecret = true;
+      console.warn('[file-manager] PLATFORM_INTERNAL_SECRET is not set — request authentication is DISABLED; relying on NetworkPolicy only');
+    }
+
     if (path === '/ls' && method === 'GET') return handleLs(req, res);
     if (path === '/read' && method === 'GET') return handleRead(req, res);
     if (path === '/download' && method === 'GET') return handleDownload(req, res);
