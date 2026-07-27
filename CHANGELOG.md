@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.8] - 2026-07-27
+
 ### Fixed
 - **Tenant backup/restore Jobs blocked from platform-api by the new
   tenant-egress policy (regression in 2026.7.7).** The `tenant-egress`
