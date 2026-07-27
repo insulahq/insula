@@ -13,6 +13,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- Existing tenants converge on the new policies via a boot-time reconciler
+  (`reconcileAllTenantNetworkPolicies`), no reprovision required.
+
+## [2026.7.7] - 2026-07-27
+
+### Security
 - **Medium/low findings from the 2026-07-27 review.**
   - `GET /api/v1/regions` now requires authentication and no longer returns the
     internal `kubernetes_api_endpoint` column (was anonymous, leaking the API
