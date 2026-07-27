@@ -46,9 +46,15 @@ async function resolveNamespace(
 }
 
 export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
-  // Support ?token= query param for <img src> (browser can't set Authorization header)
+  // Support ?token= query param for <img src> (browser can't set Authorization
+  // header). LOW-hardening: only honour it on safe, idempotent reads
+  // (GET/HEAD) — the <img>/<a download> use case. A URL-embedded bearer token
+  // leaks into access logs, the Referer header, and browser history, so a
+  // mutating request (write/rm/rename/…) must present a real Authorization
+  // header instead.
   app.addHook('onRequest', (request, _reply, done) => {
-    if (!request.headers.authorization) {
+    const method = request.method.toUpperCase();
+    if (!request.headers.authorization && (method === 'GET' || method === 'HEAD')) {
       const query = request.query as Record<string, string>;
       if (query.token) {
         request.headers.authorization = `Bearer ${query.token}`;

@@ -49,6 +49,17 @@ server {
         add_header Content-Type text/plain;
     }
 
+    # ─── Internal API — never reachable from the public panel ────────────
+    # M6: the /api/v1/internal/* routes are for in-cluster callers only
+    # (sftp-gateway, tenant backup/restore Jobs, the Stalwart init container)
+    # which reach platform-api via its ClusterIP Service directly, NOT via
+    # this nginx. They are gated by X-Internal-Auth / HMAC tokens, but one
+    # (stalwart-data-expectation) is anonymous, so refuse the whole prefix at
+    # the edge. A more-specific location wins over /api/v1/ below.
+    location ^~ /api/v1/internal/ {
+        return 404;
+    }
+
     # ─── Platform API ───────────────────────────────────────────────────
     location /api/v1/ {
         proxy_pass $backend_upstream;

@@ -12,9 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.7-rc.1] - 2026-07-27
-
 ### Security
+- **Medium/low findings from the 2026-07-27 review.**
+  - `GET /api/v1/regions` now requires authentication and no longer returns the
+    internal `kubernetes_api_endpoint` column (was anonymous, leaking the API
+    server address).
+  - Both panel nginx configs refuse `/api/v1/internal/*` at the edge — those
+    routes are for in-cluster callers only (they reach platform-api via its
+    ClusterIP Service), so no internal endpoint is reachable from the public panel.
+  - The node-terminal WebSocket `?jwt=` access token is now redacted from access
+    logs (only `token`/`replica` were before).
+  - **Tenant workloads + the file-manager sidecar no longer mount a ServiceAccount
+    token** (`automountServiceAccountToken: false`) — they never call the
+    Kubernetes API, so this removes a credential that could be exfiltrated and
+    replayed, and makes tenant→apiserver network reachability inert.
+  - The file-manager `?token=` query-param → Authorization shortcut is restricted
+    to GET/HEAD (a bearer token in a URL leaks into logs/Referer/history; writes
+    must send a real header).
+  - The interactive Swagger UI (`/api/docs`) is no longer served in production.
+  - The sftp-gateway's per-username auth lockout was removed — a third-party-
+    triggerable account lockout is a denial-of-service anti-pattern; per-source-IP
+    throttling + bcrypt remain the brute-force defences.
+  - Deferred (documented in ROADMAP R11): per-tenant hostPort PSA opt-in, rsync
+    flag allowlist, rate-limit key hardening.
 - **Tenant network isolation hardened (critical).** The per-tenant
   `default-deny-ingress` and `allow-platform-api` NetworkPolicies carried an
   `ipBlock: 10.42.0.0/16` — the whole k3s pod CIDR — alongside their

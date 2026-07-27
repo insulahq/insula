@@ -235,6 +235,9 @@ async function applyDeployment(
     containers: [container],
     priorityClassName: TENANT_DEFAULT_PRIORITY_CLASS,
     securityContext: buildPodSecurityContext(service, input.spec),
+    // M9: tenant workloads never call the Kubernetes API (the default SA has
+    // no RBAC), so don't mount a token they could exfiltrate + replay.
+    automountServiceAccountToken: false,
     restartPolicy: service.restartPolicy === 'Never' ? 'Never' : 'Always',
     ...(initContainers.length > 0 ? { initContainers } : {}),
     ...(podVolumes.length > 0 ? { volumes: podVolumes } : {}),

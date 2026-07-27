@@ -41,6 +41,9 @@ describe('File Manager K8s Lifecycle', () => {
       await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:latest');
       expect(mockK8s.apps.createNamespacedDeployment).toHaveBeenCalled();
       expect(mockK8s.core.createNamespacedService).toHaveBeenCalled();
+      // M9: the sidecar never calls the k8s API — no SA token is mounted.
+      const body = (mockK8s.apps.createNamespacedDeployment as unknown as { mock: { calls: Array<[{ body: { spec: { template: { spec: { automountServiceAccountToken?: boolean } } } } }]> } }).mock.calls[0][0].body;
+      expect(body.spec.template.spec.automountServiceAccountToken).toBe(false);
     });
 
     it('should skip recreation if deployment exists with correct spec and >=1 replica', async () => {

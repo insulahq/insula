@@ -29,6 +29,13 @@ server {
         add_header Content-Type text/plain;
     }
 
+    # M6: /api/v1/internal/* is for in-cluster callers only (they reach
+    # platform-api via its ClusterIP Service directly, not this nginx).
+    # Refuse the whole prefix at the edge. `^~` wins over the /api/ proxy.
+    location ^~ /api/v1/internal/ {
+        return 404;
+    }
+
     # Reverse-proxy API requests to the backend.
     location /api/ {
         proxy_pass $backend_upstream;
