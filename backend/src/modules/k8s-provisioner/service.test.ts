@@ -242,20 +242,28 @@ describe('K8s Provisioner Service', () => {
       });
     });
 
-    it('should create two NetworkPolicies: deny cross-ns + allow intra-ns', async () => {
+    it('should create four NetworkPolicies: deny ingress + intra-ns + platform-api + egress', async () => {
       const { applyNetworkPolicy } = await import('./service.js');
       await applyNetworkPolicy(mockK8s, 'test-ns');
-      expect(mockK8s.networking.createNamespacedNetworkPolicy).toHaveBeenCalledTimes(3);
+      expect(mockK8s.networking.createNamespacedNetworkPolicy).toHaveBeenCalledTimes(4);
 
       const mockFn = mockK8s.networking.createNamespacedNetworkPolicy as unknown as ReturnType<typeof vi.fn>;
-      const calls = mockFn.mock.calls as Array<[{ body: { metadata: { name: string }; spec: { ingress: Array<{ _from?: unknown[] }> } } }]>;
+      const calls = mockFn.mock.calls as Array<[{ body: { metadata: { name: string }; spec: { ingress?: Array<{ _from?: unknown[] }>; policyTypes: string[] } } }]>;
       const names = calls.map(c => c[0].body.metadata.name).sort();
-      expect(names).toEqual(['allow-intra-namespace', 'allow-platform-api', 'default-deny-ingress']);
+      expect(names).toEqual(['allow-intra-namespace', 'allow-platform-api', 'default-deny-ingress', 'tenant-egress']);
 
       // The intra-namespace rule is the critical one for multi-component
       // apps — without it, default-deny-ingress blocks wordpress → mariadb.
       const intra = calls.find(c => c[0].body.metadata.name === 'allow-intra-namespace')![0].body;
-      expect(intra.spec.ingress[0]._from).toEqual([{ podSelector: {} }]);
+      expect(intra.spec.ingress![0]._from).toEqual([{ podSelector: {} }]);
+
+      // Regression guard: the cross-tenant pod-CIDR ipBlock must be gone.
+      const deny = calls.find(c => c[0].body.metadata.name === 'default-deny-ingress')![0].body;
+      expect(JSON.stringify(deny.spec)).not.toContain('10.42.0.0/16');
+
+      // The new default-deny EGRESS policy is present.
+      const egress = calls.find(c => c[0].body.metadata.name === 'tenant-egress')![0].body;
+      expect(egress.spec.policyTypes).toEqual(['Egress']);
     });
 
     it('should create PVC with correct storage class and size', async () => {

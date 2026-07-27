@@ -1,5 +1,5 @@
 ---
-verified: 2026.6.7
+verified: 2026.7.7
 ---
 
 # Email
@@ -99,22 +99,23 @@ The simplest way to add your mailbox to a phone or desktop app:
     outgoing servers. (The portal itself doesn't print a fixed
     host/port table — the autoconfig records carry those values for you.)
 
-## Send mail from your website (sendmail)
+## Send mail from your website
 
 Many web apps (WordPress, scripts that call PHP's `mail()`) send email through
-the server. The **Sendmail compatibility credential** on the **Settings & DNS**
-tab gives those apps a dedicated SMTP login so their mail relays through the
-platform and lands in inboxes.
+an SMTP server. Point your app's SMTP settings at the platform mail server:
 
-1. On **Settings & DNS**, find the **Sendmail compatibility credential** card.
-2. Click **Rotate & push to PVC** to generate credentials and write them into
-   your site's storage automatically — your app picks them up on its next send.
-   (Use **Rotate only** if you want to configure an app manually instead.)
-3. The password is shown **once** — copy it if you need it for manual setup.
+- **Host:** `mail.<your-apex-domain>` (the same mail host your mailboxes use)
+- **Port:** `587` (STARTTLS) or `465` (implicit TLS)
+- **Username / password:** one of your mailboxes' full address + its password
+  (or a dedicated app password created on the **Login passwords** section)
 
-!!! note
-    The credential file is stored privately in your workload and hidden from the
-    File Manager. You normally never touch it directly.
+Most apps have an "SMTP" plugin or setting (e.g. WP Mail SMTP for WordPress).
+Use a dedicated mailbox for application mail so you can rotate its password
+without affecting a person's inbox.
+
+!!! note "Changed in 2026.7"
+    The old auto-provisioned "Sendmail compatibility credential" card was
+    removed — configure your app's SMTP settings directly as above.
 
 ## Import an old mailbox over IMAP
 

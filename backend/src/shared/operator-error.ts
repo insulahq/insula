@@ -196,7 +196,7 @@ export function translateOperatorError(
       detail: 'Let\'s Encrypt could not reach the challenge URL. Either DNS does not resolve here yet, OR Traefik → solver-pod is blocked.',
       remediation: [
         'Verify the domain\'s DNS A record points to the platform\'s public IPs.',
-        'Check tenant NetworkPolicy allow-platform-api / default-deny-ingress includes ipBlock 10.42.0.0/16.',
+        'Check the tenant default-deny-ingress NetworkPolicy allows the traefik namespace (namespaceSelector kubernetes.io/metadata.name=traefik) so Traefik → solver-pod is not blocked.',
         'Hit /api/v1/tenants/<id>/domains/<id>/verify to re-trigger after DNS settles.',
       ],
       retryable: true,

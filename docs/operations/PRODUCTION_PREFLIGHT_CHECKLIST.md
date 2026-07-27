@@ -132,10 +132,13 @@ the target (or drive `--remote` from your workstation) and run:
 # On the target node — signed installer binary (ADR-055), no repo clone:
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
 
-# Verify the signed binary BEFORE running it (production: do not skip):
+# Verify the signed binary BEFORE running it (production: do not skip).
+# --insecure-ignore-tlog=true is required — releases are signed offline/key-based
+# (no Rekor transparency log), so tlog verification would otherwise fail.
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
 curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
-cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig insula-linux-amd64
+cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig \
+  --insecure-ignore-tlog=true insula-linux-amd64
 
 chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
 

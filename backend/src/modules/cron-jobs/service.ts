@@ -3,6 +3,7 @@ import { cronJobs, tenants } from '../../db/schema.js';
 import { getTenantById } from '../tenants/service.js';
 import { ApiError } from '../../shared/errors.js';
 import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
+import { guardedFetch } from '../../shared/ssrf-guard.js';
 import type { Database } from '../../db/index.js';
 import type { CreateCronJobInput, UpdateCronJobInput } from './schema.js';
 import type { PaginationMeta } from '../../shared/response.js';
@@ -200,13 +201,17 @@ export async function runCronJobNow(db: Database, tenantId: string, cronJobId: s
 
   if (job.type === 'webcron' && job.url) {
     try {
-      const res = await fetch(job.url, {
+      // SSRF guard (H-4): the URL is tenant-controlled and this runs from the
+      // broadly-connected platform-api pod, so refuse internal / metadata
+      // destinations at connect time (rebind-safe) instead of a bare fetch.
+      const res = await guardedFetch(job.url, {
         method: (job.httpMethod as string) ?? 'GET',
-        signal: AbortSignal.timeout(30_000),
+        timeoutMs: 30_000,
+        maxBytes: 8 * 1024,
       });
       responseCode = res.status;
-      output = (await res.text()).slice(0, 2000);
-      status = res.ok ? 'success' : 'failed';
+      output = res.body.slice(0, 2000);
+      status = res.status >= 200 && res.status < 300 ? 'success' : 'failed';
     } catch (err) {
       status = 'failed';
       output = err instanceof Error ? err.message : 'Request failed';
