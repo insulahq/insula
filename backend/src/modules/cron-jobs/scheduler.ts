@@ -1,6 +1,7 @@
 import { eq, and, sql } from 'drizzle-orm';
 import { cronJobs } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
+import { guardedFetch } from '../../shared/ssrf-guard.js';
 
 /**
  * Given a cron schedule string and the last run time, compute the next time
@@ -76,14 +77,17 @@ async function executeWebcron(db: Database, job: typeof cronJobs.$inferSelect): 
   let output: string | null = null;
 
   try {
-    const res = await fetch(job.url!, {
+    // SSRF guard (H-4): tenant-controlled URL fired from platform-api — refuse
+    // internal / metadata destinations at connect time (rebind-safe).
+    const res = await guardedFetch(job.url!, {
       method: (job.httpMethod as string) ?? 'GET',
-      signal: AbortSignal.timeout(30_000),
+      timeoutMs: 30_000,
+      maxBytes: 8 * 1024,
       headers: { 'User-Agent': 'K8s-Hosting-Webcron/1.0' },
     });
     responseCode = res.status;
-    output = (await res.text()).slice(0, 2000);
-    status = res.ok ? 'success' : 'failed';
+    output = res.body.slice(0, 2000);
+    status = res.status >= 200 && res.status < 300 ? 'success' : 'failed';
   } catch (err) {
     status = 'failed';
     output = err instanceof Error ? err.message : 'Request failed';
