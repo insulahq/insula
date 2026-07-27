@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenant backup/restore Jobs blocked from platform-api by the new
+  tenant-egress policy (regression in 2026.7.7).** The `tenant-egress`
+  default-deny added in 2026.7.7 excepts the cluster service CIDR, which also
+  cut off the backup/restore Jobs that run in the tenant namespace and stream
+  bundle components to platform-api's `/internal/bundles` endpoints over its
+  ClusterIP — so every backup/restore broke. A new
+  `allow-backup-jobs-egress-to-platform-api` NetworkPolicy, scoped to the
+  `platform.io/component: backup-files|restore-files` label, restores egress to
+  platform-api:3000 for those Jobs only (mirrors the existing ingress rule).
+- **`GET /api/v1/regions` restored to a public reference-data endpoint.**
+  2026.7.7 hardened the M5 finding by requiring authentication, but `/regions`
+  (like `/plans`) is public reference data used by the create-tenant/signup
+  flow, and gating it broke that contract + the post-deploy smoke check. The
+  actual finding — an anonymous caller learning the API-server address — is
+  fully fixed by dropping the internal `kubernetes_api_endpoint` column from the
+  response (retained), so the endpoint is public again with the sensitive field
+  removed.
+
+## [2026.7.7] - 2026-07-27
+
+### Security
+- Existing tenants converge on the new policies via a boot-time reconciler
+  (`reconcileAllTenantNetworkPolicies`), no reprovision required.
+
 ## [2026.7.7] - 2026-07-27
 
 ### Security
@@ -73,6 +98,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   or the platform mail server (`mail.<apex>`, ports 587/465) with a mailbox's
   credentials directly. The `mail_submit_credentials` table is retained
   (non-destructive) so older backup bundles restore cleanly.
+
 
 ## [2026.7.6] - 2026-07-26
 

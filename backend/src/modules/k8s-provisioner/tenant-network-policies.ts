@@ -249,6 +249,44 @@ export function buildTenantNetworkPolicies(
         },
       },
     },
+    {
+      // Backup/restore Jobs run IN the tenant namespace and stream bundle
+      // components to/from platform-api's HMAC-token-gated /internal/bundles
+      // endpoints over its ClusterIP. The blanket `tenant-egress` policy above
+      // excepts the service CIDR, so without this scoped allow those Jobs
+      // cannot reach platform-api and every backup/restore breaks. Mirrors the
+      // INGRESS side (`allow-backup-files-jobs-to-platform-api` in
+      // k8s/base/network-policies.yaml): scoped to the backup/restore component
+      // label so ONLY those Jobs — not ordinary tenant workloads — get the
+      // egress to platform-api:3000. NetworkPolicy egress is additive, so a
+      // Job pod's allowed egress is the union of this rule + tenant-egress.
+      name: 'allow-backup-jobs-egress-to-platform-api',
+      body: {
+        metadata: { name: 'allow-backup-jobs-egress-to-platform-api', namespace },
+        spec: {
+          podSelector: {
+            matchExpressions: [
+              { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files'] },
+            ],
+          },
+          policyTypes: ['Egress'],
+          egress: [
+            // DNS + internet already come from the blanket tenant-egress
+            // policy (podSelector:{} selects these Jobs too, and egress is
+            // additive); this policy only ADDS the platform-api destination.
+            {
+              to: [
+                {
+                  namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
+                  podSelector: { matchLabels: { app: 'platform-api' } },
+                },
+              ],
+              ports: [{ protocol: 'TCP', port: 3000 }],
+            },
+          ],
+        },
+      },
+    },
   ];
 }
 
