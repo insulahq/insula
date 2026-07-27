@@ -11,7 +11,8 @@ describe('ipIsInternal', () => {
     }
   });
   it('allows public v4', () => {
-    for (const ip of ['1.1.1.1', '8.8.8.8', '93.184.216.34', '46.224.122.58']) {
+    // RFC 5737 documentation ranges + well-known public resolvers — never operator IPs.
+    for (const ip of ['1.1.1.1', '8.8.8.8', '203.0.113.10', '198.51.100.7']) {
       expect(ipIsInternal(ip), ip).toBe(false);
     }
   });
