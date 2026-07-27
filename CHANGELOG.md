@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.7-rc.1] - 2026-07-27
+
 ### Security
 - **Tenant network isolation hardened (critical).** The per-tenant
   `default-deny-ingress` and `allow-platform-api` NetworkPolicies carried an
