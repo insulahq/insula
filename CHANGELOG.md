@@ -12,6 +12,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- Maintenance release — no functional changes since v2026.7.16; re-pinned as a
+  fresh signed release (e.g. to exercise the upgrade flow from an installed
+  cluster).
+
 ## [2026.7.16] - 2026-07-28
 
 ### Fixed
