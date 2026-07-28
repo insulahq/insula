@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
+- **Static-site catalog codes renamed `static-nginx` → `nginx` and
+  `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
+  the deployment name and what the storage path is built from, so it should read
+  as the web server, not as an internal category. Migration `0076` renames the
+  rows **in place** so existing deployments keep their `catalog_entry_id`; the
+  catalog folders and GHCR image paths are unchanged. Requires the matching
+  manifest change in `insulahq/application-catalog`.
+
+## [2026.7.18] - 2026-07-28
+
+### Changed
 - **Redesigned the platform update page.** "Run upgrade" moved into the version
   card (shown only when a newer verified release is available) → a Review modal
   (pre-flight + interruption preview) → Approve (no second confirm) → a live
