@@ -18,10 +18,12 @@ you, through the panel and notifications, when one of them goes wrong.
 
 ## The Monitoring page
 
-**Monitoring** has these tabs:
+**Monitoring** opens on the **SLOs** tab. It has these tabs:
 
 | Tab | What it shows |
 |---|---|
+| **SLOs** | Service-level indicators and the rule table — the default view |
+| **Mail** | Mail-flow health |
 | **Active Alerts** | Current platform alerts |
 | **Alert History** | Past alerts |
 | **Health** | Real platform-health checks (not placeholders) |
@@ -29,8 +31,27 @@ you, through the panel and notifications, when one of them goes wrong.
 | **Storage Usage** | Storage consumption |
 | **Pods** | Pod-level view |
 
+SLOs is the landing tab because it answers "is the platform meeting its
+objectives right now", where Active Alerts only shows what has already fired.
+Every tab is linkable — append `?tab=<name>` (for example
+`/monitoring?tab=active-alerts`) and that tab opens instead.
+
 The top summary cards (Platform Status, Active Alerts, Pod Usage) are quick
 read-outs; the **Health** tab carries the real checks.
+
+### The SLO rules table
+
+Below the SLI cards, the rules table lists every evaluated rule. **State** is the
+first column, shown as a coloured pill — red *firing*, green *ok*, grey
+*disabled* — so the leftmost column tells you what is wrong at a glance.
+
+Every column sorts; click a header to toggle direction. The default is
+**Evaluated, newest first**, so the freshest signal is on top. Two columns sort
+by meaning rather than alphabetically:
+
+- **State** orders *firing → ok → disabled*, so one click puts the worst first.
+- **Evaluated** keeps rules that have never been evaluated at the bottom rather
+  than treating "no timestamp" as the newest value.
 
 ## Node health and recovery actions
 
