@@ -71,7 +71,7 @@ export default function NodeHealthPanel() {
   const OverallIcon = SEVERITY_ICON[summary.overallSeverity];
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 p-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <OverallIcon

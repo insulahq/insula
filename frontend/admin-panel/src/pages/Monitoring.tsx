@@ -262,7 +262,10 @@ export default function Monitoring() {
   const requested = searchParams.get('tab');
   const activeTab: Tab = useMemo(() => {
     if (requested && VALID_TABS.has(requested as Tab)) return requested as Tab;
-    return 'active-alerts';
+    // SLOs is the landing view: it answers "is the platform meeting its
+    // objectives right now", where Active Alerts only shows what has already
+    // fired. An explicit ?tab= (deep links from other surfaces) still wins.
+    return 'slos';
   }, [requested]);
   const setActiveTab = (key: Tab): void => {
     const next = new URLSearchParams(searchParams);
@@ -452,7 +455,7 @@ function PodsTab({
   }
 
   return (
-    <div className="p-4 space-y-4" data-testid="pods-tab">
+    <div className="p-5 space-y-4" data-testid="pods-tab">
       <div className="flex flex-wrap items-center gap-2">
         {(['all', 'running', 'pending', 'failed', 'orphaned', 'completed'] as const).map((f) => (
           <button

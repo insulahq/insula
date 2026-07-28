@@ -12,6 +12,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Monitoring tabs sat flush against the card border.** The page renders each
+  tab panel straight into the card with no padding wrapper, so every tab has to
+  supply its own — SLOs, Mail and Node Health supplied none. All six content
+  tabs now share `p-5` (Pods moved from `p-4` for consistency); the two alert
+  tables stay full-bleed, which is intended for a table inside a card.
+
+### Changed
+- **Monitoring now opens on the SLOs tab** instead of Active Alerts — SLOs
+  answer "is the platform meeting its objectives right now", where Active Alerts
+  only shows what has already fired. An explicit `?tab=` still wins, so existing
+  deep links (e.g. the `/monitoring/health` redirect) are unaffected.
+
 ### Changed
 - Maintenance release — no functional changes since v2026.7.16; re-pinned as a
   fresh signed release (e.g. to exercise the upgrade flow from an installed
