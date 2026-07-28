@@ -44,12 +44,42 @@ The catalog is a curated set of pre-built, tested runtime images. Each entry def
 | `dotnet-8` | mcr.microsoft.com/dotnet/aspnet:8.0 | Kestrel | .NET 8 | All | Active |
 | `bun-latest` | oven/bun:latest | (none) | Bun | All | Active |
 | `rust-stable` | rust:1.85-slim | (none) | Rust stable | All | Active |
-| `static-nginx` | nginx:1.27-alpine | Nginx | Static only | All | Active |
-| `static-apache` | httpd:2.4-alpine | Apache | Static only | All | Active |
+| `nginx` | nginx (Minimus hardened) | Nginx | Static only | All | Active |
+| `apache` | httpd:2.4-alpine | Apache | Static only | All | Active |
 
 > The version field in the manifest (`version`, `supportedVersions`) drives which language version actually runs. WordPress is no longer a runtime — it is now an Application catalog entry with its own bundled wp-cli/database/cron components (see `wordpress/manifest.json`).
 
 **Per-version overrides:** PHP runtimes pick image variants per `supportedVersions[].components[].image` — e.g. nginx-php publishes 8.3, 8.4, 8.5 from the same entry.
+
+### Custom Web-Server Configuration (static runtimes)
+
+The two static runtimes accept tenant-supplied web-server config through a single
+optional environment variable — no image rebuild, no platform-side templating:
+
+| Runtime | Variable | Included into |
+| --- | --- | --- |
+| `nginx` | `NGINX_CONF_DIR` | the default `server { ... }` block |
+| `apache` | `APACHE_CONF_DIR` | the main server config |
+
+Set it to an absolute path inside the tenant's storage (e.g.
+`/var/www/html/.nginx-conf`, `/usr/local/apache2/htdocs/.apache-conf`). Both are
+declared in the manifest's `parameters` **and** `env_vars.configurable`, so the
+tenant panel offers them at deploy time *and* on an already-installed workload
+(Applications → the app → Configuration → Edit).
+
+On start the container entrypoint:
+
+1. creates the folder if missing and seeds a `README.txt` explaining the contract,
+2. includes its `*.conf` into the server config,
+3. denies web access to the folder when it sits under the web root, so the config
+   is never publicly downloadable, and
+4. (Apache) validates with `httpd -t` first — an invalid tenant config is
+   **ignored** and the site restarts on the default config rather than
+   crash-looping, with the reason printed to the workload log.
+
+Values that are relative, contain `..`, or point at the web root itself are
+rejected and logged. Both servers read config only at startup, so the workload
+must be restarted after editing files there; static content needs no restart.
 
 ### Image Contents
 

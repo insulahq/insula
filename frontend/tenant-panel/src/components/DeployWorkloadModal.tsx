@@ -167,7 +167,10 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const handleSelectImage = (img: CatalogEntry) => {
     setSelectedImageId(img.id);
     if (!name) {
-      const baseName = img.code.replace(/[^a-z0-9-]/g, '-').slice(0, 50);
+      // `my-` prefix so the pre-filled name reads as the tenant's own instance
+      // ("my-nginx") rather than echoing the catalog code back at them. Sliced
+      // before prefixing so the result still fits the 63-char DNS limit.
+      const baseName = `my-${img.code.replace(/[^a-z0-9-]/g, '-').slice(0, 50)}`;
       const nameSet = new Set(existingNames);
       let candidate = baseName;
       let suffix = 2;
