@@ -47,9 +47,9 @@ describe('isSafeHostname / isSafeDocRoot (remote-shell injection guards)', () =>
 });
 
 describe('runtimeCodeFor', () => {
-  it('uses apache-php when the domain ran PHP, static-apache otherwise', () => {
+  it('uses apache-php when the domain ran PHP, apache otherwise', () => {
     expect(runtimeCodeFor({ name: 'a', docRoot: '/x', phpVersion: 'php8.2', dnsZoneType: null })).toBe('apache-php');
-    expect(runtimeCodeFor({ name: 'b', docRoot: '/x', phpVersion: null, dnsZoneType: null })).toBe('static-apache');
+    expect(runtimeCodeFor({ name: 'b', docRoot: '/x', phpVersion: null, dnsZoneType: null })).toBe('apache');
   });
 });
 
