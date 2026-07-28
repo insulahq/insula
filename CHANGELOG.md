@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Platform update card wrongly read "no releases published".** It showed
+  `latestVersion` (the lazy, unverified GitHub check — null on production) instead
+  of the cosign-verified `available` release the poller confirms. The card now
+  prefers `available`, so it correctly shows the latest verified version (and
+  warns inline on a non-verified verify status).
+
 ## [2026.7.15] - 2026-07-28
 
 ### Changed
