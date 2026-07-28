@@ -5,7 +5,7 @@ const healthy: PreflightFacts = {
   environment: 'production',
   cnpgReady: true,
   cnpgDetail: 'primary elected',
-  longhornMinReplicas: 3,
+  longhornAtRiskVolumes: 0,
   inFlightTransitions: 0,
   maxDiskUsedPct: 40,
   nodesWithDiskPressure: 0,
@@ -34,10 +34,21 @@ describe('evaluatePreflight', () => {
     expect(r.ok).toBe(true);
   });
 
-  it('production: <2 Longhorn replicas → fail; ≥2 → pass; null → pass(n/a)', () => {
-    expect(gate(evaluatePreflight({ ...healthy, longhornMinReplicas: 1 }), 'longhorn-replicas').status).toBe('fail');
-    expect(gate(evaluatePreflight({ ...healthy, longhornMinReplicas: 2 }), 'longhorn-replicas').status).toBe('pass');
-    expect(gate(evaluatePreflight({ ...healthy, longhornMinReplicas: null }), 'longhorn-replicas').status).toBe('pass');
+  it('Longhorn: at-risk attached volumes → fail; 0 at-risk → pass; null → pass(n/a)', () => {
+    // 0 at-risk includes a single-node cluster whose replica=1 volumes are all
+    // healthy — the case that used to hard-block single-node upgrades.
+    expect(gate(evaluatePreflight({ ...healthy, longhornAtRiskVolumes: 1 }), 'longhorn-replicas').status).toBe('fail');
+    expect(gate(evaluatePreflight({ ...healthy, longhornAtRiskVolumes: 0 }), 'longhorn-replicas').status).toBe('pass');
+    expect(gate(evaluatePreflight({ ...healthy, longhornAtRiskVolumes: null }), 'longhorn-replicas').status).toBe('pass');
+  });
+
+  it('single-node default (replica=1, all healthy → 0 at-risk) does NOT block the upgrade', () => {
+    // Regression guard for 2026-07-28: the old `< 2` check made every
+    // single-node cluster fail this gate with no override, so it could never
+    // upgrade. 0 at-risk volumes must be a clean pass in production.
+    const r = evaluatePreflight({ ...healthy, environment: 'production', longhornAtRiskVolumes: 0 });
+    expect(gate(r, 'longhorn-replicas').status).toBe('pass');
+    expect(r.ok).toBe(true);
   });
 
   it('production: in-flight tenant transitions → fail', () => {
@@ -94,7 +105,7 @@ describe('evaluatePreflight', () => {
     const r = evaluatePreflight({
       environment: 'staging',
       cnpgReady: false, cnpgDetail: 'down',
-      longhornMinReplicas: 0,
+      longhornAtRiskVolumes: 3,
       inFlightTransitions: 3,
       maxDiskUsedPct: 99,
       nodesWithDiskPressure: 2,

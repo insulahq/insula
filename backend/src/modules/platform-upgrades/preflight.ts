@@ -32,7 +32,11 @@ export interface PreflightFacts {
   readonly cnpgReady: boolean;
   readonly cnpgDetail: string;
   /** Minimum healthy Longhorn replica count across volumes, or null if N/A. */
-  readonly longhornMinReplicas: number | null;
+  /** Count of ATTACHED Longhorn volumes degraded/faulted below their configured
+   *  redundancy (null = no volumes / not collectable). NOT a replica count — a
+   *  healthy replica=1 volume on a single-node cluster is 0 at-risk, so
+   *  single-node clusters are no longer blocked from upgrading. */
+  readonly longhornAtRiskVolumes: number | null;
   /** In-flight tenant lifecycle transitions, or null if the count is unknown
    *  (DB unreachable) — null is a soft warn, NEVER a fail-open pass. */
   readonly inFlightTransitions: number | null;
@@ -69,16 +73,23 @@ export function evaluatePreflight(facts: PreflightFacts): PreflightResult {
     detail: facts.cnpgReady ? facts.cnpgDetail || 'primary elected' : `not healthy: ${facts.cnpgDetail || 'no primary'}`,
   });
 
-  // 2. Longhorn replica redundancy (need ≥2 so a node can roll during the upgrade)
-  if (facts.longhornMinReplicas === null) {
+  // 2. Longhorn storage redundancy. The gate blocks only when an ATTACHED
+  //    volume is degraded/faulted BELOW its configured replica count — not on a
+  //    hardcoded "< 2". A healthy replica=1 volume (the single-node default) is
+  //    at its intended redundancy and passes; a replica=3 volume with a dead
+  //    replica fails. Detached volumes are ignored (a node roll can't disrupt an
+  //    unmounted volume). See collect-preflight.ts:longhornAtRiskVolumes.
+  if (facts.longhornAtRiskVolumes === null) {
     gates.push({ id: 'longhorn-replicas', label: 'Storage replica redundancy', status: 'pass', detail: 'no Longhorn volumes / not applicable' });
   } else {
-    const low = facts.longhornMinReplicas < 2;
+    const atRisk = facts.longhornAtRiskVolumes > 0;
     gates.push({
       id: 'longhorn-replicas',
       label: 'Storage replica redundancy',
-      status: sev(env, low),
-      detail: low ? `min healthy replicas = ${facts.longhornMinReplicas} (< 2; a node roll could lose data availability)` : `min healthy replicas = ${facts.longhornMinReplicas}`,
+      status: sev(env, atRisk),
+      detail: atRisk
+        ? `${facts.longhornAtRiskVolumes} attached volume(s) degraded below their configured redundancy — a node roll could lose data availability`
+        : 'all attached volumes at their configured redundancy',
     });
   }
 

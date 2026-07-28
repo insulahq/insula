@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Loader2, RefreshCw, CheckCircle, AlertTriangle, XCircle, ArrowRight, ShieldAlert, Activity, Server } from 'lucide-react';
 import { usePlatformVersion } from '@/hooks/use-platform-updates';
-import { usePreflight, usePostflight, useHostMigrationsPreview, useUpgradeApply, useRollback, type UpgradeGate, type UpgradeApplyData, type RollbackData } from '@/hooks/use-platform-upgrade';
+import { usePreflight, usePostflight, useHostMigrationsPreview, useUpgradeApply, useRollback, useUpgradeProgress, type UpgradeGate, type UpgradeApplyData, type RollbackData } from '@/hooks/use-platform-upgrade';
 
 /**
  * Platform → Upgrades (super_admin) — ADR-045 W14. Shows the version spine
@@ -45,6 +45,9 @@ export default function UpgradesPage() {
   const post = postflight.data?.data;
   const hm = hostMigrations.data?.data;
   const isProduction = (v?.environment ?? '') === 'production';
+  // Live roll progress: poll while an upgrade is in flight (a pending version exists).
+  const upgradeActive = Boolean(v?.pendingVersion || post?.pendingVersion);
+  const progress = useUpgradeProgress(upgradeActive).data?.data;
 
   const onPreview = async () => {
     setConfirming(false);
@@ -172,6 +175,40 @@ export default function UpgradesPage() {
           </div>
         )}
 
+        {/* Interruption preview — what restarts, shown BEFORE the operator commits. */}
+        {preview?.proceed && !preview.applied && preview.interruption && (
+          <div className={`text-xs rounded border p-3 space-y-2 dark:bg-transparent ${
+            preview.interruption.singleNode
+              ? 'border-amber-300 bg-amber-50 dark:border-amber-700'
+              : 'border-blue-200 bg-blue-50 dark:border-blue-800'
+          }`}>
+            <div className="flex items-center gap-1.5 font-medium text-gray-900 dark:text-gray-100">
+              <AlertTriangle className={`h-4 w-4 ${preview.interruption.singleNode ? 'text-amber-500' : 'text-blue-500'}`} />
+              What will be interrupted
+              {preview.interruption.nodeCount != null && (
+                <span className="ml-auto text-gray-500 font-normal">
+                  {preview.interruption.nodeCount} node{preview.interruption.nodeCount === 1 ? '' : 's'}
+                  {preview.interruption.singleNode ? ' · no rolling redundancy' : ''}
+                </span>
+              )}
+            </div>
+            <p className="text-gray-700 dark:text-gray-300">{preview.interruption.summary}</p>
+            <ul className="space-y-1">
+              {preview.interruption.services.map((s) => (
+                <li key={s.name} className="flex items-start gap-1.5">
+                  <Server className="h-3.5 w-3.5 mt-0.5 text-gray-400 flex-shrink-0" />
+                  <span><span className="font-medium text-gray-800 dark:text-gray-200">{s.label}</span> <span className="text-gray-500 dark:text-gray-400">— {s.impact}</span></span>
+                </li>
+              ))}
+            </ul>
+            {!preview.interruption.tenantWorkloadsAffected && (
+              <div className="flex items-center gap-1.5 text-green-700 dark:text-green-400">
+                <CheckCircle className="h-3.5 w-3.5" /> Tenant websites and databases keep serving throughout.
+              </div>
+            )}
+          </div>
+        )}
+
         {applyError && (
           <div className="text-xs text-red-700 flex items-start gap-1">
             <ShieldAlert className="h-4 w-4 mt-0.5 flex-shrink-0" />
@@ -216,6 +253,37 @@ export default function UpgradesPage() {
               {post.verdict}
             </span>
           </div>
+
+          {/* Live roll progress bar — updates every few seconds as Deployments
+              reach the target image. Only meaningful mid-roll. */}
+          {progress && progress.readable && progress.total > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                <span>Rolling services to {progress.targetTag ?? post.pendingVersion}</span>
+                <span className="font-mono">{progress.atTarget}/{progress.total} · {progress.percent}%</span>
+              </div>
+              <div className="h-2 w-full rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-500 ${progress.percent === 100 ? 'bg-green-500' : 'bg-blue-500'}`}
+                  style={{ width: `${progress.percent}%` }}
+                />
+              </div>
+              <ul className="mt-2 space-y-1">
+                {progress.deployments.map((d) => (
+                  <li key={d.name} className="flex items-center gap-1.5 text-xs">
+                    {d.atTarget
+                      ? <CheckCircle className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                      : <Loader2 className="h-3.5 w-3.5 text-blue-500 animate-spin flex-shrink-0" />}
+                    <span className="text-gray-700 dark:text-gray-300">{d.label}</span>
+                    <span className="ml-auto font-mono text-gray-400">
+                      {d.imageTag ?? '?'} · {d.readyReplicas}/{d.desiredReplicas} ready
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {post.gates.map((g) => <GateRow key={g.id} gate={g} />)}
           <div className="mt-3 text-xs text-gray-500">
             Convergence check {post.consecutiveFailures}/{post.abortThreshold} consecutive failures

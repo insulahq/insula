@@ -80,16 +80,21 @@ kctl() {
   fi
 }
 
-# Resolve the Flux GitRepository the platform Kustomization tracks (same logic
-# the backend uses) so setup/teardown target the right source by name.
+# Resolve the platform Flux Kustomization + the GitRepository it tracks. The
+# Kustomization name varies by install (`platform` on staging, sometimes
+# `hosting-platform-*`), so find it by its GitRepository sourceRef rather than
+# guessing the name — the same "resolve by source" idea the backend uses.
 GITREPO=""
+KS_NAME=""
 resolve_gitrepo() {
-  for ks in hosting-platform-production hosting-platform-staging hosting-platform; do
-    local src
-    src=$(kctl -n flux-system get kustomization "$ks" -o jsonpath='{.spec.sourceRef.name}' 2>/dev/null || true)
-    [[ -n "$src" ]] && { GITREPO="$src"; return 0; }
-  done
-  return 1
+  local line
+  line=$(kctl -n flux-system get kustomization \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.spec.sourceRef.kind}{"|"}{.spec.sourceRef.name}{"\n"}{end}' 2>/dev/null \
+    | awk -F'|' '$2=="GitRepository" && $3 ~ /^hosting-platform/ {print; exit}')
+  [[ -z "$line" ]] && return 1
+  KS_NAME="${line%%|*}"
+  GITREPO="${line##*|}"
+  [[ -n "$GITREPO" && -n "$KS_NAME" ]]
 }
 
 reconcile() {  # nudge Flux to act immediately instead of on its 5m interval
@@ -123,19 +128,18 @@ wait_for_version() {
   echo "$cur"; return 1
 }
 
-platform_ks() {
-  for ks in hosting-platform-production hosting-platform-staging hosting-platform; do
-    kctl -n flux-system get kustomization "$ks" >/dev/null 2>&1 && { echo "$ks"; return; }
-  done
-  echo hosting-platform
-}
+platform_ks() { echo "$KS_NAME"; }
 
 ORIGINAL_REF=""   # JSON of the source's ref at start — restored on exit
 restore_original_ref() {
   [[ -z "$ORIGINAL_REF" || -z "$GITREPO" ]] && return 0
   log "TEARDOWN: restoring $GITREPO ref → $ORIGINAL_REF"
-  kctl -n flux-system patch gitrepository "$GITREPO" --type=merge \
-    -p "{\"spec\":{\"ref\":$ORIGINAL_REF}}" >/dev/null 2>&1 || true
+  # REPLACE the whole spec.ref — a merge-patch of {ref:{semver:…}} would leave
+  # the setup-added `tag` in place (giving a malformed {semver,tag} ref that
+  # pins the OLD version). A JSON `replace` op swaps the entire ref for exactly
+  # the captured original.
+  kctl -n flux-system patch gitrepository "$GITREPO" --type=json \
+    -p "[{\"op\":\"replace\",\"path\":\"/spec/ref\",\"value\":$ORIGINAL_REF}]" >/dev/null 2>&1 || true
   reconcile gitrepository "$GITREPO"; reconcile kustomization "$(platform_ks)"
 }
 trap restore_original_ref EXIT
@@ -175,12 +179,19 @@ phase "Phase 2: Detection (version-poller → available_version)"
 kctl -n platform get cronjob version-poller >/dev/null 2>&1 && ok "version-poller CronJob exists" || fail "version-poller CronJob missing"
 kctl -n platform delete job version-poller-itest --ignore-not-found >/dev/null 2>&1 || true
 if kctl -n platform create job version-poller-itest --from=cronjob/version-poller >/dev/null 2>&1; then
-  pj=""
+  pj=""; poll_succ=0; poll_fail=0
   for _ in $(seq 1 24); do
-    pj=$(kctl -n platform get job version-poller-itest -o jsonpath='{.status.conditions[0].type}' 2>/dev/null || true)
-    [[ "$pj" == "Complete" || "$pj" == "Failed" ]] && break; sleep 5
+    # k8s 1.36 marks a successful Job with a SuccessCriteriaMet condition (and
+    # later Complete); a failure with Failed. `.status.succeeded>=1` is the
+    # version-independent success signal. (No `local` here — this loop runs in
+    # the main script body, not a function.)
+    poll_succ=$(kctl -n platform get job version-poller-itest -o jsonpath='{.status.succeeded}' 2>/dev/null || echo 0)
+    poll_fail=$(kctl -n platform get job version-poller-itest -o jsonpath='{.status.failed}' 2>/dev/null || echo 0)
+    if [[ "${poll_succ:-0}" -ge 1 ]]; then pj="Complete"; break; fi
+    if [[ "${poll_fail:-0}" -ge 1 ]]; then pj="Failed"; break; fi
+    sleep 5
   done
-  [[ "$pj" == "Complete" ]] && ok "poller run completed (securityContext runAsUser fix)" || fail "poller run phase=$pj (securityContext/netpol regression)"
+  [[ "$pj" == "Complete" ]] && ok "poller run completed (securityContext runAsUser fix)" || fail "poller run phase=${pj:-timeout} (securityContext/netpol regression)"
   AV=$(kctl -n platform exec "$(kctl -n platform get pods -l app=platform-api --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')" -- \
        sh -c 'psql "$DATABASE_URL" -tAc "SELECT setting_value FROM platform_settings WHERE setting_key='"'"'available_version'"'"'"' 2>/dev/null | tr -d '[:space:]')
   [[ -n "$AV" ]] && ok "available_version persisted ($AV) — poller reached the DB (netpol fix)" || fail "available_version NOT written — poller could not reach the DB"
