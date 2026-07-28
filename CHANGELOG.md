@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.13] - 2026-07-28
+
 ### Changed
 - **"Update Now" now actually upgrades the platform.** The dashboard banner + the
   Updates page fired the legacy push-model endpoint (`POST /admin/platform/update`
