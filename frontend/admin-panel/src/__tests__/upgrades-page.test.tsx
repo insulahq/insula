@@ -8,6 +8,8 @@ const mockApplyMutateAsync = vi.fn();
 let preflightOk = true;
 // null = dormant (no upgrade in flight) — the panel must not render.
 let postflightData: Record<string, unknown> | null = null;
+// null = no live progress (idle); set to drive the progress bar.
+let progressData: Record<string, unknown> | null = null;
 
 vi.mock('../hooks/use-platform-updates', () => ({
   usePlatformVersion: () => ({ data: { data: { currentVersion: '2026.6.2', latestVersion: '2026.7.0', updateAvailable: true, environment: 'production' } }, isLoading: false }),
@@ -31,6 +33,7 @@ vi.mock('../hooks/use-platform-upgrade', () => ({
   }),
   useUpgradeApply: () => ({ mutateAsync: mockApplyMutateAsync, isPending: false, error: null }),
   useRollback: () => ({ mutateAsync: vi.fn(async () => ({ data: { ok: false, dataRestored: false, reason: 'no manifest', summary: 'nothing to roll back', manifest: null } })), isPending: false, error: null }),
+  useUpgradeProgress: () => ({ data: progressData ? { data: progressData } : undefined, isLoading: false }),
 }));
 
 function renderPage() {
@@ -43,7 +46,7 @@ function renderPage() {
 }
 
 describe('UpgradesPage', () => {
-  beforeEach(() => { mockApplyMutateAsync.mockReset(); preflightOk = true; postflightData = null; });
+  beforeEach(() => { mockApplyMutateAsync.mockReset(); preflightOk = true; postflightData = null; progressData = null; });
 
   it('renders the version spine + pre-flight gates', () => {
     renderPage();
@@ -105,5 +108,47 @@ describe('UpgradesPage', () => {
     fireEvent.click(screen.getByText('Preview'));
     const applyBtn = await screen.findByText(/Apply upgrade/);
     expect(applyBtn.closest('button')).toBeDisabled();
+  });
+
+  it('preview shows the interruption preview (single-node → hard-unavailability + tenants unaffected)', async () => {
+    mockApplyMutateAsync.mockResolvedValueOnce({ data: {
+      action: 'upgrade', target: '2026.7.0', reason: 'manual', proceed: true, applied: false,
+      gitRepository: 'hosting-platform-production', environment: 'production', summary: 'DRY-RUN',
+      interruption: {
+        singleNode: true, nodeCount: 1, tenantWorkloadsAffected: false,
+        summary: 'Single-node cluster: each control-plane service has a short hard-unavailable window. Tenant websites and databases keep serving.',
+        services: [
+          { name: 'platform-api', label: 'Management API', impact: 'brief hard-unavailability while its single replica restarts (~30–90s)' },
+          { name: 'admin-panel', label: 'Admin panel', impact: 'brief hard-unavailability while its single replica restarts (~30–90s)' },
+        ],
+      },
+    } });
+    renderPage();
+    fireEvent.click(screen.getByText('Preview'));
+    await screen.findByText('What will be interrupted');
+    expect(screen.getByText('Management API')).toBeInTheDocument();
+    expect(screen.getByText(/no rolling redundancy/)).toBeInTheDocument();
+    // The green reassurance line is uniquely "…keep serving throughout." (the
+    // summary paragraph also mentions tenants, hence the specific suffix).
+    expect(screen.getByText(/keep serving throughout/)).toBeInTheDocument();
+  });
+
+  it('shows a live progress bar while an upgrade rolls (atTarget / total)', () => {
+    postflightData = {
+      phase: 'reconciling', verdict: 'reconciling', pendingVersion: '2026.7.0',
+      gates: [], consecutiveFailures: 0, abortThreshold: 3, lastCheckedAt: null,
+    };
+    progressData = {
+      targetTag: '2026.7.0', total: 3, atTarget: 2, ready: 2, percent: 67, readable: true,
+      deployments: [
+        { name: 'platform-api', label: 'Management API', desiredReplicas: 1, readyReplicas: 1, imageTag: '2026.7.0', versionManaged: true, atTarget: true },
+        { name: 'admin-panel', label: 'Admin panel', desiredReplicas: 1, readyReplicas: 1, imageTag: '2026.7.0', versionManaged: true, atTarget: true },
+        { name: 'tenant-panel', label: 'Tenant panel', desiredReplicas: 1, readyReplicas: 0, imageTag: '2026.6.16', versionManaged: true, atTarget: false },
+      ],
+    };
+    renderPage();
+    expect(screen.getByText('2/3 · 67%')).toBeInTheDocument();
+    expect(screen.getByText(/Rolling services to 2026\.7\.0/)).toBeInTheDocument();
+    expect(screen.getByText('Tenant panel')).toBeInTheDocument();
   });
 });

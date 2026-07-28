@@ -86,6 +86,20 @@ export function useHostMigrationsPreview(enabled = true) {
   });
 }
 
+export interface AffectedService {
+  readonly name: string;
+  readonly label: string;
+  readonly impact: string;
+}
+
+export interface InterruptionPreview {
+  readonly services: AffectedService[];
+  readonly nodeCount: number | null;
+  readonly singleNode: boolean;
+  readonly summary: string;
+  readonly tenantWorkloadsAffected: boolean;
+}
+
 interface UpgradeApplyResponse {
   readonly data: {
     readonly action: string;
@@ -96,10 +110,51 @@ interface UpgradeApplyResponse {
     readonly gitRepository: string | null;
     readonly environment: string;
     readonly summary: string;
+    /** Populated on a dry-run (apply:false) so the confirm modal can preview it. */
+    readonly interruption: InterruptionPreview | null;
   };
 }
 
 export type UpgradeApplyData = UpgradeApplyResponse['data'];
+
+export interface DeploymentProgress {
+  readonly name: string;
+  readonly label: string;
+  readonly desiredReplicas: number;
+  readonly readyReplicas: number;
+  readonly imageTag: string | null;
+  readonly versionManaged: boolean;
+  readonly atTarget: boolean;
+}
+
+interface UpgradeProgressResponse {
+  readonly data: {
+    readonly targetTag: string | null;
+    readonly total: number;
+    readonly atTarget: number;
+    readonly ready: number;
+    readonly percent: number;
+    readonly readable: boolean;
+    readonly deployments: DeploymentProgress[];
+  };
+}
+
+export type UpgradeProgressData = UpgradeProgressResponse['data'];
+
+/**
+ * LIVE per-Deployment upgrade roll progress. Polls every 4s while an upgrade is
+ * in flight (the caller passes `active` = a pending version exists) so the bar
+ * advances smoothly, and stops when idle.
+ */
+export function useUpgradeProgress(active: boolean) {
+  return useQuery({
+    queryKey: ['upgrade-progress'],
+    queryFn: () => apiFetch<UpgradeProgressResponse>('/api/v1/admin/platform/upgrade/progress'),
+    enabled: active,
+    refetchInterval: active ? 4 * 1000 : false,
+    staleTime: 2 * 1000,
+  });
+}
 
 /**
  * Plan (apply:false → dry-run preview) or apply (apply:true → Flux re-pin) a
