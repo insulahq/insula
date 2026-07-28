@@ -12,13 +12,45 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.10-rc.1] - 2026-07-28
-
 ### Security
 
 Findings from a full-repo security review (2026-07-28). Two were exploitable;
 the rest are hardening. No evidence of exploitation — staging and DEV were the
 only clusters running the affected code.
+
+Follow-up (same day): wired 9 previously-unwired `ci-*.sh` guards into
+Infrastructure CI after validating each, plus a real fix and two repairs found
+while doing so.
+
+- **Tenant restore could reset operator-set limit overrides (real gap, found by
+  wiring `ci-tenant-restore-policy-check`).** The tenant-restore deny-list had
+  drifted: `tenants.bandwidth_limit_override`, `max_mailbox_size_mb_override`,
+  and `bandwidth_capped_at` (added by the bandwidth-cap and mailbox-limit
+  features) were NOT denied, so a tenant restoring an old backup of their own
+  row could lift a bandwidth cap or inflate their mailbox-size limit. Added to
+  `DEFAULT_TENANT_RESTORE_POLICY.deniedColumnsByTable['tenants']`. The guard now
+  runs in CI so the deny-list can't silently drift again.
+- **`ci-no-secret-in-argv` repurposed.** Its only target file (`blob-store.ts`)
+  was retired in #205, so the guard threw "file not found" and could only fail.
+  Rewritten to scan the whole backend for a credential assigned to a cli arg as
+  anything other than a `$SHELL_VAR` (JS interpolation / hardcoded literal), so
+  it protects the invariant wherever an argv might reappear.
+- **`ci-stalwart-check` / `ci-webmail-feature-css-check` overlay paths fixed.**
+  Both referenced the old `dev/` overlay (renamed to `dind/`), so they silently
+  skipped or hard-failed. Repointed to `dind/` and verified each overlay builds.
+- **npm advisories cleared: production `npm audit` 0 (was 36 high).** The
+  `dompurify` override was bumped 3.4.8 → 3.4.12 (its own #267 CVE fix is now
+  superseded — GHSA-c2j3-45gr-mqc4 et al.) and `brace-expansion` overridden to
+  `^5.0.8` (GHSA-mh99-v99m-4gvg, the mjml → js-beautify chain). The previous
+  attempt's overrides were silently ignored because `npm install` reuses the
+  existing lock without re-resolving; a from-scratch lock regen applies them.
+  That regen also floated `@emnapi/*` to a `2.0.0-alpha` prerelease, so those
+  are pinned back to `^1.11.1`. Net lock change: 29 in-range patch/minor bumps,
+  no majors, no prereleases. Full typecheck + both frontend builds + 5822
+  backend + 623 panel tests green. `ci-stalwart-hostname-check` and
+  `ci-no-leaked-test-tenants` are cluster-runtime checks (the latter already
+  runs in `integration-all.sh`); the former's invariant was verified to hold
+  live on staging but it can only run in-cluster, so it stays an operator tool.
 
 - **Passkey second-factor could be bypassed with the password alone (HIGH).**
   `/auth/login` withholds session tokens when a user has `passkeyMode =
