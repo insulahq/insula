@@ -91,14 +91,34 @@ fi
 
 # 9. authenticateWs must reject pre-auth (passkey 2FA) tokens — they
 #    carry a `step` claim and must NEVER pass a privileged auth gate.
-if ! grep -Eq "decoded as.*step|payload.*\.step" "$ROUTES"; then
-  fail "routes.ts authenticateWs must reject JWTs carrying a 'step' claim."
+#    Accepts either the shared middleware helper (preferred since
+#    2026-07-28, when assertAccessToken() was introduced so a single
+#    place covers `authenticate` AND every raw-WS verifier) or the older
+#    inline `.step` test. Assert the INVARIANT, not one spelling of it.
+if ! grep -Eq "assertAccessToken\(|decoded as.*step|payload.*\.step" "$ROUTES"; then
+  fail "routes.ts authenticateWs must reject JWTs carrying a 'step' claim (call assertAccessToken() from middleware/auth.ts)."
+fi
+
+# 9b. The shared helper must actually implement the rejection — a guard
+#     that only checks the CALL would pass if assertAccessToken were
+#     ever gutted. Pin the behaviour at its definition too.
+AUTH_MW="$ROOT/backend/src/middleware/auth.ts"
+if ! grep -Eq "export function assertAccessToken" "$AUTH_MW"; then
+  fail "middleware/auth.ts must export assertAccessToken()."
+fi
+if ! grep -A8 "export function assertAccessToken" "$AUTH_MW" | grep -Eq "throw invalidToken\(\)"; then
+  fail "middleware/auth.ts assertAccessToken() must throw invalidToken() for a step-bearing payload."
 fi
 
 # 10. Pino redact rules must scrub the WS token query param (security
 #     finding C2). Without this, tokens leak into platform-api logs.
 #     Matches the regex literal that captures token|replica.
-if ! grep -Eq "\(token\|replica\)=" "$APP_TS"; then
+# The redact regex gained a `jwt` alternative (the access JWT also rides the
+# WS query string) — accept any alternation that covers BOTH token and replica
+# rather than a fixed spelling. The old fixed pattern silently stopped matching
+# when `jwt|` was inserted, so this guard had been failing on `development`
+# until 2026-07-28.
+if ! grep -Eq "\(token\|([a-z]+\|)*replica\)=" "$APP_TS"; then
   fail "app.ts Pino redact must scrub ?token=/?replica= from URLs to prevent ws-token leakage in logs."
 fi
 

@@ -14,6 +14,13 @@ on:
       - 'scripts/**'
       - 'security/**'
 
+# Least privilege (2026-07-28 security review): these workflows only read the
+# repo, so drop the token to read-only instead of inheriting the repository
+# default (which may be read-write). Any job needing more must opt in with its
+# own job-level `permissions:`.
+permissions:
+  contents: read
+
 jobs:
   kustomize-build:
     name: Kustomize Build
@@ -95,7 +102,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - run: ./scripts/test-build-platform-ops.sh
         env:
           PLATFORM_OPS_COSIGN_BIN: cosign
@@ -170,6 +177,35 @@ jobs:
       - uses: actions/checkout@v7
       - name: Verify SYSTEM tenant scheduler filters + DB invariants
         run: ./scripts/ci-system-tenant-check.sh
+
+  tenant-scope-guard:
+    name: Tenant-scoped routes enforce tenant ownership
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify every /tenants/:tenantId/ route is scoped to the caller's tenant
+        run: ./scripts/ci-tenant-scope-check.sh
+
+  # 2026-07-28: both guards existed but were never wired into any workflow, so
+  # they never ran. ci-node-terminal-check had in fact been FAILING on
+  # `development` — its Pino-redact assertion stopped matching when a `jwt`
+  # alternative was added to the redact regex, and nothing surfaced it.
+  # A guard that nothing executes protects nothing.
+  node-terminal-guard:
+    name: Node-terminal security invariants (ADR-041)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify node-terminal auth, ws-token and log-redaction invariants
+        run: ./scripts/ci-node-terminal-check.sh
+
+  secrets-denylist-guard:
+    name: Secrets denylist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify no denylisted secret material is committed
+        run: ./scripts/ci-secrets-denylist-check.sh
 
   platform-apex-conflation-guard:
     name: Platform apex / ingress-domain conflation (R16)

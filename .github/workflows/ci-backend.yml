@@ -8,6 +8,13 @@ on:
     branches: [development, main]
     paths: ['backend/**', 'packages/api-contracts/**']
 
+# Least privilege (2026-07-28 security review): these workflows only read the
+# repo, so drop the token to read-only instead of inheriting the repository
+# default (which may be read-write). Any job needing more must opt in with its
+# own job-level `permissions:`.
+permissions:
+  contents: read
+
 jobs:
   lint-typecheck:
     name: Lint & Typecheck

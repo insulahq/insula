@@ -173,6 +173,7 @@ import { startImagePressureWatcher } from './modules/storage/image-pressure-watc
 import { startDailyImagePrune } from './modules/storage/image-prune-scheduler.js';
 import { startKubeletGcReconciler } from './modules/cluster-settings/kubelet-gc-reconciler.js';
 import { startVerificationCron } from './modules/domains/verification-cron.js';
+import { resolveTrustedProxyCidrs } from './config/trusted-proxy.js';
 import type { Config } from './config/index.js';
 import type { Database } from './db/index.js';
 
@@ -255,13 +256,42 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     //     silently. Bump generously — 1024 is plenty of headroom and
     //     shorter URLs are not affected.
     maxParamLength: 1024,
-    // trustProxy: nginx-ingress terminates TLS and forwards as HTTP
-    // to the platform-api pod. Without this, request.protocol returns
-    // "http" — which breaks OIDC because the redirect_uri sent to
-    // Dex is "http://admin.../callback" while Dex's static tenant
-    // only allows "https://admin.../callback" → "Unregistered
-    // redirect_uri." Surfaced by integration-oidc-dex.sh.
-    trustProxy: true,
+    // trustProxy: the panel nginx terminates the hop from Traefik and
+    // forwards as HTTP to the platform-api pod. Without this,
+    // request.protocol returns "http" — which breaks OIDC because the
+    // redirect_uri sent to Dex is "http://admin.../callback" while Dex's
+    // static tenant only allows "https://admin.../callback" →
+    // "Unregistered redirect_uri." Surfaced by integration-oidc-dex.sh.
+    //
+    // 2026-07-28 hardening: this was `true`, i.e. "trust EVERY hop", which
+    // makes proxy-addr return the left-most X-Forwarded-For entry — the
+    // one furthest from us and the one a client could have written. That
+    // value feeds request.ip, which keys the unauthenticated login rate
+    // limit and is persisted as the audit-log / refresh-token source IP.
+    //
+    // It is NOT currently exploitable: Traefik fronts every route with
+    // `forwardedHeaders.trustedIPs=127.0.0.1/32`, so it strips any
+    // client-supplied X-Forwarded-For / X-Real-IP / Forwarded header and
+    // re-stamps its own. Verified against staging 2026-07-28: five spoof
+    // variants (single XFF, doubled XFF, XFF chain, X-Real-IP, RFC7239
+    // Forwarded) all still audited the true client IP.
+    //
+    // We narrow it anyway, because that safety lives one layer up and is
+    // operator-tunable: the documented way to front the cluster with an
+    // external L4/L7 load balancer is to ADD that LB's CIDR to
+    // `forwardedHeaders.trustedIPs`, at which point Traefik starts passing
+    // client XFF through and `trustProxy: true` would honour it verbatim.
+    //
+    // The list below is the platform's app-level trusted-proxy set — the
+    // same RFC1918 super-set the panel nginx templates use for
+    // `set_real_ip_from` (operator decision 2026-07-19; the pod CIDR
+    // 10.42.0.0/16 sits inside 10.0.0.0/8). proxy-addr walks the chain
+    // right-to-left and stops at the first address NOT in this list, so a
+    // public IP a client prepends is ignored rather than adopted.
+    // Behaviour for real traffic is unchanged: the only in-cluster hops
+    // (Traefik pod → nginx pod) are private, and a genuinely private-
+    // sourced client (mesh VPN) still resolves to its own address.
+    trustProxy: resolveTrustedProxyCidrs(),
   });
 
   // Plugins

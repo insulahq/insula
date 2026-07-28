@@ -73,8 +73,69 @@ export function loadConfig(): Config {
     throw new Error(`Invalid configuration:\n${message}`);
   }
   const config = result.data;
-  if (config.PLATFORM_ENV === 'production' && !config.PLATFORM_ENCRYPTION_KEY) {
-    console.error('[config] CRITICAL: PLATFORM_ENCRYPTION_KEY is not set in production. Stored credentials will use a zero key and are NOT secure.');
-  }
+  assertEncryptionKeyUsable(config);
   return config;
+}
+
+/**
+ * Environments that hold real tenant/operator credentials and must therefore
+ * refuse to boot without a usable PLATFORM_ENCRYPTION_KEY. `development` and
+ * the zod default are excluded so local dev / unit tests keep working with
+ * the zero-key fallback the call sites provide.
+ */
+const KEY_REQUIRED_ENVS: ReadonlySet<Config['PLATFORM_ENV']> = new Set([
+  'production', 'staging',
+] as const);
+
+/** 32 bytes, hex-encoded — exactly what `openssl rand -hex 32` emits. */
+const ENCRYPTION_KEY_RE = /^[0-9a-fA-F]{64}$/;
+
+/**
+ * Fail CLOSED on a missing or malformed encryption key.
+ *
+ * WHY (2026-07-28 security review): `PLATFORM_ENCRYPTION_KEY` is optional and
+ * ~40 call sites fall back to `'0'.repeat(64)` — an all-zero, publicly known
+ * AES key. Previously an unset key in production only printed a CRITICAL line
+ * and then carried on, silently "encrypting" DNS-provider credentials, OIDC
+ * client secrets, backup-target secrets, mTLS keys and Plesk source passwords
+ * under a key any reader of this repo knows.
+ *
+ * Rather than rewrite 40 call sites (a large diff with 40 chances to miss
+ * one), the gate is here: if the key is unusable, a credential-bearing
+ * environment never starts, so no zero-key ciphertext can ever be produced.
+ * The dev-only fallbacks stay exactly as they are.
+ *
+ * Shape is validated too: `Buffer.from(key, 'hex')` parses up to the first
+ * non-hex character, so a 32-character passphrase silently becomes a short
+ * key and every cipher call throws at RUNTIME (mid-request) instead of at
+ * boot. Catch it once, here.
+ */
+export function assertEncryptionKeyUsable(config: Config): void {
+  const key = config.PLATFORM_ENCRYPTION_KEY;
+  const required = KEY_REQUIRED_ENVS.has(config.PLATFORM_ENV);
+
+  if (!key) {
+    if (required) {
+      throw new Error(
+        `[config] PLATFORM_ENCRYPTION_KEY is required when PLATFORM_ENV=${config.PLATFORM_ENV}. `
+        + 'Refusing to start: without it, stored credentials (DNS providers, OIDC client '
+        + 'secrets, backup targets, mTLS keys) would be encrypted with an all-zero key. '
+        + 'Generate one with `openssl rand -hex 32` and set it via the platform-secrets '
+        + 'Secret (key: platform-encryption-key).',
+      );
+    }
+    console.warn(
+      `[config] PLATFORM_ENCRYPTION_KEY is not set (PLATFORM_ENV=${config.PLATFORM_ENV}). `
+      + 'Stored credentials use a zero key — DEV/TEST ONLY, never for real data.',
+    );
+    return;
+  }
+
+  if (!ENCRYPTION_KEY_RE.test(key)) {
+    throw new Error(
+      '[config] PLATFORM_ENCRYPTION_KEY must be 64 hex characters (32 bytes), '
+      + `got ${key.length} character(s) that do not match /^[0-9a-f]{64}$/i. `
+      + 'Generate one with `openssl rand -hex 32`.',
+    );
+  }
 }
