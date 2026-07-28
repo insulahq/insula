@@ -73,7 +73,6 @@ function createTrackedDb() {
 let getVersionInfo: typeof import('./service.js').getVersionInfo;
 let updateSettings: typeof import('./service.js').updateSettings;
 let getCapacityCheck: typeof import('./service.js').getCapacityCheck;
-let triggerUpdate: typeof import('./service.js').triggerUpdate;
 let persistInstalledVersion: typeof import('./service.js').persistInstalledVersion;
 
 let originalFetch: typeof globalThis.fetch;
@@ -91,7 +90,6 @@ beforeEach(async () => {
   getVersionInfo = mod.getVersionInfo;
   updateSettings = mod.updateSettings;
   getCapacityCheck = mod.getCapacityCheck;
-  triggerUpdate = mod.triggerUpdate;
   persistInstalledVersion = mod.persistInstalledVersion;
 });
 
@@ -411,31 +409,6 @@ describe('platform-updates service', () => {
     });
   });
 
-  describe('triggerUpdate', () => {
-    it('should return "Already up to date" when no update available', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ tag_name: 'v0.1.0' }),
-      });
-
-      const db = createTrackedDb();
-      const result = await triggerUpdate(db);
-
-      expect(result.message).toBe('Already up to date');
-    });
-
-    it('should set pending_update_version when update is available', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ tag_name: 'v3.0.0' }),
-      });
-
-      const db = createTrackedDb();
-      const result = await triggerUpdate(db);
-
-      expect(result.message).toBe('Update initiated — will be applied on next reconciliation cycle');
-      expect(result.targetVersion).toBe('3.0.0');
-      expect(settingsStore.get('pending_update_version')).toBe('3.0.0');
-    });
-  });
+  // triggerUpdate() removed 2026-07-28 (dead push-model no-op on the pull model).
+  // The real upgrade path is covered by platform-upgrades (orchestrate/scheduler).
 });

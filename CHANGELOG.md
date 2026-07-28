@@ -12,6 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **"Update Now" now actually upgrades the platform.** The dashboard banner + the
+  Updates page fired the legacy push-model endpoint (`POST /admin/platform/update`
+  → set `pending_update_version`, expecting a CronJob to run `flux reconcile`),
+  which never re-pins the tag → a silent no-op on the production pull model
+  ("Update started", but nothing happened, no progress, no task). Consolidated
+  onto the ADR-045 re-pin flow: the banner + Updates page now route super-admins to
+  the Upgrades page (pre-flight → interruption preview → confirm → live progress),
+  and `/platform` defaults there for super-admins. An applied upgrade now enrolls a
+  **re-openable Task Center task** (`platform.upgrade`) with a live progress modal,
+  finalized on convergence by the post-flight reconciler. Removed the dead
+  push-model path entirely: `POST /admin/platform/update`, `service.triggerUpdate`,
+  the `useTriggerUpdate` hook, and the suspended `platform-update-checker`
+  CronJob + RBAC.
+
+### Fixed
+- **Stalwart web-admin was unreachable (401) on staging & production.** The
+  admin panel iframes/opens the Stalwart web-admin at `stalwart.<apex>`, gated
+  by the `admin-auth-cookie` auth_request — but `platform_session` was issued
+  host-only to `admin.<apex>`, so a browser never sent it to the `stalwart.<apex>`
+  subdomain and the gate 401'd for every operator (dev/dind were unaffected —
+  they already share the cookie). Set `session-cookie-domain: ".${DOMAIN}"` in
+  the production overlay's `platform-config` (staging inherits via
+  `../production`) so the cookie is `Domain=.<apex>; SameSite=None; Secure`.
+  CSRF-safe: all mutating endpoints are Bearer-only. Added a deterministic CI
+  guard (`ci-session-cookie-domain-check.sh`) and an end-to-end reachability
+  suite (`integration-stalwart-webadmin-auth.sh`) so it can't regress.
+
 ## [2026.7.12] - 2026-07-28
 
 ### Fixed

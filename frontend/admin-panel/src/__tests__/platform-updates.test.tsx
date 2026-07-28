@@ -5,7 +5,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UpdateBanner from '../components/UpdateBanner';
 import UpdatesPage from '../pages/platform/UpdatesPage';
 
-const mockMutate = vi.fn();
 const mockUpdateSettingsMutate = vi.fn();
 
 const mockVersionData = {
@@ -38,12 +37,6 @@ vi.mock('../hooks/use-platform-updates', () => ({
   })),
   useUpdateSettings: vi.fn(() => ({
     mutate: mockUpdateSettingsMutate,
-    isPending: false,
-    isSuccess: false,
-    isError: false,
-  })),
-  useTriggerUpdate: vi.fn(() => ({
-    mutate: mockMutate,
     isPending: false,
     isSuccess: false,
     isError: false,
@@ -114,11 +107,21 @@ describe('UpdateBanner', () => {
     } as unknown as ReturnType<typeof mod.usePlatformVersion>);
   });
 
-  it('"Update Now" button triggers mutation', () => {
+  it('admin sees a "View details" link (not the apply action)', () => {
     renderWithProviders(<UpdateBanner />);
-    const btn = screen.getByTestId('update-banner-trigger');
-    fireEvent.click(btn);
-    expect(mockMutate).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('update-banner-details')).toHaveAttribute('href', '/platform/updates');
+    expect(screen.queryByTestId('update-banner-review')).toBeNull();
+  });
+
+  it('super_admin sees "Review & apply" linking to the Upgrades page', async () => {
+    const auth = await import('../hooks/use-auth');
+    vi.mocked(auth.useAuth).mockReturnValueOnce({
+      user: { id: 'sa-1', email: 'sa@k8s-platform.test', fullName: 'SA', role: 'super_admin' },
+      token: 't', isAuthenticated: true, isLoading: false, error: null,
+      login: vi.fn(), logout: vi.fn(), initialize: vi.fn(),
+    } as unknown as ReturnType<typeof auth.useAuth>);
+    renderWithProviders(<UpdateBanner />);
+    expect(screen.getByTestId('update-banner-review')).toHaveAttribute('href', '/platform/upgrades');
   });
 
   it('"Dismiss" hides the banner', async () => {

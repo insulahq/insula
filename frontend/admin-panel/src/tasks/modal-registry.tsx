@@ -37,6 +37,10 @@ const PitrProgressModal = lazy(() => import('@/components/backups/PitrProgressMo
 // 2026-06-16: snapshot create enrolls a `storage.snapshot` task with a
 // `snapshot-create` modal target so the chip re-opens this progress modal.
 const SnapshotCreateProgressModal = lazy(() => import('@/components/SnapshotCreateProgressModal'));
+// 2026-07-28: platform upgrade (ADR-045 re-pin). The apply enrolls a
+// `platform.upgrade` task with `target.modal = 'platform-upgrade'` so the chip
+// re-opens live roll progress + post-flight convergence.
+const PlatformUpgradeProgressModal = lazy(() => import('@/components/PlatformUpgradeProgressModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -86,6 +90,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'snapshot-create': {
     Component: SnapshotCreateProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'platform-upgrade': {
+    Component: PlatformUpgradeProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
 };
 

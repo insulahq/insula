@@ -1,17 +1,21 @@
 import { useState } from 'react';
-import { RefreshCw, X, CheckCircle, AlertCircle } from 'lucide-react';
-import { usePlatformVersion, useTriggerUpdate } from '@/hooks/use-platform-updates';
+import { RefreshCw, X, ArrowRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { usePlatformVersion } from '@/hooks/use-platform-updates';
+import { useAuth } from '@/hooks/use-auth';
 
 export default function UpdateBanner() {
   const [dismissed, setDismissed] = useState(false);
   const { data: versionRes } = usePlatformVersion();
-  const triggerUpdate = useTriggerUpdate();
+  const { user } = useAuth();
 
   const version = versionRes?.data;
 
   if (!version?.updateAvailable || dismissed) {
     return null;
   }
+
+  const isSuperAdmin = user?.role === 'super_admin';
 
   return (
     <div
@@ -28,34 +32,29 @@ export default function UpdateBanner() {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {triggerUpdate.isSuccess && (
-            <span className="flex items-center gap-1 text-sm text-green-700 dark:text-green-300">
-              <CheckCircle size={14} />
-              Update started
-            </span>
+          {/* Route to the real upgrade flow (pre-flight → interruption preview →
+              confirm → live progress + a re-openable Tasks entry). The old inline
+              "Update Now" trigger was a no-op on the pull model — removed
+              2026-07-28. Apply is super_admin-only (backend-enforced), so only
+              they get the action button. */}
+          {isSuperAdmin ? (
+            <Link
+              to="/platform/upgrades"
+              data-testid="update-banner-review"
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            >
+              Review &amp; apply
+              <ArrowRight size={14} />
+            </Link>
+          ) : (
+            <Link
+              to="/platform/updates"
+              data-testid="update-banner-details"
+              className="inline-flex items-center gap-1.5 rounded-md border border-blue-300 dark:border-blue-700 px-3 py-1.5 text-sm font-medium text-blue-700 dark:text-blue-200 hover:bg-blue-100 dark:hover:bg-blue-800 transition-colors"
+            >
+              View details
+            </Link>
           )}
-          {triggerUpdate.isError && (
-            <span className="flex items-center gap-1 text-sm text-red-700 dark:text-red-300">
-              <AlertCircle size={14} />
-              Update failed
-            </span>
-          )}
-          <button
-            type="button"
-            data-testid="update-banner-trigger"
-            disabled={triggerUpdate.isPending}
-            onClick={() => triggerUpdate.mutate()}
-            className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            {triggerUpdate.isPending ? (
-              <>
-                <RefreshCw size={14} className="animate-spin" />
-                Updating...
-              </>
-            ) : (
-              'Update Now'
-            )}
-          </button>
           <button
             type="button"
             data-testid="update-banner-dismiss"

@@ -108,6 +108,10 @@ export const TASK_KIND_REGISTRY = [
   // variant invoked from the Backup Architecture admin page.
   'backup.shim.target-switch',
   'backup.shim.drain',
+  // 2026-07-28: platform upgrade (ADR-045 re-pin). Surfaces in the task-center
+  // chip with a re-openable progress modal (roll progress + post-flight gates)
+  // so the operator can close the Upgrades page and reopen progress from Tasks.
+  'platform.upgrade',
 ] as const;
 export type TaskKind = (typeof TASK_KIND_REGISTRY)[number];
 

@@ -17,16 +17,11 @@ const mockUpdateSettings = {
   autoUpdate: true,
 };
 
-const mockTriggerResponse = {
-  message: 'Update initiated',
-  targetVersion: '0.2.0',
-};
 
 // Mock the service module before importing routes
 vi.mock('./service.js', () => ({
   getVersionInfo: vi.fn().mockResolvedValue(mockVersionInfo),
   updateSettings: vi.fn().mockResolvedValue(mockUpdateSettings),
-  triggerUpdate: vi.fn().mockResolvedValue(mockTriggerResponse),
 }));
 
 // Import routes AFTER mocking
@@ -126,35 +121,7 @@ describe('platform-updates routes', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  // POST /api/v1/admin/platform/update
-
-  it('POST /api/v1/admin/platform/update should return 200 with trigger response', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/admin/platform/update',
-      headers: { authorization: `Bearer ${adminToken}` },
-    });
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body.data).toBeDefined();
-    expect(body.data.message).toBe('Update initiated');
-    expect(body.data.targetVersion).toBe('0.2.0');
-  });
-
-  it('POST /api/v1/admin/platform/update without auth should return 401', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/admin/platform/update',
-    });
-    expect(res.statusCode).toBe(401);
-  });
-
-  it('POST /api/v1/admin/platform/update with read_only role should return 403', async () => {
-    const res = await app.inject({
-      method: 'POST',
-      url: '/api/v1/admin/platform/update',
-      headers: { authorization: `Bearer ${readOnlyToken}` },
-    });
-    expect(res.statusCode).toBe(403);
-  });
+  // POST /api/v1/admin/platform/update removed 2026-07-28 (dead push-model
+  // no-op on the pull model). The real upgrade path is POST
+  // /admin/platform/upgrade — covered by platform-upgrades route/orchestrate tests.
 });
