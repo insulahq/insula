@@ -12,7 +12,12 @@ let postflightData: Record<string, unknown> | null = null;
 let progressData: Record<string, unknown> | null = null;
 
 vi.mock('../hooks/use-platform-updates', () => ({
-  usePlatformVersion: () => ({ data: { data: { currentVersion: '2026.6.2', latestVersion: '2026.7.0', updateAvailable: true, environment: 'production' } }, isLoading: false }),
+  usePlatformVersion: () => ({ data: { data: { currentVersion: '2026.6.2', latestVersion: '2026.7.0', updateAvailable: true, environment: 'production', imageUpdateStrategy: 'manual', autoUpdate: false, lastCheckedAt: null } }, isLoading: false, refetch: vi.fn() }),
+  useUpdateSettings: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+vi.mock('../hooks/use-auth', () => ({
+  useAuth: () => ({ user: { id: 'sa', email: 'sa@k8s-platform.test', fullName: 'SA', role: 'super_admin' } }),
 }));
 
 vi.mock('../hooks/use-platform-upgrade', () => ({
@@ -50,7 +55,7 @@ describe('UpgradesPage', () => {
 
   it('renders the version spine + pre-flight gates', () => {
     renderPage();
-    expect(screen.getByText('Platform Upgrades')).toBeInTheDocument();
+    expect(screen.getByText('Platform Updates')).toBeInTheDocument();
     expect(screen.getByText('2026.6.2')).toBeInTheDocument(); // installed
     expect(screen.getByText('2026.7.0')).toBeInTheDocument(); // available
     expect(screen.getByText('Database (CNPG) healthy')).toBeInTheDocument();
@@ -94,10 +99,10 @@ describe('UpgradesPage', () => {
       lastCheckedAt: '2026-06-04T12:00:00.000Z',
     };
     renderPage();
-    expect(screen.getByText(/Post-flight — converging to 2026\.7\.0/)).toBeInTheDocument();
+    expect(screen.getByText(/Converging to 2026\.7\.0/)).toBeInTheDocument();
     expect(screen.getByText('abort-recommended')).toBeInTheDocument();
     expect(screen.getByText('All nodes Ready')).toBeInTheDocument();
-    expect(screen.getByText(/not converging after 3 checks/)).toBeInTheDocument();
+    expect(screen.getByText(/converging after 3 checks/)).toBeInTheDocument();
   });
 
   it('Apply button is disabled when pre-flight has blocking failures', async () => {

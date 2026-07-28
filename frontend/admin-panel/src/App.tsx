@@ -40,9 +40,7 @@ import IngressTlsPage from '@/pages/cluster/IngressTlsPage';
 import LoadBalancerPage from '@/pages/cluster/LoadBalancerPage';
 import TunnelsPage from '@/pages/cluster/TunnelsPage';
 // Platform Settings group (product configuration)
-import UpdatesPage from '@/pages/platform/UpdatesPage';
 import UpgradesPage from '@/pages/platform/UpgradesPage';
-import PlatformIndexRedirect from '@/components/platform/PlatformIndexRedirect';
 import IdentityPage from '@/pages/platform/IdentityPage';
 import LimitsPage from '@/pages/platform/LimitsPage';
 import IntegrationsPage from '@/pages/platform/IntegrationsPage';
@@ -160,9 +158,10 @@ export default function App() {
             {/* Platform Settings — product configuration (replaces the
                 retired /settings catch-all + standalone /settings/*
                 child routes). */}
-            <Route path="platform" element={<PlatformIndexRedirect />} />
-            <Route path="platform/updates" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><UpdatesPage /></ProtectedRoute>} />
-            <Route path="platform/upgrades" element={<ProtectedRoute allowedRoles={['super_admin']}><UpgradesPage /></ProtectedRoute>} />
+            {/* Single consolidated page. /platform/upgrades kept as a redirect for old links. */}
+            <Route path="platform" element={<Navigate to="/platform/updates" replace />} />
+            <Route path="platform/updates" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><UpgradesPage /></ProtectedRoute>} />
+            <Route path="platform/upgrades" element={<Navigate to="/platform/updates" replace />} />
             <Route path="platform/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityPage /></ProtectedRoute>} />
             <Route path="platform/plans" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><PlansPage /></ProtectedRoute>} />
             <Route path="platform/plesk-migration" element={<ProtectedRoute allowedRoles={['super_admin']}><PleskMigrationPage /></ProtectedRoute>} />
