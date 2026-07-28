@@ -50,6 +50,43 @@ il_summary() {
   (( IL_FAIL == 0 ))
 }
 
+# ─── process liveness (ZOMBIE-SAFE) ──────────────────────────────────
+# A finished-but-unreaped child lingers as a ZOMBIE (state 'Z', shown as
+# `<defunct>`): it still holds a PID slot, so BOTH `kill -0 <pid>` AND
+# `ps -p <pid>` report it "alive". Any `while kill -0 $pid; …` or
+# `while ps -p $pid; …` wait loop therefore HANGS FOREVER when the parent
+# never reaps the child — e.g. a `nohup … &` job orphaned to a PID 1 that
+# does not reap (common in containers). The ONLY robust test is the process
+# STATE: treat 'Z' (and a vanished PID) as dead. Use these instead of
+# hand-rolling `kill -0` / `ps -p` liveness checks.
+il_pid_alive() {  # <pid> → 0 iff running AND not a zombie
+  local pid="${1:-}" st=""
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  if [[ -r "/proc/$pid/stat" ]]; then
+    # /proc/<pid>/stat: state is the first field AFTER the final ')'
+    # (comm — field 2 — may itself contain spaces and parens).
+    st="$(sed -E 's/^.*\) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $1}')"
+  else
+    # portable fallback where /proc is absent (macOS/BSD)
+    st="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  fi
+  [[ -n "$st" && "${st:0:1}" != "Z" ]]
+}
+
+# il_wait_pid <pid> [timeout_s] — wait until <pid> is truly gone, zombie-safe.
+#   Returns 0 once the process is gone (reaping it first if it is our child,
+#   which clears any zombie immediately), 1 if <timeout_s> (>0) elapses first.
+il_wait_pid() {
+  local pid="${1:-}" timeout="${2:-0}" waited=0
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  wait "$pid" 2>/dev/null || true          # reap if it is our child (no-op otherwise)
+  while il_pid_alive "$pid"; do
+    (( timeout > 0 && waited >= timeout )) && return 1
+    sleep 1; waited=$((waited + 1))
+  done
+  return 0
+}
+
 # ─── fail-fast condition polling (the P2 core) ───────────────────────
 # il_wait_for <deadline_s> <desc> <ok_rx> <fail_rx|-> <cmd-string>
 #   Polls <cmd-string> every $IL_POLL_INTERVAL (default 4s) until ONE of:
