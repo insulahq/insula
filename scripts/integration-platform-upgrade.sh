@@ -218,6 +218,25 @@ fi
 
 # ── Phase 5: REAL forward upgrade via the operator endpoint ─────────────────
 phase "Phase 5: REAL apply — POST /admin/platform/upgrade → $TARGET_VERSION"
+# The setup roll just restarted pods; Longhorn briefly rebuilds replicas and
+# CNPG may re-elect, so preflight can transiently fail for a minute or two.
+# Wait for it to go green (ok:true) before applying — an operator would do the
+# same, and the apply hard-fails (409) on any blocking gate. NOTE: this only
+# passes when the RUNNING (base) version already carries the 2026-07-28
+# single-node gate fix; older bases legitimately fail their own old gate.
+log "waiting for pre-flight to settle green after the setup roll (≤180s)…"
+pf_green=0
+for _ in $(seq 1 18); do
+  PFJSON=$(api GET /api/v1/admin/platform/upgrade/preflight)
+  if echo "$PFJSON" | grep -q '"ok":true'; then pf_green=1; break; fi
+  sleep 10
+done
+if [[ "$pf_green" == 1 ]]; then
+  ok "pre-flight settled green"
+else
+  fail "pre-flight did not settle green within 180s — apply would 409. Blocking gates:"
+  echo "$PFJSON" | tr ',' '\n' | grep -iE '"id"|"status"|"detail"' | sed 's/^/      /' | head -20
+fi
 AP=$(api POST /api/v1/admin/platform/upgrade "{\"version\":\"$TARGET_VERSION\",\"apply\":true}")
 apc=$(status_of "$AP")
 if [[ "$apc" == "200" || "$apc" == "202" ]]; then
