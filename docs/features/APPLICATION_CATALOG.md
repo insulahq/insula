@@ -12,7 +12,7 @@ The platform maintains **two different catalogs**:
 
 | Catalog | Purpose | Deployed By | Example |
 | --- | --- | --- | --- |
-| **Workload Container Catalog** | Standardized web runtimes for client sites | Admin (manages images), Client (selects) | `apache-php`, `nginx-php`, `nodejs`, `static-nginx` |
+| **Workload Container Catalog** | Standardized web runtimes for client sites | Admin (manages images), Client (selects) | `apache-php`, `nginx-php`, `nodejs`, `nginx` |
 | **Application Catalog** (this section) | Complex multi-container applications | Admin (defines apps), Admin or Client (deploys instances) | Nextcloud, BigBlueButton, Jitsi, Gitea, Matomo, Moodle, Gibbon, Keycloak |
 
 ### Key Difference

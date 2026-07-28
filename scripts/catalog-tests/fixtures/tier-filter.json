@@ -4,8 +4,8 @@
     "small": {
       "$comment": "Sub-300 MiB RSS, fast image pulls, simple readiness. 24 entries.",
       "entries": [
-        "static-nginx",
-        "static-apache",
+        "nginx",
+        "apache",
         "redis-7",
         "memcached-alpine",
         "mariadb",

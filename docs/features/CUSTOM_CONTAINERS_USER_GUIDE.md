@@ -220,7 +220,7 @@ so a client that forges a leading `X-Forwarded-For` entry can't spoof its
 source — the first *untrusted* address from the right wins.
 
 > **Catalog runtimes already do this.** If you deploy on an Official Catalog
-> runtime (`static-nginx`, `nginx-php`, `apache-php`, `static-apache`) the
+> runtime (`nginx`, `nginx-php`, `apache-php`, `apache`) the
 > real-IP config is baked in — this section is for **bring-your-own images**
 > and language runtimes where your own code owns the listening socket.
 

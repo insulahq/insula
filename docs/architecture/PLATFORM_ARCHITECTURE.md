@@ -268,8 +268,8 @@ version combination. Note: application-specific images like WordPress are in the
 | `dotnet-8`               | mcr.microsoft.com/dotnet/aspnet:8.0 | Kestrel    | .NET 8          | Active |
 | `bun-latest`             | oven/bun:latest                     | (none)     | Bun             | Active |
 | `rust-stable`            | rust:1.85-slim                      | (none)     | Rust stable     | Active |
-| `static-nginx`           | nginx:1.27-alpine                   | Nginx      | Static only     | Active |
-| `static-apache`          | httpd:2.4-alpine                    | Apache     | Static only     | Active |
+| `nginx`                  | nginx (Minimus hardened)            | Nginx      | Static only     | Active |
+| `apache`                 | httpd:2.4-alpine                    | Apache     | Static only     | Active |
 
 **Databases & Services:**
 
