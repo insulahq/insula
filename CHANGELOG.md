@@ -24,6 +24,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   integration suite. The policy now also allows egress to
   `backup-rclone-shim:9000`, scoped to the backup/restore component label.
 
+## [2026.7.9] - 2026-07-28
+
+### Fixed
+- **Tenant backup/restore Jobs could not reach the backup-rclone-shim (regression
+  in 2026.7.7/2026.7.8).** The tenant-egress default-deny excepts the cluster
+  service CIDR, and the initial `allow-backup-jobs-egress` policy only opened
+  platform-api:3000 — but restic actually backs up to / restores from the
+  `backup-rclone-shim` S3-compatible endpoint on :9000 (which proxies to the
+  operator's real target). So restic hung on `dial tcp <shim>:9000: i/o timeout`,
+  every backup/restore/DR flow failed `partial`, and the hung Jobs pinned RWO
+  volume attachments — cascading into tenant-provisioning timeouts across the
+  integration suite. The policy now also allows egress to
+  `backup-rclone-shim:9000`, scoped to the backup/restore component label.
+
 ## [2026.7.8] - 2026-07-27
 
 ### Fixed
@@ -57,7 +71,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   fully fixed by dropping the internal `kubernetes_api_endpoint` column from the
   response (retained), so the endpoint is public again with the sensitive field
   removed.
-
 
 ## [2026.7.7] - 2026-07-27
 
