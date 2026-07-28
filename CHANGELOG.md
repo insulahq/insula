@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.12] - 2026-07-28
+
 ### Fixed
 - **Admin dashboard reported `v0.1.0` for every cluster.** `GET /api/v1/admin/status`
   returned a hardcoded `version: '0.1.0'`, and the dashboard version badge reads that
