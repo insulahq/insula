@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenant resource usage reported CPU reserved as 0 and PVC usage as 0.**
+  Three independent causes, all in the per-tenant metrics collector:
+    - *CPU reserved* was summed from `container.resources.limits.cpu`, but
+      tenant workloads run asymmetric QoS (ADR-037) — CPU **request** only, no
+      CPU limit — so the field was unset on every container and the total was
+      structurally always 0. Memory looked correct because its request equals
+      its limit, which is why only some figures looked wrong. Now summed from
+      requests, falling back to limits; the ResourceQuota fallback path had the
+      same bug and got the same fix.
+    - *PVC usage* came solely from the file-manager sidecar's `/disk-usage`.
+      That sidecar is created at `replicas: 0` and scaled back to 0 after 10
+      minutes idle, so the probe usually failed and usage silently read 0. It
+      now comes from `kubelet_volume_stats_used_bytes` (new `kubelet-volumes`
+      scrape job — CSI-agnostic, two series per PVC), with the file-manager
+      kept as a fallback for the case the kubelet cannot cover: a tenant whose
+      every workload is stopped has no mounted volume to report on.
+    - *Staleness*: the endpoint served a cached sample and refreshed **behind**
+      the response, so the panel showed the previous value and needed a second
+      reload to catch up — on top of a scheduler that only refreshed hourly. It
+      now returns a cached sample only while it is under 15s old and otherwise
+      collects synchronously, so the page and the resource modal (which share
+      the endpoint) show live state, polled every 60s while the tab is active
+      and on demand via Refresh.
+
 ### Changed
 - Maintenance release — no functional changes since v2026.7.16; re-pinned as a
   fresh signed release (e.g. to exercise the upgrade flow from an installed
