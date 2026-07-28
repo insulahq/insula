@@ -302,19 +302,8 @@ export async function getCapacityCheck(
   };
 }
 
-export async function triggerUpdate(db: Database) {
-  if (ENVIRONMENT !== 'production') {
-    return { message: 'Auto-update environment — updates are deployed automatically via Flux', targetVersion: CURRENT_VERSION };
-  }
-
-  const info = await getVersionInfo(db);
-  if (!info.updateAvailable || !info.latestVersion) {
-    return { message: 'Already up to date', targetVersion: info.currentVersion };
-  }
-
-  // Record the target version. A CronJob (`platform-update-checker`)
-  // periodically reads `pending_update_version` from the database and
-  // triggers `flux reconcile kustomization platform` when set.
-  await setSetting(db, 'pending_update_version', info.latestVersion);
-  return { message: 'Update initiated — will be applied on next reconciliation cycle', targetVersion: info.latestVersion };
-}
+// triggerUpdate() was removed 2026-07-28. It set `pending_update_version` and
+// relied on the platform-update-checker CronJob to run `flux reconcile`, which
+// does NOT re-pin the tag → a no-op on the production pull model. The real
+// upgrade path is the ADR-045 re-pin (POST /admin/platform/upgrade, module
+// platform-upgrades), which also sets `pending_update_version` for post-flight.

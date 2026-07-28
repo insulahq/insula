@@ -8,8 +8,9 @@
  * (per the PR-18 spike) — it does not need to survive its own re-pin.
  */
 import type { FastifyInstance } from 'fastify';
-import { upgradeApplyRequestSchema, rollbackRequestSchema } from '@insula/api-contracts';
+import { upgradeApplyRequestSchema, rollbackRequestSchema, toSafeText } from '@insula/api-contracts';
 import { authenticate, requireRole } from '../../middleware/auth.js';
+import * as taskCenter from '../tasks/service.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -158,6 +159,29 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
           const { computeInterruptionPreview } = await import('./progress.js');
           interruption = await computeInterruptionPreview(k8s);
         } catch { interruption = null; }
+      }
+      // Record a re-openable Task Center task for an APPLIED upgrade so the
+      // operator can close the Upgrades page and reopen live progress from the
+      // Tasks chip. refId = target version → idempotent per target. The
+      // post-flight reconciler finalizes it (succeeded on convergence).
+      // Best-effort: a task-center failure must NEVER fail an upgrade that
+      // already re-pinned.
+      if (apply && r.applied && r.decision.target) {
+        try {
+          await taskCenter.start(app.db, {
+            kind: 'platform.upgrade',
+            refId: r.decision.target,
+            scope: 'system',
+            userId: null,
+            label: toSafeText(`Platform upgrade → ${r.decision.target}`),
+            target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: r.decision.target } },
+            progressPct: 0,
+            progressText: toSafeText(r.summary.slice(0, 200)),
+            details: { toVersion: r.decision.target, gitRepository: r.gitRepository, initiatedBy: request.user?.sub ?? null },
+          });
+        } catch (err) {
+          app.log.error({ err }, 'platform-upgrade task-center start failed (upgrade still applied)');
+        }
       }
       return success({
         action: r.decision.action,

@@ -8,8 +8,10 @@ import {
   Container,
   X,
 } from 'lucide-react';
-import { usePlatformVersion, useUpdateSettings, useTriggerUpdate } from '@/hooks/use-platform-updates';
+import { Link } from 'react-router-dom';
+import { usePlatformVersion, useUpdateSettings } from '@/hooks/use-platform-updates';
 import { usePlatformImages } from '@/hooks/use-platform-images';
+import { useAuth } from '@/hooks/use-auth';
 
 /**
  * Platform → Updates — image-update strategy, current vs latest version,
@@ -24,7 +26,7 @@ import { usePlatformImages } from '@/hooks/use-platform-images';
 export default function UpdatesPage() {
   const { data: versionRes, isLoading, refetch } = usePlatformVersion();
   const updateSettings = useUpdateSettings();
-  const triggerUpdate = useTriggerUpdate();
+  const { user } = useAuth();
   const [autoUpdateLocal, setAutoUpdateLocal] = useState<boolean | null>(null);
   const [showImagesModal, setShowImagesModal] = useState(false);
   const version = versionRes?.data;
@@ -124,38 +126,18 @@ export default function UpdatesPage() {
                 {version.imageUpdateStrategy === 'auto' ? 'Refresh' : 'Check for Updates'}
               </button>
 
-              {version.imageUpdateStrategy === 'manual' && (
-                <>
-                  <button
-                    type="button"
-                    data-testid="settings-update-now-btn"
-                    disabled={!version.updateAvailable || triggerUpdate.isPending}
-                    onClick={() => triggerUpdate.mutate()}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {triggerUpdate.isPending ? (
-                      <>
-                        <Loader2 size={14} className="animate-spin" />
-                        Updating…
-                      </>
-                    ) : (
-                      'Update Now'
-                    )}
-                  </button>
-
-                  {triggerUpdate.isSuccess && (
-                    <span className="flex items-center gap-1 text-sm text-green-700 dark:text-green-300">
-                      <CheckCircle size={14} />
-                      Update started
-                    </span>
-                  )}
-                  {triggerUpdate.isError && (
-                    <span className="flex items-center gap-1 text-sm text-red-700 dark:text-red-300">
-                      <AlertCircle size={14} />
-                      Update failed
-                    </span>
-                  )}
-                </>
+              {version.imageUpdateStrategy === 'manual' && version.updateAvailable && user?.role === 'super_admin' && (
+                // The real upgrade runs on the Upgrades page: pre-flight gates →
+                // interruption preview → confirm → live progress (+ a re-openable
+                // Tasks entry). The old inline "Update Now" was a pull-model no-op
+                // (removed 2026-07-28). Apply is super_admin-only.
+                <Link
+                  to="/platform/upgrades"
+                  data-testid="settings-review-upgrade-link"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+                >
+                  Review &amp; apply upgrade
+                </Link>
               )}
 
               <button

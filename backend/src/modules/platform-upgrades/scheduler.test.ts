@@ -13,19 +13,23 @@ function state(verdict: PostflightState['verdict'], consecutiveFailures = 0): Po
 
 function deps(over: Partial<UpgradeReconcilerDeps> & { observed?: PostflightState; prevVerdict?: string; pending?: string | null }): {
   deps: UpgradeReconcilerDeps; observe: ReturnType<typeof vi.fn>; notifyStuck: ReturnType<typeof vi.fn>;
+  finalizeConverged: ReturnType<typeof vi.fn>;
 } {
   const observe = vi.fn(async () => over.observed ?? state('reconciling', 1));
   const notifyStuck = vi.fn(async () => {});
+  const finalizeConverged = vi.fn(async () => {});
   return {
     deps: {
       getPending: async () => (over.pending === undefined ? '2026.6.9' : over.pending),
       readPrevVerdict: async () => over.prevVerdict ?? 'reconciling',
       observe,
       notifyStuck,
+      finalizeConverged,
       ...over,
     },
     observe,
     notifyStuck,
+    finalizeConverged,
   };
 }
 
@@ -68,11 +72,12 @@ describe('reconcileUpgradeOnce', () => {
     expect(notifyStuck).not.toHaveBeenCalled();
   });
 
-  it('converged healthy → acted, no notify (runPostflight clears pending)', async () => {
-    const { deps: d, notifyStuck } = deps({ observed: state('healthy', 0), prevVerdict: 'reconciling' });
+  it('converged healthy → finalizes the task, no notify (runPostflight clears pending)', async () => {
+    const { deps: d, notifyStuck, finalizeConverged } = deps({ observed: state('healthy', 0), prevVerdict: 'reconciling' });
     const r = await reconcileUpgradeOnce(d, 1000);
     expect(r.acted).toBe(true);
     expect(r.verdict).toBe('healthy');
     expect(notifyStuck).not.toHaveBeenCalled();
+    expect(finalizeConverged).toHaveBeenCalledWith('2026.6.9');
   });
 });

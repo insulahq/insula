@@ -38,11 +38,6 @@ export function useUpdateSettings() {
   });
 }
 
-export function useTriggerUpdate() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      apiFetch('/api/v1/admin/platform/update', { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['platform-version'] }),
-  });
-}
+// useTriggerUpdate() removed 2026-07-28. POST /admin/platform/update was the
+// dead push-model no-op on the pull model. The real upgrade flow lives on the
+// Upgrades page (use-platform-upgrade.ts → POST /admin/platform/upgrade).

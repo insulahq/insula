@@ -167,29 +167,9 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
     return success(result);
   });
 
-  // POST /api/v1/admin/platform/update
-  app.post('/admin/platform/update', {
-    schema: {
-      tags: ['Platform Updates'],
-      summary: 'Trigger a manual platform update',
-      security: [{ bearerAuth: [] }],
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            data: {
-              type: 'object',
-              properties: {
-                message: { type: 'string' },
-                targetVersion: { type: 'string' },
-              },
-            },
-          },
-        },
-      },
-    },
-  }, async () => {
-    const result = await service.triggerUpdate(app.db);
-    return success(result);
-  });
+  // NOTE: the old push-model `POST /admin/platform/update` (service.triggerUpdate
+  // + the platform-update-checker CronJob → `flux reconcile`) was removed
+  // 2026-07-28. It never re-pinned the tag, so it was a no-op on the production
+  // pull model (tag-pinned GitRepository). The real upgrade path is
+  // `POST /admin/platform/upgrade` (ADR-045 re-pin) in platform-upgrades/routes.ts.
 }

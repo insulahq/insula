@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **"Update Now" now actually upgrades the platform.** The dashboard banner + the
+  Updates page fired the legacy push-model endpoint (`POST /admin/platform/update`
+  → set `pending_update_version`, expecting a CronJob to run `flux reconcile`),
+  which never re-pins the tag → a silent no-op on the production pull model
+  ("Update started", but nothing happened, no progress, no task). Consolidated
+  onto the ADR-045 re-pin flow: the banner + Updates page now route super-admins to
+  the Upgrades page (pre-flight → interruption preview → confirm → live progress),
+  and `/platform` defaults there for super-admins. An applied upgrade now enrolls a
+  **re-openable Task Center task** (`platform.upgrade`) with a live progress modal,
+  finalized on convergence by the post-flight reconciler. Removed the dead
+  push-model path entirely: `POST /admin/platform/update`, `service.triggerUpdate`,
+  the `useTriggerUpdate` hook, and the suspended `platform-update-checker`
+  CronJob + RBAC.
+
 ### Fixed
 - **Stalwart web-admin was unreachable (401) on staging & production.** The
   admin panel iframes/opens the Stalwart web-admin at `stalwart.<apex>`, gated

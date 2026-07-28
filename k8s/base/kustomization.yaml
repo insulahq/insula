@@ -112,8 +112,6 @@ resources:
   # StatefulSets/Deployments on change. Replaces the brittle cert-reload
   # CronJob that exec'd into stalwart-mail-0 with admin credentials.
   - reloader/
-  - update-checker-rbac.yaml
-  - update-checker-cronjob.yaml
   # Daily cluster-wide sweep of completed Jobs older than 7d.
   # Defensive layer behind ttlSecondsAfterFinished (enforced at create
   # time by ci-job-ttl-check); catches Jobs we don't control directly
