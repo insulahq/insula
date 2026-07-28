@@ -45,6 +45,7 @@ suite         integration-webmail-feature-toggle.sh     # SERIAL_PRE/core; rolls
 
 # ── invoked by integration-staging.sh ────────────────────────────────────
 suite-staging integration-stalwart-mail-ha.sh            # shared mail-TLS/SMTP probe helpers
+suite-staging integration-stalwart-webadmin-auth.sh      # web-admin reachable through the admin-auth-cookie gate on stalwart.<apex>: asserts platform_session is Domain=.<apex>;SameSite=None (spans subdomains) and the gate passes with a browser-accurate cookie jar. Regression guard for the host-only-cookie bug that 401'd the web-admin for every operator on staging/prod (dev/dind masked it — cookie already shared). Pairs with the deterministic CI guard scripts/ci-session-cookie-domain-check.sh.
 suite-staging integration-system-wal-archive.sh
 suite-staging integration-platform-ops-cli-e2e.sh
 suite-staging integration-system-backup-pg-dump.sh

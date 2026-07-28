@@ -42,3 +42,16 @@ data:
   # when the feature is disabled so flipping the flag above doesn't
   # require a second ConfigMap edit.
   platform-public-hosts: "admin.${DOMAIN},tenant.${DOMAIN}"
+  # Share the platform_session cookie across ALL platform subdomains
+  # (Domain=.<apex>; SameSite=None; Secure). REQUIRED for the Stalwart
+  # web-admin at stalwart.<apex>: the admin panel iframes/opens that
+  # subdomain and it is gated by the admin-auth-cookie auth_request, which
+  # lands on stalwart.<apex> — NOT admin.<apex>. A host-only cookie (the
+  # prior default here) is scoped to admin.<apex> and a browser never sends
+  # it cross-subdomain, so the gate 401'd for every operator on
+  # staging/production (dev/dind already set this; prod/staging did not —
+  # and staging inherits this file via ../production). CSRF-safe: every
+  # mutating endpoint is Bearer-only with no cookie fallback (see
+  # buildSessionCookie / auth middleware), so SameSite=None opens no
+  # state-changing path.
+  session-cookie-domain: ".${DOMAIN}"

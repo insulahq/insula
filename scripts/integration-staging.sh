@@ -3124,6 +3124,23 @@ except Exception:
   fi
 }
 
+scenario_stalwart_webadmin_auth() {
+  # The Stalwart web-admin (iframed by the admin panel at stalwart.<apex>) must
+  # be reachable through its admin-auth-cookie gate — which requires the
+  # platform_session cookie to span subdomains (Domain=.<apex>; SameSite=None).
+  # Regression guard for the host-only-cookie bug that 401'd the web-admin for
+  # every operator on staging/prod. Non-destructive (read-only HTTP). Delegates
+  # to the standalone suite (which also runs by hand / in `all`).
+  local rc=0
+  API_URL="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+    bash "$script_dir/integration-stalwart-webadmin-auth.sh" || rc=$?
+  case "$rc" in
+    0)  ok "stalwart_webadmin_auth: web-admin reachable via cross-subdomain session cookie" ;;
+    77) log "stalwart_webadmin_auth: skipped (stalwart.<apex> not deployed here)" ;;
+    *)  fail "stalwart_webadmin_auth: web-admin gate/cookie check failed (rc=$rc)" ;;
+  esac
+}
+
 scenario_mail_tls() {
   # Validates the 2026-05-06 TLS-bootstrap rewrite: Stalwart-managed
   # ACME (HTTP-01), single-SAN cert covering mail.${DOMAIN}, SRV
@@ -4202,7 +4219,7 @@ scenario_platform_ops() {
 }
 
 ALL_SCENARIOS=(lifecycle fm https reprovision drain reaper bundle restore
-  mail mail_tls webmail webmail_url_change mail_hostname_rename
+  mail mail_tls stalwart_webadmin_auth webmail webmail_url_change mail_hostname_rename
   system_backup redis mail_migration_fixes platform_ops)
 
 # Expand "all" and build the ordered run list.

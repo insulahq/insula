@@ -12,6 +12,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Stalwart web-admin was unreachable (401) on staging & production.** The
+  admin panel iframes/opens the Stalwart web-admin at `stalwart.<apex>`, gated
+  by the `admin-auth-cookie` auth_request — but `platform_session` was issued
+  host-only to `admin.<apex>`, so a browser never sent it to the `stalwart.<apex>`
+  subdomain and the gate 401'd for every operator (dev/dind were unaffected —
+  they already share the cookie). Set `session-cookie-domain: ".${DOMAIN}"` in
+  the production overlay's `platform-config` (staging inherits via
+  `../production`) so the cookie is `Domain=.<apex>; SameSite=None; Secure`.
+  CSRF-safe: all mutating endpoints are Bearer-only. Added a deterministic CI
+  guard (`ci-session-cookie-domain-check.sh`) and an end-to-end reachability
+  suite (`integration-stalwart-webadmin-auth.sh`) so it can't regress.
+
 ## [2026.7.12] - 2026-07-28
 
 ### Fixed

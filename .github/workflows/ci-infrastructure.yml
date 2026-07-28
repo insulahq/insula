@@ -288,6 +288,8 @@ jobs:
           yq --version
       - name: Verify production overlay does not deploy Dex
         run: ./scripts/ci-no-dex-in-production.sh
+      - name: Verify platform_session spans subdomains (Stalwart web-admin gate)
+        run: ./scripts/ci-session-cookie-domain-check.sh
 
   no-pinned-domains:
     name: No hard-coded apex domains in K8s manifests
