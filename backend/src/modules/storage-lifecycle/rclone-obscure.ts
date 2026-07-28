@@ -25,11 +25,18 @@ import crypto from 'node:crypto';
 
 // rclone's static obscure key (from fs/config/obscure/obscure.go).
 // This is NOT a secret — it's published in rclone's source code so
-// any rclone install can de-obscure any obscured value. Anyone with
-// access to the encrypted Job pod spec could also de-obscure, which
-// is why the upstream code-review HIGH finding (plaintext credentials
-// in pod spec) remains a deferred hardening item — switching to
-// Secret-mounted credentials closes both leaks at once.
+// any rclone install can de-obscure any obscured value.
+//
+// 2026-07-28: this comment used to say the related "plaintext
+// credentials in the Job pod spec" finding was still a deferred
+// hardening item. It is NOT — Phase 12 closed it. `runRcloneOneShot`
+// and the streaming-Job builders split every envelope into
+// `publicEnv` (inline, non-sensitive) and `secretEnv` (written to an
+// ephemeral k8s Secret, bound with `envFrom`, owned by the Job so it
+// cascades on GC), with multi-line material (PEM keys) going through
+// a separate file-Secret mounted at /etc/rclone/. No credential
+// reaches a pod spec. Corrected here because the stale note made a
+// fixed issue look open in a security review.
 //
 // Source (verified against rclone v1.66 master, fs/config/obscure/obscure.go):
 //   var crypt = []byte{0x9c, 0x93, 0x5b, 0x48, 0x73, 0x0a, 0x55, 0x4d,

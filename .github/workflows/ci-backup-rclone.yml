@@ -154,7 +154,7 @@ jobs:
           sbom: true
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           format: sarif
@@ -168,7 +168,7 @@ jobs:
           category: backup-rclone
 
       # ---- step 3: sign (only after smoke + push succeed) ----
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
 
       - name: Sign image (keyless, OCI 1.1 referrers)
         env:

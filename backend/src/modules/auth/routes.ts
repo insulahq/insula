@@ -7,7 +7,13 @@ import { isLocalAuthDisabled } from '../oidc/service.js';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { users } from '../../db/schema.js';
-import { extractPlatformSessionCookie, PLATFORM_SESSION_COOKIE, type JwtPayload } from '../../middleware/auth.js';
+import {
+  extractPlatformSessionCookie,
+  PLATFORM_SESSION_COOKIE,
+  assertAccessToken,
+  verifyAccessToken,
+  type JwtPayload,
+} from '../../middleware/auth.js';
 import {
   findSessionIdByHash,
   hashRefreshToken,
@@ -284,7 +290,7 @@ export async function authRoutes(app: FastifyInstance) {
    * API + platform-version configmap).
    */
   app.get('/auth/runtime-info', async (request) => {
-    await request.jwtVerify();
+    await verifyAccessToken(request);
     return {
       data: {
         version: process.env.PLATFORM_VERSION ?? 'unknown',
@@ -297,7 +303,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.get('/auth/me', async (request) => {
-    await request.jwtVerify();
+    await verifyAccessToken(request);
     const payload = request.user as { sub: string; role: string };
 
     const [user] = await app.db
@@ -345,7 +351,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.patch('/auth/profile', async (request, reply) => {
-    await request.jwtVerify();
+    await verifyAccessToken(request);
     const payload = request.user as { sub: string; role: string };
 
     const parsed = updateProfileSchema.safeParse(request.body);
@@ -389,7 +395,7 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.patch('/auth/password', async (request, reply) => {
-    await request.jwtVerify();
+    await verifyAccessToken(request);
     const payload = request.user as { sub: string; role: string };
 
     const parsed = changePasswordSchema.safeParse(request.body);
@@ -505,7 +511,7 @@ export async function authRoutes(app: FastifyInstance) {
     // hook (a future plugin-registration reorder could leave us
     // unauthenticated, and a missing `request.user` would 401 — safe,
     // but the explicit verify is the documented contract).
-    await request.jwtVerify();
+    await verifyAccessToken(request);
     const user = (request as unknown as { user?: { sub?: string } }).user;
     if (!user?.sub) {
       throw new ApiError('AUTH_REQUIRED', 'Sign in required', 401);
@@ -560,6 +566,11 @@ export async function authRoutes(app: FastifyInstance) {
     let user: JwtPayload;
     try {
       user = request.server.jwt.verify<JwtPayload>(token);
+      // Defense-in-depth: a pre-auth (passkey_2fa) token never reaches
+      // this cookie today (login short-circuits before setSessionCookies
+      // in second_factor mode), but the gate must not become the one
+      // place a `step` token is honoured if that ever changes.
+      assertAccessToken(user);
     } catch {
       return reply.code(401).send();
     }
@@ -718,6 +729,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (authHeader?.startsWith('Bearer ')) {
       try {
         const decoded = request.server.jwt.verify<JwtPayload>(authHeader.slice(7));
+        // Never carry a claim across from a non-session (pre-auth) token.
+        assertAccessToken(decoded);
         if (decoded.impersonatedBy) impersonatedBy = decoded.impersonatedBy;
       } catch {
         // Access token may be expired by now (that's why we're refreshing).

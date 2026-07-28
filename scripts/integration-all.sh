@@ -1214,7 +1214,10 @@ _token_refresher() {
 _REFRESHER_PID=""
 if [[ ${#PARALLEL[@]} -gt 0 && "$INTEGRATION_PARALLEL" == "1" ]]; then
   _token_refresher & _REFRESHER_PID=$!
-  trap '[[ -n "$_REFRESHER_PID" ]] && kill "$_REFRESHER_PID" 2>/dev/null || true' EXIT
+  # kill AND wait: a bare kill leaves the refresher as a <defunct> zombie
+  # until this shell exits. Reap it. INT/TERM also cleaned up, not just EXIT.
+  _reap_refresher() { [[ -n "$_REFRESHER_PID" ]] && { kill "$_REFRESHER_PID" 2>/dev/null; wait "$_REFRESHER_PID" 2>/dev/null; _REFRESHER_PID=""; } || true; }
+  trap _reap_refresher EXIT INT TERM
 fi
 
 if [[ ${#PARALLEL[@]} -gt 0 ]]; then
@@ -1228,7 +1231,7 @@ fi
 
 # Stop the refresher before the (serial) post group — serial suites re-token
 # per-suite, so the background loop is no longer needed.
-if [[ -n "$_REFRESHER_PID" ]]; then kill "$_REFRESHER_PID" 2>/dev/null || true; _REFRESHER_PID=""; fi
+if [[ -n "$_REFRESHER_PID" ]]; then kill "$_REFRESHER_PID" 2>/dev/null; wait "$_REFRESHER_PID" 2>/dev/null; _REFRESHER_PID=""; fi
 
 # Final force-mint + serial post-group.
 if [[ ${#SERIAL_POST[@]} -gt 0 ]]; then

@@ -12,6 +12,113 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+
+Findings from a full-repo security review (2026-07-28). Two were exploitable;
+the rest are hardening. No evidence of exploitation — staging and DEV were the
+only clusters running the affected code.
+
+- **Passkey second-factor could be bypassed with the password alone (HIGH).**
+  `/auth/login` withholds session tokens when a user has `passkeyMode =
+  second_factor` and returns a short-lived pre-auth token carrying
+  `step: 'passkey_2fa'`. Only `passkey-routes.ts` and `step-up-routes.ts`
+  checked that claim — the shared `authenticate` middleware and the four
+  `request.jwtVerify()` handlers in `authRoutes` accepted a pre-auth token as a
+  full session token. Because `PATCH /auth/password` returns a real refresh
+  token, an attacker who knew the password could trade the pre-auth token for a
+  refresh token and then a full access JWT, never presenting the passkey. The
+  check now lives in `assertAccessToken()` in `middleware/auth.ts` and is
+  applied by `authenticate`, by the new `verifyAccessToken()` used by every
+  inline-verify handler, and by both raw-WebSocket verifiers.
+- **Cross-tenant file read through the AI editor (HIGH).**
+  `POST /tenants/:tenantId/ai/edit` and `GET /tenants/:tenantId/ai/budget` ran
+  with `onRequest: [authenticate]` and no tenant scoping, so `tenantId` was an
+  attacker-chosen path segment. In `folder-execute` mode the caller supplies
+  `operations` verbatim; the handler resolved the *victim's* namespace, read
+  files through their file-manager sidecar (creating one if absent) and returned
+  the file contents in `changes[].originalContent`. Both routes now use
+  `requireTenantAccess()` + `requireTenantRoleByMethod()`.
+- **container-console authorization gaps (MEDIUM).** `GET
+  /tenants/:tenantId/deployments/:deploymentId/components` had neither a role
+  nor a tenant check (any authenticated user could enumerate any tenant's
+  pod/container topology), the log-stream WebSocket had no role check (the
+  admin-panel reporting roles `billing` / `read_only` could stream any tenant's
+  container logs), and the module's local `enforceTenantAccess()` failed OPEN
+  for a tenant-panel token with no `tenantId` claim — the same hole
+  `middleware/auth.ts` closed for the shared helper but which this copy never
+  received. All three fixed; the local helper now mirrors the middleware.
+- **`PLATFORM_ENCRYPTION_KEY` no longer falls back to an all-zero key
+  (MEDIUM).** A missing key in production previously logged CRITICAL and carried
+  on, "encrypting" DNS-provider credentials, OIDC client secrets, backup-target
+  secrets and mTLS keys under a publicly known key. `loadConfig()` now refuses
+  to start when `PLATFORM_ENV` is `production` or `staging` and the key is
+  missing, and rejects a malformed key (must be 64 hex chars) in every
+  environment — `Buffer.from(key, 'hex')` silently truncates, which previously
+  turned a bad key into per-request runtime failures instead of a boot failure.
+- **Panel security headers (MEDIUM).** The tenant panel served **no** security
+  headers at all (framable by any origin); the admin panel served only
+  `frame-ancestors`. Both now emit `Content-Security-Policy: frame-ancestors
+  'self'`, `X-Frame-Options`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy` and — on https requests only — HSTS
+  (`NGINX_HSTS_MAX_AGE`, default 1 year, set `0` to disable). Shipped as
+  `frontend/security-headers.conf` and `include`d at server level *and* inside
+  every `location` that sets its own `add_header`, because nginx replaces
+  rather than merges inherited headers.
+- **Bootstrap no longer pipes unverified remote scripts into a root shell
+  (MEDIUM).** k3s, Helm and Flux were installed via `curl | sh` with no
+  integrity check, and the Helm one was fetched from the `main` *branch*. Each
+  is now pinned (Helm to the `v3.20.0` tag) and verified against a sha256
+  recorded in `bootstrap.sh` before it executes; a mismatch aborts the install.
+  Not an infra version pin — no host-migration required.
+- **Supply chain (MEDIUM).** Third-party GitHub Actions are pinned to commit
+  SHAs (several ran in jobs holding `packages: write` / `id-token: write` for
+  cosign signing); the six workflows that inherited the repository-default token
+  now declare `permissions: contents: read`.
+- **Bounded `trustProxy` (MEDIUM, defense-in-depth).** Fastify ran with
+  `trustProxy: true`, which adopts the left-most — client-writable —
+  `X-Forwarded-For` entry into `request.ip`, the key for the unauthenticated
+  login rate limit and the recorded audit-log source IP. Verified against
+  staging that this is *not* currently exploitable: Traefik's
+  `forwardedHeaders.trustedIPs=127.0.0.1/32` strips client-supplied forwarded
+  headers (five spoof variants all audited the true client IP). Narrowed anyway,
+  because that protection lives one layer up and widening Traefik's trusted IPs
+  is the documented way to front the cluster with an external load balancer.
+  Trust is now the RFC1918 super-set the panel nginx templates already use,
+  overridable via `PLATFORM_TRUSTED_PROXY_CIDRS`.
+- **`archiver` 5.3.2 → 8.0.0 and unused `archiver-zip-encrypted` removed.**
+  Clears the vulnerable `readdir-glob → minimatch → brace-expansion` chain
+  (GHSA-mh99-v99m-4gvg) — 54 packages out of the production tree, 6 of them
+  carrying the advisory, with no unrelated version churn. archiver 8 is ESM and
+  replaced its factory with named classes, so `streamZipExport` now supports
+  both shapes; ZIP output verified extractable with a stock `unzip`.
+
+### Added
+- `scripts/ci-tenant-scope-check.sh` — CI guard asserting every
+  `/tenants/:tenantId/` route is scoped to the caller's tenant (via
+  `requireTenantAccess()`, a staff-only role gate, or an allowlist entry with a
+  written reason). It caught a third module (`email-dkim/rotate-routes.ts`)
+  whose hand-rolled check did not fail closed on a missing `tenantId` claim.
+
+### Fixed
+- **`ci-node-terminal-check.sh` had been failing on `development` and nothing
+  noticed** — its Pino-redact assertion stopped matching when a `jwt`
+  alternative was added to the redact regex. The guard was not wired into any
+  workflow. Fixed, and it plus `ci-secrets-denylist-check.sh` are now wired into
+  Infrastructure CI. 11 other `ci-*.sh` guards still never run; tracked as
+  follow-up.
+
+### Fixed
+- **Tenant backup/restore Jobs could not reach the backup-rclone-shim (regression
+  in 2026.7.7/2026.7.8).** The tenant-egress default-deny excepts the cluster
+  service CIDR, and the initial `allow-backup-jobs-egress` policy only opened
+  platform-api:3000 — but restic actually backs up to / restores from the
+  `backup-rclone-shim` S3-compatible endpoint on :9000 (which proxies to the
+  operator's real target). So restic hung on `dial tcp <shim>:9000: i/o timeout`,
+  every backup/restore/DR flow failed `partial`, and the hung Jobs pinned RWO
+  volume attachments — cascading into tenant-provisioning timeouts across the
+  integration suite. The policy now also allows egress to
+  `backup-rclone-shim:9000`, scoped to the backup/restore component label.
+
 ## [2026.7.9] - 2026-07-28
 
 ### Fixed
@@ -59,7 +166,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   fully fixed by dropping the internal `kubernetes_api_endpoint` column from the
   response (retained), so the endpoint is public again with the sensitive field
   removed.
-
 
 ## [2026.7.7] - 2026-07-27
 
