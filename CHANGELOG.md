@@ -46,6 +46,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   It now also lists catalog-declared configurable keys that are unset (shown as
   *not set*), and empty values are not persisted.
 
+## [2026.7.17] - 2026-07-28
+
+### Changed
+- Maintenance release — no functional changes since v2026.7.16; re-pinned as a
+  fresh signed release (e.g. to exercise the upgrade flow from an installed
+  cluster).
+
 ## [2026.7.16] - 2026-07-28
 
 ### Fixed
