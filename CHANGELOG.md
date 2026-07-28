@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.11] - 2026-07-28
+
 ### Changed
 - **Hardened the platform-upgrade end-to-end integration test**
   (`scripts/integration-platform-upgrade.sh`). It now asserts the apply returned
