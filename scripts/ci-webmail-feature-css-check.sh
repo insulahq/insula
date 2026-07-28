@@ -21,7 +21,13 @@
 
 set -euo pipefail
 
-OVERLAYS=(dev/roundcube dev/bulwark development production)
+# 2026-07-28: was `dev/roundcube dev/bulwark` — the local-dev overlay is
+# `dind/`, not `dev/`, so both engine overlays failed to build and the guard
+# always exited 1 (it ran in no workflow, so nobody saw it). The canonical
+# overlays are dind/{roundcube,bulwark} (the two webmail engines) plus the
+# cluster overlays development/production. Verified each builds with
+# `kubectl kustomize`.
+OVERLAYS=(dind/roundcube dind/bulwark development production)
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KUSTOMIZE="kubectl kustomize"
 

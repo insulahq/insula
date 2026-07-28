@@ -564,3 +564,42 @@ jobs:
         # or if an open KEV/critical ledger item is past SLA without a mitigation.
         run: ./scripts/ci-component-watch-check.sh
 
+
+  # ── Previously-unwired guards (2026-07-28) ───────────────────────────────
+  # These ci-*.sh guards existed but ran in NO workflow, so their invariants
+  # were unprotected. Wired here after each was verified to pass on a clean
+  # checkout. One of them (ci-tenant-restore-policy-check) had already drifted
+  # — it caught three operator-set limit-override columns (bandwidth cap,
+  # mailbox-size cap) that a tenant could have restored to reset their own
+  # limits; fixed in the same change. See git log for details.
+  repo-static-guards:
+    name: Repo static guards (mail/backup/restore/pg-dump/argv)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: mail PG-removal invariants
+        run: ./scripts/ci-mail-pg-removal-check.sh
+      - name: modsec-crs exclusion footgun guard
+        run: ./scripts/ci-modsec-exclusion-check.sh
+      - name: no legacy backup-class routing keys
+        run: ./scripts/ci-no-legacy-backup-classes.sh
+      - name: no plaintext secret inlined into cli argv
+        run: ./scripts/ci-no-secret-in-argv.sh
+      - name: pg_dump scope-shrink invariants
+        run: ./scripts/ci-pg-dump-scope-check.sh
+      - name: snapshot-fallback invariants
+        run: ./scripts/ci-snapshot-fallback-check.sh
+      - name: tenant-restore deny-list covers all sensitive columns
+        run: ./scripts/ci-tenant-restore-policy-check.sh
+
+  # kubectl is preinstalled on ubuntu-latest runners; these render overlays
+  # with `kubectl kustomize` (same as the kustomize-build + admin-auth jobs).
+  overlay-invariant-guards:
+    name: Overlay guards (stalwart, webmail-feature-css)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Stalwart manifest invariants across overlays
+        run: ./scripts/ci-stalwart-check.sh
+      - name: Webmail feature-visibility CSS invariants across overlays
+        run: ./scripts/ci-webmail-feature-css-check.sh
