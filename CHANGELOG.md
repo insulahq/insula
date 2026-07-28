@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.15] - 2026-07-28
+
 ### Changed
 - **The platform update/upgrade UI is now a single page.** `/platform/updates`
   and `/platform/upgrades` merged into one page (version + settings + deployed
