@@ -67,6 +67,32 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     return success(await readPostflightState(app.db));
   });
 
+  // GET /api/v1/admin/platform/upgrade/progress — LIVE per-Deployment roll
+  // progress (the UI polls this every few seconds during an upgrade to render a
+  // progress bar). Unlike /postflight (a persisted, scheduler-cadenced verdict),
+  // this reads the cluster live so the bar advances smoothly. Read-only.
+  app.get('/admin/platform/upgrade/progress', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Live per-Deployment upgrade roll progress', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
+        targetTag: { type: 'string', nullable: true }, total: { type: 'number' }, atTarget: { type: 'number' },
+        ready: { type: 'number' }, percent: { type: 'number' }, readable: { type: 'boolean' },
+        deployments: { type: 'array', items: { type: 'object', properties: {
+          name: { type: 'string' }, label: { type: 'string' }, desiredReplicas: { type: 'number' },
+          readyReplicas: { type: 'number' }, imageTag: { type: 'string', nullable: true }, atTarget: { type: 'boolean' },
+        } } },
+      } } } } },
+    },
+  }, async () => {
+    const { collectUpgradeProgress } = await import('./progress.js');
+    // Target = the in-flight pending version (as a tag), so `atTarget` counts
+    // Deployments already rolled to the release being applied.
+    const pending = await readPostflightState(app.db);
+    const targetTag = pending.pendingVersion ? `${pending.pendingVersion}` : null;
+    const k8s = createK8sClients(kubeconfigPath());
+    return success(await collectUpgradeProgress(k8s, targetTag));
+  });
+
   // GET /api/v1/admin/platform/upgrade/host-migrations — whether host-migrations
   // would run during an upgrade (the embedded scripts aren't backend-visible; the
   // policy CM mode is). The UI links the operator to the full runbook.
@@ -91,6 +117,17 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
         action: { type: 'string' }, target: { type: 'string', nullable: true }, reason: { type: 'string' },
         proceed: { type: 'boolean' }, applied: { type: 'boolean' }, gitRepository: { type: 'string', nullable: true },
         environment: { type: 'string' }, summary: { type: 'string' },
+        // Interruption preview — populated on a DRY-RUN so the confirm modal can
+        // tell the operator what will restart before they commit.
+        interruption: {
+          type: 'object', nullable: true, properties: {
+            summary: { type: 'string' }, singleNode: { type: 'boolean' }, nodeCount: { type: 'number', nullable: true },
+            tenantWorkloadsAffected: { type: 'boolean' },
+            services: { type: 'array', items: { type: 'object', properties: {
+              name: { type: 'string' }, label: { type: 'string' }, impact: { type: 'string' },
+            } } },
+          },
+        },
       } } } } },
     },
   }, async (request) => {
@@ -112,6 +149,16 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
       // re-pin (W16); a failed capture aborts the upgrade inside runUpgrade.
       const rollback = apply ? { capture: (input: { fromVersion: string | null; toVersion: string }) => captureUpgradeRescue(realRollbackDeps(app.db, k8s), input).then((c) => ({ ok: c.ok, reason: c.reason })) } : undefined;
       const r = await runUpgrade(dbSettings(app.db), k8s, { mode: 'manual', requestedVersion: parsed.data.version, apply, rollback });
+      // Attach the interruption preview to a DRY-RUN so the confirm modal can
+      // show it before the operator applies. Best-effort — a preview failure must
+      // never block the plan.
+      let interruption = null;
+      if (!apply) {
+        try {
+          const { computeInterruptionPreview } = await import('./progress.js');
+          interruption = await computeInterruptionPreview(k8s);
+        } catch { interruption = null; }
+      }
       return success({
         action: r.decision.action,
         target: r.decision.target,
@@ -121,6 +168,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
         gitRepository: r.gitRepository,
         environment: r.environment,
         summary: r.summary,
+        interruption,
       });
     } catch (err) {
       // A k8s patch / API error must not propagate raw to the client (could leak
