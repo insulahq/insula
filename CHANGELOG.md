@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenant backup/restore Jobs could not reach the backup-rclone-shim (regression
+  in 2026.7.7/2026.7.8).** The tenant-egress default-deny excepts the cluster
+  service CIDR, and the initial `allow-backup-jobs-egress` policy only opened
+  platform-api:3000 — but restic actually backs up to / restores from the
+  `backup-rclone-shim` S3-compatible endpoint on :9000 (which proxies to the
+  operator's real target). So restic hung on `dial tcp <shim>:9000: i/o timeout`,
+  every backup/restore/DR flow failed `partial`, and the hung Jobs pinned RWO
+  volume attachments — cascading into tenant-provisioning timeouts across the
+  integration suite. The policy now also allows egress to
+  `backup-rclone-shim:9000`, scoped to the backup/restore component label.
+
+## [2026.7.8] - 2026-07-27
+
+### Fixed
+- **Tenant backup/restore Jobs blocked from platform-api by the new
+  tenant-egress policy (regression in 2026.7.7).** The `tenant-egress`
+  default-deny added in 2026.7.7 excepts the cluster service CIDR, which also
+  cut off the backup/restore Jobs that run in the tenant namespace and stream
+  bundle components to platform-api's `/internal/bundles` endpoints over its
+  ClusterIP — so every backup/restore broke. A new
+  `allow-backup-jobs-egress-to-platform-api` NetworkPolicy, scoped to the
+  `platform.io/component: backup-files|restore-files` label, restores egress to
+  platform-api:3000 for those Jobs only (mirrors the existing ingress rule).
+
 ## [2026.7.8] - 2026-07-27
 
 ### Fixed
@@ -33,11 +58,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   response (retained), so the endpoint is public again with the sensitive field
   removed.
 
-## [2026.7.7] - 2026-07-27
-
-### Security
-- Existing tenants converge on the new policies via a boot-time reconciler
-  (`reconcileAllTenantNetworkPolicies`), no reprovision required.
 
 ## [2026.7.7] - 2026-07-27
 
@@ -100,7 +120,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   or the platform mail server (`mail.<apex>`, ports 587/465) with a mailbox's
   credentials directly. The `mail_submit_credentials` table is retained
   (non-destructive) so older backup bundles restore cleanly.
-
 
 ## [2026.7.6] - 2026-07-26
 

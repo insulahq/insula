@@ -11,7 +11,7 @@ describe('buildTenantNetworkPolicies', () => {
 
   it('emits exactly the five expected policies', () => {
     expect(policies.map((p) => p.name).sort()).toEqual([
-      'allow-backup-jobs-egress-to-platform-api',
+      'allow-backup-jobs-egress',
       'allow-intra-namespace',
       'allow-platform-api',
       'default-deny-ingress',
@@ -19,8 +19,8 @@ describe('buildTenantNetworkPolicies', () => {
     ]);
   });
 
-  it('allow-backup-jobs-egress lets ONLY backup/restore Jobs egress to platform-api:3000', () => {
-    const spec = specOf('allow-backup-jobs-egress-to-platform-api');
+  it('allow-backup-jobs-egress lets ONLY backup/restore Jobs reach platform-api:3000 AND the rclone-shim:9000', () => {
+    const spec = specOf('allow-backup-jobs-egress');
     expect(spec.policyTypes).toEqual(['Egress']);
     // scoped to the backup/restore component label, not all pods
     expect(spec.podSelector).toEqual({
@@ -28,12 +28,21 @@ describe('buildTenantNetworkPolicies', () => {
         { key: 'platform.io/component', operator: 'In', values: ['backup-files', 'restore-files'] },
       ],
     });
-    const egress = spec.egress as Array<{ to: Array<Record<string, unknown>>; ports: unknown[] }>;
-    expect(egress[0].to[0]).toEqual({
+    const egress = spec.egress as Array<{ to: Array<Record<string, unknown>>; ports: Array<{ port: number }> }>;
+    // platform-api:3000 (orchestration/metadata)
+    const api = egress.find((r) => r.ports[0].port === 3000)!;
+    expect(api.to[0]).toEqual({
       namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
       podSelector: { matchLabels: { app: 'platform-api' } },
     });
-    expect(egress[0].ports).toEqual([{ protocol: 'TCP', port: 3000 }]);
+    // backup-rclone-shim:9000 (the restic S3 data path — the fix for the
+    // backup/restore i/o-timeout regression)
+    const shim = egress.find((r) => r.ports[0].port === 9000)!;
+    expect(shim).toBeDefined();
+    expect(shim.to[0]).toEqual({
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
+      podSelector: { matchLabels: { app: 'backup-rclone-shim' } },
+    });
   });
 
   it('default-deny-ingress allows ONLY the traefik namespace — NO pod-CIDR ipBlock', () => {
