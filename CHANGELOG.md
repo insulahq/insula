@@ -12,6 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **The platform update/upgrade UI is now a single page.** `/platform/updates`
+  and `/platform/upgrades` merged into one page (version + settings + deployed
+  images on top of pre-flight → interruption preview → apply → live progress →
+  rollback). `/platform` defaults there; upgrade/rollback actions are gated to
+  super-admin inside the page (admins see the read-only version/settings view).
+- **Full dark-mode support** on the consolidated page (every card, gate, input,
+  button, progress bar, and panel now has a `dark:` variant).
+
+### Fixed
+- **Rollback now shows progress + a Task Center task, like an upgrade.** An
+  applied rollback records the roll-back target as `pending_update_version` and
+  enrols a `platform.upgrade` task, so it drives the same post-flight / live
+  roll-progress / Tasks-chip machinery (was: a silent re-pin with no progress).
+
 ## [2026.7.14] - 2026-07-28
 
 ### Changed
