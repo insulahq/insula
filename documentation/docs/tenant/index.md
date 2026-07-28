@@ -91,9 +91,29 @@ The **menu on the left** is how you move around. Here is what each item is for:
 | **SSH Keys** | Store public keys for secure file access. | [Files & SFTP](files-and-sftp.md) |
 | **SFTP Access** | File-transfer accounts for uploading. | [Files & SFTP](files-and-sftp.md) |
 | **Private Workers** | Advanced background workers (if your plan includes them). | — |
-| **Resource Usage** | Detailed CPU/memory/storage charts. | — |
+| **Resource Usage** | Detailed CPU/memory/storage figures — see below. | — |
 | **Notifications** | Your full message history and preferences. | [Account & security](account-and-security.md) |
 | **Settings** | Subscription details and account-wide settings. | [Account & security](account-and-security.md) |
+
+## Resource Usage
+
+**Resource Usage** shows, for CPU, memory and storage:
+
+- **In use** — what your workloads are actually consuming right now.
+- **Reserved** — what has been set aside for them. A workload holds its reserved
+  amount even while idle, so reserved is normally higher than in use. This is the
+  number your plan limit is checked against when you deploy or resize something.
+- **Available** — your plan limit.
+
+The figures are read live from the cluster. The page refreshes itself about once
+a minute while you have it open, and the **Refresh** button fetches immediately.
+It stops polling when you switch to another tab and catches up when you return.
+
+!!! info "Storage shows 0 while everything is stopped"
+    Storage in-use is measured from the volume as it is mounted. If every one of
+    your applications is stopped, there is nothing mounted to measure and the
+    figure reads 0 until something starts again. Your files are untouched —
+    opening the File Manager is enough to get a reading.
 
 !!! note "Some pages may be hidden or read-only"
     Your provider and your plan decide which features you get. If you don't see
