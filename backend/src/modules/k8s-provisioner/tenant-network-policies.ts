@@ -250,19 +250,28 @@ export function buildTenantNetworkPolicies(
       },
     },
     {
-      // Backup/restore Jobs run IN the tenant namespace and stream bundle
-      // components to/from platform-api's HMAC-token-gated /internal/bundles
-      // endpoints over its ClusterIP. The blanket `tenant-egress` policy above
-      // excepts the service CIDR, so without this scoped allow those Jobs
-      // cannot reach platform-api and every backup/restore breaks. Mirrors the
-      // INGRESS side (`allow-backup-files-jobs-to-platform-api` in
-      // k8s/base/network-policies.yaml): scoped to the backup/restore component
-      // label so ONLY those Jobs — not ordinary tenant workloads — get the
-      // egress to platform-api:3000. NetworkPolicy egress is additive, so a
-      // Job pod's allowed egress is the union of this rule + tenant-egress.
-      name: 'allow-backup-jobs-egress-to-platform-api',
+      // Backup/restore Jobs run IN the tenant namespace and reach two
+      // platform-namespace services over their ClusterIPs:
+      //   - platform-api:3000        — bundle orchestration + the
+      //                                HMAC-token-gated /internal/bundles
+      //                                metadata/component endpoints.
+      //   - backup-rclone-shim:9000  — the S3-compatible endpoint restic
+      //                                actually backs up to / restores from
+      //                                (`s3:http://backup-rclone-shim.platform
+      //                                .svc:9000/…`); the shim proxies to the
+      //                                operator's real S3/SSH target.
+      // The blanket `tenant-egress` policy excepts the service CIDR, so without
+      // this scoped allow those Jobs cannot reach EITHER service — restic hangs
+      // on `dial tcp <shim-ip>:9000: i/o timeout`, every backup/restore fails
+      // partial, and the hung Jobs pin RWO volume attachments. Mirrors the
+      // ingress side (`allow-backup-files-jobs-to-platform-api` +
+      // backup-rclone-shim's own ingress allowlist). Scoped to the
+      // backup/restore component label so ordinary tenant workloads get neither
+      // egress. NetworkPolicy egress is additive — the Job's allowed egress is
+      // the union of this rule + tenant-egress (DNS + internet).
+      name: 'allow-backup-jobs-egress',
       body: {
-        metadata: { name: 'allow-backup-jobs-egress-to-platform-api', namespace },
+        metadata: { name: 'allow-backup-jobs-egress', namespace },
         spec: {
           podSelector: {
             matchExpressions: [
@@ -271,9 +280,6 @@ export function buildTenantNetworkPolicies(
           },
           policyTypes: ['Egress'],
           egress: [
-            // DNS + internet already come from the blanket tenant-egress
-            // policy (podSelector:{} selects these Jobs too, and egress is
-            // additive); this policy only ADDS the platform-api destination.
             {
               to: [
                 {
@@ -282,6 +288,15 @@ export function buildTenantNetworkPolicies(
                 },
               ],
               ports: [{ protocol: 'TCP', port: 3000 }],
+            },
+            {
+              to: [
+                {
+                  namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
+                  podSelector: { matchLabels: { app: 'backup-rclone-shim' } },
+                },
+              ],
+              ports: [{ protocol: 'TCP', port: 9000 }],
             },
           ],
         },
