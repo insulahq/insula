@@ -184,13 +184,24 @@ export async function readPostflightState(db: Database): Promise<PostflightState
     // the live marker: no live pending → idle, regardless of the frozen blob.
     const livePending = normalizePending(byKey.get(KEY_PENDING) ?? null);
     if (livePending === null) return idle;
+    // An upgrade IS in flight. If the scheduler has not written (or we cannot
+    // parse) an assessment blob yet — the first ~100s after Apply (the reconciler's
+    // initial delay), or a cluster's very first upgrade — do NOT fall back to
+    // `idle`: that reports "no upgrade in flight" and makes the just-opened progress
+    // modal compute `converged → done` and flash "Done" before the roll even
+    // starts. Report a synthetic `reconciling` pinned to the live target so the UI
+    // shows in-flight immediately. The abort streak still advances ONLY from a real
+    // scheduler-written blob (this read never inflates it).
+    const inflight: PostflightState = { ...idle, phase: 'reconciling', verdict: 'reconciling', pendingVersion: livePending };
     const raw = byKey.get(KEY_STATE);
-    if (!raw) return idle;
+    if (!raw) return inflight;
+    let blob: unknown;
+    try { blob = JSON.parse(raw); } catch { return inflight; }
     // Full-shape validation against the api-contracts schema (single source of
-    // truth) — a malformed / stale-schema / hand-edited blob falls back to idle
-    // rather than echoing partial or unvalidated fields to the super_admin UI.
-    const parsed = upgradePostflightResponseSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return idle;
+    // truth) — a malformed / stale-schema / hand-edited blob degrades to the
+    // in-flight assessment rather than echoing partial or unvalidated fields.
+    const parsed = upgradePostflightResponseSchema.safeParse(blob);
+    if (!parsed.success) return inflight;
     // Force the env-derived fields from live constants (never trust the blob's
     // copy); pin `pendingVersion` to the LIVE marker so a target changed since the
     // last scheduler tick reads fresh, not one tick stale.
