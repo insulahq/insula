@@ -90,15 +90,22 @@ export default function UpgradesPage() {
             <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-gray-500 dark:text-gray-400">Installed</dt>
-                <dd className="mt-0.5 text-sm font-mono font-semibold text-gray-900 dark:text-gray-100" data-testid="current-version">{v.currentVersion ?? 'unknown'}</dd>
+                <dd className="mt-0.5 text-sm font-mono font-semibold text-gray-900 dark:text-gray-100" data-testid="current-version">{v.installed ?? v.currentVersion ?? 'unknown'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-gray-500 dark:text-gray-400">Available</dt>
+                {/* `available` is the cosign-verified latest release (authoritative);
+                    `latestVersion` (unverified GitHub check) is often null on
+                    production, so prefer `available` or the card wrongly reads
+                    "no releases published" despite a verified release. */}
                 <dd className="mt-0.5 text-sm font-mono font-semibold text-gray-900 dark:text-gray-100" data-testid="latest-version">
-                  {v.latestVersion ?? (
-                    v.latestSource === 'none' ? <span className="font-sans font-normal text-gray-500 dark:text-gray-400">no releases published</span>
-                    : v.latestSource === 'unreachable' ? <span className="font-sans font-normal text-amber-700 dark:text-amber-300">GitHub unreachable</span>
-                    : '—'
+                  {v.available ?? v.latestVersion ?? (
+                    v.latestSource === 'unreachable'
+                      ? <span className="font-sans font-normal text-amber-700 dark:text-amber-300">GitHub unreachable</span>
+                      : <span className="font-sans font-normal text-gray-500 dark:text-gray-400">no releases published</span>
+                  )}
+                  {v.availableVerifyStatus && v.availableVerifyStatus !== 'verified' && (
+                    <span className="ml-1 font-sans font-normal text-xs text-amber-600 dark:text-amber-400">({v.availableVerifyStatus})</span>
                   )}
                 </dd>
               </div>
@@ -182,7 +189,7 @@ export default function UpgradesPage() {
         <div className={`${CARD} space-y-3`}>
           <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Run upgrade</h2>
           <div className="flex items-center gap-2">
-            <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder={v?.latestVersion ?? 'version (e.g. 2026.7.0)'}
+            <input value={version} onChange={(e) => setVersion(e.target.value)} placeholder={v?.available ?? v?.latestVersion ?? 'version (e.g. 2026.7.0)'}
               className="flex-1 text-sm border border-gray-300 dark:border-gray-600 rounded px-2 py-1.5 font-mono bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500" />
             <button onClick={onPreview} disabled={apply.isPending} className="text-sm px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">
               {apply.isPending && !confirming ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Preview'}

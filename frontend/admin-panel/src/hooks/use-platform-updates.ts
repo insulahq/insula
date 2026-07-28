@@ -12,6 +12,15 @@ interface PlatformVersionResponse {
     readonly imageUpdateStrategy: 'auto' | 'manual';
     readonly pendingVersion: string | null;
     readonly lastCheckedAt: string | null;
+    // Version spine (ADR-045): `available` is the cosign-VERIFIED newest release
+    // the poller has confirmed — the authoritative "latest" for the UI. On
+    // production `latestVersion` (the lazy, unverified GitHub check) is often
+    // null, so the card must prefer `available` or it perpetually reads "no
+    // releases published" despite a real verified release being available.
+    readonly installed: string;
+    readonly running: string;
+    readonly available: string | null;
+    readonly availableVerifyStatus: string | null;
   };
 }
 
