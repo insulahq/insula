@@ -39,7 +39,7 @@ export default function UpdateBanner() {
               they get the action button. */}
           {isSuperAdmin ? (
             <Link
-              to="/platform/upgrades"
+              to="/platform/updates"
               data-testid="update-banner-review"
               className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors"
             >

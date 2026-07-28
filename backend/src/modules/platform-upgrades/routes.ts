@@ -217,6 +217,31 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     const k8s = createK8sClients(kubeconfigPath());
     try {
       const r = await runRollback(realRollbackDeps(app.db, k8s), { apply: parsed.data.apply === true, restoreData: parsed.data.restoreData === true });
+      // On an APPLIED rollback, drive the SAME progress / post-flight / Task
+      // Center machinery an upgrade uses: record the roll-back target as the
+      // in-flight `pending_update_version` and enrol a re-openable task. The
+      // post-flight reconciler then tracks convergence to it + finalizes the
+      // task (identical UX to an upgrade). Best-effort — never fail an applied
+      // rollback on task-wiring.
+      if (parsed.data.apply === true && r.ok && r.manifest?.fromVersion) {
+        const target = r.manifest.fromVersion;
+        try {
+          await dbSettings(app.db).set('pending_update_version', target);
+          await taskCenter.start(app.db, {
+            kind: 'platform.upgrade',
+            refId: target,
+            scope: 'system',
+            userId: null,
+            label: toSafeText(`Rollback → ${target}`),
+            target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: target } },
+            progressPct: 0,
+            progressText: toSafeText(r.summary.slice(0, 200)),
+            details: { rollback: true, fromVersion: r.manifest.toVersion, toVersion: target, gitRepository: r.manifest.gitRepository, initiatedBy: request.user?.sub ?? null },
+          });
+        } catch (err) {
+          app.log.error({ err }, 'platform rollback task/pending wiring failed (rollback still applied)');
+        }
+      }
       return success({
         ok: r.ok,
         dataRestored: r.dataRestored,

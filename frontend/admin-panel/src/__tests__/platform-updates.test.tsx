@@ -3,7 +3,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UpdateBanner from '../components/UpdateBanner';
-import UpdatesPage from '../pages/platform/UpdatesPage';
 
 const mockUpdateSettingsMutate = vi.fn();
 
@@ -121,7 +120,7 @@ describe('UpdateBanner', () => {
       login: vi.fn(), logout: vi.fn(), initialize: vi.fn(),
     } as unknown as ReturnType<typeof auth.useAuth>);
     renderWithProviders(<UpdateBanner />);
-    expect(screen.getByTestId('update-banner-review')).toHaveAttribute('href', '/platform/upgrades');
+    expect(screen.getByTestId('update-banner-review')).toHaveAttribute('href', '/platform/updates');
   });
 
   it('"Dismiss" hides the banner', async () => {
@@ -134,28 +133,5 @@ describe('UpdateBanner', () => {
   });
 });
 
-describe('UpdatesPage', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('shows Platform Updates section', () => {
-    renderWithProviders(<UpdatesPage />);
-    expect(screen.getByTestId('platform-updates-section')).toBeInTheDocument();
-    expect(screen.getByText('Platform Updates')).toBeInTheDocument();
-  });
-
-  it('shows version information', () => {
-    renderWithProviders(<UpdatesPage />);
-    expect(screen.getByTestId('current-version')).toHaveTextContent('0.1.0');
-    expect(screen.getByTestId('latest-version')).toHaveTextContent('0.2.0');
-    expect(screen.getByTestId('environment')).toHaveTextContent('production');
-  });
-
-  it('auto-update toggle calls updateSettings mutation', () => {
-    renderWithProviders(<UpdatesPage />);
-    const toggle = screen.getByTestId('auto-update-toggle');
-    fireEvent.click(toggle);
-    expect(mockUpdateSettingsMutate).toHaveBeenCalledWith(true);
-  });
-});
+// The version card + auto-update toggle moved into the consolidated Upgrades
+// page (src/__tests__/upgrades-page.test.tsx covers them there).
