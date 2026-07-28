@@ -13,6 +13,59 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- **Tenant restore could reset operator-set limit overrides (real gap, found by
+  wiring `ci-tenant-restore-policy-check`).** The tenant-restore deny-list had
+  drifted: `tenants.bandwidth_limit_override`, `max_mailbox_size_mb_override`,
+  and `bandwidth_capped_at` (added by the bandwidth-cap and mailbox-limit
+  features) were NOT denied, so a tenant restoring an old backup of their own
+  row could lift a bandwidth cap or inflate their mailbox-size limit. Added to
+  `DEFAULT_TENANT_RESTORE_POLICY.deniedColumnsByTable['tenants']`. The guard now
+  runs in CI so the deny-list can't silently drift again.
+- **`PLATFORM_ENCRYPTION_KEY` no longer falls back to an all-zero key
+  (MEDIUM).** A missing key in production previously logged CRITICAL and carried
+  on, "encrypting" DNS-provider credentials, OIDC client secrets, backup-target
+  secrets and mTLS keys under a publicly known key. `loadConfig()` now refuses
+  to start when `PLATFORM_ENV` is `production` or `staging` and the key is
+  missing, and rejects a malformed key (must be 64 hex chars) in every
+  environment — `Buffer.from(key, 'hex')` silently truncates, which previously
+  turned a bad key into per-request runtime failures instead of a boot failure.
+- **Bootstrap no longer pipes unverified remote scripts into a root shell
+  (MEDIUM).** k3s, Helm and Flux were installed via `curl | sh` with no
+  integrity check, and the Helm one was fetched from the `main` *branch*. Each
+  is now pinned (Helm to the `v3.20.0` tag) and verified against a sha256
+  recorded in `bootstrap.sh` before it executes; a mismatch aborts the install.
+  Not an infra version pin — no host-migration required.
+
+### Added
+- `scripts/ci-tenant-scope-check.sh` — CI guard asserting every
+  `/tenants/:tenantId/` route is scoped to the caller's tenant (via
+  `requireTenantAccess()`, a staff-only role gate, or an allowlist entry with a
+  written reason). It caught a third module (`email-dkim/rotate-routes.ts`)
+  whose hand-rolled check did not fail closed on a missing `tenantId` claim.
+
+### Fixed
+- **`ci-node-terminal-check.sh` had been failing on `development` and nothing
+  noticed** — its Pino-redact assertion stopped matching when a `jwt`
+  alternative was added to the redact regex. The guard was not wired into any
+  workflow. Fixed, and it plus `ci-secrets-denylist-check.sh` are now wired into
+  Infrastructure CI. 11 other `ci-*.sh` guards still never run; tracked as
+  follow-up.
+
+### Fixed
+- **Tenant backup/restore Jobs could not reach the backup-rclone-shim (regression
+  in 2026.7.7/2026.7.8).** The tenant-egress default-deny excepts the cluster
+  service CIDR, and the initial `allow-backup-jobs-egress` policy only opened
+  platform-api:3000 — but restic actually backs up to / restores from the
+  `backup-rclone-shim` S3-compatible endpoint on :9000 (which proxies to the
+  operator's real target). So restic hung on `dial tcp <shim>:9000: i/o timeout`,
+  every backup/restore/DR flow failed `partial`, and the hung Jobs pinned RWO
+  volume attachments — cascading into tenant-provisioning timeouts across the
+  integration suite. The policy now also allows egress to
+  `backup-rclone-shim:9000`, scoped to the backup/restore component label.
+
+## [2026.7.10] - 2026-07-28
+
+### Security
 
 Findings from a full-repo security review (2026-07-28). Two were exploitable;
 the rest are hardening. No evidence of exploitation — staging and DEV were the
