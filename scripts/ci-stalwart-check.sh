@@ -20,7 +20,10 @@
 
 set -euo pipefail
 
-OVERLAYS=(dev development production)
+# 2026-07-28: `dev` → `dind` (the local-dev overlay was renamed; the guard
+# silently skipped it via its missing-path skip, so it was only ever checking
+# development+production). Matches the kustomize-build CI job.
+OVERLAYS=(dind development production)
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 failures=0

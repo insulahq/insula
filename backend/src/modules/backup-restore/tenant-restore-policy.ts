@@ -95,6 +95,18 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
       // scripts/ci-tenant-restore-policy-check.sh catches typos.
       'max_sub_users_override',
       'max_mailboxes_override',
+      // 2026-07-28: added when ci-tenant-restore-policy-check.sh was finally
+      // wired into CI and flagged them. Same class as the limit-overrides
+      // above — operator-set caps a tenant must NOT be able to reset by
+      // restoring an old backup of their own row:
+      //   bandwidth_limit_override      per-tenant monthly bandwidth cap (07-22)
+      //   max_mailbox_size_mb_override  per-tenant mailbox size cap (migration 0064)
+      //   bandwidth_capped_at           the timestamp the SOFT redirect fires on;
+      //                                 restoring an old/NULL value would lift an
+      //                                 active bandwidth cap.
+      'bandwidth_limit_override',
+      'max_mailbox_size_mb_override',
+      'bandwidth_capped_at',
       'email_send_rate_limit',
       'storage_tier',
       // ── cluster placement (operator decision) ───────────────
