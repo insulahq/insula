@@ -6,10 +6,13 @@
  * from the in-API evaluator; ad-hoc PromQL exploration lives in the
  * admin-gated VMUI (admin.<apex>/metrics/vmui/) — deliberately not here.
  */
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Loader2, AlertTriangle, CheckCircle, Activity, ExternalLink } from 'lucide-react';
+import { Loader2, AlertTriangle, CheckCircle, Activity, ExternalLink, MinusCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { apiFetch } from '@/lib/api-client';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 import type { SloStatusResponse, SloSeriesResponse } from '@insula/api-contracts';
 
 const REFRESH_MS = 30_000;
@@ -84,11 +87,65 @@ function PanelCard({ id, label, format }: { id: string; label: string; format: (
   );
 }
 
+/**
+ * State cell. Deliberately louder than the old inline text: a filled pill with
+ * a ring and a larger icon, so scanning the leftmost column tells you what is
+ * wrong without reading any labels.
+ */
+function StateBadge({ enabled, state }: { readonly enabled: boolean; readonly state: string | null }) {
+  if (!enabled) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-500 dark:bg-gray-700/60 dark:text-gray-400"
+        data-testid="slo-state-disabled"
+      >
+        <MinusCircle className="h-4 w-4" /> disabled
+      </span>
+    );
+  }
+  if (state === 'firing') {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 rounded-full bg-red-100 px-2.5 py-1 text-xs font-semibold text-red-700 ring-1 ring-inset ring-red-300 dark:bg-red-900/40 dark:text-red-300 dark:ring-red-700"
+        data-testid="slo-state-firing"
+      >
+        <AlertTriangle className="h-4 w-4" /> firing
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full bg-green-100 px-2.5 py-1 text-xs font-semibold text-green-700 ring-1 ring-inset ring-green-300 dark:bg-green-900/40 dark:text-green-300 dark:ring-green-700"
+      data-testid="slo-state-ok"
+    >
+      <CheckCircle className="h-4 w-4" /> ok
+    </span>
+  );
+}
+
 export default function SloTab() {
   const status = useSloStatus();
   const rules = status.data?.data.rules ?? [];
   const firing = rules.filter((r) => r.state === 'firing');
   const vmReachable = status.data?.data.vmReachable ?? true;
+
+  // Two derived keys so the generic comparator sorts these columns the way an
+  // operator reads them:
+  //   evaluatedTs - a number, because sorting the raw nullable ISO string
+  //     descending would float never-evaluated rules (null) to the TOP; 0 keeps
+  //     them at the bottom where they belong.
+  //   stateRank   - firing < ok < disabled, so "worst first" is a plain asc
+  //     sort rather than a reverse-alphabetical accident.
+  const sortableRules = useMemo(
+    () => rules.map((r) => ({
+      ...r,
+      evaluatedTs: r.lastEvaluatedAt ? new Date(r.lastEvaluatedAt).getTime() : 0,
+      stateRank: !r.enabled ? 2 : r.state === 'firing' ? 0 : 1,
+    })),
+    [rules],
+  );
+  // Default: most recently evaluated first - the freshest signal on top.
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(sortableRules, 'evaluatedTs', 'desc');
 
   return (
     <div className="space-y-6 p-5">
@@ -149,23 +206,26 @@ export default function SloTab() {
       {/* Rule table */}
       <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
         <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
-          <thead className="bg-gray-50 dark:bg-gray-800">
+          <thead className="bg-gray-50 text-left font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
             <tr>
-              <th className="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Rule</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Severity</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">State</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Last value</th>
-              <th className="px-4 py-2 text-left font-medium text-gray-500 dark:text-gray-400">Evaluated</th>
+              <SortableHeader label="State" sortKey="stateRank" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Rule" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Severity" sortKey="severity" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Last value" sortKey="lastValue" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+              <SortableHeader label="Evaluated" sortKey="evaluatedTs" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-700/50 dark:bg-gray-900">
-            {rules.map((r) => (
-              <tr key={r.id} className={clsx(!r.enabled && 'opacity-50')}>
-                <td className="px-4 py-2">
+            {sortedData.map((r) => (
+              <tr key={r.id} className={clsx(!r.enabled && 'opacity-60')}>
+                <td className="px-5 py-2">
+                  <StateBadge enabled={r.enabled} state={r.state} />
+                </td>
+                <td className="px-5 py-2">
                   <div className="font-medium text-gray-900 dark:text-gray-100">{r.name}</div>
                   <div className="text-xs text-gray-500 dark:text-gray-400">{r.description}</div>
                 </td>
-                <td className="px-4 py-2">
+                <td className="px-5 py-2">
                   <span className={clsx(
                     'rounded px-2 py-0.5 text-xs font-medium',
                     r.severity === 'critical'
@@ -173,22 +233,9 @@ export default function SloTab() {
                       : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
                   )}>{r.severity}</span>
                 </td>
-                <td className="px-4 py-2">
-                  {!r.enabled ? (
-                    <span className="text-xs text-gray-400 dark:text-gray-500">disabled</span>
-                  ) : r.state === 'firing' ? (
-                    <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
-                      <AlertTriangle className="h-3.5 w-3.5" /> firing
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400">
-                      <CheckCircle className="h-3.5 w-3.5" /> ok
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-2 text-gray-600 dark:text-gray-300">{r.lastValue ?? '—'}</td>
-                <td className="px-4 py-2 text-gray-500 dark:text-gray-400">
-                  {r.lastEvaluatedAt ? new Date(r.lastEvaluatedAt).toLocaleTimeString() : '—'}
+                <td className="px-5 py-2 text-gray-600 dark:text-gray-300">{r.lastValue ?? '\u2014'}</td>
+                <td className="px-5 py-2 text-gray-500 dark:text-gray-400">
+                  {r.lastEvaluatedAt ? new Date(r.lastEvaluatedAt).toLocaleTimeString() : '\u2014'}
                 </td>
               </tr>
             ))}

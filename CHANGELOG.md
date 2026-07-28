@@ -24,6 +24,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   answer "is the platform meeting its objectives right now", where Active Alerts
   only shows what has already fired. An explicit `?tab=` still wins, so existing
   deep links (e.g. the `/monitoring/health` redirect) are unaffected.
+- **SLO rules table is now sortable**, defaulting to most-recently-evaluated
+  first. **State moved to the first column** and its icons are now filled pills
+  rather than inline text, so the leftmost column reads at a glance. Sorting uses
+  derived keys — a numeric `evaluatedTs` (never-evaluated rules sort to the
+  bottom instead of floating to the top as nulls would) and a `stateRank` that
+  orders firing → ok → disabled.
 
 ### Changed
 - Maintenance release — no functional changes since v2026.7.16; re-pinned as a
