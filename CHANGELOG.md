@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.16] - 2026-07-28
+
 ### Fixed
 - **Platform update card wrongly read "no releases published".** It showed
   `latestVersion` (the lazy, unverified GitHub check — null on production) instead
