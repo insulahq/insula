@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.9] - 2026-07-28
+
 ### Fixed
 - **Tenant backup/restore Jobs could not reach the backup-rclone-shim (regression
   in 2026.7.7/2026.7.8).** The tenant-egress default-deny excepts the cluster
