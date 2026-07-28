@@ -3,7 +3,7 @@
  *
  * For each discovered domain that has a docroot:
  *   1. ensure a web deployment in the tenant namespace — `apache-php` when
- *      the Plesk domain ran PHP, else `static-apache` — and wait for Running,
+ *      the Plesk domain ran PHP, else `apache` (static) — and wait for Running,
  *   2. rsync the Plesk docroot into the tenant PVC at the deployment's docroot
  *      subpath (files only, including .htaccess) via a one-shot migration-tools
  *      Job pinned to the deployment's node (the PVC is ReadWriteOnce),
@@ -48,9 +48,9 @@ export function webDomainsOf(snapshot: PleskSubscription): PleskDomain[] {
   return snapshot.domains.filter((d) => !!d.docRoot);
 }
 
-/** apache-php for PHP domains, static-apache otherwise. */
-export function runtimeCodeFor(domain: PleskDomain): 'apache-php' | 'static-apache' {
-  return domain.phpVersion ? 'apache-php' : 'static-apache';
+/** apache-php for PHP domains, apache (static) otherwise. */
+export function runtimeCodeFor(domain: PleskDomain): 'apache-php' | 'apache' {
+  return domain.phpVersion ? 'apache-php' : 'apache';
 }
 
 /** A bare hostname — domain.name reaches a remote shell (vhost check). */

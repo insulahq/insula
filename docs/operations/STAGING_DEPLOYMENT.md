@@ -302,7 +302,7 @@ Exercise the platform to confirm the full storage path works with Longhorn:
 ```
 Admin Panel → Clients → Add Client
   → provision a test client
-  → deploy a small catalog workload (e.g. static-nginx)
+  → deploy a small catalog workload (e.g. nginx)
   → verify PVC bound (kubectl get pvc -n client-...)
   → verify Longhorn volume has 1 replica (Longhorn UI or `kubectl -n longhorn-system get volumes.longhorn.io`)
   → suspend, resume, snapshot, restore, delete
