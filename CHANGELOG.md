@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Per-route HSTS, configurable in the tenant panel** (Route → Advanced → HSTS):
+  enable, `max-age`, `includeSubDomains`, `preload`. Emitted at the edge as a
+  Traefik `headers` Middleware rather than by the workload image — the Official
+  Catalog runtimes deliberately send no `Strict-Transport-Security` of their own,
+  so a tenant can switch runtime or bring their own container without silently
+  losing or gaining the policy. **Off by default on every route**, including
+  existing ones: HSTS is sticky and cannot be recalled from the server, so it is
+  opt-in per route. The header is only ever sent on HTTPS responses (Traefik's
+  `forceSTSHeader` is never set). The Middleware is ordered first in the chain so
+  short-circuiting responses — allowlist 403, rate-limit 429, redirects, custom
+  error pages — still carry it. `preload` is refused unless `includeSubDomains`
+  is on and `max-age` ≥ 1 year, validated in the panel, against the merged row in
+  the service, and by a CHECK constraint in migration `0077`. See
+  [docs/features/HSTS.md](docs/features/HSTS.md).
+
 ### Changed
 - Maintenance release — no functional changes since v2026.7.16; re-pinned as a
   fresh signed release (e.g. to exercise the upgrade flow from an installed
