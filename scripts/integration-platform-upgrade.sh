@@ -158,7 +158,7 @@ if [[ -z "${TOKEN:-}" ]]; then
 fi
 [[ -n "${TOKEN:-}" ]] || { echo "ERROR: login failed" >&2; exit 2; }
 ok "Authenticated"
-api() {
+_curl() {
   local m="$1" p="$2" b="${3:-}"
   if [[ -n "$b" ]]; then
     curl -sk -X "$m" "$ADMIN_HOST$p" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary "$b" -w "\nHTTP_STATUS=%{http_code}"
@@ -167,6 +167,27 @@ api() {
   fi
 }
 status_of() { echo "$1" | sed -n 's/.*HTTP_STATUS=\([0-9]*\).*/\1/p' | tail -1; }
+body_of()   { echo "$1" | sed '$ d'; }   # strip the trailing HTTP_STATUS line → JSON body
+# Re-mint the bearer token. A full apply+roll+rollback run can outlive the 30-min
+# JWT TTL, so any 401 mid-run must transparently refresh rather than fail.
+relogin() {
+  local t=""
+  if declare -f get_admin_token >/dev/null 2>&1; then t="$(get_admin_token 2>/dev/null || true)"; fi
+  if [[ -z "$t" ]]; then
+    local tr; tr=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" -H 'Content-Type: application/json' \
+         -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" || true)
+    t=$(echo "$tr" | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null || true)
+  fi
+  [[ -n "$t" ]] && TOKEN="$t"
+}
+# Transparent single 401-refresh so a long roll can't expire the token mid-run.
+api() {
+  local out st
+  out=$(_curl "$@")
+  st=$(status_of "$out")
+  if [[ "$st" == "401" ]]; then relogin; out=$(_curl "$@"); fi
+  echo "$out"
+}
 
 resolve_gitrepo || { echo "ERROR: could not resolve the platform GitRepository" >&2; exit 2; }
 ORIGINAL_REF=$(kctl -n flux-system get gitrepository "$GITREPO" -o jsonpath='{.spec.ref}' 2>/dev/null | python3 -c "import sys,json;print(json.dumps(json.load(sys.stdin)))" 2>/dev/null || echo '')
@@ -237,12 +258,27 @@ else
   fail "pre-flight did not settle green within 180s — apply would 409. Blocking gates:"
   echo "$PFJSON" | tr ',' '\n' | grep -iE '"id"|"status"|"detail"' | sed 's/^/      /' | head -20
 fi
-AP=$(api POST /api/v1/admin/platform/upgrade "{\"version\":\"$TARGET_VERSION\",\"apply\":true}")
-apc=$(status_of "$AP")
-if [[ "$apc" == "200" || "$apc" == "202" ]]; then
-  ok "apply accepted ($apc) — rescue snapshot taken + Flux source re-pinned"
+# The apply MUST return applied:true — NOT merely HTTP 200. runUpgrade returns
+# 200 + applied:false on a graceful abort: most often the W16 rescue-snapshot
+# capture couldn't run yet (Longhorn still settling after the setup roll churned
+# the platform volumes) — the safety net correctly refusing to re-pin without a
+# way back. That is transient, so retry a few times; surface the server summary
+# so a genuine abort is diagnosable rather than looking like "re-pinned but the
+# ref never moved".
+apc=""; applied=""; asum=""
+for attempt in 1 2 3 4; do
+  AP=$(api POST /api/v1/admin/platform/upgrade "{\"version\":\"$TARGET_VERSION\",\"apply\":true}")
+  apc=$(status_of "$AP")
+  applied=$(body_of "$AP" | python3 -c "import sys,json;print(str(json.load(sys.stdin)['data'].get('applied')).lower())" 2>/dev/null || echo '')
+  asum=$(body_of "$AP" | python3 -c "import sys,json;print(json.load(sys.stdin)['data'].get('summary',''))" 2>/dev/null || echo '')
+  [[ "$apc" == "200" && "$applied" == "true" ]] && break
+  log "apply attempt $attempt: status=$apc applied=$applied :: ${asum:-$(echo "$AP" | head -c 160)} — retrying in 20s"
+  sleep 20
+done
+if [[ "$apc" == "200" && "$applied" == "true" ]]; then
+  ok "apply applied=true ($apc) — rescue snapshot captured + Flux re-pinned :: $asum"
 else
-  fail "apply → $apc :: $(echo "$AP" | head -c 200)"
+  fail "apply did not apply (status=$apc applied=$applied) :: ${asum:-$(echo "$AP" | head -c 160)}"
 fi
 NEW_TAG=$(kctl -n flux-system get gitrepository "$GITREPO" -o jsonpath='{.spec.ref.tag}' 2>/dev/null || true)
 [[ "$NEW_TAG" == "$TARGET_TAG" ]] && ok "GitRepository spec.ref.tag re-pinned → $TARGET_TAG" || fail "ref.tag not moved (got '$NEW_TAG')"
