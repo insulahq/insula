@@ -54,6 +54,7 @@ helper        integration-tenant-bundles-roundtrip.sh    # called by files-brows
 helper        integration-tenant-bundles-tenant-side.sh  # called by roundtrip
 
 # ── maintained standalone (run by hand: heavy or seed-chain root) ─────────
+manual        integration-platform-upgrade.sh                          # DESTRUCTIVE: rolls the platform through the REAL production upgrade+rollback flow (version-poller detection → preflight → Flux re-pin → roll → rollback), 7.8↔7.9 tag pair (migration-neutral); self-restores the original source ref on exit. Also guards the 2026-07-28 version-poller fixes (runAsUser + postgres netpol). Run on staging, NOT DinD.
 manual        integration-tenant-bundles-files-browse-restore-e2e.sh  # chain root
 manual        integration-tenant-bundles-jmap-full-e2e.sh             # canonical jmap bundle E2E
 manual        integration-tenant-bundles-mailbox-engine.sh            # L1 seed harness

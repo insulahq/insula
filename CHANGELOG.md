@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.7.10-rc.2] - 2026-07-28
-
 ### Security
 
 Findings from a full-repo security review (2026-07-28). Two were exploitable;

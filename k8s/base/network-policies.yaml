@@ -180,6 +180,18 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/component: pitr-job
+        # version-poller CronJob pods (`app: version-poller`) write the
+        # newest verified release to platform_settings.available_version.
+        # They were NOT in any allow-list, so every run timed out at TCP
+        # connect on 5432 — the poller could never persist a result and the
+        # admin "Updates" surface never showed a new release. (Second half
+        # of the version-poller being dead since PR #171; the first was the
+        # non-numeric-runAsUser CreateContainerConfigError. Found 2026-07-28.)
+        # It is `app: version-poller`, NOT `app: platform-api`, so it never
+        # joins the platform-api Service endpoints (the pitr-job lesson).
+        - podSelector:
+            matchLabels:
+              app: version-poller
       ports:
         - protocol: TCP
           port: 5432  # postgres
