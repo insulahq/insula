@@ -152,4 +152,22 @@ describe('readPostflightState (reader) — reconcile against the live pending ma
     expect(s.phase).toBe('reconciling');
     expect(s.pendingVersion).toBe('2026.7.20'); // live marker wins over the one-tick-stale blob
   });
+
+  it('in-flight but NO blob yet (first ~100s after Apply / fresh cluster) → reconciling, NOT idle', async () => {
+    // Regression: returning idle here makes the just-opened progress modal compute
+    // converged→done and flash "Done" before the roll starts.
+    const db = fakeDb([{ key: 'pending_update_version', value: '2026.7.20' }]); // no postflight_state
+    const s = await readPostflightState(db);
+    expect(s.phase).toBe('reconciling');
+    expect(s.verdict).toBe('reconciling');
+    expect(s.pendingVersion).toBe('2026.7.20');
+  });
+
+  it('in-flight but the blob is unparseable → reconciling (degrade to in-flight, not idle)', async () => {
+    const db = fakeDb([
+      { key: 'postflight_state', value: '{not valid json' },
+      { key: 'pending_update_version', value: '2026.7.20' },
+    ]);
+    expect((await readPostflightState(db)).phase).toBe('reconciling');
+  });
 });
