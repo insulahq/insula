@@ -13,9 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
-- Maintenance release — no functional changes since v2026.7.16; re-pinned as a
-  fresh signed release (e.g. to exercise the upgrade flow from an installed
-  cluster).
+- **Redesigned the platform update page.** "Run upgrade" moved into the version
+  card (shown only when a newer verified release is available) → a Review modal
+  (pre-flight + interruption preview) → Approve (no second confirm) → a live
+  progress modal; removed the standalone Run-upgrade / Pre-flight cards. The
+  progress modal now shows a clear **Done** state (it was stuck on "Rolling…" for
+  up to 2 min after finishing) and a **per-component phase** (Downloading /
+  Deploying / Ready) derived from each Deployment's pods. It keeps polling through
+  the admin-panel + API restart mid-upgrade (a "Reconnecting…" hint + a
+  post-upgrade "Reload admin panel" action) so progress never freezes until a
+  manual reload. The available version is highlighted green when an update exists.
 - **Static-site catalog codes renamed `static-nginx` → `nginx` and
   `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
   the deployment name and what the storage path is built from, so it should read
