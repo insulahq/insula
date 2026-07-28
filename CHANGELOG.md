@@ -27,6 +27,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   now reports `reconciling`, not `idle`, so the just-opened progress modal shows
   the roll instead of flashing "Done".
 
+## [2026.7.20] - 2026-07-28
+
+### Fixed
+- **Platform-upgrade progress/post-flight reported a phantom perpetual upgrade to
+  the last-completed version.** After a healthy convergence the in-flight marker
+  (`pending_update_version`) is cleared, but the persisted post-flight state blob
+  stayed frozen at `{phase: healthy, pendingVersion: <that version>}` and the
+  scheduler went dormant — so `/upgrade/progress` and `/upgrade/postflight` kept
+  reporting an upgrade to the old target (progress bar stuck at 0/N, modal stuck
+  on "Rolling → <old>…"). `readPostflightState` now reconciles against the live
+  marker: with no pending upgrade it reads `idle`, and while one is in flight it
+  pins `pendingVersion` to the live marker (fresh, not one scheduler-tick stale).
+  Also, while an upgrade is in flight but the reconciler has not yet written its
+  first assessment (the ~100 s after Apply, or a cluster's first-ever upgrade) it
+  now reports `reconciling`, not `idle`, so the just-opened progress modal shows
+  the roll instead of flashing "Done".
+
 ## [2026.7.19] - 2026-07-28
 
 ### Fixed
