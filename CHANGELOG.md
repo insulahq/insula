@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.19] - 2026-07-28
+
 ### Fixed
 - **Platform-upgrade progress/post-flight reported a phantom perpetual upgrade to
   the last-completed version.** After a healthy convergence the in-flight marker
