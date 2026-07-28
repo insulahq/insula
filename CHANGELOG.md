@@ -22,6 +22,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   on "Rolling → <old>…"). `readPostflightState` now reconciles against the live
   marker: with no pending upgrade it reads `idle`, and while one is in flight it
   pins `pendingVersion` to the live marker (fresh, not one scheduler-tick stale).
+  Also, while an upgrade is in flight but the reconciler has not yet written its
+  first assessment (the ~100 s after Apply, or a cluster's first-ever upgrade) it
+  now reports `reconciling`, not `idle`, so the just-opened progress modal shows
+  the roll instead of flashing "Done".
 
 ## [2026.7.19] - 2026-07-28
 
