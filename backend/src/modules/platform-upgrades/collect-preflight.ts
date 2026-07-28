@@ -35,22 +35,43 @@ export async function cnpgReady(k8s: K8sClients): Promise<{ ready: boolean; deta
   }
 }
 
-async function longhornMinReplicas(k8s: K8sClients): Promise<number | null> {
+/**
+ * Count ATTACHED Longhorn volumes that are below their configured redundancy
+ * (robustness degraded/faulted) — i.e. genuinely at risk if a node rolls during
+ * the upgrade.
+ *
+ * 2026-07-28: this replaced a `min healthy replicas < 2` check that could NEVER
+ * pass on the platform's documented single-node default ("Longhorn replica=1 on
+ * single node") — a healthy replica=1 volume reported 1 < 2 → the upgrade
+ * preflight hard-blocked, so single-node clusters could never upgrade. The
+ * correct question is not "are there ≥2 replicas?" but "is any in-use volume
+ * degraded below the redundancy it was configured for?":
+ *   - `healthy`  → at its configured replica count (1 or 3) → NOT at risk.
+ *   - `degraded`/`faulted` (attached) → fewer healthy replicas than desired →
+ *      at risk.
+ *   - detached volumes → not mounted, a node roll can't disrupt them → ignored
+ *      (they also report robustness `unknown`, which the old code mis-counted
+ *      as 0 healthy and let idle tenant PVCs block every upgrade).
+ *
+ * Returns the at-risk count, or null when there are no volumes / the list call
+ * failed (the gate treats null as "not applicable").
+ */
+async function longhornAtRiskVolumes(k8s: K8sClients): Promise<number | null> {
   try {
     const list = (await k8s.custom.listNamespacedCustomObject({
       group: 'longhorn.io', version: 'v1beta2', namespace: 'longhorn-system', plural: 'volumes',
     } as unknown as Parameters<typeof k8s.custom.listNamespacedCustomObject>[0])) as {
-      items?: Array<{ spec?: { numberOfReplicas?: number }; status?: { robustness?: string } }>;
+      items?: Array<{ status?: { robustness?: string; state?: string } }>;
     };
     const vols = list.items ?? [];
     if (vols.length === 0) return null;
-    let min = Infinity;
+    let atRisk = 0;
     for (const v of vols) {
+      const attached = v.status?.state === 'attached';
       const robustness = v.status?.robustness;
-      const healthy = robustness === 'healthy' ? (v.spec?.numberOfReplicas ?? 0) : robustness === 'degraded' ? 1 : 0;
-      if (healthy < min) min = healthy;
+      if (attached && (robustness === 'degraded' || robustness === 'faulted')) atRisk += 1;
     }
-    return Number.isFinite(min) ? min : null;
+    return atRisk;
   } catch {
     return null;
   }
@@ -123,9 +144,9 @@ async function freshestBackupAgeHours(k8s: K8sClients, nowMs: number): Promise<n
 }
 
 export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs: number): Promise<PreflightFacts> {
-  const [cnpg, lhMin, inFlight, disk, backupAge] = await Promise.all([
+  const [cnpg, lhAtRisk, inFlight, disk, backupAge] = await Promise.all([
     cnpgReady(k8s),
-    longhornMinReplicas(k8s),
+    longhornAtRiskVolumes(k8s),
     inFlightTransitions(db),
     nodeDiskFacts(db),
     freshestBackupAgeHours(k8s, nowMs),
@@ -134,7 +155,7 @@ export async function collectPreflightFacts(db: Database, k8s: K8sClients, nowMs
     environment: ENVIRONMENT,
     cnpgReady: cnpg.ready,
     cnpgDetail: cnpg.detail,
-    longhornMinReplicas: lhMin,
+    longhornAtRiskVolumes: lhAtRisk,
     inFlightTransitions: inFlight,
     maxDiskUsedPct: disk.maxDiskUsedPct,
     nodesWithDiskPressure: disk.nodesWithDiskPressure,
