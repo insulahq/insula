@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Admin dashboard reported `v0.1.0` for every cluster.** `GET /api/v1/admin/status`
+  returned a hardcoded `version: '0.1.0'`, and the dashboard version badge reads that
+  endpoint — so the platform version shown was always `v0.1.0` regardless of the deployed
+  release, even though `PLATFORM_VERSION`, `/auth/runtime-info`, and `/admin/platform/version`
+  were all correct. It now reports the running `PLATFORM_VERSION`.
+
 ## [2026.7.11] - 2026-07-28
 
 ### Changed
