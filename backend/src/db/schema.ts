@@ -1173,6 +1173,16 @@ export const ingressRoutes = pgTable('ingress_routes', {
   wafOwaspCrs: integer('waf_owasp_crs').notNull().default(0),
   wafAnomalyThreshold: integer('waf_anomaly_threshold').notNull().default(10),
   wafExcludedRules: text('waf_excluded_rules'),
+  // ── HSTS settings (migration 0077) ──
+  // Emitted as a Traefik `headers` Middleware. Default OFF because HSTS is
+  // sticky — a browser that has seen the header refuses plain HTTP for
+  // hstsMaxAge seconds and the server cannot recall it. Traefik only sends the
+  // header on TLS connections (we never set `forceSTSHeader`), so a plain-HTTP
+  // request never receives it.
+  hstsEnabled: integer('hsts_enabled').notNull().default(0),
+  hstsMaxAge: integer('hsts_max_age').notNull().default(31536000),
+  hstsIncludeSubdomains: integer('hsts_include_subdomains').notNull().default(0),
+  hstsPreload: integer('hsts_preload').notNull().default(0),
   // ── Advanced settings ──
   customErrorCodes: varchar('custom_error_codes', { length: 255 }),
   customErrorPath: varchar('custom_error_path', { length: 255 }),
