@@ -94,19 +94,41 @@ contents of `cosign.key` (including the `-----BEGIN/END-----` lines).
 > keep verifying against whatever `/etc/platform/cosign.pub` they were installed
 > with until the next upgrade.
 
-### Production deployment (transitional)
+### Production deployment — the admin-controlled pull model
 
-This release **no longer opens a PR to a `stable` branch** — that automation is
-gone. The replacement (production Flux pinning a `spec.ref.tag`, re-pinned by the
-in-cluster version-poller on operator click) is a **later workstream** and not
-yet implemented. The residual `stable`-branch Flux config (`gitrepository-stable.yaml`,
-`kustomization-production.yaml`, and `bootstrap.sh`'s production path) is retired
-together with that work.
+A release does **not** open a PR to a `stable` branch (that automation is gone,
+ADR-045 Dec. 10). Production runs the **pull model**, which is built and wired:
 
-Until then there is no automated production rollout. Production is **not yet
-provisioned**, so nothing is broken today; when it is, deploy a release by
-pinning the production overlay to the release tag manually (or via the
-version-poller once it lands).
+1. **Detect.** The `version-poller` CronJob (`k8s/base/version-poller-cronjob.yaml`)
+   runs hourly on every cluster, fetches the repo's GitHub Releases, **cosign-
+   verifies** the signed `release-manifest.json` against the baked-in
+   `platform/cosign.pub`, and writes the newest verified stable tag to
+   `platform_settings.available_version` (fail-closed — an unverifiable release
+   is never surfaced).
+2. **Review.** The admin panel's **Updates** page (`/platform/updates`) shows the
+   available version and runs read-only pre-flight gates.
+3. **Apply (operator click).** `POST /api/v1/admin/platform/upgrade`
+   (super_admin) captures a rescue snapshot, then **re-pins the production Flux
+   `GitRepository.spec.ref.tag`** to the release tag (`platform-upgrades/flux-repin.ts`).
+   Flux rolls every Deployment (incl. platform-api) to the new tag; a post-flight
+   observer verifies convergence and recommends rollback if it stalls.
+   Equivalent host-side path: `insula cluster upgrade --version vX.Y.Z --apply`.
+4. **Rollback.** `POST /api/v1/admin/platform/rollback` restores the previous
+   ref (optionally with a data restore).
+
+The production Flux source is a **tag-pinned** `GitRepository`
+(`k8s/base/flux/gitrepository-production.yaml` + `kustomization-production.yaml`),
+created by `bootstrap.sh --env production --release-tag vX.Y.Z` (it refuses a
+tag that has not been cut). There is **no branch merge, suspend/unsuspend, or
+`stable` branch** — the operator's Apply click is the gate.
+
+> Scope note: the **apply/re-pin path** is unit-tested but its end-to-end
+> exercise against a live cluster is `scripts/integration-platform-upgrade.sh`
+> (added 2026-07-28). Dev follows a branch and staging follows Flux-native
+> `ref.semver`, so neither exercises the operator-click re-pin in normal
+> operation — run that integration script against a disposable cluster before
+> trusting an upgrade on a real production cluster. Production is **not yet
+> provisioned**, so nothing is at risk today.
 
 ## Versioning rules
 
