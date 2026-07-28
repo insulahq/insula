@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Platform-upgrade progress/post-flight reported a phantom perpetual upgrade to
+  the last-completed version.** After a healthy convergence the in-flight marker
+  (`pending_update_version`) is cleared, but the persisted post-flight state blob
+  stayed frozen at `{phase: healthy, pendingVersion: <that version>}` and the
+  scheduler went dormant — so `/upgrade/progress` and `/upgrade/postflight` kept
+  reporting an upgrade to the old target (progress bar stuck at 0/N, modal stuck
+  on "Rolling → <old>…"). `readPostflightState` now reconciles against the live
+  marker: with no pending upgrade it reads `idle`, and while one is in flight it
+  pins `pendingVersion` to the live marker (fresh, not one scheduler-tick stale).
+
+## [2026.7.18] - 2026-07-28
+
+### Changed
+- **Static-site catalog codes renamed `static-nginx` → `nginx` and
+  `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
+  the deployment name and what the storage path is built from, so it should read
+  as the web server, not as an internal category. Migration `0076` renames the
+  rows **in place** so existing deployments keep their `catalog_entry_id`; the
+  catalog folders and GHCR image paths are unchanged. Requires the matching
+  manifest change in `insulahq/application-catalog`.
+
 ## [2026.7.18] - 2026-07-28
 
 ### Changed
