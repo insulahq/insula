@@ -13,6 +13,9 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Changed
+- Maintenance release — no functional changes since v2026.7.16; re-pinned as a
+  fresh signed release (e.g. to exercise the upgrade flow from an installed
+  cluster).
 - **Static-site catalog codes renamed `static-nginx` → `nginx` and
   `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
   the deployment name and what the storage path is built from, so it should read
