@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.18] - 2026-07-28
+
 ### Changed
 - **Redesigned the platform update page.** "Run upgrade" moved into the version
   card (shown only when a newer verified release is available) → a Review modal
