@@ -20,6 +20,8 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { platformSettings, notifications, users } from '../../db/schema.js';
 import { dbSettings } from './orchestrate.js';
 import { runPostflight, readPostflightState, type PostflightState } from './collect-postflight.js';
+import { finalizeByRef } from '../tasks/service.js';
+import { toSafeText } from '@insula/api-contracts';
 
 const TICK_MS = 2 * 60 * 1000;
 const INITIAL_DELAY_MS = 100_000; // past startup migrations, like the other reconcilers
@@ -38,6 +40,8 @@ export interface UpgradeReconcilerDeps {
   readonly observe: (nowMs: number) => Promise<PostflightState>;
   /** Notify admins that the upgrade is not converging. */
   readonly notifyStuck: (state: PostflightState) => Promise<void>;
+  /** Finalize the Task Center task (succeeded) on a confirmed healthy convergence. */
+  readonly finalizeConverged: (target: string) => Promise<void>;
 }
 
 export interface ReconcileOutcome {
@@ -63,7 +67,30 @@ export async function reconcileUpgradeOnce(deps: UpgradeReconcilerDeps, nowMs: n
     await deps.notifyStuck(state);
     notified = true;
   }
+  // On a confirmed healthy convergence, finalize the Task Center task. observe()
+  // above cleared the pending marker, but `pending` still holds the just-
+  // converged target — use it as the task ref. (Next tick reads empty pending →
+  // dormant, so this fires once.)
+  if (state.verdict === 'healthy') {
+    await deps.finalizeConverged(pending);
+  }
   return { acted: true, verdict: state.verdict, notified };
+}
+
+/** Mark the Task Center platform-upgrade task succeeded on convergence. */
+async function finalizeUpgradeTask(db: Database, target: string): Promise<void> {
+  await finalizeByRef(db, 'platform.upgrade', target, {
+    status: 'succeeded',
+    detailsPatch: { convergedAtIso: new Date().toISOString(), toVersion: target },
+    recreate: {
+      scope: 'system',
+      userId: null,
+      label: toSafeText(`Platform upgrade → ${target}`),
+      target: { type: 'modal', modal: 'platform-upgrade', modalProps: { version: target } },
+    },
+  }).catch((err) => {
+    console.error('[upgrade-reconciler] task finalize failed:', (err as Error).message);
+  });
 }
 
 async function getAdminUserIds(db: Database): Promise<string[]> {
@@ -102,6 +129,7 @@ export function realUpgradeReconcilerDeps(db: Database, k8s: K8sClients): Upgrad
     readPrevVerdict: async () => (await readPostflightState(db)).verdict,
     observe: (nowMs) => runPostflight(settings, k8s, nowMs),
     notifyStuck: (state) => notifyUpgradeStuck(db, state),
+    finalizeConverged: (target) => finalizeUpgradeTask(db, target),
   };
 }
 

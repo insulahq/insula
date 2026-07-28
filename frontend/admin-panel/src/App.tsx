@@ -42,6 +42,7 @@ import TunnelsPage from '@/pages/cluster/TunnelsPage';
 // Platform Settings group (product configuration)
 import UpdatesPage from '@/pages/platform/UpdatesPage';
 import UpgradesPage from '@/pages/platform/UpgradesPage';
+import PlatformIndexRedirect from '@/components/platform/PlatformIndexRedirect';
 import IdentityPage from '@/pages/platform/IdentityPage';
 import LimitsPage from '@/pages/platform/LimitsPage';
 import IntegrationsPage from '@/pages/platform/IntegrationsPage';
@@ -159,7 +160,7 @@ export default function App() {
             {/* Platform Settings — product configuration (replaces the
                 retired /settings catch-all + standalone /settings/*
                 child routes). */}
-            <Route path="platform" element={<Navigate to="/platform/updates" replace />} />
+            <Route path="platform" element={<PlatformIndexRedirect />} />
             <Route path="platform/updates" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><UpdatesPage /></ProtectedRoute>} />
             <Route path="platform/upgrades" element={<ProtectedRoute allowedRoles={['super_admin']}><UpgradesPage /></ProtectedRoute>} />
             <Route path="platform/identity" element={<ProtectedRoute allowedRoles={['super_admin', 'admin']}><IdentityPage /></ProtectedRoute>} />
