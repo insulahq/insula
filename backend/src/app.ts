@@ -473,7 +473,11 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       data: {
         status: hasError ? 'unhealthy' : hasDegraded ? 'degraded' : 'healthy',
         timestamp: new Date().toISOString(),
-        version: '0.1.0',
+        // Report the running platform version (injected from the platform-version
+        // ConfigMap via the PLATFORM_VERSION env). This is what the admin
+        // dashboard's version badge shows; a literal '0.1.0' here made every
+        // cluster report v0.1.0 regardless of the deployed release.
+        version: process.env.PLATFORM_VERSION ?? '0.1.0',
         services: {
           kubernetes: k8sStatus.status,
           redis: redisStatus.status,
