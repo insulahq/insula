@@ -12,6 +12,47 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Redesigned the platform update page.** "Run upgrade" moved into the version
+  card (shown only when a newer verified release is available) → a Review modal
+  (pre-flight + interruption preview) → Approve (no second confirm) → a live
+  progress modal; removed the standalone Run-upgrade / Pre-flight cards. The
+  progress modal now shows a clear **Done** state (it was stuck on "Rolling…" for
+  up to 2 min after finishing) and a **per-component phase** (Downloading /
+  Deploying / Ready) derived from each Deployment's pods. It keeps polling through
+  the admin-panel + API restart mid-upgrade (a "Reconnecting…" hint + a
+  post-upgrade "Reload admin panel" action) so progress never freezes until a
+  manual reload. The available version is highlighted green when an update exists.
+- **Static-site catalog codes renamed `static-nginx` → `nginx` and
+  `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
+  the deployment name and what the storage path is built from, so it should read
+  as the web server, not as an internal category. Migration `0076` renames the
+  rows **in place** so existing deployments keep their `catalog_entry_id`; the
+  catalog folders and GHCR image paths are unchanged. Requires the matching
+  manifest change in `insulahq/application-catalog`.
+- **Deploy modal pre-fills `my-<code>` as the deployment name** (e.g.
+  `my-nginx`) instead of echoing the catalog code back at the tenant. Applies to
+  every catalog deployment; the uniqueness suffix (`-2`, `-3`, …) is unchanged.
+- **The `nginx` static runtime now defaults to 32Mi memory** (was 64Mi), min and
+  recommended. A single-component deployment takes its budget verbatim, so the
+  allocator's 64Mi per-component floor does not apply.
+
+### Added
+- **Custom Apache configuration via `APACHE_CONF_DIR`**, mirroring the nginx
+  `NGINX_CONF_DIR` mechanism: point it at a folder in tenant storage and its
+  `*.conf` are included into the main server config, the folder is seeded with a
+  README, and it is never web-served. Unlike nginx, the Apache entrypoint runs
+  `httpd -t` first — an invalid tenant config is ignored (site restarts on the
+  default config) rather than crash-looping the pod, with the reason logged.
+
+### Fixed
+- **Optional configurable env vars were unreachable after deploy.** The installed
+  app's Configuration section listed only keys already present in the stored
+  configuration, so a variable whose default is empty (`NGINX_CONF_DIR`,
+  `APACHE_CONF_DIR`) rendered "No custom configuration" with no way to add it.
+  It now also lists catalog-declared configurable keys that are unset (shown as
+  *not set*), and empty values are not persisted.
+
 ## [2026.7.17] - 2026-07-28
 
 ### Changed

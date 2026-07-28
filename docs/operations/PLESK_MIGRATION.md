@@ -119,7 +119,7 @@ for debugging; on success it's stripped (it can contain mailbox names).
 | **domains** | Create each Plesk domain as a platform domain; preserve **primary** DNS mode if Plesk was authoritative | in platform-api |
 | **email** | Enable email on mail-hosting domains | in platform-api |
 | **databases** | Ensure the tenant MariaDB, create the DBs, stream the dumps | `migration-tools` Job in the **tenant** namespace (30-min deadline) |
-| **content** | Ensure the web deployment (apache-php / static-apache), rsync each docroot, route the domain | `migration-tools` Job in the **tenant** namespace (60-min deadline) |
+| **content** | Ensure the web deployment (apache-php / apache), rsync each docroot, route the domain | `migration-tools` Job in the **tenant** namespace (60-min deadline) |
 | **mail** | Create each Stalwart mailbox, import via IMAP (master-user proxy, multi-worker MULTIAPPEND) | `tenant-backup-tools` Job in the **mail** namespace (120-min deadline) |
 | **cron** | Import crontab lines: webcrons → enabled cron jobs; shell crons → **disabled** deployment cron jobs (for review); `@reboot` skipped; `@`-macros mapped to numeric | in platform-api |
 

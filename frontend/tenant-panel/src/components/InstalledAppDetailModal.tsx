@@ -199,9 +199,18 @@ export default function InstalledAppDetailModal({
     })(),
   );
 
+  // Keys to show in the Configuration table: the ones this deployment actually
+  // has, PLUS any the catalog declares configurable but that were never set at
+  // deploy time. Without the second group an optional variable (e.g.
+  // NGINX_CONF_DIR / APACHE_CONF_DIR, whose default is "") is unreachable
+  // forever — the section rendered "No custom configuration" and offered no way
+  // to add it.
+  const unsetConfigurableKeys = [...configurableKeys].filter((k) => !(k in configuration)).sort();
+  const displayKeys = [...configKeys, ...unsetConfigurableKeys];
+
   const enterConfigEdit = () => {
     const initial: Record<string, string> = {};
-    for (const key of configKeys) {
+    for (const key of displayKeys) {
       if (configurableKeys.has(key)) {
         initial[key] = String(configuration[key] ?? '');
       }
@@ -211,7 +220,12 @@ export default function InstalledAppDetailModal({
   };
 
   const saveConfigEdit = () => {
-    const merged: Record<string, unknown> = { ...configuration, ...editValues };
+    // Don't persist empty strings for keys that were never set — leaving them
+    // absent keeps the stored configuration to what the tenant actually chose.
+    const cleaned = Object.fromEntries(
+      Object.entries(editValues).filter(([k, v]) => v !== '' || k in configuration),
+    );
+    const merged: Record<string, unknown> = { ...configuration, ...cleaned };
     updateDeployment.mutate(
       { deploymentId: deployment.id, configuration: merged },
       {
@@ -465,7 +479,7 @@ export default function InstalledAppDetailModal({
               <Shield size={16} className="text-blue-600 dark:text-blue-400" />
               Configuration
             </h3>
-            {!editingConfig && configurableKeys.size > 0 && configKeys.length > 0 && (
+            {!editingConfig && configurableKeys.size > 0 && (
               <button
                 type="button"
                 onClick={enterConfigEdit}
@@ -477,7 +491,7 @@ export default function InstalledAppDetailModal({
               </button>
             )}
           </div>
-          {configKeys.length > 0 ? (
+          {displayKeys.length > 0 ? (
             <div className="overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">
               <table className="w-full text-sm">
                 <thead>
@@ -487,7 +501,7 @@ export default function InstalledAppDetailModal({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                  {configKeys.map((key) => {
+                  {displayKeys.map((key) => {
                     const isSecret = secretKeys.has(key);
                     const isRevealed = revealedSecrets.has(key);
                     const isConfigurable = configurableKeys.has(key);
@@ -506,8 +520,10 @@ export default function InstalledAppDetailModal({
                             />
                           ) : (
                             <div className="flex items-center gap-2">
-                              <span className="font-mono text-xs">
-                                {isSecret && !isRevealed ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022' : value}
+                              <span className={`font-mono text-xs ${value === '' ? 'italic text-gray-400 dark:text-gray-500' : ''}`}>
+                                {isSecret && !isRevealed
+                                  ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022'
+                                  : (value === '' ? 'not set' : value)}
                               </span>
                               {isSecret && (
                                 <button

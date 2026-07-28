@@ -1,159 +1,71 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UpgradesPage from '../pages/platform/UpgradesPage';
 
-const mockApplyMutateAsync = vi.fn();
-let preflightOk = true;
-// null = dormant (no upgrade in flight) — the panel must not render.
-let postflightData: Record<string, unknown> | null = null;
-// null = no live progress (idle); set to drive the progress bar.
-let progressData: Record<string, unknown> | null = null;
+let updateAvailable = true;
+let role = 'super_admin';
 
 vi.mock('../hooks/use-platform-updates', () => ({
-  usePlatformVersion: () => ({ data: { data: { currentVersion: '2026.6.2', latestVersion: '2026.7.0', updateAvailable: true, environment: 'production', imageUpdateStrategy: 'manual', autoUpdate: false, lastCheckedAt: null } }, isLoading: false, refetch: vi.fn() }),
-  useUpdateSettings: () => ({ mutate: vi.fn(), isPending: false }),
-}));
-
-vi.mock('../hooks/use-auth', () => ({
-  useAuth: () => ({ user: { id: 'sa', email: 'sa@k8s-platform.test', fullName: 'SA', role: 'super_admin' } }),
-}));
-
-vi.mock('../hooks/use-platform-upgrade', () => ({
-  usePreflight: () => ({
+  usePlatformVersion: () => ({
     data: { data: {
-      gates: [
-        { id: 'cnpg-healthy', label: 'Database (CNPG) healthy', status: 'pass', detail: 'primary elected' },
-        { id: 'disk-headroom', label: 'Disk headroom', status: 'warn', detail: 'unknown' },
-      ],
-      ok: preflightOk, failures: preflightOk ? 0 : 1, warnings: 1, environment: 'production',
+      currentVersion: '2026.6.2', installed: '2026.6.2', running: '2026.6.2',
+      latestVersion: null, latestSource: 'releases', available: '2026.7.0', availableVerifyStatus: 'verified',
+      updateAvailable, environment: 'production', imageUpdateStrategy: 'manual', autoUpdate: false,
+      pendingVersion: null, lastCheckedAt: null,
     } },
     isLoading: false, isFetching: false, refetch: vi.fn(),
   }),
-  usePostflight: () => ({ data: postflightData ? { data: postflightData } : undefined, isLoading: false, isFetching: false, refetch: vi.fn() }),
-  useHostMigrationsPreview: () => ({
-    data: { data: { mode: 'observe', willRun: false, note: 'host-migrations policy is observe (report-only).' } },
-    isLoading: false,
-  }),
-  useUpgradeApply: () => ({ mutateAsync: mockApplyMutateAsync, isPending: false, error: null }),
-  useRollback: () => ({ mutateAsync: vi.fn(async () => ({ data: { ok: false, dataRestored: false, reason: 'no manifest', summary: 'nothing to roll back', manifest: null } })), isPending: false, error: null }),
-  useUpgradeProgress: () => ({ data: progressData ? { data: progressData } : undefined, isLoading: false }),
+  useUpdateSettings: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+vi.mock('../hooks/use-auth', () => ({ useAuth: () => ({ user: { id: 'sa', role } }) }));
+
+vi.mock('../hooks/use-platform-upgrade', () => ({
+  useRollback: () => ({ mutateAsync: vi.fn(async () => ({ data: { ok: false, manifest: null, summary: 'nothing to roll back' } })), isPending: false, error: null }),
+  // Used by the review modal when it opens
+  usePreflight: () => ({ data: { data: { gates: [{ id: 'cnpg-healthy', label: 'Database (CNPG) healthy', status: 'pass', detail: 'ok' }], ok: true, failures: 0, warnings: 0, environment: 'production' } }, isLoading: false, isFetching: false, refetch: vi.fn() }),
+  useHostMigrationsPreview: () => ({ data: { data: { mode: 'observe', willRun: false, note: 'report-only' } }, isLoading: false }),
+  useUpgradeApply: () => ({ mutateAsync: vi.fn(async () => ({ data: { action: 'upgrade', target: '2026.7.0', proceed: true, applied: false, summary: 'DRY-RUN', interruption: { singleNode: false, nodeCount: 3, tenantWorkloadsAffected: false, summary: 's', services: [] } } })), isPending: false, error: null }),
+  usePostflight: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
+  useUpgradeProgress: () => ({ data: undefined, isLoading: false, isError: false, failureCount: 0 }),
 }));
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter><UpgradesPage /></MemoryRouter>
-    </QueryClientProvider>,
-  );
+  return render(<QueryClientProvider client={qc}><MemoryRouter><UpgradesPage /></MemoryRouter></QueryClientProvider>);
 }
 
-describe('UpgradesPage', () => {
-  beforeEach(() => { mockApplyMutateAsync.mockReset(); preflightOk = true; postflightData = null; progressData = null; });
+describe('UpgradesPage (consolidated)', () => {
+  beforeEach(() => { updateAvailable = true; role = 'super_admin'; });
 
-  it('renders the version spine + pre-flight gates', () => {
+  it('version card shows installed + verified available (green) + update badge + small images button', () => {
     renderPage();
-    expect(screen.getByText('Platform Updates')).toBeInTheDocument();
-    expect(screen.getByText('2026.6.2')).toBeInTheDocument(); // installed
-    expect(screen.getByText('2026.7.0')).toBeInTheDocument(); // available
-    expect(screen.getByText('Database (CNPG) healthy')).toBeInTheDocument();
-    expect(screen.getByText(/All blocking checks pass/)).toBeInTheDocument();
+    expect(screen.getByTestId('current-version')).toHaveTextContent('2026.6.2');
+    const avail = screen.getByTestId('latest-version');
+    expect(avail).toHaveTextContent('2026.7.0'); // from `available`, not the null latestVersion
+    expect(avail.className).toMatch(/text-green/); // highlighted when an update is available
+    expect(screen.getByText('update available')).toBeInTheDocument();
+    expect(screen.getByTestId('show-deployed-images-button')).toBeInTheDocument();
   });
 
-  it('Preview does a dry-run (apply:false) and shows the plan; Apply is two-click', async () => {
-    mockApplyMutateAsync.mockResolvedValueOnce({ data: { action: 'upgrade', target: '2026.7.0', reason: 'manual', proceed: true, applied: false, gitRepository: 'hosting-platform-production', environment: 'production', summary: 'DRY-RUN: would re-pin → v2026.7.0' } });
+  it('shows Run upgrade only when an update is available (super_admin) and it opens the review modal', () => {
     renderPage();
-    fireEvent.click(screen.getByText('Preview'));
-    await waitFor(() => expect(mockApplyMutateAsync).toHaveBeenCalledWith({ version: undefined, apply: false }));
-    await screen.findByText(/DRY-RUN: would re-pin/);
-    // Apply appears (two-click), first click reveals the confirm
-    fireEvent.click(screen.getByText(/Apply upgrade/));
-    expect(screen.getByText(/Confirm upgrade/)).toBeInTheDocument();
-    // Confirm performs the real apply (apply:true)
-    mockApplyMutateAsync.mockResolvedValueOnce({ data: { action: 'upgrade', target: '2026.7.0', reason: 'x', proceed: true, applied: true, gitRepository: 'x', environment: 'production', summary: 're-pinned' } });
-    fireEvent.click(screen.getByText(/Confirm upgrade/));
-    await waitFor(() => expect(mockApplyMutateAsync).toHaveBeenCalledWith({ version: undefined, apply: true }));
+    fireEvent.click(screen.getByTestId('run-upgrade-btn'));
+    expect(screen.getByTestId('upgrade-review-modal')).toBeInTheDocument();
+    expect(screen.getByTestId('approve-upgrade-btn')).toBeInTheDocument();
   });
 
-  it('renders the host-migrations policy row (mode badge + note)', () => {
+  it('hides Run upgrade when no update is available', () => {
+    updateAvailable = false;
     renderPage();
-    expect(screen.getByText('Host migrations')).toBeInTheDocument();
-    expect(screen.getByText('observe')).toBeInTheDocument(); // willRun:false → mode badge
-    expect(screen.getByText(/observe \(report-only\)/)).toBeInTheDocument();
+    expect(screen.queryByTestId('run-upgrade-btn')).toBeNull();
   });
 
-  it('post-flight panel is hidden when dormant, appears while converging, flags abort-recommended', () => {
-    const { unmount } = renderPage();
-    expect(screen.queryByText(/Post-flight/)).not.toBeInTheDocument(); // dormant
-    unmount();
-
-    postflightData = {
-      phase: 'reconciling',
-      verdict: 'abort-recommended',
-      pendingVersion: '2026.7.0',
-      gates: [{ id: 'nodes-ready', label: 'All nodes Ready', status: 'fail', detail: '1 of 2 NotReady' }],
-      consecutiveFailures: 3,
-      abortThreshold: 3,
-      lastCheckedAt: '2026-06-04T12:00:00.000Z',
-    };
+  it('hides Run upgrade for a non-super_admin', () => {
+    role = 'admin';
     renderPage();
-    expect(screen.getByText(/Converging to 2026\.7\.0/)).toBeInTheDocument();
-    expect(screen.getByText('abort-recommended')).toBeInTheDocument();
-    expect(screen.getByText('All nodes Ready')).toBeInTheDocument();
-    expect(screen.getByText(/converging after 3 checks/)).toBeInTheDocument();
-  });
-
-  it('Apply button is disabled when pre-flight has blocking failures', async () => {
-    preflightOk = false;
-    mockApplyMutateAsync.mockResolvedValueOnce({ data: { action: 'upgrade', target: '2026.7.0', reason: 'm', proceed: true, applied: false, gitRepository: 'x', environment: 'production', summary: 'preview' } });
-    renderPage();
-    expect(screen.getByText(/1 blocking failure/)).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Preview'));
-    const applyBtn = await screen.findByText(/Apply upgrade/);
-    expect(applyBtn.closest('button')).toBeDisabled();
-  });
-
-  it('preview shows the interruption preview (single-node → hard-unavailability + tenants unaffected)', async () => {
-    mockApplyMutateAsync.mockResolvedValueOnce({ data: {
-      action: 'upgrade', target: '2026.7.0', reason: 'manual', proceed: true, applied: false,
-      gitRepository: 'hosting-platform-production', environment: 'production', summary: 'DRY-RUN',
-      interruption: {
-        singleNode: true, nodeCount: 1, tenantWorkloadsAffected: false,
-        summary: 'Single-node cluster: each control-plane service has a short hard-unavailable window. Tenant websites and databases keep serving.',
-        services: [
-          { name: 'platform-api', label: 'Management API', impact: 'brief hard-unavailability while its single replica restarts (~30–90s)' },
-          { name: 'admin-panel', label: 'Admin panel', impact: 'brief hard-unavailability while its single replica restarts (~30–90s)' },
-        ],
-      },
-    } });
-    renderPage();
-    fireEvent.click(screen.getByText('Preview'));
-    await screen.findByText('What will be interrupted');
-    expect(screen.getByText('Management API')).toBeInTheDocument();
-    expect(screen.getByText(/no rolling redundancy/)).toBeInTheDocument();
-    // The green reassurance line is uniquely "…keep serving throughout." (the
-    // summary paragraph also mentions tenants, hence the specific suffix).
-    expect(screen.getByText(/keep serving throughout/)).toBeInTheDocument();
-  });
-
-  it('shows a live progress bar while an upgrade rolls (atTarget / total)', () => {
-    postflightData = {
-      phase: 'reconciling', verdict: 'reconciling', pendingVersion: '2026.7.0',
-      gates: [], consecutiveFailures: 0, abortThreshold: 3, lastCheckedAt: null,
-    };
-    progressData = {
-      targetTag: '2026.7.0', total: 3, atTarget: 2, ready: 2, percent: 67, readable: true,
-      deployments: [
-        { name: 'platform-api', label: 'Management API', desiredReplicas: 1, readyReplicas: 1, imageTag: '2026.7.0', versionManaged: true, atTarget: true },
-        { name: 'admin-panel', label: 'Admin panel', desiredReplicas: 1, readyReplicas: 1, imageTag: '2026.7.0', versionManaged: true, atTarget: true },
-        { name: 'tenant-panel', label: 'Tenant panel', desiredReplicas: 1, readyReplicas: 0, imageTag: '2026.6.16', versionManaged: true, atTarget: false },
-      ],
-    };
-    renderPage();
-    expect(screen.getByText('2/3 · 67%')).toBeInTheDocument();
-    expect(screen.getByText(/Rolling services to 2026\.7\.0/)).toBeInTheDocument();
-    expect(screen.getByText('Tenant panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('run-upgrade-btn')).toBeNull();
   });
 });
