@@ -81,6 +81,7 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
         deployments: { type: 'array', items: { type: 'object', properties: {
           name: { type: 'string' }, label: { type: 'string' }, desiredReplicas: { type: 'number' },
           readyReplicas: { type: 'number' }, imageTag: { type: 'string', nullable: true }, atTarget: { type: 'boolean' },
+          phase: { type: 'string' },
         } } },
       } } } } },
     },
