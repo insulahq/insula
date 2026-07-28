@@ -375,6 +375,11 @@ export interface SnapshotFilter {
   readonly tenantId?: string | null;
   /** Include `scope='admin'` rows where user_id != filter.userId? Off by default. */
   readonly includeOtherAdmins?: boolean;
+  /** Include platform-wide `scope='system'` tasks (e.g. `platform.upgrade`)?
+   *  Set for admin/super_admin callers so the whole ops team sees an in-flight
+   *  platform op in the chip (it has no single owner — user_id is NULL). Off by
+   *  default for tenant/user callers. */
+  readonly includeSystem?: boolean;
   /** Cap on returned rows. Default 100, hard max 100 (enforced by API contract). */
   readonly limit?: number;
   /** When set, only rows with updated_at > since are returned. */
@@ -420,7 +425,7 @@ export async function snapshot(db: Database, filter: SnapshotFilter): Promise<Ta
            progress_pct, progress_text, target, error_message, details,
            started_at, updated_at, finished_at, cleared_at, parent_task_id
       FROM tasks
-     WHERE user_id = ${filter.userId}
+     WHERE (user_id = ${filter.userId}${filter.includeSystem ? sql` OR scope = 'system'` : sql``})
        AND (
          status IN ('queued','running')
          OR (finished_at IS NOT NULL AND finished_at > ${cutoff} AND cleared_at IS NULL)

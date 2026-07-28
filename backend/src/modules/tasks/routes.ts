@@ -48,9 +48,13 @@ export async function taskCenterRoutes(app: FastifyInstance): Promise<void> {
       since = parsed;
     }
 
+    // Admins also see platform-wide system tasks (e.g. an in-flight
+    // platform.upgrade) — they have no single owner (user_id NULL).
+    const isAdmin = payload.role === 'admin' || payload.role === 'super_admin';
     const tasks = await service.snapshot(app.db, {
       userId: payload.sub,
       tenantId: payload.tenantId ?? null,
+      includeSystem: isAdmin,
       since,
     });
 
