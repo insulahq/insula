@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Hardened the platform-upgrade end-to-end integration test**
+  (`scripts/integration-platform-upgrade.sh`). It now asserts the apply returned
+  `applied: true` rather than merely HTTP 200 — so a graceful W16 rescue-capture
+  abort (200 + `applied: false`: the safety net correctly refusing to re-pin
+  without a rescue snapshot while Longhorn is still settling) can no longer be
+  misread as a successful re-pin — retries that transient abort, and
+  transparently re-mints the bearer token so a roll that outlives the 30-minute
+  JWT TTL doesn't fail the run mid-way through the rollback phase. Test tooling
+  only; no runtime/product code changed since 2026.7.10.
+
 ## [2026.7.10] - 2026-07-28
 
 ### Security
