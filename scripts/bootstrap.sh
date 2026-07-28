@@ -366,6 +366,76 @@ LONGHORN_VERSION="v1.12.0"               # 2026-07; V1 engine only (no V2/SPDK) 
 # Latest stable at pin time: v2.8.8 (2026-05-20).
 FLUX_VERSION="2.9.2"
 TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo traefik/traefik
+
+# ─── Remote installer script integrity (2026-07-28 security review) ──────────
+# k3s, Helm and Flux are installed by piping an upstream shell script into a
+# root shell. Before this, all three were fetched unpinned and unverified —
+# and the Helm one came from the `main` BRANCH, a mutable ref. A compromise of
+# any of those endpoints (or of helm's default branch) was root RCE on every
+# node this script ever provisions. That is out of step with the rest of the
+# platform, which cosign-verifies its own `insula` binary before running it.
+#
+# We keep executing the upstream installers (rewriting the k3s install flow
+# would be a far larger risk) but verify each script against a digest pinned
+# HERE before it runs. Tampering now fails closed.
+#
+# TO REFRESH A PIN (upstream published a new installer):
+#   curl -fsSL <url> | sha256sum
+# Review the diff of the script first — this pin is the trust anchor:
+#   curl -fsSL <url> -o /tmp/new.sh && diff <(curl -fsSL <url>) /tmp/old.sh
+# These are digests of the INSTALLER SCRIPTS, not of the released binaries;
+# each installer separately verifies the binary it downloads against the
+# checksum published with that release.
+#
+# NOT an infra version pin: nothing here changes which k3s/helm/flux VERSION
+# gets installed, so ci-migration-coverage.sh does not require a matching
+# host-migration (existing nodes already have these tools installed).
+K3S_INSTALLER_SHA256="d264d4d43f7c5a27b44de0075513fb22dfb02d0b7cd33ba7a3838cb822f4729c"
+HELM_INSTALLER_SHA256="e4a604efcff328eef2b2c7e67445d609f333e3875b34420ebf4e5ae379d259bb"
+FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
+
+# Helm's installer is pinned to a TAG, not `main` — `main` is a moving target
+# and re-pointing it silently changes what runs as root on every fresh node.
+# Stays on the Helm 3 installer deliberately: Helm 4 is out (v4.2.3) but is a
+# major-version move for every chart install in this script and belongs in its
+# own change, not a security fix. Note this pins the INSTALLER, not the helm
+# binary version the installer resolves (still latest 3.x).
+HELM_INSTALLER_REF="v3.20.0"
+
+# Download a remote installer script, verify it against a pinned sha256, and
+# echo the VERIFIED SCRIPT CONTENT on stdout. Caller pipes it into a shell.
+# Aborts the whole bootstrap on any mismatch (fail closed).
+#
+# Content, not a temp file, on purpose:
+#   - nothing is written to /tmp, so there is no cleanup to get wrong (an
+#     earlier draft used a temp file plus an EXIT trap; the trap never fired
+#     because the function is always called in a command-substitution SUBSHELL,
+#     and it would also have clobbered the RETURN/EXIT traps the bundle helpers
+#     further down this script install);
+#   - the bytes that are verified are the exact bytes that get executed — no
+#     window between check and use.
+fetch_verified_script() {
+  local url="$1" expected="$2" label="$3"
+  local body actual
+  # The `&& printf x` sentinel preserves TRAILING NEWLINES: command
+  # substitution strips them, which would make the digest computed here
+  # differ from the one an operator gets by running the documented
+  # `curl -fsSL <url> | sha256sum`. (Caught in testing — every pin
+  # mismatched by exactly the stripped newline.) The `&&` also means a
+  # curl failure short-circuits the printf, so the substitution's exit
+  # status is still curl's.
+  if ! body="$(curl -fsSL "$url" && printf 'x')"; then
+    error "failed to download the ${label} installer from ${url}"
+  fi
+  body="${body%x}"
+  actual="$(printf '%s' "$body" | sha256sum | awk '{print $1}')"
+  if [[ "$actual" != "$expected" ]]; then
+    error "$(printf '%s installer checksum MISMATCH — refusing to execute.\n  url:      %s\n  expected: %s\n  actual:   %s\nUpstream may have published a new installer, or the download was tampered with.\nReview the script, then update %s_INSTALLER_SHA256 in scripts/bootstrap.sh.' \
+      "$label" "$url" "$expected" "$actual" "$(printf '%s' "$label" | tr '[:lower:]' '[:upper:]')")"
+  fi
+  printf '%s' "$body"
+}
+
 # Traefik plugin catalog refs. install_traefik wires these into the
 # `experimental.plugins.<name>.{moduleName,version}` helm values so the
 # controller fetches the Yaegi-interpreted plugin source from
@@ -3275,7 +3345,7 @@ install_k3s_server() {
   # shellcheck disable=SC2086
   if [[ "$is_joining_server" == true ]]; then
     set +e
-    curl -sfL https://get.k3s.io | \
+    printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
       sh -s - \
@@ -3306,7 +3376,7 @@ install_k3s_server() {
       log "  automatically as soon as the join succeeds. Ctrl-C if you need to investigate."
     fi
   else
-    curl -sfL https://get.k3s.io | \
+    printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
       sh -s - \
@@ -3400,7 +3470,7 @@ install_k3s_worker() {
   # systemd-retried success.
   local install_rc=0
   set +e
-  curl -sfL https://get.k3s.io | \
+  printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="$exec_args" \
     K3S_URL="https://${K3S_SERVER_IP}:6443" \
@@ -3755,7 +3825,9 @@ install_helm() {
   fi
 
   log "Installing Helm..."
-  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  printf '%s' "$(fetch_verified_script \
+    "https://raw.githubusercontent.com/helm/helm/${HELM_INSTALLER_REF}/scripts/get-helm-3" \
+    "$HELM_INSTALLER_SHA256" helm)" | bash
   log "Helm installed."
 }
 
@@ -3777,7 +3849,8 @@ install_flux_cli() {
     log "Installing Flux CLI v${FLUX_VERSION}..."
   fi
   # The official installer honours FLUX_VERSION (bare semver, no 'v').
-  curl -fsSL https://fluxcd.io/install.sh | FLUX_VERSION="$FLUX_VERSION" bash
+  printf '%s' "$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" \
+    | FLUX_VERSION="$FLUX_VERSION" bash
   log "Flux CLI v${FLUX_VERSION} installed."
 }
 

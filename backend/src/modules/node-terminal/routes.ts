@@ -4,7 +4,13 @@ import * as k8s from '@kubernetes/client-node';
 import { randomBytes } from 'node:crypto';
 import { ApiError, invalidToken } from '../../shared/errors.js';
 import { recordNodeTerminalAudit } from './audit.js';
-import { authenticate, requirePanel, requireRole, type JwtPayload } from '../../middleware/auth.js';
+import {
+  authenticate,
+  requirePanel,
+  requireRole,
+  assertAccessToken,
+  type JwtPayload,
+} from '../../middleware/auth.js';
 import { createKubeConfig } from '../container-console/service.js';
 import {
   createSession,
@@ -160,8 +166,9 @@ function authenticateWs(app: FastifyInstance, request: FastifyRequest): JwtPaylo
   try {
     const decoded = app.jwt.verify<JwtPayload>(jwtToken);
     // Reject pre-auth tokens (passkey 2FA step-1) — never enough for
-    // node terminal, even when they decode correctly.
-    if ((decoded as { step?: string }).step) throw invalidToken();
+    // node terminal, even when they decode correctly. Shared helper so
+    // this stays in lockstep with `authenticate()`.
+    assertAccessToken(decoded);
     return decoded;
   } catch {
     throw invalidToken();

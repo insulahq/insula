@@ -44,6 +44,7 @@ COPY --from=builder /app/dist/ /usr/share/nginx/html/
 COPY frontend/tenant-panel/nginx.conf.template /etc/nginx/conf.d/default.conf.template
 COPY frontend/tenant-panel/nginx.conf /etc/nginx/conf.d/default.conf
 COPY frontend/tenant-panel/config.template.js /usr/share/nginx/html/config.template.js
+COPY frontend/security-headers.conf /etc/nginx/security-headers.conf
 COPY frontend/docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 

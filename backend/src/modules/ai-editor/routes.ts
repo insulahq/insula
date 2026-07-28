@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import {
+  authenticate,
+  requireRole,
+  requireTenantAccess,
+  requireTenantRoleByMethod,
+} from '../../middleware/auth.js';
 import { ApiError } from '../../shared/errors.js';
 import { success } from '../../shared/response.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -203,8 +208,14 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── Token budget status ────────────────────────────────────────────────
 
+  // SECURITY (2026-07-28): `requireTenantAccess()` is mandatory on every
+  // /tenants/:tenantId/* route. Without it `tenantId` is just an
+  // attacker-chosen path segment: this handler reads the budget of any
+  // tenant, and /ai/edit below resolves the victim's NAMESPACE and reads
+  // their files through the file-manager sidecar. `requireTenantAccess`
+  // also fails closed on a tenant-panel token with no tenantId claim.
   app.get('/tenants/:tenantId/ai/budget', {
-    onRequest: [authenticate],
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const budget = await service.getTokenBudget(app.db, tenantId);
@@ -213,8 +224,10 @@ export async function aiEditorRoutes(app: FastifyInstance): Promise<void> {
 
   // ─── AI Edit ───────────────────────────────────────────────────────────
 
+  // POST → requireTenantRoleByMethod() demands tenant_admin (or staff);
+  // a read-only tenant_user cannot drive AI edits or spend the budget.
   app.post('/tenants/:tenantId/ai/edit', {
-    onRequest: [authenticate],
+    onRequest: [authenticate, requireTenantRoleByMethod(), requireTenantAccess()],
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = aiEditRequestSchema.safeParse(request.body);

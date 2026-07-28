@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
-import { registerAuth, authenticate, requirePanel, requireRole, requireTenantAccess, requireTenantRoleByMethod } from './auth.js';
+import {
+  registerAuth, authenticate, requirePanel, requireRole, requireTenantAccess,
+  requireTenantRoleByMethod, assertAccessToken, verifyAccessToken,
+} from './auth.js';
 import { errorHandler } from './error-handler.js';
 
 describe('auth middleware', () => {
@@ -396,6 +399,118 @@ describe('auth middleware', () => {
         payload: {},
       });
       expect(res.statusCode).toBe(200);
+    });
+  });
+
+  // ─── Pre-auth (passkey_2fa) token rejection — 2026-07-28 security fix ───
+  //
+  // /auth/login mints a pre-auth token when the user has passkey
+  // second-factor enabled. It is signed with the SAME secret as an access
+  // token and differs only by the `step: 'passkey_2fa'` claim. Before this
+  // fix only passkey-routes and step-up-routes checked `step`, so
+  // `authenticate` accepted it — and PATCH /auth/password (which returns a
+  // real refresh token) let an attacker who knew the password trade it for
+  // a full session, skipping the passkey entirely.
+  describe('pre-auth (step) token rejection', () => {
+    let preAuthApp: FastifyInstance;
+    let preAuthToken: string;
+    let stepUpAccessToken: string;
+    let emptyStepToken: string;
+
+    beforeAll(async () => {
+      preAuthApp = Fastify();
+      await preAuthApp.register(fastifyJwt, { secret: 'test-secret-key-for-testing-only' });
+      registerAuth(preAuthApp);
+      preAuthApp.setErrorHandler(errorHandler);
+
+      preAuthApp.get('/gated', { preHandler: [authenticate] }, async () => ({ ok: true }));
+      preAuthApp.get('/gated-admin', {
+        preHandler: [authenticate, requireRole('admin')],
+      }, async () => ({ ok: true }));
+      // Mirrors the inline-verify handlers in authRoutes (/auth/me,
+      // /auth/profile, /auth/password, /auth/me/sessions).
+      preAuthApp.get('/inline-verify', async (request) => {
+        await verifyAccessToken(request);
+        return { ok: true };
+      });
+
+      await preAuthApp.ready();
+
+      const now = Math.floor(Date.now() / 1000);
+      // Exactly the shape signPreAuthToken() produces: no `role` claim.
+      preAuthToken = preAuthApp.jwt.sign({
+        sub: 'user-2fa', panel: 'admin', step: 'passkey_2fa', iat: now,
+      });
+      stepUpAccessToken = preAuthApp.jwt.sign({
+        sub: 'user-2fa', panel: 'admin', role: 'admin', iat: now,
+      });
+      // A `step: ''` payload must NOT be treated as a pre-auth token
+      // (empty string is the "no step" encoding some JWT libs produce).
+      emptyStepToken = preAuthApp.jwt.sign({
+        sub: 'user-2fa', panel: 'admin', role: 'admin', step: '', iat: now,
+      });
+    });
+
+    afterAll(async () => {
+      await preAuthApp.close();
+    });
+
+    it('REJECTS a pre-auth token at `authenticate` (401, not 403)', async () => {
+      const res = await preAuthApp.inject({
+        method: 'GET', url: '/gated',
+        headers: { Authorization: `Bearer ${preAuthToken}` },
+      });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('INVALID_TOKEN');
+    });
+
+    it('REJECTS a pre-auth token on a role-gated route', async () => {
+      const res = await preAuthApp.inject({
+        method: 'GET', url: '/gated-admin',
+        headers: { Authorization: `Bearer ${preAuthToken}` },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('REJECTS a pre-auth token via verifyAccessToken (inline-verify handlers)', async () => {
+      const res = await preAuthApp.inject({
+        method: 'GET', url: '/inline-verify',
+        headers: { Authorization: `Bearer ${preAuthToken}` },
+      });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('still ACCEPTS a normal access token at `authenticate`', async () => {
+      const res = await preAuthApp.inject({
+        method: 'GET', url: '/gated',
+        headers: { Authorization: `Bearer ${stepUpAccessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('still ACCEPTS a normal access token via verifyAccessToken', async () => {
+      const res = await preAuthApp.inject({
+        method: 'GET', url: '/inline-verify',
+        headers: { Authorization: `Bearer ${stepUpAccessToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('treats an EMPTY step claim as a normal access token (no false positive)', async () => {
+      const res = await preAuthApp.inject({
+        method: 'GET', url: '/gated',
+        headers: { Authorization: `Bearer ${emptyStepToken}` },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('assertAccessToken throws for a step payload and passes otherwise', () => {
+      expect(() => assertAccessToken({ step: 'passkey_2fa' })).toThrow();
+      expect(() => assertAccessToken({ step: 'anything-else' })).toThrow();
+      expect(() => assertAccessToken({ role: 'admin' })).not.toThrow();
+      expect(() => assertAccessToken({ step: undefined })).not.toThrow();
+      expect(() => assertAccessToken({ step: null })).not.toThrow();
+      expect(() => assertAccessToken(undefined)).not.toThrow();
     });
   });
 });

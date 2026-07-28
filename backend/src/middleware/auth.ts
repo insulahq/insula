@@ -14,6 +14,13 @@ export interface JwtPayload {
   readonly exp: number;
   readonly iat: number;
   readonly jti?: string;
+  /**
+   * Set ONLY on intermediate (non-session) tokens — currently the
+   * `passkey_2fa` pre-auth token minted by /auth/login when the user
+   * has opted into passkey second-factor. A payload carrying `step` is
+   * NOT an access token; see assertAccessToken().
+   */
+  readonly step?: string;
 }
 
 declare module '@fastify/jwt' {
@@ -39,6 +46,45 @@ function shouldSkipAuth(request: FastifyRequest): boolean {
 }
 
 export const PLATFORM_SESSION_COOKIE = 'platform_session';
+
+/**
+ * Reject any JWT that is not a full access token.
+ *
+ * /auth/login mints a short-lived PRE-AUTH token (`step: 'passkey_2fa'`)
+ * when the user has passkey second-factor enabled: password succeeded,
+ * passkey assertion still outstanding. It is signed with the same secret
+ * as the access token, so `jwt.verify()` alone does NOT distinguish them —
+ * the `step` claim is the only differentiator.
+ *
+ * SECURITY (2026-07-28): this check previously lived only in
+ * passkey-routes.ts and step-up-routes.ts. Every other consumer —
+ * `authenticate()` and the four `request.jwtVerify()` handlers in
+ * authRoutes — accepted a pre-auth token as a session token. Because
+ * PATCH /auth/password hands back a real refresh token, an attacker who
+ * knew the password could trade a pre-auth token for a full session and
+ * skip the passkey entirely. Centralised here so a new route cannot
+ * re-open the hole by forgetting to copy the check.
+ *
+ * Throws `invalidToken()` (401) — deliberately indistinguishable from a
+ * bad signature so the caller learns nothing about token shape.
+ */
+export function assertAccessToken(payload: unknown): void {
+  const step = (payload as { step?: unknown } | null | undefined)?.step;
+  if (step !== undefined && step !== null && step !== '') {
+    throw invalidToken();
+  }
+}
+
+/**
+ * `request.jwtVerify()` + access-token assertion, for the handful of
+ * routes that verify inline instead of via the `authenticate` hook
+ * (authRoutes has no plugin-level onRequest hook by design — /auth/login
+ * and /auth/refresh must stay unauthenticated).
+ */
+export async function verifyAccessToken(request: FastifyRequest): Promise<void> {
+  await request.jwtVerify();
+  assertAccessToken(request.user);
+}
 
 export function registerAuth(_app: FastifyInstance): void {
   // @fastify/jwt already decorates request.user
@@ -95,6 +141,9 @@ export function authenticate(
   // and is checked by /auth/refresh.
   try {
     const decoded = request.server.jwt.verify<JwtPayload>(token);
+    // A pre-auth (passkey_2fa) token is NOT a session token — reject it
+    // here so every `authenticate`-guarded route is covered at once.
+    assertAccessToken(decoded);
     request.user = decoded;
     done();
   } catch {

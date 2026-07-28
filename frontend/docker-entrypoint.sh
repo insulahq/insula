@@ -28,11 +28,19 @@ export BACKEND_PORT="${BACKEND_PORT:-3000}"
 NGINX_RESOLVER="$(awk '/^nameserver/ {print $2; exit}' /etc/resolv.conf 2>/dev/null)"
 export NGINX_RESOLVER="${NGINX_RESOLVER:-127.0.0.11}"
 
+# ── HSTS max-age ──
+# Emitted ONLY on requests that arrived over https (the template maps on
+# $http_x_forwarded_proto), so a plain-HTTP deployment never gets pinned.
+# Set NGINX_HSTS_MAX_AGE=0 to switch HSTS off — max-age=0 also tells a
+# browser that already has the pin to drop it, which is the correct escape
+# hatch for a local `.test` domain that was once served over https.
+export NGINX_HSTS_MAX_AGE="${NGINX_HSTS_MAX_AGE:-31536000}"
+
 NGINX_TEMPLATE="/etc/nginx/conf.d/default.conf.template"
 NGINX_OUTPUT="/etc/nginx/conf.d/default.conf"
 
 if [ -f "$NGINX_TEMPLATE" ]; then
-  envsubst '$BACKEND_HOST $BACKEND_PORT $NGINX_RESOLVER' < "$NGINX_TEMPLATE" > "$NGINX_OUTPUT"
+  envsubst '$BACKEND_HOST $BACKEND_PORT $NGINX_RESOLVER $NGINX_HSTS_MAX_AGE' < "$NGINX_TEMPLATE" > "$NGINX_OUTPUT"
 fi
 
 exec "$@"

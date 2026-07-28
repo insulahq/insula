@@ -721,17 +721,37 @@ export interface StreamZipExportArgs {
 export async function streamZipExport(args: StreamZipExportArgs): Promise<Readable> {
   const { store, handle, components } = args;
 
-  // archiver's runtime is CommonJS (`module.exports = archiver`), so the
-  // dynamic import resolves the factory under `.default` (esModuleInterop).
-  // Read it through a cast so this typechecks across @types/archiver majors
-  // (v7 used `export =`; v8 changed the namespace shape).
-  const archiverImport = await import('archiver');
-  const archiverFactory = (archiverImport as { default?: unknown }).default ?? archiverImport;
+  // archiver changed its public shape in v8 (2026-07-28 dependency bump,
+  // 5.3.2 → 8.0.0 to drop the vulnerable readdir-glob → minimatch →
+  // brace-expansion chain, GHSA-mh99-v99m-4gvg):
+  //   - v5/v6/v7: CommonJS, `module.exports = archiver`, called as a
+  //     FACTORY — `archiver('zip', opts)`. Under esModuleInterop the
+  //     dynamic import surfaces it as `.default`.
+  //   - v8:       ESM (`"type": "module"`), no default export at all;
+  //     named CLASSES `{ Archiver, JsonArchive, TarArchive, ZipArchive }`
+  //     constructed with `new ZipArchive(opts)`.
+  // The instance API we rely on (append / finalize / pipe / on / destroy)
+  // is identical across both, so support whichever is installed rather
+  // than hard-coding one — this file is on the tenant-bundle EXPORT path
+  // (operator data recovery) and must not break on a dependency bump.
+  const archiverImport = await import('archiver') as {
+    default?: unknown;
+    ZipArchive?: new (opts: Record<string, unknown>) => unknown;
+  };
 
   // Per-entry `store: true` (compression method 0, no zlib framing)
   // skips recompression — every component artifact we ship is already
   // gzip-compressed.
-  const archiveRaw = (archiverFactory as unknown as (format: string, opts: Record<string, unknown>) => unknown)('zip', {});
+  const archiveRaw = (() => {
+    if (typeof archiverImport.ZipArchive === 'function') {
+      return new archiverImport.ZipArchive({});                 // v8+
+    }
+    const factory = (archiverImport.default ?? archiverImport) as unknown;
+    if (typeof factory === 'function') {
+      return (factory as (format: string, opts: Record<string, unknown>) => unknown)('zip', {}); // v5-v7
+    }
+    throw new Error('streamZipExport: archiver exposes neither a ZipArchive class (v8+) nor a callable factory (v5-v7)');
+  })();
 
   // Defensive runtime guard against an unexpected archiver return
   // shape; if a future version stops being a Readable, Fastify's

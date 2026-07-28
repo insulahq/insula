@@ -3,7 +3,13 @@ import * as k8s from '@kubernetes/client-node';
 import { PassThrough } from 'stream';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { ApiError } from '../../shared/errors.js';
-import { authenticate, type JwtPayload } from '../../middleware/auth.js';
+import {
+  authenticate,
+  requireRole,
+  requireTenantAccess,
+  assertAccessToken,
+  type JwtPayload,
+} from '../../middleware/auth.js';
 import * as deploymentService from '../deployments/service.js';
 import {
   fetchPods,
@@ -49,23 +55,65 @@ function authenticateWs(app: FastifyInstance, request: FastifyRequest): JwtPaylo
   // the access token's exp anyway.
 
   try {
-    return app.jwt.verify<JwtPayload>(token);
+    const decoded = app.jwt.verify<JwtPayload>(token);
+    // Pre-auth (passkey_2fa) tokens are not session tokens. The WS
+    // routes bypass the `authenticate` hook, so assert here too.
+    assertAccessToken(decoded);
+    return decoded;
   } catch {
     throw new ApiError('UNAUTHORIZED', 'Invalid token', 401);
   }
 }
 
+/**
+ * Tenant scoping for the WebSocket routes, which cannot use the
+ * `requireTenantAccess()` onRequest hook (raw upgrade handlers run
+ * before/outside the normal hook chain in the same way the node-terminal
+ * WS does).
+ *
+ * SECURITY (2026-07-28): the previous version read
+ *   `user.panel === 'tenant' && user.tenantId && user.tenantId !== tenantId`
+ * which FAILS OPEN for any tenant-panel token that carries no `tenantId`
+ * claim — the exact hole middleware/auth.ts:requireTenantAccess closed
+ * ("Phase 1 hardening … Fail closed"); this local copy never got the fix.
+ * Mirror the middleware semantics exactly: a tenant-panel token MUST
+ * carry a tenantId, and it MUST equal the requested tenant.
+ */
 function enforceTenantAccess(user: JwtPayload, tenantId: string): void {
-  if (user.panel === 'tenant' && user.tenantId && user.tenantId !== tenantId) {
+  if (user.panel !== 'tenant') return; // staff — authorized by the role gate
+  if (!user.tenantId) {
+    throw new ApiError('CLIENT_ACCESS_DENIED', 'Client-panel tokens must carry a tenantId claim', 403);
+  }
+  if (user.tenantId !== tenantId) {
     throw new ApiError('FORBIDDEN', 'Access denied to this tenant', 403);
   }
 }
 
+/**
+ * Roles allowed to observe a tenant's containers (component list, log
+ * stream). Deliberately excludes the admin-panel reporting roles
+ * `billing` and `read_only`: container logs routinely carry secrets and
+ * customer PII, which is not in scope for a billing/reporting seat.
+ */
+const CONSOLE_READ_ROLES: ReadonlyArray<JwtPayload['role']> = [
+  'super_admin', 'admin', 'support', 'tenant_admin', 'tenant_user',
+];
+
 export async function containerConsoleRoutes(app: FastifyInstance): Promise<void> {
 
   // GET /api/v1/tenants/:tenantId/deployments/:deploymentId/components
+  //
+  // SECURITY (2026-07-28): this route had `authenticate` only — no role
+  // gate and no tenant gate — so any authenticated user could enumerate
+  // any tenant's pod/container topology by editing the path. It is a
+  // plain HTTP route (not a WS upgrade), so it uses the standard
+  // middleware hooks rather than the local helpers above.
   app.get('/tenants/:tenantId/deployments/:deploymentId/components', {
-    onRequest: [authenticate],
+    onRequest: [
+      authenticate,
+      requireRole(...CONSOLE_READ_ROLES),
+      requireTenantAccess(),
+    ],
   }, async (request) => {
     const { tenantId, deploymentId } = request.params as ConsoleParams;
     const deployment = await deploymentService.getDeploymentById(app.db, tenantId, deploymentId);
@@ -90,6 +138,17 @@ export async function containerConsoleRoutes(app: FastifyInstance): Promise<void
     } catch {
       socket.send(JSON.stringify({ type: 'error', message: 'Unauthorized' }));
       socket.close(4401, 'Unauthorized');
+      return;
+    }
+
+    // SECURITY (2026-07-28): the log stream had NO role check, so the
+    // admin-panel reporting roles (`billing`, `read_only`) — which pass
+    // enforceTenantAccess because panel !== 'tenant' — could stream live
+    // container logs for every tenant. Logs routinely carry secrets and
+    // customer PII. Mirror the /components gate.
+    if (!CONSOLE_READ_ROLES.includes(user.role)) {
+      socket.send(JSON.stringify({ type: 'error', message: 'Log access denied' }));
+      socket.close(4403, 'Forbidden');
       return;
     }
 

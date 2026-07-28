@@ -21,7 +21,7 @@ import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { z } from 'zod';
 import crypto from 'node:crypto';
-import { authenticate, requireRole } from '../../middleware/auth.js';
+import { authenticate, requireRole, requireTenantAccess } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { emailDomains, domains, auditLogs } from '../../db/schema.js';
@@ -41,7 +41,15 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
   app.post<{ Params: RouteParams }>(
     '/tenants/:tenantId/email-domains/:domainId/dkim/rotate',
     {
-      onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin', 'support')],
+      onRequest: [
+        authenticate,
+        requireRole('super_admin', 'admin', 'tenant_admin', 'support'),
+        // 2026-07-28: replaces a hand-rolled `userRole === 'tenant_admin'
+        // && userTenantId !== tenantId` check in the handler. The shared
+        // middleware is equivalent for tenant_admin AND additionally
+        // fails closed on a tenant-panel token with no tenantId claim.
+        requireTenantAccess(),
+      ],
     },
     async (request) => {
       // Defence-in-depth: validate UUID format on path params before
@@ -56,19 +64,12 @@ export async function emailDkimRotateRoutes(app: FastifyInstance): Promise<void>
       }
       const { tenantId, domainId } = parsedParams.data;
 
-      // Authorization: tenant_admin must own the tenant. The
-      // requireRole middleware lets all four through; we narrow with
-      // an explicit check here so tenant_admin from tenant A can't
-      // rotate keys for tenant B.
-      const userTenantId = (request.user as { tenantId?: string } | undefined)?.tenantId;
+      // Caller-owns-tenant is enforced by requireTenantAccess() in the
+      // onRequest chain above (fail-closed, shared with every other
+      // tenant-scoped route). The email-domain ownership check below is
+      // a SEPARATE assertion: it stops a platform admin mis-targeting a
+      // domainId that belongs to a different tenant.
       const userRole = (request.user as { role?: string } | undefined)?.role;
-      if (userRole === 'tenant_admin' && userTenantId !== tenantId) {
-        throw new ApiError(
-          'FORBIDDEN',
-          'You can only rotate DKIM keys for your own tenant',
-          403,
-        );
-      }
 
       // Verify the email-domain belongs to this tenant (via its parent
       // domain). Otherwise an admin could mis-target a domain by ID.

@@ -1,8 +1,29 @@
+# ── Security headers (2026-07-28 security review) ────────────────────────────
+# HSTS is emitted only when the request actually arrived over https, so a
+# plain-HTTP deployment (local dev behind NPM, a bring-up before certs land)
+# is never pinned. `map` is valid here because conf.d/*.conf is included
+# inside nginx's http{} block. NGINX_HSTS_MAX_AGE is substituted by
+# frontend/docker-entrypoint.sh (default 31536000; set 0 to disable, which
+# also clears an existing pin).
+#
+# The header list itself lives in /etc/nginx/security-headers.conf and is
+# included at server level AND in every location that sets its own
+# add_header — nginx replaces, rather than merges, inherited headers.
+map $http_x_forwarded_proto $insula_hsts {
+    default "";
+    https   "max-age=${NGINX_HSTS_MAX_AGE}";
+}
+
 server {
     listen 80;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
+
+    # Security headers. Before 2026-07-28 this panel served NONE.
+    include /etc/nginx/security-headers.conf;
+
+
 
     # Re-resolve upstream on each request so a recreated backend container
     # (docker-compose rebuild, k8s pod reschedule) doesn't leave us pointing
@@ -27,6 +48,9 @@ server {
         access_log off;
         return 200 "OK\n";
         add_header Content-Type text/plain;
+        # Re-include: this location sets its own add_header, which makes
+        # nginx DISCARD the server-level set.
+        include /etc/nginx/security-headers.conf;
     }
 
     # M6: /api/v1/internal/* is for in-cluster callers only (they reach
@@ -85,6 +109,9 @@ server {
     location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
+        # Re-include: this location sets its own add_header, which makes
+        # nginx DISCARD the server-level set.
+        include /etc/nginx/security-headers.conf;
     }
 
     gzip on;

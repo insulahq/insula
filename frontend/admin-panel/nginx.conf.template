@@ -1,17 +1,31 @@
+# ── Security headers (2026-07-28 security review) ────────────────────────────
+# HSTS is emitted only when the request actually arrived over https, so a
+# plain-HTTP deployment (local dev behind NPM, a bring-up before certs land)
+# is never pinned. `map` is valid here because conf.d/*.conf is included
+# inside nginx's http{} block. NGINX_HSTS_MAX_AGE is substituted by
+# frontend/docker-entrypoint.sh (default 31536000; set 0 to disable, which
+# also clears an existing pin).
+#
+# The header list itself lives in /etc/nginx/security-headers.conf and is
+# included at server level AND in every location that sets its own
+# add_header — nginx replaces, rather than merges, inherited headers.
+map $http_x_forwarded_proto $insula_hsts {
+    default "";
+    https   "max-age=${NGINX_HSTS_MAX_AGE}";
+}
+
 server {
     listen 80;
     server_name _;
     root /usr/share/nginx/html;
     index index.html;
 
-    # Allow embedding Stalwart's web-admin via an iframe. The iframe runs
-    # on mail-admin.k8s-platform.test (separate subdomain, gated by
-    # auth_request at the ingress). frame-ancestors restricts which
-    # parents may embed — limit to admin.* (this panel) and localhost
-    # for vite dev. The ingress-level CSP on the Stalwart subdomain is
-    # authoritative; this header is belt-and-braces for the admin panel
-    # itself.
-    add_header Content-Security-Policy "frame-ancestors 'self'" always;
+    # Security headers (CSP frame-ancestors, XFO, nosniff, Referrer-Policy,
+    # HSTS). The admin panel EMBEDS Stalwart's web-admin / Longhorn in
+    # iframes; frame-ancestors governs who may embed THIS panel, so 'self'
+    # does not affect those children.
+    include /etc/nginx/security-headers.conf;
+
 
     # Re-resolve upstream on each request so a recreated pod doesn't leave
     # us pointing at a dead IP.
@@ -47,6 +61,9 @@ server {
         access_log off;
         return 200 "OK\n";
         add_header Content-Type text/plain;
+        # Re-include: this location sets its own add_header, which makes
+        # nginx DISCARD the server-level set.
+        include /etc/nginx/security-headers.conf;
     }
 
     # ─── Internal API — never reachable from the public panel ────────────
@@ -111,6 +128,9 @@ server {
     # block wins in nginx.
     location = /config.js {
         add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        # Re-include: this location sets its own add_header, which makes
+        # nginx DISCARD the server-level set.
+        include /etc/nginx/security-headers.conf;
         add_header Pragma "no-cache" always;
         expires 0;
         try_files $uri =404;
@@ -124,6 +144,9 @@ server {
     location ~* \.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
+        # Re-include: this location sets its own add_header, which makes
+        # nginx DISCARD the server-level set.
+        include /etc/nginx/security-headers.conf;
     }
 
     gzip on;

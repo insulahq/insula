@@ -96,7 +96,7 @@ jobs:
 
       # Cosign keyless-sign the pushed image by digest (main only). Mirrors
       # ci-backup-rclone.yml. Gated to non-PR (fork PRs get a read-only token).
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
       - name: Sign image (keyless, OCI 1.1 referrers)
         if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
@@ -109,7 +109,7 @@ jobs:
             "${{ env.IMAGE }}@${DIGEST}"
 
       - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           # docker/metadata-action tags with type=sha,prefix= use the
           # short (7-char) sha by default, but github.sha is the full

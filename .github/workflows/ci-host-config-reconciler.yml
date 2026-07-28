@@ -94,7 +94,7 @@ jobs:
 
       - name: Trivy vulnerability scan
         if: github.event_name != 'pull_request'
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
           format: sarif
@@ -111,7 +111,7 @@ jobs:
       # Cosign keyless-sign the pushed image by digest (main only). Mirrors
       # ci-backup-rclone.yml — a transparency-log attestation for the internal
       # image. Gated to non-PR (fork PRs get a read-only token anyway).
-      - uses: sigstore/cosign-installer@v3
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
         if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
       - name: Sign image (keyless, OCI 1.1 referrers)
         if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
