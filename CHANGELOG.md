@@ -13,6 +13,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The upgrade progress bar / "Done" no longer runs ~30–40 s ahead of the actual
+  roll.** A Deployment was counted "at target" as soon as Flux re-pinned its
+  template and `availableReplicas` was satisfied — but during a rolling update the
+  *old* pod satisfies availability, so the bar hit 100% and the modal said "Done"
+  before the new-version pods were serving (while the Task Center row was still
+  correctly running). Completion now requires the roll to be genuinely done
+  (`updatedReplicas == replicas == desired`, no old surge pod left), so the modal's
+  "Done" lines up with the task finalizing.
 - **A cluster's FIRST upgrade to the adaptive reconciler no longer waits out a
   stale lease.** The upgrade reconciler's single-flight lease is now reclaimable
   when its stored expiry is further out than any legitimate TTL — otherwise the
