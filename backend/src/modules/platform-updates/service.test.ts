@@ -219,6 +219,23 @@ describe('platform-updates service', () => {
       expect(result.running).toBe('0.1.0');           // env unchanged
     });
 
+    it('updateAvailable clears once a NEWER pod has persisted installed, even while an OLD pod serves', async () => {
+      // Roll window: this endpoint is served by the OLD pod (env = 0.1.0), but the
+      // NEW pod already booted and wrote installed_platform_version=2026.6.9, and
+      // the poller's available_version is 2026.6.9. Without the max(installed,env)
+      // floor the stale pod would keep reporting updateAvailable=true (banner lingers).
+      settingsStore.set('installed_platform_version', '2026.6.9');
+      settingsStore.set('available_version', '2026.6.9');
+      settingsStore.set('available_verify_status', 'verified');
+      globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      const db = createTrackedDb();
+      const result = await getVersionInfo(db);
+      expect(result.running).toBe('0.1.0');       // old pod still serving
+      expect(result.installed).toBe('2026.6.9');  // new pod's durable record
+      expect(result.available).toBe('2026.6.9');
+      expect(result.updateAvailable).toBe(false); // floored by installed → no phantom banner
+    });
+
     // W11 verified-poller surfaces — `available` prefers the cosign-VERIFIED value.
     it('prefers the verified available_version over the unverified latestVersion', async () => {
       // Lazy checker would see 2026.7.1; the poller has VERIFIED 2026.6.9.
