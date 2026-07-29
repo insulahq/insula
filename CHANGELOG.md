@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.21] - 2026-07-29
+
 ### Fixed
 - **Tenant resource usage reported CPU reserved as 0 and PVC usage as 0.**
   Three independent causes, all in the per-tenant metrics collector:
