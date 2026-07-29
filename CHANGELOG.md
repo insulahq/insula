@@ -13,6 +13,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Dependabot opened its PRs against `main`.** The config set no
+  `target-branch`, so it defaulted to the repository default branch — but under
+  ADR-053 `main` only ever receives `chore(promote)` tree-snapshots of
+  `development` plus `chore(release)` commits, so a bump merged into `main` is
+  silently reverted by the next promote. All eight ecosystem blocks now target
+  `development`.
+
+### Changed
+- `lucide-react` 1.26 → 1.27 (supersedes the Dependabot PR that was targeting
+  `main`). All 161 icons imported across the repo still resolve in 1.27.0.
+
+### Fixed
 - **The upgrade progress bar / "Done" no longer runs ~30–40 s ahead of the actual
   roll.** A Deployment was counted "at target" as soon as Flux re-pinned its
   template and `availableReplicas` was satisfied — but during a rolling update the
