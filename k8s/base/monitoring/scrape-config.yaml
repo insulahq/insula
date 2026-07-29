@@ -79,6 +79,33 @@ data:
           - source_labels: [__meta_kubernetes_node_name]
             target_label: node
 
+      # ── kubelet: PVC usage ──────────────────────────────────────
+      # kubelet_volume_stats_* live on the kubelet's MAIN /metrics endpoint,
+      # not /metrics/cadvisor or /metrics/resource, hence a third kubelet job.
+      # This is what makes per-tenant storage usage real: it previously came
+      # only from the file-manager sidecar's /disk-usage, and that sidecar runs
+      # at replicas: 0 unless a tenant has the file browser open, so usage read
+      # 0 nearly always. Two series per PVC — negligible cardinality.
+      #
+      # The kubelet only reports volumes it has MOUNTED, so a tenant with every
+      # workload stopped reports nothing; the backend keeps the file-manager
+      # probe as a fallback for that case.
+      - job_name: kubelet-volumes
+        scheme: https
+        metrics_path: /metrics
+        kubernetes_sd_configs:
+          - role: node
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        tls_config:
+          insecure_skip_verify: true
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_node_name]
+            target_label: node
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: 'kubelet_volume_stats_(used|capacity|available)_bytes'
+            action: keep
+
       # ── Traefik (entrypoint request/duration metrics, :9100) ────
       # The helm chart (40.x) serves prometheus metrics on the
       # `metrics` entrypoint by default; pod-level scrape, no Service
