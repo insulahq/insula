@@ -427,12 +427,30 @@ export interface HeadersArgs {
   accessControlAllowOriginList?: string[];
   /** When true, strip the listed request headers before upstream. */
   removeRequestHeaders?: string[];
+  /**
+   * HSTS max-age in seconds. Emits `Strict-Transport-Security`.
+   *
+   * Traefik only attaches the header when the request arrived over TLS —
+   * UNLESS `forceSTSHeader` is set, which this module deliberately never does.
+   * That is what keeps the header off plain-HTTP responses, where RFC 6797
+   * §7.2 requires the UA to ignore it anyway.
+   *
+   * 0 is meaningful and must be emitted: it tells the UA to forget the host.
+   */
+  stsSeconds?: number;
+  stsIncludeSubdomains?: boolean;
+  stsPreload?: boolean;
 }
 export function headersSpec(args: HeadersArgs): Record<string, unknown> {
   const spec: Record<string, unknown> = {};
   if (args.customRequestHeaders) spec.customRequestHeaders = args.customRequestHeaders;
   if (args.customResponseHeaders) spec.customResponseHeaders = args.customResponseHeaders;
   if (args.accessControlAllowOriginList) spec.accessControlAllowOriginList = args.accessControlAllowOriginList;
+  // `!== undefined`, not truthiness — stsSeconds: 0 is the documented way to
+  // revoke a previously-advertised policy and must survive to the CRD.
+  if (args.stsSeconds !== undefined) spec.stsSeconds = args.stsSeconds;
+  if (args.stsIncludeSubdomains) spec.stsIncludeSubdomains = true;
+  if (args.stsPreload) spec.stsPreload = true;
   if (args.removeRequestHeaders) {
     // Traefik's headers Middleware doesn't have a remove-list field per se;
     // the closest path is to set each header to "" in customRequestHeaders.

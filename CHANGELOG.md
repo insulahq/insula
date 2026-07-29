@@ -12,20 +12,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Fixed
-- **Platform-upgrade progress/post-flight reported a phantom perpetual upgrade to
-  the last-completed version.** After a healthy convergence the in-flight marker
-  (`pending_update_version`) is cleared, but the persisted post-flight state blob
-  stayed frozen at `{phase: healthy, pendingVersion: <that version>}` and the
-  scheduler went dormant — so `/upgrade/progress` and `/upgrade/postflight` kept
-  reporting an upgrade to the old target (progress bar stuck at 0/N, modal stuck
-  on "Rolling → <old>…"). `readPostflightState` now reconciles against the live
-  marker: with no pending upgrade it reads `idle`, and while one is in flight it
-  pins `pendingVersion` to the live marker (fresh, not one scheduler-tick stale).
-  Also, while an upgrade is in flight but the reconciler has not yet written its
-  first assessment (the ~100 s after Apply, or a cluster's first-ever upgrade) it
-  now reports `reconciling`, not `idle`, so the just-opened progress modal shows
-  the roll instead of flashing "Done".
+### Added
+- **Per-route HSTS, configurable in the tenant panel** (Route → Advanced → HSTS):
+  enable, `max-age`, `includeSubDomains`, `preload`. Emitted at the edge as a
+  Traefik `headers` Middleware rather than by the workload image — the Official
+  Catalog runtimes deliberately send no `Strict-Transport-Security` of their own,
+  so a tenant can switch runtime or bring their own container without silently
+  losing or gaining the policy. **Off by default on every route**, including
+  existing ones: HSTS is sticky and cannot be recalled from the server, so it is
+  opt-in per route. The header is only ever sent on HTTPS responses (Traefik's
+  `forceSTSHeader` is never set). The Middleware is ordered first in the chain so
+  short-circuiting responses — allowlist 403, rate-limit 429, redirects, custom
+  error pages — still carry it. `preload` is refused unless `includeSubDomains`
+  is on and `max-age` ≥ 1 year, validated in the panel, against the merged row in
+  the service, and by a CHECK constraint in migration `0077`. See
+  [docs/features/HSTS.md](docs/features/HSTS.md).
 
 ## [2026.7.20] - 2026-07-28
 

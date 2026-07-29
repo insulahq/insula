@@ -40,6 +40,12 @@ export const ingressRouteResponseSchema = z.object({
   wafOwaspCrs: z.number(),
   wafAnomalyThreshold: z.number(),
   wafExcludedRules: z.string().nullable(),
+  // HSTS settings. Booleans here because `mapRouteToResponse` coerces the
+  // 0/1 columns before serialising, same as it does for forceHttps/wafEnabled.
+  hstsEnabled: z.boolean(),
+  hstsMaxAge: z.number(),
+  hstsIncludeSubdomains: z.boolean(),
+  hstsPreload: z.boolean(),
   // Advanced settings
   customErrorCodes: z.string().nullable(),
   customErrorPath: z.string().nullable(),
@@ -118,6 +124,20 @@ export const updateAdvancedSettingsSchema = z.object({
     (val) => val === null || val === undefined || Object.keys(val).length <= 50,
     { message: 'Maximum 50 headers allowed' },
   ).nullable().optional(),
+  // ── HSTS ──
+  // Per-field bounds only. The preload contract (preload ⇒ includeSubDomains
+  // AND max_age ≥ 1 year) is cross-field and this payload is partial — a
+  // caller may flip `hsts_preload` alone while the other two are already set
+  // in the database. Validating it here would reject that legitimate request,
+  // so the invariant is enforced in `settings-service` against the MERGED
+  // row (and again by a CHECK constraint in migration 0077).
+  hsts_enabled: z.boolean().optional(),
+  // 0 disables the policy immediately (RFC 6797 §6.1.1: max-age=0 tells the UA
+  // to forget the host). Capped at 2 years — longer buys nothing and lengthens
+  // the lockout window if the route is misconfigured.
+  hsts_max_age: z.number().int().min(0).max(63072000).optional(),
+  hsts_include_subdomains: z.boolean().optional(),
+  hsts_preload: z.boolean().optional(),
 });
 
 // ─── Protected Directories ──────────────────────────────────────────────────
