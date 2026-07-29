@@ -1,5 +1,6 @@
 import { getRedis } from '../../shared/redis.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
+import { queryInstant } from '../monitoring/vm-client.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -12,6 +13,15 @@ export interface ResourceMetrics {
   readonly memory: { readonly inUse: number; readonly reserved: number; readonly available: number }; // in Gi
   readonly storage: { readonly inUse: number; readonly reserved: number; readonly available: number }; // in Gi
   readonly lastUpdatedAt: string;
+}
+
+/**
+ * Escape a value for use inside a PromQL double-quoted label matcher.
+ * Namespaces are `[a-z0-9-]` in practice, so this is belt-and-braces against a
+ * crafted namespace ever reaching the query string.
+ */
+function escapeLabelValue(v: string): string {
+  return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
 /** Check if a pod/metrics entry is a system service (file-manager, etc.) */
@@ -85,9 +95,17 @@ export async function collectTenantMetrics(
     for (const pod of pods) {
       if (isSystemPod(pod.metadata?.labels)) continue; // Skip file-manager etc.
       for (const container of pod.spec?.containers ?? []) {
-        const limits = container.resources?.limits;
-        if (limits?.cpu) cpuReserved += parseResourceValue(limits.cpu, 'cpu');
-        if (limits?.memory) memoryReserved += parseResourceValue(limits.memory, 'memory');
+        // REQUESTS, not limits. Tenant workloads run asymmetric QoS (ADR-037):
+        // CPU request only, memory request==limit — so `limits.cpu` is UNSET on
+        // every tenant container and reading it reported CPU reserved as 0
+        // forever. The request is also the honest number: it is what the
+        // scheduler actually reserves on the node.
+        const req = container.resources?.requests;
+        const lim = container.resources?.limits;
+        const cpu = req?.cpu ?? lim?.cpu;
+        const memory = req?.memory ?? lim?.memory;
+        if (cpu) cpuReserved += parseResourceValue(cpu, 'cpu');
+        if (memory) memoryReserved += parseResourceValue(memory, 'memory');
       }
     }
   } catch {
@@ -98,8 +116,11 @@ export async function collectTenantMetrics(
         namespace,
       });
       const used = (quota as { status?: { used?: Record<string, string> } }).status?.used ?? {};
-      if (used['limits.cpu']) cpuReserved = parseResourceValue(used['limits.cpu'], 'cpu');
-      if (used['limits.memory']) memoryReserved = parseResourceValue(used['limits.memory'], 'memory');
+      // Same requests-first rule as the pod path above.
+      const qCpu = used['requests.cpu'] ?? used['limits.cpu'];
+      const qMem = used['requests.memory'] ?? used['limits.memory'];
+      if (qCpu) cpuReserved = parseResourceValue(qCpu, 'cpu');
+      if (qMem) memoryReserved = parseResourceValue(qMem, 'memory');
     } catch {
       // Quota might not exist yet
     }
@@ -118,18 +139,46 @@ export async function collectTenantMetrics(
     // Quota might not exist yet
   }
 
-  // 4. Storage actual usage from file-manager (if running)
+  // 4. Storage actual usage.
+  //
+  //    PRIMARY: kubelet volume stats via VictoriaMetrics. The kubelet reports
+  //    used bytes for every PVC it has mounted, which is CSI-agnostic (no
+  //    Longhorn-specific query) and, crucially, does not depend on any
+  //    tenant-namespace pod of ours being awake.
+  //
+  //    FALLBACK: the file-manager's /disk-usage. This used to be the ONLY
+  //    source, which is why storage usage read 0 nearly all the time — the
+  //    file-manager is created with replicas: 0 and the idle-cleanup loop
+  //    scales it back to 0 after 10 minutes, so the proxy usually threw and the
+  //    catch left storageInUse at 0.
+  //
+  //    Caveat worth knowing: the kubelet only reports volumes it has MOUNTED,
+  //    so a tenant whose every workload is stopped reports no volume stats. The
+  //    file-manager fallback covers exactly that case when it happens to be up.
   let storageInUse = 0;
   try {
-    const { proxyToFileManager } = await import('../file-manager/service.js');
-    const kubeconfigPath = process.env.KUBECONFIG_PATH;
-    const result = await proxyToFileManager(kubeconfigPath, namespace, '/disk-usage');
-    if (result.status === 200) {
-      const data = JSON.parse(result.body) as { usedBytes?: number };
-      storageInUse = (data.usedBytes ?? 0) / (1024 * 1024 * 1024); // bytes to Gi
+    const samples = await queryInstant(
+      `sum(kubelet_volume_stats_used_bytes{namespace="${escapeLabelValue(namespace)}"})`,
+    );
+    if (samples.length > 0) {
+      storageInUse = samples[0].value / (1024 * 1024 * 1024); // bytes to Gi
     }
   } catch {
-    // File manager not running — leave storageInUse as 0
+    // vmsingle unreachable — fall through to the file-manager probe.
+  }
+
+  if (storageInUse === 0) {
+    try {
+      const { proxyToFileManager } = await import('../file-manager/service.js');
+      const kubeconfigPath = process.env.KUBECONFIG_PATH;
+      const result = await proxyToFileManager(kubeconfigPath, namespace, '/disk-usage');
+      if (result.status === 200) {
+        const data = JSON.parse(result.body) as { usedBytes?: number };
+        storageInUse = (data.usedBytes ?? 0) / (1024 * 1024 * 1024); // bytes to Gi
+      }
+    } catch {
+      // File manager not running either — leave storageInUse as 0.
+    }
   }
 
   const metrics: ResourceMetrics = {
