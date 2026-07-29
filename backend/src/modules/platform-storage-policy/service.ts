@@ -61,6 +61,26 @@ export const PLATFORM_STATEFULSETS: ReadonlyArray<{ namespace: string; pvcPrefix
 // additional system replicas.
 const MAX_HA_REPLICAS = 3;
 
+// Local tier: how many Longhorn replicas the SINGLE CNPG instance's PVC gets.
+// Lowered 3 → 2 on 2026-07-29 after the original justification was DISPROVEN.
+//
+// The 2026-07-20 rationale was that a rolled single-instance primary landing on
+// a server without a local replica pays a cross-node re-attach slow enough to
+// exceed CNPG's recreate window, so the roll never converges. Re-measured on
+// 2026-07-29 on two clusters (a cloud one and a deliberately slow nested-KVM
+// one): a genuine cross-node RWO re-attach completes in ~6-7 SECONDS, and the
+// operator leaves a replacement pod alone for at least 36s of init. Five
+// consecutive primary rolls, including one forced onto a server holding no
+// replica, all converged. The wedge this was written for is not caused by
+// attach latency, so "a local replica on every server" buys nothing.
+//
+// What the replicas DO buy — and the reason this is 2 and not 1 — is plain
+// durability: the local tier runs ONE postgres instance, so its volume is the
+// only copy of the platform database. At 1 replica a single disk or node loss
+// means restoring from a backup bundle. 2 replicas survive one such loss at
+// two-thirds the storage and rebuild write-amplification of 3.
+const MAX_LOCAL_CNPG_REPLICAS = 2;
+
 export function replicasForSystemTier(tier: 'local' | 'ha', readyServerCount: number): number {
   if (tier === 'local') return 1;
   // HA: replicate to one server up to MAX_HA_REPLICAS. With the cap at 3,
@@ -437,27 +457,19 @@ export async function readClusterState(
   //               disk-failure tolerance comes from CNPG instance failover,
   //               not Longhorn).
   //
-  //   local tier → min(readyServerCount, MAX_HA_REPLICAS) replicas for the
-  //               SINGLE instance's PVC. In local tier there is exactly ONE
-  //               postgres instance, so replicating its one volume across
-  //               servers is NOT quadratic — and it is REQUIRED to avoid a
-  //               brick: a single-instance primary that is rolled (barman
-  //               plugin add on backup-target bind, a config/probe edit, an
-  //               operator/PG upgrade) is deleted + recreated by CNPG, and
-  //               the new pod can land on ANY server (affinity nodeSelector
-  //               = server). With only 1 replica the new pod pays a slow
-  //               CROSS-NODE Longhorn re-attach that exceeds CNPG's ~30s
-  //               recreate window, so it recreates again (bouncing nodes)
-  //               and the roll NEVER converges → system-db wedged →
-  //               platform-api crashloop (project_cnpg_barman_plugin_restart_loop,
-  //               2026-07-20; upstream CNPG issue open). Replicating the
-  //               volume onto every server means each recreate finds a LOCAL
-  //               replica → fast attach → the roll converges. No pinning, so
-  //               drain/relocation still work (any server has the data). On
-  //               a single-server install min(1,3)=1 (can't do more, and it
-  //               can't bounce anyway).
+  //   local tier → min(readyServerCount, MAX_LOCAL_CNPG_REPLICAS) replicas for
+  //               the SINGLE instance's PVC. In local tier there is exactly
+  //               ONE postgres instance, so replicating its one volume is NOT
+  //               quadratic. The reason is DURABILITY: that one volume holds
+  //               the only copy of the platform database, so a single disk or
+  //               node loss would otherwise mean restoring from a backup
+  //               bundle. See MAX_LOCAL_CNPG_REPLICAS for why this is 2 (and
+  //               why the original "avoid a cross-node re-attach stall"
+  //               rationale was retired on 2026-07-29 — it was measured wrong).
+  //               No pinning, so drain/relocation still work. On a
+  //               single-server install min(1,2)=1 (can't do more).
   const cnpgDesiredReplicas = policy.systemTier === 'local'
-    ? Math.max(1, Math.min(readyServerCount, MAX_HA_REPLICAS))
+    ? Math.max(1, Math.min(readyServerCount, MAX_LOCAL_CNPG_REPLICAS))
     : 1;
   for (const c of CNPG_CLUSTERS) {
     const pvcs = await k8s.core.listNamespacedPersistentVolumeClaim({

@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Platform upgrade: the Task Center row now tracks the roll faithfully.** The
+  redesigned modal reported "Done" from the live roll within ~30 s, but the task
+  stayed *running* for ~4 min, its dropdown progress bar sat at 0%, and the
+  dashboard kept the old version + "update available" banner for ~1 min after
+  reload. Fixed end-to-end:
+  - The post-flight reconciler runs on an **adaptive cadence** — ~8 s while an
+    upgrade is in flight (was a fixed 2 min + 100 s initial delay) — writing the
+    live per-Deployment `progressPct` onto the task each tick and **finalizing
+    within seconds of convergence**. The abort-streak (stuck detection) is
+    decoupled onto a slow 2-min sub-cadence so the fast tick rate can't false-trip
+    "not converging" during a normal roll.
+  - `updateAvailable` is computed against the **higher of the running env and the
+    durable `installed_platform_version`**, so once the new version's pod boots the
+    banner clears immediately — even if an old pod is momentarily still serving the
+    read during the roll.
+  - The progress modal invalidates the version + post-flight queries on **Done**,
+    so the badge/banner refresh without waiting out the 60 s cache.
+- Removed the duplicate **Upgrades** item from the Platform Settings menu (the page
+  consolidated into **Updates**; `/platform/upgrades` stays a redirect).
+
 ## [2026.7.21] - 2026-07-29
 
 ### Fixed

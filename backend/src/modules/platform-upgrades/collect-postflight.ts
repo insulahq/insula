@@ -125,7 +125,7 @@ export async function collectPostflightFacts(k8s: K8sClients, pendingVersion: st
  * it persisted. Idempotent at the data layer (a re-run just advances the streak
  * one more observation). MUST be called on a controlled cadence, not per UI poll.
  */
-export async function runPostflight(settings: SettingsIO, k8s: K8sClients, nowMs: number): Promise<PostflightState> {
+async function assess(settings: SettingsIO, k8s: K8sClients, nowMs: number, advance: boolean): Promise<PostflightState> {
   // Normalise '' (our cleared sentinel from a prior healthy run) → null, so a
   // confirmed-converged cluster reads as `idle` and never re-accrues a streak.
   const pendingVersion = normalizePending(await settings.get(KEY_PENDING));
@@ -134,7 +134,24 @@ export async function runPostflight(settings: SettingsIO, k8s: K8sClients, nowMs
 
   const prevRaw = await settings.get(KEY_STREAK);
   const prev = prevRaw !== null ? Number.parseInt(prevRaw, 10) : 0;
-  const { consecutiveFailures, verdict } = advanceStreak(prev, result);
+  // The abort streak advances ONLY on the slow cadence (`advance`). The fast
+  // convergence pass evaluates + clears pending on a healthy roll WITHOUT
+  // inflating the streak — otherwise the busy tick rate would trip
+  // `abort-recommended` during a perfectly normal ~30–90s roll.
+  let consecutiveFailures: number;
+  let verdict: PostflightVerdict;
+  if (advance) {
+    ({ consecutiveFailures, verdict } = advanceStreak(prev, result));
+  } else if (result.phase === 'healthy') {
+    consecutiveFailures = 0;
+    verdict = 'healthy';
+  } else if (result.phase === 'idle') {
+    consecutiveFailures = 0;
+    verdict = 'idle';
+  } else {
+    consecutiveFailures = prev;
+    verdict = prev >= ABORT_THRESHOLD ? 'abort-recommended' : 'reconciling';
+  }
 
   const state: PostflightState = {
     phase: result.phase,
@@ -151,7 +168,11 @@ export async function runPostflight(settings: SettingsIO, k8s: K8sClients, nowMs
     environment: ENVIRONMENT,
   };
 
-  await settings.set(KEY_STREAK, String(consecutiveFailures));
+  // Persist the streak only when advancing; the fast pass still resets it to 0 on
+  // a healthy/idle observation (so convergence clears it) and leaves it untouched
+  // while reconciling.
+  if (advance) await settings.set(KEY_STREAK, String(consecutiveFailures));
+  else if (result.phase === 'healthy' || result.phase === 'idle') await settings.set(KEY_STREAK, '0');
   await settings.set(KEY_STATE, JSON.stringify(state));
   // A confirmed healthy convergence ends the upgrade: clear the in-flight marker
   // so the UI/poller stop showing "upgrading → X" and the streak rests at idle.
@@ -160,6 +181,24 @@ export async function runPostflight(settings: SettingsIO, k8s: K8sClients, nowMs
   }
   return state;
 }
+
+/**
+ * OBSERVER (slow cadence): evaluate convergence AND advance the abort streak.
+ * On a confirmed healthy convergence clears `pending_update_version`. MUST be
+ * called on a controlled cadence, not per UI poll (the streak is what escalates
+ * a stuck upgrade to `abort-recommended`).
+ */
+export const runPostflight = (settings: SettingsIO, k8s: K8sClients, nowMs: number): Promise<PostflightState> =>
+  assess(settings, k8s, nowMs, true);
+
+/**
+ * FAST convergence check (busy cadence): evaluate + persist the blob + clear
+ * `pending_update_version` on a healthy roll, WITHOUT advancing the abort streak.
+ * Lets the reconciler finalize the Task Center row within seconds of the roll
+ * completing while stuck-detection stays on the slow streak cadence.
+ */
+export const checkConvergence = (settings: SettingsIO, k8s: K8sClients, nowMs: number): Promise<PostflightState> =>
+  assess(settings, k8s, nowMs, false);
 
 /** Read-only view of the last persisted post-flight state (the GET route). Never advances the streak. */
 export async function readPostflightState(db: Database): Promise<PostflightState> {

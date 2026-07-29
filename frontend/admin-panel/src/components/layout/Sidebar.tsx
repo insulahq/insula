@@ -156,7 +156,6 @@ const navItems: ReadonlyArray<NavItem> = [
     label: 'Platform Settings',
     children: [
       { kind: 'item', to: '/platform/updates',          icon: Download,           label: 'Updates' },
-      { kind: 'item', to: '/platform/upgrades',         icon: Download,           label: 'Upgrades' },
       { kind: 'item', to: '/platform/identity',         icon: Building2,          label: 'Identity' },
       { kind: 'item', to: '/platform/plans',            icon: CreditCard,         label: 'Hosting Plans' },
       { kind: 'item', to: '/platform/plesk-migration',  icon: ServerCog,          label: 'Plesk Migration' },

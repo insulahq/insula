@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { runPostflight, readPostflightState, type PostflightState } from './collect-postflight.js';
+import { runPostflight, checkConvergence, readPostflightState, type PostflightState } from './collect-postflight.js';
 import type { SettingsIO } from './orchestrate.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -106,6 +106,34 @@ describe('runPostflight (observer)', () => {
     const s = await runPostflight(io, k8s, 8_000);
     expect(s.ok).toBe(false);
     expect(s.gates.find((g) => g.id === 'deployments-available')!.detail).toMatch(/unreadable/);
+  });
+});
+
+describe('checkConvergence (fast pass) — never advances the abort streak', () => {
+  it('still reconciling → leaves the streak UNCHANGED (no false abort at a fast tick rate)', async () => {
+    const { io, store } = fakeSettings({ pending_update_version: '2026.6.9', postflight_consecutive_failures: '2' });
+    const s = await checkConvergence(io, fakeK8s(), 2_000);
+    expect(s.phase).toBe('reconciling');
+    expect(s.consecutiveFailures).toBe(2);                  // unchanged (runPostflight would make it 3)
+    expect(store.get('postflight_consecutive_failures')).toBe('2');
+    expect(store.get('pending_update_version')).toBe('2026.6.9'); // not cleared while reconciling
+  });
+
+  it('already at threshold streak → reports abort-recommended from the existing streak, still no advance', async () => {
+    const { io, store } = fakeSettings({ pending_update_version: '2026.6.9', postflight_consecutive_failures: '3' });
+    const s = await checkConvergence(io, fakeK8s(), 2_500);
+    expect(s.verdict).toBe('abort-recommended');
+    expect(store.get('postflight_consecutive_failures')).toBe('3'); // unchanged
+  });
+
+  it('healthy → clears pending + resets streak in a single pass (no waiting for the slow cadence)', async () => {
+    const running = (process.env.PLATFORM_VERSION?.replace(/^v/, '') ?? 'unknown').trim();
+    const { io, store } = fakeSettings({ pending_update_version: running, postflight_consecutive_failures: '2' });
+    const s = await checkConvergence(io, fakeK8s({ deployTotal: 2, deployAvail: 2 }), 3_000);
+    expect(s.phase).toBe('healthy');
+    expect(s.verdict).toBe('healthy');
+    expect(store.get('pending_update_version')).toBe('');
+    expect(store.get('postflight_consecutive_failures')).toBe('0');
   });
 });
 

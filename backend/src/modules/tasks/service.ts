@@ -178,6 +178,35 @@ export async function progress(db: Database, id: string, args: TaskProgressArgs)
   await db.update(tasks).set(update).where(eq(tasks.id, id));
 }
 
+/**
+ * Update live progress by `(kind, refId)` — for callers that hold the natural
+ * ref but not the row id (e.g. the upgrade reconciler advancing the roll bar).
+ * Only touches a still-active row (`queued`/`running`) so it never resurrects or
+ * overwrites a terminal task. No-op when no matching active row exists.
+ */
+export async function progressByRef(
+  db: Database,
+  kind: TaskKind | (string & {}),
+  refId: string,
+  args: TaskProgressArgs,
+): Promise<void> {
+  const update: Record<string, unknown> = { updatedAt: sql`NOW()` };
+  if (args.pct !== undefined) {
+    if (args.pct !== null && (args.pct < 0 || args.pct > 100 || !Number.isFinite(args.pct))) {
+      throw new Error(`tasks.progressByRef: pct must be 0..100 or null, got ${args.pct}`);
+    }
+    update.progressPct = args.pct;
+  }
+  if (args.text !== undefined) update.progressText = args.text;
+  if (args.detailsPatch !== undefined && args.detailsPatch !== null) {
+    update.details = sql`COALESCE(${tasks.details}, '{}'::jsonb) || ${JSON.stringify(args.detailsPatch)}::jsonb`;
+  }
+  await db
+    .update(tasks)
+    .set(update)
+    .where(and(eq(tasks.kind, kind), eq(tasks.refId, refId), sql`${tasks.status} IN ('queued','running')`));
+}
+
 // ─── finish ──────────────────────────────────────────────────────────────
 
 export interface TaskFinishArgs {
