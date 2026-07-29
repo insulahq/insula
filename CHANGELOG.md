@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.24] - 2026-07-29
+
 ### Fixed
 - **The upgrade progress bar / "Done" no longer runs ~30–40 s ahead of the actual
   roll.** A Deployment was counted "at target" as soon as Flux re-pinned its
