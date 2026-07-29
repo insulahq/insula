@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.23] - 2026-07-29
+
 ### Fixed
 - **A cluster's FIRST upgrade to the adaptive reconciler no longer waits out a
   stale lease.** The upgrade reconciler's single-flight lease is now reclaimable
