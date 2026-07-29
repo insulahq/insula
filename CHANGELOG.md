@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.22] - 2026-07-29
+
 ### Fixed
 - **Platform upgrade: the Task Center row now tracks the roll faithfully.** The
   redesigned modal reported "Done" from the live roll within ~30 s, but the task
