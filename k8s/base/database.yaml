@@ -137,10 +137,22 @@ spec:
   # of namespace quota commitment (3 replicas × 512Mi saved).
   # Production overlays can bump higher when their workload demands;
   # the storage-policy advisor also surfaces resource recommendations.
+  #
+  # requests.memory 128Mi → 256Mi (2026-07-29). Re-measured working set:
+  # 86 Mi (staging) / 69 Mi (VM tier) for the `postgres` container alone,
+  # 108-148 Mi for the whole pod. 128Mi left the container's own usage
+  # sitting at ~70-90% of its request, so a modest spike (checkpoint,
+  # vacuum, a burst of connections) pushes the pod OVER its requests —
+  # and the kubelet ranks pods that exceed their requests for eviction
+  # AHEAD of pods that do not. Since a single-instance primary IS the
+  # control plane, being an early eviction candidate is the wrong trade;
+  # 256Mi keeps steady-state usage at ~35% of request with real headroom.
+  # Cost is 128Mi of quota commitment per instance. Peak observed is far
+  # below limits.memory (512Mi), so the limit is unchanged.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       # No CPU limit — high-priority platform postgres (2026-06-24).
       memory: 512Mi

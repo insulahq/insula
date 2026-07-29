@@ -229,12 +229,14 @@ describe('readClusterState — CNPG-managed PVC inclusion', () => {
 
     const state = await readClusterState(k8s, db);
     const pg1 = state.volumes.find((v) => v.pvcName === 'system-db-1');
-    // local tier + 3 servers: the ONE postgres instance's PVC replicates
-    // to all 3 servers so a rolled primary always re-attaches to a LOCAL
-    // replica (no cross-node re-attach stall → the roll converges instead
-    // of wedging). Capped at MAX_HA_REPLICAS=3. This is the fix for the
-    // single-instance primary-roll wedge (2026-07-20).
-    expect(pg1?.desiredReplicas).toBe(3);
+    // local tier + 3 servers: the ONE postgres instance's PVC is replicated
+    // for DURABILITY — that volume holds the only copy of the platform DB,
+    // so 1 replica means a disk/node loss costs a restore from backup.
+    // Capped at MAX_LOCAL_CNPG_REPLICAS=2 (lowered from 3 on 2026-07-29:
+    // the original "a local replica on every server avoids a cross-node
+    // re-attach stall" rationale was disproven — cross-node re-attach
+    // measures ~6-7s and the rolls converge regardless).
+    expect(pg1?.desiredReplicas).toBe(2);
     expect(pg1?.kind).toBe('cnpg');
   });
 
