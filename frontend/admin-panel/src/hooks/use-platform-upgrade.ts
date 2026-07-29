@@ -62,6 +62,9 @@ export function usePostflight(pollWhilePending = false) {
     queryFn: () => apiFetch<PostflightResponse>('/api/v1/admin/platform/upgrade/postflight'),
     refetchInterval: (query) =>
       query.state.data?.data.phase === 'reconciling' ? 15 * 1000 : pollWhilePending ? 30 * 1000 : false,
+    refetchIntervalInBackground: true,
+    retry: true,
+    retryDelay: 2000,
     staleTime: 10 * 1000,
   });
 }
@@ -117,6 +120,8 @@ interface UpgradeApplyResponse {
 
 export type UpgradeApplyData = UpgradeApplyResponse['data'];
 
+export type DeploymentPhase = 'pending' | 'downloading' | 'starting' | 'ready' | 'error';
+
 export interface DeploymentProgress {
   readonly name: string;
   readonly label: string;
@@ -125,6 +130,8 @@ export interface DeploymentProgress {
   readonly imageTag: string | null;
   readonly versionManaged: boolean;
   readonly atTarget: boolean;
+  /** Coarse roll phase for this component (optional — older backends omit it). */
+  readonly phase?: DeploymentPhase;
 }
 
 interface UpgradeProgressResponse {
@@ -151,7 +158,13 @@ export function useUpgradeProgress(active: boolean) {
     queryKey: ['upgrade-progress'],
     queryFn: () => apiFetch<UpgradeProgressResponse>('/api/v1/admin/platform/upgrade/progress'),
     enabled: active,
+    // Keep polling THROUGH the roll — the admin-panel + platform-api pods restart
+    // mid-upgrade, so requests fail for ~30–90s. React Query keeps the interval
+    // firing on error and retries, so the bar resumes on its own (no page reload).
     refetchInterval: active ? 4 * 1000 : false,
+    refetchIntervalInBackground: true,
+    retry: true,
+    retryDelay: 2000,
     staleTime: 2 * 1000,
   });
 }

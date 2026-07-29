@@ -192,6 +192,13 @@ export interface RouteSettingsLike {
   wafOwaspCrs: number;
   wafAnomalyThreshold: number;
   wafExcludedRules: string | null;
+  // HSTS (migration 0077). Optional so a caller that predates the columns
+  // simply emits no HSTS Middleware — the safe direction for a sticky header
+  // that a browser caches for up to two years and the server cannot recall.
+  hstsEnabled?: number;
+  hstsMaxAge?: number;
+  hstsIncludeSubdomains?: number;
+  hstsPreload?: number;
   customErrorCodes: string | null;
   customErrorPath: string | null;
   additionalHeaders?: Record<string, string> | null;
@@ -238,6 +245,36 @@ export function buildMiddlewaresForRoute(
       labels: {
         'hosting-platform/route-id': routeId,
         'hosting-platform/middleware-kind': 'force-https',
+      },
+    }));
+    refs.push({ name, namespace });
+  }
+
+  // ── HSTS (Strict-Transport-Security) ────────────────────────────────
+  // Placed early in the chain ON PURPOSE. Traefik runs middlewares
+  // left-to-right on the request and unwinds right-to-left on the response,
+  // so anything that short-circuits (ip-allow 403, rate-limit 429,
+  // redirect-regex 301, custom error pages) still passes back out through
+  // this one and carries the header. Put it after those and a blocked or
+  // redirected response would silently lose the policy.
+  //
+  // The header is emitted by Traefik only on TLS connections — `headersSpec`
+  // never sets `forceSTSHeader` — so a plain-HTTP request never sees it.
+  // Tenant workload images emit no HSTS of their own; the edge owns it, which
+  // is what lets a tenant switch runtimes without losing the policy.
+  if (route.hstsEnabled) {
+    const name = middlewareName(routeId, 'hsts');
+    middlewares.push(buildMiddleware({
+      name,
+      namespace,
+      spec: headersSpec({
+        stsSeconds: route.hstsMaxAge ?? 31536000,
+        stsIncludeSubdomains: route.hstsIncludeSubdomains === 1,
+        stsPreload: route.hstsPreload === 1,
+      }),
+      labels: {
+        'hosting-platform/route-id': routeId,
+        'hosting-platform/middleware-kind': 'hsts',
       },
     }));
     refs.push({ name, namespace });

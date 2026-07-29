@@ -103,7 +103,8 @@ Click any route to open its detail page, which has these tabs:
 - **Security** — a per-website firewall (WAF) that blocks common attacks.
 - **Access Control** — sign-in gates and
   [password-protected folders](protected-directories.md).
-- **Advanced** — custom error pages and extra response headers.
+- **Advanced** — custom error pages, extra response headers, and
+  [HSTS](#hsts-https-only-enforcement).
 
 ## Hosting settings: www and HTTPS redirects
 
@@ -119,6 +120,37 @@ Open a route → **Redirects** tab. Changes apply within a few seconds.
     and language version your site runs are set by **the application you
     deploy** — see [Deployments & applications](deployments-and-applications.md).
     Your files live in the [File Manager](files-and-sftp.md).
+
+## HSTS (HTTPS-only enforcement)
+
+Open a route → **Advanced** → **HSTS**. Off by default.
+
+HSTS tells browsers to only ever reach this hostname over `https://`. Where
+**Force HTTPS** redirects an insecure visit, HSTS stops the browser from making
+the insecure request in the first place — which closes the gap that redirect
+leaves open. It is added by the platform's ingress, so it works whichever
+application you deploy, and it is only ever sent on HTTPS responses.
+
+| Setting | What it does |
+|---|---|
+| **Enable HSTS** | Turns the policy on. Your site must already work over HTTPS. |
+| **max-age** | How long browsers enforce it, in seconds. `31536000` (1 year) is the usual choice. Start lower (e.g. `300`) while testing. |
+| **includeSubDomains** | Applies the policy to *every* subdomain — including any not hosted here. |
+| **preload** | Marks the domain as eligible for the browsers' built-in preload list. Needs includeSubDomains and a max-age of at least 1 year. |
+
+!!! warning "HSTS is sticky — plan the way out before you turn it on"
+    Once a visitor's browser has seen the header it refuses plain HTTP for the
+    whole max-age, and there is no way to take that back from the server. If
+    HTTPS later breaks, those visitors cannot reach the site at all.
+
+    To withdraw it: set **max-age to `0`** and leave HSTS enabled long enough for
+    returning visitors to pick that up, *then* switch it off. Turning the toggle
+    off first just stops sending the header — browsers that already cached the
+    old policy keep enforcing it until it expires.
+
+    Turn **includeSubDomains** on only if every subdomain has working HTTPS, and
+    treat **preload** as close to irreversible — submitting to the list is a
+    separate manual step, and removal takes months.
 
 ## TLS certificates (HTTPS)
 

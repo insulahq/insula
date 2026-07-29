@@ -35,6 +35,9 @@ const SERVICE_LABELS: Record<string, string> = {
  */
 const PLATFORM_VERSION_TAG = /^\d{4}\.\d{1,2}\.\d+(-rc\.\d+)?$/;
 
+/** Coarse per-component roll phase, derived from its target-image pods. */
+export type DeploymentPhase = 'pending' | 'downloading' | 'starting' | 'ready' | 'error';
+
 export interface DeploymentProgress {
   readonly name: string;
   readonly label: string;
@@ -45,6 +48,10 @@ export interface DeploymentProgress {
   readonly versionManaged: boolean;
   /** true when every container image is at `targetTag` AND the Deployment is Available. */
   readonly atTarget: boolean;
+  /** pending (no target pod yet) → downloading (pulling/creating) → starting
+   *  (running, not Ready) → ready (Available at target); error on image-pull /
+   *  crash-loop. Lets the UI show "Downloading…", "Deploying…", "Ready". */
+  readonly phase: DeploymentPhase;
 }
 
 export interface UpgradeProgress {
@@ -61,6 +68,12 @@ type RawDeploy = {
   metadata?: { name?: string };
   spec?: { replicas?: number; template?: { spec?: { containers?: Array<{ image?: string }> } } };
   status?: { readyReplicas?: number; availableReplicas?: number };
+};
+
+type RawPod = {
+  metadata?: { name?: string };
+  spec?: { containers?: Array<{ image?: string }> };
+  status?: { containerStatuses?: Array<{ ready?: boolean; state?: { waiting?: { reason?: string }; running?: unknown } }> };
 };
 
 function tagOf(image: string | undefined): string | null {
@@ -89,6 +102,32 @@ export async function collectUpgradeProgress(
     return { targetTag, total: 0, atTarget: 0, ready: 0, percent: 0, deployments: [], readable: false };
   }
 
+  // Pods (once) → derive a per-component phase (downloading / starting / …).
+  let pods: RawPod[] = [];
+  try {
+    const pl = (await k8s.core.listNamespacedPod({
+      namespace: PLATFORM_NS,
+    } as unknown as Parameters<typeof k8s.core.listNamespacedPod>[0])) as { items?: RawPod[] };
+    pods = pl.items ?? [];
+  } catch { pods = []; }
+
+  const phaseOf = (name: string, atTarget: boolean): DeploymentPhase => {
+    if (atTarget) return 'ready';
+    // This Deployment's pods already on the target image (name-prefix + tag).
+    const mine = pods.filter((p) =>
+      (p.metadata?.name ?? '').startsWith(`${name}-`) &&
+      (p.spec?.containers ?? []).some((c) => (targetTag ? tagOf(c.image) === targetTag : true)));
+    if (mine.length === 0) return 'pending'; // new ReplicaSet not scheduled yet
+    for (const p of mine) {
+      const cs = (p.status?.containerStatuses ?? [])[0];
+      const wr = cs?.state?.waiting?.reason ?? '';
+      if (/ImagePull|ErrImage|InvalidImage|CrashLoopBackOff/i.test(wr)) return 'error';
+      if (/ContainerCreating|PodInitializing/i.test(wr)) return 'downloading';
+      if (cs?.ready === false || cs?.state?.running) return 'starting';
+    }
+    return 'starting';
+  };
+
   const all: DeploymentProgress[] = items.map((d) => {
     const name = d.metadata?.name ?? '<unknown>';
     const desired = d.spec?.replicas ?? 1;
@@ -105,7 +144,7 @@ export async function collectUpgradeProgress(
       ? tags.every((t) => t === null || !PLATFORM_VERSION_TAG.test(t) || t === targetTag)
       : true;
     const atTarget = versionManaged && onTag && available >= desired;
-    return { name, label: SERVICE_LABELS[name] ?? name, desiredReplicas: desired, readyReplicas: ready, imageTag, versionManaged, atTarget };
+    return { name, label: SERVICE_LABELS[name] ?? name, desiredReplicas: desired, readyReplicas: ready, imageTag, versionManaged, atTarget, phase: phaseOf(name, atTarget) };
   });
 
   // The progress bar tracks ONLY version-managed Deployments (the ones that roll
