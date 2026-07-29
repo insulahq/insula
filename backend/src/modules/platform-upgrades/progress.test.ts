@@ -10,10 +10,15 @@ function fakeK8s(deploys: unknown[], nodeCount: number): K8sClients {
   } as unknown as K8sClients;
 }
 
-const dep = (name: string, image: string, replicas: number, available: number, ready = available) => ({
+// updated/total default to `available` → a SETTLED deployment (all replicas on the
+// new template, no old surge pod). Override them to model a mid-rolling-update.
+const dep = (
+  name: string, image: string, replicas: number, available: number,
+  ready = available, updated = available, total = available,
+) => ({
   metadata: { name },
   spec: { replicas, template: { spec: { containers: [{ image }] } } },
-  status: { availableReplicas: available, readyReplicas: ready },
+  status: { availableReplicas: available, readyReplicas: ready, updatedReplicas: updated, replicas: total },
 });
 
 const IMG = 'ghcr.io/insulahq/insula';
@@ -50,6 +55,25 @@ describe('collectUpgradeProgress', () => {
     const p = await collectUpgradeProgress(k8s, '2026.7.9');
     expect(p.atTarget).toBe(0);
     expect(p.percent).toBe(0);
+  });
+
+  it('mid rolling-update: template on target + available via the OLD pod but not yet updated → NOT atTarget', async () => {
+    // Flux just re-pinned (template=target) and the OLD pod still satisfies
+    // availability (available=1), but the new pod is not ready (updated=0) and a
+    // surge pod exists (total=2). Must NOT count as done — otherwise the bar hits
+    // 100% and the modal says "Done" ~30s before the new pods actually serve.
+    const k8s = fakeK8s([dep('platform-api', `${IMG}/backend:2026.7.9`, 1, 1, 1, /*updated*/ 0, /*total*/ 2)], 1);
+    const p = await collectUpgradeProgress(k8s, '2026.7.9');
+    expect(p.atTarget).toBe(0);
+    expect(p.percent).toBe(0);
+    expect(p.deployments[0].phase).not.toBe('ready');
+  });
+
+  it('roll genuinely complete: all replicas updated + available, no old surge → atTarget', async () => {
+    const k8s = fakeK8s([dep('platform-api', `${IMG}/backend:2026.7.9`, 2, 2, 2, /*updated*/ 2, /*total*/ 2)], 1);
+    const p = await collectUpgradeProgress(k8s, '2026.7.9');
+    expect(p.atTarget).toBe(1);
+    expect(p.percent).toBe(100);
   });
 
   it('accepts rc tags as version-managed', async () => {

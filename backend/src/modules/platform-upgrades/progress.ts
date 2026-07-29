@@ -67,7 +67,7 @@ export interface UpgradeProgress {
 type RawDeploy = {
   metadata?: { name?: string };
   spec?: { replicas?: number; template?: { spec?: { containers?: Array<{ image?: string }> } } };
-  status?: { readyReplicas?: number; availableReplicas?: number };
+  status?: { readyReplicas?: number; availableReplicas?: number; updatedReplicas?: number; replicas?: number };
 };
 
 type RawPod = {
@@ -133,17 +133,26 @@ export async function collectUpgradeProgress(
     const desired = d.spec?.replicas ?? 1;
     const ready = d.status?.readyReplicas ?? 0;
     const available = d.status?.availableReplicas ?? 0;
+    const updated = d.status?.updatedReplicas ?? 0;   // pods on the NEW (target) template
+    const currentTotal = d.status?.replicas ?? 0;      // total pods incl. old surge replicas
     const containers = d.spec?.template?.spec?.containers ?? [];
     const tags = containers.map((c) => tagOf(c.image));
     const imageTag = tags[0] ?? null;
     const versionManaged = tags.some((t) => t !== null && PLATFORM_VERSION_TAG.test(t));
-    // At target when every version tag matches the target AND the Deployment has
-    // at least its desired replicas Available. Without a target, fall back to
-    // plain availability so the bar is still meaningful mid-roll.
     const onTag = targetTag
       ? tags.every((t) => t === null || !PLATFORM_VERSION_TAG.test(t) || t === targetTag)
       : true;
-    const atTarget = versionManaged && onTag && available >= desired;
+    // At target = the roll is GENUINELY complete: the template is the target AND
+    // every replica is the new one (`updated === total`, so no old surge pod is
+    // lingering) AND enough are Available. Checking availableReplicas alone flips
+    // true the instant Flux re-pins — the OLD pod still satisfies availability
+    // during a rolling update — so the bar hit 100% and the modal said "Done" ~30s
+    // before the new pods were actually serving. With no target (idle) fall back to
+    // plain availability so the bar stays meaningful.
+    const rolledDone = targetTag
+      ? updated >= desired && currentTotal <= updated && available >= desired
+      : available >= desired;
+    const atTarget = versionManaged && onTag && desired > 0 && rolledDone;
     return { name, label: SERVICE_LABELS[name] ?? name, desiredReplicas: desired, readyReplicas: ready, imageTag, versionManaged, atTarget, phase: phaseOf(name, atTarget) };
   });
 
