@@ -12,6 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Admin-panel lint hard-failed on an inert eslint directive.** An
+  `eslint-disable-next-line react-hooks/exhaustive-deps` in `UpgradeReviewModal`
+  named a rule this repo does not configure, so eslint errored with "Definition
+  for rule … was not found" and turned `development` red. The directive
+  suppressed nothing; replaced with a comment recording why the effect is
+  mount-only.
+- **Monitoring tabs sat flush against the card border.** The page renders each
+  tab panel straight into the card with no padding wrapper, so every tab has to
+  supply its own — SLOs, Mail and Node Health supplied none. All six content
+  tabs now share `p-5` (Pods moved from `p-4` for consistency); the two alert
+  tables stay full-bleed, which is intended for a table inside a card.
+
+### Changed
+- **Monitoring now opens on the SLOs tab** instead of Active Alerts — SLOs
+  answer "is the platform meeting its objectives right now", where Active Alerts
+  only shows what has already fired. An explicit `?tab=` still wins, so existing
+  deep links (e.g. the `/monitoring/health` redirect) are unaffected.
+- **SLO rules table is now sortable**, defaulting to most-recently-evaluated
+  first. **State moved to the first column** and its icons are now filled pills
+  rather than inline text, so the leftmost column reads at a glance. Sorting uses
+  derived keys — a numeric `evaluatedTs` (never-evaluated rules sort to the
+  bottom instead of floating to the top as nulls would) and a `stateRank` that
+  orders firing → ok → disabled.
 ### Added
 - **Per-route HSTS, configurable in the tenant panel** (Route → Advanced → HSTS):
   enable, `max-age`, `includeSubDomains`, `preload`. Emitted at the edge as a
