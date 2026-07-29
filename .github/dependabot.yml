@@ -8,9 +8,18 @@
 version: 2
 
 updates:
+  # target-branch: development on EVERY ecosystem — NOT the repo default.
+  #
+  # The default branch is `main`, but under ADR-053 `main` only ever receives
+  # `chore(promote)` tree-snapshots of `development` plus `chore(release)`
+  # commits. A dependency bump merged straight into `main` is therefore
+  # REVERTED by the next promote, silently. Bumps must land on `development`
+  # like all other code and reach `main` through the normal promote.
+  # (Observed 2026-07-29: PR #176 had been sitting open against `main`.)
   # ── npm (single root workspace: backend, both panels, packages/*) ──
   - package-ecosystem: npm
     directory: "/"
+    target-branch: development
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -31,21 +40,25 @@ updates:
   # ── Go modules (first-party reconcilers + sftp-gateway) ──
   - package-ecosystem: gomod
     directory: /images/firewall-reconciler
+    target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/host-config-reconciler
+    target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/security-probe
+    target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/sftp-gateway
+    target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
     labels: ["dependencies", "security-watch"]
@@ -53,6 +66,7 @@ updates:
   # go.mod deps (x/crypto for sftp/ssh) went unwatched by Dependabot.
   - package-ecosystem: gomod
     directory: /images/file-manager
+    target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
     labels: ["dependencies", "security-watch"]
@@ -60,6 +74,7 @@ updates:
   # ── Rust (RocksDB checkpoint helper) ──
   - package-ecosystem: cargo
     directory: /images/rocksdb-secondary-checkpoint
+    target-branch: development
     schedule: { interval: weekly }
     # librocksdb-sys is intentionally pinned (=0.17.3) to Stalwart's RocksDB
     # version — Dependabot may propose, but review against ADR-046 before merge.
@@ -68,6 +83,7 @@ updates:
   # ── GitHub Actions (CI toolchain) ──
   - package-ecosystem: github-actions
     directory: "/"
+    target-branch: development
     schedule: { interval: weekly }
     groups: { actions: { update-types: [minor, patch] } }
     labels: ["dependencies", "ci"]
