@@ -13,8 +13,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
-- Removed the duplicate **Upgrades** item from the Platform Settings menu (the page
-  consolidated into **Updates**; `/platform/upgrades` stays a redirect).
+- **A cluster's FIRST upgrade to the adaptive reconciler no longer waits out a
+  stale lease.** The upgrade reconciler's single-flight lease is now reclaimable
+  when its stored expiry is further out than any legitimate TTL — otherwise the
+  108s lease written by the prior (fixed-cadence) release blocked the new fast
+  reconciler for the whole first upgrade (~90s finalize lag on the transition).
 
 ## [2026.7.22] - 2026-07-29
 

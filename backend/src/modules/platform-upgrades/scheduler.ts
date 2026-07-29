@@ -202,7 +202,12 @@ export async function claimLease(db: Database, nowMs: number, ttlMs: number = le
         eq(platformSettings.key, LEASE_KEY),
         // numeric guard so a malformed value can't blow up the CAST.
         sql`${platformSettings.value} ~ '^[0-9]+$'`,
-        sql`CAST(${platformSettings.value} AS BIGINT) < ${nowMs}`,
+        // Claimable when the lease has expired, OR when its expiry is further out
+        // than ANY legitimate TTL — a stale lease left by a prior release whose
+        // TTL was longer (the old fixed 108s). Without the second clause that
+        // stale lease blocks the new fast reconciler through the whole FIRST
+        // upgrade to this version (observed: ~90s finalize lag on the transition).
+        sql`(CAST(${platformSettings.value} AS BIGINT) < ${nowMs} OR CAST(${platformSettings.value} AS BIGINT) > ${nowMs + leaseTtlFor(IDLE_TICK_MS)})`,
       ),
     )
     .returning({ key: platformSettings.key });
