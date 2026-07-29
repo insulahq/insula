@@ -18,7 +18,13 @@ permissions:
 
 jobs:
   manual-impact:
-    name: Manual freshness (report-only)
+    # NAME MUST MATCH THE BEHAVIOUR. This was called "Manual freshness
+    # (report-only)" long after it stopped being report-only (2026-07-25), so a
+    # red run read as advisory noise and got waved through. It BLOCKS: a PR
+    # touching user-visible surfaces must update documentation/docs/** or carry
+    # a `Manual-Impact: none` commit trailer. If the enforcement flag below is
+    # ever turned off again, rename this back.
+    name: Documentation freshness guard
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
