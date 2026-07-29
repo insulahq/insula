@@ -12,6 +12,69 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenant resource usage reported CPU reserved as 0 and PVC usage as 0.**
+  Three independent causes, all in the per-tenant metrics collector:
+    - *CPU reserved* was summed from `container.resources.limits.cpu`, but
+      tenant workloads run asymmetric QoS (ADR-037) — CPU **request** only, no
+      CPU limit — so the field was unset on every container and the total was
+      structurally always 0. Memory looked correct because its request equals
+      its limit, which is why only some figures looked wrong. Now summed from
+      requests, falling back to limits; the ResourceQuota fallback path had the
+      same bug and got the same fix.
+    - *PVC usage* came solely from the file-manager sidecar's `/disk-usage`.
+      That sidecar is created at `replicas: 0` and scaled back to 0 after 10
+      minutes idle, so the probe usually failed and usage silently read 0. It
+      now comes from `kubelet_volume_stats_used_bytes` (new `kubelet-volumes`
+      scrape job — CSI-agnostic, two series per PVC), with the file-manager
+      kept as a fallback for the case the kubelet cannot cover: a tenant whose
+      every workload is stopped has no mounted volume to report on.
+    - *Staleness*: the endpoint served a cached sample and refreshed **behind**
+      the response, so the panel showed the previous value and needed a second
+      reload to catch up — on top of a scheduler that only refreshed hourly. It
+      now returns a cached sample only while it is under 15s old and otherwise
+      collects synchronously, so the page and the resource modal (which share
+      the endpoint) show live state, polled every 60s while the tab is active
+      and on demand via Refresh.
+- **Admin-panel lint hard-failed on an inert eslint directive.** An
+  `eslint-disable-next-line react-hooks/exhaustive-deps` in `UpgradeReviewModal`
+  named a rule this repo does not configure, so eslint errored with "Definition
+  for rule … was not found" and turned `development` red. The directive
+  suppressed nothing; replaced with a comment recording why the effect is
+  mount-only.
+- **Monitoring tabs sat flush against the card border.** The page renders each
+  tab panel straight into the card with no padding wrapper, so every tab has to
+  supply its own — SLOs, Mail and Node Health supplied none. All six content
+  tabs now share `p-5` (Pods moved from `p-4` for consistency); the two alert
+  tables stay full-bleed, which is intended for a table inside a card.
+
+### Changed
+- **Monitoring now opens on the SLOs tab** instead of Active Alerts — SLOs
+  answer "is the platform meeting its objectives right now", where Active Alerts
+  only shows what has already fired. An explicit `?tab=` still wins, so existing
+  deep links (e.g. the `/monitoring/health` redirect) are unaffected.
+- **SLO rules table is now sortable**, defaulting to most-recently-evaluated
+  first. **State moved to the first column** and its icons are now filled pills
+  rather than inline text, so the leftmost column reads at a glance. Sorting uses
+  derived keys — a numeric `evaluatedTs` (never-evaluated rules sort to the
+  bottom instead of floating to the top as nulls would) and a `stateRank` that
+  orders firing → ok → disabled.
+### Added
+- **Per-route HSTS, configurable in the tenant panel** (Route → Advanced → HSTS):
+  enable, `max-age`, `includeSubDomains`, `preload`. Emitted at the edge as a
+  Traefik `headers` Middleware rather than by the workload image — the Official
+  Catalog runtimes deliberately send no `Strict-Transport-Security` of their own,
+  so a tenant can switch runtime or bring their own container without silently
+  losing or gaining the policy. **Off by default on every route**, including
+  existing ones: HSTS is sticky and cannot be recalled from the server, so it is
+  opt-in per route. The header is only ever sent on HTTPS responses (Traefik's
+  `forceSTSHeader` is never set). The Middleware is ordered first in the chain so
+  short-circuiting responses — allowlist 403, rate-limit 429, redirects, custom
+  error pages — still carry it. `preload` is refused unless `includeSubDomains`
+  is on and `max-age` ≥ 1 year, validated in the panel, against the merged row in
+  the service, and by a CHECK constraint in migration `0077`. See
+  [docs/features/HSTS.md](docs/features/HSTS.md).
+
 ## [2026.7.20] - 2026-07-28
 
 ### Fixed

@@ -17,7 +17,15 @@ export function useResourceMetrics() {
     queryFn: () => apiFetch<{ data: ResourceMetrics }>(`/api/v1/tenants/${tenantId}/resource-metrics`),
     enabled: Boolean(tenantId),
     staleTime: 60_000,
-    refetchInterval: 60_000, // Auto-refresh every 60 seconds
+    // Live view: poll every 60s while the operator is actually looking at the
+    // page, and refresh immediately when they come back to the tab. The server
+    // collects from the cluster on demand (it only serves a cached sample for
+    // ~15s, purely to coalesce concurrent viewers), so each poll is current.
+    refetchInterval: 60_000,
+    // Explicit: no polling while the tab is hidden. A backgrounded panel should
+    // not keep the API listing pods for every tenant it has open.
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
   });
 }
 

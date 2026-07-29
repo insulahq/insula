@@ -10,7 +10,15 @@ import { tenants, hostingPlans } from '../../db/schema.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 
-const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes — trigger background refresh
+// How old a cached sample may be and still count as "live" for the tenant-facing
+// endpoint. The panel polls every 60s, so anything under that reads as current;
+// 15s exists only to coalesce concurrent viewers (and the per-pod caches of
+// several API replicas) into one collection instead of one per request.
+//
+// Deliberately NOT stale-while-revalidate any more: that returned the OLD value
+// and refreshed behind it, so an operator watching the page had to reload twice
+// to see a change and the numbers always trailed reality by a refresh.
+const LIVE_MAX_AGE_MS = 15 * 1000;
 
 /**
  * Resolve effective plan limits for a tenant, applying per-tenant overrides.
@@ -72,20 +80,13 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { id } = request.params as { id: string };
 
-    // Try cache first
+    // Serve the cache only while it is still within the live window; otherwise
+    // collect synchronously so the caller always gets current numbers.
     const cached = await getCachedMetrics(id);
-    if (cached) {
-      // Stale-while-revalidate: return cached data immediately,
-      // trigger background refresh if older than threshold
-      const age = Date.now() - new Date(cached.lastUpdatedAt).getTime();
-      if (age > STALE_THRESHOLD_MS) {
-        // Fire-and-forget — don't await
-        collectSafe(app, id).catch(() => {});
-      }
+    if (cached && Date.now() - new Date(cached.lastUpdatedAt).getTime() <= LIVE_MAX_AGE_MS) {
       return success(cached);
     }
 
-    // Cache miss — collect on-demand (blocking)
     const tenant = await getTenantById(app.db, id);
     if (tenant.provisioningStatus !== 'provisioned') {
       throw new ApiError('TENANT_NOT_PROVISIONED', 'Tenant is not provisioned yet', 409);

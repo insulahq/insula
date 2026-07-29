@@ -50,6 +50,10 @@ export interface RouteDetailResponse {
   readonly wafOwaspCoreRules: boolean;
   readonly wafAnomalyThreshold: number;
   readonly wafExcludedRuleIds: string | null;
+  readonly hstsEnabled: boolean;
+  readonly hstsMaxAge: number;
+  readonly hstsIncludeSubdomains: boolean;
+  readonly hstsPreload: boolean;
   readonly customErrorCodes: string | null;
   readonly customErrorPath: string | null;
   readonly additionalHeaders: Record<string, string> | null;
@@ -160,6 +164,13 @@ export function useUpdateRouteAdvanced(tenantId: string | undefined, routeId: st
       readonly custom_error_codes?: string | null;
       readonly custom_error_path?: string | null;
       readonly additional_headers?: Record<string, string> | null;
+      // HSTS. Sent as a group from the HSTS section; the backend still
+      // validates the preload contract against the merged row so a partial
+      // update from any other caller cannot produce an invalid policy.
+      readonly hsts_enabled?: boolean;
+      readonly hsts_max_age?: number;
+      readonly hsts_include_subdomains?: boolean;
+      readonly hsts_preload?: boolean;
     }) =>
       apiFetch<{ data: RouteDetailResponse }>(
         `${routeBasePath(tenantId!, routeId!)}/advanced`,

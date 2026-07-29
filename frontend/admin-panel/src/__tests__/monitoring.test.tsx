@@ -106,14 +106,14 @@ vi.mock('@/hooks/use-pods', () => ({
   }),
 }));
 
-function createWrapper() {
+function createWrapper(initialEntries: readonly string[] = ['/monitoring']) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   return function Wrapper({ children }: { readonly children: React.ReactNode }) {
     return (
       <QueryClientProvider client={queryClient}>
-        <MemoryRouter>{children}</MemoryRouter>
+        <MemoryRouter initialEntries={[...initialEntries]}>{children}</MemoryRouter>
       </QueryClientProvider>
     );
   };
@@ -144,8 +144,20 @@ describe('Monitoring page', () => {
     expect(screen.getByText('3')).toBeInTheDocument();
   });
 
-  it('renders Active Alerts tab by default with audit log data', () => {
+  it('defaults to the SLOs tab', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
+    expect(screen.getByTestId('tab-slos')).toHaveClass('border-brand-500');
+    expect(screen.getByTestId('tab-active-alerts')).not.toHaveClass('border-brand-500');
+  });
+
+  it('honours an explicit ?tab= over the default', () => {
+    render(<Monitoring />, { wrapper: createWrapper(['/monitoring?tab=alert-history']) });
+    expect(screen.getByTestId('tab-alert-history')).toHaveClass('border-brand-500');
+    expect(screen.getByTestId('tab-slos')).not.toHaveClass('border-brand-500');
+  });
+
+  it('renders Active Alerts tab with audit log data', () => {
+    render(<Monitoring />, { wrapper: createWrapper(['/monitoring?tab=active-alerts']) });
     expect(screen.getByTestId('tab-active-alerts')).toHaveClass('border-brand-500');
     expect(screen.getByText('create tenant')).toBeInTheDocument();
     expect(screen.getByText('update domain')).toBeInTheDocument();
@@ -190,7 +202,7 @@ describe('Monitoring page', () => {
   });
 
   it('displays alert severity badges derived from httpStatus', () => {
-    render(<Monitoring />, { wrapper: createWrapper() });
+    render(<Monitoring />, { wrapper: createWrapper(['/monitoring?tab=active-alerts']) });
     // httpStatus 201 -> info, 500 -> critical, 404 -> warning
     expect(screen.getByText('critical')).toBeInTheDocument();
     expect(screen.getByText('warning')).toBeInTheDocument();
