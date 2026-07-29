@@ -36,11 +36,99 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
       collects synchronously, so the page and the resource modal (which share
       the endpoint) show live state, polled every 60s while the tab is active
       and on demand via Refresh.
+- **Admin-panel lint hard-failed on an inert eslint directive.** An
+  `eslint-disable-next-line react-hooks/exhaustive-deps` in `UpgradeReviewModal`
+  named a rule this repo does not configure, so eslint errored with "Definition
+  for rule … was not found" and turned `development` red. The directive
+  suppressed nothing; replaced with a comment recording why the effect is
+  mount-only.
+- **Monitoring tabs sat flush against the card border.** The page renders each
+  tab panel straight into the card with no padding wrapper, so every tab has to
+  supply its own — SLOs, Mail and Node Health supplied none. All six content
+  tabs now share `p-5` (Pods moved from `p-4` for consistency); the two alert
+  tables stay full-bleed, which is intended for a table inside a card.
 
 ### Changed
-- Maintenance release — no functional changes since v2026.7.16; re-pinned as a
-  fresh signed release (e.g. to exercise the upgrade flow from an installed
-  cluster).
+- **Monitoring now opens on the SLOs tab** instead of Active Alerts — SLOs
+  answer "is the platform meeting its objectives right now", where Active Alerts
+  only shows what has already fired. An explicit `?tab=` still wins, so existing
+  deep links (e.g. the `/monitoring/health` redirect) are unaffected.
+- **SLO rules table is now sortable**, defaulting to most-recently-evaluated
+  first. **State moved to the first column** and its icons are now filled pills
+  rather than inline text, so the leftmost column reads at a glance. Sorting uses
+  derived keys — a numeric `evaluatedTs` (never-evaluated rules sort to the
+  bottom instead of floating to the top as nulls would) and a `stateRank` that
+  orders firing → ok → disabled.
+### Added
+- **Per-route HSTS, configurable in the tenant panel** (Route → Advanced → HSTS):
+  enable, `max-age`, `includeSubDomains`, `preload`. Emitted at the edge as a
+  Traefik `headers` Middleware rather than by the workload image — the Official
+  Catalog runtimes deliberately send no `Strict-Transport-Security` of their own,
+  so a tenant can switch runtime or bring their own container without silently
+  losing or gaining the policy. **Off by default on every route**, including
+  existing ones: HSTS is sticky and cannot be recalled from the server, so it is
+  opt-in per route. The header is only ever sent on HTTPS responses (Traefik's
+  `forceSTSHeader` is never set). The Middleware is ordered first in the chain so
+  short-circuiting responses — allowlist 403, rate-limit 429, redirects, custom
+  error pages — still carry it. `preload` is refused unless `includeSubDomains`
+  is on and `max-age` ≥ 1 year, validated in the panel, against the merged row in
+  the service, and by a CHECK constraint in migration `0077`. See
+  [docs/features/HSTS.md](docs/features/HSTS.md).
+
+## [2026.7.20] - 2026-07-28
+
+### Fixed
+- **Platform-upgrade progress/post-flight reported a phantom perpetual upgrade to
+  the last-completed version.** After a healthy convergence the in-flight marker
+  (`pending_update_version`) is cleared, but the persisted post-flight state blob
+  stayed frozen at `{phase: healthy, pendingVersion: <that version>}` and the
+  scheduler went dormant — so `/upgrade/progress` and `/upgrade/postflight` kept
+  reporting an upgrade to the old target (progress bar stuck at 0/N, modal stuck
+  on "Rolling → <old>…"). `readPostflightState` now reconciles against the live
+  marker: with no pending upgrade it reads `idle`, and while one is in flight it
+  pins `pendingVersion` to the live marker (fresh, not one scheduler-tick stale).
+  Also, while an upgrade is in flight but the reconciler has not yet written its
+  first assessment (the ~100 s after Apply, or a cluster's first-ever upgrade) it
+  now reports `reconciling`, not `idle`, so the just-opened progress modal shows
+  the roll instead of flashing "Done".
+
+## [2026.7.19] - 2026-07-28
+
+### Fixed
+- **Platform-upgrade progress/post-flight reported a phantom perpetual upgrade to
+  the last-completed version.** After a healthy convergence the in-flight marker
+  (`pending_update_version`) is cleared, but the persisted post-flight state blob
+  stayed frozen at `{phase: healthy, pendingVersion: <that version>}` and the
+  scheduler went dormant — so `/upgrade/progress` and `/upgrade/postflight` kept
+  reporting an upgrade to the old target (progress bar stuck at 0/N, modal stuck
+  on "Rolling → <old>…"). `readPostflightState` now reconciles against the live
+  marker: with no pending upgrade it reads `idle`, and while one is in flight it
+  pins `pendingVersion` to the live marker (fresh, not one scheduler-tick stale).
+
+## [2026.7.18] - 2026-07-28
+
+### Changed
+- **Static-site catalog codes renamed `static-nginx` → `nginx` and
+  `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
+  the deployment name and what the storage path is built from, so it should read
+  as the web server, not as an internal category. Migration `0076` renames the
+  rows **in place** so existing deployments keep their `catalog_entry_id`; the
+  catalog folders and GHCR image paths are unchanged. Requires the matching
+  manifest change in `insulahq/application-catalog`.
+
+## [2026.7.18] - 2026-07-28
+
+### Changed
+- **Redesigned the platform update page.** "Run upgrade" moved into the version
+  card (shown only when a newer verified release is available) → a Review modal
+  (pre-flight + interruption preview) → Approve (no second confirm) → a live
+  progress modal; removed the standalone Run-upgrade / Pre-flight cards. The
+  progress modal now shows a clear **Done** state (it was stuck on "Rolling…" for
+  up to 2 min after finishing) and a **per-component phase** (Downloading /
+  Deploying / Ready) derived from each Deployment's pods. It keeps polling through
+  the admin-panel + API restart mid-upgrade (a "Reconnecting…" hint + a
+  post-upgrade "Reload admin panel" action) so progress never freezes until a
+  manual reload. The available version is highlighted green when an update exists.
 - **Static-site catalog codes renamed `static-nginx` → `nginx` and
   `static-apache` → `apache`.** The code is what the tenant panel pre-fills as
   the deployment name and what the storage path is built from, so it should read

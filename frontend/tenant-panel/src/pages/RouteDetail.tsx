@@ -414,6 +414,7 @@ function SecurityTab({ tenantId, routeId, route }: {
     }
   };
 
+
   return (
     <div className="space-y-6" data-testid="security-tab">
       <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -685,6 +686,7 @@ function SecurityTab({ tenantId, routeId, route }: {
         </form>
         )}
       </div>
+
     </div>
   );
 }
@@ -1589,9 +1591,30 @@ function AdvancedTab({ tenantId, routeId, route }: {
   const [headersSaveError, setHeadersSaveError] = useState<string | null>(null);
   const markHeadersDirty = () => setHeadersDirty(true);
 
+  /* ── HSTS state ──
+     The workload images deliberately emit no Strict-Transport-Security of
+     their own — the edge owns the policy, so it survives a runtime swap. */
+  const [hstsEnabled, setHstsEnabled] = useState(route.hstsEnabled);
+  const [hstsMaxAge, setHstsMaxAge] = useState(String(route.hstsMaxAge ?? 31536000));
+  const [hstsIncludeSubdomains, setHstsIncludeSubdomains] = useState(route.hstsIncludeSubdomains);
+  const [hstsPreload, setHstsPreload] = useState(route.hstsPreload);
+  const [hstsDirty, setHstsDirty] = useState(false);
+  const markHstsDirty = () => setHstsDirty(true);
+
+  const [hstsSaveError, setHstsSaveError] = useState<string | null>(null);
+  const [hstsSaving, setHstsSaving] = useState(false);
+
   /* ── Collapsible section state ── */
   const [errorPagesOpen, setErrorPagesOpen] = useState(false);
   const [responseHeadersOpen, setResponseHeadersOpen] = useState(false);
+  const [hstsOpen, setHstsOpen] = useState(false);
+
+  /* Preload has a hard contract (the browser preload list rejects entries
+     without includeSubDomains + max-age >= 1 year). Mirror the backend rule
+     here so the operator sees it before the request round-trips. */
+  const hstsPreloadBlocked = hstsPreload
+    && (!hstsIncludeSubdomains || Number(hstsMaxAge || '0') < 31536000);
+
 
   const handleAddHeader = () => {
     if (headers.length >= 50) return;
@@ -1635,6 +1658,25 @@ function AdvancedTab({ tenantId, routeId, route }: {
       setErrorSaveError(err instanceof Error ? err.message : 'Failed to save error page settings');
     } finally {
       setErrorSaving(false);
+    }
+  };
+
+  const handleSaveHsts = async (e: FormEvent) => {
+    e.preventDefault();
+    setHstsSaveError(null);
+    setHstsSaving(true);
+    try {
+      await updateAdvanced.mutateAsync({
+        hsts_enabled: hstsEnabled,
+        hsts_max_age: Number(hstsMaxAge || '0'),
+        hsts_include_subdomains: hstsIncludeSubdomains,
+        hsts_preload: hstsPreload,
+      });
+      setHstsDirty(false);
+    } catch (err) {
+      setHstsSaveError(err instanceof Error ? err.message : 'Failed to save HSTS settings');
+    } finally {
+      setHstsSaving(false);
     }
   };
 
@@ -1744,6 +1786,171 @@ function AdvancedTab({ tenantId, routeId, route }: {
             Save
           </button>
         </div>
+        </form>
+        )}
+      </div>
+
+      {/* ── HSTS Card ── */}
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setHstsOpen(!hstsOpen)}
+          className="flex w-full items-center justify-between px-5 py-4 text-left"
+          data-testid="hsts-section"
+        >
+          <div className="flex items-center gap-2">
+            {hstsOpen ? <ChevronDown size={16} className="text-gray-400" /> : <ChevronRight size={16} className="text-gray-400" />}
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">HSTS (HTTP Strict Transport Security)</h3>
+          </div>
+          {route.hstsEnabled && (
+            <span className="inline-flex rounded-full px-2 py-0.5 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+              Active
+            </span>
+          )}
+        </button>
+        {hstsOpen && (
+        <form
+          onSubmit={handleSaveHsts}
+          className="border-t border-gray-200 dark:border-gray-700 p-5 space-y-4"
+          data-testid="hsts-form"
+        >
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Tells browsers to reach this hostname over HTTPS only. The header is added at the
+            ingress — your application image does not need to send it — and is only ever sent
+            on HTTPS responses, never over plain HTTP.
+          </p>
+
+          <div className="flex items-center justify-between">
+            <div className="pr-4">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Enable HSTS</span>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                Requires a working HTTPS certificate on this route.
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={hstsEnabled}
+              onClick={() => { setHstsEnabled(!hstsEnabled); markHstsDirty(); }}
+              className={clsx(
+                'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+                hstsEnabled ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+              )}
+              data-testid="hsts-enabled-toggle"
+            >
+              <span
+                className={clsx(
+                  'inline-block h-5 w-5 transform rounded-full bg-white transition-transform',
+                  hstsEnabled ? 'translate-x-5' : 'translate-x-0',
+                )}
+              />
+            </button>
+          </div>
+
+          {hstsEnabled && (
+            <div
+              className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-700 dark:bg-amber-900/20"
+              data-testid="hsts-stickiness-warning"
+            >
+              <div className="flex gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <p className="text-xs text-amber-800 dark:text-amber-200">
+                  HSTS is <strong>sticky</strong>. Once a visitor&apos;s browser has seen this header it
+                  refuses plain HTTP for the whole max-age and there is no way to recall it from the
+                  server. If HTTPS later breaks, those visitors cannot reach the site at all. To back
+                  out, set max-age to <span className="font-mono">0</span> and leave the policy enabled
+                  long enough for browsers to pick it up before switching it off.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <label htmlFor="hsts-max-age" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+              max-age (seconds)
+            </label>
+            <input
+              id="hsts-max-age"
+              type="number"
+              min="0"
+              max="63072000"
+              disabled={!hstsEnabled}
+              className={INPUT_CLASS + ' mt-1 disabled:opacity-50'}
+              value={hstsMaxAge}
+              onChange={(e) => { setHstsMaxAge(e.target.value); markHstsDirty(); }}
+              data-testid="hsts-max-age-input"
+            />
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              How long browsers enforce HTTPS. 31536000 = 1 year (the usual choice, and the minimum
+              the preload list accepts). Start lower (e.g. 300) while testing. 0 tells browsers to
+              forget the policy.
+            </p>
+          </div>
+
+          <div className="space-y-3">
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={hstsIncludeSubdomains}
+                disabled={!hstsEnabled}
+                onChange={(e) => { setHstsIncludeSubdomains(e.target.checked); markHstsDirty(); }}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700"
+                data-testid="hsts-include-subdomains-checkbox"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                includeSubDomains
+                <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+                  Applies the policy to <em>every</em> subdomain of this hostname — including ones
+                  not hosted here. Any subdomain without working HTTPS becomes unreachable.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                checked={hstsPreload}
+                disabled={!hstsEnabled}
+                onChange={(e) => { setHstsPreload(e.target.checked); markHstsDirty(); }}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:opacity-50 dark:border-gray-600 dark:bg-gray-700"
+                data-testid="hsts-preload-checkbox"
+              />
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                preload
+                <span className="mt-0.5 block text-xs text-gray-500 dark:text-gray-400">
+                  Marks the domain as eligible for the browser preload list. Requires
+                  includeSubDomains and a max-age of at least 1 year. Submitting to the list is a
+                  separate manual step at hstspreload.org, and <strong>removal takes months</strong>.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {hstsPreloadBlocked && (
+            <div className="flex items-center gap-2 text-sm text-amber-700 dark:text-amber-400" data-testid="hsts-preload-blocked">
+              <AlertCircle size={14} />
+              preload needs includeSubDomains enabled and max-age at least 31536000.
+            </div>
+          )}
+
+          {hstsSaveError && (
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="hsts-save-error">
+              <AlertCircle size={14} />
+              {hstsSaveError}
+            </div>
+          )}
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={!hstsDirty || hstsSaving || hstsPreloadBlocked}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              data-testid="save-hsts"
+            >
+              {hstsSaving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+              Save
+            </button>
+          </div>
         </form>
         )}
       </div>

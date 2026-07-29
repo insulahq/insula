@@ -9,7 +9,7 @@
  * auto-trigger follow-up) calls it on a CONTROLLED cadence; the GET route only
  * READS the persisted blob (so a fast UI poll never inflates the streak).
  */
-import { eq } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { upgradePostflightResponseSchema } from '@insula/api-contracts';
 import { platformSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
@@ -169,16 +169,43 @@ export async function readPostflightState(db: Database): Promise<PostflightState
     lastCheckedAt: null, environment: ENVIRONMENT,
   };
   try {
-    const rows = await db.select().from(platformSettings).where(eq(platformSettings.key, KEY_STATE)).limit(1);
-    const raw = rows[0]?.value;
-    if (!raw) return idle;
+    const rows = await db
+      .select()
+      .from(platformSettings)
+      .where(inArray(platformSettings.key, [KEY_STATE, KEY_PENDING]));
+    const byKey = new Map(rows.map((r) => [r.key, r.value]));
+    // The post-flight assessment is only meaningful WHILE an upgrade is in flight
+    // (`pending_update_version` set). On a healthy convergence `runPostflight`
+    // clears that marker but the persisted state blob stays FROZEN with the
+    // just-completed target as `pendingVersion` + `phase: healthy` — and the
+    // scheduler then goes dormant, so nothing ever refreshes it to idle. Reading
+    // the blob verbatim would report a PHANTOM perpetual upgrade to the old target
+    // (progress bar stuck, modal stuck on "Rolling → <old>…"). Reconcile against
+    // the live marker: no live pending → idle, regardless of the frozen blob.
+    const livePending = normalizePending(byKey.get(KEY_PENDING) ?? null);
+    if (livePending === null) return idle;
+    // An upgrade IS in flight. If the scheduler has not written (or we cannot
+    // parse) an assessment blob yet — the first ~100s after Apply (the reconciler's
+    // initial delay), or a cluster's very first upgrade — do NOT fall back to
+    // `idle`: that reports "no upgrade in flight" and makes the just-opened progress
+    // modal compute `converged → done` and flash "Done" before the roll even
+    // starts. Report a synthetic `reconciling` pinned to the live target so the UI
+    // shows in-flight immediately. The abort streak still advances ONLY from a real
+    // scheduler-written blob (this read never inflates it).
+    const inflight: PostflightState = { ...idle, phase: 'reconciling', verdict: 'reconciling', pendingVersion: livePending };
+    const raw = byKey.get(KEY_STATE);
+    if (!raw) return inflight;
+    let blob: unknown;
+    try { blob = JSON.parse(raw); } catch { return inflight; }
     // Full-shape validation against the api-contracts schema (single source of
-    // truth) — a malformed / stale-schema / hand-edited blob falls back to idle
-    // rather than echoing partial or unvalidated fields to the super_admin UI.
-    const parsed = upgradePostflightResponseSchema.safeParse(JSON.parse(raw));
-    if (!parsed.success) return idle;
-    // Force the env-derived fields from live constants (never trust the blob's copy).
-    return { ...parsed.data, abortThreshold: ABORT_THRESHOLD, runningVersion: RUNNING_VERSION, environment: ENVIRONMENT };
+    // truth) — a malformed / stale-schema / hand-edited blob degrades to the
+    // in-flight assessment rather than echoing partial or unvalidated fields.
+    const parsed = upgradePostflightResponseSchema.safeParse(blob);
+    if (!parsed.success) return inflight;
+    // Force the env-derived fields from live constants (never trust the blob's
+    // copy); pin `pendingVersion` to the LIVE marker so a target changed since the
+    // last scheduler tick reads fresh, not one tick stale.
+    return { ...parsed.data, abortThreshold: ABORT_THRESHOLD, runningVersion: RUNNING_VERSION, environment: ENVIRONMENT, pendingVersion: livePending };
   } catch {
     return idle;
   }
