@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { X, CheckCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { usePostflight, useUpgradeProgress } from '@/hooks/use-platform-upgrade';
 
@@ -49,6 +51,17 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
   // failureCount rises on each failed poll and resets on the next success →
   // a live "reconnecting" hint so the modal never looks frozen.
   const reconnecting = active && !done && !stuck && (postQ.failureCount > 0 || progQ.failureCount > 0);
+
+  // When the roll completes, refresh the version spine so the dashboard badge +
+  // update banner drop the just-superseded "update available" immediately, instead
+  // of waiting out usePlatformVersion's 60s staleTime / 5-min poll.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    if (done) {
+      queryClient.invalidateQueries({ queryKey: ['platform-version'] });
+      queryClient.invalidateQueries({ queryKey: ['upgrade-postflight'] });
+    }
+  }, [done, queryClient]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">

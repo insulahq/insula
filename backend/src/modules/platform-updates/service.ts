@@ -137,10 +137,27 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
   const includePrereleases = (await getSetting(db, 'auto_update_include_prereleases')) === 'true';
   const available = verifiedAvailable && VERSION_RE.test(verifiedAvailable) ? verifiedAvailable : latestVersion;
 
+  // installed — durable DB record of the release the cluster is on. Falls back to
+  // the running env until persistInstalledVersion() has run. Re-validate on read
+  // so a hand-edited / restored-from-backup platform_settings row can't escape an
+  // unvalidated string through the API (the field feeds upgrade gating).
+  const rawInstalled = await getSetting(db, 'installed_platform_version');
+  const installed = rawInstalled && VERSION_RE.test(rawInstalled) ? rawInstalled : CURRENT_VERSION;
+
   // "unknown" currentVersion means PLATFORM_VERSION isn't wired up —
   // we can't compare semver, so never claim an update is available.
   const canCompare = VERSION_RE.test(CURRENT_VERSION);
-  const updateAvailable = canCompare && available !== null && available !== CURRENT_VERSION && isNewer(available, CURRENT_VERSION);
+  // Compare `available` against the HIGHER of the running env and the durable
+  // installed record. During a roll an OLD platform-api pod may still serve this
+  // endpoint (its env is the old version) while a NEW pod has already booted and
+  // written installed_platform_version=<new>; without this floor that stale pod
+  // keeps reporting updateAvailable=true and the update banner lingers ~1 min
+  // after the upgrade. The durable record reflects the newest pod that has started.
+  const effectiveCurrent =
+    canCompare && VERSION_RE.test(installed) && installed !== CURRENT_VERSION && isNewer(installed, CURRENT_VERSION)
+      ? installed
+      : CURRENT_VERSION;
+  const updateAvailable = canCompare && available !== null && available !== effectiveCurrent && isNewer(available, effectiveCurrent);
 
   const imageUpdateStrategy = ENVIRONMENT === 'production' ? 'manual' as const : 'auto' as const;
   // Normalise the cleared sentinel: post-flight sets pending_update_version to ''
@@ -149,17 +166,9 @@ export async function getVersionInfo(db: Database): Promise<PlatformVersionRespo
   const pendingVersion = rawPending && rawPending.trim() !== '' ? rawPending : null;
 
   // Version spine (ADR-045): three coordinates the admin UI / upgrade flow read.
-  //   installed — durable DB record of the release the cluster is on
+  //   installed — durable DB record of the release the cluster is on (computed above)
   //   running   — the live pod's version (ConfigMap → PLATFORM_VERSION env)
   //   available — newest upstream release the poller has seen
-  // installed falls back to running until persistInstalledVersion() has run.
-  // Re-validate the DB value on read so a hand-edited / restored-from-backup
-  // platform_settings row can never escape an unvalidated string through the
-  // API (the field feeds future upgrade gating). Mirrors `running`'s 'unknown'
-  // sentinel when nothing is wired.
-  const rawInstalled = await getSetting(db, 'installed_platform_version');
-  const installed = rawInstalled && VERSION_RE.test(rawInstalled) ? rawInstalled : CURRENT_VERSION;
-
   return {
     currentVersion: CURRENT_VERSION,
     latestVersion,
