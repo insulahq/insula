@@ -46,6 +46,9 @@ export function mapRouteToResponse(row: typeof ingressRoutes.$inferSelect) {
     forceHttps: Boolean(row.forceHttps),
     wafEnabled: Boolean(row.wafEnabled),
     wafOwaspCrs: Boolean(row.wafOwaspCrs),
+    hstsEnabled: Boolean(row.hstsEnabled),
+    hstsIncludeSubdomains: Boolean(row.hstsIncludeSubdomains),
+    hstsPreload: Boolean(row.hstsPreload),
     createdAt: row.createdAt?.toISOString?.() ?? row.createdAt,
     updatedAt: row.updatedAt?.toISOString?.() ?? row.updatedAt,
   };
@@ -143,12 +146,47 @@ export async function updateAdvancedSettings(
   tenantId: string,
   input: Record<string, unknown>,
 ) {
-  await verifyRouteOwnership(db, routeId, tenantId);
+  const route = await verifyRouteOwnership(db, routeId, tenantId);
 
   const updateValues: Record<string, unknown> = {};
   if (input.custom_error_codes !== undefined) updateValues.customErrorCodes = input.custom_error_codes;
   if (input.custom_error_path !== undefined) updateValues.customErrorPath = input.custom_error_path;
   if (input.additional_headers !== undefined) updateValues.additionalHeaders = input.additional_headers;
+
+  // ── HSTS ──
+  if (input.hsts_enabled !== undefined) updateValues.hstsEnabled = input.hsts_enabled ? 1 : 0;
+  if (input.hsts_max_age !== undefined) updateValues.hstsMaxAge = input.hsts_max_age;
+  if (input.hsts_include_subdomains !== undefined) {
+    updateValues.hstsIncludeSubdomains = input.hsts_include_subdomains ? 1 : 0;
+  }
+  if (input.hsts_preload !== undefined) updateValues.hstsPreload = input.hsts_preload ? 1 : 0;
+
+  // The preload contract is cross-field, and this payload is partial — a
+  // caller may flip one flag while the others already sit in the row. Validate
+  // the MERGED state, not the request, or a legitimate single-field update
+  // gets rejected (and an illegitimate one slips through).
+  const mergedHsts = {
+    preload: (updateValues.hstsPreload as number | undefined) ?? route.hstsPreload,
+    includeSubdomains:
+      (updateValues.hstsIncludeSubdomains as number | undefined) ?? route.hstsIncludeSubdomains,
+    maxAge: (updateValues.hstsMaxAge as number | undefined) ?? route.hstsMaxAge,
+  };
+  if (mergedHsts.preload === 1) {
+    if (mergedHsts.includeSubdomains !== 1) {
+      throw new ApiError(
+        'HSTS_PRELOAD_REQUIRES_SUBDOMAINS',
+        'HSTS preload requires includeSubDomains to be enabled — the browser preload list rejects entries without it.',
+        400,
+      );
+    }
+    if (mergedHsts.maxAge < 31536000) {
+      throw new ApiError(
+        'HSTS_PRELOAD_REQUIRES_LONG_MAX_AGE',
+        'HSTS preload requires a max-age of at least 31536000 seconds (1 year).',
+        400,
+      );
+    }
+  }
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(ingressRoutes).set(updateValues).where(eq(ingressRoutes.id, routeId));
