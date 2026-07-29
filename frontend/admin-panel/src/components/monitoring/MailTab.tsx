@@ -83,7 +83,7 @@ export default function MailTab() {
   const ModeIcon = modeBadge.icon;
 
   return (
-    <div className="space-y-5" data-testid="mail-tab">
+    <div className="space-y-5 p-5" data-testid="mail-tab">
       {/* Protection status */}
       <div className="flex items-center justify-between rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-3 shadow-sm">
         <div className="flex items-center gap-2">

@@ -55,7 +55,10 @@ export default function UpgradeReviewModal({ targetVersion, onApprove, onClose }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Mount-only on purpose: the dry-run preview is fetched once when the modal
+    // opens. (No eslint-disable here — `react-hooks/exhaustive-deps` is not a
+    // configured rule in this repo, and naming it made eslint hard-fail with
+    // "Definition for rule ... was not found".)
   }, []);
 
   const resolvedTarget = preview?.target ?? targetVersion;
