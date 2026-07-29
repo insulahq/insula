@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.25] - 2026-07-29
+
 ### Changed
 - Maintenance release — validation target for the honest upgrade-completion
   fix; no functional change since v2026.7.24.
