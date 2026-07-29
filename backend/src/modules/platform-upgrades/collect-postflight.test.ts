@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { runPostflight } from './collect-postflight.js';
+import { runPostflight, readPostflightState, type PostflightState } from './collect-postflight.js';
 import type { SettingsIO } from './orchestrate.js';
+import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 function fakeSettings(initial: Record<string, string> = {}): { io: SettingsIO; store: Map<string, string> } {
@@ -105,5 +106,68 @@ describe('runPostflight (observer)', () => {
     const s = await runPostflight(io, k8s, 8_000);
     expect(s.ok).toBe(false);
     expect(s.gates.find((g) => g.id === 'deployments-available')!.detail).toMatch(/unreadable/);
+  });
+});
+
+/** A DB fake whose `select().from().where()` resolves to the given settings rows. */
+function fakeDb(rows: Array<{ key: string; value: string }>): Database {
+  return {
+    select: () => ({ from: () => ({ where: async () => rows }) }),
+  } as unknown as Database;
+}
+
+const HEALTHY_BLOB: PostflightState = {
+  phase: 'healthy', verdict: 'healthy', consecutiveFailures: 0, abortThreshold: 3,
+  pendingVersion: '2026.7.17', runningVersion: '2026.7.17', gates: [], ok: true, failures: 0, warnings: 0,
+  lastCheckedAt: '2026-07-28T00:00:00.000Z', environment: 'production',
+};
+
+describe('readPostflightState (reader) — reconcile against the live pending marker', () => {
+  it('frozen healthy blob but pending marker CLEARED → idle (no phantom perpetual upgrade)', async () => {
+    // The exact stuck state: an upgrade to 2026.7.17 converged (blob frozen at
+    // healthy/2026.7.17, scheduler dormant) and the cluster moved on — reading the
+    // blob verbatim would report a phantom upgrade to 2026.7.17 forever.
+    const db = fakeDb([{ key: 'postflight_state', value: JSON.stringify(HEALTHY_BLOB) }]); // pending_update_version absent
+    const s = await readPostflightState(db);
+    expect(s.phase).toBe('idle');
+    expect(s.verdict).toBe('idle');
+    expect(s.pendingVersion).toBeNull();
+  });
+
+  it('empty-string pending marker (the cleared sentinel) → idle', async () => {
+    const db = fakeDb([
+      { key: 'postflight_state', value: JSON.stringify(HEALTHY_BLOB) },
+      { key: 'pending_update_version', value: '   ' },
+    ]);
+    expect((await readPostflightState(db)).phase).toBe('idle');
+  });
+
+  it('in-flight (pending set) → returns the assessment, pendingVersion pinned to the LIVE marker', async () => {
+    const blob: PostflightState = { ...HEALTHY_BLOB, phase: 'reconciling', verdict: 'reconciling', ok: true, pendingVersion: '2026.7.19' };
+    const db = fakeDb([
+      { key: 'postflight_state', value: JSON.stringify(blob) },
+      { key: 'pending_update_version', value: '2026.7.20' }, // target changed since the last tick
+    ]);
+    const s = await readPostflightState(db);
+    expect(s.phase).toBe('reconciling');
+    expect(s.pendingVersion).toBe('2026.7.20'); // live marker wins over the one-tick-stale blob
+  });
+
+  it('in-flight but NO blob yet (first ~100s after Apply / fresh cluster) → reconciling, NOT idle', async () => {
+    // Regression: returning idle here makes the just-opened progress modal compute
+    // converged→done and flash "Done" before the roll starts.
+    const db = fakeDb([{ key: 'pending_update_version', value: '2026.7.20' }]); // no postflight_state
+    const s = await readPostflightState(db);
+    expect(s.phase).toBe('reconciling');
+    expect(s.verdict).toBe('reconciling');
+    expect(s.pendingVersion).toBe('2026.7.20');
+  });
+
+  it('in-flight but the blob is unparseable → reconciling (degrade to in-flight, not idle)', async () => {
+    const db = fakeDb([
+      { key: 'postflight_state', value: '{not valid json' },
+      { key: 'pending_update_version', value: '2026.7.20' },
+    ]);
+    expect((await readPostflightState(db)).phase).toBe('reconciling');
   });
 });
