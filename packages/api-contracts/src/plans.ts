@@ -23,6 +23,10 @@ export const createPlanSchema = z.object({
   email_hourly_send_limit: z.number().int().min(0).max(1000000).optional(),
   email_daily_send_limit: z.number().int().min(0).max(10000000).optional(),
   weekly_ai_budget_cents: z.number().int().min(0).max(100000).optional(),
+  // Plan-level toggle for the ADR-036 custom-container (bring-your-own image)
+  // path. Omitted on create -> DB default FALSE (no plan grants it unless an
+  // admin opts in). Per-tenant override: tenants.allow_custom_containers_override.
+  allow_custom_containers: z.boolean().optional(),
   features: z.record(z.string(), z.unknown()).optional().default({}),
 });
 

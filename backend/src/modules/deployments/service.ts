@@ -385,6 +385,18 @@ export async function createDeployment(
 
   if (!entry) throw catalogEntryNotFound(input.catalog_entry_id);
 
+  // A disabled catalog entry (migration 0078) is hidden from tenants and not
+  // installable. This blocks only NEW deploys — existing deployments keep
+  // working. An admin re-enables the app to make it deployable again.
+  if (entry.disabled) {
+    throw new ApiError(
+      'CATALOG_ENTRY_DISABLED',
+      `Catalog entry '${entry.name}' is currently disabled and cannot be deployed.`,
+      403,
+      { catalog_entry_id: entry.id },
+    );
+  }
+
   // Resolve version-aware configuration: components, volumes, env vars
   const resolved = await resolveVersionAwareDeploymentConfig(db, entry, input.version);
   const { components, volumes, fixedEnvVars, generatedEnvKeys, configurableEnvKeys, installedVersion } = resolved;

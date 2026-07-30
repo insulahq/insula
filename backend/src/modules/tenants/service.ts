@@ -1019,6 +1019,11 @@ export async function updateTenant(
   if (input.include_in_scheduled_bundles_override !== undefined) {
     updateValues.includeInScheduledBundlesOverride = input.include_in_scheduled_bundles_override;
   }
+  // ADR-036 custom-container per-tenant override (migration 0078).
+  // null = inherit plan default; true/false = explicit override.
+  if (input.allow_custom_containers_override !== undefined) {
+    updateValues.allowCustomContainersOverride = input.allow_custom_containers_override;
+  }
   // M5: re-pin a tenant to a different worker. M3 plumbing makes the
   // next deploy apply the pin; existing pods keep running on their
   // current node until a migration (M6) or scheduler-triggered

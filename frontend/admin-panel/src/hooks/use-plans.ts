@@ -16,6 +16,7 @@ export interface Plan {
   readonly maxMailboxSizeMb: number;
   readonly emailHourlySendLimit: number;
   readonly emailDailySendLimit: number;
+  readonly allowCustomContainers: boolean;
   readonly status: string;
 }
 

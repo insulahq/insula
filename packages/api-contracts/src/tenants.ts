@@ -142,6 +142,10 @@ export const updateTenantSchema = z.object({
   // (tenant inherits the plan default); true/false explicitly opt
   // in/out regardless of plan.
   include_in_scheduled_bundles_override: z.boolean().nullable().optional(),
+  // Per-tenant override of the plan's allow_custom_containers (ADR-036).
+  // null clears the override (inherit plan default); true/false explicitly
+  // opt in/out regardless of plan. Migration 0078.
+  allow_custom_containers_override: z.boolean().nullable().optional(),
 });
 
 // ─── Response Schemas (what the backend returns) ─────────────────────────────
@@ -184,6 +188,9 @@ export const tenantResponseSchema = z.object({
   // R6 PR 1: daily send-limit override + outbound-mail suspension lever.
   emailSendRateLimitDaily: z.number().nullable().optional(),
   emailOutboundSuspended: z.boolean().optional(),
+  // Per-tenant override of the plan's allow_custom_containers (ADR-036).
+  // null = inherit plan default. Migration 0078.
+  allowCustomContainersOverride: z.boolean().nullable().optional(),
   // M5: current worker pin (k8s node name) or null for default scheduler.
   // Renamed from workerNodeName → nodeName as part of the tenant rename.
   nodeName: z.string().nullable().optional(),

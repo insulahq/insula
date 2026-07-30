@@ -322,6 +322,12 @@ export const hostingPlans = pgTable('hosting_plans', {
   // Default TRUE so paid plans are included automatically; freemium /
   // trial plans can flip to FALSE if needed.
   includeInScheduledBundles: boolean('include_in_scheduled_bundles').notNull().default(true),
+  // Plan-level toggle for the ADR-036 custom-container (bring-your-own image)
+  // path. Default FALSE — no plan grants it unless an admin opts in. Per-tenant
+  // override lives on tenants.allow_custom_containers_override (NULL = inherit).
+  // Effective = system customDeploymentsEnabled AND (override ?? plan default).
+  // Migration 0078.
+  allowCustomContainers: boolean('allow_custom_containers').notNull().default(false),
   features: jsonb('features').$type<Record<string, unknown>>(),
   status: planStatusEnum().notNull().default('active'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -379,6 +385,10 @@ export const tenants = pgTable('tenants', {
   // NULL = inherit hosting_plans.include_in_scheduled_bundles.
   // TRUE/FALSE = explicit override regardless of plan default.
   includeInScheduledBundlesOverride: boolean('include_in_scheduled_bundles'),
+  // Per-tenant override of the plan's allow_custom_containers.
+  // NULL = inherit hosting_plans.allow_custom_containers.
+  // TRUE/FALSE = explicit override regardless of plan default. Migration 0078.
+  allowCustomContainersOverride: boolean('allow_custom_containers_override'),
   // Phase 1 (tenant-panel email parity round 2): per-customer
   // mailbox count override. null = inherit from the plan's
   // max_mailboxes. Used by the limit check in mailboxes/service.ts.
@@ -574,6 +584,10 @@ export const catalogEntries = pgTable('catalog_entries', {
   status: catalogEntryStatusEnum().notNull().default('available'),
   featured: integer('featured').notNull().default(0),
   popular: integer('popular').notNull().default(0),
+  // Admin visibility flag alongside featured/popular. When 1 the entry is
+  // hidden from the tenant catalog listing (listCatalogEntries filters it out
+  // for non-admin panels); existing deployments keep working. Migration 0078.
+  disabled: integer('disabled').notNull().default(0),
   sourceRepoId: varchar('source_repo_id', { length: 36 }),
   manifestUrl: varchar('manifest_url', { length: 500 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),

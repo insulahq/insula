@@ -136,6 +136,9 @@ export const catalogEntryResponseSchema = z.object({
   status: z.string(),
   featured: z.number(),
   popular: z.number(),
+  // Admin visibility flag (0/1). When 1 the entry is hidden from the tenant
+  // catalog listing; admins still see it. Migration 0078.
+  disabled: z.number().default(0),
   sourceRepoId: z.string().nullable(),
   manifestUrl: z.string().nullable(),
   createdAt: z.string(),

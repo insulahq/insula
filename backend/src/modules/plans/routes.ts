@@ -57,6 +57,11 @@ export async function planRoutes(app: FastifyInstance) {
       ...(parsed.data.email_daily_send_limit !== undefined
         ? { emailDailySendLimit: parsed.data.email_daily_send_limit }
         : {}),
+      // Omitted -> DB default (false: no plan grants custom containers unless
+      // an admin opts in). Migration 0078.
+      ...(parsed.data.allow_custom_containers !== undefined
+        ? { allowCustomContainers: parsed.data.allow_custom_containers }
+        : {}),
       features: parsed.data.features ?? null,
       status: 'active',
     });
@@ -99,6 +104,7 @@ export async function planRoutes(app: FastifyInstance) {
     if (parsed.data.max_mailbox_size_mb !== undefined) updateValues.maxMailboxSizeMb = parsed.data.max_mailbox_size_mb;
     if (parsed.data.email_hourly_send_limit !== undefined) updateValues.emailHourlySendLimit = parsed.data.email_hourly_send_limit;
     if (parsed.data.email_daily_send_limit !== undefined) updateValues.emailDailySendLimit = parsed.data.email_daily_send_limit;
+    if (parsed.data.allow_custom_containers !== undefined) updateValues.allowCustomContainers = parsed.data.allow_custom_containers;
     if (parsed.data.features !== undefined) updateValues.features = parsed.data.features;
     if (body.status !== undefined) updateValues.status = body.status;
 

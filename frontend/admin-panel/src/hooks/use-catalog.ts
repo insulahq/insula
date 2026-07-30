@@ -24,6 +24,8 @@ export interface CatalogEntry {
   readonly status: string;
   readonly featured: number;
   readonly popular: number;
+  /** Admin visibility flag (0/1). When 1, hidden from tenants; admins still see it. */
+  readonly disabled: number;
   readonly url: string | null;
   readonly documentation: string | null;
   readonly manifestUrl: string | null;
@@ -93,6 +95,7 @@ interface UpdateBadgesInput {
   readonly id: string;
   readonly featured?: boolean;
   readonly popular?: boolean;
+  readonly disabled?: boolean;
 }
 
 export function useUpdateCatalogBadges() {

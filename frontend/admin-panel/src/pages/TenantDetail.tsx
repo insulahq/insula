@@ -1590,6 +1590,9 @@ function ResourceLimitsCard({
   const [mailboxesCustom, setMailboxesCustom] = useState(false);
   const [mailboxSizeCustom, setMailboxSizeCustom] = useState(false);
   const [priceCustom, setPriceCustom] = useState(false);
+  // ADR-036 custom-container per-tenant override (boolean, not numeric).
+  const [allowCcCustom, setAllowCcCustom] = useState(false);
+  const [allowCcOverride, setAllowCcOverride] = useState(false);
   const [mailHourlyOverride, setMailHourlyOverride] = useState<string>('');
   const [mailDailyOverride, setMailDailyOverride] = useState<string>('');
   const [mailHourlyCustom, setMailHourlyCustom] = useState(false);
@@ -1621,6 +1624,7 @@ function ResourceLimitsCard({
   const effectivePrice = tenant.monthlyPriceOverride ?? plan?.monthlyPriceUsd ?? '—';
   const effectiveMailHourly = tenant.emailSendRateLimit ?? plan?.emailHourlySendLimit ?? '—';
   const effectiveMailDaily = tenant.emailSendRateLimitDaily ?? plan?.emailDailySendLimit ?? '—';
+  const effectiveAllowCc = tenant.allowCustomContainersOverride ?? plan?.allowCustomContainers ?? false;
 
   const startEditing = () => {
     const hasCpu = tenant.cpuLimitOverride != null;
@@ -1653,6 +1657,9 @@ function ResourceLimitsCard({
     setMailDailyCustom(hasMailDaily);
     setMailHourlyOverride(hasMailHourly ? String(tenant.emailSendRateLimit) : String(plan?.emailHourlySendLimit ?? ''));
     setMailDailyOverride(hasMailDaily ? String(tenant.emailSendRateLimitDaily) : String(plan?.emailDailySendLimit ?? ''));
+    const hasAllowCc = tenant.allowCustomContainersOverride != null;
+    setAllowCcCustom(hasAllowCc);
+    setAllowCcOverride(hasAllowCc ? Boolean(tenant.allowCustomContainersOverride) : Boolean(plan?.allowCustomContainers));
     setEditing(true);
   };
 
@@ -1670,6 +1677,7 @@ function ResourceLimitsCard({
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
         email_send_rate_limit: mailHourlyCustom ? Number(mailHourlyOverride) : null,
         email_send_rate_limit_daily: mailDailyCustom ? Number(mailDailyOverride) : null,
+        allow_custom_containers_override: allowCcCustom ? allowCcOverride : null,
       });
       // If the PATCH grew storage online, the backend kicked off a
       // storage-lifecycle op and surfaces its id here.
@@ -1711,6 +1719,7 @@ function ResourceLimitsCard({
         max_mailboxes_override: mailboxesCustom ? Number(mailboxesOverride) : null,
         max_mailbox_size_mb_override: mailboxSizeCustom ? Number(mailboxSizeOverride) : null,
         monthly_price_override: priceCustom ? Number(priceOverride) : null,
+        allow_custom_containers_override: allowCcCustom ? allowCcOverride : null,
         confirm_destructive_shrink: true,
       });
       const opId = (result as { data?: { storageShrinkOperationId?: string | null } })?.data?.storageShrinkOperationId;
@@ -1779,6 +1788,53 @@ function ResourceLimitsCard({
     </div>
   );
 
+  // Boolean variant of renderField (custom ?? plan-default, but Yes/No).
+  const renderBoolField = (
+    label: string,
+    effectiveValue: boolean,
+    isCustom: boolean,
+    setCustom: (v: boolean) => void,
+    value: boolean,
+    setValue: (v: boolean) => void,
+    isOverridden: boolean,
+  ) => (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
+        {editing && (
+          <button
+            type="button"
+            onClick={() => setCustom(!isCustom)}
+            className="inline-flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300"
+            data-testid={`toggle-${label.toLowerCase().replace(/\s/g, '-')}`}
+          >
+            {isCustom ? <ToggleRight size={16} className="text-brand-500" /> : <ToggleLeft size={16} />}
+            {isCustom ? 'Custom' : 'Plan default'}
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <button
+          type="button"
+          onClick={() => isCustom && setValue(!value)}
+          disabled={!isCustom}
+          className={`inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : 'dark:bg-gray-700 dark:text-gray-100'}`}
+          data-testid={`value-${label.toLowerCase().replace(/\s/g, '-')}`}
+        >
+          {value ? <ToggleRight size={16} className={isCustom ? 'text-brand-500' : ''} /> : <ToggleLeft size={16} />}
+          {value ? 'Allowed' : 'Not allowed'}
+        </button>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-900 dark:text-gray-100 font-medium">{effectiveValue ? 'Allowed' : 'Not allowed'}</span>
+          {isOverridden && (
+            <span className="inline-flex rounded-full bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">custom</span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="resource-limits-card">
       <div className="flex items-center justify-between mb-4">
@@ -1812,6 +1868,7 @@ function ResourceLimitsCard({
           {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, 'number', '0.01')}
           {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, 'number', '1')}
           {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, 'number', '1')}
+          {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null)}
         </div>
 
         {updateTenant.error && editing && (

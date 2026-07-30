@@ -114,6 +114,12 @@ interface ListCatalogEntriesParams {
   readonly type?: string;
   readonly category?: string;
   readonly search?: string;
+  /**
+   * When false/omitted, entries flagged `disabled` are excluded — the tenant
+   * view. Admin callers pass true so they can see and re-enable disabled
+   * entries. Migration 0078.
+   */
+  readonly includeDisabled?: boolean;
 }
 
 // ─── Error Helpers ──────────────────────────────────────────────────────────
@@ -911,9 +917,15 @@ export async function listCatalogEntries(
   db: Database,
   params: ListCatalogEntriesParams,
 ): Promise<{ data: ReturnType<typeof normalizeEntryRow>[]; pagination: PaginationMeta }> {
-  const { limit, cursor, sort, type, category, search } = params;
+  const { limit, cursor, sort, type, category, search, includeDisabled } = params;
 
   const conditions = [];
+
+  // Hide admin-disabled entries from tenants (migration 0078). Admin callers
+  // pass includeDisabled=true so they can see + re-enable them.
+  if (!includeDisabled) {
+    conditions.push(eq(catalogEntries.disabled, 0));
+  }
 
   if (type) {
     conditions.push(eq(catalogEntries.type, type as 'application' | 'runtime' | 'database' | 'service'));
@@ -1027,7 +1039,7 @@ export async function autoSyncUnsyncedRepos(db: Database): Promise<number> {
   return repos.length;
 }
 
-export async function updateBadges(db: Database, id: string, badges: { featured?: boolean; popular?: boolean }) {
+export async function updateBadges(db: Database, id: string, badges: { featured?: boolean; popular?: boolean; disabled?: boolean }) {
   const [entry] = await db.select().from(catalogEntries).where(eq(catalogEntries.id, id));
   if (!entry) {
     throw new ApiError('CATALOG_ENTRY_NOT_FOUND', `Catalog entry '${id}' not found`, 404);
@@ -1036,6 +1048,8 @@ export async function updateBadges(db: Database, id: string, badges: { featured?
   const updateValues: Record<string, unknown> = {};
   if (badges.featured !== undefined) updateValues.featured = badges.featured ? 1 : 0;
   if (badges.popular !== undefined) updateValues.popular = badges.popular ? 1 : 0;
+  // Admin visibility flag (migration 0078): hides the entry from tenants.
+  if (badges.disabled !== undefined) updateValues.disabled = badges.disabled ? 1 : 0;
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(catalogEntries).set(updateValues).where(eq(catalogEntries.id, id));

@@ -1,5 +1,50 @@
-import { describe, it, expect } from 'vitest';
-import { validateIngressRules, validateLocalPaths } from './service.js';
+import { describe, it, expect, vi } from 'vitest';
+import { validateIngressRules, validateLocalPaths, updateBadges } from './service.js';
+import type { Database } from '../../db/index.js';
+
+describe('updateBadges', () => {
+  // Minimal db double: select() always returns the entry; update().set()
+  // captures the mapped values so we can assert the 0/1 encoding.
+  function mockDb(entry: Record<string, unknown> | null) {
+    const captured: Record<string, unknown> = {};
+    const setFn = vi.fn().mockImplementation((v: Record<string, unknown>) => {
+      Object.assign(captured, v);
+      return { where: () => Promise.resolve(undefined) };
+    });
+    const db = {
+      select: () => ({ from: () => ({ where: () => Promise.resolve(entry ? [entry] : []) }) }),
+      update: () => ({ set: setFn }),
+    } as unknown as Database;
+    return { db, captured, setFn };
+  }
+
+  const entry = { id: 'ce-1', name: 'WordPress', featured: 0, popular: 0, disabled: 0 };
+
+  it('maps disabled:true → 1', async () => {
+    const { db, captured } = mockDb(entry);
+    await updateBadges(db, 'ce-1', { disabled: true });
+    expect(captured.disabled).toBe(1);
+  });
+
+  it('maps disabled:false → 0', async () => {
+    const { db, captured } = mockDb({ ...entry, disabled: 1 });
+    await updateBadges(db, 'ce-1', { disabled: false });
+    expect(captured.disabled).toBe(0);
+  });
+
+  it('does NOT touch disabled when only featured/popular are passed', async () => {
+    const { db, captured } = mockDb(entry);
+    await updateBadges(db, 'ce-1', { featured: true, popular: true });
+    expect(captured).not.toHaveProperty('disabled');
+    expect(captured.featured).toBe(1);
+    expect(captured.popular).toBe(1);
+  });
+
+  it('throws CATALOG_ENTRY_NOT_FOUND when the entry is missing', async () => {
+    const { db } = mockDb(null);
+    await expect(updateBadges(db, 'nope', { disabled: true })).rejects.toMatchObject({ code: 'CATALOG_ENTRY_NOT_FOUND' });
+  });
+});
 
 describe('validateIngressRules', () => {
   it('accepts an app with one ingressable component', () => {
