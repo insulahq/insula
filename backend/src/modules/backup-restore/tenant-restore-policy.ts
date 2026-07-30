@@ -108,6 +108,10 @@ export const DEFAULT_TENANT_RESTORE_POLICY: TenantRestorePolicy = {
       'max_mailbox_size_mb_override',
       'bandwidth_capped_at',
       'email_send_rate_limit',
+      // Operator-set custom-container entitlement override (ADR-036, migration
+      // 0078). Same class as the other *_override caps — a tenant must NOT be
+      // able to self-grant custom containers by restoring an old/edited row.
+      'allow_custom_containers_override',
       'storage_tier',
       // ── cluster placement (operator decision) ───────────────
       'region_id',
