@@ -32,6 +32,12 @@ export interface Subscription {
   readonly status: string;
   readonly subscription_expires_at: string | null;
   readonly created_at: string;
+  /**
+   * Effective custom-container access, resolved server-side (system
+   * customDeploymentsEnabled AND (tenant override ?? plan default)). The
+   * Applications page uses this to show/hide the Custom Containers tab.
+   */
+  readonly allowCustomContainers: boolean;
 }
 
 export function useSubscription(tenantId: string | undefined) {

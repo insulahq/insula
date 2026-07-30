@@ -23,6 +23,7 @@ interface PlanRow {
   readonly maxMailboxSizeMb: number;
   readonly emailHourlySendLimit: number;
   readonly emailDailySendLimit: number;
+  readonly allowCustomContainers: boolean;
   readonly status: string;
 }
 
@@ -81,6 +82,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
     email_hourly_send_limit: String(initial?.emailHourlySendLimit ?? 50),
     email_daily_send_limit: String(initial?.emailDailySendLimit ?? 100),
     weekly_ai_budget_cents: String((initial as unknown as Record<string, unknown>)?.weeklyAiBudgetCents ?? 100),
+    allow_custom_containers: initial?.allowCustomContainers ?? false,
   });
 
   const handleSubmit = async (e: FormEvent) => {
@@ -94,6 +96,7 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
       email_hourly_send_limit: Number(form.email_hourly_send_limit),
       email_daily_send_limit: Number(form.email_daily_send_limit),
       weekly_ai_budget_cents: Number(form.weekly_ai_budget_cents),
+      allow_custom_containers: form.allow_custom_containers,
     };
     try {
       if (isEdit && initial) { await update.mutateAsync({ id: initial.id, ...payload }); }
@@ -183,6 +186,18 @@ function PlanForm({ onClose, initial }: { readonly onClose: () => void; readonly
           <p className="text-[10px] text-gray-400 mt-0.5">{formatCurrency(Number(form.weekly_ai_budget_cents) / 100, currency)}/week</p>
         </div>
       </div>
+      <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 cursor-pointer" data-testid="plan-allow-custom-containers">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 rounded border-gray-300 dark:border-gray-600 text-brand-600 focus:ring-brand-500"
+          checked={form.allow_custom_containers}
+          onChange={(e) => setForm({ ...form, allow_custom_containers: e.target.checked })}
+        />
+        <span>
+          <span className="block text-xs font-medium text-gray-700 dark:text-gray-300">Allow Custom Containers</span>
+          <span className="block text-[10px] text-gray-400">Lets tenants on this plan deploy bring-your-own container images (ADR-036). Off by default; can be overridden per tenant.</span>
+        </span>
+      </label>
       <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Description</label><input type="text" className={INPUT_CLASS} placeholder="Optional description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></div>
       {error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}
       <div className="flex gap-2 justify-end">

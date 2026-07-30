@@ -12,6 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **"Allow Custom Containers" subscription toggle (ADR-036 gating).** Bring-your-own
+  container deployments are now gated per subscription: a plan-level
+  `allow_custom_containers` flag (default **off** for every plan) with a nullable
+  per-tenant override (`allow_custom_containers_override`, resolved `override ??
+  plan`). When a tenant's effective access is off, the tenant panel hides the
+  **Custom Containers** tab (existing custom deployments stay visible/manageable
+  under *Installed Apps*) and the backend refuses new custom deploys with
+  `CUSTOM_CONTAINERS_NOT_IN_PLAN`. Layered on the existing system-wide
+  `customDeploymentsEnabled` kill-switch — both must be true. Admin controls: a
+  checkbox on the plan form and a per-tenant override toggle on the tenant-detail
+  Resource Limits card. Migration 0078.
+- **Admins can disable individual catalog apps.** Alongside *featured*/*popular*, a
+  new `disabled` flag hides a catalog entry from the tenant catalog listing (admins
+  still see it — dimmed card, "Disabled" badge, eye toggle) and blocks new deploys
+  of it (`CATALOG_ENTRY_DISABLED`); existing deployments keep running untouched.
+  Migration 0078.
+
 ### Fixed
 - **Dependabot opened its PRs against `main`.** The config set no
   `target-branch`, so it defaulted to the repository default branch — but under

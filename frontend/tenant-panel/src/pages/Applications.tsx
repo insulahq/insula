@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef } from 'react';
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { API_BASE } from '@/lib/api-client';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, ArrowUpCircle } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
@@ -6,6 +6,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
+import { useSubscription } from '@/hooks/use-subscription';
 import ReadOnlyNotice from '@/components/ReadOnlyNotice';
 import { useCatalog } from '@/hooks/use-catalog';
 import { useDeployments, useUpdateDeployment, useDeleteDeployment, useRestoreDeployment, usePermanentDeleteDeployment, useDeploymentLiveMetrics, useDeletePreview, useRestartDeployment } from '@/hooks/use-deployments';
@@ -39,6 +40,15 @@ const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
 export default function Applications() {
   const { tenantId } = useTenantContext();
   const canManage = useCanManage();
+  // Custom Containers (ADR-036) is gated by the tenant's subscription. When not
+  // allowed, hide the tab entirely — existing custom deployments still appear
+  // and stay manageable under "Installed Apps". Migration 0078.
+  const { data: subscription } = useSubscription(tenantId ?? undefined);
+  const allowCustomContainers = subscription?.data.allowCustomContainers ?? false;
+  const visibleTabs = useMemo(
+    () => TABS.filter((tab) => tab.id !== 'custom' || allowCustomContainers),
+    [allowCustomContainers],
+  );
   const { data: deploymentsForNames } = useDeployments(tenantId ?? undefined);
   const existingDeploymentNames = useMemo(
     () => (deploymentsForNames?.data ?? []).filter(d => d.status !== 'deleted').map(d => d.name),
@@ -46,6 +56,11 @@ export default function Applications() {
   );
 
   const [activeTab, setActiveTab] = useState<Tab>('installed');
+  // If the active tab is no longer visible (e.g. Custom Containers access was
+  // revoked mid-session), fall back to Installed so the body isn't left blank.
+  useEffect(() => {
+    if (!visibleTabs.some((tab) => tab.id === activeTab)) setActiveTab('installed');
+  }, [visibleTabs, activeTab]);
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployPreSelectedImage, setDeployPreSelectedImage] = useState<string | null>(null);
 
@@ -83,7 +98,7 @@ export default function Applications() {
 
       <div className="border-b border-gray-200 dark:border-gray-700">
         <nav className="-mb-px flex gap-6" data-testid="tab-bar">
-          {TABS.map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
@@ -103,7 +118,7 @@ export default function Applications() {
 
       {activeTab === 'catalog' && <CatalogTab onDeploy={openDeployModal} />}
       {activeTab === 'installed' && <InstalledTab onDeploy={() => openDeployModal()} />}
-      {activeTab === 'custom' && tenantId && (
+      {activeTab === 'custom' && allowCustomContainers && tenantId && (
         <CustomContainersTab tenantId={tenantId} canManage={canManage} />
       )}
 

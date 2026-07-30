@@ -14,6 +14,7 @@ import type { Database } from '../../db/index.js';
 import { deployments, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
+import { isCustomContainersAllowedByPlan } from '../subscriptions/service.js';
 import { assertTenantActive } from '../tenants/guards.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import {
@@ -121,6 +122,23 @@ export async function validateSimpleSpec(
   return { ok: result.ok, issues: result.issues, spec };
 }
 
+/**
+ * Per-tenant subscription gate for the custom-container path (ADR-036).
+ * Layered ON TOP of the system-wide `customDeploymentsEnabled` kill-switch:
+ * even when custom deployments are enabled platform-wide, a tenant may deploy
+ * one only if its subscription allows it (plan default OR per-tenant override).
+ * Throws 403 CUSTOM_CONTAINERS_NOT_IN_PLAN otherwise.
+ */
+async function assertCustomContainersAllowed(db: Database, tenantId: string): Promise<void> {
+  if (!(await isCustomContainersAllowedByPlan(db, tenantId))) {
+    throw new ApiError(
+      'CUSTOM_CONTAINERS_NOT_IN_PLAN',
+      'Custom containers are not enabled for this tenant\'s subscription. An administrator can enable "Allow Custom Containers" on the plan or as a per-tenant override.',
+      403,
+    );
+  }
+}
+
 export async function createSimpleDeployment(
   db: Database,
   k8s: K8sClients,
@@ -136,6 +154,7 @@ export async function createSimpleDeployment(
       403,
     );
   }
+  await assertCustomContainersAllowed(db, tenantId);
 
   const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
 
@@ -260,6 +279,7 @@ export async function createComposeDeployment(
       403,
     );
   }
+  await assertCustomContainersAllowed(db, tenantId);
 
   if (!input.name) {
     throw new ApiError('MISSING_REQUIRED_FIELD', 'Stack name is required to create a deployment.', 400, { field: 'name' });

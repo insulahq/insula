@@ -30,11 +30,16 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     const category = typeof query.category === 'string' ? query.category : undefined;
     const search = typeof query.search === 'string' ? query.search : undefined;
 
+    // This endpoint is shared by both panels. Admins see admin-disabled
+    // entries (so they can re-enable them); tenants never do (migration 0078).
+    const includeDisabled = request.user?.panel === 'admin';
+
     const result = await service.listCatalogEntries(app.db, {
       ...paginationParams,
       type,
       category,
       search,
+      includeDisabled,
     });
     return paginated(result.data, result.pagination);
   });
@@ -135,7 +140,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     onRequest: [authenticate, requireRole('super_admin', 'admin')],
     schema: {
       tags: ['Catalog'],
-      summary: 'Update featured/popular badges for a catalog entry',
+      summary: 'Update featured/popular/disabled flags for a catalog entry',
       security: [{ bearerAuth: [] }],
       params: {
         type: 'object',
@@ -145,7 +150,7 @@ export async function catalogRoutes(app: FastifyInstance): Promise<void> {
     },
   }, async (request) => {
     const { id } = request.params as { id: string };
-    const body = request.body as { featured?: boolean; popular?: boolean };
+    const body = request.body as { featured?: boolean; popular?: boolean; disabled?: boolean };
     const updated = await service.updateBadges(app.db, id, body);
     return success(updated);
   });

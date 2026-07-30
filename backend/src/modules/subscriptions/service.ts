@@ -1,6 +1,7 @@
 import { eq } from 'drizzle-orm';
 import { tenants, hostingPlans } from '../../db/schema.js';
 import { tenantNotFound } from '../../shared/errors.js';
+import { getSettings } from '../system-settings/service.js';
 import {
   notifyTenantSubscriptionChanged,
   notifyTenantSubscriptionRenewed,
@@ -8,11 +9,43 @@ import {
 import type { Database } from '../../db/index.js';
 import type { UpdateSubscriptionInput } from './schema.js';
 
+/**
+ * Resolve whether a tenant's SUBSCRIPTION permits the ADR-036 custom-container
+ * (bring-your-own image) path: per-tenant override ?? plan default. A `false`
+ * override forces it off even when the plan allows; `null` inherits the plan.
+ *
+ * This does NOT include the system-wide `customDeploymentsEnabled` kill-switch —
+ * callers check that separately so they can surface a distinct "disabled
+ * platform-wide" vs "not in your plan" error. For the single effective boolean
+ * (both combined), see getSubscription().allowCustomContainers.
+ */
+export async function isCustomContainersAllowedByPlan(db: Database, tenantId: string): Promise<boolean> {
+  const [tenant] = await db
+    .select({ planId: tenants.planId, override: tenants.allowCustomContainersOverride })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  if (!tenant) throw tenantNotFound(tenantId);
+
+  const [plan] = await db
+    .select({ allow: hostingPlans.allowCustomContainers })
+    .from(hostingPlans)
+    .where(eq(hostingPlans.id, tenant.planId));
+
+  const planAllows = plan?.allow ?? false;
+  return tenant.override ?? planAllows;
+}
+
 export async function getSubscription(db: Database, tenantId: string) {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId));
   if (!tenant) throw tenantNotFound(tenantId);
 
   const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId));
+
+  // Effective custom-container access = system kill-switch AND (override ?? plan).
+  const settings = await getSettings(db);
+  const planAllows = plan?.allowCustomContainers ?? false;
+  const allowCustomContainers =
+    settings.customDeploymentsEnabled && (tenant.allowCustomContainersOverride ?? planAllows);
 
   return {
     tenant_id: tenant.id,
@@ -20,6 +53,7 @@ export async function getSubscription(db: Database, tenantId: string) {
     status: tenant.status,
     subscription_expires_at: tenant.subscriptionExpiresAt,
     created_at: tenant.createdAt,
+    allowCustomContainers,
   };
 }
 

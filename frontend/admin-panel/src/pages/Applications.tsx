@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { API_BASE } from '@/lib/api-client';
 import { useNavigate } from 'react-router-dom';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
 import DeploymentUpgradesTab from '@/components/DeploymentUpgradesTab';
@@ -208,6 +208,10 @@ function CatalogTab() {
     updateBadges.mutate({ id: entry.id, popular: !entry.popular });
   }, [updateBadges]);
 
+  const toggleDisabled = useCallback((entry: CatalogEntry) => {
+    updateBadges.mutate({ id: entry.id, disabled: !entry.disabled });
+  }, [updateBadges]);
+
   const categories = useMemo(() => {
     const set = new Set<string>();
     for (const entry of entries) {
@@ -324,7 +328,7 @@ function CatalogTab() {
               No entries found matching your filters.
             </div>
           ) : (
-            <CatalogSections entries={filteredEntries} onCardClick={handleCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+            <CatalogSections entries={filteredEntries} onCardClick={handleCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} toggleDisabled={toggleDisabled} />
           )}
           <div className="text-sm text-gray-500 dark:text-gray-400">
             {filteredEntries.length} entr{filteredEntries.length !== 1 ? 'ies' : 'y'}
@@ -354,11 +358,13 @@ function CatalogSections({
   onCardClick,
   toggleFeatured,
   togglePopular,
+  toggleDisabled,
 }: {
   readonly entries: readonly CatalogEntry[];
   readonly onCardClick: (entry: CatalogEntry) => void;
   readonly toggleFeatured: (entry: CatalogEntry) => void;
   readonly togglePopular: (entry: CatalogEntry) => void;
+  readonly toggleDisabled: (entry: CatalogEntry) => void;
 }) {
   const featuredEntries = useMemo(() => entries.filter((e) => e.featured), [entries]);
   const popularEntries = useMemo(() => entries.filter((e) => e.popular), [entries]);
@@ -370,7 +376,7 @@ function CatalogSections({
           <CatalogSectionHeading icon={Star} title="Featured" count={featuredEntries.length} color="text-amber-500" />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {featuredEntries.map((entry) => (
-              <AdminCatalogCard key={`featured-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+              <AdminCatalogCard key={`featured-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} toggleDisabled={toggleDisabled} />
             ))}
           </div>
         </div>
@@ -381,7 +387,7 @@ function CatalogSections({
           <CatalogSectionHeading icon={Flame} title="Popular" count={popularEntries.length} color="text-orange-500" />
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {popularEntries.map((entry) => (
-              <AdminCatalogCard key={`popular-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+              <AdminCatalogCard key={`popular-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} toggleDisabled={toggleDisabled} />
             ))}
           </div>
         </div>
@@ -391,7 +397,7 @@ function CatalogSections({
         <CatalogSectionHeading icon={LayoutGrid} title="All Applications" count={entries.length} color="text-gray-500 dark:text-gray-400" />
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {entries.map((entry) => (
-            <AdminCatalogCard key={`all-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} />
+            <AdminCatalogCard key={`all-${entry.id}`} entry={entry} onCardClick={onCardClick} toggleFeatured={toggleFeatured} togglePopular={togglePopular} toggleDisabled={toggleDisabled} />
           ))}
         </div>
       </div>
@@ -404,17 +410,25 @@ function AdminCatalogCard({
   onCardClick,
   toggleFeatured,
   togglePopular,
+  toggleDisabled,
 }: {
   readonly entry: CatalogEntry;
   readonly onCardClick: (entry: CatalogEntry) => void;
   readonly toggleFeatured: (entry: CatalogEntry) => void;
   readonly togglePopular: (entry: CatalogEntry) => void;
+  readonly toggleDisabled: (entry: CatalogEntry) => void;
 }) {
+  const isDisabled = Boolean(entry.disabled);
   return (
     <button
       type="button"
       onClick={() => onCardClick(entry)}
-      className="cursor-pointer rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left"
+      className={clsx(
+        'cursor-pointer rounded-xl border bg-white dark:bg-gray-800 p-5 shadow-sm transition-shadow hover:shadow-md text-left',
+        isDisabled
+          ? 'border-dashed border-gray-300 dark:border-gray-600 opacity-60'
+          : 'border-gray-200 dark:border-gray-700',
+      )}
       data-testid={`catalog-card-${entry.code}`}
     >
       <div className="mb-3 flex items-start justify-between">
@@ -449,6 +463,11 @@ function AdminCatalogCard({
           {entry.popular ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 dark:bg-orange-900/20 px-2.5 py-0.5 text-xs font-medium text-orange-700 dark:text-orange-300">
               <Flame size={12} className="fill-orange-400 text-orange-400" /> Popular
+            </span>
+          ) : null}
+          {isDisabled ? (
+            <span className="inline-flex items-center gap-1 rounded-full bg-red-50 dark:bg-red-900/20 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:text-red-300">
+              <EyeOff size={12} /> Disabled
             </span>
           ) : null}
           <span className="inline-flex rounded-full bg-brand-50 dark:bg-brand-900/20 px-2.5 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300">
@@ -490,6 +509,17 @@ function AdminCatalogCard({
           title={entry.popular ? 'Remove Popular' : 'Mark as Popular'}
         >
           <Flame size={14} className={entry.popular ? 'fill-orange-400 text-orange-400' : 'text-gray-400 dark:text-gray-500'} />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); toggleDisabled(entry); }}
+          className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+          title={isDisabled ? 'Enable — show to tenants' : 'Disable — hide from tenants'}
+          data-testid={`toggle-disabled-${entry.code}`}
+        >
+          {isDisabled
+            ? <EyeOff size={14} className="text-red-500 dark:text-red-400" />
+            : <Eye size={14} className="text-gray-400 dark:text-gray-500" />}
         </button>
       </div>
     </button>
