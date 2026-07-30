@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.27] - 2026-07-30
+
 ### Fixed
 - **Tenant restore could self-grant the custom-container entitlement.** The
   per-tenant `allow_custom_containers_override` column (added in v2026.7.26,
