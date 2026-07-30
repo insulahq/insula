@@ -38,16 +38,22 @@ CHANGELOG="$ROOT/CHANGELOG.md"
 [ -f "$CHANGELOG" ] || { echo "sync-development-changelog: $CHANGELOG not found" >&2; exit 1; }
 
 # The tag's CHANGELOG is authoritative; read it from git (never the worktree).
-TAG_CHANGELOG="$(git -C "$ROOT" show "${TAG}:CHANGELOG.md" 2>/dev/null)" \
+# Stream it to a temp file rather than passing it as a python argv/env string:
+# the CHANGELOG has grown past Linux's 128 KB MAX_ARG_STRLEN single-argument
+# limit, so `execve` fails with E2BIG "Argument list too long" (first tripped at
+# v2026.7.26, 129 KB). trap-clean the temp file on exit.
+TAG_CHANGELOG_FILE="$(mktemp)"
+trap 'rm -f "$TAG_CHANGELOG_FILE"' EXIT
+git -C "$ROOT" show "${TAG}:CHANGELOG.md" > "$TAG_CHANGELOG_FILE" 2>/dev/null \
   || { echo "sync-development-changelog: cannot read ${TAG}:CHANGELOG.md" >&2; exit 1; }
 
-TAG="$TAG" WRITE="$WRITE" CHANGELOG="$CHANGELOG" python3 - "$TAG_CHANGELOG" <<'PY'
+TAG="$TAG" WRITE="$WRITE" CHANGELOG="$CHANGELOG" TAG_CHANGELOG_FILE="$TAG_CHANGELOG_FILE" python3 - <<'PY'
 import os, re, sys
 
 tag = os.environ["TAG"]
 version = tag[1:] if tag.startswith("v") else tag          # vX.Y.Z -> X.Y.Z
 dev = open(os.environ["CHANGELOG"]).read()
-tagged = sys.argv[1]
+tagged = open(os.environ["TAG_CHANGELOG_FILE"]).read()
 
 ver_hdr_re = re.compile(r'^## \[' + re.escape(version) + r'\]', re.M)
 m = ver_hdr_re.search(tagged)
@@ -67,10 +73,31 @@ def section(text, start_re):
     return text[s.start(): nxt.start() if nxt else len(text)]
 
 ver_section = section(tagged, ver_hdr_re)
-def bullet_titles(block):
-    # Top-level entries are '- **Title**...'; key on the bold title.
-    return set(re.findall(r'^- \*\*(.+?)\*\*', block, re.M))
-published = bullet_titles(ver_section)
+def entries_of(block):
+    # Flat list of top-level entries ('- …' + wrapped continuation lines),
+    # ignoring '### Sub' headings. cut-release moves entries verbatim, so an
+    # [Unreleased] entry is "published" iff its text matches one here.
+    out, cur = [], None
+    for ln in block.splitlines():
+        if ln.startswith('### '):
+            if cur is not None:
+                out.append(cur); cur = None
+        elif re.match(r'^- ', ln):
+            if cur is not None:
+                out.append(cur)
+            cur = ln
+        else:
+            if cur is not None:
+                cur += ' ' + ln
+    if cur is not None:
+        out.append(cur)
+    return out
+def norm(e):
+    # Whitespace-normalise so line-wrapping/indentation (and multi-line bold
+    # titles, or non-bold bullets) don't defeat the dedup — the old bold-title
+    # regex silently kept those, which is what left [Unreleased] drifting.
+    return re.sub(r'\s+', ' ', e).strip()
+published = { norm(e) for e in entries_of(ver_section) }
 
 # development's current [Unreleased] block.
 unrel_re = re.compile(r'^## \[Unreleased\]', re.M)
@@ -116,8 +143,7 @@ kept = []
 for sub, entries in out_groups:
     keep_entries = []
     for e in entries:
-        tm = re.match(r'^- \*\*(.+?)\*\*', e)
-        if tm and tm.group(1) in published:
+        if norm(e) in published:
             continue          # already released — drop
         keep_entries.append(e.rstrip("\n"))
     if keep_entries:
