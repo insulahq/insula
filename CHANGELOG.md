@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Tenant restore could self-grant the custom-container entitlement.** The
+  per-tenant `allow_custom_containers_override` column (added in v2026.7.26,
+  migration 0078) was missing from the tenant-restore deny-list, so a tenant
+  restoring the `tenants` table from a bundle could flip it on. Added to
+  `DEFAULT_TENANT_RESTORE_POLICY`, same class as the other operator-only
+  `*_override` caps.
+- **`sync-development-changelog` (post-release CHANGELOG reconcile) is robust
+  again.** It hard-failed with `python3: Argument list too long` once the
+  CHANGELOG crossed Linux's 128 KB single-argument limit (at v2026.7.26) — it
+  passed the whole file as an argv; now streamed via a temp file. Also fixed the
+  long-latent dedup that only matched single-line `**bold**` titles, leaving
+  multi-line titles and non-bold bullets (e.g. dependency bumps) drifting in
+  `[Unreleased]`; it now dedups by normalised full-entry text (regression-tested).
+- **`cut-release.sh` no longer hard-fails when copied without its `lib/`.** Its
+  dependency preflight sources `scripts/lib/require-tools.sh` defensively.
+
 ## [2026.7.26] - 2026-07-30
 
 ### Added
