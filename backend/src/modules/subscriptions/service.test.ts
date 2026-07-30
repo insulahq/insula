@@ -10,7 +10,15 @@ vi.mock('../notifications/events.js', () => ({
   notifyTenantSubscriptionRenewed: (...args: unknown[]) => notifyRenewedMock(...args),
 }));
 
-const { getSubscription, updateSubscription } = await import('./service.js');
+// getSettings hits the DB on a cold cache, which would consume the carefully
+// sequenced select() fakes below. Mock it so it returns a fixed system flag
+// (custom deployments enabled) without touching the mock db.
+const getSettingsMock = vi.fn().mockResolvedValue({ customDeploymentsEnabled: true });
+vi.mock('../system-settings/service.js', () => ({
+  getSettings: (...args: unknown[]) => getSettingsMock(...args),
+}));
+
+const { getSubscription, updateSubscription, isCustomContainersAllowedByPlan } = await import('./service.js');
 const { ApiError } = await import('../../shared/errors.js');
 
 function createMockDb(tenantResult: unknown[] = [], planResult: unknown[] = []) {
@@ -82,6 +90,62 @@ describe('getSubscription', () => {
     const result = await getSubscription(db, 'c1');
 
     expect(result.plan).toBeNull();
+  });
+
+  it('effective allowCustomContainers = system AND (override ?? plan)', async () => {
+    getSettingsMock.mockResolvedValue({ customDeploymentsEnabled: true });
+    const base = { id: 'c1', planId: 'p1', status: 'active', subscriptionExpiresAt: null, createdAt: new Date('2026-01-01') };
+
+    // plan allows, no override → true
+    let r = await getSubscription(createMockDb([{ ...base, allowCustomContainersOverride: null }], [{ id: 'p1', allowCustomContainers: true }]), 'c1');
+    expect(r.allowCustomContainers).toBe(true);
+
+    // plan disallows, no override → false
+    r = await getSubscription(createMockDb([{ ...base, allowCustomContainersOverride: null }], [{ id: 'p1', allowCustomContainers: false }]), 'c1');
+    expect(r.allowCustomContainers).toBe(false);
+
+    // plan disallows, override TRUE → true (per-tenant grant)
+    r = await getSubscription(createMockDb([{ ...base, allowCustomContainersOverride: true }], [{ id: 'p1', allowCustomContainers: false }]), 'c1');
+    expect(r.allowCustomContainers).toBe(true);
+
+    // plan allows, override FALSE → false (per-tenant revoke)
+    r = await getSubscription(createMockDb([{ ...base, allowCustomContainersOverride: false }], [{ id: 'p1', allowCustomContainers: true }]), 'c1');
+    expect(r.allowCustomContainers).toBe(false);
+  });
+
+  it('system-wide kill-switch OFF forces allowCustomContainers false even when plan+override allow', async () => {
+    getSettingsMock.mockResolvedValueOnce({ customDeploymentsEnabled: false });
+    const tenant = { id: 'c1', planId: 'p1', status: 'active', subscriptionExpiresAt: null, createdAt: new Date('2026-01-01'), allowCustomContainersOverride: true };
+    const r = await getSubscription(createMockDb([tenant], [{ id: 'p1', allowCustomContainers: true }]), 'c1');
+    expect(r.allowCustomContainers).toBe(false);
+  });
+});
+
+describe('isCustomContainersAllowedByPlan', () => {
+  // NOTE: this function SELECTs projected aliases — tenant `{ planId, override }`
+  // and plan `{ allow }` — so the mock rows use those alias keys, not the
+  // full-column names (the mock db returns rows verbatim, no projection).
+  it('resolves override ?? plan (NOT including the system kill-switch)', async () => {
+    // override null → inherit plan (true)
+    let ok = await isCustomContainersAllowedByPlan(createMockDb([{ planId: 'p1', override: null }], [{ allow: true }]), 'c1');
+    expect(ok).toBe(true);
+
+    // override null → inherit plan (false)
+    ok = await isCustomContainersAllowedByPlan(createMockDb([{ planId: 'p1', override: null }], [{ allow: false }]), 'c1');
+    expect(ok).toBe(false);
+
+    // override FALSE beats plan true
+    ok = await isCustomContainersAllowedByPlan(createMockDb([{ planId: 'p1', override: false }], [{ allow: true }]), 'c1');
+    expect(ok).toBe(false);
+
+    // override TRUE beats plan false
+    ok = await isCustomContainersAllowedByPlan(createMockDb([{ planId: 'p1', override: true }], [{ allow: false }]), 'c1');
+    expect(ok).toBe(true);
+  });
+
+  it('missing plan row → treated as not allowed', async () => {
+    const ok = await isCustomContainersAllowedByPlan(createMockDb([{ planId: 'p1', override: null }], []), 'c1');
+    expect(ok).toBe(false);
   });
 });
 

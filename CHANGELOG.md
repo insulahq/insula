@@ -12,6 +12,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **"Allow Custom Containers" subscription toggle (ADR-036 gating).** Bring-your-own
+  container deployments are now gated per subscription: a plan-level
+  `allow_custom_containers` flag (default **off** for every plan) with a nullable
+  per-tenant override (`allow_custom_containers_override`, resolved `override ??
+  plan`). When a tenant's effective access is off, the tenant panel hides the
+  **Custom Containers** tab (existing custom deployments stay visible/manageable
+  under *Installed Apps*) and the backend refuses new custom deploys with
+  `CUSTOM_CONTAINERS_NOT_IN_PLAN`. Layered on the existing system-wide
+  `customDeploymentsEnabled` kill-switch — both must be true. Admin controls: a
+  checkbox on the plan form and a per-tenant override toggle on the tenant-detail
+  Resource Limits card. Migration 0078.
+- **Admins can disable individual catalog apps.** Alongside *featured*/*popular*, a
+  new `disabled` flag hides a catalog entry from the tenant catalog listing (admins
+  still see it — dimmed card, "Disabled" badge, eye toggle) and blocks new deploys
+  of it (`CATALOG_ENTRY_DISABLED`); existing deployments keep running untouched.
+  Migration 0078.
+
+### Fixed
+- **The dev/dind overlays no longer block the whole platform namespace with a
+  stale `limits.cpu` quota.** `platform-quota` in `k8s/overlays/development` and
+  `k8s/overlays/dind` still tracked `limits.cpu` (20 / 4) — left over from the
+  pre-2026-06-24 CPU-limited model — but platform pods run *without* CPU limits
+  (ADR-037), so every pod (management API, panels, CNPG initdb) was rejected with
+  `must specify limits.cpu` and nothing scheduled. Removed `limits.cpu` from both
+  overlay quotas (matching the base) and dropped the development overlay's
+  `platform-limit-range` `default.cpu`/`max.cpu` so dev/staging match production.
+- **Scripts fail fast with an install one-liner when a required tool is missing.**
+  New `scripts/lib/require-tools.sh` (`require_cmds …`) is preflighted at the top
+  of `local.sh` (docker/helm), `smoke-test.sh` (curl/jq) and `cut-release.sh`
+  (git/python3) — so e.g. a missing `helm` fails instantly with
+  `curl … get-helm-3 | bash` instead of dying deep inside the k3s bringup after
+  the docker builds already ran.
+- **Dependabot opened its PRs against `main`.** The config set no
+  `target-branch`, so it defaulted to the repository default branch — but under
+  ADR-053 `main` only ever receives `chore(promote)` tree-snapshots of
+  `development` plus `chore(release)` commits, so a bump merged into `main` is
+  silently reverted by the next promote. All eight ecosystem blocks now target
+  `development`.
+
+### Changed
+- `lucide-react` 1.26 → 1.27 (supersedes the Dependabot PR that was targeting
+  `main`). All 161 icons imported across the repo still resolve in 1.27.0.
+
 ## [2026.7.25] - 2026-07-29
 
 ### Changed

@@ -13,6 +13,7 @@ interface CreatePlanInput {
   readonly max_sub_users?: number;
   readonly max_mailboxes?: number;
   readonly max_mailbox_size_mb?: number;
+  readonly allow_custom_containers?: boolean;
   readonly features?: Record<string, unknown>;
 }
 

@@ -27,6 +27,8 @@ export const hostingPlanSchema = z.object({
   // Phase 1 (tenant-panel email parity round 2): per-plan cap on
   // total mailboxes across the tenant's email domains.
   maxMailboxes: z.number(),
+  // Plan-level ADR-036 custom-container toggle (default false). Migration 0078.
+  allowCustomContainers: z.boolean().default(false),
   features: z.unknown().nullable(),
   status: z.string(),
   createdAt: z.string(),
@@ -38,6 +40,10 @@ export const subscriptionResponseSchema = z.object({
   status: z.string(),
   subscription_expires_at: z.string().nullable(),
   created_at: z.string(),
+  // Effective custom-container access for this tenant, resolved server-side:
+  // system customDeploymentsEnabled AND (tenant override ?? plan default).
+  // The tenant panel reads this to show/hide the Custom Containers tab.
+  allowCustomContainers: z.boolean().default(false),
 });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
