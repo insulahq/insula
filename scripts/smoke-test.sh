@@ -12,6 +12,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 ENV_FILE="${SCRIPT_DIR}/../.env.local"
 
+# Fail-fast dependency preflight — every test path needs curl + jq.
+# shellcheck source=lib/require-tools.sh
+source "${SCRIPT_DIR}/lib/require-tools.sh"
+require_cmds curl jq
+
 # .env.local holds LOCAL-DinD defaults. When this script is invoked against a
 # REMOTE cluster (integration-all.sh exports ADMIN_PASSWORD / API_URL / ADMIN_EMAIL,
 # or an operator sets them), those caller-provided values MUST win — otherwise a
