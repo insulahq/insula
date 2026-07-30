@@ -53,6 +53,11 @@ git -C "$TMP" init -q -b main
 git -C "$TMP" config user.email t@t; git -C "$TMP" config user.name t
 mkdir -p "$TMP/scripts" "$TMP/platform"
 cp "$CUT" "$TMP/scripts/cut-release.sh"
+# cut-release.sh sources scripts/lib/require-tools.sh for its dependency
+# preflight — mirror that dependency into the temp repo so the copied script
+# exercises the real path (it degrades gracefully if absent, but copy it so the
+# preflight actually runs here).
+mkdir -p "$TMP/scripts/lib"; cp "$HERE/lib/require-tools.sh" "$TMP/scripts/lib/require-tools.sh"
 printf '2026.6.3\n' > "$TMP/platform/VERSION"
 printf '# Changelog\n\n## [Unreleased]\n\n- something\n' > "$TMP/CHANGELOG.md"
 git -C "$TMP" add -A; git -C "$TMP" commit -qm init; git -C "$TMP" tag v2026.6.3

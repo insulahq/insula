@@ -35,10 +35,12 @@
 #       uncovered host change) · 2 usage
 set -euo pipefail
 
-# Fail-fast dependency preflight — cut-release drives git and a python3 helper.
+# Fail-fast dependency preflight (git + python3). Sourced defensively: a copied
+# cut-release.sh without its lib/ (e.g. test-cut-release-audit.sh copies just the
+# script) degrades to the prior behaviour instead of hard-failing under `set -e`.
+_RT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/require-tools.sh"
 # shellcheck source=lib/require-tools.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/require-tools.sh"
-require_cmds git python3
+if [ -f "$_RT_LIB" ]; then source "$_RT_LIB"; require_cmds git python3; fi
 
 PRERELEASE=0 BREAKING=0 DRY_RUN=0 ASSUME_YES=0 PRINT_ONLY=0
 ALLOW_UNCOVERED=0 SKIP_AUDIT=0
