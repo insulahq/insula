@@ -44,8 +44,13 @@ metadata:
   namespace: platform
 spec:
   hard:
+    # NO limits.cpu — platform pods run WITHOUT CPU limits (ADR-037; see the
+    # rationale in k8s/base/resource-quotas.yaml). A limits.cpu quota rejects
+    # every limitless pod with "must specify limits.cpu" and wedges the whole
+    # platform namespace — observed 2026-07-30 on a fresh local `up` (api,
+    # panels, CNPG initdb all FailedCreate). Guardrails are requests.cpu +
+    # limits.memory + node capacity. Keep this in sync with the base.
     requests.cpu: "2"
     requests.memory: 2Gi
-    limits.cpu: "4"
     limits.memory: 4Gi
     pods: "20"

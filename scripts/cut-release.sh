@@ -35,6 +35,11 @@
 #       uncovered host change) · 2 usage
 set -euo pipefail
 
+# Fail-fast dependency preflight — cut-release drives git and a python3 helper.
+# shellcheck source=lib/require-tools.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/require-tools.sh"
+require_cmds git python3
+
 PRERELEASE=0 BREAKING=0 DRY_RUN=0 ASSUME_YES=0 PRINT_ONLY=0
 ALLOW_UNCOVERED=0 SKIP_AUDIT=0
 OVERRIDE_VERSION="" YEAR_MONTH="" ROOT=""

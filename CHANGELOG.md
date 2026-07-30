@@ -31,6 +31,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Migration 0078.
 
 ### Fixed
+- **The dev/dind overlays no longer block the whole platform namespace with a
+  stale `limits.cpu` quota.** `platform-quota` in `k8s/overlays/development` and
+  `k8s/overlays/dind` still tracked `limits.cpu` (20 / 4) — left over from the
+  pre-2026-06-24 CPU-limited model — but platform pods run *without* CPU limits
+  (ADR-037), so every pod (management API, panels, CNPG initdb) was rejected with
+  `must specify limits.cpu` and nothing scheduled. Removed `limits.cpu` from both
+  overlay quotas (matching the base) and dropped the development overlay's
+  `platform-limit-range` `default.cpu`/`max.cpu` so dev/staging match production.
+- **Scripts fail fast with an install one-liner when a required tool is missing.**
+  New `scripts/lib/require-tools.sh` (`require_cmds …`) is preflighted at the top
+  of `local.sh` (docker/helm), `smoke-test.sh` (curl/jq) and `cut-release.sh`
+  (git/python3) — so e.g. a missing `helm` fails instantly with
+  `curl … get-helm-3 | bash` instead of dying deep inside the k3s bringup after
+  the docker builds already ran.
 - **Dependabot opened its PRs against `main`.** The config set no
   `target-branch`, so it defaulted to the repository default branch — but under
   ADR-053 `main` only ever receives `chore(promote)` tree-snapshots of

@@ -50,6 +50,10 @@ readonly SCRIPT_DIR
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 readonly PROJECT_DIR
 
+# Fail-fast dependency preflight (docker/helm etc.) — see lib/require-tools.sh.
+# shellcheck source=lib/require-tools.sh
+source "${SCRIPT_DIR}/lib/require-tools.sh"
+
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.local.yml"
 ENV_FILE="${PROJECT_DIR}/.env.local"
 ENV_LOCAL="${PROJECT_DIR}/.env.local.local"
@@ -1405,6 +1409,17 @@ cmd_sftp_dev_status() {
 cmd_help() {
   sed -n '3,36p' "${BASH_SOURCE[0]}" | sed 's/^# \?//'
 }
+
+# Preflight the external tools each verb needs BEFORE doing any work, so a
+# missing tool fails instantly with an install one-liner instead of deep inside
+# the k3s bringup (helm used to be discovered missing only after the docker
+# builds + k3s start had already run — 2026-07-30). kubectl is exec'd inside the
+# k3s container, so the host doesn't need it.
+case "${1:-help}" in
+  help|-h|--help|"")            : ;;
+  up|reset|rebuild)            require_cmds docker helm; require_docker_running ;;
+  *)                            require_cmds docker; require_docker_running ;;
+esac
 
 case "${1:-help}" in
   up)             cmd_up ;;
