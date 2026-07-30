@@ -26,7 +26,7 @@
   "devDependencies": {
     "@tanstack/react-query": "^5.101.3",
     "@types/react": "^19.2.17",
-    "lucide-react": "1.27",
+    "lucide-react": "1.28",
     "react": "^19.2.7",
     "typescript": "^6.0.3"
   }
