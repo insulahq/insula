@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.7.26] - 2026-07-30
+
 ### Added
 - **"Allow Custom Containers" subscription toggle (ADR-036 gating).** Bring-your-own
   container deployments are now gated per subscription: a plan-level
