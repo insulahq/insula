@@ -8077,10 +8077,121 @@ run_post_install_smoke() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+# Everything that can be known BEFORE the first mutation, checked before the
+# first mutation.
+#
+# The install is idempotent, so a late failure is recoverable — but it is
+# recoverable after twenty minutes and a half-configured host, which is a poor
+# experience when the cause was a full disk or an occupied port that could have
+# been reported in two seconds. Anything cheap and knowable up front belongs
+# here.
+#
+# FATAL only where continuing cannot work. Everything else is a warning: an
+# installer that refuses to run on a machine that would have been fine is its
+# own kind of failure, and operators route around checks that cry wolf.
+run_preflight() {
+  ui_phase "Preflight"
+  local fatal=0
+
+  # Tools needed before the installer can fetch anything. python3 is absent
+  # deliberately — install_packages auto-installs it, and demanding it here
+  # would fail hosts that bootstrap perfectly well.
+  local cmd
+  for cmd in curl openssl; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      ui_ok "${cmd} present"
+    else
+      ui_fail "${cmd} is required before the installer can fetch anything (apt-get install -y ${cmd} / dnf install -y ${cmd})"
+      fatal=1
+    fi
+  done
+
+  # Disk. k3s + container images + Longhorn need real room; running out mid-way
+  # corrupts an install far more annoyingly than refusing up front.
+  local free_gb
+  free_gb=$(df -BG --output=avail /var 2>/dev/null | tail -1 | tr -dc '0-9')
+  free_gb="${free_gb:-0}"
+  if (( free_gb < 10 )); then
+    ui_fail "/var has ${free_gb}GB free; the platform needs at least 20GB (k3s + images + Longhorn)"
+    fatal=1
+  elif (( free_gb < 20 )); then
+    ui_warn "/var has ${free_gb}GB free — under the 20GB recommendation; image pulls may fail later"
+  else
+    ui_ok "disk: ${free_gb}GB free on /var"
+  fi
+
+  # Memory. 4GB is the documented "try it" floor; below that the control plane
+  # thrashes rather than fails cleanly, which is harder to diagnose.
+  local mem_mb
+  mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+  if (( mem_mb < 2048 )); then
+    ui_fail "${mem_mb}MB RAM; the control plane needs 4GB minimum (see the requirements doc)"
+    fatal=1
+  elif (( mem_mb < 3800 )); then
+    ui_warn "${mem_mb}MB RAM — below the documented 4GB floor; expect eviction pressure"
+  else
+    ui_ok "memory: ${mem_mb}MB"
+  fi
+
+  # Ports the platform must own. Only meaningful on a first server — a re-run on
+  # an existing cluster finds k3s already holding 6443, which is correct, so the
+  # check is skipped once k3s is installed.
+  if [[ ! -x /usr/local/bin/k3s ]]; then
+    # ss OR netstat — and if NEITHER exists, say the check could not run rather
+    # than reporting the ports as free. The first version of this used `command
+    # -v ss && ss …`, which on a host without iproute2 silently produced "ports
+    # available" while 6443 was genuinely bound: a check that cannot fail is
+    # worse than no check, because it reads as evidence.
+    local port busy="" probe=""
+    if command -v ss >/dev/null 2>&1; then probe=ss
+    elif command -v netstat >/dev/null 2>&1; then probe=netstat
+    fi
+    case "$probe" in
+      ss)
+        for port in 80 443 6443; do
+          ss -Hltn "sport = :${port}" 2>/dev/null | grep -q . && busy+="${port} "
+        done ;;
+      netstat)
+        for port in 80 443 6443; do
+          netstat -ltn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && busy+="${port} "
+        done ;;
+    esac
+    if [[ -z "$probe" ]]; then
+      ui_warn "neither ss nor netstat present — could not verify ports 80/443/6443 are free"
+    elif [[ -n "$busy" ]]; then
+      ui_fail "port(s) ${busy}already in use — the platform's ingress and API server need them (another web server or k8s?)"
+      fatal=1
+    else
+      ui_ok "ports 80/443/6443 available"
+    fi
+  fi
+
+  # Clock. cert-manager's ACME exchange and etcd both misbehave on a skewed
+  # clock, in ways whose error messages point nowhere near the clock.
+  if command -v timedatectl >/dev/null 2>&1; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+      ui_ok "clock synchronised"
+    else
+      ui_warn "clock is not NTP-synchronised — ACME issuance and etcd are both sensitive to skew"
+    fi
+  fi
+
+  if (( fatal != 0 )); then
+    error "preflight failed — nothing has been changed on this host. Fix the items above and re-run."
+  fi
+}
+
 main() {
   parse_args "$@"
   check_root
   check_os
+  # Declared BEFORE the first ui_phase, or preflight renders "[1/0]". Six on a
+  # full first-server run: preflight, hardening, k3s, platform components,
+  # verification, smoke. A worker join short-circuits after k3s and simply never
+  # reaches the rest — the summary then reports "3/6 phases", which is accurate
+  # rather than a bar forced to 100%.
+  ui_phase_total 6
+  run_preflight
 
   # ADR-055: lay down the branded /var/lib/insula + /etc/insula roots (+ generic
   # compat symlinks) BEFORE any phase writes markers/credentials into them.
@@ -8091,12 +8202,6 @@ main() {
   log "  k3s ${K3S_VERSION} + Calico ${CALICO_VERSION}"
   log "════════════════════════════════════════════════"
   log ""
-
-  # Five phases on a full first-server run: hardening, k3s, platform components,
-  # verification, smoke. A worker join short-circuits after k3s, so it simply
-  # never reaches phases 3-5 — the summary then reports "2/5 phases", which is
-  # accurate rather than a bar forced to 100%.
-  ui_phase_total 5
 
   # Phase 1: Server hardening (both roles).
   # Bootstrap does NOT install or enrol VPN/mesh tooling — sysadmin
