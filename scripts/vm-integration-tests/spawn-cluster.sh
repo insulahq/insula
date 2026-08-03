@@ -21,6 +21,7 @@ source "${VMTEST_CONFIG:-$HERE/config.env}"
 source "$HERE/lib/os-registry.sh"
 source "$HERE/lib/driver.sh"
 source "$HERE/lib/waitfor.sh"
+source "$HERE/lib/log-gate.sh"
 
 RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
@@ -169,6 +170,15 @@ bootstrap_node() {
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
     --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
+  # Judge the run by what it SAID as well as what it returned. An exit code of 0
+  # was satisfied for months by a bootstrap printing seven `command not found`
+  # lines on every node; the transcript was captured every time and read by
+  # nobody. Fatal only for output that cannot be anything but a script defect —
+  # warnings are counted, not fatal, so the gate survives contact with reality.
+  log_gate_fetch_and_scan "$ip" "$host" || {
+    echo "ABORT: ${host} bootstrapped with output that indicates a script defect (above)." >&2
+    exit 1
+  }
 }
 
 # 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet
