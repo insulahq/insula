@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.2] - 2026-08-03
+
 ### Fixed
 - **The WAF blocked any admin field holding a URL written as an IP address.**
   OWASP CRS rule 931100 ("URL Parameter using IP Address") matches any argument
