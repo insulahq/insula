@@ -15,6 +15,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.8.2] - 2026-08-03
 
 ### Fixed
+- **"Check for updates" never checked.** The button called `refetch()` on the
+  version query, which only re-reads the value the hourly poller CronJob last
+  wrote to the database — and with a 60-second `staleTime` repeated clicks did
+  not even reach the network. So a release published since the last tick stayed
+  invisible however many times an operator clicked, until the next hourly run.
+  It now runs a real poll through the same cosign-verified path the CronJob
+  uses, and seeds the card with the fresh result. A GitHub outage degrades to
+  "no change" rather than an error.
+
+### Fixed
 - **The WAF blocked any admin field holding a URL written as an IP address.**
   OWASP CRS rule 931100 ("URL Parameter using IP Address") matches any argument
   value of the form `http://<ip>`, which scored 5 and tripped the blocking

@@ -6,6 +6,7 @@ import UpgradesPage from '../pages/platform/UpgradesPage';
 
 let updateAvailable = true;
 let role = 'super_admin';
+const checkMutate = vi.fn();
 
 vi.mock('../hooks/use-platform-updates', () => ({
   usePlatformVersion: () => ({
@@ -17,6 +18,7 @@ vi.mock('../hooks/use-platform-updates', () => ({
     } },
     isLoading: false, isFetching: false, refetch: vi.fn(),
   }),
+  useCheckForUpdates: () => ({ mutate: checkMutate, isPending: false }),
   useUpdateSettings: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -67,5 +69,32 @@ describe('UpgradesPage (consolidated)', () => {
     role = 'admin';
     renderPage();
     expect(screen.queryByTestId('run-upgrade-btn')).toBeNull();
+  });
+});
+
+/**
+ * "Check for updates" used to call refetch() on the version query, which only
+ * re-reads what the hourly poller CronJob last wrote to the DB — and with a 60s
+ * staleTime, repeated clicks often did not even reach the network. A release
+ * published since the last tick was therefore invisible no matter how many
+ * times the operator clicked. Reported 2026-08-03, ~90s after v2026.8.2 was
+ * published: the 23:42 poll ran before the release existed, next tick an hour
+ * away, and the button could not close that gap.
+ */
+describe('UpgradesPage — Check for updates actually polls', () => {
+  beforeEach(() => { checkMutate.mockClear(); });
+
+  it('issues a real poll instead of only re-reading cached state', () => {
+    renderPage();
+    fireEvent.click(screen.getByTestId('check-updates-btn'));
+    expect(checkMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('polls again on every click — the gap it closes can be seconds wide', () => {
+    renderPage();
+    const btn = screen.getByTestId('check-updates-btn');
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    expect(checkMutate).toHaveBeenCalledTimes(2);
   });
 });
