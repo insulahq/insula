@@ -9,6 +9,7 @@ import { usePlatformStatus } from '@/hooks/use-dashboard';
 import { useAuditLogs, type AuditLogEntry } from '@/hooks/use-audit-logs';
 import { useHealth } from '@/hooks/use-health';
 import { usePods, type PodEntry } from '@/hooks/use-pods';
+import { useMonitoringAlerts, firingAlerts, resolvedAlerts, type MonitoringAlert } from '@/hooks/use-monitoring-alerts';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -17,10 +18,10 @@ import NodeHealthPanel from '@/components/NodeHealthPanel';
 import SloTab from '@/components/SloTab';
 import MailTab from '@/components/monitoring/MailTab';
 
-type Tab = 'active-alerts' | 'alert-history' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos' | 'mail';
+type Tab = 'active-alerts' | 'alert-history' | 'activity' | 'health' | 'storage' | 'pods' | 'node-health' | 'slos' | 'mail';
 
 const VALID_TABS: ReadonlySet<Tab> = new Set([
-  'active-alerts', 'alert-history', 'health', 'storage', 'pods', 'node-health', 'slos', 'mail',
+  'active-alerts', 'alert-history', 'activity', 'health', 'storage', 'pods', 'node-health', 'slos', 'mail',
 ]);
 
 interface Alert {
@@ -91,6 +92,7 @@ const TABS: readonly { readonly key: Tab; readonly label: string }[] = [
   { key: 'mail', label: 'Mail' },
   { key: 'active-alerts', label: 'Active Alerts' },
   { key: 'alert-history', label: 'Alert History' },
+  { key: 'activity', label: 'Activity' },
   { key: 'health', label: 'Health' },
   { key: 'node-health', label: 'Node Health' },
   { key: 'storage', label: 'Storage Usage' },
@@ -286,8 +288,15 @@ export default function Monitoring() {
   const totalCount = auditData?.pagination?.total_count ?? 0;
   const hasMore = auditData?.pagination?.has_more ?? false;
   const nextCursor = auditData?.pagination?.cursor ?? null;
-  const { recent, older } = splitAlerts(entries);
-  const alertCount = recent.length;
+  const { recent, older } = splitAlerts(entries);   // audit rows → Activity tab
+  const { data: alertsData, isLoading: alertsLoading } = useMonitoringAlerts();
+  const allAlerts = alertsData?.data ?? [];
+  const firing = firingAlerts(allAlerts);
+  const resolved = resolvedAlerts(allAlerts);
+  // Only a FIRING rule counts. This used to be the number of audit entries in
+  // 24h, so the card was red whenever anything at all had happened.
+  const alertCount = firing.length;
+  const hasCritical = firing.some((a) => a.severity === 'critical');
 
   // Pod capacity from the admin/pods endpoint
   const podCapacity = podsData?.data?.capacity;
@@ -312,10 +321,13 @@ export default function Monitoring() {
           accent={platformStatus === 'healthy' ? 'green' : 'amber'}
         />
         <StatCard
-          title="Active Alerts (24h)"
+          title="Active Alerts"
           value={alertCount}
           icon={AlertTriangle}
-          accent={alertCount > 0 ? 'red' : 'green'}
+          // Red is reserved for a firing CRITICAL rule. A firing warning is
+          // amber; nothing firing is green. Previously red meant "some audit
+          // activity occurred", which made the colour meaningless.
+          accent={hasCritical ? 'red' : alertCount > 0 ? 'amber' : 'green'}
         />
         <StatCard
           title="Pod Usage"
@@ -361,10 +373,13 @@ export default function Monitoring() {
         </div>
 
         {activeTab === 'active-alerts' && (
-          <AlertTable alerts={recent} isLoading={auditLoading} />
+          <MonitoringAlertTable alerts={firing} isLoading={alertsLoading} />
         )}
         {activeTab === 'alert-history' && (
-          <AlertTable alerts={older} resolved isLoading={auditLoading} />
+          <MonitoringAlertTable alerts={resolved} resolved isLoading={alertsLoading} />
+        )}
+        {activeTab === 'activity' && (
+          <AlertTable alerts={[...recent, ...older]} isLoading={auditLoading} />
         )}
         {activeTab === 'health' && <HealthTab />}
         {activeTab === 'slos' && <SloTab />}
@@ -379,7 +394,9 @@ export default function Monitoring() {
           />
         )}
 
-        {activeTab !== 'health' && activeTab !== 'storage' && activeTab !== 'pods' && activeTab !== 'node-health' && (
+        {/* Paginates the AUDIT list, which is now only the Activity tab. The
+            alert tabs render evaluator state, which is not a paged feed. */}
+        {activeTab === 'activity' && (
           <PaginationBar
             totalCount={totalCount}
             pageSize={pagination.limit}
@@ -392,6 +409,74 @@ export default function Monitoring() {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+
+// ─── Real alerts (SLO evaluator) ───────────────────────────────────────────
+//
+// Renders alert_state rows: a rule that breached its threshold. Distinct from
+// AlertTable below, which renders AUDIT LOG entries — those are activity, not
+// alerts, and conflating them is what made a routine 401 on /auth/refresh look
+// like a platform warning.
+function MonitoringAlertTable({
+  alerts,
+  resolved = false,
+  isLoading = false,
+}: {
+  readonly alerts: readonly MonitoringAlert[];
+  readonly resolved?: boolean;
+  readonly isLoading?: boolean;
+}) {
+  if (isLoading) {
+    return <div className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">Loading alerts…</div>;
+  }
+  if (alerts.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center text-sm text-gray-500 dark:text-gray-400">
+        {resolved
+          ? 'No resolved alerts yet.'
+          : 'No alerts firing. Monitoring rules are evaluating normally.'}
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+        <thead className="bg-gray-50 dark:bg-gray-900/40">
+          <tr>
+            <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Rule</th>
+            <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Severity</th>
+            <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Since</th>
+            <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Last value</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+          {alerts.map((a) => (
+            <tr key={`${a.ruleId}-${a.since ?? ''}`} data-testid={`alert-row-${a.ruleId}`}>
+              <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{a.ruleId}</td>
+              <td className="px-4 py-2">
+                <span
+                  className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
+                    a.severity === 'critical'
+                      ? 'bg-red-50 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                      : 'bg-amber-50 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                  }`}
+                >
+                  {a.severity}
+                </span>
+              </td>
+              <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
+                {a.since ? new Date(a.since).toLocaleString() : '—'}
+              </td>
+              <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-400">
+                {a.lastValue ?? '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
