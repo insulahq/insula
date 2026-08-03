@@ -330,15 +330,24 @@ export async function scrapeWafLogs(
       // (see parseContributingRules). Emit one event per contributing rule so
       // the operator can whitelist the rule that actually matched.
       if (jsonUid) {
+        // URI + method come from the JSON record itself rather than the uid
+        // maps, because an allowlisted (DetectionOnly) request produces NO
+        // [error] line at all — verified against the CRS image 2026-08-03 —
+        // so those maps are empty for exactly the traffic the operator
+        // allowlisted. Without this, every allowlisted event would land in
+        // WAF Events as "GET /".
+        const jsonUri = extractJsonField(line, 'uri');
+        const jsonMethod = extractJsonField(line, 'method');
         for (const r of parseContributingRules(line)) {
           allParsed.push({
             uniqueId: `${jsonUid}:${r.ruleId}`,
             ruleId: r.ruleId,
             severity: r.severity,
             message: r.message,
-            // Resolved from the uid maps in pass 2, same as [error]-line events.
-            requestUri: '/',
-            requestMethod: 'GET',
+            requestUri: jsonUri || '/',
+            requestMethod: jsonMethod || 'GET',
+            // Hostname and source IP still resolve in pass 2 via uidToXfHost /
+            // uidToRealIp, which are filled from this same JSON line above.
             sourceIp: '0.0.0.0',
             hostname: '',
           });
