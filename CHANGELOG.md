@@ -12,6 +12,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Admin and tenant sidebars are scrollable when the nav outgrows the viewport.**
+  Both `<nav>` elements were `flex-1` inside a full-height flex column with no
+  overflow handling, so on a short viewport — or in the admin panel with several
+  groups expanded — the lower entries were simply unreachable. Both now scroll
+  within the space left by the header and runtime block.
+
 ### Changed
 - **Worker-subsystem guidance no longer opens with "drain and re-bootstrap".**
   The Cluster Nodes banner printed one unconditional line for every fault —

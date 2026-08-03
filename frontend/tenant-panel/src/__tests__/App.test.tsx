@@ -49,6 +49,19 @@ describe('Layout', () => {
     expect(screen.getByTestId('menu-button')).toBeInTheDocument();
   });
 
+  // The nav must be its own scroll container. min-h-0 matters as much as
+  // overflow-y-auto: a flex item defaults to min-height:auto and refuses to
+  // shrink below its content, so without it the container never gets smaller
+  // than what it holds and never scrolls — the nav just overflows the viewport
+  // and the last entries become unreachable.
+  it('sidebar nav scrolls when it outgrows the viewport', () => {
+    renderWithProviders(<Layout />);
+    const nav = screen.getByRole('navigation', { name: 'Main' });
+    expect(nav.className).toContain('overflow-y-auto');
+    expect(nav.className).toContain('min-h-0');
+    expect(nav.className).toContain('flex-1');
+  });
+
   it('shows sidebar nav items for tenant panel', () => {
     renderWithProviders(<Layout />);
     expect(screen.getByText('Dashboard')).toBeInTheDocument();
