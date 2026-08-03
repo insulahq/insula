@@ -41,6 +41,12 @@ UI_STEP_OPEN=0                      # a step line is awaiting its verdict
 UI_WARN_COUNT=0
 UI_ERROR_COUNT=0
 
+# Declared empty at SOURCE time, not only in ui_init: callers run under `set -u`
+# and may emit a warning before init (argument parsing, early preflight). An
+# unbound $UI_C_DIM there would abort the whole run over a colour code.
+UI_C_RESET=""; UI_C_DIM=""; UI_C_BOLD=""
+UI_C_GREEN=""; UI_C_YELLOW=""; UI_C_RED=""; UI_C_BLUE=""
+
 ui_is_rich() { [[ "$UI_MODE" == rich ]]; }
 
 ui_init() {
@@ -59,7 +65,16 @@ ui_init() {
     UI_C_RESET=""; UI_C_DIM=""; UI_C_BOLD=""
     UI_C_GREEN=""; UI_C_YELLOW=""; UI_C_RED=""; UI_C_BLUE=""
   fi
-  [[ -n "$UI_LOG_FILE" ]] && { mkdir -p "$(dirname "$UI_LOG_FILE")" 2>/dev/null || true; : >>"$UI_LOG_FILE" 2>/dev/null || UI_LOG_FILE=""; }
+  # Probe writability with `touch`, NOT with `: >>"$f" 2>/dev/null`: a failed
+  # REDIRECTION is reported by the shell itself, before the command's own stderr
+  # redirect can apply, so that form prints "Permission denied" to the operator's
+  # console on every non-root run. touch owns its error message, so 2>/dev/null
+  # actually silences it. A transcript we cannot write is a downgrade, not a
+  # failure — the run continues without one.
+  if [[ -n "$UI_LOG_FILE" ]]; then
+    mkdir -p "$(dirname "$UI_LOG_FILE")" 2>/dev/null || true
+    touch "$UI_LOG_FILE" 2>/dev/null || UI_LOG_FILE=""
+  fi
   return 0
 }
 

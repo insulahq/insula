@@ -581,6 +581,11 @@ OPTIONS:
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
   --skip-longhorn        Skip Longhorn storage (use local-path)
+  --plain                Plain one-line-per-event output instead of the
+                         progress display. Chosen automatically when stdout
+                         is not a terminal; pass this to force it on one.
+                         The full transcript is written to
+                         /var/log/insula-bootstrap.log either way.
   --dry-run              Validate OS + install base packages, then exit
                          before firewall/k3s/Calico/etc. Used by
                          scripts/test-bootstrap-os-matrix.sh in
@@ -903,6 +908,33 @@ fi
 # shellcheck source=lib/bootstrap-phases.sh
 source "$PHASES_LIB"
 
+# Console renderer. Same sibling-lib guarantee as the phase library above, and
+# build-platform-ops.sh packs the whole scripts/lib tree into the SEA, so it
+# travels with every supported invocation. Missing it is not fatal — the
+# fallbacks below keep a bootstrap runnable, just noisy — because failing an
+# install over a cosmetic layer would be a poor trade.
+UI_LIB="${BOOTSTRAP_SCRIPT_DIR}/lib/ui.sh"
+if [[ -r "$UI_LIB" ]]; then
+  # shellcheck source=lib/ui.sh
+  source "$UI_LIB"
+else
+  ui_init() { :; }; ui_phase_total() { :; }; ui_phase() { echo "== $* =="; }
+  ui_step() { :; }; ui_ok() { echo "OK: $*"; }; ui_detail() { echo "$*"; }
+  ui_warn() { echo "WARN: $*" >&2; }; ui_fail() { echo "ERROR: $*" >&2; }
+  ui_summary() { echo "$*"; }; ui_record() { :; }; ui_is_rich() { return 1; }
+fi
+
+# Re-point the three legacy emitters at the renderer. Doing it HERE, at the one
+# seam, converts every existing call site (412 log / 100 warn / 71 error) without
+# editing any of them — and keeps `error` fatal, which a lot of control flow
+# depends on. The timestamp moves to the transcript, where it is useful, and off
+# the screen, where it was 20 characters of noise on every line.
+UI_LOG_FILE="${UI_LOG_FILE:-/var/log/insula-bootstrap.log}"
+ui_init
+log()   { ui_detail "$*"; }
+warn()  { ui_warn "$*"; }
+error() { ui_fail "$*"; ui_summary "Bootstrap failed"; exit 1; }
+
 # Ensure python3 is on PATH, auto-installing it if missing. parse_args validates
 # --allow-source / --pre-enroll-peer / --cluster-network-cidr via python3's
 # `ipaddress` module BEFORE install_packages runs (and python3 is used widely
@@ -1051,6 +1083,11 @@ parse_args() {
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
+      # Force the plain, one-line-per-event renderer even on a terminal. For
+      # piping into a pager or a log collector that would otherwise be fed
+      # cursor movement and colour codes. Auto-detection already picks plain
+      # when stdout is not a TTY, so this is only needed to override a TTY.
+      --plain)           UI_MODE=plain; ui_init; shift ;;
       --skip-vpn)        shift ;; # Deprecated — bootstrap no longer installs VPN tools; sysadmin responsibility
       --netbird-management-url|--netbird-setup-key)
                          warn "Deprecated flag '$1' ignored — bring up NetBird/Tailscale BEFORE running bootstrap. See docs/operations/CLUSTER_NETWORK.md."
@@ -3887,8 +3924,16 @@ helm_cmd() {
   local attempt=1 rc backoff err
   while :; do
     rc=0
-    { err="$(helm --kubeconfig="$KUBECONFIG" "$@" 2>&1 1>&3)" || rc=$?; } 3>&1
-    [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+    if [[ -t 1 ]]; then
+      # Nobody is reading helm's stdout — fold it into the captured stream so a
+      # chart install contributes one line to the screen instead of forty.
+      { err="$(helm --kubeconfig="$KUBECONFIG" "$@" 2>&1)" || rc=$?; }
+      [[ -n "$err" ]] && ui_record "helm $* → ${rc}"$'\n'"$err"
+      (( rc != 0 )) && [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+    else
+      { err="$(helm --kubeconfig="$KUBECONFIG" "$@" 2>&1 1>&3)" || rc=$?; } 3>&1
+      [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+    fi
     if (( rc == 0 )) || (( attempt >= HELM_RETRY_ATTEMPTS )) \
        || ! grep -qEi "$HELM_TRANSIENT_ERROR_RE" <<<"$err"; then
       return "$rc"
@@ -3900,7 +3945,27 @@ helm_cmd() {
   done
 }
 
+# kubectl wrapper. Quiet on the operator's screen, complete in the transcript.
+#
+# The subtlety that dictates the shape: over a hundred call sites read kubectl's
+# stdout via `$(kctl get … -o jsonpath=…)`. Swallowing stdout unconditionally
+# would return empty strings to all of them and break the install in a way that
+# looks like a cluster fault. So the test is `[ -t 1 ]` — "is MY stdout the
+# terminal right now?":
+#   • command substitution / redirect → stdout is a pipe → pass through untouched.
+#     The caller wanted the bytes; it gets them, byte for byte.
+#   • statement position on a TTY     → nobody is reading them → capture, record
+#     to the transcript, and show them only if the command FAILED.
+# In plain mode (--remote, CI) stdout is a file, so everything passes through and
+# the log stays exhaustive — which is what a log is for.
 kctl() {
+  if [[ -t 1 ]]; then
+    local _out _rc=0
+    _out="$(kubectl --kubeconfig="$KUBECONFIG" "$@" 2>&1)" || _rc=$?
+    [[ -n "$_out" ]] && ui_record "kubectl $* → ${_rc}"$'\n'"$_out"
+    (( _rc != 0 )) && [[ -n "$_out" ]] && printf '%s\n' "$_out" >&2
+    return "$_rc"
+  fi
   kubectl --kubeconfig="$KUBECONFIG" "$@"
 }
 
@@ -7971,7 +8036,7 @@ run_post_install_smoke() {
   fi
 
   log ""
-  log "── Phase 5: Post-install smoke (advisory) ──"
+  ui_phase "Post-install smoke (advisory)"
   log "Smoke script: $smoke_script"
 
   # Wait for cluster-settle by checking actual readiness conditions
@@ -8027,12 +8092,18 @@ main() {
   log "════════════════════════════════════════════════"
   log ""
 
+  # Five phases on a full first-server run: hardening, k3s, platform components,
+  # verification, smoke. A worker join short-circuits after k3s, so it simply
+  # never reaches phases 3-5 — the summary then reports "2/5 phases", which is
+  # accurate rather than a bar forced to 100%.
+  ui_phase_total 5
+
   # Phase 1: Server hardening (both roles).
   # Bootstrap does NOT install or enrol VPN/mesh tooling — sysadmin
   # responsibility, performed before this script runs. verify_underlay
   # asserts the operator-claimed underlay is actually up; configure_firewall
   # then auto-detects wt0/tailscale0 and renders cidr-mode rules.
-  log "── Phase 1: Server Hardening ──"
+  ui_phase "Hardening the host"
   if [[ "$DRY_RUN" == true ]]; then
     log "DRY-RUN: skipping harden_ssh (no sshd in container)"
   else
@@ -8064,7 +8135,7 @@ main() {
 
   # Phase 2: k3s (server or agent depending on role)
   log ""
-  log "── Phase 2: Kubernetes (k3s) ──"
+  ui_phase "Installing Kubernetes (k3s)"
   install_k3s
 
   # M1: label + taint the node with platform-managed role state. Must
@@ -8083,7 +8154,7 @@ main() {
 
     # Phase 3: Platform components
     log ""
-    log "── Phase 3: Platform Components ──"
+    ui_phase "Installing platform components"
     install_helm
     install_flux_cli
     # CrowdSec bouncer key Secret must exist BEFORE install_traefik so
@@ -8194,7 +8265,7 @@ main() {
 
     # Phase 4: Verify
     log ""
-    log "── Phase 4: Verification ──"
+    ui_phase "Verifying the install"
     verify
     # Real install verification — actually probe admin login + healthz.
     # Non-fatal (warn only) so a transient cert-manager / DNS issue
@@ -8249,6 +8320,11 @@ main() {
   fi
 
   marker_set "bootstrap-complete"
+  # Last thing on screen. Carries the warning/error tally, so a run that
+  # "succeeded" with four warnings cannot look identical to a clean one — the
+  # exact ambiguity that let seven `command not found` errors ride along in
+  # green runs for months.
+  ui_summary "Bootstrap complete"
 }
 
 # Only call main() when the script is executed directly, not when sourced.

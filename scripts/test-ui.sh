@@ -95,6 +95,16 @@ finished=$(
 )
 contains "a real completion shows full"   "(2/2 phases)" "$finished"
 
+echo "ui.sh (an unwritable transcript degrades silently, never nags):"
+unwritable=$(
+  UI_MODE=plain UI_LOG_FILE=/proc/definitely/not/writable bash -c '
+    source '"$REPO_ROOT"'/scripts/lib/ui.sh
+    ui_init; ui_ok "still works"' 2>&1
+)
+contains "run continues without a transcript" "OK: still works"    "$unwritable"
+lacks    "no permission-denied noise"         "Permission denied"  "$unwritable"
+lacks    "no shell redirection error"         "No such file"       "$unwritable"
+
 echo "ui.sh (mode detection):"
 m=$(UI_MODE=auto bash -c 'source '"$REPO_ROOT"'/scripts/lib/ui.sh; ui_init; echo "$UI_MODE"' </dev/null)
 check "non-TTY auto-detects plain" "plain" "$m"
