@@ -58,7 +58,24 @@ case "$VMTEST_TIER" in
       echo "run.sh: checkout tag (${_tag}) and platform/VERSION (${_ver}) disagree — refusing to call this a release run." >&2
       exit 2
     fi
+    # The checkout is only half the claim. `--env dev` points Flux at the
+    # development BRANCH and deploys its timestamp-tagged images no matter which
+    # checkout bootstrap.sh came from — so a release-tag checkout alone proves
+    # nothing about what actually runs. The first version of this tier verified
+    # only `git describe` and duly "passed" while deploying development:
+    #   Configuring Flux source ... for dev (branch=development)
+    #   deployed image: 20260803185226-be0ce79
+    # A check that verifies the wrong thing is worse than no check, because it
+    # reads as evidence. So the release tier pins the ENVIRONMENT too, and
+    # asserts the deployed image afterwards (below, post-bootstrap).
+    VMTEST_ENV="${VMTEST_ENV:-production}"
+    VMTEST_RELEASE_TAG="$_tag"
+    VMTEST_EXPECT_IMAGE_TAG="$_ver"
+    export VMTEST_ENV VMTEST_RELEASE_TAG VMTEST_EXPECT_IMAGE_TAG
+    VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --release-tag ${_tag}"
+    export VMTEST_BOOTSTRAP_EXTRA_ARGS
     echo "── tier=release: testing ${_tag} exactly as an operator installs it ──"
+    echo "   env=${VMTEST_ENV}  flux-source=${_tag}  expected image tag=${_ver}"
     ;;
   *) echo "run.sh: unknown --tier '${VMTEST_TIER}' (branch|release)" >&2; exit 2 ;;
 esac
@@ -324,6 +341,20 @@ RUNNER_SCRIPT="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
 # cannot express, and says so every run rather than passing quietly (which is how
 # a hollow gate is born — see lib/log-gate.sh).
 if [[ "$VMTEST_TIER" == release ]]; then
+  # Assert the tier's central claim before asserting anything that depends on
+  # it: is the cluster actually running the RELEASE's images? Cheap, immediate,
+  # and it fails in seconds — the previous version of this tier took a 25-minute
+  # run to reveal it had been testing development the whole time.
+  _img=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
+           "kubectl -n platform get deploy platform-api -o jsonpath='{.spec.template.spec.containers[0].image}'" 2>/dev/null \
+         | sed -E 's/.*:([^:]+)$/\1/')
+  if [[ "$_img" != "$VMTEST_EXPECT_IMAGE_TAG" ]]; then
+    echo "run.sh: tier=release but the cluster is running image tag '${_img}', expected '${VMTEST_EXPECT_IMAGE_TAG}'." >&2
+    echo "  This is NOT release coverage — refusing to report it as such." >&2
+    echo "  (env=${VMTEST_ENV}: check that this overlay pins release images rather than tracking a branch.)" >&2
+    exit 1
+  fi
+  echo "── tier=release verified: cluster is running ${_img} ──"
   REQUIRE_CONVERGE=1
 else
   REQUIRE_CONVERGE=0
