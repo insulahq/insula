@@ -12,6 +12,118 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The WAF blocked any admin field holding a URL written as an IP address.**
+  OWASP CRS rule 931100 ("URL Parameter using IP Address") matches any argument
+  value of the form `http://<ip>`, which scored 5 and tripped the blocking
+  evaluation — so adding a self-hosted DNS server on a mesh IP, a MinIO backup
+  target on a LAN IP, a private registry or an ACME server all returned a bare
+  nginx `403`. The request never reached platform-api, so nothing appeared in
+  the API log or the panel's access log and only the modsec-crs pod knew why.
+  Storing operator-supplied endpoints is what these routes are *for*: they are
+  Bearer-authenticated, Node never include()s the value, and the rule only ever
+  rejects IP *literals* (a hostname passes untouched), so it blocked a normal
+  workflow while adding no protection. Rule 931100 is now excluded on the
+  platform-API hosts under `/api/v1/`; tenant workloads keep full coverage.
+- **WAF Events' "Whitelist this rule for this host" never took effect.** Two
+  independent causes. Flux owned the `data` key of the dynamic exclusions
+  ConfigMap and reset it to the empty seed on every reconcile, so the
+  reconciler's rendered rules were reverted within minutes — visible as
+  "ConfigMap updated (drift detected)" every ~5 minutes and a modsec-crs roll
+  each time. And the button offered the wrong rule: at paranoia level 1 the rule
+  that *matches* acts with `pass` and emits no error line, so only the rule that
+  *denies* (949110) was ever recorded — whitelisting it is a no-op, and
+  disabling it would switch off blocking for the entire host. The ConfigMap is
+  now annotated `ssa: IfNotPresent`, and the scraper records the contributing
+  rules from the audit record so the offered rule is the one that can fix it.
+- **Connection failures when adding a DNS server said only "fetch failed".**
+  Node's fetch collapses every transport failure into that one string, so an
+  unresolvable hostname, a refused port, and an `https://` URL pointed at a
+  plaintext port were indistinguishable. Failures across all five HTTP DNS
+  providers now name the cause and the fix. Upstream error bodies are also
+  stripped of markup and capped rather than spliced into the message whole.
+- **A WAF block now says so in the panel.** Blocked requests never reach the
+  API, so there is no error envelope to render and both panels showed a bare
+  status. They now recognise the block and report it as `WAF_REQUEST_BLOCKED`
+  with a pointer to Security → WAF Events.
+
+### Added
+- **Allowlisted operator IPs are never blocked by the WAF, but are still
+  logged.** The allowlist next to a WAF event writes a CrowdSec decision, which
+  governs whether an IP is *banned*; ModSecurity inspects request *content* and
+  had no IP concept at all, so an allowlisted address was still fully filtered.
+  The reconciler now renders those entries as `ctl:ruleEngine=DetectionOnly`
+  matched on `X-Real-Ip` — rules still evaluate and still record their matches,
+  so allowlisted sources keep appearing in WAF Events and only ever lose the
+  disruptive action. Fails closed: if CrowdSec is unreachable no bypass is
+  rendered and the WAF stays fully enforced.
+
+### Fixed
+- **Admin and tenant sidebars are scrollable when the nav outgrows the viewport.**
+  Both `<nav>` elements were `flex-1` inside a full-height flex column with no
+  overflow handling, so on a short viewport — or in the admin panel with several
+  groups expanded — the lower entries were simply unreachable. Both now scroll
+  within the space left by the header and runtime block.
+
+### Changed
+- **Worker-subsystem guidance no longer opens with "drain and re-bootstrap".**
+  The Cluster Nodes banner printed one unconditional line for every fault —
+  *"tenant pods will fail to attach PVCs. Drain + re-bootstrap the worker"* —
+  which was wrong twice: PVC attach is a CSI concern, so it misled whenever the
+  fault was Calico (networking, and NetworkPolicy with it); and drain +
+  re-bootstrap is a multi-minute outage for every workload on the node, offered
+  as the *first* move for conditions that are usually a one-line fix. The banner
+  now says what the failing subsystem actually affects, names the usual Calico
+  cause (a missing host `iptables` package), and links to a new escalation
+  ladder in the published manual — cheapest step first, drain last.
+
+### Fixed
+- **Calico stuck at `0/1 Ready` on fresh installs, with NetworkPolicy silently
+  not being programmed.** Bootstrap installed `nftables` but not `iptables`. We
+  do not use iptables — k3s bundles its own — but NetBird probes for the binary
+  and, not finding it, falls back to writing NATIVE nft rules (`iifname "wt0"
+  accept`, …) into `table ip filter`, the table Calico drives through
+  `iptables-nft`. Felix then fails every dataplane resync with *"iptables-save
+  failed because there are incompatible nft rules in the table"*, `calico-node`
+  never leaves `0/1`, and policy stops being programmed. Tenant isolation
+  depends on that policy, so this was a security regression rather than a
+  cosmetic one. `iptables` is now part of the base package set, and
+  host-migration 2026.8.2/0003 installs it on existing nodes and restarts
+  NetBird so it re-creates its rules through the iptables backend.
+  The install docs previously described the `Host iptables-save … not found`
+  line as benign; that is true for k3s alone and was corrected.
+
+### Changed
+- **Longhorn no longer reserves 30% of a large root disk.** Its data path is the
+  node's root filesystem, so reserving space there is right — filling it costs
+  you the node, not just Longhorn. But 30% is the wrong *shape* of number: what
+  it protects (OS, container images, logs) is roughly constant while a
+  percentage scales with the disk, so a 500 GB root disk gave up 150 GB to
+  protect a need that had barely grown. Reservation is now
+  `10% + 20 GiB` — the 10% tracks kubelet's `nodefs.available<10%` eviction
+  floor, below which Longhorn would schedule replicas into space kubelet treats
+  as its own reserve and leave the node in DiskPressure that eviction cannot
+  clear — then clamped to Longhorn's own 30%, so it can only ever REDUCE.
+  A 500 GB root disk returns ~80 GB; 40/80 GB nodes are unchanged.
+  Converged by host-migration 2026.8.2/0002.
+- **Kubelet's pod ceiling raised from 110 to 500** (`max-pods`), fresh installs
+  via a new bootstrap drop-in and existing nodes via host-migration
+  2026.8.2/0001. 110 is a conformance figure, not a property of this platform;
+  tenant pods request ~50m/64Mi and scale to zero, so nodes ran out of pod slots
+  long before anything real. Safe on the IP side because Calico's IPPool uses
+  blockSize 26 and grants nodes additional blocks on demand.
+
+### Fixed
+- **The completion screen told you where to log in, but not how.** Bootstrap's
+  final summary printed the admin/tenant/API endpoints and never mentioned the
+  seeded credentials; the one line that did (`Admin seed credentials written
+  to …`) appeared ~700 lines earlier during secret generation and had long
+  scrolled away. It now shows `sudo cat /etc/insula/admin-credentials` directly
+  under the endpoints, and only when that file exists — a worker join, which
+  seeds no admin, does not get an empty heading. The path shown is the branded
+  one everywhere too: the write still goes through `/etc/platform` (an ADR-055
+  compat symlink, same file) but the message no longer disagrees with the docs.
+
 ## [2026.8.1] - 2026-08-03
 
 ### Fixed

@@ -98,6 +98,20 @@ vi.mock('@/hooks/use-health', () => ({
   }),
 }));
 
+const MOCK_ALERTS = [
+  { ruleId: 'api-error-rate', state: 'firing', severity: 'critical', since: new Date().toISOString(), lastValue: 12, lastNotifiedAt: null, lastEvaluatedAt: null },
+  { ruleId: 'disk-pressure', state: 'firing', severity: 'warning', since: new Date().toISOString(), lastValue: 82, lastNotifiedAt: null, lastEvaluatedAt: null },
+  { ruleId: 'cert-expiry', state: 'resolved', severity: 'warning', since: new Date(Date.now() - 86_400_000).toISOString(), lastValue: 0, lastNotifiedAt: null, lastEvaluatedAt: null },
+];
+
+vi.mock('@/hooks/use-monitoring-alerts', async () => {
+  const actual = await vi.importActual<typeof import('@/hooks/use-monitoring-alerts')>('@/hooks/use-monitoring-alerts');
+  return {
+    ...actual,
+    useMonitoringAlerts: () => ({ data: { data: MOCK_ALERTS }, isLoading: false, error: null }),
+  };
+});
+
 vi.mock('@/hooks/use-pods', () => ({
   usePods: () => ({
     data: { data: { pods: [], capacity: { used: 5, allocatable: 110 } } },
@@ -138,10 +152,13 @@ describe('Monitoring page', () => {
     expect(screen.queryByText('Error Rate')).not.toBeInTheDocument();
   });
 
-  it('shows Active Alerts count from audit log data', () => {
+  // Counts FIRING RULES, not audit rows. It used to read "3" here purely
+  // because three audit entries existed inside 24h, so the card was red on a
+  // healthy system and its number meant "things happened", not "things broke".
+  it('counts firing alerts, not audit entries', () => {
     render(<Monitoring />, { wrapper: createWrapper() });
-    // 3 recent entries (within 24h), 1 old entry
-    expect(screen.getByText('3')).toBeInTheDocument();
+    // 2 firing (1 critical + 1 warning); the resolved one must not count.
+    expect(screen.getByText('2')).toBeInTheDocument();
   });
 
   it('defaults to the SLOs tab', () => {
@@ -156,9 +173,17 @@ describe('Monitoring page', () => {
     expect(screen.getByTestId('tab-slos')).not.toHaveClass('border-brand-500');
   });
 
-  it('renders Active Alerts tab with audit log data', () => {
+  it('renders Active Alerts from the evaluator, not the audit log', () => {
     render(<Monitoring />, { wrapper: createWrapper(['/monitoring?tab=active-alerts']) });
     expect(screen.getByTestId('tab-active-alerts')).toHaveClass('border-brand-500');
+    expect(screen.getByTestId('alert-row-api-error-rate')).toBeInTheDocument();
+    expect(screen.getByTestId('alert-row-disk-pressure')).toBeInTheDocument();
+    // Audit activity must not appear here at all — that is the whole point.
+    expect(screen.queryByText('create tenant')).not.toBeInTheDocument();
+  });
+
+  it('keeps audit activity on its own tab', () => {
+    render(<Monitoring />, { wrapper: createWrapper(['/monitoring?tab=activity']) });
     expect(screen.getByText('create tenant')).toBeInTheDocument();
     expect(screen.getByText('update domain')).toBeInTheDocument();
   });
@@ -179,17 +204,18 @@ describe('Monitoring page', () => {
     await user.click(screen.getByTestId('tab-alert-history'));
 
     expect(screen.getByTestId('tab-alert-history')).toHaveClass('border-brand-500');
-    expect(screen.getByText('create region')).toBeInTheDocument();
+    // Resolved RULES, not old audit rows.
+    expect(screen.getByTestId('alert-row-cert-expiry')).toBeInTheDocument();
   });
 
-  it('shows Resolved badges in Alert History tab', async () => {
+  it('shows only non-firing rules under Alert History', async () => {
     const user = userEvent.setup();
     render(<Monitoring />, { wrapper: createWrapper() });
 
     await user.click(screen.getByTestId('tab-alert-history'));
 
-    const resolvedBadges = screen.getAllByText('Resolved');
-    expect(resolvedBadges.length).toBeGreaterThan(0);
+    expect(screen.getByTestId('alert-row-cert-expiry')).toBeInTheDocument();
+    expect(screen.queryByTestId('alert-row-api-error-rate')).not.toBeInTheDocument();
   });
 
   it('switches to Health tab and renders the health panel', async () => {
@@ -201,11 +227,15 @@ describe('Monitoring page', () => {
     expect(screen.getByTestId('health-tab')).toBeInTheDocument();
   });
 
-  it('displays alert severity badges derived from httpStatus', () => {
+  // Severity now comes from the RULE, not from an HTTP status. Deriving it from
+  // status is what made a 401 on /api/v1/auth/refresh — an expired token, i.e.
+  // the refresh flow working exactly as designed — render as a platform warning.
+  it('takes severity from the rule, not from an HTTP status', () => {
     render(<Monitoring />, { wrapper: createWrapper(['/monitoring?tab=active-alerts']) });
-    // httpStatus 201 -> info, 500 -> critical, 404 -> warning
     expect(screen.getByText('critical')).toBeInTheDocument();
     expect(screen.getByText('warning')).toBeInTheDocument();
-    expect(screen.getByText('info')).toBeInTheDocument();
+    // 'info' was an artefact of bucketing 2xx/3xx audit rows; a rule is only
+    // ever warning or critical.
+    expect(screen.queryByText('info')).not.toBeInTheDocument();
   });
 });

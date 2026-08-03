@@ -256,3 +256,93 @@ describe('TenantDetail impersonation', () => {
     openSpy.mockRestore();
   });
 });
+
+/**
+ * Resource Limits: a field showing "Plan default" must show the PLAN's value.
+ *
+ * The override state is seeded once when editing starts, so it drifts from the
+ * plan in two ways an operator hits immediately: type a custom value then toggle
+ * back to Plan default (the disabled input kept the typed text), or move the
+ * tenant to another plan (it kept the old plan's number). Both are asserted here
+ * because both were reported from the real admin panel.
+ */
+const MOCK_PLANS_BASIC = {
+  data: [
+    {
+      id: 'plan-001', name: 'Starter', cpuLimit: 1, memoryLimit: 2, storageLimit: 10,
+      bandwidthGbLimit: 100, maxSubUsers: 3, maxMailboxes: 5, maxMailboxSizeMb: 500,
+      monthlyPriceUsd: 9.99, emailHourlySendLimit: 50, emailDailySendLimit: 500,
+      allowCustomContainers: false,
+    },
+    {
+      id: 'plan-002', name: 'Pro', cpuLimit: 4, memoryLimit: 8, storageLimit: 80,
+      bandwidthGbLimit: 800, maxSubUsers: 25, maxMailboxes: 50, maxMailboxSizeMb: 5000,
+      monthlyPriceUsd: 49.99, emailHourlySendLimit: 500, emailDailySendLimit: 5000,
+      allowCustomContainers: true,
+    },
+  ],
+};
+
+function setupLimitsApi(planId = 'plan-001') {
+  mockApiFetch.mockImplementation((path: string) => {
+    if (path.includes('/plans')) return Promise.resolve(MOCK_PLANS_BASIC);
+    if (path.match(/\/tenants\/tenant-001$/)) {
+      return Promise.resolve({ data: { ...MOCK_CLIENT.data, planId } });
+    }
+    if (path.includes('/metrics')) return Promise.resolve({ data: {} });
+    return Promise.resolve({ data: [] });
+  });
+}
+
+describe('TenantDetail resource limits — plan defaults', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    setupLimitsApi();
+  });
+
+  // Regression guard, not a demonstration: this already passed before the fix,
+  // because startEditing seeds from the plan when there is no override.
+  it('shows the plan value in a field left on Plan default', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    const cpu = (await screen.findAllByRole('spinbutton'))[0] as HTMLInputElement;
+    // Not overridden → the Starter plan's cpuLimit, and not editable.
+    expect(cpu.value).toBe('1');
+    expect(cpu.disabled).toBe(true);
+  });
+
+  // THIS is the reported bug: fails without the fix ('3.5' where '1' is due).
+  it('reverts to the plan value after a custom value is typed and toggled back', async () => {
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    const cpu = (await screen.findAllByRole('spinbutton'))[0] as HTMLInputElement;
+
+    fireEvent.click(screen.getByTestId('toggle-cpu-limit'));   // → Custom
+    fireEvent.change(cpu, { target: { value: '3.5' } });
+    expect(cpu.value).toBe('3.5');
+
+    fireEvent.click(screen.getByTestId('toggle-cpu-limit'));   // → Plan default
+    // The bug: this used to still read 3.5.
+    expect(cpu.value).toBe('1');
+    expect(cpu.disabled).toBe(true);
+  });
+
+  // Covers a FRESH mount on the new plan. It does NOT exercise the key-based
+  // remount of a card that was already on screen — that path is correct by
+  // React key semantics but is not asserted here; driving it needs the
+  // subscription save → invalidate → refetch round trip.
+  it('seeds from the new plan when the tenant is on a different one', async () => {
+    const { unmount } = renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    expect(((await screen.findAllByRole('spinbutton'))[0] as HTMLInputElement).value).toBe('1');
+    unmount();
+
+    // Same tenant, now on Pro — the card is keyed on planId, so it re-seeds.
+    setupLimitsApi('plan-002');
+    renderTenantDetail();
+    fireEvent.click(await screen.findByTestId('edit-limits-button'));
+    await waitFor(async () => {
+      expect(((await screen.findAllByRole('spinbutton'))[0] as HTMLInputElement).value).toBe('4');
+    });
+  });
+});

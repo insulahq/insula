@@ -1567,8 +1567,34 @@ kubelet-arg+:
   - system-reserved=cpu=500m,memory=1Gi
 EOF
 
+  # 3. Pod capacity. kubelet's default max-pods is 110, which is a Kubernetes
+  #    conformance figure rather than a property of this platform: tenant pods
+  #    here request ~50m CPU / 64Mi and scale to zero when idle, so a node runs
+  #    out of pod slots long before it runs out of anything real. An operator
+  #    watching Pod Usage sit at "N / 110" is being shown a limit that has
+  #    nothing to do with their hardware.
+  #
+  #    500 is safe on the IP side BECAUSE of Calico: the IPPool uses
+  #    blockSize 26 and hands a node ADDITIONAL /26 blocks on demand, so 500
+  #    pods needs ~8 of the /16's 1024 blocks. Under the stock
+  #    kube-controller-manager model (one fixed /24 per node) this same change
+  #    would have wedged at ~250 pods with opaque IPAM failures — worth knowing
+  #    before anyone "simplifies" the CNI.
+  #
+  #    max-pods is a CEILING, not a reservation: raising it costs nothing on a
+  #    small node, where memory and CPU bind first. Hence one value for every
+  #    environment rather than an env-gated fork.
+  install -d -m 0755 /etc/rancher/k3s/config.yaml.d
+  cat > /etc/rancher/k3s/config.yaml.d/55-pod-capacity.yaml <<'EOF'
+# Written by bootstrap.sh (configure_memory_protection) and converged on
+# existing clusters by host-migration 2026.8.2/0001-node-pod-capacity.
+kubelet-arg+:
+  - max-pods=500
+EOF
+
   marker_set "memory-protection"
   log "Memory protection configured (swap off, eviction-hard memory.available<256Mi, system-reserved 1Gi)."
+  log "Pod capacity: max-pods=500 (kubelet default 110; Calico blockSize 26 supplies the addresses)."
 }
 
 configure_node_net_tuning() {
@@ -1758,7 +1784,7 @@ install_packages_apt() {
   # the helm install step never depends on a base-image quirk.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates openssl \
-    nftables fail2ban jq unzip tar git open-iscsi nfs-common \
+    nftables iptables fail2ban jq unzip tar git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext-base \
@@ -1768,6 +1794,26 @@ install_packages_apt() {
     tmux \
     rclone \
     >/dev/null 2>&1
+  # iptables: NOT for us — k3s bundles its own and the platform firewall is
+  # nftables. It is here because OTHER host software probes for an `iptables`
+  # binary and silently changes behaviour when it is missing. NetBird does
+  # exactly that:
+  #
+  #   WARN client/firewall/nftables/router_linux.go:1096: Will use nftables to
+  #   manipulate the filter table because iptables is not available
+  #
+  # It then writes NATIVE nft rules (iifname "wt0" accept, …) into `table ip
+  # filter` — the table Calico drives through iptables-nft. Felix's
+  # iptables-nft-save cannot parse them and fails its dataplane resync with
+  # "iptables-save failed because there are incompatible nft rules in the
+  # table", so calico-node never leaves 0/1 Ready and NetworkPolicy stops being
+  # programmed. Tenant isolation depends on that policy, so this is a security
+  # regression, not a cosmetic one. Diagnosed on a fresh single-node install
+  # 2026-08-03.
+  #
+  # Installing the binary makes NetBird pick its iptables backend, whose rules
+  # are iptables-nft-compatible and which Felix can therefore read.
+  #
   # python3: used throughout bootstrap — `ipaddress`-based validation of
   # --allow-source / --pre-enroll-peer / --cluster-network-cidr, node-IP pinning,
   # and the admin/backup JSON request bodies. Declared here AND auto-ensured early
@@ -1819,7 +1865,7 @@ install_packages_dnf() {
   # available, which is also a safe no-op when dnf provides age.
   dnf install -y -q --allowerasing \
     wget gnupg2 ca-certificates openssl \
-    nftables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
+    nftables iptables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext \
@@ -5378,7 +5424,13 @@ ADMIN_EMAIL=$admin_email
 ADMIN_PASSWORD=$admin_password
 EOF
     chmod 600 /etc/platform/admin-credentials
-    log "Admin seed credentials written to /etc/platform/admin-credentials."
+    # Report the BRANDED path even though the write goes through the legacy one
+    # (/etc/platform is an ADR-055 compat symlink to /etc/insula, so it is the
+    # same file). The docs say /etc/insula; showing an operator a different path
+    # here just makes them wonder which is real. The write itself is left on the
+    # legacy path deliberately — other readers still reference it, and moving it
+    # is a separate change with its own risk.
+    log "Admin seed credentials written to /etc/insula/admin-credentials."
     log "  Login: $admin_email / $admin_password"
   fi
 
@@ -8000,6 +8052,22 @@ print_summary() {
   log "    Tenant:  https://tenant.${PLATFORM_DOMAIN}"
   log "    API:     https://api.${PLATFORM_DOMAIN}"
   log ""
+  # The first thing an operator wants after "here is your admin URL" is the
+  # credentials for it. They were written ~700 lines earlier, during secret
+  # generation, and had long scrolled away by the time this summary appeared —
+  # so the completion screen told you where to log in and not how. Reported by
+  # an operator walking a real install (2026-08-03).
+  #
+  # Path is the BRANDED root (ADR-055). /etc/platform is a compatibility symlink
+  # to /etc/insula, so both resolve, but the docs say /etc/insula and the two
+  # should not disagree in front of someone who is already unsure what to trust.
+  if [[ -f /etc/insula/admin-credentials ]]; then
+    log "  Admin sign-in:"
+    log "    sudo cat /etc/insula/admin-credentials"
+    log "    (ADMIN_EMAIL + ADMIN_PASSWORD; change the password and remove this file"
+    log "     once you have created a real admin user)"
+    log ""
+  fi
   log "  Installed:"
   log "    - k3s + Calico CNI"
   log "    - Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"

@@ -20,6 +20,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { listExclusionsForReconciler } from './service.js';
 import { renderExclusions, type RenderResult } from './renderer.js';
+import { listAllowlistEntries } from '../security-hardening/crowdsec-allowlists.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Db = NodePgDatabase<any>;
@@ -65,13 +66,40 @@ interface DeploymentShape {
   };
 }
 
+/**
+ * Read the CrowdSec `admin-panel` allowlist so those sources can skip the WAF.
+ *
+ * FAILS CLOSED. If CrowdSec isn't deployed, the pod is missing, or cscli
+ * errors, this returns [] — the WAF then inspects everyone, which is the safe
+ * direction. The alternative (reusing a stale list) would keep a bypass alive
+ * after the operator removed an entry.
+ *
+ * Deliberately never throws: a CrowdSec outage must not stop rule exclusions
+ * from reconciling, since those are what unblock a false positive.
+ */
+async function loadBypassIps(log: Pick<Logger, 'warn'>): Promise<string[]> {
+  try {
+    const entries = await listAllowlistEntries(process.env.KUBECONFIG);
+    // Country-scoped entries cannot be expressed as @ipMatch; the renderer
+    // drops anything that isn't a literal address, this just avoids the noise.
+    return entries.filter((e) => e.scope !== 'Country').map((e) => e.value);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'waf-rule-exclusions: CrowdSec allowlist unavailable — rendering with no IP bypass (WAF stays fully enforced)',
+    );
+    return [];
+  }
+}
+
 export async function reconcileWafExclusions(
   db: Db,
   clients: WafExclusionClients,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<ReconcileResult> {
   const exclusions = await listExclusionsForReconciler(db);
-  const rendered: RenderResult = renderExclusions(exclusions);
+  const bypassIps = await loadBypassIps(log);
+  const rendered: RenderResult = renderExclusions(exclusions, bypassIps);
 
   const desiredData: Record<string, string> = {
     [WAF_EXCLUSION_CM_KEY]: rendered.body,

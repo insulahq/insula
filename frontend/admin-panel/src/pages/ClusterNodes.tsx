@@ -579,6 +579,11 @@ function SubsystemHealthRow({ subsystem }: { readonly subsystem: NodeSubsystemRe
   const allHealthy = subsystem.calico === 'healthy' && subsystem.longhornCsi === 'healthy' && subsystem.csiDriverRegistered;
   if (allHealthy) return null;
 
+  // Which subsystem is actually broken decides what the operator is told. CSI
+  // owns PVC attach; Calico owns pod networking and NetworkPolicy.
+  const cniBroken = subsystem.calico !== 'healthy';
+  const csiBroken = subsystem.longhornCsi !== 'healthy' || !subsystem.csiDriverRegistered;
+
   const stateClass = (s: NodeSubsystemStatus): string => clsx(
     'rounded-full px-2 py-0.5 text-xs font-medium',
     s === 'healthy' && 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300',
@@ -609,10 +614,44 @@ function SubsystemHealthRow({ subsystem }: { readonly subsystem: NodeSubsystemRe
           {subsystem.longhornCsiMessage && <li>longhorn-csi: {subsystem.longhornCsiMessage}</li>}
         </ul>
       )}
-      <p className="mt-2 text-amber-800 dark:text-amber-300">
-        Tenant pods pinned to this node will fail to attach PVCs. Drain + re-bootstrap the worker via{' '}
-        <code className="font-mono">insula bootstrap --remote &lt;ip&gt; --join-as worker --server &lt;cp&gt; --token &lt;t&gt;</code>.
-      </p>
+      {/* Consequence and remedy both used to be a single unconditional line:
+          "pods will fail to attach PVCs — drain + re-bootstrap". It was wrong
+          twice over. PVC attach is a CSI concern, so it was misleading whenever
+          the fault was Calico (networking); and drain + re-bootstrap is a
+          multi-minute outage for every workload on the node, offered as the
+          FIRST move for conditions that are usually a one-line fix. Reported by
+          an operator whose "CNI error" turned out to be a missing package. */}
+      <div className="mt-2 space-y-1 text-amber-800 dark:text-amber-300">
+        <p>
+          {cniBroken && csiBroken
+            ? 'Networking and storage on this node are both degraded: pods here may be unreachable and may fail to attach PVCs.'
+            : cniBroken
+              ? 'Pod networking on this node is degraded. NetworkPolicy may not be programmed while calico-node is not Ready, so tenant isolation is affected — treat this as urgent.'
+              : 'Tenant pods pinned to this node will fail to attach PVCs.'}
+        </p>
+        {cniBroken && (
+          <p>
+            Most often this is a missing <code className="font-mono">iptables</code> package on the
+            host — check <code className="font-mono">command -v iptables</code> first.
+          </p>
+        )}
+        <p>
+          Work through the{' '}
+          <a
+            // The PUBLISHED manual, not a GitHub blob: docs/operations/ is a
+            // repo-internal runbook tree that is not part of the documentation
+            // site, and the host has no repo clone to read it from either.
+            href="https://insulahq.github.io/operator/troubleshooting/#worker-subsystem"
+            target="_blank"
+            rel="noreferrer"
+            className="underline font-medium hover:text-amber-900 dark:hover:text-amber-200"
+            data-testid="subsystem-troubleshooting-link"
+          >
+            node subsystem troubleshooting steps
+          </a>{' '}
+          in order — cheapest first. Drain + re-bootstrap is the last resort, not the first move.
+        </p>
+      </div>
     </div>
   );
 }

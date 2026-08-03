@@ -42,6 +42,12 @@ export default function EmailDriftPage() {
         storageKey="drift"
         defaultOpen
       >
+        {/* Only when there is something to explain. Rendered unconditionally, it
+            sat directly above the green "No active drift detected" panel and
+            told the operator the reconciler "found platform DB rows whose
+            Stalwart entries no longer exist" — on a healthy system, in an amber
+            warning box. Two contradictory statements, the alarming one first. */}
+        {active.length > 0 && (
         <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2">
           <Info size={14} className="mt-0.5 shrink-0" />
           <div>
@@ -55,6 +61,7 @@ export default function EmailDriftPage() {
             give you a controlled path to remediate.
           </div>
         </div>
+        )}
 
         {isLoading && (
           <div className="flex items-center gap-2 px-3 py-4 text-sm text-gray-500">
@@ -173,6 +180,12 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
         </div>
       </div>
 
+      {rotateMaster.isSuccess && (
+        <p className="mt-1.5 text-xs text-emerald-700 dark:text-emerald-300" data-testid={`drift-recreate-master-ok-${item.id}`}>
+          Webmail master recreated. The drift list has been refreshed — this entry
+          disappears once the reconciler confirms it.
+        </p>
+      )}
       {rotateMaster.isError && (
         <div className="text-xs text-rose-600 dark:text-rose-400">
           {rotateMaster.error instanceof Error ? rotateMaster.error.message : 'Recreate failed'}

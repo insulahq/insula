@@ -76,8 +76,18 @@ export function useRotateStalwartPassword() {
  *      caller should communicate this in the confirm modal.
  */
 export function useRotateWebmailMasterPassword() {
+  const queryClient = useQueryClient();
   return useMutation({
     mutationFn: () =>
       apiFetch<RotateWebmailEnvelope>('/api/v1/admin/mail/rotate-webmail-master-password', { method: 'POST' }),
+    // Rotating recreates the Stalwart master principal, which is exactly what a
+    // "missing master user" drift row reports. Without these invalidations the
+    // call succeeded and the drift row stayed on screen, so from the operator's
+    // side the button did nothing — while Dismiss and Recreate-empty, which do
+    // invalidate, looked like they worked. Same endpoint, opposite impression.
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['mail', 'drift'] });
+      void queryClient.invalidateQueries({ queryKey: ['mail', 'health'] });
+    },
   });
 }
