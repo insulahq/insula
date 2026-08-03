@@ -168,17 +168,36 @@ bootstrap_node() {
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
   assert_guest_os_version "$ip" "${NODE_OS[$host]}"
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
+  # Capture the status rather than letting `set -e` abort here. The gate below
+  # must run on FAILURE above all — that is when its output is worth most, and
+  # the first version of this code lost exactly that: bootstrap exited 1, set -e
+  # unwound the function, and the transcript was never fetched or scanned. Found
+  # by a real failing run (7ce830fe), not by reading the code.
+  local boot_rc=0
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
-    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
+    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@" || boot_rc=$?
+
   # Judge the run by what it SAID as well as what it returned. An exit code of 0
   # was satisfied for months by a bootstrap printing seven `command not found`
   # lines on every node; the transcript was captured every time and read by
   # nobody. Fatal only for output that cannot be anything but a script defect —
   # warnings are counted, not fatal, so the gate survives contact with reality.
-  log_gate_fetch_and_scan "$ip" "$host" || {
+  local gate_rc=0
+  log_gate_fetch_and_scan "$ip" "$host" || gate_rc=$?
+
+  if (( boot_rc != 0 )); then
+    echo "ABORT: ${host} bootstrap exited ${boot_rc} (transcript scanned above)." >&2
+    exit "$boot_rc"
+  fi
+  if (( gate_rc == 1 )); then
     echo "ABORT: ${host} bootstrapped with output that indicates a script defect (above)." >&2
     exit 1
-  }
+  fi
+  # gate_rc == 2 means the transcript could not be fetched. Inconclusive, not
+  # clean — but the bootstrap itself succeeded, so warn rather than fail the run.
+  if (( gate_rc == 2 )); then
+    echo "  WARNING: ${host} bootstrapped OK but its transcript could not be scanned." >&2
+  fi
 }
 
 # 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet
