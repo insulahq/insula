@@ -173,9 +173,20 @@ bootstrap_node() {
   # the first version of this code lost exactly that: bootstrap exited 1, set -e
   # unwound the function, and the transcript was never fetched or scanned. Found
   # by a real failing run (7ce830fe), not by reading the code.
+  # VMTEST_BOOTSTRAP_EXTRA_ARGS lets a run pass installer flags the harness does
+  # not model, without the harness having to learn each one. Its first use is
+  # --platform-ops-release-base: development's platform/VERSION does not match
+  # any published release, so a fresh dev install finds no asset and skips the
+  # `insula` binary entirely — which then fails integration-all's converge gate
+  # with a bare "platform-ops: command not found".
+  local extra=()
+  # shellcheck disable=SC2206
+  [[ -n "${VMTEST_BOOTSTRAP_EXTRA_ARGS:-}" ]] && extra=(${VMTEST_BOOTSTRAP_EXTRA_ARGS})
+
   local boot_rc=0
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
-    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@" || boot_rc=$?
+    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" \
+    ${extra[@]+"${extra[@]}"} "$@" || boot_rc=$?
 
   # Judge the run by what it SAID as well as what it returned. An exit code of 0
   # was satisfied for months by a bootstrap printing seven `command not found`
