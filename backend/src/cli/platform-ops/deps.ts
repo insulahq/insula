@@ -13,6 +13,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
 import { realDrOps } from './dr-ops.js';
+import { makeUi, type Ui } from './ui.js';
 import { realSnapshotOps } from './snapshot-ops.js';
 import { realSelfUpgradeOps } from './self-upgrade/index.js';
 import { realHostConfigOps, type HostConfigOps } from './host-config/index.js';
@@ -416,10 +417,25 @@ export interface TenantRecoverOutcome {
 
 export interface Deps {
   env: NodeJS.ProcessEnv;
-  /** Write a line to stdout. */
+  /**
+   * Write a line to stdout, undecorated.
+   *
+   * Stays RAW on purpose. It carries both human lines and the ~24
+   * `out(JSON.stringify(...))` call sites behind `--json`; routing it through
+   * the renderer would have converted the human half for free and silently
+   * corrupted every machine consumer. Human-facing output goes through
+   * `uiOf(deps)` instead — see docs/development/CONSOLE_OUTPUT.md.
+   */
   out: (s: string) => void;
-  /** Write a line to stderr. */
+  /** Write a line to stderr, undecorated. Same reasoning as `out`. */
   err: (s: string) => void;
+  /**
+   * Console renderer shared with bootstrap.sh's bash implementation. Optional:
+   * test fakes are built with `as unknown as Deps`, so a required field would
+   * compile and then be undefined at runtime. Resolve it with `uiOf(deps)`,
+   * which falls back to a renderer over `out`/`err`.
+   */
+  ui?: Ui;
   /**
    * Run a command. With `stdio: 'inherit'` the child takes over the terminal
    * (used by `shell`); otherwise stdout/stderr are captured and returned.
@@ -980,6 +996,12 @@ export function realDeps(): Deps {
     env,
     out: (s) => process.stdout.write(s + '\n'),
     err: (s) => process.stderr.write(s + '\n'),
+    // Built once per process so phase/warning counters accumulate across a
+    // whole command rather than resetting per call site.
+    ui: makeUi(
+      { out: (s) => process.stdout.write(s + '\n'), err: (s) => process.stderr.write(s + '\n') },
+      { env },
+    ),
     exec: realExec,
     versionFromDb: () => realVersionFromDb(env),
     migrationsStatus: () => realMigrationsStatus(env),
