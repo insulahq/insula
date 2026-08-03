@@ -3854,8 +3854,50 @@ install_flux_cli() {
   log "Flux CLI v${FLUX_VERSION} installed."
 }
 
+# How many times a helm invocation is attempted when it fails with a
+# network-shaped error. 1 disables the retry entirely.
+HELM_RETRY_ATTEMPTS="${HELM_RETRY_ATTEMPTS:-3}"
+
+# stderr patterns that mean "the upstream blinked", not "this chart is wrong".
+# Deliberately textual — matching bare status numbers would false-positive on
+# release names, image tags and resource counts.
+HELM_TRANSIENT_ERROR_RE='failed to fetch|failed to download|connection refused|connection reset|no such host|i/o timeout|TLS handshake timeout|temporary failure in name resolution|unexpected EOF|net/http: request canceled|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out|Too Many Requests|try again later'
+
+# Helm wrapper with a narrow transient-failure retry.
+#
+# Chart pulls reach third-party infrastructure that fails intermittently. The
+# charts.longhorn.io index points its download URLs at GitHub release assets,
+# so a GitHub 5xx surfaces as
+#   Error: failed to fetch .../longhorn-1.12.0.tgz : 500 Internal Server Error
+# and, under `set -euo pipefail`, aborted the whole bootstrap after ~20 minutes
+# of successful work. Reported by an operator 2026-08-03; the same URL served
+# 200 minutes later, so the run only ever needed to ask twice.
+#
+# The retry is deliberately narrow: it fires ONLY when helm's stderr matches
+# HELM_TRANSIENT_ERROR_RE. A genuine failure (bad values, a rollout that never
+# goes Ready, a quota block) still fails on the FIRST attempt — several installs
+# here run `--wait --timeout 600s`, and blind retries would turn one doomed
+# 10-minute wait into 30.
+#
+# stderr is captured into a variable (fd 3 dance — no temp file, nothing to
+# clean up) so it can be pattern-matched, then replayed to fd 2. stdout streams
+# straight through untouched, so `$(helm_cmd ...)` capture and `2>/dev/null` at
+# call sites behave exactly as before.
 helm_cmd() {
-  helm --kubeconfig="$KUBECONFIG" "$@"
+  local attempt=1 rc backoff err
+  while :; do
+    rc=0
+    { err="$(helm --kubeconfig="$KUBECONFIG" "$@" 2>&1 1>&3)" || rc=$?; } 3>&1
+    [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+    if (( rc == 0 )) || (( attempt >= HELM_RETRY_ATTEMPTS )) \
+       || ! grep -qEi "$HELM_TRANSIENT_ERROR_RE" <<<"$err"; then
+      return "$rc"
+    fi
+    backoff=$(( attempt * 15 ))
+    warn "helm ${1:-} hit a transient upstream error (attempt ${attempt}/${HELM_RETRY_ATTEMPTS}) — retrying in ${backoff}s..."
+    sleep "$backoff"
+    attempt=$(( attempt + 1 ))
+  done
 }
 
 kctl() {
@@ -3870,7 +3912,7 @@ install_traefik() {
   fi
 
   log "Installing Traefik v3 Ingress Controller..."
-  helm_cmd repo add traefik https://traefik.github.io/charts 2>/dev/null || true
+  helm_cmd repo add --force-update traefik https://traefik.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
   # DaemonSet + hostPort: one pod per eligible node binds directly on
@@ -4028,17 +4070,39 @@ ensure_traefik_cni_portmap() {
     return 0
   fi
   kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
-  # Brief wait for the DS controller to spawn a replacement + CNI
-  # portmap to wire the new hostPort. 30s is enough on a healthy node.
+  # Wait for the DS controller to spawn a replacement + CNI portmap to wire the
+  # new hostPort. The old 30s window was too tight to be trustworthy: the
+  # graceful delete alone burns 10s of it, leaving ~20s for schedule → (possible
+  # image pull) → container start → CNI ADD. On a fresh or loaded node that
+  # routinely overran, so the WARN below fired on clusters whose portmap chain
+  # then appeared moments later. 120s costs nothing when the chain comes back
+  # early (the loop returns on first sight) and removes the false alarm.
   local _w
-  for _w in $(seq 1 15); do
+  for _w in $(seq 1 60); do
     if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
       log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
       return 0
     fi
     sleep 2
   done
-  warn "  CNI portmap chain still missing after recycle — manual investigation needed. Try: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
+  warn "  CNI portmap chain still missing ${_w}×2s after recycling the local Traefik pod."
+  warn "  This blocks external :80/:443 on THIS node only (hostPort DNAT); the cluster is otherwise fine."
+  warn "  Confirm whether it is real — from this node:"
+  warn "    curl -sS -o /dev/null -w '%{http_code}\\n' http://127.0.0.1/    # 000 = genuinely broken, any HTTP code = the probe above was a false alarm"
+  warn "    kubectl -n traefik get pod -o wide --field-selector spec.nodeName=$(hostname)"
+  warn "    nft list table ip nat | grep -i hostport   # or: iptables -t nat -S CNI-HOSTPORT-DNAT"
+  warn "  If genuinely broken, recycle the pod again: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
+  # NOTE for whoever investigates a report of this warning: the probe above
+  # matches only NATIVE nft syntax (`tcp dport 80 ... dnat to 10.42.x.y`). When
+  # the portmap plugin programs the rule through iptables-nft instead — which is
+  # what k3s's bundled iptables does on a host with no iptables tooling of its
+  # own ("Host iptables-save/iptables-restore tools not found" in the k3s log) —
+  # the rule can surface under xt-compat spellings this grep would miss, making
+  # the warning cosmetic. The `curl 127.0.0.1` probe above settles which case it
+  # is. Broadening the match is NOT as simple as also grepping the chain name:
+  # CNI-HOSTPORT-DNAT is shared with the SFTP (:23022) and mail hostPorts, so a
+  # chain-name match would report "present" for a node whose :80 rule is
+  # genuinely absent and skip the recycle that fixes it.
 }
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
@@ -4176,7 +4240,7 @@ install_cert_manager() {
   fi
 
   log "Installing cert-manager..."
-  helm_cmd repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+  helm_cmd repo add --force-update jetstack https://charts.jetstack.io 2>/dev/null || true
   helm_cmd repo update
 
   helm_cmd upgrade --install cert-manager jetstack/cert-manager \
@@ -4399,7 +4463,14 @@ install_longhorn() {
   # Prerequisites should already be installed (open-iscsi, nfs-common)
   systemctl enable --now iscsid 2>/dev/null || true
 
-  helm_cmd repo add longhorn https://charts.longhorn.io 2>/dev/null || true
+  # --force-update on every `repo add` for the reason spelled out in
+  # install_sealed_secrets: a plain `repo add` will NOT overwrite an existing
+  # repo entry's URL, and the refusal is swallowed by `|| true`, so a host
+  # carrying a stale entry silently keeps resolving charts from the old URL.
+  # NOTE charts.longhorn.io's index resolves downloads to GitHub release assets,
+  # so chart pulls here inherit GitHub's availability — that is what helm_cmd's
+  # transient retry covers.
+  helm_cmd repo add --force-update longhorn https://charts.longhorn.io 2>/dev/null || true
   helm_cmd repo update
 
   # longhornUI.replicaCount=1 — the dashboard is operator-facing only
@@ -4536,7 +4607,7 @@ install_cnpg() {
     return 0
   fi
 
-  helm_cmd repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
+  helm_cmd repo add --force-update cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
   # Detect the currently-installed chart version. helm list -o json

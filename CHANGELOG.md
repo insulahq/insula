@@ -12,6 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A single upstream 5xx during a chart pull no longer aborts the whole
+  bootstrap.** `charts.longhorn.io` resolves its downloads to GitHub release
+  assets, so a GitHub blip surfaced as `Error: failed to fetch …
+  longhorn-1.12.0.tgz : 500 Internal Server Error` and, under `set -euo
+  pipefail`, threw away ~20 minutes of successful install (reported by an
+  operator 2026-08-03; the same URL served 200 shortly after). `helm_cmd` now
+  retries up to `HELM_RETRY_ATTEMPTS` (default 3, 15s/30s backoff) **only** when
+  helm's stderr matches a network-shaped failure — a rollout that never goes
+  Ready, bad values or a quota block still fails on the first attempt, so a
+  doomed `--wait --timeout 600s` is never tripled. Locked in by
+  `scripts/test-bootstrap-helm-retry.sh` (14 checks, wired into Infrastructure
+  CI), which asserts the fail-fast path as explicitly as the retry path.
+- **Every `helm repo add` now passes `--force-update`.** Only the sealed-secrets
+  call site had it. A plain `repo add` refuses to overwrite an existing entry's
+  URL and the refusal is swallowed by `|| true`, so any host carrying a stale
+  repo entry silently keeps resolving charts from the old URL — the exact
+  failure already diagnosed once for sealed-secrets, now closed for traefik,
+  jetstack, longhorn and cnpg too.
+- **The CNI portmap self-test no longer cries wolf.** After recycling the local
+  Traefik pod it waited 30s for the hostPort DNAT rule to reappear — but the
+  graceful delete alone consumes 10s of that, leaving ~20s for schedule →
+  image pull → container start → CNI ADD, which a fresh or loaded node
+  routinely overruns. Raised to 120s (it returns the moment the rule appears,
+  so a healthy node pays nothing), and the warning now hands over a concrete
+  diagnosis — including the `curl 127.0.0.1` probe that distinguishes a real
+  breakage from a probe that simply can't see an iptables-nft-rendered rule.
+
 ### Changed
 - **Install docs: state the tools you need, and stop leading with a cosign
   command that warns.** The getting-started pages never said `curl` had to be
