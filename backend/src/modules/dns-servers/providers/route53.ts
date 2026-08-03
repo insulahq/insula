@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, Route53Config } from './types.js';
 
 /**
@@ -42,10 +43,16 @@ export class Route53DnsProvider implements DnsProviderAdapter {
 
     headers['Authorization'] = `AWS4-HMAC-SHA256 Credential=${this.config.access_key_id}/${scope}, SignedHeaders=${signedHeadersList}, Signature=${signature}`;
 
-    const res = await fetch(`${this.baseUrl}${path}`, { method, headers, body });
+    const url = `${this.baseUrl}${path}`;
+    let res: Response;
+    try {
+      res = await fetch(url, { method, headers, body });
+    } catch (err) {
+      throw new Error(describeFetchFailure(err, url));
+    }
     if (!res.ok) {
       const errBody = await res.text().catch(() => '');
-      throw new Error(`Route53 API: ${res.status} — ${errBody}`);
+      throw new Error(`Route53 API: ${res.status} — ${summarizeUpstreamBody(errBody)}`);
     }
 
     const text = await res.text();

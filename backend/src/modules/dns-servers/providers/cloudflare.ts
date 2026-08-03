@@ -1,4 +1,5 @@
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, CloudflareConfig } from './types.js';
+import { describeFetchFailure } from '../../../shared/fetch-error.js';
 
 /**
  * Cloudflare DNS provider using the Cloudflare API v4.
@@ -17,7 +18,13 @@ export class CloudflareDnsProvider implements DnsProviderAdapter {
   }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, { ...options, headers: { ...this.headers, ...options.headers } });
+    const url = `${this.baseUrl}${path}`;
+    let res: Response;
+    try {
+      res = await fetch(url, { ...options, headers: { ...this.headers, ...options.headers } });
+    } catch (err) {
+      throw new Error(describeFetchFailure(err, url));
+    }
     const body = await res.json() as { success: boolean; result: T; errors: { message: string }[] };
     if (!body.success) throw new Error(`Cloudflare API: ${body.errors?.[0]?.message ?? res.statusText}`);
     return body.result;

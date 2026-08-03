@@ -84,6 +84,61 @@ data:
          ctl:ruleRemoveTargetById=931120;ARGS_NAMES,\
          ctl:ruleRemoveTargetById=931130;ARGS_NAMES"
 
+    # ── Operator-supplied endpoint URLs containing an IP literal ──
+    # CRS 931100 "URL Parameter using IP Address" matches any ARG VALUE
+    # of the form `http(s)://<ip-literal>`, scores 5, and 949110 blocks
+    # the request outright — the operator sees a bare nginx 403 page
+    # that never reaches platform-api, so nothing appears in the API log
+    # and the panel can only render "403".
+    #
+    # The platform API's whole job includes storing endpoints the
+    # operator points it at: a self-hosted PowerDNS on a mesh IP, a
+    # MinIO backup target on a LAN IP, a private registry, an ACME
+    # server. Those are *configuration values*, not injected includes.
+    # Every one of these routes is Bearer-authenticated (admin /
+    # super_admin), and Node never include()s a value — so RFI, the
+    # attack 931100 models, does not exist here. It also isn't an SSRF
+    # control: it only rejects IP LITERALS, and anyone who could reach
+    # these routes could pass a hostname instead and sail straight
+    # through. So it costs nothing real to drop, and leaving it on
+    # breaks every mesh/LAN deployment on first use.
+    #
+    # 9000101 above only removes ARGS_NAMES from this rule — the field
+    # NAMES. This is the ARG VALUE, which that exclusion does not cover.
+    #
+    # Chained so the removal needs BOTH the platform-API host and the
+    # /api/v1/ prefix: a tenant's own workload serving /api/v1/ on their
+    # own domain keeps full 931100 coverage. Placed BEFORE the
+    # single-rule 9000102 below on purpose — a chain that ends a file
+    # swallows the first rule of the next-loaded (901 dynamic) file.
+    # (Reported 2026-08-03: POST /api/v1/admin/dns-servers with
+    # connection_config.api_url = http://<mesh-ip>:8081 → 403.)
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000103,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveById=931100"
+        SecRule REQUEST_URI "@rx ^/api/v1/"
+
+    # NOTE — bearer tokens and session cookies in the audit log.
+    # SecAuditLogParts is ABIJDEFHZ, and part B is request headers, so
+    # every blocked request writes the caller's full `Authorization:
+    # Bearer <jwt>` and `platform_session` / `platform_refresh` cookies
+    # in cleartext to this pod's stdout. The obvious fix does NOT work:
+    # libmodsecurity 3.0.16 rejects the action outright at config-parse
+    # time —
+    #   [emerg] Action: SanitiseRequestHeader is not yet supported
+    # — which crash-loops the WAF, so do not re-add it on a future pass.
+    # (Verified 2026-08-03 against
+    # owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307: control
+    # file 855 rules OK, with the sanitise action [emerg].)
+    # Dropping part B instead would break WAF Events, which resolves the
+    # original hostname from request.headers["X-Forwarded-Host"] (see
+    # backend/src/modules/ingress-routes/waf-log-scraper.ts). Tracked as
+    # a follow-up; treat these pod logs as credential-bearing until then.
+
     # ── mTLS CRL download (crl.pem) — CRS 920440 false-positive ──
     # Rule 920440 "URL file extension is restricted by policy" matches
     # the `.pem` suffix of the CRL-download endpoint

@@ -1,4 +1,5 @@
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, ClouDnsConfig } from './types.js';
+import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
 
 /**
  * ClouDNS provider using the ClouDNS HTTP API.
@@ -25,10 +26,16 @@ export class ClouDnsProvider implements DnsProviderAdapter {
   }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, options);
+    const url = `${this.baseUrl}${path}`;
+    let res: Response;
+    try {
+      res = await fetch(url, options);
+    } catch (err) {
+      throw new Error(describeFetchFailure(err, url));
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`ClouDNS API: ${res.status} — ${body}`);
+      throw new Error(`ClouDNS API: ${res.status} — ${summarizeUpstreamBody(body)}`);
     }
     const body = await res.json() as T & { status?: string; statusDescription?: string };
     // ClouDNS returns { status: 'Failed', statusDescription: '...' } on logical errors
