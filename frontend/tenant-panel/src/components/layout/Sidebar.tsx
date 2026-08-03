@@ -94,7 +94,18 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
         <RuntimeInfoBlock />
 
-        <nav className="flex-1 space-y-1 px-3 py-4" role="navigation" aria-label="Main">
+        {/* min-h-0 is doing as much work here as overflow-y-auto: a flex item
+            defaults to min-height:auto and so refuses to shrink below its
+            content height, which means the scroll container never becomes
+            smaller than what it holds and never scrolls. With both, the nav
+            takes the space left by the header and runtime block and scrolls
+            inside it. overscroll-contain stops a scroll that reaches the end
+            of the nav from chaining to the page behind it. */}
+        <nav
+          className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-3 py-4"
+          role="navigation"
+          aria-label="Main"
+        >
           {navItems.map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
