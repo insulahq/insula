@@ -7,6 +7,7 @@
  */
 import type { Deps, NodeVersion, VersionInfo } from './deps.js';
 import { buildK3sUpgradePlans, parseK3sVersion, planK3sUpgradePath } from './operations/k3s-plan.js';
+import { uiOf } from './ui.js';
 
 const KUBECTL = 'kubectl';
 
@@ -152,10 +153,12 @@ export async function migrationsApply(args: string[], deps: Deps): Promise<numbe
       failed: r.failed, skippedReason: r.skippedReason, outcomes: r.outcomes,
     }));
   } else if (!r.ran) {
-    deps.out(`migrations apply: skipped (${r.skippedReason ?? 'unknown'})`);
+    uiOf(deps).detail(`migrations apply: skipped (${r.skippedReason ?? 'unknown'})`);
   } else {
     const tag = r.dryRun ? '[dry-run] ' : '';
-    deps.out(`${tag}${r.applied ?? 0} applied, ${r.pending ?? 0} pending${r.failed ? ' — a migration FAILED (sequence halted)' : ''}`);
+    const summary = `${tag}${r.applied ?? 0} applied, ${r.pending ?? 0} pending`;
+    if (r.failed) uiOf(deps).fail(`${summary} — a migration FAILED (sequence halted)`);
+    else uiOf(deps).ok(summary);
     for (const o of r.outcomes ?? []) {
       deps.out(`  ${o.status.padEnd(12)} ${o.id}${o.error ? ` — ${o.error}` : ''}`);
     }
@@ -227,26 +230,26 @@ export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
 
   switch (r.action) {
     case 'upgraded': {
-      deps.out(`platform-ops upgraded ${r.current} → ${r.target} (via ${r.source}, ${r.arch})`);
+      uiOf(deps).ok(`platform-ops upgraded ${r.current} → ${r.target} (via ${r.source}, ${r.arch})`);
       // apply-on-Apply: converge this release's host-migrations now (via the
       // just-replaced binary) instead of waiting for the next daily host-config
       // timer. Best-effort — the upgrade already succeeded, and the timer is the
       // backstop, so a converge failure does not fail the self-upgrade.
       if (deps.convergeAfterSelfUpgrade) {
         const c = await deps.convergeAfterSelfUpgrade();
-        if (c.code === 0) deps.out('platform-ops: converged host-migrations for the new release.');
-        else deps.err(`platform-ops: host-migration converge exited ${c.code} (the daily host-config timer will retry).`);
+        if (c.code === 0) uiOf(deps).ok('converged host-migrations for the new release');
+        else uiOf(deps).warn(`host-migration converge exited ${c.code} (the daily host-config timer will retry)`);
       }
       return 0;
     }
     case 'already-current':
-      deps.out(`platform-ops is current (${r.current}; target ${r.target ?? '—'} via ${r.source ?? '—'})`);
+      uiOf(deps).ok(`platform-ops is current (${r.current}; target ${r.target ?? '—'} via ${r.source ?? '—'})`);
       return 0;
     case 'no-target':
       deps.out(`platform-ops ${r.current}: no upgrade target (cluster unreachable + Releases offline)`);
       return 0;
     case 'invalid-version':
-      deps.err(`self-upgrade: ${r.reason ?? 'invalid version'}`);
+      uiOf(deps).fail(`self-upgrade: ${r.reason ?? 'invalid version'}`);
       return 2;
     case 'download-failed':
       deps.err(`self-upgrade: failed to download ${r.target} (${r.arch})`);

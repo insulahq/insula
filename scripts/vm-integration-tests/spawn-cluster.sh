@@ -21,6 +21,7 @@ source "${VMTEST_CONFIG:-$HERE/config.env}"
 source "$HERE/lib/os-registry.sh"
 source "$HERE/lib/driver.sh"
 source "$HERE/lib/waitfor.sh"
+source "$HERE/lib/log-gate.sh"
 
 RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
@@ -132,6 +133,30 @@ echo "== spawn: ${VMTEST_SERVERS} server(s) + ${VMTEST_WORKERS} worker(s) on ${S
 echo "   os-seed=${OS_SEED}  (reproduce with VMTEST_OS_SEED=${OS_SEED})  pool=[${OS_POOL[*]}]"
 echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
 
+# assert_guest_os_version <ip> <os-id> — fail the run if the booted guest is not
+# the OS release the registry pins.
+#
+# Without this, "we test on Debian 13.6" is an assertion about a URL, not about
+# what actually booted: an upstream image swap, a stale golden, or a hand-edited
+# cache entry all change the OS under the suite silently. Registry entries with
+# no pinned version (the floating-URL OSes) are skipped rather than guessed at.
+assert_guest_os_version() {
+  local ip="$1" os="$2" want actual
+  want="$(os_expect_version "$os" 2>/dev/null || true)"
+  [[ -n "$want" ]] || return 0
+  case "$(os_family "$os")" in
+    debian) actual=$(_vssh "$ip" "cat /etc/debian_version" 2>/dev/null | tr -d '[:space:]') ;;
+    *)      return 0 ;;   # rhel-family version probing not needed while none are pinned
+  esac
+  if [[ "$actual" != "$want" ]]; then
+    echo "ABORT: ${ip} booted ${os} reporting '${actual}', registry pins '${want}'." >&2
+    echo "  The image behind this OS changed. Re-pin the registry URL + expected version together," >&2
+    echo "  or drop the stale golden so it re-pulls: rm ${VMTEST_IMAGE_CACHE_DIR%/}/golden-${os}.qcow2*" >&2
+    exit 1
+  fi
+  echo "  ${ip}: ${os} ${actual} (matches pin)"
+}
+
 # bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
 bootstrap_node() {
   local host="$1" ip="$2" role="$3"; shift 3
@@ -141,9 +166,49 @@ bootstrap_node() {
   # 2026-07-12: bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
   # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
+  assert_guest_os_version "$ip" "${NODE_OS[$host]}"
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
+  # Capture the status rather than letting `set -e` abort here. The gate below
+  # must run on FAILURE above all — that is when its output is worth most, and
+  # the first version of this code lost exactly that: bootstrap exited 1, set -e
+  # unwound the function, and the transcript was never fetched or scanned. Found
+  # by a real failing run (7ce830fe), not by reading the code.
+  # VMTEST_BOOTSTRAP_EXTRA_ARGS lets a run pass installer flags the harness does
+  # not model, without the harness having to learn each one. Its first use is
+  # --platform-ops-release-base: development's platform/VERSION does not match
+  # any published release, so a fresh dev install finds no asset and skips the
+  # `insula` binary entirely — which then fails integration-all's converge gate
+  # with a bare "platform-ops: command not found".
+  local extra=()
+  # shellcheck disable=SC2206
+  [[ -n "${VMTEST_BOOTSTRAP_EXTRA_ARGS:-}" ]] && extra=(${VMTEST_BOOTSTRAP_EXTRA_ARGS})
+
+  local boot_rc=0
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
-    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
+    --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" \
+    ${extra[@]+"${extra[@]}"} "$@" || boot_rc=$?
+
+  # Judge the run by what it SAID as well as what it returned. An exit code of 0
+  # was satisfied for months by a bootstrap printing seven `command not found`
+  # lines on every node; the transcript was captured every time and read by
+  # nobody. Fatal only for output that cannot be anything but a script defect —
+  # warnings are counted, not fatal, so the gate survives contact with reality.
+  local gate_rc=0
+  log_gate_fetch_and_scan "$ip" "$host" || gate_rc=$?
+
+  if (( boot_rc != 0 )); then
+    echo "ABORT: ${host} bootstrap exited ${boot_rc} (transcript scanned above)." >&2
+    exit "$boot_rc"
+  fi
+  if (( gate_rc == 1 )); then
+    echo "ABORT: ${host} bootstrapped with output that indicates a script defect (above)." >&2
+    exit 1
+  fi
+  # gate_rc == 2 means the transcript could not be fetched. Inconclusive, not
+  # clean — but the bootstrap itself succeeded, so warn rather than fail the run.
+  if (( gate_rc == 2 )); then
+    echo "  WARNING: ${host} bootstrapped OK but its transcript could not be scanned." >&2
+  fi
 }
 
 # 1) first server = etcd init. --cluster-network-cidr whitelists the whole run subnet

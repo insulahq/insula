@@ -217,7 +217,7 @@ metadata:
   name: acme-probe-mtls
   namespace: ${NAMESPACE}
 spec:
-  # `web` entrypoint = HTTP/:80, no TLS. ACME challenges are plain HTTP
+  # 'web' entrypoint = HTTP/:80, no TLS. ACME challenges are plain HTTP
   # per RFC 8555. No middleware attached on purpose — this IR
   # MUST bypass the mTLS gate that the tenant's other IR has, so the
   # test passes only when the platform's ingress reconciler also

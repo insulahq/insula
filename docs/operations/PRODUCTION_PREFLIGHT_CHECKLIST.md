@@ -83,7 +83,7 @@ to recover. See [`MAIL_SERVER_OPERATIONS.md § 2`](./MAIL_SERVER_OPERATIONS.md).
 
 - [ ] `platform/cosign.pub` in the bootstrapping checkout/binary is the **intended production trust anchor** (rotate off the W17 bring-up key before hardened production — see [`RELEASING.md`](../../RELEASING.md))
 - [ ] Understood: `insula` self-upgrades daily as root and **fail-closes** on an unverified binary — a bad/rotated key stops upgrades, it does not run unsigned code
-- [ ] The signed release for the chosen tag verifies locally: `cosign verify-blob --key platform/cosign.pub --signature <asset>.sig <asset>`
+- [ ] The signed release for the chosen tag verifies locally: `openssl dgst -sha256 -verify platform/cosign.pub -signature <(base64 -d <asset>.sig) <asset>` → `Verified OK` (openssl needs no extra install and is the same check the node makes; with cosign it's `cosign verify-blob --key platform/cosign.pub --signature <asset>.sig --insecure-ignore-tlog=true <asset>`)
 
 ## 6. Secrets & encryption keys
 
@@ -133,12 +133,15 @@ the target (or drive `--remote` from your workstation) and run:
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
 
 # Verify the signed binary BEFORE running it (production: do not skip).
-# --insecure-ignore-tlog=true is required — releases are signed offline/key-based
-# (no Rekor transparency log), so tlog verification would otherwise fail.
+# openssl is already on the node and needs no flags-of-shame; it is the exact
+# check platform-ops makes on every self-upgrade. Must print "Verified OK".
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
 curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
-cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig \
-  --insecure-ignore-tlog=true insula-linux-amd64
+openssl dgst -sha256 -verify cosign.pub \
+  -signature <(base64 -d insula-linux-amd64.sig) insula-linux-amd64
+# With cosign instead: add --insecure-ignore-tlog=true (releases are signed with
+# an offline key and are NOT in the Rekor transparency log, so cosign hard-fails
+# without it and warns about skipping tlog with it — both are expected).
 
 chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
 

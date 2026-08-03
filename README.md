@@ -98,7 +98,16 @@ Calico, Traefik, Longhorn, cert-manager, Flux, and the platform) — no repo
 clone; the installer travels inside the binary:
 
 ```bash
+# Needs curl + openssl on the host (openssl is preinstalled everywhere; curl is
+# missing on minimal Debian: apt-get install -y curl ca-certificates).
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+
+# Verify the signature before running it — must print "Verified OK".
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
+curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
+openssl dgst -sha256 -verify cosign.pub \
+  -signature <(base64 -d insula-linux-amd64.sig) insula-linux-amd64
+
 chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
 sudo insula bootstrap --join-as server --domain hosting.example.com --acme-email ops@example.com
 ```

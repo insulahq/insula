@@ -51,10 +51,17 @@ sudo cat /var/lib/rancher/k3s/server/node-token
 Then, on the **new host**, download the signed `insula` binary and run
 `insula bootstrap` — same single binary as the first node, no repo clone.
 
+!!! warning "Verify the binary on every node"
+    Each joining host downloads the installer itself, so run the same signature
+    check you ran on the first node — see
+    [verify the download](install.md#verify-the-download). It needs `curl` and
+    `openssl` present on the new host.
+
 Add a server (control plane):
 
 ```bash
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+# verify it first — see install.md#verify-the-download
 chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
 
 sudo insula bootstrap --join-as server \

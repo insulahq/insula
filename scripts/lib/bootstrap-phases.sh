@@ -327,6 +327,32 @@ phase_platform_ops() {
   rm -rf "$tmp"
   log "platform-ops: installed ${version} (${arch}) → ${bin}; pubkey → ${pub_dst}."
 
+  # ADR-055 compatibility name. The ADR specifies leaving
+  # `/usr/local/bin/platform-ops` → `insula` as a compat symlink, but says it in
+  # the REBRAND HOST-MIGRATION — which only ever runs on nodes upgrading THROUGH
+  # the rename. A freshly bootstrapped node never runs it, so it ended up with
+  # strictly fewer entry points than an upgraded one: `insula` only.
+  #
+  # That is backwards, and it is not theoretical. Operator runbooks, and several
+  # of our own integration scripts, invoke `platform-ops …`; on a fresh install
+  # those fail with a bare "platform-ops: command not found" that says nothing
+  # about a rename. Caught on a real fresh-install run (0fb15981), where the
+  # binary installed and verified correctly and the converge step still could not
+  # find it.
+  #
+  # Symlink, not a copy: one binary, one signature, one thing to upgrade.
+  local compat="$(dirname "$bin")/platform-ops"
+  if [ -e "$compat" ] && [ ! -L "$compat" ]; then
+    # A real file here is a pre-ADR-055 binary. Leave it: the rebrand
+    # host-migration owns that transition, and clobbering it from bootstrap
+    # would race a node mid-migration.
+    log "platform-ops: ${compat} exists as a regular file — leaving it to the rebrand host-migration."
+  elif ! ln -sfn "$(basename "$bin")" "$compat"; then
+    warn "platform-ops: could not create the ${compat} compatibility symlink (non-fatal)."
+  else
+    log "platform-ops: ${compat} → $(basename "$bin") (ADR-055 compatibility name)."
+  fi
+
   platform_ops_install_timer || warn "platform-ops: self-upgrade timer install failed (non-fatal)."
   return 0
 }

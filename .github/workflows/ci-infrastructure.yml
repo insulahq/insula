@@ -80,6 +80,11 @@ jobs:
       - run: ./scripts/test-ci-integration-coverage.sh
       - run: ./scripts/test-new-host-migration.sh
       - run: ./scripts/test-cut-release-audit.sh
+      - run: ./scripts/test-bootstrap-helm-retry.sh
+      - run: ./scripts/test-ui.sh
+      - run: ./scripts/test-bootstrap-quiet-wrappers.sh
+      - run: ./scripts/test-log-gate.sh
+      - run: ./scripts/test-vmtest-log-gate-wiring.sh
       - run: ./.github/scripts/test-pin-image-tag.sh
       # Runs in a container with NET_ADMIN so the nft operations (and the
       # `flush ruleset` in its fixtures) are isolated from the runner's own
@@ -380,6 +385,14 @@ jobs:
         # caught one live instance; the same class affected 7 other
         # CronJobs across k8s/base/. This guard prevents regression.
         run: ./scripts/ci-flux-escape-check.sh
+      - name: Verify no backticks inside unquoted heredoc bodies
+        # An unquoted heredoc expands its body — prose backticks in the
+        # comments of bootstrap.sh's Flux Kustomization block ran as
+        # commands on every install and printed "op:: command not found",
+        # "kustomize: command not found" (+5 more) to the operator's
+        # console. Harmless-looking because the generated YAML stayed
+        # valid, which is why it shipped for months.
+        run: ./scripts/ci-heredoc-expansion-check.sh
 
   task-helper-coverage:
     name: Task Tracker helper coverage

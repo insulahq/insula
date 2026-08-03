@@ -424,7 +424,7 @@ fetch_verified_script() {
   # mismatched by exactly the stripped newline.) The `&&` also means a
   # curl failure short-circuits the printf, so the substitution's exit
   # status is still curl's.
-  if ! body="$(curl -fsSL "$url" && printf 'x')"; then
+  if ! body="$(curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" && printf 'x')"; then
     error "failed to download the ${label} installer from ${url}"
   fi
   body="${body%x}"
@@ -581,6 +581,18 @@ OPTIONS:
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
   --skip-longhorn        Skip Longhorn storage (use local-path)
+  --platform-ops-release-base <url|dir>
+                         Fetch the signed `insula` binary from this base
+                         instead of GitHub Releases — an internal mirror or a
+                         local directory holding insula-linux-<arch> + .sig.
+                         For air-gapped / mirrored sites. The signature is
+                         still verified against the in-repo trust anchor, so a
+                         mirror is a convenience, never a trust decision.
+  --plain                Plain one-line-per-event output instead of the
+                         progress display. Chosen automatically when stdout
+                         is not a terminal; pass this to force it on one.
+                         The full transcript is written to
+                         /var/log/insula-bootstrap.log either way.
   --dry-run              Validate OS + install base packages, then exit
                          before firewall/k3s/Calico/etc. Used by
                          scripts/test-bootstrap-os-matrix.sh in
@@ -903,6 +915,33 @@ fi
 # shellcheck source=lib/bootstrap-phases.sh
 source "$PHASES_LIB"
 
+# Console renderer. Same sibling-lib guarantee as the phase library above, and
+# build-platform-ops.sh packs the whole scripts/lib tree into the SEA, so it
+# travels with every supported invocation. Missing it is not fatal — the
+# fallbacks below keep a bootstrap runnable, just noisy — because failing an
+# install over a cosmetic layer would be a poor trade.
+UI_LIB="${BOOTSTRAP_SCRIPT_DIR}/lib/ui.sh"
+if [[ -r "$UI_LIB" ]]; then
+  # shellcheck source=lib/ui.sh
+  source "$UI_LIB"
+else
+  ui_init() { :; }; ui_phase_total() { :; }; ui_phase() { echo "== $* =="; }
+  ui_step() { :; }; ui_ok() { echo "OK: $*"; }; ui_detail() { echo "$*"; }
+  ui_warn() { echo "WARN: $*" >&2; }; ui_fail() { echo "ERROR: $*" >&2; }
+  ui_summary() { echo "$*"; }; ui_record() { :; }; ui_is_rich() { return 1; }
+fi
+
+# Re-point the three legacy emitters at the renderer. Doing it HERE, at the one
+# seam, converts every existing call site (412 log / 100 warn / 71 error) without
+# editing any of them — and keeps `error` fatal, which a lot of control flow
+# depends on. The timestamp moves to the transcript, where it is useful, and off
+# the screen, where it was 20 characters of noise on every line.
+UI_LOG_FILE="${UI_LOG_FILE:-/var/log/insula-bootstrap.log}"
+ui_init
+log()   { ui_detail "$*"; }
+warn()  { ui_warn "$*"; }
+error() { ui_fail "$*"; ui_summary "Bootstrap failed"; exit 1; }
+
 # Ensure python3 is on PATH, auto-installing it if missing. parse_args validates
 # --allow-source / --pre-enroll-peer / --cluster-network-cidr via python3's
 # `ipaddress` module BEFORE install_packages runs (and python3 is used widely
@@ -1051,6 +1090,27 @@ parse_args() {
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
+      # Where to fetch the signed `insula` binary from, instead of this repo's
+      # GitHub Releases. Accepts an https base URL or a local directory holding
+      # insula-linux-<arch> + .sig.
+      #
+      # Production value, not just a test hook: an air-gapped or
+      # policy-constrained site mirrors releases internally and has no route to
+      # github.com. Until now bootstrap had no way to be told that, so those
+      # installs silently ended up with no `insula` binary on the node — no
+      # self-upgrade timer and no host-config converger — because the fetch
+      # fails soft by design.
+      #
+      # The signature is still verified against the in-repo trust anchor, so a
+      # mirror is a CONVENIENCE, never a trust decision: a tampered mirror fails
+      # verification exactly as a tampered release would.
+      --platform-ops-release-base)
+                         PLATFORM_OPS_RELEASE_BASE="$2"; export PLATFORM_OPS_RELEASE_BASE; shift 2 ;;
+      # Force the plain, one-line-per-event renderer even on a terminal. For
+      # piping into a pager or a log collector that would otherwise be fed
+      # cursor movement and colour codes. Auto-detection already picks plain
+      # when stdout is not a TTY, so this is only needed to override a TTY.
+      --plain)           UI_MODE=plain; ui_init; shift ;;
       --skip-vpn)        shift ;; # Deprecated — bootstrap no longer installs VPN tools; sysadmin responsibility
       --netbird-management-url|--netbird-setup-key)
                          warn "Deprecated flag '$1' ignored — bring up NetBird/Tailscale BEFORE running bootstrap. See docs/operations/CLUSTER_NETWORK.md."
@@ -1663,7 +1723,7 @@ install_yq() {
     *) warn "yq: unsupported arch '${arch}' — secrets bundle will fall back to raw kubectl YAML."; return 0 ;;
   esac
   local url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${yq_arch}"
-  if curl -fsSL "$url" -o /usr/local/bin/yq 2>/dev/null && chmod +x /usr/local/bin/yq; then
+  if curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o /usr/local/bin/yq 2>/dev/null && chmod +x /usr/local/bin/yq; then
     log "yq (mikefarah, ${yq_arch}) installed to /usr/local/bin/yq."
   else
     rm -f /usr/local/bin/yq 2>/dev/null || true
@@ -1825,7 +1885,7 @@ install_age_if_missing() {
   log "  age package not available — installing static binary ${age_ver}/${arch} from upstream..."
   local tmpdir
   tmpdir="$(mktemp -d)"
-  if ! curl -fsSL "$url" -o "${tmpdir}/age.tar.gz" 2>/dev/null; then
+  if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o "${tmpdir}/age.tar.gz" 2>/dev/null; then
     rm -rf "$tmpdir"
     error "Failed to download age from ${url}. Check outbound HTTPS connectivity to github.com."
   fi
@@ -1862,7 +1922,7 @@ install_rclone_if_missing() {
   log "  rclone package not available — installing static binary ${rclone_ver}/${arch} from upstream..."
   local tmpdir
   tmpdir="$(mktemp -d)"
-  if ! curl -fsSL "$url" -o "${tmpdir}/rclone.zip" 2>/dev/null; then
+  if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o "${tmpdir}/rclone.zip" 2>/dev/null; then
     rm -rf "$tmpdir"
     error "Failed to download rclone from ${url}. Check outbound HTTPS connectivity to github.com."
   fi
@@ -3854,11 +3914,81 @@ install_flux_cli() {
   log "Flux CLI v${FLUX_VERSION} installed."
 }
 
+# How many times a helm invocation is attempted when it fails with a
+# network-shaped error. 1 disables the retry entirely.
+HELM_RETRY_ATTEMPTS="${HELM_RETRY_ATTEMPTS:-3}"
+
+# stderr patterns that mean "the upstream blinked", not "this chart is wrong".
+# Deliberately textual — matching bare status numbers would false-positive on
+# release names, image tags and resource counts.
+HELM_TRANSIENT_ERROR_RE='failed to fetch|failed to download|connection refused|connection reset|no such host|i/o timeout|TLS handshake timeout|temporary failure in name resolution|unexpected EOF|net/http: request canceled|Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out|Too Many Requests|try again later'
+
+# Helm wrapper with a narrow transient-failure retry.
+#
+# Chart pulls reach third-party infrastructure that fails intermittently. The
+# charts.longhorn.io index points its download URLs at GitHub release assets,
+# so a GitHub 5xx surfaces as
+#   Error: failed to fetch .../longhorn-1.12.0.tgz : 500 Internal Server Error
+# and, under `set -euo pipefail`, aborted the whole bootstrap after ~20 minutes
+# of successful work. Reported by an operator 2026-08-03; the same URL served
+# 200 minutes later, so the run only ever needed to ask twice.
+#
+# The retry is deliberately narrow: it fires ONLY when helm's stderr matches
+# HELM_TRANSIENT_ERROR_RE. A genuine failure (bad values, a rollout that never
+# goes Ready, a quota block) still fails on the FIRST attempt — several installs
+# here run `--wait --timeout 600s`, and blind retries would turn one doomed
+# 10-minute wait into 30.
+#
+# stderr is captured into a variable (fd 3 dance — no temp file, nothing to
+# clean up) so it can be pattern-matched, then replayed to fd 2. stdout streams
+# straight through untouched, so `$(helm_cmd ...)` capture and `2>/dev/null` at
+# call sites behave exactly as before.
 helm_cmd() {
-  helm --kubeconfig="$KUBECONFIG" "$@"
+  local attempt=1 rc backoff err
+  while :; do
+    rc=0
+    if [[ -t 1 ]]; then
+      # Nobody is reading helm's stdout — fold it into the captured stream so a
+      # chart install contributes one line to the screen instead of forty.
+      { err="$(helm --kubeconfig="$KUBECONFIG" "$@" 2>&1)" || rc=$?; }
+      [[ -n "$err" ]] && ui_record "helm $* → ${rc}"$'\n'"$err"
+      (( rc != 0 )) && [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+    else
+      { err="$(helm --kubeconfig="$KUBECONFIG" "$@" 2>&1 1>&3)" || rc=$?; } 3>&1
+      [[ -n "$err" ]] && printf '%s\n' "$err" >&2
+    fi
+    if (( rc == 0 )) || (( attempt >= HELM_RETRY_ATTEMPTS )) \
+       || ! grep -qEi "$HELM_TRANSIENT_ERROR_RE" <<<"$err"; then
+      return "$rc"
+    fi
+    backoff=$(( attempt * 15 ))
+    warn "helm ${1:-} hit a transient upstream error (attempt ${attempt}/${HELM_RETRY_ATTEMPTS}) — retrying in ${backoff}s..."
+    sleep "$backoff"
+    attempt=$(( attempt + 1 ))
+  done
 }
 
+# kubectl wrapper. Quiet on the operator's screen, complete in the transcript.
+#
+# The subtlety that dictates the shape: over a hundred call sites read kubectl's
+# stdout via `$(kctl get … -o jsonpath=…)`. Swallowing stdout unconditionally
+# would return empty strings to all of them and break the install in a way that
+# looks like a cluster fault. So the test is `[ -t 1 ]` — "is MY stdout the
+# terminal right now?":
+#   • command substitution / redirect → stdout is a pipe → pass through untouched.
+#     The caller wanted the bytes; it gets them, byte for byte.
+#   • statement position on a TTY     → nobody is reading them → capture, record
+#     to the transcript, and show them only if the command FAILED.
+# In plain mode (--remote, CI) stdout is a file, so everything passes through and
+# the log stays exhaustive — which is what a log is for.
 kctl() {
+  if [[ -t 1 ]]; then
+    local _out _rc=0
+    _out="$(kubectl --kubeconfig="$KUBECONFIG" "$@" 2>&1)" || _rc=$?
+    [[ -n "$_out" ]] && ui_record "kubectl $* → ${_rc}"$'\n'"$_out"
+    (( _rc != 0 )) && [[ -n "$_out" ]] && printf '%s\n' "$_out" >&2
+    return "$_rc"
+  fi
   kubectl --kubeconfig="$KUBECONFIG" "$@"
 }
 
@@ -3870,7 +4000,7 @@ install_traefik() {
   fi
 
   log "Installing Traefik v3 Ingress Controller..."
-  helm_cmd repo add traefik https://traefik.github.io/charts 2>/dev/null || true
+  helm_cmd repo add --force-update traefik https://traefik.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
   # DaemonSet + hostPort: one pod per eligible node binds directly on
@@ -4028,17 +4158,39 @@ ensure_traefik_cni_portmap() {
     return 0
   fi
   kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
-  # Brief wait for the DS controller to spawn a replacement + CNI
-  # portmap to wire the new hostPort. 30s is enough on a healthy node.
+  # Wait for the DS controller to spawn a replacement + CNI portmap to wire the
+  # new hostPort. The old 30s window was too tight to be trustworthy: the
+  # graceful delete alone burns 10s of it, leaving ~20s for schedule → (possible
+  # image pull) → container start → CNI ADD. On a fresh or loaded node that
+  # routinely overran, so the WARN below fired on clusters whose portmap chain
+  # then appeared moments later. 120s costs nothing when the chain comes back
+  # early (the loop returns on first sight) and removes the false alarm.
   local _w
-  for _w in $(seq 1 15); do
+  for _w in $(seq 1 60); do
     if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
       log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
       return 0
     fi
     sleep 2
   done
-  warn "  CNI portmap chain still missing after recycle — manual investigation needed. Try: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
+  warn "  CNI portmap chain still missing ${_w}×2s after recycling the local Traefik pod."
+  warn "  This blocks external :80/:443 on THIS node only (hostPort DNAT); the cluster is otherwise fine."
+  warn "  Confirm whether it is real — from this node:"
+  warn "    curl -sS -o /dev/null -w '%{http_code}\\n' http://127.0.0.1/    # 000 = genuinely broken, any HTTP code = the probe above was a false alarm"
+  warn "    kubectl -n traefik get pod -o wide --field-selector spec.nodeName=$(hostname)"
+  warn "    nft list table ip nat | grep -i hostport   # or: iptables -t nat -S CNI-HOSTPORT-DNAT"
+  warn "  If genuinely broken, recycle the pod again: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
+  # NOTE for whoever investigates a report of this warning: the probe above
+  # matches only NATIVE nft syntax (`tcp dport 80 ... dnat to 10.42.x.y`). When
+  # the portmap plugin programs the rule through iptables-nft instead — which is
+  # what k3s's bundled iptables does on a host with no iptables tooling of its
+  # own ("Host iptables-save/iptables-restore tools not found" in the k3s log) —
+  # the rule can surface under xt-compat spellings this grep would miss, making
+  # the warning cosmetic. The `curl 127.0.0.1` probe above settles which case it
+  # is. Broadening the match is NOT as simple as also grepping the chain name:
+  # CNI-HOSTPORT-DNAT is shared with the SFTP (:23022) and mail hostPorts, so a
+  # chain-name match would report "present" for a node whose :80 rule is
+  # genuinely absent and skip the recycle that fixes it.
 }
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
@@ -4176,7 +4328,7 @@ install_cert_manager() {
   fi
 
   log "Installing cert-manager..."
-  helm_cmd repo add jetstack https://charts.jetstack.io 2>/dev/null || true
+  helm_cmd repo add --force-update jetstack https://charts.jetstack.io 2>/dev/null || true
   helm_cmd repo update
 
   helm_cmd upgrade --install cert-manager jetstack/cert-manager \
@@ -4399,7 +4551,14 @@ install_longhorn() {
   # Prerequisites should already be installed (open-iscsi, nfs-common)
   systemctl enable --now iscsid 2>/dev/null || true
 
-  helm_cmd repo add longhorn https://charts.longhorn.io 2>/dev/null || true
+  # --force-update on every `repo add` for the reason spelled out in
+  # install_sealed_secrets: a plain `repo add` will NOT overwrite an existing
+  # repo entry's URL, and the refusal is swallowed by `|| true`, so a host
+  # carrying a stale entry silently keeps resolving charts from the old URL.
+  # NOTE charts.longhorn.io's index resolves downloads to GitHub release assets,
+  # so chart pulls here inherit GitHub's availability — that is what helm_cmd's
+  # transient retry covers.
+  helm_cmd repo add --force-update longhorn https://charts.longhorn.io 2>/dev/null || true
   helm_cmd repo update
 
   # longhornUI.replicaCount=1 — the dashboard is operator-facing only
@@ -4536,7 +4695,7 @@ install_cnpg() {
     return 0
   fi
 
-  helm_cmd repo add cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
+  helm_cmd repo add --force-update cnpg https://cloudnative-pg.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
   # Detect the currently-installed chart version. helm list -o json
@@ -4715,6 +4874,15 @@ Cut it first (scripts/cut-release.sh) or pass an existing tag via --release-tag.
   # platform-storage-policy reconciler's imperative HA scale within
   # ~30s. CNPG operator defaults instances=1 when absent — the
   # right floor for fresh clusters. Apply HA flips to 3 imperatively.
+  #
+  # The delimiter is UNQUOTED on purpose (${overlay_dir} / ${source_name} must
+  # expand), which means the body is also subject to command substitution.
+  # Keep BACKTICKS and $( ) out of it — including inside YAML '#' comments.
+  # Prose backticks in the comments below used to run as commands during every
+  # install, printing "op:: command not found", "kustomize: command not found"
+  # etc. to the operator's console (reported 2026-08-03). Use 'single quotes'
+  # for inline code in this block; \${DOMAIN} is escaped for the same reason.
+  # Guard: scripts/ci-heredoc-expansion-check.sh.
   cat <<KUSTYAML | kctl apply -f -
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -4741,21 +4909,21 @@ spec:
         name: platform-cluster-config
         optional: false
   patches:
-    # NOTE (2026-06-10): the former `op: remove /spec/instances` patch on the
+    # NOTE (2026-06-10): the former 'op: remove /spec/instances' patch on the
     # system-db Cluster was DELETED. k8s/base/database.yaml intentionally OMITS
     # spec.instances (CNPG defaults 1; Apply HA patches it imperatively and the
-    # `ssa: merge` annotation already keeps Flux off fields absent from the
-    # manifest), so the patch was redundant — AND a JSON6902 `op: remove` on a
-    # field that isn't there FAILS the whole `kustomize build`, which silently
+    # 'ssa: merge' annotation already keeps Flux off fields absent from the
+    # manifest), so the patch was redundant — AND a JSON6902 'op: remove' on a
+    # field that isn't there FAILS the whole 'kustomize build', which silently
     # broke Flux reconcile on every fresh cluster ("error in remove for path:
     # '/spec/instances': Unable to remove nonexistent key"). The patch became
     # fatal on 2026-06-05 when its target was corrected from the stale
-    # `postgres` name to `system-db` (which exists, but has no instances field).
+    # 'postgres' name to 'system-db' (which exists, but has no instances field).
     # 2026-05-29: strip spec.schedule from Flux's view of the
     # stalwart-snapshot CronJob so Flux never tries to apply it. The
     # field is operator-owned via the /backups/mail?tab=routing UI which
     # calls applyMailSnapshotRetention → applyPatch(force:true) with the
-    # fieldManager `platform-api.snapshot-settings`. Pre-fix Flux's
+    # fieldManager 'platform-api.snapshot-settings'. Pre-fix Flux's
     # IgnoreConflicts/Merge annotations did NOT actually preserve field
     # ownership across reconciles (live E2E confirmed Flux always took
     # over and reverted the operator's value). The CronJob already
@@ -4839,7 +5007,7 @@ import_secrets_bundle() {
   if [[ "$SECRETS_BUNDLE_PATH" =~ ^https?:// ]]; then
     bundle_local=$(mktemp --tmpdir=/dev/shm bundle.XXXXXX.tar.age 2>/dev/null \
       || mktemp -t bundle.XXXXXX.tar.age)
-    if ! curl -sSf -L --max-time 120 -o "$bundle_local" "$SECRETS_BUNDLE_PATH"; then
+    if ! curl --retry 3 --retry-delay 2 --retry-connrefused -sSf -L --max-time 120 -o "$bundle_local" "$SECRETS_BUNDLE_PATH"; then
       rm -f "$bundle_local"
       error "Failed to download secrets bundle from $SECRETS_BUNDLE_PATH"
     fi
@@ -6788,6 +6956,42 @@ POD_YAML
   log "  Stalwart full configuration complete."
 }
 
+# Print why the Stalwart admin probe failed, instead of telling the operator to
+# "inspect pod state manually" and leaving them at a dead end (2026-08-03: an
+# operator hit 000×100 with nothing further to go on).
+#
+# $1 = the HTTP code the probe saw. 000 is the interesting one: it means the
+# admin-panel pod could not CONNECT to stalwart-mgmt at all, which is a
+# different failure from an unexpected auth response and almost always means
+# the mail pod is not Running — most often an unbound PVC, which on a fresh
+# install points straight back at storage (a Longhorn install that failed or
+# was skipped leaves no default StorageClass).
+stalwart_probe_diagnostics() {
+  local code="${1:-000}"
+  if [[ "$code" == "000" ]]; then
+    warn "  000 means the probe could not CONNECT to stalwart-mgmt.mail.svc:8080 —"
+    warn "  the mail pod is almost certainly not Running (not an auth problem)."
+  fi
+  warn "  Collecting state (this is diagnostic output, the install has already stopped):"
+  {
+    echo "--- pods in mail namespace ---"
+    kctl get pods -n mail -o wide 2>&1 | head -20
+    echo "--- PersistentVolumeClaims in mail namespace ---"
+    kctl get pvc -n mail 2>&1 | head -20
+    echo "--- StorageClasses (a fresh install needs a default one) ---"
+    kctl get storageclass 2>&1 | head -10
+    echo "--- endpoints behind stalwart-mgmt (empty = no ready pod) ---"
+    kctl get endpoints -n mail stalwart-mgmt 2>&1 | head -5
+    echo "--- last events in mail namespace ---"
+    kctl get events -n mail --sort-by=.lastTimestamp 2>&1 | tail -15
+  } 2>&1 | sed 's/^/    /' >&2
+  warn "  Most common causes, in order:"
+  warn "    1. PVC Pending      → no default StorageClass (did the Longhorn step fail or get skipped?)"
+  warn "    2. Pod Pending      → insufficient CPU/memory on the node"
+  warn "    3. ImagePullBackOff → registry unreachable or rate-limited"
+  warn "  Bootstrap is idempotent: fix the cause, then re-run the same command."
+}
+
 bootstrap_stalwart_v016() {
   log ""
   log "── Stalwart 0.16 bootstrap ──"
@@ -6953,13 +7157,14 @@ except Exception:
           ;;
         *)
           warn "  recoveryPassword probe returned unexpected ${recovery_code} — refusing to bootstrap."
+          stalwart_probe_diagnostics "$recovery_code"
           return 1
           ;;
       esac
       ;;
     *)
       warn "  adminPassword probe returned unexpected ${admin_code} — refusing to bootstrap."
-      warn "  Inspect pod state manually before retrying."
+      stalwart_probe_diagnostics "$admin_code"
       return 1
       ;;
   esac
@@ -7854,7 +8059,7 @@ run_post_install_smoke() {
   fi
 
   log ""
-  log "── Phase 5: Post-install smoke (advisory) ──"
+  ui_phase "Post-install smoke (advisory)"
   log "Smoke script: $smoke_script"
 
   # Wait for cluster-settle by checking actual readiness conditions
@@ -7895,10 +8100,121 @@ run_post_install_smoke() {
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+# Everything that can be known BEFORE the first mutation, checked before the
+# first mutation.
+#
+# The install is idempotent, so a late failure is recoverable — but it is
+# recoverable after twenty minutes and a half-configured host, which is a poor
+# experience when the cause was a full disk or an occupied port that could have
+# been reported in two seconds. Anything cheap and knowable up front belongs
+# here.
+#
+# FATAL only where continuing cannot work. Everything else is a warning: an
+# installer that refuses to run on a machine that would have been fine is its
+# own kind of failure, and operators route around checks that cry wolf.
+run_preflight() {
+  ui_phase "Preflight"
+  local fatal=0
+
+  # Tools needed before the installer can fetch anything. python3 is absent
+  # deliberately — install_packages auto-installs it, and demanding it here
+  # would fail hosts that bootstrap perfectly well.
+  local cmd
+  for cmd in curl openssl; do
+    if command -v "$cmd" >/dev/null 2>&1; then
+      ui_ok "${cmd} present"
+    else
+      ui_fail "${cmd} is required before the installer can fetch anything (apt-get install -y ${cmd} / dnf install -y ${cmd})"
+      fatal=1
+    fi
+  done
+
+  # Disk. k3s + container images + Longhorn need real room; running out mid-way
+  # corrupts an install far more annoyingly than refusing up front.
+  local free_gb
+  free_gb=$(df -BG --output=avail /var 2>/dev/null | tail -1 | tr -dc '0-9')
+  free_gb="${free_gb:-0}"
+  if (( free_gb < 10 )); then
+    ui_fail "/var has ${free_gb}GB free; the platform needs at least 20GB (k3s + images + Longhorn)"
+    fatal=1
+  elif (( free_gb < 20 )); then
+    ui_warn "/var has ${free_gb}GB free — under the 20GB recommendation; image pulls may fail later"
+  else
+    ui_ok "disk: ${free_gb}GB free on /var"
+  fi
+
+  # Memory. 4GB is the documented "try it" floor; below that the control plane
+  # thrashes rather than fails cleanly, which is harder to diagnose.
+  local mem_mb
+  mem_mb=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 0)
+  if (( mem_mb < 2048 )); then
+    ui_fail "${mem_mb}MB RAM; the control plane needs 4GB minimum (see the requirements doc)"
+    fatal=1
+  elif (( mem_mb < 3800 )); then
+    ui_warn "${mem_mb}MB RAM — below the documented 4GB floor; expect eviction pressure"
+  else
+    ui_ok "memory: ${mem_mb}MB"
+  fi
+
+  # Ports the platform must own. Only meaningful on a first server — a re-run on
+  # an existing cluster finds k3s already holding 6443, which is correct, so the
+  # check is skipped once k3s is installed.
+  if [[ ! -x /usr/local/bin/k3s ]]; then
+    # ss OR netstat — and if NEITHER exists, say the check could not run rather
+    # than reporting the ports as free. The first version of this used `command
+    # -v ss && ss …`, which on a host without iproute2 silently produced "ports
+    # available" while 6443 was genuinely bound: a check that cannot fail is
+    # worse than no check, because it reads as evidence.
+    local port busy="" probe=""
+    if command -v ss >/dev/null 2>&1; then probe=ss
+    elif command -v netstat >/dev/null 2>&1; then probe=netstat
+    fi
+    case "$probe" in
+      ss)
+        for port in 80 443 6443; do
+          ss -Hltn "sport = :${port}" 2>/dev/null | grep -q . && busy+="${port} "
+        done ;;
+      netstat)
+        for port in 80 443 6443; do
+          netstat -ltn 2>/dev/null | grep -qE "[:.]${port}[[:space:]]" && busy+="${port} "
+        done ;;
+    esac
+    if [[ -z "$probe" ]]; then
+      ui_warn "neither ss nor netstat present — could not verify ports 80/443/6443 are free"
+    elif [[ -n "$busy" ]]; then
+      ui_fail "port(s) ${busy}already in use — the platform's ingress and API server need them (another web server or k8s?)"
+      fatal=1
+    else
+      ui_ok "ports 80/443/6443 available"
+    fi
+  fi
+
+  # Clock. cert-manager's ACME exchange and etcd both misbehave on a skewed
+  # clock, in ways whose error messages point nowhere near the clock.
+  if command -v timedatectl >/dev/null 2>&1; then
+    if timedatectl show -p NTPSynchronized --value 2>/dev/null | grep -q yes; then
+      ui_ok "clock synchronised"
+    else
+      ui_warn "clock is not NTP-synchronised — ACME issuance and etcd are both sensitive to skew"
+    fi
+  fi
+
+  if (( fatal != 0 )); then
+    error "preflight failed — nothing has been changed on this host. Fix the items above and re-run."
+  fi
+}
+
 main() {
   parse_args "$@"
   check_root
   check_os
+  # Declared BEFORE the first ui_phase, or preflight renders "[1/0]". Six on a
+  # full first-server run: preflight, hardening, k3s, platform components,
+  # verification, smoke. A worker join short-circuits after k3s and simply never
+  # reaches the rest — the summary then reports "3/6 phases", which is accurate
+  # rather than a bar forced to 100%.
+  ui_phase_total 6
+  run_preflight
 
   # ADR-055: lay down the branded /var/lib/insula + /etc/insula roots (+ generic
   # compat symlinks) BEFORE any phase writes markers/credentials into them.
@@ -7915,7 +8231,7 @@ main() {
   # responsibility, performed before this script runs. verify_underlay
   # asserts the operator-claimed underlay is actually up; configure_firewall
   # then auto-detects wt0/tailscale0 and renders cidr-mode rules.
-  log "── Phase 1: Server Hardening ──"
+  ui_phase "Hardening the host"
   if [[ "$DRY_RUN" == true ]]; then
     log "DRY-RUN: skipping harden_ssh (no sshd in container)"
   else
@@ -7947,7 +8263,7 @@ main() {
 
   # Phase 2: k3s (server or agent depending on role)
   log ""
-  log "── Phase 2: Kubernetes (k3s) ──"
+  ui_phase "Installing Kubernetes (k3s)"
   install_k3s
 
   # M1: label + taint the node with platform-managed role state. Must
@@ -7966,7 +8282,7 @@ main() {
 
     # Phase 3: Platform components
     log ""
-    log "── Phase 3: Platform Components ──"
+    ui_phase "Installing platform components"
     install_helm
     install_flux_cli
     # CrowdSec bouncer key Secret must exist BEFORE install_traefik so
@@ -8077,7 +8393,7 @@ main() {
 
     # Phase 4: Verify
     log ""
-    log "── Phase 4: Verification ──"
+    ui_phase "Verifying the install"
     verify
     # Real install verification — actually probe admin login + healthz.
     # Non-fatal (warn only) so a transient cert-manager / DNS issue
@@ -8132,6 +8448,11 @@ main() {
   fi
 
   marker_set "bootstrap-complete"
+  # Last thing on screen. Carries the warning/error tally, so a run that
+  # "succeeded" with four warnings cannot look identical to a clean one — the
+  # exact ambiguity that let seven `command not found` errors ride along in
+  # green runs for months.
+  ui_summary "Bootstrap complete"
 }
 
 # Only call main() when the script is executed directly, not when sourced.
