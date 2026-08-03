@@ -12,6 +12,7 @@
  * 2 on a usage error. `--json` emits the full check list for machines.
  */
 import type { Deps } from './deps.js';
+import { uiOf } from './ui.js';
 
 type Status = 'ok' | 'warn' | 'fail';
 
@@ -148,7 +149,22 @@ async function checkNodesReady(deps: Deps, kc: { path: string } | null): Promise
   };
 }
 
-const ICON: Record<Status, string> = { ok: '[ OK ]', warn: '[WARN]', fail: '[FAIL]' };
+/**
+ * Doctor stays a TABLE, not a phase/step stream.
+ *
+ * It is a report, not an operation: an aligned status column is what makes a
+ * dozen checks scannable at a glance, and rendering each line through
+ * ui.ok()/ui.warn() would trade that alignment for consistency with a model
+ * that does not fit. What DOES get shared is the vocabulary — the same glyphs
+ * the rest of the binary uses on a terminal, so a doctor run reads as the same
+ * product as a bootstrap.
+ *
+ * Plain mode keeps the bracketed labels: they are fixed-width (so the column
+ * survives), greppable, and already relied upon by scripts and by this file's
+ * own tests. See docs/development/CONSOLE_OUTPUT.md.
+ */
+const ICON_PLAIN: Record<Status, string> = { ok: '[ OK ]', warn: '[WARN]', fail: '[FAIL]' };
+const ICON_RICH: Record<Status, string> = { ok: '  ✔  ', warn: '  !  ', fail: '  ✖  ' };
 
 export async function clusterDoctor(args: string[], deps: Deps): Promise<number> {
   const json = args.includes('--json');
@@ -181,9 +197,10 @@ export async function clusterDoctor(args: string[], deps: Deps): Promise<number>
   }
 
   const host = (deps.readFile('/etc/hostname') ?? '').trim();
+  const icon = uiOf(deps).mode === 'rich' ? ICON_RICH : ICON_PLAIN;
   deps.out(`platform-ops cluster doctor${host ? ` (node: ${host})` : ''}`);
   for (const c of checks) {
-    deps.out(`  ${ICON[c.status]} ${c.name.padEnd(24)} ${c.detail}`);
+    deps.out(`  ${icon[c.status]} ${c.name.padEnd(24)} ${c.detail}`);
   }
   deps.out(
     fails > 0
