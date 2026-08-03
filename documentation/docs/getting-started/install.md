@@ -177,6 +177,34 @@ Run `insula bootstrap --help` for the common flags, or `insula bootstrap
     only way to decrypt your backups later — store it offline immediately
     (password manager + paper). Losing it means losing disaster recovery.
 
+### If the run stops partway
+
+**Re-run the exact same command.** Bootstrap is idempotent: each component
+checks whether it is already installed and skips it, so a second run resumes
+roughly where the first stopped rather than starting over.
+
+That is the answer for the most common cause — a third-party outage while a
+chart is being pulled. Chart downloads reach GitHub and the upstream chart
+repositories, and a bad minute there surfaces as, for example:
+
+```
+Error: failed to fetch https://github.com/longhorn/charts/releases/download/longhorn-1.12.0/longhorn-1.12.0.tgz : 500 Internal Server Error
+```
+
+Bootstrap now retries these automatically, but a longer outage still stops the
+run. Nothing is corrupted — wait a minute and re-run.
+
+Two things that look like errors in the log but are not:
+
+- `Host iptables-save/iptables-restore tools not found` — k3s reporting that it
+  will use its own bundled iptables. Expected on a host without the iptables
+  package; nothing to install.
+- `Resources populated with this chart don't match with labelSelector
+  acme.cert-manager.io/http01-solver=true` — the Traefik chart noting that its
+  own resources don't carry that label. Deliberate: Traefik is configured to
+  pick up **only** cert-manager's HTTP-01 solver Ingresses, because all other
+  platform routing goes through IngressRoute CRDs.
+
 ## First login
 
 When bootstrap finishes it prints a summary like:
