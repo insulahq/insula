@@ -133,6 +133,59 @@ interface ParsedWafEvent {
 }
 
 /**
+ * Extract the CONTRIBUTING rules from a JSON audit record.
+ *
+ * At paranoia level 1 a detection rule (931100, 942100, …) acts with `pass`
+ * and only adds to the anomaly score — it never emits an `[error]` line.
+ * The only rule that does is the one that DENIES: 949110 "Inbound Anomaly
+ * Score Exceeded". So an [error]-only scraper records the blocking rule and
+ * nothing about what actually matched.
+ *
+ * That is not cosmetic. WAF Events' "Whitelist this rule for this host"
+ * prefills the event's rule id, so the operator was offered 949110 — which
+ * cannot fix a false positive (it tests TX:BLOCKING_INBOUND_ANOMALY_SCORE,
+ * not ARGS, so removing an ARGS target is a no-op) and at full_disable
+ * switches off blocking for that entire host. The rule they needed, 931100,
+ * was never on screen. (Reported 2026-08-03: a DNS API URL written as an IP
+ * literal 403'd; whitelisting the offered rule changed nothing.)
+ *
+ * These records carry the same unique_id as the [error] line, so pass 2
+ * resolves hostname / URI / source IP for them through the existing maps.
+ */
+export function parseContributingRules(line: string): Array<{ ruleId: string; message: string; severity: string }> {
+  const marker = '"messages":';
+  if (line.indexOf(marker) < 0) return [];
+  const out: Array<{ ruleId: string; message: string; severity: string }> = [];
+  const seen = new Set<string>();
+  // Walk each `"ruleId":"<id>"` and pair it with the nearest preceding
+  // `"message":"<text>"`. Deliberately not a full JSON.parse: these records
+  // run 4-8 KB and the surrounding code avoids parsing them for that reason.
+  const ruleIdRe = /"ruleId":"(\d+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = ruleIdRe.exec(line)) !== null) {
+    const ruleId = m[1];
+    // 949110/980xxx are the scoring meta-rules — they are the block itself,
+    // already recorded from the [error] line, and never the fix.
+    if (ruleId === '949110' || ruleId.startsWith('980')) continue;
+    if (seen.has(ruleId)) continue;
+    seen.add(ruleId);
+    const before = line.slice(0, m.index);
+    const msgIdx = before.lastIndexOf('"message":"');
+    const message = msgIdx >= 0
+      ? before.slice(msgIdx + '"message":"'.length, before.indexOf('"', msgIdx + '"message":"'.length))
+      : 'WAF rule matched';
+    const sevIdx = line.indexOf('"severity":"', m.index);
+    const sevNum = sevIdx >= 0 ? parseInt(line.slice(sevIdx + 12, sevIdx + 14), 10) : 5;
+    out.push({
+      ruleId,
+      message,
+      severity: sevNum <= 2 ? 'critical' : sevNum <= 4 ? 'warning' : 'info',
+    });
+  }
+  return out;
+}
+
+/**
  * Parse a single ModSecurity log line into a structured event.
  * Returns null if the line isn't a ModSecurity rule match.
  */
@@ -272,6 +325,24 @@ export async function scrapeWafLogs(
       if (jsonUid) {
         if (xfHost) uidToXfHost.set(jsonUid, xfHost);
         if (xRealIp) uidToRealIp.set(jsonUid, xRealIp);
+      }
+      // The JSON record is also the ONLY place the contributing rules appear
+      // (see parseContributingRules). Emit one event per contributing rule so
+      // the operator can whitelist the rule that actually matched.
+      if (jsonUid) {
+        for (const r of parseContributingRules(line)) {
+          allParsed.push({
+            uniqueId: `${jsonUid}:${r.ruleId}`,
+            ruleId: r.ruleId,
+            severity: r.severity,
+            message: r.message,
+            // Resolved from the uid maps in pass 2, same as [error]-line events.
+            requestUri: '/',
+            requestMethod: 'GET',
+            sourceIp: '0.0.0.0',
+            hostname: '',
+          });
+        }
       }
       // JSON lines don't match the parser's [id "..."] regex — skip per-line parse.
       continue;
