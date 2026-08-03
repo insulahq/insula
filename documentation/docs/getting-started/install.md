@@ -194,7 +194,11 @@ Error: failed to fetch https://github.com/longhorn/charts/releases/download/long
 Bootstrap now retries these automatically, but a longer outage still stops the
 run. Nothing is corrupted — wait a minute and re-run.
 
-Two things that look like errors in the log but are not:
+Three things that look like errors in the log but are not:
+
+- `warnings.go:107] "Warning: unrecognized format \"int64\""` — kubectl
+  commenting on a third-party CRD's OpenAPI schema while it is applied. It comes
+  from the upstream chart, affects nothing, and there is no action to take.
 
 - `Host iptables-save/iptables-restore tools not found` — k3s reporting that it
   will use its own bundled iptables. Expected on a host without the iptables

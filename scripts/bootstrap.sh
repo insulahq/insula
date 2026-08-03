@@ -4786,6 +4786,15 @@ Cut it first (scripts/cut-release.sh) or pass an existing tag via --release-tag.
   # platform-storage-policy reconciler's imperative HA scale within
   # ~30s. CNPG operator defaults instances=1 when absent — the
   # right floor for fresh clusters. Apply HA flips to 3 imperatively.
+  #
+  # The delimiter is UNQUOTED on purpose (${overlay_dir} / ${source_name} must
+  # expand), which means the body is also subject to command substitution.
+  # Keep BACKTICKS and $( ) out of it — including inside YAML '#' comments.
+  # Prose backticks in the comments below used to run as commands during every
+  # install, printing "op:: command not found", "kustomize: command not found"
+  # etc. to the operator's console (reported 2026-08-03). Use 'single quotes'
+  # for inline code in this block; \${DOMAIN} is escaped for the same reason.
+  # Guard: scripts/ci-heredoc-expansion-check.sh.
   cat <<KUSTYAML | kctl apply -f -
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -4812,21 +4821,21 @@ spec:
         name: platform-cluster-config
         optional: false
   patches:
-    # NOTE (2026-06-10): the former `op: remove /spec/instances` patch on the
+    # NOTE (2026-06-10): the former 'op: remove /spec/instances' patch on the
     # system-db Cluster was DELETED. k8s/base/database.yaml intentionally OMITS
     # spec.instances (CNPG defaults 1; Apply HA patches it imperatively and the
-    # `ssa: merge` annotation already keeps Flux off fields absent from the
-    # manifest), so the patch was redundant — AND a JSON6902 `op: remove` on a
-    # field that isn't there FAILS the whole `kustomize build`, which silently
+    # 'ssa: merge' annotation already keeps Flux off fields absent from the
+    # manifest), so the patch was redundant — AND a JSON6902 'op: remove' on a
+    # field that isn't there FAILS the whole 'kustomize build', which silently
     # broke Flux reconcile on every fresh cluster ("error in remove for path:
     # '/spec/instances': Unable to remove nonexistent key"). The patch became
     # fatal on 2026-06-05 when its target was corrected from the stale
-    # `postgres` name to `system-db` (which exists, but has no instances field).
+    # 'postgres' name to 'system-db' (which exists, but has no instances field).
     # 2026-05-29: strip spec.schedule from Flux's view of the
     # stalwart-snapshot CronJob so Flux never tries to apply it. The
     # field is operator-owned via the /backups/mail?tab=routing UI which
     # calls applyMailSnapshotRetention → applyPatch(force:true) with the
-    # fieldManager `platform-api.snapshot-settings`. Pre-fix Flux's
+    # fieldManager 'platform-api.snapshot-settings'. Pre-fix Flux's
     # IgnoreConflicts/Merge annotations did NOT actually preserve field
     # ownership across reconciles (live E2E confirmed Flux always took
     # over and reverted the operator's value). The CronJob already
@@ -6859,6 +6868,42 @@ POD_YAML
   log "  Stalwart full configuration complete."
 }
 
+# Print why the Stalwart admin probe failed, instead of telling the operator to
+# "inspect pod state manually" and leaving them at a dead end (2026-08-03: an
+# operator hit 000×100 with nothing further to go on).
+#
+# $1 = the HTTP code the probe saw. 000 is the interesting one: it means the
+# admin-panel pod could not CONNECT to stalwart-mgmt at all, which is a
+# different failure from an unexpected auth response and almost always means
+# the mail pod is not Running — most often an unbound PVC, which on a fresh
+# install points straight back at storage (a Longhorn install that failed or
+# was skipped leaves no default StorageClass).
+stalwart_probe_diagnostics() {
+  local code="${1:-000}"
+  if [[ "$code" == "000" ]]; then
+    warn "  000 means the probe could not CONNECT to stalwart-mgmt.mail.svc:8080 —"
+    warn "  the mail pod is almost certainly not Running (not an auth problem)."
+  fi
+  warn "  Collecting state (this is diagnostic output, the install has already stopped):"
+  {
+    echo "--- pods in mail namespace ---"
+    kctl get pods -n mail -o wide 2>&1 | head -20
+    echo "--- PersistentVolumeClaims in mail namespace ---"
+    kctl get pvc -n mail 2>&1 | head -20
+    echo "--- StorageClasses (a fresh install needs a default one) ---"
+    kctl get storageclass 2>&1 | head -10
+    echo "--- endpoints behind stalwart-mgmt (empty = no ready pod) ---"
+    kctl get endpoints -n mail stalwart-mgmt 2>&1 | head -5
+    echo "--- last events in mail namespace ---"
+    kctl get events -n mail --sort-by=.lastTimestamp 2>&1 | tail -15
+  } 2>&1 | sed 's/^/    /' >&2
+  warn "  Most common causes, in order:"
+  warn "    1. PVC Pending      → no default StorageClass (did the Longhorn step fail or get skipped?)"
+  warn "    2. Pod Pending      → insufficient CPU/memory on the node"
+  warn "    3. ImagePullBackOff → registry unreachable or rate-limited"
+  warn "  Bootstrap is idempotent: fix the cause, then re-run the same command."
+}
+
 bootstrap_stalwart_v016() {
   log ""
   log "── Stalwart 0.16 bootstrap ──"
@@ -7024,13 +7069,14 @@ except Exception:
           ;;
         *)
           warn "  recoveryPassword probe returned unexpected ${recovery_code} — refusing to bootstrap."
+          stalwart_probe_diagnostics "$recovery_code"
           return 1
           ;;
       esac
       ;;
     *)
       warn "  adminPassword probe returned unexpected ${admin_code} — refusing to bootstrap."
-      warn "  Inspect pod state manually before retrying."
+      stalwart_probe_diagnostics "$admin_code"
       return 1
       ;;
   esac
