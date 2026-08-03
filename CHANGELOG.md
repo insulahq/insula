@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The completion screen told you where to log in, but not how.** Bootstrap's
+  final summary printed the admin/tenant/API endpoints and never mentioned the
+  seeded credentials; the one line that did (`Admin seed credentials written
+  to …`) appeared ~700 lines earlier during secret generation and had long
+  scrolled away. It now shows `sudo cat /etc/insula/admin-credentials` directly
+  under the endpoints, and only when that file exists — a worker join, which
+  seeds no admin, does not get an empty heading. The path shown is the branded
+  one everywhere too: the write still goes through `/etc/platform` (an ADR-055
+  compat symlink, same file) but the message no longer disagrees with the docs.
+
 ## [2026.8.1] - 2026-08-03
 
 ### Fixed
