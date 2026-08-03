@@ -104,6 +104,33 @@ via env vars in a follow-up if cluster shapes diverge.
 and asserts `overallSeverity != 'critical'`. Fails the smoke run if
 the reconciler reports any node in critical state.
 
+## Worker subsystem issues — Calico CNI / Longhorn CSI {#subsystem-troubleshooting}
+
+**Operator-facing steps live in the published manual:**
+[Troubleshooting → worker-subsystem banner](https://insulahq.github.io/operator/troubleshooting/#worker-subsystem).
+That is what the Cluster Nodes page links to, and it is the copy to keep
+current — this file deliberately does not repeat the ladder, so the two cannot
+drift.
+
+Engineering context that does not belong in the operator manual:
+
+- The most common Calico cause is a **missing host `iptables` binary**. We never
+  use it (k3s bundles its own; the platform firewall is nftables), but NetBird
+  probes for it and falls back to writing **native nft rules** into `table ip
+  filter` — the table Calico drives through `iptables-nft`. Felix then fails
+  every dataplane resync (`iptables-save failed because there are incompatible
+  nft rules in the table`), `calico-node` stays `0/1`, and **NetworkPolicy stops
+  being programmed** — a tenant-isolation regression, not a cosmetic badge.
+  Fixed at source in v2026.8.2 (base package + host-migration
+  `2026.8.2/0003-install-iptables-for-netbird`).
+- The fix makes the table **parseable**; it does not remove the offending rules.
+  They usually remain listed while Calico is healthy, so do not use their
+  presence as a regression signal — use `calico-node` readiness and the absence
+  of the resync error.
+- Networking faults cascade: a broken CNI dataplane times out kubelet probes to
+  pod IPs and crash-loops unrelated workloads, which recover on their own once
+  Calico is fixed. Check Calico before investigating probe timeouts elsewhere.
+
 ## UI-actionable recovery procedures
 
 Every node row with severity != normal gets a **Recover…** button on
