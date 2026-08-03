@@ -13,6 +13,52 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The WAF blocked any admin field holding a URL written as an IP address.**
+  OWASP CRS rule 931100 ("URL Parameter using IP Address") matches any argument
+  value of the form `http://<ip>`, which scored 5 and tripped the blocking
+  evaluation — so adding a self-hosted DNS server on a mesh IP, a MinIO backup
+  target on a LAN IP, a private registry or an ACME server all returned a bare
+  nginx `403`. The request never reached platform-api, so nothing appeared in
+  the API log or the panel's access log and only the modsec-crs pod knew why.
+  Storing operator-supplied endpoints is what these routes are *for*: they are
+  Bearer-authenticated, Node never include()s the value, and the rule only ever
+  rejects IP *literals* (a hostname passes untouched), so it blocked a normal
+  workflow while adding no protection. Rule 931100 is now excluded on the
+  platform-API hosts under `/api/v1/`; tenant workloads keep full coverage.
+- **WAF Events' "Whitelist this rule for this host" never took effect.** Two
+  independent causes. Flux owned the `data` key of the dynamic exclusions
+  ConfigMap and reset it to the empty seed on every reconcile, so the
+  reconciler's rendered rules were reverted within minutes — visible as
+  "ConfigMap updated (drift detected)" every ~5 minutes and a modsec-crs roll
+  each time. And the button offered the wrong rule: at paranoia level 1 the rule
+  that *matches* acts with `pass` and emits no error line, so only the rule that
+  *denies* (949110) was ever recorded — whitelisting it is a no-op, and
+  disabling it would switch off blocking for the entire host. The ConfigMap is
+  now annotated `ssa: IfNotPresent`, and the scraper records the contributing
+  rules from the audit record so the offered rule is the one that can fix it.
+- **Connection failures when adding a DNS server said only "fetch failed".**
+  Node's fetch collapses every transport failure into that one string, so an
+  unresolvable hostname, a refused port, and an `https://` URL pointed at a
+  plaintext port were indistinguishable. Failures across all five HTTP DNS
+  providers now name the cause and the fix. Upstream error bodies are also
+  stripped of markup and capped rather than spliced into the message whole.
+- **A WAF block now says so in the panel.** Blocked requests never reach the
+  API, so there is no error envelope to render and both panels showed a bare
+  status. They now recognise the block and report it as `WAF_REQUEST_BLOCKED`
+  with a pointer to Security → WAF Events.
+
+### Added
+- **Allowlisted operator IPs are never blocked by the WAF, but are still
+  logged.** The allowlist next to a WAF event writes a CrowdSec decision, which
+  governs whether an IP is *banned*; ModSecurity inspects request *content* and
+  had no IP concept at all, so an allowlisted address was still fully filtered.
+  The reconciler now renders those entries as `ctl:ruleEngine=DetectionOnly`
+  matched on `X-Real-Ip` — rules still evaluate and still record their matches,
+  so allowlisted sources keep appearing in WAF Events and only ever lose the
+  disruptive action. Fails closed: if CrowdSec is unreachable no bypass is
+  rendered and the WAF stays fully enforced.
+
+### Fixed
 - **Admin and tenant sidebars are scrollable when the nav outgrows the viewport.**
   Both `<nav>` elements were `flex-1` inside a full-height flex column with no
   overflow handling, so on a short viewport — or in the admin panel with several
