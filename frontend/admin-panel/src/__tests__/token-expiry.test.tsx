@@ -23,6 +23,9 @@ describe('apiFetch 401 handling', () => {
       status: 401,
       statusText: 'Unauthorized',
       json: () => Promise.resolve({ error: { code: 'INVALID_TOKEN', message: 'Token expired' } }),
+      // A real Response exposes text() too; the error path reads the body
+      // once as text and parses it, so a json-only mock is not faithful.
+      text: () => Promise.resolve(JSON.stringify({ error: { code: 'INVALID_TOKEN', message: 'Token expired' } })),
     });
 
     await expect(apiFetch('/api/v1/admin/dashboard')).rejects.toMatchObject({
@@ -37,6 +40,9 @@ describe('apiFetch 401 handling', () => {
       status: 401,
       statusText: 'Unauthorized',
       json: () => Promise.resolve({ error: { code: 'INVALID_TOKEN', message: 'Token is invalid or expired' } }),
+      // A real Response exposes text() too; the error path reads the body
+      // once as text and parses it, so a json-only mock is not faithful.
+      text: () => Promise.resolve(JSON.stringify({ error: { code: 'INVALID_TOKEN', message: 'Token is invalid or expired' } })),
     });
 
     try {
@@ -58,6 +64,9 @@ describe('apiFetch 401 handling', () => {
       status: 401,
       statusText: 'Unauthorized',
       json: () => Promise.resolve({ error: { code: 'INVALID_TOKEN', message: 'Bad credentials' } }),
+      // A real Response exposes text() too; the error path reads the body
+      // once as text and parses it, so a json-only mock is not faithful.
+      text: () => Promise.resolve(JSON.stringify({ error: { code: 'INVALID_TOKEN', message: 'Bad credentials' } })),
     });
 
     try { await apiFetch('/api/v1/auth/login', { method: 'POST', body: '{}' }); } catch {}
@@ -72,6 +81,9 @@ describe('apiFetch 401 handling', () => {
       status: 403,
       statusText: 'Forbidden',
       json: () => Promise.resolve({ error: { code: 'FORBIDDEN', message: 'Not allowed' } }),
+      // A real Response exposes text() too; the error path reads the body
+      // once as text and parses it, so a json-only mock is not faithful.
+      text: () => Promise.resolve(JSON.stringify({ error: { code: 'FORBIDDEN', message: 'Not allowed' } })),
     });
 
     await expect(apiFetch('/api/v1/admin/tenants')).rejects.toMatchObject({
@@ -85,6 +97,9 @@ describe('apiFetch 401 handling', () => {
       ok: true,
       status: 200,
       json: () => Promise.resolve({ data: { id: '1' } }),
+      // A real Response exposes text() too; the error path reads the body
+      // once as text and parses it, so a json-only mock is not faithful.
+      text: () => Promise.resolve(JSON.stringify({ data: { id: '1' } })),
     });
 
     const result = await apiFetch('/api/v1/admin/status');

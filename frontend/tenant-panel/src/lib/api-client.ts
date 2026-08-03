@@ -1,5 +1,38 @@
 import { config } from './runtime-config';
 
+/**
+ * A readable message for an error response that is NOT a platform envelope.
+ *
+ * `res.statusText` is the obvious fallback and is the wrong one: over HTTP/2 it
+ * is ALWAYS the empty string — h2 dropped the reason phrase and browsers expose
+ * nothing in its place. Traefik serves h2 by default, so every non-JSON error
+ * reached the UI carrying an empty message and rendered as a blank error box
+ * with the real status visible only in devtools. Reported against a 403 while
+ * adding a DNS server.
+ *
+ * A non-envelope body means the response came from something in FRONT of the
+ * API — the ingress, the WAF, an auth gate — so the text also says so rather
+ * than implying the API rejected the request on its merits.
+ */
+function nonEnvelopeMessage(status: number, statusText: string, bodyText: string): string {
+  const phrase = statusText.trim() || HTTP_PHRASE[status] || 'Request failed';
+  const detail = bodyText.trim().slice(0, 200);
+  const origin =
+    status === 403
+      ? ' The response did not come from the platform API — an ingress rule, the WAF, or an expired session gate is the usual cause.'
+      : status === 502 || status === 503 || status === 504
+        ? ' The platform API may be restarting or unreachable.'
+        : '';
+  return `HTTP ${status} ${phrase}.${origin}${detail ? ` Response: ${detail}` : ''}`;
+}
+
+const HTTP_PHRASE: Readonly<Record<number, string>> = {
+  400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
+  409: 'Conflict', 413: 'Payload Too Large', 422: 'Unprocessable Entity',
+  429: 'Too Many Requests', 500: 'Internal Server Error', 502: 'Bad Gateway',
+  503: 'Service Unavailable', 504: 'Gateway Timeout',
+};
+
 export const API_BASE = config.API_URL;
 
 export class ApiError extends Error {
@@ -93,7 +126,16 @@ async function apiFetchWithRetry<T>(
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: { code: 'UNKNOWN', message: res.statusText } }));
+    // Read the body ONCE as text, then try to parse it. Calling res.json()
+    // and later res.text() would throw "body stream already read", so the raw
+    // text has to be captured up front to be usable in the fallback message.
+    const rawBody = await res.text().catch(() => '');
+    let body: { error?: { code?: string; message?: string; details?: Record<string, unknown> } };
+    try {
+      body = rawBody ? JSON.parse(rawBody) : {};
+    } catch {
+      body = { error: { code: 'UNKNOWN', message: nonEnvelopeMessage(res.status, res.statusText, rawBody) } };
+    }
     const code = body.error?.code ?? 'UNKNOWN';
 
     const isAuthEndpoint = path.includes('/auth/login') || path.includes('/auth/refresh');
@@ -112,7 +154,12 @@ async function apiFetchWithRetry<T>(
       showTokenExpiredAndRedirect();
     }
 
-    throw new ApiError(res.status, code, body.error?.message ?? res.statusText, body.error?.details);
+    throw new ApiError(
+      res.status,
+      code,
+      body.error?.message || nonEnvelopeMessage(res.status, res.statusText, rawBody),
+      body.error?.details,
+    );
   }
 
   // Empty-body handling. We used to only special-case 204, which meant any
