@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Longhorn no longer reserves 30% of a large root disk.** Its data path is the
+  node's root filesystem, so reserving space there is right — filling it costs
+  you the node, not just Longhorn. But 30% is the wrong *shape* of number: what
+  it protects (OS, container images, logs) is roughly constant while a
+  percentage scales with the disk, so a 500 GB root disk gave up 150 GB to
+  protect a need that had barely grown. Reservation is now
+  `10% + 20 GiB` — the 10% tracks kubelet's `nodefs.available<10%` eviction
+  floor, below which Longhorn would schedule replicas into space kubelet treats
+  as its own reserve and leave the node in DiskPressure that eviction cannot
+  clear — then clamped to Longhorn's own 30%, so it can only ever REDUCE.
+  A 500 GB root disk returns ~80 GB; 40/80 GB nodes are unchanged.
+  Converged by host-migration 2026.8.2/0002.
+- **Kubelet's pod ceiling raised from 110 to 500** (`max-pods`), fresh installs
+  via a new bootstrap drop-in and existing nodes via host-migration
+  2026.8.2/0001. 110 is a conformance figure, not a property of this platform;
+  tenant pods request ~50m/64Mi and scale to zero, so nodes ran out of pod slots
+  long before anything real. Safe on the IP side because Calico's IPPool uses
+  blockSize 26 and grants nodes additional blocks on demand.
+
 ### Fixed
 - **The completion screen told you where to log in, but not how.** Bootstrap's
   final summary printed the admin/tenant/API endpoints and never mentioned the
