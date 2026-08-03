@@ -1,4 +1,5 @@
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, PowerDnsConfig } from './types.js';
+import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
 
 /**
  * PowerDNS Authoritative Server provider (API v4 / v5).
@@ -20,14 +21,22 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      ...options,
-      headers: { ...this.headers, ...options.headers },
-    });
+    const url = `${this.baseUrl}${path}`;
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        ...options,
+        headers: { ...this.headers, ...options.headers },
+      });
+    } catch (err) {
+      // undici reports every transport failure as `fetch failed`; name it.
+      throw new Error(describeFetchFailure(err, url));
+    }
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`PowerDNS API error: ${res.status} ${res.statusText} — ${body}`);
+      // A proxy or WAF in front of PowerDNS answers with an HTML error page.
+      throw new Error(`PowerDNS API error: ${res.status} — ${summarizeUpstreamBody(body)}`);
     }
 
     if (res.status === 204) return undefined as T;

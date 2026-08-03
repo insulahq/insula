@@ -14,7 +14,23 @@ import { config } from './runtime-config';
  * API — the ingress, the WAF, an auth gate — so the text also says so rather
  * than implying the API rejected the request on its merits.
  */
+/**
+ * A WAF block never reaches the platform API, so there is no error envelope
+ * to render — ModSecurity answers with nginx's stock 403 page. Recognising
+ * that signature is the only way the panel can tell the operator what
+ * actually happened; without it the most common trigger (an endpoint URL
+ * containing an IP literal, CRS rule 931100) surfaces as a bare "403".
+ */
+const NGINX_ERROR_PAGE = /<center>\s*nginx[^<]*<\/center>|<title>\s*40\d[^<]*<\/title>/i;
+
+export function isWafBlock(status: number, bodyText: string): boolean {
+  return status === 403 && NGINX_ERROR_PAGE.test(bodyText);
+}
+
 function nonEnvelopeMessage(status: number, statusText: string, bodyText: string): string {
+  if (isWafBlock(status, bodyText)) {
+    return 'Blocked by the Web Application Firewall. The request never reached the platform API — a security rule matched its contents. An endpoint URL written as an IP address is the most common cause. Open Security → WAF Events to see which rule fired and whitelist it if it is a false positive.';
+  }
   const phrase = statusText.trim() || HTTP_PHRASE[status] || 'Request failed';
   const detail = bodyText.trim().slice(0, 200);
   const origin =
@@ -144,7 +160,12 @@ async function apiFetchWithRetry<T>(
     try {
       body = rawBody ? JSON.parse(rawBody) : {};
     } catch {
-      body = { error: { code: 'UNKNOWN', message: nonEnvelopeMessage(res.status, res.statusText, rawBody) } };
+      body = {
+        error: {
+          code: isWafBlock(res.status, rawBody) ? 'WAF_REQUEST_BLOCKED' : 'UNKNOWN',
+          message: nonEnvelopeMessage(res.status, res.statusText, rawBody),
+        },
+      };
     }
     const code = body.error?.code ?? 'UNKNOWN';
 
