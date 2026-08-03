@@ -84,6 +84,7 @@ jobs:
       - run: ./scripts/test-ui.sh
       - run: ./scripts/test-bootstrap-quiet-wrappers.sh
       - run: ./scripts/test-log-gate.sh
+      - run: ./scripts/test-vmtest-log-gate-wiring.sh
       - run: ./.github/scripts/test-pin-image-tag.sh
       # Runs in a container with NET_ADMIN so the nft operations (and the
       # `flush ruleset` in its fixtures) are isolated from the runner's own
