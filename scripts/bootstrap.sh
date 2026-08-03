@@ -1567,8 +1567,34 @@ kubelet-arg+:
   - system-reserved=cpu=500m,memory=1Gi
 EOF
 
+  # 3. Pod capacity. kubelet's default max-pods is 110, which is a Kubernetes
+  #    conformance figure rather than a property of this platform: tenant pods
+  #    here request ~50m CPU / 64Mi and scale to zero when idle, so a node runs
+  #    out of pod slots long before it runs out of anything real. An operator
+  #    watching Pod Usage sit at "N / 110" is being shown a limit that has
+  #    nothing to do with their hardware.
+  #
+  #    500 is safe on the IP side BECAUSE of Calico: the IPPool uses
+  #    blockSize 26 and hands a node ADDITIONAL /26 blocks on demand, so 500
+  #    pods needs ~8 of the /16's 1024 blocks. Under the stock
+  #    kube-controller-manager model (one fixed /24 per node) this same change
+  #    would have wedged at ~250 pods with opaque IPAM failures — worth knowing
+  #    before anyone "simplifies" the CNI.
+  #
+  #    max-pods is a CEILING, not a reservation: raising it costs nothing on a
+  #    small node, where memory and CPU bind first. Hence one value for every
+  #    environment rather than an env-gated fork.
+  install -d -m 0755 /etc/rancher/k3s/config.yaml.d
+  cat > /etc/rancher/k3s/config.yaml.d/55-pod-capacity.yaml <<'EOF'
+# Written by bootstrap.sh (configure_memory_protection) and converged on
+# existing clusters by host-migration 2026.8.2/0001-node-pod-capacity.
+kubelet-arg+:
+  - max-pods=500
+EOF
+
   marker_set "memory-protection"
   log "Memory protection configured (swap off, eviction-hard memory.available<256Mi, system-reserved 1Gi)."
+  log "Pod capacity: max-pods=500 (kubelet default 110; Calico blockSize 26 supplies the addresses)."
 }
 
 configure_node_net_tuning() {
