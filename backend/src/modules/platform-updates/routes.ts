@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
 import { updateSettingsSchema } from './schema.js';
 import * as service from './service.js';
+import { runVersionPoll, readPinnedPublicKey } from './poller/index.js';
 import { getImageInventory } from './image-inventory.js';
 import { getStorageInventory } from './storage-inventory.js';
 import { success } from '../../shared/response.js';
@@ -49,6 +50,50 @@ export async function platformUpdateRoutes(app: FastifyInstance): Promise<void> 
   }, async () => {
     const info = await service.getVersionInfo(app.db);
     return success(info);
+  });
+
+  // POST /api/v1/admin/platform/version/check
+  //
+  // Poll GitHub NOW rather than reading what the hourly CronJob last wrote.
+  //
+  // The panel's "Check for updates" button used to call refetch() on the GET
+  // above, which only re-reads platform_settings.available_version. With a 60s
+  // staleTime on the query, repeated clicks did not even reach the network — so
+  // after a release was published the operator could click "Check for updates"
+  // indefinitely and still be told they were up to date, until the CronJob's
+  // next hourly tick. Reported 2026-08-03, ~90 seconds after v2026.8.2 was
+  // published: the 23:42 poll ran before the release existed and the next was
+  // an hour out.
+  //
+  // Runs the SAME verified path as the CronJob (runVersionPoll → signature
+  // check against the pinned key), so an on-demand check cannot accept anything
+  // the scheduled one would refuse. A poll failure is not an error for the
+  // caller: the response is always the current version info, so a GitHub outage
+  // degrades to "no change" instead of a red panel.
+  app.post('/admin/platform/version/check', {
+    schema: {
+      tags: ['Platform Updates'],
+      summary: 'Check GitHub for a newer release now (verified, same path as the hourly poller)',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    try {
+      const publicKeyPem = readPinnedPublicKey(process.env);
+      const result = await runVersionPoll({
+        db: app.db,
+        env: process.env,
+        publicKeyPem,
+        log: (level, msg) => app.log[level]({ source: 'version-check' }, msg),
+      });
+      app.log.info({ status: result.status, available: result.availableVersion }, 'on-demand version check complete');
+    } catch (err) {
+      // Unreadable key / network / GitHub outage — report what we already know.
+      app.log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'on-demand version check failed — returning last known version info',
+      );
+    }
+    return success(await service.getVersionInfo(app.db));
   });
 
   // PUT /api/v1/admin/platform/update-settings

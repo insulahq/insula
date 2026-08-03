@@ -35,6 +35,27 @@ export function usePlatformVersion() {
   });
 }
 
+/**
+ * Force a real poll of GitHub, then refresh the version card.
+ *
+ * `usePlatformVersion` only reads what the hourly poller CronJob last stored,
+ * and its 60s staleTime means a plain refetch() often does not even hit the
+ * network — so "Check for updates" could not surface a release published since
+ * the last tick, no matter how many times it was clicked.
+ */
+export function useCheckForUpdates() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () => apiFetch<PlatformVersionResponse>('/api/v1/admin/platform/version/check', { method: 'POST' }),
+    onSuccess: (res) => {
+      // The POST returns the freshly-polled state; seed the cache with it so
+      // the card updates immediately instead of waiting for a refetch.
+      queryClient.setQueryData(['platform-version'], res);
+      void queryClient.invalidateQueries({ queryKey: ['platform-version'] });
+    },
+  });
+}
+
 export function useUpdateSettings() {
   const queryClient = useQueryClient();
   return useMutation({
