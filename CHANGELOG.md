@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Install docs: state the tools you need, and stop leading with a cosign
+  command that warns.** The getting-started pages never said `curl` had to be
+  present before the first download (it isn't, on minimal Debian), and the
+  verification step used `cosign verify-blob`, which on cosign v3 emits
+  `WARNING: Skipping tlog verification is an insecure practice…` plus a
+  `--signature has been deprecated` notice — alarming output in the middle of a
+  first install. Requirements now lists the pre-install tools (`curl`,
+  `openssl`, `base64`) with apt/dnf one-liners, and verification leads with
+  `openssl dgst -sha256 -verify` — no extra install, no warnings, and the exact
+  check `platform-ops` already performs on every self-upgrade. The cosign route
+  is kept as a documented alternative that explains why
+  `--insecure-ignore-tlog=true` is mandatory (releases are signed with an
+  offline key and are deliberately not in Rekor) and what that does and does not
+  cost you. Same correction applied to the README quickstart, multi-node join,
+  `DEPLOYMENT_RUNBOOK.md`, and `PRODUCTION_PREFLIGHT_CHECKLIST.md`.
+
 ## [2026.7.27] - 2026-07-30
 
 ### Fixed

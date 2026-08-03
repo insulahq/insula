@@ -32,20 +32,89 @@ On the target node, in one run, it:
 Download the signed **`insula`** binary onto the server and run
 `insula bootstrap` as root. That's the whole install — no repository clone.
 
+You need **`curl`** and **`openssl`** on the server for these steps. `openssl`
+ships on every supported OS; `curl` is frequently absent from minimal Debian
+images — install both with
+[one command](requirements.md#tools-you-need-on-the-server) if they're missing.
+
 ```bash
 # Pick your CPU arch: amd64 (x86-64) or arm64.
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+```
 
-# (recommended) VERIFY the signed binary before you run it — fetch the trust
-# anchor + signature first, then cosign-verify. Never execute an unverified
-# installer. `cosign.pub` is the project's public trust anchor (in the repo).
-# `--insecure-ignore-tlog=true` is REQUIRED: releases are signed offline/key-based
-# (no Rekor transparency-log entry), so tlog verification would otherwise fail.
+### Verify the download
+
+Never execute an unverified installer. Every release asset is signed with the
+project's offline release key; `cosign.pub`, kept in the repository, is the
+matching public trust anchor.
+
+```bash
 curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
 curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
-cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig \
-  --insecure-ignore-tlog=true insula-linux-amd64
 
+openssl dgst -sha256 -verify cosign.pub \
+  -signature <(base64 -d insula-linux-amd64.sig) insula-linux-amd64
+```
+
+It must print exactly:
+
+```
+Verified OK
+```
+
+Anything else — `Verification failure`, a base64 error, a non-zero exit — means
+the binary or the signature is not what we published: **delete the download and
+stop.** Do not run it.
+
+Nothing extra to install: a release signature is a base64-encoded
+ECDSA-P256-over-SHA-256 signature, so `openssl` checks it directly. This is the
+same check each node performs on every self-upgrade, which is why cosign is
+never installed on a server.
+
+!!! note "`<(…)` needs bash or zsh"
+    In a plain POSIX `sh`, decode to a file first:
+    `base64 -d insula-linux-amd64.sig > sig.der`, then pass `-signature sig.der`.
+
+??? question "Prefer `cosign`? Then expect two alarming-looking lines"
+    cosign verifies the very same signature, but prints two notices on the way
+    to succeeding (output below from cosign v3.1.2):
+
+    ```bash
+    cosign verify-blob --key cosign.pub --signature insula-linux-amd64.sig \
+      --insecure-ignore-tlog=true insula-linux-amd64
+    ```
+
+    ```
+    Flag --signature has been deprecated, please use --bundle to provide a signature
+    WARNING: Skipping tlog verification is an insecure practice that lacks transparency and auditability verification for the blob.
+    Verified OK
+    ```
+
+    **Both lines are expected here, and `--insecure-ignore-tlog=true` is
+    mandatory** — without it cosign fails outright with `Error: signature not
+    found in transparency log`.
+
+    Why: Insula releases are signed with a **long-lived offline key** and are
+    deliberately *not* published to Rekor, the public transparency log. There is
+    no log entry to look up, so cosign is being asked to skip a check that could
+    never pass, and it warns generically about that.
+
+    What you do and don't get:
+
+    - **You still get** full cryptographic proof that these bytes were signed by
+      the private key matching `cosign.pub` — identical to the `openssl` check
+      above and to what the node enforces on every upgrade. The word "insecure"
+      in cosign's message refers to skipping the log, not to the signature.
+    - **You don't get** third-party auditability: a public, append-only record
+      that this signature existed at a point in time. With an offline key that
+      trade-off is deliberate — the key never touches a network-connected signer.
+
+    `--signature` still works; the deprecation points at cosign's newer bundle
+    format, which our release assets don't use.
+
+### Install and bootstrap
+
+```bash
 chmod +x insula-linux-amd64
 sudo mv insula-linux-amd64 /usr/local/bin/insula
 
