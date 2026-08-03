@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Calico stuck at `0/1 Ready` on fresh installs, with NetworkPolicy silently
+  not being programmed.** Bootstrap installed `nftables` but not `iptables`. We
+  do not use iptables — k3s bundles its own — but NetBird probes for the binary
+  and, not finding it, falls back to writing NATIVE nft rules (`iifname "wt0"
+  accept`, …) into `table ip filter`, the table Calico drives through
+  `iptables-nft`. Felix then fails every dataplane resync with *"iptables-save
+  failed because there are incompatible nft rules in the table"*, `calico-node`
+  never leaves `0/1`, and policy stops being programmed. Tenant isolation
+  depends on that policy, so this was a security regression rather than a
+  cosmetic one. `iptables` is now part of the base package set, and
+  host-migration 2026.8.2/0003 installs it on existing nodes and restarts
+  NetBird so it re-creates its rules through the iptables backend.
+  The install docs previously described the `Host iptables-save … not found`
+  line as benign; that is true for k3s alone and was corrected.
+
 ### Changed
 - **Longhorn no longer reserves 30% of a large root disk.** Its data path is the
   node's root filesystem, so reserving space there is right — filling it costs

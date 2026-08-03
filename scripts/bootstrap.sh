@@ -1784,7 +1784,7 @@ install_packages_apt() {
   # the helm install step never depends on a base-image quirk.
   apt-get install -y -qq \
     curl wget gnupg2 ca-certificates openssl \
-    nftables fail2ban jq unzip tar git open-iscsi nfs-common \
+    nftables iptables fail2ban jq unzip tar git open-iscsi nfs-common \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext-base \
@@ -1794,6 +1794,26 @@ install_packages_apt() {
     tmux \
     rclone \
     >/dev/null 2>&1
+  # iptables: NOT for us — k3s bundles its own and the platform firewall is
+  # nftables. It is here because OTHER host software probes for an `iptables`
+  # binary and silently changes behaviour when it is missing. NetBird does
+  # exactly that:
+  #
+  #   WARN client/firewall/nftables/router_linux.go:1096: Will use nftables to
+  #   manipulate the filter table because iptables is not available
+  #
+  # It then writes NATIVE nft rules (iifname "wt0" accept, …) into `table ip
+  # filter` — the table Calico drives through iptables-nft. Felix's
+  # iptables-nft-save cannot parse them and fails its dataplane resync with
+  # "iptables-save failed because there are incompatible nft rules in the
+  # table", so calico-node never leaves 0/1 Ready and NetworkPolicy stops being
+  # programmed. Tenant isolation depends on that policy, so this is a security
+  # regression, not a cosmetic one. Diagnosed on a fresh single-node install
+  # 2026-08-03.
+  #
+  # Installing the binary makes NetBird pick its iptables backend, whose rules
+  # are iptables-nft-compatible and which Felix can therefore read.
+  #
   # python3: used throughout bootstrap — `ipaddress`-based validation of
   # --allow-source / --pre-enroll-peer / --cluster-network-cidr, node-IP pinning,
   # and the admin/backup JSON request bodies. Declared here AND auto-ensured early
@@ -1845,7 +1865,7 @@ install_packages_dnf() {
   # available, which is also a safe no-op when dnf provides age.
   dnf install -y -q --allowerasing \
     wget gnupg2 ca-certificates openssl \
-    nftables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
+    nftables iptables fail2ban jq unzip tar git iscsi-initiator-utils nfs-utils \
     xfsprogs e2fsprogs \
     wireguard-tools \
     gettext \
