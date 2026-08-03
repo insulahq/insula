@@ -135,6 +135,49 @@ describe('ClusterNodes — health bar + collapsible node cards', () => {
     expect(subChip.textContent).toContain('Worker subsystem issues: 1');
   });
 
+  // The subsystem panel used to print one unconditional line for every fault:
+  // "pods will fail to attach PVCs — drain + re-bootstrap". Wrong twice: PVC
+  // attach is a CSI concern, so it misled whenever the fault was Calico; and
+  // drain + re-bootstrap is a full-node outage offered as the FIRST move for
+  // conditions that are usually a one-line fix.
+  function renderWithSubsystem(sub: NodeSubsystemReport) {
+    mockNodes.mockReturnValue({
+      data: { data: [makeNode({ name: sub.nodeName, role: 'worker' })] },
+      isLoading: false,
+      error: null,
+    });
+    mockSubsystem.mockReturnValue({ data: { data: { nodes: [sub] } } });
+    renderPage();
+    fireEvent.click(screen.getByText(sub.nodeName));
+  }
+
+  it('a Calico fault talks about networking and policy, not PVCs', () => {
+    renderWithSubsystem({ nodeName: 'w1', calico: 'degraded', longhornCsi: 'healthy', csiDriverRegistered: true });
+    const panel = screen.getByTestId('node-subsystem-w1');
+    expect(panel.textContent).toMatch(/pod networking/i);
+    expect(panel.textContent).toMatch(/NetworkPolicy/);
+    expect(panel.textContent).not.toMatch(/fail to attach PVCs/);
+  });
+
+  it('a Calico fault points at the usual cause before anything drastic', () => {
+    renderWithSubsystem({ nodeName: 'w1', calico: 'degraded', longhornCsi: 'healthy', csiDriverRegistered: true });
+    const panel = screen.getByTestId('node-subsystem-w1');
+    expect(panel.textContent).toMatch(/iptables/);
+    const link = within(panel).getByTestId('subsystem-troubleshooting-link');
+    // Must point at the PUBLISHED manual: docs/operations/ is a repo-internal
+    // runbook tree that is not on the docs site, and the host has no clone.
+    expect(link.getAttribute('href')).toBe('https://insulahq.github.io/operator/troubleshooting/#worker-subsystem');
+    expect(panel.textContent).toMatch(/last resort/i);
+  });
+
+  it('a CSI-only fault still says PVCs', () => {
+    renderWithSubsystem({ nodeName: 'w1', calico: 'healthy', longhornCsi: 'degraded', csiDriverRegistered: true });
+    const panel = screen.getByTestId('node-subsystem-w1');
+    expect(panel.textContent).toMatch(/fail to attach PVCs/);
+    // No iptables hint when networking is fine — it would be noise.
+    expect(panel.textContent).not.toMatch(/iptables/);
+  });
+
   it('node card is collapsed by default; clicking the row expands the body', () => {
     mockNodes.mockReturnValue({
       data: { data: [makeNode({ name: 'staging1' })] },

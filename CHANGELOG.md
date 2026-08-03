@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Worker-subsystem guidance no longer opens with "drain and re-bootstrap".**
+  The Cluster Nodes banner printed one unconditional line for every fault —
+  *"tenant pods will fail to attach PVCs. Drain + re-bootstrap the worker"* —
+  which was wrong twice: PVC attach is a CSI concern, so it misled whenever the
+  fault was Calico (networking, and NetworkPolicy with it); and drain +
+  re-bootstrap is a multi-minute outage for every workload on the node, offered
+  as the *first* move for conditions that are usually a one-line fix. The banner
+  now says what the failing subsystem actually affects, names the usual Calico
+  cause (a missing host `iptables` package), and links to a new escalation
+  ladder in the published manual — cheapest step first, drain last.
+
 ### Fixed
 - **Calico stuck at `0/1 Ready` on fresh installs, with NetworkPolicy silently
   not being programmed.** Bootstrap installed `nftables` but not `iptables`. We

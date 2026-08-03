@@ -31,6 +31,80 @@ usually exists), then the `kubectl` command if you need to go deeper.
 4. If the node is dead, **drain and remove** it (see
    [Nodes & cluster](nodes-and-cluster.md)) and replace it.
 
+## The worker-subsystem banner says Calico or Longhorn CSI is degraded { #worker-subsystem }
+
+**Work down this list in order.** Each step is cheaper than the next, and the
+first two resolve most cases. Draining and re-bootstrapping is the last resort —
+it is a multi-minute outage for every workload on the node, and on a single-node
+cluster it is a full platform outage.
+
+### 1. Calico degraded — check for the `iptables` binary first
+
+```bash
+command -v iptables || sudo apt-get install -y iptables   # or: dnf install -y iptables
+sudo systemctl restart netbird     # only if this node runs NetBird
+```
+
+The platform's firewall is nftables and k3s bundles its own iptables, so nothing
+of ours needs the package. Other host software does: **NetBird** probes for it
+and, not finding it, writes native nftables rules into the same `filter` table
+Calico drives through `iptables-nft`. Calico's Felix then can't read that table,
+fails every dataplane resync, and `calico-node` stays `0/1 Ready`.
+
+That matters beyond the badge: **while `calico-node` is not Ready, NetworkPolicy
+is not being programmed**, so tenant isolation is degraded. Treat it as urgent.
+
+Installers from **v2026.8.2** include the package, and a host-migration adds it
+to existing nodes — this step is for anything installed before that.
+
+Confirm it is this, and that the fix landed:
+
+```bash
+kubectl -n calico-system logs -l k8s-app=calico-node --tail=200 | grep 'incompatible nft rules'
+kubectl -n calico-system get pod -l k8s-app=calico-node     # want 1/1
+```
+
+!!! note "Judge it by the pod, not the rules"
+    The fix works by making the table *parseable*, not by deleting anything —
+    the offending rules are often still listed afterwards while Calico is
+    perfectly healthy. Use `calico-node` reaching `1/1` and the error leaving
+    the log as your signal.
+
+### 2. Read the actual error
+
+```bash
+kubectl -n calico-system describe pod -l k8s-app=calico-node | tail -30
+kubectl -n longhorn-system logs -l app=longhorn-csi-plugin --tail=100
+```
+
+| Symptom | Usual cause | Fix |
+|---|---|---|
+| `felix is not ready … 503` | missing `iptables` | step 1 |
+| CSI plugin `CrashLoopBackOff` | lost driver registration | **Restart Longhorn CSI plugin** recovery action |
+| Pod `Pending` | no room on the node | free resources or add a node |
+| `DiskPressure` | disk full, often logs or core dumps | [A node is running out of disk](#a-node-is-running-out-of-disk) |
+
+### 3. Use the recovery actions
+
+**Monitoring → Node Health → Recover…** rather than deleting pods by hand: the
+actions are audit-logged, restricted to platform namespaces, and idempotent.
+
+### 4. Check whether the failure is downstream
+
+Networking faults cascade. A broken CNI dataplane makes kubelet's probes to pod
+IPs time out, which crash-loops otherwise-healthy workloads elsewhere — and
+those recover on their own once the CNI is fixed. **Fix Calico first, then
+re-check** before investigating unrelated pods.
+
+### 5. Last resort — drain and re-bootstrap
+
+Only after the above, and only for a genuinely unrecoverable node:
+
+```bash
+kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+insula bootstrap --remote <ip> --join-as worker --server <cp-ip> --token <token>
+```
+
 ## A certificate won't issue
 
 Symptoms: a site or panel serves a browser warning, or a self-signed cert.
