@@ -304,6 +304,35 @@ PROVISION
 CURL_INSECURE_VAL="${VMTEST_CURL_INSECURE:-$([[ -n "${VMTEST_PEBBLE_IP:-}" ]] && echo "" || echo 1)}"
 RUNNER_REPORT="/root/report-${RUN}.json"
 RUNNER_SCRIPT="${VMTEST_TMP_DIR%/}/run-integration-${RUN}.sh"
+
+# Decide the converge assertion HERE, locally, and emit only the resolved value
+# into the runner script below. The tier is a property of this run, not of the
+# runner VM, and the explanation belongs in the harness output where the operator
+# is watching — not buried in a generated script's stdout.
+#
+# Host-config converge is REQUIRED on the release tier and MEANINGLESS on the
+# branch tier, and that is a property of how images are TAGGED, not a matter of
+# strictness. integration-all resolves the deployed release from the platform-api
+# image tag and feeds it to 'self-upgrade --version='. On a release install that
+# tag IS the version (backend:2026.8.1) and the converge genuinely tests the
+# machinery that upgrades production hosts. On development, build-deploy tags
+# images with a timestamp, so a version parser is handed an image tag and
+# correctly refuses it. No binary can converge that — host-migrations are keyed
+# by CalVer release directories.
+#
+# So the branch tier does not relax the gate; it declines to assert something it
+# cannot express, and says so every run rather than passing quietly (which is how
+# a hollow gate is born — see lib/log-gate.sh).
+if [[ "$VMTEST_TIER" == release ]]; then
+  REQUIRE_CONVERGE=1
+else
+  REQUIRE_CONVERGE=0
+  echo "── tier=branch: host-config converge NOT asserted ──"
+  echo "   development images are timestamp-tagged, so the deployed 'version' is"
+  echo "   not a CalVer and no binary can converge it. Release-machinery coverage"
+  echo "   comes from --tier release; everything else runs identically."
+fi
+
 cat > "$RUNNER_SCRIPT" <<RUN
 #!/usr/bin/env bash
 cd /root/insula
@@ -315,32 +344,7 @@ export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX}
 # seeded → ingress) + give curl the ingress IP for --resolve, else they default to
 # staging.example.test and abort "cannot resolve ingress IP (set RESOLVE_IP)".
 export HTTPS_TEST_DOMAIN_BASE=${APEX} RESOLVE_IP=${VMTEST_CP_IP}
-# Host-config converge is REQUIRED on the release tier and MEANINGLESS on the
-# branch tier, and that is a property of how images are tagged, not a matter of
-# strictness.
-#
-# integration-all resolves the "deployed release" from the platform-api image
-# TAG and feeds it to `self-upgrade --version=`. On a release install that tag IS
-# the version (backend:2026.8.1) and the converge is a genuine test of the
-# machinery that upgrades production hosts. On development, build-deploy tags
-# images with a timestamp (20260803150616-0de280c), so the same code hands an
-# image tag to a version parser and gets a correct refusal:
-#   self-upgrade: '20260803150616-0de280c' is not a valid version
-# No binary — released or locally built — can converge that, because
-# host-migrations are keyed by CalVer release directories.
-#
-# So the branch tier does not "relax" the gate; it declines to assert something
-# the tier cannot express. It says so out loud, every run, rather than quietly
-# passing (which is how a hollow gate is born — see lib/log-gate.sh).
-if [[ "${VMTEST_TIER:-branch}" == release ]]; then
-  export INTEGRATION_REQUIRE_CONVERGE=1
-else
-  export INTEGRATION_REQUIRE_CONVERGE=0
-  echo "── tier=branch: host-config converge NOT asserted ──"
-  echo "   development images are timestamp-tagged, so the deployed 'version' is"
-  echo "   not a CalVer and no binary can converge it. Release-machinery coverage"
-  echo "   comes from VMTEST_TIER=release; everything else runs identically."
-fi
+export INTEGRATION_REQUIRE_CONVERGE=${REQUIRE_CONVERGE}
 export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
 # version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
