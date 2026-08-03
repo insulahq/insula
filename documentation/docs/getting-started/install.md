@@ -201,8 +201,22 @@ Three things that look like errors in the log but are not:
   from the upstream chart, affects nothing, and there is no action to take.
 
 - `Host iptables-save/iptables-restore tools not found` — k3s reporting that it
-  will use its own bundled iptables. Expected on a host without the iptables
-  package; nothing to install.
+  will use its own bundled iptables. Harmless **for k3s**, which genuinely does
+  not need the host package.
+
+    !!! warning "It is not harmless for everything else"
+        Other software on the node probes for an `iptables` binary and changes
+        behaviour when it is missing. NetBird, for one, falls back to writing
+        native nftables rules into the `filter` table — which Calico manages
+        through `iptables-nft` — and Calico's Felix then fails every dataplane
+        resync with *"iptables-save failed because there are incompatible nft
+        rules in the table"*. `calico-node` stays `0/1 Ready` and NetworkPolicy
+        stops being programmed.
+
+        Installers from **v2026.8.2** onward add the `iptables` package for
+        exactly this reason, and a host-migration installs it on existing nodes.
+        If you see `calico-node` stuck at `0/1`, check `command -v iptables`
+        first.
 - `Resources populated with this chart don't match with labelSelector
   acme.cert-manager.io/http01-solver=true` — the Traefik chart noting that its
   own resources don't carry that label. Deliberate: Traefik is configured to
