@@ -581,6 +581,13 @@ OPTIONS:
   --skip-flux            Skip Flux v2 GitOps
   --skip-hardening       Skip SSH/firewall hardening
   --skip-longhorn        Skip Longhorn storage (use local-path)
+  --platform-ops-release-base <url|dir>
+                         Fetch the signed `insula` binary from this base
+                         instead of GitHub Releases — an internal mirror or a
+                         local directory holding insula-linux-<arch> + .sig.
+                         For air-gapped / mirrored sites. The signature is
+                         still verified against the in-repo trust anchor, so a
+                         mirror is a convenience, never a trust decision.
   --plain                Plain one-line-per-event output instead of the
                          progress display. Chosen automatically when stdout
                          is not a terminal; pass this to force it on one.
@@ -1083,6 +1090,22 @@ parse_args() {
       --skip-flux)       SKIP_FLUX=true; shift ;;
       --skip-hardening)  SKIP_HARDENING=true; shift ;;
       --dry-run)         DRY_RUN=true; shift ;;
+      # Where to fetch the signed `insula` binary from, instead of this repo's
+      # GitHub Releases. Accepts an https base URL or a local directory holding
+      # insula-linux-<arch> + .sig.
+      #
+      # Production value, not just a test hook: an air-gapped or
+      # policy-constrained site mirrors releases internally and has no route to
+      # github.com. Until now bootstrap had no way to be told that, so those
+      # installs silently ended up with no `insula` binary on the node — no
+      # self-upgrade timer and no host-config converger — because the fetch
+      # fails soft by design.
+      #
+      # The signature is still verified against the in-repo trust anchor, so a
+      # mirror is a CONVENIENCE, never a trust decision: a tampered mirror fails
+      # verification exactly as a tampered release would.
+      --platform-ops-release-base)
+                         PLATFORM_OPS_RELEASE_BASE="$2"; export PLATFORM_OPS_RELEASE_BASE; shift 2 ;;
       # Force the plain, one-line-per-event renderer even on a terminal. For
       # piping into a pager or a log collector that would otherwise be fed
       # cursor movement and colour codes. Auto-detection already picks plain
