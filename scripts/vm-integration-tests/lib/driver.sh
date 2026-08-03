@@ -50,9 +50,33 @@ put_host() {
 
 # ── images ──────────────────────────────────────────────────────────
 # img_pull_golden <url> <dest> — download the base cloud image ONCE (cached).
+# img_pull_golden <url> <dest> — fetch a base image, honouring the URL it was
+# built from.
+#
+# A `<dest>.url` sidecar records the source URL. If the registry later re-pins
+# that OS to a different build, the cached file no longer matches and is
+# re-pulled. Without this, pinning an image is decorative: the cache is keyed on
+# the OS id alone, so `golden-debian-13.qcow2` fetched months ago from a
+# floating `.../latest/...` URL would keep being reused forever and the pin
+# would never take effect. Matching URLs still hit the cache, so re-pinning one
+# OS does not invalidate the others.
 img_pull_golden() {
   local url="$1" dest="$2"
-  on_host "test -f '$dest' || (mkdir -p \"\$(dirname '$dest')\" && curl -fSL '$url' -o '$dest.tmp' && mv '$dest.tmp' '$dest')"
+  on_host "
+    set -e
+    want='$url'
+    if [ -f '$dest' ] && [ -f '$dest.url' ] && [ \"\$(cat '$dest.url')\" = \"\$want\" ]; then
+      exit 0
+    fi
+    if [ -f '$dest' ]; then
+      echo \"  golden '$dest' was built from a different URL — re-pulling\" >&2
+      rm -f '$dest'
+    fi
+    mkdir -p \"\$(dirname '$dest')\"
+    curl -fSL \"\$want\" -o '$dest.tmp'
+    mv '$dest.tmp' '$dest'
+    printf '%s' \"\$want\" > '$dest.url'
+  "
 }
 
 # img_clone <golden> <overlay> [disk_gb] — copy-on-write overlay (seconds).
