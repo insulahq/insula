@@ -69,6 +69,35 @@ The installer **rejects** (aborts on):
 Debian/Ubuntu use `apt`; RHEL-family and Amazon Linux 2023 use `dnf`. The
 installer handles the difference automatically.
 
+## Tools you need on the server
+
+The installer carries everything it deploys and pulls its own OS packages, so
+there is nothing to install *for* it. But three commands must already exist to
+**download and verify the `insula` binary itself**, before it can run:
+
+| Tool | Needed for | Preinstalled? |
+|---|---|---|
+| `curl` | Fetching the binary, its `.sig`, and the trust anchor | Ubuntu / RHEL-family / Amazon Linux: yes. **Minimal Debian and container-style images: often not.** |
+| `openssl` | Verifying the signature before you run it | Yes, on every supported OS |
+| `base64` | Decoding the signature (part of GNU coreutils) | Yes, on every supported OS |
+
+If `curl` is missing (or HTTPS fails with a certificate error, which means
+`ca-certificates` is missing):
+
+```bash
+# Debian / Ubuntu
+sudo apt-get update && sudo apt-get install -y curl ca-certificates openssl
+
+# RHEL / Rocky / AlmaLinux / CentOS Stream / Amazon Linux 2023
+sudo dnf install -y curl ca-certificates openssl
+```
+
+!!! tip "`cosign` is **not** required"
+    Release signatures are ordinary ECDSA-P256-over-SHA-256 signatures, so
+    `openssl` verifies them — which is exactly what each node does for every
+    self-upgrade. Installing the 100 MB cosign binary on a server is optional;
+    see [verify the download](install.md#verify-the-download).
+
 ## Network prerequisites
 
 ### A domain and DNS

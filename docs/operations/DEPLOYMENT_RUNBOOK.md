@@ -105,8 +105,16 @@ If `wt0` / `tailscale0` is up with an IP in `100.64.0.0/10` when bootstrap runs,
 ```bash
 ssh root@<VPS_IP>
 
-# Download the signed installer binary:
-curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64 && chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
+# Download the signed installer binary (needs curl + openssl on the host):
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64
+
+# Verify it BEFORE running it — must print "Verified OK". See
+# PRODUCTION_PREFLIGHT_CHECKLIST.md §"Go / No-Go" for the cosign equivalent.
+curl -fsSLO https://github.com/insulahq/insula/releases/latest/download/insula-linux-amd64.sig
+curl -fsSLO https://raw.githubusercontent.com/insulahq/insula/main/platform/cosign.pub
+openssl dgst -sha256 -verify cosign.pub -signature <(base64 -d insula-linux-amd64.sig) insula-linux-amd64
+
+chmod +x insula-linux-amd64 && sudo mv insula-linux-amd64 /usr/local/bin/insula
 
 # Run bootstrap (flags identical to scripts/bootstrap.sh):
 sudo insula bootstrap --domain example.test --env production
