@@ -5378,7 +5378,13 @@ ADMIN_EMAIL=$admin_email
 ADMIN_PASSWORD=$admin_password
 EOF
     chmod 600 /etc/platform/admin-credentials
-    log "Admin seed credentials written to /etc/platform/admin-credentials."
+    # Report the BRANDED path even though the write goes through the legacy one
+    # (/etc/platform is an ADR-055 compat symlink to /etc/insula, so it is the
+    # same file). The docs say /etc/insula; showing an operator a different path
+    # here just makes them wonder which is real. The write itself is left on the
+    # legacy path deliberately — other readers still reference it, and moving it
+    # is a separate change with its own risk.
+    log "Admin seed credentials written to /etc/insula/admin-credentials."
     log "  Login: $admin_email / $admin_password"
   fi
 
@@ -8000,6 +8006,22 @@ print_summary() {
   log "    Tenant:  https://tenant.${PLATFORM_DOMAIN}"
   log "    API:     https://api.${PLATFORM_DOMAIN}"
   log ""
+  # The first thing an operator wants after "here is your admin URL" is the
+  # credentials for it. They were written ~700 lines earlier, during secret
+  # generation, and had long scrolled away by the time this summary appeared —
+  # so the completion screen told you where to log in and not how. Reported by
+  # an operator walking a real install (2026-08-03).
+  #
+  # Path is the BRANDED root (ADR-055). /etc/platform is a compatibility symlink
+  # to /etc/insula, so both resolve, but the docs say /etc/insula and the two
+  # should not disagree in front of someone who is already unsure what to trust.
+  if [[ -f /etc/insula/admin-credentials ]]; then
+    log "  Admin sign-in:"
+    log "    sudo cat /etc/insula/admin-credentials"
+    log "    (ADMIN_EMAIL + ADMIN_PASSWORD; change the password and remove this file"
+    log "     once you have created a real admin user)"
+    log ""
+  fi
   log "  Installed:"
   log "    - k3s + Calico CNI"
   log "    - Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
