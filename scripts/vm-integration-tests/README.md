@@ -40,6 +40,45 @@ $EDITOR scripts/vm-integration-tests/config.env          # set VMTEST_DRIVER + e
 ./scripts/vm-integration-tests/run.sh --seed 12345        # replay a past run's exact OS assignment
 ```
 
+## Two tiers
+
+```bash
+./run.sh                                    # branch tier (default)
+VMTEST_TIER=release /path/to/rel/scripts/vm-integration-tests/run.sh   # release tier
+```
+
+**branch** — installs from the working tree. Fast, pre-merge, catches installer
+regressions before they can be released. Everything runs *except* the
+release-machinery assertion, for a structural reason rather than a strictness
+one: `integration-all` resolves the "deployed release" from the platform-api
+image **tag** and feeds it to `self-upgrade --version=`. On `development`,
+build-deploy tags images with a timestamp (`20260803150616-0de280c`), so a
+version parser is handed an image tag and correctly refuses it. No binary,
+released or locally built, can converge that — host-migrations are keyed by
+CalVer release directories. The branch tier therefore declines to assert
+something it cannot express, and **says so on every run** rather than passing
+quietly.
+
+**release** — installs from a **release-tag checkout**, exactly what an operator
+downloads: `platform/VERSION` equals the tag, the signed binary resolves, image
+tags *are* the version, and host-config converge becomes a real test of the
+machinery that upgrades production hosts.
+
+```bash
+git worktree add /tmp/rel v2026.8.1
+VMTEST_TIER=release /tmp/rel/scripts/vm-integration-tests/run.sh
+```
+
+The tier is a claim about what is under test, so it is **verified, not trusted**:
+a `release` run from an untagged tree, or one whose tag and `platform/VERSION`
+disagree, is refused. A release run that silently exercised the branch would be
+worse than no release run at all.
+
+Run the branch tier on every installer-touching change; the release tier after
+every cut.
+
+## The OS target
+
 Every run uses **one pinned OS: Debian 13.6**, itself pinned to a dated cloud-image
 build rather than a floating `latest`. Before bootstrap starts, the harness asserts
 the booted guest actually reports `13.6` and aborts if it doesn't — so an upstream
