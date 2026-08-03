@@ -23,10 +23,46 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --os)   VMTEST_OS="$2"; shift 2 ;;
     --seed) VMTEST_OS_SEED="$2"; shift 2 ;;
+    --tier) VMTEST_TIER="$2"; shift 2 ;;
     *) VMTEST_INTEGRATION_ARGS="${VMTEST_INTEGRATION_ARGS} $1"; shift ;;
   esac
 done
 export VMTEST_OS VMTEST_OS_POOL VMTEST_OS_SEED   # spawn-cluster.sh draws per-node from these
+
+# ── Tiers ────────────────────────────────────────────────────────────
+# branch  (default) — install from THIS working tree. Fast, pre-merge, catches
+#          installer regressions before they can be released. Everything runs
+#          except the release-machinery assertions, which the tier cannot
+#          express (see the converge note further down).
+# release          — install from a RELEASE-TAG checkout, i.e. exactly what an
+#          operator downloads: platform/VERSION equals the tag, so the signed
+#          binary resolves, the image tags ARE the version, and host-config
+#          converge is a real test of the machinery that upgrades production
+#          hosts.
+#
+# The tier is a claim about what is under test, so it is VERIFIED rather than
+# trusted: a "release" run from an untagged tree would exercise the branch and
+# report it as release coverage, which is worse than not running it.
+VMTEST_TIER="${VMTEST_TIER:-branch}"
+case "$VMTEST_TIER" in
+  branch) ;;
+  release)
+    _tag=$(git -C "$REPO" describe --exact-match --tags 2>/dev/null || true)
+    if [[ -z "$_tag" ]]; then
+      echo "run.sh: --tier release requires a checkout at a release tag; ${REPO} is not at one." >&2
+      echo "  git worktree add /path/to/rel <tag> && VMTEST_TIER=release /path/to/rel/scripts/vm-integration-tests/run.sh" >&2
+      exit 2
+    fi
+    _ver=$(tr -d '[:space:]' < "$REPO/platform/VERSION" 2>/dev/null || true)
+    if [[ "v${_ver}" != "$_tag" ]]; then
+      echo "run.sh: checkout tag (${_tag}) and platform/VERSION (${_ver}) disagree — refusing to call this a release run." >&2
+      exit 2
+    fi
+    echo "── tier=release: testing ${_tag} exactly as an operator installs it ──"
+    ;;
+  *) echo "run.sh: unknown --tier '${VMTEST_TIER}' (branch|release)" >&2; exit 2 ;;
+esac
+export VMTEST_TIER
 
 RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"        # unique per run
 OCTET="$(( (16#${RUN:0:2}) % 90 + 1 ))"               # 10.98.<1..90>.0/24
@@ -279,7 +315,33 @@ export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX}
 # seeded → ingress) + give curl the ingress IP for --resolve, else they default to
 # staging.example.test and abort "cannot resolve ingress IP (set RESOLVE_IP)".
 export HTTPS_TEST_DOMAIN_BASE=${APEX} RESOLVE_IP=${VMTEST_CP_IP}
-export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_REQUIRE_CONVERGE=1 INTEGRATION_ENV=
+# Host-config converge is REQUIRED on the release tier and MEANINGLESS on the
+# branch tier, and that is a property of how images are tagged, not a matter of
+# strictness.
+#
+# integration-all resolves the "deployed release" from the platform-api image
+# TAG and feeds it to `self-upgrade --version=`. On a release install that tag IS
+# the version (backend:2026.8.1) and the converge is a genuine test of the
+# machinery that upgrades production hosts. On development, build-deploy tags
+# images with a timestamp (20260803150616-0de280c), so the same code hands an
+# image tag to a version parser and gets a correct refusal:
+#   self-upgrade: '20260803150616-0de280c' is not a valid version
+# No binary — released or locally built — can converge that, because
+# host-migrations are keyed by CalVer release directories.
+#
+# So the branch tier does not "relax" the gate; it declines to assert something
+# the tier cannot express. It says so out loud, every run, rather than quietly
+# passing (which is how a hollow gate is born — see lib/log-gate.sh).
+if [[ "${VMTEST_TIER:-branch}" == release ]]; then
+  export INTEGRATION_REQUIRE_CONVERGE=1
+else
+  export INTEGRATION_REQUIRE_CONVERGE=0
+  echo "── tier=branch: host-config converge NOT asserted ──"
+  echo "   development images are timestamp-tagged, so the deployed 'version' is"
+  echo "   not a CalVer and no binary can converge it. Release-machinery coverage"
+  echo "   comes from VMTEST_TIER=release; everything else runs identically."
+fi
+export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
 # version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
 # CONTROL_HOST point at the first control-plane node; SSH_KEY is present so ssh_cp uses SSH.
