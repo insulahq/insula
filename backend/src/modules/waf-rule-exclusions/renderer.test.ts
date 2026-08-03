@@ -3,7 +3,10 @@ import type { WafRuleExclusion } from '@insula/api-contracts';
 import {
   DYNAMIC_RULE_ID_BASE,
   DYNAMIC_RULE_ID_MAX,
+  WAF_IP_BYPASS_MAX_ENTRIES,
+  isRenderableIpValue,
   renderExclusions,
+  renderIpBypass,
   renderOneExclusion,
 } from './renderer.js';
 
@@ -149,5 +152,80 @@ describe('renderExclusions', () => {
     // The literal regex `REQUEST_HEADERS:Host"` (followed by a quote = end of header name)
     // would indicate the bug yesterday's CI guard catches. Make sure we never emit it.
     expect(result.body).not.toMatch(/REQUEST_HEADERS:Host[^a-zA-Z-]/);
+  });
+});
+
+describe('operator IP bypass (never blocked, still logged)', () => {
+  it('uses DetectionOnly so allowlisted sources stay visible in WAF Events', () => {
+    const out = renderIpBypass(['192.0.2.10'])!;
+    expect(out).toContain('ctl:ruleEngine=DetectionOnly');
+    // `Off` would stop the rules evaluating at all, so the operator would lose
+    // the record that an allowlisted host tripped anything.
+    expect(out).not.toContain('ruleEngine=Off');
+  });
+
+  it('matches X-Real-Ip, never REMOTE_ADDR', () => {
+    const out = renderIpBypass(['192.0.2.10'])!;
+    expect(out).toContain('REQUEST_HEADERS:X-Real-Ip');
+    // REMOTE_ADDR is the Traefik pod IP behind the plugin — allowlisting that
+    // would un-block every request arriving from the internet.
+    expect(out).not.toContain('REMOTE_ADDR');
+  });
+
+  it('emits a single @ipMatch rule for the whole list', () => {
+    const out = renderIpBypass(['192.0.2.10', '198.51.100.0/24', '2001:db8::1'])!;
+    expect(out).toContain('@ipMatch 192.0.2.10,198.51.100.0/24,2001:db8::1');
+    expect(out.match(/SecRule/g)).toHaveLength(1);
+  });
+
+  it('returns null when nothing is allowlisted so the body stays the seed', () => {
+    expect(renderIpBypass([])).toBeNull();
+    expect(renderExclusions([], []).body).toBe(renderExclusions([]).body);
+  });
+
+  // Values arrive from CrowdSec's store via cscli — outside this process — and
+  // are interpolated into a SecRule. A value that escaped the @ipMatch argument
+  // would turn the rest of the line into rule text.
+  it('refuses anything that is not a literal address or CIDR', () => {
+    const hostile = [
+      '1.2.3.4" \\\n    SecRule REQUEST_URI "@rx .*" "id:1,phase:1,allow"',
+      '1.2.3.4,5.6.7.8',
+      '1.2.3.4 ',
+      'evil.example.test',
+      '1.2.3.4/33',
+      '1.2.3.4/x',
+      '10.0.0.0/8/16',
+      '',
+      '::1/129',
+    ];
+    for (const v of hostile) expect(isRenderableIpValue(v)).toBe(false);
+    expect(renderIpBypass(hostile)).toBeNull();
+  });
+
+  it('accepts the forms an operator actually uses', () => {
+    for (const v of ['192.0.2.10', '192.0.2.0/24', '2001:db8::1', '2001:db8::/32', '::1/128']) {
+      expect(isRenderableIpValue(v)).toBe(true);
+    }
+  });
+
+  it('drops hostile entries while keeping the valid ones', () => {
+    const out = renderIpBypass(['192.0.2.10', 'evil.example.test', '198.51.100.5'])!;
+    expect(out).toContain('@ipMatch 192.0.2.10,198.51.100.5');
+    expect(out).not.toContain('evil.example.test');
+  });
+
+  it('de-duplicates and caps the list', () => {
+    expect(renderIpBypass(['192.0.2.10', '192.0.2.10'])).toContain('@ipMatch 192.0.2.10"');
+    const many = Array.from({ length: WAF_IP_BYPASS_MAX_ENTRIES + 50 },
+      (_, i) => `10.0.${Math.floor(i / 256)}.${i % 256}`);
+    // Assert on the @ipMatch argument only — the SecRule's action list is
+    // comma-separated too, so splitting the whole rule over-counts.
+    const arg = /@ipMatch ([^"]+)"/.exec(renderIpBypass(many)!)![1];
+    expect(arg.split(',')).toHaveLength(WAF_IP_BYPASS_MAX_ENTRIES);
+  });
+
+  it('is emitted before the per-rule exclusions', () => {
+    const body = renderExclusions([{ ...baseExclusion, ruleId: '931100' }], ['192.0.2.10']).body;
+    expect(body.indexOf('DetectionOnly')).toBeLessThan(body.indexOf('931100'));
   });
 });
