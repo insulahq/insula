@@ -598,7 +598,13 @@ export default function TenantDetail() {
 
       <SubscriptionCard tenantId={id!} data={subscriptionQuery.data?.data} isLoading={subscriptionQuery.isLoading} />
 
-      <ResourceLimitsCard tenant={tenant} tenantId={id!} />
+      {/* Remount on plan change so the limits card re-seeds from the new plan.
+          Its edit state (custom-vs-plan-default toggles and the typed override
+          values) is seeded once in startEditing; without a remount, moving a
+          tenant to a different plan leaves that state describing the old one.
+          Keying on planId is the React-idiomatic "reload this section" and is
+          cheaper and less jarring than reloading the page. */}
+      <ResourceLimitsCard key={tenant.planId ?? 'no-plan'} tenant={tenant} tenantId={id!} />
 
       <NamespaceIntegrityBanner tenantId={id!} />
 
@@ -1737,6 +1743,14 @@ function ResourceLimitsCard({
 
   const INPUT_CLS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100';
 
+  // `planDefault` is what a field shows while it is NOT overridden.
+  //
+  // It is rendered directly rather than mirrored into the override state,
+  // because that state goes stale in two ways an operator hits immediately:
+  // type a custom value then toggle back to "Plan default" and the disabled
+  // input still showed what you typed; move the tenant to a different plan and
+  // it still showed the old plan's number. Reading the plan at render time makes
+  // the displayed value track the plan by construction, with nothing to re-sync.
   const renderField = (
     label: string,
     unit: string,
@@ -1746,6 +1760,7 @@ function ResourceLimitsCard({
     value: string,
     setValue: (v: string) => void,
     isOverridden: boolean,
+    planDefault: string | number | undefined,
     inputType: string = 'number',
     step: string = '0.01',
   ) => (
@@ -1770,7 +1785,7 @@ function ResourceLimitsCard({
             type={inputType}
             step={step}
             className={`${INPUT_CLS} ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : ''}`}
-            value={value}
+            value={isCustom ? value : (planDefault ?? '')}
             onChange={(e) => setValue(e.target.value)}
             disabled={!isCustom}
           />
@@ -1797,6 +1812,7 @@ function ResourceLimitsCard({
     value: boolean,
     setValue: (v: boolean) => void,
     isOverridden: boolean,
+    planDefault: boolean,
   ) => (
     <div>
       <div className="flex items-center justify-between mb-1">
@@ -1821,8 +1837,8 @@ function ResourceLimitsCard({
           className={`inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm ${!isCustom ? 'bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500' : 'dark:bg-gray-700 dark:text-gray-100'}`}
           data-testid={`value-${label.toLowerCase().replace(/\s/g, '-')}`}
         >
-          {value ? <ToggleRight size={16} className={isCustom ? 'text-brand-500' : ''} /> : <ToggleLeft size={16} />}
-          {value ? 'Allowed' : 'Not allowed'}
+          {(isCustom ? value : planDefault) ? <ToggleRight size={16} className={isCustom ? 'text-brand-500' : ''} /> : <ToggleLeft size={16} />}
+          {(isCustom ? value : planDefault) ? 'Allowed' : 'Not allowed'}
         </button>
       ) : (
         <div className="flex items-center gap-2">
@@ -1858,17 +1874,17 @@ function ResourceLimitsCard({
 
       <form onSubmit={handleSave}>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
-          {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, tenant.cpuLimitOverride != null, 'number', '0.25')}
-          {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, 'number', '0.5')}
-          {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, 'number', '1')}
-          {renderField('Bandwidth', 'GB/mo', effectiveBandwidth, bandwidthCustom, setBandwidthCustom, bandwidthOverride, setBandwidthOverride, tenant.bandwidthLimitOverride != null, 'number', '1')}
-          {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, 'number', '1')}
-          {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, 'number', '1')}
-          {renderField('Max Mailbox Size', 'MB', effectiveMailboxSize, mailboxSizeCustom, setMailboxSizeCustom, mailboxSizeOverride, setMailboxSizeOverride, tenant.maxMailboxSizeMbOverride != null, 'number', '1')}
-          {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, 'number', '0.01')}
-          {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, 'number', '1')}
-          {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, 'number', '1')}
-          {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null)}
+          {renderField('CPU Limit', 'cores', effectiveCpu, cpuCustom, setCpuCustom, cpuOverride, setCpuOverride, tenant.cpuLimitOverride != null, plan?.cpuLimit, 'number', '0.25')}
+          {renderField('Memory Limit', 'GB', effectiveMem, memCustom, setMemCustom, memOverride, setMemOverride, tenant.memoryLimitOverride != null, plan?.memoryLimit, 'number', '0.5')}
+          {renderField('Storage Limit', 'GB', effectiveStorage, storageCustom, setStorageCustom, storageOverride, setStorageOverride, tenant.storageLimitOverride != null, plan?.storageLimit, 'number', '1')}
+          {renderField('Bandwidth', 'GB/mo', effectiveBandwidth, bandwidthCustom, setBandwidthCustom, bandwidthOverride, setBandwidthOverride, tenant.bandwidthLimitOverride != null, plan?.bandwidthGbLimit, 'number', '1')}
+          {renderField('Max Sub-Users', '', effectiveSubUsers, subUsersCustom, setSubUsersCustom, subUsersOverride, setSubUsersOverride, tenant.maxSubUsersOverride != null, plan?.maxSubUsers, 'number', '1')}
+          {renderField('Max Mailboxes', '', effectiveMailboxes, mailboxesCustom, setMailboxesCustom, mailboxesOverride, setMailboxesOverride, tenant.maxMailboxesOverride != null, plan?.maxMailboxes, 'number', '1')}
+          {renderField('Max Mailbox Size', 'MB', effectiveMailboxSize, mailboxSizeCustom, setMailboxSizeCustom, mailboxSizeOverride, setMailboxSizeOverride, tenant.maxMailboxSizeMbOverride != null, plan?.maxMailboxSizeMb, 'number', '1')}
+          {renderField('Monthly Price', currency, effectivePrice, priceCustom, setPriceCustom, priceOverride, setPriceOverride, tenant.monthlyPriceOverride != null, plan?.monthlyPriceUsd, 'number', '0.01')}
+          {renderField('Email Sends / Hour', 'msgs', effectiveMailHourly, mailHourlyCustom, setMailHourlyCustom, mailHourlyOverride, setMailHourlyOverride, tenant.emailSendRateLimit != null, plan?.emailHourlySendLimit, 'number', '1')}
+          {renderField('Email Sends / Day', 'msgs', effectiveMailDaily, mailDailyCustom, setMailDailyCustom, mailDailyOverride, setMailDailyOverride, tenant.emailSendRateLimitDaily != null, plan?.emailDailySendLimit, 'number', '1')}
+          {renderBoolField('Allow Custom Containers', effectiveAllowCc, allowCcCustom, setAllowCcCustom, allowCcOverride, setAllowCcOverride, tenant.allowCustomContainersOverride != null, plan?.allowCustomContainers ?? false)}
         </div>
 
         {updateTenant.error && editing && (
