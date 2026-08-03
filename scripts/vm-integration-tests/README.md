@@ -40,10 +40,25 @@ $EDITOR scripts/vm-integration-tests/config.env          # set VMTEST_DRIVER + e
 ./scripts/vm-integration-tests/run.sh --seed 12345        # replay a past run's exact OS assignment
 ```
 
-Every run draws a **random OS per node** from the supported pool, so a single cluster
-is heterogeneous (e.g. Debian control-plane + Rocky/Ubuntu workers). Coverage over
-the whole matrix accumulates across runs — no fixed set, never all-at-once. The draw
-is seeded and printed (`os-seed=…`) so any failure is exactly reproducible.
+Every run uses **one pinned OS: Debian 13.6**, itself pinned to a dated cloud-image
+build rather than a floating `latest`. Before bootstrap starts, the harness asserts
+the booted guest actually reports `13.6` and aborts if it doesn't — so an upstream
+image swap can never quietly change what the suite runs on.
+
+Runs used to draw a **random OS per node** from the whole supported matrix. That was
+dropped deliberately: it made every red run ambiguous (the OS draw had to be triaged
+before a failure could be attributed to a change) and multiplied wall-clock and host
+RAM along a dimension most defects don't live on. The matrix is still one command away
+when a change genuinely touches OS dispatch or host packages:
+
+```bash
+./scripts/vm-integration-tests/run.sh --os rocky-9         # one specific OS
+VMTEST_OS_POOL="$(source scripts/vm-integration-tests/lib/os-registry.sh; os_pool_all)" \
+  ./scripts/vm-integration-tests/run.sh                    # sweep all 8
+```
+
+All eight supported OSes remain in the registry, and the platform's Tier-1/Tier-2
+support claim is unchanged.
 
 ## Config
 

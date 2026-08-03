@@ -132,6 +132,30 @@ echo "== spawn: ${VMTEST_SERVERS} server(s) + ${VMTEST_WORKERS} worker(s) on ${S
 echo "   os-seed=${OS_SEED}  (reproduce with VMTEST_OS_SEED=${OS_SEED})  pool=[${OS_POOL[*]}]"
 echo "   OS assignment:  ${ASSIGN}${VMTEST_OS:+  (PINNED to ${VMTEST_OS})}"
 
+# assert_guest_os_version <ip> <os-id> — fail the run if the booted guest is not
+# the OS release the registry pins.
+#
+# Without this, "we test on Debian 13.6" is an assertion about a URL, not about
+# what actually booted: an upstream image swap, a stale golden, or a hand-edited
+# cache entry all change the OS under the suite silently. Registry entries with
+# no pinned version (the floating-URL OSes) are skipped rather than guessed at.
+assert_guest_os_version() {
+  local ip="$1" os="$2" want actual
+  want="$(os_expect_version "$os" 2>/dev/null || true)"
+  [[ -n "$want" ]] || return 0
+  case "$(os_family "$os")" in
+    debian) actual=$(_vssh "$ip" "cat /etc/debian_version" 2>/dev/null | tr -d '[:space:]') ;;
+    *)      return 0 ;;   # rhel-family version probing not needed while none are pinned
+  esac
+  if [[ "$actual" != "$want" ]]; then
+    echo "ABORT: ${ip} booted ${os} reporting '${actual}', registry pins '${want}'." >&2
+    echo "  The image behind this OS changed. Re-pin the registry URL + expected version together," >&2
+    echo "  or drop the stale golden so it re-pulls: rm ${VMTEST_IMAGE_CACHE_DIR%/}/golden-${os}.qcow2*" >&2
+    exit 1
+  fi
+  echo "  ${ip}: ${os} ${actual} (matches pin)"
+}
+
 # bootstrap_node <host> <ip> <role> [extra bootstrap args…] — synchronous.
 bootstrap_node() {
   local host="$1" ip="$2" role="$3"; shift 3
@@ -141,6 +165,7 @@ bootstrap_node() {
   # 2026-07-12: bootstrap rc=0 but "no ssh on <w1> after 180s"). wait_ssh returns as soon
   # as ssh answers, so a higher ceiling only helps slow nodes and never delays fast ones.
   wait_ssh "$ip" 360; wait_cloudinit "$ip" 600   # cloud-init on a fresh cloud image is slow (apt update + pkgs)
+  assert_guest_os_version "$ip" "${NODE_OS[$host]}"
   echo "  bootstrapping ${host} @ ${ip} [${NODE_OS[$host]}] (--join-as ${role})"
   "$REPO/scripts/bootstrap.sh" --remote "$ip" --ssh-key "$VMTEST_SSH_KEY" \
     --join-as "$role" --domain "$APEX" --env "${VMTEST_ENV:-dev}" "$@"
