@@ -424,7 +424,7 @@ fetch_verified_script() {
   # mismatched by exactly the stripped newline.) The `&&` also means a
   # curl failure short-circuits the printf, so the substitution's exit
   # status is still curl's.
-  if ! body="$(curl -fsSL "$url" && printf 'x')"; then
+  if ! body="$(curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" && printf 'x')"; then
     error "failed to download the ${label} installer from ${url}"
   fi
   body="${body%x}"
@@ -1700,7 +1700,7 @@ install_yq() {
     *) warn "yq: unsupported arch '${arch}' — secrets bundle will fall back to raw kubectl YAML."; return 0 ;;
   esac
   local url="https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${yq_arch}"
-  if curl -fsSL "$url" -o /usr/local/bin/yq 2>/dev/null && chmod +x /usr/local/bin/yq; then
+  if curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o /usr/local/bin/yq 2>/dev/null && chmod +x /usr/local/bin/yq; then
     log "yq (mikefarah, ${yq_arch}) installed to /usr/local/bin/yq."
   else
     rm -f /usr/local/bin/yq 2>/dev/null || true
@@ -1862,7 +1862,7 @@ install_age_if_missing() {
   log "  age package not available — installing static binary ${age_ver}/${arch} from upstream..."
   local tmpdir
   tmpdir="$(mktemp -d)"
-  if ! curl -fsSL "$url" -o "${tmpdir}/age.tar.gz" 2>/dev/null; then
+  if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o "${tmpdir}/age.tar.gz" 2>/dev/null; then
     rm -rf "$tmpdir"
     error "Failed to download age from ${url}. Check outbound HTTPS connectivity to github.com."
   fi
@@ -1899,7 +1899,7 @@ install_rclone_if_missing() {
   log "  rclone package not available — installing static binary ${rclone_ver}/${arch} from upstream..."
   local tmpdir
   tmpdir="$(mktemp -d)"
-  if ! curl -fsSL "$url" -o "${tmpdir}/rclone.zip" 2>/dev/null; then
+  if ! curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" -o "${tmpdir}/rclone.zip" 2>/dev/null; then
     rm -rf "$tmpdir"
     error "Failed to download rclone from ${url}. Check outbound HTTPS connectivity to github.com."
   fi
@@ -4984,7 +4984,7 @@ import_secrets_bundle() {
   if [[ "$SECRETS_BUNDLE_PATH" =~ ^https?:// ]]; then
     bundle_local=$(mktemp --tmpdir=/dev/shm bundle.XXXXXX.tar.age 2>/dev/null \
       || mktemp -t bundle.XXXXXX.tar.age)
-    if ! curl -sSf -L --max-time 120 -o "$bundle_local" "$SECRETS_BUNDLE_PATH"; then
+    if ! curl --retry 3 --retry-delay 2 --retry-connrefused -sSf -L --max-time 120 -o "$bundle_local" "$SECRETS_BUNDLE_PATH"; then
       rm -f "$bundle_local"
       error "Failed to download secrets bundle from $SECRETS_BUNDLE_PATH"
     fi
