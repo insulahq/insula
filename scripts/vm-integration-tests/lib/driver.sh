@@ -238,7 +238,7 @@ vm_create() {
          for this workload, unlike host-set deflation which can starve a live guest). We do NOT
          set <currentMemory> below <memory>, so the guest still boots with full RAM and nothing
          is force-ballooned during the fragile bootstrap — only genuinely-free pages are
-         returned. <stats period> surfaces real usage via `virsh dommemstat` so the host-memory
+         returned. <stats period> surfaces real usage via 'virsh dommemstat' so the host-memory
          guard can be re-tuned from data instead of the peak. Requires guest kernel >=5.7 (all
          supported OSes qualify) + libvirt >=6.9 / qemu >=5.1 (Unraid 6.12+ ships both). Toggle
          off with VMTEST_BALLOON=0. -->

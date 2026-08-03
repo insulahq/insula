@@ -381,6 +381,14 @@ jobs:
         # caught one live instance; the same class affected 7 other
         # CronJobs across k8s/base/. This guard prevents regression.
         run: ./scripts/ci-flux-escape-check.sh
+      - name: Verify no backticks inside unquoted heredoc bodies
+        # An unquoted heredoc expands its body — prose backticks in the
+        # comments of bootstrap.sh's Flux Kustomization block ran as
+        # commands on every install and printed "op:: command not found",
+        # "kustomize: command not found" (+5 more) to the operator's
+        # console. Harmless-looking because the generated YAML stayed
+        # valid, which is why it shipped for months.
+        run: ./scripts/ci-heredoc-expansion-check.sh
 
   task-helper-coverage:
     name: Task Tracker helper coverage
