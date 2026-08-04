@@ -96,17 +96,42 @@ per-message sha256 verification) established the facts this decision rests on.
 
 ## Watch-items on Default
 
-- Stalwart does **not** enable RocksDB BlobDB garbage collection: a `.blob`
-  file is reclaimed only when no surviving key references it, so
-  long-retention mail interleaved with deleted mail accrues space
-  amplification. **Empirically confirmed 2026-06-06/07**: expunging 40k
-  messages (8.7GB of blobs) on an idle cluster freed zero bytes over
-  11.5 hours — the blob store stayed byte-identical and the WAL static
-  (Stalwart's purge had not even deleted the blob keys). Stalwart also
-  never triggers manual compaction (v0.16.5 source). Operator procedure:
+- **Deleted-mail space is held by blob REFERENCES, not by missing GC.**
+  *Superseded 2026-08-04 — the original diagnosis below was incomplete.*
+
+  What we recorded in 2026-06: expunging 40k messages (8.7 GB of blobs) on an
+  idle v0.16.5 cluster freed zero bytes over 11.5 h, attributed to Stalwart not
+  enabling RocksDB BlobDB garbage collection on the blobs CF.
+
+  What is actually true, re-tested on **v0.16.16** (2026-08-04):
+  - The GC half was real and **is fixed upstream** — blob GC is enabled on
+    CF_BLOBS from **v0.16.10**
+    ([commit 69c2b052](https://github.com/stalwartlabs/stalwart/commit/69c2b052),
+    landed 9 days after our report). Verified active at runtime in the RocksDB
+    options dump, and observed relocating blobs during compaction.
+  - It was never the binding constraint. Stalwart blob storage is
+    **reference-counted**, and the dominant reference is a
+    **spam-classifier training sample**, which pins the blob via a
+    `BlobLink::Temporary { until }` stamped at ingest as
+    `midnight + SpamClassifier.holdSamplesFor` — **180 days** by upstream
+    default. `destroy_account_blobs` unlinks only `Email`/`FileNode`/
+    `SieveScript` hard links, so **even destroying the account leaves the
+    bytes in place**. Proven: 2 GiB survived EXPUNGE + every forced purge task
+    + account deletion, then dropped to 11 MB in one compaction once the
+    samples were destroyed.
+  - Same failure shape is reported upstream on S3 and filesystem backends
+    ([#2956](https://github.com/stalwartlabs/stalwart/discussions/2956),
+    [#2970](https://github.com/stalwartlabs/stalwart/discussions/2970)) —
+    confirming this is not a RocksDB property and does not affect the
+    "stay on Default" decision this ADR records.
+
+  Mitigations shipped: the tenant/domain teardown path purges each principal's
+  training samples before destroying it
+  (`backend/src/modules/mail-admin/spam-sample-cleanup.ts`), and
+  `bootstrap.sh configure_stalwart_full()` sets `holdSamplesFor` to 30 d as the
+  bound for everything that path misses. Operator procedure + the anti-spam
+  cost of lowering that value:
   [MAIL_STORE_SPACE_RECLAIM.md](../../operations/MAIL_STORE_SPACE_RECLAIM.md).
-  Upstream contribution (enable blob GC on the blobs CF) proposed —
-  see the PR/forum links in the runbook era.
 - The 30-min restic copy of the live RocksDB dir remains the accepted
   crash-consistency compromise (unchanged by this ADR; see ADR-042 for the
   deferred logical-export path).

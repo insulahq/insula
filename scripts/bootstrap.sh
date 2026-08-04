@@ -7035,6 +7035,39 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "Email limits OK"
 
+          # 3b-bis. Spam-classifier sample retention — 180 d upstream default
+          # → 30 d. This is a DISK-RECLAIM setting, not an anti-spam tuning knob.
+          #
+          # Stalwart blob storage is reference-counted, and every training
+          # sample pins its message blob through a 'BlobLink::Temporary{until}'
+          # stamped AT INGEST as 'midnight + holdSamplesFor'. Destroying the
+          # account does NOT release it (destroy_account_blobs unlinks only
+          # Email/FileNode/SieveScript hard links), so at the upstream default a
+          # deleted mailbox keeps its bytes on the mail PVC for SIX MONTHS —
+          # invisibly, because the quota reads 0 B. Proven on v0.16.16
+          # (2026-08-04): 2 GiB expunged + account destroyed freed nothing until
+          # the samples went, then dropped to 11 MB in one compaction.
+          #
+          # Why 30 d and not lower: 'retrain' rebuilds from a FRESH trainer and
+          # aborts with "Not enough samples for training" unless the surviving
+          # samples clear minHamSamples/minSpamSamples (100 each). Routine
+          # 12-hourly 'train' is unaffected either way — it only reads samples
+          # newer than the last run. 30 d clears the retrain floor on any server
+          # with real traffic while cutting worst-case dead space 6×.
+          #
+          # Value is MILLISECONDS: 30 d = 2592000000. Only affects mail ingested
+          # AFTER this point ('until' is stamped at ingest); the fast path for
+          # deletions is the per-principal sample purge in
+          # backend/src/modules/mail-admin/spam-sample-cleanup.ts.
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:SpamClassifier/set",
+                {accountId:\$a,update:{singleton:{
+                  holdSamplesFor:2592000000
+                }}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Spam sample retention OK (30d)"
+
           # 3c. HTTP — enable permissive CORS so cross-origin JMAP
           # clients (Bulwark webmail, third-party JMAP apps) see
           # access-control-allow-* on every response, not just OPTIONS

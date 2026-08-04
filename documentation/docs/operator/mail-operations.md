@@ -125,12 +125,27 @@ Mail data is backed up two ways:
 
 ### Reclaiming disk after bulk deletion
 
-Deleting mail does **not** promptly free disk. Stalwart's blob store reclaims
-space organically under ongoing mail traffic (with a ~30-day idle backstop), so
-in normal operation you do nothing — node headroom and monitoring absorb the
+Deleting mail does **not** promptly free disk. Stalwart's blob storage is
+reference-counted, so a message's bytes survive until every reference to it is
+gone — and the longest-lived reference is the **spam-classifier training
+sample**, which holds the message for `SpamClassifier.holdSamplesFor`.
+
+Two things make this a non-issue in normal operation:
+
+- **Deleting a tenant, domain or mailbox** purges that mailbox's training
+  samples as part of teardown, so its disk comes back within a compaction cycle
+  rather than months later.
+- **`holdSamplesFor` is set to 30 days** (Stalwart's own default is 180), which
+  bounds everything else — mail a user deletes inside a live account, for
+  instance. Existing clusters are moved to 30 days automatically by a host
+  migration on the next daily converge; if you deliberately set your own value,
+  it is left alone.
+
+So in normal operation you do nothing — node headroom and monitoring absorb the
 churn. You only need a manual reclaim in rare cases (e.g. offboarding a very
-large mailbox while the mail node is under disk pressure). The maintenance
-procedure is in
+large mailbox while the mail node is already under disk pressure). The
+maintenance procedure — and the anti-spam cost of lowering `holdSamplesFor`
+further, which can stop the classifier retraining — is in
 [Mail Store Space Reclaim](https://github.com/insulahq/insula/blob/main/docs/operations/MAIL_STORE_SPACE_RECLAIM.md).
 
 ??? info "Under the hood"

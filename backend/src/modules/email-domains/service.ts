@@ -25,6 +25,7 @@ import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
+import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-cleanup.js';
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
 import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
@@ -345,6 +346,30 @@ export async function destroyStalwartArtifactsForEmailDomain(
     .where(eq(mailboxes.emailDomainId, emailDomain.id));
   for (const mb of mbRows) {
     if (!mb.principalId) continue;
+    // 1a. Spam training samples FIRST — they reference the message blobs via a
+    //     BlobLink::Temporary stamped at ingest with SpamClassifier.holdSamplesFor,
+    //     and destroying the principal does NOT release them (Stalwart's
+    //     destroy_account_blobs unlinks only Email/FileNode/SieveScript hard
+    //     links). Skipping this leaves the mailbox's bytes on the mail PVC until
+    //     that timer expires. Must run BEFORE the destroy — the samples are
+    //     addressed by principal id.
+    try {
+      const purge = await purgeSpamTrainingSamplesForPrincipal({
+        principalId: mb.principalId,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+      if (purge.remaining > 0) {
+        failures.push(`mailbox ${mb.id}: ${purge.remaining} spam sample(s) left`);
+      }
+    } catch (err) {
+      // Non-fatal: the blob is still collected when holdSamplesFor expires.
+      // Never block the principal destroy on it.
+      failures.push(`mailbox ${mb.id} spam samples: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(
+        { mailboxId: mb.id, principalId: mb.principalId, err: err instanceof Error ? err.message : String(err) },
+        'spam training sample purge failed — mail blobs stay until holdSamplesFor expires',
+      );
+    }
     try {
       await jmapDestroyPrincipal({
         accountId,
