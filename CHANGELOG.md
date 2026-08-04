@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A deleted tenant's mail kept occupying the mail PVC for up to 180 days.**
+  Stalwart blob storage is reference-counted, and a spam-classifier training
+  sample pins the message blob through a `BlobLink::Temporary { until }` stamped
+  at ingest as `midnight + SpamClassifier.holdSamplesFor` — 180 days on an
+  upstream-default install. Destroying the account does not release it
+  (Stalwart's `destroy_account_blobs` unlinks only Email/FileNode/SieveScript
+  hard links), so the bytes stayed on disk invisibly: the mailbox was gone and
+  the account quota read 0 B. Measured on v0.16.16 — 2 GiB of expunged mail
+  survived EXPUNGE, every forced purge task, and outright account deletion, then
+  fell to 11 MB in a single compaction once the samples were destroyed. Tenant
+  and domain teardown now purges each mailbox principal's training samples
+  before destroying the principal (paged, deadline-bounded, best-effort — a mail
+  outage still cannot wedge a deletion), and `bootstrap.sh` sets
+  `holdSamplesFor` to 30 d to bound every path the hook does not cover.
+  Existing installs keep 180 d until the one-liner in
+  `docs/operations/MAIL_STORE_SPACE_RECLAIM.md` is applied. That runbook and
+  ADR-046 previously blamed disabled RocksDB blob GC — which upstream shipped in
+  v0.16.10 and which was never the binding constraint; both are corrected.
 - **Eager image reaps were lost on any platform-api restart, silently.** The
   5-minute grace period lived in an in-process `setTimeout`, so a deploy, Flux
   reconcile, OOM kill or drain inside that window dropped the reap with no
