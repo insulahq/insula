@@ -62,7 +62,7 @@ ENGINE="${ENGINE:-imap}"
 # MODE from env, else a positional arg (so integration-all can wire
 # `...engine-e2e.sh api-smoke`), else the default.
 MODE="${MODE:-${1:-mailboxes-only}}"
-API_BASE="${API_BASE:-https://admin.$(resolve_platform_apex)}"
+API_BASE="${API_BASE:-${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-markus@example.test}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 STAGING_HOST="${STAGING_HOST:-root@staging1.example.test}"

@@ -49,6 +49,11 @@ set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$(resolve_platform_apex)}"
+
+# A cluster with no backup target bound to this class cannot run the suite.
+# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# suites went red on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip system
 # Honor the operator profile's SSH_HOST (real node) before the redacted public
 # placeholder — otherwise a full integration-all run SSHes to the unresolvable
 # example.test default and dies rc=255 (the 2026-07-18 full-run failure).

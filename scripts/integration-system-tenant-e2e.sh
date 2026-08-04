@@ -32,7 +32,7 @@ set -euo pipefail
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-API_BASE="${API_BASE:-https://dind.local:2011}"
+API_BASE="${API_BASE:-${ADMIN_HOST:-https://dind.local:2011}}"
 ADMIN_HOST="${ADMIN_HOST:-admin.k8s-platform.test}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@k8s-platform.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-admin}"

@@ -58,6 +58,26 @@ while IFS= read -r f; do
   done < <(grep -nE ":-[^}]*${APEX_LITERAL}" "$f" 2>/dev/null || true)
 done < <(git ls-files '*.sh' 2>/dev/null)
 
+# ─── Check 2: API_BASE must derive from the configured target ────────────
+#
+# Operator profiles set ADMIN_HOST / API_URL — never API_BASE. A harness that
+# defaults API_BASE straight to the local-dev apex therefore points every
+# request at localhost when run against a remote cluster, and every assertion
+# comes back 000. That is not a visible "wrong host" error; it reads as the
+# platform being broken (2026-08-04: node-terminal reported "A1 expected
+# super_admin, got ''", webmail-platform failed outright).
+while IFS= read -r f; do
+  while IFS= read -r hit; do
+    line_no="${hit%%:*}"
+    text="${hit#*:}"
+    [[ "$(printf '%s' "$text" | sed 's/^[[:space:]]*//')" == \#* ]] && continue
+    # Deriving forms mention another ${VAR} inside the default — allow those.
+    printf '%s' "$text" | grep -qE 'API_BASE:-\$\{' && continue
+    report+="  $f:$line_no: $(printf '%s' "$text" | sed 's/^[[:space:]]*//' | cut -c1-100)"$'\n'
+    violations=$((violations + 1))
+  done < <(grep -nE '^[[:space:]]*API_BASE="?\$\{API_BASE:-' "$f" 2>/dev/null || true)
+done < <(git ls-files 'scripts/integration-*.sh' 'scripts/ingress-*.sh' 2>/dev/null)
+
 if (( violations > 0 )); then
   echo "❌ ci-no-hardcoded-test-apex: $violations hardcoded test-apex default(s):" >&2
   printf '%s' "$report" >&2

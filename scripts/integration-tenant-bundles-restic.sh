@@ -64,8 +64,12 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Config profile (real cluster + creds) from gitignored scripts/integration.env.
 source "$SCRIPT_DIR/lib/integration-env.sh"
 load_integration_env
+# A cluster with no backup target bound cannot run this suite. Report that
+# as SKIPPED rather than a wall of red assertions (2026-08-04: twelve
+# suites failed on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip tenant
 
-API_BASE="${API_BASE:-https://admin.testing.example.test}"
+API_BASE="${API_BASE:-${ADMIN_HOST:-https://admin.testing.example.test}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@testing.example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"

@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Integration suites failed for three reasons that were never the platform.**
+  (1) The custom-container subscription gate shipped on 2026-07-30 without
+  updating the suites that exist to exercise custom containers, so every create
+  returned `403 CUSTOM_CONTAINERS_NOT_IN_PLAN` (and `T10` reported "expected
+  422, got 403" because the gate short-circuits validation); both suites now
+  grant themselves the per-tenant override. (2) `API_BASE` defaulted straight to
+  the local-dev apex in four harnesses — operator profiles set `ADMIN_HOST` /
+  `API_URL`, never `API_BASE` — so against a remote cluster every request went
+  to localhost and came back `000`, reading as a broken platform rather than a
+  misdirected test; it now derives from the configured target. (3) Backup/DR
+  suites hard-failed on a cluster with no backup target bound; nine now report
+  SKIPPED via the new `require_backup_class_or_skip`, which checks live cluster
+  state and fails open if it cannot determine the answer. The apex guard grew a
+  second check so an `API_BASE` regression is caught in CI.
+
 ### Changed
 - **Change Password now opens a lazily-loaded modal instead of rendering inside
   the user menu.** The form lived in `Header.tsx`, which is part of the main

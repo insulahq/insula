@@ -26,8 +26,15 @@
 #
 # USAGE: source scripts/integration.env first, or set ADMIN_HOST/ADMIN_PASSWORD/
 #   SSH_HOST/SSH_KEY/PLATFORM_DOMAIN (TOKEN optional — preset to skip login).
+# Preconditions + apex resolution (require_backup_class_or_skip, resolve_platform_apex).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 : "${ADMIN_HOST:?}" ; : "${ADMIN_EMAIL:=admin@${PLATFORM_DOMAIN:?}}"
+
+# A cluster with no backup target bound to this class cannot run the suite.
+# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# suites went red on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip tenant
 : "${SSH_HOST:?}" "${PLATFORM_DOMAIN:?}"
 [[ -n "${TOKEN:-}" ]] || : "${ADMIN_PASSWORD:?set ADMIN_PASSWORD or export a preset TOKEN}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"

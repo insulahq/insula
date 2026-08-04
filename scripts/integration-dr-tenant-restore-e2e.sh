@@ -25,8 +25,15 @@
 #   SSH_HOST=root@<node> SSH_KEY=~/hosting-platform.key PLATFORM_DOMAIN=<apex> \
 #   ./scripts/integration-dr-tenant-restore-e2e.sh
 # (or: source scripts/integration.env first)
+# Preconditions + apex resolution (require_backup_class_or_skip, resolve_platform_apex).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 : "${ADMIN_HOST:?set ADMIN_HOST or source scripts/integration.env}"
+
+# A cluster with no backup target bound to this class cannot run the suite.
+# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# suites went red on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip tenant
 : "${ADMIN_EMAIL:=admin@${PLATFORM_DOMAIN:?}}"
 : "${SSH_HOST:?}" "${PLATFORM_DOMAIN:?}"
 # TOKEN may be preset (e.g. an out-of-band minted admin JWT when /auth/login is

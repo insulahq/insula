@@ -19,8 +19,15 @@
 # Registry tier: manual. Needs an offsite BackupStore assigned to the 'tenant'
 # shim class. Accepts a preset TOKEN (bypass /auth/login). DESTRUCTIVE to its
 # own 2 probe tenants only.
+# Preconditions + apex resolution (require_backup_class_or_skip, resolve_platform_apex).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 : "${ADMIN_HOST:?set ADMIN_HOST or source scripts/integration.env}"
+
+# A cluster with no backup target bound to this class cannot run the suite.
+# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# suites went red on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip system
 : "${ADMIN_EMAIL:=admin@${PLATFORM_DOMAIN:?}}"
 : "${SSH_HOST:?}" "${PLATFORM_DOMAIN:?}"
 [[ -n "${TOKEN:-}" ]] || : "${ADMIN_PASSWORD:?set ADMIN_PASSWORD, or export a preset TOKEN}"
