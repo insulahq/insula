@@ -41,6 +41,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   still free. `VMTEST_DUAL_STACK=1` gives the VM tier a ULA v6 subnet and then
   asserts on the live cluster that the ingress genuinely answers over IPv6.
 
+### Security
+- **The WAF audit log no longer records bearer tokens and session cookies.**
+  `SecAuditLogParts` includes request headers, so every blocked request wrote
+  the caller's full `Authorization: Bearer <jwt>` and `platform_session` /
+  `platform_refresh` cookies in cleartext to the modsec-crs pod's stdout — and
+  a WAF block is exactly when an admin's live credentials are most likely to be
+  captured. Neither obvious fix was available: libmodsecurity 3.0.16 rejects
+  `sanitiseRequestHeader` at config-parse time and crash-loops the WAF, and
+  dropping the header part breaks WAF Events, which resolves the client-facing
+  hostname from `X-Forwarded-Host`. The JSON audit record now goes to a file
+  and an `audit-redactor` sidecar streams it to stdout with those headers
+  masked; nginx's own `ModSecurity:` error lines are unaffected. WAF Events
+  keeps everything it reads — hostname, URI, method and contributing rule ids —
+  and the scraper now names both containers explicitly.
+
 ### Fixed
 - **A deleted tenant's mail kept occupying the mail PVC for up to 180 days.**
   Stalwart blob storage is reference-counted, and a spam-classifier training

@@ -108,6 +108,29 @@ spec:
               value: "5"
             - name: ANOMALY_OUTBOUND
               value: "4"
+            - name: MODSEC_AUDIT_LOG
+              # Send the JSON audit record to a file instead of stdout.
+              #
+              # SecAuditLogParts includes part B (request headers), so every
+              # blocked request used to write the caller's full
+              # `Authorization: Bearer <jwt>` AND platform_session /
+              # platform_refresh cookies in CLEARTEXT to this pod's stdout —
+              # i.e. into node logs and anything shipping them. A WAF block is
+              # precisely when an admin's live credentials are most likely to
+              # be captured. (Found 2026-08-03.)
+              #
+              # The obvious fixes do not work: libmodsecurity 3.0.16 REJECTS
+              # `sanitiseRequestHeader` at config-parse time ("not yet
+              # supported") and crash-loops the WAF, and dropping part B breaks
+              # WAF Events, which resolves the client-facing hostname from
+              # request.headers["X-Forwarded-Host"].
+              #
+              # So the record goes to a file and the audit-redactor sidecar
+              # streams it to stdout with the secret-bearing headers masked.
+              # nginx's own `[error] ModSecurity:` lines stay on this
+              # container's stdout untouched (verified: stdout keeps the error
+              # lines and carries zero JSON and zero secrets).
+              value: /var/log/modsec/audit.log
           ports:
             - name: http
               # OWASP CRS nginx-alpine image's default nginx config
@@ -133,6 +156,8 @@ spec:
             initialDelaySeconds: 30
             periodSeconds: 30
           volumeMounts:
+            - name: audit-log
+              mountPath: /var/log/modsec
             # Mount the platform's CRS exclusion file at the standard
             # CRS pre-rules path. The image globs every *.conf under
             # /etc/modsecurity.d/owasp-crs/rules/ at startup, so this
@@ -155,7 +180,51 @@ spec:
               mountPath: /etc/modsecurity.d/owasp-crs/rules/REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
               subPath: REQUEST-901-EXCLUSION-RULES-BEFORE-CRS-DYNAMIC.conf
               readOnly: true
+        # Streams the JSON audit record to stdout with credential-bearing
+        # headers masked, so the WAF Events scraper still gets complete records
+        # (including X-Forwarded-Host and messages[] rule ids) while bearer
+        # tokens and session cookies never reach a log sink.
+        #
+        # Same image as the WAF container — no extra image to pull, pin or
+        # patch. Redaction is a value-only substitution, so the record stays
+        # valid JSON (verified against a real blocked request).
+        - name: audit-redactor
+          image: docker.io/owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              touch /var/log/modsec/audit.log
+              # Cap growth: the file is a stream buffer, not storage. tail -F
+              # follows by name and survives the truncate.
+              (
+                while true; do
+                  sz=$(wc -c < /var/log/modsec/audit.log 2>/dev/null || echo 0)
+                  [ "$sz" -gt 52428800 ] && : > /var/log/modsec/audit.log
+                  sleep 60
+                done
+              ) &
+              exec tail -F -n0 /var/log/modsec/audit.log 2>/dev/null \
+                | sed -u -E 's/("(Authorization|Cookie|Set-Cookie|Proxy-Authorization|X-Api-Key)":")[^"]*"/\1<redacted>"/g'
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: audit-log
+              mountPath: /var/log/modsec
       volumes:
+        - name: audit-log
+          emptyDir:
+            sizeLimit: 256Mi
         - name: exclusion-rules
           configMap:
             name: modsec-crs-exclusions
