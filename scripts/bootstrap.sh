@@ -411,7 +411,19 @@ TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo 
 # NOT an infra version pin: nothing here changes which k3s/helm/flux VERSION
 # gets installed, so ci-migration-coverage.sh does not require a matching
 # host-migration (existing nodes already have these tools installed).
-K3S_INSTALLER_SHA256="d264d4d43f7c5a27b44de0075513fb22dfb02d0b7cd33ba7a3838cb822f4729c"
+# Refreshed 2026-08-04. Provenance verified before bumping, not assumed:
+#   * the OLD pin d264d4d4… is byte-identical to k3s-io/k3s install.sh at the
+#     commit immediately BEFORE 2d0f82fa, so nothing had drifted underneath us;
+#   * the NEW pin ed01f89f… is byte-identical to both https://get.k3s.io and
+#     raw.githubusercontent.com/k3s-io/k3s/master/install.sh;
+#   * the only diff is upstream commit 2d0f82fa (2026-08-04) "change sles to use
+#     slemicro rpms instead of microos" — SUSE/SLE-Micro RPM repo selection,
+#     which touches no OS in our support matrix (Debian/Ubuntu, RHEL family).
+# NOTE: get.k3s.io serves MASTER's install.sh, so this pin breaks every fresh
+# install whenever upstream edits that file for any reason. Fetching from the
+# version-pinned tag URL instead would make the checksum change only when
+# K3S_VERSION does — see ROADMAP R26.
+K3S_INSTALLER_SHA256="ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
 HELM_INSTALLER_SHA256="e4a604efcff328eef2b2c7e67445d609f333e3875b34420ebf4e5ae379d259bb"
 FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
 
@@ -3681,11 +3693,12 @@ install_k3s_server() {
     is_joining_server=true
   fi
 
-  local install_rc=0
+  local install_rc=0 k3s_installer=""
   # shellcheck disable=SC2086
   if [[ "$is_joining_server" == true ]]; then
     set +e
-    printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
+    k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
       sh -s - \
@@ -3716,7 +3729,8 @@ install_k3s_server() {
       log "  automatically as soon as the join succeeds. Ctrl-C if you need to investigate."
     fi
   else
-    printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
+    k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
       sh -s - \
@@ -3822,9 +3836,10 @@ install_k3s_worker() {
   # plane until our IP is pre-enrolled there. Tolerate the initial
   # curl|sh failure and let the extended poll catch the eventual
   # systemd-retried success.
-  local install_rc=0
+  local install_rc=0 k3s_installer=""
   set +e
-  printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
+  k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+  printf '%s' "$k3s_installer" | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="$exec_args" \
     K3S_URL="https://${K3S_SERVER_IP}:6443" \
@@ -4204,9 +4219,11 @@ install_helm() {
   fi
 
   log "Installing Helm..."
-  printf '%s' "$(fetch_verified_script \
+  local helm_installer
+  helm_installer="$(fetch_verified_script \
     "https://raw.githubusercontent.com/helm/helm/${HELM_INSTALLER_REF}/scripts/get-helm-3" \
-    "$HELM_INSTALLER_SHA256" helm)" | bash
+    "$HELM_INSTALLER_SHA256" helm)" || exit 1
+  printf '%s' "$helm_installer" | bash
   log "Helm installed."
 }
 
@@ -4228,8 +4245,9 @@ install_flux_cli() {
     log "Installing Flux CLI v${FLUX_VERSION}..."
   fi
   # The official installer honours FLUX_VERSION (bare semver, no 'v').
-  printf '%s' "$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" \
-    | FLUX_VERSION="$FLUX_VERSION" bash
+  local flux_installer
+  flux_installer="$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" || exit 1
+  printf '%s' "$flux_installer" | FLUX_VERSION="$FLUX_VERSION" bash
   log "Flux CLI v${FLUX_VERSION} installed."
 }
 

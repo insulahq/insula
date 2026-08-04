@@ -37,6 +37,7 @@
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
 | [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
+| [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 
 ---
 
@@ -825,3 +826,37 @@ telling the operator what is left to do.
 **Verify:** extend `scripts/integration-migration-e2e.sh` so the probe tenant
 carries an add-on database with a known row, and assert that row is present
 after import **without** a manual restore cart.
+
+## R26 — Pin the k3s installer to a version tag, not master
+
+Proposed 2026-08-04, after a fresh install failed with:
+
+```
+ERROR: k3s installer checksum MISMATCH — refusing to execute.
+  expected: d264d4d4…   actual: ed01f89f…
+```
+
+`bootstrap.sh` fetches the k3s installer from `https://get.k3s.io` and verifies
+it against `K3S_INSTALLER_SHA256` (the `fetch_verified_script` supply-chain
+guard). But **`get.k3s.io` serves `install.sh` from k3s master**, so the pin
+breaks — and every fresh install with it — whenever upstream edits that file for
+*any* reason, including changes irrelevant to us. The 2026-08-04 break was
+commit `2d0f82fa`, a SUSE/SLE-Micro RPM-repo fix touching no OS we support.
+
+The guard behaved correctly; the problem is that the thing being pinned moves
+independently of anything we control, so the failure is recurring and always
+arrives as a production-blocking surprise rather than a planned bump.
+
+**Proposal:** fetch from the version-pinned tag instead —
+`https://raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh` — so
+the installer content is a function of `K3S_VERSION`. The checksum then changes
+only when we deliberately bump k3s, which is already a reviewed pin change
+covered by `ci-migration-coverage.sh`. Same trust model (upstream-published
+content, verified by digest), strictly more deterministic.
+
+**Decide before building:** this changes the download host from `k3s.io` to
+`raw.githubusercontent.com`. Both are upstream-controlled and the digest check
+is what actually establishes trust, but it is a change to the install path's
+trust anchor and should be an explicit operator decision rather than a silent
+refactor. A CI freshness check (warn when the tag's installer digest differs
+from the pin) is the alternative if the host change is unwanted.
