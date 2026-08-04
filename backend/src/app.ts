@@ -170,6 +170,9 @@ import { startImapSyncReconciler } from './modules/mail-imapsync/scheduler.js';
 import { startNodeSyncReconciler } from './modules/nodes/scheduler.js';
 import { getRedis, closeRedis } from './shared/redis.js';
 import { startImagePressureWatcher } from './modules/storage/image-pressure-watcher.js';
+import { runDueReaps } from './modules/storage/image-reaper.js';
+/** How often to sweep for eager reaps whose grace period has expired. */
+const REAP_SWEEP_INTERVAL_MS = 60_000;
 import { startDailyImagePrune } from './modules/storage/image-prune-scheduler.js';
 import { startKubeletGcReconciler } from './modules/cluster-settings/kubelet-gc-reconciler.js';
 import { startVerificationCron } from './modules/domains/verification-cron.js';
@@ -2003,6 +2006,23 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
 
         const gcReconciler = startKubeletGcReconciler(app.db, watcherK8s, app.log);
         app.addHook('onClose', () => gcReconciler.stop());
+
+        // Durable eager-reap sweeper. scheduleReap() persists each pending reap
+        // and also arms an in-process timer for latency; this tick is what makes
+        // the work survive a restart. Without it, a platform-api roll inside the
+        // 5-minute grace window dropped the reap silently — no image_reap_log
+        // row, no retry (observed on DEV 2026-08-04, where Flux rolls the pod on
+        // every push). Claims are DELETE … RETURNING, so running on every
+        // replica is safe.
+        const reapSweeper = setInterval(() => {
+          void runDueReaps(app.db, watcherK8s).catch((err: unknown) => {
+            app.log.warn({ err }, 'image-reap sweeper tick failed');
+          });
+        }, REAP_SWEEP_INTERVAL_MS);
+        reapSweeper.unref?.();
+        app.addHook('onClose', () => clearInterval(reapSweeper));
+        // Catch anything already overdue from a previous process at boot.
+        void runDueReaps(app.db, watcherK8s).catch(() => undefined);
       } catch (err) {
         app.log.warn({ err }, 'image-pressure-watcher / kubelet-gc-reconciler: startup skipped');
       }

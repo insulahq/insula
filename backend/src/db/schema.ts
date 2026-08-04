@@ -2797,6 +2797,28 @@ export const imageReapLog = pgTable('image_reap_log', {
 
 export type ImageReapLog = typeof imageReapLog.$inferSelect;
 
+/**
+ * Durable queue for eager image reaps (migration 0079).
+ *
+ * The grace period used to live in an in-process setTimeout, so a platform-api
+ * restart inside the window dropped the reap with no log row and no retry.
+ * Rows here survive restarts; the scheduler claims them with
+ * DELETE ... RETURNING so exactly one replica runs each reap.
+ */
+export const pendingImageReaps = pgTable('pending_image_reaps', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  imageName: text('image_name').notNull(),
+  triggeredBy: text('triggered_by').notNull(),
+  triggerRef: text('trigger_ref'),
+  /** When the grace period expires and the reap may run. */
+  dueAt: timestamp('due_at', { withTimezone: true }).notNull(),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type PendingImageReap = typeof pendingImageReaps.$inferSelect;
+
 // ─── AI Editor ─────────────────────────────────────────────────────────────
 
 export const aiProviders = pgTable('ai_providers', {

@@ -621,18 +621,23 @@ else
   echo "PRUNE_FAILED:$(tr '\\n' ' ' < /tmp/prune_out | head -c 200)"
 fi
 for img in ${imageList}; do
-  if crictl rmi "$img" >/tmp/out 2>&1; then
+  crictl rmi "$img" >/tmp/out 2>&1 || true
+  # VERIFY rather than trust the exit status. \`crictl rmi\` answering
+  # "no such image" is AMBIGUOUS: it means both "already gone" (success) and
+  # "this ref does not resolve on this runtime" (the image is still on disk).
+  # Mapping that message straight to REMOVED reported success while the image
+  # remained — the reaper then logged succeeded=true with bytes_reclaimed taken
+  # from kubelet's node status, which it never measured. Caught 2026-08-04: a
+  # digest ref (…/php@sha256:…) logged a successful reap at delete+306s and the
+  # image was still listed on the node 24s later.
+  #
+  # \`crictl images -q <ref>\` prints the image ID when the ref resolves and
+  # nothing when it does not, so an empty result is proof of absence.
+  if [ -z "$(crictl images -q "$img" 2>/dev/null)" ]; then
     echo "REMOVED:$img"
   else
     out=$(tr '\\n' ' ' < /tmp/out | head -c 200)
-    # B0.2 follow-up: \`crictl rmi --prune\` (above) already removed any
-    # dangling/digest-only images. The per-image loop then sees them as
-    # "no such image" — that's success, not failure. Treat the message as
-    # a successful removal so the response doesn't report false negatives.
-    case "$out" in
-      *"no such image"*|*"not found"*) echo "REMOVED:$img" ;;
-      *)                                echo "FAILED:$img cause=$out" ;;
-    esac
+    echo "FAILED:$img cause=\${out:-still present after rmi}"
   fi
 done
 `;

@@ -331,6 +331,14 @@ jobs:
         # guards above. See docs/development/INTEGRATION_TESTS.md.
         run: ./scripts/ci-no-hardcoded-test-infra.sh
 
+      - name: Image purge must verify removal
+        # `crictl rmi` answering "no such image" is ambiguous — it means both
+        # "already gone" and "this ref does not resolve", and treating it as
+        # success reported reaps that never happened (with a byte count copied
+        # from kubelet's node status). Runs the real embedded script against a
+        # stub crictl.
+        run: ./scripts/test-image-purge-verify.sh
+
       - name: Harness defaults must derive the test apex
         # PORTABILITY (distinct from the secrecy guard above): a harness default
         # may not bake in an apex, even the sanitised placeholder. A suite that
