@@ -32,9 +32,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 # ── Extract the pure helpers verbatim so we test the SHIPPED code ───────────
 sed -n '/^detect_node_ipv6()/,/^}/p'              "$BOOTSTRAP" >  "$WORK/helpers.sh"
+sed -n '/^resolve_cluster_network_ip()/,/^}/p'     "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_cluster_network_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^resolve_same_link_ipv6()/,/^}/p'        "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_dual_stack_node_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
-for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_dual_stack_node_ipv6; do
+for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_same_link_ipv6 resolve_dual_stack_node_ipv6; do
   grep -q "^${fn}()" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 # error() is called by the helpers on the refuse paths. It is FATAL in
@@ -47,8 +49,28 @@ STUB
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/ip" <<'FAKE'
 #!/usr/bin/env bash
-# Emits `ip -6 -o addr show`-shaped lines from $FAKE_V6_LINES (one per line).
-printf '%s\n' "${FAKE_V6_LINES:-}"
+# Fakes the three `ip` shapes the helpers use:
+#   ip -4 -o addr show           -> $FAKE_V4_LINES
+#   ip -6 -o addr show           -> $FAKE_V6_LINES
+#   ip -6 -o addr show dev <if>  -> $FAKE_V6_LINES filtered to that interface
+want_dev=""
+family=6
+prev=""
+for a in "$@"; do
+  case "$a" in
+    -4) family=4 ;;
+    -6) family=6 ;;
+  esac
+  [[ "$prev" == "dev" ]] && want_dev="$a"
+  prev="$a"
+done
+if [[ "$family" == 4 ]]; then
+  printf '%s\n' "${FAKE_V4_LINES:-}"
+elif [[ -n "$want_dev" ]]; then
+  printf '%s\n' "${FAKE_V6_LINES:-}" | awk -v d="$want_dev" '$2==d'
+else
+  printf '%s\n' "${FAKE_V6_LINES:-}"
+fi
 FAKE
 chmod +x "$WORK/bin/ip"
 export PATH="$WORK/bin:$PATH"
@@ -92,18 +114,39 @@ run_helper detect_node_ipv6 >/dev/null 2>&1 \
 echo
 echo "resolve_dual_stack_node_ipv6 — underlay safety"
 
-# The refuse-to-fall-back rule: on a pinned underlay we must NEVER silently use
-# a public v6, or pod traffic splits across two networks (v4 in the tunnel, v6
-# on the open internet).
+# The refuse rule: on a pinned underlay we must NEVER silently use a v6 that
+# sits on a DIFFERENT link, or pod traffic splits across two networks (v4 in
+# the tunnel, v6 on the open internet). Here eth0 carries the public v6 while
+# the pinned v4 lives on the mesh interface wt0 — nothing usable.
+export FAKE_V4_LINES='9: wt0    inet 10.8.0.5/24 scope global'
 FAKE_V6_LINES='2: eth0    inet6 2001:db8:1::5/64 scope global'
 out=$( NODEIP_PIN_CIDR="10.8.0.0/24" NODEIP_PIN_CIDR_V6="" run_helper resolve_dual_stack_node_ipv6 2>&1 )
 rc=$?
-if (( rc != 0 )) && grep -q "Refusing to fall back to a public IPv6" <<<"$out"; then
-  ok "pinned underlay + no mesh v6 → refuses instead of using the public address"
+if (( rc != 0 )) && grep -q "Refusing to fall back to an IPv6 on a different link" <<<"$out"; then
+  ok "pinned underlay, v6 only on ANOTHER interface → refuses"
 else
-  bad "pinned underlay + no mesh v6 → refuses instead of using the public address (rc=$rc, out=${out:0:120})"
+  bad "pinned underlay, v6 only on ANOTHER interface → refuses (rc=$rc, out=${out:0:140})"
 fi
 
+# But it must NOT refuse when the pinned v4 and a v6 share one interface —
+# same link by construction, so no declaration is needed. This is the common
+# single-NIC case and what the first dual-stack VM run hit: the harness pins
+# --cluster-network-cidr to the per-run NAT range and one virtio NIC carries
+# both that v4 and its ULA v6.
+FAKE_V4_LINES='2: enp1s0    inet 10.98.3.44/24 scope global'
+FAKE_V6_LINES='2: enp1s0    inet6 fd00:1a5:3::1bf/64 scope global
+2: enp1s0    inet6 fe80::5054:ff:fe12:3456/64 scope link'
+check "pinned underlay, v6 on the SAME interface → accepted without the flag" \
+  "fd00:1a5:3::1bf" "$( NODEIP_PIN_CIDR="10.98.3.0/24" NODEIP_PIN_CIDR_V6="" run_helper resolve_dual_stack_node_ipv6 )"
+
+# An explicitly declared range still wins over same-link inference.
+FAKE_V4_LINES='2: enp1s0    inet 10.98.3.44/24 scope global'
+FAKE_V6_LINES='2: enp1s0    inet6 fd00:1a5:3::1bf/64 scope global
+9: wt0    inet6 fd7a:115c::9/64 scope global'
+check "an explicit --cluster-network-cidr-v6 takes precedence" \
+  "fd7a:115c::9" "$( NODEIP_PIN_CIDR="10.98.3.0/24" NODEIP_PIN_CIDR_V6="fd7a:115c::/48" run_helper resolve_dual_stack_node_ipv6 )"
+
+FAKE_V4_LINES=''
 FAKE_V6_LINES='2: eth0    inet6 2001:db8:1::5/64 scope global'
 check "public underlay → uses the detected node address" \
   "2001:db8:1::5" "$( NODEIP_PIN_CIDR="" run_helper resolve_dual_stack_node_ipv6 )"
