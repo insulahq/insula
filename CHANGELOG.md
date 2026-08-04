@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Integration harnesses baked in a test apex instead of deriving it.** 113
+  literals across 51 scripts, and the same file could be inconsistent with
+  itself — three non-deriving `${MAIL_DOMAIN_APEX:-staging.example.test}` lines
+  sat next to two correct ones. A suite written that way only passes on the
+  apex whose name happens to be baked in: a run against a freshly bootstrapped
+  cluster reported `banner 'mail.<cluster apex>' DOES NOT MATCH expected
+  'mail.staging.example.test'` while mail was in fact healthy. Every default now
+  derives through `resolve_platform_apex()` in `scripts/lib/integration-env.sh`
+  — the one place the fallback is written down, honouring `MAIL_DOMAIN_APEX` /
+  `PLATFORM_DOMAIN` / `PLATFORM_BASE_DOMAIN` / `HTTPS_TEST_DOMAIN_BASE` /
+  `TENANT_BASE`. New CI guard `ci-no-hardcoded-test-apex.sh` fails the build on
+  any re-introduction, so this stops being a recurring fix. (Portability, not
+  secrecy — `staging.example.test` is the sanitised placeholder; real operator
+  domains remain covered by `ci-no-hardcoded-test-infra.sh`.)
+
 ## [2026.8.2] - 2026-08-03
 
 ### Fixed

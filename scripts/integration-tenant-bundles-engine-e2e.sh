@@ -54,21 +54,23 @@
 #   RESTORE_ADDR                john@x.staging.example.test
 #   CORPUS_SIZE                 1000
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 ENGINE="${ENGINE:-imap}"
 # MODE from env, else a positional arg (so integration-all can wire
 # `...engine-e2e.sh api-smoke`), else the default.
 MODE="${MODE:-${1:-mailboxes-only}}"
-API_BASE="${API_BASE:-https://admin.staging.example.test}"
+API_BASE="${API_BASE:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-markus@example.test}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 STAGING_HOST="${STAGING_HOST:-root@staging1.example.test}"
 SERVERS_TXT="${SERVERS_TXT:-$HOME/k8s-staging/servers.txt}"
 TARGET_CFG_ID="${TARGET_CFG_ID:-6476f958-3050-4ac2-9c91-1cb4c2dab69e}"
 TENANT_ID="${TENANT_ID:-b4384ca8-c5c9-4e1e-8c1c-f864c7a2419d}"
-TEST_ADDR="${TEST_ADDR:-jack@x.staging.example.test}"
-RESTORE_ADDR="${RESTORE_ADDR:-john@x.staging.example.test}"
+TEST_ADDR="${TEST_ADDR:-jack@x.$(resolve_platform_apex)}"
+RESTORE_ADDR="${RESTORE_ADDR:-john@x.$(resolve_platform_apex)}"
 CORPUS_SIZE="${CORPUS_SIZE:-1000}"
 RESTIC_BIN="${SPIKE_RESTIC:-$(command -v restic 2>/dev/null || true)}"
 

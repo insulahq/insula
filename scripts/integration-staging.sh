@@ -91,7 +91,7 @@ fi
 # Connection settings — every default targets the historical
 # staging cluster, but every value is overridable so the
 # harness runs cleanly against any cluster bootstrapped by this repo.
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 # Derive the platform apex from ADMIN_HOST (admin.<apex>) so DNS-level
@@ -130,7 +130,7 @@ CATALOG_NGINX_PHP="${CATALOG_NGINX_PHP:-b6465a21-6c27-4e23-a3ef-3f6d4616dca5}"
 # REQUIRED — the wildcard must resolve to the cluster's ingress IPs.
 # Default is the `staging.example.test` zone; operators
 # of other clusters MUST set this to a wildcard they control.
-HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-staging.example.test}"
+HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-$(resolve_platform_apex)}"
 
 if [[ -z "$ADMIN_PASSWORD" ]]; then
   echo "ERROR: ADMIN_PASSWORD must be set" >&2
@@ -564,7 +564,7 @@ _resolve_mail_hostname() {
     echo "$MAIL_HOSTNAME"
     return 0
   fi
-  local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-staging.example.test}}"
+  local apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   local from_api
   from_api=$(api GET /admin/webmail-settings 2>/dev/null \
     | python3 -c "import json,sys
@@ -2160,7 +2160,7 @@ scenario_mail() {
     fail "mail/resolve: could not auto-resolve mail host (DNS of mail.<apex> + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
     return 1
   fi
-  local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
+  local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   # Derive defaults from the apex under test (matches scenario_webmail's
   # convention) — a hardcoded example-host default silently probes a
   # nonexistent vhost (curl 000) whenever the operator sets
@@ -3151,7 +3151,7 @@ scenario_mail_tls() {
     return 0
   fi
 
-  local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
+  local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   # Mail hostname: read the LIVE value from /admin/webmail-settings so
   # the probe matches whatever the operator has configured (which may
   # differ from the convention `mail.<apex>` — the
@@ -3321,7 +3321,7 @@ scenario_webmail() {
     return 0
   fi
 
-  local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
+  local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   local webmail_url="${WEBMAIL_URL:-https://webmail.${mail_domain_apex}}"
   local webmail_host
   webmail_host=$(echo "$webmail_url" | sed 's|https://||;s|/.*||')
@@ -3577,7 +3577,7 @@ scenario_mail_hostname_rename() {
   # stale value, so the corruption is self-perpetuating across runs.
   # The apex is the cluster's mail apex; the canonical mail hostname is
   # `mail.<apex>` (bootstrap convention + backend defaultMailHostname()).
-  local apex="${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-staging.example.test}}"
+  local apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   local canonical="mail.${apex}"
 
   # ── Read the live original, then SELF-HEAL if it is a leftover ──

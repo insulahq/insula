@@ -20,11 +20,13 @@
 #
 # USAGE: ADMIN_PASSWORD=<…> ./scripts/integration-tenant-bundles-tenant-side.sh
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 TENANT_HOST="${TENANT_HOST:-${ADMIN_HOST/admin./tenant.}}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@staging.example.test}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$(resolve_platform_apex)}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 
 [[ -n "$ADMIN_PASSWORD" ]] || { echo "ERROR: ADMIN_PASSWORD must be set" >&2; exit 2; }

@@ -43,10 +43,12 @@
 # cluster IS WIPED + REBUILT from the barman archive. ONLY run against
 # staging. Same production paranoia as snapshot-restore harness.
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$(resolve_platform_apex)}"
 # Honor the operator profile's SSH_HOST (real node) before the redacted public
 # placeholder — otherwise a full integration-all run SSHes to the unresolvable
 # example.test default and dies rc=255 (the 2026-07-18 full-run failure).

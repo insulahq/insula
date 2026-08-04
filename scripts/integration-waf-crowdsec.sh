@@ -34,12 +34,14 @@
 # for documentation, never routable, won't collide with real traffic
 # or the community blocklist.
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
 # ─── Config ────────────────────────────────────────────────────────────
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$(resolve_platform_apex)}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 SSH_HOST="${SSH_HOST:-root@192.0.2.58}"
@@ -56,7 +58,7 @@ TEST_PROBE_PATH="${TEST_PROBE_PATH:-/.env}"
 # per-pod capture used to come up empty. Derive the host from ADMIN_HOST so the
 # probe actually reaches modsec; fall back to the placeholder only off-cluster.
 _waf_admin_host=$(printf '%s' "${ADMIN_HOST:-}" | sed -E 's#^https?://##; s#[:/].*$##')
-PROBE_HOSTNAME="${PROBE_HOSTNAME:-${_waf_admin_host:-admin.staging.example.test}}"
+PROBE_HOSTNAME="${PROBE_HOSTNAME:-${_waf_admin_host:-admin.$(resolve_platform_apex)}}"
 
 # Plugin update interval — bouncer pulls every N seconds, so a ban
 # takes up to N+5 seconds to propagate. v1.6.0 default is 60s.

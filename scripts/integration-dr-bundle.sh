@@ -32,9 +32,11 @@
 #                      ~/k8s-staging/<env>-age.key). REQUIRED for B2+.
 #   CURL_INSECURE    — set 1 to ignore TLS errors
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 AGE_KEY_FILE="${AGE_KEY_FILE:-$HOME/k8s-staging/staging-age.key}"
 CURL_OPTS=(-s --max-time 120)
