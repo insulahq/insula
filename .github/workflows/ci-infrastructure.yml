@@ -84,6 +84,7 @@ jobs:
       - run: ./scripts/test-ui.sh
       - run: ./scripts/test-bootstrap-quiet-wrappers.sh
       - run: ./scripts/test-traefik-plugin-guard.sh
+      - run: ./scripts/test-waf-audit-redaction.sh
       - run: ./scripts/test-log-gate.sh
       - run: ./scripts/test-vmtest-log-gate-wiring.sh
       - run: ./.github/scripts/test-pin-image-tag.sh

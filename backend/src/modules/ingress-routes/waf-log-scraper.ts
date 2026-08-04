@@ -50,6 +50,10 @@ const INGRESS_NAMESPACE = 'traefik';
 // since the 2026-05-15 Traefik migration. The bug only became visible after
 // the WAF Events tab surfaced an empty scraperStatus banner on 2026-05-19.
 const INGRESS_LABEL = 'app.kubernetes.io/name=modsec-crs';
+// Containers to read per modsec pod. `audit-redactor` streams the JSON audit
+// record with credential headers masked; a pod predating that sidecar simply
+// fails that one read (handled soft, per-target).
+const WAF_LOG_CONTAINERS = ['modsec', 'audit-redactor'] as const;
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : s.slice(0, n);
@@ -281,14 +285,28 @@ export async function scrapeWafLogs(
         name: string;
         namespace: string;
         sinceSeconds?: number;
+        container?: string;
       }) => Promise<string>;
     };
+
+    // The modsec pod has TWO containers and the API demands a name once that
+    // is true — omitting it returns 400 and the scraper would go blind.
+    // The signal is split on purpose:
+    //   modsec         — nginx's `[error] ModSecurity:` lines
+    //   audit-redactor — the JSON audit record, with Authorization / Cookie
+    //                    masked (the raw record carries live credentials, so it
+    //                    is written to a file and never reaches a log sink
+    //                    unredacted). Both are needed: the JSON is the ONLY
+    //                    source of X-Forwarded-Host and of the contributing
+    //                    rule ids, and a DetectionOnly (allowlisted) request
+    //                    produces no [error] line at all.
+    const targets = podNames.flatMap((name) => WAF_LOG_CONTAINERS.map((container) => ({ name, container })));
 
     // Parallel reads — at 30s cadence + ~35s window, even a 5-pod deployment
     // costs ~5 small log fetches per cycle. Fail soft per-pod.
     const results = await Promise.allSettled(
-      podNames.map((name) =>
-        coreApi.readNamespacedPodLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds: LOG_SINCE_SECONDS }),
+      targets.map(({ name, container }) =>
+        coreApi.readNamespacedPodLog({ name, namespace: INGRESS_NAMESPACE, sinceSeconds: LOG_SINCE_SECONDS, container }),
       ),
     );
     for (const r of results) {
