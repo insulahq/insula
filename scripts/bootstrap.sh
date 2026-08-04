@@ -3468,13 +3468,49 @@ for line in sys.argv[1].splitlines():
 PYEOF
 }
 
+# Find a usable IPv6 on the SAME interface that carries a given IPv4 address.
+#
+# "Same link" is the real invariant behind the pinned-underlay rule: an address
+# on the same NIC as the pinned v4 rides the same network, so using it cannot
+# leak pod traffic onto a different path. Prefers global over ULA, same as
+# detect_node_ipv6. Prints the address / exit 0, or nothing / exit 1.
+resolve_same_link_ipv6() {
+  local v4="$1" iface line addr global_hit="" ula_hit=""
+  [[ -z "$v4" ]] && return 1
+  iface=$(ip -4 -o addr show 2>/dev/null | awk -v a="$v4" '$4 ~ "^"a"/" {print $2; exit}')
+  [[ -z "$iface" ]] && return 1
+  while IFS= read -r line; do
+    addr=$(echo "$line" | awk '{print $4}' | cut -d/ -f1)
+    [[ -z "$addr" ]] && continue
+    case "$addr" in
+      ::1|fe80*) continue ;;
+    esac
+    echo "$line" | grep -q "scope global" || continue
+    case "$addr" in
+      fc*|fd*) [[ -z "$ula_hit" ]] && ula_hit="$addr" ;;
+      *)       [[ -z "$global_hit" ]] && global_hit="$addr" ;;
+    esac
+  done < <(ip -6 -o addr show dev "$iface" 2>/dev/null)
+  if [[ -n "$global_hit" ]]; then echo "$global_hit"; return 0; fi
+  if [[ -n "$ula_hit" ]];    then echo "$ula_hit";    return 0; fi
+  return 1
+}
+
 # Resolve the v6 --node-ip for a dual-stack install, honouring the underlay.
 #
-# Pinned (mesh/private) underlay: the v6 MUST come from the mesh, otherwise pod
-# and etcd traffic would split — v4 inside the tunnel, v6 straight over the
-# public internet — which is both a security regression and an asymmetry the
-# operator never asked for. So we require --cluster-network-cidr-v6 to resolve,
-# and refuse with an actionable message when it doesn't.
+# Pinned (mesh/private) underlay: the v6 must ride the SAME network as the
+# pinned v4, otherwise pod and etcd traffic split — v4 inside the tunnel, v6
+# straight over the public internet — which is both a security regression and
+# an asymmetry the operator never asked for. Two ways to satisfy that, in
+# order:
+#   1. --cluster-network-cidr-v6 resolves → the operator declared the range.
+#   2. The interface holding the pinned v4 also holds a v6 → same link by
+#      construction, no declaration needed. This is the common single-NIC case
+#      (and how the VM integration tier runs: one virtio NIC carrying both the
+#      per-run NAT v4 and its ULA v6).
+# Only when NEITHER holds do we refuse — requiring the flag outright would have
+# rejected a node whose v6 was provably on the right link, which is what the
+# first dual-stack VM run hit.
 #
 # Public underlay: any usable node v6 is correct by definition.
 resolve_dual_stack_node_ipv6() {
@@ -3482,7 +3518,12 @@ resolve_dual_stack_node_ipv6() {
     local mesh_v6=""
     mesh_v6=$(resolve_cluster_network_ipv6)
     if [[ -z "$mesh_v6" ]]; then
-      error "--dual-stack with a pinned underlay needs an IPv6 address inside the mesh/private range, but none was found${NODEIP_PIN_CIDR_V6:+ in ${NODEIP_PIN_CIDR_V6}}. Pass --cluster-network-cidr-v6 <cidr> matching the underlay's v6 range (and make sure this host holds an address in it), or drop --dual-stack. Refusing to fall back to a public IPv6, which would send pod traffic outside the underlay."
+      local pinned_v4=""
+      pinned_v4=$(resolve_cluster_network_ip)
+      mesh_v6=$(resolve_same_link_ipv6 "$pinned_v4" || true)
+    fi
+    if [[ -z "$mesh_v6" ]]; then
+      error "--dual-stack with a pinned underlay needs an IPv6 address on the underlay itself, but none was found${NODEIP_PIN_CIDR_V6:+ in ${NODEIP_PIN_CIDR_V6}} and the interface holding the pinned IPv4 has no IPv6 either. Pass --cluster-network-cidr-v6 <cidr> matching the underlay's v6 range, bring IPv6 up on that interface, or drop --dual-stack. Refusing to fall back to an IPv6 on a different link, which would send pod traffic outside the underlay."
     fi
     echo "$mesh_v6"
     return 0
