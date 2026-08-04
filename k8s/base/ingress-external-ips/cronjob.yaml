@@ -98,8 +98,23 @@ spec:
                   # Service externalIPs cover it — required for ACME
                   # HTTP-01 challenges when mail (or any TLS-anchored
                   # workload) ends up on the worker.
+                  # A dual-stack node registers TWO ExternalIPs, and
+                  # custom-columns renders a multi-value field as one
+                  # comma-joined column ("1.2.3.4,2001:db8::1"). Splitting on
+                  # the comma is what keeps this working on both cluster
+                  # shapes: a v4-only match against the joined string matches
+                  # NOTHING, so a dual-stack cluster would silently fall
+                  # through to "no Ready nodes with ExternalIP" and stop
+                  # reconciling. Accept a dotted quad or anything containing a
+                  # colon (v6); nodes only ever carry addresses the cluster
+                  # was bootstrapped for.
                   IPS=$(kubectl get nodes -o custom-columns='NAME:.metadata.name,READY:.status.conditions[?(@.type=="Ready")].status,EXTIP:.status.addresses[?(@.type=="ExternalIP")].address,INGRESS:.metadata.labels.insula\.host/ingress-mode,EXPOSURE:.metadata.labels.insula\.host/exposure' --no-headers \
-                    | awk '$2=="True" && $3 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ && $4!="none" && $5!="private" {print $3}' \
+                    | awk '$2=="True" && $4!="none" && $5!="private" {
+                        n = split($3, addrs, ",");
+                        for (i = 1; i <= n; i++) {
+                          if (addrs[i] ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ || addrs[i] ~ /:/) print addrs[i];
+                        }
+                      }' \
                     | sort -u)
                   if [ -z "$IPS" ]; then
                     echo "no Ready nodes with ExternalIP — leaving Service untouched" >&2

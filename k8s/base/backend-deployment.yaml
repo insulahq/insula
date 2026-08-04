@@ -329,6 +329,16 @@ spec:
                   name: platform-config
                   key: ingress-default-ipv4
                   optional: true
+            # R13 dual-stack: feeds the AAAA sibling of the webmail.<domain>
+            # record. optional:true and unset by default, so a single-stack
+            # cluster publishes exactly the records it did before — the
+            # backend emits no AAAA unless an address is actually configured.
+            - name: INGRESS_DEFAULT_IPV6
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: ingress-default-ipv6
+                  optional: true
             - name: CLUSTER_ISSUER_NAME
               valueFrom:
                 configMapKeyRef:

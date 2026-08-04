@@ -2,7 +2,14 @@
 # Deployed on every server-role node when mail port exposure mode is 'allServerNodes'.
 # haproxy runs hostNetwork and binds the PUBLIC mail ports (25/465/587/143/993/4190)
 # on each non-active node directly (the frontends below), so external mail reaches
-# haproxy without any Service externalIP. Each backend forwards to Stalwart's
+# haproxy without any Service externalIP.
+#
+# `bind :::<port> v4v6` — NOT `bind *:<port>`. In haproxy `*` is the IPv4
+# wildcard only, so the previous form served no IPv6 client even on a node with
+# a working global v6. `:::` + v4v6 binds one dual-stack socket and keeps
+# serving IPv4 identically, so this is safe on a single-stack cluster too:
+# because haproxy is hostNetwork it does not depend on the pod network having
+# IPv6, which is why this half of IPv6 support works without --dual-stack. Each backend forwards to Stalwart's
 # DEDICATED PROXY-protocol listener (internal ports 12025/12465/12587/12143/12993/
 # 14190 — see service.yaml) with 'send-proxy-v2'.
 #
@@ -44,42 +51,42 @@ data:
       timeout server  600s
 
     frontend smtp_in
-      bind *:25
+      bind :::25 v4v6
       default_backend stalwart_smtp
 
     backend stalwart_smtp
       server stalwart stalwart-mail.mail.svc.cluster.local:12025 send-proxy-v2 check inter 10s
 
     frontend submission_in
-      bind *:587
+      bind :::587 v4v6
       default_backend stalwart_submission
 
     backend stalwart_submission
       server stalwart stalwart-mail.mail.svc.cluster.local:12587 send-proxy-v2 check inter 10s
 
     frontend smtps_in
-      bind *:465
+      bind :::465 v4v6
       default_backend stalwart_smtps
 
     backend stalwart_smtps
       server stalwart stalwart-mail.mail.svc.cluster.local:12465 send-proxy-v2 check inter 10s
 
     frontend imap_in
-      bind *:143
+      bind :::143 v4v6
       default_backend stalwart_imap
 
     backend stalwart_imap
       server stalwart stalwart-mail.mail.svc.cluster.local:12143 send-proxy-v2 check inter 10s
 
     frontend imaps_in
-      bind *:993
+      bind :::993 v4v6
       default_backend stalwart_imaps
 
     backend stalwart_imaps
       server stalwart stalwart-mail.mail.svc.cluster.local:12993 send-proxy-v2 check inter 10s
 
     frontend sieve_in
-      bind *:4190
+      bind :::4190 v4v6
       default_backend stalwart_sieve
 
     backend stalwart_sieve
