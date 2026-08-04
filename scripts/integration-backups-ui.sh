@@ -30,6 +30,11 @@ set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
+
+# A cluster with no backup target bound to this class cannot run the suite.
+# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# suites went red on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip tenant
 CURL_OPTS=(-s --max-time 60)
 if [[ "${CURL_INSECURE:-0}" == "1" ]]; then
   CURL_OPTS+=(-k)

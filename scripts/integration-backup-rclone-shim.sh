@@ -71,7 +71,12 @@ for arg in "$@"; do
   esac
 done
 
-API_BASE="${API_BASE:-https://admin.k8s-platform.test:2011}"
+# Derive from the configured target before falling back to the local-dev
+# apex: an operator profile sets ADMIN_HOST/API_URL, not API_BASE, so a
+# bare local default silently pointed every request at localhost and
+# returned 000 against a remote cluster (seen 2026-08-04: node-terminal
+# "A1 expected super_admin, got ''" / "A2 step-up/password failed: 000").
+API_BASE="${API_BASE:-${ADMIN_HOST:-${API_URL:-https://admin.k8s-platform.test:2011}}}"
 ADMIN_HOST="${ADMIN_HOST:-$API_BASE}"
 CURL_INSECURE="${CURL_INSECURE:-1}"
 # kubectl command — point KUBECTL at scripts/lib/kubectl-remote.sh (SSH wrapper)

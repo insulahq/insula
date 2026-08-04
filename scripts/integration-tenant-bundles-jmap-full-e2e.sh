@@ -52,7 +52,7 @@
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-API_BASE="${API_BASE:-https://admin.$(resolve_platform_apex)}"
+API_BASE="${API_BASE:-${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-markus@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
