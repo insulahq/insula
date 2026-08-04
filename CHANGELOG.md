@@ -27,10 +27,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   before destroying the principal (paged, deadline-bounded, best-effort — a mail
   outage still cannot wedge a deletion), and `bootstrap.sh` sets
   `holdSamplesFor` to 30 d to bound every path the hook does not cover.
-  Existing installs keep 180 d until the one-liner in
-  `docs/operations/MAIL_STORE_SPACE_RECLAIM.md` is applied. That runbook and
-  ADR-046 previously blamed disabled RocksDB blob GC — which upstream shipped in
-  v0.16.10 and which was never the binding constraint; both are corrected.
+  Existing clusters are converged by host-migration
+  `2026.8.3/0001-stalwart-spam-sample-retention` (bootstrap.sh reaches fresh
+  installs only) — it reads the current value first and moves *only* the
+  upstream 180 d default, so an install an operator tuned on purpose keeps its
+  setting. That runbook and ADR-046 previously blamed disabled RocksDB blob GC —
+  which upstream shipped in v0.16.10 and which was never the binding constraint;
+  both are corrected.
 - **Eager image reaps were lost on any platform-api restart, silently.** The
   5-minute grace period lived in an in-process `setTimeout`, so a deploy, Flux
   reconcile, OOM kill or drain inside that window dropped the reap with no
