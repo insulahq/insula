@@ -3,8 +3,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // ── Mock DB ──────────────────────────────────────────────────────────────────
 
 const mockInsert = vi.fn().mockReturnValue({ values: vi.fn().mockResolvedValue([]) });
+// Claimed rows the mocked `DELETE … RETURNING` hands back; each test sets this.
+let claimedRows: Record<string, unknown>[] = [];
+const mockReturning = vi.fn(async () => claimedRows);
+const mockDelete = vi.fn().mockReturnValue({ where: vi.fn().mockReturnValue({ returning: mockReturning }) });
 const mockDb = {
   insert: mockInsert,
+  delete: mockDelete,
 } as unknown as import('../../db/index.js').Database;
 
 // ── Mock storage/service internals ───────────────────────────────────────────
@@ -33,9 +38,10 @@ vi.mock('./service.js', async () => {
 
 vi.mock('../../db/schema.js', () => ({
   imageReapLog: {},
+  pendingImageReaps: {},
 }));
 
-const { reapImageNow, scheduleReap } = await import('./image-reaper.js');
+const { reapImageNow, scheduleReap, runDueReaps } = await import('./image-reaper.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -323,5 +329,86 @@ describe('image-reaper', () => {
       const img = imgs[0] as { crictlName: string };
       expect(img.crictlName).toBe('sha256:abc');
     });
+  });
+});
+
+// ── Durability: the reap must survive a platform-api restart ─────────────────
+//
+// The grace period used to be an in-process setTimeout ONLY. A restart inside
+// the window dropped the reap silently — no image_reap_log row, no retry, no
+// trace. Reproduced on the DEV cluster 2026-08-04: a deployment deleted at
+// 13:43:44 armed a timer for 13:48:44, Flux rolled platform-api (new pod up
+// 13:49:28), and the image stayed on the node with NOTHING recorded anywhere.
+describe('image-reaper durability', () => {
+  // Fresh values() spy per test — mockInsert returns ONE object, so a stale spy
+  // would accumulate calls across tests and `calls[0]` would be another test's.
+  let valuesSpy: ReturnType<typeof vi.fn>;
+  const insertedRows = (): Record<string, unknown>[] => valuesSpy.mock.calls.map((c) => c[0]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    claimedRows = [];
+    valuesSpy = vi.fn().mockResolvedValue([]);
+    mockInsert.mockReturnValue({ values: valuesSpy });
+    mockDelete.mockReturnValue({ where: vi.fn().mockReturnValue({ returning: mockReturning }) });
+    mockGetInUseImages.mockResolvedValue(new Set<string>());
+    mockRunPurgeOnNode.mockResolvedValue({
+      removedDisplayNames: ['ghcr.io/x/y:1'], failedDisplayNames: [], freedBytes: 100, podError: undefined,
+    });
+  });
+
+  it('persists the pending reap BEFORE the timer — the row is the source of truth', () => {
+    vi.useFakeTimers();
+    scheduleReap(mockDb, makeK8s([]), {
+      image: 'ghcr.io/x/y:1', triggeredBy: 'deployment_delete', triggerRef: 'depl-1', graceMs: 1000,
+    });
+    // Enqueued synchronously, without waiting for the grace period: a crash one
+    // millisecond later must still leave the work recorded.
+    expect(mockInsert).toHaveBeenCalled();
+    const row = insertedRows()[0] as Record<string, unknown> & { dueAt: Date };
+    expect(row.imageName).toBe('ghcr.io/x/y:1');
+    expect(row.triggerRef).toBe('depl-1');
+    expect(row.dueAt).toBeInstanceOf(Date);
+    vi.useRealTimers();
+  });
+
+  it('a restart loses the timer but NOT the reap — the sweeper picks it up', async () => {
+    // Simulate the post-restart process: no timer was ever armed here; the only
+    // evidence the work exists is the persisted row.
+    claimedRows = [{ imageName: 'ghcr.io/x/y:1', triggeredBy: 'deployment_delete', triggerRef: 'depl-1', attempts: 0 }];
+    const executed = await runDueReaps(mockDb, makeK8s([
+      { name: 'node-a', images: [{ names: ['ghcr.io/x/y:1'], sizeBytes: 100 }] },
+    ]));
+    expect(executed).toBe(1);
+    expect(mockRunPurgeOnNode).toHaveBeenCalled();
+  });
+
+  it('claims with DELETE … RETURNING so two replicas cannot both reap a row', async () => {
+    claimedRows = [{ imageName: 'ghcr.io/x/y:1', triggeredBy: 'deployment_delete', triggerRef: null, attempts: 0 }];
+    await runDueReaps(mockDb, makeK8s([]));
+    // The claim is a DELETE (atomic hand-off), never a SELECT-then-update:
+    // with a read-first claim both replicas would see the same row.
+    expect(mockDelete).toHaveBeenCalled();
+  });
+
+  it('re-enqueues with backoff when a reap throws, instead of losing it', async () => {
+    claimedRows = [{ imageName: 'ghcr.io/x/y:1', triggeredBy: 'deployment_delete', triggerRef: 'd1', attempts: 1 }];
+    mockGetInUseImages.mockRejectedValueOnce(new Error('kube-apiserver unreachable'));
+    await runDueReaps(mockDb, makeK8s([]));
+    const reinsert = insertedRows().at(-1) as Record<string, unknown> & { dueAt: Date };
+    expect(reinsert.attempts).toBe(2);
+    expect(reinsert.lastError).toContain('kube-apiserver unreachable');
+    // Scheduled into the future, not retried in a tight loop.
+    expect(reinsert.dueAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('gives up after the attempt cap and records WHY, rather than retrying forever', async () => {
+    claimedRows = [{ imageName: 'ghcr.io/x/y:1', triggeredBy: 'deployment_delete', triggerRef: 'd1', attempts: 4 }];
+    mockGetInUseImages.mockRejectedValueOnce(new Error('permanent failure'));
+    await runDueReaps(mockDb, makeK8s([]));
+    const logged = insertedRows().at(-1) as Record<string, unknown>;
+    expect(logged.succeeded).toBe(false);
+    expect(logged.error).toContain('gave up after 5 attempts');
+    expect(logged.error).toContain('permanent failure');
   });
 });

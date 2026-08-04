@@ -16,16 +16,23 @@
  *   image_reap_log table (migration 0064) so operators can audit what was
  *   removed and why.
  *
- * Multi-replica note:
- *   scheduleReap uses setTimeout — "at-most-once-per-replica". With N replicas
- *   all scheduling the same image, N reap pods may run concurrently. crictl rmi
- *   is idempotent on missing images so duplicate reaps are safe but wasteful.
- *   A proper distributed lock (BullMQ, advisory lock) is deferred for Phase 2.
+ * Durability + multi-replica (2026-08-04):
+ *   scheduleReap persists the pending reap to `pending_image_reaps` and ALSO
+ *   arms an in-process timer. The row is the source of truth; the timer only
+ *   keeps the common case prompt. Previously the grace period lived in the
+ *   timer alone, so a restart inside the window dropped the reap silently —
+ *   no log row, no retry (seen on DEV, where Flux rolls platform-api on every
+ *   push). runDueReaps() sweeps due rows and is what makes this restart-safe.
+ *
+ *   Claiming is `DELETE … RETURNING`, which is atomic in Postgres, so each row
+ *   goes to exactly ONE replica. That supersedes the old "at-most-once-per-
+ *   replica" caveat and the deferred distributed lock.
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
-import { imageReapLog } from '../../db/schema.js';
+import { lte } from 'drizzle-orm';
+import { imageReapLog, pendingImageReaps } from '../../db/schema.js';
 import { getInUseImages, runPurgeOnNode, isAnyNameInUse } from './service.js';
 import { canonicalImageRef } from './image-ref-utils.js';
 
@@ -48,6 +55,10 @@ export interface ReapResult {
 }
 
 const DEFAULT_GRACE_MS = 5 * 60 * 1000;
+/** Give up (and log the failure) after this many failed reap attempts. */
+const MAX_REAP_ATTEMPTS = 5;
+const RETRY_BASE_MS = 60 * 1000;
+const RETRY_MAX_MS = 15 * 60 * 1000;
 
 /**
  * Schedule a reap after graceMs milliseconds — fire-and-forget.
@@ -55,11 +66,89 @@ const DEFAULT_GRACE_MS = 5 * 60 * 1000;
  */
 export function scheduleReap(db: Database, k8s: K8sClients, input: ReapInput): void {
   const grace = input.graceMs ?? DEFAULT_GRACE_MS;
+  // DURABILITY: persist the intent FIRST. A setTimeout lives only in this
+  // process, so a restart inside the grace window used to drop the reap
+  // silently — no image_reap_log row, no retry, nothing to find afterwards.
+  // (DEV cluster, 2026-08-04: delete at 13:43:44 armed a timer for 13:48:44,
+  // Flux rolled platform-api, replacement pod up at 13:49:28, reap never ran.)
+  // The row is the source of truth; the timer below is only a latency
+  // optimisation so the common case still fires promptly.
+  void db.insert(pendingImageReaps).values({
+    imageName: input.image,
+    triggeredBy: input.triggeredBy,
+    triggerRef: input.triggerRef ?? null,
+    dueAt: new Date(Date.now() + grace),
+  }).catch(() => {
+    // If the enqueue fails we still run the in-process timer below — degraded
+    // to the old behaviour rather than losing the reap entirely.
+  });
+
   setTimeout(() => {
-    reapImageNow(db, k8s, input).catch(() => {
-      // reapImageNow already logs failures via imageReapLog — nothing more to do
+    // Claim through the same path the scheduler uses so the fast path and the
+    // sweeper can never both reap the same row.
+    runDueReaps(db, k8s).catch(() => {
+      // runDueReaps logs failures via imageReapLog — nothing more to do
     });
   }, grace);
+}
+
+/**
+ * Claim and execute every reap whose grace period has expired.
+ *
+ * Claiming is `DELETE … RETURNING`, which is atomic in Postgres: with N
+ * replicas ticking concurrently each row is handed to exactly ONE of them, so
+ * duplicate reap pods stop being possible. (The previous design was documented
+ * as "at-most-once-per-replica" with a distributed lock deferred — this removes
+ * the need for one.)
+ *
+ * A reap that throws is re-enqueued with a capped exponential backoff so a
+ * transient k8s error retries instead of vanishing. After MAX_REAP_ATTEMPTS the
+ * failure is written to image_reap_log and the row is dropped, so a
+ * permanently-failing image cannot spin forever.
+ */
+export async function runDueReaps(db: Database, k8s: K8sClients): Promise<number> {
+  const claimed = await db
+    .delete(pendingImageReaps)
+    .where(lte(pendingImageReaps.dueAt, new Date()))
+    .returning();
+
+  let executed = 0;
+  for (const row of claimed) {
+    const input: ReapInput = {
+      image: row.imageName,
+      triggeredBy: row.triggeredBy as ReapInput['triggeredBy'],
+      triggerRef: row.triggerRef ?? undefined,
+    };
+    try {
+      await reapImageNow(db, k8s, input);
+      executed += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const attempts = row.attempts + 1;
+      if (attempts >= MAX_REAP_ATTEMPTS) {
+        await insertLog(db, {
+          imageName: row.imageName,
+          triggeredBy: input.triggeredBy,
+          triggerRef: input.triggerRef,
+          succeeded: false,
+          error: `gave up after ${attempts} attempts: ${message}`,
+        }).catch(() => undefined);
+        continue;
+      }
+      // Backoff: 1m, 2m, 4m … capped. Re-insert rather than update because the
+      // row was already removed by the atomic claim above.
+      const backoffMs = Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS);
+      await db.insert(pendingImageReaps).values({
+        imageName: row.imageName,
+        triggeredBy: row.triggeredBy,
+        triggerRef: row.triggerRef,
+        dueAt: new Date(Date.now() + backoffMs),
+        attempts,
+        lastError: message.slice(0, 500),
+      }).catch(() => undefined);
+    }
+  }
+  return executed;
 }
 
 /**

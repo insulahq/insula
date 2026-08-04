@@ -12,6 +12,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Eager image reaps were lost on any platform-api restart, silently.** The
+  5-minute grace period lived in an in-process `setTimeout`, so a deploy, Flux
+  reconcile, OOM kill or drain inside that window dropped the reap with no
+  `image_reap_log` row, no retry and nothing to find afterwards — the image then
+  sat on the node until the pressure watcher reclaimed it under disk pressure,
+  which is what eager reaping exists to avoid. Reproduced on the DEV cluster,
+  which rolls platform-api on every push: a deployment deleted at 13:43:44 armed
+  a timer for 13:48:44, the pod was replaced at 13:49:28, and the reap never
+  ran. Pending reaps are now persisted (`pending_image_reaps`, migration 0079)
+  and swept by a scheduler; claims use `DELETE … RETURNING`, which is atomic, so
+  each row runs on exactly one replica — superseding the old
+  "at-most-once-per-replica" caveat and its deferred distributed lock. Failed
+  reaps retry with capped backoff and give up loudly instead of vanishing.
+- **The image purge reported removals it had not performed.** `crictl rmi`
+  answering "no such image" was mapped straight to REMOVED, but that message
+  means both "already gone" and "this ref does not resolve on this runtime" —
+  and in the second case the image was still on disk. The reaper then logged
+  `succeeded=true` with a byte count copied from kubelet's node status, a figure
+  it never measured. Removal is now confirmed against the runtime
+  (`crictl images -q`), so a ref that cannot be resolved reports FAILED.
+
 ### Added
 - **"How to connect to your email accounts" guide in the tenant panel.** A button
   next to the domain pill on Email opens a tabbed dialog with end-user setup
