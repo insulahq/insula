@@ -88,14 +88,52 @@ a live A automatically. Finish the move deliberately:
    **bundles are retained** (the delete cascade only drops A's local rows) — prune
    them from the target manually if you want the storage back.
 
+## Preconditions to check BEFORE you start
+
+- **Every tenant you intend to move has a bundle with `status: completed`.** A
+  `partial` bundle is a FAILED capture, not a usable one — `meta.json` is the
+  commit marker and is written last, so a bundle without it restores nothing.
+  Check per tenant, not in aggregate.
+- **B is bootstrapped from A's age-encrypted secrets bundle** (or has A's
+  `PLATFORM_ENCRYPTION_KEY` set). See the secrets gap below for what breaks
+  otherwise.
+- **B has the same plan + region ids seeded.** The import fails fast on a missing
+  id rather than emitting a raw FK error, but it fails the whole tenant.
+
 ## Residual gaps (surfaced, operator-actionable)
 
+- **Add-on databases are restored as files, not replayed from their dump.**
+  This is the one to read twice. `dr-recover/recreate.ts` restores exactly
+  `['config', 'files', 'mailboxes', 'secrets']` — the `databases-by-id` restore
+  executor is **not** in that list, and the migration import reuses the same
+  engine. Consequences:
+  - Tenant databases live *inside* the tenant PVC under a
+    `databases/<name>-<suffix>` subPath, so the `files` component does carry
+    their on-disk data directory. It is a **crash-consistent copy of a running
+    database** — InnoDB/Postgres normally replay their journals and come up
+    clean, but that is a recovery, not a guaranteed-consistent dump.
+  - The ADR-047 pre-capture hook *does* write a clean logical dump
+    (`predump-<db>-<bundleId>.sql`) into the same PVC, and it is restored
+    alongside the files — but **nothing replays it automatically.**
+  - **What to do:** after the import, for each tenant with an add-on database,
+    run a restore cart containing a `databases-by-id` item (`{ kind: 'all' }`)
+    against the same bundle. It `find`s the predump on the PVC and imports it
+    into the running DB pod. It SKIPS gracefully when the DB workload is not
+    running, so re-deploy the database workload first.
+  - Streamlining this — folding `databases-by-id` into the recreate engine so a
+    migrated tenant needs no follow-up step — is tracked as **R25**.
 - **Cross-region DNS:** if B uses a different `ingress_base_domain`, the CNAME
   chain target differs — update client CNAMEs, not just the ingress A record.
 - **Secrets re-encryption:** TLS/secret material in a bundle is encrypted with
   **A's** `PLATFORM_ENCRYPTION_KEY`. If B's key differs, secrets that can't be
   decrypted are surfaced as a residual gap — re-enter them on B (or re-issue
   certs via cert-manager).
+- **Mail send-readiness is not re-established by the import.** The mailboxes
+  restore auto-heals the Stalwart domain + principals, so mail is *delivered*
+  and mail login works, but DKIM signing and mail DNS (MX/SPF/DKIM/DMARC) are
+  not regenerated. Re-enable each email domain on B to restore outbound
+  signing, then re-verify DNS. (`recreate.ts` surfaces this as a residual gap
+  on every run — it is expected, not a failure.)
 - **CIFS/SMB source:** the read-only mount uses the direct S3/SFTP store. A CIFS
   source is reached via the shim; assign it to a spare shim class if needed.
 

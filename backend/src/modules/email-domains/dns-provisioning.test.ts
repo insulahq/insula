@@ -208,3 +208,74 @@ describe('MAIL_SERVER_IP fallback chain', () => {
     expect(webmail?.recordValue).toBe('198.51.100.7');
   });
 });
+
+// R13 dual-stack: webmail.<domain> gains an AAAA sibling, but ONLY when an
+// IPv6 is actually configured. Publishing an AAAA that nothing answers on is
+// worse than publishing none — a v6-only client fails outright, and every
+// dual-stack client pays a failed connection first.
+describe('webmail AAAA (dual-stack)', () => {
+  const ORIGINAL_ENV = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  beforeEach(() => {
+    delete process.env.MAIL_SERVER_IP;
+    delete process.env.INGRESS_DEFAULT_IPV4;
+    delete process.env.MAIL_SERVER_IPV6;
+    delete process.env.INGRESS_DEFAULT_IPV6;
+    process.env.MAIL_SERVER_IP = '203.0.113.42';
+  });
+
+  const webmailRecords = () =>
+    buildEmailDnsRecordsForDisplay('example.com', 'default', 'pub', 'mail.host', {
+      webmailEnabled: true,
+    }).filter((r) => r.purpose === 'webmail');
+
+  it('emits NO AAAA when neither IPv6 env var is set', () => {
+    const records = webmailRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].recordType).toBe('A');
+  });
+
+  it('emits an AAAA alongside the A when MAIL_SERVER_IPV6 is set', () => {
+    process.env.MAIL_SERVER_IPV6 = '2001:db8::25';
+    const records = webmailRecords();
+    expect(records).toHaveLength(2);
+
+    const a = records.find((r) => r.recordType === 'A');
+    const aaaa = records.find((r) => r.recordType === 'AAAA');
+    expect(a?.recordValue).toBe('203.0.113.42');
+    expect(aaaa?.recordValue).toBe('2001:db8::25');
+    expect(aaaa?.recordName).toBe('webmail.example.com');
+    expect(aaaa?.ttl).toBe(3600);
+  });
+
+  it('falls back to INGRESS_DEFAULT_IPV6', () => {
+    process.env.INGRESS_DEFAULT_IPV6 = '2001:db8::99';
+    const records = webmailRecords();
+    expect(records.find((r) => r.recordType === 'AAAA')?.recordValue).toBe('2001:db8::99');
+  });
+
+  it('prefers MAIL_SERVER_IPV6 over INGRESS_DEFAULT_IPV6', () => {
+    process.env.MAIL_SERVER_IPV6 = '2001:db8::25';
+    process.env.INGRESS_DEFAULT_IPV6 = '2001:db8::99';
+    expect(webmailRecords().find((r) => r.recordType === 'AAAA')?.recordValue).toBe('2001:db8::25');
+  });
+
+  it('treats a whitespace-only IPv6 env var as unset (no AAAA, not a blank record)', () => {
+    process.env.MAIL_SERVER_IPV6 = '   ';
+    const records = webmailRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].recordType).toBe('A');
+  });
+
+  it('emits no webmail record at all — A or AAAA — when webmail is disabled', () => {
+    process.env.MAIL_SERVER_IPV6 = '2001:db8::25';
+    const records = buildEmailDnsRecordsForDisplay('example.com', 'default', 'pub', 'mail.host', {
+      webmailEnabled: false,
+    });
+    expect(records.some((r) => r.purpose === 'webmail')).toBe(false);
+  });
+});

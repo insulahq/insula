@@ -81,6 +81,20 @@ case "$VMTEST_TIER" in
 esac
 export VMTEST_TIER
 
+# VMTEST_DUAL_STACK=1 — give the libvirt network a ULA IPv6 subnet (driver.sh)
+# AND tell bootstrap to build a dual-stack cluster. Both halves are required:
+# the flag without the subnet fails preflight ("no usable IPv6 address"), and
+# the subnet without the flag installs a single-stack cluster on a v6-capable
+# node — which is precisely the silent gap this tier exists to catch.
+if [[ "${VMTEST_DUAL_STACK:-0}" == "1" ]]; then
+  case " ${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} " in
+    *" --dual-stack "*) : ;;
+    *) VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --dual-stack" ;;
+  esac
+  export VMTEST_BOOTSTRAP_EXTRA_ARGS VMTEST_DUAL_STACK
+  echo "── dual-stack: libvirt net gains a ULA v6 subnet; bootstrap gets --dual-stack ──"
+fi
+
 RUN="$(printf '%04x%04x' "$RANDOM" "$RANDOM")"        # unique per run
 OCTET="$(( (16#${RUN:0:2}) % 90 + 1 ))"               # 10.98.<1..90>.0/24
 APEX="$(printf "$VMTEST_APEX_TMPL" "$RUN")"
@@ -362,6 +376,72 @@ else
   echo "   development images are timestamp-tagged, so the deployed 'version' is"
   echo "   not a CalVer and no binary can converge it. Release-machinery coverage"
   echo "   comes from --tier release; everything else runs identically."
+fi
+
+# ── Dual-stack assertions (VMTEST_DUAL_STACK=1) ───────────────────────────────
+#
+# Asserted HERE, on the live cluster, because none of it can be proven from the
+# source: whether Calico actually programmed an IPv6 pool, whether kubelet
+# registered both families, and above all whether CNI portmap created the v6
+# hostPort DNAT that makes Traefik reachable over IPv6. That last one is the
+# whole point of the feature and the one thing a unit test cannot see.
+#
+# Fails the run rather than warning: a dual-stack run that quietly serves only
+# IPv4 is exactly the "green signal meaning less than it appears" this tier
+# exists to prevent.
+if [[ "${VMTEST_DUAL_STACK:-0}" == "1" ]]; then
+  echo "── asserting dual-stack on the live cluster ──"
+  _ds_fail=0
+  _ds() { ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" "$1" 2>/dev/null; }
+
+  _node_ips=$(_ds "kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type==\"InternalIP\")].address}'")
+  if grep -q ':' <<<"$_node_ips"; then
+    echo "   node InternalIPs: ${_node_ips}"
+  else
+    echo "run.sh: node registered no IPv6 InternalIP (got '${_node_ips}') — kubelet did not go dual-stack." >&2
+    _ds_fail=1
+  fi
+
+  _pod_cidrs=$(_ds "kubectl get node -o jsonpath='{.items[0].spec.podCIDRs}'")
+  if grep -q ':' <<<"$_pod_cidrs"; then
+    echo "   podCIDRs: ${_pod_cidrs}"
+  else
+    echo "run.sh: node podCIDRs are IPv4-only (got '${_pod_cidrs}') — the cluster is not dual-stack." >&2
+    _ds_fail=1
+  fi
+
+  # Calico must have programmed a v6 IPPool, or pods never get v6 addresses and
+  # the hostPort DNAT below has nothing to point at.
+  _v6pool=$(_ds "kubectl get ippools.crd.projectcalico.org -o jsonpath='{.items[*].spec.cidr}'")
+  if grep -q ':' <<<"$_v6pool"; then
+    echo "   Calico IPPools: ${_v6pool}"
+  else
+    echo "run.sh: Calico has no IPv6 IPPool (got '${_v6pool}')." >&2
+    _ds_fail=1
+  fi
+
+  # The end-to-end assertion: reach the ingress over IPv6 from the node itself.
+  # A v6 literal in a URL must be bracketed.
+  _node_v6=$(_ds "ip -6 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | grep -v '^fe80' | head -1")
+  if [[ -n "$_node_v6" ]]; then
+    _code=$(_ds "curl -6 -sk -o /dev/null -w '%{http_code}' --max-time 15 'https://[${_node_v6}]/' || true")
+    if [[ -n "$_code" && "$_code" != "000" ]]; then
+      echo "   IPv6 ingress reachable: https://[${_node_v6}]/ → ${_code}"
+    else
+      echo "run.sh: ingress is NOT reachable over IPv6 at [${_node_v6}]:443 (curl gave '${_code:-no response}')." >&2
+      echo "  The cluster registered v6 but no traffic is served on it — check the CNI portmap v6 DNAT." >&2
+      _ds_fail=1
+    fi
+  else
+    echo "run.sh: could not determine the node's IPv6 address for the ingress check." >&2
+    _ds_fail=1
+  fi
+
+  if (( _ds_fail != 0 )); then
+    echo "run.sh: dual-stack assertions FAILED — refusing to report this run as IPv6 coverage." >&2
+    exit 1
+  fi
+  echo "── dual-stack verified: cluster serves IPv6 ──"
 fi
 
 cat > "$RUNNER_SCRIPT" <<RUN

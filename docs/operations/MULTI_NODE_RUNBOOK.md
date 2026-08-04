@@ -22,6 +22,18 @@ adding worker nodes. Pairs with ADR-031 (architecture) and
 > and it copies itself to each target over SSH; no repo clone. A checkout's
 > `./scripts/bootstrap.sh` is the dev-path equivalent with identical flags.
 
+> **Dual-stack clusters: `--dual-stack` goes on EVERY node, not just the first.**
+> A node that registers only IPv4 cannot join a cluster whose `--cluster-cidr`
+> carries both families — kubelet is rejected outright. So if the first server
+> was installed with `--dual-stack`, every `insula bootstrap` below needs it
+> too, and each node needs its own usable IPv6 address (bootstrap refuses the
+> flag without one). On a pinned/mesh underlay also pass
+> `--cluster-network-cidr-v6` so the v6 node address comes from the mesh rather
+> than the public interface — bootstrap refuses rather than splitting pod
+> traffic across two underlays. Cluster CIDRs cannot be changed after install,
+> so a single-stack cluster cannot gain IPv6 by adding a dual-stack node; that
+> needs a rebuild (see [R13](../roadmap/ROADMAP.md#r13--ipv6-completion)).
+
 ### Add a 2nd server (1 → 2 servers; DEGRADED HA, not fully HA)
 
 Two servers don't form a real HA setup (can't tolerate loss — etcd
