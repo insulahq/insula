@@ -36,10 +36,12 @@
 #   STAGING_NODE=root@<node>.<apex> SSH_KEY=~/hosting-platform.key \
 #   ./scripts/integration-tenant-bundles-files-browse-restore-e2e.sh
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@$(resolve_platform_apex)}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 STAGING_NODE="${STAGING_NODE:-root@staging1.example.test}"

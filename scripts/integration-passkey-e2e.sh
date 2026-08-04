@@ -17,9 +17,11 @@
 #
 # USAGE: ADMIN_PASSWORD=<…> ./scripts/integration-passkey-e2e.sh
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 # Derive TENANT_HOST from ADMIN_HOST by swapping the `admin.` prefix
 # for `tenant.` — these two hostnames are always paired in this
 # platform's ingress (see k8s/base/platform/platform-ingress.yaml).

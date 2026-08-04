@@ -51,10 +51,10 @@ source "$SCRIPT_DIR/lib/integration-env.sh"
 
 # ─── config ───────────────────────────────────────────────────────────
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
-TENANT_BASE="${TENANT_BASE:-staging.example.test}"
+TENANT_BASE="${TENANT_BASE:-$(resolve_platform_apex)}"
 # Derive the tunnel anchor from the resolved TENANT_BASE (apex), not a fixed
 # example.test placeholder — otherwise the DNS prereq aborts against the real
 # staging apex. TUNNEL_BASE is gate-only (agent dial-in uses PRIVATE_WORKER_TOKEN),

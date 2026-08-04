@@ -50,6 +50,30 @@
 # exports surviving a repo-local integration.env full of plain assignments — that file
 # would clobber them. Such a caller MUST set $INTEGRATION_ENV to its own profile so
 # candidate #1 wins and #2/#3 are never reached (see scripts/vm-integration-tests/run.sh).
+# ─── Platform apex resolution ────────────────────────────────────────────
+#
+# THE ONE PLACE the fallback test apex is written down. Everything else must
+# derive from resolve_platform_apex / $PLATFORM_APEX.
+#
+# Why this exists: harnesses used to spell the fallback inline, e.g.
+#   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
+# Some sites derived from the configured apex first and some did not — three
+# such lines sat in ONE file next to two that were correct. The result is a
+# suite that can only pass on the apex whose name happens to be baked in: on
+# 2026-08-04 a run against a freshly bootstrapped cluster failed with
+#   "banner 'mail.<cluster apex>' DOES NOT MATCH expected 'mail.staging.example.test'"
+# even though mail was healthy. Each previous round fixed the line that failed
+# that day rather than the class, so it kept coming back.
+#
+# Accepts every name the harnesses have historically used, most specific
+# first, so an operator profile setting ANY of them works.
+resolve_platform_apex() {
+  printf '%s' "${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-${PLATFORM_BASE_DOMAIN:-${HTTPS_TEST_DOMAIN_BASE:-${TENANT_BASE:-staging.example.test}}}}}"
+}
+
+# Exported by load_integration_env so a harness can use "$PLATFORM_APEX"
+# directly. Call resolve_platform_apex yourself if you need it re-evaluated
+# after mutating one of the inputs.
 load_integration_env() {
   local script_dir candidate
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # scripts/
@@ -60,9 +84,11 @@ load_integration_env() {
     [[ -n "$candidate" && -f "$candidate" ]] || continue
     # shellcheck disable=SC1090
     set -a; source "$candidate"; set +a
+    PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
     [[ -n "${INTEGRATION_ENV_VERBOSE:-}" ]] && echo "integration-env: loaded $candidate" >&2
     return 0
   done
+  PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
   return 0  # no profile is fine — env vars / CI secrets may supply everything
 }
 

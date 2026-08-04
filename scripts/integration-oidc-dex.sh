@@ -47,9 +47,11 @@
 # Production guard: this harness fails fast if pointed at a production
 # domain. Dex must never be deployed in production.
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 # DEX_HOST default: derived from ADMIN_HOST (admin → dex) when not
 # explicitly set. Avoids the hardcoded staging URL breaking runs
 # against testing.example.test or any other cluster.
@@ -486,7 +488,7 @@ fi
 # transition — the cascade reaps domains, routes, the auth config row,
 # and the per-client OIDC provider via FK CASCADE.
 
-OIDC_TEST_HOST="${OIDC_TEST_HOST:-oidc-test.staging.example.test}"
+OIDC_TEST_HOST="${OIDC_TEST_HOST:-oidc-test.$(resolve_platform_apex)}"
 LIFECYCLE_TENANT_ID=""
 LIFECYCLE_DOMAIN_ID=""
 LIFECYCLE_ROUTE_ID=""

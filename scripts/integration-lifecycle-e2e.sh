@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"

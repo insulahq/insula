@@ -331,6 +331,14 @@ jobs:
         # guards above. See docs/development/INTEGRATION_TESTS.md.
         run: ./scripts/ci-no-hardcoded-test-infra.sh
 
+      - name: Harness defaults must derive the test apex
+        # PORTABILITY (distinct from the secrecy guard above): a harness default
+        # may not bake in an apex, even the sanitised placeholder. A suite that
+        # hardcodes one only passes on that cluster — a run against a fresh
+        # cluster failed with "expected mail.staging.example.test" while mail was
+        # healthy. Derive via resolve_platform_apex() instead.
+        run: ./scripts/ci-no-hardcoded-test-apex.sh
+
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest

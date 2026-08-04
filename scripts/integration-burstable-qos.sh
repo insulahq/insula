@@ -29,12 +29,14 @@
 #   1  one or more assertions failed
 #   2  prereq missing
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"

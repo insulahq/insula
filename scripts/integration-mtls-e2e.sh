@@ -44,13 +44,15 @@
 #
 # Exit: 0 all passed · 1 a scenario failed · 2 misconfiguration.
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 TOKEN="${INTEGRATION_TOKEN:-}"
-BASE="${INGRESS_DOMAIN_BASE:-${HTTPS_TEST_DOMAIN_BASE:-staging.example.test}}"
+BASE="${INGRESS_DOMAIN_BASE:-$(resolve_platform_apex)}"
 CATALOG_ENTRY="${CATALOG_ENTRY:-}"
 RECONCILE_WAIT="${RECONCILE_WAIT:-150}"
 SKIP_CLEANUP="${SKIP_CLEANUP:-0}"

@@ -20,6 +20,8 @@
 #
 # Exit code 0 = all checks pass. Each assertion logs `ok:` or `fail:`
 # followed by a brief description.
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 # Node SSH target + platform apex. In a full integration-all run the operator's
@@ -27,7 +29,7 @@ set -euo pipefail
 # before the redacted public placeholder so the suite isn't left SSHing to the
 # unresolvable example.test default (the 2026-07-18 full-run rc=255 failure).
 HOST="${HOST:-${SSH_HOST:-root@staging1.example.test}}"
-PLATFORM_APEX="${PLATFORM_APEX:-${PLATFORM_DOMAIN:-${PLATFORM_BASE_DOMAIN:-staging.example.test}}}"
+PLATFORM_APEX="${PLATFORM_APEX:-$(resolve_platform_apex)}"
 # Public admin API base. Env-overridable for non-staging clusters (the old
 # `https://staging.${PLATFORM_APEX#staging.}` construction was staging-only).
 ADMIN_HOST="${ADMIN_HOST:-https://admin.${PLATFORM_APEX}}"

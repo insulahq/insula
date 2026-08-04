@@ -23,9 +23,11 @@
 #   AGE_KEY_PATH=~/k8s-staging/operator-private.key \
 #     ./scripts/integration-system-dr-drill.sh
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-SOURCE_ADMIN_HOST="${SOURCE_ADMIN_HOST:-https://admin.staging.example.test}"
+SOURCE_ADMIN_HOST="${SOURCE_ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 SOURCE_ADMIN_EMAIL="${SOURCE_ADMIN_EMAIL:-admin@example.test}"
 SOURCE_ADMIN_PASSWORD="${SOURCE_ADMIN_PASSWORD:-}"
 TARGET_VM_HOST="${TARGET_VM_HOST:-testing.example.test}"

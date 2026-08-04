@@ -91,7 +91,7 @@ done
 
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [[ "$LIST" == 1 ]] || require_env ADMIN_PASSWORD
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 # Some suites (private-worker, …) key off TENANT_BASE for the tenant wildcard;
 # default it to the same wildcard the rest of the run uses (HTTPS_TEST_DOMAIN_BASE)
@@ -596,7 +596,7 @@ declare -A SUITE_RC=()      # name → exit code
 # learned about it only when manually checking. 2026-05-16 operator
 # audit: "Not even the admin panel is reachable, how could this be
 # missed?"
-ADMIN_HOST_FOR_PROBE="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST_FOR_PROBE="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 assert_admin_reachable() {
   local label="$1" code
   for _try in 1 2 3 4 5; do
