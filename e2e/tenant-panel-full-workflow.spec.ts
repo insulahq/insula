@@ -142,8 +142,17 @@ test.describe('Tenant Panel Full Workflow — End-to-End', () => {
     await expect(page.getByTestId('user-menu-name')).toBeVisible();
     await expect(page.getByTestId('user-menu-email')).toBeVisible();
 
-    // Change Password option should be available
+    // Change Password option should be available, and open a lazily-loaded
+    // modal — no password field may exist in the DOM before that click.
+    await expect(page.locator('input[type="password"]')).toHaveCount(0);
     await expect(page.getByTestId('change-password-menu-item')).toBeVisible({ timeout: 2000 });
+
+    await page.getByTestId('change-password-menu-item').click();
+    await expect(page.getByTestId('change-password-modal')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId('menu-current-password')).toBeVisible();
+
+    await page.getByTestId('menu-cancel-password-button').click();
+    await expect(page.getByTestId('change-password-modal')).toHaveCount(0);
   });
 
   test('multiple navigation cycles preserve session', async ({ page }) => {

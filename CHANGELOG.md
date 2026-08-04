@@ -12,6 +12,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Change Password now opens a lazily-loaded modal instead of rendering inside
+  the user menu.** The form lived in `Header.tsx`, which is part of the main
+  bundle on every page of both panels — so the password fields shipped with the
+  entry chunk on every load, and browser password managers latched onto them.
+  The form moved to `ChangePasswordModal.tsx` in each panel, pulled in with
+  `React.lazy()`, so its chunk is fetched only when an operator or tenant
+  actually clicks Change Password. Verified in a real browser against a live
+  cluster: zero `input[type=password]` in the DOM on load and with the menu
+  open, no chunk request until the click, three fields after it, and none again
+  once the dialog closes. The dialog also gains Escape-to-close, a backdrop
+  click, labelled inputs and `role="dialog"`.
+
 ### Fixed
 - **Integration harnesses baked in a test apex instead of deriving it.** 113
   literals across 51 scripts, and the same file could be inconsistent with
