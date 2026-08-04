@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# TDD harness for the --dual-stack (IPv6) path in scripts/bootstrap.sh.
+# Run: ./scripts/test-bootstrap-dual-stack.sh   (exit 0 = all pass)
+#
+# Two jobs, and the FIRST one matters more:
+#
+#   1. Prove the single-stack path is untouched. k3s cannot change cluster
+#      CIDRs after install, so a regression that leaks IPv6 into a default
+#      install is not a bug you fix forward — it is a cluster you rebuild.
+#      Every default-path assertion here is a literal, not a pattern.
+#
+#   2. Prove the dual-stack path emits both families EVERYWHERE it must:
+#      cluster-cidr, service-cidr, --node-ip and --node-external-ip, on
+#      servers AND workers. A node that registers one family joins a
+#      dual-stack cluster and then fails kubelet registration.
+#
+# The pure helpers are extracted and executed for real against a fake `ip`;
+# the call sites are asserted structurally (the repo's ci-*-check.sh idiom),
+# because install_k3s_* cannot run outside a real host.
+set -uo pipefail
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+BOOTSTRAP="$REPO_ROOT/scripts/bootstrap.sh"
+pass=0; fail=0
+ok()  { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass+1)); }
+bad() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }
+check() { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1 — expected [$2], got [$3]"; fi; }
+has()  { if grep -qF -- "$2" <<<"$1"; then ok "$3"; else bad "$3 — not found: $2"; fi; }
+hasnt(){ if grep -qF -- "$2" <<<"$1"; then bad "$3 — unexpectedly found: $2"; else ok "$3"; fi; }
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# ── Extract the pure helpers verbatim so we test the SHIPPED code ───────────
+sed -n '/^detect_node_ipv6()/,/^}/p'              "$BOOTSTRAP" >  "$WORK/helpers.sh"
+sed -n '/^resolve_cluster_network_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^resolve_dual_stack_node_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
+for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_dual_stack_node_ipv6; do
+  grep -q "^${fn}()" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
+done
+# error() is called by the helpers on the refuse paths. It is FATAL in
+# bootstrap.sh (`exit 1`) and the helpers rely on that — model it exactly, or
+# this harness would "pass" a function that falls through its own guard.
+cat >> "$WORK/helpers.sh" <<'STUB'
+error() { echo "ERROR: $*" >&2; exit 1; }
+STUB
+
+mkdir -p "$WORK/bin"
+cat > "$WORK/bin/ip" <<'FAKE'
+#!/usr/bin/env bash
+# Emits `ip -6 -o addr show`-shaped lines from $FAKE_V6_LINES (one per line).
+printf '%s\n' "${FAKE_V6_LINES:-}"
+FAKE
+chmod +x "$WORK/bin/ip"
+export PATH="$WORK/bin:$PATH"
+
+run_helper() { ( set +e; source "$WORK/helpers.sh"; "$@" ); }
+
+echo "detect_node_ipv6 — address selection"
+
+FAKE_V6_LINES='1: lo    inet6 ::1/128 scope host
+2: eth0    inet6 2001:db8:1::5/64 scope global
+2: eth0    inet6 fe80::1/64 scope link'
+export FAKE_V6_LINES
+check "picks a global address" "2001:db8:1::5" "$(run_helper detect_node_ipv6)"
+
+FAKE_V6_LINES='2: eth0    inet6 fd00:beef::7/64 scope global
+2: eth0    inet6 fe80::1/64 scope link'
+check "accepts ULA when that is all there is (lab/VM tier)" "fd00:beef::7" "$(run_helper detect_node_ipv6)"
+
+# Ordering matters: a node with both must pin the routable one, whichever the
+# kernel happens to list first.
+FAKE_V6_LINES='2: eth0    inet6 fd00:beef::7/64 scope global
+2: eth0    inet6 2001:db8:1::5/64 scope global'
+check "prefers global over ULA even when ULA is listed first" "2001:db8:1::5" "$(run_helper detect_node_ipv6)"
+
+FAKE_V6_LINES='2: eth0    inet6 fe80::1/64 scope link
+3: lo    inet6 ::1/128 scope host'
+run_helper detect_node_ipv6 >/dev/null 2>&1 \
+  && bad "refuses when only link-local/loopback exist" \
+  || ok "refuses when only link-local/loopback exist"
+
+FAKE_V6_LINES='9: wt0    inet6 2001:db8:99::1/64 scope global'
+run_helper detect_node_ipv6 >/dev/null 2>&1 \
+  && bad "ignores VPN interfaces (wt0) — a mesh address is not the node underlay" \
+  || ok "ignores VPN interfaces (wt0) — a mesh address is not the node underlay"
+
+FAKE_V6_LINES=''
+run_helper detect_node_ipv6 >/dev/null 2>&1 \
+  && bad "refuses on a node with no IPv6 at all" \
+  || ok "refuses on a node with no IPv6 at all"
+
+echo
+echo "resolve_dual_stack_node_ipv6 — underlay safety"
+
+# The refuse-to-fall-back rule: on a pinned underlay we must NEVER silently use
+# a public v6, or pod traffic splits across two networks (v4 in the tunnel, v6
+# on the open internet).
+FAKE_V6_LINES='2: eth0    inet6 2001:db8:1::5/64 scope global'
+out=$( NODEIP_PIN_CIDR="10.8.0.0/24" NODEIP_PIN_CIDR_V6="" run_helper resolve_dual_stack_node_ipv6 2>&1 )
+rc=$?
+if (( rc != 0 )) && grep -q "Refusing to fall back to a public IPv6" <<<"$out"; then
+  ok "pinned underlay + no mesh v6 → refuses instead of using the public address"
+else
+  bad "pinned underlay + no mesh v6 → refuses instead of using the public address (rc=$rc, out=${out:0:120})"
+fi
+
+FAKE_V6_LINES='2: eth0    inet6 2001:db8:1::5/64 scope global'
+check "public underlay → uses the detected node address" \
+  "2001:db8:1::5" "$( NODEIP_PIN_CIDR="" run_helper resolve_dual_stack_node_ipv6 )"
+
+echo
+echo "single-stack default is UNCHANGED (regression guard)"
+
+src=$(cat "$BOOTSTRAP")
+has "$src" 'local cluster_cidr_arg="10.42.0.0/16"'  "cluster-cidr still defaults to the IPv4 literal"
+has "$src" 'local service_cidr_arg="10.43.0.0/16"'  "service-cidr still defaults to the IPv4 literal"
+has "$src" 'DUAL_STACK=false'                        "dual-stack defaults OFF"
+# The v6 CIDRs may only ever be appended inside a DUAL_STACK guard.
+server_block=$(sed -n '/^install_k3s_server()/,/^}/p' "$BOOTSTRAP")
+if grep -n 'POD_CIDR_V6\|SERVICE_CIDR_V6' <<<"$server_block" | grep -qv 'cluster_cidr_arg=\|service_cidr_arg='; then
+  bad "v6 CIDRs referenced outside the arg-append lines in install_k3s_server"
+else
+  ok "v6 CIDRs referenced only where the args are appended"
+fi
+guard_line=$(grep -n 'if \[\[ "\$DUAL_STACK" == true \]\]; then' <<<"$server_block" | head -1 | cut -d: -f1)
+append_line=$(grep -n 'cluster_cidr_arg="\${cluster_cidr_arg},\${POD_CIDR_V6}"' <<<"$server_block" | head -1 | cut -d: -f1)
+if [[ -n "$guard_line" && -n "$append_line" ]] && (( append_line > guard_line )); then
+  ok "the v6 append sits INSIDE the dual-stack guard"
+else
+  bad "the v6 append sits INSIDE the dual-stack guard (guard=${guard_line:-none} append=${append_line:-none})"
+fi
+
+echo
+echo "dual-stack emits both families on servers AND workers"
+
+has "$server_block" 'node_pin="--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}}' \
+  "server pinned-underlay node-ip gains the v6 family"
+has "$server_block" 'node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}' \
+  "server public-underlay node-ip gains the v6 family"
+has "$server_block" '--node-external-ip=${public_ip},${node_ipv6}' \
+  "server publishes BOTH families as ExternalIP (ingress-external-ips reads this)"
+
+worker_block=$(sed -n '/^install_k3s_worker()/,/^}/p' "$BOOTSTRAP")
+has "$worker_block" 'resolve_dual_stack_node_ipv6' \
+  "worker resolves a v6 node address too (a v4-only worker cannot join)"
+has "$worker_block" '--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}}' \
+  "worker pinned-underlay node-ip gains the v6 family"
+has "$worker_block" '--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}' \
+  "worker public-underlay node-ip gains the v6 family"
+
+echo
+echo "Calico + sysctl are gated on the flag"
+
+has "$src" 'nodeAddressAutodetectionV6'          "Calico gains v6 autodetection"
+has "$src" 'blockSize: 122'                       "Calico v6 pool uses the IPv6 default blockSize"
+has "$src" '${ipv6_pool}'                         "the v6 pool is interpolated into ipPools"
+if grep -q 'ipv6_pool="$' <<<"$src" || grep -q 'local ipv6_pool=""' <<<"$src"; then
+  ok "ipv6_pool starts empty (single-stack renders no v6 pool)"
+else
+  bad "ipv6_pool starts empty (single-stack renders no v6 pool)"
+fi
+has "$src" 'net.ipv6.conf.all.forwarding = 1'    "v6 forwarding sysctl present"
+has "$src" 'net.ipv6.conf.all.accept_ra = 2'     "accept_ra=2 keeps the node's own default route with forwarding on"
+
+# The sysctl file must only be written under the flag — an IPv4-only host must
+# not have its IPv6 behaviour changed by installing the platform.
+sysctl_ctx=$(grep -B 12 'net.ipv6.conf.all.forwarding = 1' <<<"$src")
+has "$sysctl_ctx" 'if [[ "$DUAL_STACK" == true ]]; then' "the v6 sysctl block is inside the dual-stack guard"
+
+echo
+echo "validation refuses impossible requests"
+has "$src" 'Kubernetes caps the IPv6 service CIDR'  "service-cidr-v6 size is validated"
+has "$src" '--dual-stack requires an IPv6 address'  "--dual-stack is refused on a node with no v6"
+has "$src" '(( svc_v6_prefix < 108 ))'              "the /108 rule is enforced numerically"
+
+echo
+printf 'dual-stack: %d passed, %d failed\n' "$pass" "$fail"
+[[ $fail -eq 0 ]]

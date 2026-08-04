@@ -12,6 +12,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **IPv6: `bootstrap.sh --dual-stack` (R13).** Until now an IPv6-only client
+  could reach nothing the platform serves — not the panels, the API, tenant
+  routes or mail. The firewall and DNS layers were already dual-stack, so v6
+  traffic was permitted and then went unanswered: on a node with a published
+  AAAA, connections got a TCP RST in 8 ms while IPv4 served normally. The cause
+  was one layer — the cluster network was IPv4-only, and every public surface
+  reaches the outside through `hostPort` → CNI portmap DNAT to an IPv4 pod IP.
+  `--dual-stack` gives k3s dual `--cluster-cidr`/`--service-cidr` and
+  `--node-ip=<v4>,<v6>` (on servers **and** workers — a v4-only node cannot join
+  a dual-stack cluster), adds a Calico IPv6 IPPool with
+  `nodeAddressAutodetectionV6`, and enables IPv6 forwarding with `accept_ra=2`
+  so the node keeps its own default route. Pods get ULA addresses behind
+  `natOutgoing`, exactly mirroring the IPv4 model, so the node's global IPv6 is
+  what clients talk to. Downstream: the Traefik Service becomes
+  `PreferDualStack`, `ingress-external-ips` collects both families,
+  HAProxy mail binds `:::<port> v4v6` instead of the IPv4-only `*:<port>`, and
+  `webmail.<domain>` gains an AAAA when an IPv6 is configured.
+- **The flag is opt-in and refuses rather than guesses.** k3s cannot change
+  cluster CIDRs after install, so defaulting it on would make re-bootstrapping
+  an existing host destructive; a single-stack install is byte-for-byte what it
+  was. Bootstrap fails at preflight — before the first mutation — when
+  `--dual-stack` is requested on a node with no usable IPv6, and refuses to fall
+  back to a public IPv6 on a pinned/mesh underlay rather than splitting pod
+  traffic across two networks. A node that *has* IPv6 and is being installed
+  single-stack now gets a preflight warning, at the one moment the choice is
+  still free. `VMTEST_DUAL_STACK=1` gives the VM tier a ULA v6 subnet and then
+  asserts on the live cluster that the ingress genuinely answers over IPv6.
+
 ### Fixed
 - **A transient Traefik plugin download could leave a fresh install with no
   admin panel, permanently.** Traefik fetches its plugins from
