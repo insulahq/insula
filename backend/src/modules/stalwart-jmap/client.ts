@@ -719,6 +719,65 @@ export async function arfExternalReportDestroy(params: {
   );
 }
 
+/** One page of `x:SpamTrainingSample` destroys for a single principal. */
+export interface SpamTrainingSamplePage {
+  /** Sample ids actually destroyed in this page. */
+  readonly destroyed: readonly string[];
+  /** Server-reported total still matching the filter BEFORE this page's destroy. */
+  readonly total: number;
+}
+
+interface XSpamSampleQueryResponse {
+  readonly ids?: readonly string[];
+  readonly total?: number;
+}
+
+/**
+ * Destroy up to `limit` `x:SpamTrainingSample` rows belonging to one Stalwart
+ * principal, in a SINGLE round-trip (query → `#destroy` back-reference).
+ *
+ * Why this exists: a spam training sample holds the message blob via a
+ * `BlobLink::Temporary { until }` stamped at ingest as
+ * `midnight + SpamClassifier.holdSamplesFor` — 180 DAYS on a default install.
+ * Destroying an Account does NOT drop it (`destroy_account_blobs` unlinks only
+ * Email/FileNode/SieveScript hard links), so a deleted tenant's mail keeps its
+ * bytes on the mail PVC until that timer expires. Verified on Stalwart v0.16.16:
+ * with samples present the blob purge reports `expires 0 / total 4221`; after
+ * destroying them, `expires 4200 / total 21` and 2 GiB is reclaimed at the next
+ * compaction.
+ *
+ * Paged deliberately: the back-reference keeps only `limit` ids in flight, so a
+ * mailbox with a huge sample backlog can never build an unbounded array in the
+ * API process. Callers re-invoke until `destroyed` comes back empty.
+ */
+export async function spamTrainingSampleDestroyPage(params: {
+  /** Stalwart Account (principal) id that owns the samples. */
+  principalId: string;
+  limit?: number;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<SpamTrainingSamplePage> {
+  const { principalId, limit = 200, baseUrl, env } = params;
+  const auth = adminBasicAuth(env);
+  const req: JmapRequest = {
+    using: [JMAP_CORE, JMAP_STALWART],
+    methodCalls: [
+      ['x:SpamTrainingSample/query', {
+        filter: { accountId: principalId },
+        limit,
+        calculateTotal: true,
+      }, 'q'],
+      ['x:SpamTrainingSample/set', {
+        '#destroy': { resultOf: 'q', name: 'x:SpamTrainingSample/query', path: '/ids' },
+      }, 's'],
+    ],
+  };
+  const res = await jmapPost(baseUrl ?? STALWART_MGMT_URL, auth, req);
+  const query = extractResponse<XSpamSampleQueryResponse>(res, 'x:SpamTrainingSample/query', 'q');
+  const set = extractResponse<JmapSetResponse<{ id: string }>>(res, 'x:SpamTrainingSample/set', 's');
+  return { destroyed: set.destroyed ?? [], total: query.total ?? 0 };
+}
+
 export interface StalwartReportSettingsRow {
   readonly id: string;
   readonly inboundReportAddresses?: Record<string, boolean>;
