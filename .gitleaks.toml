@@ -36,8 +36,10 @@ regexes = [
   # column (`secretKey = cfg.s3SecretKeyEncrypted ? decrypt(...) : ''`). The
   # generic-api-key rule matches the identifier, not any literal value.
   '''cfg\.s3SecretKeyEncrypted''',
-  # platform_config ConfigMap key NAME referenced via configMapKeyRef — not a value.
-  '''ingress-default-ipv4''',
+  # platform_config ConfigMap key NAMES referenced via configMapKeyRef — not values.
+  # One pattern for both families so the v6 sibling (added with R13 dual-stack)
+  # does not have to be allowlisted again as a separate literal.
+  '''ingress-default-ipv[46]''',
 ]
 paths = [
   '''.*\.example(\.\w+)?$''',           # *.example, *.example.yaml, …

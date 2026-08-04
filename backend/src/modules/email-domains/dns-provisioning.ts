@@ -39,6 +39,15 @@ const MAIL_SERVER_IP = (): string => {
   return '127.0.0.1';
 };
 
+// IPv6 sibling of MAIL_SERVER_IP. Deliberately returns undefined rather than a
+// fallback: a wrong AAAA is worse than no AAAA. A published AAAA that nothing
+// answers on makes a v6-only client fail outright and costs every dual-stack
+// client a connection timeout first, so the record is emitted ONLY when the
+// operator has actually configured an address.
+const MAIL_SERVER_IPV6 = (): string | undefined =>
+  normalizeEnv(process.env.MAIL_SERVER_IPV6)
+  ?? normalizeEnv(process.env.INGRESS_DEFAULT_IPV6);
+
 // mtaStsPolicyId() helper removed 2026-05-06 along with the MTA-STS
 // records — see the comment block where the records were dropped.
 
@@ -145,16 +154,9 @@ function buildEmailDnsRecords(
   mailServerHostname: string,
   options: { readonly webmailEnabled?: boolean } = {},
 ): readonly DnsRecordSpec[] {
-  const webmailRecord: DnsRecordSpec | null = options.webmailEnabled
-    ? {
-      recordType: 'A',
-      recordName: `webmail.${domainName}`,
-      recordValue: MAIL_SERVER_IP(),
-      ttl: 3600,
-      priority: null,
-      purpose: 'webmail',
-    }
-    : null;
+  const webmailRecords: readonly DnsRecordSpec[] = options.webmailEnabled
+    ? buildWebmailRecords(domainName)
+    : [];
 
   const base: readonly DnsRecordSpec[] = buildBaseRecords(
     domainName,
@@ -162,7 +164,41 @@ function buildEmailDnsRecords(
     dkimPublicKey,
     mailServerHostname,
   );
-  return webmailRecord ? [...base, webmailRecord] : base;
+  return webmailRecords.length > 0 ? [...base, ...webmailRecords] : base;
+}
+
+/**
+ * `webmail.<domain>` — A always, AAAA only when an IPv6 is configured.
+ *
+ * The MX target is the platform hostname (see buildBaseRecords), so this is the
+ * only per-tenant record that points at the platform's own address and the only
+ * one that needs a v6 sibling here.
+ */
+function buildWebmailRecords(domainName: string): readonly DnsRecordSpec[] {
+  const records: DnsRecordSpec[] = [
+    {
+      recordType: 'A',
+      recordName: `webmail.${domainName}`,
+      recordValue: MAIL_SERVER_IP(),
+      ttl: 3600,
+      priority: null,
+      purpose: 'webmail',
+    },
+  ];
+
+  const ipv6 = MAIL_SERVER_IPV6();
+  if (ipv6) {
+    records.push({
+      recordType: 'AAAA',
+      recordName: `webmail.${domainName}`,
+      recordValue: ipv6,
+      ttl: 3600,
+      priority: null,
+      purpose: 'webmail',
+    });
+  }
+
+  return records;
 }
 
 function buildBaseRecords(
