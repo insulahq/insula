@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
@@ -40,6 +41,25 @@ vi.mock('../hooks/use-email', () => ({
   useEmailDomainDisablePreview: vi.fn(() => ({ data: undefined, isLoading: false, isError: false })),
   useUpdateEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailDomainDnsRecords: vi.fn(() => ({ data: undefined, isLoading: false, error: null })),
+  useEmailConnectionInfo: vi.fn(() => ({
+    data: {
+      data: {
+        domainName: 'example.com',
+        mailServerHostname: 'mail.platform.example',
+        ports: [
+          { protocol: 'imap', port: 993, socketType: 'ssl', recommended: true },
+          { protocol: 'imap', port: 143, socketType: 'starttls', recommended: false },
+          { protocol: 'pop3', port: 995, socketType: 'ssl', recommended: true },
+          { protocol: 'smtp', port: 465, socketType: 'ssl', recommended: true },
+          { protocol: 'smtp', port: 587, socketType: 'starttls', recommended: false },
+        ],
+        webmailUrl: 'https://webmail.platform.example',
+        webmailHostname: null,
+      },
+    },
+    isLoading: false,
+    error: null,
+  })),
   useDkimKeys: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useRotateDkimKey: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useActivateDkimKey: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
@@ -435,5 +455,111 @@ describe('Email Page', () => {
     // new selection. We can't read window.location with MemoryRouter,
     // but the select element's controlled value tracks searchParams.
     expect(select.value).toBe('ed2');
+  });
+});
+
+describe('Email connection guide', () => {
+  const oneDomain = {
+    data: { data: [{ id: 'ed1', domainId: 'd1', domainName: 'example.com' }] },
+    isLoading: false,
+  } as unknown as ReturnType<typeof useEmailDomains>;
+
+  it('renders the guide button next to the domain pill', () => {
+    mockedUseEmailDomains.mockReturnValue(oneDomain);
+    renderWithProviders(<Email />);
+
+    const button = screen.getByTestId('open-email-connection-guide');
+    expect(button).toBeInTheDocument();
+    expect(button).toHaveTextContent('How to connect to your email accounts');
+  });
+
+  it('does not render the guide button when the tenant has no email domains', () => {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+
+    renderWithProviders(<Email />);
+    expect(screen.queryByTestId('open-email-connection-guide')).not.toBeInTheDocument();
+  });
+
+  it('keeps the guide out of the DOM until the button is clicked', async () => {
+    mockedUseEmailDomains.mockReturnValue(oneDomain);
+    const user = userEvent.setup();
+    renderWithProviders(<Email />);
+
+    expect(screen.queryByTestId('email-connection-guide-modal')).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId('open-email-connection-guide'));
+
+    // Lazily loaded — resolve the chunk before asserting.
+    expect(await screen.findByTestId('email-connection-guide-modal')).toBeInTheDocument();
+  });
+
+  it('opens on the Email clients tab showing server, ports and username format', async () => {
+    mockedUseEmailDomains.mockReturnValue(oneDomain);
+    const user = userEvent.setup();
+    renderWithProviders(<Email />);
+
+    await user.click(screen.getByTestId('open-email-connection-guide'));
+    await screen.findByTestId('email-connection-guide-modal');
+
+    expect(screen.getByTestId('guide-tab-clients-content')).toBeInTheDocument();
+    // Server hostname comes from the API, never a literal in the component.
+    expect(screen.getByTestId('mail-server-hostname')).toHaveTextContent('mail.platform.example');
+    // Username must be spelled out as the FULL address for the selected domain.
+    expect(screen.getByTestId('mail-username-format')).toHaveTextContent('you@example.com');
+
+    const table = screen.getByTestId('mail-ports-table');
+    for (const port of ['993', '143', '995', '465', '587']) {
+      expect(table).toHaveTextContent(port);
+    }
+    expect(table).toHaveTextContent('SSL/TLS');
+    expect(table).toHaveTextContent('STARTTLS');
+  });
+
+  it('explains where app passwords come from', async () => {
+    mockedUseEmailDomains.mockReturnValue(oneDomain);
+    const user = userEvent.setup();
+    renderWithProviders(<Email />);
+
+    await user.click(screen.getByTestId('open-email-connection-guide'));
+    const modal = await screen.findByTestId('email-connection-guide-modal');
+
+    expect(modal).toHaveTextContent(/app password/i);
+    expect(modal).toHaveTextContent(/Passwords/);
+    expect(modal).toHaveTextContent(/shown/i);
+  });
+
+  it('switches to the Webmail tab and shows both access routes', async () => {
+    mockedUseEmailDomains.mockReturnValue(oneDomain);
+    const user = userEvent.setup();
+    renderWithProviders(<Email />);
+
+    await user.click(screen.getByTestId('open-email-connection-guide'));
+    await screen.findByTestId('email-connection-guide-modal');
+
+    await user.click(screen.getByTestId('guide-tab-webmail'));
+
+    const webmail = screen.getByTestId('guide-tab-webmail-content');
+    expect(webmail).toBeInTheDocument();
+    // Route 1: via the panel. Route 2: the direct URL from the API.
+    expect(webmail).toHaveTextContent(/Webmail/);
+    expect(screen.getByTestId('webmail-url')).toHaveTextContent('https://webmail.platform.example');
+    expect(screen.getByTestId('webmail-username-format')).toHaveTextContent('you@example.com');
+    // The clients tab is unmounted while webmail is showing.
+    expect(screen.queryByTestId('guide-tab-clients-content')).not.toBeInTheDocument();
+  });
+
+  it('closes on the Close button', async () => {
+    mockedUseEmailDomains.mockReturnValue(oneDomain);
+    const user = userEvent.setup();
+    renderWithProviders(<Email />);
+
+    await user.click(screen.getByTestId('open-email-connection-guide'));
+    await screen.findByTestId('email-connection-guide-modal');
+
+    await user.click(screen.getByTestId('email-guide-close-button'));
+    expect(screen.queryByTestId('email-connection-guide-modal')).not.toBeInTheDocument();
   });
 });

@@ -12,21 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Fixed
-- **Integration suites failed for three reasons that were never the platform.**
-  (1) The custom-container subscription gate shipped on 2026-07-30 without
-  updating the suites that exist to exercise custom containers, so every create
-  returned `403 CUSTOM_CONTAINERS_NOT_IN_PLAN` (and `T10` reported "expected
-  422, got 403" because the gate short-circuits validation); both suites now
-  grant themselves the per-tenant override. (2) `API_BASE` defaulted straight to
-  the local-dev apex in four harnesses — operator profiles set `ADMIN_HOST` /
-  `API_URL`, never `API_BASE` — so against a remote cluster every request went
-  to localhost and came back `000`, reading as a broken platform rather than a
-  misdirected test; it now derives from the configured target. (3) Backup/DR
-  suites hard-failed on a cluster with no backup target bound; nine now report
-  SKIPPED via the new `require_backup_class_or_skip`, which checks live cluster
-  state and fails open if it cannot determine the answer. The apex guard grew a
-  second check so an `API_BASE` regression is caught in CI.
+### Added
+- **"How to connect to your email accounts" guide in the tenant panel.** A button
+  next to the domain pill on Email opens a tabbed dialog with end-user setup
+  instructions for the selected domain. *Email clients* gives the server
+  hostname, the full port/encryption table, the username format (always the full
+  address) and where app passwords come from — including that the panel login
+  will not work in a mail client and that the secret is shown only once.
+  *Webmail* covers both routes in: the panel's per-mailbox Webmail button (no
+  password needed) and the direct URL a mailbox owner can bookmark, signing in
+  with the same app passwords. Backed by a new read-only endpoint
+  `GET /api/v1/tenants/:tenantId/email/domains/:domainId/connection-info`
+  (tenant-scoped) so nothing in the guide is hardcoded in the UI.
+- `MAIL_SERVICE_PORTS` in `@insula/api-contracts` is now the single source of
+  truth for mail-client ports. The Mozilla autoconfig and Outlook autodiscover
+  XML render from it instead of inline literals, so the settings a client
+  fetches automatically and the ones a human reads in the guide cannot drift
+  apart; tests assert both surfaces agree.
 
 ### Changed
 - **Change Password now opens a lazily-loaded modal instead of rendering inside
@@ -42,6 +44,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   click, labelled inputs and `role="dialog"`.
 
 ### Fixed
+- **Integration suites failed for three reasons that were never the platform.**
+  (1) The custom-container subscription gate shipped on 2026-07-30 without
+  updating the suites that exist to exercise custom containers, so every create
+  returned `403 CUSTOM_CONTAINERS_NOT_IN_PLAN` (and `T10` reported "expected
+  422, got 403" because the gate short-circuits validation); both suites now
+  grant themselves the per-tenant override. (2) `API_BASE` defaulted straight to
+  the local-dev apex in four harnesses — operator profiles set `ADMIN_HOST` /
+  `API_URL`, never `API_BASE` — so against a remote cluster every request went
+  to localhost and came back `000`, reading as a broken platform rather than a
+  misdirected test; it now derives from the configured target. (3) Backup/DR
+  suites hard-failed on a cluster with no backup target bound; nine now report
+  SKIPPED via the new `require_backup_class_or_skip`, which checks live cluster
+  state and fails open if it cannot determine the answer. The apex guard grew a
+  second check so an `API_BASE` regression is caught in CI.
 - **Integration harnesses baked in a test apex instead of deriving it.** 113
   literals across 51 scripts, and the same file could be inconsistent with
   itself — three non-deriving `${MAIL_DOMAIN_APEX:-staging.example.test}` lines
