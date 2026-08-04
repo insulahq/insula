@@ -13,6 +13,25 @@
  * Phase 3.C.1.
  */
 
+import { MAIL_SERVICE_PORTS, type MailServicePort } from '@insula/api-contracts';
+
+/**
+ * Ports are read from the shared table rather than written inline, so the XML a
+ * client auto-fetches and the "How to connect" guide a human reads can never
+ * disagree. Lookups are strict: a missing entry throws at render time instead
+ * of silently emitting a wrong port.
+ */
+function portFor(protocol: MailServicePort['protocol'], socketType: MailServicePort['socketType']): number {
+  const match = MAIL_SERVICE_PORTS.find((p) => p.protocol === protocol && p.socketType === socketType);
+  if (!match) throw new Error(`no ${protocol}/${socketType} entry in MAIL_SERVICE_PORTS`);
+  return match.port;
+}
+
+const IMAP_SSL = portFor('imap', 'ssl');
+const POP3_SSL = portFor('pop3', 'ssl');
+const SMTP_SSL = portFor('smtp', 'ssl');
+const SMTP_STARTTLS = portFor('smtp', 'starttls');
+
 function escapeXml(input: string): string {
   return input
     .replace(/&/g, '&amp;')
@@ -45,7 +64,7 @@ export function renderMozillaAutoconfigXml(input: MozillaAutoconfigInput): strin
 
     <incomingServer type="imap">
       <hostname>${host}</hostname>
-      <port>993</port>
+      <port>${IMAP_SSL}</port>
       <socketType>SSL</socketType>
       <authentication>password-cleartext</authentication>
       <username>%EMAILADDRESS%</username>
@@ -53,7 +72,7 @@ export function renderMozillaAutoconfigXml(input: MozillaAutoconfigInput): strin
 
     <incomingServer type="pop3">
       <hostname>${host}</hostname>
-      <port>995</port>
+      <port>${POP3_SSL}</port>
       <socketType>SSL</socketType>
       <authentication>password-cleartext</authentication>
       <username>%EMAILADDRESS%</username>
@@ -64,7 +83,7 @@ export function renderMozillaAutoconfigXml(input: MozillaAutoconfigInput): strin
 
     <outgoingServer type="smtp">
       <hostname>${host}</hostname>
-      <port>465</port>
+      <port>${SMTP_SSL}</port>
       <socketType>SSL</socketType>
       <authentication>password-cleartext</authentication>
       <username>%EMAILADDRESS%</username>
@@ -72,7 +91,7 @@ export function renderMozillaAutoconfigXml(input: MozillaAutoconfigInput): strin
 
     <outgoingServer type="smtp">
       <hostname>${host}</hostname>
-      <port>587</port>
+      <port>${SMTP_STARTTLS}</port>
       <socketType>STARTTLS</socketType>
       <authentication>password-cleartext</authentication>
       <username>%EMAILADDRESS%</username>
@@ -109,7 +128,7 @@ export function renderOutlookAutodiscoverXml(input: OutlookAutodiscoverInput): s
       <Protocol>
         <Type>IMAP</Type>
         <Server>${host}</Server>
-        <Port>993</Port>
+        <Port>${IMAP_SSL}</Port>
         <LoginName>${email}</LoginName>
         <SSL>on</SSL>
         <SPA>off</SPA>
@@ -118,7 +137,7 @@ export function renderOutlookAutodiscoverXml(input: OutlookAutodiscoverInput): s
       <Protocol>
         <Type>SMTP</Type>
         <Server>${host}</Server>
-        <Port>465</Port>
+        <Port>${SMTP_SSL}</Port>
         <LoginName>${email}</LoginName>
         <SSL>on</SSL>
         <SPA>off</SPA>

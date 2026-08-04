@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
-import { enableEmailForDomain, disableEmailForDomain, getEmailDomain, listEmailDomains, updateEmailDomain, getEmailDomainDisablePreview, isMailStackUnconfigured } from './service.js';
+import { MAIL_SERVICE_PORTS } from '@insula/api-contracts';
+import { enableEmailForDomain, disableEmailForDomain, getEmailDomain, listEmailDomains, updateEmailDomain, getEmailDomainDisablePreview, isMailStackUnconfigured, getEmailConnectionInfo } from './service.js';
+import { getDefaultWebmailUrl } from '../webmail-settings/service.js';
 
 // Mock DKIM generation
 vi.mock('./dkim.js', () => ({
@@ -42,6 +44,7 @@ vi.mock('../notifications/events.js', () => ({
 // Mock webmail-settings so getMailServerHostname resolves without a real DB
 vi.mock('../webmail-settings/service.js', () => ({
   getMailServerHostname: vi.fn().mockResolvedValue('mail.example.com'),
+  getDefaultWebmailUrl: vi.fn().mockResolvedValue('https://webmail.example.com'),
 }));
 
 const DOMAIN = { id: 'd1', tenantId: 'c1', domainName: 'example.com' };
@@ -455,5 +458,62 @@ describe('getEmailDomainDisablePreview', () => {
 
     await expect(getEmailDomainDisablePreview(db, 'c1', 'd1'))
       .rejects.toMatchObject({ code: 'EMAIL_DOMAIN_NOT_FOUND', status: 404 });
+  });
+});
+
+describe('getEmailConnectionInfo', () => {
+  // getEmailDomain runs: verifyDomainOwnership (select→from→where), then a
+  // joined email-domain select, then the mailbox count.
+  function connectionInfoDb(emailDomainRow: Record<string, unknown>) {
+    const whereFn = vi.fn().mockResolvedValue([DOMAIN]);
+    const innerJoinWhere = vi.fn().mockResolvedValue([emailDomainRow]);
+    const innerJoinFn = vi.fn().mockReturnValue({ where: innerJoinWhere });
+
+    let fromCall = 0;
+    const fromFn = vi.fn().mockImplementation(() => {
+      fromCall++;
+      // 1st: ownership check. 2nd: joined email-domain row. 3rd: mailbox count.
+      if (fromCall === 3) return { where: vi.fn().mockResolvedValue([{ count: 0 }]) };
+      return { where: whereFn, innerJoin: innerJoinFn };
+    });
+
+    return { select: vi.fn().mockReturnValue({ from: fromFn }) } as unknown as Parameters<
+      typeof getEmailConnectionInfo
+    >[0];
+  }
+
+  it('returns the platform mail hostname, the shared port table and the webmail URL', async () => {
+    const db = connectionInfoDb({ ...EMAIL_DOMAIN, domainName: 'example.com', webmailEnabled: 0 });
+
+    const info = await getEmailConnectionInfo(db, 'c1', 'd1');
+
+    expect(info.domainName).toBe('example.com');
+    expect(info.mailServerHostname).toBe('mail.example.com');
+    expect(info.webmailUrl).toBe('https://webmail.example.com');
+    // Ports are the shared contract table verbatim — never re-declared here.
+    expect(info.ports).toEqual([...MAIL_SERVICE_PORTS]);
+  });
+
+  it('returns the vanity webmail host only when the domain has webmail enabled', async () => {
+    const off = await getEmailConnectionInfo(
+      connectionInfoDb({ ...EMAIL_DOMAIN, domainName: 'example.com', webmailEnabled: 0 }),
+      'c1', 'd1',
+    );
+    expect(off.webmailHostname).toBeNull();
+
+    const on = await getEmailConnectionInfo(
+      connectionInfoDb({ ...EMAIL_DOMAIN, domainName: 'example.com', webmailEnabled: 1 }),
+      'c1', 'd1',
+    );
+    expect(on.webmailHostname).toBe('webmail.example.com');
+  });
+
+  it('normalises a blank operator-configured webmail URL to null', async () => {
+    vi.mocked(getDefaultWebmailUrl).mockResolvedValueOnce('   ');
+    const info = await getEmailConnectionInfo(
+      connectionInfoDb({ ...EMAIL_DOMAIN, domainName: 'example.com', webmailEnabled: 0 }),
+      'c1', 'd1',
+    );
+    expect(info.webmailUrl).toBeNull();
   });
 });

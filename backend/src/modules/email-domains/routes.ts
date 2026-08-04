@@ -166,6 +166,20 @@ export async function emailDomainRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
+  // GET /api/v1/tenants/:tenantId/email/domains/:domainId/connection-info
+  //
+  // Server hostname + port table + webmail entry points for this domain —
+  // what the tenant panel's "How to connect to your email accounts" guide
+  // renders. Read-only; the ports come from MAIL_SERVICE_PORTS in
+  // api-contracts, the same table the autodiscover XML is built from.
+  app.get('/tenants/:tenantId/email/domains/:domainId/connection-info', {
+    onRequest: [authenticate, requireRole('super_admin', 'admin', 'support', 'tenant_admin'), requireTenantAccess()],
+  }, async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    const result = await service.getEmailConnectionInfo(app.db, tenantId, domainId);
+    return success(result);
+  });
+
   // PATCH /api/v1/tenants/:tenantId/email/domains/:domainId
   app.patch('/tenants/:tenantId/email/domains/:domainId', {
     onRequest: [authenticate, requireRole('super_admin', 'admin', 'tenant_admin'), requireTenantAccess()],

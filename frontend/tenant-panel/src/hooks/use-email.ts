@@ -1,4 +1,4 @@
-import type { MailUsageResponse } from '@insula/api-contracts';
+import type { MailUsageResponse, EmailConnectionInfo } from '@insula/api-contracts';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 
@@ -155,6 +155,23 @@ export function useDisableEmailDomain(tenantId: string) {
       qc.invalidateQueries({ queryKey: ['email-aliases', tenantId] });
       qc.invalidateQueries({ queryKey: ['mailbox-usage', tenantId] });
     },
+  });
+}
+
+/**
+ * Server hostname, port table and webmail entry points for one email domain —
+ * what the "How to connect to your email accounts" guide renders. Cached for a
+ * while: the values change only when an operator edits platform settings.
+ */
+export function useEmailConnectionInfo(tenantId?: string, domainId?: string) {
+  return useQuery({
+    queryKey: ['email-connection-info', tenantId, domainId],
+    queryFn: () =>
+      apiFetch<{ data: EmailConnectionInfo }>(
+        `/api/v1/tenants/${tenantId}/email/domains/${domainId}/connection-info`,
+      ),
+    enabled: !!tenantId && !!domainId,
+    staleTime: 5 * 60 * 1000,
   });
 }
 

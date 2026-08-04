@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { MAIL_SERVICE_PORTS, recommendedMailPort } from '@insula/api-contracts';
 import {
   renderMozillaAutoconfigXml,
   renderOutlookAutodiscoverXml,
@@ -98,5 +99,46 @@ describe('renderMtaStsPolicyText', () => {
       mailServerHostname: 'mail.platform.com',
     });
     expect(text).toContain('mode: testing');
+  });
+});
+
+// The tenant panel's "How to connect" guide renders MAIL_SERVICE_PORTS
+// directly. These assert the XML a client auto-fetches is built from that same
+// table, so the two surfaces cannot drift apart: change a port in the contract
+// and the golden assertions above fail until the docs/UI agree.
+describe('port table is single-sourced from @insula/api-contracts', () => {
+  it('renders every Mozilla autoconfig port from MAIL_SERVICE_PORTS', () => {
+    const xml = renderMozillaAutoconfigXml({
+      domain: 'acme.com',
+      mailServerHostname: 'mail.platform.com',
+      displayName: 'Acme',
+    });
+
+    for (const protocol of ['imap', 'pop3', 'smtp'] as const) {
+      const entry = recommendedMailPort(protocol);
+      expect(xml).toContain(`<port>${entry.port}</port>`);
+    }
+    const starttlsSmtp = MAIL_SERVICE_PORTS.find(
+      (p) => p.protocol === 'smtp' && p.socketType === 'starttls',
+    );
+    expect(starttlsSmtp).toBeDefined();
+    expect(xml).toContain(`<port>${starttlsSmtp!.port}</port>`);
+  });
+
+  it('renders Outlook autodiscover ports from MAIL_SERVICE_PORTS', () => {
+    const xml = renderOutlookAutodiscoverXml({
+      emailAddress: 'user@acme.com',
+      mailServerHostname: 'mail.platform.com',
+    });
+
+    expect(xml).toContain(`<Port>${recommendedMailPort('imap').port}</Port>`);
+    expect(xml).toContain(`<Port>${recommendedMailPort('smtp').port}</Port>`);
+  });
+
+  it('registers exactly one recommended entry per protocol', () => {
+    for (const protocol of ['imap', 'pop3', 'smtp'] as const) {
+      const recommended = MAIL_SERVICE_PORTS.filter((p) => p.protocol === protocol && p.recommended);
+      expect(recommended).toHaveLength(1);
+    }
   });
 });
