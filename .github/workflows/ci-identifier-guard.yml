@@ -1,7 +1,9 @@
 name: Identifier Guard
 
-# Always-run, path-filter-free guard against committing the operator's live
-# cluster coordinates (apex domain, node-netblock IPs) to this PUBLIC repo.
+# Always-run, path-filter-free guards against leaking into this PUBLIC repo:
+# the operator's live cluster coordinates (apex domain, node-netblock IPs) and
+# secrets (gitleaks). Both scan the WHOLE tree, so both must run on every push
+# regardless of which paths changed.
 #
 # WHY THIS EXISTS (the gap it closes): scripts/ci-no-hardcoded-test-infra.sh
 # scans ALL tracked files (git ls-files), but the workflow that ran it
@@ -42,3 +44,37 @@ jobs:
         # gitignored scripts/integration.env profile, never in committed
         # files. See docs/development/INTEGRATION_TESTS.md.
         run: ./scripts/ci-no-hardcoded-test-infra.sh
+
+  secret-scan:
+    name: Secret scan (gitleaks, repo-wide)
+    runs-on: ubuntu-latest
+    # Same gap, same fix as the identifier guard above. gitleaks scans the
+    # WHOLE tree (`--source .`) but its only home was ci-infrastructure.yml,
+    # which is path-filtered to k8s/** scripts/** security/** — so a secret
+    # committed under backend/, frontend/, packages/, documentation/,
+    # platform/ or the repo root was never scanned on a push to development.
+    #
+    # Found 2026-08-04 the hard way: a one-line .gitleaks.toml fix for a false
+    # positive did not re-run the scan at all, because the repo root is not in
+    # those three paths — the branch's last verdict stayed red on a finding
+    # that was already fixed.
+    #
+    # The copy inside ci-infrastructure.yml stays: harmless double-run when
+    # k8s/scripts/security change, and any branch protection referencing that
+    # check name keeps working.
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install gitleaks (latest stable)
+        run: |
+          ver=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+                  | grep -oE '"tag_name": *"v[^"]+"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+          [ -n "$ver" ] || { echo "could not resolve gitleaks version"; exit 1; }
+          echo "gitleaks v$ver"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${ver}/gitleaks_${ver}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+      - name: Scan working tree for secrets
+        # --no-git scans current file contents (what merges to main), not
+        # history — already-rotated leaks don't block the build while new
+        # secrets are still caught.
+        run: gitleaks detect --no-git --source . --redact -c .gitleaks.toml -v
