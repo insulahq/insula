@@ -61,8 +61,14 @@ them, `expires 4200 / total 21`.
   (upstream default 180 d), bounding drift for every path the hook does not cover:
   user-deleted mail in live accounts, failed hooks, orphaned principals.
 
-**Existing installs** predate the bootstrap setting and keep 180 d until it is
-applied once. It is stamped at ingest, so it only affects mail received afterwards:
+**Existing clusters** are converged automatically by host-migration
+`2026.8.3/0001-stalwart-spam-sample-retention` on the next daily
+`platform-ops host-config apply` — `bootstrap.sh` reaches fresh installs only.
+The migration reads the current value first and moves **only** the upstream
+180 d default, so an install you tuned on purpose keeps its setting.
+
+To apply it by hand instead (it is stamped at ingest, so it only affects mail
+received afterwards):
 
 ```bash
 kubectl -n mail exec deploy/stalwart-mail -- curl -s \
