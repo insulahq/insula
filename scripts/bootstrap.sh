@@ -4161,6 +4161,12 @@ install_traefik() {
 
   log "Traefik v3 Ingress Controller installed."
 
+  # A transient plugin-download failure disables ALL plugins and silently
+  # 404s both panels — check and recycle before anything downstream depends
+  # on ingress working. Non-fatal on its own: the warning names the cause so
+  # verify_install's panel probe is not misread as a TLS problem.
+  ensure_traefik_plugins_loaded "post-install" || true
+
   ensure_traefik_cni_portmap "post-install"
 }
 
@@ -4185,6 +4191,75 @@ install_traefik() {
 #   - verify_install   (after Flux's first reconcile, which can roll
 #                       the Traefik DS pod and drop the chain a second
 #                       time)
+# Traefik plugin-load self-test + recycle.
+#
+# Traefik downloads its plugins from plugins.traefik.io at STARTUP, and if ANY
+# single plugin fails to download it disables the WHOLE plugin subsystem:
+#
+#   INF Loading plugins... plugins=["modsecurity","crowdsec"]
+#   ERR Plugins are disabled because an error has occurred.
+#       unable to install plugin crowdsec: … context deadline exceeded
+#
+# Traefik then keeps serving, but every router whose middleware is a plugin is
+# dropped as "invalid middleware type" — including platform-ingress, which
+# carries BOTH panels. The cluster comes up with a working API, healthy pods,
+# valid certs, and 404 on admin.<apex> and tenant.<apex>. Nothing self-heals:
+# plugins are only installed at process start, so it stays broken until someone
+# restarts the pod.
+#
+# Seen on a fresh install 2026-08-04: a single transient timeout fetching the
+# crowdsec plugin left the operator with no admin panel, and bootstrap's own
+# verify_install blamed TLS ("cert-manager has NOT issued a real cert yet")
+# because the panel probe simply 404'd.
+#
+# Detection is the log marker; the remedy is a pod recycle, which re-runs the
+# download. Bounded retries — a persistent failure (no egress to
+# plugins.traefik.io) must report itself rather than loop.
+TRAEFIK_PLUGIN_FAIL_MARKER='Plugins are disabled because an error has occurred'
+TRAEFIK_PLUGIN_MAX_ATTEMPTS="${TRAEFIK_PLUGIN_MAX_ATTEMPTS:-3}"
+
+# Prints the Traefik logs for the plugin check. Split out so the test harness
+# can stub it without stubbing kubectl itself.
+traefik_plugin_logs() {
+  kubectl -n traefik logs -l app.kubernetes.io/name=traefik --tail=200 2>/dev/null || true
+}
+
+ensure_traefik_plugins_loaded() {
+  local phase="${1:-post-install}"
+  local attempt=1 logs
+
+  while [ "$attempt" -le "$TRAEFIK_PLUGIN_MAX_ATTEMPTS" ]; do
+    logs="$(traefik_plugin_logs)"
+
+    if [ -z "$logs" ]; then
+      warn "  traefik plugin check (${phase}): no Traefik logs yet — skipping (attempt ${attempt})"
+      return 0
+    fi
+
+    if ! printf '%s' "$logs" | grep -qF "$TRAEFIK_PLUGIN_FAIL_MARKER"; then
+      log "  traefik plugins loaded OK (${phase})."
+      return 0
+    fi
+
+    warn "  Traefik disabled ALL plugins (${phase}, attempt ${attempt}/${TRAEFIK_PLUGIN_MAX_ATTEMPTS}) — the admin/tenant panels would 404."
+    if [ "$attempt" -ge "$TRAEFIK_PLUGIN_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    # Recycle: plugin install only happens at process start, so a new pod is
+    # the only way to retry the download.
+    kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n traefik rollout status ds/traefik --timeout=180s >/dev/null 2>&1 || true
+    attempt=$((attempt + 1))
+  done
+
+  warn "  Traefik plugin loading FAILED after ${TRAEFIK_PLUGIN_MAX_ATTEMPTS} attempts."
+  warn "    Effect: routers using a plugin middleware (WAF, CrowdSec) are dropped,"
+  warn "    so https://admin.<domain> and https://tenant.<domain> return 404."
+  warn "    Cause: this node could not download the plugins from plugins.traefik.io."
+  warn "    Check egress/DNS, then recycle: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik"
+  return 1
+}
+
 ensure_traefik_cni_portmap() {
   local caller="${1:-unknown}"
   if ! command -v nft >/dev/null 2>&1; then
@@ -7993,6 +8068,19 @@ verify_install() {
                  -H "Host: ${admin_host}" "https://127.0.0.1/" 2>/dev/null || echo "000")
   case "$panel_code" in
     200|301|302) log "  admin panel: ${panel_code}" ;;
+    404)
+      warn "  admin panel returned 404 (expected 200/301/302)"
+      # A 404 from Traefik means NO ROUTER MATCHED — not a TLS or cert problem.
+      # The usual cause on a fresh install is the plugin subsystem having been
+      # disabled by a failed download, which drops every router that uses a
+      # plugin middleware (platform-ingress carries both panels). Say so here,
+      # otherwise the TLS warning further down reads as the explanation.
+      if traefik_plugin_logs | grep -qF "$TRAEFIK_PLUGIN_FAIL_MARKER"; then
+        warn "    CAUSE: Traefik disabled ALL plugins (a plugin download failed at startup),"
+        warn "    so the platform-ingress router was dropped. This is NOT a certificate issue."
+        warn "    Fix: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik"
+      fi
+      rc=1 ;;
     *) warn "  admin panel returned ${panel_code} (expected 200/301/302)"; rc=1 ;;
   esac
 

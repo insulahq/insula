@@ -34,6 +34,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   setting. That runbook and ADR-046 previously blamed disabled RocksDB blob GC —
   which upstream shipped in v0.16.10 and which was never the binding constraint;
   both are corrected.
+- **A transient Traefik plugin download could leave a fresh install with no
+  admin panel, permanently.** Traefik fetches its plugins from
+  plugins.traefik.io at startup and disables the *entire* plugin subsystem if
+  any single one fails. It then keeps serving while every router that uses a
+  plugin middleware is dropped as "invalid middleware type" — including
+  `platform-ingress`, which carries both panels. The cluster came up with
+  healthy pods and valid certs, 404 on `admin.<apex>` and `tenant.<apex>`, and
+  nothing self-healing, because plugins are only installed at process start.
+  Bootstrap now checks for the failure after installing Traefik, recycles the
+  pod to retry the download (bounded), and reports the real cause if it still
+  fails. `verify_install` no longer attributes the resulting 404 to TLS — it
+  names the plugin failure and the one-line fix.
+
 - **Eager image reaps were lost on any platform-api restart, silently.** The
   5-minute grace period lived in an in-process `setTimeout`, so a deploy, Flux
   reconcile, OOM kill or drain inside that window dropped the reap with no
