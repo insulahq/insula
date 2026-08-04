@@ -173,41 +173,41 @@ test.describe('Admin Form Interactions', () => {
       await expect(page.getByTestId('platform-config-section')).toBeVisible({ timeout: 2000 });
     });
 
-    test('password change is accessible from user menu', async ({ page }) => {
+    test('password change opens a modal from the user menu', async ({ page }) => {
+
+      // No password field may exist before the modal is requested — the form is
+      // lazy-loaded precisely so password managers don't see it on page load.
+      await expect(page.locator('input[type="password"]')).toHaveCount(0);
 
       // Open user menu from header
       const userMenuBtn = page.getByTestId('user-menu-button').or(page.getByRole('button', { name: 'User menu' }));
       await userMenuBtn.click();
       await page.waitForTimeout(200);
 
-      // Look for Change Password section — may be a clickable item or already expanded
-      const changePwItem = page.getByTestId('change-password-menu-item');
-      if (await changePwItem.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await changePwItem.click();
-      }
+      await expect(page.locator('input[type="password"]')).toHaveCount(0);
 
-      // The Change Password form should be visible (either after clicking or already expanded)
-      await expect(page.getByRole('heading', { name: 'Change Password' })).toBeVisible({ timeout: 2000 });
+      await page.getByTestId('change-password-menu-item').click();
 
-      // Fill password form with mismatched passwords using label-based selectors
-      const currentPwInput = page.getByRole('textbox', { name: 'Current password' });
-      await currentPwInput.waitFor({ state: 'visible', timeout: 2000 });
-      await currentPwInput.fill('admin');
-
-      const newPwInput = page.getByRole('textbox', { name: /^New password$/i });
-      await newPwInput.waitFor({ state: 'visible', timeout: 2000 });
-      await newPwInput.fill('newpassword123');
-
-      const confirmPwInput = page.getByRole('textbox', { name: /Confirm new password/i });
-      await confirmPwInput.waitFor({ state: 'visible', timeout: 2000 });
-      await confirmPwInput.fill('differentpassword');
-
-      await page.getByRole('button', { name: 'Update Password' }).click();
-
-      // Should show error or validation message for mismatched passwords
-      await page.waitForTimeout(1000);
-      // The form should still be visible (didn't navigate away on error)
+      // The lazily-loaded modal replaces the dropdown
+      await expect(page.getByTestId('change-password-modal')).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId('user-menu-dropdown')).toHaveCount(0);
       await expect(page.getByRole('heading', { name: 'Change Password' })).toBeVisible();
+
+      // Fill password form with mismatched passwords
+      await page.getByTestId('menu-current-password').fill('admin');
+      await page.getByTestId('menu-new-password').fill('newpassword123');
+      await page.getByTestId('menu-confirm-password').fill('differentpassword');
+
+      await page.getByTestId('menu-update-password-button').click();
+
+      // Mismatch is caught client-side and the modal stays open
+      await expect(page.getByTestId('menu-password-error')).toHaveText(/do not match/i, { timeout: 2000 });
+      await expect(page.getByTestId('change-password-modal')).toBeVisible();
+
+      // Cancel closes the modal and tears the password fields back out of the DOM
+      await page.getByTestId('menu-cancel-password-button').click();
+      await expect(page.getByTestId('change-password-modal')).toHaveCount(0);
+      await expect(page.locator('input[type="password"]')).toHaveCount(0);
     });
 
     test('user menu displays current user info', async ({ page }) => {
