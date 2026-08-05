@@ -194,13 +194,20 @@ NoNewPrivileges=yes
 ProtectHome=yes
 PrivateTmp=yes
 UNIT
+  # HOURLY, not daily. The converge is what applies a release's host-migrations,
+  # and a migration that fails (or is blocked behind a failure) is retried only
+  # on the next tick — at daily+1h jitter that is up to ~25 hours of a cluster
+  # sitting on an unapplied migration, which is how the 2026-08-05 staging
+  # failure went unnoticed. The run is idempotent and costs ~1s when there is
+  # nothing pending, so an hourly tick is cheap insurance. The jitter is kept
+  # (spread across a 15-min window) so a big cluster does not stampede the API.
   cat > "${dir}/platform-ops-host-config.timer" <<'UNIT'
 [Unit]
-Description=Daily Insula platform-ops host-config converge
+Description=Hourly Insula platform-ops host-config converge
 
 [Timer]
-OnCalendar=daily
-RandomizedDelaySec=3600
+OnCalendar=hourly
+RandomizedDelaySec=900
 Persistent=true
 
 [Install]
