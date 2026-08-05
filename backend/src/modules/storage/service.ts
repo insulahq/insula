@@ -634,7 +634,7 @@ for img in ${imageList}; do
   # \`crictl images -q <ref>\` prints the image ID when the ref resolves and
   # nothing when it does not, so an empty result is proof of absence.
   # POLL, don't sample once: containerd settles the removal asynchronously, so
-  # the ref can still resolve for a moment after `rmi` returns. A single check
+  # the ref can still resolve for a moment after \`rmi\` returns. A single check
   # reported reaps that HAD succeeded as failures — image_reap_log recorded
   # "failed on <node>" for an image the node really had removed (2026-08-04).
   gone=0
