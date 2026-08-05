@@ -40,6 +40,8 @@
 #   ADMIN_HOST=https://admin.staging.example.test SSH_HOST=root@<node> \
 #     ADMIN_PASSWORD=<pw> ./scripts/integration-wal-archive-failure-e2e.sh
 # ─────────────────────────────────────────────────────────────────────────────
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@testing.example.test}"
@@ -53,7 +55,7 @@ SSH_HOST="${SSH_HOST:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 PF_PORT="${PF_PORT:-18080}"
 if [[ -n "$SSH_HOST" ]]; then
-  ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+  ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 else
   ADMIN_HOST="http://127.0.0.1:${PF_PORT}"
 fi

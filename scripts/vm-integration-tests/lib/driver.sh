@@ -153,14 +153,43 @@ seed_iso() {
 
 # ── network ─────────────────────────────────────────────────────────
 # vm_net_create <run> <cidr> — isolated per-run NAT net. Idempotent.
+#
+# VMTEST_DUAL_STACK=1 additionally gives the network a ULA IPv6 subnet, so a
+# `bootstrap.sh --dual-stack` run has a v6 address to pin --node-ip to and the
+# harness can prove the v6 data path end-to-end on a disposable VM.
+#
+# ULA, not a routable prefix, on purpose: the assertion that matters is "an
+# IPv6 client reaches Traefik/mail through the cluster's hostPort DNAT", and
+# that is identical whether the address is fd00:… or 2001:…. Requiring real
+# global v6 on the VM host would make the tier unrunnable on most machines.
+#
+# Default OFF — an existing single-stack run renders byte-identical XML.
 vm_net_create() {
   local run="$1" cidr="$2"
   local name="insula-test-${run}" gw="${cidr%.*}.1"
   VIRSH net-info "$name" >/dev/null 2>&1 && return 0
+
+  # Per-run ULA prefix derived from the v4 third octet, so parallel runs on one
+  # host never collide (same guarantee the v4 subnet already gives).
+  local octet="${cidr%.*}"; octet="${octet##*.}"
+  local v6_prefix="fd00:1a5:${octet}"
+  local forward_block="  <forward mode='nat'/>"
+  local v6_block=""
+  if [[ "${VMTEST_DUAL_STACK:-0}" == "1" ]]; then
+    # nat ipv6='yes' needs libvirt >= 5.2; every supported host is well past it.
+    forward_block="  <forward mode='nat'>
+    <nat ipv6='yes'/>
+  </forward>"
+    v6_block="
+  <ip family='ipv6' address='${v6_prefix}::1' prefix='64'>
+    <dhcp><range start='${v6_prefix}::100' end='${v6_prefix}::1ff'/></dhcp>
+  </ip>"
+  fi
+
   local xml; xml=$(cat <<XML
 <network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>${name}</name>
-  <forward mode='nat'/>
+${forward_block}
   <bridge name='vtest${run:0:6}' stp='on' delay='0'/>
   <!-- DHCP only, DNS off: a host-wide resolver (AdGuardHome/pi-hole) commonly binds
        *:53, so libvirt's per-net dnsmasq can't bind gw:53 ("Address already in use").
@@ -171,7 +200,7 @@ vm_net_create() {
   <dns enable='no'/>
   <ip address='${gw}' netmask='255.255.255.0'>
     <dhcp><range start='${cidr%.*}.10' end='${cidr%.*}.99'/></dhcp>
-  </ip>
+  </ip>${v6_block}
   <dnsmasq:options>
     <dnsmasq:option value='dhcp-option=6,${VMTEST_UPSTREAM_DNS:-1.1.1.1}'/>
   </dnsmasq:options>

@@ -28,6 +28,18 @@ off-cluster on an S3 or SSH target. Bundles are split into four
 enabled component succeeded. Operators recognise a bundle as restorable
 by the presence of `meta.json` on the off-site target.
 
+> **Add-on databases live inside `files`, and their replay is a separate step.**
+> Tenant MariaDB/PostgreSQL deployments mount the tenant PVC under a
+> `databases/<name>-<suffix>` subPath, so `files` captures their on-disk data
+> directory. Because that directory is copied while the database is *running*,
+> it is crash-consistent rather than dump-consistent — which is why an ADR-047
+> pre-capture hook also writes a clean logical
+> `predump-<db>-<bundleId>.sql` into the same PVC. Replaying that dump is the
+> `databases-by-id` restore item; **it is not part of a bundle-wide restore or
+> of `recreateTenantFromBundle`**, so a DR-recovered or migrated tenant needs it
+> added to the restore cart explicitly. Tracked as
+> [R25](../roadmap/ROADMAP.md#r25--migration--dr-recover-completeness).
+
 Architecture: [ADR-032 — BackupStore + bundle orchestration](../architecture/adr/ADR-032-backupstore-interface-and-bundle-orchestration.md).
 Restore model: [ADR-034 — restore execution + cart pattern](../architecture/adr/ADR-034-restore-execution-model-and-cart-pattern.md).
 

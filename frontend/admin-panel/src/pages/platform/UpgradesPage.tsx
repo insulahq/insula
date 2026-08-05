@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Loader2, RefreshCw, CheckCircle, ShieldAlert, Download, Container, ArrowUpCircle } from 'lucide-react';
-import { usePlatformVersion, useUpdateSettings } from '@/hooks/use-platform-updates';
+import { usePlatformVersion, useCheckForUpdates, useUpdateSettings } from '@/hooks/use-platform-updates';
 import { useRollback, type RollbackData } from '@/hooks/use-platform-upgrade';
 import { useAuth } from '@/hooks/use-auth';
 import DeployedImagesModal from '@/components/platform/DeployedImagesModal';
@@ -17,7 +17,10 @@ import PlatformUpgradeProgressModal from '@/components/PlatformUpgradeProgressMo
 const CARD = 'bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-4';
 
 export default function UpgradesPage() {
-  const { data: versionRes, isLoading: versionLoading, isFetching: versionFetching, refetch: refetchVersion } = usePlatformVersion();
+  const { data: versionRes, isLoading: versionLoading, isFetching: versionFetching } = usePlatformVersion();
+  const checkForUpdates = useCheckForUpdates();
+  // Spin while either the on-demand poll or a background refetch is in flight.
+  const checking = checkForUpdates.isPending || versionFetching;
   const updateSettings = useUpdateSettings();
   const rollback = useRollback();
   const { user } = useAuth();
@@ -117,9 +120,12 @@ export default function UpgradesPage() {
                   Automatic updates
                 </label>
               )}
-              <button type="button" data-testid="check-updates-btn" onClick={() => refetchVersion()} disabled={versionFetching}
+              {/* Polls GitHub for real. refetchVersion() only re-read the value
+                  the hourly CronJob stored, so a release published since the
+                  last tick stayed invisible however often this was clicked. */}
+              <button type="button" data-testid="check-updates-btn" onClick={() => checkForUpdates.mutate()} disabled={checking}
                 className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-60 transition-colors">
-                <RefreshCw size={14} className={versionFetching ? 'animate-spin' : ''} /> {versionFetching ? 'Checking…' : 'Check for updates'}
+                <RefreshCw size={14} className={checking ? 'animate-spin' : ''} /> {checking ? 'Checking…' : 'Check for updates'}
               </button>
               {/* Run upgrade — only when a newer version is available (super_admin). */}
               {canUpgrade && (

@@ -2,7 +2,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import { emailDomains, domains, mailboxes, tenants, emailAliases, dnsRecords } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { provisionEmailDns, deprovisionEmailDns } from './dns-provisioning.js';
-import { getMailServerHostname, getDefaultWebmailEngine } from '../webmail-settings/service.js';
+import { getMailServerHostname, getDefaultWebmailEngine, getDefaultWebmailUrl } from '../webmail-settings/service.js';
 import { serviceNameForEngine } from '../webmail-router/reconciler.js';
 import { notifyTenantEmailBootstrapped } from '../notifications/events.js';
 import { mailLogger } from '../../shared/mail-logger.js';
@@ -19,11 +19,13 @@ import {
   destroyPrincipal as jmapDestroyPrincipal,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
-import type { EmailDomainDisablePreview, WebmailStatus } from '@insula/api-contracts';
+import type { EmailDomainDisablePreview, WebmailStatus, EmailConnectionInfo } from '@insula/api-contracts';
+import { MAIL_SERVICE_PORTS } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { EnableEmailDomainInput, UpdateEmailDomainInput } from '@insula/api-contracts';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { removeAllDkimSignaturesForDomain } from '../email-dkim/cleanup.js';
+import { purgeSpamTrainingSamplesForPrincipal } from '../mail-admin/spam-sample-cleanup.js';
 import { normalizeDomainDkim } from '../email-dkim/normalize.js';
 import { upsertDkimTxtRecord } from '../email-dkim/dns-publish.js';
 import { redactPemBlocks } from '../email-dkim/signatures.js';
@@ -344,6 +346,30 @@ export async function destroyStalwartArtifactsForEmailDomain(
     .where(eq(mailboxes.emailDomainId, emailDomain.id));
   for (const mb of mbRows) {
     if (!mb.principalId) continue;
+    // 1a. Spam training samples FIRST — they reference the message blobs via a
+    //     BlobLink::Temporary stamped at ingest with SpamClassifier.holdSamplesFor,
+    //     and destroying the principal does NOT release them (Stalwart's
+    //     destroy_account_blobs unlinks only Email/FileNode/SieveScript hard
+    //     links). Skipping this leaves the mailbox's bytes on the mail PVC until
+    //     that timer expires. Must run BEFORE the destroy — the samples are
+    //     addressed by principal id.
+    try {
+      const purge = await purgeSpamTrainingSamplesForPrincipal({
+        principalId: mb.principalId,
+        baseUrl: process.env.STALWART_MGMT_URL,
+      });
+      if (purge.remaining > 0) {
+        failures.push(`mailbox ${mb.id}: ${purge.remaining} spam sample(s) left`);
+      }
+    } catch (err) {
+      // Non-fatal: the blob is still collected when holdSamplesFor expires.
+      // Never block the principal destroy on it.
+      failures.push(`mailbox ${mb.id} spam samples: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(
+        { mailboxId: mb.id, principalId: mb.principalId, err: err instanceof Error ? err.message : String(err) },
+        'spam training sample purge failed — mail blobs stay until holdSamplesFor expires',
+      );
+    }
     try {
       await jmapDestroyPrincipal({
         accountId,
@@ -604,6 +630,40 @@ export async function getEmailDomain(
  * mode. The response includes a `manualRequired` flag so the UI
  * knows whether to nag the operator to publish them manually.
  */
+/**
+ * Everything a tenant needs to point a mail client or a browser at their
+ * mailboxes: the server hostname, the port table, and the webmail entry points.
+ *
+ * Read-only aggregation of existing settings — the hostname and webmail URL are
+ * platform-wide (`platform_settings`), the vanity webmail host is per-domain.
+ * Ports come from `MAIL_SERVICE_PORTS` in `@insula/api-contracts`, the same
+ * table the autodiscover/autoconfig XML is rendered from, so the instructions a
+ * human reads can't drift from the config a client auto-fetches.
+ */
+export async function getEmailConnectionInfo(
+  db: Database,
+  tenantId: string,
+  domainId: string,
+): Promise<EmailConnectionInfo> {
+  const ed = await getEmailDomain(db, tenantId, domainId);
+
+  const [mailServerHostname, webmailUrl] = await Promise.all([
+    getMailServerHostname(db),
+    getDefaultWebmailUrl(db),
+  ]);
+
+  return {
+    domainName: ed.domainName,
+    mailServerHostname,
+    ports: MAIL_SERVICE_PORTS.map((p) => ({ ...p })),
+    // getDefaultWebmailUrl falls back to a computed value, but an operator can
+    // store an empty string — normalise that to null so the UI hides the tab
+    // section instead of rendering a dead link.
+    webmailUrl: webmailUrl && webmailUrl.trim().length > 0 ? webmailUrl : null,
+    webmailHostname: ed.webmailEnabled === 1 ? `webmail.${ed.domainName}` : null,
+  };
+}
+
 export async function getEmailDomainDnsRecords(
   db: Database,
   tenantId: string,

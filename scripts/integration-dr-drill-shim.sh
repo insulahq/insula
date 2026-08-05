@@ -47,6 +47,8 @@
 #   ./scripts/integration-dr-drill-shim.sh
 #   ./scripts/integration-dr-drill-shim.sh --neg-only  # only phase C+E
 
+# Preconditions + apex resolution (require_backup_class_or_skip, resolve_platform_apex).
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
 NEG_ONLY=0
@@ -58,8 +60,18 @@ for arg in "$@"; do
   esac
 done
 
-API_BASE="${API_BASE:-https://admin.k8s-platform.test:2011}"
+# Derive from the configured target before falling back to the local-dev
+# apex: an operator profile sets ADMIN_HOST/API_URL, not API_BASE, so a
+# bare local default silently pointed every request at localhost and
+# returned 000 against a remote cluster (seen 2026-08-04: node-terminal
+# "A1 expected super_admin, got ''" / "A2 step-up/password failed: 000").
+API_BASE="${API_BASE:-${ADMIN_HOST:-${API_URL:-https://admin.k8s-platform.test:2011}}}"
 ADMIN_HOST="${ADMIN_HOST:-$API_BASE}"
+
+# A cluster with no backup target bound to this class cannot run the suite.
+# Report SKIPPED instead of a wall of red assertions (2026-08-04: twelve
+# suites went red on a fresh cluster purely because nothing was bound).
+require_backup_class_or_skip system
 CURL_INSECURE="${CURL_INSECURE:-1}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

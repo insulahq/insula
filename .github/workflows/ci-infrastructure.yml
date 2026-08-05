@@ -83,6 +83,8 @@ jobs:
       - run: ./scripts/test-bootstrap-helm-retry.sh
       - run: ./scripts/test-ui.sh
       - run: ./scripts/test-bootstrap-quiet-wrappers.sh
+      - run: ./scripts/test-traefik-plugin-guard.sh
+      - run: ./scripts/test-waf-audit-redaction.sh
       - run: ./scripts/test-log-gate.sh
       - run: ./scripts/test-vmtest-log-gate-wiring.sh
       - run: ./.github/scripts/test-pin-image-tag.sh
@@ -330,6 +332,22 @@ jobs:
         # profile (scripts/lib/integration-env.sh). Companion to the two k8s/-only
         # guards above. See docs/development/INTEGRATION_TESTS.md.
         run: ./scripts/ci-no-hardcoded-test-infra.sh
+
+      - name: Image purge must verify removal
+        # `crictl rmi` answering "no such image" is ambiguous — it means both
+        # "already gone" and "this ref does not resolve", and treating it as
+        # success reported reaps that never happened (with a byte count copied
+        # from kubelet's node status). Runs the real embedded script against a
+        # stub crictl.
+        run: ./scripts/test-image-purge-verify.sh
+
+      - name: Harness defaults must derive the test apex
+        # PORTABILITY (distinct from the secrecy guard above): a harness default
+        # may not bake in an apex, even the sanitised placeholder. A suite that
+        # hardcodes one only passes on that cluster — a run against a fresh
+        # cluster failed with "expected mail.staging.example.test" while mail was
+        # healthy. Derive via resolve_platform_apex() instead.
+        run: ./scripts/ci-no-hardcoded-test-apex.sh
 
   secret-scan:
     name: Secret scan (gitleaks)

@@ -48,9 +48,11 @@
 #   FLAGGED_EVERY_N             20
 #   SKIP_RESTORE=1              skip stage 8
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-API_BASE="${API_BASE:-https://admin.staging.example.test}"
+API_BASE="${API_BASE:-${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-markus@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
@@ -58,8 +60,8 @@ STAGING_HOST="${STAGING_HOST:-root@staging1.example.test}"
 SERVERS_TXT="${SERVERS_TXT:-$HOME/k8s-staging/servers.txt}"
 TARGET_CFG_ID="${TARGET_CFG_ID:-6476f958-2c4b-4ec2-bba0-6d4f1764b24b}"
 TENANT_ID="${TENANT_ID:-b4384ca8-c5c9-4e1e-8c1c-f864c7a2419d}"
-TEST_ADDR="${TEST_ADDR:-jack@x.staging.example.test}"
-RESTORE_ADDR="${RESTORE_ADDR:-john@x.staging.example.test}"
+TEST_ADDR="${TEST_ADDR:-jack@x.$(resolve_platform_apex)}"
+RESTORE_ADDR="${RESTORE_ADDR:-john@x.$(resolve_platform_apex)}"
 COUNT="${COUNT:-1000}"
 FLAGGED_EVERY_N="${FLAGGED_EVERY_N:-20}"
 SKIP_SEED="${SKIP_SEED:-0}"   # if 1, skip Stages 1+2; requires MARKER + EFFECTIVE_COUNT env vars
