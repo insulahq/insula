@@ -12,7 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Stalwart mail server v0.16.14 → v0.16.16.** Two upstream patch releases, all
+  fixes plus two additive changes; no breaking changes and no new security
+  advisories since the previous pin. The three changelog entries that could have
+  affected us do not: the Redis task/queue lock-leak fix is moot because our
+  Coordinator is disabled, we never set `maxMessageSize`, and we use no registry
+  `#id` references. Verified by an in-place upgrade on a real RocksDB store
+  (40 messages, 40 spam training samples, 2 accounts, 1 domain): v0.16.16 opens
+  the v0.16.14 store, all 26 registry objects the platform calls stay reachable,
+  IMAP still serves the pre-upgrade mailbox, every `configure_stalwart_full`
+  settings payload still applies — and **rollback to v0.16.14 works with data
+  intact**, so the bump is revertible rather than one-way. Delivered by Flux as
+  an app manifest, so existing clusters pick it up on reconcile; no
+  host-migration is involved.
+
 ### Fixed
+- **The mail archive/DR export ran a Stalwart binary eleven releases behind the
+  server.** `archive.ts` defaulted the export/import Job to a hardcoded
+  `v0.16.5` while the Deployment ran v0.16.14 — nothing forced the two to move
+  together, and `security/components.yaml` only watches the Deployment, so the
+  archive image got no release tracking and no vulnerability scanning. That
+  binary reads the server's own RocksDB store, so it is the one image that must
+  track the server. The Job now resolves its image from the live `stalwart-mail`
+  Deployment (explicit `STALWART_IMAGE` still wins; a pinned fallback covers an
+  unreadable Deployment and is asserted equal to the manifest by a test that
+  fails if either side drifts). Testing showed the old pin still exported a
+  v0.16.16-written store byte-identically, so this closes a drift and scanning
+  gap rather than a live data risk.
 - **Harnesses could call the shared env lib before sourcing it.** The apex sweep
   left seven suites using `resolve_platform_apex()` in a `${VAR:-…}` default
   above their `source` line — latent, because the default only evaluates when

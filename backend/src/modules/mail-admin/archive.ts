@@ -640,6 +640,66 @@ async function safeScaleBackUp(deps: ArchiveDeps, replicas: number): Promise<voi
 
 // ── Internal: k8s helpers ──────────────────────────────────────────────────────
 
+/**
+ * Fallback Stalwart image for the archive Job, used ONLY when the live
+ * Deployment cannot be read.
+ *
+ * Keep in lockstep with `k8s/base/stalwart-mail/stalwart/deployment.yaml` and
+ * the `stalwart` entry in `security/components.yaml`.
+ *
+ * Why it is a fallback and not the primary source: this constant sat at
+ * v0.16.5 while the server ran v0.16.14 — eleven releases of silent drift,
+ * because nothing forced the two to move together. The export/import binary
+ * reads the server's own RocksDB store, so it is the one image that must track
+ * the server. `resolveStalwartImage` therefore asks the cluster what is
+ * actually running and only falls back to this literal.
+ */
+const STALWART_IMAGE_FALLBACK = 'docker.io/stalwartlabs/stalwart:v0.16.16';
+
+/**
+ * The image the archive Job should run `stalwart -e` / `-i` with.
+ *
+ * Order: explicit `STALWART_IMAGE` env override → the image the live
+ * `stalwart-mail` Deployment is running → the pinned fallback.
+ *
+ * Reading the live Deployment is what keeps export/import on the SAME binary
+ * as the store it is reading, across every upgrade, with no second pin to
+ * remember. Verified 2026-08-05 that a v0.16.5 binary still exports a
+ * v0.16.16-written store byte-identically, so a stale image degrades rather
+ * than corrupts — but matching is free here, so match.
+ */
+export async function resolveStalwartImage(
+  apps: AppsV1Api,
+  env: NodeJS.ProcessEnv = process.env,
+  logger?: { warn: (...args: unknown[]) => void },
+): Promise<string> {
+  const override = env[STALWART_IMAGE_ENV];
+  if (override) return override;
+  try {
+    const dep = (await apps.readNamespacedDeployment({
+      name: STALWART_DEPLOYMENT,
+      namespace: MAIL_NAMESPACE,
+    })) as { spec?: { template?: { spec?: { containers?: Array<{ name?: string; image?: string }> } } } };
+    const containers = dep.spec?.template?.spec?.containers ?? [];
+    // The pod carries sidecars (rsyncd, init containers); take the one that IS
+    // Stalwart, not merely the first entry.
+    const image =
+      containers.find((c) => c.name === 'stalwart')?.image ??
+      containers.find((c) => (c.image ?? '').includes('stalwartlabs/stalwart'))?.image;
+    if (image) return image;
+    logger?.warn(
+      { deployment: `${MAIL_NAMESPACE}/${STALWART_DEPLOYMENT}` },
+      'archive: no stalwart container image on the live Deployment — using pinned fallback',
+    );
+  } catch (err) {
+    logger?.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'archive: could not read the live Stalwart Deployment — using pinned fallback',
+    );
+  }
+  return STALWART_IMAGE_FALLBACK;
+}
+
 async function readCurrentReplicas(apps: AppsV1Api): Promise<number | null> {
   try {
     const dep = (await apps.readNamespacedDeployment({
@@ -701,9 +761,7 @@ async function createArchiveJob(
   const toolsImage =
     process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
     'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
-  const stalwartImage =
-    process.env[STALWART_IMAGE_ENV] ??
-    'docker.io/stalwartlabs/stalwart:v0.16.5';
+  const stalwartImage = await resolveStalwartImage(deps.apps, process.env, deps.logger);
 
   // Archive Job pod composition:
   //   export mode  — initContainer runs `stalwart -e` → writes /export/export.lz4
@@ -895,9 +953,7 @@ async function createArchiveJobNoDowntime(
   const toolsImage =
     process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
     'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
-  const stalwartImage =
-    process.env[STALWART_IMAGE_ENV] ??
-    'docker.io/stalwartlabs/stalwart:v0.16.5';
+  const stalwartImage = await resolveStalwartImage(deps.apps, process.env, deps.logger);
   const rocksdbSecondaryImage =
     process.env[ROCKSDB_SECONDARY_IMAGE_ENV] ??
     'ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest';
