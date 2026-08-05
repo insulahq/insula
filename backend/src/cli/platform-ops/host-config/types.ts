@@ -130,14 +130,24 @@ export type HostMigrationState =
   | 'already-applied' // marker present → skipped
   | 'applied' // ran successfully this pass (enforce)
   | 'would-run' // pending, dry-run (no action)
-  | 'run-failed' // ran, non-zero exit → HALTS the pass
-  | 'blocked' // a prior script in this pass failed → not attempted
+  | 'run-failed' // ran, non-zero exit → halts the pass iff it blocks-on-failure
+  | 'blocked' // a prior BLOCKING script failed this pass → not attempted
+  | 'skipped' // operator recorded a .skipped marker — never ran, never blocks
   | 'invalid'; // failed catalog validation (bad version/name) → never run
 
 export interface HostMigrationItem {
   readonly key: string; // "<version>/<name>" — marker + ordering key
   readonly state: HostMigrationState;
   readonly error?: string;
+  /**
+   * ADR-056 §3. Consecutive failures recorded for this script, and when it first
+   * started failing. A wedge announces itself instead of repeating one silent
+   * line forever — DEV sat at 11-pending behind one failure for five weeks.
+   */
+  readonly attempt?: number;
+  readonly failingSince?: string;
+  /** Operator-supplied reason from the .skipped marker (ADR-056 §2). */
+  readonly skipReason?: string;
 }
 
 export interface HostMigrationResult {
@@ -158,6 +168,22 @@ export interface HostMigrationScript {
   readonly body: string; // script contents
 }
 
+/**
+ * ADR-056 §1. Does a failure of this script stop later ones?
+ *
+ * Parsed from the `# blocks-on-failure: yes|no` header. ABSENT MEANS YES: the
+ * safe default is that a failure halts, because a later migration may assume an
+ * earlier one applied. `no` is a claim the author makes about their own script —
+ * that nothing later depends on it — and is reviewed like any other code.
+ */
+export function hostMigrationBlocksOnFailure(body: string): boolean {
+  for (const line of body.split('\n', 40)) {
+    const m = /^#\s*blocks-on-failure:\s*(\S+)/i.exec(line.trim());
+    if (m) return (m[1] ?? '').toLowerCase() !== 'no';
+  }
+  return true;
+}
+
 export interface HostMigrationDeps {
   /** host-migrations-desired mode (enforce|observe|…); null = absent/unreachable. */
   readonly readMode: () => Promise<string | null>;
@@ -165,6 +191,19 @@ export interface HostMigrationDeps {
   readonly isApplied: (key: string) => boolean;
   /** Record a script as applied (write its marker); throws on failure. */
   readonly markApplied: (key: string) => void;
+  /**
+   * Operator-recorded skip for this script, or null. ADR-056 §2 — an honest
+   * escape hatch, distinct from `.done`, so the node never reports `applied`
+   * for something a human decided to skip.
+   */
+  readonly readSkip?: (key: string) => { reason: string } | null;
+  /**
+   * Consecutive-failure bookkeeping (ADR-056 §3). `noteFailure` returns the
+   * updated count + first-seen so the report can escalate; `clearFailure` is
+   * called when a script finally applies.
+   */
+  readonly noteFailure?: (key: string) => { attempt: number; failingSince: string };
+  readonly clearFailure?: (key: string) => void;
   /** Run a script (bash, argv-only, timeout); throws on non-zero exit. */
   readonly runScript: (script: HostMigrationScript) => void;
   /** Where the catalog came from (for reporting). */
