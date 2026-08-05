@@ -349,6 +349,32 @@ describe('selfUpgrade', () => {
     expect(err.join('\n')).toMatch(/host-migration converge exited 1/);
   });
 
+  it('apply-on-Apply: a converge failure REPORTS ITS CAUSE, not just an exit code', async () => {
+    // Regression guard for the 2026-08-05 staging finding: the converge exited 1
+    // on all three nodes during the 2026.8.2 → 2026.8.3-rc.1 upgrade and the
+    // warning carried only the number, so the cause was unrecoverable after the
+    // fact. An exit code with no detail is not a diagnosable failure.
+    const converge = vi.fn(async () => ({ code: 1, detail: 'migration 2026.8.3/0001 failed: kubectl not found' }));
+    const { deps, err } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '2026.8.2', target: '2026.8.3', source: 'configmap' as const, arch: 'amd64' })) },
+      convergeAfterSelfUpgrade: converge,
+    });
+    expect(await selfUpgrade(['--check'], deps)).toBe(0);
+    const out = err.join('\n');
+    expect(out).toMatch(/host-migration converge exited 1/);
+    expect(out).toMatch(/migration 2026\.8\.3\/0001 failed: kubectl not found/);
+  });
+
+  it('apply-on-Apply: a converge failure with no output still warns cleanly', async () => {
+    const converge = vi.fn(async () => ({ code: 1 }));
+    const { deps, err } = fakeDeps({
+      selfUpgrade: { run: vi.fn(async () => ({ ok: true, action: 'upgraded' as const, current: '2026.8.2', target: '2026.8.3', source: 'configmap' as const, arch: 'amd64' })) },
+      convergeAfterSelfUpgrade: converge,
+    });
+    expect(await selfUpgrade(['--check'], deps)).toBe(0);
+    expect(err.join('\n')).toMatch(/host-migration converge exited 1 \(the daily host-config timer will retry\)$/m);
+  });
+
   it('apply-on-Apply: NOT triggered when already-current (no upgrade happened)', async () => {
     const converge = vi.fn(async () => ({ code: 0 }));
     const { deps } = fakeDeps({

@@ -238,7 +238,11 @@ export async function selfUpgrade(args: string[], deps: Deps): Promise<number> {
       if (deps.convergeAfterSelfUpgrade) {
         const c = await deps.convergeAfterSelfUpgrade();
         if (c.code === 0) uiOf(deps).ok('converged host-migrations for the new release');
-        else uiOf(deps).warn(`host-migration converge exited ${c.code} (the daily host-config timer will retry)`);
+        else
+          uiOf(deps).warn(
+            `host-migration converge exited ${c.code} (the daily host-config timer will retry)` +
+              (c.detail ? ` — ${c.detail}` : ''),
+          );
       }
       return 0;
     }
