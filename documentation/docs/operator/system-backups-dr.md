@@ -95,6 +95,14 @@ Lost the admin password? Reset it on the server in under a second:
 scripts/admin-password-reset.sh --email <addr> --random
 ```
 
+The generated password is printed once and cannot be recovered — save it before
+you close the terminal. The reset also removes the `platform-admin-seed` Secret,
+which held the *previous* password: leaving it in place would keep shipping a
+credential that no longer works in the secrets bundle, which is misleading
+exactly when you need it during an incident. (Changing the password from the
+panel has always done the same.) If you see a warning that the Secret could not
+be removed, delete it by hand — it is stale from that point on.
+
 The full three-tier model (bootstrap-time / runtime / operator-rotated secrets)
 and the daily CronJob that keeps the bundle current are in
 [Secrets Lifecycle](https://github.com/insulahq/insula/blob/main/docs/operations/SECRETS_LIFECYCLE.md).
