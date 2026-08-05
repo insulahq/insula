@@ -1,12 +1,16 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
 import { User, KeyRound, Save, Loader2, Clock, Fingerprint, Trash2, Plus, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
-import { useChangePassword } from '@/hooks/use-password';
 import { useUpdateProfile } from '@/hooks/use-profile';
 import { usePasskey } from '@/hooks/use-passkey';
 import { ApiError } from '@/lib/api-client';
 import type { PasskeySummary, PasskeyMode } from '@insula/api-contracts';
 import TimezoneSelect from '@/components/TimezoneSelect';
+
+// Lazy so the password inputs stay OUT of the entry chunk — routes are not
+// code-split in this panel, so an inline form here ships on every page view and
+// password managers latch onto it. Same reason as Header.tsx.
+const ChangePasswordModal = lazy(() => import('@/components/ChangePasswordModal'));
 
 const INPUT_CLASS =
   'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -29,9 +33,38 @@ export default function UserSettings() {
         initialTimezone={(user as unknown as { timezone?: string | null })?.timezone ?? ''}
       />
 
-      <PasswordForm />
+      <PasswordSection />
 
       <PasskeySection />
+    </div>
+  );
+}
+
+function PasswordSection() {
+  const [modalOpen, setModalOpen] = useState(false);
+  return (
+    <div data-testid="password-section" className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-700 dark:bg-gray-800">
+      <div className="mb-4 flex items-center gap-2">
+        <KeyRound size={18} className="text-gray-500 dark:text-gray-400" />
+        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Password</h2>
+      </div>
+      <p className="mb-4 max-w-md text-sm text-gray-600 dark:text-gray-400">
+        Change the password you use to sign in to the panel.
+      </p>
+      <button
+        type="button"
+        onClick={() => setModalOpen(true)}
+        data-testid="settings-open-password-modal"
+        className="inline-flex items-center gap-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-2 disabled:opacity-50 dark:focus:ring-offset-gray-800"
+      >
+        <KeyRound size={14} />
+        Change password
+      </button>
+      {modalOpen && (
+        <Suspense fallback={null}>
+          <ChangePasswordModal onClose={() => setModalOpen(false)} />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -364,109 +397,6 @@ function ProfileForm({
         >
           {updateProfile.isPending ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
           Save Changes
-        </button>
-      </form>
-    </div>
-  );
-}
-
-function PasswordForm() {
-  const changePassword = useChangePassword();
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
-  const [errorMessage, setErrorMessage] = useState('');
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSuccessMessage('');
-    setErrorMessage('');
-
-    if (newPassword !== confirmPassword) {
-      setErrorMessage('New passwords do not match');
-      return;
-    }
-
-    try {
-      await changePassword.mutateAsync({
-        current_password: currentPassword,
-        new_password: newPassword,
-      });
-      setSuccessMessage('Password updated successfully');
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-    } catch (err) {
-      setErrorMessage(
-        err instanceof ApiError ? err.message : 'Failed to update password. Please try again.',
-      );
-    }
-  };
-
-  return (
-    <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm" data-testid="password-section">
-      <div className="mb-4 flex items-center gap-2">
-        <KeyRound size={20} className="text-gray-600 dark:text-gray-400" />
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Change Password</h2>
-      </div>
-      <form className="max-w-md space-y-4" onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="currentPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Current Password
-          </label>
-          <input
-            id="currentPassword"
-            type="password"
-            autoComplete="current-password"
-            className={INPUT_CLASS}
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-            data-testid="settings-current-password"
-          />
-        </div>
-        <div>
-          <label htmlFor="newPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            New Password
-          </label>
-          <input
-            id="newPassword"
-            type="password"
-            autoComplete="new-password"
-            className={INPUT_CLASS}
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            data-testid="settings-new-password"
-          />
-        </div>
-        <div>
-          <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-            Confirm New Password
-          </label>
-          <input
-            id="confirmPassword"
-            type="password"
-            autoComplete="new-password"
-            className={INPUT_CLASS}
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            data-testid="settings-confirm-password"
-          />
-        </div>
-        {successMessage && (
-          <p className="text-sm text-green-600 dark:text-green-400" data-testid="password-success">{successMessage}</p>
-        )}
-        {errorMessage && (
-          <p className="text-sm text-red-600 dark:text-red-400" data-testid="password-error">{errorMessage}</p>
-        )}
-        <button
-          type="submit"
-          disabled={changePassword.isPending}
-          className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="settings-update-password-button"
-        >
-          {changePassword.isPending ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
-          Update Password
         </button>
       </form>
     </div>
