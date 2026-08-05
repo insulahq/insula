@@ -20,6 +20,7 @@
  */
 
 import { compareVersions, isValidVersion } from '../../../modules/platform-updates/poller/semver.js';
+import { hostMigrationBlocksOnFailure } from './types.js';
 import type {
   HostMigrationDeps,
   HostMigrationItem,
@@ -70,6 +71,9 @@ export function runHostMigrations(
   const ordered = orderHostMigrations(scripts);
   const items: HostMigrationItem[] = [];
   let appliedCount = 0;
+  // ADR-056 §1: only a script that DECLARES it blocks halts the chain. Absent
+  // header ⇒ blocks, so nothing regresses silently; an author opts out only for
+  // a script nothing later depends on.
   let halted = false;
   let ok = true;
 
@@ -80,6 +84,13 @@ export function runHostMigrations(
     }
     if (deps.isApplied(s.key)) {
       items.push({ key: s.key, state: 'already-applied' });
+      continue;
+    }
+    // ADR-056 §2: an operator-recorded skip. Reported as `skipped`, never
+    // `applied` — the node's state stays honest — and it does not block.
+    const skip = deps.readSkip?.(s.key) ?? null;
+    if (skip) {
+      items.push({ key: s.key, state: 'skipped', skipReason: skip.reason });
       continue;
     }
     if (!enforcing) {
@@ -95,9 +106,18 @@ export function runHostMigrations(
       deps.runScript(s);
     } catch (err) {
       ok = false;
-      halted = true;
+      const blocks = hostMigrationBlocksOnFailure(s.body);
+      if (blocks) halted = true;
       const message = err instanceof Error ? err.message : String(err);
-      items.push({ key: s.key, state: 'run-failed', error: message });
+      // ADR-056 §3: count it, so a wedge escalates instead of repeating one
+      // silent line. DEV failed identically for five weeks before anyone looked.
+      const f = deps.noteFailure?.(s.key);
+      items.push({
+        key: s.key,
+        state: 'run-failed',
+        error: message,
+        ...(f ? { attempt: f.attempt, failingSince: f.failingSince } : {}),
+      });
       continue;
     }
     try {
@@ -108,9 +128,16 @@ export function runHostMigrations(
       ok = false;
       halted = true;
       const message = err instanceof Error ? err.message : String(err);
-      items.push({ key: s.key, state: 'run-failed', error: `applied but marker write failed: ${message}` });
+      const f = deps.noteFailure?.(s.key);
+      items.push({
+        key: s.key,
+        state: 'run-failed',
+        error: `applied but marker write failed: ${message}`,
+        ...(f ? { attempt: f.attempt, failingSince: f.failingSince } : {}),
+      });
       continue;
     }
+    deps.clearFailure?.(s.key);
     items.push({ key: s.key, state: 'applied' });
     appliedCount++;
   }

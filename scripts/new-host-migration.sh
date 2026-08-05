@@ -101,6 +101,7 @@ cat > "$DEST" <<EOF
 #!/usr/bin/env bash
 # idempotent: TODO — describe why re-running on an already-applied node is a no-op
 # allow-paths: TODO — list the host path(s) this migration may touch (review allow-list)
+# blocks-on-failure: yes    # ADR-056: 'no' iff NOTHING later depends on this script
 set -euo pipefail
 
 # TODO: implement the host change for "${NAME}".

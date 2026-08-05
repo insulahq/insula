@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { runHostMigrations, orderHostMigrations, hostMigrationValid } from './host-migrations.js';
+import { hostMigrationBlocksOnFailure } from './types.js';
 import type { HostMigrationDeps, HostMigrationScript } from './types.js';
 
 function script(version: string, name: string, body = 'echo ok'): HostMigrationScript {
@@ -147,5 +148,85 @@ describe('runHostMigrations', () => {
     expect(r.ok).toBe(false);
     expect(r.reason).toMatch(/501 scripts.*cap/);
     expect(ran).toHaveLength(0);
+  });
+});
+
+// ── ADR-056: failure policy ──────────────────────────────────────────────────
+describe('ADR-056 host-migration failure policy', () => {
+  const script = (key: string, body = '') => ({
+    version: key.split('/')[0] as string,
+    name: key.split('/')[1] as string,
+    key,
+    body,
+  });
+
+  function deps(over: Partial<HostMigrationDeps> = {}): HostMigrationDeps {
+    return {
+      readMode: async () => 'enforce',
+      isApplied: () => false,
+      markApplied: () => {},
+      runScript: () => {},
+      source: 'embedded',
+      ...over,
+    } as HostMigrationDeps;
+  }
+
+  it('a blocking failure still halts the chain (unchanged default)', () => {
+    const r = runHostMigrations(
+      [script('2026.1.1/0001-a.sh'), script('2026.1.1/0002-b.sh')],
+      true,
+      deps({ runScript: (s) => { if (s.key.includes('0001')) throw new Error('boom'); } }),
+    );
+    expect(r.items.map((i) => i.state)).toEqual(['run-failed', 'blocked']);
+  });
+
+  it('a NON-blocking failure lets later migrations run — the DEV wedge, unwedged', () => {
+    // 2026.7.1/0001 (cert-manager chart bump) failed deterministically for five
+    // weeks and parked eleven unrelated migrations behind it.
+    const independent = script('2026.1.1/0001-a.sh', '# blocks-on-failure: no\n');
+    const later = script('2026.1.1/0002-b.sh');
+    const r = runHostMigrations([independent, later], true, deps({
+      runScript: (s) => { if (s.key.includes('0001')) throw new Error('boom'); },
+    }));
+    expect(r.items.map((i) => i.state)).toEqual(['run-failed', 'applied']);
+    expect(r.appliedCount).toBe(1);
+    expect(r.ok).toBe(false); // the failure is still a failure
+  });
+
+  it('an absent header blocks — the safe default, so nothing regresses silently', () => {
+    expect(hostMigrationBlocksOnFailure('')).toBe(true);
+    expect(hostMigrationBlocksOnFailure('# idempotent: yes\n')).toBe(true);
+    expect(hostMigrationBlocksOnFailure('# blocks-on-failure: no\n')).toBe(false);
+    expect(hostMigrationBlocksOnFailure('# blocks-on-failure: NO\n')).toBe(false);
+    expect(hostMigrationBlocksOnFailure('# blocks-on-failure: yes\n')).toBe(true);
+    // only the header counts, not prose that happens to mention it
+    expect(hostMigrationBlocksOnFailure('echo "blocks-on-failure: no"\n')).toBe(true);
+  });
+
+  it('a skipped migration is reported as skipped — never applied — and does not block', () => {
+    const r = runHostMigrations(
+      [script('2026.1.1/0001-a.sh'), script('2026.1.1/0002-b.sh')],
+      true,
+      deps({ readSkip: (k) => (k.includes('0001') ? { reason: 'stale helm values, cleared by hand' } : null) }),
+    );
+    expect(r.items[0]?.state).toBe('skipped');
+    expect(r.items[0]?.skipReason).toMatch(/stale helm values/);
+    expect(r.items[1]?.state).toBe('applied');
+  });
+
+  it('failures carry an attempt count and a first-seen date so a wedge escalates', () => {
+    const r = runHostMigrations([script('2026.1.1/0001-a.sh')], true, deps({
+      runScript: () => { throw new Error('boom'); },
+      noteFailure: () => ({ attempt: 840, failingSince: '2026-07-01' }),
+    }));
+    expect(r.items[0]).toMatchObject({ state: 'run-failed', attempt: 840, failingSince: '2026-07-01' });
+  });
+
+  it('clears the failure record once a migration finally applies', () => {
+    const cleared: string[] = [];
+    runHostMigrations([script('2026.1.1/0001-a.sh')], true, deps({
+      clearFailure: (k) => cleared.push(k),
+    }));
+    expect(cleared).toEqual(['2026.1.1/0001-a.sh']);
   });
 });
