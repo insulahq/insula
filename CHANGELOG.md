@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.4] - 2026-08-05
+
 ### Fixed
 - **Host-migrations could never apply during a platform upgrade.** The
   post-upgrade converge ran as a child of `platform-ops-update.service`, which is
