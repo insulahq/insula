@@ -25,6 +25,10 @@
 #   1  one or more assertions failed
 #   2  prereq missing
 
+# Sourced BEFORE the ${VAR:-...} defaults below: they call
+# resolve_platform_apex(), which must already exist.
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,8 +96,6 @@ api() {
   fi
 }
 
-# shellcheck source=scripts/lib/integration-env.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
 # ─── Resolve a target ────────────────────────────────────────────
 

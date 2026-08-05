@@ -68,6 +68,10 @@
 # All connection settings are env-overridable. See integration-all.sh
 # for the full set.
 
+# Sourced BEFORE the ${VAR:-...} defaults below: they call
+# resolve_platform_apex(), which must already exist.
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
@@ -106,8 +110,6 @@ api() {
   fi
 }
 
-# shellcheck source=scripts/lib/integration-env.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
 # ─── Cleanup trap — uncordon node + delete tenants no matter what ────
 cleanup() {

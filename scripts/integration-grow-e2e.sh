@@ -21,6 +21,10 @@
 #
 # USAGE: ADMIN_PASSWORD=<…> ./scripts/integration-grow-e2e.sh
 
+# Sourced BEFORE the ${VAR:-...} defaults below: they call
+# resolve_platform_apex(), which must already exist.
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
@@ -67,8 +71,6 @@ api() {
   fi
 }
 
-# shellcheck source=scripts/lib/integration-env.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
 # #130: reuse ONE cache-backed admin token across ALL/single-test modes so
 # rapid runs don't trip the auth rate limit. Only mints if no token is set

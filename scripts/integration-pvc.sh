@@ -17,6 +17,10 @@
 # USAGE
 #   ADMIN_PASSWORD=<…> ./scripts/integration-pvc.sh
 
+# Sourced BEFORE the ${VAR:-...} defaults below: they call
+# resolve_platform_apex(), which must already exist.
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
@@ -101,8 +105,6 @@ delete_tenant() {
   return 0
 }
 
-# shellcheck source=scripts/lib/integration-env.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
 # Count tenant-capable nodes via the admin API. Same source of truth as
 # integration-tier-flip-e2e.sh ("need >=3 tenant nodes"). The HA tier-flip
