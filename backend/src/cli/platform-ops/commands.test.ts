@@ -365,6 +365,52 @@ describe('selfUpgrade', () => {
     expect(out).toMatch(/migration 2026\.8\.3\/0001 failed: kubectl not found/);
   });
 
+  it('apply-on-Apply: delegates the converge to the host-config unit, not this process', async () => {
+    // Regression guard for the 2026-08-05 staging root cause. The self-upgrade
+    // unit is ProtectSystem=strict with ReadWritePaths limited to the binary dir
+    // and /etc/platform. Running the converge as a CHILD of it meant every
+    // migration that wrote a host file died on a read-only mount: the same
+    // migration failed with `mktemp: ... Read-only file system` under this unit
+    // and applied cleanly under platform-ops-host-config.service seconds later.
+    const { convergeAfterSelfUpgradeWith } = await import('./deps.js');
+    const calls: string[][] = [];
+    const exec = vi.fn(async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    const r = await convergeAfterSelfUpgradeWith({}, exec as never, async () => true);
+    expect(r.code).toBe(0);
+    expect(calls[0]?.[0]).toBe('systemctl');
+    expect(calls[0]).toEqual(['systemctl', 'start', 'platform-ops-host-config.service']);
+    // and it must NOT have re-executed itself in this sandbox
+    expect(calls.some((c) => c.includes('host-config') && c.includes('apply'))).toBe(false);
+  });
+
+  it('apply-on-Apply: falls back to in-process only when systemctl is absent', async () => {
+    const { convergeAfterSelfUpgradeWith } = await import('./deps.js');
+    const calls: string[][] = [];
+    const exec = vi.fn(async (cmd: string, args: string[]) => {
+      calls.push([cmd, ...args]);
+      // 127 = command not found → no systemd on this host
+      return cmd === 'systemctl' ? { code: 127, stdout: '', stderr: '' } : { code: 0, stdout: '', stderr: '' };
+    });
+    const r = await convergeAfterSelfUpgradeWith({}, exec as never, async () => true);
+    expect(r.code).toBe(0);
+    expect(calls[calls.length - 1]).toContain('apply');
+  });
+
+  it('apply-on-Apply: a unit failure carries the journal as its cause', async () => {
+    const { convergeAfterSelfUpgradeWith } = await import('./deps.js');
+    const exec = vi.fn(async (cmd: string) =>
+      cmd === 'systemctl'
+        ? { code: 1, stdout: '', stderr: 'Job failed' }
+        : { code: 0, stdout: 'run-failed 2026.8.3/0002 — mktemp: Read-only file system', stderr: '' },
+    );
+    const r = await convergeAfterSelfUpgradeWith({}, exec as never, async () => true);
+    expect(r.code).toBe(1);
+    expect(r.detail).toMatch(/Read-only file system/);
+  });
+
   it('apply-on-Apply: a converge failure with no output still warns cleanly', async () => {
     const converge = vi.fn(async () => ({ code: 1 }));
     const { deps, err } = fakeDeps({
