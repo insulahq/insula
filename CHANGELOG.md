@@ -12,7 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.3-rc.3] - 2026-08-05
+### Fixed
+- **Host-migrations could never apply during a platform upgrade.** The
+  post-upgrade converge ran as a child of `platform-ops-update.service`, which is
+  hardened with `ProtectSystem=strict` and `ReadWritePaths` limited to the binary
+  directory and `/etc/platform` — correct for a signature-verifying self-upgrade,
+  and inherited by everything it spawns. A host-migration's entire job is writing
+  host files, so any migration that touched the filesystem died on a read-only
+  mount, the converge exited 1, and the release's migrations waited for the next
+  timer tick. Caught on staging with the diagnostics added earlier in this
+  release: the same migration failed with `mktemp: … Read-only file system` under
+  that unit and applied cleanly under `platform-ops-host-config.service` seconds
+  later. The converge is now dispatched to that unit — which owns a sandbox built
+  for the work — instead of inheriting the wrong one; relaxing the self-upgrade's
+  hardening to suit its child would have weakened the path that verifies release
+  signatures. Falls back to in-process only where there is no systemd to
+  delegate to.
 
 ### Changed
 - **The host-config converge now runs hourly instead of daily.** That converge is
