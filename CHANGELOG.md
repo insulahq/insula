@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **A failure policy for host-migrations (ADR-056).** Halting on the first
+  failure is right — a later migration may assume an earlier one applied — but as
+  shipped it was unscoped, unrecoverable and silent: one deterministic failure
+  parked every later migration indefinitely, the only escape was `touch`ing a
+  `.done` marker (which makes the node report `applied` for a script that never
+  ran), and nothing escalated. The DEV cluster proved it, sitting at `0 applied,
+  11 pending` behind a single failure for five weeks.
+  - A migration may declare `# blocks-on-failure: no` when nothing later depends
+    on it, so an independent script no longer wedges the chain. **Absent means
+    `yes`**, so existing migrations keep today's safe behaviour; CI rejects any
+    value other than `yes`/`no`.
+  - An operator can record a `.skipped` marker carrying a reason. It is reported
+    as `skipped` — never `applied` — so the node's state stays honest, and it does
+    not block.
+  - Repeat failures carry an attempt count and a first-seen date, and a blocked
+    chain now names what it is blocked behind and links the runbook.
+  - The authoring contract distinguishes "not applicable to this host → exit 0,
+    loudly" from "tried and failed → exit 1"; `new-host-migration.sh` says so in
+    the stub.
+
 ### Fixed
 - **Host-migrations could never apply during a platform upgrade.** The
   post-upgrade converge ran as a child of `platform-ops-update.service`, which is
