@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.3] - 2026-08-05
+
 ### Changed
 - **The host-config converge now runs hourly instead of daily.** That converge is
   what applies a release's host-migrations, and a script that fails — or is
