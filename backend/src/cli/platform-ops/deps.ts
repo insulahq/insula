@@ -546,7 +546,7 @@ export interface Deps {
    * `platform-ops-host-config.timer`. NEVER throws; returns the converge exit code.
    * Optional: absent in tests + dev (non-SEA), where there is no replaced binary.
    */
-  convergeAfterSelfUpgrade?: () => Promise<{ code: number }>;
+  convergeAfterSelfUpgrade?: () => Promise<{ code: number; detail?: string }>;
 }
 
 function realExec(
@@ -974,7 +974,23 @@ function findRepoRootFromSource(): string | null {
  * SEA-only: in dev (non-SEA) there is no replaced binary to invoke, so skip.
  * NEVER throws.
  */
-async function realConvergeAfterSelfUpgrade(env: NodeJS.ProcessEnv): Promise<{ code: number }> {
+/** Longest converge output kept in the warning — enough for a cause, not a wall. */
+const CONVERGE_DETAIL_MAX = 600;
+
+/** Last non-empty lines of the converge output, for the failure warning. */
+function convergeDetail(stderr: string, stdout: string): string | undefined {
+  const lines = `${stderr}\n${stdout}`
+    .split('\n')
+    .map((l) => l.trim())
+    // Node prints this on every SEA invocation; it is never the cause.
+    .filter((l) => l && !/DeprecationWarning|trace-deprecation/i.test(l));
+  if (lines.length === 0) return undefined;
+  return lines.slice(-4).join(' | ').slice(0, CONVERGE_DETAIL_MAX);
+}
+
+async function realConvergeAfterSelfUpgrade(
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number; detail?: string }> {
   let isSea = false;
   try {
     const sea = await import('node:sea');
@@ -987,7 +1003,10 @@ async function realConvergeAfterSelfUpgrade(env: NodeJS.ProcessEnv): Promise<{ c
   // (host-migrations default to enforce), so operator observe-mode sysctls /
   // packages are left untouched.
   const r = await realExec(process.execPath, ['host-config', 'apply'], { env });
-  return { code: r.code };
+  // realExec already captures both streams; discarding them here is what made
+  // the 2026-08-05 staging failure (converge exited 1 on all three nodes during
+  // the 2026.8.2 → 2026.8.3-rc.1 upgrade) impossible to diagnose after the fact.
+  return { code: r.code, detail: r.code === 0 ? undefined : convergeDetail(r.stderr, r.stdout) };
 }
 
 export function realDeps(): Deps {
