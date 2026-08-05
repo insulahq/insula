@@ -12,7 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.3-rc.1] - 2026-08-05
+### Fixed
+- **`admin-password-reset.sh` left a Secret holding the previous password.**
+  Changing the password through the UI deletes `platform-admin-seed` on purpose
+  — `auth/seed-cleanup.ts` exists because a Secret whose password no longer
+  works is a silent trap: it still ships in the secrets bundle and still looks
+  like a valid credential during incident response. The CLI break-glass path
+  skipped that cleanup, so a reset left the stale value behind; a staging login
+  against the seed failed on 2026-08-05, which is how it surfaced. The script
+  now removes the Secret too (best-effort — the password change has already
+  committed, so a kubectl hiccup must not fail the reset). Verified live on
+  staging: Secret present before, absent after.
+
+### Changed
+- **The panels' settings page no longer ships password inputs in the entry
+  chunk.** Routes are not code-split, so the inline change-password form on
+  `UserSettings` was compiled into the bundle every page view downloads, which
+  is what makes password managers prompt on unrelated pages. It now reuses the
+  same lazily-loaded `ChangePasswordModal` as the header, so the inputs are
+  fetched only when the operator asks to change their password — and the
+  duplicated form is gone. Measured on the admin panel: the entry chunk went
+  from 21 password inputs to 18. **This does not finish the job**: the remaining
+  18 come from twelve other pages (admin users, backup targets, OIDC, registry
+  credentials, …) that are all eagerly imported. Route-level code splitting is
+  the actual fix.
 
 ### Changed
 - **Stalwart mail server v0.16.14 → v0.16.16.** Two upstream patch releases, all
