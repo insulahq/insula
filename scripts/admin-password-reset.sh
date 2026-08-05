@@ -258,6 +258,28 @@ if [[ $RANDOM_MODE -eq 1 ]]; then
 fi
 echo "Audit row written to audit_logs (action_type=admin_password_reset_via_cli)."
 
+# Drop the bootstrap seed Secret, exactly as PATCH /auth/password does
+# (backend/src/modules/auth/seed-cleanup.ts). That module exists because a
+# Secret holding a password that no longer works is a silent trap: it still
+# ships in the secrets bundle and still "looks like" a valid credential during
+# incident response. Resetting here leaves the same stale value behind, so the
+# CLI break-glass path has to clean up after itself too — this was missed until
+# a staging login failed against the seed on 2026-08-05.
+#
+# Best-effort by design: the password change has already committed to the DB,
+# so a kubectl hiccup must not fail the reset. A missing Secret is the expected
+# steady state (already cleaned up, or the admin rotated via the UI first).
+if command -v kubectl >/dev/null 2>&1; then
+  if kubectl -n "$PLATFORM_NS" get secret platform-admin-seed >/dev/null 2>&1; then
+    if kubectl -n "$PLATFORM_NS" delete secret platform-admin-seed >/dev/null 2>&1; then
+      echo "Removed the stale platform-admin-seed Secret (it held the previous password)."
+    else
+      echo "WARNING: could not delete platform-admin-seed — it still holds the PREVIOUS password." >&2
+      echo "         Delete it by hand: kubectl -n $PLATFORM_NS delete secret platform-admin-seed" >&2
+    fi
+  fi
+fi
+
 # Best-effort wipe. Bash doesn't zero memory on assignment, but
 # overwriting reduces the lifetime of the secret string in case
 # the script is killed mid-run by something that snapshots memory.
