@@ -1,33 +1,32 @@
-import { useState, useEffect, useRef, type FormEvent } from 'react';
+import { useState, useEffect, useRef, lazy, Suspense } from 'react';
 import { Link } from 'react-router-dom';
 import { Menu, Search, UserCircle, KeyRound, LogOut, Settings, Cpu, HardDrive, MemoryStick } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
-import { useChangePassword } from '@/hooks/use-password';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
-import { ApiError } from '@/lib/api-client';
 import NotificationDropdown from '@/components/NotificationDropdown';
 import DarkModeToggle from '@/components/DarkModeToggle';
 import TaskCenterChip from '@/components/TaskCenterChip';
 import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/components/ResourceMetricsModal';
 
+// Lazy on purpose: the password inputs must not be part of the main bundle, or
+// password-manager extensions pick them up on every page load. The chunk is
+// only fetched when the user opens the dialog.
+const ChangePasswordModal = lazy(() => import('@/components/ChangePasswordModal'));
+
 interface HeaderProps {
   readonly onMenuClick: () => void;
 }
 
-const INPUT_CLASS =
-  'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
-
 export default function Header({ onMenuClick }: HeaderProps) {
   const { user, logout } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false);
-        setShowPassword(false);
       }
     }
     if (menuOpen) {
@@ -38,9 +37,11 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
   const handleToggle = () => {
     setMenuOpen((prev) => !prev);
-    if (menuOpen) {
-      setShowPassword(false);
-    }
+  };
+
+  const handleOpenPasswordModal = () => {
+    setMenuOpen(false);
+    setPasswordModalOpen(true);
   };
 
   const handleSignOut = async () => {
@@ -98,42 +99,44 @@ export default function Header({ onMenuClick }: HeaderProps) {
                 </p>
               </div>
 
-              {showPassword ? (
-                <ChangePasswordForm onClose={() => setShowPassword(false)} />
-              ) : (
-                <div className="p-2">
-                  <Link
-                    to="/user-settings"
-                    onClick={() => setMenuOpen(false)}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    data-testid="user-settings-menu-item"
-                  >
-                    <Settings size={16} />
-                    Settings
-                  </Link>
-                  <button
-                    onClick={() => setShowPassword(true)}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                    data-testid="change-password-menu-item"
-                  >
-                    <KeyRound size={16} />
-                    Change Password
-                  </button>
-                  <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
-                  <button
-                    onClick={handleSignOut}
-                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-                    data-testid="user-menu-sign-out"
-                  >
-                    <LogOut size={16} />
-                    Sign Out
-                  </button>
-                </div>
-              )}
+              <div className="p-2">
+                <Link
+                  to="/user-settings"
+                  onClick={() => setMenuOpen(false)}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  data-testid="user-settings-menu-item"
+                >
+                  <Settings size={16} />
+                  Settings
+                </Link>
+                <button
+                  onClick={handleOpenPasswordModal}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
+                  data-testid="change-password-menu-item"
+                >
+                  <KeyRound size={16} />
+                  Change Password
+                </button>
+                <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+                <button
+                  onClick={handleSignOut}
+                  className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
+                  data-testid="user-menu-sign-out"
+                >
+                  <LogOut size={16} />
+                  Sign Out
+                </button>
+              </div>
             </div>
           )}
         </div>
       </div>
+
+      {passwordModalOpen && (
+        <Suspense fallback={null}>
+          <ChangePasswordModal onClose={() => setPasswordModalOpen(false)} />
+        </Suspense>
+      )}
     </header>
   );
 }
@@ -210,110 +213,5 @@ function ResourceUsageTags() {
       </div>
       <ResourceMetricsModal open={modalOpen} onClose={() => setModalOpen(false)} />
     </>
-  );
-}
-
-function ChangePasswordForm({ onClose }: { readonly onClose: () => void }) {
-  const changePassword = useChangePassword();
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
-  const [errorMessage, setErrorMessage] = useState('');
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setSuccessMessage('');
-    setErrorMessage('');
-
-    if (newPassword !== confirmPassword) {
-      setErrorMessage('New passwords do not match');
-      return;
-    }
-
-    try {
-      await changePassword.mutateAsync({
-        current_password: currentPassword,
-        new_password: newPassword,
-      });
-      setSuccessMessage('Password updated successfully');
-      setCurrentPassword('');
-      setNewPassword('');
-      setConfirmPassword('');
-    } catch (err) {
-      const message =
-        err instanceof ApiError
-          ? err.message
-          : 'Failed to update password. Please try again.';
-      setErrorMessage(message);
-    }
-  };
-
-  return (
-    <div className="p-4" data-testid="user-menu-password-form">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Change Password</h3>
-        <button
-          onClick={onClose}
-          className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
-          data-testid="password-form-back"
-        >
-          Back
-        </button>
-      </div>
-      <form className="space-y-3" onSubmit={handleSubmit}>
-        <div>
-          <input
-            type="password"
-            autoComplete="current-password"
-            className={INPUT_CLASS}
-            placeholder="Current password"
-            data-testid="menu-current-password"
-            value={currentPassword}
-            onChange={(e) => setCurrentPassword(e.target.value)}
-          />
-        </div>
-        <div>
-          <input
-            type="password"
-            autoComplete="new-password"
-            className={INPUT_CLASS}
-            placeholder="New password"
-            data-testid="menu-new-password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-          />
-        </div>
-        <div>
-          <input
-            type="password"
-            autoComplete="new-password"
-            className={INPUT_CLASS}
-            placeholder="Confirm new password"
-            data-testid="menu-confirm-password"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-          />
-        </div>
-        {successMessage && (
-          <p className="text-xs text-green-600" data-testid="menu-password-success">
-            {successMessage}
-          </p>
-        )}
-        {errorMessage && (
-          <p className="text-xs text-red-600" data-testid="menu-password-error">
-            {errorMessage}
-          </p>
-        )}
-        <button
-          type="submit"
-          disabled={changePassword.isPending}
-          className="w-full rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="menu-update-password-button"
-        >
-          {changePassword.isPending ? 'Updating...' : 'Update Password'}
-        </button>
-      </form>
-    </div>
   );
 }

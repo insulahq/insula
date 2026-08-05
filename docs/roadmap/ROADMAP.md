@@ -24,7 +24,7 @@
 | [R10](#r10--bulwark-deferred-work) | Bulwark deferred work (phases 7–8) | P3 | Deferred by decision |
 | [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply + operator→trusted-range bridge (2026-06-18) + upstream-image Trivy CVE scan (CI, 2026-06-20); only in-cluster Trivy UI deferred |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
-| [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Dual-stack firewall + DNS AAAA only |
+| [R13](#r13--ipv6-completion) | IPv6 completion | **P1** | Shipped 2026-08-04 — opt-in `--dual-stack` (cluster CIDRs, node-ip, Calico v6 pool, ingress + mail v6); pod addressing is ULA+NAT, globally-routable pods + catalog images binding `::` still open |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 | [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
@@ -36,6 +36,8 @@
 | [R22](#r22--rc-validation-on-staging-via-flux-adr-045-mode-b) | RC validation on staging via Flux (Mode B) | P3 | ✅ Shipped 2026-06-21 — Flux re-pin now accepts `-rc.N` tags (gated by the prerelease flag) |
 | [R23](#r23--insula-single-binary-install--branding) | `insula` single-binary install + branding | P2 | Proposed (ADR-055, 2026-07-26) — fold bootstrap into the signed binary; rename `platform-ops`→`insula`; consolidate host paths |
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
+| [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
+| [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 
 ---
 
@@ -264,8 +266,67 @@ unencrypted. Evaluate mTLS (mesh or per-service certs) per
 
 ## R13 — IPv6 completion
 
-Firewall and DNS are dual-stack; k3s cluster networking is IPv4-only.
 Requirements doc: [roadmap/IPV4_IPV6_REQUIREMENTS.md](IPV4_IPV6_REQUIREMENTS.md) (moved here).
+
+**Why this sat unbuilt.** The requirements doc has scoped IPv6 into *Phase 1.5,
+week 13* since 2026-03-24 — its own success-criteria table reads "IPv6 support:
+Phase 1 = No" — because k3s dual-stack needed the Flannel→Calico migration
+first. That migration shipped (bootstrap runs `--flannel-backend=none` + the
+Tigera operator), but the dual-stack step behind it was never scheduled, and a
+second constraint accumulated in the meantime: k3s requires `--node-ip` and
+`--cluster-cidr` to carry the same families, so a dual-stack cluster CIDR with a
+v4-only node IP fails worker join. With the mesh-underlay mode pinning
+`--node-ip` to a v4-only NetBird/Tailscale address, single-stack won by default
+and the comment in `install_k3s_server` hardened into "we don't expose IPv6
+anywhere in the platform".
+
+**Shipped 2026-08-04 — opt-in `--dual-stack`.** Default behaviour is unchanged;
+a cluster is dual-stack only when the operator asks at install time (cluster
+CIDRs are immutable in k3s, so this cannot be flipped later without a rebuild).
+
+- `bootstrap.sh --dual-stack` → dual `--cluster-cidr`/`--service-cidr`,
+  `--node-ip=<v4>,<v6>` on servers **and** workers, `--node-external-ip` with
+  both families, a Calico IPv6 IPPool + `nodeAddressAutodetectionV6`, and
+  `net.ipv6.conf.all.forwarding=1` (with `accept_ra=2`, or the node loses its
+  own default route). `--pod-cidr-v6` / `--service-cidr-v6` override the ULA
+  defaults.
+- Refuses rather than guesses: no usable node IPv6 → fail at preflight, before
+  the first mutation. On a pinned underlay, a v6 that is not inside
+  `--cluster-network-cidr-v6` → refuse, rather than silently sending pod
+  traffic outside the mesh.
+- A node that *has* IPv6 but is being installed single-stack now says so at
+  preflight — the one moment the choice is still free.
+- Data path: Traefik Service `PreferDualStack` (it carries the node
+  externalIPs), `ingress-external-ips` collects both families, HAProxy mail
+  binds `:::<port> v4v6` (works on single-stack too — it is hostNetwork), and
+  `webmail.<domain>` gains an AAAA when `INGRESS_DEFAULT_IPV6`/`MAIL_SERVER_IPV6`
+  is set.
+- Proof: `scripts/test-bootstrap-dual-stack.sh` (29 assertions, half of them
+  guarding that the single-stack path is byte-identical) and
+  `VMTEST_DUAL_STACK=1` on the VM tier, which gives the libvirt network a ULA
+  v6 subnet and then asserts on the live cluster that the node registered both
+  families, Calico programmed a v6 pool, and **the ingress actually answers over
+  IPv6** — the one thing no unit test can see.
+
+**Pod addressing is ULA + natOutgoing**, mirroring the IPv4 model: the node's
+global v6 is what clients talk to and CNI portmap DNATs hostPort down to the
+pod. That satisfies the requirement (v6-only clients reach panels, API, tenant
+routes, mail) without depending on the provider routing a delegated prefix.
+Giving pods globally-routable addresses — true end-to-end v6, no NAT — remains
+open.
+
+**Still open:**
+- Globally-routable pod addressing (above).
+- Catalog/runtime images should bind `::` so tenant *workloads* serve v6, not
+  just the platform's own surfaces.
+- Outbound mail over IPv6 is deliberately NOT enabled by this work: receivers
+  apply stricter PTR/forward-confirmed rules to v6 than v4, so sending before
+  rDNS is in place and warmed trades a reachability win for a deliverability
+  loss. Inbound v6 is safe today; outbound needs the operator's PTR first.
+- A guard that fails when a platform hostname publishes AAAA while the cluster
+  is single-stack. The testing box ran that way for months — apex and every
+  subdomain resolving AAAA, nothing listening, TCP RST in 8 ms — and nothing
+  surfaced it.
 
 ## R14 — User-manual website
 
@@ -708,3 +769,94 @@ write-up here is the proposal, not an approval to build. Related:
 (real-client-IP recovery groundwork), the mail HA path in
 [HA_MODE](../architecture/HA_MODE.md).
 
+
+## R25 — Migration / DR-recover completeness
+
+Proposed 2026-08-04, surfaced while scoping the IPv6 blue/green migration
+([R13](#r13--ipv6-completion)). Recreating a tenant from an off-site bundle —
+`recreateTenantFromBundle`, used by both DR recover and cross-cluster migration
+([R20](#r20--cross-cluster-tenant-migration)) — leaves the tenant **serving but
+not fully reconstituted**. Each residual is individually documented and
+operator-actionable today (see
+[CROSS_CLUSTER_MIGRATION.md](../operations/CROSS_CLUSTER_MIGRATION.md)); the
+point of this item is that an operator must know to perform them, and a migration
+of many tenants multiplies the chance one is missed.
+
+**The gaps, most consequential first:**
+
+1. **Add-on databases are never replayed from their dump.**
+   `dr-recover/recreate.ts` restores exactly `['config', 'files', 'mailboxes',
+   'secrets']`. The `databases-by-id` executor — which exists, is tested, and
+   knows how to find the ADR-047 `predump-<db>-<bundleId>.sql` on the tenant PVC
+   and import it into the running DB pod — is **not** in that set. So a
+   recreated tenant's database comes up on the *data directory* copied inside
+   the `files` component: a crash-consistent snapshot of a database that was
+   running at capture time. That normally recovers cleanly via journal replay,
+   but it is a recovery rather than a restore, and the clean logical dump that
+   was captured specifically to avoid this sits unused a few directories away.
+   *Fix:* enqueue a `databases-by-id { kind: 'all' }` item as the final step of
+   the recreate engine, after workload reconcile so the DB pod is running (the
+   executor already SKIPs gracefully when it is not). Guard it so a failed
+   replay degrades to the current behaviour + a surfaced residual, never a
+   failed migration.
+
+2. **Mail send-readiness needs a manual re-enable.** The mailboxes restore
+   auto-heals the Stalwart domain and principals — mail is delivered, login
+   works — but DKIM signing and mail DNS (MX/SPF/DKIM/DMARC) are not
+   regenerated. The operator must re-enable each email domain. *Fix:* drive the
+   existing enable path per restored email domain, or make the residual an
+   explicit actionable task in the Task Center rather than a line of prose.
+
+3. **No preflight on bundle completeness.** The import fails per-tenant when a
+   bundle is unusable. For a fleet migration the operator wants the answer
+   *before* starting: which tenants have a `completed` bundle, how old, which
+   components. `list-tenants` already surfaces newest-bundle metadata — this is
+   a presentation + hard-gate change, not new machinery.
+
+4. **Encryption-key mismatch is discovered late.** Bundle secrets are encrypted
+   with the *source* `PLATFORM_ENCRYPTION_KEY`. If B's key differs, the failure
+   appears per-secret during import. *Fix:* verify decryptability of one secret
+   during the dry-run and refuse up front with the remedy (bootstrap B from A's
+   age-encrypted secrets bundle).
+
+**Not in scope:** changing the bundle format or adding a `databases` component.
+The dump is already captured; this item is about *replaying* it and about
+telling the operator what is left to do.
+
+**Verify:** extend `scripts/integration-migration-e2e.sh` so the probe tenant
+carries an add-on database with a known row, and assert that row is present
+after import **without** a manual restore cart.
+
+## R26 — Pin the k3s installer to a version tag, not master
+
+Proposed 2026-08-04, after a fresh install failed with:
+
+```
+ERROR: k3s installer checksum MISMATCH — refusing to execute.
+  expected: d264d4d4…   actual: ed01f89f…
+```
+
+`bootstrap.sh` fetches the k3s installer from `https://get.k3s.io` and verifies
+it against `K3S_INSTALLER_SHA256` (the `fetch_verified_script` supply-chain
+guard). But **`get.k3s.io` serves `install.sh` from k3s master**, so the pin
+breaks — and every fresh install with it — whenever upstream edits that file for
+*any* reason, including changes irrelevant to us. The 2026-08-04 break was
+commit `2d0f82fa`, a SUSE/SLE-Micro RPM-repo fix touching no OS we support.
+
+The guard behaved correctly; the problem is that the thing being pinned moves
+independently of anything we control, so the failure is recurring and always
+arrives as a production-blocking surprise rather than a planned bump.
+
+**Proposal:** fetch from the version-pinned tag instead —
+`https://raw.githubusercontent.com/k3s-io/k3s/${K3S_VERSION}/install.sh` — so
+the installer content is a function of `K3S_VERSION`. The checksum then changes
+only when we deliberately bump k3s, which is already a reviewed pin change
+covered by `ci-migration-coverage.sh`. Same trust model (upstream-published
+content, verified by digest), strictly more deterministic.
+
+**Decide before building:** this changes the download host from `k3s.io` to
+`raw.githubusercontent.com`. Both are upstream-controlled and the digest check
+is what actually establishes trust, but it is a change to the install path's
+trust anchor and should be an explicit operator decision rather than a silent
+refactor. A CI freshness check (warn when the tag's installer digest differs
+from the pin) is the alternative if the host change is unwanted.

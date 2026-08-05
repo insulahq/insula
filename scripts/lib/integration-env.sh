@@ -50,6 +50,30 @@
 # exports surviving a repo-local integration.env full of plain assignments — that file
 # would clobber them. Such a caller MUST set $INTEGRATION_ENV to its own profile so
 # candidate #1 wins and #2/#3 are never reached (see scripts/vm-integration-tests/run.sh).
+# ─── Platform apex resolution ────────────────────────────────────────────
+#
+# THE ONE PLACE the fallback test apex is written down. Everything else must
+# derive from resolve_platform_apex / $PLATFORM_APEX.
+#
+# Why this exists: harnesses used to spell the fallback inline, e.g.
+#   local mail_domain_apex="${MAIL_DOMAIN_APEX:-staging.example.test}"
+# Some sites derived from the configured apex first and some did not — three
+# such lines sat in ONE file next to two that were correct. The result is a
+# suite that can only pass on the apex whose name happens to be baked in: on
+# 2026-08-04 a run against a freshly bootstrapped cluster failed with
+#   "banner 'mail.<cluster apex>' DOES NOT MATCH expected 'mail.staging.example.test'"
+# even though mail was healthy. Each previous round fixed the line that failed
+# that day rather than the class, so it kept coming back.
+#
+# Accepts every name the harnesses have historically used, most specific
+# first, so an operator profile setting ANY of them works.
+resolve_platform_apex() {
+  printf '%s' "${MAIL_DOMAIN_APEX:-${PLATFORM_DOMAIN:-${PLATFORM_BASE_DOMAIN:-${HTTPS_TEST_DOMAIN_BASE:-${TENANT_BASE:-staging.example.test}}}}}"
+}
+
+# Exported by load_integration_env so a harness can use "$PLATFORM_APEX"
+# directly. Call resolve_platform_apex yourself if you need it re-evaluated
+# after mutating one of the inputs.
 load_integration_env() {
   local script_dir candidate
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"  # scripts/
@@ -60,9 +84,11 @@ load_integration_env() {
     [[ -n "$candidate" && -f "$candidate" ]] || continue
     # shellcheck disable=SC1090
     set -a; source "$candidate"; set +a
+    PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
     [[ -n "${INTEGRATION_ENV_VERBOSE:-}" ]] && echo "integration-env: loaded $candidate" >&2
     return 0
   done
+  PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
   return 0  # no profile is fine — env vars / CI secrets may supply everything
 }
 
@@ -101,6 +127,70 @@ require_or_skip() {
     } >&2
     exit "${INTEGRATION_SKIP_RC}"
   fi
+}
+
+# _backup_class_target <class> — read the assignments payload on stdin, print
+# the bound targetId ('' when the class exists but is unbound) or UNKNOWN when
+# the payload is unparseable / the class is absent. Split out so the decision
+# is unit-testable without a live cluster.
+_backup_class_target() {
+  python3 -c "
+import json,sys
+try:
+    rows = json.load(sys.stdin)['data']['assignments']
+except Exception:
+    print('UNKNOWN'); raise SystemExit
+for r in rows:
+    if r.get('className') == sys.argv[1]:
+        print(r.get('targetId') or ''); raise SystemExit
+print('UNKNOWN')
+" "$1" 2>/dev/null || printf 'UNKNOWN'
+}
+
+# require_backup_class_or_skip <class> — SKIP (77) when the CLUSTER has no
+# backup target bound to <class> (system | tenant | mail).
+#
+# Unlike require_or_skip this is about cluster STATE, not a missing env var: a
+# freshly bootstrapped cluster has no target bound, so every backup/DR suite
+# fails deep in its run with
+#     NO_SNAPSHOT_TARGET — "No backup target bound to the 'tenant' class"
+#     target: no active backup config — run /tenant-backup → Off-site Targets
+# On 2026-08-04 that turned twelve suites red on a fresh cluster and read as
+# twelve product failures. "Not configured" must report as SKIPPED, not FAILED.
+#
+# FAILS OPEN: if the check itself cannot run (no host, no credentials, API
+# unreachable, unexpected payload) it returns 0 and lets the suite proceed —
+# a broken precondition check must never mask a real failure.
+require_backup_class_or_skip() {
+  local class="${1:-tenant}"
+  local host="${ADMIN_HOST:-${API_URL:-}}"
+  local token="${INTEGRATION_TOKEN:-}"
+  [[ -n "$host" ]] || return 0
+  if [[ -z "$token" ]]; then
+    [[ -n "${ADMIN_EMAIL:-}" && -n "${ADMIN_PASSWORD:-}" ]] || return 0
+    token="$(curl -sk -m 20 -X POST "$host/api/v1/auth/login" \
+      -H 'content-type: application/json' \
+      -d "{\"email\":\"${ADMIN_EMAIL}\",\"password\":\"${ADMIN_PASSWORD}\"}" 2>/dev/null \
+      | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+    [[ -n "$token" ]] || return 0
+  fi
+  local payload bound
+  payload="$(curl -sk -m 20 "$host/api/v1/admin/backup-rclone-shim/assignments" \
+    -H "Authorization: Bearer $token" 2>/dev/null)"
+  # Empty/failed fetch → cannot determine → fail open.
+  [[ -n "$payload" ]] || return 0
+  bound="$(printf '%s' "$payload" | _backup_class_target "$class")"
+  # UNKNOWN = unparseable payload or no such class → fail open.
+  [[ "$bound" == "UNKNOWN" ]] && return 0
+  if [[ -z "$bound" ]]; then
+    {
+      echo "SKIP: no backup target is bound to the '${class}' class on this cluster."
+      echo "      Bind one in the admin panel (Backups → Targets, Schedules & Retention)"
+      echo "      or via PUT /api/v1/admin/backup-rclone-shim/assignments/${class}."
+    } >&2
+    exit "${INTEGRATION_SKIP_RC}"
+  fi
+  return 0
 }
 
 # redact <string> — best-effort scrub of secrets before logging. Use when a

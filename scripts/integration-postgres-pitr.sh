@@ -57,9 +57,11 @@
 #   ADMIN_PASSWORD=<…> ./scripts/integration-postgres-pitr.sh
 #   WITH_WAL=1 ADMIN_PASSWORD=<…> ./scripts/integration-postgres-pitr.sh
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_HOST="${SSH_HOST:-root@192.0.2.56}"

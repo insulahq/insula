@@ -264,6 +264,27 @@ CALICO_VERSION="v3.32.1"
 # cluster_cidr_arg.
 POD_CIDR_V4="10.42.0.0/16"
 
+# ─── IPv6 dual-stack (R13) — OPT-IN via --dual-stack ────────────────────────
+#
+# Default stays IPv4-only: every existing install path is untouched, and a
+# cluster only becomes dual-stack when the operator asks for it. This matters
+# because k3s CANNOT change --cluster-cidr after install — flipping the default
+# would silently make re-bootstrapping an existing host a destructive operation.
+#
+# Pod/service v6 ranges are ULA + natOutgoing, mirroring the IPv4 model exactly:
+# pods get fd42:… addresses and the node's GLOBAL v6 is what the internet talks
+# to, with CNI portmap DNAT'ing hostPort 80/443/25/… down to the pod the same way
+# it does for IPv4. That is sufficient for the actual requirement — IPv6-only
+# clients reaching panels/API/tenant routes/mail — and avoids depending on the
+# provider routing a delegated prefix to the node. Giving pods globally-routable
+# addresses (true end-to-end v6, no NAT) is a later, separate step.
+#
+# Service v6 must be /108 or larger (Kubernetes caps the service CIDR size);
+# /112 leaves 65k service IPs, far past what a node ever allocates.
+DUAL_STACK=false
+POD_CIDR_V6="fd42:42::/56"
+SERVICE_CIDR_V6="fd42:43::/112"
+
 # SSH-via-mesh — opt-in firewall scoping for SSH (:22).
 #
 # Default behaviour is unchanged: `tcp dport 22 accept` is public,
@@ -390,7 +411,19 @@ TRAEFIK_CHART_VERSION="41.0.2"           # app v3.7.6; verify: helm search repo 
 # NOT an infra version pin: nothing here changes which k3s/helm/flux VERSION
 # gets installed, so ci-migration-coverage.sh does not require a matching
 # host-migration (existing nodes already have these tools installed).
-K3S_INSTALLER_SHA256="d264d4d43f7c5a27b44de0075513fb22dfb02d0b7cd33ba7a3838cb822f4729c"
+# Refreshed 2026-08-04. Provenance verified before bumping, not assumed:
+#   * the OLD pin d264d4d4… is byte-identical to k3s-io/k3s install.sh at the
+#     commit immediately BEFORE 2d0f82fa, so nothing had drifted underneath us;
+#   * the NEW pin ed01f89f… is byte-identical to both https://get.k3s.io and
+#     raw.githubusercontent.com/k3s-io/k3s/master/install.sh;
+#   * the only diff is upstream commit 2d0f82fa (2026-08-04) "change sles to use
+#     slemicro rpms instead of microos" — SUSE/SLE-Micro RPM repo selection,
+#     which touches no OS in our support matrix (Debian/Ubuntu, RHEL family).
+# NOTE: get.k3s.io serves MASTER's install.sh, so this pin breaks every fresh
+# install whenever upstream edits that file for any reason. Fetching from the
+# version-pinned tag URL instead would make the checksum change only when
+# K3S_VERSION does — see ROADMAP R26.
+K3S_INSTALLER_SHA256="ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
 HELM_INSTALLER_SHA256="e4a604efcff328eef2b2c7e67445d609f333e3875b34420ebf4e5ae379d259bb"
 FLUX_INSTALLER_SHA256="bd7765225b731a1df952456eced0abb5dbbf5e11bc70cf6ab5fddd1476088b7e"
 
@@ -775,6 +808,20 @@ FIREWALL TRUST (always-on set mode):
                          detected from the mesh interface if unset.
                          Same convenience: also added to --allow-source.
                          Optional.
+  --dual-stack           Bootstrap the cluster IPv4+IPv6 so IPv6-only
+                         clients can reach the panels, API, tenant
+                         routes and mail. Requires a usable IPv6
+                         address on this node (global preferred, ULA
+                         accepted) — refuses to continue without one.
+                         DEFAULT OFF, and k3s cannot change cluster
+                         CIDRs after install: turning this on later
+                         means re-bootstrapping the node, so decide at
+                         install time. See docs/roadmap/ROADMAP.md R13.
+  --pod-cidr-v6 <cidr>   Pod IPv6 range for --dual-stack.
+                         Default fd42:42::/56 (ULA + natOutgoing).
+  --service-cidr-v6 <cidr>
+                         Service IPv6 range for --dual-stack.
+                         Default fd42:43::/112 (must be /108 or larger).
   --calico-wg-public <true|false>
                          Calico WireGuard (UDP/51821). Default true:
                          public-key auth makes exposure safe AND mesh
@@ -1080,6 +1127,9 @@ parse_args() {
       # ever sets the firewall var, never the pin var.
       --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; NODEIP_PIN_CIDR="$2"; shift 2 ;;
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; NODEIP_PIN_CIDR_V6="$2"; shift 2 ;;
+      --dual-stack) DUAL_STACK=true; shift ;;
+      --pod-cidr-v6) POD_CIDR_V6="$2"; shift 2 ;;
+      --service-cidr-v6) SERVICE_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --pre-enroll-peer) parse_pre_enroll_peer_arg "$2"; shift 2 ;;
       --ssh-via-mesh)    SSH_VIA_MESH_IFACE="$2"; shift 2 ;;
@@ -1235,6 +1285,27 @@ parse_args() {
   if [[ -n "$CLUSTER_NETWORK_CIDR" ]] \
      && [[ ! "$CLUSTER_NETWORK_CIDR" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[0-2])$ ]]; then
     error "Invalid --cluster-network-cidr: '${CLUSTER_NETWORK_CIDR}'. Must be IPv4 CIDR (e.g. 100.64.0.0/10)."
+  fi
+
+  # Dual-stack shape + feasibility. Validated here (arg-parse time) rather than
+  # at install time so an impossible request fails BEFORE the first mutation
+  # instead of half-way through a k3s install that cannot be re-run with
+  # different CIDRs.
+  if [[ "$DUAL_STACK" == true ]]; then
+    if [[ ! "$POD_CIDR_V6" =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
+      error "Invalid --pod-cidr-v6: '${POD_CIDR_V6}'. Must be an IPv6 CIDR (e.g. fd42:42::/56)."
+    fi
+    if [[ ! "$SERVICE_CIDR_V6" =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
+      error "Invalid --service-cidr-v6: '${SERVICE_CIDR_V6}'. Must be an IPv6 CIDR (e.g. fd42:43::/112)."
+    fi
+    # Kubernetes refuses a service CIDR larger than /108.
+    local svc_v6_prefix="${SERVICE_CIDR_V6##*/}"
+    if (( svc_v6_prefix < 108 )); then
+      error "Invalid --service-cidr-v6: '${SERVICE_CIDR_V6}'. Kubernetes caps the IPv6 service CIDR at /108 or smaller-ranged; use e.g. fd42:43::/112."
+    fi
+    if ! detect_node_ipv6 >/dev/null 2>&1; then
+      error "--dual-stack requires an IPv6 address on this node, but none was found (global or ULA, on a non-VPN interface). Bring IPv6 up on the host first — 'ip -6 addr show scope global' must list an address — or drop --dual-stack to install IPv4-only."
+    fi
   fi
 
   # Validate CLUSTER_NETWORK_CIDR_V6 shape if set. Permissive regex —
@@ -1647,6 +1718,31 @@ EOF
 
     marker_set "node-net-tuning"
     log "Node net-tuning configured (rmem_max=16M, rmem_default=4M, backlog=10000)."
+  fi
+
+  # ── IPv6 forwarding (dual-stack only) ────────────────────────────────────
+  # Pod v6 packets are routed by the host, and Linux drops forwarded IPv6
+  # unless this is on — every distro we support ships it OFF by default. Also
+  # keep accept_ra=2 so a node that gets its default route from a Router
+  # Advertisement (Hetzner, most clouds) does not lose it the moment
+  # forwarding is enabled: with forwarding=1 the kernel ignores RAs at
+  # accept_ra=1, silently blackholing the node's own v6 egress.
+  #
+  # Written under --dual-stack only. A single-stack node's sysctls are
+  # untouched, so this cannot regress an IPv4-only install.
+  if [[ "$DUAL_STACK" == true ]]; then
+    install -d -m 0755 /etc/sysctl.d
+    cat > /etc/sysctl.d/99-platform-ipv6-forwarding.conf <<'EOF'
+# IPv6 dual-stack — set by bootstrap.sh --dual-stack.
+# forwarding: required for pod v6 traffic to be routed by this host.
+# accept_ra=2: keep honouring Router Advertisements WITH forwarding on,
+# otherwise the node loses its own IPv6 default route.
+net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.all.accept_ra = 2
+net.ipv6.conf.default.accept_ra = 2
+EOF
+    sysctl --system >/dev/null 2>&1 || warn "sysctl --system reported errors after enabling IPv6 forwarding; check 'sysctl --system'."
+    log "IPv6 forwarding enabled (dual-stack)."
   fi
 
   # ── TCP BBR congestion control + fq qdisc (marker: node-net-tuning-bbr) ──
@@ -3107,6 +3203,40 @@ detect_public_ipv6() {
   return 1
 }
 
+# Detect the IPv6 address to hand k3s as this node's v6 --node-ip.
+#
+# Deliberately NOT detect_public_ipv6(): that one exists to answer "can Let's
+# Encrypt reach us over v6", so it correctly rejects ULA. Here a ULA address is
+# perfectly usable — a private or lab dual-stack cluster is a valid deployment,
+# and the VM integration tier runs on a ULA network. Preference order is
+# global-scope first, ULA second, so a node with both pins the routable one.
+#
+# Prints the address, exit 0. Prints nothing, exit 1 when the node has no usable
+# v6 at all.
+detect_node_ipv6() {
+  local vpn_re='^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|ppp[0-9]*|gre[0-9]*|cali[0-9a-f]+|vxlan\.calico|wireguard\.calico|wireguard\.cali)$'
+  local line addr ifname global_hit="" ula_hit=""
+  while IFS= read -r line; do
+    ifname=$(echo "$line" | awk '{print $2}')
+    addr=$(echo "$line" | awk '{print $4}' | cut -d/ -f1)
+    [[ -z "$ifname" || -z "$addr" ]] && continue
+    [[ "$ifname" =~ $vpn_re ]] && continue
+    # Loopback and link-local are never node IPs.
+    case "$addr" in
+      ::1|fe80*) continue ;;
+    esac
+    echo "$line" | grep -q "scope global" || continue
+    case "$addr" in
+      fc*|fd*) [[ -z "$ula_hit" ]] && ula_hit="$addr" ;;
+      *)       [[ -z "$global_hit" ]] && global_hit="$addr" ;;
+    esac
+  done < <(ip -6 -o addr show 2>/dev/null)
+
+  if [[ -n "$global_hit" ]]; then echo "$global_hit"; return 0; fi
+  if [[ -n "$ula_hit" ]];    then echo "$ula_hit";    return 0; fi
+  return 1
+}
+
 # Choose between LE production and LE staging based on whether the
 # operator-supplied --domain actually resolves (via public DNS) to
 # THIS server. Auto-promotion logic:
@@ -3319,6 +3449,100 @@ for line in sys.argv[1].splitlines():
 PYEOF
 }
 
+# IPv6 sibling of resolve_cluster_network_ip — resolves this host's address
+# inside NODEIP_PIN_CIDR_V6. Used only when --dual-stack is combined with a
+# pinned (mesh/private) underlay, where the v6 node-ip MUST come from the same
+# underlay as the v4 one; see install_k3s_server for why.
+resolve_cluster_network_ipv6() {
+  if [[ -z "${NODEIP_PIN_CIDR_V6:-}" ]]; then
+    echo ""
+    return 0
+  fi
+  if ! command -v ip &>/dev/null; then
+    error "resolve_cluster_network_ipv6: 'ip' command missing — install iproute2 first."
+  fi
+  local ip_output
+  ip_output=$(ip -6 -o addr show | awk '{print $4}')
+  CLUSTER_NETWORK_CIDR_V6="$NODEIP_PIN_CIDR_V6" python3 - "$ip_output" <<'PYEOF'
+import ipaddress, os, sys
+target = ipaddress.ip_network(os.environ['CLUSTER_NETWORK_CIDR_V6'], strict=False)
+for line in sys.argv[1].splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        addr = ipaddress.ip_interface(line).ip
+        if addr in target:
+            print(addr)
+            sys.exit(0)
+    except ValueError:
+        pass
+PYEOF
+}
+
+# Find a usable IPv6 on the SAME interface that carries a given IPv4 address.
+#
+# "Same link" is the real invariant behind the pinned-underlay rule: an address
+# on the same NIC as the pinned v4 rides the same network, so using it cannot
+# leak pod traffic onto a different path. Prefers global over ULA, same as
+# detect_node_ipv6. Prints the address / exit 0, or nothing / exit 1.
+resolve_same_link_ipv6() {
+  local v4="$1" iface line addr global_hit="" ula_hit=""
+  [[ -z "$v4" ]] && return 1
+  iface=$(ip -4 -o addr show 2>/dev/null | awk -v a="$v4" '$4 ~ "^"a"/" {print $2; exit}')
+  [[ -z "$iface" ]] && return 1
+  while IFS= read -r line; do
+    addr=$(echo "$line" | awk '{print $4}' | cut -d/ -f1)
+    [[ -z "$addr" ]] && continue
+    case "$addr" in
+      ::1|fe80*) continue ;;
+    esac
+    echo "$line" | grep -q "scope global" || continue
+    case "$addr" in
+      fc*|fd*) [[ -z "$ula_hit" ]] && ula_hit="$addr" ;;
+      *)       [[ -z "$global_hit" ]] && global_hit="$addr" ;;
+    esac
+  done < <(ip -6 -o addr show dev "$iface" 2>/dev/null)
+  if [[ -n "$global_hit" ]]; then echo "$global_hit"; return 0; fi
+  if [[ -n "$ula_hit" ]];    then echo "$ula_hit";    return 0; fi
+  return 1
+}
+
+# Resolve the v6 --node-ip for a dual-stack install, honouring the underlay.
+#
+# Pinned (mesh/private) underlay: the v6 must ride the SAME network as the
+# pinned v4, otherwise pod and etcd traffic split — v4 inside the tunnel, v6
+# straight over the public internet — which is both a security regression and
+# an asymmetry the operator never asked for. Two ways to satisfy that, in
+# order:
+#   1. --cluster-network-cidr-v6 resolves → the operator declared the range.
+#   2. The interface holding the pinned v4 also holds a v6 → same link by
+#      construction, no declaration needed. This is the common single-NIC case
+#      (and how the VM integration tier runs: one virtio NIC carrying both the
+#      per-run NAT v4 and its ULA v6).
+# Only when NEITHER holds do we refuse — requiring the flag outright would have
+# rejected a node whose v6 was provably on the right link, which is what the
+# first dual-stack VM run hit.
+#
+# Public underlay: any usable node v6 is correct by definition.
+resolve_dual_stack_node_ipv6() {
+  if [[ -n "$NODEIP_PIN_CIDR" ]]; then
+    local mesh_v6=""
+    mesh_v6=$(resolve_cluster_network_ipv6)
+    if [[ -z "$mesh_v6" ]]; then
+      local pinned_v4=""
+      pinned_v4=$(resolve_cluster_network_ip)
+      mesh_v6=$(resolve_same_link_ipv6 "$pinned_v4" || true)
+    fi
+    if [[ -z "$mesh_v6" ]]; then
+      error "--dual-stack with a pinned underlay needs an IPv6 address on the underlay itself, but none was found${NODEIP_PIN_CIDR_V6:+ in ${NODEIP_PIN_CIDR_V6}} and the interface holding the pinned IPv4 has no IPv6 either. Pass --cluster-network-cidr-v6 <cidr> matching the underlay's v6 range, bring IPv6 up on that interface, or drop --dual-stack. Refusing to fall back to an IPv6 on a different link, which would send pod traffic outside the underlay."
+    fi
+    echo "$mesh_v6"
+    return 0
+  fi
+  detect_node_ipv6
+}
+
 # Pre-flight: when joining an existing cluster, refuse if the chosen
 # advertise-IP isn't in the same CIDR as the existing cluster's peers.
 # Catches "server-2 forgot the flag" → mixed public/private etcd.
@@ -3395,13 +3619,24 @@ install_k3s_server() {
   # mesh is up at install time, which is wrong for the cluster
   # underlay if we want pod traffic to flow over public/private
   # network rather than nested in a third-party VPN.
-  # Cluster CIDRs are IPv4-only — we don't expose IPv6 anywhere in
-  # the platform, and dual-stack creates the v4-only/v6-only node
-  # mismatch that fails worker join (k3s rejects --node-ip IPv4 with
-  # dual-stack --cluster-cidr).
+  # Cluster CIDRs are IPv4-only unless --dual-stack was passed. The
+  # constraint that made single-stack the default still holds: k3s
+  # requires --node-ip and --cluster-cidr to carry the SAME families,
+  # so a dual-stack cluster-cidr with an IPv4-only --node-ip is fatal
+  # and fails worker join. --dual-stack therefore appends the v6 CIDRs
+  # AND a v6 --node-ip together, never one without the other, and the
+  # arg validator has already refused the flag on a node with no v6.
   local node_pin=""
   local cluster_cidr_arg="10.42.0.0/16"
   local service_cidr_arg="10.43.0.0/16"
+  local node_ipv6=""
+  if [[ "$DUAL_STACK" == true ]]; then
+    node_ipv6=$(resolve_dual_stack_node_ipv6) || exit 1
+    cluster_cidr_arg="${cluster_cidr_arg},${POD_CIDR_V6}"
+    service_cidr_arg="${service_cidr_arg},${SERVICE_CIDR_V6}"
+    log "  dual-stack: pod=${cluster_cidr_arg} svc=${service_cidr_arg} node-v6=${node_ipv6}"
+    tls_sans="${tls_sans} --tls-san=${node_ipv6}"
+  fi
   if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     # Private-underlay mode: pin to the host's IP inside the CIDR.
     # Reached only via an EXPLICIT --cluster-network-cidr (mesh auto-
@@ -3413,7 +3648,11 @@ install_k3s_server() {
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip}"
-    node_pin="--node-ip=${private_ip} --node-external-ip=${public_ip} --advertise-address=${private_ip} --bind-address=0.0.0.0"
+    # --advertise-address / --bind-address stay IPv4: they steer the apiserver
+    # and etcd peer endpoints, which the mesh carries over v4. Only --node-ip
+    # gains the second family, which is what kubelet needs to register a
+    # dual-stack Node.
+    node_pin="--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}} --node-external-ip=${public_ip} --advertise-address=${private_ip} --bind-address=0.0.0.0"
     tls_sans="${tls_sans} --tls-san=${private_ip}"
   else
     # Public-underlay mode: pin to the host's primary public IPv4.
@@ -3427,7 +3666,14 @@ install_k3s_server() {
       error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
     log "  public-underlay mode: --node-ip=${public_ip}"
-    node_pin="--node-ip=${public_ip} --advertise-address=${public_ip}"
+    # --node-external-ip is set explicitly under dual-stack so the Node object
+    # carries BOTH public families. ingress-external-ips reads ExternalIP to
+    # build the Traefik Service's externalIPs, and without the v6 here it would
+    # publish a v4-only list on a dual-stack cluster.
+    node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}} --advertise-address=${public_ip}"
+    if [[ -n "$node_ipv6" ]]; then
+      node_pin="${node_pin} --node-external-ip=${public_ip},${node_ipv6}"
+    fi
     tls_sans="${tls_sans} --tls-san=${public_ip}"
   fi
 
@@ -3447,11 +3693,12 @@ install_k3s_server() {
     is_joining_server=true
   fi
 
-  local install_rc=0
+  local install_rc=0 k3s_installer=""
   # shellcheck disable=SC2086
   if [[ "$is_joining_server" == true ]]; then
     set +e
-    printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
+    k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
       sh -s - \
@@ -3482,7 +3729,8 @@ install_k3s_server() {
       log "  automatically as soon as the join succeeds. Ctrl-C if you need to investigate."
     fi
   else
-    printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
+    k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
       sh -s - \
@@ -3532,7 +3780,18 @@ install_k3s_worker() {
   # the systemd unit's command line. (Tested 2026-04-25 — env-var alone
   # left INTERNAL-IP=public on the Node object.)
   # Pin --node-ip explicitly (see install_k3s_server for rationale).
+  #
+  # Dual-stack: a worker joining a dual-stack cluster MUST register both
+  # families or kubelet is rejected — the cluster CIDR carries v6 and a
+  # v4-only --node-ip is exactly the mismatch that fails the join. The flag
+  # therefore has to be passed to every node in the cluster, not just the first
+  # server; MULTI_NODE_RUNBOOK.md says so explicitly.
   local exec_args=""
+  local node_ipv6=""
+  if [[ "$DUAL_STACK" == true ]]; then
+    node_ipv6=$(resolve_dual_stack_node_ipv6) || exit 1
+    log "  dual-stack worker: node-v6=${node_ipv6}"
+  fi
   if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     local private_ip public_ip
     private_ip=$(resolve_cluster_network_ip)
@@ -3541,7 +3800,7 @@ install_k3s_worker() {
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
-    exec_args="agent --node-ip=${private_ip} --node-external-ip=${public_ip}"
+    exec_args="agent --node-ip=${private_ip}${node_ipv6:+,${node_ipv6}} --node-external-ip=${public_ip}"
   else
     # Public-underlay mode (workers) — see detect_public_ipv4() comment.
     local public_ip
@@ -3550,7 +3809,10 @@ install_k3s_worker() {
       error "Could not detect a non-VPN public IPv4 address. Set --cluster-network-cidr <CIDR> to pin the underlay manually."
     fi
     log "  public-underlay mode: --node-ip=${public_ip}"
-    exec_args="agent --node-ip=${public_ip}"
+    exec_args="agent --node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}"
+    if [[ -n "$node_ipv6" ]]; then
+      exec_args="${exec_args} --node-external-ip=${public_ip},${node_ipv6}"
+    fi
   fi
 
   # Stamp the platform-required labels at k3s-agent ExecStart time.
@@ -3574,9 +3836,10 @@ install_k3s_worker() {
   # plane until our IP is pre-enrolled there. Tolerate the initial
   # curl|sh failure and let the extended poll catch the eventual
   # systemd-retried success.
-  local install_rc=0
+  local install_rc=0 k3s_installer=""
   set +e
-  printf '%s' "$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" | \
+  k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+  printf '%s' "$k3s_installer" | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="$exec_args" \
     K3S_URL="https://${K3S_SERVER_IP}:6443" \
@@ -3764,19 +4027,36 @@ install_calico() {
   #     in mixed clusters where some nodes joined publicly and others
   #     via the mesh.
   local autodetect_block=""
-  # ipv6_pool: kept here as a documented placeholder for the future
-  # dual-stack v2 mode (see ROADMAP.md). When enabled, this string
-  # would carry the sibling IPv6 ipPool block. Until then the
-  # IPv4-only path doesn't emit it.
-  # shellcheck disable=SC2034
+  # ipv6_pool carries the sibling IPv6 ipPool, emitted only under
+  # --dual-stack. Calico has supported IPv6 pools with VXLAN
+  # encapsulation (no BGP) since v3.22, so `bgp: Disabled` — which the
+  # platform relies on — is compatible; before that IPv6 did require
+  # BIRD, which is why this used to be a placeholder.
+  # blockSize 122 is Calico's IPv6 default (valid 116–128); a /56 pool
+  # yields far more blocks than a node ever claims.
   local ipv6_pool=""
+  local autodetect_v6_block=""
+  if [[ "$DUAL_STACK" == true ]]; then
+    ipv6_pool="
+    - blockSize: 122
+      cidr: ${POD_CIDR_V6}
+      encapsulation: VXLAN
+      natOutgoing: Enabled
+      nodeSelector: all()"
+  fi
   if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     autodetect_block="    nodeAddressAutodetectionV4:
       cidrs:
       - ${NODEIP_PIN_CIDR}"
-    # IPv4-only underlay → drop the IPv6 ipPool. Mixed v4/v6 with
-    # bgp:Disabled is rejected anyway, and k3s was launched with
-    # IPv4-only cluster-cidr in install_k3s_server.
+    # Pinned underlay: the v6 side must autodetect from the SAME range the
+    # v6 --node-ip was resolved from, or Calico would pick a public address
+    # and split pod traffic across two underlays.
+    if [[ "$DUAL_STACK" == true && -n "${NODEIP_PIN_CIDR_V6:-}" ]]; then
+      autodetect_v6_block="
+    nodeAddressAutodetectionV6:
+      cidrs:
+      - ${NODEIP_PIN_CIDR_V6}"
+    fi
   else
     # Inherit k3s' --node-ip choice: Calico picks whatever IP
     # Node.status.addresses[InternalIP] already shows. install_k3s_*
@@ -3797,8 +4077,16 @@ install_calico() {
     # cluster_peers_v4 contained the mesh IP, not the public one.
     autodetect_block="    nodeAddressAutodetectionV4:
       kubernetes: NodeInternalIP"
-    # IPv6 dropped — see install_k3s_server: cluster-cidr is IPv4-only.
+    # Same inheritance for v6: kubelet registered both families on the Node
+    # (install_k3s_* passes --node-ip=<v4>,<v6> under --dual-stack), so
+    # NodeInternalIP resolves to the address we already chose.
+    if [[ "$DUAL_STACK" == true ]]; then
+      autodetect_v6_block="
+    nodeAddressAutodetectionV6:
+      kubernetes: NodeInternalIP"
+    fi
   fi
+  autodetect_block="${autodetect_block}${autodetect_v6_block}"
 
   # controlPlaneReplicas=1 — Tigera's default of 2 is tuned for clusters
   # with 100+ nodes. The project target audience (single hosting operator,
@@ -3833,7 +4121,7 @@ ${autodetect_block}
       cidr: 10.42.0.0/16
       encapsulation: VXLAN
       natOutgoing: Enabled
-      nodeSelector: all()
+      nodeSelector: all()${ipv6_pool}
 ---
 apiVersion: operator.tigera.io/v1
 kind: APIServer
@@ -3931,9 +4219,11 @@ install_helm() {
   fi
 
   log "Installing Helm..."
-  printf '%s' "$(fetch_verified_script \
+  local helm_installer
+  helm_installer="$(fetch_verified_script \
     "https://raw.githubusercontent.com/helm/helm/${HELM_INSTALLER_REF}/scripts/get-helm-3" \
-    "$HELM_INSTALLER_SHA256" helm)" | bash
+    "$HELM_INSTALLER_SHA256" helm)" || exit 1
+  printf '%s' "$helm_installer" | bash
   log "Helm installed."
 }
 
@@ -3955,8 +4245,9 @@ install_flux_cli() {
     log "Installing Flux CLI v${FLUX_VERSION}..."
   fi
   # The official installer honours FLUX_VERSION (bare semver, no 'v').
-  printf '%s' "$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" \
-    | FLUX_VERSION="$FLUX_VERSION" bash
+  local flux_installer
+  flux_installer="$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" || exit 1
+  printf '%s' "$flux_installer" | FLUX_VERSION="$FLUX_VERSION" bash
   log "Flux CLI v${FLUX_VERSION} installed."
 }
 
@@ -4049,6 +4340,18 @@ install_traefik() {
   helm_cmd repo add --force-update traefik https://traefik.github.io/charts 2>/dev/null || true
   helm_cmd repo update
 
+  # Traefik's Service is the one platform Service that must be dual-stack: the
+  # ingress-external-ips reconciler patches the node ExternalIPs onto it, and
+  # the apiserver rejects an IPv6 externalIP on a SingleStack IPv4 Service.
+  # The panels/API Services need no change — Traefik routes to pod endpoints
+  # directly, so their ClusterIP family never enters the client path.
+  # Empty string on a single-stack install ⇒ the helm command line is byte-for-
+  # byte what it was before this flag existed.
+  local dual_stack_svc_args=""
+  if [[ "$DUAL_STACK" == true ]]; then
+    dual_stack_svc_args="--set service.ipFamilyPolicy=PreferDualStack"
+  fi
+
   # DaemonSet + hostPort: one pod per eligible node binds directly on
   # host ports 80 and 443. hostPort without hostNetwork means Traefik's
   # entrypoints listen on container ports 8000/8443 and the kernel
@@ -4130,6 +4433,7 @@ install_traefik() {
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
     --set service.spec.type=ClusterIP \
+    ${dual_stack_svc_args} \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
     --set providers.kubernetesCRD.allowExternalNameServices=true \
@@ -4161,6 +4465,12 @@ install_traefik() {
 
   log "Traefik v3 Ingress Controller installed."
 
+  # A transient plugin-download failure disables ALL plugins and silently
+  # 404s both panels — check and recycle before anything downstream depends
+  # on ingress working. Non-fatal on its own: the warning names the cause so
+  # verify_install's panel probe is not misread as a TLS problem.
+  ensure_traefik_plugins_loaded "post-install" || true
+
   ensure_traefik_cni_portmap "post-install"
 }
 
@@ -4185,6 +4495,75 @@ install_traefik() {
 #   - verify_install   (after Flux's first reconcile, which can roll
 #                       the Traefik DS pod and drop the chain a second
 #                       time)
+# Traefik plugin-load self-test + recycle.
+#
+# Traefik downloads its plugins from plugins.traefik.io at STARTUP, and if ANY
+# single plugin fails to download it disables the WHOLE plugin subsystem:
+#
+#   INF Loading plugins... plugins=["modsecurity","crowdsec"]
+#   ERR Plugins are disabled because an error has occurred.
+#       unable to install plugin crowdsec: … context deadline exceeded
+#
+# Traefik then keeps serving, but every router whose middleware is a plugin is
+# dropped as "invalid middleware type" — including platform-ingress, which
+# carries BOTH panels. The cluster comes up with a working API, healthy pods,
+# valid certs, and 404 on admin.<apex> and tenant.<apex>. Nothing self-heals:
+# plugins are only installed at process start, so it stays broken until someone
+# restarts the pod.
+#
+# Seen on a fresh install 2026-08-04: a single transient timeout fetching the
+# crowdsec plugin left the operator with no admin panel, and bootstrap's own
+# verify_install blamed TLS ("cert-manager has NOT issued a real cert yet")
+# because the panel probe simply 404'd.
+#
+# Detection is the log marker; the remedy is a pod recycle, which re-runs the
+# download. Bounded retries — a persistent failure (no egress to
+# plugins.traefik.io) must report itself rather than loop.
+TRAEFIK_PLUGIN_FAIL_MARKER='Plugins are disabled because an error has occurred'
+TRAEFIK_PLUGIN_MAX_ATTEMPTS="${TRAEFIK_PLUGIN_MAX_ATTEMPTS:-3}"
+
+# Prints the Traefik logs for the plugin check. Split out so the test harness
+# can stub it without stubbing kubectl itself.
+traefik_plugin_logs() {
+  kubectl -n traefik logs -l app.kubernetes.io/name=traefik --tail=200 2>/dev/null || true
+}
+
+ensure_traefik_plugins_loaded() {
+  local phase="${1:-post-install}"
+  local attempt=1 logs
+
+  while [ "$attempt" -le "$TRAEFIK_PLUGIN_MAX_ATTEMPTS" ]; do
+    logs="$(traefik_plugin_logs)"
+
+    if [ -z "$logs" ]; then
+      warn "  traefik plugin check (${phase}): no Traefik logs yet — skipping (attempt ${attempt})"
+      return 0
+    fi
+
+    if ! printf '%s' "$logs" | grep -qF "$TRAEFIK_PLUGIN_FAIL_MARKER"; then
+      log "  traefik plugins loaded OK (${phase})."
+      return 0
+    fi
+
+    warn "  Traefik disabled ALL plugins (${phase}, attempt ${attempt}/${TRAEFIK_PLUGIN_MAX_ATTEMPTS}) — the admin/tenant panels would 404."
+    if [ "$attempt" -ge "$TRAEFIK_PLUGIN_MAX_ATTEMPTS" ]; then
+      break
+    fi
+    # Recycle: plugin install only happens at process start, so a new pod is
+    # the only way to retry the download.
+    kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --ignore-not-found >/dev/null 2>&1 || true
+    kubectl -n traefik rollout status ds/traefik --timeout=180s >/dev/null 2>&1 || true
+    attempt=$((attempt + 1))
+  done
+
+  warn "  Traefik plugin loading FAILED after ${TRAEFIK_PLUGIN_MAX_ATTEMPTS} attempts."
+  warn "    Effect: routers using a plugin middleware (WAF, CrowdSec) are dropped,"
+  warn "    so https://admin.<domain> and https://tenant.<domain> return 404."
+  warn "    Cause: this node could not download the plugins from plugins.traefik.io."
+  warn "    Check egress/DNS, then recycle: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik"
+  return 1
+}
+
 ensure_traefik_cni_portmap() {
   local caller="${1:-unknown}"
   if ! command -v nft >/dev/null 2>&1; then
@@ -6674,6 +7053,39 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "Email limits OK"
 
+          # 3b-bis. Spam-classifier sample retention — 180 d upstream default
+          # → 30 d. This is a DISK-RECLAIM setting, not an anti-spam tuning knob.
+          #
+          # Stalwart blob storage is reference-counted, and every training
+          # sample pins its message blob through a 'BlobLink::Temporary{until}'
+          # stamped AT INGEST as 'midnight + holdSamplesFor'. Destroying the
+          # account does NOT release it (destroy_account_blobs unlinks only
+          # Email/FileNode/SieveScript hard links), so at the upstream default a
+          # deleted mailbox keeps its bytes on the mail PVC for SIX MONTHS —
+          # invisibly, because the quota reads 0 B. Proven on v0.16.16
+          # (2026-08-04): 2 GiB expunged + account destroyed freed nothing until
+          # the samples went, then dropped to 11 MB in one compaction.
+          #
+          # Why 30 d and not lower: 'retrain' rebuilds from a FRESH trainer and
+          # aborts with "Not enough samples for training" unless the surviving
+          # samples clear minHamSamples/minSpamSamples (100 each). Routine
+          # 12-hourly 'train' is unaffected either way — it only reads samples
+          # newer than the last run. 30 d clears the retrain floor on any server
+          # with real traffic while cutting worst-case dead space 6×.
+          #
+          # Value is MILLISECONDS: 30 d = 2592000000. Only affects mail ingested
+          # AFTER this point ('until' is stamped at ingest); the fast path for
+          # deletions is the per-principal sample purge in
+          # backend/src/modules/mail-admin/spam-sample-cleanup.ts.
+          jmap_call "\$(jq -n --arg a "\$ACCT" \
+            '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+              methodCalls:[["x:SpamClassifier/set",
+                {accountId:\$a,update:{singleton:{
+                  holdSamplesFor:2592000000
+                }}},
+                "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
+          echo "Spam sample retention OK (30d)"
+
           # 3c. HTTP — enable permissive CORS so cross-origin JMAP
           # clients (Bulwark webmail, third-party JMAP apps) see
           # access-control-allow-* on every response, not just OPTIONS
@@ -7960,6 +8372,19 @@ verify_install() {
                  -H "Host: ${admin_host}" "https://127.0.0.1/" 2>/dev/null || echo "000")
   case "$panel_code" in
     200|301|302) log "  admin panel: ${panel_code}" ;;
+    404)
+      warn "  admin panel returned 404 (expected 200/301/302)"
+      # A 404 from Traefik means NO ROUTER MATCHED — not a TLS or cert problem.
+      # The usual cause on a fresh install is the plugin subsystem having been
+      # disabled by a failed download, which drops every router that uses a
+      # plugin middleware (platform-ingress carries both panels). Say so here,
+      # otherwise the TLS warning further down reads as the explanation.
+      if traefik_plugin_logs | grep -qF "$TRAEFIK_PLUGIN_FAIL_MARKER"; then
+        warn "    CAUSE: Traefik disabled ALL plugins (a plugin download failed at startup),"
+        warn "    so the platform-ingress router was dropped. This is NOT a certificate issue."
+        warn "    Fix: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik"
+      fi
+      rc=1 ;;
     *) warn "  admin panel returned ${panel_code} (expected 200/301/302)"; rc=1 ;;
   esac
 
@@ -8265,6 +8690,23 @@ run_preflight() {
     else
       ui_warn "clock is not NTP-synchronised — ACME issuance and etcd are both sensitive to skew"
     fi
+  fi
+
+  # IPv6. Surfaced as a decision, not a default, because k3s cannot change
+  # cluster CIDRs after install: a node that installs IPv4-only today can only
+  # gain IPv6 by being re-bootstrapped. Saying so HERE — before anything is
+  # written — is the only moment the operator can act on it for free.
+  if [[ "$DUAL_STACK" == true ]]; then
+    local ds_v6=""
+    ds_v6=$(detect_node_ipv6 2>/dev/null || true)
+    if [[ -n "$ds_v6" ]]; then
+      ui_ok "dual-stack requested — node IPv6 ${ds_v6}"
+    else
+      ui_fail "--dual-stack requested but this node has no usable IPv6 address"
+      fatal=1
+    fi
+  elif detect_node_ipv6 >/dev/null 2>&1; then
+    ui_warn "this node HAS IPv6 but the cluster will be IPv4-only — IPv6-only clients will not reach the panels, tenant sites or mail. Pass --dual-stack to serve them (cluster CIDRs cannot be changed later without re-bootstrapping)."
   fi
 
   if (( fatal != 0 )); then

@@ -122,7 +122,7 @@ data:
          ctl:ruleRemoveById=931100"
         SecRule REQUEST_URI "@rx ^/api/v1/"
 
-    # NOTE — bearer tokens and session cookies in the audit log.
+    # NOTE — bearer tokens and session cookies in the audit log (FIXED).
     # SecAuditLogParts is ABIJDEFHZ, and part B is request headers, so
     # every blocked request writes the caller's full `Authorization:
     # Bearer <jwt>` and `platform_session` / `platform_refresh` cookies
@@ -136,8 +136,11 @@ data:
     # file 855 rules OK, with the sanitise action [emerg].)
     # Dropping part B instead would break WAF Events, which resolves the
     # original hostname from request.headers["X-Forwarded-Host"] (see
-    # backend/src/modules/ingress-routes/waf-log-scraper.ts). Tracked as
-    # a follow-up; treat these pod logs as credential-bearing until then.
+    # backend/src/modules/ingress-routes/waf-log-scraper.ts).
+    # RESOLVED 2026-08-04 by a third route: the JSON audit record is written to
+    # a file (MODSEC_AUDIT_LOG) and the `audit-redactor` sidecar streams it to
+    # stdout with the credential headers masked — see deployment.yaml. Nothing
+    # here changes; do NOT re-add the sanitise action.
 
     # ── mTLS CRL download (crl.pem) — CRS 920440 false-positive ──
     # Rule 920440 "URL file extension is restricted by policy" matches

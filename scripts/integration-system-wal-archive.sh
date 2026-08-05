@@ -18,9 +18,11 @@
 #   ADMIN_PASSWORD=<…> TARGET_CONFIG_ID=<uuid-of-active-s3-row> \
 #     ./scripts/integration-system-wal-archive.sh
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 TARGET_CONFIG_ID="${TARGET_CONFIG_ID:-}"

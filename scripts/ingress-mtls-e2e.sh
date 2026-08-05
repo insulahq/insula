@@ -14,15 +14,17 @@
 #
 # Exit code 0 only when all scenarios pass; otherwise 1.
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -uo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 CONTROL_HOST="${CONTROL_HOST:-192.0.2.58}"
 SSH_KEY="${SSH_KEY:-/home/dev/hosting-platform.key}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10}"
-HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-staging.example.test}"
+HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-$(resolve_platform_apex)}"
 
 if [[ -z "$ADMIN_PASSWORD" ]]; then
   echo "ERROR: ADMIN_PASSWORD must be set" >&2

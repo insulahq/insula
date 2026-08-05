@@ -40,9 +40,11 @@
 #     what integration-staging.sh already requires (curl, jq, kubectl,
 #     python3 for token JSON parsing).
 
+# resolve_platform_apex(): derive the test apex instead of baking one in.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
@@ -161,6 +163,21 @@ if [[ -z "$TENANT_ID" ]]; then
 fi
 [[ -z "$TENANT_ID" ]] && { echo "FATAL: no tenant" >&2; exit 2; }
 info "Using client $TENANT_ID"
+
+# ADR-036 subscription gate (migration 0078, shipped 2026-07-30 in 6ac21ae7):
+# custom containers are DENIED unless the tenant's plan allows them or the
+# tenant carries an explicit override. This suite exists to exercise custom
+# containers, so it must grant itself the capability — without it every create
+# returns 403 CUSTOM_CONTAINERS_NOT_IN_PLAN and the suite has been red since
+# that feature landed (observed 2026-08-04: T7/T10/T12/T14/T18/T19, and T10
+# reporting "expected 422, got 403" because the gate short-circuits validation).
+# Uses the PER-TENANT override so no shared plan is mutated for other suites.
+# Note the request key is snake_case (allow_custom_containers_override) — the
+# response field is camelCase (allowCustomContainersOverride).
+if ! api PATCH "/tenants/$TENANT_ID" '{"allow_custom_containers_override":true}' >/dev/null 2>&1; then
+  echo "WARN: could not set allow_custom_containers_override on $TENANT_ID — custom-container scenarios will 403" >&2
+fi
+
 
 # Resolve the tenant namespace once.
 TENANT_NS=$(api GET "/tenants/$TENANT_ID" | python3 -c "

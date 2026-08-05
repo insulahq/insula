@@ -1,6 +1,6 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle } from 'lucide-react';
+import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useSortable } from '@/hooks/use-sortable';
@@ -56,6 +56,9 @@ import {
 } from '@/hooks/use-email';
 import { MailboxLoginPasswordsModal } from '@/components/MailboxLoginPasswords';
 
+// Lazy: a wall of static setup copy that most sessions never open.
+const EmailConnectionGuideModal = lazy(() => import('@/components/EmailConnectionGuideModal'));
+
 const INPUT_CLASS = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
 type Tab = 'mailboxes' | 'aliases' | 'settings';
@@ -63,6 +66,7 @@ type Tab = 'mailboxes' | 'aliases' | 'settings';
 export default function Email() {
   const { tenantId } = useTenantContext();
   const [tab, setTab] = useState<Tab>('mailboxes');
+  const [guideOpen, setGuideOpen] = useState(false);
   const { data: domainsRes, isLoading: domainsLoading } = useEmailDomains(tenantId ?? undefined);
   const emailDomains = domainsRes?.data ?? [];
 
@@ -142,7 +146,35 @@ export default function Email() {
             ))}
           </select>
         )}
+
+        {/*
+          Setup instructions for whichever domain is selected. Sits next to the
+          domain pill because that is where a user looks when wondering "what do
+          I type into Outlook for this domain?".
+        */}
+        {!domainsLoading && selectedEmailDomain && (
+          <button
+            type="button"
+            onClick={() => setGuideOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-brand-200 dark:border-brand-700 bg-brand-50 dark:bg-brand-900/30 px-3 py-1.5 text-sm font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-900/50"
+            data-testid="open-email-connection-guide"
+          >
+            <HelpCircle size={14} />
+            How to connect to your email accounts
+          </button>
+        )}
       </div>
+
+      {guideOpen && selectedEmailDomain && tenantId && (
+        <Suspense fallback={null}>
+          <EmailConnectionGuideModal
+            tenantId={tenantId}
+            domainId={selectedEmailDomain.domainId}
+            domainName={selectedEmailDomain.domainName}
+            onClose={() => setGuideOpen(false)}
+          />
+        </Suspense>
+      )}
 
       {domainsLoading && <div className="flex justify-center py-12"><Loader2 size={24} className="animate-spin text-brand-500" /></div>}
 

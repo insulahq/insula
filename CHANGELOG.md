@@ -12,7 +12,225 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Stalwart mail server v0.16.14 → v0.16.16.** Two upstream patch releases, all
+  fixes plus two additive changes; no breaking changes and no new security
+  advisories since the previous pin. The three changelog entries that could have
+  affected us do not: the Redis task/queue lock-leak fix is moot because our
+  Coordinator is disabled, we never set `maxMessageSize`, and we use no registry
+  `#id` references. Verified by an in-place upgrade on a real RocksDB store
+  (40 messages, 40 spam training samples, 2 accounts, 1 domain): v0.16.16 opens
+  the v0.16.14 store, all 26 registry objects the platform calls stay reachable,
+  IMAP still serves the pre-upgrade mailbox, every `configure_stalwart_full`
+  settings payload still applies — and **rollback to v0.16.14 works with data
+  intact**, so the bump is revertible rather than one-way. Delivered by Flux as
+  an app manifest, so existing clusters pick it up on reconcile; no
+  host-migration is involved.
+
+### Fixed
+- **The mail archive/DR export ran a Stalwart binary eleven releases behind the
+  server.** `archive.ts` defaulted the export/import Job to a hardcoded
+  `v0.16.5` while the Deployment ran v0.16.14 — nothing forced the two to move
+  together, and `security/components.yaml` only watches the Deployment, so the
+  archive image got no release tracking and no vulnerability scanning. That
+  binary reads the server's own RocksDB store, so it is the one image that must
+  track the server. The Job now resolves its image from the live `stalwart-mail`
+  Deployment (explicit `STALWART_IMAGE` still wins; a pinned fallback covers an
+  unreadable Deployment and is asserted equal to the manifest by a test that
+  fails if either side drifts). Testing showed the old pin still exported a
+  v0.16.16-written store byte-identically, so this closes a drift and scanning
+  gap rather than a live data risk.
+- **Harnesses could call the shared env lib before sourcing it.** The apex sweep
+  left seven suites using `resolve_platform_apex()` in a `${VAR:-…}` default
+  above their `source` line — latent, because the default only evaluates when
+  the variable is unset, so it passed with a profile and would have exploded
+  without one. `integration-bundle-coverage` also got a bare
+  `require_backup_class_or_skip` call in that position and died with
+  `rc=127: command not found`. The `source` now precedes first use everywhere,
+  and `ci-no-hardcoded-test-apex.sh` grew a third check that fails the build on
+  a use-before-source.
+
+### Fixed
+- **Image reaps that succeeded were being recorded as failures.** The removal
+  check ran once, immediately after `crictl rmi` — but containerd settles the
+  removal asynchronously, so the reference can still resolve for a moment and
+  the reaper logged `failed on <node>` for images the node really had removed.
+  (Introduced with the verification that replaced the previous *false success*;
+  failing closed was the safer direction, but `image_reap_log` then
+  under-reported.) The check now polls before concluding.
+
+### Added
+- **IPv6: `bootstrap.sh --dual-stack` (R13).** Until now an IPv6-only client
+  could reach nothing the platform serves — not the panels, the API, tenant
+  routes or mail. The firewall and DNS layers were already dual-stack, so v6
+  traffic was permitted and then went unanswered: on a node with a published
+  AAAA, connections got a TCP RST in 8 ms while IPv4 served normally. The cause
+  was one layer — the cluster network was IPv4-only, and every public surface
+  reaches the outside through `hostPort` → CNI portmap DNAT to an IPv4 pod IP.
+  `--dual-stack` gives k3s dual `--cluster-cidr`/`--service-cidr` and
+  `--node-ip=<v4>,<v6>` (on servers **and** workers — a v4-only node cannot join
+  a dual-stack cluster), adds a Calico IPv6 IPPool with
+  `nodeAddressAutodetectionV6`, and enables IPv6 forwarding with `accept_ra=2`
+  so the node keeps its own default route. Pods get ULA addresses behind
+  `natOutgoing`, exactly mirroring the IPv4 model, so the node's global IPv6 is
+  what clients talk to. Downstream: the Traefik Service becomes
+  `PreferDualStack`, `ingress-external-ips` collects both families,
+  HAProxy mail binds `:::<port> v4v6` instead of the IPv4-only `*:<port>`, and
+  `webmail.<domain>` gains an AAAA when an IPv6 is configured.
+- **The flag is opt-in and refuses rather than guesses.** k3s cannot change
+  cluster CIDRs after install, so defaulting it on would make re-bootstrapping
+  an existing host destructive; a single-stack install is byte-for-byte what it
+  was. Bootstrap fails at preflight — before the first mutation — when
+  `--dual-stack` is requested on a node with no usable IPv6, and refuses to fall
+  back to a public IPv6 on a pinned/mesh underlay rather than splitting pod
+  traffic across two networks. A node that *has* IPv6 and is being installed
+  single-stack now gets a preflight warning, at the one moment the choice is
+  still free. `VMTEST_DUAL_STACK=1` gives the VM tier a ULA v6 subnet and then
+  asserts on the live cluster that the ingress genuinely answers over IPv6.
+
+### Security
+- **The WAF audit log no longer records bearer tokens and session cookies.**
+  `SecAuditLogParts` includes request headers, so every blocked request wrote
+  the caller's full `Authorization: Bearer <jwt>` and `platform_session` /
+  `platform_refresh` cookies in cleartext to the modsec-crs pod's stdout — and
+  a WAF block is exactly when an admin's live credentials are most likely to be
+  captured. Neither obvious fix was available: libmodsecurity 3.0.16 rejects
+  `sanitiseRequestHeader` at config-parse time and crash-loops the WAF, and
+  dropping the header part breaks WAF Events, which resolves the client-facing
+  hostname from `X-Forwarded-Host`. The JSON audit record now goes to a file
+  and an `audit-redactor` sidecar streams it to stdout with those headers
+  masked; nginx's own `ModSecurity:` error lines are unaffected. WAF Events
+  keeps everything it reads — hostname, URI, method and contributing rule ids —
+  and the scraper now names both containers explicitly.
+
+### Fixed
+- **A deleted tenant's mail kept occupying the mail PVC for up to 180 days.**
+  Stalwart blob storage is reference-counted, and a spam-classifier training
+  sample pins the message blob through a `BlobLink::Temporary { until }` stamped
+  at ingest as `midnight + SpamClassifier.holdSamplesFor` — 180 days on an
+  upstream-default install. Destroying the account does not release it
+  (Stalwart's `destroy_account_blobs` unlinks only Email/FileNode/SieveScript
+  hard links), so the bytes stayed on disk invisibly: the mailbox was gone and
+  the account quota read 0 B. Measured on v0.16.16 — 2 GiB of expunged mail
+  survived EXPUNGE, every forced purge task, and outright account deletion, then
+  fell to 11 MB in a single compaction once the samples were destroyed. Tenant
+  and domain teardown now purges each mailbox principal's training samples
+  before destroying the principal (paged, deadline-bounded, best-effort — a mail
+  outage still cannot wedge a deletion), and `bootstrap.sh` sets
+  `holdSamplesFor` to 30 d to bound every path the hook does not cover.
+  Existing clusters are converged by host-migration
+  `2026.8.3/0001-stalwart-spam-sample-retention` (bootstrap.sh reaches fresh
+  installs only) — it reads the current value first and moves *only* the
+  upstream 180 d default, so an install an operator tuned on purpose keeps its
+  setting. That runbook and ADR-046 previously blamed disabled RocksDB blob GC —
+  which upstream shipped in v0.16.10 and which was never the binding constraint;
+  both are corrected.
+- **A transient Traefik plugin download could leave a fresh install with no
+  admin panel, permanently.** Traefik fetches its plugins from
+  plugins.traefik.io at startup and disables the *entire* plugin subsystem if
+  any single one fails. It then keeps serving while every router that uses a
+  plugin middleware is dropped as "invalid middleware type" — including
+  `platform-ingress`, which carries both panels. The cluster came up with
+  healthy pods and valid certs, 404 on `admin.<apex>` and `tenant.<apex>`, and
+  nothing self-healing, because plugins are only installed at process start.
+  Bootstrap now checks for the failure after installing Traefik, recycles the
+  pod to retry the download (bounded), and reports the real cause if it still
+  fails. `verify_install` no longer attributes the resulting 404 to TLS — it
+  names the plugin failure and the one-line fix.
+
+- **Eager image reaps were lost on any platform-api restart, silently.** The
+  5-minute grace period lived in an in-process `setTimeout`, so a deploy, Flux
+  reconcile, OOM kill or drain inside that window dropped the reap with no
+  `image_reap_log` row, no retry and nothing to find afterwards — the image then
+  sat on the node until the pressure watcher reclaimed it under disk pressure,
+  which is what eager reaping exists to avoid. Reproduced on the DEV cluster,
+  which rolls platform-api on every push: a deployment deleted at 13:43:44 armed
+  a timer for 13:48:44, the pod was replaced at 13:49:28, and the reap never
+  ran. Pending reaps are now persisted (`pending_image_reaps`, migration 0079)
+  and swept by a scheduler; claims use `DELETE … RETURNING`, which is atomic, so
+  each row runs on exactly one replica — superseding the old
+  "at-most-once-per-replica" caveat and its deferred distributed lock. Failed
+  reaps retry with capped backoff and give up loudly instead of vanishing.
+- **The image purge reported removals it had not performed.** `crictl rmi`
+  answering "no such image" was mapped straight to REMOVED, but that message
+  means both "already gone" and "this ref does not resolve on this runtime" —
+  and in the second case the image was still on disk. The reaper then logged
+  `succeeded=true` with a byte count copied from kubelet's node status, a figure
+  it never measured. Removal is now confirmed against the runtime
+  (`crictl images -q`), so a ref that cannot be resolved reports FAILED.
+
+### Added
+- **"How to connect to your email accounts" guide in the tenant panel.** A button
+  next to the domain pill on Email opens a tabbed dialog with end-user setup
+  instructions for the selected domain. *Email clients* gives the server
+  hostname, the full port/encryption table, the username format (always the full
+  address) and where app passwords come from — including that the panel login
+  will not work in a mail client and that the secret is shown only once.
+  *Webmail* covers both routes in: the panel's per-mailbox Webmail button (no
+  password needed) and the direct URL a mailbox owner can bookmark, signing in
+  with the same app passwords. Backed by a new read-only endpoint
+  `GET /api/v1/tenants/:tenantId/email/domains/:domainId/connection-info`
+  (tenant-scoped) so nothing in the guide is hardcoded in the UI.
+- `MAIL_SERVICE_PORTS` in `@insula/api-contracts` is now the single source of
+  truth for mail-client ports. The Mozilla autoconfig and Outlook autodiscover
+  XML render from it instead of inline literals, so the settings a client
+  fetches automatically and the ones a human reads in the guide cannot drift
+  apart; tests assert both surfaces agree.
+
+### Changed
+- **Change Password now opens a lazily-loaded modal instead of rendering inside
+  the user menu.** The form lived in `Header.tsx`, which is part of the main
+  bundle on every page of both panels — so the password fields shipped with the
+  entry chunk on every load, and browser password managers latched onto them.
+  The form moved to `ChangePasswordModal.tsx` in each panel, pulled in with
+  `React.lazy()`, so its chunk is fetched only when an operator or tenant
+  actually clicks Change Password. Verified in a real browser against a live
+  cluster: zero `input[type=password]` in the DOM on load and with the menu
+  open, no chunk request until the click, three fields after it, and none again
+  once the dialog closes. The dialog also gains Escape-to-close, a backdrop
+  click, labelled inputs and `role="dialog"`.
+
+### Fixed
+- **Integration suites failed for three reasons that were never the platform.**
+  (1) The custom-container subscription gate shipped on 2026-07-30 without
+  updating the suites that exist to exercise custom containers, so every create
+  returned `403 CUSTOM_CONTAINERS_NOT_IN_PLAN` (and `T10` reported "expected
+  422, got 403" because the gate short-circuits validation); both suites now
+  grant themselves the per-tenant override. (2) `API_BASE` defaulted straight to
+  the local-dev apex in four harnesses — operator profiles set `ADMIN_HOST` /
+  `API_URL`, never `API_BASE` — so against a remote cluster every request went
+  to localhost and came back `000`, reading as a broken platform rather than a
+  misdirected test; it now derives from the configured target. (3) Backup/DR
+  suites hard-failed on a cluster with no backup target bound; nine now report
+  SKIPPED via the new `require_backup_class_or_skip`, which checks live cluster
+  state and fails open if it cannot determine the answer. The apex guard grew a
+  second check so an `API_BASE` regression is caught in CI.
+- **Integration harnesses baked in a test apex instead of deriving it.** 113
+  literals across 51 scripts, and the same file could be inconsistent with
+  itself — three non-deriving `${MAIL_DOMAIN_APEX:-staging.example.test}` lines
+  sat next to two correct ones. A suite written that way only passes on the
+  apex whose name happens to be baked in: a run against a freshly bootstrapped
+  cluster reported `banner 'mail.<cluster apex>' DOES NOT MATCH expected
+  'mail.staging.example.test'` while mail was in fact healthy. Every default now
+  derives through `resolve_platform_apex()` in `scripts/lib/integration-env.sh`
+  — the one place the fallback is written down, honouring `MAIL_DOMAIN_APEX` /
+  `PLATFORM_DOMAIN` / `PLATFORM_BASE_DOMAIN` / `HTTPS_TEST_DOMAIN_BASE` /
+  `TENANT_BASE`. New CI guard `ci-no-hardcoded-test-apex.sh` fails the build on
+  any re-introduction, so this stops being a recurring fix. (Portability, not
+  secrecy — `staging.example.test` is the sanitised placeholder; real operator
+  domains remain covered by `ci-no-hardcoded-test-infra.sh`.)
+
 ## [2026.8.2] - 2026-08-03
+
+### Fixed
+- **"Check for updates" never checked.** The button called `refetch()` on the
+  version query, which only re-reads the value the hourly poller CronJob last
+  wrote to the database — and with a 60-second `staleTime` repeated clicks did
+  not even reach the network. So a release published since the last tick stayed
+  invisible however many times an operator clicked, until the next hourly run.
+  It now runs a real poll through the same cosign-verified path the CronJob
+  uses, and seeds the card with the fresh result. A GitHub outage degrades to
+  "no change" rather than an error.
 
 ### Fixed
 - **The WAF blocked any admin field holding a URL written as an IP address.**

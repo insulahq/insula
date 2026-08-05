@@ -30,13 +30,13 @@ set -uo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 load_integration_env
 
-ADMIN_HOST="${ADMIN_HOST:-https://admin.staging.example.test}"
+ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.test}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 CONTROL_HOST="${CONTROL_HOST:-192.0.2.58}"
 SSH_KEY="${SSH_KEY:-/home/dev/hosting-platform.key}"
 SSH_OPTS="${SSH_OPTS:--o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10}"
-HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-staging.example.test}"
+HTTPS_TEST_DOMAIN_BASE="${HTTPS_TEST_DOMAIN_BASE:-$(resolve_platform_apex)}"
 
 OIDC_ISSUER="${OIDC_ISSUER:-https://auth.example.test/}"
 # IdP client credentials are confidential + operator-specific — no committed
