@@ -45,6 +45,39 @@ const required = (name: string): string => {
   return v;
 };
 
+/**
+ * Retry a best-effort DB write across the post-cutover reconnect window.
+ *
+ * A barman-promote/PITR that rebuilds system-db momentarily takes out the very
+ * database this job writes its outcome to. postgres-restore/service.ts already
+ * documents the symptom — "the cluster IS up, data IS correct, but the
+ * auth-credential reconciler hasn't caught up yet" — and the chip write used to
+ * get exactly one attempt into that window, silently losing the operator's only
+ * record of a completed DR operation.
+ *
+ * Bounded (~29s across 5 attempts) because the DB is expected back in seconds,
+ * and still non-fatal: a missing chip must never fail an operation that already
+ * succeeded on the data plane.
+ */
+const CHIP_RETRY_DELAYS_MS = [0, 2_000, 4_000, 8_000, 15_000] as const;
+
+async function withDbRetry(label: string, fn: () => Promise<void>): Promise<void> {
+  let lastErr: unknown;
+  for (const delayMs of CHIP_RETRY_DELAYS_MS) {
+    if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    try {
+      await fn();
+      return;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  console.warn(JSON.stringify({
+    msg: `pitr-job: ${label} failed after ${CHIP_RETRY_DELAYS_MS.length} attempts (non-fatal)`,
+    error: (lastErr as Error)?.message,
+  }));
+}
+
 async function main(): Promise<void> {
   const clusterNamespace = required('PITR_CLUSTER_NAMESPACE');
   const clusterName = required('PITR_CLUSTER_NAME');
@@ -178,6 +211,26 @@ async function main(): Promise<void> {
     // completes). Without this, clicking the green chip post-success
     // showed an empty modal — exactly what the operator reported.
     //
+    // 2026-08-05 follow-up C: RETRY the write. finalizeByRef made the chip
+    // survive a self-cluster PITR, but it was still a SINGLE attempt against
+    // exactly the transient this codebase already documents: right after the
+    // cutover rebuilds system-db, the orchestrator's own DB connection can
+    // fail while CNPG re-syncs the platform user's credentials ("the cluster
+    // IS up, data IS correct, but the auth-credential reconciler hasn't caught
+    // up yet" — postgres-restore/service.ts, caught on staging 2026-05-23).
+    // One attempt into that window and the chip is silently lost again — the
+    // operator ends a successful DR operation with no record of it, the same
+    // user-visible symptom the upsert fix was meant to end.
+    //
+    // Surfaced by the IPv6 dual-stack VM runs (R13): a dual-stack cluster
+    // takes longer to rebuild (recreate-source 75s), widening the window
+    // enough that this write failed in BOTH dual-stack runs while passing on
+    // the single-stack control. The race is not IPv6-specific — IPv6 only made
+    // an existing one reproducible.
+    //
+    // Bounded and still non-fatal: the DB is expected back within seconds, and
+    // a missing chip must never fail a DR operation that already succeeded.
+    //
     // 2026-05-23 follow-up B: use finalizeByRef (INSERT-or-UPDATE)
     // instead of finishByRef (UPDATE-only). When a PITR rebuilds the
     // SAME cluster that holds the chip table (system-db restoring
@@ -189,7 +242,7 @@ async function main(): Promise<void> {
     // 2026-05-23: after a system-db PITR completed, the chip simply
     // didn't exist in the post-cutover tasks table.
     if (jobNameForChip && actorUserId) {
-      try {
+      await withDbRetry('chip finalize', async () => {
         const tasksMod = await import('../modules/tasks/service.js');
         const { toSafeText } = await import('@insula/api-contracts');
         const label = isPromoteMode
@@ -224,13 +277,7 @@ async function main(): Promise<void> {
             },
           },
         });
-      } catch (chipErr) {
-        console.warn(JSON.stringify({
-          msg: 'pitr-job: chip finalize failed (non-fatal)',
-          chipKind, refId: jobNameForChip,
-          error: (chipErr as Error).message,
-        }));
-      }
+      });
     }
 
     await closeDb();
@@ -252,7 +299,7 @@ async function main(): Promise<void> {
     // Same finalizeByRef upsert as the success path: handles the
     // case where the chip's home DB was rebuilt mid-orchestration.
     if (jobNameForChip && actorUserId) {
-      try {
+      await withDbRetry('chip finalize', async () => {
         const tasksMod = await import('../modules/tasks/service.js');
         const { toSafeText } = await import('@insula/api-contracts');
         const label = isPromoteMode
@@ -283,7 +330,7 @@ async function main(): Promise<void> {
             details: { clusterNamespace, clusterName, snapshotName },
           },
         });
-      } catch { /* best-effort */ }
+      });
     }
     await closeDb().catch(() => undefined);
     process.exit(1);
