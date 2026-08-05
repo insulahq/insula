@@ -12,6 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **The host-config converge now runs hourly instead of daily.** That converge is
+  what applies a release's host-migrations, and a script that fails — or is
+  blocked behind a failure — is retried only on the next tick. At daily plus up
+  to an hour of jitter that was ~25 hours of a cluster sitting on an unapplied
+  migration with nothing surfaced anywhere, which is how the 2026-08-05 staging
+  failure went unnoticed. The run is idempotent and costs about a second when
+  nothing is pending. Fresh installs get it from `bootstrap.sh`; existing
+  clusters from host-migration `2026.8.3/0002`, which rewrites only the shape
+  bootstrap wrote and leaves an operator-customised schedule alone.
+
+### Added
+- **A troubleshooting runbook for failed host-migrations**
+  (`docs/operations/HOST_MIGRATION_TROUBLESHOOTING.md`): how to read the
+  `applied` / `pending` / `run-failed` / `blocked` states, why one failure blocks
+  the rest, how to re-run the converge by hand, and the chart-values-schema cause
+  seen in the wild.
+
 ### Fixed
 - **`admin-password-reset.sh` left a Secret holding the previous password.**
   Changing the password through the UI deletes `platform-admin-seed` on purpose
