@@ -977,6 +977,9 @@ function findRepoRootFromSource(): string | null {
 /** Longest converge output kept in the warning — enough for a cause, not a wall. */
 const CONVERGE_DETAIL_MAX = 600;
 
+/** The unit that owns the converge sandbox (bootstrap-phases.sh writes it). */
+const HOST_CONFIG_UNIT = 'platform-ops-host-config.service';
+
 /** Last non-empty lines of the converge output, for the failure warning. */
 function convergeDetail(stderr: string, stdout: string): string | undefined {
   const lines = `${stderr}\n${stdout}`
@@ -988,25 +991,41 @@ function convergeDetail(stderr: string, stdout: string): string | undefined {
   return lines.slice(-4).join(' | ').slice(0, CONVERGE_DETAIL_MAX);
 }
 
+/**
+ * Exported for tests: delegating the converge to the host-config unit instead of
+ * running it as a child of the hardened self-upgrade unit IS the fix, so the
+ * decision needs a seam an assertion can reach.
+ */
+export async function convergeAfterSelfUpgradeWith(
+  env: NodeJS.ProcessEnv,
+  exec: typeof realExec,
+  isSea: () => Promise<boolean>,
+): Promise<{ code: number; detail?: string }> {
+  if (!(await isSea())) return { code: 0 };
+  const viaUnit = await exec('systemctl', ['start', HOST_CONFIG_UNIT], { env });
+  if (viaUnit.code !== 127) {
+    if (viaUnit.code === 0) return { code: 0 };
+    // systemctl reports only that the unit failed; the cause is in its journal.
+    const log = await exec('journalctl', ['-u', HOST_CONFIG_UNIT, '-n', '40', '--no-pager'], { env });
+    return { code: viaUnit.code, detail: convergeDetail(viaUnit.stderr, log.stdout) };
+  }
+  // No systemctl (container, test rig, non-systemd host) — nothing to delegate
+  // to, so run it here and accept the inherited sandbox.
+  const r = await exec(process.execPath, ['host-config', 'apply'], { env });
+  return { code: r.code, detail: r.code === 0 ? undefined : convergeDetail(r.stderr, r.stdout) };
+}
+
 async function realConvergeAfterSelfUpgrade(
   env: NodeJS.ProcessEnv,
 ): Promise<{ code: number; detail?: string }> {
-  let isSea = false;
-  try {
-    const sea = await import('node:sea');
-    isSea = sea.isSea();
-  } catch {
-    isSea = false;
-  }
-  if (!isSea) return { code: 0 };
-  // No `--apply`: each surface converges only if its policy mode is `enforce`
-  // (host-migrations default to enforce), so operator observe-mode sysctls /
-  // packages are left untouched.
-  const r = await realExec(process.execPath, ['host-config', 'apply'], { env });
-  // realExec already captures both streams; discarding them here is what made
-  // the 2026-08-05 staging failure (converge exited 1 on all three nodes during
-  // the 2026.8.2 → 2026.8.3-rc.1 upgrade) impossible to diagnose after the fact.
-  return { code: r.code, detail: r.code === 0 ? undefined : convergeDetail(r.stderr, r.stdout) };
+  return convergeAfterSelfUpgradeWith(env, realExec, async () => {
+    try {
+      const sea = await import('node:sea');
+      return sea.isSea();
+    } catch {
+      return false;
+    }
+  });
 }
 
 export function realDeps(): Deps {
