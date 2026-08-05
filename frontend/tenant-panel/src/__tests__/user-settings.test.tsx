@@ -49,31 +49,34 @@ describe('Tenant UserSettings page', () => {
     expect(screen.getByTestId('profile-email')).toHaveValue('tenant@test.com');
   });
 
-  it('renders password section with all fields', () => {
+  it('renders the password section', () => {
     render(<UserSettings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('password-section')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-current-password')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-new-password')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-confirm-password')).toBeInTheDocument();
   });
 
-  it('shows password mismatch error', async () => {
+  // The password inputs deliberately live in a lazy-loaded modal, NOT inline on
+  // this page: routes are not code-split, so anything rendered here ships in the
+  // entry chunk that every page view downloads, and password managers latch onto
+  // the fields on every load.
+  it('does NOT ship password inputs on the page itself', () => {
+    const { container } = render(<UserSettings />, { wrapper: createWrapper() });
+    expect(container.querySelectorAll('input[type="password"]')).toHaveLength(0);
+  });
+
+  it('opens the change-password modal on demand', async () => {
     const user = userEvent.setup();
     render(<UserSettings />, { wrapper: createWrapper() });
-
-    await user.type(screen.getByTestId('settings-current-password'), 'current');
-    await user.type(screen.getByTestId('settings-new-password'), 'newpass123');
-    await user.type(screen.getByTestId('settings-confirm-password'), 'different');
-    await user.click(screen.getByTestId('settings-update-password-button'));
-
+    await user.click(screen.getByTestId('settings-open-password-modal'));
     await waitFor(() => {
-      expect(screen.getByTestId('password-error')).toHaveTextContent('New passwords do not match');
+      expect(screen.getByTestId('change-password-modal')).toBeInTheDocument();
     });
   });
 
   it('has save and update buttons', () => {
     render(<UserSettings />, { wrapper: createWrapper() });
     expect(screen.getByTestId('profile-save-button')).toBeInTheDocument();
-    expect(screen.getByTestId('settings-update-password-button')).toBeInTheDocument();
+    // The update button now lives inside the lazy modal; the page exposes only
+    // the launcher.
+    expect(screen.getByTestId('settings-open-password-modal')).toBeInTheDocument();
   });
 });
