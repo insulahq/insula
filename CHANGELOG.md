@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.2] - 2026-08-05
+
 ### Fixed
 - **`admin-password-reset.sh` left a Secret holding the previous password.**
   Changing the password through the UI deletes `platform-admin-seed` on purpose
