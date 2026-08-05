@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Image reaps that succeeded were being recorded as failures.** The removal
+  check ran once, immediately after `crictl rmi` — but containerd settles the
+  removal asynchronously, so the reference can still resolve for a moment and
+  the reaper logged `failed on <node>` for images the node really had removed.
+  (Introduced with the verification that replaced the previous *false success*;
+  failing closed was the safer direction, but `image_reap_log` then
+  under-reported.) The check now polls before concluding.
+
 ### Added
 - **IPv6: `bootstrap.sh --dual-stack` (R13).** Until now an IPv6-only client
   could reach nothing the platform serves — not the panels, the API, tenant

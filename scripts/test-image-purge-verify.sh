@@ -55,7 +55,7 @@ PY
 fails=0
 run_case() {
   local name="$1" rmi_out="$2" rmi_rc="$3" images_q="$4" expect="$5"
-  local bin="$TMP/bin"; rm -rf "$bin" "$TMP/root"; mkdir -p "$bin" "$TMP/root"
+  local bin="$TMP/bin"; rm -rf "$bin" "$TMP/root"; mkdir -p "$bin" "$TMP/root"; : > "$TMP/imgcalls"
   # The script refuses to run without a containerd socket ([ ! -S ]), so make a
   # real one — a plain file would not satisfy the test.
   python3 -c "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1])" "$TMP/root/cri.sock" 2>/dev/null || true
@@ -68,7 +68,17 @@ case "\$1" in
     [[ "\$2" == "--prune" ]] && exit 0
     printf '%s\n' "$rmi_out"; exit $rmi_rc ;;
   images)
-    printf '%s' "$images_q" ;;
+    # "$images_q" of the form "delayN" means: still present for the first N
+    # checks, absent afterwards — i.e. containerd settling asynchronously.
+    case "$images_q" in
+      delay*)
+        n=${images_q#delay}
+        c=\$(cat "$TMP/imgcalls" 2>/dev/null || echo 0)
+        c=\$((c + 1)); echo "\$c" > "$TMP/imgcalls"
+        [ "\$c" -le "\$n" ] && printf 'sha256:abc123'
+        ;;
+      *) printf '%s' "$images_q" ;;
+    esac ;;
 esac
 exit 0
 EOF
@@ -102,6 +112,12 @@ run_case "rmi succeeds + image absent → REMOVED" \
 # rmi claims success but the image survives (partial/failed delete).
 run_case "rmi 'succeeds' but image survives → FAILED" \
   "Deleted: ghcr.io/example/app@sha256:deadbeef" 0 "sha256:abc123" "FAILED:"
+
+# THE REGRESSION: verifying once immediately after rmi reported a reap that had
+# actually succeeded as FAILED, because containerd had not settled yet. The
+# check must poll before concluding.
+run_case "removal settles after 2 checks → REMOVED (not a false failure)" \
+  "Deleted: ghcr.io/example/app@sha256:deadbeef" 0 "delay2" "REMOVED:"
 
 if (( fails > 0 )); then
   echo "❌ test-image-purge-verify: $fails case(s) failed" >&2
