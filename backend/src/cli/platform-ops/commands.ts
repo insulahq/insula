@@ -347,7 +347,24 @@ export async function hostConfigCommand(args: string[], deps: Deps): Promise<num
     deps.out(`host-config host-migrations ${h.mode} [${h.source}]: ${h.appliedCount} applied, ${pending.length} pending, ${h.items.length} shipped`);
     for (const i of h.items) {
       if (i.state === 'already-applied') continue;
-      deps.out(`  ${i.state.padEnd(16)} ${i.key}${i.error ? ` — ${i.error}` : ''}`);
+      // ADR-056 §3: a repeat failure states how long it has been repeating, so a
+      // wedge is legible at a glance instead of looking like a fresh problem.
+      const age =
+        i.state === 'run-failed' && i.attempt && i.attempt > 1
+          ? ` (attempt ${i.attempt}${i.failingSince ? `, failing since ${i.failingSince}` : ''})`
+          : '';
+      const why = i.state === 'skipped' && i.skipReason ? ` — skipped by operator: ${i.skipReason}` : '';
+      deps.out(`  ${i.state.padEnd(16)} ${i.key}${i.error ? ` — ${i.error}` : ''}${age}${why}`);
+    }
+    // A blocked chain is the failure mode ADR-056 exists for: it is silent, it
+    // compounds every release, and DEV sat in it for five weeks unnoticed.
+    const blocked = h.items.filter((i) => i.state === 'blocked').length;
+    if (blocked > 0) {
+      const culprit = h.items.find((i) => i.state === 'run-failed');
+      deps.out(
+        `host-config host-migrations: ${blocked} migration(s) BLOCKED behind ${culprit?.key ?? 'a failure'}` +
+          ` — see docs/operations/HOST_MIGRATION_TROUBLESHOOTING.md`,
+      );
     }
   }
 

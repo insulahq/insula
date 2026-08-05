@@ -66,6 +66,16 @@ if [[ -d "$HM_ROOT" ]]; then
     grep -q 'set -euo pipefail' "$f" || fail "$rel: must 'set -euo pipefail'"
     grep -q '^# idempotent:' "$f" || fail "$rel: missing '# idempotent:' header contract"
     grep -q '^# allow-paths:' "$f" || fail "$rel: missing '# allow-paths:' header contract"
+    # ADR-056 §1: the header is OPTIONAL (absent ⇒ blocks, the safe default), but
+    # a typo'd value must not silently read as "blocks" when the author meant the
+    # opposite — that is the whole failure mode this policy exists to prevent.
+    if grep -q '^# blocks-on-failure:' "$f"; then
+      v=$(grep -m1 '^# blocks-on-failure:' "$f" | sed -E 's/^# blocks-on-failure:[[:space:]]*([^[:space:]]+).*/\1/' | tr 'A-Z' 'a-z')
+      case "$v" in
+        yes|no) : ;;
+        *) fail "$rel: '# blocks-on-failure: $v' — must be exactly 'yes' or 'no' (absent means yes)" ;;
+      esac
+    fi
     if command -v shellcheck >/dev/null 2>&1; then
       shellcheck -S warning "$f" || fail "$rel: shellcheck reported issues"
     fi
