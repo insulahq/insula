@@ -78,6 +78,29 @@ while IFS= read -r f; do
   done < <(grep -nE '^[[:space:]]*API_BASE="?\$\{API_BASE:-' "$f" 2>/dev/null || true)
 done < <(git ls-files 'scripts/integration-*.sh' 'scripts/ingress-*.sh' 2>/dev/null)
 
+# ─── Check 3: the lib must be sourced BEFORE its helpers are used ────────
+#
+# `X="${X:-$(resolve_platform_apex)}"` placed above the `source` line is a
+# latent trap: it only evaluates when X is unset, so it passes on any machine
+# with a profile and explodes on one without. A bare call is worse — it fails
+# outright with "command not found", which is how integration-bundle-coverage
+# died with rc=127 after the apex sweep (2026-08-04).
+while IFS= read -r f; do
+  # This guard names the helpers in its own patterns and help text — scanning
+  # itself would always "find" a use before the source line in the usage block.
+  [[ "$f" == 'scripts/ci-no-hardcoded-test-apex.sh' ]] && continue
+  src_line="$(grep -nE '^[[:space:]]*source .*lib/integration-env\.sh' "$f" 2>/dev/null | head -1 | cut -d: -f1)"
+  [[ -n "$src_line" ]] || continue
+  while IFS= read -r hit; do
+    line_no="${hit%%:*}"
+    text="${hit#*:}"
+    [[ "$(printf '%s' "$text" | sed 's/^[[:space:]]*//')" == \#* ]] && continue
+    (( line_no < src_line )) || continue
+    report+="  $f:$line_no: uses the lib before it is sourced (line $src_line): $(printf '%s' "$text" | sed 's/^[[:space:]]*//' | cut -c1-70)"$'\n'
+    violations=$((violations + 1))
+  done < <(grep -nE 'resolve_platform_apex|require_backup_class_or_skip|load_integration_env' "$f" 2>/dev/null || true)
+done < <(git ls-files 'scripts/*.sh' 2>/dev/null)
+
 if (( violations > 0 )); then
   echo "❌ ci-no-hardcoded-test-apex: $violations hardcoded test-apex default(s):" >&2
   printf '%s' "$report" >&2

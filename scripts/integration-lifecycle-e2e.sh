@@ -24,6 +24,10 @@
 #
 # USAGE: ADMIN_PASSWORD=<…> ./scripts/integration-lifecycle-e2e.sh
 
+# Sourced BEFORE the ${VAR:-...} defaults below: they call
+# resolve_platform_apex(), which must already exist.
+# shellcheck source=scripts/lib/integration-env.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 set -euo pipefail
 
 ADMIN_HOST="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
@@ -63,8 +67,6 @@ api() {
   fi
 }
 
-# shellcheck source=scripts/lib/integration-env.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/integration-env.sh"
 
 if [[ -n "${INTEGRATION_TOKEN:-}" ]]; then
   log "using cached INTEGRATION_TOKEN"

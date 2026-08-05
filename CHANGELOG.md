@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Harnesses could call the shared env lib before sourcing it.** The apex sweep
+  left seven suites using `resolve_platform_apex()` in a `${VAR:-…}` default
+  above their `source` line — latent, because the default only evaluates when
+  the variable is unset, so it passed with a profile and would have exploded
+  without one. `integration-bundle-coverage` also got a bare
+  `require_backup_class_or_skip` call in that position and died with
+  `rc=127: command not found`. The `source` now precedes first use everywhere,
+  and `ci-no-hardcoded-test-apex.sh` grew a third check that fails the build on
+  a use-before-source.
+
+### Fixed
 - **Image reaps that succeeded were being recorded as failures.** The removal
   check ran once, immediately after `crictl rmi` — but containerd settles the
   removal asynchronously, so the reference can still resolve for a moment and
