@@ -5,8 +5,8 @@ package main
 // the backend (drift surfacing + nightly alert). OBSERVE MODE: the reconciler
 // never writes host state — it reports desired-vs-actual only.
 type Snapshot struct {
-	Node        string       `json:"node"`
-	CollectedAt string       `json:"collectedAt"`
+	Node        string `json:"node"`
+	CollectedAt string `json:"collectedAt"`
 	// "configmap" when host-config-desired was found, "absent" otherwise.
 	DesiredSource string `json:"desiredSource"`
 	// Always "observe" in this release — write/enforce mode is a later PR.

@@ -30,6 +30,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     create any ConfigMap in `platform-system`.
   - No retry button, by design: the backend cannot touch a node, and the converge
     already runs hourly and picks up a fixed condition on its own.
+  - Three failure shapes that would otherwise still have read as healthy are
+    surfaced explicitly: a **whole-run refusal** (catalog over the script cap,
+    which arrives with `ok:false` and *no items*, so every count is legitimately
+    zero), an **invalid** script that can never run, and a node that **breaks
+    between polls** (the per-node auto-expand now tracks state instead of only
+    the first render). Applied state is reported cumulatively — the relay counts
+    only what ran in that pass, so a fully caught-up node used to render "0
+    applied", indistinguishable from one that had never run anything.
+  - The relay caps field and list sizes. A failed migration's stderr is relayed
+    verbatim and the whole snapshot lives in one ConfigMap, so an unbounded blob
+    would breach etcd's ~1 MiB limit and freeze that node's reporting at its
+    last-known state — precisely when the panel matters most. Counts are derived
+    before capping and the API takes `max(relayed, recounted)`, so truncation can
+    never hide a failure.
 
 ### Added
 - **A failure policy for host-migrations (ADR-056).** Halting on the first

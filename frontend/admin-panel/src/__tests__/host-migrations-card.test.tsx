@@ -17,12 +17,22 @@ const { default: HostMigrationsCard } = await import('@/components/platform/Host
 
 const node = (over: Record<string, unknown> = {}) => ({
   node: 'node-a', collectedAt: '2026-08-05T20:00:00Z', mode: 'enforce', source: 'embedded', ok: true,
-  appliedCount: 3, failedCount: 0, blockedCount: 0, pendingCount: 0, skippedCount: 0, items: [], ...over,
+  appliedCount: 3, failedCount: 0, blockedCount: 0, pendingCount: 0, skippedCount: 0,
+  invalidCount: 0, reason: null, items: [], ...over,
 });
 
 function wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
+}
+
+/** A wrapper whose QueryClient the test can drive, to simulate the 5-min poll. */
+function pollable() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const W = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+  );
+  return { qc, wrapper: W };
 }
 
 const resolve = (payload: unknown) => fetchMock.mockResolvedValue({ data: payload });
@@ -105,6 +115,58 @@ describe('HostMigrationsCard', () => {
     expect(screen.queryByText(/skipped by operator/i)).not.toBeInTheDocument();
     await user.click(screen.getByTestId('host-migrations-node-node-a'));
     expect(screen.getByText(/skipped by operator: stale values, cleared by hand/i)).toBeInTheDocument();
+  });
+
+  it('opens a node that BREAKS BETWEEN POLLS, not just one broken on first load', async () => {
+    // The list is keyed by node name, so NodeBlock never remounts across a
+    // refetch — only its props change. A useState initialiser would go stale
+    // here and leave the newly-broken node collapsed, which is precisely the
+    // "operator has to hunt for it" outcome the auto-open exists to prevent.
+    const { qc, wrapper: w } = pollable();
+    resolve({ degraded: false, runbookUrl: 'r', nodes: [node()] });
+    render(<HostMigrationsCard />, { wrapper: w });
+    await waitFor(() => expect(screen.getByTestId('host-migrations-node-node-a')).toBeInTheDocument());
+    expect(screen.queryByText(/boom/)).not.toBeInTheDocument(); // collapsed while healthy
+
+    resolve({
+      degraded: true, runbookUrl: 'r',
+      nodes: [node({ failedCount: 1, ok: false, items: [{ key: 'v/1.sh', state: 'run-failed', error: 'boom' }] })],
+    });
+    await qc.invalidateQueries();
+    await waitFor(() => expect(screen.getByText(/boom/)).toBeInTheDocument());
+  });
+
+  it('surfaces a WHOLE-RUN refusal, where every count is legitimately zero', async () => {
+    // ok:false with no items — nothing "failed", so a counts-only check would
+    // render this as a healthy "0 applied" node running nothing at all.
+    resolve({
+      degraded: true, runbookUrl: 'r',
+      nodes: [node({ ok: false, appliedCount: 0, reason: 'host-migration catalog has 700 scripts (> 500 cap) — refusing' })],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    await waitFor(() => expect(screen.getByTestId('host-migrations-reason')).toBeInTheDocument());
+    expect(screen.getByText(/> 500 cap/)).toBeInTheDocument();
+    expect(screen.getByText(/run refused/)).toBeInTheDocument();
+  });
+
+  it('flags an invalid script, which will never run', async () => {
+    resolve({
+      degraded: true, runbookUrl: 'r',
+      nodes: [node({ invalidCount: 1, items: [{ key: 'v/00x-bad.sh', state: 'invalid' }] })],
+    });
+    render(<HostMigrationsCard />, { wrapper });
+    await waitFor(() => expect(screen.getByText(/1 invalid/)).toBeInTheDocument());
+  });
+
+  it('reports expand state to assistive tech', async () => {
+    resolve({ degraded: false, runbookUrl: 'r', nodes: [node()] });
+    const user = userEvent.setup();
+    render(<HostMigrationsCard />, { wrapper });
+    await waitFor(() => expect(screen.getByTestId('host-migrations-node-node-a')).toBeInTheDocument());
+    const toggle = screen.getByTestId('host-migrations-node-node-a');
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('opens a broken node automatically — the operator should not have to hunt', async () => {

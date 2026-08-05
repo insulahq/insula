@@ -189,6 +189,15 @@ export const hostMigrationNodeStatusSchema = z.object({
   blockedCount: z.number().int(),
   pendingCount: z.number().int(),
   skippedCount: z.number().int(),
+  /** A script whose name/version failed validation — it will NEVER run. */
+  invalidCount: z.number().int(),
+  /**
+   * A whole-run refusal, e.g. the catalog exceeded MAX_SCRIPTS. This arrives
+   * with `ok: false` and an EMPTY item list — the run never got far enough to
+   * produce per-item state — so it must be surfaced on its own, or the node
+   * renders as healthy while applying nothing at all.
+   */
+  reason: z.string().nullable().optional(),
   items: z.array(hostMigrationItemSchema),
   /** Why this node has no data, when it has none. */
   note: z.string().nullable().optional(),
@@ -197,7 +206,8 @@ export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSche
 
 export const hostMigrationStatusResponseSchema = z.object({
   nodes: z.array(hostMigrationNodeStatusSchema),
-  /** True when ANY node has a failed or blocked migration. Drives the alert. */
+  /** True when ANY node has a failed, blocked or invalid migration, or refused
+   *  the whole run. Drives the alert. */
   degraded: z.boolean(),
   /** Runbook the UI links to for remediation. */
   runbookUrl: z.string(),

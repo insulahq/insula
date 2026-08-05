@@ -1,5 +1,5 @@
 import { AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Loader2, ExternalLink, Server } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useHostMigrationStatus } from '@/hooks/use-host-migrations';
 import type { HostMigrationNodeStatus, HostMigrationItem } from '@insula/api-contracts';
 
@@ -63,8 +63,23 @@ function ItemRow({ item }: { readonly item: HostMigrationItem }) {
 }
 
 function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
-  const bad = node.failedCount > 0 || node.blockedCount > 0;
+  // `ok === false` is a WHOLE-RUN refusal (catalog over the script cap): it
+  // carries no items, so every count is legitimately zero and only `ok` and
+  // `reason` say anything is wrong. `invalid` is a script that will never run.
+  const bad = node.failedCount > 0 || node.blockedCount > 0 || node.invalidCount > 0 || node.ok === false;
   const [open, setOpen] = useState(bad); // a broken node opens itself
+  const panelId = useId();
+
+  // useState only runs its initialiser on mount, and this list is keyed by node
+  // name so the component never remounts across the 5-minute poll. Without this,
+  // a node that starts failing between polls stays collapsed — the operator
+  // would have to hunt for it, which is what the auto-open exists to prevent.
+  // One-directional on purpose: a node the operator collapsed after fixing it
+  // should not be forced back open.
+  useEffect(() => {
+    if (bad) setOpen(true);
+  }, [bad]);
+
   const interesting = node.items.filter((i) => i.state !== 'applied' && i.state !== 'already-applied');
 
   return (
@@ -72,6 +87,8 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={panelId}
         data-testid={`host-migrations-node-${node.node}`}
         className="flex w-full items-center gap-2 text-left"
       >
@@ -80,9 +97,15 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
         <span className="text-sm font-medium text-gray-900 dark:text-gray-100">{node.node}</span>
         {bad ? (
           <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
-            {node.failedCount > 0 ? `${node.failedCount} failed` : ''}
-            {node.failedCount > 0 && node.blockedCount > 0 ? ' · ' : ''}
-            {node.blockedCount > 0 ? `${node.blockedCount} blocked` : ''}
+            {[
+              node.failedCount > 0 ? `${node.failedCount} failed` : null,
+              node.blockedCount > 0 ? `${node.blockedCount} blocked` : null,
+              node.invalidCount > 0 ? `${node.invalidCount} invalid` : null,
+              // No counts at all means the run itself was refused.
+              node.failedCount + node.blockedCount + node.invalidCount === 0 ? 'run refused' : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           </span>
         ) : (
           <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -92,9 +115,14 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
       </button>
 
       {open && (
-        <div className="pl-6 pt-1">
+        <div className="pl-6 pt-1" id={panelId}>
           {node.note && <p className="py-1 text-xs text-gray-500 dark:text-gray-400">{node.note}</p>}
-          {interesting.length === 0 && !node.note && (
+          {node.reason && (
+            <p className="py-1 text-xs text-red-600 dark:text-red-400" data-testid="host-migrations-reason">
+              This node refused the whole run: {node.reason}
+            </p>
+          )}
+          {interesting.length === 0 && !node.note && !node.reason && (
             <p className="py-1 text-xs text-gray-500 dark:text-gray-400">All shipped migrations are applied.</p>
           )}
           {interesting.length > 0 && (

@@ -74,6 +74,8 @@ export function interpretNodeSnapshot(node: string, snapshotRaw: string | undefi
     blockedCount: 0,
     pendingCount: 0,
     skippedCount: 0,
+    invalidCount: 0,
+    reason: null,
     items: [],
     note,
   });
@@ -112,29 +114,66 @@ export function interpretNodeSnapshot(node: string, snapshotRaw: string | undefi
     ];
   });
 
-  // Recount here rather than trusting the relayed counters: the API is the
-  // contract the UI renders, and a stale or older relay must not be able to
-  // report "0 failed" while shipping a failed item.
-  const count = (s: string): number => items.filter((i) => i.state === s).length;
+  // Take max(relayed, recounted) — both halves matter, in opposite directions:
+  //
+  //  - recounting stops a stale or older relay from claiming "0 failed" while
+  //    shipping a failed item (it can never hide something we can see);
+  //  - honouring the relayed counter stops a *truncated* list from under-
+  //    reporting (the relay caps items to keep the ConfigMap under etcd's ~1 MiB
+  //    limit, and counts there are derived before capping, so they stay exact).
+  //
+  // Both directions fail toward "needs attention", which is the safe way for a
+  // health indicator to be wrong.
+  const count = (s: string, relayed: unknown): number =>
+    Math.max(items.filter((i) => i.state === s).length, Math.max(0, int(relayed)));
 
+  // `appliedCount` from the relay counts only what ran IN THAT PASS — an
+  // already-applied script `continue`s before the counter (host-migrations.ts),
+  // and in enforce mode `would-run` never appears at all. So a fully caught-up
+  // node relays `0 applied, 0 pending`, which on screen is indistinguishable
+  // from a node that has never run anything — the very ambiguity this feature
+  // exists to remove. Report the CUMULATIVE state instead: applied + already-
+  // applied. max() with the relayed value keeps it honest if the item list was
+  // truncated (applied items are the first the relay drops).
   return {
     node,
     collectedAt: str(hm['collectedAt']),
     mode: str(hm['mode']),
     source: str(hm['source']),
     ok: typeof hm['ok'] === 'boolean' ? (hm['ok'] as boolean) : null,
-    appliedCount: int(hm['appliedCount']),
-    failedCount: count('run-failed'),
-    blockedCount: count('blocked'),
-    pendingCount: count('would-run'),
-    skippedCount: count('skipped'),
+    appliedCount: Math.max(
+      int(hm['appliedCount']),
+      items.filter((i) => i.state === 'applied' || i.state === 'already-applied').length,
+    ),
+    failedCount: count('run-failed', hm['failedCount']),
+    blockedCount: count('blocked', hm['blockedCount']),
+    pendingCount: count('would-run', hm['pendingCount']),
+    skippedCount: count('skipped', hm['skippedCount']),
+    invalidCount: items.filter((i) => i.state === 'invalid').length,
+    // A whole-run refusal (catalog over MAX_SCRIPTS) arrives as ok:false with
+    // NO items. Without carrying the reason, that node renders as a healthy
+    // "0 applied" while running nothing at all.
+    reason: str(hm['reason']),
     items,
   };
 }
 
-/** True when any node has a failed or blocked migration. */
+/**
+ * True when any node needs attention. Deliberately broader than "something
+ * failed":
+ *  - `blocked` — nothing failed on this node's own account, it is queued behind
+ *    another failure. That is the silent case the whole feature exists for.
+ *  - `invalid` — a script that will NEVER run, because its name/version did not
+ *    validate. Silent in exactly the same way.
+ *  - `ok === false` — a whole-run refusal, which carries NO items at all, so
+ *    every count above is legitimately zero.
+ * Pending alone is NOT degraded: it is normal between a release and the next
+ * hourly converge.
+ */
 export function isDegraded(nodes: readonly HostMigrationNodeStatus[]): boolean {
-  return nodes.some((n) => n.failedCount > 0 || n.blockedCount > 0);
+  return nodes.some(
+    (n) => n.failedCount > 0 || n.blockedCount > 0 || n.invalidCount > 0 || n.ok === false,
+  );
 }
 
 export async function readHostMigrationStatus(k8s: K8sClients): Promise<HostMigrationStatusResponse> {
