@@ -394,21 +394,26 @@ if [[ "${VMTEST_DUAL_STACK:-0}" == "1" ]]; then
   _ds_fail=0
   _ds() { ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" "$1" 2>/dev/null; }
 
-  _node_ips=$(_ds "kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type==\"InternalIP\")].address}'")
-  if grep -q ':' <<<"$_node_ips"; then
-    echo "   node InternalIPs: ${_node_ips}"
-  else
-    echo "run.sh: node registered no IPv6 InternalIP (got '${_node_ips}') — kubelet did not go dual-stack." >&2
-    _ds_fail=1
-  fi
-
-  _pod_cidrs=$(_ds "kubectl get node -o jsonpath='{.items[0].spec.podCIDRs}'")
-  if grep -q ':' <<<"$_pod_cidrs"; then
-    echo "   podCIDRs: ${_pod_cidrs}"
-  else
-    echo "run.sh: node podCIDRs are IPv4-only (got '${_pod_cidrs}') — the cluster is not dual-stack." >&2
-    _ds_fail=1
-  fi
+  # EVERY node, not just the control plane. Traefik and Stalwart are DaemonSets
+  # binding hostPorts on each node, so "the cluster serves IPv6" is a per-node
+  # property — a v6 DNAT missing on one worker is invisible if only the first
+  # server is probed, and that is exactly what HA ingress depends on.
+  _nodes=$(_ds "kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{end}'")
+  echo "   nodes: ${_nodes}"
+  for _n in ${_nodes}; do
+    _ips=$(_ds "kubectl get node ${_n} -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'")
+    _cidrs=$(_ds "kubectl get node ${_n} -o jsonpath='{.spec.podCIDRs}'")
+    if grep -q ':' <<<"$_ips"; then
+      echo "     ${_n}: InternalIPs ${_ips}"
+    else
+      echo "run.sh: node ${_n} registered no IPv6 InternalIP (got '${_ips}') — kubelet did not go dual-stack." >&2
+      _ds_fail=1
+    fi
+    if ! grep -q ':' <<<"$_cidrs"; then
+      echo "run.sh: node ${_n} podCIDRs are IPv4-only (got '${_cidrs}')." >&2
+      _ds_fail=1
+    fi
+  done
 
   # Calico must have programmed a v6 IPPool, or pods never get v6 addresses and
   # the hostPort DNAT below has nothing to point at.
@@ -420,21 +425,46 @@ if [[ "${VMTEST_DUAL_STACK:-0}" == "1" ]]; then
     _ds_fail=1
   fi
 
-  # The end-to-end assertion: reach the ingress over IPv6 from the node itself.
-  # A v6 literal in a URL must be bracketed.
-  _node_v6=$(_ds "ip -6 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | grep -v '^fe80' | head -1")
-  if [[ -n "$_node_v6" ]]; then
-    _code=$(_ds "curl -6 -sk -o /dev/null -w '%{http_code}' --max-time 15 'https://[${_node_v6}]/' || true")
-    if [[ -n "$_code" && "$_code" != "000" ]]; then
-      echo "   IPv6 ingress reachable: https://[${_node_v6}]/ → ${_code}"
+  # The end-to-end assertion, ON EVERY NODE. Asserts a real 200 with the panel's
+  # Host header, not merely "something answered": a bare-IP request returns 404
+  # from a healthy Traefik, so the previous `!= 000` check would have passed on
+  # a cluster whose routing was broken for every actual hostname.
+  #
+  # This is the HA-ingress property — DNS round-robins the apex across nodes, so
+  # a client can land on any of them and must be served identically over v6.
+  _ing_ok=0
+  for _n in ${_nodes}; do
+    _nv6=$(_ds "kubectl get node ${_n} -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}' | tr ' ' '\n' | grep ':' | head -1")
+    if [[ -z "$_nv6" ]]; then
+      echo "run.sh: node ${_n} has no IPv6 InternalIP to probe the ingress on." >&2
+      _ds_fail=1; continue
+    fi
+    _code=$(_ds "curl -6 -sk -o /dev/null -w '%{http_code}' --max-time 20 -H 'Host: admin.${VMTEST_APEX}' 'https://[${_nv6}]/' || true")
+    if [[ "$_code" == "200" ]]; then
+      echo "     ${_n}: admin.${VMTEST_APEX} over IPv6 [${_nv6}] → 200"
+      _ing_ok=$((_ing_ok + 1))
     else
-      echo "run.sh: ingress is NOT reachable over IPv6 at [${_node_v6}]:443 (curl gave '${_code:-no response}')." >&2
-      echo "  The cluster registered v6 but no traffic is served on it — check the CNI portmap v6 DNAT." >&2
+      echo "run.sh: node ${_n} did NOT serve admin.${VMTEST_APEX} over IPv6 at [${_nv6}] (got '${_code:-none}')." >&2
+      echo "  Check that node's CNI portmap v6 hostPort DNAT — HA ingress means EVERY node must serve." >&2
       _ds_fail=1
     fi
-  else
-    echo "run.sh: could not determine the node's IPv6 address for the ingress check." >&2
-    _ds_fail=1
+  done
+  echo "   IPv6 ingress serving on ${_ing_ok} node(s)"
+
+  # Mail over IPv6, on the node running Stalwart: a real SMTP greeting, not an
+  # open socket. Ports-open proves a listener exists; the banner proves Stalwart
+  # is the thing behind it and is speaking to a v6 peer.
+  _mail_v6=$(_ds "kubectl get pods -n mail -l app.kubernetes.io/component=stalwart -o jsonpath='{.items[0].status.hostIP}'" )
+  if [[ -n "$_mail_v6" ]]; then
+    _mn=$(_ds "kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}' | grep -F '${_mail_v6}' | cut -d= -f1")
+    _mv6=$(_ds "kubectl get node ${_mn} -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}' | tr ' ' '\n' | grep ':' | head -1")
+    _banner=$(_ds "timeout 12 bash -c 'exec 3<>/dev/tcp/${_mv6}/25; head -1 <&3'")
+    if grep -q '^220' <<<"$_banner"; then
+      echo "     mail: SMTP greeting over IPv6 on ${_mn} — ${_banner:0:52}"
+    else
+      echo "run.sh: Stalwart did not greet over IPv6 on ${_mn} :25 (got '${_banner:0:40}')." >&2
+      _ds_fail=1
+    fi
   fi
 
   if (( _ds_fail != 0 )); then
