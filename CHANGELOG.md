@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.1] - 2026-08-05
+
 ### Changed
 - **Stalwart mail server v0.16.14 → v0.16.16.** Two upstream patch releases, all
   fixes plus two additive changes; no breaking changes and no new security
