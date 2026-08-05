@@ -147,3 +147,59 @@ export type UpgradeGate = z.infer<typeof upgradeGateSchema>;
 export type UpgradePreflightResponse = z.infer<typeof upgradePreflightResponseSchema>;
 export type UpgradeApplyRequest = z.infer<typeof upgradeApplyRequestSchema>;
 export type UpgradeApplyResponse = z.infer<typeof upgradeApplyResponseSchema>;
+
+/**
+ * Per-node host-migration status (ADR-045 W10c + ADR-056), relayed to the API by
+ * the host-config-reconciler DaemonSet from the status document platform-ops
+ * writes after each converge.
+ *
+ * Exists because a failed migration blocks every later one and was previously
+ * invisible until someone SSHed in: the DEV cluster sat at 11 pending behind a
+ * single failure for five weeks before anyone noticed.
+ */
+export const hostMigrationItemSchema = z.object({
+  key: z.string(),
+  state: z.enum([
+    'applied',
+    'already-applied',
+    'would-run',
+    'run-failed',
+    'blocked',
+    'skipped',
+    'invalid',
+  ]),
+  error: z.string().nullable().optional(),
+  /** ADR-056: how many consecutive times this has failed, and since when. */
+  attempt: z.number().int().nullable().optional(),
+  failingSince: z.string().nullable().optional(),
+  /** Operator-recorded reason from a `.skipped` marker. */
+  skipReason: z.string().nullable().optional(),
+});
+export type HostMigrationItem = z.infer<typeof hostMigrationItemSchema>;
+
+export const hostMigrationNodeStatusSchema = z.object({
+  node: z.string(),
+  /** null when the node has never converged — normal on a fresh install. */
+  collectedAt: z.string().nullable(),
+  mode: z.string().nullable(),
+  source: z.string().nullable(),
+  ok: z.boolean().nullable(),
+  appliedCount: z.number().int(),
+  failedCount: z.number().int(),
+  blockedCount: z.number().int(),
+  pendingCount: z.number().int(),
+  skippedCount: z.number().int(),
+  items: z.array(hostMigrationItemSchema),
+  /** Why this node has no data, when it has none. */
+  note: z.string().nullable().optional(),
+});
+export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSchema>;
+
+export const hostMigrationStatusResponseSchema = z.object({
+  nodes: z.array(hostMigrationNodeStatusSchema),
+  /** True when ANY node has a failed or blocked migration. Drives the alert. */
+  degraded: z.boolean(),
+  /** Runbook the UI links to for remediation. */
+  runbookUrl: z.string(),
+});
+export type HostMigrationStatusResponse = z.infer<typeof hostMigrationStatusResponseSchema>;

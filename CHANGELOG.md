@@ -13,6 +13,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Host-migration state is visible in the admin panel** (Platform → Updates).
+  A failed migration blocks every later one on that node, and the only way to
+  discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
+  `0 applied, 11 pending` behind a single failure for five weeks. The card shows
+  per-node applied/pending/failed/blocked/skipped counts, the failure's cause,
+  how many times it has repeated and since when (ADR-056), any operator skip and
+  its reason, and links the troubleshooting runbook. A broken node expands
+  itself; a healthy or not-yet-reported node deliberately does not raise an
+  alert.
+  - Costs **no new privilege**: the converge writes a node-local `status.json`
+    and the existing `host-config-reconciler` DaemonSet — already on every node,
+    already publishing a per-node ConfigMap — relays it through a **read-only**
+    mount. Publishing from `platform-ops` was rejected because RBAC cannot scope
+    `create` by resource name, so a worker would have gained the ability to
+    create any ConfigMap in `platform-system`.
+  - No retry button, by design: the backend cannot touch a node, and the converge
+    already runs hourly and picks up a fixed condition on its own.
+
+### Added
 - **A failure policy for host-migrations (ADR-056).** Halting on the first
   failure is right — a later migration may assume an earlier one applied — but as
   shipped it was unscoped, unrecoverable and silent: one deterministic failure

@@ -391,6 +391,45 @@ function migrationNoteFailure(key: string): { attempt: number; failingSince: str
   return next;
 }
 
+/**
+ * Node-local status file, written after every converge.
+ *
+ * The backend cannot read a node's filesystem and platform-ops cannot write
+ * cluster state from a worker (its kubeconfig is `get` on five ConfigMaps, and
+ * RBAC cannot scope `create` by resourceName — granting it would mean every
+ * worker could create any ConfigMap in platform-system). So the converge writes
+ * here, and the host-config-reconciler DaemonSet — which already runs on every
+ * node and already publishes its own per-node ConfigMap — relays it. No new
+ * privilege anywhere.
+ *
+ * Best-effort: reporting must never fail a converge.
+ */
+function writeHostMigrationStatusFile(result: HostMigrationResult): void {
+  try {
+    mkdirSync(HOST_MIGRATION_MARKER_ROOT, { recursive: true });
+    const doc = {
+      schema: 1,
+      collectedAt: new Date().toISOString(),
+      mode: result.mode,
+      source: result.source,
+      ok: result.ok,
+      appliedCount: result.appliedCount,
+      reason: result.reason ?? null,
+      items: result.items.map((i) => ({
+        key: i.key,
+        state: i.state,
+        error: i.error ?? null,
+        attempt: i.attempt ?? null,
+        failingSince: i.failingSince ?? null,
+        skipReason: i.skipReason ?? null,
+      })),
+    };
+    writeFileSync(join(HOST_MIGRATION_MARKER_ROOT, 'status.json'), JSON.stringify(doc), { mode: 0o644 });
+  } catch {
+    /* advisory — a converge must not fail because it could not report */
+  }
+}
+
 function migrationClearFailure(key: string): void {
   const p = migrationMarkerPathFor(key, '.failing');
   if (!p) return;
@@ -734,11 +773,17 @@ export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
     async hostMigrations(opts) {
       const catalog = await loadHostMigrationCatalog(env);
       const hmDeps = realHostMigrationDeps(env, catalog);
-      if (catalog.source === 'absent') return runHostMigrations(null, false, hmDeps);
+      if (catalog.source === 'absent') {
+        const r = runHostMigrations(null, false, hmDeps);
+        writeHostMigrationStatusFile(r);
+        return r;
+      }
       // Same opt-in gating, against the host-migrations policy's own mode.
       const mode = await hmDeps.readMode();
       const enforcing = opts.apply || (!opts.dryRun && (mode ?? '').toLowerCase() === 'enforce');
-      return runHostMigrations(catalog.scripts, enforcing, hmDeps);
+      const result = runHostMigrations(catalog.scripts, enforcing, hmDeps);
+      writeHostMigrationStatusFile(result);
+      return result;
     },
     async ulimits(opts) {
       const desired = await ulimitDeps.readDesired();
