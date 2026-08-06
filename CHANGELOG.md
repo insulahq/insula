@@ -13,6 +13,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **`platform/VERSION` on `development` now tracks the release line.**
+  `cut-release.sh` writes it on `main`, and promotion is one-way
+  `development → main`, so the stamp never came back: `development` sat on
+  `2026.6.16` — a version never cut — for six weeks. That is what a fresh install
+  resolves its platform-ops asset from, so the download 404'd, the install was
+  skipped, and the node got no converge timer at all. A new
+  `sync-development-version` release job pushes the released version back to
+  `development` (stable releases only: build-deploy stamps `<VERSION>-<sha>`, and
+  an RC would compose to `2026.8.3-rc.4-<sha>`, which the backend's version regex
+  rejects — silently breaking `installed_platform_version`). Also makes the
+  promote snapshot idempotent, which used to revert `main`'s stamp until
+  cut-release rewrote it.
+
+### Fixed
 - **Chart-bump host-migrations no longer try to DOWNGRADE a newer cluster.** The
   guard compared the installed chart version to the target with string equality,
   so a node bootstrapped *after* the migration was written — carrying newer pins —
