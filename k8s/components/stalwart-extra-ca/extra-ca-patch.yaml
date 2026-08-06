@@ -1,0 +1,94 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: stalwart-mail
+  namespace: mail
+spec:
+  template:
+    spec:
+      initContainers:
+        # Build a trust store = image roots (+ any extra CA) into an emptyDir,
+        # which then replaces /etc/ssl/certs on the stalwart container.
+        #
+        # Runs on the SAME image as the stalwart container on purpose: it has to
+        # copy that image's own roots, and it is the only image guaranteed to
+        # have the exact baseline. It also ships `openssl`, which is required for
+        # the rehash (verified on v0.16.16).
+        #
+        # Ordering note: Kustomize's strategic merge places this FIRST, ahead of
+        # protect-from-silent-data-loss and restore-state. That is fine — it only
+        # writes to its own emptyDir and never touches mail data — but it does
+        # mean a failure here blocks the pod before the data-loss guard runs. The
+        # script is therefore deliberately total: with no extra CA it degenerates
+        # to a plain copy, and the rehash is the only step that can fail, which is
+        # why it is guarded and only reached when a CA was actually added.
+        - name: merge-ca-trust
+          image: docker.io/stalwartlabs/stalwart:v0.16.16
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              # Copy the image's own trust store — bundle file AND the hashed
+              # *.0 symlink farm. Both matter: verification is satisfied by the
+              # hashed entries alone, so a copy that dropped them would appear to
+              # work while quietly trusting nothing extra.
+              #
+              # -RL, deliberately NOT -a: `-a` implies `-p`, and preserving
+              # ownership/timestamps onto an emptyDir fails as a non-root user
+              # with "preserving times for '/merged/.': Operation not permitted",
+              # which kills the pod before any other init container runs. We only
+              # need the file CONTENT, and -L flattens the hash symlinks into real
+              # files so nothing dangles after the copy.
+              cp -RL /etc/ssl/certs/. /merged/
+              base=$(ls /merged | wc -l)
+              added=0
+              if [ -d /extra-ca ]; then
+                for f in /extra-ca/*; do
+                  [ -f "$f" ] || continue
+                  case "$f" in *..*) continue ;; esac   # skip k8s ..data symlink cruft
+                  cat "$f" >> /merged/ca-certificates.crt
+                  cp "$f" "/merged/extra-$(basename "$f")"
+                  added=$((added+1))
+                done
+              fi
+              if [ "$added" -gt 0 ]; then
+                # Regenerate the hash symlinks so the new CA is reachable by the
+                # directory lookup, not just by the concatenated bundle.
+                openssl rehash /merged >/dev/null 2>&1 || c_rehash /merged >/dev/null 2>&1
+              fi
+              echo "merge-ca-trust: baseline=${base} files, extra CAs added=${added}, total=$(ls /merged | wc -l)"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: merged-ca-trust
+              mountPath: /merged
+            - name: stalwart-extra-ca
+              mountPath: /extra-ca
+              readOnly: true
+      containers:
+        - name: stalwart
+          volumeMounts:
+            - name: merged-ca-trust
+              mountPath: /etc/ssl/certs
+              readOnly: true
+      volumes:
+        - name: merged-ca-trust
+          emptyDir:
+            sizeLimit: 16Mi
+        # optional: absent Secret → empty dir → initContainer is a pure copy and
+        # the trust store is identical to the image's.
+        - name: stalwart-extra-ca
+          secret:
+            secretName: stalwart-extra-ca
+            optional: true

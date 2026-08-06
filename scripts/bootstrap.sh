@@ -842,6 +842,18 @@ FIREWALL TRUST (always-on set mode):
                          means re-bootstrapping the node, so decide at
                          install time. See docs/roadmap/ROADMAP.md R13.
   --pod-cidr-v6 <cidr>   Pod IPv6 range for --dual-stack.
+  --stalwart-acme-directory <url>
+                         ACME directory Stalwart orders its MAIL certificate
+                         from. Default: public Let's Encrypt. Use this when the
+                         apex is not publicly resolvable — public LE answers
+                         NXDOMAIN and the order can never complete, leaving the
+                         mail listener on a self-signed cert. NOTE: the value is
+                         READ-ONLY once Stalwart has created the provider and the
+                         provider cannot be deleted while a Domain links to it,
+                         so this must be set at FIRST bootstrap; it cannot be
+                         changed on a live cluster. A non-default CA must also be
+                         trusted by Stalwart (see the stalwart-extra-ca Kustomize
+                         component) and reachable through the mail NetworkPolicy.
                          Default fd42:42::/56 (ULA + natOutgoing).
   --service-cidr-v6 <cidr>
                          Service IPv6 range for --dual-stack.
@@ -1153,6 +1165,11 @@ parse_args() {
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; NODEIP_PIN_CIDR_V6="$2"; shift 2 ;;
       --dual-stack) DUAL_STACK=true; shift ;;
       --pod-cidr-v6) POD_CIDR_V6="$2"; shift 2 ;;
+      # A FLAG, not just the env var: --remote forwards CLI args only (it
+      # base64s them and re-execs on the target), so an exported
+      # STALWART_ACME_DIRECTORY never reaches a remote bootstrap — and remote is
+      # how the VM tier and most real installs run.
+      --stalwart-acme-directory) STALWART_ACME_DIRECTORY="$2"; shift 2 ;;
       --service-cidr-v6) SERVICE_CIDR_V6="$2"; shift 2 ;;
       --allow-source)    parse_allow_source_arg "$2"; shift 2 ;;
       --pre-enroll-peer) parse_pre_enroll_peer_arg "$2"; shift 2 ;;
