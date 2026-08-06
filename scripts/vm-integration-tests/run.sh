@@ -328,6 +328,24 @@ PEBSVC
     k3s kubectl -n mail delete pod -l app=stalwart-mail --ignore-not-found >/dev/null 2>&1 || true
     k3s kubectl -n mail rollout status deploy/stalwart-mail --timeout=240s >/dev/null 2>&1 || true
     echo "  Stalwart restarted with Pebble in its trust store"
+
+    # Now let the platform-api reconciler CREATE the AcmeProvider.
+    #
+    # It cannot be bootstrap that creates it, and bootstrap's failure to do so is
+    # LOAD-BEARING rather than a defect to fix: Stalwart CONTACTS the directory
+    # and registers an ACME account at provider-creation time, so creation needs
+    # trust + reachability, which only exist after the block above. bootstrap
+    # therefore logs
+    #   "Failed to create ACME account: HTTP error: error sending request"
+    # and — crucially — leaves NO provider behind, so the read-only directory is
+    # still unset. Passing --stalwart-acme-directory to bootstrap is still
+    # REQUIRED: without it bootstrap would successfully create a *Let's Encrypt*
+    # provider, and that one would be locked in forever.
+    k3s kubectl -n platform patch configmap platform-config --type=merge \
+      -p "{\"data\":{\"stalwart-acme-directory\":\"https://pebble:14000/dir\"}}" >/dev/null 2>&1 || true
+    k3s kubectl -n platform delete pod -l app=platform-api --ignore-not-found >/dev/null 2>&1 || true
+    k3s kubectl -n platform rollout status deploy/platform-api --timeout=180s >/dev/null 2>&1 || true
+    echo "  platform-api restarted with stalwart-acme-directory=https://pebble:14000/dir"
 PICA
 fi
 
