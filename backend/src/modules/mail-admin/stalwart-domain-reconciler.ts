@@ -144,6 +144,32 @@ const JMAP_TIMEOUT_MS = 10_000;
 /** AcmeProvider key — stable identifier the reconciler creates/updates. */
 const ACME_PROVIDER_KEY = 'letsencrypt';
 
+/** Public Let's Encrypt — the default for every real deployment. */
+const DEFAULT_ACME_DIRECTORY = 'https://acme-v02.api.letsencrypt.org/directory';
+
+/**
+ * ACME directory Stalwart orders its mail certificate from.
+ *
+ * Overridable so non-public environments can point at their own CA. It was
+ * hardcoded, which meant the ephemeral VM tier asked *public* Let's Encrypt to
+ * validate a private test apex — LE answers `NXDOMAIN looking up A/AAAA for
+ * mail.<apex>`, so the order can never succeed and the mail listener serves
+ * Stalwart's built-in self-signed cert forever. That in turn makes every
+ * mail-TLS assertion on that tier untestable.
+ *
+ * Anything but the default ALSO needs Stalwart to trust that CA. Its ACME client
+ * reads the system trust store (proven 2026-08-06 by masking `/etc/ssl/certs`:
+ * the failure changed from an LE application response to `error sending
+ * request`), but a CA has to be present in the WHOLE `/etc/ssl/certs` directory —
+ * replacing only `ca-certificates.crt` is not enough, the hashed `*.0` entries
+ * still satisfy verification. `SSL_CERT_FILE`/`SSL_CERT_DIR` are not honoured
+ * (absent from the binary).
+ */
+function acmeDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  const override = env.STALWART_ACME_DIRECTORY?.trim();
+  return override && override.length > 0 ? override : DEFAULT_ACME_DIRECTORY;
+}
+
 /**
  * TLS port the served-cert probe handshakes against (submissions/465,
  * implicit TLS). Any of Stalwart's TLS ports serves the same cert, but
@@ -1472,7 +1498,7 @@ async function ensureAcmeProvider(
           accountId: ADMIN_ACCOUNT_ID,
           create: {
             [ACME_PROVIDER_KEY]: {
-              directory: 'https://acme-v02.api.letsencrypt.org/directory',
+              directory: acmeDirectory(),
               challengeType: 'Http01',
               contact: { [`hostmaster@${apex}`]: true },
             },
