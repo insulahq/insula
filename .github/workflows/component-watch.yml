@@ -2,10 +2,20 @@ name: Component Watch
 
 # Component CVE & version watch (ADR-050).
 #   * PR gate  — registry guard + OSV dep-scan that fails on a new HIGH/CRITICAL
-#                not waived in security/cve-ledger.yaml.
+#                not waived in security/cve-ledger.yaml, and on ANY malicious
+#                (MAL-) package regardless of severity.
+#   * Daily    — the same dep-scan, unattended (see WHY DAILY below).
 #   * Weekly   — OSV + upstream-behind sweep → rolling tracking issue.
 # Registry: security/components.yaml   Ledger: security/cve-ledger.yaml
 # Runbook:  docs/operations/COMPONENT_WATCH.md
+#
+# THIS IS THE ONLY OSV SCANNER IN CI (consolidated 2026-08-06). A second,
+# lockfile-only OSV job briefly lived in ci-dependency-audit.yml with its own
+# inline MAL- gate; two scanners meant two sets of rules and two places to waive
+# a finding. The malicious-package gating moved into component-watch-gate.py
+# (where the ledger already is) and that job was deleted. ci-dependency-audit.yml
+# keeps only `npm audit signatures`, which is a genuinely different signal —
+# registry signature/provenance verification, not an advisory lookup.
 
 on:
   pull_request:
@@ -14,11 +24,22 @@ on:
       - 'security/**'
       - 'package-lock.json'
       - '**/package.json'
+      - '.npmrc'
+      - '.github/workflows/component-watch.yml'
+      - '.github/scripts/component-watch-gate.py'
       - 'images/**/go.mod'
       - 'images/**/go.sum'
       - 'images/**/Cargo.toml'
   schedule:
-    - cron: '0 6 * * 1'   # Mondays 06:00 UTC
+    # WHY DAILY: a dependency is compromised on the advisory's clock, not ours.
+    # Nothing in the lockfile has to change for a package already in it to turn
+    # hostile, so a PR-only trigger never re-examines it — and the weekly sweep
+    # alone means up to 7 days between a MAL- advisory being published and this
+    # repo noticing. Daily bounds that to ~24h. The scan is a few minutes of a
+    # hosted runner; a malicious transitive dep sitting undetected for a week is
+    # not worth the saving.
+    - cron: '17 4 * * *'   # daily 04:17 UTC — dep-scan + registry guard
+    - cron: '0 6 * * 1'    # Mondays 06:00 UTC — adds the sweep + tracking issue
   workflow_dispatch:
 
 permissions:
@@ -39,7 +60,7 @@ jobs:
       - run: ./scripts/ci-component-watch-check.sh
 
   dep-scan:
-    name: OSV dependency scan (gate on new HIGH/CRITICAL)
+    name: OSV dependency scan (gate on malicious + new HIGH/CRITICAL)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -58,7 +79,10 @@ jobs:
 
   sweep:
     name: Weekly sweep → tracking issue
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Weekly cron + manual dispatch only. The daily cron exists for the dep-scan;
+    # rewriting the rolling tracking issue every morning would turn a signal
+    # people read into a notification people mute.
+    if: github.event.schedule == '0 6 * * 1' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
