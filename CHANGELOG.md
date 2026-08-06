@@ -112,13 +112,36 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   machines. (2) Dependabot gains a 7-day cooldown (14 for majors) so a bot bump
   can no longer adopt a malicious release within hours of publication; security
   updates are advisory-driven and remain immediate. (3) A new dependency-audit
-  workflow runs `npm audit signatures` (registry signatures + provenance —
-  detects a *tampered* artifact, which CVE scanning cannot) and an OSV scan of
-  the lockfile that **fails on malicious-package advisories** while reporting
-  ordinary CVEs as warnings, since that triage already lives in the CVE ledger.
-  It also runs daily, because a dependency can be compromised long after it
-  entered the lockfile. (4) All 228 GitHub Actions references are now pinned by
-  commit SHA rather than mutable tag.
+  workflow runs `npm audit signatures` — registry signatures and provenance,
+  which detect a *tampered* artifact that no CVE feed will ever mention — daily,
+  because a dependency can be compromised long after it entered the lockfile.
+  (4) All 228 GitHub Actions references are now pinned by commit SHA rather than
+  mutable tag.
+- **The dependency gate passed malicious packages.** `component-watch-gate.py`
+  classified findings purely by CVSS, and a `MAL-` advisory — the OSV record for
+  a package that has been hijacked and republished — usually carries no severity
+  at all. Such a finding therefore landed in the *unknown severity* bucket, which
+  prints a ⚠ and exits **0**: a hostile package in `package-lock.json` produced a
+  green check and a mergeable PR. The gate now blocks any `MAL-` finding
+  regardless of score, matched on ids *and* aliases (the MAL- id often rides along
+  as an alias of a GHSA primary). Waiver rules are deliberately narrower than for
+  CVEs: only `not_affected` (confirmed false positive) or `fixed` (removed and
+  lockfile regenerated) clear one — `open`/`investigating`/`mitigated`/`accepted`
+  all mean "we'll get to it", which is not an answer for a package that is
+  currently stealing tokens. All sixteen rules are pinned by
+  `.github/scripts/test-component-watch-gate.sh`, verified to fail 6/16 against
+  the previous gate and to leave CVE handling byte-identical.
+- **Consolidated the two OSV scanners into one.** The dependency-audit workflow
+  added yesterday carried its own lockfile OSV scan with an inline malicious-
+  package gate, duplicating `component-watch.yml`'s recursive scan and splitting
+  the rules — and the waiver point — across two files. The malicious-package
+  gating moved into `component-watch-gate.py`, next to the ledger it consults,
+  and the duplicate job was deleted; `component-watch.yml` is now the only OSV
+  scanner in CI and additionally covers `go.mod`/`Cargo.toml`, which the removed
+  job never did. Its dep-scan also drops from weekly to **daily**, so the window
+  between a MAL- advisory being published and this repo noticing is ~24 h rather
+  than up to 7 days. `npm audit signatures` stays in dependency-audit: it answers
+  "is this the artifact the maintainer published?", which no advisory feed can.
 
 ### Added
 - **The node's IPv6 is now visible in the admin panel** (migration 0080,

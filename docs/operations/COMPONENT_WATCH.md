@@ -84,6 +84,12 @@ SLAs are encoded in `security/components.yaml: slas` and enforced by the guard f
    HIGH/CRITICAL (no ledger entry at all). Triaging it into the ledger (even
    `open` with a remediation) unblocks the dep-scan gate; the SLA check then
    fails CI if an open KEV/critical sits past its tier window with no mitigation.
+   The same gate also fails on **any malicious (`MAL-`) package** — see
+   *Malicious packages* below; those follow different rules.
+2b. **Daily (automated)** — the dep-scan + registry guard run unattended at 04:17
+   UTC. A package already in the lockfile can be compromised without anything in
+   this repo changing, so a PR-only trigger would never re-examine it; daily
+   bounds "advisory published → we notice" to ~24 h instead of a week.
 3. **Event-driven** — a KEV addition or a critical disclosure for a Tier 0/1
    component starts the SLA clock immediately; don't wait for the weekly issue.
 4. **Quarterly (human)** — re-review tiers (§Quarterly tier review).
@@ -103,6 +109,41 @@ SLAs are encoded in `security/components.yaml: slas` and enforced by the guard f
 
 Add the entry to [`security/cve-ledger.yaml`](../../security/cve-ledger.yaml)
 (template at the bottom of that file). Every `component` must exist in the registry.
+
+## Malicious packages (`MAL-`) — different rules
+
+A `MAL-` advisory is not a CVE. It does not mean a package we depend on has a bug;
+it means the **published artifact is hostile** — a hijacked maintainer account, an
+injected install script, a credential stealer. The 2026-08 keyv/`@adminide-stack`
+wave was ~443 such packages, none of which was ever "vulnerable".
+
+Two rules follow, and the gate enforces both:
+
+- **Severity is not consulted.** Most `MAL-` advisories carry no CVSS at all. Under
+  the ordinary vulnerability rules an unknown severity is a warning, so until
+  2026-08-06 a malicious package printed a ⚠ and the gate exited 0. It now blocks
+  regardless of score.
+- **Only `not_affected` or `fixed` clear it.** `open` / `investigating` /
+  `mitigated` / `accepted` all mean *"we know, we'll get to it"* — a coherent answer
+  for a CVE and an incoherent one for a package that is currently exfiltrating
+  tokens. They suppress a CVE; they do **not** suppress a `MAL-` finding.
+
+When the gate reports one:
+
+1. **Remove it or pin away from the affected version**, then regenerate
+   `package-lock.json`. Verify: `grep -n '<name>' package-lock.json`.
+2. **Assume compromise of anything that installed it.** Rotate registry tokens,
+   GHCR tokens, and anything else reachable from a runner or developer shell.
+   `ignore-scripts=true` in [`.npmrc`](../../.npmrc) blocks the usual install-time
+   execution path, so this is containment — not proof you were unaffected.
+3. Record it as `status: fixed` with `closed:` once the lockfile is clean.
+4. **Only** for a confirmed false positive: `status: not_affected`, justified in
+   `notes`.
+
+Rules and escape hatches are pinned by
+[`.github/scripts/test-component-watch-gate.sh`](../../.github/scripts/test-component-watch-gate.sh)
+(run in Infrastructure CI → *Shell unit tests*), because every one of them fails
+green — a mistake here shows up as a passing build, not a red one.
 
 ## Research breaking changes
 

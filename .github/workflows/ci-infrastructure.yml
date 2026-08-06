@@ -88,6 +88,7 @@ jobs:
       - run: ./scripts/test-log-gate.sh
       - run: ./scripts/test-vmtest-log-gate-wiring.sh
       - run: ./.github/scripts/test-pin-image-tag.sh
+      - run: ./.github/scripts/test-component-watch-gate.sh
       # Runs in a container with NET_ADMIN so the nft operations (and the
       # `flush ruleset` in its fixtures) are isolated from the runner's own
       # networking. Proves the firewall-blacklist host-migration is surgical
