@@ -282,12 +282,12 @@ WAITCERT
     # What remains post-bootstrap is the trust + reachability half:
     #   * Secret stalwart-extra-ca — consumed by the stalwart-extra-ca component,
     #     whose initContainer rebuilds the WHOLE /etc/ssl/certs. Both roots are
-    #     needed and they are DIFFERENT CAs: `minica` signs Pebble's own
+    #     needed and they are DIFFERENT CAs: 'minica' signs Pebble's own
     #     directory TLS, while /roots/0 signs the certs Pebble issues.
-    #   * Service/EndpointSlice `pebble` — Pebble's directory cert carries
+    #   * Service/EndpointSlice 'pebble' — Pebble's directory cert carries
     #     SANs localhost, pebble, 127.0.0.1 and NO IP SAN for the services VM, so
     #     connecting by IP fails hostname verification (openssl: 62). Resolving
-    #     the bare name `pebble` inside the mail namespace makes it match.
+    #     the bare name 'pebble' inside the mail namespace makes it match.
     #     cert-manager sidesteps all of this with skipTLSVerify:true; Stalwart's
     #     AcmeProvider has no such option and must genuinely verify.
     # Egress to :14000 comes from the same component (the base policy allows only
