@@ -91,16 +91,55 @@ function getEnvironment(): CertEnvironment {
 }
 
 /**
+ * ClusterIssuer names that mean "the stock public/self-signed issuers". Any
+ * OTHER value of CLUSTER_ISSUER_NAME means the operator deliberately pointed
+ * this cluster at a different ACME endpoint.
+ */
+const STOCK_CLUSTER_ISSUERS: ReadonlySet<string> = new Set([
+  'letsencrypt-prod-http01',
+  'letsencrypt-staging-http01',
+  'local-ca-issuer',
+  'selfsigned-issuer',
+]);
+
+/**
+ * The cluster-wide ACME issuer when it is a CUSTOM one, else null.
+ *
+ * `bootstrap.sh --acme-server` pins CLUSTER_ISSUER_NAME to acme-custom-http01
+ * so the platform's own hostnames (admin/tenant/dex/webmail) are issued by that
+ * endpoint. Per-DOMAIN certificates used to ignore it entirely and always pick a
+ * Let's Encrypt issuer from `getEnvironment()`, which cannot work on the very
+ * clusters that need a custom endpoint: LE has no HTTP-01 route to a private
+ * apex, so every tenant order fails and Traefik serves its default certificate.
+ * Observed on a private-apex cluster — a tenant hostname stayed on
+ * cn=TRAEFIKDEFAULTCERT while every platform hostname had a valid cert.
+ *
+ * Note this deliberately does NOT touch `dns01Issuers`: a custom HTTP-01 issuer
+ * cannot solve a DNS-01 wildcard order, so silently substituting it there would
+ * break real dns01 wildcard setups. Wildcards on a custom ACME endpoint need
+ * their own issuer, configured explicitly via CERT_ISSUER_DNS01_*.
+ */
+function customClusterAcmeIssuer(): string | null {
+  const name = process.env.CLUSTER_ISSUER_NAME?.trim();
+  if (!name || STOCK_CLUSTER_ISSUERS.has(name)) return null;
+  // The stock DNS-01 issuers are per-provider, not a cluster-wide ACME choice.
+  if (name.startsWith('letsencrypt-prod-dns01-')) return null;
+  return name;
+}
+
+/**
  * Default ClusterIssuer names, matching the manifests in
  * k8s/base/cert-manager/ and k8s/overlays/dind/cert-manager/. Can be
- * overridden per-issuer via env vars for custom cluster setups.
+ * overridden per-issuer via env vars for custom cluster setups; an explicit
+ * CERT_ISSUER_* always wins over the cluster-wide custom issuer.
  */
-function getConfiguredIssuers(): ConfiguredIssuers {
+export function getConfiguredIssuers(): ConfiguredIssuers {
+  const custom = customClusterAcmeIssuer();
   return {
     letsencryptProdHttp01:
-      process.env.CERT_ISSUER_PROD_HTTP01 ?? 'letsencrypt-prod-http01',
+      process.env.CERT_ISSUER_PROD_HTTP01 ?? custom ?? 'letsencrypt-prod-http01',
     letsencryptStagingHttp01:
-      process.env.CERT_ISSUER_STAGING_HTTP01 ?? 'letsencrypt-staging-http01',
+      process.env.CERT_ISSUER_STAGING_HTTP01 ?? custom ?? 'letsencrypt-staging-http01',
     dns01Issuers: {
       powerdns: process.env.CERT_ISSUER_DNS01_POWERDNS ?? 'letsencrypt-prod-dns01-powerdns',
       cloudflare: process.env.CERT_ISSUER_DNS01_CLOUDFLARE ?? 'letsencrypt-prod-dns01-cloudflare',
@@ -111,7 +150,7 @@ function getConfiguredIssuers(): ConfiguredIssuers {
     localCaIssuer:
       process.env.CERT_ISSUER_LOCAL_CA ?? 'local-ca-issuer',
     fallbackIssuer:
-      process.env.CERT_ISSUER_FALLBACK ?? 'letsencrypt-prod-http01',
+      process.env.CERT_ISSUER_FALLBACK ?? custom ?? 'letsencrypt-prod-http01',
   };
 }
 
