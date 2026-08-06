@@ -234,7 +234,17 @@ export async function reapImageNow(
     }
     if (result.podError) errors.push(result.podError);
     if (result.failedDisplayNames.length > 0) {
-      errors.push(`failed on ${presence.node}: ${result.failedDisplayNames.join(', ')}`);
+      // Include the per-image cause the purge script reported. Without it the
+      // log row read "failed on <node>: <image>" and gave an operator nothing
+      // to act on — it could not distinguish "still referenced by a container"
+      // from "ref did not resolve" from "containerd was still settling".
+      const detail = result.failedDisplayNames
+        .map(name => {
+          const cause = result.failureCauses[name];
+          return cause ? `${name} (${cause})` : name;
+        })
+        .join(', ');
+      errors.push(`failed on ${presence.node}: ${detail}`);
     }
   }
 
