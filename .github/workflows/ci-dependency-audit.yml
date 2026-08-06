@@ -1,0 +1,110 @@
+name: Dependency audit (npm supply chain)
+
+# WHY THIS EXISTS (the gap it closes)
+#
+# Two scanners already run, and neither watches the npm dependency graph:
+#   - image-cve-scan.yml  — Trivy over BUILT IMAGES
+#   - component-watch.yml — OSV over security/components.yaml (infra components)
+#
+# Both are CVE-driven. A maliciously published package usually has NO CVE at
+# all: the 2026-08 keyv/@adminide-stack wave was ~443 packages that were never
+# "vulnerable", they were hijacked and republished. Answering "are we affected?"
+# on 2026-08-06 required a hand-rolled cross-reference of a vendor CSV against
+# the lockfile — that is not a control, that is luck plus a spare afternoon.
+#
+# This job adds two signals the others cannot give:
+#   1. npm audit signatures — verifies every resolved tarball against the
+#      registry's signature and npm provenance attestations. This catches a
+#      TAMPERED artifact, which no CVE feed will ever tell you about.
+#   2. OSV scan of package-lock.json — OSV carries MAL- advisories for
+#      malicious packages, not just CVEs, and reads the lockfile directly.
+#
+# Deliberately NOT `npm audit --audit-level=high`: that gates on transitive
+# advisories in dev tooling and is famous for blocking merges on unreachable
+# findings. Vulnerability triage stays with the CVE ledger; this job is about
+# INTEGRITY and MALICIOUS packages.
+
+on:
+  push:
+    branches: [development]
+    paths: ['package-lock.json', 'package.json', '.npmrc', '.github/workflows/ci-dependency-audit.yml']
+  pull_request:
+    branches: [development, main]
+    paths: ['package-lock.json', 'package.json', '.npmrc', '.github/workflows/ci-dependency-audit.yml']
+  schedule:
+    # Daily: a package can be compromised long after it entered the lockfile,
+    # so a push-only trigger would never re-examine a dependency that has not
+    # changed — which is exactly the case that bites.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signatures:
+    name: Registry signatures + provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      # --ignore-scripts is redundant with the repo .npmrc but stated here too:
+      # this job must never execute dependency code to check dependency code.
+      - run: npm ci --ignore-scripts
+      - name: Verify every tarball against the registry signature
+        # Fails the build on a signature mismatch — that is tampering, not a
+        # judgement call. Missing signatures (older packages) are reported but
+        # do not fail, otherwise this would be permanently red.
+        run: npm audit signatures
+
+  osv:
+    name: OSV scan (malicious packages + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Scan the lockfile with OSV
+        # Pinned BY DIGEST, not tag: a tag is mutable and this scanner reads the
+        # dependency graph, so it is itself supply chain.
+        run: |
+          docker run --rm -v "$PWD:/src:ro" \
+            ghcr.io/google/osv-scanner@sha256:64e86bec6df2466feea5137fc7c78fb3b7c21ec077f014d7130f64810e50676b \
+            --lockfile=/src/package-lock.json --format=json > osv.json || true
+          test -s osv.json || { echo "::error::OSV produced no report — scan infrastructure failure"; exit 1; }
+      - name: Fail on MALICIOUS packages; report vulnerabilities
+        # The split is deliberate. A MAL- advisory means the package itself is
+        # hostile — there is no triage to do and no waiver that makes sense, so
+        # it fails the build. Ordinary CVEs are REPORTED here but do not gate:
+        # that judgement already lives in security/cve-ledger.yaml, and gating
+        # twice on the same finding just teaches people to ignore a red check.
+        # (On 2026-08-06 the lockfile carried 5 known CVEs — hard-failing would
+        # have shipped a permanently-red job on day one.)
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          rep = json.load(open('osv.json'))
+          mal, vulns = [], []
+          for res in rep.get('results', []):
+              for pkg in res.get('packages', []):
+                  name = pkg['package']['name']; ver = pkg['package'].get('version', '?')
+                  for v in pkg.get('vulnerabilities', []):
+                      ids = [v.get('id', '')] + v.get('aliases', [])
+                      (mal if any(i.startswith('MAL-') for i in ids) else vulns).append(
+                          (name, ver, v.get('id', '?')))
+          summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          lines = [f"### OSV scan\n", f"- malicious packages: **{len(mal)}**\n",
+                   f"- known vulnerabilities: {len(vulns)}\n"]
+          for n, v, i in mal:   lines.append(f"  - MALICIOUS `{n}@{v}` {i}\n")
+          for n, v, i in vulns: lines.append(f"  - {n}@{v} {i}\n")
+          if summary:
+              open(summary, 'a').write(''.join(lines))
+          print(''.join(lines))
+          for n, v, i in vulns:
+              print(f"::warning::{n}@{v} {i}")
+          if mal:
+              for n, v, i in mal:
+                  print(f"::error::MALICIOUS package {n}@{v} ({i}) is in package-lock.json")
+              sys.exit(1)
+          EOF
