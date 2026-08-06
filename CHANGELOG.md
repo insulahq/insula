@@ -22,7 +22,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   deliberately leaves a real prerelease (`-rc.N`) alone. Version *comparison* still
   uses the full string, so a node on `2026.8.2` does not flap when the ConfigMap
   says `2026.8.2-<newsha>`.
-
+- **DEV's Flux could not apply anything** — an unescaped `${base}` in the
+  `stalwart-extra-ca` init container failed Flux 2.9's strict envsubst
+  (`variable not set (strict mode): "base"`), so *every* Kustomization apply
+  failed and the cluster froze on an old revision. Escaped to `$${base}`.
+- **`ci-flux-escape-check.sh` was blind to it**: the guard quick-rejected any
+  manifest that was not `kind: CronJob|Job`, so a Deployment init container — or
+  a kustomize component patch with no kind at all — was never scanned. It now
+  scans anything with an `args:`/`command:` block. Two matching refinements keep
+  it precise: names Flux genuinely substitutes (`DOMAIN`, `ENV`,
+  `CLUSTER_ISSUER_NAME`, `STALWART_EXTERNAL_IP`) are allowed bare, and YAML
+  comments — stripped by kustomize before substitution — are no longer flagged,
+  which previously would have fired on the very comments documenting the rule.
 ### Fixed
 - **`platform/VERSION` on `development` now tracks the release line.**
   `cut-release.sh` writes it on `main`, and promotion is one-way
