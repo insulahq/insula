@@ -32,6 +32,7 @@ import type {
   MailHealthCertSanProbe,
   MailHealthDeliverabilityComponent,
   MailHealthForwardDnsProbe,
+  MailHealthIpv6DnsProbe,
   MailHealthReverseDnsProbe,
   MailHealthSmtpBannerProbe,
 } from '@insula/api-contracts';
@@ -110,6 +111,12 @@ export interface DeliverabilityDeps {
    * one pinned node's external IP. Empty array → probes return `skipped`.
    */
   readonly serverNodeIps: ReadonlyArray<string>;
+  /**
+   * Global IPv6 addresses of the same mail nodes. Empty on a single-stack
+   * cluster (and on a dual-stack cluster whose hosts have no global v6), which
+   * makes the AAAA probe report `skipped` rather than inventing a gap.
+   */
+  readonly serverNodeIpv6s?: ReadonlyArray<string>;
   readonly clock?: () => number;
   /** Override for tests: forward DNS resolver (A + AAAA). */
   readonly resolveAddresses?: (hostname: string) => Promise<{ a: string[]; aaaa: string[] }>;
@@ -166,7 +173,7 @@ export async function probeDeliverability(deps: DeliverabilityDeps): Promise<Mai
   // Each sub-probe also enforces its own timeout, so the wall timer is
   // a backstop — under normal conditions all sub-probes return well
   // under it.
-  const bundlePromise = runAllProbes(deps, hostname, expectedIps);
+  const bundlePromise = runAllProbes(deps, hostname, expectedIps, [...(deps.serverNodeIpv6s ?? [])]);
   const wallTimeout = new Promise<MailHealthDeliverabilityComponent>((resolve) => {
     setTimeout(() => {
       resolve(wallTimeoutComponent(
@@ -182,9 +189,11 @@ async function runAllProbes(
   deps: DeliverabilityDeps,
   hostname: string,
   expectedIps: ReadonlyArray<string>,
+  expectedIpv6: ReadonlyArray<string>,
 ): Promise<MailHealthDeliverabilityComponent> {
-  const [forwardDns, reverseDns, blocklists, certSanMatch, smtpBanner] = await Promise.all([
+  const [forwardDns, ipv6Dns, reverseDns, blocklists, certSanMatch, smtpBanner] = await Promise.all([
     probeForwardDns(deps, hostname, expectedIps),
+    probeIpv6Dns(deps, hostname, expectedIpv6),
     probeReverseDnsAll(deps, hostname, expectedIps),
     probeBlocklistsAll(deps, expectedIps),
     probeCertSan(deps, hostname),
@@ -193,6 +202,7 @@ async function runAllProbes(
 
   const subProbes: ReadonlyArray<{ severity: string }> = [
     forwardDns,
+    ipv6Dns,
     ...reverseDns,
     ...blocklists,
     certSanMatch,
@@ -217,6 +227,7 @@ async function runAllProbes(
     hostname,
     expectedMailIps: [...expectedIps],
     forwardDns,
+    ipv6Dns,
     reverseDns,
     blocklists,
     certSanMatch,
@@ -268,6 +279,122 @@ function notImplementedComponent(
 
 function wallTimeoutComponent(reason: string): MailHealthDeliverabilityComponent {
   return notImplementedComponent(null, [], reason);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// IPv6 DNS — does mail.<apex> publish AAAA on a dual-stack cluster?
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The gap this closes: a cluster bootstrapped with `--dual-stack` answers
+ * SMTP/IMAP over IPv6 on every mail node, but a v6-only client can only find it
+ * if `mail.<apex>` publishes AAAA. When it doesn't, nothing breaks and nothing
+ * complains — IPv4 carries every connection, so the operator who deliberately
+ * asked for IPv6 gets none of it and has no signal at all.
+ *
+ * Deliberately `warning`, never `fail`: mail is fully functional, and turning
+ * the deliverability rollup red over a reachability nicety would train
+ * operators to ignore it.
+ */
+async function probeIpv6Dns(
+  deps: DeliverabilityDeps,
+  hostname: string,
+  expectedIpv6: ReadonlyArray<string>,
+): Promise<MailHealthIpv6DnsProbe> {
+  const base = {
+    assertion: `${hostname} publishes AAAA for every IPv6 mail node`,
+    hostname,
+    expectedIpv6: [...expectedIpv6],
+    clusterIsDualStack: expectedIpv6.length > 0,
+  };
+
+  if (expectedIpv6.length === 0) {
+    return {
+      ...base,
+      severity: 'skipped',
+      actual: null,
+      expected: null,
+      remediation: null,
+      resolvedIpv6: [],
+      missingIpv6: [],
+      extraIpv6: [],
+      // Single-stack: no v6 to publish, so AAAA absence is correct, not a gap.
+      // (Publishing AAAA *anyway* is the opposite failure — smoke test 10.)
+    };
+  }
+
+  const resolveAddrs = deps.resolveAddresses ?? defaultResolveAddresses;
+  let resolvedIpv6: string[] = [];
+  let resolveErr: string | null = null;
+  try {
+    const { aaaa } = await withTimeout(
+      resolveAddrs(hostname),
+      DNS_LOOKUP_TIMEOUT_MS,
+      `AAAA lookup for ${hostname} timed out`,
+    );
+    resolvedIpv6 = aaaa;
+  } catch (err) {
+    resolveErr = (err as Error).message ?? String(err);
+  }
+
+  if (resolveErr) {
+    return {
+      ...base,
+      severity: 'skipped',
+      actual: `AAAA lookup failed: ${resolveErr}`,
+      expected: expectedIpv6.join(', '),
+      remediation:
+        `Could not query AAAA for ${hostname}. This is a resolver problem, not a DNS-content ` +
+        'problem — the forward-DNS probe above reports the same reachability from the IPv4 side.',
+      resolvedIpv6: [],
+      missingIpv6: [],
+      extraIpv6: [],
+    };
+  }
+
+  // Compare case-insensitively and without leading zeros is overkill here:
+  // both sides come from the same textual conventions (kube Node addresses and
+  // DNS answers are already canonical lowercase forms).
+  const resolvedSet = new Set(resolvedIpv6);
+  const expectedSet = new Set(expectedIpv6);
+  const missingIpv6 = expectedIpv6.filter((ip) => !resolvedSet.has(ip));
+  const extraIpv6 = resolvedIpv6.filter((ip) => !expectedSet.has(ip));
+
+  if (missingIpv6.length === 0 && extraIpv6.length === 0) {
+    return {
+      ...base,
+      severity: 'ok',
+      actual: resolvedIpv6.join(', '),
+      expected: expectedIpv6.join(', '),
+      remediation: null,
+      resolvedIpv6,
+      missingIpv6: [],
+      extraIpv6: [],
+    };
+  }
+
+  const remediation = missingIpv6.length > 0
+    ? (resolvedIpv6.length === 0
+        ? `This cluster was bootstrapped dual-stack and serves mail over IPv6, but ${hostname} ` +
+          `publishes no AAAA record — so no IPv6-only client can reach it. Add AAAA record(s) for ` +
+          `${missingIpv6.join(', ')} at your DNS provider. Note that outbound IPv6 mail also needs ` +
+          'matching PTR/rDNS before you enable it; inbound over IPv6 is safe today.'
+        : `${hostname} publishes AAAA for only some IPv6 mail nodes. Add AAAA record(s) for ` +
+          `${missingIpv6.join(', ')} so every node can accept IPv6 connections for this hostname.`)
+    : `${hostname} publishes AAAA for ${extraIpv6.join(', ')}, which are NOT IPv6 mail nodes. ` +
+      'Remove the stale AAAA records — an IPv6 client that picks one gets a connection failure ' +
+      'with no IPv4 fallback for that address.';
+
+  return {
+    ...base,
+    severity: 'warning',
+    actual: resolvedIpv6.length > 0 ? resolvedIpv6.join(', ') : '(no AAAA records)',
+    expected: expectedIpv6.join(', '),
+    remediation,
+    resolvedIpv6,
+    missingIpv6,
+    extraIpv6,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────

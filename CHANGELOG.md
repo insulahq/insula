@@ -25,8 +25,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   rejects — silently breaking `installed_platform_version`). Also makes the
   promote snapshot idempotent, which used to revert `main`'s stamp until
   cut-release rewrote it.
-
-### Fixed
 - **Chart-bump host-migrations no longer try to DOWNGRADE a newer cluster.** The
   guard compared the installed chart version to the target with string equality,
   so a node bootstrapped *after* the migration was written — carrying newer pins —
@@ -46,6 +44,84 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   whenever a usable binary is present, and still skipped when there is none.
 
 ### Added
+
+### Security
+- **Image builds now install the lockfile instead of re-resolving it.** Every
+  Dockerfile ran `npm install` against a workspace's `package.json` with no
+  lockfile in the build context, so each build re-resolved the `^` ranges
+  against the live registry — meaning `package-lock.json`, the file that is
+  audited, scanned and cross-referenced against IOC lists, did **not** govern
+  what shipped. A version published between two builds landed in the image even
+  when the lockfile pinned a safe one, which is precisely how a
+  hijack-and-republish compromise propagates. All three images now copy the root
+  lockfile plus every workspace manifest and use `npm ci --workspace <pkg>`,
+  which installs the locked tree or fails. Verified by building each image and
+  comparing installed versions against the lockfile.
+  Two things fell out of the change: the flattened layout's `sed` rewrites of
+  `package.json`/`tsconfig.json` are gone (the workspace layout resolves
+  `@insula/*` natively), as is the `rm -rf node_modules/react*` workaround —
+  npm hoists a single React, now asserted at build time rather than patched
+  after the fact. The panel **builder** stages move to `node:22-slim`, because
+  the lockfile is generated on glibc and records no musl binding for rolldown;
+  the previous `npm install` masked that by silently re-resolving on Alpine.
+  Runtime images are unchanged.
+
+### Security
+- **Dependency supply-chain hardening.** Four controls, aimed at the class of
+  attack where a package is *hijacked and republished* rather than found
+  vulnerable — the 2026-08 keyv/@adminide-stack wave, which no CVE feed would
+  have flagged. (1) `.npmrc` sets `ignore-scripts=true`: a dependency's
+  install script runs with the full privileges of whoever ran `npm ci`, which
+  in CI means the registry credentials and push token, and it executes without
+  the package ever being imported. The Dockerfiles already passed
+  `--ignore-scripts`, so this closes the same hole for CI runners and developer
+  machines. (2) Dependabot gains a 7-day cooldown (14 for majors) so a bot bump
+  can no longer adopt a malicious release within hours of publication; security
+  updates are advisory-driven and remain immediate. (3) A new dependency-audit
+  workflow runs `npm audit signatures` (registry signatures + provenance —
+  detects a *tampered* artifact, which CVE scanning cannot) and an OSV scan of
+  the lockfile that **fails on malicious-package advisories** while reporting
+  ordinary CVEs as warnings, since that triage already lives in the CVE ledger.
+  It also runs daily, because a dependency can be compromised long after it
+  entered the lockfile. (4) All 228 GitHub Actions references are now pinned by
+  commit SHA rather than mutable tag.
+
+### Added
+- **The node's IPv6 is now visible in the admin panel** (migration 0080,
+  `cluster_nodes.public_ipv6`). Node sync stored a single `public_ip` taken from
+  the first `ExternalIP`, which on a dual-stack cluster is always the IPv4 — so
+  an operator had no way to read the node's global IPv6 short of SSH-ing to it,
+  even though `ingress_default_ipv6` (which drives every apex AAAA record) is
+  operator-set and needs exactly that value. Address selection is now per
+  family. The v4 keeps its ExternalIP→InternalIP fallback (on a single-NIC VPS
+  the InternalIP *is* the public address); the v6 deliberately does not, because
+  the v6 InternalIP may be a ULA and reporting a ULA as a node's public address
+  points the operator at an off-link address. This also fills the `v6Set` in
+  `getPlatformIngressIps()`, whose `includes(':')` branch could never match
+  before — the node-sourced half of AAAA domain verification was dead code.
+- **Email → Data Drift warns when a dual-stack cluster publishes no AAAA for
+  its mail hostname.** A cluster bootstrapped `--dual-stack` accepts SMTP/IMAP
+  over IPv6 on every mail node, but a v6-only client can only find it if
+  `mail.<apex>` publishes AAAA. When it doesn't, nothing breaks and nothing
+  complains — IPv4 carries every connection, so the operator who deliberately
+  asked for IPv6 gets none of it and has no signal. It belongs on the drift page
+  because it is the same failure shape as the rest of it: the platform's real
+  state and its published state disagree. Backed by a new `ipv6Dns`
+  deliverability sub-probe (also shown in the mail-health details modal) that
+  additionally flags partial coverage and stale AAAA pointing at non-mail nodes.
+  Deliberately `warning`, never `fail` — mail is fully functional, and
+  red-lighting the dashboard over a reachability nicety trains operators to
+  ignore it. Inert on single-stack clusters.
+- **Smoke test 10: published AAAA vs the cluster's actual IP stack.** Publishing
+  AAAA on a single-stack cluster gives every v6-preferring client a connection
+  reset and a silent fallback to IPv4 — invisible in every other check, and how
+  the testing box ran for months. Test 10 fails that, and on a dual-stack
+  cluster additionally requires each published AAAA to actually *serve*, so a
+  stale record pointing at a decommissioned node is caught too.
+  `scripts/test-smoke-aaaa-guard.sh` drives all four branches offline, because a
+  false FAIL here would turn `make smoke` red on every existing single-stack
+  production cluster.
+
 - **Host-migration state is visible in the admin panel** (Platform → Updates).
   A failed migration blocks every later one on that node, and the only way to
   discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
@@ -100,6 +176,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     the stub.
 
 ### Fixed
+- **`integration-mail-external-reachability` was banning its own prober.** The
+  suite opens 6 ports × every node × 4 phases from one source address, which is
+  enough for Stalwart to auto-ban it. A banned source is dropped *silently* —
+  the TCP handshake completes and the server then EOFs without greeting — so the
+  suite read a perfectly healthy mail server as dead. It now declares itself to
+  Stalwart before probing (clears any stale `BlockedIp` entry for its own source
+  and allowlists it for the run, removing the entry on exit), scoped to that one
+  address so every other rate-limit decision stays enforced. An empty banner on
+  a port that *accepted* the connection is now reported as exactly that, rather
+  than as a dead listener.
+- **Stalwart's rate-limit exemption covered IPv4 only.** The `x:AllowedIp`
+  entries bootstrap seeds for the cluster pod and service ranges were hardcoded
+  v4 literals, so on a dual-stack cluster the IPv6 ranges stayed subject to
+  Stalwart's connection and login limits. They now follow the real dual-stack
+  CIDRs, one entry per family, and an existing cluster gains only the missing v6
+  entries when re-run.
+- **Dual-stack clusters denied tenants all IPv6 egress.** The
+  `platform-cluster-cidrs` ConfigMap that tells the backend the cluster's pod and
+  service ranges was never created — on *any* cluster: the guard around it read a
+  variable that was `local` to a sibling shell function, so it was always empty.
+  On an IPv4-only cluster this was invisible, because the backend's built-in
+  defaults happen to be the same `10.42.0.0/16` / `10.43.0.0/16`. On a dual-stack
+  cluster it meant `buildTenantNetworkPolicies` never learned the IPv6 ranges, so
+  it emitted no `::/0` egress rule at all — and because that policy sets
+  `policyTypes: [Egress]`, having no v6 rule denies IPv6 outright. A tenant pod
+  could reach the node over IPv4 but not over IPv6, so a tenant app whose
+  resolver preferred the AAAA of `mail.<apex>` could not send mail. Both
+  consumers now share one `cluster_cidr_args()` helper, and
+  `resolveTenantNetworkCidrs` falls back to the nodes' own `spec.podCIDRs` when
+  the ConfigMap names no v6 range, so existing dual-stack clusters self-heal
+  without a rebuild. Cross-tenant isolation was verified to hold over both
+  families before and after the fix.
+- **`--node-external-ip` published IPv4 only on a pinned (mesh/VLAN) underlay.**
+  `--dual-stack` appended the node's IPv6 in the public-underlay branch but not
+  the pinned one, so the Node object carried a v4-only `ExternalIP` and the
+  `ingress-external-ips` reconciler published a v4-only list on the Traefik
+  Service. Both branches now take that address from a `global-only` detector:
+  a ULA is a perfectly good `--node-ip`, but announcing one as externally
+  reachable points clients at an off-link address, so a ULA-only host correctly
+  announces no IPv6 at all.
+- **The pod-CIDR control-plane firewall exemption was IPv4-only on dual-stack.**
+  The nft table is family `inet`, where `ip saddr` matches IPv4 exclusively;
+  `--dual-stack` now emits the matching `ip6 saddr` rule. The single-stack
+  ruleset is unchanged byte-for-byte.
 - **Host-migrations could never apply during a platform upgrade.** The
   post-upgrade converge ran as a child of `platform-ops-update.service`, which is
   hardened with `ProtectSystem=strict` and `ReadWritePaths` limited to the binary

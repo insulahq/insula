@@ -48,6 +48,70 @@ describe('projectNode', () => {
       },
     });
     expect(observed.publicIp).toBe('192.0.2.56');
+    expect(observed.publicIpv6).toBeNull();
+  });
+
+  // Dual-stack: a Node carries TWO InternalIPs and TWO ExternalIPs. A bare
+  // `.find(ExternalIP)` returns whichever family k3s listed first (the v4), so
+  // the node's IPv6 was invisible everywhere downstream — including the panel
+  // row an operator reads to set `ingress_default_ipv6`.
+  it('picks each family separately on a dual-stack node', () => {
+    const observed = projectNode({
+      metadata: { name: 'node-1', labels: {} },
+      status: {
+        addresses: [
+          { type: 'InternalIP', address: '10.0.0.5' },
+          { type: 'InternalIP', address: 'fd00:5e:1::5' },
+          { type: 'ExternalIP', address: '192.0.2.56' },
+          { type: 'ExternalIP', address: '2001:db8:9::56' },
+        ],
+      },
+    });
+    expect(observed.publicIp).toBe('192.0.2.56');
+    expect(observed.publicIpv6).toBe('2001:db8:9::56');
+  });
+
+  it('picks the v4 ExternalIP even when the v6 is listed first', () => {
+    const observed = projectNode({
+      metadata: { name: 'node-1', labels: {} },
+      status: {
+        addresses: [
+          { type: 'ExternalIP', address: '2001:db8:9::56' },
+          { type: 'ExternalIP', address: '192.0.2.56' },
+        ],
+      },
+    });
+    expect(observed.publicIp).toBe('192.0.2.56');
+    expect(observed.publicIpv6).toBe('2001:db8:9::56');
+  });
+
+  // The v6 side deliberately does NOT fall back to InternalIP the way v4 does.
+  // bootstrap only ever publishes a GLOBAL v6 as ExternalIP; the v6 InternalIP
+  // may be a ULA, and reporting a ULA as the node's public address would send
+  // an operator to an address that is unroutable off-link.
+  it('reports no publicIpv6 when the only v6 is an internal ULA', () => {
+    const observed = projectNode({
+      metadata: { name: 'node-1', labels: {} },
+      status: {
+        addresses: [
+          { type: 'InternalIP', address: '10.0.0.5' },
+          { type: 'InternalIP', address: 'fd00:5e:1::5' },
+          { type: 'ExternalIP', address: '192.0.2.56' },
+        ],
+      },
+    });
+    expect(observed.publicIpv6).toBeNull();
+  });
+
+  // Single-NIC cloud VPS: no ExternalIP at all, InternalIP *is* the public
+  // address. The historical v4 fallback must survive.
+  it('falls back to the v4 InternalIP when no ExternalIP exists', () => {
+    const observed = projectNode({
+      metadata: { name: 'node-1', labels: {} },
+      status: { addresses: [{ type: 'InternalIP', address: '198.51.100.9' }] },
+    });
+    expect(observed.publicIp).toBe('198.51.100.9');
+    expect(observed.publicIpv6).toBeNull();
   });
 
   it('extracts k3s version from osImage', () => {

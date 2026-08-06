@@ -301,12 +301,45 @@ CIDRs are immutable in k3s, so this cannot be flipped later without a rebuild).
   binds `:::<port> v4v6` (works on single-stack too — it is hostNetwork), and
   `webmail.<domain>` gains an AAAA when `INGRESS_DEFAULT_IPV6`/`MAIL_SERVER_IPV6`
   is set.
-- Proof: `scripts/test-bootstrap-dual-stack.sh` (29 assertions, half of them
+- Proof: `scripts/test-bootstrap-dual-stack.sh` (42 assertions, half of them
   guarding that the single-stack path is byte-identical) and
   `VMTEST_DUAL_STACK=1` on the VM tier, which gives the libvirt network a ULA
   v6 subnet and then asserts on the live cluster that the node registered both
   families, Calico programmed a v6 pool, and **the ingress actually answers over
   IPv6** — the one thing no unit test can see.
+
+**Blast-radius sweep, 2026-08-05 (VM run `6e9e214b`, 3 servers + 1 worker).**
+Every public surface was driven over both families from an OFF-CLUSTER client,
+with IPv4 as the control for each v6 assertion. All green: panels/API (200 on
+all 4 nodes), a real tenant workload on its own domain (200 with the tenant's
+own content from all 4 nodes, 3 of them forwarding cross-node), SFTP `:23022`
+(SSH banner on all 3 server nodes), and mail `25/587/465/993` — both with
+Stalwart on its original node and again **after migrating it to another node**,
+where the `stalwart-haproxy` DaemonSet correctly re-reconciled (old active node
+gained haproxy, new active node dropped it). Cross-tenant isolation was verified
+to hold over IPv6 as well as IPv4.
+
+Three defects the sweep found, all fixed here:
+- **`--node-external-ip` published IPv4 only on a pinned underlay.** The v6 was
+  appended in the public-underlay branch but not the mesh/VLAN one, so the Node
+  object carried a v4-only ExternalIP and `ingress-external-ips` published a
+  v4-only list. Both branches now use a `global-only` address detector — a ULA
+  is fine for `--node-ip` but must never be *announced* as externally
+  reachable, so a ULA-only host correctly announces no v6 at all.
+- **The `platform-cluster-cidrs` ConfigMap was never created, on any cluster.**
+  Its guard read a name that was `local` to a sibling function. Invisible on
+  IPv4-only (the backend's built-in defaults match), but on dual-stack it cost
+  tenants *all* IPv6 egress: with no v6 CIDRs to except,
+  `buildTenantNetworkPolicies` emitted no `::/0` rule, and an egress policy with
+  no v6 rule denies v6 outright. A tenant pod could reach the node over IPv4 but
+  not IPv6 — so a tenant app resolving `mail.<apex>` to its AAAA could not send
+  mail. Both consumers now share one `cluster_cidr_args()` helper, and
+  `resolveTenantNetworkCidrs` additionally falls back to the nodes' own
+  `spec.podCIDRs` so existing dual-stack clusters self-heal without a rebuild.
+- **The pod-CIDR control-plane firewall exemption was IPv4-only.** The nft table
+  is family `inet`, so `ip saddr` matches v4 exclusively; dual-stack now emits
+  the matching `ip6 saddr` rule. Inert while Services stay `SingleStack [IPv4]`,
+  but a trap the day they don't.
 
 **Pod addressing is ULA + natOutgoing**, mirroring the IPv4 model: the node's
 global v6 is what clients talk to and CNI portmap DNATs hostPort down to the
@@ -323,10 +356,114 @@ open.
   apply stricter PTR/forward-confirmed rules to v6 than v4, so sending before
   rDNS is in place and warmed trades a reachability win for a deliverability
   loss. Inbound v6 is safe today; outbound needs the operator's PTR first.
-- A guard that fails when a platform hostname publishes AAAA while the cluster
-  is single-stack. The testing box ran that way for months — apex and every
-  subdomain resolving AAAA, nothing listening, TCP RST in 8 ms — and nothing
-  surfaced it.
+- The single-stack **multi-node** control run for `mail-external-reachability`.
+  The dual-stack run is now clean (2026-08-06, run `6e9e214b`): every port
+  probe, SMTP banner, negative expectation and the mode-switch refusal pass on
+  all four nodes across all four phases, and `BlockedIp` is EMPTY at the end —
+  the prober is never banned, which was the entire cause of the historical
+  failures. The single-stack variant is still worth running as a control.
+
+**The VM tier points Stalwart's ACME at PRODUCTION Let's Encrypt, and burns its
+rate limits** (found 2026-08-06 on run `6e9e214b`).
+
+`bootstrap.sh` and `stalwart-domain-reconciler.ts` both hardcode Stalwart's own
+AcmeProvider to `https://acme-v02.api.letsencrypt.org/directory`. The VM harness
+overrides ACME to Pebble for *cert-manager* but not for Stalwart, which has no
+override hook at all. So every throwaway VM cluster asks **real** Let's Encrypt to
+validate a private test apex that will never resolve publicly. Observed on this
+run: `x:Certificate/get` empty (no cert ever issued), and an `AcmeRenewal` task
+chain going back to bootstrap with `failureReason: "Rate limited. Retry after 689
+seconds"` after 10 failed attempts.
+
+Consequence: **the VM tier can never hold a valid mail certificate**, so every
+mail-TLS assertion is untestable there and `integration-mail-external-reachability`
+cannot pass its cert probe on that tier by construction. Production is unaffected —
+`mail.<apex>` resolves publicly and HTTP-01 completes through Traefik →
+`stalwart-mail-acme` → Stalwart.
+
+Let's Encrypt states the cause itself, so this needs no further diagnosis:
+
+```
+Authentication failed: "Status: invalid; Challenge type: http-01, error:
+ urn:ietf:params:acme:error:dns: DNS problem: NXDOMAIN looking up A for
+ mail.<vm-apex> - check that a DNS record exists for this domain;
+ DNS problem: NXDOMAIN looking up AAAA for mail.<vm-apex>"
+```
+
+**Stalwart's ACME client DOES honour the system trust store — proven, not
+inferred** (2026-08-06). Masking `/etc/ssl/certs` with a single decoy root and
+forcing a fresh order changed the failure from an application-level LE response
+to a transport failure, and restoring it brought the full ACME exchange back:
+
+| `/etc/ssl/certs` | ACME task failureReason |
+|---|---|
+| real (150 roots) | `Rate limited. Retry after 677 seconds` (reached LE) |
+| masked (1 decoy) | `HTTP error: error sending request for url (…/directory)` |
+| restored | full ACME exchange → LE's NXDOMAIN authorization error |
+
+A `curl` control inside the container tracked it exactly (`200 → 000 → 200`), so
+nothing else moved. The `webpki-roots` crate is linked but is not what ACME uses.
+
+So pointing the VM tier at Pebble is viable. What it takes:
+1. An env/setting hook for the `directory` value — `bootstrap.sh` and
+   `stalwart-domain-reconciler.ts` both hardcode it.
+2. Pebble's root mounted at a path the binary probes. `/etc/ssl/certs/ca-certificates.crt`
+   is the first entry in the compiled-in probe list, so that works — but mount the
+   **whole `/etc/ssl/certs` directory** with a bundle of *system roots + Pebble*.
+   Replacing only the `.crt` file is a no-op: the hashed `*.0` files in that
+   directory still serve the real roots (verified — `curl` was unaffected until
+   the whole directory was masked).
+3. Do NOT rely on `SSL_CERT_FILE` / `SSL_CERT_DIR` — 0 occurrences in the binary.
+   The CA has to land at a probed path.
+
+The harness already has the Pebble root in a `platform-extra-ca-trust` Secret in
+the `mail` namespace (for Bulwark); it is simply not mounted into the stalwart
+container. An alternative that sidesteps all of it: give the VM tier a publicly
+resolvable throwaway apex.
+
+*Aside, cost me two inconclusive experiments:* **Stalwart's task scheduler does not
+reliably run a task at its `due` time.** AcmeRenewal tasks sat past due, unchanged,
+until destroyed and re-queued (`x:Task/set destroy` + `stalwart-reprovision`). Any
+test that waits on a Stalwart task firing on schedule will hang instead of failing.
+
+> **Retracted (rate limits):** an earlier revision claimed production "shares the
+> rate-limit pool" with VM clusters. That is not supported. The limit actually
+> being hit is a per-account/per-hostname failed-validation limit, scoped to each
+> disposable cluster's own throwaway LE account, and the VM clusters never issue a
+> certificate so they consume none of the per-registered-domain quota. The only
+> genuinely shared surface is new-accounts-per-IP, which is shared between VM runs
+> on a common egress IP — not with production, which egresses elsewhere.
+
+> **Retracted:** an earlier revision of this entry claimed Stalwart *drops its
+> mail certificate on pod restart*. That was wrong. It was an artifact of the
+> reachability suite scoring an EMPTY issuer read as a valid certificate: while
+> the prober was banned no TLS handshake completed, `openssl` returned nothing,
+> and the probe went green; clearing the ban made the same permanently
+> self-signed listener go red, which looked like a regression caused by the
+> restart. Nothing changed across the restart — the listener had been serving
+> `CN=rcgen self signed cert` since bootstrap. The empty-issuer branch now fails
+> with `cert=UNREADABLE` instead of passing.
+
+**Closed 2026-08-06** (were listed here as open):
+- *The node's IPv6 is invisible in the admin panel* — migration 0080 adds
+  `cluster_nodes.public_ipv6`, node sync selects per family, and the panel's
+  node row shows it. Also un-deadens the node-sourced half of AAAA domain
+  verification.
+- *A guard for AAAA published while the cluster is single-stack* — smoke test
+  10, with `scripts/test-smoke-aaaa-guard.sh` covering all four branches
+  offline. It also catches the inverse (a dual-stack cluster whose AAAA
+  resolves but does not serve) and the case that made the first live run
+  misreport: `getent ahostsv6` returns IPv4-**mapped** addresses for A-only
+  hosts, which reads as "publishes AAAA" and would have failed every hostname
+  on every single-stack cluster.
+- *Stalwart's `x:AllowedIp` seeds v4 CIDRs only* — now follows the dual-stack
+  pod/service CIDRs, one entry per family.
+- *Nothing told an operator that a dual-stack cluster published no AAAA* — a new
+  `ipv6Dns` deliverability sub-probe warns on **Email → Data Drift** (and in the
+  mail-health details modal) when `mail.<apex>` has missing, partial, or stale
+  AAAA on a cluster that serves IPv6. Warning, never fail: mail works over IPv4,
+  and red-lighting the dashboard over a reachability nicety trains operators to
+  ignore it.
 
 ## R14 — User-manual website
 

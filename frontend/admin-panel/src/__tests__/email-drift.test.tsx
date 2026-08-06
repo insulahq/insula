@@ -41,9 +41,9 @@ const MOCK_HEALTH = {
   },
 };
 
-function mockDrift(items: unknown[]) {
+function mockDrift(items: unknown[], health: unknown = MOCK_HEALTH) {
   mockApiFetch.mockImplementation((path: string) => {
-    if (path.includes('/mail/health')) return Promise.resolve(MOCK_HEALTH);
+    if (path.includes('/mail/health')) return Promise.resolve(health);
     if (path.includes('/mail/drift')) return Promise.resolve({ data: { items, hasActive: items.length > 0 } });
     // Array-shaped by default: sibling cards on this page map/reduce over
     // their lists, and an object fallback makes them throw during render.
@@ -125,5 +125,85 @@ describe('EmailDriftPage', () => {
     renderPage();
     fireEvent.click(await screen.findByTestId('drift-recreate-master-11111111-1111-4111-8111-111111111111'));
     expect(await screen.findByTestId('drift-recreate-master-ok-11111111-1111-4111-8111-111111111111')).toBeTruthy();
+  });
+
+  /**
+   * A dual-stack cluster that publishes no AAAA for its mail hostname is
+   * completely silent: mail works over IPv4, so the operator who deliberately
+   * turned on IPv6 gets none of it and is never told. It belongs on THIS page
+   * because it is the same failure shape as the rest of it — the platform's
+   * real state and its published state disagree.
+   */
+  describe('missing-AAAA warning', () => {
+    const healthWithIpv6 = (ipv6Dns: unknown) => ({
+      data: {
+        healthy: true,
+        checkedAt: '2026-08-03T00:00:00Z',
+        components: {
+          pod: { ready: true, node: 'node-1', phase: 'Running' },
+          jmap: { reachable: true },
+          deliverability: { healthy: true, ipv6Dns },
+        },
+      },
+    });
+
+    it('warns when a dual-stack cluster publishes no AAAA', async () => {
+      mockDrift([], healthWithIpv6({
+        severity: 'warning',
+        clusterIsDualStack: true,
+        hostname: 'mail.example.test',
+        resolvedIpv6: [],
+        expectedIpv6: ['2001:db8:9::10'],
+        missingIpv6: ['2001:db8:9::10'],
+        extraIpv6: [],
+        remediation: 'Add AAAA record(s) at your DNS provider.',
+      }));
+      renderPage();
+      const el = await screen.findByTestId('mail-drift-missing-aaaa');
+      expect(el.textContent).toContain('mail.example.test');
+      expect(el.textContent).toContain('2001:db8:9::10');
+    });
+
+    // The overwhelming majority of installs are single-stack. A warning there
+    // would be pure noise on every existing cluster.
+    it('renders nothing on a single-stack cluster', async () => {
+      mockDrift([], healthWithIpv6({
+        severity: 'skipped',
+        clusterIsDualStack: false,
+        hostname: 'mail.example.test',
+        resolvedIpv6: [],
+        expectedIpv6: [],
+        missingIpv6: [],
+        extraIpv6: [],
+        remediation: null,
+      }));
+      renderPage();
+      await screen.findByText(/No active drift detected/);
+      expect(screen.queryByTestId('mail-drift-missing-aaaa')).toBeNull();
+    });
+
+    it('renders nothing when AAAA coverage is complete', async () => {
+      mockDrift([], healthWithIpv6({
+        severity: 'ok',
+        clusterIsDualStack: true,
+        hostname: 'mail.example.test',
+        resolvedIpv6: ['2001:db8:9::10'],
+        expectedIpv6: ['2001:db8:9::10'],
+        missingIpv6: [],
+        extraIpv6: [],
+        remediation: null,
+      }));
+      renderPage();
+      await screen.findByText(/No active drift detected/);
+      expect(screen.queryByTestId('mail-drift-missing-aaaa')).toBeNull();
+    });
+
+    // Older backends omit the field entirely.
+    it('renders nothing when the backend does not report the probe', async () => {
+      mockDrift([]);
+      renderPage();
+      await screen.findByText(/No active drift detected/);
+      expect(screen.queryByTestId('mail-drift-missing-aaaa')).toBeNull();
+    });
   });
 });

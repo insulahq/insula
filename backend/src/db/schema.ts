@@ -3182,6 +3182,11 @@ export const clusterNodes = pgTable('cluster_nodes', {
   canHostTenantWorkloads: boolean('can_host_tenant_workloads').notNull().default(true),
   ingressMode: varchar('ingress_mode', { length: 8 }).$type<NodeIngressMode>().notNull().default('all'),
   publicIp: inet('public_ip'),
+  // Migration 0080 — the node's global IPv6 ExternalIP, kept separate from
+  // public_ip so callers can ask for a family instead of sniffing one. NULL on
+  // single-stack clusters and wherever the node has no globally-routable v6
+  // (a ULA is deliberately never published as an ExternalIP).
+  publicIpv6: inet('public_ipv6'),
   kubeletVersion: varchar('kubelet_version', { length: 32 }),
   k3sVersion: varchar('k3s_version', { length: 32 }),
   cpuMillicores: integer('cpu_millicores'),

@@ -116,6 +116,17 @@ components:
   # not in production); its matching patch is wired inline below.
   # See docs/architecture/NODE_ROLE_TAXONOMY.md for apply-order notes.
   - ../../components/system-node-affinity
+  # Let Stalwart trust an extra CA so a non-public environment can use its own
+  # ACME server. Dev/VM clusters have a private apex, and public Let's Encrypt
+  # answers `NXDOMAIN looking up A/AAAA for mail.<apex>` — the order can never
+  # complete, so the mail listener serves a self-signed cert forever and every
+  # mail-TLS assertion there is untestable.
+  #
+  # INERT until Secret `stalwart-extra-ca` exists in the mail namespace: the
+  # volume is optional and the initContainer then just reproduces the image's own
+  # trust store. Dev clusters that keep using public LE are unaffected.
+  # Deliberately NOT in staging/production, whose apexes resolve publicly.
+  - ../../components/stalwart-extra-ca
 
 patches:
   # ── platform-critical eviction protection (operator decision 2026-07-25) ──
@@ -198,11 +209,11 @@ patches:
 
 images:
   - name: ghcr.io/insulahq/insula/backend
-    newTag: "20260805215758-dd36418" # {"$imagepolicy": "flux-system:backend:tag"}
+    newTag: "20260806102619-c81e518" # {"$imagepolicy": "flux-system:backend:tag"}
   - name: ghcr.io/insulahq/insula/admin-panel
-    newTag: "20260805215746-dd36418" # {"$imagepolicy": "flux-system:admin-panel:tag"}
+    newTag: "20260806102628-c81e518" # {"$imagepolicy": "flux-system:admin-panel:tag"}
   - name: ghcr.io/insulahq/insula/tenant-panel
-    newTag: "20260805215801-dd36418" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
+    newTag: "20260806102617-c81e518" # {"$imagepolicy": "flux-system:tenant-panel:tag"}
   # Internal DaemonSet/sidecar images — pinned to an immutable <timestamp>-<sha>
   # tag by each image's OWN build workflow (.github/workflows/ci-*.yml →
   # .github/scripts/pin-image-tag.sh) AFTER the push completes, so Flux only
@@ -211,14 +222,14 @@ images:
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20260728113002-fb14b28"
+    newTag: "20260806065127-5bc0fe0"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260728113015-fb14b28"
+    newTag: "20260806065135-5bc0fe0"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
-    newTag: "20260728113018-fb14b28"
+    newTag: "20260806065132-5bc0fe0"
   - name: ghcr.io/insulahq/insula/backup-rclone
-    newTag: "20260728113043-fb14b28"
+    newTag: "20260806065055-5bc0fe0"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260728112952-fb14b28"
+    newTag: "20260806065011-5bc0fe0"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
-    newTag: "20260728112954-fb14b28"
+    newTag: "20260806065005-5bc0fe0"

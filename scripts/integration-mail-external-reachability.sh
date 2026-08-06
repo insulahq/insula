@@ -24,6 +24,12 @@
 #   5. Restore prior state.
 #
 # Each probe: bash /dev/tcp + SMTP-banner read with a 5s timeout.
+#
+# RUN THIS FROM A HOST WITH A DIRECT IP ROUTE TO THE NODES (the VM-tier runner,
+# or an operator workstation on the same network). Probing through an SSH jump
+# host does NOT work: ssh reaches the cluster via ProxyJump while `/dev/tcp`
+# needs a real route, so every port reads `closed` and the whole run is a wall
+# of false failures that looks exactly like total mail collapse.
 set -u
 
 SSH_KEY=${SSH_KEY:-/home/dev/hosting-platform.key}
@@ -90,6 +96,122 @@ done
 SSH
 }
 
+# ── Stalwart blocklist: stop the suite banning its own prober ────────────
+#
+# This suite opens 6 ports x every node x 4 phases from ONE source address, and
+# Stalwart auto-bans a source that connects that hard. A banned source is
+# dropped SILENTLY — the TCP handshake completes and the server then EOFs with
+# no banner — which is byte-for-byte what a dead service looks like. The suite
+# therefore poisoned itself partway through and reported the platform as broken.
+# Diagnosed 2026-08-06 on VM runs 6e9e214b/34090e97: a fresh source address got
+# `220` from the exact node:port that had just "failed".
+#
+# Fix: tell the system under test that this source is a prober. We purge any
+# existing BlockedIp entry for it and add an AllowedIp entry so it cannot be
+# re-banned mid-run, then remove that entry again on exit. Scoped to the ONE
+# address — every other rate-limit decision on the cluster stays enforced.
+#
+# jmap_prober() runs a JMAP call inside the Stalwart pod (curl against
+# 127.0.0.1:8080 — Stalwart 0.16 does PROXY-v2 sniffing on every non-loopback
+# connection, see proxy-networks-reconciler.ts:jmapPost).
+PROBER_ALLOWED_ID="integration-mail-reachability-prober"
+PROBE_SOURCE_IP=""
+
+jmap_prober() {
+  # jmap_prober <json-method-calls>  → raw JMAP response on stdout
+  #
+  # Credentials are `admin` + the secret's adminPassword. NOT recoveryAdmin /
+  # recoveryPassword: recoveryAdmin's value is a compound `admin:<hash>` token
+  # that Stalwart's JMAP endpoint rejects with 401. And there is no `username`
+  # key in the Secret at all — reading one yields an empty user, i.e. an
+  # unauthenticated `curl -u ":pw"`, which also 401s. Both mistakes look
+  # identical to "nothing is blocked" if the caller doesn't check, which is why
+  # every caller below asserts on the response.
+  local calls_b64
+  calls_b64=$(printf '%s' "$1" | base64 -w0)
+  ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' "$calls_b64" <<'SSH' 2>/dev/null
+calls=$(printf '%s' "$1" | base64 -d)
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+POD=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+[ -n "$POD" ] || exit 1
+P=$(kubectl get secret -n mail stalwart-admin-creds -o jsonpath='{.data.adminPassword}' | base64 -d)
+[ -n "$P" ] || exit 1
+kubectl exec -n mail "$POD" -c stalwart -- \
+  curl -s -u "admin:${P}" -H 'Content-Type: application/json' -d "$calls" http://127.0.0.1:8080/jmap/
+SSH
+}
+
+# True when a JMAP response is a real response and not an error document.
+jmap_ok() { printf '%s' "$1" | jq -e '.methodResponses' >/dev/null 2>&1; }
+
+# Source address as the CLUSTER sees this host. Read from SSH_CLIENT on the
+# bastion rather than a local `ip route get`, so it is still correct when the
+# prober sits behind NAT (running the suite against a remote staging cluster).
+detect_probe_source_ip() {
+  PROBE_SOURCE_IP=${PROBE_SOURCE_IP_OVERRIDE:-$(
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" "$BASTION" \
+      'echo $SSH_CLIENT' 2>/dev/null | awk '{print $1}'
+  )}
+  [ -n "$PROBE_SOURCE_IP" ] || amber "  could not determine this host's source IP — skipping blocklist prep"
+}
+
+unblock_prober() {
+  [ -n "$PROBE_SOURCE_IP" ] || return 0
+
+  # 1. Destroy any BlockedIp entry for our source.
+  #
+  # Match on `.address`, NOT `.id`. A BlockedIp entry looks like
+  #   {"address":"10.0.0.9","reason":"portScanning","expiresAt":null,"id":"i1ipj377aaqj"}
+  # — the id is an opaque handle with no relation to the IP, so an id-substring
+  # filter silently matches nothing and the run proceeds still banned.
+  # `expiresAt: null` means the ban is PERMANENT; waiting it out is not an option.
+  local blocked ids n
+  blocked=$(jmap_prober '{"using":["urn:ietf:params:jmap:core","urn:stalwart:jmap"],"methodCalls":[["x:BlockedIp/get",{"accountId":"d333333","ids":null},"c0"]]}')
+  if ! jmap_ok "$blocked"; then
+    amber "  could not read Stalwart's blocklist — probes may be dropped silently as a banned source"
+    amber "    response: $(printf '%s' "$blocked" | head -c 160)"
+    return 0
+  fi
+  ids=$(printf '%s' "$blocked" | jq -c --arg ip "$PROBE_SOURCE_IP" \
+        '[.methodResponses[0][1].list[]? | select(.address == $ip) | .id]')
+  n=$(printf '%s' "$ids" | jq -r 'length')
+  if [ "${n:-0}" -gt 0 ]; then
+    local reasons
+    reasons=$(printf '%s' "$blocked" | jq -r --arg ip "$PROBE_SOURCE_IP" \
+      '[.methodResponses[0][1].list[]? | select(.address == $ip) | .reason] | unique | join(",")')
+    local resp
+    resp=$(jmap_prober "$(jq -nc --argjson d "$ids" \
+      '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],methodCalls:[["x:BlockedIp/set",{accountId:"d333333",destroy:$d},"c0"]]}')")
+    if jmap_ok "$resp"; then
+      amber "  cleared ${n} BlockedIp entry/entries for ${PROBE_SOURCE_IP} (reason: ${reasons})"
+    else
+      amber "  FAILED to clear BlockedIp for ${PROBE_SOURCE_IP}: $(printf '%s' "$resp" | head -c 160)"
+    fi
+  fi
+
+  # 2. Allowlist it for the duration so the run cannot re-ban itself. Stalwart
+  #    bans this suite with reason=portScanning — 6 ports x every node x 4
+  #    phases from one source is, structurally, a port scan.
+  #    destroy-then-create in one call so re-invoking this between phases is
+  #    idempotent instead of failing with "already exists".
+  local allow
+  allow=$(jmap_prober "$(jq -nc --arg k "$PROBER_ALLOWED_ID" --arg a "${PROBE_SOURCE_IP}/32" \
+    '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+      methodCalls:[["x:AllowedIp/set",{accountId:"d333333",destroy:[$k],create:{($k):{address:$a,reason:"integration-mail-external-reachability prober (removed at end of run)"}}},"c0"]]}')")
+  if jmap_ok "$allow"; then
+    echo "  prober ${PROBE_SOURCE_IP} allowlisted in Stalwart for this run"
+  else
+    amber "  could not allowlist prober ${PROBE_SOURCE_IP}: $(printf '%s' "$allow" | head -c 160)"
+  fi
+}
+
+release_prober_allowlist() {
+  [ -n "$PROBE_SOURCE_IP" ] || return 0
+  jmap_prober "$(jq -nc --arg k "$PROBER_ALLOWED_ID" \
+    '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+      methodCalls:[["x:AllowedIp/set",{accountId:"d333333",destroy:[$k]},"c0"]]}')" >/dev/null 2>&1 || true
+}
+
 # Returns 0 if port answers with TCP within timeout
 probe_tcp() {
   local ip="$1" port="$2"
@@ -153,7 +275,26 @@ probe_node_ports() {
       pass=$((pass+1))
     else
       fail=$((fail+1))
-      reasons="$reasons banner='${banner:-empty}'"
+      # An EMPTY banner on a port that ACCEPTED the connection is the signature
+      # of a source Stalwart has blocked (it completes the handshake, then EOFs
+      # without greeting) — not of a dead listener. Name it, because reading it
+      # as "the mail server is down" has cost real debugging time. unblock_prober
+      # is meant to prevent this; if it shows up anyway, the prober's source
+      # address was mis-detected (NAT/multi-homing) or it got banned faster than
+      # the allowlist took effect.
+      if [ -z "$banner" ] && probe_tcp "$ip" 25; then
+        # The ban is held IN MEMORY by the running Stalwart process. Deleting the
+        # persisted BlockedIp row does NOT clear it, and adding the source to
+        # AllowedIp afterwards does not either — proven 2026-08-06: with the
+        # blocklist empty AND the source allowlisted, it still got no banner,
+        # while a fresh source on the same host got 220 from the same node in the
+        # same second. Only restarting the Stalwart pod cleared it. So the ONLY
+        # cure once banned is a restart, and the only prevention is allowlisting
+        # BEFORE the first probe (which unblock_prober now does).
+        reasons="$reasons banner=empty-but-port-25-ACCEPTS(source ${PROBE_SOURCE_IP:-unknown} is banned by Stalwart, not a dead listener — the ban is in-memory: restart the mail pod to clear it)"
+      else
+        reasons="$reasons banner='${banner:-empty}'"
+      fi
     fi
     # TLS cert on :465 must be a REAL CA cert, NOT Stalwart's self-signed rcgen
     # fallback (SAN=localhost). An invalid cert is a FAIL, not a warning — it
@@ -166,7 +307,17 @@ probe_node_ports() {
       local ci iss cert_ok=0 nudged=0
       for ci in $(seq 1 8); do
         iss=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
-        if echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
+        # An EMPTY issuer is NOT a good cert — it means no TLS handshake
+        # happened at all (banned source, firewall, dead listener, timeout).
+        # This branch used to fall through to `cert_ok=1`, so "I could not read
+        # a certificate" scored the same as "the certificate is valid". That
+        # false pass hid a permanently self-signed listener for an entire run:
+        # while the prober was banned, openssl returned nothing and the probe
+        # went green; the moment the ban lifted it correctly went red, which
+        # read as "the restart broke the cert" when nothing had changed.
+        if [ -z "$iss" ]; then
+          sleep 12
+        elif echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
           [ "$nudged" -eq 0 ] && { mail_reconcile; nudged=1; }
           sleep 12
         else
@@ -176,7 +327,12 @@ probe_node_ports() {
       if [ "$cert_ok" -eq 1 ]; then
         pass=$((pass+1))
       else
-        fail=$((fail+1)); reasons="$reasons cert=self-signed(${iss#issuer=})"
+        fail=$((fail+1))
+        if [ -z "$iss" ]; then
+          reasons="$reasons cert=UNREADABLE(no TLS handshake on :465 — not evidence of a good cert)"
+        else
+          reasons="$reasons cert=self-signed(${iss#issuer=})"
+        fi
       fi
     fi
   fi
@@ -201,6 +357,11 @@ echo "Current mode: $PRE_MODE"
 MAILHOST=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT 'mail.'||platform_domain FROM system_settings;\"" 2>/dev/null | head -1)
 MAILHOST="${MAILHOST:-mail}"
 echo "Mail hostname (cert SNI): $MAILHOST"
+
+# Make this host a declared prober BEFORE the first probe — see unblock_prober.
+detect_probe_source_ip
+unblock_prober
+trap 'release_prober_allowlist' EXIT
 
 # Parse node-name → ip + role from kubectl JSON. Using jq through the local shell.
 mapfile -t NODE_LINES < <(
@@ -253,20 +414,29 @@ wait_for_haproxy_ds() {
 
 # Wait until Service.spec.externalIPs == expected list (sorted).
 # expected_ips: space-separated list, e.g. "" (empty) or "192.0.2.58 192.0.2.116"
-wait_for_externalips() {
-  local expected="$1"
-  local want
-  want=$(echo "$expected" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
-  local end=$(($(date +%s) + 180))
-  while [ $(date +%s) -lt $end ]; do
-    local got
-    got=$(ssh_kubectl "kubectl get svc -n mail stalwart-mail -o jsonpath='{.spec.externalIPs}'" 2>/dev/null | tr -d '[]"' | tr ',' ' ' | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ $//')
-    if [ "$got" = "$want" ]; then
-      return 0
-    fi
-    sleep 5
-  done
-  echo "  expected externalIPs '$want', got '$got'" >&2
+assert_externalips_empty() {
+  # Service.spec.externalIPs must stay EMPTY in every mode.
+  #
+  # This used to wait for externalIPs to converge to a per-mode node set. That
+  # feature was REMOVED on 2026-06-29 and the assertion outlived it, so every
+  # phase burned its full 180s timeout waiting for something resolveExternalIpNodes()
+  # can no longer produce (it returns [] unconditionally, locked in by
+  # port-exposure-modes.test.ts) and then printed a failure the platform could
+  # not have avoided.
+  #
+  # Inverted rather than deleted, because "empty" is now a real invariant worth
+  # guarding: kube-proxy's externalIP PREROUTING DNAT preempted haproxy's
+  # hostNetwork socket outright — haproxy saw zero external traffic, PROXY-v2
+  # never ran, the client IP was lost, and Calico masqueraded every cross-node
+  # client to a single pod-CIDR tunnel IP that Stalwart's portScanning autoban
+  # then banned, killing mail on the node. A regression that repopulates this
+  # field reintroduces all of that, silently.
+  local got
+  got=$(ssh_kubectl "kubectl get svc -n mail stalwart-mail -o jsonpath='{.spec.externalIPs}'" 2>/dev/null | tr -d '[]" ' )
+  if [ -z "$got" ]; then
+    return 0
+  fi
+  red "  stalwart-mail Service.spec.externalIPs is NOT empty: '${got}' — externalIPs were eliminated 2026-06-29 (kube-proxy DNAT preempts haproxy and breaks PROXY-v2 + triggers tunnel-IP autoban)"
   return 1
 }
 
@@ -283,6 +453,10 @@ ACTIVE_IP=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$
 # the active node is up). When active=server, only the server nodes
 # answer (worker has no data-plane role).
 hdr "PHASE 1: allServerNodes mode — server-role nodes serve mail; worker too IF it's the active node"
+# Re-clear before every probing phase: reason=portScanning can re-trigger
+# mid-run, and one silent re-ban turns the rest of the suite into a wall of
+# false 'closed' results.
+unblock_prober
 api_patch '{"mode":"allServerNodes"}' >/dev/null
 amber "  waiting for haproxy DS to come up + Stalwart hostPorts (always-on post-hairpin-fix) + externalIPs to converge…"
 wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
@@ -293,8 +467,7 @@ wait_for_stalwart_settled yes || amber "  Stalwart hostPorts not yet bound in 30
 # Server IPs are in externalIPs EXCEPT when the active node is server-role
 # (then that server's IP is excluded too — Stalwart hostPort handles it).
 ACTIVE_ROLE=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$1==a{print $2; exit}')
-EXPECTED_PHASE1_IPS=$(echo "$SERVER_IPS" | xargs -n1 | grep -v "^${ACTIVE_IP}$" | xargs)
-wait_for_externalips "$EXPECTED_PHASE1_IPS" || red "  externalIPs didn't converge to expected set in 180s"
+assert_externalips_empty || fail_count=$((fail_count+1))
 sleep 10   # extra grace for haproxy hostPort bind + DNS
 fail_count=0
 for L in "${NODE_LINES[@]}"; do
@@ -315,6 +488,10 @@ fi
 
 # ── PHASE 2: activeNodeOnly mode — only active node's IP should answer ────
 hdr "PHASE 2: activeNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"
+# Re-clear before every probing phase: reason=portScanning can re-trigger
+# mid-run, and one silent re-ban turns the rest of the suite into a wall of
+# false 'closed' results.
+unblock_prober
 api_patch '{"mode":"activeNodeOnly"}' >/dev/null
 amber "  waiting for haproxy DS to delete + Stalwart hostPorts to bind + externalIPs to clear…"
 wait_for_haproxy_ds absent || { red "  haproxy DS didn't delete in 120s"; }
@@ -322,7 +499,7 @@ wait_for_stalwart_settled yes || { red "  Stalwart didn't acquire hostPorts in 3
 # Post-hairpin-fix: externalIPs cleared in activeNodeOnly — Stalwart
 # hostPort (CNI portmap) is the only listener and serves the active
 # node directly without kube-proxy DNAT.
-wait_for_externalips "" || red "  externalIPs didn't clear in 180s"
+assert_externalips_empty || fail2_count=$((fail2_count+1))
 sleep 15   # extra grace for kernel hostPort bind + connection-tracking flush
 fail2_count=0
 for L in "${NODE_LINES[@]}"; do
@@ -392,6 +569,10 @@ else
 fi
 
 hdr "PHASE 3b: assignedMailNodes mode — SUCCESS when active IS in assigned set"
+# Re-clear before every probing phase: reason=portScanning can re-trigger
+# mid-run, and one silent re-ban turns the rest of the suite into a wall of
+# false 'closed' results.
+unblock_prober
 # Reset placement so active IS in the set (use active + two others)
 ASSIGNED_NEW=("$ACTIVE")
 for n in $OTHER_NODES; do
@@ -413,15 +594,13 @@ ASSIGNED_IPS=$(echo "$ASSIGNED_IPS" | xargs -n1 | sort -u | xargs)
 # serves it directly). All assigned set nodes should ANSWER (active via
 # hostPort, others via haproxy → ClusterIP → pod), but externalIPs only
 # lists the haproxy-bound ones.
-EXPECTED_PHASE3B_EXT_IPS=$(echo "$ASSIGNED_IPS" | xargs -n1 | grep -v "^${ACTIVE_IP}$" | xargs)
-echo "  expected externalIPs (active excluded): $EXPECTED_PHASE3B_EXT_IPS"
 echo "  expected to ANSWER (active via hostPort + others via haproxy): $ASSIGNED_IPS"
 
 api_patch '{"mode":"assignedMailNodes"}' >/dev/null
 amber "  waiting for haproxy DS + label reconcile + externalIPs convergence…"
 wait_for_haproxy_ds present || red "  haproxy DS didn't come up in 120s"
 wait_for_stalwart_settled yes || true
-wait_for_externalips "$EXPECTED_PHASE3B_EXT_IPS" || red "  externalIPs didn't converge to assigned set in 180s"
+assert_externalips_empty || fail3_count=$((fail3_count+1))
 sleep 15
 fail3_count=0
 for L in "${NODE_LINES[@]}"; do

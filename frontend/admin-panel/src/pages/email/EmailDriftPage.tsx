@@ -4,6 +4,7 @@ import EmailPageHeader from '@/components/email/EmailPageHeader';
 import MailSectionCard from '@/components/MailSectionCard';
 import { useMailDrift, useDismissMailDrift, useRecreateMailDriftEmpty , useDeleteOrphanDomain } from '@/hooks/use-mail-drift';
 import { useRotateWebmailMasterPassword } from '@/hooks/use-stalwart';
+import { useMailHealth } from '@/hooks/use-mail-health';
 import type { MailDriftItem } from '@insula/api-contracts';
 
 /**
@@ -42,6 +43,7 @@ export default function EmailDriftPage() {
         storageKey="drift"
         defaultOpen
       >
+        <MissingAaaaWarning />
         {/* Only when there is something to explain. Rendered unconditionally, it
             sat directly above the green "No active drift detected" panel and
             told the operator the reconciler "found platform DB rows whose
@@ -90,6 +92,52 @@ export default function EmailDriftPage() {
 
         {resolved.length > 0 && <ResolvedHistory items={resolved} />}
       </MailSectionCard>
+    </div>
+  );
+}
+
+/**
+ * DNS drift of a different kind: the cluster was bootstrapped `--dual-stack` and
+ * serves mail over IPv6, but `mail.<apex>` publishes no (or incomplete) AAAA, so
+ * no IPv6-only client can reach it.
+ *
+ * It belongs on this page because it is exactly the same failure shape as the
+ * rest of it — the platform's state and its published state disagree — and it is
+ * otherwise silent: everything works over IPv4, so an operator who deliberately
+ * turned on IPv6 gets none of it and is never told. Renders nothing at all on a
+ * single-stack cluster (no v6 to publish) or when the AAAA records are complete.
+ */
+function MissingAaaaWarning() {
+  const { data } = useMailHealth();
+  const probe = data?.data.components.deliverability?.ipv6Dns;
+  if (!probe || !probe.clusterIsDualStack) return null;
+  if (probe.severity !== 'warning') return null;
+
+  const missing = probe.missingIpv6 ?? [];
+  return (
+    <div
+      className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2.5 text-xs text-amber-800 dark:text-amber-200 flex items-start gap-2"
+      data-testid="mail-drift-missing-aaaa"
+    >
+      <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+      <div className="space-y-1">
+        <div>
+          <strong>IPv6 DNS incomplete.</strong> This cluster was bootstrapped
+          dual-stack and accepts mail over IPv6, but{' '}
+          <span className="font-mono">{probe.hostname}</span>{' '}
+          {probe.resolvedIpv6.length === 0
+            ? 'publishes no AAAA record'
+            : `publishes AAAA for only ${probe.resolvedIpv6.length} of ${probe.expectedIpv6.length} mail nodes`}
+          {' '}— IPv6-only clients cannot reach it.
+        </div>
+        {missing.length > 0 && (
+          <div>
+            Missing AAAA for:{' '}
+            <span className="font-mono">{missing.join(', ')}</span>
+          </div>
+        )}
+        {probe.remediation && <div className="opacity-90">{probe.remediation}</div>}
+      </div>
     </div>
   );
 }

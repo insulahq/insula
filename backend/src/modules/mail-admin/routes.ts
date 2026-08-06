@@ -61,7 +61,7 @@ import {
   rotateResticPassword,
 } from './snapshot-settings.js';
 import { getMailPlacement, updateMailPlacement } from './placement.js';
-import { resolveServerNodeIps } from './server-node-ips.js';
+import { resolveServerNodeIps, resolveServerNodeIpv6s } from './server-node-ips.js';
 import {
   startMailMigration,
   getMailMigrationStatus,
@@ -220,9 +220,15 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
         app.log.warn({ err }, 'mail-admin: serverNodeIps lookup failed; deliverability probes skipped');
         return [] as string[];
       });
+      // Same nodes, IPv6 side. Empty on single-stack — the AAAA-coverage probe
+      // treats that as `skipped`, not as a missing record.
+      const serverNodeIpv6s = await resolveServerNodeIpv6s(k8s, app.db).catch((err) => {
+        app.log.warn({ err }, 'mail-admin: serverNodeIpv6s lookup failed; AAAA-coverage probe skipped');
+        return [] as string[];
+      });
       const refresh = ((req.query as { refresh?: string } | undefined)?.refresh ?? '') === '1';
       const result = await getMailHealth(
-        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, serverNodeIps },
+        { k8s, jmapBaseUrl, jmapAdminCredentials: creds, mailHostname, kubeconfigPath, serverNodeIps, serverNodeIpv6s },
         { refresh },
       );
       return success(result);

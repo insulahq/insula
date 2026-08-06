@@ -157,6 +157,24 @@ eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" \
 # --acme-server (Pebble). Export so it's inherited.
 export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
 
+# Point Stalwart's MAIL certificate at Pebble too, at BOOTSTRAP time.
+#
+# It has to be here and nowhere later: AcmeProvider.directory is READ-ONLY once
+# created, and the provider cannot be deleted once a Domain links to it, so there
+# is no way to repoint a running cluster. Without this the tier asks PUBLIC Let's
+# Encrypt to validate a private apex, LE returns NXDOMAIN forever, and the mail
+# listener serves a self-signed cert — which is why every mail-TLS assertion on
+# this tier was untestable. Trust + reachability for that CA are wired
+# post-bootstrap (Secret + `pebble` Service below, egress via the
+# stalwart-extra-ca component).
+if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
+  case " ${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} " in
+    *" --stalwart-acme-directory "*) : ;;
+    *) VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --stalwart-acme-directory https://pebble:14000/dir" ;;
+  esac
+  export VMTEST_BOOTSTRAP_EXTRA_ARGS
+fi
+
 # 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed
 SPAWN_OUT="$("$HERE/spawn-cluster.sh" "$RUN" "$APEX" "$OCTET" "$VMTEST_DNS_IP" | tee /dev/stderr)"
 eval "$(grep -E '^VMTEST_(CP_IP|RUNNER_IP|APEX|SSH_KEY)=' <<<"$SPAWN_OUT")"
@@ -251,6 +269,65 @@ WAITCERT
     k3s kubectl -n mail delete pod \$(k3s kubectl -n mail get pod -o name 2>/dev/null | grep '/bulwark-') --ignore-not-found >/dev/null 2>&1 || true
     k3s kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
     echo "  platform-api + bulwark reloaded with Pebble trust"
+
+    # ── Stalwart: trust Pebble so it can order the MAIL certificate ──
+    #
+    # The DIRECTORY itself is set at bootstrap (--stalwart-acme-directory), not
+    # here, and that is not a stylistic choice: Stalwart's AcmeProvider.directory
+    # is READ-ONLY once created ("Cannot modify read-only property"), and the
+    # provider cannot be deleted once a Domain links to it ("objectIsLinked").
+    # There is therefore NO post-bootstrap way to repoint it — an earlier version
+    # of this block tried destroy-then-recreate and silently did nothing.
+    #
+    # What remains post-bootstrap is the trust + reachability half:
+    #   * Secret stalwart-extra-ca — consumed by the stalwart-extra-ca component,
+    #     whose initContainer rebuilds the WHOLE /etc/ssl/certs. Both roots are
+    #     needed and they are DIFFERENT CAs: 'minica' signs Pebble's own
+    #     directory TLS, while /roots/0 signs the certs Pebble issues.
+    #   * Service/EndpointSlice 'pebble' — Pebble's directory cert carries
+    #     SANs localhost, pebble, 127.0.0.1 and NO IP SAN for the services VM, so
+    #     connecting by IP fails hostname verification (openssl: 62). Resolving
+    #     the bare name 'pebble' inside the mail namespace makes it match.
+    #     cert-manager sidesteps all of this with skipTLSVerify:true; Stalwart's
+    #     AcmeProvider has no such option and must genuinely verify.
+    # Egress to :14000 comes from the same component (the base policy allows only
+    # 443/80, which is all public LE needs).
+    echo "── giving Stalwart Pebble's roots + a resolvable 'pebble' name ──"
+    docker_minica=/tmp/pebble-minica.pem
+    ssh -o StrictHostKeyChecking=no -i /root/hosting-platform.key root@${VMTEST_PEBBLE_IP} \
+      'docker cp pebble:/test/certs/pebble.minica.pem - 2>/dev/null | tar xO' > "\$docker_minica" 2>/dev/null || true
+    if [ -s "\$docker_minica" ]; then
+      k3s kubectl -n mail create secret generic stalwart-extra-ca \
+        --from-file=pebble-minica.crt="\$docker_minica" \
+        --from-file=pebble-issuer.crt=/tmp/pebble-root.crt \
+        --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null
+    else
+      echo "  WARN: could not extract pebble.minica.pem — Stalwart will not trust Pebble's directory TLS" >&2
+    fi
+    cat <<PEBSVC | k3s kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Service
+metadata: {name: pebble, namespace: mail}
+spec:
+  clusterIP: None
+  ports: [{name: acme, port: 14000, protocol: TCP}]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: pebble-manual
+  namespace: mail
+  labels: {kubernetes.io/service-name: pebble}
+addressType: IPv4
+ports: [{name: acme, port: 14000, protocol: TCP}]
+endpoints:
+  - addresses: ["${VMTEST_PEBBLE_IP}"]
+    conditions: {ready: true}
+PEBSVC
+    # Restart Stalwart so the component's initContainer rebuilds the trust store.
+    k3s kubectl -n mail delete pod -l app=stalwart-mail --ignore-not-found >/dev/null 2>&1 || true
+    k3s kubectl -n mail rollout status deploy/stalwart-mail --timeout=240s >/dev/null 2>&1 || true
+    echo "  Stalwart restarted with Pebble in its trust store"
 PICA
 fi
 
