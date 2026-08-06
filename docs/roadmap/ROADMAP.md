@@ -363,24 +363,36 @@ open.
   the prober is never banned, which was the entire cause of the historical
   failures. The single-stack variant is still worth running as a control.
 
-**Stalwart does not re-acquire its mail certificate after a pod restart**
-(found 2026-08-06 on run `6e9e214b`; PRE-EXISTING, unrelated to dual-stack).
-Restart the `stalwart-mail` pod and the listener falls back to its built-in
-self-signed cert (`CN=rcgen self signed cert`, `SAN: localhost`). It did **not**
-recover in 33 minutes — past the stalwart-domain reconciler's 30-min tick — and
-an explicit `POST /admin/mail/stalwart-reprovision` did not fix it either. Proven
-by comparison on one cluster: the suite's cert probe passed on all three server
-nodes before the restart and failed on all of them after.
+**The VM tier points Stalwart's ACME at PRODUCTION Let's Encrypt, and burns its
+rate limits** (found 2026-08-06 on run `6e9e214b`).
 
-The blast radius is every mail-pod reschedule — node drain, platform upgrade, and
-mail failover (`POST /admin/mail/migrate`) — during which every TLS-verifying
-IMAP/SMTP client fails. Mitigating factors: the platform *does* detect it
-(`deliverability.certSanMatch` = fail with an accurate remediation, and mail
-health goes `healthy: false`), so it is visible rather than silent. What is
-missing is automatic remediation. Note also that the dedicated `cert` component
-reports `healthy: true` throughout — it checks the cert-manager-issued certs, not
-what Stalwart's mail listener actually serves — so the two signals disagree and
-only the deliverability one is right.
+`bootstrap.sh` and `stalwart-domain-reconciler.ts` both hardcode Stalwart's own
+AcmeProvider to `https://acme-v02.api.letsencrypt.org/directory`. The VM harness
+overrides ACME to Pebble for *cert-manager* but not for Stalwart, which has no
+override hook at all. So every throwaway VM cluster asks **real** Let's Encrypt to
+validate a private test apex that will never resolve publicly. Observed on this
+run: `x:Certificate/get` empty (no cert ever issued), and an `AcmeRenewal` task
+chain going back to bootstrap with `failureReason: "Rate limited. Retry after 689
+seconds"` after 10 failed attempts.
+
+Consequences: the VM tier can never have a valid mail cert (so any assertion that
+one exists is untestable there), and worse, it consumes real LE rate limit from
+disposable clusters — which can starve a genuine issuance elsewhere on the same
+account/IP. **Production is unaffected by the cert failure itself** — there
+`mail.<apex>` resolves publicly and HTTP-01 completes through Traefik →
+`stalwart-mail-acme` → Stalwart — but it does share the rate-limit pool. Fix:
+make the Stalwart AcmeProvider directory configurable (env/setting) and point the
+VM tier at Pebble like everything else.
+
+> **Retracted:** an earlier revision of this entry claimed Stalwart *drops its
+> mail certificate on pod restart*. That was wrong. It was an artifact of the
+> reachability suite scoring an EMPTY issuer read as a valid certificate: while
+> the prober was banned no TLS handshake completed, `openssl` returned nothing,
+> and the probe went green; clearing the ban made the same permanently
+> self-signed listener go red, which looked like a regression caused by the
+> restart. Nothing changed across the restart — the listener had been serving
+> `CN=rcgen self signed cert` since bootstrap. The empty-issuer branch now fails
+> with `cert=UNREADABLE` instead of passing.
 
 **Closed 2026-08-06** (were listed here as open):
 - *The node's IPv6 is invisible in the admin panel* — migration 0080 adds

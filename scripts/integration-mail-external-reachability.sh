@@ -307,7 +307,17 @@ probe_node_ports() {
       local ci iss cert_ok=0 nudged=0
       for ci in $(seq 1 8); do
         iss=$(echo | timeout 10 openssl s_client -connect "$ip:465" -servername "${MAILHOST:-mail}" 2>/dev/null | openssl x509 -noout -issuer 2>/dev/null)
-        if echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
+        # An EMPTY issuer is NOT a good cert — it means no TLS handshake
+        # happened at all (banned source, firewall, dead listener, timeout).
+        # This branch used to fall through to `cert_ok=1`, so "I could not read
+        # a certificate" scored the same as "the certificate is valid". That
+        # false pass hid a permanently self-signed listener for an entire run:
+        # while the prober was banned, openssl returned nothing and the probe
+        # went green; the moment the ban lifted it correctly went red, which
+        # read as "the restart broke the cert" when nothing had changed.
+        if [ -z "$iss" ]; then
+          sleep 12
+        elif echo "$iss" | grep -qiE 'rcgen|self.?signed|CN *= *localhost'; then
           [ "$nudged" -eq 0 ] && { mail_reconcile; nudged=1; }
           sleep 12
         else
@@ -317,7 +327,12 @@ probe_node_ports() {
       if [ "$cert_ok" -eq 1 ]; then
         pass=$((pass+1))
       else
-        fail=$((fail+1)); reasons="$reasons cert=self-signed(${iss#issuer=})"
+        fail=$((fail+1))
+        if [ -z "$iss" ]; then
+          reasons="$reasons cert=UNREADABLE(no TLS handshake on :465 — not evidence of a good cert)"
+        else
+          reasons="$reasons cert=self-signed(${iss#issuer=})"
+        fi
       fi
     fi
   fi
