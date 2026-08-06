@@ -65,6 +65,12 @@ export interface TenantNetworkCidrs {
   readonly podV6?: string;
   /** IPv6 service CIDR — only on dual-stack / v6 clusters. */
   readonly svcV6?: string;
+  /**
+   * Extra IPv6 ranges to except from the tenant's `::/0` egress rule, on top
+   * of podV6/svcV6. Populated from the nodes' own `spec.podCIDRs` when the
+   * ConfigMap names no v6 pod CIDR — see readNodePodCidrsV6().
+   */
+  readonly extraV6Except?: readonly string[];
 }
 
 const DEFAULT_CIDRS: TenantNetworkCidrs = {
@@ -91,10 +97,53 @@ function splitFamilies(raw: string | undefined): { v4?: string; v6?: string } {
 }
 
 /**
+ * Read every node's `spec.podCIDRs` and return the IPv6 slices.
+ *
+ * This is the fallback for a dual-stack cluster whose `platform-cluster-cidrs`
+ * ConfigMap carries no v6 range — either an older bootstrap (the ConfigMap was
+ * never written at all: its guard read a name that was `local` to a sibling
+ * function) or a cluster flipped to dual-stack out of band.
+ *
+ * Excepting each node's /64 slice is EXACT — every pod address on the cluster
+ * lives inside one of them — where guessing the cluster-wide ULA prefix would
+ * not be: an operator who passed `--pod-cidr-v6` has a range we cannot infer,
+ * and an `except` that misses the real pod CIDR is a cross-tenant hole, not a
+ * cosmetic gap. The trade-off is that a node joining AFTER the policies are
+ * written is not excepted until the next reconcile, which is why the ConfigMap
+ * (cluster-wide and stable) stays the preferred source.
+ */
+async function readNodePodCidrsV6(
+  core: k8s.CoreV1Api,
+  log?: Pick<Console, 'warn'>,
+): Promise<string[]> {
+  try {
+    const res = (await core.listNode()) as unknown as {
+      items?: Array<{ spec?: { podCIDRs?: string[] } }>;
+    };
+    const out = new Set<string>();
+    for (const node of res.items ?? []) {
+      for (const cidr of node.spec?.podCIDRs ?? []) {
+        if (isV6(cidr)) out.add(cidr);
+      }
+    }
+    return [...out];
+  } catch (err) {
+    log?.warn?.(`[tenant-netpol] node listing failed while probing for IPv6 pod CIDRs: ${String(err)}`);
+    return [];
+  }
+}
+
+/**
  * Resolve the cluster's pod + service CIDRs for the egress `except` list.
  * Order: the `platform-cluster-cidrs` ConfigMap (written by bootstrap) →
  * env overrides (POD_CIDR / SVC_CIDR) → k3s defaults. Never throws; a read
  * failure falls back to defaults so provisioning is never blocked.
+ *
+ * When neither source names an IPv6 pod CIDR we probe the nodes: on a
+ * dual-stack cluster, emitting no v6 rule at all means the tenant-egress
+ * policy denies IPv6 outright (an egress policy with no v6 rule is a v6
+ * default-deny), so a tenant app that resolves `mail.<apex>` to its AAAA
+ * cannot send mail. Proven on VM run 6e9e214b.
  */
 export async function resolveTenantNetworkCidrs(
   core: k8s.CoreV1Api,
@@ -127,7 +176,19 @@ export async function resolveTenantNetworkCidrs(
     log?.warn?.(`[tenant-netpol] malformed v4 CIDR (pod=${cidrs.podV4} svc=${cidrs.svcV4}); using defaults`);
     return DEFAULT_CIDRS;
   }
-  return cidrs;
+  if (cidrs.podV6) return cidrs;
+
+  // No v6 pod CIDR from the ConfigMap or env. Ask the nodes directly: on a
+  // dual-stack cluster we MUST emit a v6 egress rule (see the doc comment),
+  // and on a single-stack cluster this returns [] and nothing changes.
+  const nodeV6 = await readNodePodCidrsV6(core, log);
+  if (nodeV6.length === 0) return cidrs;
+  log?.warn?.(
+    `[tenant-netpol] cluster is dual-stack but ${CLUSTER_CIDRS_CM_NAME} names no IPv6 pod CIDR; ` +
+      `excepting the nodes' own podCIDRs instead (${nodeV6.join(', ')}). ` +
+      `Re-run bootstrap or set POD_CIDR to the comma-joined dual-stack value for a stable, cluster-wide range.`,
+  );
+  return { ...cidrs, extraV6Except: nodeV6 };
 }
 
 export interface TenantNetworkPolicy {
@@ -173,8 +234,17 @@ export function buildTenantNetworkPolicies(
   // CIDRs we except them; when we don't (v6 present but unconfigured) we
   // allow ::/0 outright rather than silently blackholing v6 egress — the
   // v4 rule already blocks the primary internal path (ClusterIPs are v4).
-  if (cidrs.podV6 || cidrs.svcV6) {
-    const v6Except = [cidrs.podV6, cidrs.svcV6].filter((c): c is string => !!c);
+  //
+  // Emitting NOTHING is not the safe option it looks like: this policy sets
+  // policyTypes ['Egress'], so a dual-stack namespace with no v6 rule denies
+  // IPv6 egress entirely. That is what shipped before resolveTenantNetworkCidrs
+  // learned to probe the nodes — tenants could reach the node over IPv4 but
+  // not over IPv6, so outbound mail broke the moment a resolver preferred the
+  // AAAA of mail.<apex>.
+  if (cidrs.podV6 || cidrs.svcV6 || cidrs.extraV6Except?.length) {
+    const v6Except = [...new Set(
+      [cidrs.podV6, cidrs.svcV6, ...(cidrs.extraV6Except ?? [])].filter((c): c is string => !!c),
+    )];
     egressRules.push({
       to: [{ ipBlock: v6Except.length ? { cidr: '::/0', except: v6Except } : { cidr: '::/0' } }],
     });

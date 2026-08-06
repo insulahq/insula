@@ -67,6 +67,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     the stub.
 
 ### Fixed
+- **Dual-stack clusters denied tenants all IPv6 egress.** The
+  `platform-cluster-cidrs` ConfigMap that tells the backend the cluster's pod and
+  service ranges was never created — on *any* cluster: the guard around it read a
+  variable that was `local` to a sibling shell function, so it was always empty.
+  On an IPv4-only cluster this was invisible, because the backend's built-in
+  defaults happen to be the same `10.42.0.0/16` / `10.43.0.0/16`. On a dual-stack
+  cluster it meant `buildTenantNetworkPolicies` never learned the IPv6 ranges, so
+  it emitted no `::/0` egress rule at all — and because that policy sets
+  `policyTypes: [Egress]`, having no v6 rule denies IPv6 outright. A tenant pod
+  could reach the node over IPv4 but not over IPv6, so a tenant app whose
+  resolver preferred the AAAA of `mail.<apex>` could not send mail. Both
+  consumers now share one `cluster_cidr_args()` helper, and
+  `resolveTenantNetworkCidrs` falls back to the nodes' own `spec.podCIDRs` when
+  the ConfigMap names no v6 range, so existing dual-stack clusters self-heal
+  without a rebuild. Cross-tenant isolation was verified to hold over both
+  families before and after the fix.
+- **`--node-external-ip` published IPv4 only on a pinned (mesh/VLAN) underlay.**
+  `--dual-stack` appended the node's IPv6 in the public-underlay branch but not
+  the pinned one, so the Node object carried a v4-only `ExternalIP` and the
+  `ingress-external-ips` reconciler published a v4-only list on the Traefik
+  Service. Both branches now take that address from a `global-only` detector:
+  a ULA is a perfectly good `--node-ip`, but announcing one as externally
+  reachable points clients at an off-link address, so a ULA-only host correctly
+  announces no IPv6 at all.
+- **The pod-CIDR control-plane firewall exemption was IPv4-only on dual-stack.**
+  The nft table is family `inet`, where `ip saddr` matches IPv4 exclusively;
+  `--dual-stack` now emits the matching `ip6 saddr` rule. The single-stack
+  ruleset is unchanged byte-for-byte.
 - **Host-migrations could never apply during a platform upgrade.** The
   post-upgrade converge ran as a child of `platform-ops-update.service`, which is
   hardened with `ProtectSystem=strict` and `ReadWritePaths` limited to the binary

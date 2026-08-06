@@ -36,7 +36,9 @@ sed -n '/^resolve_cluster_network_ip()/,/^}/p'     "$BOOTSTRAP" >> "$WORK/helper
 sed -n '/^resolve_cluster_network_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_same_link_ipv6()/,/^}/p'        "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_dual_stack_node_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
-for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_same_link_ipv6 resolve_dual_stack_node_ipv6; do
+sed -n '/^cluster_cidr_args()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers.sh"
+for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_same_link_ipv6 resolve_dual_stack_node_ipv6 \
+          cluster_cidr_args; do
   grep -q "^${fn}()" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 # error() is called by the helpers on the refuse paths. It is FATAL in
@@ -155,22 +157,40 @@ echo
 echo "single-stack default is UNCHANGED (regression guard)"
 
 src=$(cat "$BOOTSTRAP")
-has "$src" 'local cluster_cidr_arg="10.42.0.0/16"'  "cluster-cidr still defaults to the IPv4 literal"
-has "$src" 'local service_cidr_arg="10.43.0.0/16"'  "service-cidr still defaults to the IPv4 literal"
 has "$src" 'DUAL_STACK=false'                        "dual-stack defaults OFF"
-# The v6 CIDRs may only ever be appended inside a DUAL_STACK guard.
+
+# cluster_cidr_args() is the ONE place the k3s CIDR strings are built, so both
+# consumers — the k3s install flags and the platform-cluster-cidrs ConfigMap —
+# can never drift. Execute it for real in both modes rather than grepping: a
+# structural assertion would still "pass" if the guard inverted.
+POD_CIDR_V4="10.42.0.0/16" SERVICE_CIDR_V4="10.43.0.0/16" \
+POD_CIDR_V6="fd42:42::/56" SERVICE_CIDR_V6="fd42:43::/112"
+check "single-stack builds IPv4-ONLY cluster+service CIDRs" \
+  "10.42.0.0/16 10.43.0.0/16" \
+  "$( DUAL_STACK=false run_helper cluster_cidr_args )"
+check "dual-stack appends BOTH v6 CIDRs, v4 first" \
+  "10.42.0.0/16,fd42:42::/56 10.43.0.0/16,fd42:43::/112" \
+  "$( DUAL_STACK=true run_helper cluster_cidr_args )"
+
+# Both consumers must go through the helper. install_k3s_server()'s locals are
+# NOT visible in apply_platform_manifests() (sibling top-level functions), which
+# is how the platform-cluster-cidrs ConfigMap silently never got created — and
+# on dual-stack that cost tenants every IPv6 egress rule.
 server_block=$(sed -n '/^install_k3s_server()/,/^}/p' "$BOOTSTRAP")
-if grep -n 'POD_CIDR_V6\|SERVICE_CIDR_V6' <<<"$server_block" | grep -qv 'cluster_cidr_arg=\|service_cidr_arg='; then
-  bad "v6 CIDRs referenced outside the arg-append lines in install_k3s_server"
+manifests_block=$(sed -n '/^apply_platform_manifests()/,/^}/p' "$BOOTSTRAP")
+has "$server_block"    'read -r cluster_cidr_arg service_cidr_arg <<<"$(cluster_cidr_args)"' \
+  "install_k3s_server sources its CIDRs from the helper"
+has "$manifests_block" 'read -r pod_cidr_value svc_cidr_value <<<"$(cluster_cidr_args)"' \
+  "the platform-cluster-cidrs ConfigMap sources the SAME helper"
+hasnt "$manifests_block" '${cluster_cidr_arg:-}' \
+  "the ConfigMap no longer reads another function's local (always-empty guard)"
+has "$manifests_block" 'kctl create configmap platform-cluster-cidrs' \
+  "the ConfigMap is written unconditionally, not behind a dead guard"
+# The v6 CIDRs may only ever be reached through the DUAL_STACK guard.
+if grep -q 'POD_CIDR_V6\|SERVICE_CIDR_V6' <<<"$server_block"; then
+  bad "install_k3s_server references the v6 CIDRs directly (must go via cluster_cidr_args)"
 else
-  ok "v6 CIDRs referenced only where the args are appended"
-fi
-guard_line=$(grep -n 'if \[\[ "\$DUAL_STACK" == true \]\]; then' <<<"$server_block" | head -1 | cut -d: -f1)
-append_line=$(grep -n 'cluster_cidr_arg="\${cluster_cidr_arg},\${POD_CIDR_V6}"' <<<"$server_block" | head -1 | cut -d: -f1)
-if [[ -n "$guard_line" && -n "$append_line" ]] && (( append_line > guard_line )); then
-  ok "the v6 append sits INSIDE the dual-stack guard"
-else
-  bad "the v6 append sits INSIDE the dual-stack guard (guard=${guard_line:-none} append=${append_line:-none})"
+  ok "install_k3s_server reaches the v6 CIDRs only via cluster_cidr_args"
 fi
 
 echo
@@ -180,9 +200,6 @@ has "$server_block" 'node_pin="--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}
   "server pinned-underlay node-ip gains the v6 family"
 has "$server_block" 'node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}' \
   "server public-underlay node-ip gains the v6 family"
-has "$server_block" '--node-external-ip=${public_ip},${node_ipv6}' \
-  "server publishes BOTH families as ExternalIP (ingress-external-ips reads this)"
-
 worker_block=$(sed -n '/^install_k3s_worker()/,/^}/p' "$BOOTSTRAP")
 has "$worker_block" 'resolve_dual_stack_node_ipv6' \
   "worker resolves a v6 node address too (a v4-only worker cannot join)"
@@ -190,6 +207,36 @@ has "$worker_block" '--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}}' \
   "worker pinned-underlay node-ip gains the v6 family"
 has "$worker_block" '--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}' \
   "worker public-underlay node-ip gains the v6 family"
+
+echo
+echo "--node-external-ip PUBLISHES, so it takes a global v6 — never a ULA"
+# Live check on VM run 6e9e214b: --node-ip carried both families but
+# --node-external-ip carried only IPv4, because the PINNED-underlay branch
+# never appended the v6 while the public-underlay branch did. Both branches
+# now use node_public_ipv6, and both take it from the global-only detector:
+# announcing a ULA as ExternalIP would send clients to an off-link address,
+# and ingress-external-ips copies ExternalIP straight onto the Traefik Service.
+for blk in server worker; do
+  b=$([[ $blk == server ]] && echo "$server_block" || echo "$worker_block")
+  has "$b" 'node_public_ipv6=$(detect_node_ipv6 global-only || true)' \
+    "${blk}: external v6 comes from the GLOBAL-ONLY detector"
+  hasnt "$b" '--node-external-ip=${public_ip},${node_ipv6}' \
+    "${blk}: external-ip never takes the ULA-tolerant node_ipv6"
+done
+has "$server_block" '--node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}' \
+  "server PINNED-underlay publishes the global v6 as ExternalIP too"
+has "$worker_block" '--node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}' \
+  "worker PINNED-underlay publishes the global v6 as ExternalIP too"
+# And the detector itself must actually refuse a ULA in that mode.
+FAKE_V6_LINES='2: eth0    inet6 fd00:5e:1::130/64 scope global'
+check "global-only refuses a ULA-only host (empty, not the ULA)" \
+  "" "$( run_helper detect_node_ipv6 global-only )"
+check "the default mode still accepts that ULA (it is a fine --node-ip)" \
+  "fd00:5e:1::130" "$( run_helper detect_node_ipv6 )"
+FAKE_V6_LINES='2: eth0    inet6 fd00:5e:1::130/64 scope global
+2: eth0    inet6 2001:db8:9::7/64 scope global'
+check "global-only picks the global address when one exists" \
+  "2001:db8:9::7" "$( run_helper detect_node_ipv6 global-only )"
 
 echo
 echo "Calico + sysctl are gated on the flag"
