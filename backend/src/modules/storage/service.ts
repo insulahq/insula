@@ -577,6 +577,16 @@ export interface PerNodePurgeResult {
   readonly node: string;
   readonly removedDisplayNames: readonly string[];
   readonly failedDisplayNames: readonly string[];
+  /**
+   * Per-failure `cause=` text emitted by the purge script, keyed by the same
+   * display name as `failedDisplayNames`. The script already computes why a
+   * removal failed (crictl's stderr, or "still present 10s after rmi"), but it
+   * used to be parsed off and thrown away — image_reap_log then recorded a bare
+   * "failed on <node>: <image>", which says nothing about whether the image was
+   * still referenced by a container, the ref did not resolve, or containerd was
+   * simply slow. Keep it so the log row is diagnosable.
+   */
+  readonly failureCauses: Readonly<Record<string, string>>;
   readonly freedBytes: number;
   readonly podError?: string;
 }
@@ -590,6 +600,7 @@ export async function runPurgeOnNode(
   const crictlByName = new Map(targets.map(t => [t.crictlName, t]));
   const removedDisplayNames: string[] = [];
   const failedDisplayNames: string[] = [];
+  const failureCauses: Record<string, string> = {};
   let freedBytes = 0;
 
   const imageList = targets.map(t => `'${t.crictlName.replace(/'/g, "'\\''")}'`).join(' ');
@@ -685,6 +696,7 @@ done
       node,
       removedDisplayNames: [],
       failedDisplayNames: targets.map(t => t.displayName),
+      failureCauses: {},
       freedBytes: 0,
       podError: `create pod on ${node}: ${err instanceof Error ? err.message : String(err)}`,
     };
@@ -731,8 +743,11 @@ done
         const rest = line.slice('FAILED:'.length).trim();
         const sepIdx = rest.indexOf(' cause=');
         const crictlName = sepIdx >= 0 ? rest.slice(0, sepIdx) : rest;
+        const cause = sepIdx >= 0 ? rest.slice(sepIdx + ' cause='.length).trim() : '';
         const t = crictlByName.get(crictlName);
-        failedDisplayNames.push(t?.displayName ?? crictlName);
+        const displayName = t?.displayName ?? crictlName;
+        failedDisplayNames.push(displayName);
+        if (cause) failureCauses[displayName] = cause;
       }
       // B0.2: PRUNE_FAILED is logged but does not fail the whole purge
       // (the per-image loop still runs). No bytes are tracked for --prune
@@ -749,7 +764,7 @@ done
     // pod may already be gone
   }
 
-  return { node, removedDisplayNames, failedDisplayNames, freedBytes, podError };
+  return { node, removedDisplayNames, failedDisplayNames, failureCauses, freedBytes, podError };
 }
 
 /**
