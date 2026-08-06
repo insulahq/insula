@@ -13,6 +13,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- **Image builds now install the lockfile instead of re-resolving it.** Every
+  Dockerfile ran `npm install` against a workspace's `package.json` with no
+  lockfile in the build context, so each build re-resolved the `^` ranges
+  against the live registry — meaning `package-lock.json`, the file that is
+  audited, scanned and cross-referenced against IOC lists, did **not** govern
+  what shipped. A version published between two builds landed in the image even
+  when the lockfile pinned a safe one, which is precisely how a
+  hijack-and-republish compromise propagates. All three images now copy the root
+  lockfile plus every workspace manifest and use `npm ci --workspace <pkg>`,
+  which installs the locked tree or fails. Verified by building each image and
+  comparing installed versions against the lockfile.
+  Two things fell out of the change: the flattened layout's `sed` rewrites of
+  `package.json`/`tsconfig.json` are gone (the workspace layout resolves
+  `@insula/*` natively), as is the `rm -rf node_modules/react*` workaround —
+  npm hoists a single React, now asserted at build time rather than patched
+  after the fact. The panel **builder** stages move to `node:22-slim`, because
+  the lockfile is generated on glibc and records no musl binding for rolldown;
+  the previous `npm install` masked that by silently re-resolving on Alpine.
+  Runtime images are unchanged.
+
+### Security
 - **Dependency supply-chain hardening.** Four controls, aimed at the class of
   attack where a package is *hijacked and republished* rather than found
   vulnerable — the 2026-08 keyv/@adminide-stack wave, which no CVE feed would
