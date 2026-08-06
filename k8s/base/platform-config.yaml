@@ -13,7 +13,17 @@ data:
   # Ingress / TLS — overlays MUST patch these with real values.
   ingress-base-domain: "${DOMAIN}"
   ingress-default-ipv4: ""
-  cluster-issuer-name: "letsencrypt-prod-http01"
+  # Resolved by Flux postBuild.substituteFrom (ConfigMap/platform-cluster-config,
+  # key CLUSTER_ISSUER_NAME, written by bootstrap.sh from --cluster-issuer /
+  # --acme-server / the per-env default). The `:=` default keeps clusters
+  # bootstrapped before that key existed rendering under Flux's strict envsubst.
+  #
+  # This MUST NOT be a literal. A hardcoded `letsencrypt-prod-http01` here made
+  # Flux revert any runtime issuer change on every reconcile — so clusters on a
+  # private apex (VM integration tier, air-gapped installs) had their certs
+  # silently re-pointed at real Let's Encrypt mid-run, where HTTP-01 can never
+  # validate, and every TLS-dependent flow failed with the Traefik default cert.
+  cluster-issuer-name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
 
   # Storage — Longhorn is the default; dev overlay can override to local-path.
   default-storage-class: "longhorn"

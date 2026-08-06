@@ -417,7 +417,13 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   for _ in 1 2 3; do apt-get \$APTO update -qq >/dev/null 2>&1 && break; sleep 5; done
   # 'ncat' (its OWN Debian package — the staging-all suite requires it; 'netcat-openbsd' ships only
   # 'nc', and the 'nmap' package does NOT bundle 'ncat' on Debian).
-  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd ncat socat rsync >/dev/null 2>&1
+  # 'docker.io' (Debian's own packaging — no external Docker repo needed): the private-worker
+  # suite runs the worker agent + an echo fixture as LOCAL containers to prove an off-cluster
+  # agent can dial in. Without it the suite aborts rc=2 in 0s on 'required tool docker not
+  # found'. The runner is not a cluster node, so docker0 (172.17/16) cannot collide with the
+  # run-net or the pod/service CIDRs.
+  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd ncat socat rsync docker.io >/dev/null 2>&1
+  systemctl enable --now docker >/dev/null 2>&1 || true
   ( cd /root/insula && npm install --no-audit --no-fund --silent ws >/dev/null 2>&1 ) || true
   SK=(-i /root/hosting-platform.key -o StrictHostKeyChecking=no -o ConnectTimeout=10)
   scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/usr/local/bin/k3s" /usr/local/bin/kubectl >/dev/null 2>&1
