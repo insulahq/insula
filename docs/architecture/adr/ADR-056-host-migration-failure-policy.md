@@ -133,6 +133,15 @@ migrations were failing at upgrade time; it does not change the failure policy.
   enforced only by review and by the default being safe.
 - Per-node state grows two marker kinds (`.skipped`, failure counters). Both are
   small files under the existing marker dir.
-- Full visibility still wants the admin-panel surface (per-node status, retry).
-  That needs an RBAC widening for worker nodes and a privileged execution path;
-  it is deliberately out of scope here.
+- The admin-panel surface is delivered, and it cost **no new privilege**. The
+  converge writes a node-local `status.json`; the `host-config-reconciler`
+  DaemonSet — already on every node, already publishing one per-node ConfigMap —
+  relays it through a **read-only** mount. Publishing from platform-ops itself
+  was rejected: a worker's kubeconfig is `get` on five ConfigMaps, and RBAC
+  cannot scope `create` by `resourceName`, so granting it would let any worker
+  create any ConfigMap in `platform-system`.
+- There is deliberately **no Retry button**. The backend cannot touch a node's
+  filesystem, and the converge that applies migrations already runs hourly and
+  picks up a fixed condition by itself — a button that waited an hour would be
+  theatre. The panel shows the cause, the attempt count and age, and the two
+  commands that resolve it.

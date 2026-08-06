@@ -14,10 +14,12 @@ type collector struct {
 	nodeName string
 	now      func() time.Time
 	allow    func(string) bool
+	// Where platform-ops writes its post-converge status (read-only mount).
+	migrationStatusPath string
 }
 
 func newCollector(hostRoot, nodeName string) *collector {
-	return &collector{hostRoot: hostRoot, nodeName: nodeName, now: time.Now, allow: sysctlAllowed}
+	return &collector{hostRoot: hostRoot, nodeName: nodeName, now: time.Now, allow: sysctlAllowed, migrationStatusPath: defaultMigrationStatusPath}
 }
 
 // normalizeSysctl collapses internal whitespace runs to single spaces and
@@ -54,6 +56,13 @@ func (c *collector) collect(desired *DesiredConfig) Snapshot {
 		Node:        c.nodeName,
 		CollectedAt: c.now().UTC().Format(time.RFC3339),
 		Mode:        "observe",
+	}
+	// Relay host-migration state regardless of the sysctl policy: a node with no
+	// host-config-desired ConfigMap can still have a failed or blocked migration
+	// chain, and that is precisely the case worth surfacing.
+	if st, errs := readMigrationStatus(c.migrationStatusPath); st != nil || len(errs) > 0 {
+		snap.HostMigrations = st
+		snap.Errors = append(snap.Errors, errs...)
 	}
 	if desired == nil {
 		snap.DesiredSource = "absent"

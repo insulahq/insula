@@ -20,6 +20,7 @@ import { runUpgrade, dbSettings } from './orchestrate.js';
 import { captureUpgradeRescue, runRollback, realRollbackDeps } from './rollback.js';
 import { readPostflightState } from './collect-postflight.js';
 import { readHostMigrationsPreview } from './host-migrations-preview.js';
+import { readHostMigrationStatus } from './host-migration-status.js';
 
 const ENVIRONMENT = process.env.PLATFORM_ENV ?? 'production';
 
@@ -108,6 +109,25 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
   }, async () => {
     const k8s = createK8sClients(kubeconfigPath());
     return success(await readHostMigrationsPreview(k8s));
+  });
+
+  // GET /api/v1/admin/platform/host-migrations/status — per-node applied /
+  // pending / failed / blocked state, relayed by the host-config-reconciler
+  // DaemonSet. A failed migration blocks every later one, and before this the
+  // only way to find out was to SSH to a node: DEV sat at 11 pending behind one
+  // failure for five weeks. Read-only by construction — the backend cannot
+  // touch a node, and the converge that applies migrations already runs hourly.
+  app.get('/admin/platform/host-migrations/status', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Per-node host-migration status', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
+        degraded: { type: 'boolean' }, runbookUrl: { type: 'string' },
+        nodes: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      } } } } },
+    },
+  }, async () => {
+    const k8s = createK8sClients(kubeconfigPath());
+    return success(await readHostMigrationStatus(k8s));
   });
 
   // POST /api/v1/admin/platform/upgrade  { version?, apply? }

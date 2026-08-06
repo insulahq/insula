@@ -13,6 +13,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Host-migration state is visible in the admin panel** (Platform → Updates).
+  A failed migration blocks every later one on that node, and the only way to
+  discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
+  `0 applied, 11 pending` behind a single failure for five weeks. The card shows
+  per-node applied/pending/failed/blocked/skipped counts, the failure's cause,
+  how many times it has repeated and since when (ADR-056), any operator skip and
+  its reason, and links the troubleshooting runbook. A broken node expands
+  itself; a healthy or not-yet-reported node deliberately does not raise an
+  alert.
+  - Costs **no new privilege**: the converge writes a node-local `status.json`
+    and the existing `host-config-reconciler` DaemonSet — already on every node,
+    already publishing a per-node ConfigMap — relays it through a **read-only**
+    mount. Publishing from `platform-ops` was rejected because RBAC cannot scope
+    `create` by resource name, so a worker would have gained the ability to
+    create any ConfigMap in `platform-system`.
+  - No retry button, by design: the backend cannot touch a node, and the converge
+    already runs hourly and picks up a fixed condition on its own.
+  - Three failure shapes that would otherwise still have read as healthy are
+    surfaced explicitly: a **whole-run refusal** (catalog over the script cap,
+    which arrives with `ok:false` and *no items*, so every count is legitimately
+    zero), an **invalid** script that can never run, and a node that **breaks
+    between polls** (the per-node auto-expand now tracks state instead of only
+    the first render). Applied state is reported cumulatively — the relay counts
+    only what ran in that pass, so a fully caught-up node used to render "0
+    applied", indistinguishable from one that had never run anything.
+  - The relay caps field and list sizes. A failed migration's stderr is relayed
+    verbatim and the whole snapshot lives in one ConfigMap, so an unbounded blob
+    would breach etcd's ~1 MiB limit and freeze that node's reporting at its
+    last-known state — precisely when the panel matters most. Counts are derived
+    before capping and the API takes `max(relayed, recounted)`, so truncation can
+    never hide a failure.
+
+### Added
 - **A failure policy for host-migrations (ADR-056).** Halting on the first
   failure is right — a later migration may assume an earlier one applied — but as
   shipped it was unscoped, unrecoverable and silent: one deterministic failure
