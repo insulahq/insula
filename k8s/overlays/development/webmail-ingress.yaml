@@ -84,6 +84,6 @@ spec:
   dnsNames:
     - webmail.${DOMAIN}
   issuerRef:
-    name: letsencrypt-prod-http01
+    name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
     kind: ClusterIssuer
     group: cert-manager.io
