@@ -381,23 +381,50 @@ cannot pass its cert probe on that tier by construction. Production is unaffecte
 `mail.<apex>` resolves publicly and HTTP-01 completes through Traefik →
 `stalwart-mail-acme` → Stalwart.
 
-Fixing it is NOT a one-line directory swap, and should be scoped before it is
-attempted:
-1. The `directory` field is settable (it is a plain JMAP AcmeProvider property),
-   so the value itself is easy — but it needs an env/setting hook, since both
-   `bootstrap.sh` and `stalwart-domain-reconciler.ts` hardcode it.
-2. Stalwart must TRUST Pebble's root to talk to it over HTTPS. The VM harness
-   already puts the root in a `platform-extra-ca-trust` Secret in the `mail`
-   namespace (for Bulwark) but **does not mount it into the stalwart container** —
-   verified 2026-08-06.
-3. **Unverified and the real risk:** Stalwart is Rust, and if its ACME client
-   uses compiled-in roots (`webpki-roots`) rather than the system trust store,
-   mounting a CA bundle changes nothing. Confirm this before promising the
-   approach works.
+Let's Encrypt states the cause itself, so this needs no further diagnosis:
 
-An alternative that sidesteps all of the above: give the VM tier a publicly
-resolvable throwaway apex, or assert `cert=UNREADABLE`-tolerance on that tier
-explicitly rather than pretending mail TLS is verifiable there.
+```
+Authentication failed: "Status: invalid; Challenge type: http-01, error:
+ urn:ietf:params:acme:error:dns: DNS problem: NXDOMAIN looking up A for
+ mail.<vm-apex> - check that a DNS record exists for this domain;
+ DNS problem: NXDOMAIN looking up AAAA for mail.<vm-apex>"
+```
+
+**Stalwart's ACME client DOES honour the system trust store — proven, not
+inferred** (2026-08-06). Masking `/etc/ssl/certs` with a single decoy root and
+forcing a fresh order changed the failure from an application-level LE response
+to a transport failure, and restoring it brought the full ACME exchange back:
+
+| `/etc/ssl/certs` | ACME task failureReason |
+|---|---|
+| real (150 roots) | `Rate limited. Retry after 677 seconds` (reached LE) |
+| masked (1 decoy) | `HTTP error: error sending request for url (…/directory)` |
+| restored | full ACME exchange → LE's NXDOMAIN authorization error |
+
+A `curl` control inside the container tracked it exactly (`200 → 000 → 200`), so
+nothing else moved. The `webpki-roots` crate is linked but is not what ACME uses.
+
+So pointing the VM tier at Pebble is viable. What it takes:
+1. An env/setting hook for the `directory` value — `bootstrap.sh` and
+   `stalwart-domain-reconciler.ts` both hardcode it.
+2. Pebble's root mounted at a path the binary probes. `/etc/ssl/certs/ca-certificates.crt`
+   is the first entry in the compiled-in probe list, so that works — but mount the
+   **whole `/etc/ssl/certs` directory** with a bundle of *system roots + Pebble*.
+   Replacing only the `.crt` file is a no-op: the hashed `*.0` files in that
+   directory still serve the real roots (verified — `curl` was unaffected until
+   the whole directory was masked).
+3. Do NOT rely on `SSL_CERT_FILE` / `SSL_CERT_DIR` — 0 occurrences in the binary.
+   The CA has to land at a probed path.
+
+The harness already has the Pebble root in a `platform-extra-ca-trust` Secret in
+the `mail` namespace (for Bulwark); it is simply not mounted into the stalwart
+container. An alternative that sidesteps all of it: give the VM tier a publicly
+resolvable throwaway apex.
+
+*Aside, cost me two inconclusive experiments:* **Stalwart's task scheduler does not
+reliably run a task at its `due` time.** AcmeRenewal tasks sat past due, unchanged,
+until destroyed and re-queued (`x:Task/set destroy` + `stalwart-reprovision`). Any
+test that waits on a Stalwart task firing on schedule will hang instead of failing.
 
 > **Retracted (rate limits):** an earlier revision claimed production "shares the
 > rate-limit pool" with VM clusters. That is not supported. The limit actually
