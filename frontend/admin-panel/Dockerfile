@@ -1,50 +1,68 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22-alpine AS builder
 
-WORKDIR /app
-
-# Build shared API contracts first.
-# --build --force prevents stale tsbuildinfo from a Docker layer cache
-# from producing zero output when src changed but the buildinfo wasn't
-# invalidated (see feedback_api_contracts_build_force). Without --force,
-# the admin-panel TS errors on types added in PR #100 (drift,
-# lastFailedMigration, MailPortExposureMode) — the source has them but
-# the cached dist doesn't.
-COPY packages/api-contracts/ ./packages/api-contracts/
+# ─── deps: install from the LOCKFILE, in the real workspace layout ──────────
+#
+# WHY (2026-08-06): this image used to run `npm install` from package.json with
+# NO lockfile in the build context, so every build re-resolved `^` ranges against
+# the live registry and package-lock.json did not govern what shipped — the exact
+# gap the 2026-08 keyv/@adminide-stack hijack-and-republish wave exploits.
+# `npm ci` installs the locked tree or fails.
+#
+# All five workspace manifests are copied because npm ci requires the same
+# workspace set the lockfile was generated from. The three workspaces this panel
+# actually needs are selected explicitly, so their dependencies are installed
+# rather than just symlinked.
+# glibc (slim), NOT alpine/musl. package-lock.json is generated on glibc, so it
+# records @rolldown/binding-linux-x64-gnu and no musl variant. The previous
+# `npm install` hid this by re-resolving on alpine and quietly picking the musl
+# binding — which is exactly the non-reproducibility this change removes. Under
+# `npm ci` the locked gnu binding is installed faithfully and then cannot load
+# on musl ("MODULE_NOT_FOUND … rolldown/dist/shared/binding"). Building on glibc
+# makes the lockfile and the build platform agree. The RUNTIME image below is
+# untouched (nginx:alpine) — only static assets cross the stage boundary.
+FROM node:22-slim AS deps
+WORKDIR /repo
+COPY package.json package-lock.json ./
+COPY packages/api-contracts/package.json packages/api-contracts/
+COPY packages/ui-restore-cart/package.json packages/ui-restore-cart/
+COPY backend/package.json backend/
+COPY frontend/admin-panel/package.json frontend/admin-panel/
+COPY frontend/tenant-panel/package.json frontend/tenant-panel/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
+    npm ci --include-workspace-root \
+           --workspace @insula/admin-panel \
+           --workspace @insula/ui-restore-cart \
+           --workspace @insula/api-contracts \
+           --ignore-scripts --prefer-offline --no-audit --no-fund
+# The old build had to `rm -rf packages/ui-restore-cart/node_modules/react*`
+# after installing that package standalone: a second React copy made Vite bundle
+# two dispatchers and /backups/restore died on "Cannot read properties of null
+# (reading 'useState')". A workspaces install hoists ONE react to the root, so
+# the duplicate cannot arise — asserted here rather than assumed, because the
+# failure mode is a runtime crash on one page, not a build error.
+RUN test ! -e packages/ui-restore-cart/node_modules/react \
+    && test ! -e frontend/admin-panel/node_modules/react \
+    || { echo "ERROR: react was NOT hoisted — a duplicate copy would crash /backups/restore"; exit 1; }
 
-# Build the shared restore-cart UI workspace (packages/ui-restore-cart).
-# Depends on api-contracts via a workspace ref ("*") which we rewrite to
-# a file: URL pointing at the sibling dir built above. Same --force
-# discipline as api-contracts to defeat stale Docker layer-cache
-# tsbuildinfo (feedback_api_contracts_build_force).
-COPY packages/ui-restore-cart/ ./packages/ui-restore-cart/
-RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:../api-contracts"|' packages/ui-restore-cart/package.json \
-    && grep -q '"@insula/api-contracts": "file:../api-contracts"' packages/ui-restore-cart/package.json \
-    || { echo "ERROR: sed rewrite of ui-restore-cart api-contracts ref failed — package.json formatting drifted"; exit 1; }
-RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    cd packages/ui-restore-cart && npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps && npx tsc --build --force \
-    && rm -rf node_modules/react node_modules/react-dom
-# ^ Drop the package's OWN react/react-dom after the tsc build (they were
-#   only needed as type/peer deps). Leaving them makes Vite bundle a SECOND
-#   React copy into the package chunk → null hooks dispatcher → the
-#   /backups/restore page crashed with "Cannot read properties of null
-#   (reading 'useState')". Belt-and-braces with vite resolve.dedupe.
-
-# Build admin panel
-COPY frontend/admin-panel/package.json ./package.json
-RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:./packages/api-contracts"|' package.json
-RUN sed -i 's|"@insula/ui-restore-cart": "\*"|"@insula/ui-restore-cart": "file:./packages/ui-restore-cart"|' package.json
-RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
-COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/postcss.config.js ./
-COPY frontend/admin-panel/src/ src/
-COPY frontend/admin-panel/public/ public/
-RUN npx vite build
+# ─── builder: shared contracts → shared UI → panel ─────────────────────────
+#
+# The workspace layout matches the repo, so every "@insula/*": "*" reference
+# resolves natively. The three `sed` rewrites the flattened layout needed (and
+# their drift-detection guards) are gone.
+FROM deps AS builder
+# --build --force: a stale tsbuildinfo restored from a layer cache otherwise
+# makes tsc emit ZERO files while exiting 0 (feedback_api_contracts_build_force).
+COPY packages/api-contracts/ packages/api-contracts/
+RUN npx tsc --build --force packages/api-contracts
+COPY packages/ui-restore-cart/ packages/ui-restore-cart/
+RUN npx tsc --build --force packages/ui-restore-cart
+COPY frontend/admin-panel/index.html frontend/admin-panel/tsconfig.json frontend/admin-panel/vite.config.ts frontend/admin-panel/postcss.config.js frontend/admin-panel/
+COPY frontend/admin-panel/src/ frontend/admin-panel/src/
+COPY frontend/admin-panel/public/ frontend/admin-panel/public/
+RUN cd frontend/admin-panel && npx vite build
 
 FROM nginx:1.27-alpine
-COPY --from=builder /app/dist/ /usr/share/nginx/html/
+COPY --from=builder /repo/frontend/admin-panel/dist/ /usr/share/nginx/html/
 # Nginx config template — BACKEND_HOST/BACKEND_PORT substituted at startup
 COPY frontend/admin-panel/nginx.conf.template /etc/nginx/conf.d/default.conf.template
 COPY frontend/admin-panel/nginx.conf /etc/nginx/conf.d/default.conf
