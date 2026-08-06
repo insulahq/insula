@@ -13,6 +13,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Self-upgrade could never resolve a DEV cluster's binary.** The
+  `platform-version` ConfigMap is stamped `<VERSION>-<short-sha>` by build-deploy,
+  and self-upgrade used that verbatim as the release tag — asking GitHub for
+  `v2026.8.2-d847808`, which does not exist. The node then kept whatever binary it
+  had, which is how DEV ran a July build against an August cluster. Assets are now
+  fetched from `releaseTagFor(version)`, which strips a lone git-sha identifier and
+  deliberately leaves a real prerelease (`-rc.N`) alone. Version *comparison* still
+  uses the full string, so a node on `2026.8.2` does not flap when the ConfigMap
+  says `2026.8.2-<newsha>`.
 - **DEV's Flux could not apply anything** — an unescaped `${base}` in the
   `stalwart-extra-ca` init container failed Flux 2.9's strict envsubst
   (`variable not set (strict mode): "base"`), so *every* Kustomization apply
@@ -25,7 +34,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `CLUSTER_ISSUER_NAME`, `STALWART_EXTERNAL_IP`) are allowed bare, and YAML
   comments — stripped by kustomize before substitution — are no longer flagged,
   which previously would have fired on the very comments documenting the rule.
-
 ### Fixed
 - **`platform/VERSION` on `development` now tracks the release line.**
   `cut-release.sh` writes it on `main`, and promotion is one-way
