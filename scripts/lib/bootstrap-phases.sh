@@ -223,6 +223,27 @@ UNIT
   log "platform-ops: self-upgrade + host-config timers installed (${dir})."
 }
 
+
+# A DORMANT SELF-UPGRADE MUST NOT ALSO DISABLE HOST-MIGRATION CONVERGENCE.
+#
+# Every dormancy path below (no trust anchor, no published asset, missing
+# signature, failed verification) is a legitimate refusal to REPLACE the binary.
+# None of them is a reason to leave the host with no converge timer: host
+# migrations are what keep an existing node correct, `host-migrations-desired`
+# defaults to mode=enforce, and without the timer they simply never run.
+#
+# Found on the DEV cluster, which is pinned to a platform version that was never
+# cut as a GitHub release: the asset fetch 404'd, bootstrap skipped the install,
+# and the node sat with 16 unapplied migrations and NO timer to apply them --
+# silently, because nothing reports a timer that was never installed.
+platform_ops_keep_host_config_timer() {
+  local bin="${PLATFORM_OPS_BIN:-/usr/local/bin/insula}"
+  [ -x "$bin" ] || return 0   # nothing to converge with — genuinely dormant
+  log "platform-ops: self-upgrade dormant, but ${bin} is present — installing the host-config converge timer anyway."
+  platform_ops_install_timer || warn "platform-ops: host-config timer install failed (non-fatal)."
+  return 0
+}
+
 # Install the operator CLI on first run. Best-effort + fail-closed (see header).
 # Returns 0 in every expected outcome (installed, already-current, dormant,
 # refused) so it can never abort bootstrap; the caller may still `|| true`.
@@ -291,6 +312,7 @@ phase_platform_ops() {
   # in-repo signing key there is no trust anchor and no published asset.
   if [ ! -r "$pub_src" ]; then
     log "platform-ops: signing key not present (${pub_src}) — binary not yet published; skipping (expected until the platform-ops release pipeline lands)."
+    platform_ops_keep_host_config_timer
     return 0
   fi
 
@@ -308,15 +330,15 @@ phase_platform_ops() {
 
   if ! platform_ops_fetch "$asset" "$tmp_bin"; then
     warn "platform-ops: no asset for v${version} (${asset}) yet — skipping install."
-    rm -rf "$tmp"; return 0
+    rm -rf "$tmp"; platform_ops_keep_host_config_timer; return 0
   fi
   if ! platform_ops_fetch "$sig_url" "$tmp_sig"; then
     warn "platform-ops: binary present but signature missing (${sig_url}) — refusing to install unverified binary."
-    rm -rf "$tmp"; return 0
+    rm -rf "$tmp"; platform_ops_keep_host_config_timer; return 0
   fi
   if ! platform_ops_verify_blob "$tmp_bin" "$tmp_sig" "$pub_src"; then
     warn "platform-ops: signature verification FAILED — refusing to install unverified binary."
-    rm -rf "$tmp"; return 0
+    rm -rf "$tmp"; platform_ops_keep_host_config_timer; return 0
   fi
 
   # Verified. Persist the trust anchor, then atomically swap the binary into

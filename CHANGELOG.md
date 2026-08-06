@@ -12,6 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **`platform/VERSION` on `development` now tracks the release line.**
+  `cut-release.sh` writes it on `main`, and promotion is one-way
+  `development → main`, so the stamp never came back: `development` sat on
+  `2026.6.16` — a version never cut — for six weeks. That is what a fresh install
+  resolves its platform-ops asset from, so the download 404'd, the install was
+  skipped, and the node got no converge timer at all. A new
+  `sync-development-version` release job pushes the released version back to
+  `development` (stable releases only: build-deploy stamps `<VERSION>-<sha>`, and
+  an RC would compose to `2026.8.3-rc.4-<sha>`, which the backend's version regex
+  rejects — silently breaking `installed_platform_version`). Also makes the
+  promote snapshot idempotent, which used to revert `main`'s stamp until
+  cut-release rewrote it.
+- **Chart-bump host-migrations no longer try to DOWNGRADE a newer cluster.** The
+  guard compared the installed chart version to the target with string equality,
+  so a node bootstrapped *after* the migration was written — carrying newer pins —
+  did not match, and the migration ran `helm upgrade --reuse-values` onto an
+  OLDER chart. That fed the old chart values whose schema it does not know, and
+  it failed: cert-manager rejected `runtimeClassName`, which blocked 15 later
+  migrations behind it (ADR-056). A chart bump now establishes a **floor, never a
+  ceiling** — it skips when the release is at or above the target. Affects the
+  five chart-bump migrations under `2026.7.1/`.
+- **A dormant self-upgrade no longer silently disables host-migration
+  convergence.** Every dormancy path in the platform-ops install (no trust anchor,
+  no published asset, missing signature, failed verification) returned before
+  installing the systemd units — so a node pinned to a platform version that was
+  never cut as a release got *no converge timer at all*, and its host migrations
+  could never run. Refusing to REPLACE the binary is a trust decision; refusing to
+  converge an already-installed one is not. The host-config timer is now installed
+  whenever a usable binary is present, and still skipped when there is none.
+
+### Added
+
 ### Security
 - **Image builds now install the lockfile instead of re-resolving it.** Every
   Dockerfile ran `npm install` against a workspace's `package.json` with no
@@ -88,6 +121,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `scripts/test-smoke-aaaa-guard.sh` drives all four branches offline, because a
   false FAIL here would turn `make smoke` red on every existing single-stack
   production cluster.
+
 - **Host-migration state is visible in the admin panel** (Platform → Updates).
   A failed migration blocks every later one on that node, and the only way to
   discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
