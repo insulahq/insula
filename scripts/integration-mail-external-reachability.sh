@@ -202,6 +202,30 @@ unblock_prober() {
     echo "  prober ${PROBE_SOURCE_IP} allowlisted in Stalwart for this run"
   else
     amber "  could not allowlist prober ${PROBE_SOURCE_IP}: $(printf '%s' "$allow" | head -c 160)"
+    return 0
+  fi
+
+  # 3. RECYCLE Stalwart so the entry actually takes effect.
+  #
+  # Writing to AllowedIp is not enough: Stalwart caches the allow/ban lists AT
+  # STARTUP, so a runtime addition is inert until the process restarts. Without
+  # this the suite allowlists itself, keeps probing, gets banned anyway, and
+  # reports a healthy mail server as dead — observed on the single-stack control
+  # run, where the diagnostic correctly said "banned" on nodes that had just been
+  # allowlisted. Same reason the ban survives a BlockedIp delete, and the same
+  # remedy integration-staging.sh already applies for this exact cache.
+  #
+  # Once per run, not per phase: recycling between phases would churn the pod
+  # the phases are measuring.
+  if [ "${PROBER_ALLOW_RECYCLED:-0}" != "1" ]; then
+    PROBER_ALLOW_RECYCLED=1
+    ssh_kubectl "kubectl delete pod -n mail -l app=stalwart-mail --wait=false" >/dev/null 2>&1
+    local _w=0
+    while [ "$_w" -lt 180 ]; do
+      if ssh_kubectl "kubectl get pods -n mail -l app=stalwart-mail" 2>/dev/null | grep -qE '2/2[[:space:]]+Running'; then break; fi
+      sleep 5; _w=$((_w+5))
+    done
+    echo "  stalwart recycled so the allowlist is in its startup cache (${_w}s)"
   fi
 }
 
@@ -350,6 +374,15 @@ probe_node_ports() {
 hdr "TOPOLOGY"
 NODES_JSON=$(ssh_kubectl 'kubectl get node -o json')
 ACTIVE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_active_node FROM system_settings;\"" | head -1)
+# system_settings.mail_active_node is NOT seeded on a cold multi-node bootstrap,
+# so on a fresh cluster this is empty and every expectation built from it is
+# wrong: PHASE 2 then expects NOBODY to serve and reports the real active node as
+# "unexpectedly-open". Derive it from the live Stalwart pod instead — the same
+# fallback placement.ts uses, and the pod's nodeName is the ground truth anyway.
+if [ -z "$ACTIVE" ]; then
+  ACTIVE=$(ssh_kubectl "kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].spec.nodeName}'" 2>/dev/null | head -1)
+  [ -n "$ACTIVE" ] && amber "  mail_active_node unset in the DB — derived from the live Stalwart pod: ${ACTIVE}"
+fi
 PRE_MODE=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT mail_port_exposure_mode FROM system_settings;\"" | head -1)
 echo "Active mail node: $ACTIVE"
 echo "Current mode: $PRE_MODE"
