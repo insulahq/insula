@@ -95,6 +95,23 @@ PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 VMTEST_REGISTRY_MIRROR="${VMTEST_REGISTRY_MIRROR:-}"
 REGISTRY_MIRROR_WRITE_FILES=""
 if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
+  # PREFLIGHT the mirror before seeding it into every node.
+  #
+  # This variable is a HOST, not a boolean, and setting it to something
+  # boolean-looking (VMTEST_REGISTRY_MIRROR=1 — done exactly once, by me) yields
+  # `http://1:4000`. containerd then silently falls back to the upstream
+  # registry, so the run still passes while pulling everything over the WAN —
+  # the failure mode is invisible and the only symptom is the bandwidth bill the
+  # mirror exists to avoid. Fail loudly at spawn instead.
+  for _mp in "${VMTEST_MIRROR_PORT_DOCKER:-4000}" "${VMTEST_MIRROR_PORT_GHCR:-4001}" \
+             "${VMTEST_MIRROR_PORT_QUAY:-4002}" "${VMTEST_MIRROR_PORT_K8S:-4003}"; do
+    if ! curl -sf -o /dev/null --max-time 5 "http://${VMTEST_REGISTRY_MIRROR}:${_mp}/v2/"; then
+      echo "spawn-cluster: registry mirror http://${VMTEST_REGISTRY_MIRROR}:${_mp}/v2/ is not answering." >&2
+      echo "  VMTEST_REGISTRY_MIRROR must be the mirror HOST (e.g. 10.0.0.5), not a flag." >&2
+      echo "  Unset it to run without mirrors." >&2
+      exit 2
+    fi
+  done
   REGISTRY_MIRROR_WRITE_FILES="write_files:
   - path: /etc/rancher/k3s/registries.yaml
     permissions: '0644'
