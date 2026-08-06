@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Chart-bump host-migrations no longer try to DOWNGRADE a newer cluster.** The
+  guard compared the installed chart version to the target with string equality,
+  so a node bootstrapped *after* the migration was written — carrying newer pins —
+  did not match, and the migration ran `helm upgrade --reuse-values` onto an
+  OLDER chart. That fed the old chart values whose schema it does not know, and
+  it failed: cert-manager rejected `runtimeClassName`, which blocked 15 later
+  migrations behind it (ADR-056). A chart bump now establishes a **floor, never a
+  ceiling** — it skips when the release is at or above the target. Affects the
+  five chart-bump migrations under `2026.7.1/`.
+- **A dormant self-upgrade no longer silently disables host-migration
+  convergence.** Every dormancy path in the platform-ops install (no trust anchor,
+  no published asset, missing signature, failed verification) returned before
+  installing the systemd units — so a node pinned to a platform version that was
+  never cut as a release got *no converge timer at all*, and its host migrations
+  could never run. Refusing to REPLACE the binary is a trust decision; refusing to
+  converge an already-installed one is not. The host-config timer is now installed
+  whenever a usable binary is present, and still skipped when there is none.
+
 ### Added
 - **Host-migration state is visible in the admin panel** (Platform → Updates).
   A failed migration blocks every later one on that node, and the only way to
