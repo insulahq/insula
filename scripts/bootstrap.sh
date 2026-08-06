@@ -6952,6 +6952,7 @@ configure_stalwart_full() {
     --from-literal=STALWART_DOMAIN="${stalwart_domain}" \
     --from-literal=PLATFORM_APEX="${PLATFORM_DOMAIN}" \
     --from-literal=STALWART_CONTACT_EMAIL="${STALWART_CONTACT_EMAIL:-}" \
+    --from-literal=STALWART_ACME_DIRECTORY="${STALWART_ACME_DIRECTORY:-}" \
     --from-literal=STALWART_DKIM_PEM="${dkim_pem}" \
     --from-literal=CLUSTER_POD_CIDRS="${stalwart_pod_cidrs}" \
     --from-literal=CLUSTER_SVC_CIDRS="${stalwart_svc_cidrs}" \
@@ -7206,6 +7207,11 @@ spec:
           # the operator supplies STALWART_CONTACT_EMAIL via env.
           # See LE validation: https://datatracker.ietf.org/doc/html/rfc8555#section-7.3
           ACME_CONTACT_EMAIL="\${STALWART_CONTACT_EMAIL:-hostmaster@\${PLATFORM_APEX}}"
+          # ACME directory Stalwart orders its mail cert from. Defaults to public
+          # Let's Encrypt; overridable for environments whose apex is not publicly
+          # resolvable (see --stalwart-acme-directory). Anything but the default
+          # also needs that CA in the container's WHOLE /etc/ssl/certs directory.
+          ACME_DIRECTORY="\${STALWART_ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
           ACME_GET_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:AcmeProvider/get",{accountId:\$a,ids:null,properties:["id"]},"c0"]]}')")
@@ -7214,11 +7220,11 @@ spec:
           if [ -n "\$ACME_PROVIDER_ID" ]; then
             echo "AcmeProvider already exists (id=\${ACME_PROVIDER_ID}) — skipping create"
           else
-            ACME_SET_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" --arg c "\${ACME_CONTACT_EMAIL}" \
+            ACME_SET_RESP=\$(jmap_call "\$(jq -n --arg a "\$ACCT" --arg c "\${ACME_CONTACT_EMAIL}" --arg d "\${ACME_DIRECTORY}" \
               '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
                 methodCalls:[["x:AcmeProvider/set",
                   {accountId:\$a,create:{"letsencrypt":{
-                    directory:"https://acme-v02.api.letsencrypt.org/directory",
+                    directory:\$d,
                     challengeType:"Http01",
                     contact:{(\$c): true}
                   }}},

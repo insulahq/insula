@@ -339,6 +339,19 @@ spec:
                   name: platform-config
                   key: ingress-default-ipv6
                   optional: true
+            # ACME directory Stalwart orders its mail certificate from. Unset by
+            # default, so the reconciler uses public Let's Encrypt exactly as
+            # before. Exists for environments whose apex is not publicly
+            # resolvable — LE answers NXDOMAIN there and the order can never
+            # complete, leaving the mail listener on a self-signed cert. Setting
+            # this ALSO requires that CA to be present in Stalwart's whole
+            # /etc/ssl/certs directory; see ROADMAP R13.
+            - name: STALWART_ACME_DIRECTORY
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: stalwart-acme-directory
+                  optional: true
             - name: CLUSTER_ISSUER_NAME
               valueFrom:
                 configMapKeyRef:
