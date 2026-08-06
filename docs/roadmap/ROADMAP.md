@@ -375,14 +375,37 @@ run: `x:Certificate/get` empty (no cert ever issued), and an `AcmeRenewal` task
 chain going back to bootstrap with `failureReason: "Rate limited. Retry after 689
 seconds"` after 10 failed attempts.
 
-Consequences: the VM tier can never have a valid mail cert (so any assertion that
-one exists is untestable there), and worse, it consumes real LE rate limit from
-disposable clusters — which can starve a genuine issuance elsewhere on the same
-account/IP. **Production is unaffected by the cert failure itself** — there
+Consequence: **the VM tier can never hold a valid mail certificate**, so every
+mail-TLS assertion is untestable there and `integration-mail-external-reachability`
+cannot pass its cert probe on that tier by construction. Production is unaffected —
 `mail.<apex>` resolves publicly and HTTP-01 completes through Traefik →
-`stalwart-mail-acme` → Stalwart — but it does share the rate-limit pool. Fix:
-make the Stalwart AcmeProvider directory configurable (env/setting) and point the
-VM tier at Pebble like everything else.
+`stalwart-mail-acme` → Stalwart.
+
+Fixing it is NOT a one-line directory swap, and should be scoped before it is
+attempted:
+1. The `directory` field is settable (it is a plain JMAP AcmeProvider property),
+   so the value itself is easy — but it needs an env/setting hook, since both
+   `bootstrap.sh` and `stalwart-domain-reconciler.ts` hardcode it.
+2. Stalwart must TRUST Pebble's root to talk to it over HTTPS. The VM harness
+   already puts the root in a `platform-extra-ca-trust` Secret in the `mail`
+   namespace (for Bulwark) but **does not mount it into the stalwart container** —
+   verified 2026-08-06.
+3. **Unverified and the real risk:** Stalwart is Rust, and if its ACME client
+   uses compiled-in roots (`webpki-roots`) rather than the system trust store,
+   mounting a CA bundle changes nothing. Confirm this before promising the
+   approach works.
+
+An alternative that sidesteps all of the above: give the VM tier a publicly
+resolvable throwaway apex, or assert `cert=UNREADABLE`-tolerance on that tier
+explicitly rather than pretending mail TLS is verifiable there.
+
+> **Retracted (rate limits):** an earlier revision claimed production "shares the
+> rate-limit pool" with VM clusters. That is not supported. The limit actually
+> being hit is a per-account/per-hostname failed-validation limit, scoped to each
+> disposable cluster's own throwaway LE account, and the VM clusters never issue a
+> certificate so they consume none of the per-registered-domain quota. The only
+> genuinely shared surface is new-accounts-per-IP, which is shared between VM runs
+> on a common egress IP — not with production, which egresses elsewhere.
 
 > **Retracted:** an earlier revision of this entry claimed Stalwart *drops its
 > mail certificate on pod restart*. That was wrong. It was an artifact of the
