@@ -78,6 +78,46 @@ taken before every upgrade, so the code re-pin is safe on its own.
   revert data to the pre-upgrade state — this reverts volumes and is
   destructive. Confirm explicitly.
 
+## Host migration state (per node)
+
+Some releases carry **host migrations** — small scripts that change the host
+itself (a version pin, a systemd unit, a firewall shape). They cannot travel
+through GitOps, so each node applies them locally on its own hourly converge.
+
+The **Host migrations** card on the same page shows what each node has done:
+applied, pending, failed, blocked, or skipped.
+
+**A failed migration deliberately blocks every later one on that node.** A later
+script may assume an earlier one applied, so the runner halts rather than
+applying migrations out of order. That is why a single failure can leave a node
+reading *0 applied, 11 pending* — the queue is intact, it is waiting.
+
+When a node needs attention it expands itself and shows:
+
+- the migration that failed and **why**,
+- how many times it has been retried and **since when** — a handful of attempts
+  is a transient failure clearing itself; hundreds since July is a deterministic
+  one that will never clear on its own,
+- anything an operator has skipped, with the reason recorded.
+
+!!! note "There is no Retry button, on purpose"
+    Migrations re-run **automatically every hour** on each node, so a transient
+    failure clears itself and a fixed cause is picked up without you doing
+    anything. A button would only wait for that same converge. Fix the cause on
+    the node, then run `insula host-config apply` if you don't want to wait out
+    the hour.
+
+If a migration can *never* apply to a host — it targets something that host
+doesn't have — record a skip so the rest of the chain proceeds. Never create the
+`.done` marker by hand: that reports the migration as **applied**, and the next
+one will assume work that never happened. The
+[host-migration troubleshooting runbook](https://github.com/insulahq/insula/blob/main/docs/operations/HOST_MIGRATION_TROUBLESHOOTING.md)
+walks through both, and the card links straight to it.
+
+A node that has never converged, or one running an older agent, reports *not
+reported yet* rather than an error — that is normal on a fresh install and is
+not flagged as a problem.
+
 ## `platform-ops` on your hosts
 
 Every node carries `platform-ops`, a small CLI that does the on-host half of the
