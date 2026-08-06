@@ -254,6 +254,18 @@ WAITCERT
   # default trust store; without this, that fetch fails on the Pebble-signed cert and
   # oidc-dex fails. The secret is created imperatively (NOT in the Flux overlay), so its
   # contents stick; reload platform-api so the new pod mounts it.
+  # Extract Pebble's MINICA root here, on the harness, NOT inside the CP heredoc.
+  # The CP node has no SSH key for the services VM (only the runner gets one), so
+  # the in-heredoc `ssh root@pebble docker cp` silently produced an empty file and
+  # the extra-CA Secret was never created — the WARN fired and Stalwart went on
+  # trusting nothing. Base64 so it survives the heredoc round-trip intact.
+  #
+  # minica is the CA that signs Pebble's OWN directory TLS; it is NOT the same as
+  # /roots/0, which signs the certs Pebble issues. Stalwart needs both.
+  PEBBLE_MINICA_B64=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+      "root@${VMTEST_PEBBLE_IP}" 'docker cp pebble:/test/certs/pebble.minica.pem - 2>/dev/null | tar xO' 2>/dev/null | base64 -w0)
+  [[ -n "$PEBBLE_MINICA_B64" ]] || echo "  WARN: could not extract pebble.minica.pem from ${VMTEST_PEBBLE_IP}" >&2
+
   echo "── injecting Pebble root into platform-api trust (oidc-dex server-side TLS) ──"
   ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<PICA || true
     curl -sk --max-time 15 https://${VMTEST_PEBBLE_IP}:15000/roots/0 -o /tmp/pebble-root.crt
@@ -294,8 +306,7 @@ WAITCERT
     # 443/80, which is all public LE needs).
     echo "── giving Stalwart Pebble's roots + a resolvable 'pebble' name ──"
     docker_minica=/tmp/pebble-minica.pem
-    ssh -o StrictHostKeyChecking=no -i /root/hosting-platform.key root@${VMTEST_PEBBLE_IP} \
-      'docker cp pebble:/test/certs/pebble.minica.pem - 2>/dev/null | tar xO' > "\$docker_minica" 2>/dev/null || true
+    printf '%s' "${PEBBLE_MINICA_B64}" | base64 -d > "\$docker_minica" 2>/dev/null || true
     if [ -s "\$docker_minica" ]; then
       k3s kubectl -n mail create secret generic stalwart-extra-ca \
         --from-file=pebble-minica.crt="\$docker_minica" \
@@ -341,8 +352,11 @@ PEBSVC
     # still unset. Passing --stalwart-acme-directory to bootstrap is still
     # REQUIRED: without it bootstrap would successfully create a *Let's Encrypt*
     # provider, and that one would be locked in forever.
-    k3s kubectl -n platform patch configmap platform-config --type=merge \
-      -p "{\"data\":{\"stalwart-acme-directory\":\"https://pebble:14000/dir\"}}" >/dev/null 2>&1 || true
+    # platform-config already carries stalwart-acme-directory (bootstrap writes it
+    # at ConfigMap-creation time — setting it here instead loses a race with the
+    # reconciler's first tick, which permanently locks in a Let's Encrypt
+    # provider). Only the restart is needed, so platform-api picks up trust
+    # changes and re-attempts the order now that Pebble is reachable.
     k3s kubectl -n platform delete pod -l app=platform-api --ignore-not-found >/dev/null 2>&1 || true
     k3s kubectl -n platform rollout status deploy/platform-api --timeout=180s >/dev/null 2>&1 || true
     echo "  platform-api restarted with stalwart-acme-directory=https://pebble:14000/dir"
