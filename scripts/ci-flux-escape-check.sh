@@ -66,8 +66,16 @@ with open(path, 'r', encoding='utf-8', errors='replace') as fh:
 
 joined = ''.join(lines)
 
-# Quick reject: not a CronJob/Job manifest.
-if not re.search(r'(?m)^kind:\s*(CronJob|Job)\s*$', joined):
+# Quick reject: nothing that could carry an inline shell block.
+#
+# This used to gate on `kind: CronJob|Job`, which is how an unescaped ${base}
+# reached a Deployment INIT CONTAINER (stalwart-extra-ca) and wedged the entire
+# DEV Kustomization under Flux 2.9 strict envsubst — every apply failed with
+# `variable not set (strict mode): "base"` while this guard reported clean. Any
+# workload kind can hold an args:/command: block, and a kustomize component
+# patch may not declare a kind at all. The block detection below is the real
+# scope; the only thing worth rejecting early is a file with no such block.
+if not re.search(r'(?m)^\s*(args|command):\s*$', joined):
     sys.exit(0)
 
 # File-level opt-out: explicitly excluded from Flux's reconcile loop.
@@ -91,6 +99,11 @@ block_indent = -1
 # strict identifier regex doesn't match them.
 RE_BARE = re.compile(r'(?<!\$)\$\{([A-Za-z_][A-Za-z0-9_]*)([:=+?\-][^}]*)?\}')
 
+# Names Flux is SUPPOSED to substitute (platform-cluster-config, referenced by
+# every Kustomization's postBuild.substituteFrom). A bare ${DOMAIN} in an args:
+# block is CORRECT — it must resolve at apply time, not survive to the shell.
+SUBSTITUTED = {'DOMAIN', 'ENV', 'CLUSTER_ISSUER_NAME', 'STALWART_EXTERNAL_IP'}
+
 KEY_RE = re.compile(r'^(\s*)(args|command):\s*$')
 
 for idx, raw in enumerate(lines, 1):
@@ -101,17 +114,32 @@ for idx, raw in enumerate(lines, 1):
     m = KEY_RE.match(line)
     if m:
         in_block = True
+        in_scalar = False
         block_indent = indent
         continue
 
     if in_block:
+        # Track entry into a block scalar (`- |`): its content IS the script and
+        # reaches envsubst, `#` lines included. A `#` line OUTSIDE a scalar is a
+        # YAML comment, stripped by kustomize before Flux substitutes — so the
+        # comments that TEACH this escaping rule are not findings.
+        if re.match(r'^\s*-\s*[|>]', line):
+            in_scalar = True
+            scalar_indent = indent
+            continue
+        if in_scalar and stripped.strip() and indent <= scalar_indent:
+            in_scalar = False
+
         # End of block: a non-empty, non-comment-only line at indent
         # ≤ block_indent that isn't a list-continuation or block-scalar.
         if (stripped.strip()
                 and indent <= block_indent
                 and not stripped.startswith(('-', '|', '>'))):
             in_block = False
+            in_scalar = False
             # fall through; this line is outside the block
+        elif not in_scalar and stripped.startswith('#'):
+            continue  # YAML comment — never reaches envsubst
         else:
             # Inside block — scan for bare ${VAR} unless line has the
             # opt-out pragma.
@@ -123,6 +151,8 @@ for idx, raw in enumerate(lines, 1):
                 # forms don't reach here. Defensive double-check:
                 inner = hit.group(0)
                 if '[' in inner or '#' in inner.split('{', 1)[1].split('}', 1)[0]:
+                    continue
+                if hit.group(1) in SUBSTITUTED:
                     continue
                 col = hit.start() + 1
                 print(f"{path}:{idx}:{col}:{inner}")
@@ -138,7 +168,7 @@ PY
 done < <(find "$ROOT" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0)
 
 if [ $FAIL -ne 0 ]; then
-  echo "❌ ci-flux-escape-check: bare \${VAR} inside CronJob/Job args/command block(s)."
+  echo "❌ ci-flux-escape-check: bare \${VAR} inside an args/command block(s)."
   echo
   echo "  Flux postBuild.substituteFrom expands every \${VAR} against"
   echo "  platform-cluster-config. Bash locals and pod-env vars get"
@@ -162,4 +192,4 @@ if [ $FAIL -ne 0 ]; then
   exit 1
 fi
 
-echo "✅ ci-flux-escape-check: no bare \${VAR} inside CronJob/Job args/command blocks."
+echo "✅ ci-flux-escape-check: no bare \${VAR} inside any args/command block."
