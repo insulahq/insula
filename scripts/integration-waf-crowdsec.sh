@@ -580,12 +580,31 @@ else
     warn "SKIP_PHASE_4_EXTERNAL=1 — skipping external enforcement test"
     skipped=$((skipped + traefik_count * 2))
   else
-    # Discover our own outbound public IP.
-    HARNESS_OUTBOUND_IP=$(curl -s --max-time 5 https://api.ipify.org)
+    # Discover the source address the CLUSTER sees us as.
+    #
+    # NOT api.ipify.org, which reports the public NAT egress. That is only the
+    # right answer when the harness reaches the nodes over the internet. On the
+    # VM tier the runner sits on the same private run network as the nodes, so
+    # the server sees 10.98.x.y while ipify reports the site's public IP — the
+    # ban then targets an address that never appears in a request and all four
+    # nodes correctly return 200, which the suite scored as an enforcement
+    # failure. (Observed on VM run 71085648: banned 160.x.x.x, probed from
+    # 10.98.24.94.) The existing warning at the node-IP fallback below hinted at
+    # this assumption; it just was not enforced.
+    #
+    # SSH_CLIENT on the cluster node is authoritative: it is the source address
+    # of the very connection the harness is making. On a routed/internet setup
+    # that IS the public IP, so this is strictly more correct, not a VM-tier
+    # special case. ipify remains the fallback for transports with no SSH_CLIENT.
+    HARNESS_OUTBOUND_IP=$(ssh_run 'echo $SSH_CLIENT' 2>/dev/null | awk '{print $1}')
+    if ! [[ "$HARNESS_OUTBOUND_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      HARNESS_OUTBOUND_IP=$(curl -s --max-time 5 https://api.ipify.org)
+      warn "SSH_CLIENT unavailable — falling back to the public egress IP; enforcement is only meaningful if the nodes see that address"
+    fi
     if ! [[ "$HARNESS_OUTBOUND_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       fail "could not detect harness outbound IP (got: $HARNESS_OUTBOUND_IP) — skipping enforcement"
     else
-      ok "harness outbound IP: $HARNESS_OUTBOUND_IP"
+      ok "harness source IP as the cluster sees it: $HARNESS_OUTBOUND_IP"
 
       # Get every cluster node's External-IP (one per node = one Traefik
       # pod via hostPort 443). `kubectl get nodes -o wide` is the most
