@@ -357,10 +357,30 @@ open.
   rDNS is in place and warmed trades a reachability win for a deliverability
   loss. Inbound v6 is safe today; outbound needs the operator's PTR first.
 - The single-stack **multi-node** control run for `mail-external-reachability`.
-  The suite no longer bans its own prober (it declares itself to Stalwart first
-  — see the CHANGELOG), which explains and removes the cause of its failures on
-  runs `6e9e214b` and `34090e97`; a control run should still confirm that on a
-  clean cluster.
+  The dual-stack run is now clean (2026-08-06, run `6e9e214b`): every port
+  probe, SMTP banner, negative expectation and the mode-switch refusal pass on
+  all four nodes across all four phases, and `BlockedIp` is EMPTY at the end —
+  the prober is never banned, which was the entire cause of the historical
+  failures. The single-stack variant is still worth running as a control.
+
+**Stalwart does not re-acquire its mail certificate after a pod restart**
+(found 2026-08-06 on run `6e9e214b`; PRE-EXISTING, unrelated to dual-stack).
+Restart the `stalwart-mail` pod and the listener falls back to its built-in
+self-signed cert (`CN=rcgen self signed cert`, `SAN: localhost`). It did **not**
+recover in 33 minutes — past the stalwart-domain reconciler's 30-min tick — and
+an explicit `POST /admin/mail/stalwart-reprovision` did not fix it either. Proven
+by comparison on one cluster: the suite's cert probe passed on all three server
+nodes before the restart and failed on all of them after.
+
+The blast radius is every mail-pod reschedule — node drain, platform upgrade, and
+mail failover (`POST /admin/mail/migrate`) — during which every TLS-verifying
+IMAP/SMTP client fails. Mitigating factors: the platform *does* detect it
+(`deliverability.certSanMatch` = fail with an accurate remediation, and mail
+health goes `healthy: false`), so it is visible rather than silent. What is
+missing is automatic remediation. Note also that the dedicated `cert` component
+reports `healthy: true` throughout — it checks the cert-manager-issued certs, not
+what Stalwart's mail listener actually serves — so the two signals disagree and
+only the deliverability one is right.
 
 **Closed 2026-08-06** (were listed here as open):
 - *The node's IPv6 is invisible in the admin panel* — migration 0080 adds
