@@ -116,7 +116,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   which detect a *tampered* artifact that no CVE feed will ever mention — daily,
   because a dependency can be compromised long after it entered the lockfile.
   (4) All 228 GitHub Actions references are now pinned by commit SHA rather than
-  mutable tag.
+  mutable tag — **and `ci-actions-pinned-check.sh` now enforces it**. The manual
+  pass had already drifted to 227/228 within a day: `actions/checkout@v7` in
+  release.yml's version-sync job, which runs with `permissions: contents: write`,
+  so a retagged release would have executed in a runner holding a repo write
+  token (the tj-actions/changed-files pattern). Pinning by hand is a one-time
+  act; the guard is what makes it a property.
+- **A `not_affected` entry for `GO-2026-5932`** (`golang.org/x/crypto`). The
+  advisory is module-scoped — "the openpgp subpackage is unmaintained and unsafe
+  by design" — so OSV flags every consumer of x/crypto regardless of which
+  subpackage they import, and it carries no CVSS and no fixed version. Untriaged
+  it printed an unactionable ⚠ on every scan, forever. Verified unreachable by
+  resolving the real build graph (go1.26.5, `go list -deps ./...`, rc=0) rather
+  than grepping our own source, since a transitive dependency could have pulled
+  openpgp in: sftp-gateway resolves 594 packages, file-manager 171, and openpgp
+  is in neither. The x/crypto packages actually compiled are ssh, chacha20poly1305,
+  curve25519, cryptobyte, blowfish and bcrypt_pbkdf.
 - **The dependency gate passed malicious packages.** `component-watch-gate.py`
   classified findings purely by CVSS, and a `MAL-` advisory — the OSV record for
   a package that has been hijacked and republished — usually carries no severity
