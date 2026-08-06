@@ -6183,17 +6183,6 @@ create_platform_configmap() {
     --from-literal=ingress-base-domain="${PLATFORM_DOMAIN:-}" \
     --from-literal=platform-base-domain="${PLATFORM_DOMAIN:-}" \
     --from-literal=ingress-default-ipv4="${PUBLIC_IP:-}" \
-    `# Stalwart's ACME directory, read by stalwart-domain-reconciler. Written` \
-    `# HERE — at the same moment the ConfigMap is first created — because the` \
-    `# reconciler races everything else: AcmeProvider.directory is READ-ONLY` \
-    `# once created and the provider cannot be deleted while a Domain links to` \
-    `# it, so whichever value the reconciler sees on its FIRST tick is the` \
-    `# value that cluster keeps forever. Setting it post-bootstrap lost that` \
-    `# race on VM run 7f196aa0: bootstrap's own attempt failed (no CA trust` \
-    `# yet, which is fine and leaves no provider), the reconciler then ticked` \
-    `# with the built-in default and created a LET'S ENCRYPT provider, and the` \
-    `# cluster was stuck with it. Empty = the reconciler's own default.` \
-    --from-literal=stalwart-acme-directory="${STALWART_ACME_DIRECTORY:-}" \
     --from-literal=api-url="https://api.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=admin-url="https://admin.${PLATFORM_DOMAIN:-localhost}" \
     --from-literal=tenant-url="https://tenant.${PLATFORM_DOMAIN:-localhost}" \
@@ -6224,6 +6213,25 @@ create_platform_configmap() {
     `# Belt-and-braces against X-Forwarded-Host spoofing.` \
     --from-literal=platform-public-hosts="admin.${PLATFORM_DOMAIN:-localhost},tenant.${PLATFORM_DOMAIN:-localhost}" \
     --dry-run=client -o yaml | kctl apply -f -
+
+  # Stalwart's ACME directory, read by stalwart-domain-reconciler.
+  #
+  # A DEDICATED ConfigMap, deliberately not a platform-config key: platform-config
+  # ships in k8s/base and is owned by Flux, which overwrites bootstrap's value on
+  # the next reconcile. That cost VM run 1f0c03dd its mail cert — bootstrap wrote
+  # the key, Flux reconciled it away, and the reconciler then created a permanent
+  # LET'S ENCRYPT provider because AcmeProvider.directory is read-only once set.
+  # Nothing in k8s/ ships platform-mail-acme, so what bootstrap writes here stays.
+  #
+  # Only written when non-empty: an absent ConfigMap leaves the optional env unset
+  # and the reconciler uses its own public-LE default, exactly as before.
+  if [[ -n "${STALWART_ACME_DIRECTORY:-}" ]]; then
+    log "Seeding platform-mail-acme ConfigMap (directory=${STALWART_ACME_DIRECTORY})..."
+    kctl create configmap platform-mail-acme \
+      --namespace=platform \
+      --from-literal=directory="${STALWART_ACME_DIRECTORY}" \
+      --dry-run=client -o yaml | kctl apply -f -
+  fi
   log "platform-config ConfigMap applied (issuer=${issuer_name})."
 
   # --acme-server: override the RECONCILER's cert issuers too. platform-api creates most

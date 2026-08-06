@@ -349,8 +349,15 @@ spec:
             - name: STALWART_ACME_DIRECTORY
               valueFrom:
                 configMapKeyRef:
-                  name: platform-config
-                  key: stalwart-acme-directory
+                  # platform-mail-acme, NOT platform-config: platform-config is
+                  # shipped in k8s/base and therefore OWNED BY FLUX, which
+                  # overwrites anything bootstrap writes into it on the next
+                  # reconcile. That is exactly what happened on VM run 1f0c03dd —
+                  # bootstrap set the key, Flux reconciled, the key vanished, and
+                  # the reconciler fell back to Let's Encrypt. This ConfigMap is
+                  # created by bootstrap and shipped by nothing, so it survives.
+                  name: platform-mail-acme
+                  key: directory
                   optional: true
             - name: CLUSTER_ISSUER_NAME
               valueFrom:

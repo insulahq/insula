@@ -308,10 +308,14 @@ WAITCERT
     docker_minica=/tmp/pebble-minica.pem
     printf '%s' "${PEBBLE_MINICA_B64}" | base64 -d > "\$docker_minica" 2>/dev/null || true
     if [ -s "\$docker_minica" ]; then
-      k3s kubectl -n mail create secret generic stalwart-extra-ca \
+      if k3s kubectl -n mail create secret generic stalwart-extra-ca \
         --from-file=pebble-minica.crt="\$docker_minica" \
         --from-file=pebble-issuer.crt=/tmp/pebble-root.crt \
-        --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null
+        --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null; then
+        echo "  stalwart-extra-ca created (\$(k3s kubectl -n mail get secret stalwart-extra-ca -o jsonpath='{.data}' | tr ',' '\n' | grep -c crt) roots)"
+      else
+        echo "  ERROR: failed to create stalwart-extra-ca — Stalwart will not trust Pebble" >&2
+      fi
     else
       echo "  WARN: could not extract pebble.minica.pem — Stalwart will not trust Pebble's directory TLS" >&2
     fi
