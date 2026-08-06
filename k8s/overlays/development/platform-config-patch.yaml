@@ -8,7 +8,8 @@ data:
   log-level: "info"
   default-storage-class: "longhorn"
   ingress-base-domain: "${DOMAIN}"
-  cluster-issuer-name: "letsencrypt-prod-http01"
+  # Substituted, never literal — see k8s/base/platform-config.yaml for why.
+  cluster-issuer-name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
   admin-url: "https://admin.${DOMAIN}"
   tenant-url: "https://tenant.${DOMAIN}"
   # Canonical public URL used to mint CRL distribution URLs in mTLS
