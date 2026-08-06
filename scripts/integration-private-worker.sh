@@ -459,28 +459,55 @@ phase3_traffic() {
     fi
   fi
 
-  # USER-VISIBLE: served TLS cert subject CN matches the host (rules out
-  # MITM / wildcard-mismatch / fallback-cert scenarios). HTTP-01 issuance
-  # can take a few minutes; poll until the LE cert lands or the budget
-  # expires. The intermediate "Kubernetes Ingress Controller Fake
-  # Certificate" is the placeholder NGINX serves before issuance.
-  local cert_cn=""
-  local cert_t=0
+  # USER-VISIBLE: the served TLS cert actually covers this host (rules out
+  # MITM / wildcard-mismatch / fallback-cert scenarios). HTTP-01 issuance can
+  # take a few minutes; poll until the cert lands or the budget expires.
+  #
+  # Match on the SUBJECT ALTERNATIVE NAME, not the subject CN. CN-based
+  # hostname validation was deprecated by RFC 6125 and dropped by Chrome in
+  # 2017; issuers increasingly emit a cert with an EMPTY subject and the
+  # hostnames only in the SAN. Pebble (the ACME server the VM tier uses for its
+  # private apex) does exactly that:
+  #     subject=
+  #     issuer=CN=Pebble Intermediate CA 17fffd
+  #     X509v3 Subject Alternative Name: critical
+  #         DNS:admin.<apex>, DNS:tenant.<apex>
+  # so the old CN assertion could never pass there and reported
+  # "cn=subject=" against a perfectly valid certificate. CN stays as a
+  # fallback for issuers that still populate it.
+  _cert_names() {  # -> newline-separated DNS names the served cert covers
+    local pem; pem=$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null)
+    [[ -z "$pem" ]] && return 0
+    local san
+    san=$(printf '%s' "$pem" | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+          | tr ',' '\n' | sed -nE 's/.*DNS:[[:space:]]*([^[:space:],]+).*/\1/p')
+    [[ -z "$san" ]] && san=$(printf '%s' "$pem" | openssl x509 -noout -text 2>/dev/null \
+          | grep -A1 'Subject Alternative Name' | tr ',' '\n' \
+          | sed -nE 's/.*DNS:[[:space:]]*([^[:space:],]+).*/\1/p')
+    printf '%s\n' "$san"
+    printf '%s' "$pem" | openssl x509 -noout -subject 2>/dev/null \
+      | sed -nE 's/.*CN[[:space:]]*=[[:space:]]*([^,/]+).*/\1/p' | tr -d ' '
+  }
+  _covers_host() {  # $1 = candidate name; exact or one-label wildcard
+    local n="$1"
+    [[ -z "$n" ]] && return 1
+    [[ "$n" == "$host" ]] && return 0
+    [[ "$n" == "*."* && "${host#*.}" == "${n#\*.}" ]] && return 0
+    return 1
+  }
+  local cert_names="" matched="" cert_t=0
   while (( cert_t < 360 )); do
-    cert_cn=$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null \
-      | openssl x509 -noout -subject 2>/dev/null \
-      | sed -E 's/.*CN[ ]*=[ ]*([^,/]+).*/\1/' \
-      | tr -d ' ')
-    if [[ "$cert_cn" == "$host" ]] || [[ "$cert_cn" == "*."* && "${host#*.}" == "${cert_cn#\*.}" ]]; then
-      break
-    fi
+    cert_names=$(_cert_names)
+    matched=""
+    while IFS= read -r n; do _covers_host "$n" && { matched="$n"; break; }; done <<< "$cert_names"
+    [[ -n "$matched" ]] && break
     sleep 15
     cert_t=$((cert_t + 15))
   done
-  if [[ "$cert_cn" == "$host" ]] || [[ "$cert_cn" == "*."* && "${host#*.}" == "${cert_cn#\*.}" ]]; then
-    ok "TLS cert CN '$cert_cn' matches host '$host'"
+  if [[ -n "$matched" ]]; then
+    ok "TLS cert covers host '$host' (matched '$matched')"
   else
-    fail "TLS cert CN mismatch (cn=$cert_cn host=$host)"
+    fail "TLS cert does not cover host '$host' (cert names: $(printf '%s' "$cert_names" | tr '\n' ' ' | sed 's/ $//'))"
   fi
 
   local elapsed=$(( $(date +%s) - started_at ))
