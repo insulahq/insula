@@ -440,8 +440,8 @@ mapfile -t NODE_LINES < <(
   echo "$NODES_JSON" | jq -r '.items[] | [
     .metadata.name,
     (.metadata.labels["insula.host/node-role"] // "unknown"),
-    ([.status.addresses[]? | select(.type=="ExternalIP") | .address, .status.addresses[]? | select(.type=="InternalIP") | .address]
-      | map(select(test(":") | not)) | .[0] // "")
+    ([.status.addresses[]? | select(.type=="ExternalIP" or .type=="InternalIP") | .address]
+      | map(select(contains(":") | not)) | .[0] // "")
   ] | @tsv'
 )
 
@@ -452,13 +452,24 @@ while IFS=$'\t' read -r _n _a; do
   [ -n "${_a:-}" ] && NODE_V6["$_n"]="$_a"
 done < <(echo "$NODES_JSON" | jq -r '.items[] | [
     .metadata.name,
-    ([.status.addresses[]? | select(.type=="ExternalIP") | .address, .status.addresses[]? | select(.type=="InternalIP") | .address]
-      | map(select(test(":"))) | .[0] // "")
+    ([.status.addresses[]? | select(.type=="ExternalIP" or .type=="InternalIP") | .address]
+      | map(select(contains(":"))) | .[0] // "")
   ] | @tsv')
 CLUSTER_DUAL_STACK=no
-echo "$NODES_JSON" | jq -e '[.items[].spec.podCIDRs // [] | .[]] | map(select(test(":"))) | length > 0' >/dev/null 2>&1 && CLUSTER_DUAL_STACK=yes
+echo "$NODES_JSON" | jq -e '[.items[].spec.podCIDRs // [] | .[]] | map(select(contains(":"))) | length > 0' >/dev/null 2>&1 && CLUSTER_DUAL_STACK=yes
 echo "Cluster dual-stack: $CLUSTER_DUAL_STACK"
-[ "$CLUSTER_DUAL_STACK" = yes ] && echo "Node IPv6: $(for k in "${!NODE_V6[@]}"; do printf '%s=%s ' "$k" "${NODE_V6[$k]}"; done)"
+if [ "$CLUSTER_DUAL_STACK" = yes ]; then
+  echo "Node IPv6: $(for k in "${!NODE_V6[@]}"; do printf '%s=%s ' "$k" "${NODE_V6[$k]}"; done)"
+  # FAIL LOUDLY rather than skip. A dual-stack cluster with no discoverable node
+  # IPv6 means the discovery is broken, and the v6 assertions would then silently
+  # not run at all — which is how the first version of this shipped: it printed
+  # "Cluster dual-stack: yes / Node IPv6:" and every phase quietly skipped the v6
+  # half while the run went green.
+  if [ "${#NODE_V6[@]}" -eq 0 ]; then
+    red "  dual-stack cluster but NO node IPv6 discovered — the IPv6 assertions cannot run"
+    exit 1
+  fi
+fi
 
 echo "Nodes:"
 for L in "${NODE_LINES[@]}"; do
