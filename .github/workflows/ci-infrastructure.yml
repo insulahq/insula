@@ -625,6 +625,8 @@ jobs:
         run: ./scripts/ci-snapshot-fallback-check.sh
       - name: tenant-restore deny-list covers all sensitive columns
         run: ./scripts/ci-tenant-restore-policy-check.sh
+      - name: every GitHub Action is pinned to a commit SHA
+        run: ./scripts/ci-actions-pinned-check.sh
 
   # kubectl is preinstalled on ubuntu-latest runners; these render overlays
   # with `kubectl kustomize` (same as the kustomize-build + admin-auth jobs).
