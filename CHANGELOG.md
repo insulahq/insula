@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Remediated the brace-expansion and fast-uri advisories instead of leaving
+  them waived.** `GHSA-rgw5-rvv9-x895` (CVSS 7.5) and `GHSA-7p8r-x3mc-p8w7`
+  (CVSS 7.5) were triaged `reachable: false` and left `status: open` with the
+  remediation recorded. That remediation is now applied: the root
+  `brace-expansion` override moves `^5.0.8 → ^5.0.9` exactly as the ledger
+  prescribed, and `fast-uri` takes its patch on both major lines (3.1.4 → 3.1.5,
+  4.1.1 → 4.1.2) rather than an override, because ajv needs the 3.x line and
+  forcing one major on both would break it. Both ledger entries are now
+  `status: fixed`. Verified: OSV no longer reports either package, the
+  component-watch gate passes, and the backend suite is 5986 green.
+
 ### Fixed
 - **Self-upgrade could never resolve a DEV cluster's binary.** The
   `platform-version` ConfigMap is stamped `<VERSION>-<short-sha>` by build-deploy,
