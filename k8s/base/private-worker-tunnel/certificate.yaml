@@ -45,6 +45,12 @@ spec:
   dnsNames:
     - tunnels.${DOMAIN}
   issuerRef:
-    name: letsencrypt-prod-http01
+    # Substituted, never literal — matches every other platform Certificate
+    # (stalwart-mail/ingress-mgmt.yaml, roundcube-deployment.yaml) and
+    # platform-config's cluster-issuer-name. Pinned to Let's Encrypt prod, this
+    # cert could never be issued on a private apex: HTTP-01 has no route from
+    # the public ACME server, so tunnels.<apex> fell back to the Traefik default
+    # cert and integration-private-worker.sh failed on a CN mismatch.
+    name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
     kind: ClusterIssuer
     group: cert-manager.io
