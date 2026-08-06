@@ -35,6 +35,20 @@ updates:
       # ignore once typescript-eslint supports TS 7.
       - dependency-name: typescript
         update-types: ["version-update:semver-major"]
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
 
   # ── Go modules (first-party reconcilers + sftp-gateway) ──
@@ -43,24 +57,80 @@ updates:
     target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/host-config-reconciler
     target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/security-probe
     target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
   - package-ecosystem: gomod
     directory: /images/sftp-gateway
     target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
   # file-manager was missing from this list (added 2026-07-24) — its
   # go.mod deps (x/crypto for sftp/ssh) went unwatched by Dependabot.
@@ -69,6 +139,20 @@ updates:
     target-branch: development
     schedule: { interval: weekly }
     groups: { gomod: { update-types: [minor, patch] } }
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
 
   # ── Rust (RocksDB checkpoint helper) ──
@@ -78,6 +162,20 @@ updates:
     schedule: { interval: weekly }
     # librocksdb-sys is intentionally pinned (=0.17.3) to Stalwart's RocksDB
     # version — Dependabot may propose, but review against ADR-046 before merge.
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "security-watch"]
 
   # ── GitHub Actions (CI toolchain) ──
@@ -86,4 +184,18 @@ updates:
     target-branch: development
     schedule: { interval: weekly }
     groups: { actions: { update-types: [minor, patch] } }
+    # Minimum release age before a version bump is proposed (2026-08-06).
+    #
+    # Every package in the 2026-08 keyv/@adminide-stack compromise was attacked
+    # by PUBLISHING A NEW VERSION — which is exactly what Dependabot chases. An
+    # unaged bot bumps you onto a malicious release within hours of publication,
+    # before the ecosystem has noticed. A week of soak turns Dependabot from an
+    # amplifier of that attack into a filter against it.
+    #
+    # This delays VERSION updates only. Dependabot SECURITY updates (advisory
+    # driven) are not gated by cooldown, so a real CVE fix still arrives at once.
+    # Majors wait longer: they are the least urgent and the most disruptive.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
     labels: ["dependencies", "ci"]

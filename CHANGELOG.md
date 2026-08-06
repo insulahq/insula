@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Dependency supply-chain hardening.** Four controls, aimed at the class of
+  attack where a package is *hijacked and republished* rather than found
+  vulnerable — the 2026-08 keyv/@adminide-stack wave, which no CVE feed would
+  have flagged. (1) `.npmrc` sets `ignore-scripts=true`: a dependency's
+  install script runs with the full privileges of whoever ran `npm ci`, which
+  in CI means the registry credentials and push token, and it executes without
+  the package ever being imported. The Dockerfiles already passed
+  `--ignore-scripts`, so this closes the same hole for CI runners and developer
+  machines. (2) Dependabot gains a 7-day cooldown (14 for majors) so a bot bump
+  can no longer adopt a malicious release within hours of publication; security
+  updates are advisory-driven and remain immediate. (3) A new dependency-audit
+  workflow runs `npm audit signatures` (registry signatures + provenance —
+  detects a *tampered* artifact, which CVE scanning cannot) and an OSV scan of
+  the lockfile that **fails on malicious-package advisories** while reporting
+  ordinary CVEs as warnings, since that triage already lives in the CVE ledger.
+  It also runs daily, because a dependency can be compromised long after it
+  entered the lockfile. (4) All 228 GitHub Actions references are now pinned by
+  commit SHA rather than mutable tag.
+
 ### Added
 - **The node's IPv6 is now visible in the admin panel** (migration 0080,
   `cluster_nodes.public_ipv6`). Node sync stored a single `public_ip` taken from

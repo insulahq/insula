@@ -38,7 +38,7 @@ jobs:
     name: No operator IPs/domains in committed files
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Scan every tracked file for operator domains and node IPs
         # Repo-wide identifier guard. Real cluster values belong in the
         # gitignored scripts/integration.env profile, never in committed
@@ -63,7 +63,7 @@ jobs:
     # k8s/scripts/security change, and any branch protection referencing that
     # check name keeps working.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install gitleaks (latest stable)
         run: |
           ver=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
