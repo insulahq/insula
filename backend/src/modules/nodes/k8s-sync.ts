@@ -303,10 +303,24 @@ export function projectNode(node: K8sNode): ObservedNode {
     : ingressLabelRaw === 'none' ? 'none'
     : 'all';
 
+  // Address selection is PER FAMILY. On a dual-stack cluster a Node carries two
+  // InternalIPs and (when the host has a global v6) two ExternalIPs, so a bare
+  // `.find(ExternalIP)` returns whichever family k3s listed first — always the
+  // v4 — and the node's IPv6 was invisible everywhere downstream: the panel's
+  // node row, and the `v6Set` in getPlatformIngressIps() whose `includes(':')`
+  // branch could never match. The operator needs the v6 to set
+  // `ingress_default_ipv6`, which drives every apex AAAA.
   const addresses = node.status?.addresses ?? [];
-  const publicIp = addresses.find((a) => a.type === 'ExternalIP')?.address
-    ?? addresses.find((a) => a.type === 'InternalIP')?.address
-    ?? null;
+  const isV6 = (a: { address?: string }) => (a.address ?? '').includes(':');
+  const pick = (type: string, v6: boolean) =>
+    addresses.find((a) => a.type === type && isV6(a) === v6)?.address ?? null;
+  // v4 keeps the historical ExternalIP→InternalIP fallback: on a single-NIC
+  // cloud VPS the InternalIP *is* the public address.
+  const publicIp = pick('ExternalIP', false) ?? pick('InternalIP', false) ?? null;
+  // v6 does NOT fall back to InternalIP. bootstrap only publishes a GLOBAL v6
+  // as ExternalIP; the InternalIP v6 may be a ULA, and reporting a ULA as the
+  // node's public address would send an operator to an off-link address.
+  const publicIpv6 = pick('ExternalIP', true);
 
   const kubeletVersion = node.status?.nodeInfo?.kubeletVersion ?? null;
 
@@ -340,6 +354,7 @@ export function projectNode(node: K8sNode): ObservedNode {
     canHostTenantWorkloads,
     ingressMode,
     publicIp,
+    publicIpv6,
     kubeletVersion,
     k3sVersion,
     cpuMillicores,

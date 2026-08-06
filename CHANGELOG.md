@@ -13,6 +13,40 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **The node's IPv6 is now visible in the admin panel** (migration 0080,
+  `cluster_nodes.public_ipv6`). Node sync stored a single `public_ip` taken from
+  the first `ExternalIP`, which on a dual-stack cluster is always the IPv4 — so
+  an operator had no way to read the node's global IPv6 short of SSH-ing to it,
+  even though `ingress_default_ipv6` (which drives every apex AAAA record) is
+  operator-set and needs exactly that value. Address selection is now per
+  family. The v4 keeps its ExternalIP→InternalIP fallback (on a single-NIC VPS
+  the InternalIP *is* the public address); the v6 deliberately does not, because
+  the v6 InternalIP may be a ULA and reporting a ULA as a node's public address
+  points the operator at an off-link address. This also fills the `v6Set` in
+  `getPlatformIngressIps()`, whose `includes(':')` branch could never match
+  before — the node-sourced half of AAAA domain verification was dead code.
+- **Email → Data Drift warns when a dual-stack cluster publishes no AAAA for
+  its mail hostname.** A cluster bootstrapped `--dual-stack` accepts SMTP/IMAP
+  over IPv6 on every mail node, but a v6-only client can only find it if
+  `mail.<apex>` publishes AAAA. When it doesn't, nothing breaks and nothing
+  complains — IPv4 carries every connection, so the operator who deliberately
+  asked for IPv6 gets none of it and has no signal. It belongs on the drift page
+  because it is the same failure shape as the rest of it: the platform's real
+  state and its published state disagree. Backed by a new `ipv6Dns`
+  deliverability sub-probe (also shown in the mail-health details modal) that
+  additionally flags partial coverage and stale AAAA pointing at non-mail nodes.
+  Deliberately `warning`, never `fail` — mail is fully functional, and
+  red-lighting the dashboard over a reachability nicety trains operators to
+  ignore it. Inert on single-stack clusters.
+- **Smoke test 10: published AAAA vs the cluster's actual IP stack.** Publishing
+  AAAA on a single-stack cluster gives every v6-preferring client a connection
+  reset and a silent fallback to IPv4 — invisible in every other check, and how
+  the testing box ran for months. Test 10 fails that, and on a dual-stack
+  cluster additionally requires each published AAAA to actually *serve*, so a
+  stale record pointing at a decommissioned node is caught too.
+  `scripts/test-smoke-aaaa-guard.sh` drives all four branches offline, because a
+  false FAIL here would turn `make smoke` red on every existing single-stack
+  production cluster.
 - **Host-migration state is visible in the admin panel** (Platform → Updates).
   A failed migration blocks every later one on that node, and the only way to
   discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
@@ -67,6 +101,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     the stub.
 
 ### Fixed
+- **`integration-mail-external-reachability` was banning its own prober.** The
+  suite opens 6 ports × every node × 4 phases from one source address, which is
+  enough for Stalwart to auto-ban it. A banned source is dropped *silently* —
+  the TCP handshake completes and the server then EOFs without greeting — so the
+  suite read a perfectly healthy mail server as dead. It now declares itself to
+  Stalwart before probing (clears any stale `BlockedIp` entry for its own source
+  and allowlists it for the run, removing the entry on exit), scoped to that one
+  address so every other rate-limit decision stays enforced. An empty banner on
+  a port that *accepted* the connection is now reported as exactly that, rather
+  than as a dead listener.
+- **Stalwart's rate-limit exemption covered IPv4 only.** The `x:AllowedIp`
+  entries bootstrap seeds for the cluster pod and service ranges were hardcoded
+  v4 literals, so on a dual-stack cluster the IPv6 ranges stayed subject to
+  Stalwart's connection and login limits. They now follow the real dual-stack
+  CIDRs, one entry per family, and an existing cluster gains only the missing v6
+  entries when re-run.
 - **Dual-stack clusters denied tenants all IPv6 egress.** The
   `platform-cluster-cidrs` ConfigMap that tells the backend the cluster's pod and
   service ranges was never created — on *any* cluster: the guard around it read a

@@ -123,6 +123,83 @@ describe('forward DNS probe', () => {
   });
 });
 
+describe('IPv6 DNS (AAAA coverage) probe', () => {
+  // A dual-stack cluster serving mail over IPv6 with no AAAA published is
+  // completely silent: IPv4 carries every connection, so the operator who asked
+  // for IPv6 gets none of it and nothing complains.
+  it('warns when a dual-stack cluster publishes no AAAA at all', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: [] }),
+    }));
+    expect(r.ipv6Dns?.severity).toBe('warning');
+    expect(r.ipv6Dns?.clusterIsDualStack).toBe(true);
+    expect(r.ipv6Dns?.missingIpv6).toEqual(['2001:db8:9::10']);
+    expect(r.ipv6Dns?.remediation).toMatch(/bootstrapped dual-stack/);
+  });
+
+  it('warns when only some mail nodes have AAAA', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIpv6s: ['2001:db8:9::10', '2001:db8:9::11'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10'] }),
+    }));
+    expect(r.ipv6Dns?.severity).toBe('warning');
+    expect(r.ipv6Dns?.missingIpv6).toEqual(['2001:db8:9::11']);
+  });
+
+  it('warns on a stale AAAA that is not a mail node', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10', '2001:db8:99::1'] }),
+    }));
+    expect(r.ipv6Dns?.severity).toBe('warning');
+    expect(r.ipv6Dns?.extraIpv6).toEqual(['2001:db8:99::1']);
+    // No IPv4 fallback exists for a specific bad AAAA — the client just fails.
+    expect(r.ipv6Dns?.remediation).toMatch(/no IPv4 fallback/);
+  });
+
+  it('is ok when every mail node has a matching AAAA', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10'] }),
+    }));
+    expect(r.ipv6Dns?.severity).toBe('ok');
+  });
+
+  // Single-stack is the overwhelming majority of installs. This probe must be
+  // inert there — a warning on every existing cluster would be noise, and the
+  // opposite failure (AAAA published on a single-stack cluster) is caught by
+  // smoke test 10, which can see the cluster's actual pod CIDRs.
+  it('is skipped on a single-stack cluster, and never warns', async () => {
+    const r = await probeDeliverability(makeDeps({ serverNodeIpv6s: [] }));
+    expect(r.ipv6Dns?.severity).toBe('skipped');
+    expect(r.ipv6Dns?.clusterIsDualStack).toBe(false);
+    expect(r.ipv6Dns?.remediation).toBeNull();
+  });
+
+  it('treats the probe as skipped when the AAAA lookup itself errors', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => { throw new Error('SERVFAIL'); },
+    }));
+    expect(r.ipv6Dns?.severity).toBe('skipped');
+    expect(r.ipv6Dns?.actual).toMatch(/SERVFAIL/);
+  });
+
+  // The whole component must stay `healthy` — mail works fine over IPv4, and
+  // red-lighting the dashboard over a reachability nicety trains operators to
+  // ignore it.
+  it('never flips the deliverability component to unhealthy', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: [] }),
+    }));
+    expect(r.healthy).toBe(true);
+    expect(r.summary.fail).toBe(0);
+    expect(r.summary.warning).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('reverse DNS / FCrDNS probe', () => {
   it('reports ok per IP when PTR matches', async () => {
     const r = await probeDeliverability(makeDeps({
