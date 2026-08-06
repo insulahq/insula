@@ -70,6 +70,20 @@ current_chart_ver() {
     | head -n1
 }
 
+
+# A chart-bump migration establishes a FLOOR, never a ceiling. Skip when the
+# release is already at OR ABOVE the target: a cluster bootstrapped after this
+# migration was written carries NEWER pins, and dragging it backwards is both
+# wrong and dangerous — `helm upgrade --reuse-values` onto an older chart feeds
+# it values whose schema it does not know, which is how a fresh DEV install hit
+#   "additional properties 'runtimeClassName' not allowed"
+# and blocked 15 later migrations behind the failure (ADR-056).
+chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
+  local a="${1#v}" b="${2#v}"
+  [ "$a" = "$b" ] && return 0
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
+}
+
 # bump <release> <namespace> <chart-ref> <chart-name-prefix> <target-version> [extra helm flags...]
 bump() {
   local rel="$1" ns="$2" ref="$3" prefix="$4" target="$5"; shift 5
@@ -79,8 +93,8 @@ bump() {
     echo "infra-chart-bumps: release '${rel}' not installed in ns '${ns}' here — skipping (migration never first-installs a chart)."
     return 0
   fi
-  if [ "$cur" = "$target" ]; then
-    echo "infra-chart-bumps: ${rel} already at chart ${target} — nothing to do."
+  if chart_ver_ge "$cur" "$target"; then
+    echo "infra-chart-bumps: ${rel} already at chart ${cur} (>= ${target}) — nothing to do."
     return 0
   fi
   echo "infra-chart-bumps: upgrading ${rel} chart ${cur} -> ${target} (--reuse-values) ..."
