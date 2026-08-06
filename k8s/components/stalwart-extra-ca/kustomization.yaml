@@ -1,0 +1,63 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+# Lets Stalwart trust an extra CA (a private/test ACME CA such as Pebble) on top
+# of the image's bundled roots.
+#
+# Why this needs a whole component rather than a one-line mount:
+#
+#   Stalwart's ACME client reads the SYSTEM trust store — proven 2026-08-06 by
+#   masking /etc/ssl/certs, which flipped the failure from a Let's Encrypt
+#   application response ("Rate limited") to a transport error ("error sending
+#   request"), and back again on restore.
+#
+#   But it does NOT read /etc/ssl/certs/ca-certificates.crt on its own. Replacing
+#   just that file — a subPath mount, the obvious approach — is a silent no-op:
+#   verified with a 1-root decoy bundle and the hashed *.0 entries left intact,
+#   where ACME still reached Let's Encrypt. The hashed directory has to carry the
+#   CA too, which means rebuilding the directory and re-running `openssl rehash`.
+#
+#   SSL_CERT_FILE / SSL_CERT_DIR are not an escape hatch either: both are absent
+#   from the binary (0 occurrences), so the env-var override does nothing.
+#
+# INERT BY DEFAULT. The Secret is `optional: true`, so with no Secret present the
+# initContainer reproduces the image's trust store byte-for-byte and the running
+# container sees exactly what it saw before. That is what makes it safe to carry
+# in an overlay that also serves clusters which must keep using public LE.
+#
+# To activate: create Secret `stalwart-extra-ca` in namespace `mail` with one or
+# more PEM keys, e.g.
+#   kubectl -n mail create secret generic stalwart-extra-ca \
+#     --from-file=pebble-root.crt=/tmp/pebble-root.crt
+# and set `stalwart-acme-directory` in the platform-config ConfigMap (consumed by
+# stalwart-domain-reconciler) and/or STALWART_ACME_DIRECTORY at bootstrap.
+
+patches:
+  - path: extra-ca-patch.yaml
+    target:
+      kind: Deployment
+      name: stalwart-mail
+  # Trusting the CA is necessary but not sufficient: the base NetworkPolicy only
+  # permits egress on 443/80 (all public Let's Encrypt needs), so a private ACME
+  # directory on any other port is silently dropped. The failure looks exactly
+  # like a trust problem — `HTTP error: error sending request` — which is why
+  # this belongs in the same component as the CA, not somewhere else.
+  #
+  # JSON6902 `add` to /spec/egress/-, NOT a strategic merge. `egress` is a list
+  # with no merge key, so a strategic-merge patch REPLACES it wholesale: the
+  # first version of this dropped every other rule and left the pod with 14000
+  # as its only permitted egress — no DNS, no SMTP, no platform-api. Caught by
+  # rendering the overlay and diffing the port list.
+  - target:
+      kind: NetworkPolicy
+      name: stalwart-mail
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to: []
+          ports:
+            - protocol: TCP
+              # Pebble's default ACME directory port. A private ACME server on a
+              # different port needs this changed to match.
+              port: 14000
