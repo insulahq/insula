@@ -13,6 +13,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Self-upgrade could never resolve a DEV cluster's binary.** The
+  `platform-version` ConfigMap is stamped `<VERSION>-<short-sha>` by build-deploy,
+  and self-upgrade used that verbatim as the release tag — asking GitHub for
+  `v2026.8.2-d847808`, which does not exist. The node then kept whatever binary it
+  had, which is how DEV ran a July build against an August cluster. Assets are now
+  fetched from `releaseTagFor(version)`, which strips a lone git-sha identifier and
+  deliberately leaves a real prerelease (`-rc.N`) alone. Version *comparison* still
+  uses the full string, so a node on `2026.8.2` does not flap when the ConfigMap
+  says `2026.8.2-<newsha>`.
+
+### Fixed
 - **`platform/VERSION` on `development` now tracks the release line.**
   `cut-release.sh` writes it on `main`, and promotion is one-way
   `development → main`, so the stamp never came back: `development` sat on
