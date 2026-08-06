@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync, renameSync, rmSync, existsSync, openSync, 
 import { dirname, join, basename } from 'node:path';
 import { verifyCosignSignature } from '../../../modules/platform-updates/poller/verify.js';
 import { parseVersion } from '../../../modules/platform-updates/poller/semver.js';
+import { releaseTagFor } from './release-tag.js';
 import type { SelfUpgradeOps } from '../deps.js';
 import { runSelfUpgrade } from './upgrade.js';
 import type { SelfUpgradeDeps } from './types.js';
@@ -139,7 +140,10 @@ async function fetchLatestReleaseVersion(env: NodeJS.ProcessEnv): Promise<string
 
 function downloadBaseFor(env: NodeJS.ProcessEnv, version: string): string {
   const repo = resolveRepo(env);
-  return `https://github.com/${repo}/releases/download/v${version}`;
+  // releaseTagFor, not the raw version: a DEV cluster's platform-version
+  // ConfigMap carries build-deploy's `-<short-sha>` stamp, which is not a tag
+  // and 404s. Comparison upstream still uses the full version.
+  return `https://github.com/${repo}/releases/download/v${releaseTagFor(version)}`;
 }
 
 async function streamCapped(resp: Response): Promise<Buffer | null> {
