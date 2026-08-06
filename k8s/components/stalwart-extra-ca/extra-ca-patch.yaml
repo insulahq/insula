@@ -58,7 +58,7 @@ spec:
                 # directory lookup, not just by the concatenated bundle.
                 openssl rehash /merged >/dev/null 2>&1 || c_rehash /merged >/dev/null 2>&1
               fi
-              echo "merge-ca-trust: baseline=${base} files, extra CAs added=${added}, total=$(ls /merged | wc -l)"
+              echo "merge-ca-trust: baseline=$${base} files, extra CAs added=$${added}, total=$(ls /merged | wc -l)"
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
