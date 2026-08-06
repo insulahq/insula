@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
 // ─── tls-settings mock ────────────────────────────────────────────────────
@@ -532,5 +532,70 @@ describe('ensureMailServerCertificate', () => {
         ),
       ).rejects.toMatchObject({ code: 'INVALID_FIELD_VALUE' });
     }
+  });
+});
+
+// ─── cluster-wide custom ACME issuer → per-domain issuer defaults ─────────
+//
+// A cluster bootstrapped with --acme-server pins CLUSTER_ISSUER_NAME to a
+// custom issuer. Per-domain certs used to ignore it and always pick a Let's
+// Encrypt issuer, which cannot validate a private apex — tenant hostnames
+// were left on the Traefik default certificate while every platform hostname
+// had a valid cert.
+describe('getConfiguredIssuers — cluster-wide custom ACME issuer', () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    for (const k of Object.keys(process.env)) {
+      if (k.startsWith('CERT_ISSUER_') || k === 'CLUSTER_ISSUER_NAME') delete process.env[k];
+    }
+  });
+  afterAll(() => { process.env = saved; });
+
+  it('uses the custom cluster issuer for both HTTP-01 slots and the fallback', () => {
+    process.env.CLUSTER_ISSUER_NAME = 'acme-custom-http01';
+    const i = service.getConfiguredIssuers();
+    expect(i.letsencryptProdHttp01).toBe('acme-custom-http01');
+    expect(i.letsencryptStagingHttp01).toBe('acme-custom-http01');
+    expect(i.fallbackIssuer).toBe('acme-custom-http01');
+  });
+
+  it('leaves the DNS-01 issuers alone — an HTTP-01 issuer cannot solve a wildcard order', () => {
+    process.env.CLUSTER_ISSUER_NAME = 'acme-custom-http01';
+    const i = service.getConfiguredIssuers();
+    expect(i.dns01Issuers.powerdns).toBe('letsencrypt-prod-dns01-powerdns');
+    expect(i.dns01Issuers.cloudflare).toBe('letsencrypt-prod-dns01-cloudflare');
+  });
+
+  it.each(['letsencrypt-prod-http01', 'letsencrypt-staging-http01', 'local-ca-issuer', 'selfsigned-issuer'])(
+    'treats the stock issuer %s as "no custom endpoint" (staging/production render unchanged)',
+    (stock) => {
+      process.env.CLUSTER_ISSUER_NAME = stock;
+      const i = service.getConfiguredIssuers();
+      expect(i.letsencryptProdHttp01).toBe('letsencrypt-prod-http01');
+      expect(i.letsencryptStagingHttp01).toBe('letsencrypt-staging-http01');
+      expect(i.fallbackIssuer).toBe('letsencrypt-prod-http01');
+    },
+  );
+
+  it('does not hijack the per-provider DNS-01 issuer names', () => {
+    process.env.CLUSTER_ISSUER_NAME = 'letsencrypt-prod-dns01-powerdns';
+    const i = service.getConfiguredIssuers();
+    expect(i.letsencryptProdHttp01).toBe('letsencrypt-prod-http01');
+  });
+
+  it('lets an explicit CERT_ISSUER_* override win over the custom cluster issuer', () => {
+    process.env.CLUSTER_ISSUER_NAME = 'acme-custom-http01';
+    process.env.CERT_ISSUER_STAGING_HTTP01 = 'my-explicit-issuer';
+    const i = service.getConfiguredIssuers();
+    expect(i.letsencryptStagingHttp01).toBe('my-explicit-issuer');
+    expect(i.letsencryptProdHttp01).toBe('acme-custom-http01');
+  });
+
+  it('falls back to the stock names when CLUSTER_ISSUER_NAME is unset or blank', () => {
+    const unset = service.getConfiguredIssuers();
+    expect(unset.letsencryptStagingHttp01).toBe('letsencrypt-staging-http01');
+    process.env.CLUSTER_ISSUER_NAME = '   ';
+    const blank = service.getConfiguredIssuers();
+    expect(blank.letsencryptStagingHttp01).toBe('letsencrypt-staging-http01');
   });
 });
