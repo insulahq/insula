@@ -151,6 +151,102 @@ describe('image-reaper', () => {
       expect(valuesArg.bytesReclaimed).toBe(50_000_000);
     });
 
+    // ── digest-pinned images (regression, 2026-08-06) ──────────────────────
+    //
+    // kubelet lists BOTH the tag and the digest form under
+    // node.status.images[].names, but containerd only answers `crictl rmi`
+    // for a ref it actually stored. A Pod that pulled by digest leaves the
+    // image addressable ONLY as <repo>@sha256:… , so passing the caller's tag
+    // alone failed with "no such image" and the targeted reap silently missed
+    // every digest-pinned image.
+    it('passes EVERY node-reported ref to the purge, not just the caller tag', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set());
+      const k8s = makeK8s([
+        {
+          name: 'node-1',
+          images: [{
+            names: [
+              'docker.io/serversideup/php:8.4-fpm-nginx-alpine',
+              'docker.io/serversideup/php@sha256:f0dfc60eef94aa50857a85b99dda39299c44ea1f575d7d56ea2f6747b7a07c1f',
+            ],
+            sizeBytes: 120_000_000,
+          }],
+        },
+      ]);
+      mockRunPurgeOnNode.mockResolvedValue({
+        node: 'node-1',
+        removedDisplayNames: ['serversideup/php:8.4-fpm-nginx-alpine'],
+        failedDisplayNames: [],
+        failureCauses: {},
+        freedBytes: 120_000_000,
+      });
+
+      await reapImageNow(mockDb, k8s, {
+        image: 'serversideup/php:8.4-fpm-nginx-alpine',
+        triggeredBy: 'deployment_delete',
+        triggerRef: 'deploy-digest',
+      });
+
+      const targets = mockRunPurgeOnNode.mock.calls[0][2];
+      const refs = targets.map((t: { crictlName: string }) => t.crictlName);
+      expect(refs).toContain('docker.io/serversideup/php:8.4-fpm-nginx-alpine');
+      expect(refs.some((r: string) => r.includes('@sha256:f0dfc60'))).toBe(true);
+      // Operator-facing name stays the caller's ref on every target.
+      for (const t of targets) expect(t.displayName).toBe('serversideup/php:8.4-fpm-nginx-alpine');
+    });
+
+    it('counts the image size ONCE even though several aliases were removed', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set());
+      const k8s = makeK8s([
+        {
+          name: 'node-1',
+          images: [{ names: ['app:v1', 'app@sha256:abc', 'reg.io/app:v1'], sizeBytes: 90_000_000 }],
+        },
+      ]);
+      // The purge removed all three aliases and naively summed their bytes.
+      mockRunPurgeOnNode.mockResolvedValue({
+        node: 'node-1',
+        removedDisplayNames: ['app:v1', 'app:v1', 'app:v1'],
+        failedDisplayNames: [],
+        failureCauses: {},
+        freedBytes: 270_000_000,
+      });
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'app:v1',
+        triggeredBy: 'deployment_delete',
+        triggerRef: 'deploy-alias',
+      });
+
+      expect(result.reclaimedBytes).toBe(90_000_000);
+    });
+
+    it('does not log a failure when one alias resolved and the others did not', async () => {
+      mockGetInUseImages.mockResolvedValue(new Set());
+      const k8s = makeK8s([
+        { name: 'node-1', images: [{ names: ['app:v1', 'app@sha256:abc'], sizeBytes: 10 }] },
+      ]);
+      // Real shape: the digest ref removed, the tag reported "no such image".
+      mockRunPurgeOnNode.mockResolvedValue({
+        node: 'node-1',
+        removedDisplayNames: ['app:v1'],
+        failedDisplayNames: ['app:v1'],
+        failureCauses: { 'app:v1': 'no such image app:v1' },
+        freedBytes: 10,
+      });
+
+      const result = await reapImageNow(mockDb, k8s, {
+        image: 'app:v1',
+        triggeredBy: 'deployment_delete',
+        triggerRef: 'deploy-mixed',
+      });
+
+      const valuesArg = mockInsert.mock.results[0].value.values.mock.calls[0][0];
+      expect(valuesArg.succeeded).toBe(true);
+      expect(valuesArg.error ?? '').not.toContain('failed on');
+      expect(result.nodes).toEqual(['node-1']);
+    });
+
     it('handles k8s listNode failure gracefully', async () => {
       mockGetInUseImages.mockResolvedValue(new Set());
       const k8s = {
