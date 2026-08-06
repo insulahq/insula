@@ -150,6 +150,33 @@ export const mailHealthForwardDnsProbeSchema = deliverabilityProbeBaseSchema.ext
 });
 export type MailHealthForwardDnsProbe = z.infer<typeof mailHealthForwardDnsProbeSchema>;
 
+/**
+ * AAAA coverage for the mail hostname on a DUAL-STACK cluster.
+ *
+ * A cluster bootstrapped with `--dual-stack` accepts SMTP/IMAP over IPv6 on
+ * every mail node, but a v6-only client can only find it if `mail.<apex>`
+ * publishes AAAA. Missing AAAA is not a fault in the cluster — everything works
+ * over IPv4 — which is exactly why it goes unnoticed: the operator asked for
+ * IPv6, the platform delivers it, and no client ever uses it. Hence `warning`,
+ * never `fail`.
+ *
+ * On a single-stack cluster this probe is `skipped`: there is no v6 to publish.
+ */
+export const mailHealthIpv6DnsProbeSchema = deliverabilityProbeBaseSchema.extend({
+  hostname: z.string(),
+  /** AAAA records currently published for the mail hostname. */
+  resolvedIpv6: z.array(z.string()),
+  /** Global IPv6 addresses of the nodes that serve mail. Empty = single-stack. */
+  expectedIpv6: z.array(z.string()),
+  /** Node IPv6 addresses with no matching AAAA record. */
+  missingIpv6: z.array(z.string()),
+  /** Published AAAA records that are not a mail-serving node. */
+  extraIpv6: z.array(z.string()),
+  /** True when the cluster itself serves IPv6 (i.e. the probe is meaningful). */
+  clusterIsDualStack: z.boolean(),
+});
+export type MailHealthIpv6DnsProbe = z.infer<typeof mailHealthIpv6DnsProbeSchema>;
+
 export const mailHealthReverseDnsProbeSchema = deliverabilityProbeBaseSchema.extend({
   ip: z.string(),
   ptrRecords: z.array(z.string()),
@@ -199,6 +226,8 @@ export const mailHealthDeliverabilityComponentSchema = componentStatusSchema.ext
   /** Server-role node IPs that the cluster believes serve mail. */
   expectedMailIps: z.array(z.string()),
   forwardDns: mailHealthForwardDnsProbeSchema.nullable(),
+  /** AAAA coverage on a dual-stack cluster. Optional — older backends omit it. */
+  ipv6Dns: mailHealthIpv6DnsProbeSchema.nullable().optional(),
   reverseDns: z.array(mailHealthReverseDnsProbeSchema),
   blocklists: z.array(mailHealthBlocklistProbeSchema),
   certSanMatch: mailHealthCertSanProbeSchema.nullable(),

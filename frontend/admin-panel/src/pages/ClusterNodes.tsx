@@ -435,7 +435,21 @@ function NodeCard({ node, subsystem, health }: { readonly node: ClusterNodeRespo
               )}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400">
-              {node.publicIp ?? 'no public IP'} · k3s {node.k3sVersion ?? '—'} · kubelet {node.kubeletVersion ?? '—'}
+              {node.publicIp ?? 'no public IP'}
+              {/* Dual-stack nodes carry a global IPv6 ExternalIP too. Show it:
+                  it is the value an operator needs for `ingress_default_ipv6`
+                  (which drives every apex AAAA), and before this there was no
+                  way to read it short of SSH-ing to the node. Single-stack
+                  clusters render nothing extra. */}
+              {node.publicIpv6 && (
+                <>
+                  {' · '}
+                  <span data-testid={`node-public-ipv6-${node.name}`} title="Global IPv6 (ExternalIP)">
+                    {node.publicIpv6}
+                  </span>
+                </>
+              )}
+              {' · '}k3s {node.k3sVersion ?? '—'} · kubelet {node.kubeletVersion ?? '—'}
             </p>
           </div>
         </div>

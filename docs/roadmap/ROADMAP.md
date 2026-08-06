@@ -356,28 +356,32 @@ open.
   apply stricter PTR/forward-confirmed rules to v6 than v4, so sending before
   rDNS is in place and warmed trades a reachability win for a deliverability
   loss. Inbound v6 is safe today; outbound needs the operator's PTR first.
-- A guard that fails when a platform hostname publishes AAAA while the cluster
-  is single-stack. The testing box ran that way for months — apex and every
-  subdomain resolving AAAA, nothing listening, TCP RST in 8 ms — and nothing
-  surfaced it.
-- **The node's IPv6 is invisible in the admin panel.** `nodes/k8s-sync.ts`
-  stores a single `publicIp`, taking the first `ExternalIP` — the v4. On a
-  dual-stack cluster the operator has no way to read the node's global v6 from
-  the UI, yet `ingress_default_ipv6` (which drives every apex AAAA) is
-  operator-set and needs exactly that value. Wants a `publicIpv6` alongside
-  `publicIp`: nodes schema + `@insula/api-contracts` + the panel column.
-- **Stalwart's `x:AllowedIp` rate-limit exemption seeds v4 CIDRs only**
-  (`cluster-pod` 10.42/16, `cluster-svc` 10.43/16). Inert today — every platform
-  Service is `SingleStack [IPv4]`, so cluster-internal traffic to Stalwart never
-  arrives over v6 — but it should follow the pod/service CIDRs of both families
-  once anything in-cluster is dual-stack.
-- The single-stack **multi-node** control run for `mail-external-reachability`
-  is still outstanding. Its failures on runs `6e9e214b` and `34090e97` are
-  explained — the harness's own runner IP had been auto-banned by Stalwart, and
-  a banned source is dropped silently (TCP connects, then EOF, no banner), which
-  is indistinguishable from "port closed" — but that explanation should be
-  confirmed by a control run, and the suite should bind a fresh source per probe
-  the way `mailmatrix.sh` does rather than reusing one that it poisons.
+- The single-stack **multi-node** control run for `mail-external-reachability`.
+  The suite no longer bans its own prober (it declares itself to Stalwart first
+  — see the CHANGELOG), which explains and removes the cause of its failures on
+  runs `6e9e214b` and `34090e97`; a control run should still confirm that on a
+  clean cluster.
+
+**Closed 2026-08-06** (were listed here as open):
+- *The node's IPv6 is invisible in the admin panel* — migration 0080 adds
+  `cluster_nodes.public_ipv6`, node sync selects per family, and the panel's
+  node row shows it. Also un-deadens the node-sourced half of AAAA domain
+  verification.
+- *A guard for AAAA published while the cluster is single-stack* — smoke test
+  10, with `scripts/test-smoke-aaaa-guard.sh` covering all four branches
+  offline. It also catches the inverse (a dual-stack cluster whose AAAA
+  resolves but does not serve) and the case that made the first live run
+  misreport: `getent ahostsv6` returns IPv4-**mapped** addresses for A-only
+  hosts, which reads as "publishes AAAA" and would have failed every hostname
+  on every single-stack cluster.
+- *Stalwart's `x:AllowedIp` seeds v4 CIDRs only* — now follows the dual-stack
+  pod/service CIDRs, one entry per family.
+- *Nothing told an operator that a dual-stack cluster published no AAAA* — a new
+  `ipv6Dns` deliverability sub-probe warns on **Email → Data Drift** (and in the
+  mail-health details modal) when `mail.<apex>` has missing, partial, or stale
+  AAAA on a cluster that serves IPv6. Warning, never fail: mail works over IPv4,
+  and red-lighting the dashboard over a reachability nicety trains operators to
+  ignore it.
 
 ## R14 — User-manual website
 

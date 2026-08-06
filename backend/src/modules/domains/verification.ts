@@ -61,7 +61,7 @@ export async function getPlatformIngressIps(
     // protects us against a future role (e.g. `storage_only`) that
     // shouldn't accept tenant ingress traffic.
     const nodes = await db
-      .select({ publicIp: clusterNodes.publicIp })
+      .select({ publicIp: clusterNodes.publicIp, publicIpv6: clusterNodes.publicIpv6 })
       .from(clusterNodes)
       .where(
         and(
@@ -70,14 +70,18 @@ export async function getPlatformIngressIps(
         ),
       );
     for (const node of nodes) {
+      // public_ip / public_ipv6 are separate columns (migration 0080) so the
+      // family is known, not sniffed. The `includes(':')` test stays as a
+      // belt-and-braces guard for legacy rows written before the split, when
+      // public_ip was `inet` and could in principle hold either family.
       if (node.publicIp) {
         const ip = String(node.publicIp);
-        // Rough IPv6 detection: contains ':'
-        if (ip.includes(':')) {
-          v6Set.add(ip);
-        } else {
-          v4Set.add(ip);
-        }
+        if (ip.includes(':')) v6Set.add(ip);
+        else v4Set.add(ip);
+        hasNodes = true;
+      }
+      if (node.publicIpv6) {
+        v6Set.add(String(node.publicIpv6));
         hasNodes = true;
       }
     }

@@ -90,6 +90,81 @@ done
 SSH
 }
 
+# ── Stalwart blocklist: stop the suite banning its own prober ────────────
+#
+# This suite opens 6 ports x every node x 4 phases from ONE source address, and
+# Stalwart auto-bans a source that connects that hard. A banned source is
+# dropped SILENTLY — the TCP handshake completes and the server then EOFs with
+# no banner — which is byte-for-byte what a dead service looks like. The suite
+# therefore poisoned itself partway through and reported the platform as broken.
+# Diagnosed 2026-08-06 on VM runs 6e9e214b/34090e97: a fresh source address got
+# `220` from the exact node:port that had just "failed".
+#
+# Fix: tell the system under test that this source is a prober. We purge any
+# existing BlockedIp entry for it and add an AllowedIp entry so it cannot be
+# re-banned mid-run, then remove that entry again on exit. Scoped to the ONE
+# address — every other rate-limit decision on the cluster stays enforced.
+#
+# jmap_prober() runs a JMAP call inside the Stalwart pod (curl against
+# 127.0.0.1:8080 — Stalwart 0.16 does PROXY-v2 sniffing on every non-loopback
+# connection, see proxy-networks-reconciler.ts:jmapPost).
+PROBER_ALLOWED_ID="integration-mail-reachability-prober"
+PROBE_SOURCE_IP=""
+
+jmap_prober() {
+  # jmap_prober <json-method-calls>  → raw JMAP response on stdout
+  local calls_b64
+  calls_b64=$(printf '%s' "$1" | base64 -w0)
+  ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$BASTION" 'bash -s' "$calls_b64" <<'SSH' 2>/dev/null
+calls=$(printf '%s' "$1" | base64 -d)
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+POD=$(kubectl get pod -n mail -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}')
+[ -n "$POD" ] || exit 1
+U=$(kubectl get secret -n mail stalwart-admin-creds -o jsonpath='{.data.username}' | base64 -d)
+P=$(kubectl get secret -n mail stalwart-admin-creds -o jsonpath='{.data.recoveryPassword}' | base64 -d 2>/dev/null)
+[ -n "$P" ] || P=$(kubectl get secret -n mail stalwart-admin-creds -o jsonpath='{.data.adminPassword}' | base64 -d)
+kubectl exec -n mail "$POD" -c stalwart -- \
+  curl -s -u "${U}:${P}" -H 'Content-Type: application/json' -d "$calls" http://127.0.0.1:8080/jmap/
+SSH
+}
+
+# Source address as the CLUSTER sees this host. Read from SSH_CLIENT on the
+# bastion rather than a local `ip route get`, so it is still correct when the
+# prober sits behind NAT (running the suite against a remote staging cluster).
+detect_probe_source_ip() {
+  PROBE_SOURCE_IP=${PROBE_SOURCE_IP_OVERRIDE:-$(
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" "$BASTION" \
+      'echo $SSH_CLIENT' 2>/dev/null | awk '{print $1}'
+  )}
+  [ -n "$PROBE_SOURCE_IP" ] || amber "  could not determine this host's source IP — skipping blocklist prep"
+}
+
+unblock_prober() {
+  [ -n "$PROBE_SOURCE_IP" ] || return 0
+  # 1. destroy any BlockedIp entry whose id/address mentions our source.
+  local blocked ids
+  blocked=$(jmap_prober '{"using":["urn:ietf:params:jmap:core","urn:stalwart:jmap"],"methodCalls":[["x:BlockedIp/get",{"accountId":"d333333","ids":null},"c0"]]}')
+  ids=$(printf '%s' "$blocked" | jq -r --arg ip "$PROBE_SOURCE_IP" \
+        '[.methodResponses[0][1].list[]? | select((.id // "") | contains($ip)) | .id]' 2>/dev/null)
+  if [ -n "$ids" ] && [ "$ids" != "[]" ] && [ "$ids" != "null" ]; then
+    jmap_prober "$(jq -nc --argjson d "$ids" \
+      '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],methodCalls:[["x:BlockedIp/set",{accountId:"d333333",destroy:$d},"c0"]]}')" >/dev/null
+    amber "  cleared $(printf '%s' "$ids" | jq -r 'length') stale BlockedIp entry/entries for ${PROBE_SOURCE_IP}"
+  fi
+  # 2. allowlist it for the duration so the run cannot re-ban itself.
+  jmap_prober "$(jq -nc --arg k "$PROBER_ALLOWED_ID" --arg a "${PROBE_SOURCE_IP}/32" \
+    '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+      methodCalls:[["x:AllowedIp/set",{accountId:"d333333",create:{($k):{address:$a,reason:"integration-mail-external-reachability prober (removed at end of run)"}}},"c0"]]}')" >/dev/null
+  echo "  prober ${PROBE_SOURCE_IP} allowlisted in Stalwart for this run"
+}
+
+release_prober_allowlist() {
+  [ -n "$PROBE_SOURCE_IP" ] || return 0
+  jmap_prober "$(jq -nc --arg k "$PROBER_ALLOWED_ID" \
+    '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
+      methodCalls:[["x:AllowedIp/set",{accountId:"d333333",destroy:[$k]},"c0"]]}')" >/dev/null 2>&1 || true
+}
+
 # Returns 0 if port answers with TCP within timeout
 probe_tcp() {
   local ip="$1" port="$2"
@@ -153,7 +228,18 @@ probe_node_ports() {
       pass=$((pass+1))
     else
       fail=$((fail+1))
-      reasons="$reasons banner='${banner:-empty}'"
+      # An EMPTY banner on a port that ACCEPTED the connection is the signature
+      # of a source Stalwart has blocked (it completes the handshake, then EOFs
+      # without greeting) — not of a dead listener. Name it, because reading it
+      # as "the mail server is down" has cost real debugging time. unblock_prober
+      # is meant to prevent this; if it shows up anyway, the prober's source
+      # address was mis-detected (NAT/multi-homing) or it got banned faster than
+      # the allowlist took effect.
+      if [ -z "$banner" ] && probe_tcp "$ip" 25; then
+        reasons="$reasons banner=empty-but-port-25-ACCEPTS(source ${PROBE_SOURCE_IP:-unknown} likely blocked by Stalwart, not a dead listener)"
+      else
+        reasons="$reasons banner='${banner:-empty}'"
+      fi
     fi
     # TLS cert on :465 must be a REAL CA cert, NOT Stalwart's self-signed rcgen
     # fallback (SAN=localhost). An invalid cert is a FAIL, not a warning — it
@@ -201,6 +287,11 @@ echo "Current mode: $PRE_MODE"
 MAILHOST=$(ssh_kubectl "kubectl exec -n platform \$(kubectl get pod -n platform -l cnpg.io/cluster=system-db -o jsonpath='{.items[0].metadata.name}') -- psql -U postgres -d platform -tA -c \"SELECT 'mail.'||platform_domain FROM system_settings;\"" 2>/dev/null | head -1)
 MAILHOST="${MAILHOST:-mail}"
 echo "Mail hostname (cert SNI): $MAILHOST"
+
+# Make this host a declared prober BEFORE the first probe — see unblock_prober.
+detect_probe_source_ip
+unblock_prober
+trap 'release_prober_allowlist' EXIT
 
 # Parse node-name → ip + role from kubectl JSON. Using jq through the local shell.
 mapfile -t NODE_LINES < <(

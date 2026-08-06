@@ -117,6 +117,8 @@ export interface MailHealthDeps {
    * makes deliverability report `not_implemented`.
    */
   readonly serverNodeIps?: ReadonlyArray<string>;
+  /** Global IPv6 of the same mail nodes — drives the AAAA-coverage probe. */
+  readonly serverNodeIpv6s?: ReadonlyArray<string>;
   /** Visible for tests: override the deliverability probe set wholesale. */
   readonly deliverabilityOverrides?: Partial<Omit<DeliverabilityDeps, 'hostname' | 'serverNodeIps' | 'clock'>>;
 }
@@ -145,6 +147,7 @@ export async function getMailHealth(
     probeDeliverability({
       hostname: deps.mailHostname,
       serverNodeIps: deps.serverNodeIps ?? [],
+      serverNodeIpv6s: deps.serverNodeIpv6s ?? [],
       clock: deps.clock,
       ...deps.deliverabilityOverrides,
     }),

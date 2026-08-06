@@ -6939,6 +6939,13 @@ configure_stalwart_full() {
 
   # Write configure-params Secret. adminPassword and recoveryPassword come
   # from stalwart-admin-creds via a second envFrom secretRef in the pod.
+  # Cluster CIDRs for the AllowedIp seeding step below — comma-joined and
+  # dual-stack-aware, from the same helper the k3s flags use, so the rate-limit
+  # exemption follows BOTH families instead of the hardcoded v4 literals it
+  # used to carry.
+  local stalwart_pod_cidrs stalwart_svc_cidrs
+  read -r stalwart_pod_cidrs stalwart_svc_cidrs <<<"$(cluster_cidr_args)"
+
   kctl create secret generic "${params_secret}" \
     --namespace=mail \
     --from-literal=STALWART_HOSTNAME="${stalwart_hostname}" \
@@ -6946,6 +6953,8 @@ configure_stalwart_full() {
     --from-literal=PLATFORM_APEX="${PLATFORM_DOMAIN}" \
     --from-literal=STALWART_CONTACT_EMAIL="${STALWART_CONTACT_EMAIL:-}" \
     --from-literal=STALWART_DKIM_PEM="${dkim_pem}" \
+    --from-literal=CLUSTER_POD_CIDRS="${stalwart_pod_cidrs}" \
+    --from-literal=CLUSTER_SVC_CIDRS="${stalwart_svc_cidrs}" \
     --dry-run=client -o yaml | kctl apply -f - >/dev/null
 
   log "  Spawning configure pod ${pod_name}..."
@@ -7366,13 +7375,33 @@ spec:
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
               methodCalls:[["x:AllowedIp/get",{accountId:\$a,ids:null},"c0"]]}')" | \
             jq -r '.methodResponses[0][1].list[].id // empty' 2>/dev/null | tr '\n' ',')
+          # CLUSTER_POD_CIDRS / CLUSTER_SVC_CIDRS come from the configure-params
+          # Secret and are comma-joined on dual-stack ("10.42.0.0/16,fd42:42::/56").
+          # These used to be hardcoded v4 literals, so a dual-stack cluster left
+          # its IPv6 pod/service ranges subject to Stalwart's connection and
+          # login rate-limits. Each family gets its own entry id so the two can
+          # be reconciled independently.
           CREATE_IPS='{}'
-          echo ",\${EXISTING_IPS}," | grep -q ',cluster-pod,' || \
-            CREATE_IPS=\$(echo "\$CREATE_IPS" | jq \
-              '."cluster-pod" = {"address":"10.42.0.0/16","reason":"k8s pod CIDR (kubelet probes + intra-cluster)"}')
-          echo ",\${EXISTING_IPS}," | grep -q ',cluster-svc,' || \
-            CREATE_IPS=\$(echo "\$CREATE_IPS" | jq \
-              '."cluster-svc" = {"address":"10.43.0.0/16","reason":"k8s service CIDR"}')
+          add_allowed_ip() { # add_allowed_ip <id-prefix> <cidr-list> <reason>
+            for _cidr in \$(echo "\$2" | tr ',' ' '); do
+              [ -n "\$_cidr" ] || continue
+              case "\$_cidr" in
+                *:*) _id="\$1-v6" ;;
+                *)   _id="\$1" ;;
+              esac
+              # NOTE: an \`if\`, not \`grep -q … && continue\` — this pod runs
+              # \`set -eu\`, under which a failing && chain aborts the whole
+              # configure step (and the "not already present" case is exactly
+              # when grep fails, i.e. every fresh install).
+              if echo ",\${EXISTING_IPS}," | grep -q ",\${_id},"; then
+                continue
+              fi
+              CREATE_IPS=\$(echo "\$CREATE_IPS" | jq --arg k "\$_id" --arg a "\$_cidr" --arg r "\$3" \
+                '.[\$k] = {"address":\$a,"reason":\$r}')
+            done
+          }
+          add_allowed_ip cluster-pod "\${CLUSTER_POD_CIDRS:-10.42.0.0/16}" "k8s pod CIDR (kubelet probes + intra-cluster)"
+          add_allowed_ip cluster-svc "\${CLUSTER_SVC_CIDRS:-10.43.0.0/16}" "k8s service CIDR"
           if [ "\$CREATE_IPS" != '{}' ]; then
             jmap_call "\$(jq -n --arg a "\$ACCT" --argjson c "\$CREATE_IPS" \
               '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],

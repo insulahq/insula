@@ -383,6 +383,21 @@ function DeliverabilitySection({ d }: { readonly d: MailHealthDeliverabilityComp
         />
       )}
 
+      {/* AAAA coverage. Rendered only when the cluster actually serves IPv6 —
+          on a single-stack cluster the probe is `skipped` and a card saying
+          "no IPv6 to publish" would be noise on every install. */}
+      {d.ipv6Dns && d.ipv6Dns.clusterIsDualStack && (
+        <ProbeCard
+          title="IPv6 DNS (AAAA)"
+          severity={d.ipv6Dns.severity}
+          assertion={d.ipv6Dns.assertion}
+          actual={d.ipv6Dns.actual}
+          expected={d.ipv6Dns.expected}
+          error={null}
+          remediation={d.ipv6Dns.remediation}
+        />
+      )}
+
       {d.reverseDns.map((p) => (
         <ProbeCard
           key={`rdns-${p.ip}`}
