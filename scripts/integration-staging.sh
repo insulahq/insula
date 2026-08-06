@@ -1174,20 +1174,36 @@ scenario_https() {
   #    after the Certificate CR reaches Ready, ingress-nginx needs a
   #    few seconds to re-load its TLS config from the new secret. The
   #    cert IS issued; we're just waiting for the data plane to catch up.
-  local subject="" matched=0
-  local i=0
+  # Match on the SUBJECT ALTERNATIVE NAME, with CN only as a legacy fallback —
+  # the same order assert_cert_covers_host() above already uses. CN-based
+  # hostname validation was deprecated by RFC 6125 and dropped by Chrome in
+  # 2017, and issuers increasingly emit an EMPTY subject with the hostnames
+  # only in the SAN. Pebble (the ACME server the VM tier uses for its private
+  # apex) does exactly that, so `grep CN=$domain` could never match there and
+  # reported a mismatch against a perfectly valid certificate.
+  local names="" matched=0 i=0
   while (( i < 60 )); do
-    subject=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null \
-      | openssl x509 -noout -subject 2>/dev/null)
-    if echo "$subject" | grep -q "CN=$domain"; then
-      matched=1; break
+    local pem
+    pem=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null)
+    if [[ -n "$pem" ]]; then
+      names=$(printf '%s' "$pem" | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+              | grep -oE 'DNS:[^,]+' | sed 's/^DNS://; s/[[:space:]]*//g')
+      names+=$'\n'$(printf '%s' "$pem" | openssl x509 -noout -subject 2>/dev/null \
+              | sed -nE 's/.*CN[[:space:]]*=[[:space:]]*([^,/]+).*/\1/p' | tr -d ' ')
+      while IFS= read -r n; do
+        [[ -z "$n" ]] && continue
+        if [[ "$n" == "$domain" ]] || { [[ "$n" == "*."* ]] && [[ "${domain#*.}" == "${n#\*.}" ]]; }; then
+          matched=1; break
+        fi
+      done <<< "$names"
     fi
+    (( matched )) && break
     sleep 4; i=$((i+4))
   done
   if (( matched )); then
-    ok "TLS cert subject CN matches host (after ${i}s): $subject"
+    ok "TLS cert covers host $domain (after ${i}s): $(printf '%s' "$names" | tr '\n' ' ' | sed 's/ *$//')"
   else
-    fail "TLS cert subject does NOT match $domain after 60s — got: ${subject:-<no cert>}"
+    fail "TLS cert does NOT cover $domain after 60s — cert names: ${names:-<no cert>}"
     return 1
   fi
 
