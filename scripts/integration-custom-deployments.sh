@@ -547,12 +547,18 @@ scenario_delete() {
       fi
       sleep 2
     done
-    local final
-    final=$(remote_kubectl get all,configmap,secret -n "$TENANT_NS" \
+    # NAME the leftovers. A bare count cannot distinguish a genuine reaper gap
+    # from a Pod still Terminating on a loaded node, so the failure was
+    # unactionable — and this assertion is exactly the kind that goes flaky
+    # under cluster contention. Report kind/name plus deletionTimestamp so the
+    # next occurrence says whether the resource was already being deleted.
+    local leftovers final
+    leftovers=$(remote_kubectl get all,configmap,secret -n "$TENANT_NS" \
       -l "insula.host/deployment-id=$id" \
-      -o jsonpath='{.items[*].metadata.name}' 2>/dev/null | wc -w)
+      -o 'jsonpath={range .items[*]}{.kind}/{.metadata.name}{" deleting="}{.metadata.deletionTimestamp}{"\n"}{end}' 2>/dev/null | sed '/^$/d')
+    final=$(printf '%s' "$leftovers" | sed '/^$/d' | wc -l | tr -d ' ')
     if [[ "$final" != "0" ]]; then
-      fail "$final resources still labelled deployment-id=$id after delete"
+      fail "$final resource(s) still labelled deployment-id=$id after delete: $(printf '%s' "$leftovers" | tr '\n' ';')"
     fi
   done
 }
