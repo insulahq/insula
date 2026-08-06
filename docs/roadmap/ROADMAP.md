@@ -301,12 +301,45 @@ CIDRs are immutable in k3s, so this cannot be flipped later without a rebuild).
   binds `:::<port> v4v6` (works on single-stack too — it is hostNetwork), and
   `webmail.<domain>` gains an AAAA when `INGRESS_DEFAULT_IPV6`/`MAIL_SERVER_IPV6`
   is set.
-- Proof: `scripts/test-bootstrap-dual-stack.sh` (29 assertions, half of them
+- Proof: `scripts/test-bootstrap-dual-stack.sh` (42 assertions, half of them
   guarding that the single-stack path is byte-identical) and
   `VMTEST_DUAL_STACK=1` on the VM tier, which gives the libvirt network a ULA
   v6 subnet and then asserts on the live cluster that the node registered both
   families, Calico programmed a v6 pool, and **the ingress actually answers over
   IPv6** — the one thing no unit test can see.
+
+**Blast-radius sweep, 2026-08-05 (VM run `6e9e214b`, 3 servers + 1 worker).**
+Every public surface was driven over both families from an OFF-CLUSTER client,
+with IPv4 as the control for each v6 assertion. All green: panels/API (200 on
+all 4 nodes), a real tenant workload on its own domain (200 with the tenant's
+own content from all 4 nodes, 3 of them forwarding cross-node), SFTP `:23022`
+(SSH banner on all 3 server nodes), and mail `25/587/465/993` — both with
+Stalwart on its original node and again **after migrating it to another node**,
+where the `stalwart-haproxy` DaemonSet correctly re-reconciled (old active node
+gained haproxy, new active node dropped it). Cross-tenant isolation was verified
+to hold over IPv6 as well as IPv4.
+
+Three defects the sweep found, all fixed here:
+- **`--node-external-ip` published IPv4 only on a pinned underlay.** The v6 was
+  appended in the public-underlay branch but not the mesh/VLAN one, so the Node
+  object carried a v4-only ExternalIP and `ingress-external-ips` published a
+  v4-only list. Both branches now use a `global-only` address detector — a ULA
+  is fine for `--node-ip` but must never be *announced* as externally
+  reachable, so a ULA-only host correctly announces no v6 at all.
+- **The `platform-cluster-cidrs` ConfigMap was never created, on any cluster.**
+  Its guard read a name that was `local` to a sibling function. Invisible on
+  IPv4-only (the backend's built-in defaults match), but on dual-stack it cost
+  tenants *all* IPv6 egress: with no v6 CIDRs to except,
+  `buildTenantNetworkPolicies` emitted no `::/0` rule, and an egress policy with
+  no v6 rule denies v6 outright. A tenant pod could reach the node over IPv4 but
+  not IPv6 — so a tenant app resolving `mail.<apex>` to its AAAA could not send
+  mail. Both consumers now share one `cluster_cidr_args()` helper, and
+  `resolveTenantNetworkCidrs` additionally falls back to the nodes' own
+  `spec.podCIDRs` so existing dual-stack clusters self-heal without a rebuild.
+- **The pod-CIDR control-plane firewall exemption was IPv4-only.** The nft table
+  is family `inet`, so `ip saddr` matches v4 exclusively; dual-stack now emits
+  the matching `ip6 saddr` rule. Inert while Services stay `SingleStack [IPv4]`,
+  but a trap the day they don't.
 
 **Pod addressing is ULA + natOutgoing**, mirroring the IPv4 model: the node's
 global v6 is what clients talk to and CNI portmap DNATs hostPort down to the
@@ -327,6 +360,24 @@ open.
   is single-stack. The testing box ran that way for months — apex and every
   subdomain resolving AAAA, nothing listening, TCP RST in 8 ms — and nothing
   surfaced it.
+- **The node's IPv6 is invisible in the admin panel.** `nodes/k8s-sync.ts`
+  stores a single `publicIp`, taking the first `ExternalIP` — the v4. On a
+  dual-stack cluster the operator has no way to read the node's global v6 from
+  the UI, yet `ingress_default_ipv6` (which drives every apex AAAA) is
+  operator-set and needs exactly that value. Wants a `publicIpv6` alongside
+  `publicIp`: nodes schema + `@insula/api-contracts` + the panel column.
+- **Stalwart's `x:AllowedIp` rate-limit exemption seeds v4 CIDRs only**
+  (`cluster-pod` 10.42/16, `cluster-svc` 10.43/16). Inert today — every platform
+  Service is `SingleStack [IPv4]`, so cluster-internal traffic to Stalwart never
+  arrives over v6 — but it should follow the pod/service CIDRs of both families
+  once anything in-cluster is dual-stack.
+- The single-stack **multi-node** control run for `mail-external-reachability`
+  is still outstanding. Its failures on runs `6e9e214b` and `34090e97` are
+  explained — the harness's own runner IP had been auto-banned by Stalwart, and
+  a banned source is dropped silently (TCP connects, then EOF, no banner), which
+  is indistinguishable from "port closed" — but that explanation should be
+  confirmed by a control run, and the suite should bind a fresh source per probe
+  the way `mailmatrix.sh` does rather than reusing one that it poisons.
 
 ## R14 — User-manual website
 

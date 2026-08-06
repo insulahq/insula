@@ -138,4 +138,47 @@ describe('buildTenantNetworkPolicies', () => {
     expect(v6).toBeDefined();
     expect(v6.to[0].ipBlock.except).toEqual(['fd00:42::/56', 'fd00:43::/112']);
   });
+
+  // Regression: a dual-stack cluster whose platform-cluster-cidrs ConfigMap
+  // names no v6 range still MUST get a ::/0 rule. Without one the policy's
+  // policyTypes ['Egress'] denies IPv6 outright, which is how tenant apps on
+  // VM run 6e9e214b could reach the node over IPv4 but not over IPv6.
+  it('excepts node-derived pod CIDRs when the ConfigMap names no IPv6 range', () => {
+    const nodeDerived = buildTenantNetworkPolicies(ns, {
+      podV4: '10.42.0.0/16',
+      svcV4: '10.43.0.0/16',
+      extraV6Except: ['fd42:42::/64', 'fd42:42:0:1::/64'],
+    });
+    const egress = (nodeDerived.find((p) => p.name === 'tenant-egress')!.body as {
+      spec: { egress: Array<Record<string, unknown>> };
+    }).spec.egress;
+    const v6 = egress.find((r) => {
+      const to = (r as { to?: Array<{ ipBlock?: { cidr?: string } }> }).to;
+      return to?.[0]?.ipBlock?.cidr === '::/0';
+    }) as { to: Array<{ ipBlock: { except: string[] } }> } | undefined;
+    expect(v6, 'a dual-stack cluster must get a ::/0 egress rule').toBeDefined();
+    expect(v6!.to[0].ipBlock.except).toEqual(['fd42:42::/64', 'fd42:42:0:1::/64']);
+  });
+
+  it('de-duplicates the IPv6 except list across both sources', () => {
+    const both = buildTenantNetworkPolicies(ns, {
+      podV4: '10.42.0.0/16',
+      svcV4: '10.43.0.0/16',
+      podV6: 'fd42:42::/56',
+      svcV6: 'fd42:43::/112',
+      extraV6Except: ['fd42:42::/56', 'fd42:42:0:9::/64'],
+    });
+    const egress = (both.find((p) => p.name === 'tenant-egress')!.body as {
+      spec: { egress: Array<Record<string, unknown>> };
+    }).spec.egress;
+    const v6 = egress.find((r) => {
+      const to = (r as { to?: Array<{ ipBlock?: { cidr?: string } }> }).to;
+      return to?.[0]?.ipBlock?.cidr === '::/0';
+    }) as { to: Array<{ ipBlock: { except: string[] } }> };
+    expect(v6.to[0].ipBlock.except).toEqual([
+      'fd42:42::/56',
+      'fd42:43::/112',
+      'fd42:42:0:9::/64',
+    ]);
+  });
 });

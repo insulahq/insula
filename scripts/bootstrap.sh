@@ -284,6 +284,30 @@ POD_CIDR_V4="10.42.0.0/16"
 DUAL_STACK=false
 POD_CIDR_V6="fd42:42::/56"
 SERVICE_CIDR_V6="fd42:43::/112"
+SERVICE_CIDR_V4="10.43.0.0/16"
+
+# The exact --cluster-cidr / --service-cidr strings handed to k3s, comma-joined
+# on dual-stack ("10.42.0.0/16,fd42:42::/56"). Two consumers, in DIFFERENT
+# top-level functions:
+#   1. install_k3s_server()      — the k3s install flags themselves
+#   2. apply_platform_manifests() — the `platform-cluster-cidrs` ConfigMap that
+#      the backend reads to build tenant NetworkPolicies and trusted-proxy rows
+# They used to be `local` to (1), so (2) read an UNSET name and its `if [[ -n
+# … ]]` guard never fired — the ConfigMap was never created on ANY cluster.
+# On IPv4-only that was invisible (the backend's built-in defaults are the same
+# 10.42/10.43), but on dual-stack it silently cost tenants ALL IPv6 egress:
+# with no v6 CIDRs to except, buildTenantNetworkPolicies() emits no `::/0` rule
+# at all, and an egress policy with no v6 rule denies v6 outright. Proven on VM
+# run 6e9e214b — a tenant pod could reach the node over IPv4 but not IPv6, so a
+# tenant app resolving mail.<apex> to its AAAA could not send mail.
+cluster_cidr_args() { # -> "<pod-cidrs> <svc-cidrs>"
+  local pod="$POD_CIDR_V4" svc="$SERVICE_CIDR_V4"
+  if [[ "$DUAL_STACK" == true ]]; then
+    pod="${pod},${POD_CIDR_V6}"
+    svc="${svc},${SERVICE_CIDR_V6}"
+  fi
+  printf '%s %s' "$pod" "$svc"
+}
 
 # SSH-via-mesh — opt-in firewall scoping for SSH (:22).
 #
@@ -2169,6 +2193,17 @@ configure_firewall() {
   fi
 
   # ─── SSH rule rendering ───────────────────────────────────────────────
+  # Pod-CIDR control-plane exemption, IPv6 half. Empty on single-stack so the
+  # v4-only ruleset stays BYTE-IDENTICAL (scripts/.firewall-shape.sha256 and
+  # test-bootstrap-dual-stack.sh both assert that).
+  local pod_cidr_v6_rule=""
+  if [[ "$DUAL_STACK" == true ]]; then
+    pod_cidr_v6_rule="
+    # Same exemption for the IPv6 pod CIDR on dual-stack clusters — the table
+    # is family \`inet\`, so the \`ip saddr\` rule above matches IPv4 ONLY.
+    ip6 saddr ${POD_CIDR_V6} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept"
+  fi
+
   # Default: public :22 (legacy behaviour, assumes external gating).
   # --ssh-via-mesh <iface>: scoped to that interface + trusted_ranges.
   local ssh_rule="    tcp dport 22 accept      # SSH (public — set --ssh-via-mesh to scope)"
@@ -2297,7 +2332,7 @@ ${ssh_rule}
     # "i/o timeout" against 10.43.0.1:443 before Calico's NAT rules
     # are active. Pod CIDR is internal cluster traffic only; it isn't
     # routable from outside.
-    ip saddr ${POD_CIDR_V4} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept
+    ip saddr ${POD_CIDR_V4} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept${pod_cidr_v6_rule}
 
 ${cluster_allow}
 
@@ -3214,6 +3249,18 @@ detect_public_ipv6() {
 # Prints the address, exit 0. Prints nothing, exit 1 when the node has no usable
 # v6 at all.
 detect_node_ipv6() {
+  # detect_node_ipv6 [global-only]
+  #
+  # Default: prefer a globally-routable address, fall back to a ULA (fc00::/7).
+  # That is right for --node-ip, where a ULA is a perfectly good cluster
+  # underlay (it mirrors the IPv4 10.x model).
+  #
+  # `global-only`: refuse the ULA fallback. Used for --node-external-ip, which
+  # is what the Node object PUBLISHES as reachable-from-outside — the
+  # ingress-external-ips reconciler copies it onto the Traefik Service and the
+  # panel shows it as the node's public address. Announcing a ULA there sends
+  # clients to an address that is unroutable off-link.
+  local mode="${1:-prefer-global}"
   local vpn_re='^(wt[0-9]*|tailscale[0-9]*|wg[0-9]*|tun[0-9]*|tap[0-9]*|ipsec[0-9]*|ppp[0-9]*|gre[0-9]*|cali[0-9a-f]+|vxlan\.calico|wireguard\.calico|wireguard\.cali)$'
   local line addr ifname global_hit="" ula_hit=""
   while IFS= read -r line; do
@@ -3233,6 +3280,7 @@ detect_node_ipv6() {
   done < <(ip -6 -o addr show 2>/dev/null)
 
   if [[ -n "$global_hit" ]]; then echo "$global_hit"; return 0; fi
+  [[ "$mode" == "global-only" ]] && return 1
   if [[ -n "$ula_hit" ]];    then echo "$ula_hit";    return 0; fi
   return 1
 }
@@ -3627,14 +3675,17 @@ install_k3s_server() {
   # AND a v6 --node-ip together, never one without the other, and the
   # arg validator has already refused the flag on a node with no v6.
   local node_pin=""
-  local cluster_cidr_arg="10.42.0.0/16"
-  local service_cidr_arg="10.43.0.0/16"
-  local node_ipv6=""
+  local cluster_cidr_arg service_cidr_arg
+  read -r cluster_cidr_arg service_cidr_arg <<<"$(cluster_cidr_args)"
+  local node_ipv6="" node_public_ipv6=""
   if [[ "$DUAL_STACK" == true ]]; then
     node_ipv6=$(resolve_dual_stack_node_ipv6) || exit 1
-    cluster_cidr_arg="${cluster_cidr_arg},${POD_CIDR_V6}"
-    service_cidr_arg="${service_cidr_arg},${SERVICE_CIDR_V6}"
-    log "  dual-stack: pod=${cluster_cidr_arg} svc=${service_cidr_arg} node-v6=${node_ipv6}"
+    # Separate address for --node-external-ip: PUBLISHED as the node's
+    # externally-reachable v6, so a ULA never qualifies. Empty is the normal,
+    # correct outcome on a ULA-only host (the VM tier) — the cluster is still
+    # dual-stack internally, it just has no global v6 to announce.
+    node_public_ipv6=$(detect_node_ipv6 global-only || true)
+    log "  dual-stack: pod=${cluster_cidr_arg} svc=${service_cidr_arg} node-v6=${node_ipv6} external-v6=${node_public_ipv6:-<none, no global v6 on this host>}"
     tls_sans="${tls_sans} --tls-san=${node_ipv6}"
   fi
   if [[ -n "$NODEIP_PIN_CIDR" ]]; then
@@ -3652,7 +3703,7 @@ install_k3s_server() {
     # and etcd peer endpoints, which the mesh carries over v4. Only --node-ip
     # gains the second family, which is what kubelet needs to register a
     # dual-stack Node.
-    node_pin="--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}} --node-external-ip=${public_ip} --advertise-address=${private_ip} --bind-address=0.0.0.0"
+    node_pin="--node-ip=${private_ip}${node_ipv6:+,${node_ipv6}} --node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}} --advertise-address=${private_ip} --bind-address=0.0.0.0"
     tls_sans="${tls_sans} --tls-san=${private_ip}"
   else
     # Public-underlay mode: pin to the host's primary public IPv4.
@@ -3671,8 +3722,8 @@ install_k3s_server() {
     # build the Traefik Service's externalIPs, and without the v6 here it would
     # publish a v4-only list on a dual-stack cluster.
     node_pin="--node-ip=${public_ip}${node_ipv6:+,${node_ipv6}} --advertise-address=${public_ip}"
-    if [[ -n "$node_ipv6" ]]; then
-      node_pin="${node_pin} --node-external-ip=${public_ip},${node_ipv6}"
+    if [[ -n "$node_public_ipv6" ]]; then
+      node_pin="${node_pin} --node-external-ip=${public_ip},${node_public_ipv6}"
     fi
     tls_sans="${tls_sans} --tls-san=${public_ip}"
   fi
@@ -3787,10 +3838,13 @@ install_k3s_worker() {
   # therefore has to be passed to every node in the cluster, not just the first
   # server; MULTI_NODE_RUNBOOK.md says so explicitly.
   local exec_args=""
-  local node_ipv6=""
+  local node_ipv6="" node_public_ipv6=""
   if [[ "$DUAL_STACK" == true ]]; then
     node_ipv6=$(resolve_dual_stack_node_ipv6) || exit 1
-    log "  dual-stack worker: node-v6=${node_ipv6}"
+    # See the server-side comment: --node-external-ip publishes, so ULA-only
+    # hosts announce no v6 rather than an off-link-unroutable one.
+    node_public_ipv6=$(detect_node_ipv6 global-only || true)
+    log "  dual-stack worker: node-v6=${node_ipv6} external-v6=${node_public_ipv6:-<none, no global v6 on this host>}"
   fi
   if [[ -n "$NODEIP_PIN_CIDR" ]]; then
     local private_ip public_ip
@@ -3800,7 +3854,7 @@ install_k3s_worker() {
     fi
     public_ip=$(hostname -I | awk '{print $1}')
     log "  private-network mode: --node-ip=${private_ip} --node-external-ip=${public_ip}"
-    exec_args="agent --node-ip=${private_ip}${node_ipv6:+,${node_ipv6}} --node-external-ip=${public_ip}"
+    exec_args="agent --node-ip=${private_ip}${node_ipv6:+,${node_ipv6}} --node-external-ip=${public_ip}${node_public_ipv6:+,${node_public_ipv6}}"
   else
     # Public-underlay mode (workers) — see detect_public_ipv4() comment.
     local public_ip
@@ -3810,8 +3864,8 @@ install_k3s_worker() {
     fi
     log "  public-underlay mode: --node-ip=${public_ip}"
     exec_args="agent --node-ip=${public_ip}${node_ipv6:+,${node_ipv6}}"
-    if [[ -n "$node_ipv6" ]]; then
-      exec_args="${exec_args} --node-external-ip=${public_ip},${node_ipv6}"
+    if [[ -n "$node_public_ipv6" ]]; then
+      exec_args="${exec_args} --node-external-ip=${public_ip},${node_public_ipv6}"
     fi
   fi
 
@@ -7890,19 +7944,22 @@ swaps cert issuers + retention policies). Pass --force-domain-change if intentio
   # UI shows the cluster's real CIDRs (not just the RFC1918 baseline).
   # Idempotent — ON CONFLICT updates the existing row so re-running
   # bootstrap with a different --cluster-cidr propagates the change.
-  if [[ -n "${cluster_cidr_arg:-}" || -n "${service_cidr_arg:-}" ]]; then
-    # Write to a stable ConfigMap (platform namespace) that the backend
-    # reads at reconcile time. DB-write here would require credentials
-    # we may not have yet; the reconciler bridges into platform_settings.
-    local pod_cidr_value="${cluster_cidr_arg:-10.42.0.0/16}"
-    local svc_cidr_value="${service_cidr_arg:-10.43.0.0/16}"
-    log "Seeding platform-cluster-cidrs ConfigMap (pod=${pod_cidr_value}, svc=${svc_cidr_value})..."
-    kctl create configmap platform-cluster-cidrs \
-      -n platform \
-      --from-literal=POD_CIDR="${pod_cidr_value}" \
-      --from-literal=SVC_CIDR="${svc_cidr_value}" \
-      --dry-run=client -o yaml | kctl apply -f -
-  fi
+  #
+  # The values come from cluster_cidr_args(), NOT from install_k3s_server's
+  # locals: that function is a sibling in the top-level flow, so its `local`
+  # names are out of scope here and the guard that used to read them was
+  # always false — see the comment on cluster_cidr_args().
+  local pod_cidr_value svc_cidr_value
+  read -r pod_cidr_value svc_cidr_value <<<"$(cluster_cidr_args)"
+  # Write to a stable ConfigMap (platform namespace) that the backend
+  # reads at reconcile time. DB-write here would require credentials
+  # we may not have yet; the reconciler bridges into platform_settings.
+  log "Seeding platform-cluster-cidrs ConfigMap (pod=${pod_cidr_value}, svc=${svc_cidr_value})..."
+  kctl create configmap platform-cluster-cidrs \
+    -n platform \
+    --from-literal=POD_CIDR="${pod_cidr_value}" \
+    --from-literal=SVC_CIDR="${svc_cidr_value}" \
+    --dry-run=client -o yaml | kctl apply -f -
 
   # Dex config injection — only for overlays that ship Dex (dev/staging).
   # Replace any leftover PLACEHOLDER URLs and the generated oauth2-proxy
