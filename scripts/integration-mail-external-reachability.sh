@@ -23,6 +23,11 @@
 #         nodes answer mail ports.
 #   5. Restore prior state.
 #
+#   On a DUAL-STACK cluster every phase additionally asserts the same topology
+#   over IPv6: exposure is a property of the NODE, not of the address family, so
+#   a node that serves mail on v4 must serve it on v6 and a node that must stay
+#   silent must be silent on both. Skipped entirely on single-stack clusters.
+#
 # Each probe: bash /dev/tcp + SMTP-banner read with a 5s timeout.
 #
 # RUN THIS FROM A HOST WITH A DIRECT IP ROUTE TO THE NODES (the VM-tier runner,
@@ -236,10 +241,44 @@ release_prober_allowlist() {
       methodCalls:[["x:AllowedIp/set",{accountId:"d333333",destroy:[$k]},"c0"]]}')" >/dev/null 2>&1 || true
 }
 
-# Returns 0 if port answers with TCP within timeout
+# Returns 0 if port answers with TCP within timeout. Handles both families —
+# bash /dev/tcp takes a bare IPv6 literal (no brackets).
 probe_tcp() {
   local ip="$1" port="$2"
   timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${ip}/${port} && exec 3>&-" 2>/dev/null
+}
+
+# probe_node_ports_v6 <node> <v6> <expect yes|no>
+#
+# The IPv6 half of the topology assertion. A dual-stack cluster must expose mail
+# on EXACTLY the same nodes over v6 as over v4 — the exposure mode is a property
+# of the node, not of the address family, so any divergence is a real gap. Runs
+# only when the cluster is dual-stack AND the node has a v6 address; otherwise
+# there is nothing to assert and it is silently skipped.
+probe_node_ports_v6() {
+  local node="$1" v6="$2" expect="$3"
+  [ "$CLUSTER_DUAL_STACK" = yes ] || return 0
+  [ -n "$v6" ] || return 0
+  local pass=0 fail=0 reasons=""
+  for p in "${ALL_PORTS[@]}"; do
+    if probe_tcp "$v6" "$p"; then
+      if [ "$expect" = "yes" ]; then pass=$((pass+1)); else fail=$((fail+1)); reasons="$reasons ${p}=unexpectedly-open-v6"; fi
+    else
+      if [ "$expect" = "yes" ]; then fail=$((fail+1)); reasons="$reasons ${p}=closed-v6"; else pass=$((pass+1)); fi
+    fi
+  done
+  if [ "$expect" = "yes" ]; then
+    local b6
+    b6=$(timeout "$PROBE_TIMEOUT" bash -c "exec 3<>/dev/tcp/${v6}/25; read -t 4 l <&3 || true; printf '%s' \"\$l\"" 2>/dev/null)
+    if echo "$b6" | grep -qiE "^220.*(stalwart|smtp|esmtp|mta|mail)"; then pass=$((pass+1))
+    else fail=$((fail+1)); reasons="$reasons banner-v6='${b6:-empty}'"; fi
+  fi
+  if [ $fail -eq 0 ]; then
+    green "  ${node} [${v6}]: ${pass}/${pass} IPv6 probes match expectation '${expect}'"
+  else
+    red "  ${node} [${v6}]: IPv6 FAIL — ${fail}/$((pass+fail)) failed${reasons}"
+  fi
+  return $fail
 }
 
 # Reads SMTP banner; prints first line or empty string. Plain text only (port 25).
@@ -401,9 +440,25 @@ mapfile -t NODE_LINES < <(
   echo "$NODES_JSON" | jq -r '.items[] | [
     .metadata.name,
     (.metadata.labels["insula.host/node-role"] // "unknown"),
-    (.status.addresses[]? | select(.type=="ExternalIP") | .address) // (.status.addresses[]? | select(.type=="InternalIP") | .address)
+    ([.status.addresses[]? | select(.type=="ExternalIP") | .address, .status.addresses[]? | select(.type=="InternalIP") | .address]
+      | map(select(test(":") | not)) | .[0] // "")
   ] | @tsv'
 )
+
+# IPv6 address per node, for the dual-stack assertions below. Empty on a
+# single-stack cluster, which is what makes the v6 probes skip rather than fail.
+declare -A NODE_V6=()
+while IFS=$'\t' read -r _n _a; do
+  [ -n "${_a:-}" ] && NODE_V6["$_n"]="$_a"
+done < <(echo "$NODES_JSON" | jq -r '.items[] | [
+    .metadata.name,
+    ([.status.addresses[]? | select(.type=="ExternalIP") | .address, .status.addresses[]? | select(.type=="InternalIP") | .address]
+      | map(select(test(":"))) | .[0] // "")
+  ] | @tsv')
+CLUSTER_DUAL_STACK=no
+echo "$NODES_JSON" | jq -e '[.items[].spec.podCIDRs // [] | .[]] | map(select(test(":"))) | length > 0' >/dev/null 2>&1 && CLUSTER_DUAL_STACK=yes
+echo "Cluster dual-stack: $CLUSTER_DUAL_STACK"
+[ "$CLUSTER_DUAL_STACK" = yes ] && echo "Node IPv6: $(for k in "${!NODE_V6[@]}"; do printf '%s=%s ' "$k" "${NODE_V6[$k]}"; done)"
 
 echo "Nodes:"
 for L in "${NODE_LINES[@]}"; do
@@ -509,8 +564,10 @@ for L in "${NODE_LINES[@]}"; do
   # Expected to answer when: server-role OR (worker AND this is the active mail node)
   if [ "$role" = "server" ] || [ "$name" = "$ACTIVE" ]; then
     probe_node_ports "$name" "$ip" yes || fail_count=$((fail_count+1))
+    probe_node_ports_v6 "$name" "${NODE_V6[$name]:-}" yes || fail_count=$((fail_count+1))
   else
     probe_node_ports "$name" "$ip" no || fail_count=$((fail_count+1))
+    probe_node_ports_v6 "$name" "${NODE_V6[$name]:-}" no || fail_count=$((fail_count+1))
   fi
 done
 if [ $fail_count -eq 0 ]; then
@@ -540,8 +597,10 @@ for L in "${NODE_LINES[@]}"; do
   [ -z "$ip" ] && continue
   if [ "$name" = "$ACTIVE" ]; then
     probe_node_ports "$name" "$ip" yes || fail2_count=$((fail2_count+1))
+    probe_node_ports_v6 "$name" "${NODE_V6[$name]:-}" yes || fail2_count=$((fail2_count+1))
   else
     probe_node_ports "$name" "$ip" no || fail2_count=$((fail2_count+1))
+    probe_node_ports_v6 "$name" "${NODE_V6[$name]:-}" no || fail2_count=$((fail2_count+1))
   fi
 done
 if [ $fail2_count -eq 0 ]; then
@@ -641,8 +700,10 @@ for L in "${NODE_LINES[@]}"; do
   [ -z "$ip" ] && continue
   if [[ " ${ASSIGNED_NEW[*]} " == *" $name "* ]]; then
     probe_node_ports "$name" "$ip" yes || fail3_count=$((fail3_count+1))
+    probe_node_ports_v6 "$name" "${NODE_V6[$name]:-}" yes || fail3_count=$((fail3_count+1))
   else
     probe_node_ports "$name" "$ip" no || fail3_count=$((fail3_count+1))
+    probe_node_ports_v6 "$name" "${NODE_V6[$name]:-}" no || fail3_count=$((fail3_count+1))
   fi
 done
 if [ $fail3_count -eq 0 ]; then
