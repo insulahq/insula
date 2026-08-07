@@ -3263,12 +3263,22 @@ scenario_mail_tls() {
   #       would reject on hostname mismatch in real traffic. ──
   for port in 465 993; do
     local out; out=$(_probe_tls_handshake "$mail_host" "$port" "$mail_hostname")
-    if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
-      ok "mail-tls/${port}: serves LE-issued cert (SNI=${mail_hostname})"
-    elif echo "$out" | grep -qE "rcgen self signed cert|self-signed"; then
+    # Read the ISSUER line only. The previous test grepped the whole handshake
+    # for "Let's Encrypt|R10|R11|E5|E6|E7|E8" — but _probe_tls_handshake passes
+    # -showcerts, so the output carries the full base64 PEM chain and those
+    # two-character needles match random base64 constantly. The assertion was
+    # therefore passing by ACCIDENT rather than because a Let's Encrypt cert
+    # was served, and would flip to failing whenever the encoding happened not
+    # to contain them. Hardcoding LE was also wrong on any cluster using a
+    # different ACME endpoint (the VM tier's Pebble).
+    local issuer
+    issuer=$(echo "$out" | sed -nE 's/^[[:space:]]*(issuer=|Issuer: )//p' | head -1 | sed 's/^ *//; s/ *$//')
+    if echo "$out" | grep -qEi "rcgen self signed cert|self-signed certificate"; then
       fail "mail-tls/${port}: serving rcgen self-signed cert — Stalwart-managed ACME has not issued a real cert yet for ${mail_hostname}"
+    elif [[ -n "$issuer" ]]; then
+      ok "mail-tls/${port}: serves CA-issued cert (issuer=${issuer}, SNI=${mail_hostname})"
     else
-      fail "mail-tls/${port}: openssl handshake unexpected output: $(echo "$out" | grep -E 'subject=|issuer=|verify' | head -3)"
+      fail "mail-tls/${port}: openssl handshake produced no issuer: $(echo "$out" | grep -E 'subject=|issuer=|verify|error' | head -3)"
     fi
     # CN/SAN match — independent assertion so we know whether the cert
     # the server returned actually covers the hostname we asked for.
@@ -3467,10 +3477,18 @@ for l in d.get('data',{}).get('listeners',[]):
 " 2>/dev/null)
     wm_connected=$(echo "$wm_issuer" | awk -F'|' '{gsub(/ /,"",$2); print $2}')
     wm_issuer=$(echo "$wm_issuer" | awk -F'|' '{print $1}')
-    if [[ "$wm_connected" == "true" ]] && echo "$wm_issuer" | grep -qi "encrypt"; then
-      ok "webmail/ssl-status: webmail-https row → connected=true, LE issuer (${wm_issuer})"
+    # Accept ANY real CA, not Let's Encrypt by name. `grep -qi encrypt` failed
+    # on every cluster using a different ACME endpoint (the VM tier's Pebble:
+    # `CN=Pebble Intermediate CA ...`) even though the row reported
+    # connected=true with a perfectly good issuer. What matters is that the
+    # listener is connected and is NOT serving the self-signed placeholder.
+    # Same reasoning as the mail-tls/api check above.
+    local wm_issuer_lc; wm_issuer_lc=$(printf '%s' "$wm_issuer" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    if [[ "$wm_connected" == "true" && -n "$wm_issuer_lc" ]] \
+       && [[ "$wm_issuer_lc" != *"selfsigned"* && "$wm_issuer_lc" != *"self-signed"* ]]; then
+      ok "webmail/ssl-status: webmail-https row → connected=true, CA-issued cert (${wm_issuer})"
     else
-      fail "webmail/ssl-status: webmail row connected=${wm_connected} issuer=${wm_issuer}"
+      fail "webmail/ssl-status: webmail row connected=${wm_connected} issuer=${wm_issuer:-<none>} (expected connected=true with a CA-issued cert)"
     fi
   else
     fail "webmail/ssl-status: response missing webmail-https listener row"
