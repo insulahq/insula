@@ -30,6 +30,12 @@ data:
   # file-manager was broken on every non-dev cluster (surfaced by the ADR-053
   # prod-mirror staging, 2026-06-22).
   file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
+  # Mail-archive checkpoint binary. Production does NOT follow the development
+  # overlay's CI pin (no cluster tracks a branch here — ADR-053's admin-controlled
+  # pull model), so this is stamped at release time. Until cut-release.sh does
+  # that, it is the same mutable `:latest` every other job image on this overlay
+  # uses; see docs/roadmap/ROADMAP.md.
+  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest"
   # Admin node-terminal (ADR-041 — super_admin-only privileged root shell
   # on cluster nodes via nsenter into host PID 1). ENABLED in production:
   # it's a break-glass tool operators need, and it's still gated by the

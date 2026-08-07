@@ -34,6 +34,11 @@ jobs:
   build:
     name: Build + Scan + Push
     runs-on: ubuntu-latest
+    outputs:
+      # Consumed by the pin job below. The digest is what containerd resolves;
+      # the timestamp tag rides along so the pinned line stays human-readable.
+      digest: ${{ steps.build.outputs.digest }}
+      timestamp_tag: ${{ steps.tag.outputs.timestamp_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -61,6 +66,18 @@ jobs:
             # (5c30f200) for the two that were caught first.
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/development' }}
             type=raw,value={{date 'YYYYMMDDHHmmss'}}-{{sha}},enable=${{ github.ref == 'refs/heads/development' }}
+
+      # Read the timestamp tag back OUT of metadata-action rather than
+      # recomputing it. `{{date}}` is evaluated inside that action, so a second
+      # `date` call here would be seconds off and would pin a tag that was never
+      # pushed. Extract, don't re-derive.
+      - id: tag
+        if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed 's/.*://' | grep -E '^[0-9]{14}-' | head -1)"
+          [ -n "$tag" ] || { echo "::error::no <timestamp>-<sha> tag in metadata-action output — refusing to pin"; exit 1; }
+          echo "timestamp_tag=$tag" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         id: build
@@ -96,3 +113,34 @@ jobs:
         uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3 # v4
         with:
           sarif_file: trivy-results.sarif
+
+  # Pin the freshly-pushed image into the development overlay's platform-config,
+  # AFTER the push. This runs here — in the image's own workflow — rather than in
+  # build-deploy.yml on purpose: pinning from a different workflow is what caused
+  # the 2026-06-06 pull race (the roll fired before the tag finished pushing).
+  #
+  # The backend resolves this image at RUNTIME from an env var, so it is invisible
+  # to the kustomization `images:` transformer that pin-image-tag.sh drives —
+  # hence the ConfigMap-key variant. See .github/scripts/pin-config-image.sh.
+  pin:
+    name: Pin digest into the development overlay
+    needs: build
+    if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      # Shared with the other pin jobs: they all commit to `development`, and the
+      # push race-recovery loop is cheaper to avoid than to exercise.
+      group: pin-development-config
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: development
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pin rocksdb-secondary-checkpoint by digest
+        run: |
+          .github/scripts/pin-config-image.sh rocksdb-secondary-checkpoint-image \
+            "${IMAGE}:${{ needs.build.outputs.timestamp_tag }}@${{ needs.build.outputs.digest }}"

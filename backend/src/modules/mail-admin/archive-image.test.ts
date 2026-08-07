@@ -9,7 +9,11 @@
  * identical in production until the day it didn't).
  */
 import { describe, it, expect, vi } from 'vitest';
-import { resolveStalwartImage } from './archive.js';
+import {
+  resolveStalwartImage,
+  resolveRocksdbCheckpointImage,
+  ROCKSDB_SECONDARY_IMAGE_FALLBACK,
+} from './archive.js';
 
 type AppsStub = Parameters<typeof resolveStalwartImage>[0];
 
@@ -104,5 +108,52 @@ describe('resolveStalwartImage', () => {
     } as unknown as AppsStub;
     const sourceFallback = await resolveStalwartImage(unreadable, {}, { warn: vi.fn() });
     expect(sourceFallback).toBe(pinned);
+  });
+});
+
+/**
+ * The mail-archive CHECKPOINT image (initContainer #1 of the no_downtime path,
+ * which is DEFAULT_ARCHIVE_MODE — so this runs on every operator-triggered
+ * archive, against the live mail store).
+ *
+ * Same drift concern as the Stalwart resolver above, one level worse: this
+ * binary opens the live RocksDB directly. On a real cluster the value comes from
+ * platform-config as an immutable `:<tag>@sha256:<digest>` written by the
+ * image's own CI; the literal below is a local/DinD fallback. A resolver that
+ * quietly always returned the fallback would look identical in production until
+ * the day the ConfigMap wiring broke and every archive silently ran `:latest`.
+ */
+describe('resolveRocksdbCheckpointImage', () => {
+  it('uses the digest-pinned reference the ConfigMap supplies', () => {
+    const pinned =
+      'ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260807103130-abc1234' +
+      '@sha256:1111111111111111111111111111111111111111111111111111111111111111';
+    expect(
+      resolveRocksdbCheckpointImage({ ROCKSDB_SECONDARY_CHECKPOINT_IMAGE: pinned }),
+    ).toBe(pinned);
+  });
+
+  it('falls back to the in-code default when the env var is absent', () => {
+    expect(resolveRocksdbCheckpointImage({})).toBe(ROCKSDB_SECONDARY_IMAGE_FALLBACK);
+  });
+
+  it('treats an empty or whitespace-only value as unset', () => {
+    // An unset ConfigMap key (optional: true) can surface as "" rather than
+    // undefined; "" as an image reference would make the Job unschedulable with
+    // an opaque error instead of falling back.
+    expect(resolveRocksdbCheckpointImage({ ROCKSDB_SECONDARY_CHECKPOINT_IMAGE: '' })).toBe(
+      ROCKSDB_SECONDARY_IMAGE_FALLBACK,
+    );
+    expect(resolveRocksdbCheckpointImage({ ROCKSDB_SECONDARY_CHECKPOINT_IMAGE: '   ' })).toBe(
+      ROCKSDB_SECONDARY_IMAGE_FALLBACK,
+    );
+  });
+
+  it('the fallback is a real reference, and is the ONLY mutable one we ship', () => {
+    // If this literal ever gains a digest, the pin wiring has been superseded and
+    // this test should be updated deliberately rather than silently.
+    expect(ROCKSDB_SECONDARY_IMAGE_FALLBACK).toMatch(
+      /^ghcr\.io\/insulahq\/insula\/rocksdb-secondary-checkpoint:latest$/,
+    );
   });
 });

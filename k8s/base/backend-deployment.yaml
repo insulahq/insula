@@ -229,6 +229,16 @@ spec:
                   name: platform-config
                   key: file-manager-image
                   optional: true
+            # Mail-archive checkpoint binary (initContainer #1 of no_downtime,
+            # which is DEFAULT_ARCHIVE_MODE). CI writes an immutable
+            # :<tag>@sha256:<digest> here via pin-config-image.sh; the code
+            # default is :latest, so `optional: true` keeps local dev working.
+            - name: ROCKSDB_SECONDARY_CHECKPOINT_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: rocksdb-secondary-checkpoint-image
+                  optional: true
             # Private Worker — overlay-supplied per environment.
             - name: TUNNEL_BASE_URL
               valueFrom:
