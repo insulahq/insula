@@ -480,7 +480,22 @@ _resolve_serving_mail_host() {
   local stalwart_ip
   stalwart_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
   if [[ -n "$stalwart_ip" ]]; then
-    candidates=$(printf '%s\n%s\n' "$candidates" "$stalwart_ip" | grep -vE '^$' | sort -u)
+    # ORDER MATTERS — put the active Stalwart node FIRST.
+    #
+    # This used to `sort -u` the merged list, which sorts numerically and threw
+    # away the very priority the stalwart_ip candidate exists to express. On a
+    # 4-node cluster the haproxy node 10.98.x.23 sorts ahead of the active node
+    # 10.98.x.98, so the sweep returned a haproxy front-end — precisely the node
+    # this helper's own comment calls out as prone to accept-then-drop while its
+    # Stalwart backend is mid-roll. The cert/banner probes then hit that node and
+    # reported "no SMTP 220 banner" against a perfectly healthy mail server
+    # (staging-all mail_tls 25/465/587, full run 2026-08-07).
+    #
+    # The active node serves the port DIRECTLY with no proxy hop, so prefer it
+    # and keep the DNS-resolved nodes as ordered fallbacks. Reachability THROUGH
+    # haproxy is integration-mail-external-reachability.sh's job; these probes
+    # are about what the mail server presents.
+    candidates=$(printf '%s\n%s\n' "$stalwart_ip" "$candidates" | grep -vE '^$' | awk '!seen[$0]++')
   fi
   local _try ip
   for _try in 1 2 3 4 5 6; do
