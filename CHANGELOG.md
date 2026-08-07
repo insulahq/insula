@@ -62,6 +62,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and strands them on a registry GC; and `private-worker-frps` is third-party we
   do not build, so a digest means a manual bump per upstream release with no CI to
   produce it.
+- **Fixed a pin-losing concurrency bug in the sweep itself.** All the new pin jobs
+  initially shared one `pin-development-config` group. GitHub keeps at most **one
+  pending job per concurrency group and cancels the rest**, so when five image
+  workflows fired together the `tenant-backup-tools` pin was silently cancelled
+  while the other four landed — `cancel-in-progress: false` prevents cancelling a
+  *running* job, not a queued one. Each pin now has a per-image group. Serialising
+  was never needed: `pin-config-image.sh` already carries a 4-attempt
+  reset/re-apply/retry loop precisely because concurrent pins are expected.
 - **A guard so this cannot silently regress.** `ci-config-image-pin-check.sh`
   classifies every runtime-resolved image key in the development overlay:
   `PINNED` keys must carry an `@sha256:` digest, `PENDING` keys are known-mutable
