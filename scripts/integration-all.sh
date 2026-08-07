@@ -1010,7 +1010,19 @@ o['mail.mode']=mp.get('mode'); o['mbe.engine']=mb.get('engine')
 for k in 'protectAdminViaProxy protectTenantViaProxy disableLocalAuthAdmin disableLocalAuthTenant breakGlassPath'.split(): o['oidc.'+k]=oi.get(k)
 rr=tp.get('ranges',[]) if isinstance(tp,dict) else []
 o['tp.operator']=','.join(sorted(str(r.get('cidr')) for r in rr if isinstance(r,dict) and r.get('source')=='operator'))
-print(';'.join('%s=%s'%(k,o[k]) for k in sorted(o)))
+# NULL and EMPTY STRING mean the same thing for these nullable string settings,
+# so render them identically. Without this the gate reported a phantom leak:
+# oidc-dex's break-glass scenario clears the path by PATCHing "", while the
+# pristine value is null, so the ONLY diff in an otherwise byte-identical state
+# string was
+#     canonical: oidc.breakGlassPath=None
+#     after    : oidc.breakGlassPath=
+# and the run failed a suite that had restored everything it touched. It is not
+# specific to oidc-dex — any suite clearing a nullable string field would trip
+# it. A real value still differs from both.
+def _norm(v):
+    return '' if v is None else v
+print(';'.join('%s=%s'%(k,_norm(o[k])) for k in sorted(o)))
 " 2>/dev/null || echo READ_ERR
 }
 
