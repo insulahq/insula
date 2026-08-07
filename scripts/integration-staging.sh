@@ -3202,6 +3202,17 @@ scenario_mail_tls() {
     return 0
   fi
 
+  # Re-arm the allowlist BEFORE probing. This scenario opens ~6 ports in quick
+  # succession (25/465/587/993/4190 + banner + EHLO), which is exactly the
+  # shape Stalwart's portScanning heuristic bans on. The preceding `mail`
+  # scenario's SMTP/IMAP traffic can also earn the ban. The plain call is
+  # memoised for the whole run, so a ban acquired AFTER that first call was
+  # never cleared and every probe here accept-then-dropped: no 220 banner and
+  # "Didn't find STARTTLS in server response" against a healthy server.
+  # "force" re-runs the ban check + reload; it is a cheap no-op (2 JMAP gets,
+  # no recycle) when the entry survived and the IP is not banned.
+  _mail_allowlist_harness_ip force
+
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   # Mail hostname: read the LIVE value from /admin/webmail-settings so
   # the probe matches whatever the operator has configured (which may
@@ -3341,13 +3352,41 @@ scenario_mail_tls() {
   # ── 4. admin SSL-status endpoint round-trip ──
   local resp; resp=$(api GET "/admin/email-settings/ssl-status")
   if echo "$resp" | grep -q '"listeners"'; then
-    local le_count
-    le_count=$(echo "$resp" \
-      | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for l in d.get('data',{}).get('listeners',[]) if (l.get('cert') or {}).get('issuer','').lower().find('encrypt') >= 0))" 2>/dev/null || echo 0)
-    if (( le_count >= 4 )); then
-      ok "mail-tls/api: GET /admin/email-settings/ssl-status — ${le_count} listeners serving LE cert"
+    # What matters is that each listener serves a CA-issued certificate that
+    # COVERS the mail hostname — not who the CA happens to be. The old check
+    # searched the issuer string for "encrypt", i.e. it demanded Let's Encrypt
+    # specifically, so it scored 0/4 on any cluster using a different ACME
+    # endpoint (the VM tier's Pebble: `CN=Pebble Intermediate CA …`) even
+    # though every listener was serving a perfectly valid cert with the right
+    # SAN. Assert the substance instead: an issuer exists, it is not the
+    # self-signed placeholder Stalwart serves before issuance, and the SAN
+    # covers the mail host.
+    local ok_count
+    ok_count=$(echo "$resp" | MAIL_HOST="$mail_hostname" python3 -c '
+import json, os, sys
+host = os.environ["MAIL_HOST"]
+def covers(name):
+    if name == host:
+        return True
+    return name.startswith("*.") and host.endswith(name[1:]) and host.count(".") == name.count(".")
+n = 0
+for l in json.load(sys.stdin).get("data", {}).get("listeners", []):
+    cert = l.get("cert") or {}
+    issuer = (cert.get("issuer") or "").strip()
+    sans = cert.get("subjectAlternativeNames") or []
+    if not issuer or "self-signed" in issuer.lower() or "self signed" in issuer.lower():
+        continue
+    # A self-issued placeholder names itself as its own issuer.
+    if issuer == (cert.get("subject") or "").strip() and issuer:
+        continue
+    if any(covers(s) for s in sans):
+        n += 1
+print(n)
+' 2>/dev/null || echo 0)
+    if (( ok_count >= 4 )); then
+      ok "mail-tls/api: GET /admin/email-settings/ssl-status — ${ok_count} listeners serving a CA-issued cert covering ${mail_hostname}"
     else
-      fail "mail-tls/api: only ${le_count} listeners serving LE cert (expected ≥4); resp head: $(echo "$resp" | head -c 400)"
+      fail "mail-tls/api: only ${ok_count} listeners serve a CA-issued cert covering ${mail_hostname} (expected ≥4); resp head: $(echo "$resp" | head -c 400)"
     fi
   else
     fail "mail-tls/api: ssl-status endpoint returned no listeners: $(echo "$resp" | head -c 300)"
