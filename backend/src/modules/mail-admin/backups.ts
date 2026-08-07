@@ -35,6 +35,7 @@ import type {
   MailBackupSnapshot,
   MailBackupRestoreResponse,
 } from '@insula/api-contracts';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 const MAIL_NAMESPACE = 'mail';
 const LIST_JOB_PREFIX = 'mail-backup-list-';
@@ -169,7 +170,7 @@ function buildListJob(name: string): Record<string, unknown> {
           containers: [
             {
               name: 'list',
-              image: 'ghcr.io/insulahq/insula/tenant-backup-tools:latest',
+              image: resolvePlatformImage('tenant-backup-tools'),
               imagePullPolicy: 'IfNotPresent',
               // restic snapshots --json prints a JSON array to stdout, one
               // entry per snapshot. --no-cache to avoid touching /root in

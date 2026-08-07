@@ -32,6 +32,12 @@ data:
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.69.1"
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
+  # CI-MANAGED (pin-config-image.sh) — do not hand-edit; the next build of each
+  # image overwrites these with `:<tag>@sha256:<digest>`.
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:latest"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:latest"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:latest"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:latest"
   # Longhorn dashboard URL for the Storage Configuration iframe.
   # 2026-06-12: path route on the admin host (same-origin) — the
   # longhorn.<apex> subdomain was removed.

@@ -1,4 +1,5 @@
 import type * as k8s from '@kubernetes/client-node';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 // Label keys are exported so the orphan-sweeper and CI guard can pin
 // to the same strings without import-of-magic-string surprises.
@@ -14,7 +15,9 @@ export const TERMINAL_POD_NAME_PREFIX = 'node-terminal-';
 // Default image — overridable via NODE_TERMINAL_IMAGE env. The image
 // ONLY needs to provide /usr/bin/nsenter and a sleeping process for
 // `kubectl exec` to hook into. See images/node-terminal/Dockerfile.
-export const DEFAULT_TERMINAL_IMAGE = 'ghcr.io/insulahq/insula/node-terminal:latest';
+// NODE_TERMINAL_IMAGE is now actually READ. The previous comment promised it
+// was overridable via that env var and nothing anywhere read it.
+export const DEFAULT_TERMINAL_IMAGE = resolvePlatformImage('node-terminal');
 
 // 1 hour. Hard backstop: even if every other lifecycle guarantee fails
 // (platform-api crashes mid-session, WS gets stuck, orphan-sweeper is

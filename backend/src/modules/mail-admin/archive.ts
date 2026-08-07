@@ -76,6 +76,7 @@ import {
   toSafeText,
 } from '@insula/api-contracts';
 import * as taskCenter from '../tasks/service.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 type AppsV1Api = import('@kubernetes/client-node').AppsV1Api;
@@ -85,7 +86,6 @@ const MAIL_NAMESPACE = 'mail';
 const STALWART_DEPLOYMENT = 'stalwart-mail';
 const SETTINGS_ID = 'system';
 const ARCHIVE_JOB_PREFIX = 'stalwart-archive-';
-const ARCHIVE_TOOLS_IMAGE_ENV = 'TENANT_BACKUP_TOOLS_IMAGE';
 const STALWART_IMAGE_ENV = 'STALWART_IMAGE';
 const ROCKSDB_SECONDARY_IMAGE_ENV = 'ROCKSDB_SECONDARY_CHECKPOINT_IMAGE';
 /**
@@ -783,9 +783,7 @@ async function createArchiveJob(
   mode: 'export' | 'restore',
   resticSnapshotId?: string,
 ): Promise<void> {
-  const toolsImage =
-    process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+  const toolsImage = resolvePlatformImage('tenant-backup-tools');
   const stalwartImage = await resolveStalwartImage(deps.apps, process.env, deps.logger);
 
   // Archive Job pod composition:
@@ -975,9 +973,7 @@ async function createArchiveJobNoDowntime(
   nodeName: string,
   deps: ArchiveDeps,
 ): Promise<void> {
-  const toolsImage =
-    process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+  const toolsImage = resolvePlatformImage('tenant-backup-tools');
   const stalwartImage = await resolveStalwartImage(deps.apps, process.env, deps.logger);
   const rocksdbSecondaryImage = resolveRocksdbCheckpointImage(process.env);
 

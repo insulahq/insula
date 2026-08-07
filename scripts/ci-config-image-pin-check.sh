@@ -41,9 +41,18 @@ PINNED=(
 )
 
 # Known-mutable, with the reason. Shrink this list; never grow it silently.
+#
+# NOTE on the "awaiting first pin" entries: their workflows ARE wired to
+# pin-config-image.sh, but a pin only lands when that image next builds. They move
+# to PINNED once it has. Listing them here rather than in PINNED keeps CI honest
+# in the gap instead of red for a reason nobody can act on.
 declare -A PENDING=(
-  [file-manager-image]="per-tenant sidecar; ci-file-manager.yml not yet wired to pin-config-image.sh"
-  [private-worker-agent-image]="image tenants run at HOME, not in-cluster — a digest here would pin what we hand out, needs its own decision"
+  [file-manager-image]="wired to pin-config-image.sh; awaiting first build+pin"
+  [tenant-backup-tools-image]="wired to pin-config-image.sh; awaiting first build+pin"
+  [migration-tools-image]="wired to pin-config-image.sh; awaiting first build+pin"
+  [claim-validator-image]="wired to pin-config-image.sh; awaiting first build+pin"
+  [node-terminal-image]="wired to pin-config-image.sh; awaiting first build+pin"
+  [private-worker-agent-image]="NOT in-cluster — this string is interpolated into the docker run / compose snippet TENANTS run on their own hardware (private-workers/service.ts). Digest-pinning it pins what we hand out: tenants would never pick up a fix without re-copying, and a registry GC would strand them. Product decision, not hygiene."
   [private-worker-frps-image]="THIRD-PARTY upstream (fatedier/frps), version-pinned not digest-pinned. We do not build it, so a digest means a manual bump on every upstream release with no CI to produce it — a different trade-off from our own images. Revisit with the Dependabot docker ecosystem."
 )
 

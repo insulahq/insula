@@ -38,6 +38,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   against an immutable reference a re-pull can only fetch identical bytes, so
   `Always` bought nothing and cost a hard dependency on GHCR being reachable at
   archive time. A new pin changes the digest, which is itself a cache miss.
+- **Swept every remaining runtime-launched image onto the same digest pin**, and
+  fixed two bugs found doing it. `tenant-backup-tools` — the most-used image in the
+  platform, running in backup-restore, storage-lifecycle, tenant-bundles and
+  mail-admin — was a bare `TOOLS_IMAGE_DEFAULT` const in six modules that read **no
+  env var at all**, so an operator could not repoint it anywhere. And
+  `node-terminal`'s own comment said "overridable via NODE_TERMINAL_IMAGE env"
+  while nothing in the codebase read that variable. Both look correct at the call
+  site; neither was, and neither would fail a build, a test, or a deploy.
+  All runtime images now resolve through one table
+  (`backend/src/shared/platform-images.ts`) so the env contract is stated once and
+  asserted once, and `tenant-backup-tools`, `migration-tools`, `claim-validator`
+  and `node-terminal` gained platform-config keys plus `configMapKeyRef` wiring.
+  Five more build workflows (`file-manager`, `tenant-backup-tools`,
+  `migration-tools`, `claim-validator`, `node-terminal`) now pin their own digest
+  after the push. The tag label is the 7-char git sha — exactly what
+  `type=sha,prefix=` publishes — rather than a re-derived timestamp, because
+  `{{date}}` is evaluated inside metadata-action and recomputing it names a tag
+  that was never pushed.
+  Two images stay deliberately unpinned, now with the reason recorded rather than
+  assumed: `private-worker-agent` is interpolated into the `docker run`/compose
+  snippet **tenants run on their own hardware**, so a digest pins what we hand out
+  and strands them on a registry GC; and `private-worker-frps` is third-party we
+  do not build, so a digest means a manual bump per upstream release with no CI to
+  produce it.
 - **A guard so this cannot silently regress.** `ci-config-image-pin-check.sh`
   classifies every runtime-resolved image key in the development overlay:
   `PINNED` keys must carry an `@sha256:` digest, `PENDING` keys are known-mutable

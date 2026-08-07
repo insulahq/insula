@@ -239,6 +239,34 @@ spec:
                   name: platform-config
                   key: rocksdb-secondary-checkpoint-image
                   optional: true
+            # Remaining runtime-launched images, same mechanism. Each is pinned to
+            # an immutable digest in the development overlay by its own build
+            # workflow. `optional: true` throughout so local/DinD falls back to
+            # the in-code default (backend/src/shared/platform-images.ts).
+            - name: TENANT_BACKUP_TOOLS_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: tenant-backup-tools-image
+                  optional: true
+            - name: PLESK_MIGRATION_TOOLS_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: migration-tools-image
+                  optional: true
+            - name: CLAIM_VALIDATOR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: claim-validator-image
+                  optional: true
+            - name: NODE_TERMINAL_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: node-terminal-image
+                  optional: true
             # Private Worker — overlay-supplied per environment.
             - name: TUNNEL_BASE_URL
               valueFrom:

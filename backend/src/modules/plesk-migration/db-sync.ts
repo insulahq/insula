@@ -32,9 +32,10 @@ import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { LegItem } from './provision.js';
 import type { MigrationLogger } from './provision.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 const MIGRATION_TOOLS_IMAGE =
-  process.env.PLESK_MIGRATION_TOOLS_IMAGE ?? 'ghcr.io/insulahq/insula/migration-tools:latest';
+  resolvePlatformImage('migration-tools');
 
 // The per-subscription MariaDB deployment all the subscription's databases
 // land in (one pod, N logical databases). DNS-name-safe.

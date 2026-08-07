@@ -23,6 +23,7 @@ import type { PleskSubscription, PleskMailbox } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { LegItem, MigrationLogger } from './provision.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 const MAIL_NAMESPACE = 'mail';
 const IMAP_HOST = process.env.STALWART_IMAP_HOST ?? 'stalwart-mail.mail.svc.cluster.local';
@@ -30,7 +31,7 @@ const IMAP_PORT = '993';
 const IMPORT_WORKERS = process.env.PLESK_MAIL_IMPORT_WORKERS ?? '8';
 const MASTER_SECRET_NAME = 'mail-secrets';
 const MASTER_SECRET_KEY = 'STALWART_MASTER_PASSWORD';
-const MAIL_TOOLS_IMAGE = process.env.PLESK_MAIL_TOOLS_IMAGE ?? 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+const MAIL_TOOLS_IMAGE = resolvePlatformImage('tenant-backup-tools');
 // Quota for a Plesk mailbox whose source quota was unlimited (-1/0 → null).
 const DEFAULT_MAILBOX_QUOTA_MB = 2048;
 
