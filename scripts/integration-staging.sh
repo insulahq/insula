@@ -204,16 +204,55 @@ login_token() {
     | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null
 }
 
+# Mint a FRESH token, ignoring INTEGRATION_TOKEN (which is what just expired).
+# `all` takes well over the token TTL end to end, so a single token minted at
+# startup dies partway through and every later call 401s. That cascade has
+# repeatedly masqueraded as product failures — "client create failed",
+# "ssl-status returned no listeners", "restore PATCH never returned 200" — and
+# in one case left the mail backup schedule pinned at */2 because the restore
+# PATCH could not authenticate.
+#
+# The refreshed token is ALSO written to a file because api()/api_raw() are
+# almost always invoked as `$(api ...)`, i.e. in a subshell — an assignment to
+# TOKEN there dies with the subshell, so without this every later call would
+# re-login. $$ is the top-level shell's PID even inside a subshell, so all
+# callers share one path. Removed by the EXIT trap.
+_TOKEN_CACHE="${TMPDIR:-/tmp}/.integration-staging-token.$$"
+_remint_token() {
+  local fresh
+  fresh=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["token"])' 2>/dev/null)
+  [[ -n "$fresh" ]] || return 1
+  TOKEN="$fresh"
+  export INTEGRATION_TOKEN="$fresh"
+  ( umask 077; printf '%s' "$fresh" > "$_TOKEN_CACHE" ) 2>/dev/null || true
+  return 0
+}
+
+_api_curl() {
+  local method="$1" path="$2" body="${3:-}" extra="${4:-}"
+  # Pick up a token refreshed by an earlier subshell.
+  if [[ -s "$_TOKEN_CACHE" ]]; then
+    local cached; cached=$(cat "$_TOKEN_CACHE" 2>/dev/null)
+    [[ -n "$cached" ]] && TOKEN="$cached"
+  fi
+  local args=(-sk -X "$method" "$ADMIN_HOST/api/v1$path" -H "Authorization: Bearer $TOKEN")
+  [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" -d "$body")
+  [[ -n "$extra" ]] && args+=(-w "\n%{http_code}")
+  curl "${args[@]}"
+}
+
 api() {
   local method="$1" path="$2" body="${3:-}"
-  if [[ -n "$body" ]]; then
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" -d "$body"
-  else
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN"
+  local out; out=$(_api_curl "$method" "$path" "$body")
+  # Re-mint ONCE on an expired token, then replay the call. Bounded to a single
+  # retry so a genuinely bad credential still fails fast instead of looping.
+  if [[ "$out" == *'"INVALID_TOKEN"'* ]] && _remint_token; then
+    out=$(_api_curl "$method" "$path" "$body")
   fi
+  printf '%s' "$out"
 }
 
 # Like api() but appends the HTTP status code on its OWN final line, so
@@ -223,16 +262,13 @@ api() {
 # shape is identical and only the status differentiates accept vs reject.
 api_raw() {
   local method="$1" path="$2" body="${3:-}"
-  if [[ -n "$body" ]]; then
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" -d "$body" \
-      -w "\n%{http_code}"
-  else
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN" \
-      -w "\n%{http_code}"
+  local out; out=$(_api_curl "$method" "$path" "$body" withcode)
+  # Same one-shot re-mint as api(): here the status code is the last line, so
+  # match on it directly rather than on the error body.
+  if [[ "$(printf '%s' "$out" | tail -1)" == "401" ]] && _remint_token; then
+    out=$(_api_curl "$method" "$path" "$body" withcode)
   fi
+  printf '%s' "$out"
 }
 
 ssh_cp() {
@@ -3020,6 +3056,9 @@ except Exception as e:
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
+  # Token cache written by _remint_token — a bearer token on tmpfs must not
+  # outlive the run.
+  rm -f "${_TOKEN_CACHE:-}" 2>/dev/null || true
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null || true)
   if [[ -n "$cid" ]]; then
     log "cleanup: deleting test client $cid"
