@@ -58,6 +58,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: python3 -m pip install --user pyyaml
       - run: ./scripts/ci-component-watch-check.sh
+      # The ONLINE half of the rocksdb↔Stalwart coupling: fetch Stalwart's
+      # Cargo.lock at the pinned tag and confirm the mapping recorded in
+      # components.yaml is actually true upstream, not merely self-consistent.
+      # Lives here rather than in Infrastructure CI because this workflow is
+      # already network-bound; a blip exits 2 (harness), never a false green.
+      - name: rocksdb pin matches Stalwart's upstream lockfile
+        run: ./scripts/ci-rocksdb-stalwart-pin-check.sh --online
 
   dep-scan:
     name: OSV dependency scan (gate on malicious + new HIGH/CRITICAL)

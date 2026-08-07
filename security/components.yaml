@@ -494,13 +494,38 @@ components:
     tier: "1"
     kind: image
     pinned: ci-pinned
-    pin_source: k8s/base/platform-config.yaml
+    # Resolved at runtime from ROCKSDB_SECONDARY_CHECKPOINT_IMAGE, defaulting to
+    # ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest — see
+    # backend/src/modules/mail-admin/archive.ts. (Previously pointed at
+    # k8s/base/platform-config.yaml, which has never contained this pin; hence
+    # pin_check: false. Digest-pinning it is open work — see notes.)
+    pin_source: backend/src/modules/mail-admin/archive.ts
     pin_check: false
     watch: { type: first_party }
     scan: trivy+cargo-audit
-    deps: [images/rocksdb-secondary-checkpoint/Cargo.toml]
+    # Cargo.LOCK, not Cargo.toml — osv-scanner and cargo-audit both read the
+    # lockfile; pointing at the manifest gave nominal coverage, not real coverage.
+    deps: [images/rocksdb-secondary-checkpoint/Cargo.lock]
+    # ── Coupled pin. Machine-readable so a guard can enforce it. ──────────────
+    # This binary opens Stalwart's live RocksDB store as a secondary instance, so
+    # the two MUST link the same C++ rocksdb. `verified_against` records the
+    # Stalwart release this was last checked against; if the `stalwart` component
+    # moves off that version, ci-rocksdb-stalwart-pin-check.sh fails until it is
+    # re-verified. Bumping librocksdb-sys on its own is never correct.
+    tracks:
+      component: stalwart
+      verified_against: "v0.16.16"
+      crate: librocksdb-sys
+      crate_version: "0.17.3+10.4.2"
     owner: platform
-    notes: First-party (Rust 1.95, distroless/cc). librocksdb-sys =0.17.3 pinned to Stalwart's rocksdb 10.4.2.
+    notes: >-
+      First-party (Rust 1.95, distroless/cc). librocksdb-sys =0.17.3 (C++ rocksdb
+      10.4.2) coupled to Stalwart's resolution — see `tracks`. Runs as
+      initContainer #1 of every no-downtime mail archive (the DEFAULT archive
+      mode), against the live mail store. OPEN: the runtime reference is the
+      mutable tag `:latest`; digest-pinning it needs a pipeline step to publish
+      the digest, since this image is built by its own CI workflow rather than
+      by build-deploy.
 
   - id: coraza-plugin
     name: traefik-plugin-coraza (WASM WAF — currently disabled)

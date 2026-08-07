@@ -42,12 +42,21 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock* ./
+# NO GLOB on Cargo.lock. It used to read `Cargo.lock*`, and since no lockfile was
+# committed the glob matched NOTHING — silently. Every build then re-resolved the
+# whole dependency graph against the live crates.io index, so the crates that went
+# into a binary which opens the production mail database were whatever existed at
+# build time, not what anyone reviewed. A bare `Cargo.lock` makes a missing
+# lockfile a hard COPY failure instead of a silent re-resolve.
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Cargo's "fetch deps first" cache trick — separate fetch from compile.
-RUN cargo fetch
-RUN cargo build --release \
+# --locked on BOTH: fetch and build must use Cargo.lock exactly as committed and
+# fail if it is stale or absent, rather than quietly updating it (which is what
+# plain `cargo build` does when Cargo.toml and Cargo.lock disagree). This is the
+# Rust equivalent of `npm ci` over `npm install`.
+RUN cargo fetch --locked
+RUN cargo build --release --locked \
  && strip target/release/rocksdb-secondary-checkpoint
 
 # ── runtime stage ──────────────────────────────────────────────────────

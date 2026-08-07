@@ -13,6 +13,48 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- **`rocksdb-secondary-checkpoint` built from an unpinned dependency graph.** The
+  image committed only `Cargo.toml`, and its Dockerfile read
+  `COPY Cargo.toml Cargo.lock* ./` — the `*` matched **nothing**, silently, so every
+  build re-resolved the whole crate graph against the live crates.io index. The
+  crates going into a binary that opens the production mail store were whatever
+  existed at build time, not what anyone reviewed. This is not a fringe path: the
+  binary is initContainer #1 of `no_downtime`, which is `DEFAULT_ARCHIVE_MODE`, so
+  it runs on every operator-triggered mail archive. `Cargo.lock` is now committed
+  (36 crates), the glob is gone so a missing lockfile is a hard `COPY` failure, and
+  `cargo fetch`/`cargo build` both run `--locked` — the Rust equivalent of
+  `npm ci` over `npm install`. Verified by real builds in both directions: matching
+  lockfile compiles `librocksdb-sys v0.17.3+10.4.2` and produces a working 31.3 MB
+  image; a stale lockfile fails the build with exit 101 instead of quietly updating
+  itself. `components.yaml` now points `deps:` at the lockfile rather than the
+  manifest — osv-scanner and cargo-audit both read the lockfile, so the previous
+  entry gave nominal coverage, not real coverage (36 crates now scanned, 0 findings).
+- **The rocksdb↔Stalwart version coupling is now enforced, not commented.**
+  `rocksdb-secondary-checkpoint` opens Stalwart's **live** RocksDB store as a
+  secondary instance, so both processes read the same MANIFEST and SST files and
+  must link the same C++ rocksdb; a mismatch fails against the production mail
+  database at archive time, with nothing failing at build time. That invariant was
+  held by a Cargo.toml comment reading *"pinned to the same rocksdb Stalwart 0.16.5
+  uses"* while Stalwart had already moved to **v0.16.16**. It happened to still be
+  correct — both resolve `librocksdb-sys 0.17.3+10.4.2` — but nobody had checked and
+  nothing would have said so otherwise. The coupling is now declared machine-readably
+  (`tracks: {component, verified_against, crate, crate_version}`) and enforced by
+  `ci-rocksdb-stalwart-pin-check.sh`: bumping Stalwart without re-verifying the
+  rocksdb pin fails CI. The offline half (registry ↔ Cargo.toml ↔ Cargo.lock all
+  agree) runs on every push; the `--online` half fetches Stalwart's `Cargo.lock` at
+  the pinned tag and confirms the recorded mapping is true upstream, and runs in
+  component-watch. A network blip exits 2, never a false green. All four drift paths
+  are negative-tested: Stalwart bumped, crate bumped alone, lockfile drifted, and an
+  exact pin loosened to a caret range.
+- **js-yaml 4.3.0 → 4.3.1** (`GHSA-5p4m-2wfm-xmqj`, CVSS 7.5). Quadratic CPU
+  consumption in `!!omap` resolution — `!!omap` is in the *default* schema, so a
+  plain `yaml.load(untrusted)` is affected with no special configuration. Found by
+  scanning the current lockfile while verifying unrelated work; it was untracked and
+  would have failed the next dep-scan. Remediated rather than waived, since 4.3.1 is
+  a patch: both affected copies are transitive (`@kubernetes/client-node`,
+  `cosmiconfig`) and `npm update --package-lock-only` reached them inside their
+  existing ranges, so no override was needed. Our direct dependency is 5.2.2, which
+  the advisory does not cover. The lockfile diff is 6 lines, nothing else moved.
 - **Remediated the brace-expansion and fast-uri advisories instead of leaving
   them waived.** `GHSA-rgw5-rvv9-x895` (CVSS 7.5) and `GHSA-7p8r-x3mc-p8w7`
   (CVSS 7.5) were triaged `reachable: false` and left `status: open` with the

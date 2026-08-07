@@ -10,13 +10,24 @@ name = "rocksdb-secondary-checkpoint"
 path = "src/main.rs"
 
 [dependencies]
-# Pinned to the same C++ rocksdb version Stalwart 0.16.5 uses (10.4.2).
-# On-disk file format compatibility is critical — opening a primary as
-# secondary with a different on-disk format version risks MANIFEST/SST
-# read failures. Confirm via:
-#   gh api -H 'Accept: application/vnd.github.raw' \
-#     /repos/stalwartlabs/stalwart/contents/Cargo.lock \
-#     | grep -A2 librocksdb-sys
+# ⚠ THIS PIN IS COUPLED TO STALWART'S. DO NOT BUMP IT ON ITS OWN.
+#
+# This binary opens Stalwart's LIVE RocksDB store as a secondary instance. The
+# two processes read the same MANIFEST and SST files, so they must agree on the
+# on-disk format — a mismatch risks MANIFEST/SST read failures against the
+# production mail database, and the failure mode is at archive time, on real
+# data, not at build time.
+#
+# The pin is therefore whatever `librocksdb-sys` STALWART resolves, not whatever
+# is newest. Verified against Stalwart v0.16.16 → librocksdb-sys 0.17.3+10.4.2
+# (C++ rocksdb 10.4.2, via rust rocksdb 0.24.0). v0.16.5 resolved the same.
+#
+# Enforced, not just documented: scripts/ci-rocksdb-stalwart-pin-check.sh fails
+# CI when the Stalwart pin moves without this pin being re-verified against it.
+# The comment above this line said "Stalwart 0.16.5" while Stalwart had already
+# moved to v0.16.16 — a comment cannot hold an invariant, which is why the guard
+# exists. To re-verify after a Stalwart bump:
+#   ./scripts/ci-rocksdb-stalwart-pin-check.sh --online
 librocksdb-sys = "=0.17.3"
 
 # c_char support for FFI string handling.
