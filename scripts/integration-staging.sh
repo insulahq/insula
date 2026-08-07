@@ -404,8 +404,22 @@ _ws_port_open() {
 # socket via bash /dev/tcp and returns the first line (the 220 greeting).
 # For implicit-TLS (465/993) callers use the openssl path instead.
 _ws_smtp_banner() {
-  local host="$1" port="$2"
-  timeout 10 bash -c 'exec 3<>/dev/tcp/'"$host"'/'"$port"'; head -1 <&3' 2>/dev/null || true
+  local host="$1" port="$2" out="" i=0
+  # RETRY: mail_tls fires ~16 connections at one IP inside ~6s (cert + SAN +
+  # banner across 25/465/587/993/4190). A mail server rate-limiting a burst
+  # like that is CORRECT behaviour, and it showed up as ~3 scattered failures
+  # per run — 587/san failing while 587/banner passed seconds later, 25/san
+  # passing while 25/banner failed. Nothing about the port or the path; purely
+  # how many connections had just been opened. These assertions ask whether the
+  # server PRESENTS a banner, not whether it survives a burst, so give a
+  # throttled connection a moment and ask again. A genuinely dead listener
+  # still fails, just 3 attempts later.
+  while [ $i -lt 3 ]; do
+    out=$(timeout 10 bash -c 'exec 3<>/dev/tcp/'"$host"'/'"$port"'; head -1 <&3' 2>/dev/null || true)
+    [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+    i=$((i+1)); sleep 3
+  done
+  printf '%s' "$out"
 }
 
 # Resolve the cluster's externally-routable mail IP without hardcoding.
@@ -527,7 +541,22 @@ _probe_tls_handshake() {
   # `</dev/null` so openssl exits after the handshake (no interactive
   # input). `2>&1` captures the cert chain block that openssl prints
   # to stderr.
-  echo | timeout 10 openssl "${args[@]}" 2>&1 || true
+  #
+  # RETRY for the same reason as _ws_smtp_banner: this scenario opens ~16
+  # connections at one IP in ~6s and a throttled one comes back with no
+  # certificate at all ("Didn't find STARTTLS in server response",
+  # "Ncat: Broken pipe") — indistinguishable from a broken listener until you
+  # notice the SAME port passed moments earlier. Retry only when the handshake
+  # produced no certificate; a real failure still fails.
+  local out="" i=0
+  while [ $i -lt 3 ]; do
+    out=$(echo | timeout 10 openssl "${args[@]}" 2>&1 || true)
+    if printf '%s' "$out" | grep -q 'BEGIN CERTIFICATE'; then
+      printf '%s' "$out"; return 0
+    fi
+    i=$((i+1)); sleep 3
+  done
+  printf '%s' "$out"
 }
 
 # Assert that the TLS cert served by (host, port, sni) names the
