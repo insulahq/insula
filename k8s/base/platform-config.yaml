@@ -43,6 +43,15 @@ data:
   # pull from a real registry.
   file-manager-image: "file-manager:latest"
 
+  # Mail-archive checkpoint binary (initContainer #1 of the no_downtime archive
+  # path — DEFAULT_ARCHIVE_MODE, so it runs on every operator-triggered archive).
+  # This base value is the DinD/local default (bare name, imported into DinD
+  # containerd). Real clusters get an IMMUTABLE `:<tag>@sha256:<digest>` written
+  # into the development overlay by the image's own CI
+  # (.github/scripts/pin-config-image.sh, after the push). The digest is what
+  # containerd resolves; the tag is a readable label.
+  rocksdb-secondary-checkpoint-image: "rocksdb-secondary-checkpoint:latest"
+
   # Private Worker — per-tenant tunnel agent the tenant runs at home.
   # tunnel-base-url is the dial-in FQDN. Cluster-side frps image is the
   # upstream frp server; agent docker image is what tenants run at home.

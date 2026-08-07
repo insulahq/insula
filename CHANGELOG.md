@@ -13,6 +13,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Security
+- **Runtime-resolved Job images now pin by digest — `rocksdb-secondary-checkpoint`
+  first.** The mail-archive checkpoint binary resolved as
+  `…/rocksdb-secondary-checkpoint:latest` with no override anywhere, on a mutable
+  tag, for an initContainer that opens the live mail store on every archive
+  (`no_downtime` is `DEFAULT_ARCHIVE_MODE`). `:latest` is not hypothetical risk
+  here: the `is_default_branch` bug froze it at its pre-cutover build on
+  2026-06-22 and every consumer silently pulled a stale image.
+  The image's own CI now writes an immutable `:<tag>@sha256:<digest>` into the
+  development overlay's platform-config after the push, via a new
+  `pin-config-image.sh`. It sits alongside `pin-image-tag.sh` rather than
+  replacing it: that script drives the kustomization `images:` transformer, which
+  by design only rewrites `image:` fields in pod specs and so cannot reach an
+  image the backend builds at runtime from an env var. Timing is deliberately the
+  same — pin from the image's own workflow, after the push — because pinning from
+  a different workflow is what caused the 2026-06-06 pull race.
+  Both halves of the reference are intentional: the digest is authoritative and a
+  re-pushed tag cannot change it, while the tag keeps the overlay diff readable.
+  Verified on a real cluster (k3s v1.31.4) rather than assumed — a Pod with
+  `busybox:1.36@<digest-of-1.37>` started and reported `BusyBox v1.37.0`, with
+  `imageID` equal to the 1.37 digest. The script REFUSES a tag-only reference, so
+  the property cannot be given up by accident.
+  The initContainer also drops from `imagePullPolicy: Always` to `IfNotPresent`:
+  against an immutable reference a re-pull can only fetch identical bytes, so
+  `Always` bought nothing and cost a hard dependency on GHCR being reachable at
+  archive time. A new pin changes the digest, which is itself a cache miss.
+
 - **`rocksdb-secondary-checkpoint` built from an unpinned dependency graph.** The
   image committed only `Cargo.toml`, and its Dockerfile read
   `COPY Cargo.toml Cargo.lock* ./` — the `*` matched **nothing**, silently, so every
