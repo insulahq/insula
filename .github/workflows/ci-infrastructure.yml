@@ -627,6 +627,11 @@ jobs:
         run: ./scripts/ci-tenant-restore-policy-check.sh
       - name: every GitHub Action is pinned to a commit SHA
         run: ./scripts/ci-actions-pinned-check.sh
+      # Offline half only — hermetic, so it can run on every push. The --online
+      # half (does upstream really resolve that crate version?) runs in
+      # component-watch.yml, which already has network + a token.
+      - name: rocksdb pin stays coupled to Stalwart's
+        run: ./scripts/ci-rocksdb-stalwart-pin-check.sh
 
   # kubectl is preinstalled on ubuntu-latest runners; these render overlays
   # with `kubectl kustomize` (same as the kustomize-build + admin-auth jobs).
