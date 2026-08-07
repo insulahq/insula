@@ -1165,7 +1165,23 @@ async function runMigrationStateMachine(
     );
     await forceDeleteMailPodsMountingPvc(core, MAIL_PVC_NAME);
     // Re-wait briefly — a grace-0 delete finalizes near-instantly.
-    await waitForReplicaCount(apps, 0, 60, () => isCancelRequested(db, runId));
+    try {
+      await waitForReplicaCount(apps, 0, 60, () => isCancelRequested(db, runId));
+    } catch (err2) {
+      if (err2 instanceof MigrationCancelledError) throw err2;
+      // The force-delete pass was supposed to be the escape hatch; if we are
+      // STILL not at 0 the operator needs to know which pod held the gate and
+      // in what state. Without this the migration failed with nothing but
+      // "did not reach 0 ready replica(s) within 60s" and the evidence was
+      // gone by the time anyone looked.
+      const diag = await captureScaleDownDiagnostics(core, apps, log);
+      log.warn(`[migration ${runId}] scale-down still blocked after force-delete: ${diag}`);
+      throw new ApiError(
+        'MAIL_MIGRATION_SCALE_TIMEOUT',
+        `${err2 instanceof Error ? err2.message : String(err2)} (after force-delete; ${diag})`,
+        500,
+      );
+    }
   }
 
   // Step 4: Swap the PVC binding to the target node + signal restore-on-start.
@@ -3037,6 +3053,85 @@ function trunc(s: string, max: number): string {
  * investigation needed (2026-07-04). NEVER throws — returns '' when everything is
  * unreadable.
  */
+/**
+ * Why the mail stack did not reach 0 replicas.
+ *
+ * The scale-UP timeout has attached captureScaleUpDiagnostics since the
+ * 2026-07-04 failback hang, but the scale-DOWN timeout threw a bare
+ * "Deployment <name> did not reach 0 ready replica(s) within 60s" — no
+ * indication of WHICH state the pod was in, so the failure was
+ * unexplainable after the fact (the pod and its logs are gone by the time
+ * anyone looks). Observed 2026-08-07 on a VM-tier run and not reproducible
+ * afterwards, which is precisely the case this exists for.
+ *
+ * Reports, per mail-stack Deployment: the replica counters the wait
+ * actually gates on, and for every pod its phase, whether it is
+ * Terminating (deletionTimestamp) with how long it has been so, its
+ * remaining grace, node, and any finalizers. That distinguishes the four
+ * ways this times out — still gracefully draining, wedged on a finalizer,
+ * never asked to terminate (so the force-delete pass skipped it, since
+ * that pass is onlyTerminating by default), or recreated underneath us.
+ */
+export async function captureScaleDownDiagnostics(
+  core: CoreV1Api,
+  apps: AppsV1Api,
+  log: { warn: (...a: unknown[]) => void },
+): Promise<string> {
+  const parts: string[] = [];
+  const nowMs = Date.now();
+  for (const name of MAIL_STACK_DEPLOYMENTS) {
+    try {
+      const dep = await apps.readNamespacedDeployment({
+        name,
+        namespace: MAIL_NAMESPACE,
+      }) as { spec?: { replicas?: number }; status?: { replicas?: number; readyReplicas?: number; unavailableReplicas?: number } };
+      parts.push(
+        `${name}: spec=${dep.spec?.replicas ?? '?'}`
+        + ` status=${dep.status?.replicas ?? 0}/ready=${dep.status?.readyReplicas ?? 0}`
+        + `/unavail=${dep.status?.unavailableReplicas ?? 0}`,
+      );
+    } catch {
+      parts.push(`${name}: <deployment unreadable>`);
+    }
+  }
+  try {
+    const pods = await core.listNamespacedPod({ namespace: MAIL_NAMESPACE }) as {
+      items?: Array<{
+        metadata?: {
+          name?: string;
+          labels?: Record<string, string>;
+          deletionTimestamp?: string;
+          deletionGracePeriodSeconds?: number;
+          finalizers?: string[];
+        };
+        spec?: { nodeName?: string; volumes?: Array<{ persistentVolumeClaim?: { claimName?: string } }> };
+        status?: { phase?: string };
+      }>;
+    };
+    const stack = new Set<string>(MAIL_STACK_DEPLOYMENTS);
+    const relevant = (pods.items ?? []).filter((p) => stack.has(p.metadata?.labels?.app ?? ''));
+    if (relevant.length === 0) parts.push('pods=<none>');
+    for (const p of relevant) {
+      const del = p.metadata?.deletionTimestamp;
+      const terminatingFor = del ? `${Math.round((nowMs - Date.parse(del)) / 1000)}s` : '-';
+      const mountsPvc = (p.spec?.volumes ?? []).some(
+        (v) => v.persistentVolumeClaim?.claimName === MAIL_PVC_NAME,
+      );
+      parts.push(
+        `pod=${p.metadata?.name ?? '?'} phase=${p.status?.phase ?? '?'}`
+        + ` terminating=${del ? `yes(${terminatingFor})` : 'NO'}`
+        + ` grace=${p.metadata?.deletionGracePeriodSeconds ?? '-'}`
+        + ` node=${p.spec?.nodeName ?? '?'} mountsMailPvc=${mountsPvc ? 'yes' : 'no'}`
+        + (p.metadata?.finalizers?.length ? ` finalizers=${p.metadata.finalizers.join(',')}` : ''),
+      );
+    }
+  } catch (err) {
+    log.warn('[migration] scale-down diag: pod read failed:', err);
+    parts.push('pods=<unreadable>');
+  }
+  return parts.join(' | ');
+}
+
 async function captureScaleUpDiagnostics(
   core: CoreV1Api,
   log: { warn: (...a: unknown[]) => void },
