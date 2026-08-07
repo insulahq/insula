@@ -11,7 +11,7 @@ data:
   # Substituted, never literal — see k8s/base/platform-config.yaml for why.
   # The default keeps production on real Let's Encrypt unless bootstrap pinned
   # something else (e.g. an internal ACME endpoint for an air-gapped install).
-  cluster-issuer-name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
+  cluster-issuer-name: "${CLUSTER_ISSUER_NAME}"
   admin-url: "https://admin.${DOMAIN}"
   tenant-url: "https://tenant.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"

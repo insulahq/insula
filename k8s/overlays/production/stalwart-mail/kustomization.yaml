@@ -48,7 +48,7 @@ patches:
       spec:
         secretName: stalwart-webadmin-prod-tls
         issuerRef:
-          name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
+          name: "${CLUSTER_ISSUER_NAME}"
           kind: ClusterIssuer
           group: cert-manager.io
     target:

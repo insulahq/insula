@@ -15,15 +15,29 @@ data:
   ingress-default-ipv4: ""
   # Resolved by Flux postBuild.substituteFrom (ConfigMap/platform-cluster-config,
   # key CLUSTER_ISSUER_NAME, written by bootstrap.sh from --cluster-issuer /
-  # --acme-server / the per-env default). The `:=` default keeps clusters
-  # bootstrapped before that key existed rendering under Flux's strict envsubst.
+  # --acme-server / the per-env default).
+  #
+  # MUST be the bare `${VAR}` form — NOT `${VAR:=default}`. Two different
+  # substitution engines render these manifests and only one understands
+  # defaults:
+  #   * Flux postBuild  → drone/envsubst, supports ${VAR:=default}
+  #   * bootstrap.sh    → GNU envsubst with an explicit token whitelist
+  #                       (`envsubst '${DOMAIN} ${STALWART_EXTERNAL_IP}
+  #                       ${CLUSTER_ISSUER_NAME}'`), which matches that exact
+  #                       token and passes anything else through UNTOUCHED.
+  # A `:=` default therefore survives bootstrap as the literal string
+  # "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}", which lands in
+  # issuerRef.name and silently breaks any Certificate applied on that path —
+  # observed on a fresh install 2026-08-07: stalwart-webadmin never issued and
+  # Bulwark's JMAP passthrough 500'd. Both engines handle the bare form, and
+  # bootstrap always exports the variable, so the bare form is the safe one.
   #
   # This MUST NOT be a literal. A hardcoded `letsencrypt-prod-http01` here made
   # Flux revert any runtime issuer change on every reconcile — so clusters on a
   # private apex (VM integration tier, air-gapped installs) had their certs
   # silently re-pointed at real Let's Encrypt mid-run, where HTTP-01 can never
   # validate, and every TLS-dependent flow failed with the Traefik default cert.
-  cluster-issuer-name: "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}"
+  cluster-issuer-name: "${CLUSTER_ISSUER_NAME}"
 
   # Storage — Longhorn is the default; dev overlay can override to local-path.
   default-storage-class: "longhorn"
