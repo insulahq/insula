@@ -36,6 +36,15 @@ data:
   # that, it is the same mutable `:latest` every other job image on this overlay
   # uses; see docs/roadmap/ROADMAP.md.
   rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest"
+  # The remaining runtime-launched images. These MUST be listed here even though
+  # the values below are placeholders: cut-release.sh stamps each one from the
+  # development overlay's digest-pinned value when a release is cut, and it fails
+  # closed on a key that is pinned in development but absent here — without the
+  # line, production would silently inherit the base `:latest` instead.
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:latest"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:latest"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:latest"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:latest"
   # Admin node-terminal (ADR-041 — super_admin-only privileged root shell
   # on cluster nodes via nsenter into host PID 1). ENABLED in production:
   # it's a break-glass tool operators need, and it's still gated by the

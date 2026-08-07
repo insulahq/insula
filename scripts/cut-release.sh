@@ -395,6 +395,67 @@ sys.stderr.write(f"cut-release: stamped {changed} image pin(s) in production ove
                  f"(3 platform → {version}, 6 internal → development snapshot)\n")
 PY
 
+# Stamp the RUNTIME-LAUNCHED image pins too (platform-config ConfigMap).
+#
+# The block above covers images that appear in a k8s manifest, via the
+# kustomization `images:` transformer. It cannot cover the ones the BACKEND
+# launches at runtime — mail-archive checkpoint, file-manager, tenant-backup-tools,
+# migration-tools, claim-validator, node-terminal — because those references live
+# in a ConfigMap the backend reads, not in a pod spec. Each is digest-pinned on
+# `development` by its own build workflow (.github/scripts/pin-config-image.sh);
+# without this, a signed release still shipped them as mutable `:latest`, which
+# defeats the point of signing the release at all.
+#
+# Self-maintaining ON PURPOSE: it stamps every key the development overlay has
+# digest-pinned, rather than a hand-kept list that would drift the moment someone
+# wires a new image. Keys deliberately left mutable there (private-worker-agent,
+# private-worker-frps) carry no digest and are left alone here.
+PROD_PC="$ROOT/k8s/overlays/production/platform-config-patch.yaml"
+DEV_PC="$ROOT/k8s/overlays/development/platform-config-patch.yaml"
+PROD_PC="$PROD_PC" DEV_PC="$DEV_PC" python3 - <<'PY'
+import os, re, sys
+prod_p, dev_p = os.environ["PROD_PC"], os.environ["DEV_PC"]
+if not (os.path.exists(prod_p) and os.path.exists(dev_p)):
+    sys.stderr.write("cut-release: platform-config patches not present — skipping runtime-image stamp\n")
+    sys.exit(0)
+
+KEY_RE = re.compile(r'^(\s*)([a-z0-9-]+-image):\s*"?([^"#\s]+)"?\s*$')
+
+def read_keys(path):
+    out = {}
+    for line in open(path):
+        m = KEY_RE.match(line)
+        if m:
+            out[m.group(2)] = m.group(3)
+    return out
+
+dev = read_keys(dev_p)
+prod = read_keys(prod_p)
+# Only digest-pinned values are stamped. A tag-only value on `development` means
+# that image is deliberately not pinned (or has not built yet) — either way it is
+# not something to freeze into a signed release.
+pinned = {k: v for k, v in dev.items() if "@sha256:" in v}
+
+missing = sorted(k for k in pinned if k not in prod)
+if missing:
+    sys.stderr.write(
+        "cut-release: image key(s) digest-pinned on development but ABSENT from the\n"
+        "production platform-config patch: " + ", ".join(missing) + "\n"
+        "  Add each key to k8s/overlays/production/platform-config-patch.yaml.\n"
+        "  Without the line, production silently inherits the base `:latest`.\n")
+    sys.exit(1)
+
+out, changed = [], 0
+for line in open(prod_p):
+    m = KEY_RE.match(line)
+    if m and m.group(2) in pinned:
+        out.append(f'{m.group(1)}{m.group(2)}: "{pinned[m.group(2)]}"\n'); changed += 1; continue
+    out.append(line)
+open(prod_p, "w").write("".join(out))
+sys.stderr.write(f"cut-release: stamped {changed} runtime-image digest pin(s) into the "
+                 "production platform-config (staging inherits)\n")
+PY
+
 # Stamp the release version into the production overlay's platform-version
 # ConfigMap (staging bases on production and inherits it).
 #

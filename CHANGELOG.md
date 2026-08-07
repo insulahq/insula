@@ -62,6 +62,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and strands them on a registry GC; and `private-worker-frps` is third-party we
   do not build, so a digest means a manual bump per upstream release with no CI to
   produce it.
+- **Signed releases now pin their runtime images too.** `cut-release.sh` already
+  snapshotted the development overlay's kustomization pins into production, but
+  that transformer only reaches images in a pod spec — the six the backend
+  launches from a ConfigMap were left as mutable `:latest`, so a cosign-signed
+  release did not actually describe what it ran. The cut now stamps every
+  digest-pinned runtime image into the production platform-config too (staging
+  inherits), and **fails closed** on a key pinned in development but absent from
+  production, which would otherwise silently fall back to the base `:latest`. It
+  stamps whatever development has pinned rather than a hand-kept list, so it
+  cannot drift when a new image is wired; keys deliberately left mutable carry no
+  digest and are skipped. Three new tests cover the stamp, the skip, and the abort.
+- **Pinned the three third-party images that were still on `:latest`** —
+  `gilleslamiral/imapsync`, `openziti/ziti-edge-tunnel`, `openziti/zrok`. Each is
+  pinned to the version `latest` resolved to on 2026-08-07, verified by comparing
+  manifest digests, so behaviour is unchanged today and merely reproducible from
+  now on. The imapsync comment had asserted "the Docker Hub image only publishes
+  `latest` — there is no version-tagged release", which was untrue (2.288, 2.295,
+  2.306, 2.319, …); on the strength of it every tenant mail migration ran whatever
+  `latest` happened to be that day.
+- **Un-shared the seven pre-existing kustomize pin concurrency groups.** They all
+  used `pin-development-${{ github.ref }}`, carrying the same defect that dropped
+  the tenant-backup-tools pin — one pending job per group, the rest cancelled.
+  Each now has its own; both `pin-image-tag.sh` and `apply-development-pin.sh`
+  already retry against `origin/development`, so serialising was never what made
+  concurrent pins safe.
 - **Fixed a pin-losing concurrency bug in the sweep itself.** All the new pin jobs
   initially shared one `pin-development-config` group. GitHub keeps at most **one
   pending job per concurrency group and cancels the rest**, so when five image
