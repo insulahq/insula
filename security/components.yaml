@@ -527,6 +527,49 @@ components:
       the digest, since this image is built by its own CI workflow rather than
       by build-deploy.
 
+  # ── Third-party images the backend launches at runtime (added 2026-08-07) ──
+  # These were deployed with NO registry entry at all, so nothing watched them for
+  # CVEs, and all three ran on `:latest` until 2026-08-07. Now version-pinned to
+  # whatever `latest` resolved to that day (verified by manifest digest), so the
+  # pin changed no behaviour — it only made it reproducible and watchable.
+  - id: imapsync
+    name: imapsync (tenant mailbox migration Job)
+    tier: "2"
+    kind: image
+    pinned: "2.319"
+    pin_source: backend/src/modules/mail-imapsync/service.ts
+    pin_check: true
+    watch: { type: docker_hub, repo: gilleslamiral/imapsync }
+    scan: trivy
+    owner: platform
+    notes: >-
+      Third-party. Reads and writes TENANT MAILBOX CONTENT with tenant credentials
+      during migrations, so it handles secrets even though it is short-lived. Not
+      internet-facing; runs as a Job and exits. Upstream ships version tags despite
+      an in-repo comment that long claimed otherwise.
+  - id: ziti-edge-tunnel
+    name: OpenZiti edge tunnel (deployment network access)
+    tier: "2"
+    kind: image
+    pinned: "1.18.3"
+    pin_source: backend/src/modules/deployment-network-access/reconciler.ts
+    pin_check: true
+    watch: { type: docker_hub, repo: openziti/ziti-edge-tunnel }
+    scan: trivy
+    owner: platform
+    notes: Third-party. Opt-in per-deployment network access sidecar.
+  - id: zrok
+    name: zrok frontdoor (deployment network access)
+    tier: "2"
+    kind: image
+    pinned: "1.1.11"
+    pin_source: backend/src/modules/deployment-network-access/reconciler.ts
+    pin_check: true
+    watch: { type: docker_hub, repo: openziti/zrok }
+    scan: trivy
+    owner: platform
+    notes: Third-party. Opt-in per-deployment public-share frontdoor.
+
   - id: coraza-plugin
     name: traefik-plugin-coraza (WASM WAF — currently disabled)
     tier: "1"

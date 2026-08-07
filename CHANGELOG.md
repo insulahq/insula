@@ -62,6 +62,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and strands them on a registry GC; and `private-worker-frps` is third-party we
   do not build, so a digest means a manual bump per upstream release with no CI to
   produce it.
+- **Digest-pinned every external base image** — 29 `FROM` lines across 19
+  Dockerfiles, including `gcr.io/distroless/static:latest`. Each keeps its tag as a
+  readable label with the manifest-LIST digest appended (`image:tag@sha256:…`), so
+  multi-arch builds still resolve per platform. Paired with a new Dependabot
+  `docker` ecosystem, which is the half that matters: a digest is immutable, so it
+  also stops receiving upstream security rebuilds — pinning without an updater is
+  a slow-motion regression, not a fix. Dependabot understands `tag@sha256:` and
+  bumps both halves. Verified by real builds of a distroless/Go image and a
+  node/nginx panel image.
+- **`dperson/samba` pinned by digest.** It publishes no version tags at all (only
+  architecture names and `latest`), so a digest is the only pin available.
+- **Hash-pinned the docs toolchain.** `documentation/requirements.txt` pinned four
+  versions and said nothing about the ~20 transitive dependencies. A version pin
+  stops you adopting a *new* malicious release; it does nothing about a
+  *republished* one. The build now installs from a generated
+  `requirements.lock.txt` with `pip install --require-hashes` — 29 packages, 339
+  hashes — so pip refuses any artifact whose sha256 does not match and refuses to
+  install anything unlisted. Regeneration instructions are in the file header.
+- **Registered the three unwatched third-party images** (`imapsync`,
+  `ziti-edge-tunnel`, `zrok`) in `security/components.yaml`. They were deployed with
+  no registry entry, so nothing watched them for CVEs; imapsync is now marked for
+  what it is — a Job that reads and writes tenant mailbox content with tenant
+  credentials.
 - **Signed releases now pin their runtime images too.** `cut-release.sh` already
   snapshotted the development overlay's kustomization pins into production, but
   that transformer only reaches images in a pod spec — the six the backend

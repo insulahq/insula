@@ -1,4 +1,4 @@
-FROM wordpress:php8.4-apache
+FROM wordpress:php8.4-apache@sha256:77bb03bd978b0654e38446b1c98400f8a0e187654e72cead120ea5e30f50d741
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     less curl \

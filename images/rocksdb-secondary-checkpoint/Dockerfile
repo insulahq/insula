@@ -22,7 +22,7 @@
 # rust:1.95-bookworm is the current stable Rust toolchain (released
 # 2026-05-09) on Debian 12 (glibc 2.36). librocksdb-sys 0.17.3+10.4.2
 # requires Rust ≥ 1.85; 1.95 satisfies that.
-FROM rust:1.95-bookworm AS build
+FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
 
 # librocksdb-sys compile-time deps. snappy/zlib/lz4/zstd/bz2 are linked in
 # statically by the librocksdb-sys build script; we install the -dev headers.
@@ -64,7 +64,7 @@ RUN cargo build --release --locked \
 # libm, libpthread, libdl — exactly what librocksdb-sys needs and
 # nothing else. No shell, no package manager, no shell-injection
 # surface; the binary is the only entrypoint.
-FROM gcr.io/distroless/cc-debian12 AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
 
 COPY --from=build /build/target/release/rocksdb-secondary-checkpoint \
                   /usr/local/bin/rocksdb-secondary-checkpoint
