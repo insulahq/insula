@@ -636,10 +636,35 @@ _assert_mail_forward_dns() {
     mdfail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"
     return 1
   fi
+  # Only GLOBALLY ROUTABLE addresses belong in public mail DNS. InternalIP on a
+  # dual-stack cluster is commonly RFC1918 v4 plus a ULA v6 (fd00::/8) — see the
+  # dual-stack pod/node addressing scheme — and publishing either as an A/AAAA
+  # for a mail host is actively harmful: a sender would try an address that
+  # cannot be reached from the internet. Demanding they appear in DNS made this
+  # assertion permanently red on any private-apex cluster while asserting
+  # something we would never want to be true.
+  local routable_ips=""
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    case "$ip" in
+      10.*|127.*|169.254.*|192.168.*) continue ;;                 # RFC1918 / loopback / link-local v4
+      172.1[6-9].*|172.2[0-9].*|172.3[01].*) continue ;;          # 172.16/12
+      [fF][cCdD]*:*) continue ;;                                  # ULA fc00::/7
+      [fF][eE]8*:*|[fF][eE]9*:*|[fF][eE][aA]*:*|[fF][eE][bB]*:*) continue ;;  # link-local fe80::/10
+      ::1) continue ;;
+    esac
+    routable_ips+="${ip}"$'\n'
+  done <<<"$cluster_ips"
+  routable_ips=$(printf '%s' "$routable_ips" | grep -vE '^$' | sort -u || true)
   if [[ -z "$cluster_ips" ]]; then
     log "mail-dns/forward: ${hostname} → ${dns_all//$'\n'/, } (no server-role node IPs discoverable via kubectl — skipping subset check)"
     return 0
   fi
+  if [[ -z "$routable_ips" ]]; then
+    warn "mail-dns/forward: no server-role node has a globally-routable address (cluster:${cluster_ips//$'\n'/,}) — a private-apex/lab cluster cannot publish deliverable mail DNS; asserted in full on a public-IP cluster"
+    return 0
+  fi
+  cluster_ips="$routable_ips"
   # Every cluster IP must appear in DNS.
   local missing=""
   while IFS= read -r ip; do
@@ -683,9 +708,19 @@ _assert_mail_reverse_dns() {
     mdfail "mail-dns/reverse: no mail IPs resolvable (DNS + kubectl both empty); cannot run PTR checks"
     return 1
   fi
-  local checked=0
+  local checked=0 skipped_private=0
   while IFS= read -r ip; do
     [[ -z "$ip" ]] && continue
+    # FCrDNS is only meaningful for a globally-routable address: nobody
+    # delegates in-addr.arpa / ip6.arpa for RFC1918 or ULA space, so demanding
+    # a matching PTR there fails an assertion that could never hold. Same
+    # reasoning as the forward check above.
+    case "$ip" in
+      10.*|127.*|169.254.*|192.168.*|::1) skipped_private=$((skipped_private+1)); continue ;;
+      172.1[6-9].*|172.2[0-9].*|172.3[01].*) skipped_private=$((skipped_private+1)); continue ;;
+      [fF][cCdD]*:*) skipped_private=$((skipped_private+1)); continue ;;
+      [fF][eE]8*:*|[fF][eE]9*:*|[fF][eE][aA]*:*|[fF][eE][bB]*:*) skipped_private=$((skipped_private+1)); continue ;;
+    esac
     checked=$((checked + 1))
     local ptr
     ptr=$(_ws_resolve_ptr "$ip" | head -1 | sed 's/\.$//' || true)
@@ -708,7 +743,7 @@ _assert_mail_reverse_dns() {
       fi
     fi
   done <<<"$ips"
-  log "mail-dns/reverse: ${checked} IP(s) checked"
+  log "mail-dns/reverse: ${checked} IP(s) checked$([[ $skipped_private -gt 0 ]] && echo ", ${skipped_private} non-routable IP(s) skipped (no public PTR delegation for RFC1918/ULA)")"
 }
 
 # Assert that no mail-serving IP is on a major DNSBL. DNSBL queries
