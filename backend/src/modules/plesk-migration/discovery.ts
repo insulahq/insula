@@ -27,6 +27,7 @@ import {
 import { pleskInventorySchema, type PleskInventory } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 export const PLESK_MIGRATION_NAMESPACE = 'plesk-migration';
 // Parity with the existing Job-spawning code (backup-restore
@@ -34,7 +35,7 @@ export const PLESK_MIGRATION_NAMESPACE = 'plesk-migration';
 // Flux-pinned in the deployed manifests and cached on nodes; overridable
 // via env for tests. A platform-wide digest-pin is a separate effort.
 const DISCOVERY_IMAGE =
-  process.env.PLESK_DISCOVERY_IMAGE ?? 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+  resolvePlatformImage('tenant-backup-tools');
 
 export interface DiscoveryLogger {
   info: (obj: unknown, msg?: string) => void;

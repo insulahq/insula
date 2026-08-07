@@ -69,6 +69,7 @@ import {
   ensureResticRepoInitialised,
   type BackupTarget,
 } from '../restic-driver.js';
+import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 /**
  * PVC mount point inside the capture Job. `restic backup /source`
@@ -77,7 +78,9 @@ import {
  */
 export const FILES_CAPTURE_ROOT = '/source';
 
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+// Resolved through the shared table so an operator CAN repoint it — this was
+// a bare literal with no env read in six modules (see shared/platform-images.ts).
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 
 export interface FilesComponentResult {
   /** Restic snapshot id (full 64-char) parsed from the Job log. */

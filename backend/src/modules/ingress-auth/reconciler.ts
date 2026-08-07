@@ -44,6 +44,7 @@ import { decryptProviderSecret } from './providers-service.js';
 import { hostAndPathMatch } from '../ingress-routes/traefik-types.js';
 import type { Database } from '../../db/index.js';
 import type { IngressAuthConfig, IngressClaimRule } from '../../db/schema.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 const PROXY_NAME = 'oauth2-proxy';
 const PROXY_PORT = 4180;
@@ -66,8 +67,7 @@ const PASSTHROUGH_INGRESS_NAME = 'oauth2-proxy-passthrough';
 // in this codebase for the platform-side admin gate.
 const OAUTH2_PROXY_IMAGE = process.env.OAUTH2_PROXY_IMAGE
   ?? 'quay.io/oauth2-proxy/oauth2-proxy:v7.6.0';
-const CLAIM_VALIDATOR_IMAGE = process.env.CLAIM_VALIDATOR_IMAGE
-  ?? 'ghcr.io/insulahq/insula/claim-validator:latest';
+const CLAIM_VALIDATOR_IMAGE = resolvePlatformImage('claim-validator');
 
 export interface IngressAuthTenants {
   readonly core: k8s.CoreV1Api;

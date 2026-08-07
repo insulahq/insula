@@ -30,9 +30,10 @@ import type { PleskSubscription, PleskDomain } from '@insula/api-contracts';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { LegItem, MigrationLogger } from './provision.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 const MIGRATION_TOOLS_IMAGE =
-  process.env.PLESK_MIGRATION_TOOLS_IMAGE ?? 'ghcr.io/insulahq/insula/migration-tools:latest';
+  resolvePlatformImage('migration-tools');
 
 const CONTENT_BEGIN = '===CONTENTSYNC-BEGIN===';
 const CONTENT_END = '===CONTENTSYNC-END===';

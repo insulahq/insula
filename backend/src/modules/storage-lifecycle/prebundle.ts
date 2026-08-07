@@ -58,6 +58,7 @@ import {
   wireSecretOwnerRef,
 } from '../tenant-bundles/components/files.js';
 import { tailJobLog } from './job-log-tail.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 /** Failure insurance window. The bundle is held this long so a shrink
  *  that dies after the PVC delete still has an off-site rollback source;
@@ -68,7 +69,9 @@ const DEFAULT_RESTORE_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 // straight against the per-tenant shim repo, writing into the PVC at /source —
 // so it needs the restic toolchain image + the creds mount + a small scratch
 // dir for restic's cache (no large staging volume).
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+// Resolved through the shared table so an operator CAN repoint it — this was
+// a bare literal with no env read in six modules (see shared/platform-images.ts).
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 const CREDS_MOUNT_PATH = '/var/run/restic-creds';
 const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 

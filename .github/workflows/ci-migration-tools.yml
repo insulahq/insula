@@ -27,6 +27,8 @@ jobs:
       packages: write
       security-events: write   # Trivy SARIF upload
       id-token: write          # cosign keyless signing (main, non-PR)
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -99,3 +101,35 @@ jobs:
   # No `pin` job: migration-tools is not referenced by any Deployment
   # manifest — the backend spawns it as a one-shot Job by `:latest` (env
   # PLESK_MIGRATION_TOOLS_IMAGE overridable), like the discovery Job.
+
+  # Pin the freshly-pushed image into the development overlay's platform-config,
+  # AFTER the push, from the image's OWN workflow — pinning from a different
+  # workflow is what caused the 2026-06-06 pull race. The backend resolves this
+  # image at RUNTIME from an env var, so it is invisible to the kustomization
+  # `images:` transformer; see .github/scripts/pin-config-image.sh.
+  #
+  # Tag label is the 7-char git sha (exactly what `type=sha,prefix=` pushes)
+  # rather than a re-derived timestamp: `{{date}}` is evaluated inside
+  # metadata-action, so recomputing it here would name a tag that was never
+  # pushed. The digest is authoritative regardless; the tag is a readable label.
+  pin-config:
+    name: Pin digest into the development overlay
+    needs: build
+    if: github.ref == 'refs/heads/development' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: pin-development-config
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: development
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          .github/scripts/pin-config-image.sh migration-tools-image \
+            "${IMAGE}:${GITHUB_SHA:0:7}@${DIGEST}"
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
