@@ -151,7 +151,15 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: pin-development-${{ github.ref }}
+      # PER-IMAGE group. A single shared `pin-development-${{ github.ref }}` group
+      # across seven workflows loses pins: GitHub keeps at most ONE pending job per
+      # group and cancels the rest, and `cancel-in-progress: false` only protects a
+      # RUNNING job, not a queued one. That silently dropped the tenant-backup-tools
+      # digest pin on 2026-08-07 when five workflows fired together. Serialising was
+      # never the safety mechanism anyway — both pin-image-tag.sh and
+      # apply-development-pin.sh carry a reset/re-apply/retry loop against
+      # origin/development precisely because concurrent pins are expected.
+      group: pin-development-sftp-gateway-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

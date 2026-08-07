@@ -291,7 +291,15 @@ jobs:
     # See project_backups_real_bugs_fixed_2026_05_22 + the 2026-05-26
     # 2a3e9fd3 incident for the failure mode this prevents.
     concurrency:
-      group: pin-development-${{ github.ref }}
+      # PER-IMAGE group. A single shared `pin-development-${{ github.ref }}` group
+      # across seven workflows loses pins: GitHub keeps at most ONE pending job per
+      # group and cancels the rest, and `cancel-in-progress: false` only protects a
+      # RUNNING job, not a queued one. That silently dropped the tenant-backup-tools
+      # digest pin on 2026-08-07 when five workflows fired together. Serialising was
+      # never the safety mechanism anyway — both pin-image-tag.sh and
+      # apply-development-pin.sh carry a reset/re-apply/retry loop against
+      # origin/development precisely because concurrent pins are expected.
+      group: pin-development-platform-${{ github.ref }}
       cancel-in-progress: false
     if: |
       always() &&

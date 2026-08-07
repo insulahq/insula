@@ -41,10 +41,17 @@ import {
 
 // Pinned image — operators can override via STALWART_IMAPSYNC_IMAGE
 // env var if they need a different mirror or local image.
-// The Docker Hub image only publishes `latest` — there is no
-// version-tagged release. Pin to latest and track upstream
-// releases manually.
-export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:latest';
+// Pinned to a version tag, NOT `latest`. The previous comment here claimed
+// "the Docker Hub image only publishes `latest` — there is no version-tagged
+// release"; that was simply untrue (the repo carries 2.288 / 2.295 / 2.306 /
+// 2.319, …), and on the strength of it every mail migration ran whatever
+// `latest` happened to be that day.
+//
+// 2.319 is what `latest` resolved to on 2026-08-07 (verified by comparing
+// manifest digests), so this pin changed no behaviour — it only made the
+// behaviour reproducible. Bump deliberately after checking upstream release
+// notes; imapsync moves fast and talks to tenant mailboxes.
+export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:2.319';
 
 // imapsync supports --passfile1 / --passfile2 to read passwords from
 // a file. We mount the per-job Secret as env vars and have the

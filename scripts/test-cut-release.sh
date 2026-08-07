@@ -250,6 +250,67 @@ yes "a prerelease cut stamps the rc version (not the stable one)" \
   "grep -qE 'version: \"2026\\.6\\.[0-9]+-rc\\.[0-9]+\"' '$R/k8s/overlays/production/platform-version-patch.yaml'"
 rm -rf "$R"
 
+# ── runtime-launched image pins (platform-config ConfigMap) ─────────────────
+# These images are resolved by the BACKEND at runtime from a ConfigMap, so the
+# kustomization `images:` transformer never sees them. Before this stamp, a
+# signed release still shipped them as mutable `:latest` -- which defeats signing
+# the release. Guard both the stamp and its fail-closed behaviour.
+R=$(make_repo)
+mkdir -p "$R/k8s/overlays/production" "$R/k8s/overlays/development"
+cat > "$R/k8s/overlays/development/platform-config-patch.yaml" <<'PCEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:abc1234@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
+PCEOF
+cat > "$R/k8s/overlays/production/platform-config-patch.yaml" <<'PCEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
+  private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
+PCEOF
+git -C "$R" add k8s >/dev/null 2>&1
+git -C "$R" commit -qm "add platform-config patches" >/dev/null 2>&1
+"$CUT" --root "$R" --version 2026.6.7 --yes >/dev/null 2>&1
+yes "cut stamps a digest-pinned runtime image into the production platform-config" \
+  "grep -q 'file-manager:abc1234@sha256:1111' '$R/k8s/overlays/production/platform-config-patch.yaml'"
+yes "a non-digest key is left untouched" \
+  "grep -q 'private-worker-agent:latest' '$R/k8s/overlays/production/platform-config-patch.yaml'"
+rm -rf "$R"
+
+# FAIL CLOSED: pinned on development, absent from production => the release would
+# silently inherit the base `:latest`. That must stop the cut, not pass quietly.
+R=$(make_repo)
+mkdir -p "$R/k8s/overlays/production" "$R/k8s/overlays/development"
+cat > "$R/k8s/overlays/development/platform-config-patch.yaml" <<'PCEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:abc1234@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+PCEOF
+cat > "$R/k8s/overlays/production/platform-config-patch.yaml" <<'PCEOF'
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-config
+data:
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
+PCEOF
+git -C "$R" add k8s >/dev/null 2>&1
+git -C "$R" commit -qm "add mismatched platform-config patches" >/dev/null 2>&1
+"$CUT" --root "$R" --version 2026.6.8 --yes >/dev/null 2>&1
+yes "a dev-pinned key missing from production ABORTS the cut (no tag)" \
+  "! git -C '$R' rev-parse v2026.6.8 >/dev/null 2>&1"
+rm -rf "$R"
+
 # Absent overlay (the minimal fixture) must not break the cut.
 R=$(make_repo)
 "$CUT" --root "$R" --version 2026.6.7 --yes >/dev/null 2>&1
