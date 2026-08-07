@@ -102,7 +102,13 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: pin-development-config
+      # PER-IMAGE group, deliberately. A single shared group loses pins: GitHub
+      # keeps at most ONE pending job per concurrency group and cancels the rest,
+      # so when five image workflows fired together on 2026-08-07 the
+      # tenant-backup-tools pin was cancelled while the other four ran. Serialising
+      # was never needed anyway — pin-config-image.sh has a 4-attempt
+      # reset/re-apply/retry loop precisely because concurrent pins are expected.
+      group: pin-development-config-claim-validator
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
