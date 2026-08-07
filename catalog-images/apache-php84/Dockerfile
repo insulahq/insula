@@ -1,4 +1,4 @@
-FROM php:8.4-apache-bookworm
+FROM php:8.4-apache-bookworm@sha256:7143d0ad6b79cf85351fa26934e680779c1e9dcbb5c2ac5ee74f1b2d88b2b304
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpng-dev libjpeg62-turbo-dev libfreetype6-dev \

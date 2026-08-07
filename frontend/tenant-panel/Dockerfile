@@ -13,7 +13,7 @@
 # `npm install` hid that by re-resolving on alpine and quietly picking the musl
 # binding — the very non-reproducibility this change removes. The RUNTIME image
 # below is untouched (nginx:alpine); only static assets cross the boundary.
-FROM node:22-slim AS deps
+FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY packages/api-contracts/package.json packages/api-contracts/
@@ -52,7 +52,7 @@ COPY frontend/tenant-panel/src/ frontend/tenant-panel/src/
 COPY frontend/tenant-panel/public/ frontend/tenant-panel/public/
 RUN cd frontend/tenant-panel && npx vite build
 
-FROM nginx:1.27-alpine
+FROM nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
 COPY --from=builder /repo/frontend/tenant-panel/dist/ /usr/share/nginx/html/
 # Nginx config template — BACKEND_HOST/BACKEND_PORT substituted at startup
 COPY frontend/tenant-panel/nginx.conf.template /etc/nginx/conf.d/default.conf.template

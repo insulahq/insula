@@ -178,6 +178,35 @@ updates:
       semver-major-days: 14
     labels: ["dependencies", "security-watch"]
 
+  # ── Base images (Dockerfile FROM lines) ──
+  #
+  # Every external FROM is pinned by DIGEST (2026-08-07). A digest is immutable,
+  # which is the point — but it also means the base stops receiving upstream
+  # security rebuilds, since `alpine:3.20` moves and `alpine:3.20@sha256:d9e853…`
+  # does not. Digest pinning without an updater is how you end up frozen on a
+  # base with known CVEs.
+  #
+  # Dependabot's docker ecosystem understands `image:tag@sha256:…` and bumps BOTH
+  # halves, so this is the half of the control that keeps the pins fresh. Without
+  # it the pinning above would be a slow-motion regression rather than a fix.
+  - package-ecosystem: docker
+    directories:
+      - "/backend"
+      - "/frontend/admin-panel"
+      - "/frontend/tenant-panel"
+      - "/catalog-images/*"
+      - "/docker/traefik-plugin-coraza"
+      - "/images/*"
+    target-branch: development
+    schedule: { interval: weekly }
+    groups: { base-images: { update-types: [minor, patch] } }
+    # Same soak rationale as the ecosystems above — a freshly published base tag
+    # is the one most likely to be compromised or simply broken.
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    labels: ["dependencies", "security-watch"]
+
   # ── GitHub Actions (CI toolchain) ──
   - package-ecosystem: github-actions
     directory: "/"

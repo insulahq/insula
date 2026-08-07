@@ -17,7 +17,7 @@
 #   was generated from, so all five workspace manifests are copied even though
 #   only the backend's dependencies are installed. Manifests only — no sources —
 #   so this layer stays cached until a dependency actually changes.
-FROM node:22-alpine AS deps
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS deps
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY packages/api-contracts/package.json packages/api-contracts/
@@ -59,7 +59,7 @@ COPY backend/src/ backend/src/
 RUN npx tsc --build --force packages/api-contracts
 RUN cd backend && npx tsc
 
-FROM node:22-alpine
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 
 # openssl is used by the mtls-providers module to generate self-signed
 # CAs and sign user certs (cert-ops.ts). Alpine's node image doesn't

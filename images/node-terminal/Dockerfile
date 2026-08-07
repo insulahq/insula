@@ -18,7 +18,7 @@
 # kubelet on every node that hosts a terminal session; `IfNotPresent`
 # pull policy in pod-spec keeps subsequent opens fast.
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
 # util-linux provides: nsenter, lsns, unshare, mount, etc.
 # bash + coreutils: in-container debugging (rarely used; the shell
