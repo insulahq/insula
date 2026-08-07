@@ -333,6 +333,31 @@ probe_node_ports() {
 
   local banner=""
   if [ "$expect_answers" = "yes" ]; then
+    # Wait for the node to actually SERVE before asserting on the greeting.
+    #
+    # A DaemonSet reporting numberReady == desiredNumberScheduled is not the
+    # same as haproxy answering SMTP: the kubelet binds hostPort :25 as soon as
+    # the pod sandbox exists, so the node ACCEPTS the TCP connection while the
+    # proxy is still wiring its backend. The probe then reads an empty banner —
+    # byte-for-byte what a blocked source looks like — and the suite blamed
+    # Stalwart's autoban for a node that was merely still starting. It showed up
+    # only on NON-ACTIVE nodes (the active node is gated by
+    # wait_for_stalwart_settled, which does check the hostPort), only in the
+    # phases where those nodes must START serving, and only on this banner
+    # assertion; the port-open checks passed because the port genuinely was
+    # bound. A fixed `sleep 10` was not enough on a 4-node cluster.
+    #
+    # Measured 2026-08-07: with the exposure mode set and haproxy left to settle,
+    # 12/12 banner samples across both non-active nodes returned the greeting —
+    # so this is a readiness race in the harness, not a platform defect.
+    local _bw=0
+    while [ "$_bw" -lt "${BANNER_READY_TIMEOUT:-90}" ]; do
+      banner=$(read_smtp_banner "$ip")
+      [ -n "$banner" ] && break
+      sleep 5; _bw=$((_bw+5))
+    done
+    [ "$_bw" -gt 0 ] && [ -n "$banner" ] \
+      && echo "    ${name}: SMTP banner appeared after ${_bw}s (haproxy backend warm-up)"
     banner=$(read_smtp_banner "$ip")
     if echo "$banner" | grep -qiE "^220.*(stalwart|smtp|esmtp|mta|mail)"; then
       pass=$((pass+1))
@@ -499,15 +524,37 @@ wait_for_stalwart_settled() {
 
 wait_for_haproxy_ds() {
   local expect="$1"  # "present" or "absent"
-  local end=$(($(date +%s) + 120))
+  local end=$(($(date +%s) + 180))
   while [ $(date +%s) -lt $end ]; do
     if ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy' >/dev/null 2>&1; then
-      [ "$expect" = "present" ] && return 0
+      if [ "$expect" = "present" ]; then
+        # EXISTENCE IS NOT READINESS. This used to return the instant the
+        # DaemonSet OBJECT appeared, while its pods were still being scheduled
+        # and pulled on the non-active nodes. The kubelet binds hostPort :25 as
+        # soon as the pod sandbox comes up, so those nodes ACCEPT the TCP
+        # connection while haproxy is not yet serving — the probe then reads an
+        # empty banner and the suite reports a healthy mail server as
+        # unreachable. It shows up exactly where you would predict: only on
+        # NON-ACTIVE nodes (the active node is covered by
+        # wait_for_stalwart_settled, which does gate on the hostPort), only in
+        # the phases where those nodes must START serving, and only on the
+        # banner probe — the port-open check passes because the port really is
+        # bound. Reproduced on a quiescent cluster 2026-08-07; probing the same
+        # nodes by hand minutes later returned the banner every time.
+        local want got
+        want=$(ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy -o jsonpath="{.status.desiredNumberScheduled}"' 2>/dev/null | tr -d '\r')
+        got=$(ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy -o jsonpath="{.status.numberReady}"' 2>/dev/null | tr -d '\r')
+        if [ -n "$want" ] && [ "$want" != "0" ] && [ "$got" = "$want" ]; then
+          echo "    haproxy DS ready on ${got}/${want} node(s)"
+          return 0
+        fi
+      fi
     else
       [ "$expect" = "absent" ] && return 0
     fi
     sleep 5
   done
+  [ "$expect" = "present" ] && red "  haproxy DS never reached full readiness (ready=${got:-?}/${want:-?}) — non-active nodes may accept TCP without serving"
   return 1
 }
 
