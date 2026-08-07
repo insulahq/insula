@@ -3183,6 +3183,13 @@ scenario_stalwart_webadmin_auth() {
   # every operator on staging/prod. Non-destructive (read-only HTTP). Delegates
   # to the standalone suite (which also runs by hand / in `all`).
   local rc=0
+  # script_dir is `local` to scenario_system_backup — referencing it here left
+  # it UNBOUND, and `set -u` then killed the whole suite at this last scenario.
+  # staging-all could therefore never exit 0 no matter how many scenarios
+  # passed: the same "line NNNN: script_dir: unbound variable" abort appears in
+  # every historical run. Declare it here too.
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   API_URL="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
     bash "$script_dir/integration-stalwart-webadmin-auth.sh" || rc=$?
   case "$rc" in
