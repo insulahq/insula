@@ -162,13 +162,26 @@ fi
 
 log "── dr restore-component etcd --local (Tier 0, non-destructive) ──"
 LL=$(on_node "dr restore-component etcd --local --list")
+SNAP_COUNT=$(echo "$LL" | grep -cE 'etcd-snapshot|e2e-|\.db')
 echo "$LL" | grep -qE 'snapshot|none found|in /var/lib' \
-  && ok "etcd --local --list ran (Tier 0): $(echo "$LL" | grep -cE 'etcd-snapshot|e2e-|\.db') snapshot line(s)" \
+  && ok "etcd --local --list ran (Tier 0): ${SNAP_COUNT} snapshot line(s)" \
   || fail "etcd --local --list output unexpected: ${LL:0:160}"
-DD=$(on_node "dr restore-component etcd --local --dry-run --latest")
-echo "$DD" | grep -q 'cluster-reset' \
-  && ok "etcd --local --dry-run --latest resolves + would cluster-reset (NOT executed)" \
-  || fail "etcd --local --dry-run did not resolve: ${DD:0:160}"
+# --dry-run --latest can only resolve if a snapshot EXISTS. The --list
+# assertion above deliberately accepts "none found", so requiring one here was
+# internally inconsistent: on a freshly bootstrapped cluster k3s has not taken
+# its first scheduled etcd snapshot yet, and the suite hard-failed with
+# "etcd --local --dry-run did not resolve:" (empty output) for a CLI that was
+# behaving correctly — there was simply nothing to resolve. Caught on the
+# fresh-cluster full run 2026-08-07, where --list reported 0 snapshot lines
+# immediately before this.
+if [[ "${SNAP_COUNT:-0}" -eq 0 ]]; then
+  skip "etcd --local --dry-run --latest — no local etcd snapshot exists yet on this cluster (k3s takes them on a schedule); nothing for --latest to resolve"
+else
+  DD=$(on_node "dr restore-component etcd --local --dry-run --latest")
+  echo "$DD" | grep -q 'cluster-reset' \
+    && ok "etcd --local --dry-run --latest resolves + would cluster-reset (NOT executed)" \
+    || fail "etcd --local --dry-run did not resolve: ${DD:0:160}"
+fi
 
 log "── Tier 1: secrets bundle carries dr-system-target.json + offline path resolves ──"
 DRTOK=$(login_token "$ADMIN_PASSWORD")
