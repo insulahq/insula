@@ -38,6 +38,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   against an immutable reference a re-pull can only fetch identical bytes, so
   `Always` bought nothing and cost a hard dependency on GHCR being reachable at
   archive time. A new pin changes the digest, which is itself a cache miss.
+- **A guard so this cannot silently regress.** `ci-config-image-pin-check.sh`
+  classifies every runtime-resolved image key in the development overlay:
+  `PINNED` keys must carry an `@sha256:` digest, `PENDING` keys are known-mutable
+  **with a written reason**, and anything in neither list fails the build — so a
+  NEW Job image cannot land on `:latest` unnoticed, which is exactly how this
+  backlog accumulated. It caught one I had missed on its first run
+  (`private-worker-frps-image`), and now records why each remaining one is still
+  mutable: `file-manager-image` (workflow not yet wired),
+  `private-worker-agent-image` (runs on tenant hardware, not in-cluster — a
+  different decision), and `private-worker-frps-image` (third-party upstream we do
+  not build, so a digest means a manual bump per release with no CI to produce it).
 
 - **`rocksdb-secondary-checkpoint` built from an unpinned dependency graph.** The
   image committed only `Cargo.toml`, and its Dockerfile read

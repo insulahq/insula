@@ -633,6 +633,8 @@ jobs:
       # component-watch.yml, which already has network + a token.
       - name: rocksdb pin stays coupled to Stalwart's
         run: ./scripts/ci-rocksdb-stalwart-pin-check.sh
+      - name: runtime-resolved images stay digest-pinned (or declared pending)
+        run: ./scripts/ci-config-image-pin-check.sh
 
   # kubectl is preinstalled on ubuntu-latest runners; these render overlays
   # with `kubectl kustomize` (same as the kustomize-build + admin-auth jobs).
