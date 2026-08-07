@@ -36,7 +36,7 @@ data:
   # image overwrites these with `:<tag>@sha256:<digest>`.
   tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:latest"
   migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:13d2914@sha256:b7b995e88dab6b445de7eaad9572ebb9fe26ac140cf4e2fe063e4c6c01e91a68"
-  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:13d2914@sha256:55324b10da116813a398647152ec9b203b33ef07ed08b92e49e45641859cb291"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:8cab4f7@sha256:f47ee1beff77fa9bfa3215a2ae74273d62659545516063cf87bde8a909f2aec5"
   node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:13d2914@sha256:b2bcf540d350aba6d462c75473863437683854c9069c04b84a9cf3d7061151c2"
   # Longhorn dashboard URL for the Storage Configuration iframe.
   # 2026-06-12: path route on the admin host (same-origin) — the
