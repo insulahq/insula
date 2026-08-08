@@ -3350,8 +3350,26 @@ select_cluster_issuer() {
     echo "$CLUSTER_ISSUER_NAME"
     return 0
   fi
-  # 2. dev/local
-  if [[ "$env" == "dev" ]]; then
+  # 2. dev/local — ONLY when that ClusterIssuer actually exists on the cluster.
+  #
+  # `local-ca-issuer` is shipped by the DIND overlay alone (k8s/overlays/dind/
+  # cert-manager/); k8s/base/cert-manager ships only the Let's Encrypt issuers,
+  # and the development overlay adds none. So returning it unconditionally for
+  # `--env dev` pinned every Certificate on a real DEV cluster to an issuer that
+  # does not exist, and none of them could ever be issued.
+  #
+  # This was masked for as long as platform-config carried a hardcoded
+  # `letsencrypt-prod-http01`: the literal won, the certs issued, and the bogus
+  # value sat unused in platform-cluster-config. Once platform-config started
+  # honouring ${CLUSTER_ISSUER_NAME} the mismatch became load-bearing — caught
+  # on a fresh --env dev bootstrap of testing.<apex> 2026-08-08, where all 6
+  # platform Certificates sat Ready=False against a missing issuer.
+  #
+  # Same existence-probe idiom as the acme-custom-http01 check above. A dev
+  # cluster that really does ship the local CA still gets it; one that does not
+  # falls through to the DNS-vs-server alignment below and lands on a Let's
+  # Encrypt issuer it can actually use.
+  if [[ "$env" == "dev" ]] && kctl get clusterissuer local-ca-issuer >/dev/null 2>&1; then
     echo "local-ca-issuer"
     return 0
   fi
