@@ -41,6 +41,14 @@ excludes prereleases) — a release candidate cannot bootstrap production.
 - [ ] **Swap is off** (`swapoff -a` + fstab) — kubelet memory eviction assumes swapless nodes
 - [ ] SSH reachable as a passwordless-sudo user (or root): `ssh <user>@<ip> uptime`
 - [ ] Fresh host — no pre-existing `/etc/insula`, `/var/lib/insula`, or `/var/lib/rancher/k3s` state
+- [ ] **No leftover Longhorn iSCSI sessions** (only matters when REINSTALLING on hardware that
+      previously ran the platform and has not been rebooted):
+      `iscsiadm -m session | grep -c iqn.2019-10.io.longhorn:` should be `0` on a host with no
+      cluster. Sessions survive a wipe — nothing logs them out unless the teardown went through
+      `scripts/destroy-cluster.sh` — and each orphan then retries login ~1/s forever against
+      whatever now owns the old portal IP, flooding the kernel log (measured: ~3100 msgs/min on an
+      otherwise idle node) and spawning `scsi_eh` threads. Clear with
+      `iscsiadm -m session -u` **on a host with no live volumes**, or reboot.
 
 ## 3. DNS (propagated, verified from a public resolver)
 
