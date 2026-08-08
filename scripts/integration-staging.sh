@@ -1533,10 +1533,22 @@ scenario_reaper() {
   #   19:50:52  reap actually COMPLETES  (image_reap_log: succeeded=t,
   #             bytes_reclaimed=46409201, error=NULL)
   #
-  # 46 seconds short. The suite reported "reaper did not fire" about a reaper
-  # that fired correctly and reclaimed 46 MB. Polling keeps the assertion just
-  # as strong — a reaper that never fires still fails at the deadline — while
-  # removing a race that only ever produced false failures.
+  # — "reaper did not fire" reported about a reaper that fired correctly and
+  # reclaimed 46 MB. On a QUIET cluster it is much tighter than that run implies;
+  # re-measured with nothing else touching the cluster:
+  #
+  #   20:02:36  wait starts   20:07:36 grace expires   20:07:42 reap COMPLETES
+  #   20:08:06  where the fixed 330s check would fire  -> ~24s of margin, total
+  #
+  # So the fixed budget passes only while nothing perturbs the timer. What eats
+  # the 24s: scheduleReap arms an in-process setTimeout, so ANY platform-api
+  # restart inside the grace window drops it and the reap falls to the persisted
+  # dueAt sweeper, landing a tick later — 88s after due in the run above, whose
+  # api pod was replaced 17s before the row came due.
+  #
+  # Polling keeps the assertion exactly as strong (a reaper that never fires
+  # still fails at the deadline) and removes a margin that only ever produced
+  # false failures.
   local reap_deadline="${REAPER_WAIT_S:-600}"
   log "reaper: waiting out the ${IMAGE_REAP_GRACE_S:-300}s grace period, then polling up to ${reap_deadline}s…"
   sleep "${IMAGE_REAP_GRACE_S:-300}"
