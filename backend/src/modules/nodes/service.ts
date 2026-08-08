@@ -161,6 +161,8 @@ export interface ObservedNode {
   canHostTenantWorkloads: boolean;
   ingressMode: NodeIngressMode;
   publicIp: string | null;
+  /** Global IPv6 ExternalIP. Null on single-stack and on ULA-only hosts. */
+  publicIpv6: string | null;
   kubeletVersion: string | null;
   k3sVersion: string | null;
   cpuMillicores: number | null;
@@ -199,6 +201,7 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
     canHostTenantWorkloads: observed.canHostTenantWorkloads,
     ingressMode: observed.ingressMode,
     publicIp: observed.publicIp,
+    publicIpv6: observed.publicIpv6,
     kubeletVersion: observed.kubeletVersion,
     k3sVersion: observed.k3sVersion,
     cpuMillicores: observed.cpuMillicores,
@@ -222,6 +225,7 @@ export async function upsertNodeFromK8s(db: Database, observed: ObservedNode): P
       canHostTenantWorkloads: observed.canHostTenantWorkloads,
       ingressMode: observed.ingressMode,
       publicIp: observed.publicIp,
+      publicIpv6: observed.publicIpv6,
       kubeletVersion: observed.kubeletVersion,
       k3sVersion: observed.k3sVersion,
       cpuMillicores: observed.cpuMillicores,

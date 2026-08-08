@@ -46,7 +46,13 @@
 #   API_BASE          — admin-panel base URL.
 #                       Default: https://admin.testing.example.test
 #   ADMIN_EMAIL/PW    — admin login.
-#   SERVERS_TXT       — credential source. Default ~/k8s-staging/servers.txt.
+#   BACKUP_S3_ENDPOINT/_BUCKET/_ACCESS_KEY/_SECRET_KEY
+#                     — S3 target creds. PREFERRED source; when all four are
+#                       set servers.txt is never read (the VM integration tier
+#                       exports these and ships no servers.txt).
+#   SERVERS_TXT       — fallback credential source when the BACKUP_S3_* env
+#                       vars are not all set. Default ~/servers.txt, then
+#                       ~/k8s-staging/servers.txt.
 #   PLATFORM_OIDC_KEY — PLATFORM_ENCRYPTION_KEY hex (64 chars). If unset,
 #                       the script reads it from the testing cluster via
 #                       SSH (kubectl -n platform get secret platform-secrets).
@@ -91,22 +97,42 @@ echo "workdir: $WORK"
 trap 'rm -rf "$WORK"' EXIT
 
 # ── Read S3 + SFTP creds ────────────────────────────────────────────────────
+# Two credential sources, env FIRST. The harness tiers that already export
+# BACKUP_S3_* / BACKUP_SFTP_* (the VM integration tier points them at the
+# services-VM MinIO) have no servers.txt at all — parsing it unconditionally
+# made this suite abort rc=2 in 0s on every VM run. servers.txt stays the
+# fallback for an operator running this straight off their workstation.
 strip_cr() { tr -d '\r'; }
-[ -f "$SERVERS_TXT" ] || { echo "ERROR: $SERVERS_TXT not found" >&2; exit 2; }
-S3_ENDPOINT=$(awk '/^https:\/\/.*your-objectstorage/{print $1; exit}' "$SERVERS_TXT" | strip_cr)
-S3_BUCKET=$(awk '/^Bucket: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
-S3_KEY=$(awk '/^Access Key: /{print $3; exit}' "$SERVERS_TXT" | strip_cr)
-S3_SECRET=$(awk '/^Key: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
-SFTP_LINE=$(grep -m1 'install-ssh-key' "$SERVERS_TXT" | strip_cr || true)
-SFTP_USER=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+) ([^@]+)@.*|\2|p')
-SFTP_HOST=$(echo "$SFTP_LINE" | sed -nE 's|.*@([^ ]+) install-ssh-key.*|\1|p')
-SFTP_PORT=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+).*|\1|p')
+S3_ENDPOINT="${BACKUP_S3_ENDPOINT:-}"
+S3_BUCKET="${BACKUP_S3_BUCKET:-}"
+S3_KEY="${BACKUP_S3_ACCESS_KEY:-}"
+S3_SECRET="${BACKUP_S3_SECRET_KEY:-}"
+SFTP_USER="${BACKUP_SFTP_USER:-}"
+SFTP_HOST="${BACKUP_SFTP_HOST:-}"
+SFTP_PORT="${BACKUP_SFTP_PORT:-}"
+CRED_SRC="env (BACKUP_S3_*)"
+
+if [ -z "$S3_ENDPOINT" ] || [ -z "$S3_BUCKET" ] || [ -z "$S3_KEY" ] || [ -z "$S3_SECRET" ]; then
+  CRED_SRC="$SERVERS_TXT"
+  [ -f "$SERVERS_TXT" ] || {
+    echo "ERROR: no S3 credentials — set BACKUP_S3_ENDPOINT/BUCKET/ACCESS_KEY/SECRET_KEY, or provide $SERVERS_TXT" >&2
+    exit 2; }
+  S3_ENDPOINT=$(awk '/^https:\/\/.*your-objectstorage/{print $1; exit}' "$SERVERS_TXT" | strip_cr)
+  S3_BUCKET=$(awk '/^Bucket: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
+  S3_KEY=$(awk '/^Access Key: /{print $3; exit}' "$SERVERS_TXT" | strip_cr)
+  S3_SECRET=$(awk '/^Key: /{print $2; exit}' "$SERVERS_TXT" | strip_cr)
+  SFTP_LINE=$(grep -m1 'install-ssh-key' "$SERVERS_TXT" | strip_cr || true)
+  SFTP_USER=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+) ([^@]+)@.*|\2|p')
+  SFTP_HOST=$(echo "$SFTP_LINE" | sed -nE 's|.*@([^ ]+) install-ssh-key.*|\1|p')
+  SFTP_PORT=$(echo "$SFTP_LINE" | sed -nE 's|.*ssh -p([0-9]+).*|\1|p')
+fi
 # SFTP key path (override SFTP_KEY env if a different identity is used
 # for the storage-box vs the cluster). Defaults to the same key as SSH_KEY.
 SFTP_KEY="${SFTP_KEY:-$SSH_KEY}"
 
 [ -n "$S3_ENDPOINT" ] && [ -n "$S3_BUCKET" ] && [ -n "$S3_KEY" ] && [ -n "$S3_SECRET" ] || {
-  echo "ERROR: S3 creds missing from $SERVERS_TXT" >&2; exit 2; }
+  echo "ERROR: S3 creds incomplete from $CRED_SRC" >&2; exit 2; }
+echo "  S3 credentials from: $CRED_SRC"
 
 # ── PLATFORM_ENCRYPTION_KEY (for HKDF deriving the per-tenant restic password) ──
 if [ -z "${PLATFORM_OIDC_KEY:-}" ]; then

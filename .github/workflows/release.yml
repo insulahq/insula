@@ -17,11 +17,11 @@ jobs:
     name: Build & Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - uses: docker/login-action@v4
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -44,21 +44,21 @@ jobs:
           echo "tag matches platform/VERSION: $FILE_VERSION"
 
       # Build all 3 images with semver tag only (no :latest — that's build-deploy.yml's job)
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: backend/Dockerfile
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/backend:${{ steps.version.outputs.version }}
 
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: frontend/admin-panel/Dockerfile
           push: true
           tags: ${{ env.IMAGE_PREFIX }}/admin-panel:${{ steps.version.outputs.version }}
 
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           file: frontend/tenant-panel/Dockerfile
@@ -71,7 +71,7 @@ jobs:
       # assets that bootstrap.sh fetches + verifies. If COSIGN_PRIVATE_KEY is not
       # set the binaries ship UNSIGNED and the bootstrap auto-install stays
       # dormant (fail-closed) — see scripts/lib/bootstrap-phases.sh.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
       - run: npm ci
@@ -209,7 +209,7 @@ jobs:
       group: sync-development-changelog
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: development
           fetch-depth: 0
@@ -234,3 +234,41 @@ jobs:
             git rebase origin/development || { echo "::error::rebase conflict syncing CHANGELOG"; exit 1; }
           done
           echo "::error::could not push CHANGELOG sync after retries"; exit 1
+
+  sync-development-version:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    # No `if:` guard here on purpose — sync-development-version.sh owns the
+    # stable-only rule (an RC would compose to `<VERSION>-rc.N-<sha>`, which the
+    # backend's version regex rejects) and exits 2 for a prerelease. One place
+    # to state the rule, and it has a test.
+    permissions:
+      contents: write
+    concurrency:
+      group: sync-development-version
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: development
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Bring development's platform/VERSION up to the released tag
+        run: |
+          set -euo pipefail
+          rc=0
+          ./scripts/sync-development-version.sh --tag "${GITHUB_REF_NAME}" --write || rc=$?
+          if [ "$rc" = "2" ]; then echo "platform/VERSION already in sync — nothing to push."; exit 0; fi
+          if [ "$rc" != "0" ]; then echo "::error::sync-development-version failed (rc=$rc)"; exit 1; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add platform/VERSION
+          git commit -m "chore(release): sync development platform/VERSION with ${GITHUB_REF_NAME} [skip ci]"
+          # Concurrency-safe push: rebase onto the latest development before pushing.
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:development; then echo "pushed."; exit 0; fi
+            echo "push rejected (attempt $attempt) — rebasing onto development…"
+            git fetch origin development
+            git rebase origin/development || { echo "::error::rebase conflict syncing platform/VERSION"; exit 1; }
+          done
+          echo "::error::could not push platform/VERSION sync after retries"; exit 1

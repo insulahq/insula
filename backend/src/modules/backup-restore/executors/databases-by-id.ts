@@ -75,8 +75,11 @@ import {
   createResticCredsSecret,
   wireSecretOwnerRef,
 } from '../../tenant-bundles/components/files.js';
+import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+// Resolved through the shared table so an operator CAN repoint it — this was
+// a bare literal with no env read in six modules (see shared/platform-images.ts).
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 
 const DUMP_PREFIX = 'predump-';

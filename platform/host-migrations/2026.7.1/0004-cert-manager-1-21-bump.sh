@@ -74,8 +74,22 @@ if [ -z "$cur" ]; then
   echo "cert-manager-1-21-bump: cert-manager release not installed in ns cert-manager here — skipping (migration never first-installs a chart)."
   exit 0
 fi
-if [ "$cur" = "$TARGET_CHART" ]; then
-  echo "cert-manager-1-21-bump: cert-manager already at chart ${TARGET_CHART} — nothing to do."
+
+# A chart-bump migration establishes a FLOOR, never a ceiling. Skip when the
+# release is already at OR ABOVE the target: a cluster bootstrapped after this
+# migration was written carries NEWER pins, and dragging it backwards is both
+# wrong and dangerous — `helm upgrade --reuse-values` onto an older chart feeds
+# it values whose schema it does not know, which is how a fresh DEV install hit
+#   "additional properties 'runtimeClassName' not allowed"
+# and blocked 15 later migrations behind the failure (ADR-056).
+chart_ver_ge() { # chart_ver_ge <have> <want> -> 0 when have >= want
+  local a="${1#v}" b="${2#v}"
+  [ "$a" = "$b" ] && return 0
+  [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | head -n1)" = "$b" ]
+}
+
+if chart_ver_ge "$cur" "$TARGET_CHART"; then
+  echo "cert-manager-1-21-bump: cert-manager already at chart ${cur} (>= ${TARGET_CHART}) — nothing to do."
   exit 0
 fi
 

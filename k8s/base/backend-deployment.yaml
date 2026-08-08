@@ -229,6 +229,44 @@ spec:
                   name: platform-config
                   key: file-manager-image
                   optional: true
+            # Mail-archive checkpoint binary (initContainer #1 of no_downtime,
+            # which is DEFAULT_ARCHIVE_MODE). CI writes an immutable
+            # :<tag>@sha256:<digest> here via pin-config-image.sh; the code
+            # default is :latest, so `optional: true` keeps local dev working.
+            - name: ROCKSDB_SECONDARY_CHECKPOINT_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: rocksdb-secondary-checkpoint-image
+                  optional: true
+            # Remaining runtime-launched images, same mechanism. Each is pinned to
+            # an immutable digest in the development overlay by its own build
+            # workflow. `optional: true` throughout so local/DinD falls back to
+            # the in-code default (backend/src/shared/platform-images.ts).
+            - name: TENANT_BACKUP_TOOLS_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: tenant-backup-tools-image
+                  optional: true
+            - name: PLESK_MIGRATION_TOOLS_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: migration-tools-image
+                  optional: true
+            - name: CLAIM_VALIDATOR_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: claim-validator-image
+                  optional: true
+            - name: NODE_TERMINAL_IMAGE
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: node-terminal-image
+                  optional: true
             # Private Worker — overlay-supplied per environment.
             - name: TUNNEL_BASE_URL
               valueFrom:
@@ -338,6 +376,26 @@ spec:
                 configMapKeyRef:
                   name: platform-config
                   key: ingress-default-ipv6
+                  optional: true
+            # ACME directory Stalwart orders its mail certificate from. Unset by
+            # default, so the reconciler uses public Let's Encrypt exactly as
+            # before. Exists for environments whose apex is not publicly
+            # resolvable — LE answers NXDOMAIN there and the order can never
+            # complete, leaving the mail listener on a self-signed cert. Setting
+            # this ALSO requires that CA to be present in Stalwart's whole
+            # /etc/ssl/certs directory; see ROADMAP R13.
+            - name: STALWART_ACME_DIRECTORY
+              valueFrom:
+                configMapKeyRef:
+                  # platform-mail-acme, NOT platform-config: platform-config is
+                  # shipped in k8s/base and therefore OWNED BY FLUX, which
+                  # overwrites anything bootstrap writes into it on the next
+                  # reconcile. That is exactly what happened on VM run 1f0c03dd —
+                  # bootstrap set the key, Flux reconciled, the key vanished, and
+                  # the reconciler fell back to Let's Encrypt. This ConfigMap is
+                  # created by bootstrap and shipped by nothing, so it survives.
+                  name: platform-mail-acme
+                  key: directory
                   optional: true
             - name: CLUSTER_ISSUER_NAME
               valueFrom:

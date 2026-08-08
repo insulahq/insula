@@ -577,6 +577,16 @@ export interface PerNodePurgeResult {
   readonly node: string;
   readonly removedDisplayNames: readonly string[];
   readonly failedDisplayNames: readonly string[];
+  /**
+   * Per-failure `cause=` text emitted by the purge script, keyed by the same
+   * display name as `failedDisplayNames`. The script already computes why a
+   * removal failed (crictl's stderr, or "still present 10s after rmi"), but it
+   * used to be parsed off and thrown away — image_reap_log then recorded a bare
+   * "failed on <node>: <image>", which says nothing about whether the image was
+   * still referenced by a container, the ref did not resolve, or containerd was
+   * simply slow. Keep it so the log row is diagnosable.
+   */
+  readonly failureCauses: Readonly<Record<string, string>>;
   readonly freedBytes: number;
   readonly podError?: string;
 }
@@ -590,6 +600,7 @@ export async function runPurgeOnNode(
   const crictlByName = new Map(targets.map(t => [t.crictlName, t]));
   const removedDisplayNames: string[] = [];
   const failedDisplayNames: string[] = [];
+  const failureCauses: Record<string, string> = {};
   let freedBytes = 0;
 
   const imageList = targets.map(t => `'${t.crictlName.replace(/'/g, "'\\''")}'`).join(' ');
@@ -631,16 +642,33 @@ for img in ${imageList}; do
   # digest ref (…/php@sha256:…) logged a successful reap at delete+306s and the
   # image was still listed on the node 24s later.
   #
-  # \`crictl images -q <ref>\` prints the image ID when the ref resolves and
-  # nothing when it does not, so an empty result is proof of absence.
-  # POLL, don't sample once: containerd settles the removal asynchronously, so
-  # the ref can still resolve for a moment after \`rmi\` returns. A single check
-  # reported reaps that HAD succeeded as failures — image_reap_log recorded
-  # "failed on <node>" for an image the node really had removed (2026-08-04).
+  # Use \`crictl inspecti <ref>\`, NOT \`crictl images -q <ref>\`.
+  #
+  # \`crictl images -q <ref>\` DOES NOT FILTER on the CRI versions we ship: it
+  # prints every image ID on the node regardless of the ref, and does so even
+  # for a ref that cannot exist. Measured on a k3s node 2026-08-08:
+  #     crictl images -q <real tag>  -> 28 ids
+  #     crictl images -q <garbage>   -> 28 ids
+  #     crictl images -q             -> 28 ids
+  # So the emptiness test below could NEVER be satisfied while the node held
+  # any image at all, and EVERY removal was reported FAILED — including the
+  # ones that had just succeeded. That is why image_reap_log carried
+  # succeeded=false with bytes_reclaimed=0 on every single reap, and why
+  # integration-staging's reaper scenario kept reporting "reaper did not fire"
+  # for an image the runtime had actually deleted. The 10-attempt poll added
+  # on 2026-08-04 could not help: the result is never empty, so it just burned
+  # 10s before declaring failure.
+  #
+  # \`crictl inspecti\` inspects ONE image and exits non-zero when the ref does
+  # not resolve — verified on the same node: present ref -> 0, garbage ref ->
+  # non-zero, just-removed ref -> non-zero.
+  #
+  # POLL still, because containerd settles the removal asynchronously and the
+  # ref can resolve for a moment after \`rmi\` returns.
   gone=0
   i=0
   while [ $i -lt 10 ]; do
-    if [ -z "$(crictl images -q "$img" 2>/dev/null)" ]; then gone=1; break; fi
+    if ! crictl inspecti "$img" >/dev/null 2>&1; then gone=1; break; fi
     i=$((i + 1))
     sleep 1
   done
@@ -685,6 +713,7 @@ done
       node,
       removedDisplayNames: [],
       failedDisplayNames: targets.map(t => t.displayName),
+      failureCauses: {},
       freedBytes: 0,
       podError: `create pod on ${node}: ${err instanceof Error ? err.message : String(err)}`,
     };
@@ -731,8 +760,11 @@ done
         const rest = line.slice('FAILED:'.length).trim();
         const sepIdx = rest.indexOf(' cause=');
         const crictlName = sepIdx >= 0 ? rest.slice(0, sepIdx) : rest;
+        const cause = sepIdx >= 0 ? rest.slice(sepIdx + ' cause='.length).trim() : '';
         const t = crictlByName.get(crictlName);
-        failedDisplayNames.push(t?.displayName ?? crictlName);
+        const displayName = t?.displayName ?? crictlName;
+        failedDisplayNames.push(displayName);
+        if (cause) failureCauses[displayName] = cause;
       }
       // B0.2: PRUNE_FAILED is logged but does not fail the whole purge
       // (the per-image loop still runs). No bytes are tracked for --prune
@@ -749,7 +781,7 @@ done
     // pod may already be gone
   }
 
-  return { node, removedDisplayNames, failedDisplayNames, freedBytes, podError };
+  return { node, removedDisplayNames, failedDisplayNames, failureCauses, freedBytes, podError };
 }
 
 /**

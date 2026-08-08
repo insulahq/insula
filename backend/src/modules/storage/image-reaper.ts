@@ -192,7 +192,7 @@ export async function reapImageNow(
   // node.status.images[].names (which is always a canonical
   // `<registry>/<repo>:<tag>` or `<registry>/<repo>@<digest>` string).
   const wantedCanonical = canonicalImageRef(image);
-  const nodePresences: { node: string; sizeBytes: number }[] = [];
+  const nodePresences: { node: string; sizeBytes: number; refs: string[] }[] = [];
   for (const node of nodeList) {
     const nodeName = node.metadata?.name ?? 'unknown';
     const images = node.status?.images ?? [];
@@ -200,7 +200,27 @@ export async function reapImageNow(
       const names = img.names ?? [];
       const matches = names.some((n) => canonicalImageRef(n) === wantedCanonical);
       if (matches) {
-        nodePresences.push({ node: nodeName, sizeBytes: img.sizeBytes ?? 0 });
+        // Keep EVERY ref kubelet reports for this image, not just the one we
+        // matched on. kubelet lists both the tag and the digest form, but
+        // containerd only answers `crictl rmi` for a ref it actually stored:
+        // a Pod that pulled by digest leaves the image addressable ONLY as
+        // <repo>@sha256:… , and `crictl rmi <repo>:<tag>` then fails with
+        // "no such image". Because we used to pass the caller's (tag) ref
+        // alone, the targeted removal silently missed every digest-pinned
+        // image — image_reap_log recorded succeeded=false with no bytes, and
+        // the image only disappeared incidentally via the script's
+        // `crictl rmi --prune` pass once nothing referenced it. Under a
+        // parallel run, where another tenant still referenced it, --prune
+        // could not sweep either and the image simply stayed.
+        // Observed 2026-08-06: cause="no such image
+        // docker.io/serversideup/php:8.4-fpm-nginx-alpine" for an image the
+        // node held as php@sha256:f0dfc… .
+        const refs = [...new Set(names.map((n) => canonicalImageRef(n)))];
+        nodePresences.push({
+          node: nodeName,
+          sizeBytes: img.sizeBytes ?? 0,
+          refs: refs.length > 0 ? refs : [wantedCanonical],
+        });
         break;
       }
     }
@@ -223,18 +243,39 @@ export async function reapImageNow(
     // the default registry, but cri-o requires the FQDN form to remove
     // an image. The original short ref stays as `displayName` so audit
     // logs (image_reap_log.image_name) keep the operator-facing string.
-    const result = await runPurgeOnNode(k8s, presence.node, [{
-      crictlName: wantedCanonical,
+    // One target per ref the node reports. displayName stays the
+    // operator-facing ref so image_reap_log keeps reading in the caller's terms.
+    const result = await runPurgeOnNode(k8s, presence.node, presence.refs.map((ref) => ({
+      crictlName: ref,
       displayName: image,
       sizeBytes: presence.sizeBytes,
-    }]);
+    })));
+    // Any ref removed means the image is gone from this node — the other
+    // aliases resolving to nothing afterwards is the expected outcome, not a
+    // failure worth logging.
+    //
+    // Bytes come from the NODE's own report for this image, not from
+    // result.freedBytes: the aliases all address one image, so summing per
+    // removed ref would count the same layers two or three times over.
     if (result.removedDisplayNames.length > 0) {
       reclaimedNodes.push(presence.node);
-      totalBytes += result.freedBytes;
+      totalBytes += presence.sizeBytes;
     }
     if (result.podError) errors.push(result.podError);
-    if (result.failedDisplayNames.length > 0) {
-      errors.push(`failed on ${presence.node}: ${result.failedDisplayNames.join(', ')}`);
+    if (result.removedDisplayNames.length === 0 && result.failedDisplayNames.length > 0) {
+      // Include the per-image cause the purge script reported. Without it the
+      // log row read "failed on <node>: <image>" and gave an operator nothing
+      // to act on — it could not distinguish "still referenced by a container"
+      // from "ref did not resolve" from "containerd was still settling".
+      // Dedupe: every alias shares one displayName, so an image with a tag AND
+      // a digest ref would otherwise be listed once per alias.
+      const detail = [...new Set(result.failedDisplayNames)]
+        .map(name => {
+          const cause = result.failureCauses[name];
+          return cause ? `${name} (${cause})` : name;
+        })
+        .join(', ');
+      errors.push(`failed on ${presence.node}: ${detail}`);
     }
   }
 

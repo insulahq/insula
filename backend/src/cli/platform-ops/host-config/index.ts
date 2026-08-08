@@ -6,7 +6,7 @@
  * host-config-desired ConfigMap via kubeconfig.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
@@ -332,13 +332,112 @@ function splitMigrationKey(key: string): { version: string; name: string } {
   return { version: key.slice(0, slash), name: key.slice(slash + 1) };
 }
 
-/** Build a contained marker path for a key, or null if it fails validation. */
-function migrationMarkerPath(key: string): string | null {
+/** Build a contained marker path for a key + suffix, or null if it fails validation. */
+function migrationMarkerPathFor(key: string, suffix: string): string | null {
   const { version, name } = splitMigrationKey(key);
   if (!hostMigrationValid({ version, name })) return null; // re-guard before any FS path
-  const full = join(HOST_MIGRATION_MARKER_ROOT, version, `${name}.done`);
+  const full = join(HOST_MIGRATION_MARKER_ROOT, version, `${name}${suffix}`);
   if (!full.startsWith(HOST_MIGRATION_MARKER_ROOT + '/')) return null;
   return full;
+}
+
+function migrationMarkerPath(key: string): string | null {
+  return migrationMarkerPathFor(key, '.done');
+}
+
+/**
+ * ADR-056 §2 — an operator-recorded skip. Deliberately a DIFFERENT file from
+ * `.done`: `touch`ing the done-marker (the only escape hatch before this) makes
+ * the node report `applied` for a script that never ran, which is a lie the next
+ * incident responder has to unpick. First line of the file is the reason.
+ */
+function migrationReadSkip(key: string): { reason: string } | null {
+  const p = migrationMarkerPathFor(key, '.skipped');
+  if (!p || !existsSync(p)) return null;
+  let reason = '';
+  try {
+    reason = (readFileSync(p, 'utf8').split('\n')[0] ?? '').trim();
+  } catch {
+    reason = '';
+  }
+  return { reason: reason || '(no reason recorded)' };
+}
+
+/**
+ * ADR-056 §3 — consecutive-failure bookkeeping, so a wedge escalates instead of
+ * repeating one identical line forever. DEV failed the same way for five weeks.
+ * Best-effort: bookkeeping must never itself fail a converge.
+ */
+function migrationNoteFailure(key: string): { attempt: number; failingSince: string } {
+  const fallback = { attempt: 1, failingSince: new Date().toISOString().slice(0, 10) };
+  const p = migrationMarkerPathFor(key, '.failing');
+  if (!p) return fallback;
+  let prev: { attempt?: number; failingSince?: string } = {};
+  try {
+    if (existsSync(p)) prev = JSON.parse(readFileSync(p, 'utf8')) as typeof prev;
+  } catch {
+    prev = {};
+  }
+  const next = {
+    attempt: typeof prev.attempt === 'number' && prev.attempt > 0 ? prev.attempt + 1 : 1,
+    failingSince: prev.failingSince ?? fallback.failingSince,
+  };
+  try {
+    mkdirSync(join(p, '..'), { recursive: true });
+    writeFileSync(p, JSON.stringify(next), { mode: 0o644 });
+  } catch {
+    /* bookkeeping is advisory — never fail the converge over it */
+  }
+  return next;
+}
+
+/**
+ * Node-local status file, written after every converge.
+ *
+ * The backend cannot read a node's filesystem and platform-ops cannot write
+ * cluster state from a worker (its kubeconfig is `get` on five ConfigMaps, and
+ * RBAC cannot scope `create` by resourceName — granting it would mean every
+ * worker could create any ConfigMap in platform-system). So the converge writes
+ * here, and the host-config-reconciler DaemonSet — which already runs on every
+ * node and already publishes its own per-node ConfigMap — relays it. No new
+ * privilege anywhere.
+ *
+ * Best-effort: reporting must never fail a converge.
+ */
+function writeHostMigrationStatusFile(result: HostMigrationResult): void {
+  try {
+    mkdirSync(HOST_MIGRATION_MARKER_ROOT, { recursive: true });
+    const doc = {
+      schema: 1,
+      collectedAt: new Date().toISOString(),
+      mode: result.mode,
+      source: result.source,
+      ok: result.ok,
+      appliedCount: result.appliedCount,
+      reason: result.reason ?? null,
+      items: result.items.map((i) => ({
+        key: i.key,
+        state: i.state,
+        error: i.error ?? null,
+        attempt: i.attempt ?? null,
+        failingSince: i.failingSince ?? null,
+        skipReason: i.skipReason ?? null,
+      })),
+    };
+    writeFileSync(join(HOST_MIGRATION_MARKER_ROOT, 'status.json'), JSON.stringify(doc), { mode: 0o644 });
+  } catch {
+    /* advisory — a converge must not fail because it could not report */
+  }
+}
+
+function migrationClearFailure(key: string): void {
+  const p = migrationMarkerPathFor(key, '.failing');
+  if (!p) return;
+  try {
+    if (existsSync(p)) rmSync(p);
+  } catch {
+    /* advisory */
+  }
 }
 
 function migrationIsApplied(key: string): boolean {
@@ -471,6 +570,9 @@ export function realHostMigrationDeps(
     readMode: () => readHostMigrationMode(env),
     isApplied: migrationIsApplied,
     markApplied: migrationMarkApplied,
+    readSkip: migrationReadSkip,
+    noteFailure: migrationNoteFailure,
+    clearFailure: migrationClearFailure,
     runScript: migrationRunScript,
     source: catalog.source,
   };
@@ -671,11 +773,17 @@ export function realHostConfigOps(env: NodeJS.ProcessEnv): HostConfigOps {
     async hostMigrations(opts) {
       const catalog = await loadHostMigrationCatalog(env);
       const hmDeps = realHostMigrationDeps(env, catalog);
-      if (catalog.source === 'absent') return runHostMigrations(null, false, hmDeps);
+      if (catalog.source === 'absent') {
+        const r = runHostMigrations(null, false, hmDeps);
+        writeHostMigrationStatusFile(r);
+        return r;
+      }
       // Same opt-in gating, against the host-migrations policy's own mode.
       const mode = await hmDeps.readMode();
       const enforcing = opts.apply || (!opts.dryRun && (mode ?? '').toLowerCase() === 'enforce');
-      return runHostMigrations(catalog.scripts, enforcing, hmDeps);
+      const result = runHostMigrations(catalog.scripts, enforcing, hmDeps);
+      writeHostMigrationStatusFile(result);
+      return result;
     },
     async ulimits(opts) {
       const desired = await ulimitDeps.readDesired();

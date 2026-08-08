@@ -204,16 +204,55 @@ login_token() {
     | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null
 }
 
+# Mint a FRESH token, ignoring INTEGRATION_TOKEN (which is what just expired).
+# `all` takes well over the token TTL end to end, so a single token minted at
+# startup dies partway through and every later call 401s. That cascade has
+# repeatedly masqueraded as product failures — "client create failed",
+# "ssl-status returned no listeners", "restore PATCH never returned 200" — and
+# in one case left the mail backup schedule pinned at */2 because the restore
+# PATCH could not authenticate.
+#
+# The refreshed token is ALSO written to a file because api()/api_raw() are
+# almost always invoked as `$(api ...)`, i.e. in a subshell — an assignment to
+# TOKEN there dies with the subshell, so without this every later call would
+# re-login. $$ is the top-level shell's PID even inside a subshell, so all
+# callers share one path. Removed by the EXIT trap.
+_TOKEN_CACHE="${TMPDIR:-/tmp}/.integration-staging-token.$$"
+_remint_token() {
+  local fresh
+  fresh=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["token"])' 2>/dev/null)
+  [[ -n "$fresh" ]] || return 1
+  TOKEN="$fresh"
+  export INTEGRATION_TOKEN="$fresh"
+  ( umask 077; printf '%s' "$fresh" > "$_TOKEN_CACHE" ) 2>/dev/null || true
+  return 0
+}
+
+_api_curl() {
+  local method="$1" path="$2" body="${3:-}" extra="${4:-}"
+  # Pick up a token refreshed by an earlier subshell.
+  if [[ -s "$_TOKEN_CACHE" ]]; then
+    local cached; cached=$(cat "$_TOKEN_CACHE" 2>/dev/null)
+    [[ -n "$cached" ]] && TOKEN="$cached"
+  fi
+  local args=(-sk -X "$method" "$ADMIN_HOST/api/v1$path" -H "Authorization: Bearer $TOKEN")
+  [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" -d "$body")
+  [[ -n "$extra" ]] && args+=(-w "\n%{http_code}")
+  curl "${args[@]}"
+}
+
 api() {
   local method="$1" path="$2" body="${3:-}"
-  if [[ -n "$body" ]]; then
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" -d "$body"
-  else
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN"
+  local out; out=$(_api_curl "$method" "$path" "$body")
+  # Re-mint ONCE on an expired token, then replay the call. Bounded to a single
+  # retry so a genuinely bad credential still fails fast instead of looping.
+  if [[ "$out" == *'"INVALID_TOKEN"'* ]] && _remint_token; then
+    out=$(_api_curl "$method" "$path" "$body")
   fi
+  printf '%s' "$out"
 }
 
 # Like api() but appends the HTTP status code on its OWN final line, so
@@ -223,16 +262,13 @@ api() {
 # shape is identical and only the status differentiates accept vs reject.
 api_raw() {
   local method="$1" path="$2" body="${3:-}"
-  if [[ -n "$body" ]]; then
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN" \
-      -H "Content-Type: application/json" -d "$body" \
-      -w "\n%{http_code}"
-  else
-    curl -sk -X "$method" "$ADMIN_HOST/api/v1$path" \
-      -H "Authorization: Bearer $TOKEN" \
-      -w "\n%{http_code}"
+  local out; out=$(_api_curl "$method" "$path" "$body" withcode)
+  # Same one-shot re-mint as api(): here the status code is the last line, so
+  # match on it directly rather than on the error body.
+  if [[ "$(printf '%s' "$out" | tail -1)" == "401" ]] && _remint_token; then
+    out=$(_api_curl "$method" "$path" "$body" withcode)
   fi
+  printf '%s' "$out"
 }
 
 ssh_cp() {
@@ -368,8 +404,22 @@ _ws_port_open() {
 # socket via bash /dev/tcp and returns the first line (the 220 greeting).
 # For implicit-TLS (465/993) callers use the openssl path instead.
 _ws_smtp_banner() {
-  local host="$1" port="$2"
-  timeout 10 bash -c 'exec 3<>/dev/tcp/'"$host"'/'"$port"'; head -1 <&3' 2>/dev/null || true
+  local host="$1" port="$2" out="" i=0
+  # RETRY: mail_tls fires ~16 connections at one IP inside ~6s (cert + SAN +
+  # banner across 25/465/587/993/4190). A mail server rate-limiting a burst
+  # like that is CORRECT behaviour, and it showed up as ~3 scattered failures
+  # per run — 587/san failing while 587/banner passed seconds later, 25/san
+  # passing while 25/banner failed. Nothing about the port or the path; purely
+  # how many connections had just been opened. These assertions ask whether the
+  # server PRESENTS a banner, not whether it survives a burst, so give a
+  # throttled connection a moment and ask again. A genuinely dead listener
+  # still fails, just 3 attempts later.
+  while [ $i -lt 3 ]; do
+    out=$(timeout 10 bash -c 'exec 3<>/dev/tcp/'"$host"'/'"$port"'; head -1 <&3' 2>/dev/null || true)
+    [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+    i=$((i+1)); sleep 3
+  done
+  printf '%s' "$out"
 }
 
 # Resolve the cluster's externally-routable mail IP without hardcoding.
@@ -444,7 +494,22 @@ _resolve_serving_mail_host() {
   local stalwart_ip
   stalwart_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
   if [[ -n "$stalwart_ip" ]]; then
-    candidates=$(printf '%s\n%s\n' "$candidates" "$stalwart_ip" | grep -vE '^$' | sort -u)
+    # ORDER MATTERS — put the active Stalwart node FIRST.
+    #
+    # This used to `sort -u` the merged list, which sorts numerically and threw
+    # away the very priority the stalwart_ip candidate exists to express. On a
+    # 4-node cluster the haproxy node 10.98.x.23 sorts ahead of the active node
+    # 10.98.x.98, so the sweep returned a haproxy front-end — precisely the node
+    # this helper's own comment calls out as prone to accept-then-drop while its
+    # Stalwart backend is mid-roll. The cert/banner probes then hit that node and
+    # reported "no SMTP 220 banner" against a perfectly healthy mail server
+    # (staging-all mail_tls 25/465/587, full run 2026-08-07).
+    #
+    # The active node serves the port DIRECTLY with no proxy hop, so prefer it
+    # and keep the DNS-resolved nodes as ordered fallbacks. Reachability THROUGH
+    # haproxy is integration-mail-external-reachability.sh's job; these probes
+    # are about what the mail server presents.
+    candidates=$(printf '%s\n%s\n' "$stalwart_ip" "$candidates" | grep -vE '^$' | awk '!seen[$0]++')
   fi
   local _try ip
   for _try in 1 2 3 4 5 6; do
@@ -476,7 +541,22 @@ _probe_tls_handshake() {
   # `</dev/null` so openssl exits after the handshake (no interactive
   # input). `2>&1` captures the cert chain block that openssl prints
   # to stderr.
-  echo | timeout 10 openssl "${args[@]}" 2>&1 || true
+  #
+  # RETRY for the same reason as _ws_smtp_banner: this scenario opens ~16
+  # connections at one IP in ~6s and a throttled one comes back with no
+  # certificate at all ("Didn't find STARTTLS in server response",
+  # "Ncat: Broken pipe") — indistinguishable from a broken listener until you
+  # notice the SAME port passed moments earlier. Retry only when the handshake
+  # produced no certificate; a real failure still fails.
+  local out="" i=0
+  while [ $i -lt 3 ]; do
+    out=$(echo | timeout 10 openssl "${args[@]}" 2>&1 || true)
+    if printf '%s' "$out" | grep -q 'BEGIN CERTIFICATE'; then
+      printf '%s' "$out"; return 0
+    fi
+    i=$((i+1)); sleep 3
+  done
+  printf '%s' "$out"
 }
 
 # Assert that the TLS cert served by (host, port, sni) names the
@@ -636,10 +716,35 @@ _assert_mail_forward_dns() {
     mdfail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"
     return 1
   fi
+  # Only GLOBALLY ROUTABLE addresses belong in public mail DNS. InternalIP on a
+  # dual-stack cluster is commonly RFC1918 v4 plus a ULA v6 (fd00::/8) — see the
+  # dual-stack pod/node addressing scheme — and publishing either as an A/AAAA
+  # for a mail host is actively harmful: a sender would try an address that
+  # cannot be reached from the internet. Demanding they appear in DNS made this
+  # assertion permanently red on any private-apex cluster while asserting
+  # something we would never want to be true.
+  local routable_ips=""
+  while IFS= read -r ip; do
+    [[ -z "$ip" ]] && continue
+    case "$ip" in
+      10.*|127.*|169.254.*|192.168.*) continue ;;                 # RFC1918 / loopback / link-local v4
+      172.1[6-9].*|172.2[0-9].*|172.3[01].*) continue ;;          # 172.16/12
+      [fF][cCdD]*:*) continue ;;                                  # ULA fc00::/7
+      [fF][eE]8*:*|[fF][eE]9*:*|[fF][eE][aA]*:*|[fF][eE][bB]*:*) continue ;;  # link-local fe80::/10
+      ::1) continue ;;
+    esac
+    routable_ips+="${ip}"$'\n'
+  done <<<"$cluster_ips"
+  routable_ips=$(printf '%s' "$routable_ips" | grep -vE '^$' | sort -u || true)
   if [[ -z "$cluster_ips" ]]; then
     log "mail-dns/forward: ${hostname} → ${dns_all//$'\n'/, } (no server-role node IPs discoverable via kubectl — skipping subset check)"
     return 0
   fi
+  if [[ -z "$routable_ips" ]]; then
+    warn "mail-dns/forward: no server-role node has a globally-routable address (cluster:${cluster_ips//$'\n'/,}) — a private-apex/lab cluster cannot publish deliverable mail DNS; asserted in full on a public-IP cluster"
+    return 0
+  fi
+  cluster_ips="$routable_ips"
   # Every cluster IP must appear in DNS.
   local missing=""
   while IFS= read -r ip; do
@@ -683,9 +788,19 @@ _assert_mail_reverse_dns() {
     mdfail "mail-dns/reverse: no mail IPs resolvable (DNS + kubectl both empty); cannot run PTR checks"
     return 1
   fi
-  local checked=0
+  local checked=0 skipped_private=0
   while IFS= read -r ip; do
     [[ -z "$ip" ]] && continue
+    # FCrDNS is only meaningful for a globally-routable address: nobody
+    # delegates in-addr.arpa / ip6.arpa for RFC1918 or ULA space, so demanding
+    # a matching PTR there fails an assertion that could never hold. Same
+    # reasoning as the forward check above.
+    case "$ip" in
+      10.*|127.*|169.254.*|192.168.*|::1) skipped_private=$((skipped_private+1)); continue ;;
+      172.1[6-9].*|172.2[0-9].*|172.3[01].*) skipped_private=$((skipped_private+1)); continue ;;
+      [fF][cCdD]*:*) skipped_private=$((skipped_private+1)); continue ;;
+      [fF][eE]8*:*|[fF][eE]9*:*|[fF][eE][aA]*:*|[fF][eE][bB]*:*) skipped_private=$((skipped_private+1)); continue ;;
+    esac
     checked=$((checked + 1))
     local ptr
     ptr=$(_ws_resolve_ptr "$ip" | head -1 | sed 's/\.$//' || true)
@@ -708,7 +823,7 @@ _assert_mail_reverse_dns() {
       fi
     fi
   done <<<"$ips"
-  log "mail-dns/reverse: ${checked} IP(s) checked"
+  log "mail-dns/reverse: ${checked} IP(s) checked$([[ $skipped_private -gt 0 ]] && echo ", ${skipped_private} non-routable IP(s) skipped (no public PTR delegation for RFC1918/ULA)")"
 }
 
 # Assert that no mail-serving IP is on a major DNSBL. DNSBL queries
@@ -1174,20 +1289,36 @@ scenario_https() {
   #    after the Certificate CR reaches Ready, ingress-nginx needs a
   #    few seconds to re-load its TLS config from the new secret. The
   #    cert IS issued; we're just waiting for the data plane to catch up.
-  local subject="" matched=0
-  local i=0
+  # Match on the SUBJECT ALTERNATIVE NAME, with CN only as a legacy fallback —
+  # the same order assert_cert_covers_host() above already uses. CN-based
+  # hostname validation was deprecated by RFC 6125 and dropped by Chrome in
+  # 2017, and issuers increasingly emit an EMPTY subject with the hostnames
+  # only in the SAN. Pebble (the ACME server the VM tier uses for its private
+  # apex) does exactly that, so `grep CN=$domain` could never match there and
+  # reported a mismatch against a perfectly valid certificate.
+  local names="" matched=0 i=0
   while (( i < 60 )); do
-    subject=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null \
-      | openssl x509 -noout -subject 2>/dev/null)
-    if echo "$subject" | grep -q "CN=$domain"; then
-      matched=1; break
+    local pem
+    pem=$(echo | openssl s_client -servername "$domain" -connect "$domain:443" 2>/dev/null)
+    if [[ -n "$pem" ]]; then
+      names=$(printf '%s' "$pem" | openssl x509 -noout -ext subjectAltName 2>/dev/null \
+              | grep -oE 'DNS:[^,]+' | sed 's/^DNS://; s/[[:space:]]*//g')
+      names+=$'\n'$(printf '%s' "$pem" | openssl x509 -noout -subject 2>/dev/null \
+              | sed -nE 's/.*CN[[:space:]]*=[[:space:]]*([^,/]+).*/\1/p' | tr -d ' ')
+      while IFS= read -r n; do
+        [[ -z "$n" ]] && continue
+        if [[ "$n" == "$domain" ]] || { [[ "$n" == "*."* ]] && [[ "${domain#*.}" == "${n#\*.}" ]]; }; then
+          matched=1; break
+        fi
+      done <<< "$names"
     fi
+    (( matched )) && break
     sleep 4; i=$((i+4))
   done
   if (( matched )); then
-    ok "TLS cert subject CN matches host (after ${i}s): $subject"
+    ok "TLS cert covers host $domain (after ${i}s): $(printf '%s' "$names" | tr '\n' ' ' | sed 's/ *$//')"
   else
-    fail "TLS cert subject does NOT match $domain after 60s — got: ${subject:-<no cert>}"
+    fail "TLS cert does NOT cover $domain after 60s — cert names: ${names:-<no cert>}"
     return 1
   fi
 
@@ -2969,6 +3100,9 @@ except Exception as e:
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
+  # Token cache written by _remint_token — a bearer token on tmpfs must not
+  # outlive the run.
+  rm -f "${_TOKEN_CACHE:-}" 2>/dev/null || true
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null || true)
   if [[ -n "$cid" ]]; then
     log "cleanup: deleting test client $cid"
@@ -3132,6 +3266,13 @@ scenario_stalwart_webadmin_auth() {
   # every operator on staging/prod. Non-destructive (read-only HTTP). Delegates
   # to the standalone suite (which also runs by hand / in `all`).
   local rc=0
+  # script_dir is `local` to scenario_system_backup — referencing it here left
+  # it UNBOUND, and `set -u` then killed the whole suite at this last scenario.
+  # staging-all could therefore never exit 0 no matter how many scenarios
+  # passed: the same "line NNNN: script_dir: unbound variable" abort appears in
+  # every historical run. Declare it here too.
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   API_URL="$ADMIN_HOST" ADMIN_EMAIL="$ADMIN_EMAIL" ADMIN_PASSWORD="$ADMIN_PASSWORD" \
     bash "$script_dir/integration-stalwart-webadmin-auth.sh" || rc=$?
   case "$rc" in
@@ -3150,6 +3291,17 @@ scenario_mail_tls() {
     log "scenario mail_tls skipped — SKIP_MAIL_SCENARIO=1"
     return 0
   fi
+
+  # Re-arm the allowlist BEFORE probing. This scenario opens ~6 ports in quick
+  # succession (25/465/587/993/4190 + banner + EHLO), which is exactly the
+  # shape Stalwart's portScanning heuristic bans on. The preceding `mail`
+  # scenario's SMTP/IMAP traffic can also earn the ban. The plain call is
+  # memoised for the whole run, so a ban acquired AFTER that first call was
+  # never cleared and every probe here accept-then-dropped: no 220 banner and
+  # "Didn't find STARTTLS in server response" against a healthy server.
+  # "force" re-runs the ban check + reload; it is a cheap no-op (2 JMAP gets,
+  # no recycle) when the entry survived and the IP is not banned.
+  _mail_allowlist_harness_ip force
 
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   # Mail hostname: read the LIVE value from /admin/webmail-settings so
@@ -3194,12 +3346,22 @@ scenario_mail_tls() {
   #       would reject on hostname mismatch in real traffic. ──
   for port in 465 993; do
     local out; out=$(_probe_tls_handshake "$mail_host" "$port" "$mail_hostname")
-    if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
-      ok "mail-tls/${port}: serves LE-issued cert (SNI=${mail_hostname})"
-    elif echo "$out" | grep -qE "rcgen self signed cert|self-signed"; then
+    # Read the ISSUER line only. The previous test grepped the whole handshake
+    # for "Let's Encrypt|R10|R11|E5|E6|E7|E8" — but _probe_tls_handshake passes
+    # -showcerts, so the output carries the full base64 PEM chain and those
+    # two-character needles match random base64 constantly. The assertion was
+    # therefore passing by ACCIDENT rather than because a Let's Encrypt cert
+    # was served, and would flip to failing whenever the encoding happened not
+    # to contain them. Hardcoding LE was also wrong on any cluster using a
+    # different ACME endpoint (the VM tier's Pebble).
+    local issuer
+    issuer=$(echo "$out" | sed -nE 's/^[[:space:]]*(issuer=|Issuer: )//p' | head -1 | sed 's/^ *//; s/ *$//')
+    if echo "$out" | grep -qEi "rcgen self signed cert|self-signed certificate"; then
       fail "mail-tls/${port}: serving rcgen self-signed cert — Stalwart-managed ACME has not issued a real cert yet for ${mail_hostname}"
+    elif [[ -n "$issuer" ]]; then
+      ok "mail-tls/${port}: serves CA-issued cert (issuer=${issuer}, SNI=${mail_hostname})"
     else
-      fail "mail-tls/${port}: openssl handshake unexpected output: $(echo "$out" | grep -E 'subject=|issuer=|verify' | head -3)"
+      fail "mail-tls/${port}: openssl handshake produced no issuer: $(echo "$out" | grep -E 'subject=|issuer=|verify|error' | head -3)"
     fi
     # CN/SAN match — independent assertion so we know whether the cert
     # the server returned actually covers the hostname we asked for.
@@ -3212,10 +3374,18 @@ scenario_mail_tls() {
     [[ "$port" == "4190" ]] && proto="sieve"
     local out
     out=$(_probe_tls_handshake "$mail_host" "$port" "$mail_hostname" "$proto")
-    if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
-      ok "mail-tls/${port}: STARTTLS upgrade → LE cert"
-    elif echo "$out" | grep -qE "rcgen self signed cert"; then
+    # Issuer line only — same reasoning as the 465/993 loop above. Grepping the
+    # whole -showcerts output for "R10|R11|E5|…" matched random base64 in the
+    # PEM chain, so this branch was passing by accident rather than because a
+    # Let's Encrypt cert was served (it still printed "→ LE cert" against a
+    # Pebble-issued one). Assert a real CA instead; the /san assertion below
+    # already proves the cert covers the hostname.
+    local st_issuer
+    st_issuer=$(echo "$out" | sed -nE 's/^[[:space:]]*(issuer=|Issuer: )//p' | head -1 | sed 's/^ *//; s/ *$//')
+    if echo "$out" | grep -qE "rcgen self signed cert"; then
       fail "mail-tls/${port}: STARTTLS upgrade → rcgen self-signed (cert not provisioned)"
+    elif [[ -n "$st_issuer" ]]; then
+      ok "mail-tls/${port}: STARTTLS upgrade → CA-issued cert (issuer=${st_issuer})"
     elif echo "$out" | grep -q "didn't found starttls"; then
       # openssl <1.1.1 doesn't know `-starttls sieve`; accept implicit
       # ports as the canonical check.
@@ -3290,13 +3460,41 @@ scenario_mail_tls() {
   # ── 4. admin SSL-status endpoint round-trip ──
   local resp; resp=$(api GET "/admin/email-settings/ssl-status")
   if echo "$resp" | grep -q '"listeners"'; then
-    local le_count
-    le_count=$(echo "$resp" \
-      | python3 -c "import json,sys; d=json.load(sys.stdin); print(sum(1 for l in d.get('data',{}).get('listeners',[]) if (l.get('cert') or {}).get('issuer','').lower().find('encrypt') >= 0))" 2>/dev/null || echo 0)
-    if (( le_count >= 4 )); then
-      ok "mail-tls/api: GET /admin/email-settings/ssl-status — ${le_count} listeners serving LE cert"
+    # What matters is that each listener serves a CA-issued certificate that
+    # COVERS the mail hostname — not who the CA happens to be. The old check
+    # searched the issuer string for "encrypt", i.e. it demanded Let's Encrypt
+    # specifically, so it scored 0/4 on any cluster using a different ACME
+    # endpoint (the VM tier's Pebble: `CN=Pebble Intermediate CA …`) even
+    # though every listener was serving a perfectly valid cert with the right
+    # SAN. Assert the substance instead: an issuer exists, it is not the
+    # self-signed placeholder Stalwart serves before issuance, and the SAN
+    # covers the mail host.
+    local ok_count
+    ok_count=$(echo "$resp" | MAIL_HOST="$mail_hostname" python3 -c '
+import json, os, sys
+host = os.environ["MAIL_HOST"]
+def covers(name):
+    if name == host:
+        return True
+    return name.startswith("*.") and host.endswith(name[1:]) and host.count(".") == name.count(".")
+n = 0
+for l in json.load(sys.stdin).get("data", {}).get("listeners", []):
+    cert = l.get("cert") or {}
+    issuer = (cert.get("issuer") or "").strip()
+    sans = cert.get("subjectAlternativeNames") or []
+    if not issuer or "self-signed" in issuer.lower() or "self signed" in issuer.lower():
+        continue
+    # A self-issued placeholder names itself as its own issuer.
+    if issuer == (cert.get("subject") or "").strip() and issuer:
+        continue
+    if any(covers(s) for s in sans):
+        n += 1
+print(n)
+' 2>/dev/null || echo 0)
+    if (( ok_count >= 4 )); then
+      ok "mail-tls/api: GET /admin/email-settings/ssl-status — ${ok_count} listeners serving a CA-issued cert covering ${mail_hostname}"
     else
-      fail "mail-tls/api: only ${le_count} listeners serving LE cert (expected ≥4); resp head: $(echo "$resp" | head -c 400)"
+      fail "mail-tls/api: only ${ok_count} listeners serve a CA-issued cert covering ${mail_hostname} (expected ≥4); resp head: $(echo "$resp" | head -c 400)"
     fi
   else
     fail "mail-tls/api: ssl-status endpoint returned no listeners: $(echo "$resp" | head -c 300)"
@@ -3331,10 +3529,21 @@ scenario_webmail() {
   cert_out=$(echo | timeout 8 openssl s_client \
     -connect "${webmail_host}:443" \
     -servername "${webmail_host}" 2>&1)
-  if echo "$cert_out" | grep -qE "Let's Encrypt|R10|R11|R12|R13|E5|E6|E7|E8"; then
-    ok "webmail/cert: ${webmail_host}:443 serves LE cert"
-  elif echo "$cert_out" | grep -qE "Kubernetes Ingress Controller Fake Certificate|ingress.local"; then
+  # Assert a real CA, not Let's Encrypt by name. The old test grepped for
+  # "Let's Encrypt|R10|R11|R12|R13|E5|E6|E7|E8", so it failed on every cluster
+  # using a different ACME endpoint — the VM tier's Pebble issues
+  # `CN=Pebble Intermediate CA ...`, which matches none of those — and reported
+  # "unexpected handshake: verify return:1", i.e. it called a SUCCESSFUL
+  # verification unexpected. What matters is that the host serves a CA-issued
+  # cert and specifically NOT the ingress placeholder, which the elif below
+  # still catches. Same change already applied to mail-tls/465,993,
+  # mail-tls/api and webmail/ssl-status.
+  local wm_issuer
+  wm_issuer=$(echo "$cert_out" | sed -nE 's/^[[:space:]]*issuer=//p' | head -1 | sed 's/^ *//; s/ *$//')
+  if echo "$cert_out" | grep -qE "Kubernetes Ingress Controller Fake Certificate|ingress.local"; then
     fail "webmail/cert: ${webmail_host}:443 is serving the nginx-ingress fake cert — Cert CR missing/broken (regression of the 2026-05-07 fix)"
+  elif [[ -n "$wm_issuer" ]] && ! echo "$wm_issuer" | grep -qiE 'self.?signed'; then
+    ok "webmail/cert: ${webmail_host}:443 serves a CA-issued cert (issuer=${wm_issuer})"
   else
     fail "webmail/cert: ${webmail_host}:443 unexpected handshake: $(echo "$cert_out" | grep -E 'subject=|issuer=|verify' | head -3)"
   fi
@@ -3370,10 +3579,18 @@ for l in d.get('data',{}).get('listeners',[]):
 " 2>/dev/null)
     wm_connected=$(echo "$wm_issuer" | awk -F'|' '{gsub(/ /,"",$2); print $2}')
     wm_issuer=$(echo "$wm_issuer" | awk -F'|' '{print $1}')
-    if [[ "$wm_connected" == "true" ]] && echo "$wm_issuer" | grep -qi "encrypt"; then
-      ok "webmail/ssl-status: webmail-https row → connected=true, LE issuer (${wm_issuer})"
+    # Accept ANY real CA, not Let's Encrypt by name. `grep -qi encrypt` failed
+    # on every cluster using a different ACME endpoint (the VM tier's Pebble:
+    # `CN=Pebble Intermediate CA ...`) even though the row reported
+    # connected=true with a perfectly good issuer. What matters is that the
+    # listener is connected and is NOT serving the self-signed placeholder.
+    # Same reasoning as the mail-tls/api check above.
+    local wm_issuer_lc; wm_issuer_lc=$(printf '%s' "$wm_issuer" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    if [[ "$wm_connected" == "true" && -n "$wm_issuer_lc" ]] \
+       && [[ "$wm_issuer_lc" != *"selfsigned"* && "$wm_issuer_lc" != *"self-signed"* ]]; then
+      ok "webmail/ssl-status: webmail-https row → connected=true, CA-issued cert (${wm_issuer})"
     else
-      fail "webmail/ssl-status: webmail row connected=${wm_connected} issuer=${wm_issuer}"
+      fail "webmail/ssl-status: webmail row connected=${wm_connected} issuer=${wm_issuer:-<none>} (expected connected=true with a CA-issued cert)"
     fi
   else
     fail "webmail/ssl-status: response missing webmail-https listener row"

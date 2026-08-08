@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # smoke-test-cluster-network.sh — cluster-level network smoke suite.
 #
-# Six tests, run in sequence. Each prints PASS or FAIL + diagnostic.
+# Ten tests, run in sequence. Each prints PASS or FAIL + diagnostic.
 # Designed for forensic comparison: same input → same output ordering →
 # trivial diffability across runs (PRE-wipe vs POST-wipe).
 #
@@ -37,6 +37,11 @@
 #      but pods don't actually schedule on a third node.
 #   9) CNPG Cluster reports ready + matches expected instance
 #      count for the current tier (1 for local, 3 for ha).
+#  10) Published AAAA records match the cluster's actual IP stack.
+#      Publishing AAAA on a single-stack cluster gives every
+#      v6-preferring client a connection reset + silent v4 fallback —
+#      invisible in every other check, and how the testing box ran for
+#      months. On a dual-stack cluster the AAAA must also SERVE.
 #
 # Usage:
 #   ./scripts/smoke-test-cluster-network.sh                        # human output
@@ -706,6 +711,91 @@ test_9_cnpg_cluster() {
   fi
 }
 
+# ─ test 10: published AAAA vs the cluster's actual IP stack ────────
+#
+# The failure this exists for: the testing box published AAAA on the apex and
+# every subdomain for MONTHS while the cluster was single-stack. Nothing was
+# listening on IPv6, so every v6-capable client — which is most of them, and
+# they PREFER v6 — got a TCP RST in ~8ms and silently fell back to IPv4. It
+# never showed up in any check because the v4 path was perfect, and a fallback
+# is invisible unless you look for it.
+#
+# Both directions are wrong and both are checked:
+#   single-stack + AAAA  → FAIL. Publishing an address nothing answers on.
+#   dual-stack   + AAAA  → the AAAA must actually SERVE, not merely resolve.
+#                          A stale AAAA pointing at a decommissioned node is
+#                          the same user-visible outage with a different cause.
+#   dual-stack   + none  → INFO. Working v6 that no client can discover; not a
+#                          fault, but worth saying out loud on a cluster the
+#                          operator built dual-stack on purpose.
+# Real AAAA records only.
+#
+# `getent ahostsv6` is NOT a AAAA lookup — glibc applies AI_V4MAPPED, so a host
+# with only an A record comes back as `::ffff:10.0.0.5` and reads as "publishes
+# AAAA". On a single-stack cluster that would fire this test's FAIL branch for
+# EVERY hostname, which is worse than the bug the test exists to catch. Caught
+# on the first live run of this test, 2026-08-06.
+#
+# Prefer a real DNS query (dig/host); fall back to getent with the v4-mapped
+# forms stripped — `::ffff:a.b.c.d` and the all-hex `::ffff:0:0` variants.
+resolve_aaaa() {
+  local host="$1" out=""
+  if command -v dig >/dev/null 2>&1; then
+    out=$(dig +short +time=3 +tries=1 AAAA "$host" 2>/dev/null | grep ':')
+  elif command -v host >/dev/null 2>&1; then
+    out=$(host -t AAAA "$host" 2>/dev/null | awk '/has IPv6 address/ {print $NF}')
+  else
+    out=$(getent ahostsv6 "$host" 2>/dev/null | awk '{print $1}' \
+          | grep -viE '^::ffff:' | grep ':')
+  fi
+  printf '%s' "$(echo "$out" | grep -v '^$' | sort -u | head -4 | tr '\n' ' ' | sed 's/ $//')"
+}
+
+test_10_aaaa_vs_stack() {
+  if skipped 10; then emit "test10.aaaa_vs_stack" SKIP "skipped"; return; fi
+
+  # Dual-stack is a property of the CLUSTER, and the authoritative signal is
+  # what k3s assigned: a v6 slice in spec.podCIDRs. Node addresses alone would
+  # be ambiguous (a host can carry a v6 address on a single-stack cluster —
+  # that is precisely the testing-box situation).
+  local pod_cidrs dual_stack=no
+  pod_cidrs=$(kubectl get nodes -o jsonpath='{range .items[*]}{.spec.podCIDRs}{"\n"}{end}' 2>/dev/null) || {
+    emit "test10.aaaa_vs_stack" FAIL "kubectl get nodes failed (check kubeconfig)"; return; }
+  [[ "$pod_cidrs" == *:* ]] && dual_stack=yes
+  emit "test10.stack" INFO "cluster dual-stack=${dual_stack}"
+
+  IFS=',' read -ra HN10 <<< "$HOSTNAMES"
+  for host in "${HN10[@]}"; do
+    [[ -n "$host" ]] || continue
+    local aaaa
+    aaaa=$(resolve_aaaa "$host")
+    if [[ -z "$aaaa" ]]; then
+      if [[ "$dual_stack" == yes ]]; then
+        emit "test10.${host}" INFO "cluster serves IPv6 but ${host} publishes no AAAA — v6 clients can't reach it"
+      else
+        emit "test10.${host}" PASS "no AAAA, single-stack cluster — consistent"
+      fi
+      continue
+    fi
+    if [[ "$dual_stack" != yes ]]; then
+      emit "test10.${host}" FAIL "publishes AAAA (${aaaa}) but the cluster is SINGLE-STACK — v6-preferring clients get a connection reset and silently fall back"
+      continue
+    fi
+    # Dual-stack + AAAA: prove each published address actually serves.
+    local bad=""
+    for a6 in $aaaa; do
+      local code
+      code=$(curl -sk -o /dev/null -w '%{http_code}' --resolve "${host}:443:${a6}" -m 12 "https://${host}/" 2>/dev/null || echo 000)
+      [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]] || bad="${bad} ${a6}=>${code}"
+    done
+    if [[ -z "$bad" ]]; then
+      emit "test10.${host}" PASS "AAAA ${aaaa} — all serve over IPv6"
+    else
+      emit "test10.${host}" FAIL "AAAA published but not serving:${bad}"
+    fi
+  done
+}
+
 # ─ run ──────────────────────────────────────────────────────────────
 emit "run.start" INFO "run_id=$RUN_ID hostnames=$HOSTNAMES skip=${SKIP:-none}"
 test_1_external_ips
@@ -717,6 +807,7 @@ test_6_felix_logs
 test_7_cert_ready
 test_8_ha_deployments
 test_9_cnpg_cluster
+test_10_aaaa_vs_stack
 
 emit "run.summary" INFO "PASS=$PASS FAIL=$FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

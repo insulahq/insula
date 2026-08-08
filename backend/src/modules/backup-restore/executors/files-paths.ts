@@ -47,6 +47,7 @@ import {
   createResticCredsSecret,
   wireSecretOwnerRef,
 } from '../../tenant-bundles/components/files.js';
+import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 interface Selector {
   kind: 'full' | 'paths';
@@ -55,7 +56,9 @@ interface Selector {
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const JOB_DEADLINE_BUFFER_SEC = 60;
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+// Resolved through the shared table so an operator CAN repoint it — this was
+// a bare literal with no env read in six modules (see shared/platform-images.ts).
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 const CREDS_MOUNT_PATH = '/var/run/restic-creds';
 const RESTIC_SNAPSHOT_ID_RE = /^[0-9a-f]{8,64}$/;
 const RESTORE_TMP = '/restore-tmp';

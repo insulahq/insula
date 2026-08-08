@@ -24,6 +24,14 @@ export const clusterNodeSchema = z.object({
   canHostTenantWorkloads: z.boolean(),
   ingressMode: nodeIngressModeSchema,
   publicIp: z.string().nullable(),
+  /**
+   * The node's global IPv6 ExternalIP. Null on single-stack clusters and on
+   * dual-stack nodes with no globally-routable v6 — bootstrap deliberately
+   * never publishes a ULA as an ExternalIP, so "no v6 here" is a real answer
+   * rather than a missing one. This is the value an operator needs in order to
+   * set `ingress_default_ipv6` (which drives every apex AAAA record).
+   */
+  publicIpv6: z.string().nullable().optional(),
   kubeletVersion: z.string().nullable(),
   k3sVersion: z.string().nullable(),
   cpuMillicores: z.number().nullable(),

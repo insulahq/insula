@@ -150,6 +150,16 @@ TENANT_ID=$(printf '%s' "$BODY"|jq -r '.data.id')
 api POST "/admin/tenants/$TENANT_ID/provision" '{}' "$TOKEN" >/dev/null 2>&1 || true
 st=""; for i in $(seq 1 80); do st=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.status'); [[ "$st" == active ]] && break; sleep 3; done
 [[ "$st" == active ]] || { no "tenant not active ($st)"; exit 1; }
+# ADR-036 subscription gate (migration 0078, shipped 2026-07-30 in 6ac21ae7):
+# custom containers are DENIED unless the tenant's plan allows them or a
+# per-tenant override is set — otherwise POST /custom-deployments returns
+# 403 CUSTOM_CONTAINERS_NOT_IN_PLAN and the WORKLOAD-redeploy leg below can
+# never be seeded. Use the PER-TENANT override (not a plan edit) so no shared
+# plan is mutated for the other suites sharing this cluster. Request key is
+# snake_case, matching scripts/integration-custom-deployments.sh.
+if ! api PATCH "/tenants/$TENANT_ID" '{"allow_custom_containers_override":true}' "$TOKEN" >/dev/null 2>&1; then
+  echo "  ! could not set allow_custom_containers_override on $TENANT_ID — the workload leg will 403"
+fi
 NS=$(api GET "/tenants/$TENANT_ID" '' "$TOKEN"|sed '$d'|jq -r '.data.kubernetesNamespace')
 ok "tenant=$TENANT_ID ns=$NS active"
 
@@ -186,8 +196,16 @@ ok "seeded mailbox $TEST_ADDR ($SEED messages)"
 # WORKLOAD-redeploy path is exercised end-to-end (config captures the deployments
 # row + customSpec; the recover re-deploys it into the re-created namespace).
 WLNAME="drwl-$STAMP"
-WLID=$(api POST "/tenants/$TENANT_ID/custom-deployments" "{\"mode\":\"simple\",\"name\":\"$WLNAME\",\"image\":\"nginx:1.27-alpine\",\"ports\":[{\"containerPort\":80,\"name\":\"http\",\"protocol\":\"TCP\",\"exposeAsService\":true,\"ingressEligible\":true}]}" "$TOKEN"|sed '$d'|jq -r '.data.id // empty')
-[[ -n "$WLID" && "$WLID" != null ]] || { no "workload create failed"; exit 1; }
+# Keep the raw response: a bare "workload create failed" is unactionable, and
+# this call has several plausible non-obvious rejections (subscription gate on
+# custom containers, ResourceQuota too small for the image's requests, image
+# policy). Echo the envelope's error code/message on failure.
+WL_RESP=$(api POST "/tenants/$TENANT_ID/custom-deployments" "{\"mode\":\"simple\",\"name\":\"$WLNAME\",\"image\":\"nginx:1.27-alpine\",\"ports\":[{\"containerPort\":80,\"name\":\"http\",\"protocol\":\"TCP\",\"exposeAsService\":true,\"ingressEligible\":true}]}" "$TOKEN")
+WL_CODE=$(printf '%s' "$WL_RESP"|tail -1)
+WLID=$(printf '%s' "$WL_RESP"|sed '$d'|jq -r '.data.id // empty')
+[[ -n "$WLID" && "$WLID" != null ]] || {
+  no "workload create failed (HTTP $WL_CODE): $(printf '%s' "$WL_RESP"|sed '$d'|jq -c '.error // .' 2>/dev/null|head -c 400)"
+  exit 1; }
 wait_wl_pod "$WLNAME" && ok "seeded workload $WLNAME (nginx pod Running)" || { no "workload pod never Running before capture"; exit 1; }
 # Attach a registry pull credential so the config capture/restore of the
 # envelope-encrypted PAT (custom_deployment_image_credentials) is exercised.

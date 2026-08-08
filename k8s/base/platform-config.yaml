@@ -13,7 +13,31 @@ data:
   # Ingress / TLS — overlays MUST patch these with real values.
   ingress-base-domain: "${DOMAIN}"
   ingress-default-ipv4: ""
-  cluster-issuer-name: "letsencrypt-prod-http01"
+  # Resolved by Flux postBuild.substituteFrom (ConfigMap/platform-cluster-config,
+  # key CLUSTER_ISSUER_NAME, written by bootstrap.sh from --cluster-issuer /
+  # --acme-server / the per-env default).
+  #
+  # MUST be the bare `${VAR}` form — NOT `${VAR:=default}`. Two different
+  # substitution engines render these manifests and only one understands
+  # defaults:
+  #   * Flux postBuild  → drone/envsubst, supports ${VAR:=default}
+  #   * bootstrap.sh    → GNU envsubst with an explicit token whitelist
+  #                       (`envsubst '${DOMAIN} ${STALWART_EXTERNAL_IP}
+  #                       ${CLUSTER_ISSUER_NAME}'`), which matches that exact
+  #                       token and passes anything else through UNTOUCHED.
+  # A `:=` default therefore survives bootstrap as the literal string
+  # "${CLUSTER_ISSUER_NAME:=letsencrypt-prod-http01}", which lands in
+  # issuerRef.name and silently breaks any Certificate applied on that path —
+  # observed on a fresh install 2026-08-07: stalwart-webadmin never issued and
+  # Bulwark's JMAP passthrough 500'd. Both engines handle the bare form, and
+  # bootstrap always exports the variable, so the bare form is the safe one.
+  #
+  # This MUST NOT be a literal. A hardcoded `letsencrypt-prod-http01` here made
+  # Flux revert any runtime issuer change on every reconcile — so clusters on a
+  # private apex (VM integration tier, air-gapped installs) had their certs
+  # silently re-pointed at real Let's Encrypt mid-run, where HTTP-01 can never
+  # validate, and every TLS-dependent flow failed with the Traefik default cert.
+  cluster-issuer-name: "${CLUSTER_ISSUER_NAME}"
 
   # Storage — Longhorn is the default; dev overlay can override to local-path.
   default-storage-class: "longhorn"
@@ -33,6 +57,15 @@ data:
   # pull from a real registry.
   file-manager-image: "file-manager:latest"
 
+  # Mail-archive checkpoint binary (initContainer #1 of the no_downtime archive
+  # path — DEFAULT_ARCHIVE_MODE, so it runs on every operator-triggered archive).
+  # This base value is the DinD/local default (bare name, imported into DinD
+  # containerd). Real clusters get an IMMUTABLE `:<tag>@sha256:<digest>` written
+  # into the development overlay by the image's own CI
+  # (.github/scripts/pin-config-image.sh, after the push). The digest is what
+  # containerd resolves; the tag is a readable label.
+  rocksdb-secondary-checkpoint-image: "rocksdb-secondary-checkpoint:latest"
+
   # Private Worker — per-tenant tunnel agent the tenant runs at home.
   # tunnel-base-url is the dial-in FQDN. Cluster-side frps image is the
   # upstream frp server; agent docker image is what tenants run at home.
@@ -41,3 +74,14 @@ data:
   tunnel-base-url: "wss://tunnels.${DOMAIN}"
   private-worker-frps-image: "fatedier/frps:v0.70.0"
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
+
+  # Platform-owned images the BACKEND launches at runtime (Jobs/initContainers).
+  # They never appear in a k8s manifest, so the kustomization `images:`
+  # transformer cannot reach them — each is pinned to an immutable
+  # `:<tag>@sha256:<digest>` in the development overlay by its OWN build workflow
+  # (.github/scripts/pin-config-image.sh). These base values are the fallback for
+  # environments with no such pin; see backend/src/shared/platform-images.ts.
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:latest"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:latest"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:latest"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:latest"

@@ -157,6 +157,24 @@ eval "$("$HERE/net-services.sh" "$RUN" "$APEX" "$OCTET" \
 # --acme-server (Pebble). Export so it's inherited.
 export VMTEST_PEBBLE_IP VMTEST_DNS_IP VMTEST_MINIO_IP
 
+# Point Stalwart's MAIL certificate at Pebble too, at BOOTSTRAP time.
+#
+# It has to be here and nowhere later: AcmeProvider.directory is READ-ONLY once
+# created, and the provider cannot be deleted once a Domain links to it, so there
+# is no way to repoint a running cluster. Without this the tier asks PUBLIC Let's
+# Encrypt to validate a private apex, LE returns NXDOMAIN forever, and the mail
+# listener serves a self-signed cert — which is why every mail-TLS assertion on
+# this tier was untestable. Trust + reachability for that CA are wired
+# post-bootstrap (Secret + `pebble` Service below, egress via the
+# stalwart-extra-ca component).
+if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
+  case " ${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} " in
+    *" --stalwart-acme-directory "*) : ;;
+    *) VMTEST_BOOTSTRAP_EXTRA_ARGS="${VMTEST_BOOTSTRAP_EXTRA_ARGS:-} --stalwart-acme-directory https://pebble:14000/dir" ;;
+  esac
+  export VMTEST_BOOTSTRAP_EXTRA_ARGS
+fi
+
 # 2) spawn + bootstrap the (heterogeneous) cluster; capture the OS assignment+seed
 SPAWN_OUT="$("$HERE/spawn-cluster.sh" "$RUN" "$APEX" "$OCTET" "$VMTEST_DNS_IP" | tee /dev/stderr)"
 eval "$(grep -E '^VMTEST_(CP_IP|RUNNER_IP|APEX|SSH_KEY)=' <<<"$SPAWN_OUT")"
@@ -236,6 +254,18 @@ WAITCERT
   # default trust store; without this, that fetch fails on the Pebble-signed cert and
   # oidc-dex fails. The secret is created imperatively (NOT in the Flux overlay), so its
   # contents stick; reload platform-api so the new pod mounts it.
+  # Extract Pebble's MINICA root here, on the harness, NOT inside the CP heredoc.
+  # The CP node has no SSH key for the services VM (only the runner gets one), so
+  # the in-heredoc `ssh root@pebble docker cp` silently produced an empty file and
+  # the extra-CA Secret was never created — the WARN fired and Stalwart went on
+  # trusting nothing. Base64 so it survives the heredoc round-trip intact.
+  #
+  # minica is the CA that signs Pebble's OWN directory TLS; it is NOT the same as
+  # /roots/0, which signs the certs Pebble issues. Stalwart needs both.
+  PEBBLE_MINICA_B64=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+      "root@${VMTEST_PEBBLE_IP}" 'docker cp pebble:/test/certs/pebble.minica.pem - 2>/dev/null | tar xO' 2>/dev/null | base64 -w0)
+  [[ -n "$PEBBLE_MINICA_B64" ]] || echo "  WARN: could not extract pebble.minica.pem from ${VMTEST_PEBBLE_IP}" >&2
+
   echo "── injecting Pebble root into platform-api trust (oidc-dex server-side TLS) ──"
   ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<PICA || true
     curl -sk --max-time 15 https://${VMTEST_PEBBLE_IP}:15000/roots/0 -o /tmp/pebble-root.crt
@@ -251,6 +281,89 @@ WAITCERT
     k3s kubectl -n mail delete pod \$(k3s kubectl -n mail get pod -o name 2>/dev/null | grep '/bulwark-') --ignore-not-found >/dev/null 2>&1 || true
     k3s kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || true
     echo "  platform-api + bulwark reloaded with Pebble trust"
+
+    # ── Stalwart: trust Pebble so it can order the MAIL certificate ──
+    #
+    # The DIRECTORY itself is set at bootstrap (--stalwart-acme-directory), not
+    # here, and that is not a stylistic choice: Stalwart's AcmeProvider.directory
+    # is READ-ONLY once created ("Cannot modify read-only property"), and the
+    # provider cannot be deleted once a Domain links to it ("objectIsLinked").
+    # There is therefore NO post-bootstrap way to repoint it — an earlier version
+    # of this block tried destroy-then-recreate and silently did nothing.
+    #
+    # What remains post-bootstrap is the trust + reachability half:
+    #   * Secret stalwart-extra-ca — consumed by the stalwart-extra-ca component,
+    #     whose initContainer rebuilds the WHOLE /etc/ssl/certs. Both roots are
+    #     needed and they are DIFFERENT CAs: 'minica' signs Pebble's own
+    #     directory TLS, while /roots/0 signs the certs Pebble issues.
+    #   * Service/EndpointSlice 'pebble' — Pebble's directory cert carries
+    #     SANs localhost, pebble, 127.0.0.1 and NO IP SAN for the services VM, so
+    #     connecting by IP fails hostname verification (openssl: 62). Resolving
+    #     the bare name 'pebble' inside the mail namespace makes it match.
+    #     cert-manager sidesteps all of this with skipTLSVerify:true; Stalwart's
+    #     AcmeProvider has no such option and must genuinely verify.
+    # Egress to :14000 comes from the same component (the base policy allows only
+    # 443/80, which is all public LE needs).
+    echo "── giving Stalwart Pebble's roots + a resolvable 'pebble' name ──"
+    docker_minica=/tmp/pebble-minica.pem
+    printf '%s' "${PEBBLE_MINICA_B64}" | base64 -d > "\$docker_minica" 2>/dev/null || true
+    if [ -s "\$docker_minica" ]; then
+      if k3s kubectl -n mail create secret generic stalwart-extra-ca \
+        --from-file=pebble-minica.crt="\$docker_minica" \
+        --from-file=pebble-issuer.crt=/tmp/pebble-root.crt \
+        --dry-run=client -o yaml | k3s kubectl apply -f - >/dev/null; then
+        echo "  stalwart-extra-ca created (\$(k3s kubectl -n mail get secret stalwart-extra-ca -o jsonpath='{.data}' | tr ',' '\n' | grep -c crt) roots)"
+      else
+        echo "  ERROR: failed to create stalwart-extra-ca — Stalwart will not trust Pebble" >&2
+      fi
+    else
+      echo "  WARN: could not extract pebble.minica.pem — Stalwart will not trust Pebble's directory TLS" >&2
+    fi
+    cat <<PEBSVC | k3s kubectl apply -f - >/dev/null
+apiVersion: v1
+kind: Service
+metadata: {name: pebble, namespace: mail}
+spec:
+  clusterIP: None
+  ports: [{name: acme, port: 14000, protocol: TCP}]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: pebble-manual
+  namespace: mail
+  labels: {kubernetes.io/service-name: pebble}
+addressType: IPv4
+ports: [{name: acme, port: 14000, protocol: TCP}]
+endpoints:
+  - addresses: ["${VMTEST_PEBBLE_IP}"]
+    conditions: {ready: true}
+PEBSVC
+    # Restart Stalwart so the component's initContainer rebuilds the trust store.
+    k3s kubectl -n mail delete pod -l app=stalwart-mail --ignore-not-found >/dev/null 2>&1 || true
+    k3s kubectl -n mail rollout status deploy/stalwart-mail --timeout=240s >/dev/null 2>&1 || true
+    echo "  Stalwart restarted with Pebble in its trust store"
+
+    # Now let the platform-api reconciler CREATE the AcmeProvider.
+    #
+    # It cannot be bootstrap that creates it, and bootstrap's failure to do so is
+    # LOAD-BEARING rather than a defect to fix: Stalwart CONTACTS the directory
+    # and registers an ACME account at provider-creation time, so creation needs
+    # trust + reachability, which only exist after the block above. bootstrap
+    # therefore logs
+    #   "Failed to create ACME account: HTTP error: error sending request"
+    # and — crucially — leaves NO provider behind, so the read-only directory is
+    # still unset. Passing --stalwart-acme-directory to bootstrap is still
+    # REQUIRED: without it bootstrap would successfully create a *Let's Encrypt*
+    # provider, and that one would be locked in forever.
+    # platform-config already carries stalwart-acme-directory (bootstrap writes it
+    # at ConfigMap-creation time — setting it here instead loses a race with the
+    # reconciler's first tick, which permanently locks in a Let's Encrypt
+    # provider). Only the restart is needed, so platform-api picks up trust
+    # changes and re-attempts the order now that Pebble is reachable.
+    k3s kubectl -n platform delete pod -l app=platform-api --ignore-not-found >/dev/null 2>&1 || true
+    k3s kubectl -n platform rollout status deploy/platform-api --timeout=180s >/dev/null 2>&1 || true
+    echo "  platform-api restarted with stalwart-acme-directory=https://pebble:14000/dir"
 PICA
 fi
 
@@ -304,7 +417,13 @@ scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
   for _ in 1 2 3; do apt-get \$APTO update -qq >/dev/null 2>&1 && break; sleep 5; done
   # 'ncat' (its OWN Debian package — the staging-all suite requires it; 'netcat-openbsd' ships only
   # 'nc', and the 'nmap' package does NOT bundle 'ncat' on Debian).
-  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd ncat socat rsync >/dev/null 2>&1
+  # 'docker.io' (Debian's own packaging — no external Docker repo needed): the private-worker
+  # suite runs the worker agent + an echo fixture as LOCAL containers to prove an off-cluster
+  # agent can dial in. Without it the suite aborts rc=2 in 0s on 'required tool docker not
+  # found'. The runner is not a cluster node, so docker0 (172.17/16) cannot collide with the
+  # run-net or the pod/service CIDRs.
+  apt-get \$APTO install -y -qq nodejs npm jq curl openssl ca-certificates bind9-host xxd apache2-utils netcat-openbsd ncat socat rsync docker.io >/dev/null 2>&1
+  systemctl enable --now docker >/dev/null 2>&1 || true
   ( cd /root/insula && npm install --no-audit --no-fund --silent ws >/dev/null 2>&1 ) || true
   SK=(-i /root/hosting-platform.key -o StrictHostKeyChecking=no -o ConnectTimeout=10)
   scp "\${SK[@]}" "root@${VMTEST_CP_IP}:/usr/local/bin/k3s" /usr/local/bin/kubectl >/dev/null 2>&1

@@ -6,6 +6,7 @@ import { useAuth } from '@/hooks/use-auth';
 import DeployedImagesModal from '@/components/platform/DeployedImagesModal';
 import UpgradeReviewModal from '@/components/platform/UpgradeReviewModal';
 import PlatformUpgradeProgressModal from '@/components/PlatformUpgradeProgressModal';
+import HostMigrationsCard from '@/components/platform/HostMigrationsCard';
 
 /**
  * Platform → Updates (single consolidated page). The version card carries the
@@ -174,6 +175,11 @@ export default function UpgradesPage() {
           )}
         </div>
       )}
+
+      {/* Host-migrations apply host-side per node, not through Flux — and a failed
+          one blocks every later migration on that node. Surfaced here, next to
+          the upgrade that ships them. */}
+      <HostMigrationsCard />
 
       {showImages && <DeployedImagesModal onClose={() => setShowImages(false)} />}
       {showReview && (

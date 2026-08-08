@@ -76,6 +76,7 @@ import {
   toSafeText,
 } from '@insula/api-contracts';
 import * as taskCenter from '../tasks/service.js';
+import { resolvePlatformImage } from '../../shared/platform-images.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 type AppsV1Api = import('@kubernetes/client-node').AppsV1Api;
@@ -85,9 +86,33 @@ const MAIL_NAMESPACE = 'mail';
 const STALWART_DEPLOYMENT = 'stalwart-mail';
 const SETTINGS_ID = 'system';
 const ARCHIVE_JOB_PREFIX = 'stalwart-archive-';
-const ARCHIVE_TOOLS_IMAGE_ENV = 'TENANT_BACKUP_TOOLS_IMAGE';
 const STALWART_IMAGE_ENV = 'STALWART_IMAGE';
 const ROCKSDB_SECONDARY_IMAGE_ENV = 'ROCKSDB_SECONDARY_CHECKPOINT_IMAGE';
+/**
+ * In-code fallback only. On any real cluster the value arrives from
+ * platform-config (`rocksdb-secondary-checkpoint-image`) as an IMMUTABLE
+ * `:<tag>@sha256:<digest>` written by the image's own CI — see
+ * .github/scripts/pin-config-image.sh. This literal exists so local/DinD dev,
+ * where that ConfigMap key is a bare name, still works.
+ */
+export const ROCKSDB_SECONDARY_IMAGE_FALLBACK =
+  'ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest';
+
+/**
+ * Resolve the mail-archive checkpoint image, env first.
+ *
+ * Extracted and exported for the same reason `resolveStalwartImage` was: this
+ * binary opens the LIVE mail store, so "which image actually runs" is an
+ * invariant worth asserting rather than inferring. An inline `??` looks
+ * identical in production right up until the ConfigMap wiring breaks and every
+ * archive silently falls back to a mutable `:latest`.
+ */
+export function resolveRocksdbCheckpointImage(env: NodeJS.ProcessEnv): string {
+  const configured = env[ROCKSDB_SECONDARY_IMAGE_ENV];
+  return configured && configured.trim() !== ''
+    ? configured.trim()
+    : ROCKSDB_SECONDARY_IMAGE_FALLBACK;
+}
 const ARCHIVE_TIMEOUT_SECONDS = 900; // 15 min hard cap on the whole run
 const SCALE_DOWN_TIMEOUT_SECONDS = 180; // wait for pods to terminate
 
@@ -758,9 +783,7 @@ async function createArchiveJob(
   mode: 'export' | 'restore',
   resticSnapshotId?: string,
 ): Promise<void> {
-  const toolsImage =
-    process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+  const toolsImage = resolvePlatformImage('tenant-backup-tools');
   const stalwartImage = await resolveStalwartImage(deps.apps, process.env, deps.logger);
 
   // Archive Job pod composition:
@@ -950,13 +973,9 @@ async function createArchiveJobNoDowntime(
   nodeName: string,
   deps: ArchiveDeps,
 ): Promise<void> {
-  const toolsImage =
-    process.env[ARCHIVE_TOOLS_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+  const toolsImage = resolvePlatformImage('tenant-backup-tools');
   const stalwartImage = await resolveStalwartImage(deps.apps, process.env, deps.logger);
-  const rocksdbSecondaryImage =
-    process.env[ROCKSDB_SECONDARY_IMAGE_ENV] ??
-    'ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest';
+  const rocksdbSecondaryImage = resolveRocksdbCheckpointImage(process.env);
 
   // Checkpoint dir lives INSIDE the data PVC (same filesystem as the
   // primary's SST files — required for hard-link). Name includes the
@@ -1045,7 +1064,14 @@ async function createArchiveJobNoDowntime(
     {
       name: 'rocksdb-checkpoint',
       image: rocksdbSecondaryImage,
-      imagePullPolicy: 'Always',
+      // IfNotPresent, not Always. On a real cluster this reference is an
+      // immutable `:<tag>@sha256:<digest>` written by the image's own CI
+      // (pin-config-image.sh), so re-pulling can only ever fetch the same bytes.
+      // `Always` therefore bought nothing and cost a hard dependency on GHCR
+      // being reachable at ARCHIVE time — a registry blip would have failed a
+      // mail archive that needs nothing but a cached layer. A new pin changes the
+      // digest, which is itself a cache miss, so updates still land immediately.
+      imagePullPolicy: 'IfNotPresent',
       // Three positional args: primary, secondary-dir, checkpoint-dir.
       // - primary: /data (the live data dir on the PVC, opened as secondary)
       // - secondary: /scratch/secondary (writable scratch for the

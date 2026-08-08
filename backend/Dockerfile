@@ -1,27 +1,65 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22-alpine AS builder
 
-WORKDIR /app
-
-# Build shared API contracts first.
-# --build --force prevents stale tsbuildinfo from a Docker layer cache
-# from producing zero output when src changed but the buildinfo wasn't
-# invalidated (see feedback_api_contracts_build_force).
-COPY packages/api-contracts/ ./packages/api-contracts/
+# ─── deps: install from the LOCKFILE, in the real workspace layout ──────────
+#
+# WHY THIS STAGE EXISTS (2026-08-06)
+#   This image used to run `npm install` against backend/package.json with NO
+#   lockfile in the build context. That meant every build RE-RESOLVED the `^`
+#   ranges against the live registry, so package-lock.json — the file we audit,
+#   scan and cross-reference against IOC lists — did not govern what shipped.
+#   A version published between two builds landed in the image even when the
+#   lockfile pinned a safe one, which is exactly how the 2026-08
+#   keyv/@adminide-stack compromise propagated (hijack + republish, no CVE).
+#
+#   `npm ci` fixes that by construction: it installs the lockfile or fails.
+#
+#   npm ci refuses to run unless it can see the SAME workspace set the lockfile
+#   was generated from, so all five workspace manifests are copied even though
+#   only the backend's dependencies are installed. Manifests only — no sources —
+#   so this layer stays cached until a dependency actually changes.
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS deps
+WORKDIR /repo
+COPY package.json package-lock.json ./
+COPY packages/api-contracts/package.json packages/api-contracts/
+COPY packages/ui-restore-cart/package.json packages/ui-restore-cart/
+COPY backend/package.json backend/
+COPY frontend/admin-panel/package.json frontend/admin-panel/
+COPY frontend/tenant-panel/package.json frontend/tenant-panel/
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    cd packages/api-contracts && npm install --ignore-scripts --prefer-offline --no-audit --no-fund && npx tsc --build --force
+    npm ci --workspace @insula/backend --include-workspace-root \
+           --ignore-scripts --prefer-offline --no-audit --no-fund
 
-# Build backend
-COPY backend/package.json backend/tsconfig.json ./
-RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:./packages/api-contracts"|' package.json
-# Fix tsconfig reference path for Docker flat layout
-RUN sed -i 's|\.\./packages/api-contracts|./packages/api-contracts|' tsconfig.json
+# ─── prod-deps: the same install, runtime dependencies only ────────────────
+#
+# No --legacy-peer-deps. The previous build used it and that silently SKIPPED
+# auto-installed peer dependencies, so the image shipped a different tree than
+# the lockfile describes — the very thing this restructure exists to stop.
+# Consequence worth knowing: typescript (~24MB) arrives as a production-reachable
+# peer of cosmiconfig, because that is what package-lock.json says. Re-adding the
+# flag does NOT drop it (verified — npm ci installs the locked tree either way),
+# so the honest fix is upstream in whichever runtime dep pulls cosmiconfig, not a
+# flag that hides the difference.
+FROM deps AS prod-deps
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    npm install --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
-COPY backend/src/ src/
-RUN npx tsc
+    npm ci --workspace @insula/backend --include-workspace-root --omit=dev \
+           --ignore-scripts --prefer-offline --no-audit --no-fund
 
-FROM node:22-alpine
+# ─── builder: compile shared contracts, then the backend ───────────────────
+#
+# In the workspace layout backend/ and packages/ are siblings exactly as in the
+# repo, so backend/tsconfig.json's `../packages/api-contracts` reference
+# resolves as-is. The previous flattened layout needed two `sed` rewrites (of
+# package.json and tsconfig.json) to fake that; both are gone.
+FROM deps AS builder
+COPY packages/api-contracts/ packages/api-contracts/
+COPY backend/tsconfig.json backend/
+COPY backend/src/ backend/src/
+# --build --force: a stale tsbuildinfo restored from a layer cache otherwise
+# makes tsc emit ZERO files while exiting 0 (see feedback_api_contracts_build_force).
+RUN npx tsc --build --force packages/api-contracts
+RUN cd backend && npx tsc
+
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32
 
 # openssl is used by the mtls-providers module to generate self-signed
 # CAs and sign user certs (cert-ops.ts). Alpine's node image doesn't
@@ -66,13 +104,17 @@ RUN apk add --no-cache openssl age postgresql18-client restic openssh-client rcl
 
 WORKDIR /app
 
-COPY --from=builder /app/packages/api-contracts/ ./packages/api-contracts/
+# Runtime layout is UNCHANGED from the pre-lockfile version: /app holds dist/,
+# node_modules/, package.json and platform/cosign.pub, and the entrypoint runs
+# `node dist/…` relative to /app. Only the provenance of node_modules changed.
+#
+# node_modules is hoisted to the workspace root, and @insula/api-contracts
+# inside it is a workspace SYMLINK to ../packages/api-contracts — so the built
+# contracts must be copied to the sibling path for that link to resolve.
+COPY --from=prod-deps /repo/node_modules ./node_modules
+COPY --from=builder /repo/packages/api-contracts/ ./packages/api-contracts/
+COPY --from=builder /repo/backend/dist/ dist/
 COPY backend/package.json ./
-RUN sed -i 's|"@insula/api-contracts": "\*"|"@insula/api-contracts": "file:./packages/api-contracts"|' package.json
-RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    npm install --omit=dev --ignore-scripts --prefer-offline --no-audit --no-fund --legacy-peer-deps
-
-COPY --from=builder /app/dist/ dist/
 COPY backend/src/db/migrations/ dist/db/migrations/
 COPY backend/src/modules/plesk-migration/scripts/ dist/modules/plesk-migration/scripts/
 COPY backend/docker-entrypoint.sh ./

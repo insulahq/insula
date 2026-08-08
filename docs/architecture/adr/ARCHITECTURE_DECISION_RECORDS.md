@@ -2591,3 +2591,21 @@ transition host-migration on a dual-asset-name release; host-migration markers
 are name-independent, and symlinks (not moves) preserve that so no migration
 re-runs. Completes R18 / ADR-045 W10c consolidation.
 
+
+## ADR-056: Host-migration failure policy — blocking scope, escape hatch, escalation
+
+See [ADR-056-host-migration-failure-policy.md](ADR-056-host-migration-failure-policy.md).
+
+Proposed (2026-08-05): amends ADR-045 W10c. Halting on the first failure is right
+— a later migration may assume an earlier one applied — but as shipped it was
+unscoped, unrecoverable and silent: one deterministic failure parked every later
+migration forever, the only escape was `touch`ing a `.done` marker (which makes
+the node report `applied` for a script that never ran), and nothing escalated.
+DEV proved it, sitting at `0 applied, 11 pending` behind a single failure for five
+weeks. Four changes: a per-migration `# blocks-on-failure: yes|no` header (absent
+⇒ yes, so nothing regresses silently) so independent scripts stop wedging the
+chain; an auditable `.skipped` marker carrying a reason, reported as `skipped`
+never `applied`; consecutive-failure counting so a repeat failure states how long
+it has been repeating and a blocked chain announces itself; and an authoring
+contract distinguishing "not applicable → exit 0 loudly" from "tried and failed →
+exit 1".

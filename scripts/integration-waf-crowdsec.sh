@@ -580,12 +580,31 @@ else
     warn "SKIP_PHASE_4_EXTERNAL=1 — skipping external enforcement test"
     skipped=$((skipped + traefik_count * 2))
   else
-    # Discover our own outbound public IP.
-    HARNESS_OUTBOUND_IP=$(curl -s --max-time 5 https://api.ipify.org)
+    # Discover the source address the CLUSTER sees us as.
+    #
+    # NOT api.ipify.org, which reports the public NAT egress. That is only the
+    # right answer when the harness reaches the nodes over the internet. On the
+    # VM tier the runner sits on the same private run network as the nodes, so
+    # the server sees 10.98.x.y while ipify reports the site's public IP — the
+    # ban then targets an address that never appears in a request and all four
+    # nodes correctly return 200, which the suite scored as an enforcement
+    # failure. (Observed on VM run 71085648: banned 160.x.x.x, probed from
+    # 10.98.24.94.) The existing warning at the node-IP fallback below hinted at
+    # this assumption; it just was not enforced.
+    #
+    # SSH_CLIENT on the cluster node is authoritative: it is the source address
+    # of the very connection the harness is making. On a routed/internet setup
+    # that IS the public IP, so this is strictly more correct, not a VM-tier
+    # special case. ipify remains the fallback for transports with no SSH_CLIENT.
+    HARNESS_OUTBOUND_IP=$(ssh_run 'echo $SSH_CLIENT' 2>/dev/null | awk '{print $1}')
+    if ! [[ "$HARNESS_OUTBOUND_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+      HARNESS_OUTBOUND_IP=$(curl -s --max-time 5 https://api.ipify.org)
+      warn "SSH_CLIENT unavailable — falling back to the public egress IP; enforcement is only meaningful if the nodes see that address"
+    fi
     if ! [[ "$HARNESS_OUTBOUND_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
       fail "could not detect harness outbound IP (got: $HARNESS_OUTBOUND_IP) — skipping enforcement"
     else
-      ok "harness outbound IP: $HARNESS_OUTBOUND_IP"
+      ok "harness source IP as the cluster sees it: $HARNESS_OUTBOUND_IP"
 
       # Get every cluster node's External-IP (one per node = one Traefik
       # pod via hostPort 443). `kubectl get nodes -o wide` is the most
@@ -601,6 +620,45 @@ else
         warn "no ExternalIP on nodes — falling back to InternalIP ($node_count); enforcement test only meaningful if those are routable from \$HARNESS_OUTBOUND_IP"
       fi
       ok "discovered $node_count node IPs to probe: $(echo $NODE_IPS | tr '\n' ' ')"
+
+      # ── Can this harness's source IP even REACH the bouncer intact? ──
+      #
+      # Traefik runs as a DaemonSet on hostPort 443, so ingress traffic goes
+      # through the CNI portmap chain. When the client sits on the SAME subnet
+      # as the node, portmap MASQUERADEs the client source to the node's own
+      # address (so the reply routes back through the node). The bouncer then
+      # evaluates the NODE's IP, never the client's — proven on a 4-node VM
+      # cluster 2026-08-06: probing four nodes yielded four different derived
+      # client IPs, each tracking the probed node (10.98.x.71 → 10.98.x.71,
+      # 10.98.x.34 → 10.98.x.34, …) and never the harness address.
+      #
+      # That is upstream CNI hostPort behaviour for same-subnet clients, NOT a
+      # platform regression: on staging (harness on a public IP, different
+      # network) the source survives and this phase asserts in full. So detect
+      # the condition from the NODE's own interface CIDR — evidence, not a
+      # hardcoded "is it RFC1918" guess — and skip only the nodes where the
+      # assertion is physically unobservable.
+      declare -A NODE_SNATS_US=()
+      snat_masked=0
+      node_cidrs=$(ssh_run "ip -o -4 addr show scope global 2>/dev/null | awk '{print \$4}'" 2>/dev/null)
+      for nip in $NODE_IPS; do
+        NODE_SNATS_US["$nip"]=no
+        for cidr in $node_cidrs; do
+          # Same-subnet test, pure bash: compare the network prefix of the
+          # harness IP and the node CIDR under that CIDR's mask.
+          pfx="${cidr#*/}"; base="${cidr%/*}"
+          [[ "$pfx" =~ ^[0-9]+$ ]] || continue
+          ip2int() { local IFS=.; read -r a b c d <<< "$1"; echo $(( (a<<24)|(b<<16)|(c<<8)|d )); }
+          mask=$(( 0xFFFFFFFF << (32 - pfx) & 0xFFFFFFFF ))
+          if (( ($(ip2int "$base") & mask) == ($(ip2int "$HARNESS_OUTBOUND_IP") & mask) )) \
+             && (( ($(ip2int "$base") & mask) == ($(ip2int "$nip") & mask) )); then
+            NODE_SNATS_US["$nip"]=yes; snat_masked=$((snat_masked+1)); break
+          fi
+        done
+      done
+      if (( snat_masked > 0 )); then
+        warn "harness $HARNESS_OUTBOUND_IP shares a subnet with $snat_masked/$node_count node(s) — hostPort portmap will MASQUERADE the source to the node IP, so the bouncer cannot observe the harness address on those nodes"
+      fi
 
       # Baseline: probe each node — expect non-403 from at least one
       # (sanity check that the route IS reachable from outside).
@@ -653,6 +711,10 @@ else
           # failing on an unroutable target (env gap, not a regression).
           if [[ "${BASELINE_RC[$nip]:-}" == "404" ]]; then
             skip "node $nip: no bouncer-protected route to probe on this cluster (baseline 404) — skipping L3 enforcement assertion"
+            continue
+          fi
+          if [[ "${NODE_SNATS_US[$nip]:-no}" == "yes" ]]; then
+            skip "node $nip: harness is on this node's subnet — hostPort portmap masquerades the source to $nip, so the bouncer never sees $BAN_TARGET (unobservable here, asserted in full from an off-subnet harness e.g. staging)"
             continue
           fi
           rc=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$PROBE_HOSTNAME:443:$nip" "https://$PROBE_HOSTNAME/" 2>&1 | tail -1)
@@ -727,6 +789,12 @@ except Exception:
           # "no longer blocking" assertion is equally meaningless there.
           if [[ "${BASELINE_RC[$nip]:-}" == "404" ]]; then
             skip "node $nip: no bouncer-protected route (baseline 404) — skipping post-unban reachability assertion"
+            continue
+          fi
+          # Same for a masqueraded source: nothing was ever blocked on this
+          # node, so "not 403 after unban" would pass without proving anything.
+          if [[ "${NODE_SNATS_US[$nip]:-no}" == "yes" ]]; then
+            skip "node $nip: source masqueraded by hostPort portmap — nothing was blocked pre-unban, so this assertion proves nothing here"
             continue
           fi
           rc=$(curl -sk -o /dev/null -w '%{http_code}' --max-time 10 --resolve "$PROBE_HOSTNAME:443:$nip" "https://$PROBE_HOSTNAME/" 2>&1 | tail -1)

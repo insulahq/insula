@@ -97,14 +97,32 @@ spec:
               cpu: 50m
               memory: 96Mi
           volumeMounts:
-            # The ONLY host mount: /proc/sys, read-only. The reconciler reads
-            # the live sysctl values from here; it can write nothing back
-            # (readOnly + no caps).
+            # Both host mounts are readOnly; the reconciler can write nothing
+            # back to the host (readOnly + no caps + readOnlyRootFilesystem).
+            # 1. Live sysctl values.
             - name: proc-sys
               mountPath: /host/proc/sys
+              readOnly: true
+            # 2. Host-migration markers + the status.json platform-ops writes
+            #    after each converge. RELAY ONLY: the converger owns this state,
+            #    but it cannot publish from a worker (its kubeconfig is `get` on
+            #    five ConfigMaps, and RBAC cannot scope `create` by
+            #    resourceName). This DaemonSet already runs everywhere and
+            #    already publishes one per-node ConfigMap, so it carries the
+            #    document to the API and the admin panel can show a failed or
+            #    blocked chain instead of it being invisible until someone SSHes
+            #    in. No new RBAC, no host mutation.
+            #    DirectoryOrCreate: a node that has never converged has no such
+            #    directory, and that is normal — not an error.
+            - name: host-migrations
+              mountPath: /host/var/lib/platform/host-migrations
               readOnly: true
       volumes:
         - name: proc-sys
           hostPath:
             path: /proc/sys
             type: Directory
+        - name: host-migrations
+          hostPath:
+            path: /var/lib/platform/host-migrations
+            type: DirectoryOrCreate

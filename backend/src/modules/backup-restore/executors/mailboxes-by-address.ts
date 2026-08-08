@@ -105,6 +105,7 @@ import {
   type MailboxRestoreMode,
   MAILBOX_RESTORE_MODE_DEFAULT,
 } from '@insula/api-contracts';
+import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 interface Selector {
   kind: 'all' | 'addresses';
@@ -127,7 +128,9 @@ const JMAP_ENDPOINT_DEFAULT = 'http://stalwart-mgmt.mail.svc.cluster.local:8080'
 // `mail/mail-secrets.STALWART_MASTER_USER`.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+// Resolved through the shared table so an operator CAN repoint it — this was
+// a bare literal with no env read in six modules (see shared/platform-images.ts).
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 const DEFAULT_TIMEOUT_MS = 60 * 60 * 1000;
 // Parallelism for Blob/upload from a single jmap-restore.py invocation.
 // Stalwart's bumped maxConcurrentUploads=32 caps the upper bound;

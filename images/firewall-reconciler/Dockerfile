@@ -25,7 +25,7 @@
 # Runs hostNetwork: true so the kernel netfilter context is the host's;
 # CAP_NET_ADMIN is the only capability needed for set writes.
 
-FROM golang:1.26-alpine AS build
+FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
@@ -34,7 +34,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/reconciler ./...
 
 # Distroless static — no shell, no package manager, no `nft`. Just the
 # Go binary + ca-certs (for in-cluster apiserver TLS via service VIP).
-FROM gcr.io/distroless/static:latest
+FROM gcr.io/distroless/static:latest@sha256:9197324ba51d9cd071af8505989365c006adf9d6d2067eada25aef00abbb5278
 COPY --from=build /out/reconciler /usr/local/bin/firewall-reconciler
 # Runs as root (UID 0) inside the container. DaemonSet drops all caps
 # except NET_ADMIN (the only one libnftnl needs for set writes via

@@ -81,6 +81,7 @@ import {
   IMAP_MAX_CONCURRENT_MIGRATION,
 } from '../../mail-admin/imap-concurrency.js';
 import { mailLogger } from '../../../shared/mail-logger.js';
+import { resolvePlatformImage } from '../../../shared/platform-images.js';
 
 const mlog = mailLogger().child({ module: 'tenant-bundles-mailboxes' });
 
@@ -160,7 +161,9 @@ const IMAP_PORT_DEFAULT = 993;
 // source-of-truth for the master FQDN.
 const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
 const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
-const TOOLS_IMAGE_DEFAULT = 'ghcr.io/insulahq/insula/tenant-backup-tools:latest';
+// Resolved through the shared table so an operator CAN repoint it — this was
+// a bare literal with no env read in six modules (see shared/platform-images.ts).
+const TOOLS_IMAGE_DEFAULT = resolvePlatformImage('tenant-backup-tools');
 const RESTIC_STREAM_ARTIFACT = 'restic-stream';
 const STDIN_FILENAME = 'maildir.tar';
 

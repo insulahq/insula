@@ -22,7 +22,7 @@
 # rust:1.95-bookworm is the current stable Rust toolchain (released
 # 2026-05-09) on Debian 12 (glibc 2.36). librocksdb-sys 0.17.3+10.4.2
 # requires Rust ≥ 1.85; 1.95 satisfies that.
-FROM rust:1.95-bookworm AS build
+FROM rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cdcfabcbbe3db374f92ed2d47121282d4a1 AS build
 
 # librocksdb-sys compile-time deps. snappy/zlib/lz4/zstd/bz2 are linked in
 # statically by the librocksdb-sys build script; we install the -dev headers.
@@ -42,12 +42,21 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
-COPY Cargo.toml Cargo.lock* ./
+# NO GLOB on Cargo.lock. It used to read `Cargo.lock*`, and since no lockfile was
+# committed the glob matched NOTHING — silently. Every build then re-resolved the
+# whole dependency graph against the live crates.io index, so the crates that went
+# into a binary which opens the production mail database were whatever existed at
+# build time, not what anyone reviewed. A bare `Cargo.lock` makes a missing
+# lockfile a hard COPY failure instead of a silent re-resolve.
+COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 
-# Cargo's "fetch deps first" cache trick — separate fetch from compile.
-RUN cargo fetch
-RUN cargo build --release \
+# --locked on BOTH: fetch and build must use Cargo.lock exactly as committed and
+# fail if it is stale or absent, rather than quietly updating it (which is what
+# plain `cargo build` does when Cargo.toml and Cargo.lock disagree). This is the
+# Rust equivalent of `npm ci` over `npm install`.
+RUN cargo fetch --locked
+RUN cargo build --release --locked \
  && strip target/release/rocksdb-secondary-checkpoint
 
 # ── runtime stage ──────────────────────────────────────────────────────
@@ -55,7 +64,7 @@ RUN cargo build --release \
 # libm, libpthread, libdl — exactly what librocksdb-sys needs and
 # nothing else. No shell, no package manager, no shell-injection
 # surface; the binary is the only entrypoint.
-FROM gcr.io/distroless/cc-debian12 AS runtime
+FROM gcr.io/distroless/cc-debian12@sha256:e8e7ee4b8b106d4c5fde9e422a321b2b8a2d5cca546c97adcce927f3e1d36e36 AS runtime
 
 COPY --from=build /build/target/release/rocksdb-secondary-checkpoint \
                   /usr/local/bin/rocksdb-secondary-checkpoint

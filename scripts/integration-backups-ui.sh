@@ -304,16 +304,27 @@ except Exception as e:
   # is >24h old, or `cnpg_operator_blind` on one whose CNPG operator
   # is wedged but the object-store catalogue still sees backups.
   # All three indicate the plugin model is correctly detected.
+  # `never_run` belongs in this list too: it means "no Backup CRs exist yet for
+  # this cluster", which is the CORRECT state on a freshly bootstrapped cluster
+  # whose first scheduled backup has not fired. The assertion's own goal —
+  # stated above — is that the plugin path is detected, and hasSpec=true is what
+  # confirms that; the state is incidental. Without it a fresh-cluster run
+  # failed with "state=never_run (expected healthy / stale /
+  # cnpg_operator_blind)" on a perfectly healthy install (full run 2026-08-07).
   case "$STATE" in
-    healthy|stale|cnpg_operator_blind)
+    healthy|stale|cnpg_operator_blind|never_run)
       if [[ "$HAS_SPEC" == "true" ]]; then
-        pass "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (plugin path detected)"
+        if [[ "$STATE" == "never_run" ]]; then
+          pass "cnpg system-db: state=never_run clusterHasBackupSpec=true (plugin path detected; no scheduled backup has fired yet on this cluster)"
+        else
+          pass "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (plugin path detected)"
+        fi
       else
         fail "cnpg system-db: state=$STATE clusterHasBackupSpec=$HAS_SPEC (expected hasSpec=true)"
       fi
       ;;
     *)
-      fail "cnpg system-db: state=$STATE (expected healthy / stale / cnpg_operator_blind)"
+      fail "cnpg system-db: state=$STATE (expected healthy / stale / cnpg_operator_blind / never_run)"
       ;;
   esac
 fi

@@ -74,6 +74,61 @@ ensure_golden() {
 [[ -f "$VMTEST_SSH_KEY" ]] || ssh-keygen -t ed25519 -N '' -f "$VMTEST_SSH_KEY" -q
 PUBKEY="$(cat "${VMTEST_SSH_KEY}.pub")"
 
+# ── Pull-through registry mirrors (bandwidth, not behaviour) ────────────────
+#
+# Every k3s node runs its own containerd with no shared cache, so a 4-node run
+# fetches the SAME ~3.6 GB image set four times over the WAN (measured on run
+# 097668f8: docker.io 2037 MB · ghcr.io 1078 MB · quay.io 497 MB ·
+# registry.k8s.io 35 MB). Pointing containerd at LAN caches makes the internet
+# fetch happen once.
+#
+# Written via cloud-init write_files, NOT runcmd: registries.yaml must exist
+# BEFORE k3s first starts, and bootstrap.sh runs well after cloud-init.
+#
+# Safe by construction:
+#   * opt-in — unset VMTEST_REGISTRY_MIRROR and the seed is byte-identical to
+#     before, so a host without the caches is unaffected;
+#   * containerd falls back to the real upstream when a mirror is unreachable,
+#     so a stopped cache degrades to today's behaviour instead of breaking runs;
+#   * digests are still verified end-to-end by containerd — a cache cannot serve
+#     tampered content. This is a bandwidth optimisation, never a trust boundary.
+VMTEST_REGISTRY_MIRROR="${VMTEST_REGISTRY_MIRROR:-}"
+REGISTRY_MIRROR_WRITE_FILES=""
+if [[ -n "$VMTEST_REGISTRY_MIRROR" ]]; then
+  # PREFLIGHT the mirror before seeding it into every node.
+  #
+  # This variable is a HOST, not a boolean, and setting it to something
+  # boolean-looking (VMTEST_REGISTRY_MIRROR=1 — done exactly once, by me) yields
+  # `http://1:4000`. containerd then silently falls back to the upstream
+  # registry, so the run still passes while pulling everything over the WAN —
+  # the failure mode is invisible and the only symptom is the bandwidth bill the
+  # mirror exists to avoid. Fail loudly at spawn instead.
+  for _mp in "${VMTEST_MIRROR_PORT_DOCKER:-4000}" "${VMTEST_MIRROR_PORT_GHCR:-4001}" \
+             "${VMTEST_MIRROR_PORT_QUAY:-4002}" "${VMTEST_MIRROR_PORT_K8S:-4003}"; do
+    if ! curl -sf -o /dev/null --max-time 5 "http://${VMTEST_REGISTRY_MIRROR}:${_mp}/v2/"; then
+      echo "spawn-cluster: registry mirror http://${VMTEST_REGISTRY_MIRROR}:${_mp}/v2/ is not answering." >&2
+      echo "  VMTEST_REGISTRY_MIRROR must be the mirror HOST (e.g. 10.0.0.5), not a flag." >&2
+      echo "  Unset it to run without mirrors." >&2
+      exit 2
+    fi
+  done
+  REGISTRY_MIRROR_WRITE_FILES="write_files:
+  - path: /etc/rancher/k3s/registries.yaml
+    permissions: '0644'
+    content: |
+      mirrors:
+        docker.io:
+          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_DOCKER:-4000}\"]
+        ghcr.io:
+          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_GHCR:-4001}\"]
+        quay.io:
+          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_QUAY:-4002}\"]
+        registry.k8s.io:
+          endpoint: [\"http://${VMTEST_REGISTRY_MIRROR}:${VMTEST_MIRROR_PORT_K8S:-4003}\"]
+"
+  echo "  registry mirrors: ${VMTEST_REGISTRY_MIRROR} (docker=${VMTEST_MIRROR_PORT_DOCKER:-4000} ghcr=${VMTEST_MIRROR_PORT_GHCR:-4001} quay=${VMTEST_MIRROR_PORT_QUAY:-4002} k8s=${VMTEST_MIRROR_PORT_K8S:-4003})" >&2
+fi
+
 seed_for() {  # cloud-init: root key, guest-agent, our resolver (uniform across families)
   local host="$1"
   cat > "${VMTEST_TMP_DIR}/ud-${RUN}-${host}.yaml" <<UD
@@ -86,7 +141,7 @@ users:
 disable_root: false
 ssh_pwauth: false
 packages: [qemu-guest-agent, curl, ca-certificates]
-runcmd:
+${REGISTRY_MIRROR_WRITE_FILES}runcmd:
   - [systemctl, enable, --now, qemu-guest-agent]
   # Resolver = the services-VM dnsmasq (apex -> PowerDNS, else -> upstream). A plain
   # echo is clobbered by systemd-resolved/NetworkManager, so replace the symlink and

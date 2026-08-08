@@ -12,6 +12,443 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Security
+- **Runtime-resolved Job images now pin by digest — `rocksdb-secondary-checkpoint`
+  first.** The mail-archive checkpoint binary resolved as
+  `…/rocksdb-secondary-checkpoint:latest` with no override anywhere, on a mutable
+  tag, for an initContainer that opens the live mail store on every archive
+  (`no_downtime` is `DEFAULT_ARCHIVE_MODE`). `:latest` is not hypothetical risk
+  here: the `is_default_branch` bug froze it at its pre-cutover build on
+  2026-06-22 and every consumer silently pulled a stale image.
+  The image's own CI now writes an immutable `:<tag>@sha256:<digest>` into the
+  development overlay's platform-config after the push, via a new
+  `pin-config-image.sh`. It sits alongside `pin-image-tag.sh` rather than
+  replacing it: that script drives the kustomization `images:` transformer, which
+  by design only rewrites `image:` fields in pod specs and so cannot reach an
+  image the backend builds at runtime from an env var. Timing is deliberately the
+  same — pin from the image's own workflow, after the push — because pinning from
+  a different workflow is what caused the 2026-06-06 pull race.
+  Both halves of the reference are intentional: the digest is authoritative and a
+  re-pushed tag cannot change it, while the tag keeps the overlay diff readable.
+  Verified on a real cluster (k3s v1.31.4) rather than assumed — a Pod with
+  `busybox:1.36@<digest-of-1.37>` started and reported `BusyBox v1.37.0`, with
+  `imageID` equal to the 1.37 digest. The script REFUSES a tag-only reference, so
+  the property cannot be given up by accident.
+  The initContainer also drops from `imagePullPolicy: Always` to `IfNotPresent`:
+  against an immutable reference a re-pull can only fetch identical bytes, so
+  `Always` bought nothing and cost a hard dependency on GHCR being reachable at
+  archive time. A new pin changes the digest, which is itself a cache miss.
+- **Swept every remaining runtime-launched image onto the same digest pin**, and
+  fixed two bugs found doing it. `tenant-backup-tools` — the most-used image in the
+  platform, running in backup-restore, storage-lifecycle, tenant-bundles and
+  mail-admin — was a bare `TOOLS_IMAGE_DEFAULT` const in six modules that read **no
+  env var at all**, so an operator could not repoint it anywhere. And
+  `node-terminal`'s own comment said "overridable via NODE_TERMINAL_IMAGE env"
+  while nothing in the codebase read that variable. Both look correct at the call
+  site; neither was, and neither would fail a build, a test, or a deploy.
+  All runtime images now resolve through one table
+  (`backend/src/shared/platform-images.ts`) so the env contract is stated once and
+  asserted once, and `tenant-backup-tools`, `migration-tools`, `claim-validator`
+  and `node-terminal` gained platform-config keys plus `configMapKeyRef` wiring.
+  Five more build workflows (`file-manager`, `tenant-backup-tools`,
+  `migration-tools`, `claim-validator`, `node-terminal`) now pin their own digest
+  after the push. The tag label is the 7-char git sha — exactly what
+  `type=sha,prefix=` publishes — rather than a re-derived timestamp, because
+  `{{date}}` is evaluated inside metadata-action and recomputing it names a tag
+  that was never pushed.
+  Two images stay deliberately unpinned, now with the reason recorded rather than
+  assumed: `private-worker-agent` is interpolated into the `docker run`/compose
+  snippet **tenants run on their own hardware**, so a digest pins what we hand out
+  and strands them on a registry GC; and `private-worker-frps` is third-party we
+  do not build, so a digest means a manual bump per upstream release with no CI to
+  produce it.
+- **Digest-pinned every external base image** — 29 `FROM` lines across 19
+  Dockerfiles, including `gcr.io/distroless/static:latest`. Each keeps its tag as a
+  readable label with the manifest-LIST digest appended (`image:tag@sha256:…`), so
+  multi-arch builds still resolve per platform. Paired with a new Dependabot
+  `docker` ecosystem, which is the half that matters: a digest is immutable, so it
+  also stops receiving upstream security rebuilds — pinning without an updater is
+  a slow-motion regression, not a fix. Dependabot understands `tag@sha256:` and
+  bumps both halves. Verified by real builds of a distroless/Go image and a
+  node/nginx panel image.
+- **`dperson/samba` pinned by digest.** It publishes no version tags at all (only
+  architecture names and `latest`), so a digest is the only pin available.
+- **Hash-pinned the docs toolchain.** `documentation/requirements.txt` pinned four
+  versions and said nothing about the ~20 transitive dependencies. A version pin
+  stops you adopting a *new* malicious release; it does nothing about a
+  *republished* one. The build now installs from a generated
+  `requirements.lock.txt` with `pip install --require-hashes` — 29 packages, 339
+  hashes — so pip refuses any artifact whose sha256 does not match and refuses to
+  install anything unlisted. Regeneration instructions are in the file header.
+- **Registered the three unwatched third-party images** (`imapsync`,
+  `ziti-edge-tunnel`, `zrok`) in `security/components.yaml`. They were deployed with
+  no registry entry, so nothing watched them for CVEs; imapsync is now marked for
+  what it is — a Job that reads and writes tenant mailbox content with tenant
+  credentials.
+- **Signed releases now pin their runtime images too.** `cut-release.sh` already
+  snapshotted the development overlay's kustomization pins into production, but
+  that transformer only reaches images in a pod spec — the six the backend
+  launches from a ConfigMap were left as mutable `:latest`, so a cosign-signed
+  release did not actually describe what it ran. The cut now stamps every
+  digest-pinned runtime image into the production platform-config too (staging
+  inherits), and **fails closed** on a key pinned in development but absent from
+  production, which would otherwise silently fall back to the base `:latest`. It
+  stamps whatever development has pinned rather than a hand-kept list, so it
+  cannot drift when a new image is wired; keys deliberately left mutable carry no
+  digest and are skipped. Three new tests cover the stamp, the skip, and the abort.
+- **Pinned the three third-party images that were still on `:latest`** —
+  `gilleslamiral/imapsync`, `openziti/ziti-edge-tunnel`, `openziti/zrok`. Each is
+  pinned to the version `latest` resolved to on 2026-08-07, verified by comparing
+  manifest digests, so behaviour is unchanged today and merely reproducible from
+  now on. The imapsync comment had asserted "the Docker Hub image only publishes
+  `latest` — there is no version-tagged release", which was untrue (2.288, 2.295,
+  2.306, 2.319, …); on the strength of it every tenant mail migration ran whatever
+  `latest` happened to be that day.
+- **Un-shared the seven pre-existing kustomize pin concurrency groups.** They all
+  used `pin-development-${{ github.ref }}`, carrying the same defect that dropped
+  the tenant-backup-tools pin — one pending job per group, the rest cancelled.
+  Each now has its own; both `pin-image-tag.sh` and `apply-development-pin.sh`
+  already retry against `origin/development`, so serialising was never what made
+  concurrent pins safe.
+- **Fixed a pin-losing concurrency bug in the sweep itself.** All the new pin jobs
+  initially shared one `pin-development-config` group. GitHub keeps at most **one
+  pending job per concurrency group and cancels the rest**, so when five image
+  workflows fired together the `tenant-backup-tools` pin was silently cancelled
+  while the other four landed — `cancel-in-progress: false` prevents cancelling a
+  *running* job, not a queued one. Each pin now has a per-image group. Serialising
+  was never needed: `pin-config-image.sh` already carries a 4-attempt
+  reset/re-apply/retry loop precisely because concurrent pins are expected.
+- **A guard so this cannot silently regress.** `ci-config-image-pin-check.sh`
+  classifies every runtime-resolved image key in the development overlay:
+  `PINNED` keys must carry an `@sha256:` digest, `PENDING` keys are known-mutable
+  **with a written reason**, and anything in neither list fails the build — so a
+  NEW Job image cannot land on `:latest` unnoticed, which is exactly how this
+  backlog accumulated. It caught one I had missed on its first run
+  (`private-worker-frps-image`), and now records why each remaining one is still
+  mutable: `file-manager-image` (workflow not yet wired),
+  `private-worker-agent-image` (runs on tenant hardware, not in-cluster — a
+  different decision), and `private-worker-frps-image` (third-party upstream we do
+  not build, so a digest means a manual bump per release with no CI to produce it).
+- **`rocksdb-secondary-checkpoint` built from an unpinned dependency graph.** The
+  image committed only `Cargo.toml`, and its Dockerfile read
+  `COPY Cargo.toml Cargo.lock* ./` — the `*` matched **nothing**, silently, so every
+  build re-resolved the whole crate graph against the live crates.io index. The
+  crates going into a binary that opens the production mail store were whatever
+  existed at build time, not what anyone reviewed. This is not a fringe path: the
+  binary is initContainer #1 of `no_downtime`, which is `DEFAULT_ARCHIVE_MODE`, so
+  it runs on every operator-triggered mail archive. `Cargo.lock` is now committed
+  (36 crates), the glob is gone so a missing lockfile is a hard `COPY` failure, and
+  `cargo fetch`/`cargo build` both run `--locked` — the Rust equivalent of
+  `npm ci` over `npm install`. Verified by real builds in both directions: matching
+  lockfile compiles `librocksdb-sys v0.17.3+10.4.2` and produces a working 31.3 MB
+  image; a stale lockfile fails the build with exit 101 instead of quietly updating
+  itself. `components.yaml` now points `deps:` at the lockfile rather than the
+  manifest — osv-scanner and cargo-audit both read the lockfile, so the previous
+  entry gave nominal coverage, not real coverage (36 crates now scanned, 0 findings).
+- **The rocksdb↔Stalwart version coupling is now enforced, not commented.**
+  `rocksdb-secondary-checkpoint` opens Stalwart's **live** RocksDB store as a
+  secondary instance, so both processes read the same MANIFEST and SST files and
+  must link the same C++ rocksdb; a mismatch fails against the production mail
+  database at archive time, with nothing failing at build time. That invariant was
+  held by a Cargo.toml comment reading *"pinned to the same rocksdb Stalwart 0.16.5
+  uses"* while Stalwart had already moved to **v0.16.16**. It happened to still be
+  correct — both resolve `librocksdb-sys 0.17.3+10.4.2` — but nobody had checked and
+  nothing would have said so otherwise. The coupling is now declared machine-readably
+  (`tracks: {component, verified_against, crate, crate_version}`) and enforced by
+  `ci-rocksdb-stalwart-pin-check.sh`: bumping Stalwart without re-verifying the
+  rocksdb pin fails CI. The offline half (registry ↔ Cargo.toml ↔ Cargo.lock all
+  agree) runs on every push; the `--online` half fetches Stalwart's `Cargo.lock` at
+  the pinned tag and confirms the recorded mapping is true upstream, and runs in
+  component-watch. A network blip exits 2, never a false green. All four drift paths
+  are negative-tested: Stalwart bumped, crate bumped alone, lockfile drifted, and an
+  exact pin loosened to a caret range.
+- **js-yaml 4.3.0 → 4.3.1** (`GHSA-5p4m-2wfm-xmqj`, CVSS 7.5). Quadratic CPU
+  consumption in `!!omap` resolution — `!!omap` is in the *default* schema, so a
+  plain `yaml.load(untrusted)` is affected with no special configuration. Found by
+  scanning the current lockfile while verifying unrelated work; it was untracked and
+  would have failed the next dep-scan. Remediated rather than waived, since 4.3.1 is
+  a patch: both affected copies are transitive (`@kubernetes/client-node`,
+  `cosmiconfig`) and `npm update --package-lock-only` reached them inside their
+  existing ranges, so no override was needed. Our direct dependency is 5.2.2, which
+  the advisory does not cover. The lockfile diff is 6 lines, nothing else moved.
+- **Remediated the brace-expansion and fast-uri advisories instead of leaving
+  them waived.** `GHSA-rgw5-rvv9-x895` (CVSS 7.5) and `GHSA-7p8r-x3mc-p8w7`
+  (CVSS 7.5) were triaged `reachable: false` and left `status: open` with the
+  remediation recorded. That remediation is now applied: the root
+  `brace-expansion` override moves `^5.0.8 → ^5.0.9` exactly as the ledger
+  prescribed, and `fast-uri` takes its patch on both major lines (3.1.4 → 3.1.5,
+  4.1.1 → 4.1.2) rather than an override, because ajv needs the 3.x line and
+  forcing one major on both would break it. Both ledger entries are now
+  `status: fixed`. Verified: OSV no longer reports either package, the
+  component-watch gate passes, and the backend suite is 5986 green.
+
+### Fixed
+- **Self-upgrade could never resolve a DEV cluster's binary.** The
+  `platform-version` ConfigMap is stamped `<VERSION>-<short-sha>` by build-deploy,
+  and self-upgrade used that verbatim as the release tag — asking GitHub for
+  `v2026.8.2-d847808`, which does not exist. The node then kept whatever binary it
+  had, which is how DEV ran a July build against an August cluster. Assets are now
+  fetched from `releaseTagFor(version)`, which strips a lone git-sha identifier and
+  deliberately leaves a real prerelease (`-rc.N`) alone. Version *comparison* still
+  uses the full string, so a node on `2026.8.2` does not flap when the ConfigMap
+  says `2026.8.2-<newsha>`.
+- **DEV's Flux could not apply anything** — an unescaped `${base}` in the
+  `stalwart-extra-ca` init container failed Flux 2.9's strict envsubst
+  (`variable not set (strict mode): "base"`), so *every* Kustomization apply
+  failed and the cluster froze on an old revision. Escaped to `$${base}`.
+- **`ci-flux-escape-check.sh` was blind to it**: the guard quick-rejected any
+  manifest that was not `kind: CronJob|Job`, so a Deployment init container — or
+  a kustomize component patch with no kind at all — was never scanned. It now
+  scans anything with an `args:`/`command:` block. Two matching refinements keep
+  it precise: names Flux genuinely substitutes (`DOMAIN`, `ENV`,
+  `CLUSTER_ISSUER_NAME`, `STALWART_EXTERNAL_IP`) are allowed bare, and YAML
+  comments — stripped by kustomize before substitution — are no longer flagged,
+  which previously would have fired on the very comments documenting the rule.
+
+### Fixed
+- **`platform/VERSION` on `development` now tracks the release line.**
+  `cut-release.sh` writes it on `main`, and promotion is one-way
+  `development → main`, so the stamp never came back: `development` sat on
+  `2026.6.16` — a version never cut — for six weeks. That is what a fresh install
+  resolves its platform-ops asset from, so the download 404'd, the install was
+  skipped, and the node got no converge timer at all. A new
+  `sync-development-version` release job pushes the released version back to
+  `development` (stable releases only: build-deploy stamps `<VERSION>-<sha>`, and
+  an RC would compose to `2026.8.3-rc.4-<sha>`, which the backend's version regex
+  rejects — silently breaking `installed_platform_version`). Also makes the
+  promote snapshot idempotent, which used to revert `main`'s stamp until
+  cut-release rewrote it.
+- **Chart-bump host-migrations no longer try to DOWNGRADE a newer cluster.** The
+  guard compared the installed chart version to the target with string equality,
+  so a node bootstrapped *after* the migration was written — carrying newer pins —
+  did not match, and the migration ran `helm upgrade --reuse-values` onto an
+  OLDER chart. That fed the old chart values whose schema it does not know, and
+  it failed: cert-manager rejected `runtimeClassName`, which blocked 15 later
+  migrations behind it (ADR-056). A chart bump now establishes a **floor, never a
+  ceiling** — it skips when the release is at or above the target. Affects the
+  five chart-bump migrations under `2026.7.1/`.
+- **A dormant self-upgrade no longer silently disables host-migration
+  convergence.** Every dormancy path in the platform-ops install (no trust anchor,
+  no published asset, missing signature, failed verification) returned before
+  installing the systemd units — so a node pinned to a platform version that was
+  never cut as a release got *no converge timer at all*, and its host migrations
+  could never run. Refusing to REPLACE the binary is a trust decision; refusing to
+  converge an already-installed one is not. The host-config timer is now installed
+  whenever a usable binary is present, and still skipped when there is none.
+
+### Security
+- **Image builds now install the lockfile instead of re-resolving it.** Every
+  Dockerfile ran `npm install` against a workspace's `package.json` with no
+  lockfile in the build context, so each build re-resolved the `^` ranges
+  against the live registry — meaning `package-lock.json`, the file that is
+  audited, scanned and cross-referenced against IOC lists, did **not** govern
+  what shipped. A version published between two builds landed in the image even
+  when the lockfile pinned a safe one, which is precisely how a
+  hijack-and-republish compromise propagates. All three images now copy the root
+  lockfile plus every workspace manifest and use `npm ci --workspace <pkg>`,
+  which installs the locked tree or fails. Verified by building each image and
+  comparing installed versions against the lockfile.
+  Two things fell out of the change: the flattened layout's `sed` rewrites of
+  `package.json`/`tsconfig.json` are gone (the workspace layout resolves
+  `@insula/*` natively), as is the `rm -rf node_modules/react*` workaround —
+  npm hoists a single React, now asserted at build time rather than patched
+  after the fact. The panel **builder** stages move to `node:22-slim`, because
+  the lockfile is generated on glibc and records no musl binding for rolldown;
+  the previous `npm install` masked that by silently re-resolving on Alpine.
+  Runtime images are unchanged.
+
+### Security
+- **Dependency supply-chain hardening.** Four controls, aimed at the class of
+  attack where a package is *hijacked and republished* rather than found
+  vulnerable — the 2026-08 keyv/@adminide-stack wave, which no CVE feed would
+  have flagged. (1) `.npmrc` sets `ignore-scripts=true`: a dependency's
+  install script runs with the full privileges of whoever ran `npm ci`, which
+  in CI means the registry credentials and push token, and it executes without
+  the package ever being imported. The Dockerfiles already passed
+  `--ignore-scripts`, so this closes the same hole for CI runners and developer
+  machines. (2) Dependabot gains a 7-day cooldown (14 for majors) so a bot bump
+  can no longer adopt a malicious release within hours of publication; security
+  updates are advisory-driven and remain immediate. (3) A new dependency-audit
+  workflow runs `npm audit signatures` — registry signatures and provenance,
+  which detect a *tampered* artifact that no CVE feed will ever mention — daily,
+  because a dependency can be compromised long after it entered the lockfile.
+  (4) All 228 GitHub Actions references are now pinned by commit SHA rather than
+  mutable tag — **and `ci-actions-pinned-check.sh` now enforces it**. The manual
+  pass had already drifted to 227/228 within a day: `actions/checkout@v7` in
+  release.yml's version-sync job, which runs with `permissions: contents: write`,
+  so a retagged release would have executed in a runner holding a repo write
+  token (the tj-actions/changed-files pattern). Pinning by hand is a one-time
+  act; the guard is what makes it a property.
+- **A `not_affected` entry for `GO-2026-5932`** (`golang.org/x/crypto`). The
+  advisory is module-scoped — "the openpgp subpackage is unmaintained and unsafe
+  by design" — so OSV flags every consumer of x/crypto regardless of which
+  subpackage they import, and it carries no CVSS and no fixed version. Untriaged
+  it printed an unactionable ⚠ on every scan, forever. Verified unreachable by
+  resolving the real build graph (go1.26.5, `go list -deps ./...`, rc=0) rather
+  than grepping our own source, since a transitive dependency could have pulled
+  openpgp in: sftp-gateway resolves 594 packages, file-manager 171, and openpgp
+  is in neither. The x/crypto packages actually compiled are ssh, chacha20poly1305,
+  curve25519, cryptobyte, blowfish and bcrypt_pbkdf.
+- **The dependency gate passed malicious packages.** `component-watch-gate.py`
+  classified findings purely by CVSS, and a `MAL-` advisory — the OSV record for
+  a package that has been hijacked and republished — usually carries no severity
+  at all. Such a finding therefore landed in the *unknown severity* bucket, which
+  prints a ⚠ and exits **0**: a hostile package in `package-lock.json` produced a
+  green check and a mergeable PR. The gate now blocks any `MAL-` finding
+  regardless of score, matched on ids *and* aliases (the MAL- id often rides along
+  as an alias of a GHSA primary). Waiver rules are deliberately narrower than for
+  CVEs: only `not_affected` (confirmed false positive) or `fixed` (removed and
+  lockfile regenerated) clear one — `open`/`investigating`/`mitigated`/`accepted`
+  all mean "we'll get to it", which is not an answer for a package that is
+  currently stealing tokens. All sixteen rules are pinned by
+  `.github/scripts/test-component-watch-gate.sh`, verified to fail 6/16 against
+  the previous gate and to leave CVE handling byte-identical.
+- **Consolidated the two OSV scanners into one.** The dependency-audit workflow
+  added yesterday carried its own lockfile OSV scan with an inline malicious-
+  package gate, duplicating `component-watch.yml`'s recursive scan and splitting
+  the rules — and the waiver point — across two files. The malicious-package
+  gating moved into `component-watch-gate.py`, next to the ledger it consults,
+  and the duplicate job was deleted; `component-watch.yml` is now the only OSV
+  scanner in CI and additionally covers `go.mod`/`Cargo.toml`, which the removed
+  job never did. Its dep-scan also drops from weekly to **daily**, so the window
+  between a MAL- advisory being published and this repo noticing is ~24 h rather
+  than up to 7 days. `npm audit signatures` stays in dependency-audit: it answers
+  "is this the artifact the maintainer published?", which no advisory feed can.
+
+### Added
+- **The node's IPv6 is now visible in the admin panel** (migration 0080,
+  `cluster_nodes.public_ipv6`). Node sync stored a single `public_ip` taken from
+  the first `ExternalIP`, which on a dual-stack cluster is always the IPv4 — so
+  an operator had no way to read the node's global IPv6 short of SSH-ing to it,
+  even though `ingress_default_ipv6` (which drives every apex AAAA record) is
+  operator-set and needs exactly that value. Address selection is now per
+  family. The v4 keeps its ExternalIP→InternalIP fallback (on a single-NIC VPS
+  the InternalIP *is* the public address); the v6 deliberately does not, because
+  the v6 InternalIP may be a ULA and reporting a ULA as a node's public address
+  points the operator at an off-link address. This also fills the `v6Set` in
+  `getPlatformIngressIps()`, whose `includes(':')` branch could never match
+  before — the node-sourced half of AAAA domain verification was dead code.
+- **Email → Data Drift warns when a dual-stack cluster publishes no AAAA for
+  its mail hostname.** A cluster bootstrapped `--dual-stack` accepts SMTP/IMAP
+  over IPv6 on every mail node, but a v6-only client can only find it if
+  `mail.<apex>` publishes AAAA. When it doesn't, nothing breaks and nothing
+  complains — IPv4 carries every connection, so the operator who deliberately
+  asked for IPv6 gets none of it and has no signal. It belongs on the drift page
+  because it is the same failure shape as the rest of it: the platform's real
+  state and its published state disagree. Backed by a new `ipv6Dns`
+  deliverability sub-probe (also shown in the mail-health details modal) that
+  additionally flags partial coverage and stale AAAA pointing at non-mail nodes.
+  Deliberately `warning`, never `fail` — mail is fully functional, and
+  red-lighting the dashboard over a reachability nicety trains operators to
+  ignore it. Inert on single-stack clusters.
+- **Smoke test 10: published AAAA vs the cluster's actual IP stack.** Publishing
+  AAAA on a single-stack cluster gives every v6-preferring client a connection
+  reset and a silent fallback to IPv4 — invisible in every other check, and how
+  the testing box ran for months. Test 10 fails that, and on a dual-stack
+  cluster additionally requires each published AAAA to actually *serve*, so a
+  stale record pointing at a decommissioned node is caught too.
+  `scripts/test-smoke-aaaa-guard.sh` drives all four branches offline, because a
+  false FAIL here would turn `make smoke` red on every existing single-stack
+  production cluster.
+- **Host-migration state is visible in the admin panel** (Platform → Updates).
+  A failed migration blocks every later one on that node, and the only way to
+  discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
+  `0 applied, 11 pending` behind a single failure for five weeks. The card shows
+  per-node applied/pending/failed/blocked/skipped counts, the failure's cause,
+  how many times it has repeated and since when (ADR-056), any operator skip and
+  its reason, and links the troubleshooting runbook. A broken node expands
+  itself; a healthy or not-yet-reported node deliberately does not raise an
+  alert.
+  - Costs **no new privilege**: the converge writes a node-local `status.json`
+    and the existing `host-config-reconciler` DaemonSet — already on every node,
+    already publishing a per-node ConfigMap — relays it through a **read-only**
+    mount. Publishing from `platform-ops` was rejected because RBAC cannot scope
+    `create` by resource name, so a worker would have gained the ability to
+    create any ConfigMap in `platform-system`.
+  - No retry button, by design: the backend cannot touch a node, and the converge
+    already runs hourly and picks up a fixed condition on its own.
+  - Three failure shapes that would otherwise still have read as healthy are
+    surfaced explicitly: a **whole-run refusal** (catalog over the script cap,
+    which arrives with `ok:false` and *no items*, so every count is legitimately
+    zero), an **invalid** script that can never run, and a node that **breaks
+    between polls** (the per-node auto-expand now tracks state instead of only
+    the first render). Applied state is reported cumulatively — the relay counts
+    only what ran in that pass, so a fully caught-up node used to render "0
+    applied", indistinguishable from one that had never run anything.
+  - The relay caps field and list sizes. A failed migration's stderr is relayed
+    verbatim and the whole snapshot lives in one ConfigMap, so an unbounded blob
+    would breach etcd's ~1 MiB limit and freeze that node's reporting at its
+    last-known state — precisely when the panel matters most. Counts are derived
+    before capping and the API takes `max(relayed, recounted)`, so truncation can
+    never hide a failure.
+
+### Added
+- **A failure policy for host-migrations (ADR-056).** Halting on the first
+  failure is right — a later migration may assume an earlier one applied — but as
+  shipped it was unscoped, unrecoverable and silent: one deterministic failure
+  parked every later migration indefinitely, the only escape was `touch`ing a
+  `.done` marker (which makes the node report `applied` for a script that never
+  ran), and nothing escalated. The DEV cluster proved it, sitting at `0 applied,
+  11 pending` behind a single failure for five weeks.
+  - A migration may declare `# blocks-on-failure: no` when nothing later depends
+    on it, so an independent script no longer wedges the chain. **Absent means
+    `yes`**, so existing migrations keep today's safe behaviour; CI rejects any
+    value other than `yes`/`no`.
+  - An operator can record a `.skipped` marker carrying a reason. It is reported
+    as `skipped` — never `applied` — so the node's state stays honest, and it does
+    not block.
+  - Repeat failures carry an attempt count and a first-seen date, and a blocked
+    chain now names what it is blocked behind and links the runbook.
+  - The authoring contract distinguishes "not applicable to this host → exit 0,
+    loudly" from "tried and failed → exit 1"; `new-host-migration.sh` says so in
+    the stub.
+
+### Fixed
+- **`integration-mail-external-reachability` was banning its own prober.** The
+  suite opens 6 ports × every node × 4 phases from one source address, which is
+  enough for Stalwart to auto-ban it. A banned source is dropped *silently* —
+  the TCP handshake completes and the server then EOFs without greeting — so the
+  suite read a perfectly healthy mail server as dead. It now declares itself to
+  Stalwart before probing (clears any stale `BlockedIp` entry for its own source
+  and allowlists it for the run, removing the entry on exit), scoped to that one
+  address so every other rate-limit decision stays enforced. An empty banner on
+  a port that *accepted* the connection is now reported as exactly that, rather
+  than as a dead listener.
+- **Stalwart's rate-limit exemption covered IPv4 only.** The `x:AllowedIp`
+  entries bootstrap seeds for the cluster pod and service ranges were hardcoded
+  v4 literals, so on a dual-stack cluster the IPv6 ranges stayed subject to
+  Stalwart's connection and login limits. They now follow the real dual-stack
+  CIDRs, one entry per family, and an existing cluster gains only the missing v6
+  entries when re-run.
+- **Dual-stack clusters denied tenants all IPv6 egress.** The
+  `platform-cluster-cidrs` ConfigMap that tells the backend the cluster's pod and
+  service ranges was never created — on *any* cluster: the guard around it read a
+  variable that was `local` to a sibling shell function, so it was always empty.
+  On an IPv4-only cluster this was invisible, because the backend's built-in
+  defaults happen to be the same `10.42.0.0/16` / `10.43.0.0/16`. On a dual-stack
+  cluster it meant `buildTenantNetworkPolicies` never learned the IPv6 ranges, so
+  it emitted no `::/0` egress rule at all — and because that policy sets
+  `policyTypes: [Egress]`, having no v6 rule denies IPv6 outright. A tenant pod
+  could reach the node over IPv4 but not over IPv6, so a tenant app whose
+  resolver preferred the AAAA of `mail.<apex>` could not send mail. Both
+  consumers now share one `cluster_cidr_args()` helper, and
+  `resolveTenantNetworkCidrs` falls back to the nodes' own `spec.podCIDRs` when
+  the ConfigMap names no v6 range, so existing dual-stack clusters self-heal
+  without a rebuild. Cross-tenant isolation was verified to hold over both
+  families before and after the fix.
+- **`--node-external-ip` published IPv4 only on a pinned (mesh/VLAN) underlay.**
+  `--dual-stack` appended the node's IPv6 in the public-underlay branch but not
+  the pinned one, so the Node object carried a v4-only `ExternalIP` and the
+  `ingress-external-ips` reconciler published a v4-only list on the Traefik
+  Service. Both branches now take that address from a `global-only` detector:
+  a ULA is a perfectly good `--node-ip`, but announcing one as externally
+  reachable points clients at an off-link address, so a ULA-only host correctly
+  announces no IPv6 at all.
+- **The pod-CIDR control-plane firewall exemption was IPv4-only on dual-stack.**
+  The nft table is family `inet`, where `ip saddr` matches IPv4 exclusively;
+  `--dual-stack` now emits the matching `ip6 saddr` rule. The single-stack
+  ruleset is unchanged byte-for-byte.
+
 ## [2026.8.3-rc.4] - 2026-08-05
 
 ### Fixed

@@ -1,0 +1,64 @@
+name: Dependency audit (npm supply chain)
+
+# WHY THIS EXISTS (the one gap it closes)
+#
+# Every other dependency check in this repo answers "is there an ADVISORY about
+# this package?":
+#   - component-watch.yml  — OSV over every lockfile, gated against the CVE ledger,
+#                            and the single place malicious (MAL-) packages block
+#   - image-cve-scan.yml   — Trivy over BUILT IMAGES
+#
+# This job asks a question none of them can: "is the artifact we installed the one
+# the maintainer actually published?" `npm audit signatures` verifies every resolved
+# tarball against the registry's ECDSA signature and, where present, its npm
+# provenance attestation. That catches a TAMPERED artifact — a registry-side or
+# mirror-side swap leaves the version and the advisory feeds completely untouched,
+# so no CVE scanner will ever mention it.
+#
+# HISTORY: this workflow also carried its own OSV scan of package-lock.json with an
+# inline malicious-package gate. That duplicated component-watch.yml's scanner and
+# split the rules across two files — the MAL- gating moved into
+# .github/scripts/component-watch-gate.py (next to the ledger it consults) and the
+# duplicate job was removed 2026-08-06.
+#
+# Deliberately NOT `npm audit --audit-level=high`: that gates on transitive
+# advisories in dev tooling and is famous for blocking merges on unreachable
+# findings. Vulnerability triage stays with the CVE ledger.
+
+on:
+  push:
+    branches: [development]
+    paths: ['package-lock.json', 'package.json', '.npmrc', '.github/workflows/ci-dependency-audit.yml']
+  pull_request:
+    branches: [development, main]
+    paths: ['package-lock.json', 'package.json', '.npmrc', '.github/workflows/ci-dependency-audit.yml']
+  schedule:
+    # Daily: signatures and provenance are re-checkable facts about packages that
+    # are already in the lockfile, so a push-only trigger would never re-examine a
+    # dependency that has not changed — which is exactly the case that bites.
+    # An hour after component-watch's daily dep-scan (04:17), not alongside it —
+    # identical crons across two workflows read like a copy-paste mistake.
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  signatures:
+    name: Registry signatures + provenance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      # --ignore-scripts is redundant with the repo .npmrc but stated here too:
+      # this job must never execute dependency code to check dependency code.
+      - run: npm ci --ignore-scripts
+      - name: Verify every tarball against the registry signature
+        # Fails the build on a signature mismatch — that is tampering, not a
+        # judgement call. Missing signatures (older packages) are reported but
+        # do not fail, otherwise this would be permanently red.
+        run: npm audit signatures

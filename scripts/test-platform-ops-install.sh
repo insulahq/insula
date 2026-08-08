@@ -253,6 +253,38 @@ printf 'PUBKEY\n' > "$SBT/repo/platform/cosign.pub"; EMPTY2=$(mktemp -d)
 ) ; yes "no lingering RETURN trap after install path (caller return is clean)" "[ \$? -eq 0 ]"
 rm -rf "$SBT" "$EMPTY2"
 
+# ── 7. Regression: A DORMANT SELF-UPGRADE MUST STILL LEAVE A CONVERGE TIMER.
+#      The DEV cluster was pinned to a platform version never cut as a release,
+#      so the asset fetch 404'd, bootstrap skipped the whole install, and the
+#      node sat with 16 unapplied host-migrations and NO timer to apply them —
+#      silently, since nothing reports a timer that was never installed.
+#      Dormancy is a refusal to REPLACE the binary; it must not disable the
+#      convergence of an already-installed one.
+DORM=$(mktemp -d); mkdir -p "$DORM/repo/platform" "$DORM/units" "$DORM/bin"
+printf '2026.6.1\n' > "$DORM/repo/platform/VERSION"
+printf 'PUBKEY\n'   > "$DORM/repo/platform/cosign.pub"
+printf '#!/bin/sh\n' > "$DORM/bin/insula"; chmod +x "$DORM/bin/insula"   # binary ALREADY present
+EMPTY3=$(mktemp -d)   # release base with no asset → the 404 dormancy path
+PLATFORM_OPS_BIN="$DORM/bin/insula" PLATFORM_OPS_RELEASE_BASE="$EMPTY3" \
+  PLATFORM_OPS_SYSTEMD_DIR="$DORM/units" PLATFORM_OPS_SKIP_SYSTEMCTL=1 \
+  phase_platform_ops "$DORM/repo" >/dev/null 2>&1
+yes "dormant fetch + binary present → host-config converge timer IS installed" \
+  "[ -f '$DORM/units/platform-ops-host-config.timer' ]"
+yes "dormant fetch → the converge service points at the present binary" \
+  "grep -q '$DORM/bin/insula' '$DORM/units/platform-ops-host-config.service'"
+
+# The other half: with NO binary there is genuinely nothing to converge with,
+# so a timer would only fail every hour. It must stay absent.
+NOBIN=$(mktemp -d); mkdir -p "$NOBIN/repo/platform" "$NOBIN/units"
+printf '2026.6.1\n' > "$NOBIN/repo/platform/VERSION"
+printf 'PUBKEY\n'   > "$NOBIN/repo/platform/cosign.pub"
+PLATFORM_OPS_BIN="$NOBIN/bin/insula" PLATFORM_OPS_RELEASE_BASE="$EMPTY3" \
+  PLATFORM_OPS_SYSTEMD_DIR="$NOBIN/units" PLATFORM_OPS_SKIP_SYSTEMCTL=1 \
+  phase_platform_ops "$NOBIN/repo" >/dev/null 2>&1
+yes "dormant fetch + NO binary → no timer (nothing to converge with)" \
+  "[ ! -e '$NOBIN/units/platform-ops-host-config.timer' ]"
+rm -rf "$DORM" "$EMPTY3" "$NOBIN"
+
 rm -rf "$KEYDIR"
 echo
 echo "platform-ops-install tests: $pass passed, $fail failed"

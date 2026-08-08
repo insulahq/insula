@@ -39,8 +39,17 @@ host-config host-migrations enforce [embedded]: 1 applied, 0 pending, 19 shipped
 |---|---|
 | `applied` | ran successfully, or was already satisfied; a marker exists |
 | `pending` | shipped in this binary, not yet run |
-| `run-failed` | the script exited non-zero — **this is what blocks the rest** |
-| `blocked` | queued behind a `run-failed` script; not itself broken |
+| `run-failed` | the script exited non-zero. Blocks the rest **unless it declares `# blocks-on-failure: no`** |
+| `blocked` | queued behind a blocking `run-failed` script; not itself broken |
+| `skipped` | an operator recorded a `.skipped` marker — it never ran, and it does not block |
+
+A repeat failure states how long it has been repeating, so a wedge is legible at
+a glance rather than looking like a fresh problem:
+
+```
+run-failed  2026.7.1/0001-… — <error>  (attempt 840, failing since 2026-07-01)
+host-config host-migrations: 11 migration(s) BLOCKED behind 2026.7.1/0001-… — see …
+```
 
 Per-node markers live at `/var/lib/platform/host-migrations/<version>/<name>.sh.done`.
 A missing marker means "not applied on this node" — they are per node, so check
@@ -80,6 +89,39 @@ That value is not set by any current manifest or by `bootstrap.sh` — it is sta
 state in that one cluster's stored Helm release. Clear it deliberately (inspect
 first, then `helm upgrade` without the offending key) rather than by re-running
 the migration, which will keep reproducing it.
+
+## When a migration can never succeed (ADR-056)
+
+Retrying only fixes *transient* failures. A deterministic one — a precondition
+retrying cannot change, like stale Helm values a newer chart schema rejects —
+repeats forever, and before ADR-056 it parked every later migration with it.
+
+Two ways out, in order of preference:
+
+1. **Fix the underlying condition**, then `insula host-config apply`. Always try
+   this first; the migration exists for a reason.
+2. **Record a skip** when the migration is genuinely not applicable to this host
+   and never will be:
+   ```bash
+   V=2026.7.1; N=0001-infra-chart-bumps-cert-manager-traefik-cnpg.sh
+   printf 'stale runtimeClassName in the stored release; values cleared by hand 2026-08-05\n' \
+     > /var/lib/platform/host-migrations/$V/$N.skipped
+   ```
+   The node then reports it as **`skipped`** with that reason — never `applied` —
+   and the chain proceeds.
+
+> **Do not `touch` the `.done` marker.** It was the only escape hatch before
+> ADR-056 and it *lies*: the node reports `applied` for a script that never ran,
+> which the next incident responder has to unpick. Use `.skipped`.
+
+### For migration authors
+
+- **Exit 0** for applied, already-satisfied, **and not-applicable-to-this-host** —
+  printing why. A precondition retrying can never change is *not* a failure.
+- **Exit 1** only when you genuinely attempted the change and it failed.
+- Add `# blocks-on-failure: no` **iff nothing later depends on your script.** The
+  header is optional and absent means `yes`, so the safe default holds; CI
+  rejects any value other than `yes`/`no`.
 
 ## If a node never converges at all
 
