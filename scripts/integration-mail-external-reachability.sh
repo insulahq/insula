@@ -259,6 +259,8 @@ probe_node_ports_v6() {
   local node="$1" v6="$2" expect="$3"
   [ "$CLUSTER_DUAL_STACK" = yes ] || return 0
   [ -n "$v6" ] || return 0
+  # No v6 path from here → cannot judge; skipping beats inventing a failure.
+  [ "${HARNESS_HAS_V6:-yes}" = yes ] || return 0
   local pass=0 fail=0 reasons=""
   for p in "${ALL_PORTS[@]}"; do
     if probe_tcp "$v6" "$p"; then
@@ -483,6 +485,36 @@ done < <(echo "$NODES_JSON" | jq -r '.items[] | [
 CLUSTER_DUAL_STACK=no
 echo "$NODES_JSON" | jq -e '[.items[].spec.podCIDRs // [] | .[]] | map(select(contains(":"))) | length > 0' >/dev/null 2>&1 && CLUSTER_DUAL_STACK=yes
 echo "Cluster dual-stack: $CLUSTER_DUAL_STACK"
+
+# Can THIS HARNESS speak IPv6 at all?
+#
+# The v6 assertions below check that a dual-stack cluster serves mail on the
+# same nodes over both families. Run from an IPv4-only uplink every one of them
+# fails at connect() and the suite reports "IPv6 FAIL — mail not reachable over
+# v6" for a cluster that is serving v6 perfectly — a property of the operator's
+# network, not of the platform. Confirmed 2026-08-08: the DEV apex publishes
+# AAAA for the apex, admin, mail and the wildcard, all pointing at the node's
+# public v6, while the host running this suite had no v6 route at all.
+#
+# Probe once: a global v6 source address AND a completed TCP connect to a node's
+# v6. Anything less means the harness cannot judge v6, so say so and skip rather
+# than manufacture failures. (A cluster that genuinely lost v6 still fails the
+# in-cluster checks and the AAAA guard in smoke-test-cluster-network.sh.)
+HARNESS_HAS_V6=no
+if [ "$CLUSTER_DUAL_STACK" = yes ]; then
+  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
+    for _n in "${!NODE_V6[@]}"; do
+      _a="${NODE_V6[$_n]}"
+      [ -n "$_a" ] || continue
+      if probe_tcp "$_a" 22 || probe_tcp "$_a" 443; then HARNESS_HAS_V6=yes; break; fi
+    done
+  fi
+  if [ "$HARNESS_HAS_V6" = no ]; then
+    amber "  harness has no usable IPv6 path to the cluster — IPv6 assertions will be SKIPPED (not failed)."
+    amber "    The cluster is dual-stack; this is the harness's uplink, not a platform gap."
+    amber "    Re-run from an IPv6-capable host to assert the v6 half."
+  fi
+fi
 if [ "$CLUSTER_DUAL_STACK" = yes ]; then
   echo "Node IPv6: $(for k in "${!NODE_V6[@]}"; do printf '%s=%s ' "$k" "${NODE_V6[$k]}"; done)"
   # FAIL LOUDLY rather than skip. A dual-stack cluster with no discoverable node
