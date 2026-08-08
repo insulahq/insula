@@ -1500,9 +1500,31 @@ scenario_reaper() {
   # Accept 200 or 204
   ok "reaper: deployment deleted (response: $(echo "$del_resp" | head -c 80))"
 
-  # Wait the grace period (5 min) + 30s buffer
-  log "reaper: waiting 330s for reaper grace period + job to complete…"
-  sleep 330
+  # Wait out the 5-minute grace period, then POLL — do not sleep-once-and-assert.
+  #
+  # `sleep 330` (grace + 30s) budgets nothing for what happens AFTER the grace
+  # expires: the due row is picked up on the next sweep tick, which then has to
+  # schedule a privileged pod on the target node, start it, and exec crictl.
+  # Measured on a single-node cluster 2026-08-08:
+  #
+  #   19:44:24  deployment deleted, wait starts
+  #   19:49:24  grace (300s) expires — row becomes due
+  #   19:50:06  suite asserts at t+342s  -> image present -> FAIL
+  #   19:50:52  reap actually COMPLETES  (image_reap_log: succeeded=t,
+  #             bytes_reclaimed=46409201, error=NULL)
+  #
+  # 46 seconds short. The suite reported "reaper did not fire" about a reaper
+  # that fired correctly and reclaimed 46 MB. Polling keeps the assertion just
+  # as strong — a reaper that never fires still fails at the deadline — while
+  # removing a race that only ever produced false failures.
+  local reap_deadline="${REAPER_WAIT_S:-600}"
+  log "reaper: waiting out the ${IMAGE_REAP_GRACE_S:-300}s grace period, then polling up to ${reap_deadline}s…"
+  sleep "${IMAGE_REAP_GRACE_S:-300}"
+  local _rw=0
+  while (( _rw < reap_deadline )); do
+    ssh_node "$node_name" "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}" || break
+    sleep 10; _rw=$((_rw + 10))
+  done
 
   # Assert image is GONE from the node the pod ran on (same multi-node
   # fix as the presence check above).
