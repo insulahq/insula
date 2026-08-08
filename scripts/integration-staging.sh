@@ -683,7 +683,17 @@ _resolve_mail_ips() {
   # 2. Cluster node IPs (server-role nodes — haproxy targets) for the
   # intersection check + fallback.
   local cluster_ips
-  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+  # NOTE the NESTED range. `{.status.addresses[?(@.type=="InternalIP")].address}`
+  # matches EVERY InternalIP on the node and kubectl joins multiple matches with
+  # a SPACE, while `{"\n"}` fires once per NODE. On a dual-stack node that emits
+  # one line holding two addresses:
+  #     "178.x.x.x 2a01:...::1"        <- ONE line, space-separated
+  # which downstream is read as a single IP: it matches no private-range case,
+  # matches nothing in DNS, and so gets reported as MISSING — while every real
+  # DNS answer simultaneously looks EXTRA. That is how this printed the same
+  # address as both missing and extra in one breath. Single-stack clusters have
+  # one InternalIP per node, so the bug is invisible until dual-stack.
+  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type==\"InternalIP\")]}{.address}{\"\n\"}{end}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   # If DNS returned anything, use it. Otherwise fall back to cluster
   # node IPs (covers fresh clusters where DNS hasn't been wired yet
@@ -710,7 +720,17 @@ _assert_mail_forward_dns() {
     | grep -E ':' | sort -u || true)
   local dns_all
   dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
-  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+  # NOTE the NESTED range. `{.status.addresses[?(@.type=="InternalIP")].address}`
+  # matches EVERY InternalIP on the node and kubectl joins multiple matches with
+  # a SPACE, while `{"\n"}` fires once per NODE. On a dual-stack node that emits
+  # one line holding two addresses:
+  #     "178.x.x.x 2a01:...::1"        <- ONE line, space-separated
+  # which downstream is read as a single IP: it matches no private-range case,
+  # matches nothing in DNS, and so gets reported as MISSING — while every real
+  # DNS answer simultaneously looks EXTRA. That is how this printed the same
+  # address as both missing and extra in one breath. Single-stack clusters have
+  # one InternalIP per node, so the bug is invisible until dual-stack.
+  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type==\"InternalIP\")]}{.address}{\"\n\"}{end}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   if [[ -z "$dns_all" ]]; then
     mdfail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"

@@ -287,9 +287,13 @@ done
 [[ "$READY" == "true" ]] && ok "coturn pod Ready" || warn "coturn pod not Ready yet ($READY) — STUN may fail spuriously"
 
 # Resolve the public IP of the pod's node.
-NODE_IP=$(ssh_cluster "kubectl get node $POD_NODE -o jsonpath='{.status.addresses[?(@.type==\"ExternalIP\")].address}'" 2>/dev/null)
+# Nested range + head -1: the flat `…addresses[?(…)].address` form matches EVERY
+# address of that type and kubectl space-joins them, so a dual-stack node yields
+# "v4 v6" in one string and the STUN probe below gets an unusable host. One
+# address per line, take the first — the value single-stack always produced.
+NODE_IP=$(ssh_cluster "kubectl get node $POD_NODE -o jsonpath='{range .status.addresses[?(@.type==\"ExternalIP\")]}{.address}{\"\n\"}{end}'" 2>/dev/null | head -1)
 if [[ -z "$NODE_IP" ]]; then
-  NODE_IP=$(ssh_cluster "kubectl get node $POD_NODE -o jsonpath='{.status.addresses[?(@.type==\"InternalIP\")].address}'" 2>/dev/null)
+  NODE_IP=$(ssh_cluster "kubectl get node $POD_NODE -o jsonpath='{range .status.addresses[?(@.type==\"InternalIP\")]}{.address}{\"\n\"}{end}'" 2>/dev/null | head -1)
 fi
 log "  probing $POD_NODE → $NODE_IP:3478"
 
