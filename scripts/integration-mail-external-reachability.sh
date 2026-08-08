@@ -486,6 +486,12 @@ CLUSTER_DUAL_STACK=no
 echo "$NODES_JSON" | jq -e '[.items[].spec.podCIDRs // [] | .[]] | map(select(contains(":"))) | length > 0' >/dev/null 2>&1 && CLUSTER_DUAL_STACK=yes
 echo "Cluster dual-stack: $CLUSTER_DUAL_STACK"
 
+# How many SERVER-role nodes? Drives whether a haproxy DaemonSet is expected at
+# all (it needs a non-active server node to run on).
+SERVER_NODE_COUNT=$(echo "$NODES_JSON" | jq -r '[.items[] | select(.metadata.labels."insula.host/node-role"=="server")] | length' 2>/dev/null)
+[ -n "$SERVER_NODE_COUNT" ] || SERVER_NODE_COUNT=2
+echo "Server-role nodes: $SERVER_NODE_COUNT"
+
 # Can THIS HARNESS speak IPv6 at all?
 #
 # The v6 assertions below check that a dual-stack cluster serves mail on the
@@ -556,6 +562,18 @@ wait_for_stalwart_settled() {
 
 wait_for_haproxy_ds() {
   local expect="$1"  # "present" or "absent"
+  # With fewer than TWO server-role nodes there can be no NON-ACTIVE server
+  # node, so the platform never creates the haproxy DaemonSet — the active node
+  # serves mail from Stalwart's own hostPort. Waiting for it to appear then
+  # burns the full timeout in every phase and prints "haproxy DS never reached
+  # full readiness (ready=?/?)" against a perfectly healthy cluster (the ?/?
+  # being an ABSENT DS, not a zero-scheduled one). Observed on the single-node
+  # DEV cluster 2026-08-08; the VM tier never showed it because it runs 3
+  # servers.
+  if [ "$expect" = "present" ] && [ "${SERVER_NODE_COUNT:-2}" -lt 2 ] 2>/dev/null; then
+    echo "    haproxy DS not expected (${SERVER_NODE_COUNT:-?} server-role node) — active node serves mail directly"
+    return 0
+  fi
   local end=$(($(date +%s) + 180))
   while [ $(date +%s) -lt $end ]; do
     if ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy' >/dev/null 2>&1; then
@@ -576,7 +594,18 @@ wait_for_haproxy_ds() {
         local want got
         want=$(ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy -o jsonpath="{.status.desiredNumberScheduled}"' 2>/dev/null | tr -d '\r')
         got=$(ssh_kubectl 'kubectl get ds -n mail stalwart-haproxy -o jsonpath="{.status.numberReady}"' 2>/dev/null | tr -d '\r')
-        if [ -n "$want" ] && [ "$want" != "0" ] && [ "$got" = "$want" ]; then
+        # desiredNumberScheduled==0 is a legitimate steady state, not a
+        # not-ready one: on a SINGLE-NODE cluster the active node serves mail
+        # from Stalwart's own hostPort and there is no non-active server node
+        # for haproxy to run on, so the DS correctly schedules nothing. Treating
+        # 0 as "not ready yet" made this gate burn its full timeout and print
+        # "haproxy DS never reached full readiness (ready=0/0)" on a perfectly
+        # healthy single-node cluster — seen against DEV 2026-08-08.
+        if [ "$want" = "0" ]; then
+          echo "    haproxy DS schedules 0 pods (single-node / no non-active server node) — nothing to wait for"
+          return 0
+        fi
+        if [ -n "$want" ] && [ "$got" = "$want" ]; then
           echo "    haproxy DS ready on ${got}/${want} node(s)"
           return 0
         fi
