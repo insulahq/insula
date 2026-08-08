@@ -80,7 +80,14 @@ assert() {
 }
 
 cm_data_key() {
-  $KUBECTL -n "$NAMESPACE" get configmap "$CM_NAME" -o jsonpath="{.data.$1}"
+  # ESCAPE the dots. The keys are filenames — "bulwark-overrides.css" — and an
+  # unescaped `{.data.bulwark-overrides.css}` is parsed as
+  # data -> "bulwark-overrides" -> "css", which does not exist, so kubectl
+  # returns EMPTY and every assertion built on this reads as "key missing" on a
+  # cluster where the ConfigMap is perfectly correct. Verified against the live
+  # object: dotted form -> empty, escaped form -> the CSS.
+  # deployment_hash() below already escapes its annotation key the same way.
+  $KUBECTL -n "$NAMESPACE" get configmap "$CM_NAME" -o jsonpath="{.data.${1//./\\.}}"
 }
 
 deployment_hash() {
