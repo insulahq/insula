@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.5] - 2026-08-08
+
 ### Security
 - **Runtime-resolved Job images now pin by digest — `rocksdb-secondary-checkpoint`
   first.** The mail-archive checkpoint binary resolved as
