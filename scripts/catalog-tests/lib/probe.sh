@@ -247,7 +247,9 @@ probe_stun_probe() {
   fi
   # The DinD node IP from the workspace's perspective.
   local node_ip
-  node_ip=$(kctl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+  # Nested range + head -1: the flat form space-joins a dual-stack node's v4+v6
+  # into one string, which is not a usable host for the STUN probe below.
+  node_ip=$(kctl get nodes -o jsonpath='{range .items[0].status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}' | head -1)
   [[ -n "$node_ip" ]] || { fail "coturn: cannot resolve node InternalIP"; return 1; }
 
   local probe_port
