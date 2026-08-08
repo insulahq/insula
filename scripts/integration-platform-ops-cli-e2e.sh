@@ -50,7 +50,16 @@ ADMIN_EMAIL="${ADMIN_EMAIL:-admin@testing.example.test}"
 SSH_KEY="${SSH_KEY:-$HOME/hosting-platform.key}"
 SSH_HOST="${SSH_HOST:-root@192.0.2.10}"
 RENAME_TARGET="${RENAME_TARGET:-}"
-PLATFORM_OPS_BIN="${PLATFORM_OPS_BIN:-/usr/local/bin/platform-ops}"
+# Resolve the operator CLI on the NODE rather than hardcoding a path.
+# ADR-055 consolidated the operator CLI into a single `insula` binary installed
+# at /usr/local/bin/insula; /usr/local/bin/platform-ops no longer exists on a
+# current node. The old hardcoded default made every invocation exit 127, and
+# on_node() sends stderr to /dev/null, so "command not found" was swallowed and
+# all seven checks reported "… --json malformed:" with an empty payload — seven
+# mystery failures for one missing file. (The binary still identifies itself as
+# "platform-ops — Insula operator CLI" and keeps the same subcommands, so only
+# the path changed.)
+PLATFORM_OPS_BIN="${PLATFORM_OPS_BIN:-}"
 
 CYAN='\033[36m'; GREEN='\033[32m'; RED='\033[31m'; YEL='\033[33m'; RESET='\033[0m'
 log()  { printf '%b[%s]%b %s\n' "$CYAN" "$(date +%H:%M:%S)" "$RESET" "$*"; }
@@ -73,6 +82,22 @@ login_token() { # $1 = password
     | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('data') or {}).get('token','') or '')" 2>/dev/null
 }
 
+if [[ -z "$PLATFORM_OPS_BIN" ]]; then
+  # `insula` first (ADR-055), then the pre-consolidation name, then PATH.
+  PLATFORM_OPS_BIN=$(ssh_q '
+    for c in /usr/local/bin/insula /usr/local/bin/platform-ops; do
+      [ -x "$c" ] && { printf %s "$c"; exit 0; }
+    done
+    command -v insula 2>/dev/null || command -v platform-ops 2>/dev/null || true' 2>/dev/null | tr -d '\r')
+fi
+if [[ -z "$PLATFORM_OPS_BIN" ]]; then
+  # A missing binary is a PREREQUISITE failure, not seven malformed-JSON
+  # assertions. Say which node and what was looked for.
+  printf '  %b✗%b operator CLI not found on %s (looked for /usr/local/bin/insula, /usr/local/bin/platform-ops, and $PATH) — set PLATFORM_OPS_BIN to override\n' \
+    "$RED" "$RESET" "${SSH_HOST#*@}" >&2
+  exit 2
+fi
+log "operator CLI on node: $PLATFORM_OPS_BIN"
 log "platform-ops version on node: $(on_node version | head -1)"
 
 # ─── Test 1: admin reset-password --random → log in with the printed password ──
