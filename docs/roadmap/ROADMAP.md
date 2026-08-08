@@ -378,10 +378,21 @@ serving IPv6, and neither blocks the customer-facing promise:
   and it should be done *then*, together, or it is untested surface. (Verified for
   nginx-php only; other images unaudited, deliberately — there is nothing to fix
   until the Services change.)
-- Outbound mail over IPv6 is deliberately NOT enabled by this work: receivers
-  apply stricter PTR/forward-confirmed rules to v6 than v4, so sending before
-  rDNS is in place and warmed trades a reachability win for a deliverability
-  loss. Inbound v6 is safe today; outbound needs the operator's PTR first.
+- ~~Outbound mail over IPv6 is deliberately NOT enabled~~ — **corrected
+  2026-08-08: outbound IPv6 is already active, and nothing gates it.** Measured
+  on the dual-stack cluster: a major receiver accepted an SMTP connection from
+  the node's global v6 and echoed it back (`250-… at your service,
+  [2a01:…:a0f5::1]`). The live Stalwart config carries no `ip-strategy`,
+  `source-ip` or `queue.outbound` key at all, so it runs on its default — and
+  that default is `V4ThenV6` (`MtaIpStrategy::V4ThenV6` is the `#[default]`
+  variant in Stalwart's source). So IPv4 wins for any destination that has an A
+  record, and IPv6 is used as the fallback for destinations that do not. It is
+  enabled and working, just rarely exercised.
+  PTR is EXTERNAL configuration (the IP's network provider) and equally so for
+  IPv4 — it is now reported per-address in the mail health card for BOTH
+  families and never gates sending. Deliberately still open: flipping the
+  strategy to `V6ThenV4` to make IPv6 the preferred path, which is a
+  reputation decision for the operator, not a defect.
 - The single-stack **multi-node** control run for `mail-external-reachability`.
   The dual-stack run is now clean (2026-08-06, run `6e9e214b`): every port
   probe, SMTP banner, negative expectation and the mode-switch refusal pass on

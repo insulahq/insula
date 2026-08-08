@@ -56,8 +56,10 @@ describe('probeDeliverability — top-level wiring', () => {
     expect(r.status).toBe('not_implemented');
     expect(r.healthy).toBe(true);
     // No server IPs → fixed-count probes only would have run
-    // (1 forward DNS + 0 reverse + 0 blocklists + 1 SAN + 1 banner = 3).
-    expect(r.summary.skipped).toBe(3);
+    // (1 forward DNS + 1 AAAA + 0 reverse + 0 blocklists + 1 SAN + 1 banner = 4).
+    // The AAAA probe is in the real subProbes array but was missing from
+    // expectedSubProbeCount, so this rollup under-reported by one.
+    expect(r.summary.skipped).toBe(4);
   });
 
   it('not_implemented summary counts what WOULD have run (hostname missing, 2 IPs)', async () => {
@@ -66,8 +68,8 @@ describe('probeDeliverability — top-level wiring', () => {
       serverNodeIps: ['198.51.100.10', '198.51.100.11'],
     }));
     expect(r.status).toBe('not_implemented');
-    // 1 forward + 2 reverse + 2×8 blocklists + 1 SAN + 1 banner = 21
-    expect(r.summary.skipped).toBe(21);
+    // 1 forward + 1 AAAA + 2 reverse + 2×8 blocklists + 1 SAN + 1 banner = 22
+    expect(r.summary.skipped).toBe(22);
   });
 
   it('reports ok with summary when everything passes', async () => {
@@ -225,6 +227,44 @@ describe('reverse DNS / FCrDNS probe', () => {
       resolvePtr: async () => ['mail.example.com.'],
     }));
     expect(r.reverseDns[0].severity).toBe('ok');
+  });
+
+  // PTR used to be checked for IPv4 only, so on a dual-stack cluster the IPv6
+  // mail addresses — which outbound mail genuinely uses as a fallback — had no
+  // reverse-DNS signal at all. A receiver reachable only over IPv6 would see an
+  // unauthenticated source and nothing in the health card said so.
+  it('checks PTR for IPv6 mail addresses too, not just IPv4', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10'] }),
+      resolvePtr: async () => ['mail.example.com'],
+    }));
+    expect(r.reverseDns).toHaveLength(2);
+    expect(r.reverseDns.map((p) => p.ip)).toContain('2001:db8:9::10');
+    expect(r.reverseDns.every((p) => p.severity === 'ok')).toBe(true);
+  });
+
+  // Severity differs by family ON PURPOSE. Stalwart's default IP strategy is
+  // V4ThenV6, so IPv4 carries essentially all outbound mail: no PTR there is a
+  // hard failure. IPv6 is only the fallback, so a missing PTR degrades delivery
+  // to IPv6-only receivers while everything else keeps flowing — reporting that
+  // as `fail` would paint every dual-stack cluster red over something that is
+  // not stopping mail. PTR is external config; it is reported, never enforced.
+  it('reports a missing IPv6 PTR as warning, while IPv4 stays fail', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10'] }),
+      resolvePtr: async () => { throw new Error('NXDOMAIN'); },
+    }));
+    const v4 = r.reverseDns.find((p) => !p.ip.includes(':'));
+    const v6 = r.reverseDns.find((p) => p.ip.includes(':'));
+    expect(v4?.severity).toBe('fail');
+    expect(v6?.severity).toBe('warning');
+    expect(v6?.remediation).toMatch(/fallback path/);
+    // Never phrased as a precondition for sending.
+    expect(v6?.remediation ?? '').not.toMatch(/before you enable/i);
   });
 
   it('fails when PTR lookup throws (no PTR configured)', async () => {

@@ -194,7 +194,15 @@ async function runAllProbes(
   const [forwardDns, ipv6Dns, reverseDns, blocklists, certSanMatch, smtpBanner] = await Promise.all([
     probeForwardDns(deps, hostname, expectedIps),
     probeIpv6Dns(deps, hostname, expectedIpv6),
-    probeReverseDnsAll(deps, hostname, expectedIps),
+    // PTR over BOTH families. This used to run on expectedIps (IPv4) only, so a
+    // dual-stack cluster's IPv6 mail addresses were never checked for reverse DNS
+    // at all — the AAAA forward check was the only v6 signal, and a missing v6
+    // PTR was invisible. Outbound IPv6 works today (verified: a receiver accepted
+    // a connection from the node's global v6), so those addresses need the same
+    // scrutiny; see probeReverseDnsOne for why v6 reports as warning, not fail.
+    probeReverseDnsAll(deps, hostname, [...expectedIps, ...expectedIpv6]),
+    // Blocklists stay IPv4-only on purpose: the major DNSBLs either do not accept
+    // IPv6 queries or answer meaninglessly for them.
     probeBlocklistsAll(deps, expectedIps),
     probeCertSan(deps, hostname),
     probeSmtpBanner(deps, hostname),
@@ -237,12 +245,16 @@ async function runAllProbes(
 }
 
 // Number of sub-probes that would have run had the precondition (hostname
-// + serverNodeIps) been satisfied: 1 forward DNS + N reverse DNS + N×8
-// blocklists + 1 cert SAN + 1 SMTP banner. Used by notImplementedComponent
-// so the summary rollup is honest about what was elided.
-function expectedSubProbeCount(serverNodeIps: ReadonlyArray<string>): number {
+// + serverNodeIps) been satisfied: 1 forward DNS + 1 AAAA + N reverse DNS
+// (v4 AND v6) + N×8 blocklists (v4 only) + 1 cert SAN + 1 SMTP banner. Used by
+// notImplementedComponent so the summary rollup is honest about what was elided.
+function expectedSubProbeCount(
+  serverNodeIps: ReadonlyArray<string>,
+  serverNodeIpv6s: ReadonlyArray<string> = [],
+): number {
   const ipCount = serverNodeIps.length;
-  return 1 + ipCount + (ipCount * BLOCKLISTS.length) + 1 + 1;
+  const reverseCount = ipCount + serverNodeIpv6s.length;
+  return 1 + 1 + reverseCount + (ipCount * BLOCKLISTS.length) + 1 + 1;
 }
 
 function notImplementedComponent(
@@ -377,8 +389,9 @@ async function probeIpv6Dns(
     ? (resolvedIpv6.length === 0
         ? `This cluster was bootstrapped dual-stack and serves mail over IPv6, but ${hostname} ` +
           `publishes no AAAA record — so no IPv6-only client can reach it. Add AAAA record(s) for ` +
-          `${missingIpv6.join(', ')} at your DNS provider. Note that outbound IPv6 mail also needs ` +
-          'matching PTR/rDNS before you enable it; inbound over IPv6 is safe today.'
+          `${missingIpv6.join(', ')} at your DNS provider. Outbound IPv6 is already active as a ` +
+          'fallback (IPv4 is tried first); PTR for those addresses is reported separately below and ' +
+          'is not a precondition for sending.'
         : `${hostname} publishes AAAA for only some IPv6 mail nodes. Add AAAA record(s) for ` +
           `${missingIpv6.join(', ')} so every node can accept IPv6 connections for this hostname.`)
     : `${hostname} publishes AAAA for ${extraIpv6.join(', ')}, which are NOT IPv6 mail nodes. ` +
@@ -491,11 +504,34 @@ async function probeReverseDnsAll(
   return Promise.all(expectedIps.map((ip) => probeReverseDnsOne(deps, hostname, ip)));
 }
 
+// PTR is EXTERNAL configuration — it lives at the IP's network provider, not on
+// this cluster — and that is equally true for IPv4 and IPv6. It is reported, never
+// enforced: nothing here gates sending on it.
+//
+// Severity does differ by family, and deliberately:
+//   IPv4  fail    — the primary send path. Stalwart's default IP strategy is
+//                   V4ThenV6 (MtaIpStrategy::V4ThenV6 is #[default] in its
+//                   source), so essentially all outbound mail leaves over IPv4.
+//                   No PTR there and receivers reject or quarantine.
+//   IPv6  warning — only the FALLBACK path is affected. With V4ThenV6, IPv6 is
+//                   used when a destination has no usable IPv4, so a missing v6
+//                   PTR degrades delivery to those few hosts while everything
+//                   else keeps flowing over IPv4. Failing here would paint every
+//                   dual-stack cluster's health card red for something that is
+//                   not stopping mail.
+const isIpv6 = (ip: string) => ip.includes(':');
+
 async function probeReverseDnsOne(
   deps: DeliverabilityDeps,
   hostname: string,
   ip: string,
 ): Promise<MailHealthReverseDnsProbe> {
+  const v6 = isIpv6(ip);
+  const missSeverity = v6 ? 'warning' as const : 'fail' as const;
+  const familyNote = v6
+    ? ' IPv6 is the fallback path (Stalwart tries IPv4 first), so mail keeps flowing over IPv4 meanwhile — ' +
+      'but any receiver reachable only over IPv6 will see an unauthenticated source.'
+    : ' This is the primary send path — outbound mail leaves over IPv4 by default.';
   const resolvePtr = deps.resolvePtr ?? defaultResolvePtr;
   let ptrRecords: string[] = [];
   let err: string | null = null;
@@ -517,13 +553,14 @@ async function probeReverseDnsOne(
 
   if (err) {
     return {
-      severity: 'fail',
+      severity: missSeverity,
       assertion: `PTR for ${ip} resolves to ${hostname}`,
       actual: `PTR lookup failed: ${err}`,
       expected: hostname,
       remediation:
         `No PTR record for ${ip}. Configure reverse DNS at the IP's network provider (Hetzner/AWS/etc.) ` +
-        `to ${hostname}. Without PTR, large mailbox providers (Gmail, Outlook, Apple) will reject or quarantine mail.`,
+        `to ${hostname}. Without PTR, large mailbox providers (Gmail, Outlook, Apple) will reject or quarantine mail.` +
+        familyNote,
       ip,
       ptrRecords: [],
       expectedPtr: hostname,
@@ -546,14 +583,14 @@ async function probeReverseDnsOne(
   }
 
   return {
-    severity: 'fail',
+    severity: missSeverity,
     assertion: `PTR for ${ip} resolves to ${hostname}`,
     actual: ptrRecords.length > 0 ? ptrRecords.join(', ') : '(no records)',
     expected: hostname,
     remediation:
       `PTR for ${ip} returns ${ptrRecords.join(', ') || '(nothing)'} instead of ${hostname}. ` +
       'Update reverse DNS at your IP provider to match. Forward+reverse DNS mismatch (FCrDNS failure) is one of the top ' +
-      'three reasons receivers tempfail outbound mail.',
+      'three reasons receivers tempfail outbound mail.' + familyNote,
     ip,
     ptrRecords,
     expectedPtr: hostname,
