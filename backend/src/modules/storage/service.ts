@@ -642,16 +642,33 @@ for img in ${imageList}; do
   # digest ref (…/php@sha256:…) logged a successful reap at delete+306s and the
   # image was still listed on the node 24s later.
   #
-  # \`crictl images -q <ref>\` prints the image ID when the ref resolves and
-  # nothing when it does not, so an empty result is proof of absence.
-  # POLL, don't sample once: containerd settles the removal asynchronously, so
-  # the ref can still resolve for a moment after \`rmi\` returns. A single check
-  # reported reaps that HAD succeeded as failures — image_reap_log recorded
-  # "failed on <node>" for an image the node really had removed (2026-08-04).
+  # Use \`crictl inspecti <ref>\`, NOT \`crictl images -q <ref>\`.
+  #
+  # \`crictl images -q <ref>\` DOES NOT FILTER on the CRI versions we ship: it
+  # prints every image ID on the node regardless of the ref, and does so even
+  # for a ref that cannot exist. Measured on a k3s node 2026-08-08:
+  #     crictl images -q <real tag>  -> 28 ids
+  #     crictl images -q <garbage>   -> 28 ids
+  #     crictl images -q             -> 28 ids
+  # So the emptiness test below could NEVER be satisfied while the node held
+  # any image at all, and EVERY removal was reported FAILED — including the
+  # ones that had just succeeded. That is why image_reap_log carried
+  # succeeded=false with bytes_reclaimed=0 on every single reap, and why
+  # integration-staging's reaper scenario kept reporting "reaper did not fire"
+  # for an image the runtime had actually deleted. The 10-attempt poll added
+  # on 2026-08-04 could not help: the result is never empty, so it just burned
+  # 10s before declaring failure.
+  #
+  # \`crictl inspecti\` inspects ONE image and exits non-zero when the ref does
+  # not resolve — verified on the same node: present ref -> 0, garbage ref ->
+  # non-zero, just-removed ref -> non-zero.
+  #
+  # POLL still, because containerd settles the removal asynchronously and the
+  # ref can resolve for a moment after \`rmi\` returns.
   gone=0
   i=0
   while [ $i -lt 10 ]; do
-    if [ -z "$(crictl images -q "$img" 2>/dev/null)" ]; then gone=1; break; fi
+    if ! crictl inspecti "$img" >/dev/null 2>&1; then gone=1; break; fi
     i=$((i + 1))
     sleep 1
   done
