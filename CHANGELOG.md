@@ -129,7 +129,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `private-worker-agent-image` (runs on tenant hardware, not in-cluster — a
   different decision), and `private-worker-frps-image` (third-party upstream we do
   not build, so a digest means a manual bump per release with no CI to produce it).
-
 - **`rocksdb-secondary-checkpoint` built from an unpinned dependency graph.** The
   image committed only `Cargo.toml`, and its Dockerfile read
   `COPY Cargo.toml Cargo.lock* ./` — the `*` matched **nothing**, silently, so every
@@ -205,6 +204,7 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `CLUSTER_ISSUER_NAME`, `STALWART_EXTERNAL_IP`) are allowed bare, and YAML
   comments — stripped by kustomize before substitution — are no longer flagged,
   which previously would have fired on the very comments documenting the rule.
+
 ### Fixed
 - **`platform/VERSION` on `development` now tracks the release line.**
   `cut-release.sh` writes it on `main`, and promotion is one-way
@@ -235,8 +235,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   could never run. Refusing to REPLACE the binary is a trust decision; refusing to
   converge an already-installed one is not. The host-config timer is now installed
   whenever a usable binary is present, and still skipped when there is none.
-
-### Added
 
 ### Security
 - **Image builds now install the lockfile instead of re-resolving it.** Every
@@ -352,7 +350,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   `scripts/test-smoke-aaaa-guard.sh` drives all four branches offline, because a
   false FAIL here would turn `make smoke` red on every existing single-stack
   production cluster.
-
 - **Host-migration state is visible in the admin panel** (Platform → Updates).
   A failed migration blocks every later one on that node, and the only way to
   discover it was to SSH in and run `insula host-config` — the DEV cluster sat at
@@ -451,6 +448,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   The nft table is family `inet`, where `ip saddr` matches IPv4 exclusively;
   `--dual-stack` now emits the matching `ip6 saddr` rule. The single-stack
   ruleset is unchanged byte-for-byte.
+
+## [2026.8.3-rc.4] - 2026-08-05
+
+### Fixed
 - **Host-migrations could never apply during a platform upgrade.** The
   post-upgrade converge ran as a child of `platform-ops-update.service`, which is
   hardened with `ProtectSystem=strict` and `ReadWritePaths` limited to the binary
