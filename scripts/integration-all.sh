@@ -597,15 +597,94 @@ declare -A SUITE_RC=()      # name → exit code
 # audit: "Not even the admin panel is reachable, how could this be
 # missed?"
 ADMIN_HOST_FOR_PROBE="${ADMIN_HOST:-https://admin.$(resolve_platform_apex)}"
+
+# THE PROBE MUST HIT THE API, NOT THE SPA.
+#
+# This used to curl "${ADMIN_HOST}/" and accept 200. That path never reaches
+# platform-api: the panel's nginx serves it off local disk
+# (`location / { try_files $uri $uri/ /index.html; }`), so it answers 200 while
+# the API is stone dead. Measured on DEV 2026-08-08 by deleting the
+# platform-api pod:
+#
+#     GET /                 -> 200   200   200   200   200   (every poll)
+#     GET /api/v1/healthz   -> 502   502   502   502   502   (nginx/1.27.5)
+#
+# That blind spot is what let a whole run report "0 reachability breaks" while
+# suites drowned in 502s — see wait_admin_ready below for the full chain.
+#
+# 502 here is specifically `connect() failed (111: Connection refused) while
+# connecting to upstream` in the panel's error log: with zero READY endpoints
+# kube-proxy REJECTs the ClusterIP, so this probe goes red the moment
+# platform-api leaves the Endpoints object, which is exactly what the suites
+# experience.
+probe_api_code() {
+  curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    "${ADMIN_HOST_FOR_PROBE}/api/v1/healthz" 2>/dev/null || echo "000"
+}
+probe_panel_code() {
+  curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    "${ADMIN_HOST_FOR_PROBE}/" 2>/dev/null || echo "000"
+}
+
 assert_admin_reachable() {
-  local label="$1" code
+  local label="$1" code panel
   for _try in 1 2 3 4 5; do
-    code=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 "${ADMIN_HOST_FOR_PROBE}/" 2>/dev/null || echo "000")
+    code="$(probe_api_code)"
     [[ "$code" == "200" ]] && return 0
     sleep 3
   done
-  reachability_breaks+=("$label (http=$code)")
-  warn "admin panel UNREACHABLE after $label (http=$code) — global state may be corrupted"
+  panel="$(probe_panel_code)"
+  reachability_breaks+=("$label (api=$code panel=$panel)")
+  # Naming both makes the failure self-diagnosing: panel=200 api=502 is
+  # "platform-api has no ready endpoint" (DB cutover, evicted pod, crashloop);
+  # both non-200 is ingress/Traefik/DNS.
+  warn "platform API UNREACHABLE after $label (api=$code, panel=$panel) — global state may be corrupted"
+  return 1
+}
+
+# wait_admin_ready LABEL [BUDGET_SECONDS]
+#
+# BLOCKING pre-suite gate. `assert_admin_reachable` runs AFTER a suite and only
+# warns; nothing ever stopped the NEXT suite from starting into a dead API.
+#
+# Root-caused 2026-08-08 (DEV full run, migration-cifs):
+#   postgres-barman-restore's promote step DELETES and recreates the CNPG
+#   `system-db` cluster. The job reports its own downtime — "downtimeMs":108150
+#   — and deliberately leaves platform-api running ("platform-api left running
+#   (self-host)"). platform-api's entrypoint then sits in its 120s DB-wait.
+#   integration-all runs migration-cifs IMMEDIATELY after it in SERIAL_POST, so
+#   the suite's very first writes hit nginx's 502 page:
+#       ✗ set override 502
+#       <html> ... <center><h1>502 Bad Gateway</h1></center>
+#   and its status poll got the same HTML 63× in a row — which is what
+#   `jq: parse error: Invalid numeric literal at line 1, column 7` decodes to.
+#   The suite then reported "file-manager never ready", pointing the
+#   investigation at Longhorn/scheduling instead of at the DB cutover next door.
+#   It reproduced in the retry pass too, because the retry list preserves the
+#   same adjacency (barman-restore, then migration-cifs). Deterministic
+#   ordering, not load.
+#
+# Budget defaults to 300s: it has to cover the ~108s cutover PLUS platform-api's
+# 120s DB-wait on restart, with headroom. Tune with INTEGRATION_API_SETTLE_S.
+wait_admin_ready() {
+  local label="$1" budget="${2:-${INTEGRATION_API_SETTLE_S:-300}}"
+  local waited=0 code
+  code="$(probe_api_code)"
+  [[ "$code" == "200" ]] && return 0
+  warn "API not ready before $label (api=$code) — waiting up to ${budget}s for it to settle"
+  while (( waited < budget )); do
+    sleep 5; waited=$((waited + 5))
+    code="$(probe_api_code)"
+    if [[ "$code" == "200" ]]; then
+      log "  API recovered after ${waited}s — starting $label"
+      return 0
+    fi
+  done
+  # Attribute the break to the gate, not to the suite about to run: the suite
+  # has not executed a single request yet, so blaming it would repeat exactly
+  # the misdiagnosis this function exists to prevent.
+  reachability_breaks+=("pre:$label (api=$code after ${budget}s)")
+  warn "API STILL not ready after ${budget}s (api=$code) — running $label anyway; treat its result as unsound"
   return 1
 }
 
@@ -636,6 +715,10 @@ run_serial_group() {
     local args=("${parts[@]:1}")
     local to start; to="$(suite_timeout_of "$name")"; start=$(date +%s)
     log "Suite: $name (tier=$(suite_tier_of "$name"), hard-timeout ${to}s)"
+    # Gate BEFORE the suite, and before force_mint below — the token mint is
+    # itself an API call, so a dead API turns into "token refresh failed
+    # (continuing with prior token)" and the run limps on with a stale bearer.
+    wait_admin_ready "$name" || true
     # #130 + 2026-07-09: FORCE a fresh, full-TTL token before EACH suite.
     # Must be force_mint, NOT mint_token: mint_token is cache-backed
     # (get_admin_token) and reuses the shared token while it's merely >120s from
@@ -691,6 +774,10 @@ run_parallel_group() {
   set -- "${_par[@]}"
   local n=$#
   log "Group [$group_label] (parallel, $n suite(s))"
+  # Same gate as the serial runner: a preceding group may have left the API
+  # down (DB cutover, node drain), and launching 4 suites into a 502 wall
+  # fails all of them with unrelated-looking symptoms.
+  wait_admin_ready "group:$group_label" || true
   local tmpdir
   tmpdir=$(mktemp -d)
   local -a pids=() names=() rcfiles=() logfiles=()
@@ -842,6 +929,11 @@ retry_failed_serially() {
     script="${parts[0]}"; local -a args=("${parts[@]:1}")
     to="$(suite_timeout_of "$name")"; start=$(date +%s); first_rc="${SUITE_RC[$name]}"
     log "retry: $name (alone, hard-timeout ${to}s; batch rc=$first_rc)"
+    # The retry list preserves the batch ORDER, so a suite that failed because
+    # its predecessor took the API down gets re-run right behind that same
+    # predecessor's retry — reproducing the failure and "confirming" it as real.
+    # That is exactly how migration-cifs was recorded as a REAL failure twice.
+    wait_admin_ready "retry:$name" || true
     INTEGRATION_TOKEN="$(force_mint)" && export INTEGRATION_TOKEN || warn "retry $name: token refresh failed (continuing with prior token)"
     set +e
     ADMIN_PASSWORD="$ADMIN_PASSWORD" ADMIN_TOKEN="${INTEGRATION_TOKEN:-}" TOKEN="${INTEGRATION_TOKEN:-}" timeout --kill-after=30s "${to}s" "$SCRIPT_DIR/$script" "${args[@]}"

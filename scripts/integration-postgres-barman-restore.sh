@@ -380,7 +380,19 @@ for i in $(seq 1 150); do
   PHASE=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"phase":"([^"]+)".*/\1/p' | head -1)
   IN_FLIGHT=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"progressInFlight":\{"step":"([^"]+)".*/\1/p' | head -1)
   while IFS= read -r s; do [[ -n "$s" ]] && SEEN_STEPS+=("$s"); done < <(printf '%s' "$STATUS_OUT" | grep -oE '"step":"[^"]+"' | sed -E 's/.*"step":"([^"]+)"/\1/' || true)
-  printf '  [%3d] inProgress=%s phase=%s inFlight=%s\n' "$i" "$IN_PROGRESS" "${PHASE:--}" "${IN_FLIGHT:--}"
+  # An EMPTY inProgress is not "still running" — it means /status did not return
+  # parseable JSON, and during this exact step that is the norm rather than the
+  # exception: the promote DELETES and recreates the CNPG cluster while leaving
+  # platform-api up ("platform-api left running (self-host)"), so the API has no
+  # ready endpoint and the panel's nginx answers 502 for ~108s (the job reports
+  # its own `downtimeMs`). Say so, instead of printing a blank column that reads
+  # like a slow poll — silence here is what made the neighbouring suite's 502
+  # storm look like a Longhorn/scheduling problem.
+  if [[ -z "$IN_PROGRESS" ]]; then
+    printf '  [%3d] /status unreachable (API down during cutover — expected)\n' "$i"
+  else
+    printf '  [%3d] inProgress=%s phase=%s inFlight=%s\n' "$i" "$IN_PROGRESS" "${PHASE:--}" "${IN_FLIGHT:--}"
+  fi
   if [[ "$IN_PROGRESS" == "false" ]]; then break; fi
   sleep 8
 done
@@ -391,8 +403,28 @@ if [[ "$IN_PROGRESS" != "false" ]]; then
 fi
 pass "promote finished after ~$((i*8))s"
 
-# Job exit code
-JOB_FINAL=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get job $PROMOTE_JOB -o jsonpath='succeeded={.status.succeeded}/failed={.status.failed}'")
+# Job exit code.
+#
+# POLL — do not single-shot this. `inProgress=false` above comes from
+# platform-api's own bookkeeping, which flips as soon as the pitr-job writes its
+# result; the Kubernetes Job controller sets `.status.succeeded` independently
+# and a beat later. Reading immediately caught the gap on DEV 2026-08-08:
+#
+#     ✗ promote Job failed: succeeded=/failed=
+#
+# — BOTH counters empty, i.e. the Job object existed but had neither terminal
+# field set yet, while the Job's own log in the very same output said
+# `"msg":"pitr-job complete"` with every step ok=true. A non-existent Job would
+# have produced no output at all and a kubectl error, so empty-vs-empty is
+# unambiguously the race, not a missing object. It was reported as a hard suite
+# failure both in the batch and in the retry.
+JOB_FINAL=""
+for _ in $(seq 1 30); do
+  JOB_FINAL=$(ssh_cmd "k3s kubectl -n $CLUSTER_NS get job $PROMOTE_JOB -o jsonpath='succeeded={.status.succeeded}/failed={.status.failed}'" 2>/dev/null || echo "succeeded=/failed=")
+  # Stop on either terminal state — a genuine failure must still fail fast.
+  printf '%s' "$JOB_FINAL" | grep -qE 'succeeded=[1-9]|failed=[1-9]' && break
+  sleep 2
+done
 if ! printf '%s' "$JOB_FINAL" | grep -q "succeeded=1"; then
   fail "promote Job failed: $JOB_FINAL"
   ssh_cmd "k3s kubectl -n $CLUSTER_NS logs job/$PROMOTE_JOB --tail=40" || true
