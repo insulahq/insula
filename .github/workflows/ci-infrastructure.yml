@@ -343,6 +343,16 @@ jobs:
         # stub crictl.
         run: ./scripts/test-image-purge-verify.sh
 
+      - name: Wipe must log out Longhorn's iSCSI sessions (and only those)
+        # k3s-uninstall.sh knows nothing about Longhorn and the CSI plugin's
+        # NodeUnstageVolume never runs when the cluster is torn down underneath
+        # it, so kernel iSCSI sessions used to survive both the wipe and the
+        # re-bootstrap (the host is not rebooted) and retry login ~1/s forever.
+        # Also pins the scoping: an operator's external SAN session must not be
+        # torn down by an unfiltered logout. Runs the real embedded block
+        # against a stub iscsiadm.
+        run: ./scripts/test-destroy-iscsi-sweep.sh
+
       - name: Harness defaults must derive the test apex
         # PORTABILITY (distinct from the secrecy guard above): a harness default
         # may not bake in an apex, even the sanitised placeholder. A suite that
