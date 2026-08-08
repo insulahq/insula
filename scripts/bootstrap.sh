@@ -4621,6 +4621,25 @@ ensure_traefik_plugins_loaded() {
   local phase="${1:-post-install}"
   local attempt=1 logs
 
+  # WAIT for Traefik to actually say something before judging it.
+  #
+  # This used to `return 0` the moment the log was empty, which made the check
+  # a no-op on exactly the run it exists for: Helm's --wait returns as soon as
+  # the pod is Ready, so post-install fires while Traefik has not yet written
+  # its "Loading plugins…" line. Observed on the fresh DEV bootstrap
+  # 2026-08-08 — "no Traefik logs yet — skipping (attempt 1)" at 12:50:33,
+  # and the plugin subsystem then died at 12:57:39, seven minutes later,
+  # unnoticed. Poll for the startup marker instead; only give up (and pass)
+  # if Traefik never logs at all, which is a different failure that the
+  # rollout gates already cover.
+  local waited=0
+  while [ "$waited" -lt "${TRAEFIK_PLUGIN_LOG_WAIT_S:-120}" ]; do
+    logs="$(traefik_plugin_logs)"
+    [ -n "$logs" ] && break
+    sleep 5
+    waited=$((waited + 5))
+  done
+
   while [ "$attempt" -le "$TRAEFIK_PLUGIN_MAX_ATTEMPTS" ]; do
     logs="$(traefik_plugin_logs)"
 
@@ -8452,6 +8471,19 @@ verify_install() {
   # Caught on testing.example.test 2026-05-16 — manual operator
   # recycle of the Traefik pod restored access; this call automates it.
   ensure_traefik_cni_portmap "verify-install"
+
+  # Re-check the PLUGIN subsystem here too, for the same reason the portmap
+  # self-test runs twice: Flux's first reconcile rolls the Traefik DS, and the
+  # replacement pod re-downloads its plugins. That second download lands while
+  # Calico's control plane (typha / apiserver / kube-controllers) is still
+  # converging, so it is the one that actually times out — measured on the DEV
+  # bootstrap 2026-08-08, where "Loading plugins…" at 12:57:29 failed at
+  # 12:57:39 with calico-typha going Ready at 12:57:38 and calico-apiserver at
+  # 12:57:43. Only the post-install call existed, and it had already run (and
+  # skipped) at 12:50:33, so nothing remediated it: the install finished
+  # "successfully" with every pod Running, valid certs, and admin.<apex> +
+  # tenant.<apex> returning 404 because every plugin middleware was invalid.
+  ensure_traefik_plugins_loaded "verify-install" || true
 
   # Wait up to 5 min for the platform-api Deployment to finish rolling
   # out — Helm/Flux may still be settling at this point.

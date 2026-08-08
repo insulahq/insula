@@ -401,6 +401,32 @@ if [[ "$MAIL_TESTS_ENABLED" == "1" ]]; then
   # Against a remote cluster (API_URL=https://…) that container doesn't
   # exist — skip instead of failing 4 probes with "No such container"
   # (run with MAIL_PROBE_MODE=host MAIL_HOST=<node> to probe remotely).
+  # A REMOTE cluster must never be probed through the local DinD container.
+  #
+  # The k3s mode `docker exec`s into $K3S_CONTAINER and probes 127.0.0.1 inside
+  # it. The guard below only skipped when that container was ABSENT — so on a
+  # workstation that also runs the local dev stack, pointing API_URL at a remote
+  # cluster probed the LOCAL one instead and reported its mail ports as the
+  # remote cluster's. Observed 2026-08-08 against a freshly bootstrapped DEV
+  # host: four NodePort probes failed "connection refused" while the DEV node
+  # was serving mail perfectly on 25/587/143 — the smoke gate is a hard gate, so
+  # it aborted the entire integration suite before a single test ran.
+  #
+  # Decide from the TARGET, not from what happens to exist locally: anything but
+  # a loopback API_URL means remote, so fall through to host-mode probes
+  # (MAIL_HOST defaults to the API host below).
+  # Ports too: the host-mode defaults (2025/2587/2143/2993) are the
+  # docker-compose published ports for the local stack. A real cluster serves
+  # mail on the standard ports via hostPort, so switch those as well unless the
+  # caller pinned them.
+  if [[ "$MAIL_PROBE_MODE" == "k3s" ]] && [[ ! "$API_URL" =~ ^https?://(localhost|127\.0\.0\.1|\[?::1\]?)([:/]|$) ]]; then
+    MAIL_PROBE_MODE=host
+    MAIL_PORT_SMTP="${PORT_MAIL_SMTP:-25}"
+    MAIL_PORT_SUBMISSION="${PORT_MAIL_SUBMISSION:-587}"
+    MAIL_PORT_IMAP="${PORT_MAIL_IMAP:-143}"
+    MAIL_PORT_IMAPS="${PORT_MAIL_IMAPS:-993}"
+    echo "  ⊘ k3s probe mode targets the local DinD stack; API_URL is remote — probing mail on ${MAIL_HOST} :${MAIL_PORT_SMTP}/:${MAIL_PORT_SUBMISSION}/:${MAIL_PORT_IMAP}/:${MAIL_PORT_IMAPS} instead."
+  fi
   if [[ "$MAIL_PROBE_MODE" == "k3s" ]] && ! docker inspect "$K3S_CONTAINER" >/dev/null 2>&1; then
     echo "  ⊘ Mail probes skipped — DinD container '$K3S_CONTAINER' not found (remote cluster?). Use MAIL_PROBE_MODE=host MAIL_HOST=<node-ip> to probe remote mail ports."
   elif [[ "$MAIL_PROBE_MODE" == "k3s" ]]; then
