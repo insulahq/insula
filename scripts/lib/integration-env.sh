@@ -82,8 +82,30 @@ load_integration_env() {
     "$script_dir/integration.env" \
     "${XDG_CONFIG_HOME:-$HOME/.config}/insula/integration.env"; do
     [[ -n "$candidate" && -f "$candidate" ]] || continue
+    # The profile provides DEFAULTS — it must never override what the CALLER
+    # explicitly set.
+    #
+    # `set -a; source` is plain assignment, so a profile pinning
+    # ADMIN_HOST/ADMIN_EMAIL silently replaced an explicitly exported target.
+    # Running any suite with ADMIN_HOST=<dev cluster> therefore retargeted it at
+    # whatever ~/.config/insula/integration.env names — with no warning. Hit
+    # 2026-08-08: a suite launched against the DEV cluster logged in as
+    # admin@staging.<apex> and began creating tenants on STAGING. Its cleanup
+    # trap removed them, but pointing a test harness at a production-adjacent
+    # cluster must not be one forgotten variable away.
+    #
+    # Snapshot the caller's exported environment, source the profile (so it can
+    # still supply everything the caller omitted), then re-apply the snapshot so
+    # explicit values win.
+    # NB: rewrite `declare -x` to `export`. `declare` inside a function is
+    # function-LOCAL in bash, so eval-ing export -p's own output here would
+    # restore the values into this function's scope and leave the caller still
+    # holding the profile's — which is exactly the bug this guards against.
+    local _caller_env
+    _caller_env="$(export -p 2>/dev/null | sed 's/^declare -x /export /' || true)"
     # shellcheck disable=SC1090
     set -a; source "$candidate"; set +a
+    eval "$_caller_env" 2>/dev/null || true
     PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
     [[ -n "${INTEGRATION_ENV_VERBOSE:-}" ]] && echo "integration-env: loaded $candidate" >&2
     return 0
