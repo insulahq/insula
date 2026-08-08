@@ -103,15 +103,137 @@ load_integration_env() {
     # holding the profile's — which is exactly the bug this guards against.
     local _caller_env
     _caller_env="$(export -p 2>/dev/null | sed 's/^declare -x /export /' || true)"
+    # Record which target-defining vars the CALLER already had, so a config
+    # assembled from two sources is visible rather than silent. Caller-wins fixes
+    # precedence; it cannot stop a PARTIAL caller set from being completed by the
+    # profile into a config that names two different clusters.
+    local _v _from_caller="" _from_profile=""
+    for _v in ADMIN_HOST PLATFORM_API_URL ADMIN_EMAIL SSH_HOST KUBECTL \
+              PLATFORM_DOMAIN MAIL_DOMAIN_APEX RESOLVE_IP HTTPS_TEST_DOMAIN_BASE; do
+      [[ -n "${!_v:-}" ]] && _from_caller+=" $_v"
+    done
     # shellcheck disable=SC1090
     set -a; source "$candidate"; set +a
     eval "$_caller_env" 2>/dev/null || true
+    for _v in ADMIN_HOST PLATFORM_API_URL ADMIN_EMAIL SSH_HOST KUBECTL \
+              PLATFORM_DOMAIN MAIL_DOMAIN_APEX RESOLVE_IP HTTPS_TEST_DOMAIN_BASE; do
+      [[ -n "${!_v:-}" && " $_from_caller " != *" $_v "* ]] && _from_profile+=" $_v"
+    done
+    if [[ -n "$_from_caller" && -n "$_from_profile" ]]; then
+      echo "integration-env: MIXED target config — caller set:${_from_caller}" >&2
+      echo "integration-env:                       $candidate supplied:${_from_profile}" >&2
+      echo "integration-env: assert_single_target will verify these name ONE cluster." >&2
+    fi
     PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
     [[ -n "${INTEGRATION_ENV_VERBOSE:-}" ]] && echo "integration-env: loaded $candidate" >&2
     return 0
   done
   PLATFORM_APEX="$(resolve_platform_apex)"; export PLATFORM_APEX
   return 0  # no profile is fine — env vars / CI secrets may supply everything
+}
+
+# ─── Target identity guard ───────────────────────────────────────────────────
+#
+# WHY THIS EXISTS, AND WHY THE PRECEDENCE FIX ABOVE IS NOT ENOUGH.
+#
+# A harness gets its target from several INDEPENDENT variables: ADMIN_HOST /
+# PLATFORM_API_URL decide who receives the HTTP calls, SSH_HOST / KUBECTL decide
+# whose cluster gets kubectl'd, RESOLVE_IP / HTTPS_TEST_DOMAIN_BASE decide who
+# gets probed. Nothing ties them together.
+#
+# The operator profile defines SOME of them. A caller exports SOME of them. Any
+# precedence rule — profile-wins or caller-wins — still merges two partial sets
+# into one config that names TWO DIFFERENT CLUSTERS. Observed 2026-08-08: a run
+# sent its API traffic and kubectl to one cluster while mail/DNS probes went to
+# another, and the only visible symptom was a pile of "cert does not cover …"
+# assertions that read like a TLS bug. Worse, that run's destructive suites
+# (a CNPG delete+recreate of the platform DB) executed against the wrong cluster.
+#
+# So do not try to police the variables. Ask the TARGET who it is, from BOTH
+# sides, and refuse to continue if the answers disagree.
+#
+# The fingerprint is the SYSTEM tenant's UUID: exactly one row per cluster
+# (tenants.is_system, partial unique index — ADR-040), stable for the cluster's
+# life, reachable over HTTP and over kubectl, and needs no new endpoint.
+#
+#   INTEGRATION_SKIP_TARGET_ASSERT=1  bypass (offline/unit contexts)
+#   INTEGRATION_TARGET_EXPECT=<uuid|apex-substring>
+#                                     hard pin — refuse anything else. Use this
+#                                     when running destructive suites by hand.
+
+_target_fp_api() {
+  local tok="${INTEGRATION_TOKEN:-${TOKEN:-${ADMIN_TOKEN:-}}}"
+  [[ -n "${ADMIN_HOST:-}" ]] || return 0
+  if [[ -z "$tok" ]]; then
+    [[ -n "${ADMIN_EMAIL:-}" && -n "${ADMIN_PASSWORD:-}" ]] || return 0
+    tok=$(ADMIN_EMAIL="$ADMIN_EMAIL" PW="$ADMIN_PASSWORD" python3 -c \
+        "import json,os;print(json.dumps({'email':os.environ['ADMIN_EMAIL'],'password':os.environ['PW']}))" 2>/dev/null \
+      | curl -sk --max-time 15 -X POST "$ADMIN_HOST/api/v1/auth/login" \
+          -H 'Content-Type: application/json' --data-binary @- 2>/dev/null \
+      | python3 -c "import json,sys;d=json.load(sys.stdin);print((d.get('data') or {}).get('token','') or '')" 2>/dev/null) || return 0
+  fi
+  [[ -n "$tok" ]] || return 0
+  curl -sk --max-time 15 "$ADMIN_HOST/api/v1/tenants?limit=100" -H "Authorization: Bearer $tok" 2>/dev/null \
+    | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin).get('data') or []
+except Exception: sys.exit(0)
+for t in d:
+    if t.get('isSystem') or t.get('is_system'):
+        print(t.get('id','')); break" 2>/dev/null
+}
+
+_target_fp_node() {
+  local kc="${KUBECTL:-kubectl}" pod
+  pod=$($kc -n platform get pods -l cnpg.io/cluster=system-db,role=primary \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null | tr -d '\r')
+  [[ -n "$pod" ]] || return 0
+  $kc -n platform exec "$pod" -c postgres -- \
+    psql -U postgres -d platform -tAc 'select id from tenants where is_system = true' 2>/dev/null \
+    | tr -d '\r' | tr -d '[:space:]'
+}
+
+assert_single_target() {
+  local label="${1:-run}" api node
+  [[ "${INTEGRATION_SKIP_TARGET_ASSERT:-0}" == 1 ]] && return 0
+  api="$(_target_fp_api  || true)"
+  node="$(_target_fp_node || true)"
+
+  if [[ -n "${INTEGRATION_TARGET_EXPECT:-}" ]]; then
+    local seen="${api:-$node}"
+    if [[ -n "$seen" && "$seen" != "$INTEGRATION_TARGET_EXPECT" \
+       && "${ADMIN_HOST:-}" != *"$INTEGRATION_TARGET_EXPECT"* ]]; then
+      echo "══ TARGET PIN VIOLATED ($label) ══" >&2
+      echo "   expected : $INTEGRATION_TARGET_EXPECT" >&2
+      echo "   resolved : $seen   (ADMIN_HOST=${ADMIN_HOST:-unset})" >&2
+      exit 3
+    fi
+  fi
+
+  # A proven mismatch is fatal. Being UNABLE to check is not — a suite may
+  # legitimately have HTTP access without kubectl, or vice versa; refusing to run
+  # then would just make the guard something people disable.
+  if [[ -n "$api" && -n "$node" && "$api" != "$node" ]]; then
+    echo "══ SPLIT TARGET — REFUSING TO RUN ($label) ══" >&2
+    echo "   HTTP  ${ADMIN_HOST:-unset}" >&2
+    echo "         → SYSTEM tenant $api" >&2
+    echo "   KUBECTL/SSH ${SSH_HOST:-${KUBECTL:-unset}}" >&2
+    echo "         → SYSTEM tenant $node" >&2
+    echo "   These are TWO DIFFERENT CLUSTERS. The API calls and the kubectl/SSH" >&2
+    echo "   probes would land in different places, and any destructive step would" >&2
+    echo "   execute against whichever side it happens to use." >&2
+    echo "   Set every target var from ONE source (INTEGRATION_ENV=<profile>, or" >&2
+    echo "   export them all yourself)." >&2
+    exit 3
+  fi
+
+  if [[ -n "$api$node" ]]; then
+    INTEGRATION_TARGET_FP="${api:-$node}"; export INTEGRATION_TARGET_FP
+    echo "integration-target: ${label} → ${ADMIN_HOST:-?} (cluster ${INTEGRATION_TARGET_FP}${api:+, HTTP+kubectl agree})" >&2
+  else
+    echo "integration-target: ${label} → ${ADMIN_HOST:-?} (identity NOT verifiable — no API token and no kubectl reach)" >&2
+  fi
+  return 0
 }
 
 # require_env VAR [VAR...] — exit 2 if any named var is unset/empty.

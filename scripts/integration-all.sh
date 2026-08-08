@@ -155,11 +155,22 @@ force_mint() {
   force_mint_token
 }
 if [[ "$LIST" == 0 ]]; then
+  # BEFORE anything that mutates a cluster — reset_admin_password is already a
+  # write, and the host-config converger further down applies host-migrations.
+  # Ask the target who it is over HTTP and over kubectl and refuse to continue if
+  # the two disagree. See assert_single_target in lib/integration-env.sh for why
+  # variable precedence alone cannot prevent a split target.
+  assert_single_target "startup"
   reset_admin_password
   INTEGRATION_TOKEN="$(mint_token)"
   [[ -n "$INTEGRATION_TOKEN" ]] || { echo "ERROR: initial login failed" >&2; exit 2; }
   export INTEGRATION_TOKEN
   log "Cached INTEGRATION_TOKEN (sub-scripts will skip per-suite login)"
+  # Re-assert with a known-good bearer: the pre-reset check can only reach the
+  # HTTP side if ADMIN_PASSWORD happened to be current, and an unverifiable side
+  # degrades to a warning by design. With the token in hand both sides always
+  # answer, so this is the one that is guaranteed to catch a split.
+  assert_single_target "post-login"
 fi
 
 # Suite layout: SERIAL groups + PARALLEL groups. Layout chosen to keep
@@ -1017,15 +1028,33 @@ converge_host_config() {
   [[ -n "$deployed" ]] || { warn "host-config converge: could not resolve deployed platform-api version — skipping"; return 0; }
   log "  target release: ${deployed}"
 
+  # ADR-055 renamed the installed operator CLI to /usr/local/bin/insula. Calling
+  # the old name exits 127, and because this whole preflight is warn-only that
+  # showed up as a single "converge INCOMPLETE (rc=127)" line while the run
+  # carried on — so the gate that is supposed to guarantee the cluster is at the
+  # deployed release's host state was silently doing nothing. Resolve the binary
+  # on the node; keep the pre-consolidation name as a fallback.
+  local ops_bin
+  ops_bin=$("${remote_ssh[@]}" '
+    for c in /usr/local/bin/insula /usr/local/bin/platform-ops; do
+      [ -x "$c" ] && { printf %s "$c"; exit 0; }
+    done
+    command -v insula 2>/dev/null || command -v platform-ops 2>/dev/null || true' 2>/dev/null | tr -d '\r')
+  if [[ -z "$ops_bin" ]]; then
+    warn "host-config converge: no operator CLI on ${SSH_HOST#*@} (looked for /usr/local/bin/insula, /usr/local/bin/platform-ops, \$PATH) — skipping"
+    return 0
+  fi
+  log "  operator CLI: ${ops_bin}"
+
   # 1) Ensure the control-plane binary embeds THIS release's migrations
   #    (no-op if already current; upgrades cosign-verified otherwise).
-  "${remote_ssh[@]}" "platform-ops self-upgrade --version=${deployed}" 2>&1 \
+  "${remote_ssh[@]}" "$ops_bin self-upgrade --version=${deployed}" 2>&1 \
     | grep -vE 'DeprecationWarning|trace-deprecation' | sed 's/^/    self-upgrade: /' || true
 
   # 2) Converge host state (sysctls/packages/host-migrations) in enforce mode,
   #    then assert the host-migrations line reports 0 pending.
   local out rc mig_line pending
-  out=$("${remote_ssh[@]}" "platform-ops host-config apply --apply" 2>&1 | grep -vE 'DeprecationWarning|trace-deprecation'); rc=$?
+  out=$("${remote_ssh[@]}" "$ops_bin host-config apply --apply" 2>&1 | grep -vE 'DeprecationWarning|trace-deprecation'); rc=$?
   printf '%s\n' "$out" | grep -iE 'host-config (host-migrations|sysctls|packages|modules)' | sed 's/^/    /'
   mig_line=$(printf '%s\n' "$out" | grep -i 'host-config host-migrations' | tail -1)
   pending=$(printf '%s' "$mig_line" | sed -nE 's/.*, ([0-9]+) pending,.*/\1/p')
