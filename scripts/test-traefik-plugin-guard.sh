@@ -97,6 +97,10 @@ check "persistent failure → rc 1 (reported)" "1" "$rc"
 check "persistent failure → bounded recycles (max-1)" "2" "$(recycles)"
 
 # Traefik not up yet: no logs is not evidence of failure — must not recycle.
+# Pin the log-wait to 0 so this case doesn't sit through the real 120s poll the
+# guard now does before judging an empty log (that poll is the fix for the
+# post-install check firing before Traefik had written anything).
+export TRAEFIK_PLUGIN_LOG_WAIT_S=0
 rc=$(run_guard empty)
 check "no logs yet → rc 0, no false alarm" "0" "$rc"
 check "no logs yet → NO recycle" "0" "$(recycles)"
