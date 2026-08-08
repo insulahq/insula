@@ -3374,10 +3374,18 @@ scenario_mail_tls() {
     [[ "$port" == "4190" ]] && proto="sieve"
     local out
     out=$(_probe_tls_handshake "$mail_host" "$port" "$mail_hostname" "$proto")
-    if echo "$out" | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
-      ok "mail-tls/${port}: STARTTLS upgrade → LE cert"
-    elif echo "$out" | grep -qE "rcgen self signed cert"; then
+    # Issuer line only — same reasoning as the 465/993 loop above. Grepping the
+    # whole -showcerts output for "R10|R11|E5|…" matched random base64 in the
+    # PEM chain, so this branch was passing by accident rather than because a
+    # Let's Encrypt cert was served (it still printed "→ LE cert" against a
+    # Pebble-issued one). Assert a real CA instead; the /san assertion below
+    # already proves the cert covers the hostname.
+    local st_issuer
+    st_issuer=$(echo "$out" | sed -nE 's/^[[:space:]]*(issuer=|Issuer: )//p' | head -1 | sed 's/^ *//; s/ *$//')
+    if echo "$out" | grep -qE "rcgen self signed cert"; then
       fail "mail-tls/${port}: STARTTLS upgrade → rcgen self-signed (cert not provisioned)"
+    elif [[ -n "$st_issuer" ]]; then
+      ok "mail-tls/${port}: STARTTLS upgrade → CA-issued cert (issuer=${st_issuer})"
     elif echo "$out" | grep -q "didn't found starttls"; then
       # openssl <1.1.1 doesn't know `-starttls sieve`; accept implicit
       # ports as the canonical check.
@@ -3521,10 +3529,21 @@ scenario_webmail() {
   cert_out=$(echo | timeout 8 openssl s_client \
     -connect "${webmail_host}:443" \
     -servername "${webmail_host}" 2>&1)
-  if echo "$cert_out" | grep -qE "Let's Encrypt|R10|R11|R12|R13|E5|E6|E7|E8"; then
-    ok "webmail/cert: ${webmail_host}:443 serves LE cert"
-  elif echo "$cert_out" | grep -qE "Kubernetes Ingress Controller Fake Certificate|ingress.local"; then
+  # Assert a real CA, not Let's Encrypt by name. The old test grepped for
+  # "Let's Encrypt|R10|R11|R12|R13|E5|E6|E7|E8", so it failed on every cluster
+  # using a different ACME endpoint — the VM tier's Pebble issues
+  # `CN=Pebble Intermediate CA ...`, which matches none of those — and reported
+  # "unexpected handshake: verify return:1", i.e. it called a SUCCESSFUL
+  # verification unexpected. What matters is that the host serves a CA-issued
+  # cert and specifically NOT the ingress placeholder, which the elif below
+  # still catches. Same change already applied to mail-tls/465,993,
+  # mail-tls/api and webmail/ssl-status.
+  local wm_issuer
+  wm_issuer=$(echo "$cert_out" | sed -nE 's/^[[:space:]]*issuer=//p' | head -1 | sed 's/^ *//; s/ *$//')
+  if echo "$cert_out" | grep -qE "Kubernetes Ingress Controller Fake Certificate|ingress.local"; then
     fail "webmail/cert: ${webmail_host}:443 is serving the nginx-ingress fake cert — Cert CR missing/broken (regression of the 2026-05-07 fix)"
+  elif [[ -n "$wm_issuer" ]] && ! echo "$wm_issuer" | grep -qiE 'self.?signed'; then
+    ok "webmail/cert: ${webmail_host}:443 serves a CA-issued cert (issuer=${wm_issuer})"
   else
     fail "webmail/cert: ${webmail_host}:443 unexpected handshake: $(echo "$cert_out" | grep -E 'subject=|issuer=|verify' | head -3)"
   fi

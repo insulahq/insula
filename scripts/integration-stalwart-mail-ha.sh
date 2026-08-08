@@ -1795,11 +1795,19 @@ phase_j_cert_acquisition() {
     note_fail "J1. ${mail_host}:465 cert subject does NOT match — got: $(echo "$cert_info" | grep subject)"
   fi
 
-  # J2. Cert MUST be Let's Encrypt (not self-signed or staging cluster CA).
-  if echo "$cert_info" | grep -qE 'issuer=.*(Let.s Encrypt|R[0-9]{1,2}|E[0-9]{1,2})'; then
-    note_pass "J2. ${mail_host}:465 cert issued by Let's Encrypt"
+  # J2. Cert MUST come from a real CA — NOT self-signed, and not the rcgen
+  # placeholder Stalwart serves before ACME issuance. Deliberately not "must be
+  # Let's Encrypt": a cluster pointed at another ACME endpoint (the VM tier's
+  # Pebble, an internal CA for an air-gapped install) serves a perfectly valid
+  # cert whose issuer names neither "Let's Encrypt" nor an R*/E* intermediate.
+  # The old pattern also matched `R[0-9]{1,2}`/`E[0-9]{1,2}` ANYWHERE in the
+  # issuer line, which is loose enough to hit unrelated CA names by luck.
+  local ha_issuer
+  ha_issuer=$(echo "$cert_info" | sed -nE 's/^[[:space:]]*issuer=//p' | head -1 | sed 's/^ *//; s/ *$//')
+  if [[ -n "$ha_issuer" ]] && ! echo "$ha_issuer" | grep -qiE 'self.?signed|rcgen'; then
+    note_pass "J2. ${mail_host}:465 cert issued by a real CA (${ha_issuer})"
   else
-    note_fail "J2. ${mail_host}:465 cert NOT issued by Let's Encrypt — got: $(echo "$cert_info" | grep issuer)"
+    note_fail "J2. ${mail_host}:465 cert is self-signed or has no issuer — got: ${ha_issuer:-<none>}"
   fi
 
   # J3. Cert MUST be currently valid (notBefore < now < notAfter).
