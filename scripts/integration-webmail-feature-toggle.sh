@@ -80,14 +80,18 @@ assert() {
 }
 
 cm_data_key() {
-  # ESCAPE the dots. The keys are filenames — "bulwark-overrides.css" — and an
-  # unescaped `{.data.bulwark-overrides.css}` is parsed as
-  # data -> "bulwark-overrides" -> "css", which does not exist, so kubectl
-  # returns EMPTY and every assertion built on this reads as "key missing" on a
-  # cluster where the ConfigMap is perfectly correct. Verified against the live
-  # object: dotted form -> empty, escaped form -> the CSS.
-  # deployment_hash() below already escapes its annotation key the same way.
-  $KUBECTL -n "$NAMESPACE" get configmap "$CM_NAME" -o jsonpath="{.data.${1//./\\.}}"
+  # $1 arrives ALREADY jsonpath-escaped ('bulwark-overrides\.css') — the keys are
+  # filenames and an unescaped `{.data.bulwark-overrides.css}` would be parsed as
+  # data -> "bulwark-overrides" -> "css". Do NOT re-escape here: a `${1//./\\.}`
+  # in this function turns the caller's `\.` into `\\.` and jsonpath then matches
+  # nothing, so every assertion reads "key missing" against a correct ConfigMap.
+  #
+  # That double-escape shipped briefly on 2026-08-08 and measured as a FIX only
+  # because the ad-hoc `ssh … kubectl "$@"` wrapper in use at the time dropped one
+  # backslash on the remote shell's re-parse, collapsing it back to one level.
+  # scripts/lib/kubectl-remote.sh quotes each argument with printf %q and does
+  # not, so the same code passed by hand and failed under the real harness.
+  $KUBECTL -n "$NAMESPACE" get configmap "$CM_NAME" -o jsonpath="{.data.$1}"
 }
 
 deployment_hash() {
