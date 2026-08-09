@@ -123,7 +123,40 @@ spec:
                   # Build a JSON array of IPs without depending on jq.
                   IP_LIST=$(echo "$IPS" | awk 'BEGIN{ORS=""} {if(NR>1) printf ","; printf "\""$0"\""}')
                   echo "Ready ExternalIPs: $(echo "$IPS" | tr '\n' ' ')"
-                  PATCH="{\"spec\":{\"externalIPs\":[$${IP_LIST}]}}"
+                  # externalTrafficPolicy MUST ride along with externalIPs.
+                  #
+                  # Setting externalIPs makes kube-proxy own node:80/443, which
+                  # takes those ports AWAY from the CNI hostPort DNAT path. With
+                  # the default `Cluster` policy kube-proxy's KUBE-EXT-* chain
+                  # unconditionally jumps to KUBE-MARK-MASQ, so every external
+                  # client is SNAT'd to the node's own address before Traefik
+                  # ever sees it. Measured on a dual-stack cluster — a request
+                  # from a host at 46.x.x.x arrived as, and was logged as, the
+                  # node's own 178.x.x.x, in $remote_addr AND X-Forwarded-For.
+                  #
+                  # That silently voided the perimeter design: bootstrap.sh sets
+                  # Traefik's forwardedHeaders.trustedIPs to 127.0.0.1/32 on the
+                  # explicit assumption that "Traefik's connection-remote-addr
+                  # reflects the real client IP". It did not. CrowdSec, the WAF's
+                  # source_ip, panel audit logs and every tenant workload saw one
+                  # address — the node — for the entire IPv4 internet, so an L7
+                  # ban could only ever have banned the cluster itself.
+                  #
+                  # Only IPv4 was affected: Services here are SingleStack IPv4,
+                  # so kube-proxy programs no v6 chains and IPv6 fell through to
+                  # hostPort DNAT with its source intact. That asymmetry is why
+                  # this hid for so long — the IPv6 tests looked correct.
+                  #
+                  # `Local` is safe precisely because Traefik is a DaemonSet:
+                  # every eligible node has a local endpoint, so kube-proxy's
+                  # "drop where no local endpoint exists" behaviour has nothing
+                  # to drop. (Contrast stalwart-mail, which is a single Pod and
+                  # therefore MUST stay `Cluster` — see its service.yaml.)
+                  #
+                  # Patched here rather than only in bootstrap.sh's helm install
+                  # so existing clusters converge on the next 5-minute run
+                  # instead of needing a host-migration.
+                  PATCH="{\"spec\":{\"externalIPs\":[$${IP_LIST}],\"externalTrafficPolicy\":\"Local\"}}"
                   CURRENT=$(kubectl get svc -n traefik traefik \
                     -o jsonpath='{.spec.externalIPs}')
                   echo "current: $${CURRENT}"
