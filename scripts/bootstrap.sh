@@ -4754,58 +4754,72 @@ ensure_traefik_plugins_loaded() {
   return 1
 }
 
-ensure_traefik_cni_portmap() {
-  local caller="${1:-unknown}"
-  if ! command -v nft >/dev/null 2>&1; then
+# _hostport_open <port> — TCP-connect 127.0.0.1:<port> from this node.
+#
+# This, not a rule grep, is the arbiter for "is a hostPort actually wired". The
+# portmap plugin's rules surface under several spellings — native nft
+# (`tcp dport 80 … dnat to 10.42.x.y`), a dport SET when one pod publishes
+# several ports (`tcp dport { 25, 465, 587, … }`), or xt-compat when programmed
+# through iptables-nft — so any single grep both misses working nodes and, if
+# loosened to the chain name, reports "present" for a node whose port is
+# genuinely dead (CNI-HOSTPORT-DNAT is SHARED by Traefik, mail and SFTP). A
+# connect answers the only question that matters and cannot be spelled wrong.
+_hostport_open() {
+  timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/${1}" 2>/dev/null
+}
+
+# ensure_hostport_dnat <caller> <human-name> <namespace> <selector> <port>
+#
+# The CNI portmap plugin occasionally fails to hook a pod's hostPort chain — the
+# jump into CNI-HOSTPORT-DNAT is simply absent, so the node ACCEPTS the packet
+# (the firewall allows the port) and then RSTs it: `Connection refused` from
+# outside, while the pod is Running, Ready and listening. Recreating the pod
+# makes CNI re-run ADD and install the chain.
+#
+# Measured on a fresh dual-stack install 2026-08-09: CNI-HOSTPORT-DNAT carried
+# jumps for the mail ports and 80/443 but NONE for 23022, so SFTP was dead
+# cluster-wide from first boot. Only Traefik had a self-heal; the SFTP gateway
+# published a hostPort with no such protection. Recreating its pod added
+# `tcp dport 23022 … jump CNI-DN-…` and files.<apex>:23022 answered SSH-2.0-Go.
+ensure_hostport_dnat() {
+  local caller="${1:-unknown}" human="${2:-workload}" ns="${3:-}" selector="${4:-}" port="${5:-}"
+  [[ -n "$ns" && -n "$selector" && -n "$port" ]] || return 0
+  if _hostport_open "$port"; then
     return 0
   fi
-  if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-    return 0
-  fi
-  log "CNI portmap chain self-test (${caller}): no :80 hostPort DNAT rule found on this node — recycling the local Traefik pod to force CNI portmap install."
-  local local_traefik_pod
-  local_traefik_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n traefik get pod \
-    -l app.kubernetes.io/name=traefik \
+  log "CNI portmap self-test (${caller}): ${human} hostPort :${port} is not answering on this node — recycling the local pod to force a CNI portmap install."
+  local local_pod
+  local_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n "$ns" get pod \
+    -l "$selector" \
     --field-selector "spec.nodeName=$(hostname)" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [[ -z "$local_traefik_pod" ]]; then
-    warn "  no local Traefik pod found via field-selector spec.nodeName=$(hostname); check DS rollout state"
+  if [[ -z "$local_pod" ]]; then
+    warn "  no local ${human} pod found via field-selector spec.nodeName=$(hostname); check its rollout state"
     return 0
   fi
-  kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
-  # Wait for the DS controller to spawn a replacement + CNI portmap to wire the
-  # new hostPort. The old 30s window was too tight to be trustworthy: the
-  # graceful delete alone burns 10s of it, leaving ~20s for schedule → (possible
-  # image pull) → container start → CNI ADD. On a fresh or loaded node that
-  # routinely overran, so the WARN below fired on clusters whose portmap chain
-  # then appeared moments later. 120s costs nothing when the chain comes back
-  # early (the loop returns on first sight) and removes the false alarm.
+  kctl -n "$ns" delete pod "$local_pod" --grace-period=10 >/dev/null 2>&1 || true
+  # 120s: the graceful delete alone burns 10s, then schedule -> (possible image
+  # pull) -> container start -> CNI ADD. A tighter window made this warn on
+  # nodes whose chain appeared moments later.
   local _w
   for _w in $(seq 1 60); do
-    if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-      log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
+    if _hostport_open "$port"; then
+      log "  ${human} hostPort :${port} answering on attempt $_w (after $((_w * 2))s)."
       return 0
     fi
     sleep 2
   done
-  warn "  CNI portmap chain still missing ${_w}×2s after recycling the local Traefik pod."
-  warn "  This blocks external :80/:443 on THIS node only (hostPort DNAT); the cluster is otherwise fine."
-  warn "  Confirm whether it is real — from this node:"
-  warn "    curl -sS -o /dev/null -w '%{http_code}\\n' http://127.0.0.1/    # 000 = genuinely broken, any HTTP code = the probe above was a false alarm"
-  warn "    kubectl -n traefik get pod -o wide --field-selector spec.nodeName=$(hostname)"
-  warn "    nft list table ip nat | grep -i hostport   # or: iptables -t nat -S CNI-HOSTPORT-DNAT"
-  warn "  If genuinely broken, recycle the pod again: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
-  # NOTE for whoever investigates a report of this warning: the probe above
-  # matches only NATIVE nft syntax (`tcp dport 80 ... dnat to 10.42.x.y`). When
-  # the portmap plugin programs the rule through iptables-nft instead — which is
-  # what k3s's bundled iptables does on a host with no iptables tooling of its
-  # own ("Host iptables-save/iptables-restore tools not found" in the k3s log) —
-  # the rule can surface under xt-compat spellings this grep would miss, making
-  # the warning cosmetic. The `curl 127.0.0.1` probe above settles which case it
-  # is. Broadening the match is NOT as simple as also grepping the chain name:
-  # CNI-HOSTPORT-DNAT is shared with the SFTP (:23022) and mail hostPorts, so a
-  # chain-name match would report "present" for a node whose :80 rule is
-  # genuinely absent and skip the recycle that fixes it.
+  warn "  ${human} hostPort :${port} still not answering $((_w * 2))s after recycling the local pod."
+  warn "  This blocks external :${port} on THIS node only (hostPort DNAT); the cluster is otherwise fine."
+  warn "  Investigate from this node:"
+  warn "    kubectl -n ${ns} get pod -o wide --field-selector spec.nodeName=$(hostname) -l ${selector}"
+  warn "    nft list chain ip nat CNI-HOSTPORT-DNAT   # a jump for dport ${port} must be present"
+  warn "  Then recycle again: kubectl -n ${ns} delete pod -l ${selector} --field-selector spec.nodeName=$(hostname)"
+}
+
+# Back-compat wrapper — Traefik's :80. Callers predate the generalisation.
+ensure_traefik_cni_portmap() {
+  ensure_hostport_dnat "${1:-unknown}" "Traefik" "traefik" "app.kubernetes.io/name=traefik" 80
 }
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
@@ -8595,6 +8609,17 @@ verify_install() {
   # Caught on testing.example.test 2026-05-16 — manual operator
   # recycle of the Traefik pod restored access; this call automates it.
   ensure_traefik_cni_portmap "verify-install"
+
+  # Traefik is NOT the only workload publishing a hostPort, and it was the only
+  # one with a self-heal. On the fresh dual-stack install of 2026-08-09
+  # CNI-HOSTPORT-DNAT carried jumps for 80/443 and the mail ports but NONE for
+  # 23022: the sftp-gateway pod was Running, Ready and listening, the firewall
+  # allowed the port, and every external connection was REFUSED — SFTP dead
+  # cluster-wide from first boot, with nothing in bootstrap that would notice.
+  # These run after the Traefik check because they depend on Flux having applied
+  # the workloads; a missing pod is a no-op, not a failure.
+  ensure_hostport_dnat "verify-install" "SFTP gateway" "platform-system" "app=sftp-gateway" 23022
+  ensure_hostport_dnat "verify-install" "Stalwart mail" "mail" "app=stalwart-mail" 25
 
   # Re-check the PLUGIN subsystem here too, for the same reason the portmap
   # self-test runs twice: Flux's first reconcile rolls the Traefik DS, and the
