@@ -90,6 +90,30 @@ if [[ -n "$REMOTE_HOST" ]]; then
   # the shell quoting boundary.
   remote_args_b64=$(printf '%s\0' "$@" | base64 | tr -d '\n')
 
+  # Credential env vars must ALSO cross, or the flags that depend on them are
+  # dead on this path. --backup-target-s3-* deliberately refuses to take the
+  # access/secret key as flags (they would land in `ps`/cmdline), reading them
+  # from the environment instead — but ssh forwards no environment by default
+  # and the block below forwards ARGS only, so the remote bootstrap never saw
+  # them and every --remote install silently logged
+  #   "env vars ... are not both set — skipping"
+  # and came up with no backup target at all.
+  #
+  # These go over the SSH channel's STDIN, not in the command string: the
+  # command string becomes the remote shell's argv and would be readable in the
+  # remote `ps` for the life of the launch. The remote decodes them into
+  # exported vars (never a file, never the log), which the nohup'd bootstrap
+  # then inherits — the same exposure as exporting them for a local run, which
+  # is the documented usage.
+  remote_env_b64=""
+  if [[ -n "${BACKUP_TARGET_S3_ACCESS_KEY:-}" || -n "${BACKUP_TARGET_S3_SECRET_KEY:-}" ]]; then
+    remote_env_b64=$(printf '%s\0' \
+      "BACKUP_TARGET_S3_ACCESS_KEY=${BACKUP_TARGET_S3_ACCESS_KEY:-}" \
+      "BACKUP_TARGET_S3_SECRET_KEY=${BACKUP_TARGET_S3_SECRET_KEY:-}" \
+      | base64 | tr -d '\n')
+    echo "Forwarding backup-target credentials to $REMOTE_HOST (via stdin, not argv)..."
+  fi
+
   echo "Launching bootstrap on $REMOTE_HOST (detached + tail)..."
   # Phase 1: launch bootstrap detached on remote. nohup + redirect
   # stdin/out/err so the process is fully detached from the launch
@@ -112,6 +136,19 @@ if [[ -n "$REMOTE_HOST" ]]; then
     # Decode args once at launch; the array survives until bootstrap
     # exits. mapfile -d '' reads NUL-delimited base64-decoded stream.
     mapfile -d '' BOOTSTRAP_ARGS < <(printf '%s' '${remote_args_b64}' | base64 -d)
+    # Credential env blob arrives on STDIN (see the sender above). Exported
+    # here in the launching shell so the nohup'd bootstrap INHERITS them —
+    # \`export \"KEY=value\"\` assigns without evaluating the value, so a secret
+    # containing quotes or \$(...) cannot execute. Nothing is written to disk
+    # and nothing reaches \${REMOTE_LOG}.
+    IFS= read -r REMOTE_ENV_B64 || true
+    if [ -n \"\${REMOTE_ENV_B64:-}\" ]; then
+      mapfile -d '' BOOTSTRAP_ENV < <(printf '%s' \"\$REMOTE_ENV_B64\" | base64 -d)
+      for _pair in \"\${BOOTSTRAP_ENV[@]}\"; do
+        [ -n \"\$_pair\" ] && export \"\$_pair\"
+      done
+      unset REMOTE_ENV_B64 BOOTSTRAP_ENV _pair
+    fi
     # Run bootstrap.sh as a child of bash -c so we can capture its
     # exit code (note: NOT exec, which would replace the bash and
     # never run the echo). \"\$@\" inside bash -c expands to the
@@ -122,7 +159,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
     disown || true
     echo \$PID > ${REMOTE_RUNDIR}/pid
     echo \"remote bootstrap pid=\$PID\"
-  " || { echo "ERROR: remote launch failed" >&2; exit 1; }
+  " <<<"$remote_env_b64" || { echo "ERROR: remote launch failed" >&2; exit 1; }
 
   # Phase 2: stream-tail the log until the bootstrap process exits.
   #
