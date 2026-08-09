@@ -961,7 +961,19 @@ retry_failed_serially() {
       # already recorded the reachability break and could have said so, which
       # would have pointed straight at the crash instead of at phantom
       # contention. Correlate rather than guess.
-      local _why="under parallel load — FLAKY, not a regression"
+      # Contention can only be the explanation if the batch actually ran
+      # concurrently. Under INTEGRATION_PARALLEL=0 nothing ran alongside this
+      # suite, so "under parallel load" is not a weaker diagnosis — it is a
+      # false one, and it sends the reader looking for a race that cannot
+      # exist. Seen 2026-08-09: a SERIAL run reported two suites as load-flakes
+      # when one had been fixed and the other's cluster state remediated
+      # between the two attempts.
+      local _why
+      if [[ "${INTEGRATION_PARALLEL:-1}" == "1" ]]; then
+        _why="under parallel load — FLAKY, not a regression"
+      else
+        _why="in a SERIAL run (INTEGRATION_PARALLEL=0) — nothing ran alongside it, so contention is NOT the explanation. Something differed between the two attempts: cluster state, a leaked global from an earlier suite, or the suite/product itself. Find that difference before calling it flaky."
+      fi
       if (( ${#reachability_breaks[@]} > 0 )); then
         _why="while the platform API was UNREACHABLE during that batch (${#reachability_breaks[@]} break(s) recorded) — collateral, NOT a load flake. Investigate the outage, not this suite."
       fi
