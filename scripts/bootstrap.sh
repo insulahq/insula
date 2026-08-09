@@ -4510,16 +4510,34 @@ install_traefik() {
   # nodeAffinity excludes nodes where the operator has opted them out of
   # ingress traffic (ingress-mode=none) or marked them private-only.
   #
-  # service.spec.externalTrafficPolicy=Local — REQUIRED, not cosmetic.
-  # The ingress-external-ips reconciler adds .spec.externalIPs to this
-  # Service, which hands node:80/443 to kube-proxy. Under the default
-  # `Cluster` policy kube-proxy masquerades every external client to the
-  # node's own address BEFORE Traefik sees it, which silently falsifies
-  # the trustedIPs reasoning immediately below. `Local` is safe here only
-  # because Traefik is a DaemonSet — every eligible node has a local
-  # endpoint, so there is nothing for kube-proxy to drop. The reconciler
-  # re-asserts this every 5 min so existing clusters converge too; see
-  # k8s/base/ingress-external-ips/cronjob.yaml for the measurement.
+  # externalTrafficPolicy is DELIBERATELY NOT SET HERE — it cannot be.
+  # The apiserver only accepts .spec.externalTrafficPolicy on a Service it
+  # considers externally accessible: type LoadBalancer, type NodePort, or a
+  # ClusterIP Service whose .spec.externalIPs is NON-EMPTY. At helm-install
+  # time this Service is ClusterIP with no externalIPs yet (the
+  # ingress-external-ips reconciler adds them later, from the live Node), so
+  # setting the policy here fails the install outright:
+  #
+  #   Error: Service "traefik" is invalid: spec.externalTrafficPolicy:
+  #   Invalid value: "Local": may only be set for externally-accessible services
+  #
+  # — which is exactly what a fresh --dual-stack bootstrap hit on 2026-08-09,
+  # after the policy was added here on the strength of a LIVE-cluster patch that
+  # had set BOTH fields at once. The two fields are only jointly valid, so the
+  # reconciler owns both and patches them in a SINGLE patch every 5 min
+  # (k8s/base/ingress-external-ips/cronjob.yaml). It also must stay the sole
+  # owner of externalIPs: a value baked in here would be re-imposed by every
+  # `helm upgrade`, dropping the other nodes' IPs on a multi-node cluster until
+  # the next reconcile.
+  #
+  # Why the policy matters at all: externalIPs hand node:80/443 to kube-proxy,
+  # and under the default `Cluster` policy kube-proxy masquerades every external
+  # client to the node's own address BEFORE Traefik sees it, which silently
+  # falsifies the trustedIPs reasoning immediately below. `Local` is safe
+  # because Traefik is a DaemonSet — every eligible node has a local endpoint,
+  # so there is nothing for kube-proxy to drop. Until the first reconcile lands,
+  # this Service has no externalIPs and external traffic arrives via hostPort,
+  # which preserves the client IP on its own.
   #
   # additionalArguments[0..1] — entryPoint.forwardedHeaders.trustedIPs —
   # list of CIDRs Traefik TRUSTS to set X-Forwarded-* on incoming
@@ -4549,7 +4567,6 @@ install_traefik() {
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
     --set service.spec.type=ClusterIP \
-    --set service.spec.externalTrafficPolicy=Local \
     ${dual_stack_svc_args} \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
