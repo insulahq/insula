@@ -4495,12 +4495,24 @@ install_traefik() {
   # nodeAffinity excludes nodes where the operator has opted them out of
   # ingress traffic (ingress-mode=none) or marked them private-only.
   #
+  # service.spec.externalTrafficPolicy=Local — REQUIRED, not cosmetic.
+  # The ingress-external-ips reconciler adds .spec.externalIPs to this
+  # Service, which hands node:80/443 to kube-proxy. Under the default
+  # `Cluster` policy kube-proxy masquerades every external client to the
+  # node's own address BEFORE Traefik sees it, which silently falsifies
+  # the trustedIPs reasoning immediately below. `Local` is safe here only
+  # because Traefik is a DaemonSet — every eligible node has a local
+  # endpoint, so there is nothing for kube-proxy to drop. The reconciler
+  # re-asserts this every 5 min so existing clusters converge too; see
+  # k8s/base/ingress-external-ips/cronjob.yaml for the measurement.
+  #
   # additionalArguments[0..1] — entryPoint.forwardedHeaders.trustedIPs —
   # list of CIDRs Traefik TRUSTS to set X-Forwarded-* on incoming
   # connections. With our DaemonSet+hostPort layout Traefik IS the
   # perimeter (no LB in front); external clients connect directly to
-  # the node's :80/:443 via DNAT and Traefik's connection-remote-addr
-  # reflects the real client IP. We therefore set trustedIPs to
+  # the node's :80/:443 via DNAT and — GIVEN the externalTrafficPolicy
+  # above — Traefik's connection-remote-addr reflects the real client
+  # IP. We therefore set trustedIPs to
   # 127.0.0.1/32 (loopback only) to strip any attacker-supplied XFF
   # before it reaches ForwardAuth Middlewares — operators behind an
   # external L4/L7 load balancer must add their LB CIDR in an overlay
@@ -4522,6 +4534,7 @@ install_traefik() {
     --set 'ports.web.hostPort=80' \
     --set 'ports.websecure.hostPort=443' \
     --set service.spec.type=ClusterIP \
+    --set service.spec.externalTrafficPolicy=Local \
     ${dual_stack_svc_args} \
     --set providers.kubernetesCRD.enabled=true \
     --set providers.kubernetesCRD.allowCrossNamespace=true \
