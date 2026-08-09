@@ -90,6 +90,30 @@ if [[ -n "$REMOTE_HOST" ]]; then
   # the shell quoting boundary.
   remote_args_b64=$(printf '%s\0' "$@" | base64 | tr -d '\n')
 
+  # Credential env vars must ALSO cross, or the flags that depend on them are
+  # dead on this path. --backup-target-s3-* deliberately refuses to take the
+  # access/secret key as flags (they would land in `ps`/cmdline), reading them
+  # from the environment instead — but ssh forwards no environment by default
+  # and the block below forwards ARGS only, so the remote bootstrap never saw
+  # them and every --remote install silently logged
+  #   "env vars ... are not both set — skipping"
+  # and came up with no backup target at all.
+  #
+  # These go over the SSH channel's STDIN, not in the command string: the
+  # command string becomes the remote shell's argv and would be readable in the
+  # remote `ps` for the life of the launch. The remote decodes them into
+  # exported vars (never a file, never the log), which the nohup'd bootstrap
+  # then inherits — the same exposure as exporting them for a local run, which
+  # is the documented usage.
+  remote_env_b64=""
+  if [[ -n "${BACKUP_TARGET_S3_ACCESS_KEY:-}" || -n "${BACKUP_TARGET_S3_SECRET_KEY:-}" ]]; then
+    remote_env_b64=$(printf '%s\0' \
+      "BACKUP_TARGET_S3_ACCESS_KEY=${BACKUP_TARGET_S3_ACCESS_KEY:-}" \
+      "BACKUP_TARGET_S3_SECRET_KEY=${BACKUP_TARGET_S3_SECRET_KEY:-}" \
+      | base64 | tr -d '\n')
+    echo "Forwarding backup-target credentials to $REMOTE_HOST (via stdin, not argv)..."
+  fi
+
   echo "Launching bootstrap on $REMOTE_HOST (detached + tail)..."
   # Phase 1: launch bootstrap detached on remote. nohup + redirect
   # stdin/out/err so the process is fully detached from the launch
@@ -112,6 +136,19 @@ if [[ -n "$REMOTE_HOST" ]]; then
     # Decode args once at launch; the array survives until bootstrap
     # exits. mapfile -d '' reads NUL-delimited base64-decoded stream.
     mapfile -d '' BOOTSTRAP_ARGS < <(printf '%s' '${remote_args_b64}' | base64 -d)
+    # Credential env blob arrives on STDIN (see the sender above). Exported
+    # here in the launching shell so the nohup'd bootstrap INHERITS them —
+    # \`export \"KEY=value\"\` assigns without evaluating the value, so a secret
+    # containing quotes or \$(...) cannot execute. Nothing is written to disk
+    # and nothing reaches \${REMOTE_LOG}.
+    IFS= read -r REMOTE_ENV_B64 || true
+    if [ -n \"\${REMOTE_ENV_B64:-}\" ]; then
+      mapfile -d '' BOOTSTRAP_ENV < <(printf '%s' \"\$REMOTE_ENV_B64\" | base64 -d)
+      for _pair in \"\${BOOTSTRAP_ENV[@]}\"; do
+        [ -n \"\$_pair\" ] && export \"\$_pair\"
+      done
+      unset REMOTE_ENV_B64 BOOTSTRAP_ENV _pair
+    fi
     # Run bootstrap.sh as a child of bash -c so we can capture its
     # exit code (note: NOT exec, which would replace the bash and
     # never run the echo). \"\$@\" inside bash -c expands to the
@@ -122,7 +159,7 @@ if [[ -n "$REMOTE_HOST" ]]; then
     disown || true
     echo \$PID > ${REMOTE_RUNDIR}/pid
     echo \"remote bootstrap pid=\$PID\"
-  " || { echo "ERROR: remote launch failed" >&2; exit 1; }
+  " <<<"$remote_env_b64" || { echo "ERROR: remote launch failed" >&2; exit 1; }
 
   # Phase 2: stream-tail the log until the bootstrap process exits.
   #
@@ -1649,9 +1686,24 @@ configure_memory_protection() {
   #      (k8s/base/priorityclass.yaml) — kubelet evicts
   #      exceeds-requests pods by ascending priority, and tenant pods
   #      run at priority 0.
-  if marker_exists "memory-protection" && [[ ! -s /proc/swaps || $(wc -l < /proc/swaps) -le 1 ]]; then
+  # Check the ARTIFACT, not just the marker. /var/lib/insula survives a
+  # destroy-cluster wipe (it holds the age-encrypted secrets bundle, so it must),
+  # but the drop-in lives under /etc/rancher, which does not. A wipe +
+  # re-bootstrap therefore hit a stale "memory-protection" marker and skipped,
+  # leaving the node with NO kubelet eviction thresholds and NO system-reserved
+  # headroom — exactly the protection that keeps the kernel OOM killer away from
+  # k3s and postgres. Observed on a node re-bootstrapped 2026-08-08: marker dated
+  # four days earlier, /etc/rancher/k3s/config.yaml.d absent entirely.
+  # destroy-cluster.sh now clears the markers too; this is the belt to those
+  # braces, and self-heals a node wiped by any other means.
+  if marker_exists "memory-protection" \
+     && [[ -s /etc/rancher/k3s/config.yaml.d/50-memory-protection.yaml ]] \
+     && [[ ! -s /proc/swaps || $(wc -l < /proc/swaps) -le 1 ]]; then
     log "Memory protection already configured and swap off, skipping."
     return 0
+  fi
+  if marker_exists "memory-protection" && [[ ! -s /etc/rancher/k3s/config.yaml.d/50-memory-protection.yaml ]]; then
+    warn "memory-protection marker present but the kubelet drop-in is MISSING (wiped /etc/rancher?) — rewriting."
   fi
 
   log "Configuring node memory protection (swap off, kubelet eviction)..."
@@ -3350,8 +3402,26 @@ select_cluster_issuer() {
     echo "$CLUSTER_ISSUER_NAME"
     return 0
   fi
-  # 2. dev/local
-  if [[ "$env" == "dev" ]]; then
+  # 2. dev/local — ONLY when that ClusterIssuer actually exists on the cluster.
+  #
+  # `local-ca-issuer` is shipped by the DIND overlay alone (k8s/overlays/dind/
+  # cert-manager/); k8s/base/cert-manager ships only the Let's Encrypt issuers,
+  # and the development overlay adds none. So returning it unconditionally for
+  # `--env dev` pinned every Certificate on a real DEV cluster to an issuer that
+  # does not exist, and none of them could ever be issued.
+  #
+  # This was masked for as long as platform-config carried a hardcoded
+  # `letsencrypt-prod-http01`: the literal won, the certs issued, and the bogus
+  # value sat unused in platform-cluster-config. Once platform-config started
+  # honouring ${CLUSTER_ISSUER_NAME} the mismatch became load-bearing — caught
+  # on a fresh --env dev bootstrap of testing.<apex> 2026-08-08, where all 6
+  # platform Certificates sat Ready=False against a missing issuer.
+  #
+  # Same existence-probe idiom as the acme-custom-http01 check above. A dev
+  # cluster that really does ship the local CA still gets it; one that does not
+  # falls through to the DNS-vs-server alignment below and lands on a Let's
+  # Encrypt issuer it can actually use.
+  if [[ "$env" == "dev" ]] && kctl get clusterissuer local-ca-issuer >/dev/null 2>&1; then
     echo "local-ca-issuer"
     return 0
   fi
@@ -4477,12 +4547,42 @@ install_traefik() {
   # nodeAffinity excludes nodes where the operator has opted them out of
   # ingress traffic (ingress-mode=none) or marked them private-only.
   #
+  # externalTrafficPolicy is DELIBERATELY NOT SET HERE — it cannot be.
+  # The apiserver only accepts .spec.externalTrafficPolicy on a Service it
+  # considers externally accessible: type LoadBalancer, type NodePort, or a
+  # ClusterIP Service whose .spec.externalIPs is NON-EMPTY. At helm-install
+  # time this Service is ClusterIP with no externalIPs yet (the
+  # ingress-external-ips reconciler adds them later, from the live Node), so
+  # setting the policy here fails the install outright:
+  #
+  #   Error: Service "traefik" is invalid: spec.externalTrafficPolicy:
+  #   Invalid value: "Local": may only be set for externally-accessible services
+  #
+  # — which is exactly what a fresh --dual-stack bootstrap hit on 2026-08-09,
+  # after the policy was added here on the strength of a LIVE-cluster patch that
+  # had set BOTH fields at once. The two fields are only jointly valid, so the
+  # reconciler owns both and patches them in a SINGLE patch every 5 min
+  # (k8s/base/ingress-external-ips/cronjob.yaml). It also must stay the sole
+  # owner of externalIPs: a value baked in here would be re-imposed by every
+  # `helm upgrade`, dropping the other nodes' IPs on a multi-node cluster until
+  # the next reconcile.
+  #
+  # Why the policy matters at all: externalIPs hand node:80/443 to kube-proxy,
+  # and under the default `Cluster` policy kube-proxy masquerades every external
+  # client to the node's own address BEFORE Traefik sees it, which silently
+  # falsifies the trustedIPs reasoning immediately below. `Local` is safe
+  # because Traefik is a DaemonSet — every eligible node has a local endpoint,
+  # so there is nothing for kube-proxy to drop. Until the first reconcile lands,
+  # this Service has no externalIPs and external traffic arrives via hostPort,
+  # which preserves the client IP on its own.
+  #
   # additionalArguments[0..1] — entryPoint.forwardedHeaders.trustedIPs —
   # list of CIDRs Traefik TRUSTS to set X-Forwarded-* on incoming
   # connections. With our DaemonSet+hostPort layout Traefik IS the
   # perimeter (no LB in front); external clients connect directly to
-  # the node's :80/:443 via DNAT and Traefik's connection-remote-addr
-  # reflects the real client IP. We therefore set trustedIPs to
+  # the node's :80/:443 via DNAT and — GIVEN the externalTrafficPolicy
+  # above — Traefik's connection-remote-addr reflects the real client
+  # IP. We therefore set trustedIPs to
   # 127.0.0.1/32 (loopback only) to strip any attacker-supplied XFF
   # before it reaches ForwardAuth Middlewares — operators behind an
   # external L4/L7 load balancer must add their LB CIDR in an overlay
@@ -4603,6 +4703,25 @@ ensure_traefik_plugins_loaded() {
   local phase="${1:-post-install}"
   local attempt=1 logs
 
+  # WAIT for Traefik to actually say something before judging it.
+  #
+  # This used to `return 0` the moment the log was empty, which made the check
+  # a no-op on exactly the run it exists for: Helm's --wait returns as soon as
+  # the pod is Ready, so post-install fires while Traefik has not yet written
+  # its "Loading plugins…" line. Observed on the fresh DEV bootstrap
+  # 2026-08-08 — "no Traefik logs yet — skipping (attempt 1)" at 12:50:33,
+  # and the plugin subsystem then died at 12:57:39, seven minutes later,
+  # unnoticed. Poll for the startup marker instead; only give up (and pass)
+  # if Traefik never logs at all, which is a different failure that the
+  # rollout gates already cover.
+  local waited=0
+  while [ "$waited" -lt "${TRAEFIK_PLUGIN_LOG_WAIT_S:-120}" ]; do
+    logs="$(traefik_plugin_logs)"
+    [ -n "$logs" ] && break
+    sleep 5
+    waited=$((waited + 5))
+  done
+
   while [ "$attempt" -le "$TRAEFIK_PLUGIN_MAX_ATTEMPTS" ]; do
     logs="$(traefik_plugin_logs)"
 
@@ -4635,58 +4754,72 @@ ensure_traefik_plugins_loaded() {
   return 1
 }
 
-ensure_traefik_cni_portmap() {
-  local caller="${1:-unknown}"
-  if ! command -v nft >/dev/null 2>&1; then
+# _hostport_open <port> — TCP-connect 127.0.0.1:<port> from this node.
+#
+# This, not a rule grep, is the arbiter for "is a hostPort actually wired". The
+# portmap plugin's rules surface under several spellings — native nft
+# (`tcp dport 80 … dnat to 10.42.x.y`), a dport SET when one pod publishes
+# several ports (`tcp dport { 25, 465, 587, … }`), or xt-compat when programmed
+# through iptables-nft — so any single grep both misses working nodes and, if
+# loosened to the chain name, reports "present" for a node whose port is
+# genuinely dead (CNI-HOSTPORT-DNAT is SHARED by Traefik, mail and SFTP). A
+# connect answers the only question that matters and cannot be spelled wrong.
+_hostport_open() {
+  timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/${1}" 2>/dev/null
+}
+
+# ensure_hostport_dnat <caller> <human-name> <namespace> <selector> <port>
+#
+# The CNI portmap plugin occasionally fails to hook a pod's hostPort chain — the
+# jump into CNI-HOSTPORT-DNAT is simply absent, so the node ACCEPTS the packet
+# (the firewall allows the port) and then RSTs it: `Connection refused` from
+# outside, while the pod is Running, Ready and listening. Recreating the pod
+# makes CNI re-run ADD and install the chain.
+#
+# Measured on a fresh dual-stack install 2026-08-09: CNI-HOSTPORT-DNAT carried
+# jumps for the mail ports and 80/443 but NONE for 23022, so SFTP was dead
+# cluster-wide from first boot. Only Traefik had a self-heal; the SFTP gateway
+# published a hostPort with no such protection. Recreating its pod added
+# `tcp dport 23022 … jump CNI-DN-…` and files.<apex>:23022 answered SSH-2.0-Go.
+ensure_hostport_dnat() {
+  local caller="${1:-unknown}" human="${2:-workload}" ns="${3:-}" selector="${4:-}" port="${5:-}"
+  [[ -n "$ns" && -n "$selector" && -n "$port" ]] || return 0
+  if _hostport_open "$port"; then
     return 0
   fi
-  if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-    return 0
-  fi
-  log "CNI portmap chain self-test (${caller}): no :80 hostPort DNAT rule found on this node — recycling the local Traefik pod to force CNI portmap install."
-  local local_traefik_pod
-  local_traefik_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n traefik get pod \
-    -l app.kubernetes.io/name=traefik \
+  log "CNI portmap self-test (${caller}): ${human} hostPort :${port} is not answering on this node — recycling the local pod to force a CNI portmap install."
+  local local_pod
+  local_pod=$(kubectl --kubeconfig="$KUBECONFIG" -n "$ns" get pod \
+    -l "$selector" \
     --field-selector "spec.nodeName=$(hostname)" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  if [[ -z "$local_traefik_pod" ]]; then
-    warn "  no local Traefik pod found via field-selector spec.nodeName=$(hostname); check DS rollout state"
+  if [[ -z "$local_pod" ]]; then
+    warn "  no local ${human} pod found via field-selector spec.nodeName=$(hostname); check its rollout state"
     return 0
   fi
-  kctl -n traefik delete pod "$local_traefik_pod" --grace-period=10 >/dev/null 2>&1 || true
-  # Wait for the DS controller to spawn a replacement + CNI portmap to wire the
-  # new hostPort. The old 30s window was too tight to be trustworthy: the
-  # graceful delete alone burns 10s of it, leaving ~20s for schedule → (possible
-  # image pull) → container start → CNI ADD. On a fresh or loaded node that
-  # routinely overran, so the WARN below fired on clusters whose portmap chain
-  # then appeared moments later. 120s costs nothing when the chain comes back
-  # early (the loop returns on first sight) and removes the false alarm.
+  kctl -n "$ns" delete pod "$local_pod" --grace-period=10 >/dev/null 2>&1 || true
+  # 120s: the graceful delete alone burns 10s, then schedule -> (possible image
+  # pull) -> container start -> CNI ADD. A tighter window made this warn on
+  # nodes whose chain appeared moments later.
   local _w
   for _w in $(seq 1 60); do
-    if nft list table ip nat 2>/dev/null | grep -qE 'tcp dport 80[[:space:]].*dnat to[[:space:]]+10\.42'; then
-      log "  CNI portmap chain installed on attempt $_w (after ${_w}×2s)."
+    if _hostport_open "$port"; then
+      log "  ${human} hostPort :${port} answering on attempt $_w (after $((_w * 2))s)."
       return 0
     fi
     sleep 2
   done
-  warn "  CNI portmap chain still missing ${_w}×2s after recycling the local Traefik pod."
-  warn "  This blocks external :80/:443 on THIS node only (hostPort DNAT); the cluster is otherwise fine."
-  warn "  Confirm whether it is real — from this node:"
-  warn "    curl -sS -o /dev/null -w '%{http_code}\\n' http://127.0.0.1/    # 000 = genuinely broken, any HTTP code = the probe above was a false alarm"
-  warn "    kubectl -n traefik get pod -o wide --field-selector spec.nodeName=$(hostname)"
-  warn "    nft list table ip nat | grep -i hostport   # or: iptables -t nat -S CNI-HOSTPORT-DNAT"
-  warn "  If genuinely broken, recycle the pod again: kubectl -n traefik delete pod -l app.kubernetes.io/name=traefik --field-selector spec.nodeName=$(hostname)"
-  # NOTE for whoever investigates a report of this warning: the probe above
-  # matches only NATIVE nft syntax (`tcp dport 80 ... dnat to 10.42.x.y`). When
-  # the portmap plugin programs the rule through iptables-nft instead — which is
-  # what k3s's bundled iptables does on a host with no iptables tooling of its
-  # own ("Host iptables-save/iptables-restore tools not found" in the k3s log) —
-  # the rule can surface under xt-compat spellings this grep would miss, making
-  # the warning cosmetic. The `curl 127.0.0.1` probe above settles which case it
-  # is. Broadening the match is NOT as simple as also grepping the chain name:
-  # CNI-HOSTPORT-DNAT is shared with the SFTP (:23022) and mail hostPorts, so a
-  # chain-name match would report "present" for a node whose :80 rule is
-  # genuinely absent and skip the recycle that fixes it.
+  warn "  ${human} hostPort :${port} still not answering $((_w * 2))s after recycling the local pod."
+  warn "  This blocks external :${port} on THIS node only (hostPort DNAT); the cluster is otherwise fine."
+  warn "  Investigate from this node:"
+  warn "    kubectl -n ${ns} get pod -o wide --field-selector spec.nodeName=$(hostname) -l ${selector}"
+  warn "    nft list chain ip nat CNI-HOSTPORT-DNAT   # a jump for dport ${port} must be present"
+  warn "  Then recycle again: kubectl -n ${ns} delete pod -l ${selector} --field-selector spec.nodeName=$(hostname)"
+}
+
+# Back-compat wrapper — Traefik's :80. Callers predate the generalisation.
+ensure_traefik_cni_portmap() {
+  ensure_hostport_dnat "${1:-unknown}" "Traefik" "traefik" "app.kubernetes.io/name=traefik" 80
 }
 
 # Generate / load the per-cluster CrowdSec bouncer key and ensure it
@@ -7345,73 +7478,6 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "AcmeRenewal task fired (domainId=\${DOMAIN_ID})"
 
-          # 5d. ADVISORY: poll whether the first mail TLS cert actually
-          # issued, so a fresh bootstrap deterministically observes the
-          # outcome (and warns loudly) instead of silently moving on.
-          #
-          # NON-FATAL: the configure pod runs under "set -eu" (line ~5590),
-          # so every probe command below is guarded with "|| true" and the
-          # loop NEVER exits -- a failed/timed-out probe must not strand the
-          # rest of the configure step (AllowedIp, listeners, admin creds
-          # still need to run).
-          #
-          # Probe approach (Option 2, adapted to run in-pod): install openssl
-          # via the same apk path already proven above, then openssl s_client
-          # to the Stalwart pod's implicit-TLS submissions port (465) over the
-          # IN-CLUSTER Service DNS and assert the served leaf issuer is NOT the
-          # startup rcgen self-signed cert.
-          #
-          # Why this and not JMAP (Option 1): jmap_call (defined above) only
-          # reaches Stalwart's config surface (x:SystemSettings/get,
-          # x:Domain/get certificateManagement) -- nowhere in this repo does
-          # JMAP expose the SERVED runtime certificate, so it cannot tell a
-          # real CA-issued cert from the rcgen self-signed one. The served-leaf
-          # issuer check is the only "cert really issued" signal the codebase
-          # trusts (cf. scripts/integration-staging.sh scenario_mail_tls and
-          # scripts/integration-stalwart-mail-ha.sh). It stays INSIDE the
-          # cluster (stalwart-mail.mail.svc.cluster.local) -- we deliberately
-          # do NOT probe the node's own public IP:465, which fails on cloud
-          # hairpin NAT. kubectl is unavailable in this pod, so Option 2's
-          # one-shot "kubectl run" cannot apply here; an in-pod openssl probe
-          # is the in-pod-feasible equivalent.
-          # Poll budget is deliberately SHORT (4x20s ~= 80s): this whole
-          # configure pod is gated by an outer "kctl wait ...
-          # --timeout=180s" (see the wait after the pod is applied), so a
-          # multi-minute poll here would be cut off by that wait AND would
-          # add minutes to EVERY fresh install (mail DNS is frequently
-          # wired AFTER bootstrap). 80s catches the common fast-issue case
-          # (DNS already correct); the platform-api stalwart-domain
-          # reconciler's 30-min tick is the durable backstop for the
-          # slow-DNS case. Fits comfortably inside the 180s pod wait.
-          apk add -q --no-cache openssl 2>/dev/null || true
-          CERT_PROBE_HOST="stalwart-mail.mail.svc.cluster.local"
-          CERT_OK=""
-          echo "Polling for first mail TLS cert on \${CERT_PROBE_HOST}:465 (up to 4x20s ~= 80s; advisory, non-fatal)..."
-          for _cert_try in 1 2 3 4; do
-            CERT_ISSUER=\$( (echo | openssl s_client -connect "\${CERT_PROBE_HOST}:465" \
-              -servername "\${STALWART_HOSTNAME}" 2>/dev/null \
-              | openssl x509 -noout -issuer 2>/dev/null) || true )
-            case "\${CERT_ISSUER}" in
-              "")
-                echo "  cert poll \${_cert_try}/4: no TLS issuer readable yet on :465" ;;
-              *[Ss]talwart*|*[Ss]elf?[Ss]igned*|*rcgen*|*localhost*)
-                echo "  cert poll \${_cert_try}/4: still serving startup self-signed cert (\${CERT_ISSUER})" ;;
-              *)
-                echo "Mail TLS cert ISSUED for \${STALWART_HOSTNAME}: \${CERT_ISSUER}"
-                CERT_OK=yes
-                break ;;
-            esac
-            if [ "\${_cert_try}" -lt 4 ]; then sleep 20 || true; fi
-          done
-          if [ -z "\${CERT_OK}" ]; then
-            echo "WARN: mail TLS cert for \${STALWART_HOSTNAME} not yet issued (~80s elapsed)." >&2
-            echo "WARN:   Most common cause: DNS for \${STALWART_HOSTNAME} has not propagated yet," >&2
-            echo "WARN:   so Let's Encrypt cannot reach this host to validate the ACME challenge." >&2
-            echo "WARN:   This is EXPECTED if you set mail DNS after bootstrap. Stalwart + the" >&2
-            echo "WARN:   platform-api stalwart-domain reconciler keep retrying automatically." >&2
-            echo "WARN:   Verify later with:  scripts/integration-staging.sh mail_tls" >&2
-          fi
-
           # 6. AllowedIp — create missing entries
           EXISTING_IPS=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
@@ -7517,29 +7583,135 @@ spec:
 
           echo ""
           echo "configure-ok listeners_created=\${LISTENERS_CREATED}"
+
+          # 5d. ADVISORY: poll whether the first mail TLS cert actually
+          # issued, so a fresh bootstrap deterministically observes the
+          # outcome (and warns loudly) instead of silently moving on.
+          #
+          # THIS RUNS LAST, AFTER the configure-ok marker, and that placement is
+          # load-bearing. It used to sit between step 5c and step 6, where its
+          # ~80s budget pushed the pod past the outer "kctl wait --timeout"; the
+          # pod was then DELETED mid-poll, so steps 6-8 (AllowedIp, listeners,
+          # admin credentials) never ran and the marker never printed. A block
+          # documented "ADVISORY / NON-FATAL" was silently skipping real
+          # configuration and reporting the whole configure step as failed on a
+          # cluster that was fine — observed on the DEV box 2026-08-09. Anything
+          # whose failure is tolerable must come after everything whose failure
+          # is not.
+          #
+          # NON-FATAL: the configure pod runs under "set -eu" (line ~5590),
+          # so every probe command below is guarded with "|| true" and the
+          # loop NEVER exits -- a failed/timed-out probe must not strand the
+          # rest of the configure step (AllowedIp, listeners, admin creds
+          # still need to run).
+          #
+          # Probe approach (Option 2, adapted to run in-pod): install openssl
+          # via the same apk path already proven above, then openssl s_client
+          # to the Stalwart pod's implicit-TLS submissions port (465) over the
+          # IN-CLUSTER Service DNS and assert the served leaf issuer is NOT the
+          # startup rcgen self-signed cert.
+          #
+          # Why this and not JMAP (Option 1): jmap_call (defined above) only
+          # reaches Stalwart's config surface (x:SystemSettings/get,
+          # x:Domain/get certificateManagement) -- nowhere in this repo does
+          # JMAP expose the SERVED runtime certificate, so it cannot tell a
+          # real CA-issued cert from the rcgen self-signed one. The served-leaf
+          # issuer check is the only "cert really issued" signal the codebase
+          # trusts (cf. scripts/integration-staging.sh scenario_mail_tls and
+          # scripts/integration-stalwart-mail-ha.sh). It stays INSIDE the
+          # cluster (stalwart-mail.mail.svc.cluster.local) -- we deliberately
+          # do NOT probe the node's own public IP:465, which fails on cloud
+          # hairpin NAT. kubectl is unavailable in this pod, so Option 2's
+          # one-shot "kubectl run" cannot apply here; an in-pod openssl probe
+          # is the in-pod-feasible equivalent.
+          # Poll budget is deliberately SHORT (4x20s ~= 80s): it adds to EVERY
+          # fresh install, and mail DNS is frequently wired AFTER bootstrap. 80s
+          # catches the common fast-issue case (DNS already correct); the
+          # platform-api stalwart-domain reconciler's 30-min tick is the durable
+          # backstop for the slow-DNS case. Being last, an outer-wait timeout
+          # during this poll now costs only the observation, not the config.
+          apk add -q --no-cache openssl 2>/dev/null || true
+          CERT_PROBE_HOST="stalwart-mail.mail.svc.cluster.local"
+          CERT_OK=""
+          echo "Polling for first mail TLS cert on \${CERT_PROBE_HOST}:465 (up to 4x20s ~= 80s; advisory, non-fatal)..."
+          for _cert_try in 1 2 3 4; do
+            CERT_ISSUER=\$( (echo | openssl s_client -connect "\${CERT_PROBE_HOST}:465" \
+              -servername "\${STALWART_HOSTNAME}" 2>/dev/null \
+              | openssl x509 -noout -issuer 2>/dev/null) || true )
+            case "\${CERT_ISSUER}" in
+              "")
+                echo "  cert poll \${_cert_try}/4: no TLS issuer readable yet on :465" ;;
+              *[Ss]talwart*|*[Ss]elf?[Ss]igned*|*rcgen*|*localhost*)
+                echo "  cert poll \${_cert_try}/4: still serving startup self-signed cert (\${CERT_ISSUER})" ;;
+              *)
+                echo "Mail TLS cert ISSUED for \${STALWART_HOSTNAME}: \${CERT_ISSUER}"
+                CERT_OK=yes
+                break ;;
+            esac
+            if [ "\${_cert_try}" -lt 4 ]; then sleep 20 || true; fi
+          done
+          if [ -z "\${CERT_OK}" ]; then
+            echo "WARN: mail TLS cert for \${STALWART_HOSTNAME} not yet issued (~80s elapsed)." >&2
+            echo "WARN:   Most common cause: DNS for \${STALWART_HOSTNAME} has not propagated yet," >&2
+            echo "WARN:   so Let's Encrypt cannot reach this host to validate the ACME challenge." >&2
+            echo "WARN:   This is EXPECTED if you set mail DNS after bootstrap. Stalwart + the" >&2
+            echo "WARN:   platform-api stalwart-domain reconciler keep retrying automatically." >&2
+            echo "WARN:   Verify later with:  scripts/integration-staging.sh mail_tls" >&2
+          fi
+
 POD_YAML
 
+  # 300s, not 180s: the pod's own budget is ~22s of mgmt-reachability probing +
+  # the JMAP calls + an ~80s advisory cert poll, which 180s did not cover. The
+  # configure work itself is ordered ahead of the advisory poll now, so a
+  # timeout here no longer loses configuration — but the extra headroom keeps
+  # the common case from reporting a failure it does not have.
+  local configure_wait="${STALWART_CONFIGURE_WAIT:-300s}"
   if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
-       -n mail "pod/${pod_name}" --timeout=180s 2>/dev/null; then
-    warn "  configure pod did not Succeed within 180s."
+       -n mail "pod/${pod_name}" --timeout="${configure_wait}" 2>/dev/null; then
+    warn "  configure pod did not Succeed within ${configure_wait}."
     kctl logs -n mail "${pod_name}" 2>&1 | tail -40 | sed 's/^/      /' || true
+    # A timeout is NOT automatically a configuration failure: everything that
+    # matters prints `configure-ok` before the advisory cert poll begins. If the
+    # marker is there, the config landed and only the observation was cut off.
+    if kctl logs -n mail "${pod_name}" 2>/dev/null | grep -q '^configure-ok '; then
+      warn "  ...but configure-ok was reached — configuration is COMPLETE; only the"
+      warn "     advisory mail-TLS cert poll was cut off. Treating as success."
+      local late_marker
+      late_marker=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
+      kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
+      kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
+      if echo "$late_marker" | grep -q 'listeners_created=true'; then
+        log "  Rolling Stalwart Deployment so new listeners bind..."
+        kctl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null 2>&1 || true
+      fi
+      return 0
+    fi
     kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
     kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
     return 1
   fi
 
+  # Match the marker ANYWHERE in the log, not just on the last line: the
+  # advisory cert poll prints after it, so `tail -1` would miss it entirely.
   local last_line
-  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | tail -1)
+  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
   kctl logs -n mail "${pod_name}" 2>&1 | sed 's/^/    /' || true
   kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
   kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
 
   # Roll Deployment if new listeners were created (re-bind sockets at process start).
+  #
+  # Pod DELETE, not `rollout restart`. This Deployment is Flux-managed: a restart
+  # stamps kubectl.kubernetes.io/restartedAt on the pod template, which Flux sees
+  # as drift from git and reverts — scaling the new ReplicaSet back to 0. Deleting
+  # the pod lets the existing ReplicaSet recreate it from the unchanged template,
+  # which is the repo-wide rule for restarting anything on a Flux cluster.
   if echo "$last_line" | grep -q 'listeners_created=true'; then
     log "  Rolling Stalwart Deployment so new listeners bind..."
-    kctl rollout restart -n mail deploy/stalwart-mail
-    kctl rollout status  -n mail deploy/stalwart-mail --timeout=180s || \
-      warn "  Stalwart rollout did not complete in 180s — verify manually."
+    kctl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null 2>&1 || true
+    kctl rollout status -n mail deploy/stalwart-mail --timeout=180s || \
+      warn "  Stalwart did not become Ready in 180s — verify manually."
   fi
 
   log "  Stalwart full configuration complete."
@@ -7801,9 +7973,12 @@ except Exception:
   log "  Bootstrap Job completed."
 
   # ── Step 7: Restart Deployment to exit bootstrap mode ────────────────
+  # Pod DELETE, not `rollout restart` — same reason as the listener roll in
+  # configure_stalwart_full: stalwart-mail is Flux-managed, and the restart
+  # annotation reads as git drift, so Flux scales the new ReplicaSet back to 0.
   log "  Rolling Stalwart Deployment to exit bootstrap mode..."
-  kctl rollout restart -n mail deploy/stalwart-mail
-  kctl rollout status  -n mail deploy/stalwart-mail --timeout=180s || true
+  kctl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null 2>&1 || true
+  kctl rollout status -n mail deploy/stalwart-mail --timeout=180s || true
 
   # ── Step 8: Full JMAP configuration ──────────────────────────────────
   log "  Running post-bootstrap JMAP configuration..."
@@ -8434,6 +8609,30 @@ verify_install() {
   # Caught on testing.example.test 2026-05-16 — manual operator
   # recycle of the Traefik pod restored access; this call automates it.
   ensure_traefik_cni_portmap "verify-install"
+
+  # Traefik is NOT the only workload publishing a hostPort, and it was the only
+  # one with a self-heal. On the fresh dual-stack install of 2026-08-09
+  # CNI-HOSTPORT-DNAT carried jumps for 80/443 and the mail ports but NONE for
+  # 23022: the sftp-gateway pod was Running, Ready and listening, the firewall
+  # allowed the port, and every external connection was REFUSED — SFTP dead
+  # cluster-wide from first boot, with nothing in bootstrap that would notice.
+  # These run after the Traefik check because they depend on Flux having applied
+  # the workloads; a missing pod is a no-op, not a failure.
+  ensure_hostport_dnat "verify-install" "SFTP gateway" "platform-system" "app=sftp-gateway" 23022
+  ensure_hostport_dnat "verify-install" "Stalwart mail" "mail" "app=stalwart-mail" 25
+
+  # Re-check the PLUGIN subsystem here too, for the same reason the portmap
+  # self-test runs twice: Flux's first reconcile rolls the Traefik DS, and the
+  # replacement pod re-downloads its plugins. That second download lands while
+  # Calico's control plane (typha / apiserver / kube-controllers) is still
+  # converging, so it is the one that actually times out — measured on the DEV
+  # bootstrap 2026-08-08, where "Loading plugins…" at 12:57:29 failed at
+  # 12:57:39 with calico-typha going Ready at 12:57:38 and calico-apiserver at
+  # 12:57:43. Only the post-install call existed, and it had already run (and
+  # skipped) at 12:50:33, so nothing remediated it: the install finished
+  # "successfully" with every pod Running, valid certs, and admin.<apex> +
+  # tenant.<apex> returning 404 because every plugin middleware was invalid.
+  ensure_traefik_plugins_loaded "verify-install" || true
 
   # Wait up to 5 min for the platform-api Deployment to finish rolling
   # out — Helm/Flux may still be settling at this point.

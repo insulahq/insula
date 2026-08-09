@@ -79,6 +79,24 @@ case "\$1" in
         ;;
       *) printf '%s' "$images_q" ;;
     esac ;;
+  inspecti)
+    # The purge script verifies with \`crictl inspecti <ref>\` — it exits
+    # non-zero when the ref does not resolve. \`images -q <ref>\` is NOT usable
+    # for this: on real CRI versions it ignores the ref and prints every image
+    # ID on the node, so an emptiness test can never succeed (measured on a k3s
+    # node 2026-08-08). This branch mirrors the same fixture semantics as
+    # "images" above, expressed as an EXIT CODE instead of stdout: non-empty
+    # => present => exit 0; empty => absent => exit 1.
+    case "$images_q" in
+      delay*)
+        n=${images_q#delay}
+        c=\$(cat "$TMP/imgcalls" 2>/dev/null || echo 0)
+        c=\$((c + 1)); echo "\$c" > "$TMP/imgcalls"
+        [ "\$c" -le "\$n" ] && exit 0 || exit 1
+        ;;
+      "") exit 1 ;;
+      *)  exit 0 ;;
+    esac ;;
 esac
 exit 0
 EOF

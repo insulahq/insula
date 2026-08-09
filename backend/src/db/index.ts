@@ -12,6 +12,28 @@ export function getDb(connectionString: string) {
       idleTimeoutMillis: 60_000,        // Close idle connections after 60s
       connectionTimeoutMillis: 10_000,  // Timeout for new connections
     });
+    // MANDATORY. pg.Pool is an EventEmitter and emits 'error' when an IDLE
+    // pooled client's backend goes away — which is exactly what a Postgres
+    // restart does to every idle connection at once. An EventEmitter that
+    // emits 'error' with no listener makes Node throw and kill the process,
+    // so without this a CNPG failover, minor-version upgrade, PITR promote or
+    // node drain takes platform-api down with the database.
+    //
+    // Found alongside the identical bug in the pg-boss bootstrap, which was
+    // caught crashing the API in a DR run (SQLSTATE 57P03, exit code 1). Two
+    // independent paths, same root shape; fixing only one leaves the door open.
+    //
+    // Errors on an IDLE client are not tied to a caller — the query path
+    // surfaces its own errors through the awaited promise — so log and carry
+    // on. pg removes the broken client from the pool and reconnects on demand.
+    // The deployment's shallow /healthz exists precisely so a RUNNING pod
+    // rides out a brief DB blip; it cannot ride out one that kills it.
+    pool.on('error', (err: Error & { code?: string }) => {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[db] idle client error (pool recovers, no request affected): ${err.code ? `[${err.code}] ` : ''}${err.message}`,
+      );
+    });
   }
   return drizzle(pool, { schema });
 }

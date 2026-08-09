@@ -58,7 +58,17 @@ set -uo pipefail
 #   3. platform-cluster-config ConfigMap (deployed by bootstrap.sh —
 #      authoritative source of the cluster's PLATFORM_DOMAIN)
 #   4. Hardcoded fallback (staging cluster, used when CM is absent)
-SMOKE_HOSTNAMES_FALLBACK="admin.staging.example.test,tenant.staging.example.test,longhorn.staging.example.test,dex.staging.example.test"
+# Entries are `host` or `host/path` — the probes below fetch https://<host><path>
+# and require 2xx/3xx, so every entry must name a hostname the platform actually
+# serves AT THAT PATH:
+#   * longhorn.<dom> is NOT one. Longhorn is path-routed under
+#     admin.<dom>/longhorn/ (and auth-gated, so it answers 401, not 2xx) — there
+#     is no Host(`longhorn.…`) route anywhere. It resolved only because of the
+#     wildcard DNS record, and Traefik answered 404 for it on EVERY cluster,
+#     single-stack included. It has been in this list producing a permanent,
+#     ignored FAIL.
+#   * dex.<dom> IS a real Host route, but Dex serves under /dex — `/` is a 404.
+SMOKE_HOSTNAMES_FALLBACK="admin.staging.example.test,tenant.staging.example.test,dex.staging.example.test/dex/.well-known/openid-configuration"
 
 discover_hostnames() {
   # Read the base domain from the live cluster's platform-config
@@ -80,7 +90,7 @@ discover_hostnames() {
       -o jsonpath='{.data.PLATFORM_DOMAIN}' 2>/dev/null || true)
   fi
   if [[ -n "$dom" ]]; then
-    echo "admin.${dom},tenant.${dom},longhorn.${dom},dex.${dom}"
+    echo "admin.${dom},tenant.${dom},dex.${dom}/dex/.well-known/openid-configuration"
   else
     echo "$SMOKE_HOSTNAMES_FALLBACK"
   fi
@@ -130,6 +140,20 @@ emit() {
 
 skipped() { [[ ",$SKIP," == *",$1,"* ]]; }
 
+# split_host_path <entry> — an entry is `host` or `host/path`. Sets SHP_HOST and
+# SHP_PATH (the latter defaults to "/"). Globals rather than stdout so callers
+# get both without a subshell.
+SHP_HOST=""; SHP_PATH="/"
+split_host_path() {
+  if [[ "$1" == */* ]]; then
+    SHP_HOST="${1%%/*}"
+    SHP_PATH="/${1#*/}"
+  else
+    SHP_HOST="$1"
+    SHP_PATH="/"
+  fi
+}
+
 # ─ test 1: external IP × hostname matrix ───────────────────────────
 test_1_external_ips() {
   if skipped 1; then emit "test1.external_ip_matrix" SKIP "skipped"; return; fi
@@ -139,8 +163,18 @@ test_1_external_ips() {
   # often leave this empty and rely on InternalIP + DNS only. Split
   # the kubectl error from the missing-field signal so the diagnostic
   # message points at the actual problem.
+  # NOTE the NESTED range. `{.status.addresses[?(@.type=="ExternalIP")].address}`
+  # matches EVERY ExternalIP on the node and joins them with a SPACE, while the
+  # `{"\n"}` fires once per NODE, not once per address. On a dual-stack node that
+  # yields ONE line holding both families:
+  #     192.0.2.7 2001:db8::1
+  # which becomes the malformed curl entry `--resolve host:443:<v4> <v6>` and
+  # fails all five probes, reporting every platform hostname as "mostly broken"
+  # on a cluster that is serving perfectly. Seen on the first --dual-stack
+  # bootstrap of the DEV box, 2026-08-09: 4 FAILs, 0 real. The inner range emits
+  # one line per ADDRESS, so each family is probed on its own.
   local raw_ips ips
-  if ! raw_ips=$(kubectl get nodes -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="ExternalIP")].address}{"\n"}{end}' 2>/dev/null); then
+  if ! raw_ips=$(kubectl get nodes -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="ExternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null); then
     emit "test1.external_ip_matrix" FAIL "kubectl get nodes failed (check kubeconfig)"
     return
   fi
@@ -155,12 +189,14 @@ test_1_external_ips() {
 
   IFS=',' read -ra HNARR <<< "$HOSTNAMES"
   while IFS= read -r ip; do
-    for host in "${HNARR[@]}"; do
+    for entry in "${HNARR[@]}"; do
+      local host path
+      split_host_path "$entry"; host="$SHP_HOST"; path="$SHP_PATH"
       local n_ok=0 n_fail=0 t_total=0 t_max=0
       for _ in 1 2 3 4 5; do
         local res
         res=$(curl -sk -o /dev/null -w '%{http_code} %{time_total}' \
-          --resolve "$host:443:$ip" -m 12 "https://$host/" 2>/dev/null || echo "000 12.000")
+          --resolve "$host:443:$ip" -m 12 "https://${host}${path}" 2>/dev/null || echo "000 12.000")
         local code time_ms
         code=$(echo "$res" | awk '{print $1}')
         time_ms=$(echo "$res" | awk '{printf "%d", $2*1000}')
@@ -175,11 +211,11 @@ test_1_external_ips() {
       local avg=0
       [[ $n_ok -gt 0 ]] && avg=$((t_total/n_ok))
       if [[ $n_ok -ge 5 && $t_max -le 2000 ]]; then
-        emit "test1.${host}@${ip}" PASS "5/5 OK avg=${avg}ms max=${t_max}ms"
+        emit "test1.${host}${path}@${ip}" PASS "5/5 OK avg=${avg}ms max=${t_max}ms"
       elif [[ $n_ok -ge 3 ]]; then
-        emit "test1.${host}@${ip}" FAIL "${n_ok}/5 OK ${n_fail}/5 fail avg=${avg}ms max=${t_max}ms (intermittent OR slow)"
+        emit "test1.${host}${path}@${ip}" FAIL "${n_ok}/5 OK ${n_fail}/5 fail avg=${avg}ms max=${t_max}ms (intermittent OR slow)"
       else
-        emit "test1.${host}@${ip}" FAIL "${n_ok}/5 OK ${n_fail}/5 fail (mostly broken)"
+        emit "test1.${host}${path}@${ip}" FAIL "${n_ok}/5 OK ${n_fail}/5 fail (mostly broken)"
       fi
     done
   done <<< "$ips"
@@ -765,9 +801,10 @@ test_10_aaaa_vs_stack() {
   emit "test10.stack" INFO "cluster dual-stack=${dual_stack}"
 
   IFS=',' read -ra HN10 <<< "$HOSTNAMES"
-  for host in "${HN10[@]}"; do
-    [[ -n "$host" ]] || continue
-    local aaaa
+  for entry in "${HN10[@]}"; do
+    [[ -n "$entry" ]] || continue
+    local host path aaaa
+    split_host_path "$entry"; host="$SHP_HOST"; path="$SHP_PATH"
     aaaa=$(resolve_aaaa "$host")
     if [[ -z "$aaaa" ]]; then
       if [[ "$dual_stack" == yes ]]; then
@@ -781,17 +818,31 @@ test_10_aaaa_vs_stack() {
       emit "test10.${host}" FAIL "publishes AAAA (${aaaa}) but the cluster is SINGLE-STACK — v6-preferring clients get a connection reset and silently fall back"
       continue
     fi
-    # Dual-stack + AAAA: prove each published address actually serves.
+    # Dual-stack + AAAA: prove each published address serves the SAME thing the
+    # IPv4 address does.
+    #
+    # The bar cannot be "2xx/3xx". Several platform hostnames legitimately 404 at
+    # `/` on EVERY family (longhorn. and dex. are routed per-path, not at the
+    # root), so an absolute check reports "AAAA published but not serving" for a
+    # host whose v6 answer is byte-identical to its v4 answer — a family-specific
+    # claim made from a family-agnostic measurement. Both fired on the DEV box
+    # 2026-08-09 with v4=404 v6=404.
+    #
+    # Comparing against the v4 code is what actually detects the failure this
+    # test is for: AAAA published but the v6 path dead (000/timeout) or serving
+    # something different, while v4 is fine.
+    local v4ref
+    v4ref=$(curl -sk -o /dev/null -w '%{http_code}' -4 -m 12 "https://${host}${path}" 2>/dev/null || echo 000)
     local bad=""
     for a6 in $aaaa; do
       local code
-      code=$(curl -sk -o /dev/null -w '%{http_code}' --resolve "${host}:443:${a6}" -m 12 "https://${host}/" 2>/dev/null || echo 000)
-      [[ "$code" =~ ^(2|3)[0-9][0-9]$ ]] || bad="${bad} ${a6}=>${code}"
+      code=$(curl -sk -o /dev/null -w '%{http_code}' --resolve "${host}:443:${a6}" -m 12 "https://${host}${path}" 2>/dev/null || echo 000)
+      [[ "$code" == "$v4ref" ]] || bad="${bad} ${a6}=>${code}(v4=${v4ref})"
     done
     if [[ -z "$bad" ]]; then
-      emit "test10.${host}" PASS "AAAA ${aaaa} — all serve over IPv6"
+      emit "test10.${host}" PASS "AAAA ${aaaa} — v6 matches v4 (http=${v4ref})"
     else
-      emit "test10.${host}" FAIL "AAAA published but not serving:${bad}"
+      emit "test10.${host}" FAIL "AAAA published but v6 differs from v4:${bad}"
     fi
   done
 }

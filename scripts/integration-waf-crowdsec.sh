@@ -48,6 +48,14 @@ SSH_HOST="${SSH_HOST:-root@192.0.2.58}"
 
 # Test data — TEST-NET-2, never routable.
 TEST_BAN_IP="${TEST_BAN_IP:-198.51.100.42}"
+# IPv6 counterpart — RFC 3849 documentation prefix, the 2001:db8::/32 analogue
+# of TEST-NET. Every address in this suite used to be IPv4, so nothing exercised
+# the v6 half of the stack even on dual-stack clusters: not the scraper's
+# source-IP extraction, not LAPI's acceptance of a v6 decision, and not the
+# `ip6 saddr` nft rules the dual-stack work added. Verified by hand 2026-08-08
+# (a real v6 client's CRS hits landed in waf_logs with the v6 source, and a v6
+# ban was enforced and reversed) — this pins that behaviour.
+TEST_BAN_IP6="${TEST_BAN_IP6:-2001:db8::42}"
 TEST_PROBE_PATH="${TEST_PROBE_PATH:-/.env}"
 # Hostname the probe targets. It MUST be a real route on the cluster:
 # admin/tenant panels carry the always-on modsecurity-crs@traefik middleware
@@ -79,6 +87,12 @@ fi
 # IPv4 address with no slash/mask before we touch anything.
 if ! [[ "$TEST_BAN_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
   printf 'ERROR: TEST_BAN_IP must be a plain IPv4 address (no CIDR), got "%s"\n' "$TEST_BAN_IP" >&2
+  exit 2
+fi
+# Same reasoning for the v6 value: it also reaches `cscli decisions delete --ip`,
+# and cscli accepts a CIDR there, so "::/0" would drop every active decision.
+if ! [[ "$TEST_BAN_IP6" =~ ^[0-9a-fA-F:]+$ && "$TEST_BAN_IP6" == *:* && "$TEST_BAN_IP6" != */* ]]; then
+  printf 'ERROR: TEST_BAN_IP6 must be a plain IPv6 address (no CIDR), got "%s"\n' "$TEST_BAN_IP6" >&2
   exit 2
 fi
 # PROBE_HOSTNAME is interpolated into header flags inside `kubectl
@@ -317,6 +331,7 @@ cleanup() {
   # cleanup silently fails — that's acceptable because the ban was
   # added with `duration: 5m` so it auto-expires even with no cleanup.
   kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $TEST_BAN_IP" >/dev/null 2>&1 || true
+  kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $TEST_BAN_IP6" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT INT TERM
 
@@ -443,6 +458,12 @@ for pod in $modsec_pods; do
   else
     warn "$pod ($pod_ip): unexpected probe response (HTTP $rc)"
   fi
+  # Repeat with an IPv6 X-Real-Ip. This needs no v6 connectivity from the
+  # harness — the address travels in a header — so it runs on every cluster and
+  # pins the half that silently regressed for a v6 client: the source-IP
+  # extraction into waf_logs (asserted below).
+  rnd6=$(next_nonce)
+  kubectl_run "run waf-modsec6-$rnd6 -n platform --rm -i --restart=Never --image=curlimages/curl:latest --quiet --command -- curl -sk -o /dev/null -w '%{http_code}' -H 'X-Forwarded-Host: $PROBE_HOSTNAME' -H 'X-Real-Ip: $TEST_BAN_IP6' --max-time 8 http://$pod_ip:8080$TEST_PROBE_PATH" >/dev/null 2>&1 || true
 done
 
 # ─── Phase 3 — WAF event capture per Traefik pod ──────────────────────
@@ -542,6 +563,58 @@ if (( ${real_ip_count:-0} >= 1 )); then
 else
   warn "No events with source_ip=$TEST_BAN_IP — X-Real-Ip extraction may be broken (got '$real_ip_count' rows)"
 fi
+
+# Same assertion for IPv6. A v6 address is longer, colon-separated and may be
+# bracketed by intermediaries, so it is exactly the shape a naive parser drops —
+# and if it IS dropped, every v6 attacker aggregates into one bucket (or none),
+# which is invisible from the UI. The platform serves v6 on the public edge
+# while routing IPv4 internally, so the client's v6 reaches the WAF only as a
+# header: this is the ONLY thing standing between a v6 attacker and anonymity.
+real_ip6_count=$(kubectl_run "exec -n platform system-db-1 -c postgres -- psql -d platform -tA -c \"SELECT COUNT(*) FROM waf_logs WHERE created_at > NOW() - INTERVAL '2 minutes' AND source_ip = '$TEST_BAN_IP6';\"" 2>/dev/null | tr -d '[:space:]')
+#
+# SEVERITY MATCHES ITS IPv4 SIBLING ABOVE — deliberately. Both read the same
+# column, populated from the same X-Real-Ip header, injected by the same
+# best-effort probe (`… || true`, output discarded, fired at one modsec pod IP).
+# This half was introduced as a hard `fail` while the v4 half was a `warn`, so
+# the identical mechanism gated the suite on one family and not the other: the
+# 2026-08-09 run reported "a v6 attacker would be unattributable" on a cluster
+# whose WAF pipeline was verified healthy end to end minutes later — an external
+# CRS-tripping request was blocked, logged by modsec, and landed in waf_logs
+# within ~30s with the correct source_ip, hostname, rule_ids and URI.
+#
+# If this should be a hard gate, BOTH halves must become one, and the injection
+# has to stop being best-effort first — otherwise the gate measures probe
+# delivery rather than v6 attribution.
+if (( ${real_ip6_count:-0} >= 1 )); then
+  ok "Events captured with IPv6 source_ip=$TEST_BAN_IP6 (v6 X-Real-Ip extraction works)"
+else
+  warn "No events with IPv6 source_ip=$TEST_BAN_IP6 — v6 X-Real-Ip extraction may be broken (got '$real_ip6_count' rows)"
+fi
+
+# LAPI must accept a decision whose value is an IPv6 address, and the nft
+# bouncer must have somewhere to put it. Enforcing a v6 ban end-to-end needs a
+# request that ORIGINATES from v6, which the harness cannot fake at L3 (and on
+# an IPv4-only harness cannot do at all) — so assert the two things that are
+# checkable everywhere: the decision round-trips, and the v6 blocklist set the
+# dual-stack work added actually exists.
+ban6_resp=$(api_internal POST /admin/security/crowdsec/decisions \
+  "{\"value\":\"$TEST_BAN_IP6\",\"scope\":\"Ip\",\"duration\":\"2m\",\"reason\":\"harness v6 decision round-trip\"}")
+if echo "$ban6_resp" | grep -q "Decision successfully added"; then
+  ok "LAPI accepted an IPv6 ban ($TEST_BAN_IP6, auto-expires in 2min)"
+  if kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions list -o raw" 2>/dev/null | grep -qF "$TEST_BAN_IP6"; then
+    ok "IPv6 decision is listed by cscli (round-trip through LAPI intact)"
+  else
+    fail "IPv6 ban accepted but not listed by cscli — decision did not persist"
+  fi
+else
+  fail "LAPI rejected an IPv6 ban: $(echo "$ban6_resp" | head -c 200)"
+fi
+if ssh_run "nft list ruleset 2>/dev/null | grep -q 'crowdsec_blocklist_v6'" >/dev/null 2>&1; then
+  ok "nft carries an IPv6 blocklist set (crowdsec_blocklist_v6) — v6 decisions have a landing place"
+else
+  warn "no crowdsec_blocklist_v6 nft set — L3 enforcement of a v6 ban would be impossible on this node"
+fi
+kubectl_run "exec -n crowdsec deploy/crowdsec -- cscli decisions delete --ip $TEST_BAN_IP6" >/dev/null 2>&1 || true
 
 # ─── Phase 4 — IP blocking via bouncer on every Traefik replica ───────
 

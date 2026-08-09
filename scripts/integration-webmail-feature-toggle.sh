@@ -80,6 +80,17 @@ assert() {
 }
 
 cm_data_key() {
+  # $1 arrives ALREADY jsonpath-escaped ('bulwark-overrides\.css') — the keys are
+  # filenames and an unescaped `{.data.bulwark-overrides.css}` would be parsed as
+  # data -> "bulwark-overrides" -> "css". Do NOT re-escape here: a `${1//./\\.}`
+  # in this function turns the caller's `\.` into `\\.` and jsonpath then matches
+  # nothing, so every assertion reads "key missing" against a correct ConfigMap.
+  #
+  # That double-escape shipped briefly on 2026-08-08 and measured as a FIX only
+  # because the ad-hoc `ssh … kubectl "$@"` wrapper in use at the time dropped one
+  # backslash on the remote shell's re-parse, collapsing it back to one level.
+  # scripts/lib/kubectl-remote.sh quotes each argument with printf %q and does
+  # not, so the same code passed by hand and failed under the real harness.
   $KUBECTL -n "$NAMESPACE" get configmap "$CM_NAME" -o jsonpath="{.data.$1}"
 }
 

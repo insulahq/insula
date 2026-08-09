@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.3-rc.5] - 2026-08-08
-
 ### Security
 - **Runtime-resolved Job images now pin by digest — `rocksdb-secondary-checkpoint`
   first.** The mail-archive checkpoint binary resolved as
@@ -185,6 +183,83 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   component-watch gate passes, and the backend suite is 5986 green.
 
 ### Fixed
+- **`externalTrafficPolicy` on the Traefik helm install broke every fresh
+  install.** The apiserver accepts that field only on an externally-accessible
+  Service — LoadBalancer, NodePort, or ClusterIP with a non-empty `externalIPs`.
+  At helm time the Traefik Service has none (the ingress-external-ips reconciler
+  adds them later), so bootstrap died outright at "Installing Traefik v3
+  Ingress Controller". It had been added on the strength of a live-cluster patch
+  where both fields went in together, and no fresh install was provisioned
+  between. The reconciler owns both fields and patches them atomically;
+  `ci-service-etp-check.sh` now guards both directions, because dropping the
+  policy from the reconciler silently restores kube-proxy's SNAT while every
+  request still returns 200.
+- **SFTP was dead from first boot on a fresh cluster.** `CNI-HOSTPORT-DNAT`
+  carried jumps for the mail ports and 80/443 but none for 23022, so the node
+  accepted the SYN and RST'd it: the gateway pod Running, Ready and listening,
+  the firewall open, and every external connection refused. Only Traefik had a
+  self-heal for this CNI portmap race — and that function's own comments already
+  named `:23022` as sharing the chain. Generalised to `ensure_hostport_dnat`,
+  covering the SFTP gateway and Stalwart, and probing with a TCP connect rather
+  than a rule grep: portmap rules surface as native nft, as a dport *set* when
+  one pod publishes several ports, or via xt-compat, so no single grep matches
+  them all — and loosening it to the chain name would report "present" for a
+  genuinely dead port, since all three workloads share that chain.
+- **A completed PITR restore blocked every write, cluster-wide, indefinitely.**
+  The orchestration runs in a Kubernetes Job — a separate process — which clears
+  the DB lock on success, but platform-api's in-memory `activeRestore` is set by
+  the route handler and nothing in that process clears it. The cluster-wide
+  check consulted the in-memory flag first and let it win unconditionally,
+  despite its own contract naming the DB lock as the source of truth across
+  replicas. Since the write-lock middleware runs that check on every non-GET
+  request, one finished restore returned 503 `RESTORE_IN_PROGRESS` for unrelated
+  admin operations until platform-api was restarted — there is no operator-facing
+  release endpoint, and the PITR watchdog does not cover this case (it requires
+  FailedCreate events and no Succeeded pods, i.e. only "the pod never ran"). An
+  in-memory lock that outlives an absent DB row is now treated as stale, with the
+  acquire window preserved and, critically, failing closed when the DB cannot be
+  read — during the cutover the source cluster is deleted, which is exactly when
+  the in-memory flag is the only guard left.
+- **Any Postgres restart killed platform-api.** pg-boss and `pg.Pool` both emit
+  `'error'` with no listener, so an ordinary CNPG failover, minor upgrade, PITR
+  promote or node drain terminated the process — defeating the deliberately
+  shallow `/healthz` that exists so a running pod survives a brief DB blip.
+- **A crashed process left `tasks` rows `running` forever**, and drain counts
+  those rows, so a single crash blocked every backup-class reassignment and DR
+  drill for up to 30 hours with a manual DB edit as the only escape.
+- **An "advisory, non-fatal" poll could skip Stalwart configuration entirely.**
+  The mail-TLS cert poll sat between steps 5c and 6 of the configure pod, so the
+  outer wait deleted the pod mid-poll — before AllowedIp exemptions,
+  NetworkListener creation and the admin credential update, and before the
+  `configure-ok` marker bootstrap reads to decide whether to roll Stalwart. It
+  now runs last, the marker is matched anywhere in the log, and a wait timeout
+  with the marker present is no longer reported as a failure.
+- **`bootstrap.sh --remote` could never configure a backup target.** The
+  `--backup-target-s3-*` flags deliberately refuse the access/secret keys as
+  arguments so they cannot leak into `ps`, reading them from the environment
+  instead — which ssh does not forward, and `--remote` forwards CLI args only.
+  Every remote install that passed the documented flag combination warned and
+  skipped. The credentials now cross on the SSH channel's stdin, never in the
+  command string (which becomes the remote shell's argv) and never on disk.
+- **`--env dev` selected a ClusterIssuer that does not exist**, leaving every
+  platform Certificate unissuable on a real DEV cluster.
+- **Service `externalIPs` without `externalTrafficPolicy=Local` hid every client
+  IP** behind kube-proxy's SNAT, blinding CrowdSec, the WAF, the panels' real_ip
+  chain and tenant access logs.
+- **Idempotence markers outlived the artifacts they guard**, so a re-bootstrap
+  silently skipped work whose output had been wiped.
+- **Mail health now checks reverse DNS for IPv6 too**, and grades a missing
+  record by family — a missing IPv4 PTR breaks the primary send path, while a
+  missing IPv6 PTR does not stop mail leaving over IPv4 — instead of framing
+  either as a gate on sending.
+- **`destroy-cluster.sh` reported "all nodes wiped" and exited 0** immediately
+  after printing a node's non-zero exit code: the per-node subshell ended with an
+  `echo`, so its status was always 0 and the failure count never incremented.
+  Also fixed: every node without NetBird failed the wipe (a missing `wt0` was
+  treated as a failure without asking whether it had ever existed), and roughly
+  1 MB of `Operation not permitted` from Calico's cgroup2 bind-mount buried the
+  result — the mount is now released first, taking a node's wipe log from
+  1,068,519 bytes to 451.
 - **Self-upgrade could never resolve a DEV cluster's binary.** The
   `platform-version` ConfigMap is stamped `<VERSION>-<short-sha>` by build-deploy,
   and self-upgrade used that verbatim as the release tag — asking GitHub for

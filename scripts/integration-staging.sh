@@ -337,16 +337,69 @@ _ws_resolve_a() {
   getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u || true
 }
 
+# AAAA lookups MUST NOT go through getent.
+#
+# glibc's getent filters results by the address families the LOCAL host can
+# actually use, so on an IPv4-only harness `getent ahosts <host>` returns the A
+# records and silently omits every AAAA — even when the record exists and the
+# world can resolve it. The mail forward-DNS check then reports
+# "A/AAAA missing cluster IPs: <v6>" against a hostname that publishes a
+# perfectly good AAAA, which is a failure about the HARNESS's connectivity
+# wearing the costume of a cluster defect. Confirmed 2026-08-09: this exact
+# false failure on mail.<apex>, whose AAAA resolves fine from a v6-capable host.
+#
+# A DNS query is transport-independent — asking for AAAA over IPv4 is normal —
+# so use a real resolver and fall back to getent only when none is installed.
+# Public resolvers used as a fallback for AAAA. Override with a space-separated
+# list if these are unreachable from your harness.
+INTEGRATION_PUBLIC_RESOLVERS="${INTEGRATION_PUBLIC_RESOLVERS:-1.1.1.1 8.8.8.8}"
+
+_ws_resolve_aaaa_dns() {
+  local host="$1" out=''
+  if command -v dig >/dev/null 2>&1; then
+    out=$(dig +short AAAA "$host" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' | sort -u)
+    # An empty answer from the SYSTEM resolver is not evidence of absence. This
+    # sandbox's resolver returns AAAA for nothing at all, while the very same
+    # query against a public resolver answers correctly:
+    #     dig +short AAAA <host>            -> (nothing)
+    #     dig +short AAAA <host> @1.1.1.1   -> 2a01:...::1
+    # The assertion we actually care about is "does this hostname publish AAAA
+    # to the INTERNET", which is a public-resolver question, so ask one before
+    # concluding the record is missing.
+    if [[ -z "$out" ]]; then
+      local r
+      for r in $INTEGRATION_PUBLIC_RESOLVERS; do
+        out=$(dig +short AAAA "$host" "@$r" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' | sort -u)
+        [[ -n "$out" ]] && break
+      done
+    fi
+    printf '%s\n' "$out" | grep -vE '^$' || true
+    return 0
+  fi
+  if [[ "${DNSPYTHON:-0}" == "1" ]]; then
+    python3 -c 'import dns.resolver,sys
+try:
+    for r in dns.resolver.resolve(sys.argv[1],"AAAA"): print(str(r))
+except Exception: pass' "$host" 2>/dev/null
+    return 0
+  fi
+  # Last resort: getent, which filters by the LOCAL host's usable families and
+  # therefore hides AAAA entirely on an IPv4-only harness. Callers should read
+  # an empty result here as "unknown", not "absent".
+  getent ahosts "$host" 2>/dev/null | awk '{print $1}' | grep ':' | sort -u || true
+}
+
 # IPv4-only: drop any address containing a colon (v6).
 _ws_resolve_a4() {
   local host="$1"
   _ws_resolve_a "$host" | grep -v ':' || true
 }
 
-# IPv6-only: keep only addresses containing a colon.
+# IPv6-only. Goes through the DNS-based resolver, NOT getent — see
+# _ws_resolve_aaaa_dns for why getent cannot be trusted for AAAA here.
 _ws_resolve_a6() {
   local host="$1"
-  _ws_resolve_a "$host" | grep ':' || true
+  _ws_resolve_aaaa_dns "$host" | grep ':' || true
 }
 
 # SRV target resolution via dnspython. Echoes one target host per line
@@ -683,7 +736,17 @@ _resolve_mail_ips() {
   # 2. Cluster node IPs (server-role nodes — haproxy targets) for the
   # intersection check + fallback.
   local cluster_ips
-  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+  # NOTE the NESTED range. `{.status.addresses[?(@.type=="InternalIP")].address}`
+  # matches EVERY InternalIP on the node and kubectl joins multiple matches with
+  # a SPACE, while `{"\n"}` fires once per NODE. On a dual-stack node that emits
+  # one line holding two addresses:
+  #     "178.x.x.x 2a01:...::1"        <- ONE line, space-separated
+  # which downstream is read as a single IP: it matches no private-range case,
+  # matches nothing in DNS, and so gets reported as MISSING — while every real
+  # DNS answer simultaneously looks EXTRA. That is how this printed the same
+  # address as both missing and extra in one breath. Single-stack clusters have
+  # one InternalIP per node, so the bug is invisible until dual-stack.
+  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type==\"InternalIP\")]}{.address}{\"\n\"}{end}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   # If DNS returned anything, use it. Otherwise fall back to cluster
   # node IPs (covers fresh clusters where DNS hasn't been wired yet
@@ -710,7 +773,17 @@ _assert_mail_forward_dns() {
     | grep -E ':' | sort -u || true)
   local dns_all
   dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
-  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{.status.addresses[?(@.type==\"InternalIP\")].address}{\"\n\"}{end}'" 2>/dev/null \
+  # NOTE the NESTED range. `{.status.addresses[?(@.type=="InternalIP")].address}`
+  # matches EVERY InternalIP on the node and kubectl joins multiple matches with
+  # a SPACE, while `{"\n"}` fires once per NODE. On a dual-stack node that emits
+  # one line holding two addresses:
+  #     "178.x.x.x 2a01:...::1"        <- ONE line, space-separated
+  # which downstream is read as a single IP: it matches no private-range case,
+  # matches nothing in DNS, and so gets reported as MISSING — while every real
+  # DNS answer simultaneously looks EXTRA. That is how this printed the same
+  # address as both missing and extra in one breath. Single-stack clusters have
+  # one InternalIP per node, so the bug is invisible until dual-stack.
+  cluster_ips=$(ssh_cp "kubectl get nodes -l insula.host/node-role=server -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type==\"InternalIP\")]}{.address}{\"\n\"}{end}{end}'" 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   if [[ -z "$dns_all" ]]; then
     mdfail "mail-dns/forward: ${hostname} has no A or AAAA records — no external sender can deliver mail"
@@ -802,10 +875,26 @@ _assert_mail_reverse_dns() {
       [fF][eE]8*:*|[fF][eE]9*:*|[fF][eE][aA]*:*|[fF][eE][bB]*:*) skipped_private=$((skipped_private+1)); continue ;;
     esac
     checked=$((checked + 1))
-    local ptr
+    # Severity is FAMILY-DEPENDENT, mirroring the platform's own health card
+    # (backend/src/modules/mail-admin/deliverability.ts: `v6 ? 'warning' : 'fail'`).
+    # Stalwart's default MtaIpStrategy is V4ThenV6, so outbound mail leaves over
+    # IPv4: a missing IPv4 PTR breaks the primary send path, while a missing IPv6
+    # PTR only affects receivers reachable ONLY over v6 — mail keeps flowing.
+    # PTR is provider-side configuration the platform cannot set either way.
+    #
+    # This check predates dual-stack and failed family-agnostically. Once
+    # --dual-stack publishes an AAAA for the mail host, the v6 address enters
+    # this loop and a missing v6 PTR turned the whole suite red on a cluster the
+    # product itself grades as healthy-with-a-warning. Two policies for one
+    # condition is the bug; the product's is the one to follow.
+    local ptr sev=mdfail famnote=""
+    if [[ "$ip" == *:* ]]; then
+      sev=warn
+      famnote=" (IPv6 is the fallback path — Stalwart tries IPv4 first, so mail keeps flowing over IPv4)"
+    fi
     ptr=$(_ws_resolve_ptr "$ip" | head -1 | sed 's/\.$//' || true)
     if [[ -z "$ptr" ]]; then
-      mdfail "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)"
+      "$sev" "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)${famnote}"
       continue
     fi
     if [[ "$ptr" == "$hostname" ]]; then
@@ -819,7 +908,7 @@ _assert_mail_reverse_dns() {
       if [[ -n "$apex" && "$ptr" == *".${apex}" ]]; then
         warn "mail-dns/reverse: ${ip} → ${ptr} (under .${apex} but NOT exactly ${hostname} — set explicit PTR for best deliverability)"
       else
-        mdfail "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)"
+        "$sev" "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)${famnote}"
       fi
     fi
   done <<<"$ips"
@@ -1500,9 +1589,43 @@ scenario_reaper() {
   # Accept 200 or 204
   ok "reaper: deployment deleted (response: $(echo "$del_resp" | head -c 80))"
 
-  # Wait the grace period (5 min) + 30s buffer
-  log "reaper: waiting 330s for reaper grace period + job to complete…"
-  sleep 330
+  # Wait out the 5-minute grace period, then POLL — do not sleep-once-and-assert.
+  #
+  # `sleep 330` (grace + 30s) budgets nothing for what happens AFTER the grace
+  # expires: the due row is picked up on the next sweep tick, which then has to
+  # schedule a privileged pod on the target node, start it, and exec crictl.
+  # Measured on a single-node cluster 2026-08-08:
+  #
+  #   19:44:24  deployment deleted, wait starts
+  #   19:49:24  grace (300s) expires — row becomes due
+  #   19:50:06  suite asserts at t+342s  -> image present -> FAIL
+  #   19:50:52  reap actually COMPLETES  (image_reap_log: succeeded=t,
+  #             bytes_reclaimed=46409201, error=NULL)
+  #
+  # — "reaper did not fire" reported about a reaper that fired correctly and
+  # reclaimed 46 MB. On a QUIET cluster it is much tighter than that run implies;
+  # re-measured with nothing else touching the cluster:
+  #
+  #   20:02:36  wait starts   20:07:36 grace expires   20:07:42 reap COMPLETES
+  #   20:08:06  where the fixed 330s check would fire  -> ~24s of margin, total
+  #
+  # So the fixed budget passes only while nothing perturbs the timer. What eats
+  # the 24s: scheduleReap arms an in-process setTimeout, so ANY platform-api
+  # restart inside the grace window drops it and the reap falls to the persisted
+  # dueAt sweeper, landing a tick later — 88s after due in the run above, whose
+  # api pod was replaced 17s before the row came due.
+  #
+  # Polling keeps the assertion exactly as strong (a reaper that never fires
+  # still fails at the deadline) and removes a margin that only ever produced
+  # false failures.
+  local reap_deadline="${REAPER_WAIT_S:-600}"
+  log "reaper: waiting out the ${IMAGE_REAP_GRACE_S:-300}s grace period, then polling up to ${reap_deadline}s…"
+  sleep "${IMAGE_REAP_GRACE_S:-300}"
+  local _rw=0
+  while (( _rw < reap_deadline )); do
+    ssh_node "$node_name" "crictl images 2>/dev/null" | grep -qF "${image_ref%%@*}" || break
+    sleep 10; _rw=$((_rw + 10))
+  done
 
   # Assert image is GONE from the node the pod ran on (same multi-node
   # fix as the presence check above).

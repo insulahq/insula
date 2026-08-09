@@ -135,8 +135,102 @@ for m in $(awk '$2 ~ "/var/lib/kubelet" {print $2}' /proc/mounts 2>/dev/null | s
   umount -l "$m" 2>/dev/null || true
 done
 
+# ── Log out Longhorn's iSCSI sessions ────────────────────────────────
+# MUST run after the unmounts above (a session whose block device still
+# backs a mount refuses to log out) and before /var/lib/longhorn is
+# removed.
+#
+# Nothing else does this. k3s-uninstall.sh knows nothing about Longhorn,
+# and Longhorn's own logout lives in the CSI plugin's NodeUnstageVolume,
+# which is never called when the whole cluster is torn down underneath
+# it. The kernel sessions therefore SURVIVE the wipe — and survive the
+# re-bootstrap too, because the host is not rebooted. Each orphan then
+# retries login ~1/s forever against whatever now owns the old portal IP,
+# which answers "target not found":
+#
+#   iscsid: connection281:0 login rejected: initiator error - target not found (02/03)
+#   kernel:  connection281:0: detected conn error (1020)
+#
+# Measured on a VM that had been wiped and re-bootstrapped repeatedly:
+# 44 sessions against 4 live volumes (41 orphans), ~3100 kernel messages
+# per MINUTE on an idle cluster, 51 scsi_eh threads, iscsid at 17h
+# cumulative CPU. It compounds with every wipe cycle. A cluster that is
+# merely USED does not accumulate these — a 47-day node with real tenant
+# churn showed 17 sessions for 17 volumes — so this is purely teardown
+# hygiene, not a runtime leak.
+#
+# Scoped to Longhorn's IQN prefix on purpose: a node may legitimately
+# have other iSCSI sessions (an external SAN holding operator data), and
+# `iscsiadm -m session -u` with no filter would log those out too.
+LH_IQN_PREFIX="iqn.2019-10.io.longhorn:"
+if command -v iscsiadm >/dev/null 2>&1; then
+  _lh_before=$(iscsiadm -m session 2>/dev/null | grep -cF "$LH_IQN_PREFIX")
+  _lh_out=0
+  # "tcp: [281] 10.42.0.5:3260,1 iqn.2019-10.io.longhorn:pvc-… (non-flash)"
+  while IFS='|' read -r _sid _iqn; do
+    [[ -z "$_sid" ]] && continue
+    iscsiadm -m session -r "$_sid" -u >/dev/null 2>&1 && _lh_out=$((_lh_out + 1))
+    # Drop any persisted node record so it cannot auto-login on next boot.
+    iscsiadm -m node -T "$_iqn" -o delete >/dev/null 2>&1 || true
+  done < <(iscsiadm -m session 2>/dev/null \
+             | sed -nE "s#^[a-z]+: \[([0-9]+)\] [^ ]+ (${LH_IQN_PREFIX}[^ ]+).*#\1|\2#p")
+  _lh_after=$(iscsiadm -m session 2>/dev/null | grep -cF "$LH_IQN_PREFIX")
+  echo "[$(hostname)] longhorn iscsi sessions: ${_lh_before} before, ${_lh_out} logged out, ${_lh_after} remaining"
+  if [[ "${_lh_after:-0}" -gt 0 ]]; then
+    # Not fatal — the wipe must still finish — but say it plainly, because
+    # the leftovers survive into the next install and only a reboot clears
+    # a session whose device is still held.
+    echo "[$(hostname)] WARNING: ${_lh_after} longhorn iscsi session(s) would NOT log out (device still held?) — reboot this node before re-bootstrapping"
+  fi
+else
+  echo "[$(hostname)] iscsiadm not present — skipping longhorn iscsi logout"
+fi
+
+# ── Idempotence markers MUST NOT outlive what they guard ─────────────
+# bootstrap.sh short-circuits each configure_* step on a marker in
+# /var/lib/insula (via the /var/lib/hosting-platform back-compat symlink,
+# ADR-055), and the host-config converger skips a host-migration whose
+# <name>.done exists. Neither directory was wiped here, but the artifacts
+# they guard live under /etc/rancher — which IS wiped below. So after a
+# wipe + re-bootstrap the markers said "done" while the files were gone,
+# and the step never re-ran.
+#
+# Measured on a node wiped and re-bootstrapped 2026-08-08:
+#
+#   .memory-protection    Aug  4 00:33   <- previous install
+#   .calico-installed     Aug  8 12:50   <- the re-bootstrap
+#   .node-logging-caps    Jul 26 22:34   <- two installs ago
+#
+# /etc/rancher/k3s/config.yaml.d did not exist at all, so the node ran with
+# NO kubelet eviction thresholds and NO system-reserved headroom — the very
+# protection that is supposed to shed tenant pods before the kernel OOM
+# killer picks k3s or postgres. host-migration 2026.7.2/0001 would have
+# converged it, but its .done marker had survived too, so the converger
+# reported "0 pending" against a node that was missing the file.
+#
+# Surgical on purpose: bundles/ holds the age-encrypted Tier-1 secrets
+# bundle and operator-key/ the operator key. Destroying those would turn a
+# cluster wipe into unrecoverable data loss, so only the markers go.
+if [[ -d /var/lib/insula || -d /var/lib/hosting-platform ]]; then
+  for _root in /var/lib/insula /var/lib/hosting-platform; do
+    [[ -d "$_root" ]] || continue
+    find "$_root" -maxdepth 1 -type f -name '.*' -delete 2>/dev/null || true
+    rm -rf "$_root/host-migrations" 2>/dev/null || true
+  done
+  echo "[$(hostname)] cleared bootstrap + host-migration markers (kept bundles/, operator-key/, snapshots/)"
+fi
+
 # Wipe K8s + Calico + Longhorn state directories
 rm -rf /var/lib/rancher /etc/rancher
+# /var/run/calico/cgroup is a cgroup2 MOUNT (Felix bind-mounts it for its
+# BPF/connect-time load balancer). Its entries are kernel-owned pseudo-files:
+# `rm -rf` can never delete them and emits one "Operation not permitted" per
+# file — a single wipe produced ~1 MB of them, which buried the node's real
+# exit status in the log. Unmount first, then the (now empty) dir removes
+# cleanly. `|| true` because it is absent on a node that never ran Calico.
+if mountpoint -q /var/run/calico/cgroup 2>/dev/null; then
+  umount /var/run/calico/cgroup 2>/dev/null || umount -l /var/run/calico/cgroup 2>/dev/null || true
+fi
 rm -rf /var/lib/calico /etc/cni /var/run/calico
 rm -rf /var/lib/longhorn /opt/longhorn
 rm -rf /var/lib/kubelet /etc/kubernetes
@@ -162,8 +256,13 @@ systemctl restart netbird 2>/dev/null || systemctl start netbird 2>/dev/null || 
 sleep 5
 WTAFTER=$(ip -4 -o addr show wt0 2>/dev/null | awk '{print $4}' | head -1)
 echo "[$(hostname)] wt0 after: ${WTAFTER:-none}"
-if [[ -z "$WTAFTER" ]]; then
-  echo "[$(hostname)] WARN: wt0 missing post-wipe — NetBird needs manual recovery"
+# Only a wt0 that EXISTED BEFORE and is gone now is a NetBird failure. Guarding
+# on WTAFTER alone made every node without a mesh (the common case — NetBird is
+# one optional underlay, not a dependency) exit 3 and print "NetBird needs
+# manual recovery", sending the operator to recover something that was never
+# installed.
+if [[ -n "$WTBEFORE" && -z "$WTAFTER" ]]; then
+  echo "[$(hostname)] WARN: wt0 was ${WTBEFORE} before the wipe and is GONE now — NetBird needs manual recovery"
   exit 3
 fi
 if [[ "$WTBEFORE" != "$WTAFTER" ]]; then
@@ -189,6 +288,11 @@ for nh in "${NODES[@]}"; do
       > "$LOG_DIR/${host}.log" 2>&1
     rc=$?
     echo "[$host] exit=$rc"
+    # PROPAGATE. Without this the subshell's status is `echo`'s — always 0 — so
+    # `wait` below always succeeded, $fail stayed 0, and the script printed
+    # "all nodes wiped" + exit 0 having just displayed "exit=3" one line above.
+    # The failure was measured and then thrown away.
+    exit "$rc"
   ) &
   PIDS+=($!)
 done

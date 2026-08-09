@@ -563,7 +563,14 @@ export async function runRetention(db: Database): Promise<RetentionResult> {
     .where(
       and(
         sql`${tasks.status} IN ('queued','running')`,
-        sql`${tasks.startedAt} < NOW() - INTERVAL '${sql.raw(String(ORPHAN_REAP_HOURS))} hours'`,
+        // updatedAt, NOT startedAt. The message has always said "no progress in
+        // over 24 hours" but the predicate measured AGE, which is a different
+        // thing and wrong in both directions: a healthy long-running task that
+        // reports progress every few seconds was reaped once it turned 24h old,
+        // while a task whose process died 30 seconds after starting sat
+        // `running` for a further 24h. updatedAt is the liveness signal the
+        // message already promised — drivers advance it via tasks.progress().
+        sql`${tasks.updatedAt} < NOW() - INTERVAL '${sql.raw(String(ORPHAN_REAP_HOURS))} hours'`,
       ),
     )
     .returning({ id: tasks.id });

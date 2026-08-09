@@ -301,7 +301,11 @@ HOST_IP_OF_POD="$(kctl -n "$STALWART_NS" get pod "$POD" -o jsonpath='{.status.ho
 # fall back to HOST_IP_OF_POD.
 DEFAULT_PROBE_HOST="$HOST_IP_OF_POD"
 if [[ "$(kctl -n "$STALWART_NS" get daemonset stalwart-haproxy --no-headers 2>/dev/null | awk '{print $4}')" -gt 0 ]]; then
-  SERVER_NODE_IP="$(kctl get nodes -l "$SERVER_ROLE_LABEL" -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null)"
+  # `…addresses[?(@.type=="InternalIP")].address` matches EVERY InternalIP and
+  # kubectl joins multiple matches with a SPACE, so on a dual-stack node this
+  # yields "v4 v6" in one string and PROBE_HOST becomes an unusable host. Take
+  # the first address — the same value single-stack has always produced.
+  SERVER_NODE_IP="$(kctl get nodes -l "$SERVER_ROLE_LABEL" -o jsonpath='{range .items[0].status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}' 2>/dev/null | head -1)"
   if [[ -n "$SERVER_NODE_IP" ]]; then
     DEFAULT_PROBE_HOST="$SERVER_NODE_IP"
   fi
@@ -373,7 +377,7 @@ _ha_mail_ips() {
   else
     # Fallback: server-role node InternalIPs from the cluster.
     kctl get nodes -l insula.host/node-role=server \
-      -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null \
+      -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null \
       | tr -d '\r' | grep -vE '^$' | sort -u
   fi
 }
@@ -585,8 +589,12 @@ print(' '.join(str(p) for p in sorted(ports)))" 2>/dev/null || echo '')"
     | grep -E ':' | sort -u)
   local dns_all
   dns_all=$(printf '%s\n%s\n' "$dns_v4" "$dns_v6" | grep -vE '^$' | sort -u)
+  # Nested range: one address PER LINE. The flat form joins a dual-stack node's
+  # v4+v6 with a space onto a single line, and the subset check below then reads
+  # that as one bogus IP — reporting it as missing from DNS while every real DNS
+  # answer looks extra.
   cluster_ips=$(kctl get nodes -l insula.host/node-role=server \
-    -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}' 2>/dev/null \
+    -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}' 2>/dev/null \
     | tr -d '\r' | grep -vE '^$' | sort -u)
   if [[ -z "$dns_all" ]]; then
     note_fail "A7. ${STALWART_DOMAIN} has NO A/AAAA records — no external sender can deliver"
@@ -913,9 +921,26 @@ phase_c_mode_flip() {
   fi
 
   # C3. TCP probe port 587 from every server node's external/internal IP.
-  local mapfile_ips=()
-  while IFS= read -r line; do mapfile_ips+=("$line"); done < <(
-    kctl get nodes -l "$SERVER_ROLE_LABEL" -o jsonpath='{range .items[*]}{.status.addresses[?(@.type=="InternalIP")].address}{"\n"}{end}'
+  # Nested range: one address PER LINE (the flat form space-joins a dual-stack
+  # node's v4+v6 into a single unusable "host", which fails every probe below).
+  # Then drop v6 targets when this harness has no v6 route of its own — probing
+  # an address we cannot reach measures the harness, not the cluster. Cluster-side
+  # v6 exposure is asserted by integration-mail-external-reachability.sh, which
+  # gates on HARNESS_HAS_V6 for exactly this reason.
+  local mapfile_ips=() _harness_v6="${HARNESS_HAS_V6:-}"
+  if [[ -z "$_harness_v6" ]]; then
+    _harness_v6=no
+    ip -6 route get 2001:4860:4860::8888 >/dev/null 2>&1 && _harness_v6=yes
+  fi
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == *:* && "$_harness_v6" != yes ]]; then
+      note_warn "    skipping v6 target ${line} — this harness has no IPv6 route"
+      continue
+    fi
+    mapfile_ips+=("$line")
+  done < <(
+    kctl get nodes -l "$SERVER_ROLE_LABEL" -o jsonpath='{range .items[*]}{range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}{end}'
   )
   local ok=0 nope=0
   for ip in "${mapfile_ips[@]}"; do

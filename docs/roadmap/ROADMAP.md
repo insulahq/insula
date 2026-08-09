@@ -24,7 +24,7 @@
 | [R10](#r10--bulwark-deferred-work) | Bulwark deferred work (phases 7–8) | P3 | Deferred by decision |
 | [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply + operator→trusted-range bridge (2026-06-18) + upstream-image Trivy CVE scan (CI, 2026-06-20); only in-cluster Trivy UI deferred |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
-| [R13](#r13--ipv6-completion) | IPv6 completion | **P1** | Shipped 2026-08-04 — opt-in `--dual-stack` (cluster CIDRs, node-ip, Calico v6 pool, ingress + mail v6); pod addressing is ULA+NAT, globally-routable pods + catalog images binding `::` still open |
+| [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Shipped 2026-08-04 — opt-in `--dual-stack` (cluster CIDRs, node-ip, Calico v6 pool, ingress + mail v6). **Serving IPv6 is DONE**: proven 2026-08-08 that a v6-only client fetches a tenant site while the internal plane stays SingleStack IPv4. Remaining items (globally-routable pods, `::` binding) are end-to-end-v6 purity, not serving; outbound mail over v6 still gated on operator PTR |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 | [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
@@ -348,14 +348,51 @@ routes, mail) without depending on the provider routing a delegated prefix.
 Giving pods globally-routable addresses — true end-to-end v6, no NAT — remains
 open.
 
-**Still open:**
-- Globally-routable pod addressing (above).
-- Catalog/runtime images should bind `::` so tenant *workloads* serve v6, not
-  just the platform's own surfaces.
-- Outbound mail over IPv6 is deliberately NOT enabled by this work: receivers
-  apply stricter PTR/forward-confirmed rules to v6 than v4, so sending before
-  rDNS is in place and warmed trades a reachability win for a deliverability
-  loss. Inbound v6 is safe today; outbound needs the operator's PTR first.
+**Measured 2026-08-08 — neither of the first two items is needed to SERVE IPv6.**
+Traced end to end on the dual-stack DEV cluster with a real tenant workload
+(nginx-php from the catalog, its own domain, fetched from a v6-capable host):
+
+- Every Service in the cluster is `ipFamilies: [IPv4] SingleStack`, and the
+  tenant's EndpointSlice is `addressType: IPv4 -> 10.42.x.x`. The
+  ingress→workload hop is IPv4 **by construction**.
+- A v6-only fetch (`curl -6 --resolve <host>:443:[<node v6>]`) returned the
+  workload's own response with `peer=<node's public v6>`, three times. The
+  client plane is v6; the internal plane never is.
+- The nginx-php image **already** binds `::` (`:::8080`, `:::9000`) — and it
+  makes no difference, because nothing dials the pod over v6.
+- Pods already have working OUTBOUND v6 through the ULA + `natOutgoing` path
+  (`curl -6 https://ipv6.google.com` → 200 from inside a tenant pod).
+
+So "keep IPv4 for internal routing, serve the public surface over v6" is not a
+compromise to be replaced later — it is the shipped design, and it satisfies the
+requirement. The two items below are about end-to-end v6 *purity*, not about
+serving IPv6, and neither blocks the customer-facing promise:
+
+- **Globally-routable pod addressing** — buys: no NAT66, and a per-pod outbound
+  source address. Today every tenant's outbound v6 NATs to the node's single
+  global v6, which is exactly what IPv4 already does, so this changes nothing an
+  operator or tenant can observe short of per-tenant v6 reputation. Needs a
+  delegated prefix from the provider. Low priority.
+- **Catalog/runtime images binding `::`** — INERT while tenant Services stay
+  SingleStack IPv4. It only becomes load-bearing if we ever make them dual-stack,
+  and it should be done *then*, together, or it is untested surface. (Verified for
+  nginx-php only; other images unaudited, deliberately — there is nothing to fix
+  until the Services change.)
+- ~~Outbound mail over IPv6 is deliberately NOT enabled~~ — **corrected
+  2026-08-08: outbound IPv6 is already active, and nothing gates it.** Measured
+  on the dual-stack cluster: a major receiver accepted an SMTP connection from
+  the node's global v6 and echoed it back (`250-… at your service,
+  [2a01:…:a0f5::1]`). The live Stalwart config carries no `ip-strategy`,
+  `source-ip` or `queue.outbound` key at all, so it runs on its default — and
+  that default is `V4ThenV6` (`MtaIpStrategy::V4ThenV6` is the `#[default]`
+  variant in Stalwart's source). So IPv4 wins for any destination that has an A
+  record, and IPv6 is used as the fallback for destinations that do not. It is
+  enabled and working, just rarely exercised.
+  PTR is EXTERNAL configuration (the IP's network provider) and equally so for
+  IPv4 — it is now reported per-address in the mail health card for BOTH
+  families and never gates sending. Deliberately still open: flipping the
+  strategy to `V6ThenV4` to make IPv6 the preferred path, which is a
+  reputation decision for the operator, not a defect.
 - The single-stack **multi-node** control run for `mail-external-reachability`.
   The dual-stack run is now clean (2026-08-06, run `6e9e214b`): every port
   probe, SMTP banner, negative expectation and the mode-switch refusal pass on

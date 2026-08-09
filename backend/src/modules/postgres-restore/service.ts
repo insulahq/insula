@@ -62,6 +62,13 @@ let activeRestore: { readonly startedAt: Date; readonly snapshot: string } | nul
 
 const PITR_LOCK_KEY = 'pg_pitr_in_progress';
 
+/**
+ * How long an in-memory lock may outlive an ABSENT DB row before it is treated
+ * as stale. Only has to exceed the acquire window — the single writePersistedLock
+ * INSERT between setting the in-memory flag and persisting it. Exported for tests.
+ */
+export const STALE_IN_MEMORY_LOCK_MS = 30_000;
+
 interface PersistedLock {
   readonly startedAt: string;
   readonly snapshot: string;
@@ -209,7 +216,53 @@ export async function isPostgresRestoreInProgressClusterWide(
   /** P4b: derived from the persisted lock phase. Useful banner copy. */
   readonly phase?: 'preflight' | 'cutover' | 'rebuilding' | 'cleanup';
 }> {
-  const persisted = await readPersistedLock(db).catch(() => null);
+  // Distinguish "the DB says there is no lock" from "the DB could not be read".
+  // They mean opposite things here and a bare .catch(() => null) conflates them:
+  // during the cutover the source cluster is deleted, so the read FAILS exactly
+  // when the in-memory flag is the only guard left. Absence is authoritative
+  // only when the read succeeded.
+  let persisted: PersistedLock | null = null;
+  let persistedReadOk = true;
+  try {
+    persisted = await readPersistedLock(db);
+  } catch {
+    persistedReadOk = false;
+  }
+
+  // Self-heal a stale in-memory lock.
+  //
+  // The orchestration runs in a k8s JOB — a separate process. It clears the
+  // DB row when it finishes, but platform-api's `activeRestore` was set by the
+  // ROUTE HANDLER and can only be cleared by that process, which never happens
+  // on the success path. The DB row is the cross-process channel, and this
+  // function's own contract says so ("The DB lock is the single source of truth
+  // across replicas") — but the in-memory branch below used to be checked first
+  // and won unconditionally, so a completed restore left every replica claiming
+  // inProgress forever.
+  //
+  // Observed on DEV 2026-08-09: promote finished in ~71s with every step ok, and
+  // /status still reported inProgress=true 40+ min later with source=in-memory
+  // while pg_pitr_in_progress was ABSENT. Because the write-lock middleware
+  // calls this on EVERY non-GET request, that stale flag then 503'd unrelated
+  // admin operations cluster-wide (waf-crowdsec failed 4 assertions on
+  // RESTORE_IN_PROGRESS). Only restarting platform-api cleared it; there is no
+  // operator-facing release endpoint, and the PITR watchdog does not cover this
+  // case (it requires FailedCreate events and no Succeeded pods — i.e. the
+  // "pod never ran" case, the opposite of this one).
+  //
+  // The age guard preserves the acquire window: acquirePitrLockOrThrow sets the
+  // in-memory flag and then awaits writePersistedLock, so a status check landing
+  // between the two legitimately sees in-memory-set + row-absent. That window is
+  // a single INSERT; STALE_IN_MEMORY_LOCK_MS is orders of magnitude wider.
+  if (
+    activeRestore
+    && persistedReadOk
+    && !persisted
+    && Date.now() - activeRestore.startedAt.getTime() > STALE_IN_MEMORY_LOCK_MS
+  ) {
+    activeRestore = null;
+  }
+
   if (activeRestore) {
     return {
       inProgress: true,
