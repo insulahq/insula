@@ -337,16 +337,69 @@ _ws_resolve_a() {
   getent ahosts "$host" 2>/dev/null | awk '{print $1}' | sort -u || true
 }
 
+# AAAA lookups MUST NOT go through getent.
+#
+# glibc's getent filters results by the address families the LOCAL host can
+# actually use, so on an IPv4-only harness `getent ahosts <host>` returns the A
+# records and silently omits every AAAA — even when the record exists and the
+# world can resolve it. The mail forward-DNS check then reports
+# "A/AAAA missing cluster IPs: <v6>" against a hostname that publishes a
+# perfectly good AAAA, which is a failure about the HARNESS's connectivity
+# wearing the costume of a cluster defect. Confirmed 2026-08-09: this exact
+# false failure on mail.<apex>, whose AAAA resolves fine from a v6-capable host.
+#
+# A DNS query is transport-independent — asking for AAAA over IPv4 is normal —
+# so use a real resolver and fall back to getent only when none is installed.
+# Public resolvers used as a fallback for AAAA. Override with a space-separated
+# list if these are unreachable from your harness.
+INTEGRATION_PUBLIC_RESOLVERS="${INTEGRATION_PUBLIC_RESOLVERS:-1.1.1.1 8.8.8.8}"
+
+_ws_resolve_aaaa_dns() {
+  local host="$1" out=''
+  if command -v dig >/dev/null 2>&1; then
+    out=$(dig +short AAAA "$host" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' | sort -u)
+    # An empty answer from the SYSTEM resolver is not evidence of absence. This
+    # sandbox's resolver returns AAAA for nothing at all, while the very same
+    # query against a public resolver answers correctly:
+    #     dig +short AAAA <host>            -> (nothing)
+    #     dig +short AAAA <host> @1.1.1.1   -> 2a01:...::1
+    # The assertion we actually care about is "does this hostname publish AAAA
+    # to the INTERNET", which is a public-resolver question, so ask one before
+    # concluding the record is missing.
+    if [[ -z "$out" ]]; then
+      local r
+      for r in $INTEGRATION_PUBLIC_RESOLVERS; do
+        out=$(dig +short AAAA "$host" "@$r" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' | sort -u)
+        [[ -n "$out" ]] && break
+      done
+    fi
+    printf '%s\n' "$out" | grep -vE '^$' || true
+    return 0
+  fi
+  if [[ "${DNSPYTHON:-0}" == "1" ]]; then
+    python3 -c 'import dns.resolver,sys
+try:
+    for r in dns.resolver.resolve(sys.argv[1],"AAAA"): print(str(r))
+except Exception: pass' "$host" 2>/dev/null
+    return 0
+  fi
+  # Last resort: getent, which filters by the LOCAL host's usable families and
+  # therefore hides AAAA entirely on an IPv4-only harness. Callers should read
+  # an empty result here as "unknown", not "absent".
+  getent ahosts "$host" 2>/dev/null | awk '{print $1}' | grep ':' | sort -u || true
+}
+
 # IPv4-only: drop any address containing a colon (v6).
 _ws_resolve_a4() {
   local host="$1"
   _ws_resolve_a "$host" | grep -v ':' || true
 }
 
-# IPv6-only: keep only addresses containing a colon.
+# IPv6-only. Goes through the DNS-based resolver, NOT getent — see
+# _ws_resolve_aaaa_dns for why getent cannot be trusted for AAAA here.
 _ws_resolve_a6() {
   local host="$1"
-  _ws_resolve_a "$host" | grep ':' || true
+  _ws_resolve_aaaa_dns "$host" | grep ':' || true
 }
 
 # SRV target resolution via dnspython. Echoes one target host per line
