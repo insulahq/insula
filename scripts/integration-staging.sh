@@ -875,10 +875,26 @@ _assert_mail_reverse_dns() {
       [fF][eE]8*:*|[fF][eE]9*:*|[fF][eE][aA]*:*|[fF][eE][bB]*:*) skipped_private=$((skipped_private+1)); continue ;;
     esac
     checked=$((checked + 1))
-    local ptr
+    # Severity is FAMILY-DEPENDENT, mirroring the platform's own health card
+    # (backend/src/modules/mail-admin/deliverability.ts: `v6 ? 'warning' : 'fail'`).
+    # Stalwart's default MtaIpStrategy is V4ThenV6, so outbound mail leaves over
+    # IPv4: a missing IPv4 PTR breaks the primary send path, while a missing IPv6
+    # PTR only affects receivers reachable ONLY over v6 — mail keeps flowing.
+    # PTR is provider-side configuration the platform cannot set either way.
+    #
+    # This check predates dual-stack and failed family-agnostically. Once
+    # --dual-stack publishes an AAAA for the mail host, the v6 address enters
+    # this loop and a missing v6 PTR turned the whole suite red on a cluster the
+    # product itself grades as healthy-with-a-warning. Two policies for one
+    # condition is the bug; the product's is the one to follow.
+    local ptr sev=mdfail famnote=""
+    if [[ "$ip" == *:* ]]; then
+      sev=warn
+      famnote=" (IPv6 is the fallback path — Stalwart tries IPv4 first, so mail keeps flowing over IPv4)"
+    fi
     ptr=$(_ws_resolve_ptr "$ip" | head -1 | sed 's/\.$//' || true)
     if [[ -z "$ptr" ]]; then
-      mdfail "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)"
+      "$sev" "mail-dns/reverse: ${ip} has NO PTR record — receiving SMTP servers will likely refuse mail (no FCrDNS)${famnote}"
       continue
     fi
     if [[ "$ptr" == "$hostname" ]]; then
@@ -892,7 +908,7 @@ _assert_mail_reverse_dns() {
       if [[ -n "$apex" && "$ptr" == *".${apex}" ]]; then
         warn "mail-dns/reverse: ${ip} → ${ptr} (under .${apex} but NOT exactly ${hostname} — set explicit PTR for best deliverability)"
       else
-        mdfail "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)"
+        "$sev" "mail-dns/reverse: ${ip} → ${ptr} (does NOT match ${hostname} — FCrDNS fails, mail likely rejected)${famnote}"
       fi
     fi
   done <<<"$ips"
