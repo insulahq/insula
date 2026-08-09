@@ -67,8 +67,26 @@ if [[ -n "${TOKEN:-}" ]]; then ok "using preset TOKEN"; else
   [[ "$STATUS" == 200 ]] || { no "login $STATUS"; echo "$BODY"|rd; exit 1; }
   TOKEN=$(printf '%s' "$BODY"|jq -r '.data.token'); ok "admin login"
 fi
-parse "$(api GET /admin/backup-configs '' "$TOKEN")"
-CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.active==true or .isActive==true)|.id'|head -1)
+# Resolve the target the TENANT CLASS ACTUALLY WRITES TO, not the first config
+# flagged `active`. Those are different things, and picking the wrong one is
+# worse than skipping: capture routes by CLASS through the backup-rclone-shim
+# and ignores any other target, so the suite would exercise a store that never
+# receives the data and could pass while the real path is broken.
+#
+# Observed on DEV 2026-08-09 — the bound target was not the active one:
+#   c7d5b8b4  active=False  <- bound to system+tenant+mail  (the real target)
+#   ca4bfbef  active=True   <- bound to nothing
+# The old selector chose ca4bfbef, and when no config carried active=true it
+# skipped with a message blaming the class assignment it had never queried.
+#
+# Same resolution integration-migration-e2e.sh already documents. Falls back to
+# first-active only when the shim reports no binding (local/dev, no class
+# routing).
+CFG="$(api GET /admin/backup-rclone-shim/assignments '' "$TOKEN" | sed '$d' | _backup_class_target tenant)"
+if [[ -z "$CFG" || "$CFG" == UNKNOWN || "$CFG" == null ]]; then
+  parse "$(api GET /admin/backup-configs '' "$TOKEN")"
+  CFG=$(printf '%s' "$BODY"|jq -r '.data[]|select(.active==true or .isActive==true)|.id'|head -1)
+fi
 if [[ -z "$CFG" || "$CFG" == null ]]; then echo "  SKIP (77): no active offsite BackupStore for the 'tenant' class" >&2; exit 77; fi
 ok "offsite backup target=$CFG"
 parse "$(api GET /plans '' "$TOKEN")"; PLAN=$(printf '%s' "$BODY"|jq -r '.data[]|select(.name=="Premium" or .name=="Business").id'|head -1); [[ -n "$PLAN" && "$PLAN" != null ]] || PLAN=$(printf '%s' "$BODY"|jq -r '.data[-1].id')

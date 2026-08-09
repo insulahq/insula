@@ -134,8 +134,34 @@ if ! command -v age >/dev/null 2>&1; then
   echo "  SKIP (77): 'age' binary not on PATH — external-tier bundle-decrypt suite. Install age (apt-get install age / filippo.io/age) to run." >&2
   exit 77
 fi
+# Fall back to the key the CLUSTER ITSELF generated before declaring the suite
+# unrunnable. bootstrap.sh writes the operator AGE keypair to
+# /var/lib/insula/operator-key/ on the control plane, so the key that can decrypt
+# this cluster's bundle is always on the cluster this suite is already SSH'd
+# into. The old default was a hardcoded personal path
+# ($HOME/k8s-staging/staging-age.key) that exists on nobody else's machine, so
+# the suite skipped everywhere but one workstation — and it skipped AFTER
+# exporting and downloading a real 200KB+ bundle, i.e. it did the expensive part
+# and then threw the result away.
+#
+# Copied to a 0600 file inside WORK_DIR (already rm -rf'd by the EXIT trap) so
+# the private key never persists on the harness, and never to stdout.
+if [[ ! -f "$AGE_KEY_FILE" && -n "${SSH_HOST:-}" ]]; then
+  _node_key=/var/lib/insula/operator-key/operator-private.key
+  _fetched="$WORK_DIR/operator-age.key"
+  if (umask 077; ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" \
+        -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o LogLevel=ERROR \
+        "$SSH_HOST" "cat $_node_key" > "$_fetched" 2>/dev/null) \
+     && grep -q 'AGE-SECRET-KEY' "$_fetched"; then
+    chmod 600 "$_fetched"
+    AGE_KEY_FILE="$_fetched"
+    echo "  • AGE key not at the configured path — using the cluster's own operator key from ${SSH_HOST#*@}:$_node_key (temporary, 0600, removed on exit)"
+  else
+    rm -f "$_fetched"
+  fi
+fi
 if [[ ! -f "$AGE_KEY_FILE" ]]; then
-  echo "  SKIP (77): AGE_KEY_FILE not found at $AGE_KEY_FILE — external-tier suite needs the operator AGE private key (set AGE_KEY_FILE)." >&2
+  echo "  SKIP (77): no operator AGE private key — not at \$AGE_KEY_FILE ($AGE_KEY_FILE) and could not read /var/lib/insula/operator-key/operator-private.key from \${SSH_HOST:-<unset>}. Set AGE_KEY_FILE or give the harness SSH access to the control plane." >&2
   exit 77
 fi
 
@@ -248,23 +274,49 @@ else
 
   echo "  spinning up ephemeral Postgres on :$PG_PORT..."
   docker run -d --rm --name "$PG_NAME" -e POSTGRES_PASSWORD="$PG_PASS" -p "$PG_PORT:5432" postgres:18-alpine >/dev/null
-  # Wait for Postgres to accept connections (max 30s)
+  # Wait for Postgres to accept connections FROM THIS HARNESS (max 30s).
+  #
+  # `docker exec … pg_isready` was the wrong probe: it asks the server about its
+  # own unix socket, which says nothing about whether the PUBLISHED PORT is
+  # reachable from here. Under DinD (or any daemon in a different network
+  # namespace) the container is perfectly healthy while localhost:$PG_PORT is
+  # refused — so the loop "succeeded", psql then failed on the first migration,
+  # and the suite reported
+  #     G0 migration 0000_tenant_rename.sql failed against ephemeral Postgres
+  # about a migration that is fine. Probe the path we actually use.
+  export DATABASE_URL="postgresql://postgres:$PG_PASS@localhost:$PG_PORT/postgres"
+  PG_REACHABLE=0
   for _ in $(seq 1 30); do
-    if docker exec "$PG_NAME" pg_isready -U postgres >/dev/null 2>&1; then break; fi
+    if PGCONNECT_TIMEOUT=3 psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; then
+      PG_REACHABLE=1; break
+    fi
     sleep 1
   done
+  if [[ "$PG_REACHABLE" -ne 1 ]]; then
+    # Environment, not product: skip Phase G rather than blame a migration.
+    echo "  (skip G: ephemeral Postgres started but localhost:$PG_PORT is unreachable from this harness —" >&2
+    echo "   published container ports are not routable here, e.g. a Docker-in-Docker daemon in another" >&2
+    echo "   network namespace. Run this suite where docker publishes to the harness's own loopback," >&2
+    echo "   or set SKIP_RESTORE=1 to elide Phase G explicitly.)" >&2
+  fi
 
   # Apply schema migrations — every *.sql in backend/src/db/migrations
   # in alphabetical order. Mirrors the platform-api startup migrator.
-  export DATABASE_URL="postgresql://postgres:$PG_PASS@localhost:$PG_PORT/postgres"
-  MIGRATION_FAIL=0
-  for m in "$REPO_ROOT"/backend/src/db/migrations/*.sql; do
-    if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$m" >/dev/null 2>&1; then
-      fail "G0 migration $(basename "$m") failed against ephemeral Postgres"
-      MIGRATION_FAIL=1
-      break
-    fi
-  done
+  # MIGRATION_FAIL starts at 1 when Postgres is unreachable so the import block
+  # below is skipped without recording a product failure — the skip was already
+  # reported above.
+  MIGRATION_FAIL=$(( PG_REACHABLE == 1 ? 0 : 1 ))
+  if [[ "$PG_REACHABLE" -eq 1 ]]; then
+    for m in "$REPO_ROOT"/backend/src/db/migrations/*.sql; do
+      # Keep stderr: a swallowed psql error is how a connection refusal came to
+      # be reported as a broken migration in the first place.
+      if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$m" > "$WORK_DIR/migrate.out" 2>&1; then
+        fail "G0 migration $(basename "$m") failed against ephemeral Postgres: $(tail -3 "$WORK_DIR/migrate.out" | tr '\n' ' ')"
+        MIGRATION_FAIL=1
+        break
+      fi
+    done
+  fi
   if [[ $MIGRATION_FAIL -eq 0 ]]; then
     ok "G0 schema migrations applied to ephemeral Postgres"
 
