@@ -222,6 +222,15 @@ fi
 
 # Wipe K8s + Calico + Longhorn state directories
 rm -rf /var/lib/rancher /etc/rancher
+# /var/run/calico/cgroup is a cgroup2 MOUNT (Felix bind-mounts it for its
+# BPF/connect-time load balancer). Its entries are kernel-owned pseudo-files:
+# `rm -rf` can never delete them and emits one "Operation not permitted" per
+# file — a single wipe produced ~1 MB of them, which buried the node's real
+# exit status in the log. Unmount first, then the (now empty) dir removes
+# cleanly. `|| true` because it is absent on a node that never ran Calico.
+if mountpoint -q /var/run/calico/cgroup 2>/dev/null; then
+  umount /var/run/calico/cgroup 2>/dev/null || umount -l /var/run/calico/cgroup 2>/dev/null || true
+fi
 rm -rf /var/lib/calico /etc/cni /var/run/calico
 rm -rf /var/lib/longhorn /opt/longhorn
 rm -rf /var/lib/kubelet /etc/kubernetes
@@ -247,8 +256,13 @@ systemctl restart netbird 2>/dev/null || systemctl start netbird 2>/dev/null || 
 sleep 5
 WTAFTER=$(ip -4 -o addr show wt0 2>/dev/null | awk '{print $4}' | head -1)
 echo "[$(hostname)] wt0 after: ${WTAFTER:-none}"
-if [[ -z "$WTAFTER" ]]; then
-  echo "[$(hostname)] WARN: wt0 missing post-wipe — NetBird needs manual recovery"
+# Only a wt0 that EXISTED BEFORE and is gone now is a NetBird failure. Guarding
+# on WTAFTER alone made every node without a mesh (the common case — NetBird is
+# one optional underlay, not a dependency) exit 3 and print "NetBird needs
+# manual recovery", sending the operator to recover something that was never
+# installed.
+if [[ -n "$WTBEFORE" && -z "$WTAFTER" ]]; then
+  echo "[$(hostname)] WARN: wt0 was ${WTBEFORE} before the wipe and is GONE now — NetBird needs manual recovery"
   exit 3
 fi
 if [[ "$WTBEFORE" != "$WTAFTER" ]]; then
@@ -274,6 +288,11 @@ for nh in "${NODES[@]}"; do
       > "$LOG_DIR/${host}.log" 2>&1
     rc=$?
     echo "[$host] exit=$rc"
+    # PROPAGATE. Without this the subshell's status is `echo`'s — always 0 — so
+    # `wait` below always succeeded, $fail stayed 0, and the script printed
+    # "all nodes wiped" + exit 0 having just displayed "exit=3" one line above.
+    # The failure was measured and then thrown away.
+    exit "$rc"
   ) &
   PIDS+=($!)
 done
