@@ -1170,6 +1170,23 @@ print(';'.join('%s=%s'%(k,_norm(o[k])) for k in sorted(o)))
 " 2>/dev/null || echo READ_ERR
 }
 
+# _ready_server_node_count — how many server-role nodes the PLATFORM counts.
+# Read from /admin/mail/port-exposure, which is the same number its own guard
+# uses to accept or refuse a mode, so this can never disagree with the API that
+# produced the refusal. Empty on any read failure — callers must treat "unknown"
+# as "not the special case" and report the leak normally.
+_ready_server_node_count() {
+  local base="${PLATFORM_API_URL:-$ADMIN_HOST}" tok="${INTEGRATION_TOKEN:-}"
+  [[ -n "$tok" ]] || tok=$(force_mint 2>/dev/null || true)
+  [[ -n "$tok" ]] || { echo ""; return; }
+  curl -sk --max-time 15 -H "Authorization: Bearer $tok" \
+    "$base/api/v1/admin/mail/port-exposure" 2>/dev/null \
+    | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['data'].get('readyServerNodeCount',''))
+except Exception: print('')" 2>/dev/null
+}
+
 heal_global_state() {
   # Re-apply canonical to the SAFE single-value PATCH groups (idempotent — the
   # same fields the mutating suites restore themselves). Skips the trusted-proxies
@@ -1209,6 +1226,35 @@ assert_global_state() {
   [[ -z "$cur" || "$cur" == *READ_ERR* ]] && return 0        # unreadable → don't false-flag
   if [[ -z "$GLOBAL_STATE_CANONICAL" ]]; then GLOBAL_STATE_CANONICAL="$cur"; return 0; fi
   if [[ "$cur" != "$GLOBAL_STATE_CANONICAL" ]]; then
+    # A drift the PLATFORM refuses to let anyone undo is not a leaked global —
+    # blaming a suite for it is the same misattribution this gate exists to
+    # avoid. The only such case today: mail port-exposure on a cluster with one
+    # server node. bootstrap stores `allServerNodes` (the schema default) but no
+    # HAProxy DaemonSet is ever created there, correctly, because that mode
+    # needs >=2 server nodes — so the stored value is a claim the cluster never
+    # realises. Once any suite moves it to `activeNodeOnly`, the stored value
+    # finally MATCHES reality and the API refuses to go back:
+    #   MAIL_PORT_EXPOSURE_MODE_REFUSED "Mail HA-Proxy requires 2 or more server nodes."
+    # Restoration is impossible by design, so the drift would be re-reported on
+    # every subsequent run against the same cluster, permanently, blaming
+    # whichever suite touched it. Reported as a NOTE instead; the canonical is
+    # still advanced below so nothing cascades. Any OTHER field that drifts is
+    # still a hard leak, and on a multi-node cluster so is this one.
+    local _only_mailmode=0
+    if [[ "$(printf '%s' "$cur"       | tr ';' '\n' | grep -v '^mail\.mode=')" \
+       == "$(printf '%s' "$GLOBAL_STATE_CANONICAL" | tr ';' '\n' | grep -v '^mail\.mode=')" ]] \
+       && [[ "$cur" == *'mail.mode=activeNodeOnly'* ]] \
+       && [[ "$GLOBAL_STATE_CANONICAL" == *'mail.mode=allServerNodes'* ]] \
+       && [[ "$(_ready_server_node_count)" == "1" ]]; then
+      _only_mailmode=1
+    fi
+    if (( _only_mailmode )); then
+      warn "global-state NOTE ('$culprit'): mail.mode allServerNodes → activeNodeOnly on a 1-server-node cluster."
+      warn "  Not a leak — the API refuses to restore allServerNodes here (needs >=2 server nodes), and no"
+      warn "  HAProxy DaemonSet ever existed to realise it. The stored default was unrealisable; this is correct."
+      GLOBAL_STATE_CANONICAL="$cur"
+      return 0
+    fi
     global_state_leaks+=("$culprit")
     fail "GLOBAL-STATE LEAK attributed to '$culprit': a cluster-wide global drifted and was not restored"
     echo "     canonical: $GLOBAL_STATE_CANONICAL" >&2
