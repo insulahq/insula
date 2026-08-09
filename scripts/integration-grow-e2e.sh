@@ -303,8 +303,20 @@ if [[ -n "$FM_POD_FOR_SEED" ]]; then
   log "── PATCH storage_limit_override=1 + confirm — must reject RESIZE_UNSAFE ──"
   UNSAFE_RESP=$(api PATCH "/tenants/$CID" '{"storage_limit_override":1,"confirm_destructive_shrink":true}')
   UNSAFE_CODE=$(echo "$UNSAFE_RESP" | python3 -c "import json,sys;print(json.load(sys.stdin).get('error',{}).get('code',''))" 2>/dev/null)
-  [[ "$UNSAFE_CODE" == "RESIZE_UNSAFE" ]] && ok "shrink-with-confirm rejected by pre-flight dryrun (RESIZE_UNSAFE — used would not fit)" \
-    || fail "shrink-with-confirm code=$UNSAFE_CODE (expected RESIZE_UNSAFE) — body: $(echo "$UNSAFE_RESP" | head -c 400)"
+  # A destructive shrink is gated on a snapshot target BEFORE the size pre-flight
+  # runs, so on a cluster with no tenant-class backup binding the API refuses with
+  # NO_SNAPSHOT_TARGET and RESIZE_UNSAFE is unreachable. That is the API behaving
+  # correctly — the shrink WAS refused — but it is a different assertion, so
+  # counting it as a pass would claim coverage this run never had. Report it as
+  # skipped with the precondition named, and keep the hard assertion for clusters
+  # that can actually reach the size check.
+  if [[ "$UNSAFE_CODE" == "RESIZE_UNSAFE" ]]; then
+    ok "shrink-with-confirm rejected by pre-flight dryrun (RESIZE_UNSAFE — used would not fit)"
+  elif [[ "$UNSAFE_CODE" == "NO_SNAPSHOT_TARGET" ]]; then
+    log "  • SKIP RESIZE_UNSAFE assertion — destructive shrink is refused earlier with NO_SNAPSHOT_TARGET (no backup target bound to the 'tenant' class on this cluster). Bind one at /backups/tenant → Targets to exercise the size pre-flight."
+  else
+    fail "shrink-with-confirm code=$UNSAFE_CODE (expected RESIZE_UNSAFE, or NO_SNAPSHOT_TARGET when no tenant backup target is bound) — body: $(echo "$UNSAFE_RESP" | head -c 400)"
+  fi
   # Cleanup the marker so the upcoming successful shrink isn't rejected.
   ssh_cp "kubectl -n $NS exec $FM_POD_FOR_SEED -c file-manager -- rm -f /data/shrink-marker" || true
 fi
