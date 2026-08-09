@@ -954,7 +954,18 @@ retry_failed_serially() {
     SUITE_SECS["$name"]=$(( ${SUITE_SECS[$name]:-0} + $(date +%s) - start ))
     if [[ "$rc" == "0" ]]; then
       flaky_suites+=("$name")
-      warn "retry: $name PASSED alone (batch rc=$first_rc under parallel load) — FLAKY, not a regression"
+      # "Flaky under parallel load" is a DIAGNOSIS, and it is the wrong one when
+      # the API was down during the batch — those suites were killed, not raced.
+      # 2026-08-09: platform-api crashed mid-batch (unhandled pg-boss 'error' on a
+      # DB restart) and six suites were reported as load-flakes. The runner had
+      # already recorded the reachability break and could have said so, which
+      # would have pointed straight at the crash instead of at phantom
+      # contention. Correlate rather than guess.
+      local _why="under parallel load — FLAKY, not a regression"
+      if (( ${#reachability_breaks[@]} > 0 )); then
+        _why="while the platform API was UNREACHABLE during that batch (${#reachability_breaks[@]} break(s) recorded) — collateral, NOT a load flake. Investigate the outage, not this suite."
+      fi
+      warn "retry: $name PASSED alone (batch rc=$first_rc) $_why"
     elif [[ "$rc" == "$SKIP_RC" ]]; then
       log "retry: $name now SKIPPED (rc=77)"
     else
