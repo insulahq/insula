@@ -187,16 +187,67 @@ export function resolveDrainKinds(
 }
 
 /**
+ * Kinds whose drivers report progress while they run, so a row that has stopped
+ * advancing `updated_at` is provably dead rather than merely slow.
+ *
+ * WHY AN ALLOWLIST AND NOT A BLANKET RULE. `postgres.pitr` is a shim consumer
+ * too, and it does NOT heartbeat — its task row is a marker while the real work
+ * runs in a Kubernetes Job. Applying a staleness cutoff to it would let a drain
+ * declare "nothing in flight" and switch the backup target out from under a live
+ * PITR. Waiting too long is an annoyance; draining during a restore is a
+ * data-integrity risk, so anything not listed here counts as in-flight forever
+ * and is left to the retention reaper.
+ *
+ * Verified against production task history before listing:
+ *   backup.shim.drain  21/21 heartbeated      restore.cart   7/7 heartbeated
+ *   backup.bundle      12/12                  backup.run     8/8
+ *   storage.snapshot    1/1                   storage.resize 2/2
+ *   postgres.pitr      0/1  ← NOT listed      postgres.barman-promote 0/1 ← n/a
+ */
+const HEARTBEATING_SHIM_KINDS: ReadonlySet<string> = new Set([
+  'backup.run',
+  'storage.snapshot',
+  'storage.restore',
+  'backup.bundle',
+  'restore.cart',
+  'mail.snapshot.trigger',
+]);
+
+/**
+ * A heartbeating task that has not advanced `updated_at` for this long had its
+ * owning process die. Generous by design: the longest observed gap between
+ * progress updates is seconds, so minutes is far outside normal behaviour.
+ */
+export const INFLIGHT_STALE_MS = 15 * 60 * 1000;
+
+/**
  * Snapshot of in-flight shim-consumer tasks. Returns total + a
  * grouped sample (kind → count) for diagnostics.
  *
  * Tasks are considered in-flight when `status IN ('queued','running')`
  * and `cleared_at IS NULL`. Already-finished rows pending GC are
  * ignored.
+ *
+ * ...AND, for heartbeating kinds only, when they are still advancing. A task row
+ * is persisted state: when platform-api dies mid-flight the row stays `running`
+ * forever and nothing reconciles it, so drain counted a ghost and could never
+ * reach zero. Observed 2026-08-09 after an API crash:
+ *
+ *     restore.cart | running | started 12:00:26 | updated 12:00:26
+ *     -> "drain-now never reached zero in-flight after 6 tries"
+ *        {"inFlightAtStart":2,"inFlightAtEnd":2,"drained":false}
+ *
+ * The retention reaper does clear these, but only after 24h on a 6h cycle — so a
+ * single crash blocked every backup-class reassignment and DR drill for up to
+ * 30 hours. Excluding provably-dead rows here fixes the blockage in minutes
+ * without weakening the gate for kinds we cannot prove dead.
  */
 export async function snapshotInflightShimConsumers(
   db: Database,
   classes: ReadonlyArray<BackupShimClass> = [],
+  /** Staleness cutoff for heartbeating kinds. 0 disables the liveness filter
+   *  (tests that want the raw row semantics pass 0). */
+  staleMs: number = INFLIGHT_STALE_MS,
 ): Promise<{ total: number; samples: InflightSample[] }> {
   const kinds = resolveDrainKinds(classes);
   if (kinds.length === 0) {
@@ -208,6 +259,15 @@ export async function snapshotInflightShimConsumers(
   // PG `record→text[]` cast surprise (the array literal we tried
   // first failed with `cannot cast type record to text[]`).
   const kindsArray: string[] = [...kinds];
+  const staleCutoffMs = Math.max(0, Math.trunc(staleMs));
+  // Drop provably-dead rows: heartbeating kinds whose updated_at has stalled.
+  // Kinds outside HEARTBEATING_SHIM_KINDS are never filtered — see the comment
+  // above for why postgres.pitr in particular must always count.
+  const heartbeatKinds = kindsArray.filter((k) => HEARTBEATING_SHIM_KINDS.has(k));
+  const liveness = (heartbeatKinds.length > 0 && staleCutoffMs > 0)
+    ? sql`(${tasksTable.kind} NOT IN (${sql.join(heartbeatKinds.map((k) => sql`${k}`), sql`, `)})
+           OR ${tasksTable.updatedAt} > NOW() - (${staleCutoffMs}::text || ' milliseconds')::interval)`
+    : undefined;
   const rows = await db
     .select({ kind: tasksTable.kind, n: count() })
     .from(tasksTable)
@@ -216,6 +276,7 @@ export async function snapshotInflightShimConsumers(
         inArray(tasksTable.kind, kindsArray),
         inArray(tasksTable.status, ['queued', 'running']),
         isNull(tasksTable.clearedAt),
+        ...(liveness ? [liveness] : []),
       ),
     )
     .groupBy(tasksTable.kind)
