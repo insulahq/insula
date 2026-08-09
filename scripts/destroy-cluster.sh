@@ -186,6 +186,40 @@ else
   echo "[$(hostname)] iscsiadm not present — skipping longhorn iscsi logout"
 fi
 
+# ── Idempotence markers MUST NOT outlive what they guard ─────────────
+# bootstrap.sh short-circuits each configure_* step on a marker in
+# /var/lib/insula (via the /var/lib/hosting-platform back-compat symlink,
+# ADR-055), and the host-config converger skips a host-migration whose
+# <name>.done exists. Neither directory was wiped here, but the artifacts
+# they guard live under /etc/rancher — which IS wiped below. So after a
+# wipe + re-bootstrap the markers said "done" while the files were gone,
+# and the step never re-ran.
+#
+# Measured on a node wiped and re-bootstrapped 2026-08-08:
+#
+#   .memory-protection    Aug  4 00:33   <- previous install
+#   .calico-installed     Aug  8 12:50   <- the re-bootstrap
+#   .node-logging-caps    Jul 26 22:34   <- two installs ago
+#
+# /etc/rancher/k3s/config.yaml.d did not exist at all, so the node ran with
+# NO kubelet eviction thresholds and NO system-reserved headroom — the very
+# protection that is supposed to shed tenant pods before the kernel OOM
+# killer picks k3s or postgres. host-migration 2026.7.2/0001 would have
+# converged it, but its .done marker had survived too, so the converger
+# reported "0 pending" against a node that was missing the file.
+#
+# Surgical on purpose: bundles/ holds the age-encrypted Tier-1 secrets
+# bundle and operator-key/ the operator key. Destroying those would turn a
+# cluster wipe into unrecoverable data loss, so only the markers go.
+if [[ -d /var/lib/insula || -d /var/lib/hosting-platform ]]; then
+  for _root in /var/lib/insula /var/lib/hosting-platform; do
+    [[ -d "$_root" ]] || continue
+    find "$_root" -maxdepth 1 -type f -name '.*' -delete 2>/dev/null || true
+    rm -rf "$_root/host-migrations" 2>/dev/null || true
+  done
+  echo "[$(hostname)] cleared bootstrap + host-migration markers (kept bundles/, operator-key/, snapshots/)"
+fi
+
 # Wipe K8s + Calico + Longhorn state directories
 rm -rf /var/lib/rancher /etc/rancher
 rm -rf /var/lib/calico /etc/cni /var/run/calico

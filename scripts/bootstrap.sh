@@ -1649,9 +1649,24 @@ configure_memory_protection() {
   #      (k8s/base/priorityclass.yaml) — kubelet evicts
   #      exceeds-requests pods by ascending priority, and tenant pods
   #      run at priority 0.
-  if marker_exists "memory-protection" && [[ ! -s /proc/swaps || $(wc -l < /proc/swaps) -le 1 ]]; then
+  # Check the ARTIFACT, not just the marker. /var/lib/insula survives a
+  # destroy-cluster wipe (it holds the age-encrypted secrets bundle, so it must),
+  # but the drop-in lives under /etc/rancher, which does not. A wipe +
+  # re-bootstrap therefore hit a stale "memory-protection" marker and skipped,
+  # leaving the node with NO kubelet eviction thresholds and NO system-reserved
+  # headroom — exactly the protection that keeps the kernel OOM killer away from
+  # k3s and postgres. Observed on a node re-bootstrapped 2026-08-08: marker dated
+  # four days earlier, /etc/rancher/k3s/config.yaml.d absent entirely.
+  # destroy-cluster.sh now clears the markers too; this is the belt to those
+  # braces, and self-heals a node wiped by any other means.
+  if marker_exists "memory-protection" \
+     && [[ -s /etc/rancher/k3s/config.yaml.d/50-memory-protection.yaml ]] \
+     && [[ ! -s /proc/swaps || $(wc -l < /proc/swaps) -le 1 ]]; then
     log "Memory protection already configured and swap off, skipping."
     return 0
+  fi
+  if marker_exists "memory-protection" && [[ ! -s /etc/rancher/k3s/config.yaml.d/50-memory-protection.yaml ]]; then
+    warn "memory-protection marker present but the kubelet drop-in is MISSING (wiped /etc/rancher?) — rewriting."
   fi
 
   log "Configuring node memory protection (swap off, kubelet eviction)..."
