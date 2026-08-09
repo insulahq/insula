@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isPostgresRestoreInProgress, promotePostgresFromSnapshot, acquirePitrLockOrThrow, createPitrJob, getPlatformApiImage, releasePitrLock, runPitrPrechecks } from './service.js';
+import { isPostgresRestoreInProgress, isPostgresRestoreInProgressClusterWide, STALE_IN_MEMORY_LOCK_MS, promotePostgresFromSnapshot, acquirePitrLockOrThrow, createPitrJob, getPlatformApiImage, releasePitrLock, runPitrPrechecks } from './service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 
@@ -594,5 +594,80 @@ describe('runPitrPrechecks — read-only mirror of preflight', () => {
     expect(r.lockState).toBe('free');
     expect(r.blockingError).toBeNull();
     expect(r.snapshotAgeSec).toBeGreaterThanOrEqual(0);
+  });
+});
+
+/**
+ * Regression: a completed restore left every replica claiming inProgress.
+ *
+ * The orchestration runs in a k8s JOB — a separate process — which clears the DB
+ * row when it finishes. platform-api's in-memory `activeRestore` was set by the
+ * ROUTE HANDLER and nothing in that process ever clears it on the success path.
+ * The cluster-wide check consulted the in-memory flag FIRST and let it win
+ * unconditionally, so /status reported inProgress=true forever and the write-lock
+ * middleware (which runs this on EVERY non-GET request) 503'd unrelated admin
+ * operations cluster-wide. Observed on DEV 2026-08-09.
+ */
+describe('isPostgresRestoreInProgressClusterWide — stale in-memory lock', () => {
+  const inputs = { clusterNamespace: 'platform', clusterName: 'system-db', snapshotName: 'snap-stale' };
+
+  // A db whose persisted-lock READ rejects — the cutover state, where the source
+  // cluster has been deleted and the in-memory flag is the only guard left.
+  function makeUnreadableDb(): Database {
+    return {
+      select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.reject(new Error('db unreachable')) }) }) }),
+      insert: () => ({ values: () => Object.assign(Promise.resolve(undefined), { onConflictDoUpdate: () => Promise.resolve(undefined) }) }),
+      delete: () => ({ where: () => Promise.resolve(undefined) }),
+    } as unknown as Database;
+  }
+
+  beforeEach(async () => {
+    await releasePitrLock(makeDb());
+  });
+
+  it('keeps the lock inside the acquire window (in-memory set, DB row not yet written)', async () => {
+    const db = makeDb();
+    await acquirePitrLockOrThrow(db, inputs);
+    const state = await isPostgresRestoreInProgressClusterWide(db);
+    expect(state.inProgress).toBe(true);
+    expect(state.source).toBe('in-memory');
+    await releasePitrLock(db);
+  });
+
+  it('self-heals once the DB row is absent and the in-memory lock outlives the window', async () => {
+    vi.useFakeTimers();
+    try {
+      const db = makeDb();
+      await acquirePitrLockOrThrow(db, inputs);
+      expect((await isPostgresRestoreInProgressClusterWide(db)).inProgress).toBe(true);
+
+      vi.advanceTimersByTime(STALE_IN_MEMORY_LOCK_MS + 1_000);
+
+      const state = await isPostgresRestoreInProgressClusterWide(db);
+      expect(state.inProgress).toBe(false);
+      expect(state.source).toBe('none');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT self-heal when the DB read FAILS — absence must be proven, not assumed', async () => {
+    vi.useFakeTimers();
+    try {
+      const db = makeDb();
+      await acquirePitrLockOrThrow(db, inputs);
+      vi.advanceTimersByTime(STALE_IN_MEMORY_LOCK_MS + 1_000);
+
+      // Same age as the self-heal case above; the only difference is that the
+      // DB cannot be read. Failing open here would drop the lock during the
+      // destructive cutover, which is precisely when the DB is unreachable.
+      const state = await isPostgresRestoreInProgressClusterWide(makeUnreadableDb());
+      expect(state.inProgress).toBe(true);
+      expect(state.source).toBe('in-memory');
+
+      await releasePitrLock(db);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
