@@ -7464,73 +7464,6 @@ spec:
                 "c0"]]}')" | jq -r '.methodResponses[0] | "\(.[0]): \(.[1] | keys[0])"'
           echo "AcmeRenewal task fired (domainId=\${DOMAIN_ID})"
 
-          # 5d. ADVISORY: poll whether the first mail TLS cert actually
-          # issued, so a fresh bootstrap deterministically observes the
-          # outcome (and warns loudly) instead of silently moving on.
-          #
-          # NON-FATAL: the configure pod runs under "set -eu" (line ~5590),
-          # so every probe command below is guarded with "|| true" and the
-          # loop NEVER exits -- a failed/timed-out probe must not strand the
-          # rest of the configure step (AllowedIp, listeners, admin creds
-          # still need to run).
-          #
-          # Probe approach (Option 2, adapted to run in-pod): install openssl
-          # via the same apk path already proven above, then openssl s_client
-          # to the Stalwart pod's implicit-TLS submissions port (465) over the
-          # IN-CLUSTER Service DNS and assert the served leaf issuer is NOT the
-          # startup rcgen self-signed cert.
-          #
-          # Why this and not JMAP (Option 1): jmap_call (defined above) only
-          # reaches Stalwart's config surface (x:SystemSettings/get,
-          # x:Domain/get certificateManagement) -- nowhere in this repo does
-          # JMAP expose the SERVED runtime certificate, so it cannot tell a
-          # real CA-issued cert from the rcgen self-signed one. The served-leaf
-          # issuer check is the only "cert really issued" signal the codebase
-          # trusts (cf. scripts/integration-staging.sh scenario_mail_tls and
-          # scripts/integration-stalwart-mail-ha.sh). It stays INSIDE the
-          # cluster (stalwart-mail.mail.svc.cluster.local) -- we deliberately
-          # do NOT probe the node's own public IP:465, which fails on cloud
-          # hairpin NAT. kubectl is unavailable in this pod, so Option 2's
-          # one-shot "kubectl run" cannot apply here; an in-pod openssl probe
-          # is the in-pod-feasible equivalent.
-          # Poll budget is deliberately SHORT (4x20s ~= 80s): this whole
-          # configure pod is gated by an outer "kctl wait ...
-          # --timeout=180s" (see the wait after the pod is applied), so a
-          # multi-minute poll here would be cut off by that wait AND would
-          # add minutes to EVERY fresh install (mail DNS is frequently
-          # wired AFTER bootstrap). 80s catches the common fast-issue case
-          # (DNS already correct); the platform-api stalwart-domain
-          # reconciler's 30-min tick is the durable backstop for the
-          # slow-DNS case. Fits comfortably inside the 180s pod wait.
-          apk add -q --no-cache openssl 2>/dev/null || true
-          CERT_PROBE_HOST="stalwart-mail.mail.svc.cluster.local"
-          CERT_OK=""
-          echo "Polling for first mail TLS cert on \${CERT_PROBE_HOST}:465 (up to 4x20s ~= 80s; advisory, non-fatal)..."
-          for _cert_try in 1 2 3 4; do
-            CERT_ISSUER=\$( (echo | openssl s_client -connect "\${CERT_PROBE_HOST}:465" \
-              -servername "\${STALWART_HOSTNAME}" 2>/dev/null \
-              | openssl x509 -noout -issuer 2>/dev/null) || true )
-            case "\${CERT_ISSUER}" in
-              "")
-                echo "  cert poll \${_cert_try}/4: no TLS issuer readable yet on :465" ;;
-              *[Ss]talwart*|*[Ss]elf?[Ss]igned*|*rcgen*|*localhost*)
-                echo "  cert poll \${_cert_try}/4: still serving startup self-signed cert (\${CERT_ISSUER})" ;;
-              *)
-                echo "Mail TLS cert ISSUED for \${STALWART_HOSTNAME}: \${CERT_ISSUER}"
-                CERT_OK=yes
-                break ;;
-            esac
-            if [ "\${_cert_try}" -lt 4 ]; then sleep 20 || true; fi
-          done
-          if [ -z "\${CERT_OK}" ]; then
-            echo "WARN: mail TLS cert for \${STALWART_HOSTNAME} not yet issued (~80s elapsed)." >&2
-            echo "WARN:   Most common cause: DNS for \${STALWART_HOSTNAME} has not propagated yet," >&2
-            echo "WARN:   so Let's Encrypt cannot reach this host to validate the ACME challenge." >&2
-            echo "WARN:   This is EXPECTED if you set mail DNS after bootstrap. Stalwart + the" >&2
-            echo "WARN:   platform-api stalwart-domain reconciler keep retrying automatically." >&2
-            echo "WARN:   Verify later with:  scripts/integration-staging.sh mail_tls" >&2
-          fi
-
           # 6. AllowedIp — create missing entries
           EXISTING_IPS=\$(jmap_call "\$(jq -n --arg a "\$ACCT" \
             '{using:["urn:ietf:params:jmap:core","urn:stalwart:jmap"],
@@ -7636,29 +7569,135 @@ spec:
 
           echo ""
           echo "configure-ok listeners_created=\${LISTENERS_CREATED}"
+
+          # 5d. ADVISORY: poll whether the first mail TLS cert actually
+          # issued, so a fresh bootstrap deterministically observes the
+          # outcome (and warns loudly) instead of silently moving on.
+          #
+          # THIS RUNS LAST, AFTER the configure-ok marker, and that placement is
+          # load-bearing. It used to sit between step 5c and step 6, where its
+          # ~80s budget pushed the pod past the outer "kctl wait --timeout"; the
+          # pod was then DELETED mid-poll, so steps 6-8 (AllowedIp, listeners,
+          # admin credentials) never ran and the marker never printed. A block
+          # documented "ADVISORY / NON-FATAL" was silently skipping real
+          # configuration and reporting the whole configure step as failed on a
+          # cluster that was fine — observed on the DEV box 2026-08-09. Anything
+          # whose failure is tolerable must come after everything whose failure
+          # is not.
+          #
+          # NON-FATAL: the configure pod runs under "set -eu" (line ~5590),
+          # so every probe command below is guarded with "|| true" and the
+          # loop NEVER exits -- a failed/timed-out probe must not strand the
+          # rest of the configure step (AllowedIp, listeners, admin creds
+          # still need to run).
+          #
+          # Probe approach (Option 2, adapted to run in-pod): install openssl
+          # via the same apk path already proven above, then openssl s_client
+          # to the Stalwart pod's implicit-TLS submissions port (465) over the
+          # IN-CLUSTER Service DNS and assert the served leaf issuer is NOT the
+          # startup rcgen self-signed cert.
+          #
+          # Why this and not JMAP (Option 1): jmap_call (defined above) only
+          # reaches Stalwart's config surface (x:SystemSettings/get,
+          # x:Domain/get certificateManagement) -- nowhere in this repo does
+          # JMAP expose the SERVED runtime certificate, so it cannot tell a
+          # real CA-issued cert from the rcgen self-signed one. The served-leaf
+          # issuer check is the only "cert really issued" signal the codebase
+          # trusts (cf. scripts/integration-staging.sh scenario_mail_tls and
+          # scripts/integration-stalwart-mail-ha.sh). It stays INSIDE the
+          # cluster (stalwart-mail.mail.svc.cluster.local) -- we deliberately
+          # do NOT probe the node's own public IP:465, which fails on cloud
+          # hairpin NAT. kubectl is unavailable in this pod, so Option 2's
+          # one-shot "kubectl run" cannot apply here; an in-pod openssl probe
+          # is the in-pod-feasible equivalent.
+          # Poll budget is deliberately SHORT (4x20s ~= 80s): it adds to EVERY
+          # fresh install, and mail DNS is frequently wired AFTER bootstrap. 80s
+          # catches the common fast-issue case (DNS already correct); the
+          # platform-api stalwart-domain reconciler's 30-min tick is the durable
+          # backstop for the slow-DNS case. Being last, an outer-wait timeout
+          # during this poll now costs only the observation, not the config.
+          apk add -q --no-cache openssl 2>/dev/null || true
+          CERT_PROBE_HOST="stalwart-mail.mail.svc.cluster.local"
+          CERT_OK=""
+          echo "Polling for first mail TLS cert on \${CERT_PROBE_HOST}:465 (up to 4x20s ~= 80s; advisory, non-fatal)..."
+          for _cert_try in 1 2 3 4; do
+            CERT_ISSUER=\$( (echo | openssl s_client -connect "\${CERT_PROBE_HOST}:465" \
+              -servername "\${STALWART_HOSTNAME}" 2>/dev/null \
+              | openssl x509 -noout -issuer 2>/dev/null) || true )
+            case "\${CERT_ISSUER}" in
+              "")
+                echo "  cert poll \${_cert_try}/4: no TLS issuer readable yet on :465" ;;
+              *[Ss]talwart*|*[Ss]elf?[Ss]igned*|*rcgen*|*localhost*)
+                echo "  cert poll \${_cert_try}/4: still serving startup self-signed cert (\${CERT_ISSUER})" ;;
+              *)
+                echo "Mail TLS cert ISSUED for \${STALWART_HOSTNAME}: \${CERT_ISSUER}"
+                CERT_OK=yes
+                break ;;
+            esac
+            if [ "\${_cert_try}" -lt 4 ]; then sleep 20 || true; fi
+          done
+          if [ -z "\${CERT_OK}" ]; then
+            echo "WARN: mail TLS cert for \${STALWART_HOSTNAME} not yet issued (~80s elapsed)." >&2
+            echo "WARN:   Most common cause: DNS for \${STALWART_HOSTNAME} has not propagated yet," >&2
+            echo "WARN:   so Let's Encrypt cannot reach this host to validate the ACME challenge." >&2
+            echo "WARN:   This is EXPECTED if you set mail DNS after bootstrap. Stalwart + the" >&2
+            echo "WARN:   platform-api stalwart-domain reconciler keep retrying automatically." >&2
+            echo "WARN:   Verify later with:  scripts/integration-staging.sh mail_tls" >&2
+          fi
+
 POD_YAML
 
+  # 300s, not 180s: the pod's own budget is ~22s of mgmt-reachability probing +
+  # the JMAP calls + an ~80s advisory cert poll, which 180s did not cover. The
+  # configure work itself is ordered ahead of the advisory poll now, so a
+  # timeout here no longer loses configuration — but the extra headroom keeps
+  # the common case from reporting a failure it does not have.
+  local configure_wait="${STALWART_CONFIGURE_WAIT:-300s}"
   if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
-       -n mail "pod/${pod_name}" --timeout=180s 2>/dev/null; then
-    warn "  configure pod did not Succeed within 180s."
+       -n mail "pod/${pod_name}" --timeout="${configure_wait}" 2>/dev/null; then
+    warn "  configure pod did not Succeed within ${configure_wait}."
     kctl logs -n mail "${pod_name}" 2>&1 | tail -40 | sed 's/^/      /' || true
+    # A timeout is NOT automatically a configuration failure: everything that
+    # matters prints `configure-ok` before the advisory cert poll begins. If the
+    # marker is there, the config landed and only the observation was cut off.
+    if kctl logs -n mail "${pod_name}" 2>/dev/null | grep -q '^configure-ok '; then
+      warn "  ...but configure-ok was reached — configuration is COMPLETE; only the"
+      warn "     advisory mail-TLS cert poll was cut off. Treating as success."
+      local late_marker
+      late_marker=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
+      kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
+      kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
+      if echo "$late_marker" | grep -q 'listeners_created=true'; then
+        log "  Rolling Stalwart Deployment so new listeners bind..."
+        kctl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null 2>&1 || true
+      fi
+      return 0
+    fi
     kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
     kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
     return 1
   fi
 
+  # Match the marker ANYWHERE in the log, not just on the last line: the
+  # advisory cert poll prints after it, so `tail -1` would miss it entirely.
   local last_line
-  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | tail -1)
+  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
   kctl logs -n mail "${pod_name}" 2>&1 | sed 's/^/    /' || true
   kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
   kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
 
   # Roll Deployment if new listeners were created (re-bind sockets at process start).
+  #
+  # Pod DELETE, not `rollout restart`. This Deployment is Flux-managed: a restart
+  # stamps kubectl.kubernetes.io/restartedAt on the pod template, which Flux sees
+  # as drift from git and reverts — scaling the new ReplicaSet back to 0. Deleting
+  # the pod lets the existing ReplicaSet recreate it from the unchanged template,
+  # which is the repo-wide rule for restarting anything on a Flux cluster.
   if echo "$last_line" | grep -q 'listeners_created=true'; then
     log "  Rolling Stalwart Deployment so new listeners bind..."
-    kctl rollout restart -n mail deploy/stalwart-mail
-    kctl rollout status  -n mail deploy/stalwart-mail --timeout=180s || \
-      warn "  Stalwart rollout did not complete in 180s — verify manually."
+    kctl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null 2>&1 || true
+    kctl rollout status -n mail deploy/stalwart-mail --timeout=180s || \
+      warn "  Stalwart did not become Ready in 180s — verify manually."
   fi
 
   log "  Stalwart full configuration complete."
@@ -7920,9 +7959,12 @@ except Exception:
   log "  Bootstrap Job completed."
 
   # ── Step 7: Restart Deployment to exit bootstrap mode ────────────────
+  # Pod DELETE, not `rollout restart` — same reason as the listener roll in
+  # configure_stalwart_full: stalwart-mail is Flux-managed, and the restart
+  # annotation reads as git drift, so Flux scales the new ReplicaSet back to 0.
   log "  Rolling Stalwart Deployment to exit bootstrap mode..."
-  kctl rollout restart -n mail deploy/stalwart-mail
-  kctl rollout status  -n mail deploy/stalwart-mail --timeout=180s || true
+  kctl -n mail delete pod -l app=stalwart-mail --wait=false >/dev/null 2>&1 || true
+  kctl rollout status -n mail deploy/stalwart-mail --timeout=180s || true
 
   # ── Step 8: Full JMAP configuration ──────────────────────────────────
   log "  Running post-bootstrap JMAP configuration..."
