@@ -167,7 +167,7 @@ test_1_external_ips() {
   # matches EVERY ExternalIP on the node and joins them with a SPACE, while the
   # `{"\n"}` fires once per NODE, not once per address. On a dual-stack node that
   # yields ONE line holding both families:
-  #     178.0.2.7 2001:db8::1
+  #     192.0.2.7 2001:db8::1
   # which becomes the malformed curl entry `--resolve host:443:<v4> <v6>` and
   # fails all five probes, reporting every platform hostname as "mostly broken"
   # on a cluster that is serving perfectly. Seen on the first --dual-stack
