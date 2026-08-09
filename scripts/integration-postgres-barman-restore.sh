@@ -372,10 +372,35 @@ else
 fi
 
 # ─── Live progress: poll /status for promote ─────────────────────────
+#
+# poll_status — a DELIBERATELY tolerant, SHORT-timeout fetch, because neither
+# property holds for the shared `api` helper here:
+#
+#   * `set -euo pipefail` is in force, and `api` returns curl's exit code. The
+#     loop below is explicitly written to handle an unreachable API ("[nnn]
+#     /status unreachable (API down during cutover — expected)") — but that
+#     branch could never run, because the moment curl actually failed the whole
+#     suite aborted. Observed 2026-08-09: the re-run died at poll 3 with rc=28
+#     (curl timeout) on a promote that SUCCEEDED, having printed nothing about
+#     why. `|| true` gives the loop's own tolerance a chance to work.
+#   * CURL_OPTS carries --max-time 180 as a hang guard for the heavy restore
+#     calls. That is far too long for a status poll the loop repeats 150 times
+#     on an 8s cadence: a handful of hangs alone exceeds the suite's 2400s
+#     budget. The cutover deletes and recreates system-db, so a status read
+#     hanging on a dead pool is the EXPECTED case here, not the exception.
+POLL_CURL_OPTS=(-s --max-time 15)
+if [[ "${CURL_INSECURE:-0}" == "1" ]]; then
+  POLL_CURL_OPTS+=(-k)
+fi
+poll_status() {
+  curl "${POLL_CURL_OPTS[@]}" \
+    -X GET "$ADMIN_HOST/api/v1/admin/postgres-restore/status" \
+    -H "Authorization: Bearer $TOKEN" -w '\n%{http_code}' 2>/dev/null || true
+}
 hdr "Live progress on promote ($PROMOTE_JOB)"
 SEEN_STEPS=()
 for i in $(seq 1 150); do
-  STATUS_OUT=$(api GET '/api/v1/admin/postgres-restore/status' | head -n -1)
+  STATUS_OUT=$(poll_status | head -n -1) || STATUS_OUT=""
   IN_PROGRESS=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"inProgress":(true|false).*/\1/p' | head -1)
   PHASE=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"phase":"([^"]+)".*/\1/p' | head -1)
   IN_FLIGHT=$(printf '%s' "$STATUS_OUT" | sed -nE 's/.*"progressInFlight":\{"step":"([^"]+)".*/\1/p' | head -1)
