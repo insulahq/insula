@@ -7,13 +7,14 @@
 
 import { runDataRetention } from './service.js';
 import type { Database } from '../../db/index.js';
+import { safeTick } from '../../shared/safe-tick.js';
 
 const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
 export function startDataRetention(db: Database): NodeJS.Timeout {
-  void runOnce(db);
+  safeTick('data-retention', () => runOnce(db));
   const timer = setInterval(() => {
-    void runOnce(db);
+    safeTick('data-retention', () => runOnce(db));
   }, RETENTION_INTERVAL_MS);
   // Don't hold the event loop open during shutdown — the onClose hook
   // clears the interval anyway, but unref() is belt-and-braces.

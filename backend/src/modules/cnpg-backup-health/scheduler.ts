@@ -32,6 +32,7 @@ import { notifyUsers } from '../notifications/service.js';
 import { resolveRecipients } from '../notifications/recipients.js';
 import { readBackupHealth, type ClusterBackupHealth, type BackupRecord } from './service.js';
 import type { Database } from '../../db/index.js';
+import { safeTick } from '../../shared/safe-tick.js';
 
 const RESOURCE_TYPE = 'cnpg_backup_failure';
 
@@ -61,10 +62,10 @@ export function startCnpgBackupHealthScheduler(
     info: (msg) => console.info(`[cnpg-backup-health] ${msg}`),
   };
 
-  void runTick(deps.db, deps.custom, log);
+  safeTick('cnpg-backup-health', () => runTick(deps.db, deps.custom, log), log);
 
   const timer = setInterval(() => {
-    void runTick(deps.db, deps.custom, log);
+    safeTick('cnpg-backup-health', () => runTick(deps.db, deps.custom, log), log);
   }, tickMs);
 
   return () => clearInterval(timer);
