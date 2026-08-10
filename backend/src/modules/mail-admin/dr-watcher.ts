@@ -21,6 +21,7 @@ import { eq, sql } from 'drizzle-orm';
 import { systemSettings } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { triggerRestoreBasedFailover } from './migration.js';
+import { safeTick } from '../../shared/safe-tick.js';
 
 const SETTINGS_ID = 'system';
 
@@ -56,9 +57,9 @@ export function startDrWatcher(deps: DrWatcherDeps): () => void {
 
   // Run one tick immediately on start to catch a degraded state that
   // persisted across a platform-api restart.
-  void runDrWatcherTick(deps);
+  safeTick('mail-dr-watcher', () => runDrWatcherTick(deps));
 
-  const timer = setInterval(() => void runDrWatcherTick(deps), tickMs);
+  const timer = setInterval(() => safeTick('mail-dr-watcher', () => runDrWatcherTick(deps)), tickMs);
   return () => clearInterval(timer);
 }
 

@@ -69,6 +69,7 @@ import { sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { JmapError } from '../stalwart-jmap/client.js';
+import { safeTick } from '../../shared/safe-tick.js';
 
 const log = mailLogger().child({ module: 'mail-admin-imap-concurrency' });
 
@@ -217,8 +218,8 @@ export function startImapConcurrencyReverter(
 ): () => void {
   // Run one tick immediately on start to converge from any stale
   // elevated state left over from a previous platform-api crash.
-  void runImapConcurrencyReverterTick(db, deps);
-  const timer = setInterval(() => void runImapConcurrencyReverterTick(db, deps), tickMs);
+  safeTick('imap-concurrency-reverter', () => runImapConcurrencyReverterTick(db, deps), log);
+  const timer = setInterval(() => safeTick('imap-concurrency-reverter', () => runImapConcurrencyReverterTick(db, deps), log), tickMs);
   timer.unref?.();
   return () => clearInterval(timer);
 }

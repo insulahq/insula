@@ -20,6 +20,7 @@ import { listHealthWatchedJobs, findNewFailures } from './service.js';
 import { severityToNotificationType } from './labels.js';
 import type { BackupJobMeta } from './service.js';
 import type { Database } from '../../db/index.js';
+import { safeTick } from '../../shared/safe-tick.js';
 
 const RESOURCE_TYPE_BACKUP_JOB = 'backup_job';
 
@@ -42,10 +43,10 @@ export function startBackupHealthScheduler(
     warn: (msg, err) => console.warn(`[backup-health] ${msg}`, err ?? ''),
   };
 
-  void runTick(deps.db, deps.batch, log);
+  safeTick('backup-health', () => runTick(deps.db, deps.batch, log), log);
 
   const timer = setInterval(() => {
-    void runTick(deps.db, deps.batch, log);
+    safeTick('backup-health', () => runTick(deps.db, deps.batch, log), log);
   }, tickMs);
 
   return () => clearInterval(timer);
