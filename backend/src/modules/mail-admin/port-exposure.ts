@@ -186,14 +186,17 @@ export async function getMailPortExposure(
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
 
-  // Default to allServerNodes (Phase 2 streamline, 2026-05-15). Matches
-  // the schema column default. Legacy 'thisNodeOnly' values from
-  // pre-0034 DBs are normalised by migration 0034; defensive
+  // Default to activeNodeOnly (2026-08-10). Matches the schema column default,
+  // and it is the only mode legal on EVERY topology — `allServerNodes` and
+  // `assignedMailNodes` both require >=2 server nodes, so defaulting to one of
+  // them made a single-node install report a mode the API itself refuses to set
+  // and that no haproxy DaemonSet was ever created for. Legacy 'thisNodeOnly'
+  // values from pre-0034 DBs are normalised by migration 0034; defensive
   // re-mapping here covers any older runtime path.
   const stored = row?.v;
   const mode: MailPortExposureMode = stored === 'thisNodeOnly'
     ? 'activeNodeOnly'
-    : ((stored as MailPortExposureMode | null) ?? 'allServerNodes');
+    : ((stored as MailPortExposureMode | null) ?? 'activeNodeOnly');
 
   let daemonSetStatus: { ready: number; desired: number } | null = null;
   try {
@@ -402,7 +405,7 @@ export async function ensureMailPortExposureApplied(
   const [row] = await db.select({ v: systemSettings.mailPortExposureMode })
     .from(systemSettings)
     .where(eq(systemSettings.id, SETTINGS_ID));
-  const mode = (row?.v as MailPortExposureMode | null) ?? 'allServerNodes';
+  const mode = (row?.v as MailPortExposureMode | null) ?? 'activeNodeOnly';
   await applyModeToCluster(mode, opts, undefined, db);
 }
 

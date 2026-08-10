@@ -516,6 +516,28 @@ describe('mail-admin/port-exposure.getMailPortExposure', () => {
     expect(r.proxyProtocolActive).toBe(false);
     expect(r.daemonSetStatus).toBeNull();
   });
+
+  // Regression (2026-08-10): the default used to be `allServerNodes`, which
+  // requires >= 2 server nodes and which the API itself REFUSES below that
+  // ("Mail HA-Proxy requires 2 or more server nodes"). Every install starts as
+  // a single node, so a fresh cluster stored a mode it could never realise —
+  // no haproxy DaemonSet was created, and once anything moved the value to a
+  // legal mode it could never be set back. The default must be the one mode
+  // that is valid on EVERY topology.
+  it('defaults to activeNodeOnly when nothing is stored — the only mode legal on a single node', async () => {
+    mockReadDs.mockRejectedValue(notFoundError());
+    const db = {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([]),   // no row at all
+        })),
+      })),
+    } as unknown as import('../../db/index.js').Database;
+    const { getMailPortExposure } = await import('./port-exposure.js');
+    const r = await getMailPortExposure(db, { kubeconfigPath: undefined });
+    expect(r.mode).toBe('activeNodeOnly');
+    expect(r.proxyProtocolActive).toBe(false);
+  });
 });
 
 // ─── PVC-derived active node (fresh-multi-node haproxy deadlock fix) ──
