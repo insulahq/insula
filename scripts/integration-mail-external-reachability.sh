@@ -660,11 +660,30 @@ ACTIVE_IP=$(echo "${NODE_LINES[*]}" | tr ' ' '\n' | awk -F'\t' -v a="$ACTIVE" '$
 # the active node is up). When active=server, only the server nodes
 # answer (worker has no data-plane role).
 hdr "PHASE 1: allServerNodes mode — server-role nodes serve mail; worker too IF it's the active node"
+# A MODE CHANGE IS ONLY TESTABLE ON A MULTI-NODE CLUSTER. `allServerNodes` runs
+# the haproxy DaemonSet and the API refuses it below two server nodes:
+#   400 MAIL_PORT_EXPOSURE_MODE_REFUSED "Mail HA-Proxy requires 2 or more server nodes."
+# Attempting it anyway on a single node meant the PATCH was rejected while its
+# response went to /dev/null, so the phase then probed "allServerNodes
+# behaviour" against a cluster still in the previous mode — asserting semantics
+# that were never applied. Since 2026-08-10 `activeNodeOnly` is also the
+# bootstrap default, so on a single node there is no transition here to observe
+# at all.
+SERVER_NODE_COUNT=$(printf '%s' "$SERVER_IPS" | wc -w | tr -d ' ')
+if [ "${SERVER_NODE_COUNT:-0}" -lt 2 ]; then
+  amber "PHASE 1 SKIPPED — ${SERVER_NODE_COUNT} server-role node(s); allServerNodes needs >=2 and the API refuses it below that."
+  amber "  A mode change is only observable on a multi-node cluster. Phase 2 below still asserts the"
+  amber "  activeNodeOnly data plane, which is this cluster's real (and default) configuration."
+else
 # Re-clear before every probing phase: reason=portScanning can re-trigger
 # mid-run, and one silent re-ban turns the rest of the suite into a wall of
 # false 'closed' results.
 unblock_prober
-api_patch '{"mode":"allServerNodes"}' >/dev/null
+# Capture the response — a refused mode change must be visible, not silent.
+PATCH_OUT=$(api_patch '{"mode":"allServerNodes"}' 2>&1)
+if printf '%s' "$PATCH_OUT" | grep -q 'MAIL_PORT_EXPOSURE_MODE_REFUSED'; then
+  red "  mode change to allServerNodes REFUSED by the API: $(printf '%s' "$PATCH_OUT" | head -c 200)"
+fi
 amber "  waiting for haproxy DS to come up + Stalwart hostPorts (always-on post-hairpin-fix) + externalIPs to converge…"
 wait_for_haproxy_ds present || { red "  haproxy DS didn't come up in 120s"; }
 # Post-hairpin-fix: Stalwart hostPort is ALWAYS bound on the active node.
@@ -694,6 +713,7 @@ if [ $fail_count -eq 0 ]; then
 else
   red "PHASE 1 FAIL — $fail_count nodes had unexpected reachability"
 fi
+fi   # end multi-node gate for PHASE 1
 
 # ── PHASE 2: activeNodeOnly mode — only active node's IP should answer ────
 hdr "PHASE 2: activeNodeOnly mode — only the active node ($ACTIVE) should answer mail ports"

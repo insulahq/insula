@@ -2747,11 +2747,17 @@ export const systemSettings = pgTable('system_settings', {
   //   automatically once mailFailoverThresholdSeconds have elapsed without a healthy pod.
   // mailFailoverThresholdSeconds: seconds of pod unavailability before auto-failover.
   // mailLastFailoverAt: timestamp of last failover action (manual or automatic).
-  // mailPortExposureMode: default 'allServerNodes' since the Phase 2 streamline
-  //   (2026-05-15). The haproxy DaemonSet (PROXY-v2) is the production-ready
-  //   path. 'thisNodeOnly' (Stalwart hostPort on the active node only) remains
-  //   supported via the admin API for debugging single-node installs but is no
-  //   longer surfaced in the operator UI by default.
+  // mailPortExposureMode: default 'activeNodeOnly' (2026-08-10). The haproxy
+  //   DaemonSet (PROXY-v2) remains the production-ready HA path and is what an
+  //   operator moves to once the cluster has >=2 server nodes — but it CANNOT
+  //   be the bootstrap default, because it is not a legal mode on the cluster
+  //   every install starts as. `allServerNodes` requires >=2 server nodes and
+  //   the API refuses it below that ("Mail HA-Proxy requires 2 or more server
+  //   nodes"), so a single-node install stored a mode it could never realise:
+  //   no haproxy DaemonSet was ever created, and once anything moved the value
+  //   to a legal one it could never be set back. Defaulting to the mode that is
+  //   valid on every topology makes the stored value describe reality from the
+  //   first boot; scaling to multi-node is an explicit operator action.
   // mailDatastorePvcSizeGi: requested size (Gi) for the mail-stack-data PVC (A2.5; legacy stalwart-rocksdb-data).
   mailPrimaryNode: varchar('mail_primary_node', { length: 253 }),
   mailSecondaryNode: varchar('mail_secondary_node', { length: 253 }),
@@ -2761,7 +2767,7 @@ export const systemSettings = pgTable('system_settings', {
   mailAutoFailoverEnabled: boolean('mail_auto_failover_enabled').notNull().default(false),
   mailFailoverThresholdSeconds: integer('mail_failover_threshold_seconds').notNull().default(300),
   mailLastFailoverAt: timestamp('mail_last_failover_at', { withTimezone: true }),
-  mailPortExposureMode: varchar('mail_port_exposure_mode', { length: 32 }).notNull().default('allServerNodes'),
+  mailPortExposureMode: varchar('mail_port_exposure_mode', { length: 32 }).notNull().default('activeNodeOnly'),
   mailDatastorePvcSizeGi: integer('mail_datastore_pvc_size_gi').notNull().default(20),
   // 0107: mail archive scheduler (minimum-viable fixed-interval cron).
   // mailArchiveScheduleInterval: 'off' | 'hourly' | 'daily' | 'weekly' — fires
