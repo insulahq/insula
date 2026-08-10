@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.7] - 2026-08-10
+
 ### Fixed
 - **A scheduler tick could still kill platform-api on a DB blip.** Third path to
   the same outcome, and the one that survived the pg-boss / `pg.Pool` fix: ticks
