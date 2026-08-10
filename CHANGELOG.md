@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A scheduler tick could still kill platform-api on a DB blip.** Third path to
+  the same outcome, and the one that survived the pg-boss / `pg.Pool` fix: ticks
+  were launched as `void runTick(...)`, and the `void` operator DISCARDS the
+  promise, so a rejection inside had no handler and Node terminated the process.
+  Not covered by the `'error'` listeners — those catch emitted EventEmitter
+  events, this is an unhandled rejection, and auditing for one does not find the
+  other. The tick was not unguarded either: it wrapped its Kubernetes read in
+  try/catch, and the DB query further down is what rejected. Six periodic
+  schedulers now run through `shared/safe-tick.ts`, which also catches a tick
+  that throws synchronously (where no promise exists and a bare `.catch()` would
+  miss it). Consequence beyond the crash: schedulers own in-process work, so a
+  mid-flight death strands rows only that process would have finalised — this is
+  why a COMPLETED PITR left no task chip.
+- **Mail port exposure now defaults to `activeNodeOnly`.** `allServerNodes` runs
+  the HAProxy DaemonSet and requires ≥2 server nodes; the API refuses it below
+  that. Every install starts as a single node, so the old default stored a mode
+  the cluster could never realise — no HAProxy DaemonSet was ever created — and
+  it was a one-way door: once anything moved the value to a legal mode, nothing
+  could set it back. Migration 0081 changes the column DEFAULT only; existing
+  rows are deliberately untouched, because mail port exposure is live
+  operator-visible configuration and a migration must not silently re-point it.
+
 ### Security
 - **Runtime-resolved Job images now pin by digest — `rocksdb-secondary-checkpoint`
   first.** The mail-archive checkpoint binary resolved as
