@@ -3461,6 +3461,37 @@ scenario_mail_tls() {
   _assert_mail_reverse_dns
   _assert_mail_not_blacklisted
 
+  # ── 0b. WAIT for the ACME cert before asserting on it. ──
+  #
+  # Stalwart's cert is EVENTUALLY consistent: bootstrap polls ~80s, gives up with
+  # an advisory warning, and leaves the stalwart-domain reconciler to finish the
+  # order on its own tick. Asserting once, immediately, therefore fails on every
+  # freshly bootstrapped cluster while nothing is actually wrong — measured
+  # 2026-08-09: 11 of staging-all's 109 assertions, all of them this cert, on a
+  # cluster whose real LE cert was serving ~20 minutes later with no
+  # intervention at all.
+  #
+  # Advisory: a timeout here does NOT fail or skip. It logs and lets the
+  # assertions below run and report exactly what they see, so a cert that is
+  # genuinely never issued still surfaces as the failure it is.
+  local _cert_wait="${MAIL_TLS_CERT_WAIT_S:-600}"
+  local _cert_deadline=$(( SECONDS + _cert_wait ))
+  local _cert_seen=0
+  log "mail-tls: waiting up to ${_cert_wait}s for a CA-issued cert on ${mail_hostname} (ACME is async after bootstrap)"
+  while (( SECONDS < _cert_deadline )); do
+    if _probe_tls_handshake "$mail_host" 465 "$mail_hostname" 2>/dev/null \
+       | grep -qE "Let's Encrypt|R10|R11|E5|E6|E7|E8"; then
+      _cert_seen=1
+      break
+    fi
+    sleep 15
+  done
+  if (( _cert_seen )); then
+    log "mail-tls: CA-issued cert present — proceeding with the port assertions"
+  else
+    warn "mail-tls: no CA-issued cert after ${_cert_wait}s — asserting anyway so the real state is reported"
+  fi
+
   # ── 1. TLS handshake on each implicit-TLS port — must serve LE
   #       cert (not rcgen self-signed) AND cover the expected hostname
   #       (subject CN or SAN). The CN/SAN match catches the case where
