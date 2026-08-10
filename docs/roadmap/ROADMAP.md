@@ -24,7 +24,7 @@
 | [R10](#r10--bulwark-deferred-work) | Bulwark deferred work (phases 7–8) | P3 | Deferred by decision |
 | [R11](#r11--security-hardening-phase-2) | Security-hardening Phase 2 (+ Trivy revisit) | P2 | Shipped — K8s posture + auth tabs + NetworkPolicy bulk-apply + operator→trusted-range bridge (2026-06-18) + upstream-image Trivy CVE scan (CI, 2026-06-20); only in-cluster Trivy UI deferred |
 | [R12](#r12--service-to-service-mtls) | Service-to-service mTLS | P3 | NetworkPolicy-only today |
-| [R13](#r13--ipv6-completion) | IPv6 completion | P3 | Shipped 2026-08-04 — opt-in `--dual-stack` (cluster CIDRs, node-ip, Calico v6 pool, ingress + mail v6). **Serving IPv6 is DONE**: proven 2026-08-08 that a v6-only client fetches a tenant site while the internal plane stays SingleStack IPv4. Remaining items (globally-routable pods, `::` binding) are end-to-end-v6 purity, not serving; outbound mail over v6 still gated on operator PTR |
+| [R13](#r13--ipv6-completion) | IPv6 completion | P3 | ✅ **CLOSED 2026-08-10** — serving IPv6 is done and re-proven on a from-scratch dual-stack install (smoke 29/0 over both families, integration-all 43/0/2). Residual end-to-end-v6 *purity* work moved to [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6); the `V6ThenV4` flip is an operator reputation decision, not tracked work |
 | [R14](#r14--user-manual-website) | User-manual website | P2 | Shipped — live at insulahq.github.io |
 | [R15](#r15--component-cve--version-watch) | Component CVE & version watch | P2 | Shipped (ADR-050) — ongoing operation |
 | [R16](#r16--decouple-ingress_domain-from-platform_domain--turnkey-apex-rename) | Decouple ingress/platform domain + apex rename | P2 | Shipped (2026-06-13/14) — §3e DNS automation + live per-worker tunnel subdomains residual |
@@ -38,6 +38,7 @@
 | [R24](#r24--proxy-protocol-support-for-cloud-load-balancers) | PROXY-protocol support for cloud (SNAT) load balancers | P2 | Proposed 2026-07-26 — real client IP is lost behind a SNAT-ing cloud LB (neither Traefik nor HAProxy accept inbound PROXY protocol); today needs a source-preserving L4-passthrough LB or DNS multi-A |
 | [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
+| [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
 
 ---
 
@@ -365,40 +366,35 @@ Traced end to end on the dual-stack DEV cluster with a real tenant workload
 
 So "keep IPv4 for internal routing, serve the public surface over v6" is not a
 compromise to be replaced later — it is the shipped design, and it satisfies the
-requirement. The two items below are about end-to-end v6 *purity*, not about
-serving IPv6, and neither blocks the customer-facing promise:
+requirement.
 
-- **Globally-routable pod addressing** — buys: no NAT66, and a per-pod outbound
-  source address. Today every tenant's outbound v6 NATs to the node's single
-  global v6, which is exactly what IPv4 already does, so this changes nothing an
-  operator or tenant can observe short of per-tenant v6 reputation. Needs a
-  delegated prefix from the provider. Low priority.
-- **Catalog/runtime images binding `::`** — INERT while tenant Services stay
-  SingleStack IPv4. It only becomes load-bearing if we ever make them dual-stack,
-  and it should be done *then*, together, or it is untested surface. (Verified for
-  nginx-php only; other images unaudited, deliberately — there is nothing to fix
-  until the Services change.)
-- ~~Outbound mail over IPv6 is deliberately NOT enabled~~ — **corrected
-  2026-08-08: outbound IPv6 is already active, and nothing gates it.** Measured
-  on the dual-stack cluster: a major receiver accepted an SMTP connection from
-  the node's global v6 and echoed it back (`250-… at your service,
-  [2a01:…:a0f5::1]`). The live Stalwart config carries no `ip-strategy`,
-  `source-ip` or `queue.outbound` key at all, so it runs on its default — and
-  that default is `V4ThenV6` (`MtaIpStrategy::V4ThenV6` is the `#[default]`
-  variant in Stalwart's source). So IPv4 wins for any destination that has an A
-  record, and IPv6 is used as the fallback for destinations that do not. It is
-  enabled and working, just rarely exercised.
-  PTR is EXTERNAL configuration (the IP's network provider) and equally so for
-  IPv4 — it is now reported per-address in the mail health card for BOTH
-  families and never gates sending. Deliberately still open: flipping the
-  strategy to `V6ThenV4` to make IPv6 the preferred path, which is a
-  reputation decision for the operator, not a defect.
-- The single-stack **multi-node** control run for `mail-external-reachability`.
-  The dual-stack run is now clean (2026-08-06, run `6e9e214b`): every port
-  probe, SMTP banner, negative expectation and the mode-switch refusal pass on
-  all four nodes across all four phases, and `BlockedIp` is EMPTY at the end —
-  the prober is never banned, which was the entire cause of the historical
-  failures. The single-stack variant is still worth running as a control.
+**CLOSED 2026-08-10.** Re-proven from scratch after the install path was found
+BROKEN: `--dual-stack` bootstrap died at "Installing Traefik v3" because
+`externalTrafficPolicy` was being set on a ClusterIP Service with no
+`externalIPs` yet — a regression introduced AFTER R13 was marked shipped on
+08-04, invisible to every test because only a FIRST install reaches it. Fixed
+and guarded by `scripts/ci-service-etp-check.sh` (both directions). A wipe +
+re-bootstrap then produced a clean first install, and:
+
+- `make smoke` **29 PASS / 0 FAIL**, with admin, tenant and dex each passing over
+  **both** families — the smoke matrix previously probed only one, because a
+  dual-stack node's two addresses were space-joined into a single malformed
+  `--resolve`.
+- Full `integration-all.sh` **43 passed / 0 failed / 2 skipped**, the two skips
+  being multi-node-only suites that still assert their single-node guards.
+- Mail serves on 25/465/587/143/993/4190 with a real Let's Encrypt certificate;
+  reverse DNS is graded per family (a missing IPv4 PTR fails the primary send
+  path, a missing IPv6 PTR warns — mail still leaves over IPv4).
+
+The remaining items are **end-to-end v6 purity, not serving**, and are tracked
+together in [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) because
+neither is actionable alone: globally-routable pod addressing and catalog images
+binding `::` only become load-bearing if tenant Services stop being SingleStack
+IPv4, and doing either before that creates untested surface.
+
+Not tracked as work: flipping Stalwart's `MtaIpStrategy` to `V6ThenV4`. Outbound
+IPv6 already works (the default `V4ThenV6` uses it as the fallback); making it
+*preferred* is a deliverability/reputation decision for the operator.
 
 **The VM tier points Stalwart's ACME at PRODUCTION Let's Encrypt, and burns its
 rate limits** (found 2026-08-06 on run `6e9e214b`).
@@ -1034,3 +1030,34 @@ is what actually establishes trust, but it is a change to the install path's
 trust anchor and should be an explicit operator decision rather than a silent
 refactor. A CI freshness check (warn when the tag's installer digest differs
 from the pin) is the alternative if the host change is unwanted.
+
+## R27 — Dual-stack tenant Services (end-to-end IPv6)
+
+**Proposed 2026-08-10.** The residual carved out of
+[R13](#r13--ipv6-completion) when that closed. Nothing here is required to SERVE
+IPv6 — that is shipped and proven. This is end-to-end v6 *purity*: removing the
+NAT hop, so a tenant pod has a globally-routable v6 address of its own.
+
+Two items, deliberately tracked as ONE because neither is actionable alone and
+either one shipped without the other is untested surface:
+
+- **Globally-routable pod addressing.** Today pods get ULA + `natOutgoing`,
+  mirroring the IPv4 model: clients talk to the node's global v6 and CNI portmap
+  DNATs hostPort down to the pod. Buys: no NAT66 and a per-pod outbound source
+  address. Changes nothing an operator or tenant can observe today, since every
+  tenant's outbound v6 NATs to the node's single global v6 — exactly what IPv4
+  already does. **Needs a delegated prefix from the provider**, which is why it
+  is not simply a config change.
+- **Catalog/runtime images binding `::`.** INERT while tenant Services are
+  `ipFamilies: [IPv4] SingleStack` — the ingress→workload hop is IPv4 by
+  construction, so nothing dials a pod over v6. Verified for `nginx-php` (which
+  already binds `::`); other images deliberately unaudited, because there is
+  nothing to fix until the Services change.
+
+**Trigger:** only start this when tenant Services are to become dual-stack. Doing
+it before then audits and changes images against a path no traffic takes.
+
+**Explicitly NOT in scope:** flipping Stalwart's `MtaIpStrategy` to `V6ThenV4`.
+Outbound IPv6 already works — the default `V4ThenV6` uses it as the fallback for
+destinations with no A record. Making IPv6 the *preferred* egress path is a
+deliverability/reputation decision for the operator, not engineering work.
