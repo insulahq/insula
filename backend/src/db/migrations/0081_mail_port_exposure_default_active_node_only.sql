@@ -1,0 +1,21 @@
+-- 0081: mail port-exposure defaults to activeNodeOnly for NEW installs.
+--
+-- `allServerNodes` (haproxy DaemonSet, PROXY-v2) requires >= 2 server nodes —
+-- the API refuses it below that with MAIL_PORT_EXPOSURE_MODE_REFUSED, "Mail
+-- HA-Proxy requires 2 or more server nodes". Every install starts as a single
+-- node, so the old default stored a mode the cluster could never realise: no
+-- haproxy DaemonSet was created, and once anything moved the value to a legal
+-- mode it could never be set back. Observed on a fresh dual-stack DEV install
+-- 2026-08-09.
+--
+-- activeNodeOnly is legal on every topology, so the stored value describes
+-- reality from the first boot. Moving to the HA path stays an explicit operator
+-- action once the cluster actually has the nodes for it.
+--
+-- DEFAULT ONLY — existing rows are deliberately left alone. Mail port exposure
+-- is live, operator-visible configuration on a running cluster; a migration must
+-- not silently re-point it. An existing single-node cluster still carrying the
+-- unrealisable `allServerNodes` keeps it (it was already inert there) until an
+-- operator changes it.
+ALTER TABLE system_settings
+  ALTER COLUMN mail_port_exposure_mode SET DEFAULT 'activeNodeOnly';

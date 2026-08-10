@@ -36,6 +36,7 @@
  */
 
 import { readStalwartCredentials } from './credentials.js';
+import { safeTick } from '../../shared/safe-tick.js';
 
 type CoreV1Api = import('@kubernetes/client-node').CoreV1Api;
 
@@ -110,8 +111,8 @@ export function startProxyNetworksReconciler(
   const tickMs = deps.tickMs ?? PROXY_NETWORKS_RECONCILER_TICK_MS;
   // Run one tick immediately on start to fix drift left over from a
   // platform-api restart.
-  void runProxyNetworksReconcilerTick(deps);
-  const timer = setInterval(() => void runProxyNetworksReconcilerTick(deps), tickMs);
+  safeTick('proxy-networks-reconciler', () => runProxyNetworksReconcilerTick(deps));
+  const timer = setInterval(() => safeTick('proxy-networks-reconciler', () => runProxyNetworksReconcilerTick(deps)), tickMs);
   return () => clearInterval(timer);
 }
 
