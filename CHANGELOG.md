@@ -13,6 +13,28 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Ingress addresses are now discovered from live cluster state.**
+  `ingress_default_ipv4/ipv6` were operator-set and nothing kept them current,
+  so adding an ingress-capable node updated Traefik's `externalIPs` (the
+  `ingress-external-ips` CronJob already did that) while the DNS side silently
+  kept the old set. A reconciler now lists nodes every 5 minutes — the same
+  cadence and the *same* eligibility filter as that CronJob (Ready, has an
+  ExternalIP, `ingress-mode != none`, `exposure != private`, missing labels
+  meaning "include") — and records the result in `ingress_discovered_ipv4/ipv6`.
+  Two deliberate constraints: it writes only the **discovered** keys, never the
+  operator's, because an operator may point apexes at a load-balancer VIP that
+  is no node's ExternalIP and a reconciler owning one key would undo that every
+  tick; and it **refuses to publish an empty set**, so a transient API read or a
+  cluster mid-upgrade cannot blank the addresses and make every apex look like
+  it drifted to zero. Resolution order is override → discovered → env →
+  `127.0.0.1`, and the effective source is surfaced in the drift report so
+  "why is my apex pointing there?" is answerable from the UI.
+  Clearing an override field now genuinely clears it, handing the field back to
+  discovery — previously a saved value could never be un-set, and because the
+  form is pre-filled with the effective address, saving an unrelated field would
+  have frozen whatever was discovered at that moment into a permanent override.
+  This still never writes tenant DNS: apex repair remains operator-invoked and
+  additive.
 - **Apex DNS drift detection and additive repair.** A tenant apex cannot CNAME
   into the ingress chain (CNAME is illegal at a zone apex), so its A/AAAA are
   *copies* of the cluster's ingress addresses living in the tenant zone. Add an
