@@ -58,6 +58,66 @@ function fakeDeps(over: Partial<Deps> = {}, drOver: Partial<Deps['dr']> = {}): {
 }
 
 // ── parseDrArgs ──────────────────────────────────────────────────────────────
+/**
+ * Regression (2026-08-11): `insula dr restore --help` answered
+ *
+ *     dr restore: unknown argument '--help'      (exit 2)
+ *
+ * because --help fell through to the same parser that validates --bundle. This
+ * file's header states the argv surface "mirrors that shim so operators carry
+ * no new muscle memory", and the shim it replaced
+ * (scripts/dr-restore-bundle.sh → dr-restore-runner.ts) DOES accept --help. It
+ * is also the one command an operator reaches for mid-incident.
+ */
+describe('parseDrArgs --help', () => {
+  it('returns subcommand help for `dr restore --help` instead of a usage error', () => {
+    const r = parseDrArgs(['restore', '--help']);
+    expect(r.ok).toBe(true);
+    if (!r.ok || r.sub !== 'help') throw new Error('expected help');
+    expect(r.text).toContain('--mode partial|full');
+    // The assertion the integration suite makes: both modes documented.
+    expect(r.text).toMatch(/partial/);
+    expect(r.text).toMatch(/full/);
+  });
+
+  it('does NOT report a missing --bundle when --help is asked for', () => {
+    const r = parseDrArgs(['restore', '--help']);
+    if (r.ok) return;
+    throw new Error(`--help produced a usage error: ${r.message}`);
+  });
+
+  it('documents the full-mode safety flags, which is why an operator asks', () => {
+    const r = parseDrArgs(['restore', '--help']);
+    if (!r.ok || r.sub !== 'help') throw new Error('expected help');
+    expect(r.text).toContain('--target-mail-node');
+    expect(r.text).toContain('--confirm-cluster');
+  });
+
+  it('supports -h and every subcommand', () => {
+    for (const sub of ['verify', 'restore', 'rescue', 'tenant-restore']) {
+      const r = parseDrArgs([sub, '-h']);
+      expect(r.ok, `${sub} -h`).toBe(true);
+      if (!r.ok || r.sub !== 'help') throw new Error(`expected help for ${sub}`);
+      expect(r.text).toContain(`insula dr ${sub}`);
+    }
+  });
+
+  it('falls back to the general help for a bare `dr --help`', () => {
+    const r = parseDrArgs(['--help']);
+    if (!r.ok || r.sub !== 'help') throw new Error('expected help');
+    expect(r.text).toContain('verify');
+    expect(r.text).toContain('tenant-restore');
+  });
+
+  it('still rejects a genuinely unknown argument — help must not swallow errors', () => {
+    const r = parseDrArgs(['restore', '--bundle', '/b', '--age-key', '/k', '--mode', 'partial', '--bogus']);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected a usage error');
+    expect(r.code).toBe(2);
+    expect(r.message).toContain('--bogus');
+  });
+});
+
 describe('parseDrArgs', () => {
   it('rejects a missing subcommand', () => {
     const r = parseDrArgs([]);
