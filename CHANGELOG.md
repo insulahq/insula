@@ -13,6 +13,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Worker nodes could never take a prerelease, so host-migrations in an RC
+  silently never reached them.** `self-upgrade` reads the `platform-version`
+  ConfigMap to learn the cluster's pinned version; on a k3s AGENT that read
+  always failed, so it fell back to the "newest stable GitHub Release" path,
+  which by construction cannot select an RC. Observed on staging: the worker
+  sat on 2026.8.2 with no pod-CIDR `:53` firewall rule while all three
+  control-plane nodes had rc.8 and the migration applied — host state diverged
+  for the whole life of every RC, which meant nothing host-side was really
+  validated before a stable cut. Two halves were broken and either alone still
+  fails: the code hardcoded the control-plane-only `/etc/rancher/k3s/k3s.yaml`
+  (agents don't have it, and the in-cluster fallback needs a ServiceAccount
+  token a host process has no mount for), and the scoped worker kubeconfig had
+  no RBAC for that ConfigMap — the existing Role is namespaced to
+  `platform-system` while `platform-version` lives in `platform`. Resolution now
+  goes through the same helper the host-config converger uses, and a second
+  name-scoped Role grants `get` on that one ConfigMap (no list, no write,
+  nothing else). An already-stuck worker still needs one explicit
+  `insula self-upgrade --version <ver>` to cross over, since the fix ships in
+  the binary it can't yet fetch.
+
+### Fixed
 - **Enabling email on a customer-managed (`cname`/`secondary`) domain reported
   four green provisioning ticks while nothing had been published.** The mail
   records were always written to `dns_records` — that part was right, and is
