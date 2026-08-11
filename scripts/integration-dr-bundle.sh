@@ -290,7 +290,21 @@ G_SSH=(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=
 g_node() { "${G_SSH[@]}" "$SSH_HOST" "$@"; }
 # psql runs INSIDE the CNPG pod (the node has no psql client). -U postgres is
 # peer-trusted there, which is also how the throwaway database gets created.
-g_psql() { g_node "kubectl -n platform exec -i system-db-1 -c postgres -- psql -U postgres -v ON_ERROR_STOP=1 $*"; }
+# Resolve the CNPG PRIMARY rather than assuming system-db-1. With the default
+# instances:1 they are the same pod, but after an HA scale-up (or a failover)
+# system-db-1 can be a read-only replica — CREATE DATABASE then fails with
+# "cannot execute CREATE DATABASE in a read-only transaction", which would look
+# like a DR defect rather than a harness assumption. Both label schemes are
+# checked: cnpg.io/instanceRole is current, role= is the legacy one.
+g_primary() {
+  local p
+  for sel in 'cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary' 'cnpg.io/cluster=system-db,role=primary'; do
+    p=$(g_node "kubectl -n platform get pods -l '$sel' -o jsonpath='{.items[0].metadata.name}'" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$p" ]] && { printf '%s' "$p"; return 0; }
+  done
+  printf 'system-db-1'   # last resort: the single-instance name
+}
+g_psql() { g_node "kubectl -n platform exec -i ${G_PGPOD:-system-db-1} -c postgres -- psql -U postgres -v ON_ERROR_STOP=1 $*"; }
 # Row count in the THROWAWAY database. Every Phase G assertion below is made
 # against real database state rather than against what the CLI says it did.
 g_count() { g_psql "-d '$G_DB' -tAc 'SELECT COUNT(*) FROM $1'" 2>/dev/null | tr -d '[:space:]'; }
@@ -305,6 +319,8 @@ elif [[ -z "${OPS_BIN_G:=$(for c in /usr/local/bin/insula /usr/local/bin/platfor
 else
   # Unique, obviously-disposable name. Asserted below so a bug in this block can
   # never point the restore at the live `platform` database.
+  G_PGPOD=$(g_primary)
+  echo "  CNPG primary: $G_PGPOD"
   G_DB="dr_verify_$(date +%s)_$$"
   case "$G_DB" in platform|postgres|template*) echo "  (skip G: refusing unsafe db name $G_DB)"; G_DB=""; esac
 fi
@@ -331,7 +347,7 @@ if [[ -n "${G_DB:-}" ]]; then
     # schema the platform ACTUALLY runs rather than a replay of migrations.
     # Both ends run inside the pod: no schema crosses the network.
     G_SCHEMA_FAIL=0
-    G_SCHEMA_ERR=$(g_node "kubectl -n platform exec -i system-db-1 -c postgres -- \
+    G_SCHEMA_ERR=$(g_node "kubectl -n platform exec -i $G_PGPOD -c postgres -- \
         sh -c \"pg_dump -U postgres --schema-only --no-owner --no-privileges platform \
                  | psql -U postgres -v ON_ERROR_STOP=1 -q -d '$G_DB'\"" 2>&1) || G_SCHEMA_FAIL=1
     if [[ $G_SCHEMA_FAIL -ne 0 ]]; then
