@@ -13,6 +13,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The host firewall blocked CoreDNS from reaching the node's own resolver,
+  breaking ALL pod DNS.** The input chain exempted the pod CIDR for the
+  control-plane ports but never for `:53`. That is dormant while the node's
+  `/etc/resolv.conf` lists real upstreams — but a mesh client can own that file:
+  NetBird rewrites it to its OWN interface address on hosts with neither
+  `resolvconf` nor `systemd-resolved` to integrate with (where either is present
+  it only appends its search domain and leaves the nameservers alone, which is
+  why most nodes never saw this). CoreDNS runs `dnsPolicy: Default` and forwards
+  what it cannot answer to that file, so its upstream queries arrived at INPUT
+  with a POD source IP and fell through to the catch-all drop.
+  The failure is total rather than slow: pods also inherit the mesh search
+  domain, so any in-pod `getaddrinfo` for a name with fewer dots than `ndots`
+  tries `<name>.<mesh-domain>` FIRST, that query blackholes, and glibc aborts the
+  whole search with `EAI_AGAIN` — it walks past NXDOMAIN, but not past a
+  timeout. platform-api then crashlooped in `wait-for-db` (3s connect timeout,
+  240s budget) against a perfectly healthy Postgres, which is what the incident
+  looked like from the outside.
+  Latent by construction: `resolv.conf` is snapshotted into a pod at CREATION,
+  so already-running CoreDNS pods keep the pre-mesh upstream and the cluster
+  stays healthy until something recreates them — a k3s restart re-applying its
+  packaged `coredns.yaml` is enough, and is what finally detonated it days after
+  the mesh was installed. Host-migration `0003-pod-cidr-dns-firewall` backfills
+  existing clusters; it derives the pod CIDR from the node's own ruleset rather
+  than assuming the default, and inserts BEFORE the catch-all drop (an appended
+  accept is unreachable).
 - **A scheduler tick could still kill platform-api on a DB blip.** Third path to
   the same outcome, and the one that survived the pg-boss / `pg.Pool` fix: ticks
   were launched as `void runTick(...)`, and the `void` operator DISCARDS the
