@@ -6,6 +6,10 @@ import {
   useDnsProviderGroups, useCreateDnsProviderGroup, useUpdateDnsProviderGroup, useDeleteDnsProviderGroup,
   type DnsServer, type DnsProviderGroup,
 } from '@/hooks/use-dns-servers';
+import { useDnsApexDriftReport, useScanDnsApexDrift } from '@/hooks/use-dns-apex-drift';
+import DnsApexDriftBanner from '@/components/DnsApexDriftBanner';
+import DnsApexDriftModal from '@/components/DnsApexDriftModal';
+import DnsApexDriftTaskModal from '@/components/DnsApexDriftTaskModal';
 
 const INPUT_CLASS = 'mt-1 w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2.5 text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
@@ -35,6 +39,15 @@ export default function DnsServers() {
   const groups = groupsResponse?.data ?? [];
   const [showAdd, setShowAdd] = useState(false);
 
+  // Apex drift: the report read is cheap and never touches a provider; the
+  // scan is explicit. Detection never repairs — the fix is a separate,
+  // operator-confirmed action that runs under the task center.
+  const { data: driftResponse } = useDnsApexDriftReport();
+  const scanDrift = useScanDnsApexDrift();
+  const [showDrift, setShowDrift] = useState(false);
+  const [driftTaskId, setDriftTaskId] = useState<string | null>(null);
+  const driftReport = driftResponse?.data ?? null;
+
   if (isLoading || groupsLoading) return <div className="flex items-center justify-center py-20"><Loader2 size={24} className="animate-spin text-brand-500" /></div>;
 
   return (
@@ -45,7 +58,47 @@ export default function DnsServers() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">DNS Providers</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">Manage DNS provider groups and servers for domain provisioning.</p>
         </div>
+        <div className="ml-auto flex items-center gap-2">
+          {driftReport && (
+            <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="dns-apex-drift-last-scan">
+              Drift scan: {new Date(driftReport.scannedAt).toLocaleString()}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => scanDrift.mutate(undefined, { onSuccess: () => setShowDrift(true) })}
+            disabled={scanDrift.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-700/50"
+            data-testid="dns-apex-drift-scan-button"
+          >
+            {scanDrift.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            Scan for drift
+          </button>
+          {driftReport && (
+            <button
+              type="button"
+              onClick={() => setShowDrift(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-700/50"
+              data-testid="dns-apex-drift-open-report"
+            >
+              View report
+            </button>
+          )}
+        </div>
       </div>
+
+      <DnsApexDriftBanner report={driftReport} onReview={() => setShowDrift(true)} />
+
+      {showDrift && driftReport && (
+        <DnsApexDriftModal
+          report={driftReport}
+          onClose={() => setShowDrift(false)}
+          onFixStarted={(taskId) => { setShowDrift(false); setDriftTaskId(taskId); }}
+        />
+      )}
+      {driftTaskId && (
+        <DnsApexDriftTaskModal taskId={driftTaskId} onClose={() => setDriftTaskId(null)} />
+      )}
 
       {/* Provider Groups Section */}
       <ProviderGroupsSection groups={groups} servers={servers} />

@@ -130,3 +130,4 @@ export * from './login-passwords.js';
 export * from './monitoring-slo.js';
 export * from './tenant-snapshots.js';
 export * from './email-connection.js';
+export * from './dns-apex-drift.js';

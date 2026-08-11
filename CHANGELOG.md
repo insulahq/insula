@@ -12,6 +12,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Apex DNS drift detection and additive repair.** A tenant apex cannot CNAME
+  into the ingress chain (CNAME is illegal at a zone apex), so its A/AAAA are
+  *copies* of the cluster's ingress addresses living in the tenant zone. Add an
+  ingress-capable node and every apex silently keeps pointing at the old set —
+  subdomains follow the chain automatically, apexes do not.
+  A scan compares each primary-mode zone's apex records against the configured
+  ingress addresses and reports, per domain: what is **missing**, what is
+  **present but not platform-managed**, and which zones could not be read at
+  all (an unreadable zone is drift you cannot rule out, so it is reported
+  rather than skipped).
+  Detection is read-only and runs hourly plus on demand from **DNS Providers →
+  Scan for drift**; it *never* repairs on its own. A banner appears only when
+  there is drift or an unreadable zone — extra apex records alone never raise
+  it, since they are usually deliberate. Repair is explicit, selectable per
+  domain or all at once, runs through the task center with a per-domain
+  progress checklist, and is strictly **additive**: missing ingress addresses
+  are added and nothing is ever removed, so a deliberate CDN origin or legacy
+  host survives untouched. Unreadable zones are not selectable — with the zone
+  unreadable there is nothing safe to add.
+
 ### Fixed
 - **Tenant domain creation provisioned a DNS zone in every mode, including
   `cname` — which silently shadowed the platform wildcard.** The
