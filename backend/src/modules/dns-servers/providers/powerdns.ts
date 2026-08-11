@@ -67,19 +67,43 @@ export class PowerDnsProvider implements DnsProviderAdapter {
     }
   }
 
-  async createZone(name: string, kind: 'Native' | 'Master'): Promise<DnsZone> {
+  async createZone(name: string, kind: 'Native' | 'Master', nameservers?: string[]): Promise<DnsZone> {
     const normalized = name.endsWith('.') ? name : `${name}.`;
 
     // Check if zone already exists
     const existing = await this.getZone(normalized);
     if (existing) return existing;
 
+    // The NS set MUST come from the caller (the domain's provider group).
+    //
+    // This used to hardcode `["ns1.<zone>", "ns2.<zone>"]` — the zone's own
+    // name with a label glued on the front. Those hostnames are never
+    // registered and get no glue, so every zone the platform created was a
+    // LAME DELEGATION: authoritative-looking, resolvable by nobody. A
+    // best-effort `replaceNsRecords()` pass was supposed to correct it
+    // afterwards, but it was wrapped in a swallow-everything catch, so when
+    // it failed the placeholders silently survived.
+    //
+    // PowerDNS dedupes nothing here: a duplicated entry makes the API reject
+    // the whole RRset with 422, which is how a group holding the same
+    // hostname twice took out zone creation. Normalise defensively.
+    const apexNs = Array.from(
+      new Set((nameservers ?? []).map((ns) => (ns.endsWith('.') ? ns : `${ns}.`))),
+    );
+    if (apexNs.length === 0) {
+      throw new Error(
+        `Refusing to create zone '${normalized}' with no nameservers — ` +
+          `configure ns_hostnames on the domain's DNS provider group first. ` +
+          `A zone with placeholder NS records resolves for nobody.`,
+      );
+    }
+
     const zone = await this.request<PdnsZone>('/zones', {
       method: 'POST',
       body: JSON.stringify({
         name: normalized,
         kind,
-        nameservers: [`ns1.${normalized}`, `ns2.${normalized}`],
+        nameservers: apexNs,
       }),
     });
     return toZone(zone);
