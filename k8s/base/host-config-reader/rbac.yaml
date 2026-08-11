@@ -58,3 +58,51 @@ subjects:
   - kind: ServiceAccount
     name: host-config-reader
     namespace: platform-system
+---
+# `platform-version` lives in the `platform` namespace, NOT platform-system, so
+# the Role above (which is namespaced to platform-system) never covered it.
+#
+# That one gap made every WORKER node invisible to release pinning: self-upgrade
+# reads this ConfigMap to learn the cluster's target version, the read 403'd, and
+# it fell back to the "newest STABLE GitHub Release" path — which can never
+# select a prerelease. Control-plane nodes were unaffected because they use the
+# k3s admin kubeconfig. Net effect: on any multi-node cluster, host state
+# (firewall shape, sysctls, packages, host-migrations) silently diverged between
+# control-plane and workers for the whole life of an RC, so nothing host-side was
+# ever really validated before a stable cut.
+#
+# Same least-privilege shape as above: `get` on ONE ConfigMap by name. No list
+# (which cannot be name-scoped), no write, nothing else in the namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: host-config-reader-platform-version
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: host-config-reader
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["platform-version"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: host-config-reader-platform-version
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: host-config-reader
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: host-config-reader-platform-version
+subjects:
+  # The SA lives in platform-system; a RoleBinding in `platform` may name a
+  # subject from another namespace, which is what keeps this to a single extra
+  # grant instead of a second ServiceAccount.
+  - kind: ServiceAccount
+    name: host-config-reader
+    namespace: platform-system
