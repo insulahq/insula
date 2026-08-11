@@ -116,6 +116,11 @@ cleanup() {
   if [[ "${VMTEST_KEEP:-1}" == "1" ]]; then
     echo "── run ${RUN} RETAINED (rc=$rc; VMTEST_KEEP=1 is the default) ──"
     echo "   inspect:  virsh -c qemu+ssh://\${VMTEST_HOST_SSH#*@}/system list --all | grep ${RUN}"
+    # Without the key + an IP a retained cluster cannot be logged into, which
+    # makes retention pointless. Print both.
+    echo "   ssh key:  ${VMTEST_SSH_KEY:-<unset>}"
+    [[ -n "${VMTEST_CP_IP:-}" ]] && echo "   ssh:      ssh -i ${VMTEST_SSH_KEY} root@${VMTEST_CP_IP}   (control-plane)"
+    [[ -n "${VMTEST_RUNNER_IP:-}" ]] && echo "   runner:   ssh -i ${VMTEST_SSH_KEY} root@${VMTEST_RUNNER_IP}"
     echo "   teardown: $HERE/teardown.sh ${RUN}"
     return
   fi

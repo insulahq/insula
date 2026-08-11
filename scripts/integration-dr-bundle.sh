@@ -302,8 +302,6 @@ elif [[ -z "${SSH_HOST:-}" ]]; then
 elif [[ -z "${OPS_BIN_G:=$(for c in /usr/local/bin/insula /usr/local/bin/platform-ops; do
         "${G_SSH[@]}" "$SSH_HOST" "test -x $c" 2>/dev/null && { echo "$c"; break; }; done)}" ]]; then
   echo "  (skip G: no insula/platform-ops binary on ${SSH_HOST#*@})"
-elif ! g_node 'test -d /opt/insula/backend/src/db/migrations' 2>/dev/null; then
-  echo "  (skip G: /opt/insula/backend/src/db/migrations missing on the node)"
 else
   # Unique, obviously-disposable name. Asserted below so a bug in this block can
   # never point the restore at the live `platform` database.
@@ -325,16 +323,27 @@ if [[ -n "${G_DB:-}" ]]; then
     # Apply the schema exactly as platform-api's startup migrator does: every
     # *.sql in alphabetical order, stopping at the first failure. Streamed into
     # the pod so the node needs no psql client.
-    G_MIGRATE_FAIL=0
-    G_MIGRATE_ERR=""
-    G_MIGRATE_ERR=$(g_node "set -e; for m in /opt/insula/backend/src/db/migrations/*.sql; do \
-        kubectl -n platform exec -i system-db-1 -c postgres -- \
-          psql -U postgres -v ON_ERROR_STOP=1 -q -d '$G_DB' -f - < \"\$m\" \
-          || { echo \"FAILED_AT=\$m\"; exit 1; }; done" 2>&1) || G_MIGRATE_FAIL=1
-    if [[ $G_MIGRATE_FAIL -ne 0 ]]; then
-      fail "G0 schema migrations failed against $G_DB: $(printf '%s' "$G_MIGRATE_ERR" | tail -3 | tr '\n' ' ')"
+    # Schema for the throwaway DB comes from the LIVE platform database, not
+    # from a repo checkout. `--remote` bootstrap ships scripts/ only, so
+    # /opt/insula does not exist on a VM-integration node — requiring it moved
+    # the permanent skip rather than removing it. pg_dump needs nothing but the
+    # CNPG pod, so this phase now runs on every cluster, and it reproduces the
+    # schema the platform ACTUALLY runs rather than a replay of migrations.
+    # Both ends run inside the pod: no schema crosses the network.
+    G_SCHEMA_FAIL=0
+    G_SCHEMA_ERR=$(g_node "kubectl -n platform exec -i system-db-1 -c postgres -- \
+        sh -c \"pg_dump -U postgres --schema-only --no-owner --no-privileges platform \
+                 | psql -U postgres -v ON_ERROR_STOP=1 -q -d '$G_DB'\"" 2>&1) || G_SCHEMA_FAIL=1
+    if [[ $G_SCHEMA_FAIL -ne 0 ]]; then
+      fail "G0 could not clone the live schema into $G_DB: $(printf '%s' "$G_SCHEMA_ERR" | tail -3 | tr '\n' ' ')"
     else
-      ok "G0 schema migrations applied to $G_DB (real migrations, real Postgres)"
+      # Prove the clone actually produced the tables the restore writes to —
+      # `psql -q` is silent on an empty input, so a no-op would look identical.
+      G_TBLS=$(g_psql "-d '$G_DB' -tAc \"SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('backup_configurations','backup_target_assignments')\"" 2>/dev/null | tr -d '[:space:]')
+      if [[ "$G_TBLS" != "2" ]]; then
+        fail "G0 cloned schema is missing the DR tables (found $G_TBLS/2)"
+      else
+      ok "G0 live schema cloned into $G_DB (real schema, real Postgres)"
 
       # Credentials: derive from the URL the PLATFORM itself uses
       # (platform-db-credentials/url), NOT CNPG's default `system-db-app`
@@ -458,6 +467,7 @@ print(u.urlunparse(p._replace(netloc=(creds + "@" + host) if creds else host,
           fail "G5 re-run failed: $(tail -2 "$WORK_DIR/restore2.stdout.err" | tr '\n' ' ')"
         fi
       fi   # end G1-gated assertions
+      fi  # end G0 table check
     fi
   fi
 fi
