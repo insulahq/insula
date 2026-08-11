@@ -27,6 +27,7 @@ vm_net_destroy "$RUN"
 on_host "rm -rf ${VMTEST_DISK_DIR}/vmt-${RUN}-*.qcow2 ${VMTEST_DISK_DIR}/seed-${RUN}-* ${VMTEST_DISK_DIR}/dom-vmt-${RUN}-*.xml ${VMTEST_DISK_DIR}/net-insula-test-${RUN}.xml" || true
 # LOCAL scratch: cloud-init user/meta-data + the ephemeral ssh key.
 rm -rf "${VMTEST_TMP_DIR}/ud-${RUN}-"* "${VMTEST_TMP_DIR}/md-${RUN}-"* 2>/dev/null || true
-rm -f  "${VMTEST_TMP_DIR}/vmtest-${RUN}.key" "${VMTEST_TMP_DIR}/vmtest-${RUN}.key.pub" 2>/dev/null || true
+rm -f  "${VMTEST_TMP_DIR}/vmtest-${RUN}.key" "${VMTEST_TMP_DIR}/vmtest-${RUN}.key.pub" \
+       "${VMTEST_REPORT_DIR}/vmtest-${RUN}.key" "${VMTEST_REPORT_DIR}/vmtest-${RUN}.key.pub" 2>/dev/null || true
 
 echo "  run ${RUN} reclaimed (cached OS images in ${VMTEST_IMAGE_CACHE_DIR} kept)."
