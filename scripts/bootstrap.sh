@@ -2265,12 +2265,15 @@ configure_firewall() {
   # Pod-CIDR control-plane exemption, IPv6 half. Empty on single-stack so the
   # v4-only ruleset stays BYTE-IDENTICAL (scripts/.firewall-shape.sha256 and
   # test-bootstrap-dual-stack.sh both assert that).
-  local pod_cidr_v6_rule=""
+  local pod_cidr_v6_rule="" pod_cidr_dns_v6_rule=""
   if [[ "$DUAL_STACK" == true ]]; then
     pod_cidr_v6_rule="
     # Same exemption for the IPv6 pod CIDR on dual-stack clusters — the table
     # is family \`inet\`, so the \`ip saddr\` rule above matches IPv4 ONLY.
     ip6 saddr ${POD_CIDR_V6} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept"
+    pod_cidr_dns_v6_rule="
+    ip6 saddr ${POD_CIDR_V6} udp dport 53 accept
+    ip6 saddr ${POD_CIDR_V6} tcp dport 53 accept"
   fi
 
   # Default: public :22 (legacy behaviour, assumes external gating).
@@ -2402,6 +2405,33 @@ ${ssh_rule}
     # are active. Pod CIDR is internal cluster traffic only; it isn't
     # routable from outside.
     ip saddr ${POD_CIDR_V4} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept${pod_cidr_v6_rule}
+
+    # Pod CIDR → the node's own DNS resolver. CoreDNS runs `dnsPolicy: Default`
+    # and forwards whatever it cannot answer to the node's /etc/resolv.conf.
+    # When a mesh client owns that file the upstream is a HOST-LOCAL address:
+    # NetBird rewrites resolv.conf to its own interface IP on hosts that have
+    # neither resolvconf nor systemd-resolved for it to integrate with (it
+    # leaves the real nameservers in place when either is present — which is
+    # why this stays dormant on most nodes). CoreDNS's upstream queries then
+    # arrive at the INPUT chain with a POD source IP and fall through to the
+    # catch-all drop.
+    #
+    # The failure is not "external DNS is slower" — it is total: pods inherit
+    # the mesh search domain, so any in-pod getaddrinfo for a name with fewer
+    # dots than `ndots` tries `<name>.<mesh-domain>` FIRST, that query
+    # blackholes, and glibc aborts the whole search with EAI_AGAIN (it walks
+    # past NXDOMAIN, but not past a timeout). platform-api then crashloops in
+    # wait-for-db against a perfectly healthy Postgres.
+    #
+    # Latent by nature: resolv.conf is snapshotted into a pod at CREATION, so
+    # already-running CoreDNS pods keep the pre-mesh upstream and the cluster
+    # looks fine until something recreates them (a k3s restart re-applying its
+    # packaged coredns.yaml is enough).
+    #
+    # Same "internal cluster traffic only, not routable from outside" reasoning
+    # as the control-plane exemption above.
+    ip saddr ${POD_CIDR_V4} udp dport 53 accept
+    ip saddr ${POD_CIDR_V4} tcp dport 53 accept${pod_cidr_dns_v6_rule}
 
 ${cluster_allow}
 
