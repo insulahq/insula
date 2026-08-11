@@ -51,6 +51,21 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# A missing backend/ is a SETUP error (exit 2), not a restore failure (exit 1) —
+# see the exit-code contract in this header. Letting `cd` fail under `set -e`
+# reported 1, which reads as "the restore was attempted and failed" when nothing
+# was attempted at all. It also produced a bare
+#   dr-restore-bundle.sh: line 54: cd: …/backend: No such file or directory
+# with no hint about what to do. This is the normal state on a host that
+# received only scripts/ (the VM integration runner does exactly that), and it
+# is the same class of problem as the tsx check below, which already exits 2.
+if [[ ! -d "$REPO_ROOT/backend" ]]; then
+  echo "dr-restore-bundle.sh: no backend/ at $REPO_ROOT/backend" >&2
+  echo "                     this wrapper runs the TypeScript restore runner and needs the" >&2
+  echo "                     full repository, not just scripts/. Clone/copy the repo and run" >&2
+  echo "                     'npm ci' (top-level or in backend/) before invoking it." >&2
+  exit 2
+fi
 cd "$REPO_ROOT/backend"
 
 # Pass argv through to the TS runner via `tsx`. We resolve the
