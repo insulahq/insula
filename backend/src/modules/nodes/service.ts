@@ -447,6 +447,93 @@ function isUnevictable(pod: PodLite, thisNode: string): { skip: boolean; reason:
   return { skip: false, reason: '' };
 }
 
+interface NodeAffinityTerm {
+  matchExpressions?: Array<{ key?: string; operator?: string; values?: string[] }>;
+  matchFields?: Array<{ key?: string; operator?: string; values?: string[] }>;
+}
+interface AffinityLite {
+  nodeAffinity?: {
+    requiredDuringSchedulingIgnoredDuringExecution?: { nodeSelectorTerms?: NodeAffinityTerm[] };
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+
+/**
+ * Remove ONLY the `kubernetes.io/hostname In [nodeName]` requirement from an
+ * affinity block, leaving everything else intact. Returns the new affinity, or
+ * null when nothing recognisable was pinned to this node.
+ *
+ * Why this is surgical rather than `affinity: null`: a drain must un-pin the
+ * node, not discard the operator's other scheduling rules. Anti-affinity,
+ * preferred terms, topology constraints and unrelated required terms all live
+ * under the same key, and nulling it would silently delete them — turning a
+ * routine drain into a scheduling change nobody asked for.
+ *
+ * Exported for testing: the whole point is that it removes exactly one term.
+ */
+export function stripHostnamePin(
+  affinity: AffinityLite | undefined,
+  nodeName: string,
+): { changed: boolean; affinity: AffinityLite | null } {
+  const na = affinity?.nodeAffinity;
+  const required = na?.requiredDuringSchedulingIgnoredDuringExecution;
+  const terms = required?.nodeSelectorTerms;
+  if (!affinity || !na || !required || !Array.isArray(terms) || terms.length === 0) {
+    return { changed: false, affinity: affinity ?? null };
+  }
+
+  const isHostnamePin = (e: { key?: string; operator?: string; values?: string[] }): boolean =>
+    e.key === 'kubernetes.io/hostname'
+    && e.operator === 'In'
+    && Array.isArray(e.values)
+    && e.values.length === 1
+    && e.values[0] === nodeName;
+
+  let changed = false;
+  const keptTerms: NodeAffinityTerm[] = [];
+  for (const term of terms) {
+    const exprs = term.matchExpressions ?? [];
+    const kept = exprs.filter((e) => !isHostnamePin(e));
+    if (kept.length !== exprs.length) changed = true;
+    // A term with neither matchExpressions nor matchFields left matches
+    // EVERYTHING — keeping it would widen scheduling rather than narrow it, so
+    // drop the term entirely once its only requirement was the hostname pin.
+    const hasFields = Array.isArray(term.matchFields) && term.matchFields.length > 0;
+    if (kept.length === 0 && !hasFields) continue;
+    // Rebuild explicitly. A conditional SPREAD cannot delete: `{ ...term }`
+    // carries the ORIGINAL matchExpressions, so a term that also has
+    // matchFields would keep the very hostname pin we just stripped. Caught by
+    // the matchFields test, which is the only case where the term survives with
+    // an empty kept list.
+    const nextTerm: NodeAffinityTerm = { ...term };
+    if (kept.length > 0) nextTerm.matchExpressions = kept;
+    else delete nextTerm.matchExpressions;
+    keptTerms.push(nextTerm);
+  }
+  if (!changed) return { changed: false, affinity };
+
+  const nextNodeAffinity: Record<string, unknown> = { ...na };
+  if (keptTerms.length === 0) {
+    // No required terms left. Drop the key rather than leaving an empty
+    // nodeSelectorTerms array, which the apiserver rejects.
+    delete nextNodeAffinity.requiredDuringSchedulingIgnoredDuringExecution;
+  } else {
+    nextNodeAffinity.requiredDuringSchedulingIgnoredDuringExecution = { nodeSelectorTerms: keptTerms };
+  }
+
+  const nextAffinity: Record<string, unknown> = { ...affinity };
+  if (Object.keys(nextNodeAffinity).length === 0) {
+    delete nextAffinity.nodeAffinity;
+  } else {
+    nextAffinity.nodeAffinity = nextNodeAffinity;
+  }
+  return {
+    changed: true,
+    affinity: Object.keys(nextAffinity).length === 0 ? null : (nextAffinity as AffinityLite),
+  };
+}
+
 /**
  * Check whether a Pod template (or live Pod) is pinned to one specific
  * node via nodeSelector or nodeAffinity. We accept both forms because:
@@ -1232,14 +1319,39 @@ export async function drainNode(
 
     for (const w of c.workloads) {
       try {
+        // A workload pinned by nodeAffinity is NOT released by the nodeSelector
+        // patch above — and buildDrainImpact counts BOTH forms (detectNodePin),
+        // so the drain would report success while the impact preview kept
+        // listing the node as occupied forever. Measured on the multi-node VM
+        // run 2026-08-10: pods moved, volumes moved, tenants.node_name cleared,
+        // nodeSelector cleared — and drain-impact still returned
+        // "Σ workloads=4 / pinnedTenants=3" for an empty node, which is exactly
+        // the counter the delete gate reads. The node became undeletable.
+        //
+        // Read-modify-write, because the removal has to be surgical: see
+        // stripHostnamePin. Only workloads the preview flagged as
+        // pinKind='nodeAffinity' pay the extra GET.
+        let affinityPatch: Record<string, unknown> | undefined;
+        if (w.pinKind === 'nodeAffinity') {
+          const live = w.kind === 'Deployment'
+            ? await k8s.apps.readNamespacedDeployment({ namespace: ns, name: w.name })
+            : await k8s.apps.readNamespacedStatefulSet({ namespace: ns, name: w.name });
+          const cur = (live as { spec?: { template?: { spec?: { affinity?: unknown } } } })
+            .spec?.template?.spec?.affinity as Parameters<typeof stripHostnamePin>[0];
+          const stripped = stripHostnamePin(cur, name);
+          if (stripped.changed) affinityPatch = { affinity: stripped.affinity };
+        }
+        const wBody = affinityPatch
+          ? { spec: { template: { spec: { ...affinityPatch, nodeSelector: selectorPatch } } } }
+          : body;
         if (w.kind === 'Deployment') {
           await k8s.apps.patchNamespacedDeployment({
-            namespace: ns, name: w.name, body,
+            namespace: ns, name: w.name, body: wBody,
           } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
             MERGE_PATCH);
         } else {
           await k8s.apps.patchNamespacedStatefulSet({
-            namespace: ns, name: w.name, body,
+            namespace: ns, name: w.name, body: wBody,
           } as unknown as Parameters<typeof k8s.apps.patchNamespacedStatefulSet>[0],
             MERGE_PATCH);
         }
