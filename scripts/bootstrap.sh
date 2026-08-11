@@ -2406,7 +2406,7 @@ ${ssh_rule}
     # routable from outside.
     ip saddr ${POD_CIDR_V4} tcp dport { 6443, 8443, 10250, 5473, 2379-2380 } accept${pod_cidr_v6_rule}
 
-    # Pod CIDR → the node's own DNS resolver. CoreDNS runs `dnsPolicy: Default`
+    # Pod CIDR → the node's own DNS resolver. CoreDNS runs 'dnsPolicy: Default'
     # and forwards whatever it cannot answer to the node's /etc/resolv.conf.
     # When a mesh client owns that file the upstream is a HOST-LOCAL address:
     # NetBird rewrites resolv.conf to its own interface IP on hosts that have
@@ -2418,7 +2418,7 @@ ${ssh_rule}
     #
     # The failure is not "external DNS is slower" — it is total: pods inherit
     # the mesh search domain, so any in-pod getaddrinfo for a name with fewer
-    # dots than `ndots` tries `<name>.<mesh-domain>` FIRST, that query
+    # dots than 'ndots' tries '<name>.<mesh-domain>' FIRST, that query
     # blackholes, and glibc aborts the whole search with EAI_AGAIN (it walks
     # past NXDOMAIN, but not past a timeout). platform-api then crashloops in
     # wait-for-db against a perfectly healthy Postgres.
