@@ -12,6 +12,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Enabling email on a customer-managed (`cname`/`secondary`) domain reported
+  four green provisioning ticks while nothing had been published.** The mail
+  records were always written to `dns_records` — that part was right, and is
+  what the domain's DNS page renders — but `mx/spf/dkim/dmarc_provisioned` were
+  then set to `1` unconditionally, including in modes where the platform has no
+  authority over the zone and pushed nothing anywhere. The operator saw a fully
+  provisioned mail domain that could never receive mail. Those flags now mean
+  what they say: they are set only when the records were actually published,
+  and a customer-managed domain instead emits a warning naming the record count
+  and pointing at the DNS Records page. Customer-managed DNS remains a
+  supported mode, so this path still never throws.
+
+### Added
+- **The mail DELIVERY gate now runs as part of `integration-all.sh`.** It does
+  an authenticated SMTPS send-to-self plus an IMAPS retrieve — the only check
+  that proves mail actually delivers, since the TCP/banner probes are liveness
+  only and pass while the server rejects at DATA with `452 mail system full`
+  (the Stalwart regression that shipped undetected in v2026.6.14). It had
+  skipped on every run because it needs a real mailbox and the suites' own
+  mailboxes are deliberately ephemeral, so nothing was ever left for it to use.
+  `scripts/lib/ensure-mail-e2e-mailbox.sh` now provisions a throwaway
+  tenant + domain + mailbox, exports the credentials, and deletes the tenant
+  afterwards. It honours a pre-set `MAIL_E2E_USER`/`MAIL_E2E_PASS` if you'd
+  rather pin it to a mailbox you maintain, and degrades to the previous
+  loud skip (never a hard failure) if provisioning can't complete.
+
 ### Added
 - **Ingress addresses are now discovered from live cluster state.**
   `ingress_default_ipv4/ipv6` were operator-set and nothing kept them current,
