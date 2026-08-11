@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.8] - 2026-08-11
+
 ### Added
 - **Ingress addresses are now discovered from live cluster state.**
   `ingress_default_ipv4/ipv6` were operator-set and nothing kept them current,
