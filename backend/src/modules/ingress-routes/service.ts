@@ -22,6 +22,11 @@ async function getSetting(db: Database, key: string): Promise<string | null> {
   return row?.value ?? null;
 }
 
+/** Remove a setting so its resolution falls through to the next source. */
+async function clearSetting(db: Database, key: string): Promise<void> {
+  await db.delete(platformSettings).where(eq(platformSettings.key, key));
+}
+
 async function setSetting(db: Database, key: string, value: string): Promise<void> {
   await db
     .insert(platformSettings)
@@ -29,16 +34,76 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
     .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
+/**
+ * Resolve the effective ingress addresses.
+ *
+ * Precedence — operator intent always wins:
+ *   1. `ingress_default_ipv4/ipv6`     explicit operator override
+ *   2. `ingress_discovered_ipv4/ipv6`  live cluster state, maintained by the
+ *                                      ingress-nodes reconciler
+ *   3. INGRESS_DEFAULT_IPV4 env        deployment fallback
+ *   4. 127.0.0.1                       local-DinD convenience
+ *
+ * The override is kept separate from the discovered value rather than having
+ * the reconciler write the same key, because an operator may deliberately
+ * point tenant apexes at a load-balancer VIP or anycast address that is not
+ * any node's ExternalIP. A reconciler that owned one key would quietly undo
+ * that every tick.
+ *
+ * `ingressSource` is returned so the UI can say which of these is in effect —
+ * "why is my apex pointing there?" should be answerable without reading code.
+ */
+export type IngressAddressSource = 'override' | 'discovered' | 'env' | 'fallback';
+
 export async function getIngressSettings(db: Database) {
   const baseDomain = await getSetting(db, 'ingress_base_domain');
   const ipv4 = await getSetting(db, 'ingress_default_ipv4');
   const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+  const discoveredIpv4 = await getSetting(db, 'ingress_discovered_ipv4');
+  const discoveredIpv6 = await getSetting(db, 'ingress_discovered_ipv6');
+  const discoveredNodes = await getSetting(db, 'ingress_discovered_nodes');
+
+  const hasOverride = Boolean(ipv4 || ipv6);
+  const hasDiscovered = Boolean(discoveredIpv4 || discoveredIpv6);
+  const ingressSource: IngressAddressSource = hasOverride
+    ? 'override'
+    : hasDiscovered
+      ? 'discovered'
+      : ENV_INGRESS_DEFAULT_IPV4
+        ? 'env'
+        : 'fallback';
 
   return {
     ingressBaseDomain: baseDomain ?? ENV_INGRESS_BASE_DOMAIN ?? 'ingress.localhost',
-    ingressDefaultIpv4: ipv4 ?? ENV_INGRESS_DEFAULT_IPV4 ?? '127.0.0.1',
-    ingressDefaultIpv6: ipv6 ?? null,
+    ingressDefaultIpv4:
+      ipv4 ?? (hasOverride ? null : discoveredIpv4) ?? ENV_INGRESS_DEFAULT_IPV4 ?? '127.0.0.1',
+    ingressDefaultIpv6: ipv6 ?? (hasOverride ? null : discoveredIpv6) ?? null,
+    ingressSource,
+    /** Nodes that produced the discovered set, for operator-facing provenance. */
+    ingressDiscoveredNodes: discoveredNodes ? discoveredNodes.split(',').filter(Boolean) : [],
   };
+}
+
+/**
+ * Split an ingress-IP setting into individual addresses.
+ *
+ * The setting is comma/whitespace separated so a multi-node cluster can
+ * publish every ingress-enabled address and have apex records round-robin
+ * across them.
+ *
+ * Loopback is dropped deliberately: `getIngressSettings()` falls back to
+ * `127.0.0.1` when nothing is configured (a convenience for local DinD), and
+ * without this filter that fallback gets written verbatim into a customer's
+ * public zone — an apex A record pointing at the visitor's own machine.
+ */
+export function parseIngressIps(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const parts = raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((ip) => !/^127\./.test(ip) && ip !== '::1' && ip !== '0.0.0.0' && ip !== '::');
+  return Array.from(new Set(parts));
 }
 
 export async function updateIngressSettings(
@@ -48,13 +113,20 @@ export async function updateIngressSettings(
   if (input.ingressBaseDomain !== undefined) {
     await setSetting(db, 'ingress_base_domain', input.ingressBaseDomain);
   }
+  // An empty value CLEARS the override and hands the field back to node
+  // discovery. Without this there is no way back to automatic once a value has
+  // been saved once — and because the settings form is pre-filled with the
+  // EFFECTIVE address, saving an unrelated field would otherwise silently
+  // freeze whatever was discovered at that moment into a permanent override.
   if (input.ingressDefaultIpv4 !== undefined) {
-    await setSetting(db, 'ingress_default_ipv4', input.ingressDefaultIpv4);
+    const v = input.ingressDefaultIpv4.trim();
+    if (v) await setSetting(db, 'ingress_default_ipv4', v);
+    else await clearSetting(db, 'ingress_default_ipv4');
   }
   if (input.ingressDefaultIpv6 !== undefined) {
-    if (input.ingressDefaultIpv6) {
-      await setSetting(db, 'ingress_default_ipv6', input.ingressDefaultIpv6);
-    }
+    const v = (input.ingressDefaultIpv6 ?? '').trim();
+    if (v) await setSetting(db, 'ingress_default_ipv6', v);
+    else await clearSetting(db, 'ingress_default_ipv6');
   }
   return getIngressSettings(db);
 }
@@ -268,25 +340,52 @@ export async function createRoute(
   if (domain.dnsMode === 'primary') {
     const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
     try {
-      // Always create A record (simpler, no CNAME limitations)
-      await syncRecordToProviders(db, domain.domainName, 'create', {
-        type: 'A',
-        name: recordName,
-        content: settings.ingressDefaultIpv4,
-        ttl: 300,
-      });
-      // Also add AAAA if IPv6 configured
-      const ipv6 = await getSetting(db, 'ingress_default_ipv6');
-      if (ipv6) {
+      if (apex) {
+        // A zone apex cannot hold a CNAME (RFC 1034), so it must carry
+        // address records. Emit one per configured ingress IP: a multi-node
+        // cluster round-robins across all ingress-enabled addresses instead
+        // of pinning every tenant apex to whichever single IP happened to be
+        // in the setting.
+        const v4 = parseIngressIps(settings.ingressDefaultIpv4);
+        const v6 = parseIngressIps(await getSetting(db, 'ingress_default_ipv6'));
+        if (v4.length === 0 && v6.length === 0) {
+          console.warn(
+            `[ingress-dns] No usable ingress IP configured (ingress_default_ipv4/ipv6) — ` +
+              `apex records for '${hostname}' were NOT created. Set them in Settings → Ingress.`,
+          );
+        }
+        for (const ip of v4) {
+          await syncRecordToProviders(db, domain.domainName, 'create', {
+            type: 'A', name: recordName, content: ip, ttl: 300,
+          });
+        }
+        for (const ip of v6) {
+          await syncRecordToProviders(db, domain.domainName, 'create', {
+            type: 'AAAA', name: recordName, content: ip, ttl: 300,
+          });
+        }
+      } else {
+        // Subdomain → CNAME into the platform's ingress chain. This is the
+        // entire point of `<slug>.ingress.<apex>`: when ingress node
+        // membership changes, ONE centrally-owned RRset changes, instead of
+        // rewriting an A record inside every tenant zone. The previous code
+        // wrote an A record here ("simpler, no CNAME limitations"), which is
+        // what made adding a node a manual per-domain migration.
         await syncRecordToProviders(db, domain.domainName, 'create', {
-          type: 'AAAA',
+          type: 'CNAME',
           name: recordName,
-          content: ipv6,
+          content: ingressCname.endsWith('.') ? ingressCname : `${ingressCname}.`,
           ttl: 300,
         });
       }
-    } catch {
-      // DNS creation failure shouldn't block route creation
+    } catch (err) {
+      // Non-blocking (a DNS outage must not fail route creation) but never
+      // silent — the previous bare `catch {}` is why primary-mode zones sat
+      // there with no address records and nothing said a word.
+      console.warn(
+        `[ingress-dns] Failed to create DNS records for '${hostname}':`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

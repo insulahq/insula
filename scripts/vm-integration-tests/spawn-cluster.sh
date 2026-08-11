@@ -26,6 +26,9 @@ source "$HERE/lib/log-gate.sh"
 RUN="${1:?usage: spawn-cluster.sh <run-id> <apex> <octet> <dns-ip>}"
 APEX="${2:?}"; OCTET="${3:?}"; DNS_IP="${4:?}"
 SUB="${VMTEST_SUBNET_BASE}.${OCTET}"
+# NOTE: this default is effectively never taken — lib/waitfor.sh (sourced above)
+# already sets VMTEST_SSH_KEY to a FIXED, persistent ~/.ssh/insula_vmtest, which
+# is what every run actually uses and why a retained cluster stays reachable.
 export VMTEST_SSH_KEY="${VMTEST_SSH_KEY:-${VMTEST_TMP_DIR%/}/vmtest-${RUN}.key}"
 mkdir -p "$VMTEST_TMP_DIR"                                          # local scratch
 on_host "mkdir -p '${VMTEST_IMAGE_CACHE_DIR}' '${VMTEST_DISK_DIR}'" # host storage (goldens stay on the pool FS)

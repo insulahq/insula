@@ -12,9 +12,118 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.3-rc.7] - 2026-08-10
+### Added
+- **Ingress addresses are now discovered from live cluster state.**
+  `ingress_default_ipv4/ipv6` were operator-set and nothing kept them current,
+  so adding an ingress-capable node updated Traefik's `externalIPs` (the
+  `ingress-external-ips` CronJob already did that) while the DNS side silently
+  kept the old set. A reconciler now lists nodes every 5 minutes — the same
+  cadence and the *same* eligibility filter as that CronJob (Ready, has an
+  ExternalIP, `ingress-mode != none`, `exposure != private`, missing labels
+  meaning "include") — and records the result in `ingress_discovered_ipv4/ipv6`.
+  Two deliberate constraints: it writes only the **discovered** keys, never the
+  operator's, because an operator may point apexes at a load-balancer VIP that
+  is no node's ExternalIP and a reconciler owning one key would undo that every
+  tick; and it **refuses to publish an empty set**, so a transient API read or a
+  cluster mid-upgrade cannot blank the addresses and make every apex look like
+  it drifted to zero. Resolution order is override → discovered → env →
+  `127.0.0.1`, and the effective source is surfaced in the drift report so
+  "why is my apex pointing there?" is answerable from the UI.
+  Clearing an override field now genuinely clears it, handing the field back to
+  discovery — previously a saved value could never be un-set, and because the
+  form is pre-filled with the effective address, saving an unrelated field would
+  have frozen whatever was discovered at that moment into a permanent override.
+  This still never writes tenant DNS: apex repair remains operator-invoked and
+  additive.
+- **Apex DNS drift detection and additive repair.** A tenant apex cannot CNAME
+  into the ingress chain (CNAME is illegal at a zone apex), so its A/AAAA are
+  *copies* of the cluster's ingress addresses living in the tenant zone. Add an
+  ingress-capable node and every apex silently keeps pointing at the old set —
+  subdomains follow the chain automatically, apexes do not.
+  A scan compares each primary-mode zone's apex records against the configured
+  ingress addresses and reports, per domain: what is **missing**, what is
+  **present but not platform-managed**, and which zones could not be read at
+  all (an unreadable zone is drift you cannot rule out, so it is reported
+  rather than skipped).
+  Detection is read-only and runs hourly plus on demand from **DNS Providers →
+  Scan for drift**; it *never* repairs on its own. A banner appears only when
+  there is drift or an unreadable zone — extra apex records alone never raise
+  it, since they are usually deliberate. Repair is explicit, selectable per
+  domain or all at once, runs through the task center with a per-domain
+  progress checklist, and is strictly **additive**: missing ingress addresses
+  are added and nothing is ever removed, so a deliberate CDN origin or legacy
+  host survives untouched. Unreadable zones are not selectable — with the zone
+  unreadable there is nothing safe to add.
 
 ### Fixed
+- **Tenant domain creation provisioned a DNS zone in every mode, including
+  `cname` — which silently shadowed the platform wildcard.** The
+  "auto-provision DNS zone" block in `createDomain()` special-cased only
+  `secondary`; everything else fell through to `createZone()`. So a
+  customer-managed (`cname`) domain still got a zone on the platform's own DNS
+  servers. That is not merely useless: creating `x.<apex>` as a child zone
+  makes the name EXIST, and per RFC 4592 a wildcard never covers a name that
+  exists — so the platform's own `*.<apex>` stopped resolving for that host.
+  The correct predicate already existed and was already used to gate record
+  CRUD (`dns-servers/authority.ts:canManageDnsZone()`); `createDomain` just
+  never called it, which is why records were correctly skipped in cname mode
+  while the zone was created anyway. Both agree now.
+- **Every provisioned zone was a lame delegation.** The PowerDNS provider
+  hardcoded `nameservers: ["ns1.<zone>", "ns2.<zone>"]` — the zone's own name
+  with a label glued on. Those hostnames are never registered and get no glue,
+  so the zone was authoritative-looking and resolvable by nobody. The apex NS
+  set now comes from the domain's provider group, and creating a zone with an
+  empty NS list is refused outright (with an `OperatorError` pointing at the
+  group) rather than minting a broken zone.
+- **A provider group listing the same nameserver twice broke zone creation
+  silently.** PowerDNS rejects an RRset containing duplicate records with 422,
+  so the `replaceNsRecords()` fix-up failed — into a swallowed `console.warn`,
+  leaving the placeholder NS in place. Duplicate nameserver hostnames and
+  duplicate DNS-server names within a group are now rejected at the API with a
+  clear error, blocked in the admin UI before submit, and de-duplicated
+  defensively at the provider.
+- **Ingress routes wrote an A record for subdomains instead of a CNAME.** The
+  old code took the "always create A, simpler, no CNAME limitations" route,
+  which pinned every tenant subdomain to one hardcoded IP and made adding an
+  ingress node a manual per-domain DNS migration. Subdomains now CNAME to
+  `<slug>.ingress.<apex>` — the indirection the CNAME chain exists for, so node
+  membership changes are one central RRset edit. Apexes (where CNAME is
+  illegal) get A/AAAA records and now support MULTIPLE ingress addresses so a
+  multi-node cluster round-robins.
+- **The loopback fallback could be published into a customer's zone.**
+  `getIngressSettings()` falls back to `127.0.0.1` when `ingress_default_ipv4`
+  is unset (a local-DinD convenience); that value was written verbatim as an
+  apex A record. Loopback and unspecified addresses are now filtered out, and a
+  route whose zone would get no address records says so in the log.
+- **DNS provisioning failures were invisible.** Three bare `catch {}` blocks
+  (zone creation, initial record sync, ingress-route record creation) discarded
+  the error entirely — no status, no message. They are still non-blocking, but
+  they now log what failed and where.
+- **The host firewall blocked CoreDNS from reaching the node's own resolver,
+  breaking ALL pod DNS.** The input chain exempted the pod CIDR for the
+  control-plane ports but never for `:53`. That is dormant while the node's
+  `/etc/resolv.conf` lists real upstreams — but a mesh client can own that file:
+  NetBird rewrites it to its OWN interface address on hosts with neither
+  `resolvconf` nor `systemd-resolved` to integrate with (where either is present
+  it only appends its search domain and leaves the nameservers alone, which is
+  why most nodes never saw this). CoreDNS runs `dnsPolicy: Default` and forwards
+  what it cannot answer to that file, so its upstream queries arrived at INPUT
+  with a POD source IP and fell through to the catch-all drop.
+  The failure is total rather than slow: pods also inherit the mesh search
+  domain, so any in-pod `getaddrinfo` for a name with fewer dots than `ndots`
+  tries `<name>.<mesh-domain>` FIRST, that query blackholes, and glibc aborts the
+  whole search with `EAI_AGAIN` — it walks past NXDOMAIN, but not past a
+  timeout. platform-api then crashlooped in `wait-for-db` (3s connect timeout,
+  240s budget) against a perfectly healthy Postgres, which is what the incident
+  looked like from the outside.
+  Latent by construction: `resolv.conf` is snapshotted into a pod at CREATION,
+  so already-running CoreDNS pods keep the pre-mesh upstream and the cluster
+  stays healthy until something recreates them — a k3s restart re-applying its
+  packaged `coredns.yaml` is enough, and is what finally detonated it days after
+  the mesh was installed. Host-migration `0003-pod-cidr-dns-firewall` backfills
+  existing clusters; it derives the pod CIDR from the node's own ruleset rather
+  than assuming the default, and inserts BEFORE the catch-all drop (an appended
+  accept is unreachable).
 - **A scheduler tick could still kill platform-api on a DB blip.** Third path to
   the same outcome, and the one that survived the pg-boss / `pg.Pool` fix: ticks
   were launched as `void runTick(...)`, and the `void` operator DISCARDS the

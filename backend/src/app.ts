@@ -62,6 +62,7 @@ import { privateWorkerAdminRoutes } from './modules/private-workers/admin-routes
 import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
 import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
+import { dnsApexDriftRoutes } from './modules/dns-apex-drift/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { nodeRoutes } from './modules/nodes/routes.js';
@@ -160,6 +161,8 @@ import { startWebcronScheduler } from './modules/cron-jobs/scheduler.js';
 import { startIdleCleanup } from './modules/file-manager/idle-cleanup.js';
 import { startMetricsScheduler } from './modules/metrics/metrics-scheduler.js';
 import { startMailStatsScheduler, stopMailStatsScheduler } from './modules/mail-stats/scheduler.js';
+import { startApexDriftScheduler } from './modules/dns-apex-drift/scheduler.js';
+import { startIngressNodeScheduler } from './modules/ingress-nodes/reconciler.js';
 import { startStorageLifecycleScheduler } from './modules/storage-lifecycle/scheduler.js';
 import { startRetentionScheduler } from './modules/tenant-bundles/retention.js';
 // startBackupScheduleTick (legacy per-tenant scheduler) retired 2026-05-28;
@@ -557,6 +560,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(backupsOverviewRoutes, { prefix: '/api/v1' });
   await app.register(oidcRoutes, { prefix: '/api/v1' });
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
+  await app.register(dnsApexDriftRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
   await app.register(provisioningRoutes, { prefix: '/api/v1' });
   await app.register(nodeRoutes, { prefix: '/api/v1' });
@@ -1070,6 +1074,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // chain re-arms itself.
       app.addHook('onClose', () => stopMailStatsScheduler(mailStatsTimer));
 
+      // Apex DNS drift DETECTION only (hourly). Never repairs on its own —
+      // an additive write into a customer zone is an explicit operator action
+      // from the DNS settings page. The scan just refreshes the stored report
+      // that drives the drift banner.
+      const apexDriftScheduler = startApexDriftScheduler(app.db, { log: app.log });
+      app.addHook('onClose', () => apexDriftScheduler.stop());
+
       // R6 PR 1+2: mail self-heal — re-asserts the plan-based Stalwart
       // throttle/quota objects AND the mail-events webhook every 5 min
       // (and once shortly after boot) so a Stalwart restore/restart or
@@ -1181,6 +1192,14 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const { createK8sClients: createK8s } = await import('./modules/k8s-provisioner/k8s-client.js');
         const storageK8s = createK8s(kubeconfigPath);
         const storageLifecycleHandle = startStorageLifecycleScheduler(app.db, storageK8s, app.config as Record<string, unknown>);
+
+        // Keep the DISCOVERED ingress addresses in step with live node state
+        // (5 min, matching the ingress-external-ips CronJob so both views of
+        // "which nodes serve ingress" converge at the same rate). Writes only
+        // the discovered keys — an operator override always wins — and never
+        // touches tenant DNS: apex repair stays operator-invoked.
+        const ingressNodeScheduler = startIngressNodeScheduler(app.db, storageK8s, { log: app.log });
+        app.addHook('onClose', () => ingressNodeScheduler.stop());
         app.addHook('onClose', () => storageLifecycleHandle.stop());
 
         // Phase 5: lifecycle-hook retry tick. Drains failed

@@ -40,6 +40,7 @@ export type ParseDrResult =
   | { ok: true; sub: 'restore'; req: DrRestoreRequest }
   | { ok: true; sub: 'rescue'; req: DrRescueRequest }
   | { ok: true; sub: 'tenant-restore'; req: TenantRecoverRequest }
+  | { ok: true; sub: 'help'; text: string }
   | { ok: false; code: number; message: string };
 
 type Fail = { ok: false; code: number; message: string };
@@ -255,8 +256,89 @@ function parseTenantRestore(rest: string[]): ParseDrResult {
   return { ok: true, sub: 'tenant-restore', req };
 }
 
+/**
+ * `--help` for `dr` and each subcommand.
+ *
+ * This file's own header states the argv surface "mirrors that shim so
+ * operators carry no new muscle memory" — and the shim it replaced
+ * (scripts/dr-restore-bundle.sh → dr-restore-runner.ts) accepts `--help`.
+ * The CLI did not: `insula dr restore --help` answered
+ *
+ *     dr restore: unknown argument '--help'      (exit 2)
+ *
+ * which is the one command an operator reaches for mid-incident, when they are
+ * least likely to have the docs open. Help goes to STDOUT and exits 0 — it is a
+ * successful request for information, not a usage error.
+ */
+const DR_HELP: Readonly<Record<string, string>> = {
+  verify: [
+    'insula dr verify --bundle <path> --age-key <path> [--age-binary <path>] [--json]',
+    '',
+    '  Read-only: decrypt a DR bundle and print its manifest. Touches no',
+    '  database and no cluster, so it is safe to run at any time.',
+    '',
+    '  Exit: 0 ok | 1 runtime failure | 2 usage error',
+  ].join('\n'),
+  restore: [
+    'insula dr restore --bundle <path> --age-key <path> --mode partial|full [options]',
+    '',
+    '  partial   Import the DR rows from the bundle. Non-destructive.',
+    '  full      Full recovery: CNPG clusters + the mail stack. DESTRUCTIVE.',
+    '',
+    'Options:',
+    '  --strict                     Fail on manifest drift instead of warning',
+    '  --age-binary <path>          age binary to decrypt with',
+    '  --kubeconfig <path>          kubeconfig for the target cluster',
+    '  --target-mail-node <name>    REQUIRED for --mode full: node for the mail stack',
+    '  --confirm-cluster <name>     REQUIRED for --mode full, repeatable: one typed',
+    '                               confirmation per CNPG cluster in the bundle',
+    '  --json                       Machine-readable result on stdout',
+    '',
+    '  Exit: 0 ok | 1 runtime failure | 2 usage error',
+  ].join('\n'),
+  rescue: [
+    'insula dr rescue [--json]',
+    '',
+    '  Take Longhorn safety snapshots of the system volumes before a',
+    '  destructive recovery. No required arguments.',
+    '',
+    '  Exit: 0 ok | 1 runtime failure | 2 usage error',
+  ].join('\n'),
+  'tenant-restore': [
+    'insula dr tenant-restore --tenant <id> [--bundle <id>] [--components <csv>]',
+    '                        [--mailbox-mode <m>] [--no-provision] [--json]',
+    '',
+    '  One-button tenant DR recover from an off-site bundle',
+    '  (provision → cart → execute). Unlike verify/restore/rescue this needs',
+    '  platform-api RUNNING — it drives the recover route in the pod.',
+    '',
+    '  Exit: 0 ok | 1 runtime failure | 2 usage error',
+  ].join('\n'),
+};
+
+const DR_HELP_GENERAL = [
+  'insula dr <subcommand> [args]',
+  '',
+  '  verify           Inspect a DR bundle (decrypt + manifest; read-only)',
+  '  restore          Restore from a DR bundle (partial rows | full recovery)',
+  '  rescue           Longhorn safety snapshots of the system volumes',
+  '  tenant-restore   One-button tenant recover (needs platform-api up)',
+  '',
+  "Run 'insula dr <subcommand> --help' for that subcommand's flags.",
+].join('\n');
+
+const wantsHelp = (args: readonly string[]): boolean =>
+  args.includes('--help') || args.includes('-h');
+
 export function parseDrArgs(args: string[]): ParseDrResult {
   const [sub, ...rest] = args;
+  // Before ANY validation: `--help` must not be reported as a missing --bundle.
+  if (wantsHelp(rest) && typeof sub === 'string' && sub in DR_HELP) {
+    return { ok: true, sub: 'help', text: DR_HELP[sub] };
+  }
+  if (wantsHelp(args)) {
+    return { ok: true, sub: 'help', text: DR_HELP_GENERAL };
+  }
   switch (sub) {
     case 'verify': return parseVerify(rest);
     case 'restore': return parseRestore(rest);
@@ -442,6 +524,11 @@ export async function drCommand(args: string[], deps: Deps): Promise<number> {
   if (!parsed.ok) {
     deps.err(parsed.message);
     return parsed.code;
+  }
+  // Help is a successful request for information: stdout, exit 0.
+  if (parsed.sub === 'help') {
+    deps.out(parsed.text);
+    return 0;
   }
   const json = args.includes('--json');
   if (parsed.sub === 'verify') return verifyCommand(parsed, json, deps);

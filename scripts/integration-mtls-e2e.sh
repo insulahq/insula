@@ -141,7 +141,16 @@ scenario_bootstrap() {
   local dep; dep=$(api POST "/tenants/$TID/deployments" "$(jq -nc --arg c "$CATALOG_ENTRY" --arg n "d${RUN//-/}" '{catalog_entry_id:$c,name:$n,replica_count:1}')" | jq -r '.data.id // empty')
   [[ -n "$dep" ]] || { fail "deployment create"; return; }
   st=""; i=0; while (( i < 60 )); do st=$(api GET "/tenants/$TID/deployments/$dep" | jq -r '.data.status // ""'); [[ "$st" == running ]] && break; sleep 6; i=$((i+1)); done
-  [[ "$st" == running ]] && ok "deployment running" || { fail "deployment never running (st=$st)"; return; }
+  if [[ "$st" == running ]]; then
+    ok "deployment running"
+  else
+    # A bare "st=pending" after six minutes says nothing about WHY, and this
+    # failure reproduces only on the VM clusters — where re-diagnosing it costs
+    # a whole fresh run. Dump what the API knows about the record so the log
+    # itself carries the cause (quota/ReplicaFailure, image pull, scheduling).
+    fail "deployment never running (st=$st) — record: $(api GET "/tenants/$TID/deployments/$dep" | jq -c '.data' 2>/dev/null | head -c 700)"
+    return
+  fi
 
   DID=$(api POST "/tenants/$TID/domains" "$(jq -nc --arg d "$HOST" --arg dep "$dep" '{domain_name:$d,deployment_id:$dep,dns_mode:"cname"}')" | jq -r '.data.id // empty')
   [[ -n "$DID" ]] || { fail "domain create"; return; }

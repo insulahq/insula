@@ -147,7 +147,15 @@ done
 # the pod must still be Running with the SAME name — that's how we
 # prove the orchestrator did NOT quiesce/replace.
 FM_POD_BEFORE=$(ssh_cp "kubectl -n $NS get pods -l app=file-manager -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" || echo "")
-log "file-manager pod before grow = ${FM_POD_BEFORE:-<none>}"
+# The Deployment UID is what distinguishes the two ways this can go wrong:
+# a template PATCH (same UID, new ReplicaSet hash) vs a delete+recreate
+# (new UID entirely — ensureFileManagerRunning does that on any spec
+# mismatch: image, caps, pvc, pull-policy, resources). Without it, "pod name
+# changed" is a symptom with two very different causes, and the failure has
+# only ever reproduced on the multi-node VM clusters.
+FM_DEP_UID_BEFORE=$(ssh_cp "kubectl -n $NS get deploy file-manager -o jsonpath='{.metadata.uid}' 2>/dev/null" || echo "")
+FM_RS_BEFORE=$(ssh_cp "kubectl -n $NS get rs -l app=file-manager -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{end}' 2>/dev/null" || echo "")
+log "file-manager pod before grow = ${FM_POD_BEFORE:-<none>} (deploy uid=${FM_DEP_UID_BEFORE:-<none>})"
 
 # ─── PATCH storage_limit_override 10 → 15 GiB (auto-grow trigger) ────
 log "── PATCH storage_limit_override=15 (UI: Save Resource Limits) ──"
@@ -243,7 +251,14 @@ if [[ -n "$FM_POD_BEFORE" && "$FM_POD_BEFORE" == "$FM_POD_AFTER" ]]; then
 elif [[ -z "$FM_POD_BEFORE" ]]; then
   log "no FM pod before — skipping name-equality check"
 else
-  fail "file-manager pod name changed: $FM_POD_BEFORE → $FM_POD_AFTER (was the orchestrator destructive?)"
+  FM_DEP_UID_AFTER=$(ssh_cp "kubectl -n $NS get deploy file-manager -o jsonpath='{.metadata.uid}' 2>/dev/null" || echo "")
+  FM_RS_AFTER=$(ssh_cp "kubectl -n $NS get rs -l app=file-manager -o jsonpath='{range .items[*]}{.metadata.name}{\" \"}{end}' 2>/dev/null" || echo "")
+  if [[ -n "$FM_DEP_UID_BEFORE" && "$FM_DEP_UID_BEFORE" != "$FM_DEP_UID_AFTER" ]]; then
+    _cause="Deployment was DELETED and RECREATED (uid $FM_DEP_UID_BEFORE → $FM_DEP_UID_AFTER) — ensureFileManagerRunning spec-mismatch path"
+  else
+    _cause="Deployment survived (uid unchanged) but its POD TEMPLATE was patched — new ReplicaSet; rs before=[$FM_RS_BEFORE] after=[$FM_RS_AFTER]"
+  fi
+  fail "file-manager pod name changed: $FM_POD_BEFORE → $FM_POD_AFTER — $_cause; recent events: $(ssh_cp "kubectl -n $NS get events --sort-by=.lastTimestamp -o jsonpath='{range .items[*]}{.reason}:{.message}{\"; \"}{end}' 2>/dev/null" | tail -c 400)"
 fi
 
 # ─── op state machine never visited destructive states ───────────────

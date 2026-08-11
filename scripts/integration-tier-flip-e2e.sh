@@ -377,7 +377,17 @@ sleep 3
 LOCAL_STATE=$(ssh_cp "kubectl -n $NS get deploy $DEPL_NAME -o jsonpath='{.spec.template.spec.nodeSelector.kubernetes\\.io/hostname}{\"|\"}{.spec.template.spec.affinity}' 2>/dev/null" || true)
 LOCAL_NS=$(echo "$LOCAL_STATE" | cut -d'|' -f1)
 LOCAL_AFF=$(echo "$LOCAL_STATE" | cut -d'|' -f2)
-[[ -n "$LOCAL_NS" ]] && ok "local tier: nodeSelector set to $LOCAL_NS" || fail "local tier: nodeSelector not applied"
+if [[ -n "$LOCAL_NS" ]]; then
+  ok "local tier: nodeSelector set to $LOCAL_NS"
+else
+  # applyTenantTier() builds { 'kubernetes.io/hostname': tenant.nodeName } and
+  # sends it as an RFC-7386 merge-patch, where a null VALUE deletes the key. So
+  # "no nodeSelector" and "nodeName is null" are the same observation from here,
+  # and the mirror HA assertion passes on empty output either way. Capture the
+  # tenant's nodeName and the live pod placement so one run distinguishes
+  # "never pinned" from "pinned then overwritten by a reconciler".
+  fail "local tier: nodeSelector not applied (tenant.nodeName=$(api GET "/tenants/$CID" | jq -r '.data.nodeName // "<null>"'), live spec=$(ssh_cp "kubectl -n $NS get deploy $DEPL_NAME -o jsonpath='{.spec.template.spec.nodeSelector}{\" aff=\"}{.spec.template.spec.affinity}'" 2>/dev/null | head -c 300), pods=$(ssh_cp "kubectl -n $NS get pods -o jsonpath='{range .items[*]}{.metadata.name}={.spec.nodeName}{\" \"}{end}'" 2>/dev/null | head -c 200))"
+fi
 [[ -z "$LOCAL_AFF" ]] && ok "local tier: affinity cleared" || fail "local tier: affinity still set ($LOCAL_AFF) — null-doesnt-clear bug"
 
 # ─── deployment uses Recreate strategy (RWO PVC requires it) ─────────

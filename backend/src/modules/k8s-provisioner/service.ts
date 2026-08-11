@@ -874,6 +874,20 @@ export async function runProvisionNamespace(
       if (picked) {
         await db.update(tenants).set({ nodeName: picked }).where(eq(tenants.id, tenantId));
         tenant.nodeName = picked;
+      } else {
+        // A null pick is NOT benign for Local tier — the comment above says
+        // this tier MUST be pinned because the single replica exists on one
+        // node only. Continuing unpinned leaves tenants.nodeName null, and
+        // applyTenantTier then gates its whole Deployment patch loop on that
+        // field: every later tier flip silently becomes a no-op. Only the
+        // throwing path was logged, so the far more likely failure — every
+        // candidate filtered out by can_host_tenant_workloads, which returns
+        // null rather than throwing — was completely invisible.
+        console.warn(
+          `[k8s-provisioner] auto-pick found NO tenant-capable node for ${namespace} `
+          + `(local tier stays unpinned; tier flips will no-op until tenants.node_name is set). `
+          + `Check cluster_nodes.can_host_tenant_workloads and Longhorn node scheduling.`,
+        );
       }
     } catch (err) {
       console.warn(`[k8s-provisioner] auto-pick worker failed for ${namespace}: ${(err as Error).message}`);
