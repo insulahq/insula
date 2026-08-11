@@ -142,8 +142,21 @@ wait_for_hash_change() {
 # Echoes the hash on success; nothing (return 1) on timeout. A truly ABSENT
 # Deployment returns immediately — that is not transient and deserves its own
 # error. All diagnostics go to stderr so $(…) capture stays clean.
+# Budget MUST exceed the reconciler's tick, not merely "feel generous".
+# startWebmailFeatureCssReconciler runs on DEFAULT_INTERVAL_MS = 5 * 60 * 1000,
+# and it stamps the annotation only when it ticks. A Deployment that appears
+# AFTER the last tick therefore carries no annotation for up to five minutes —
+# which is normal on a freshly bootstrapped cluster where Flux applies workloads
+# progressively, and is why the old 45s default produced
+#   FAIL roundcube Deployment carries feature-css-hash annotation
+# on the 2026-08-10 multi-node run while bulwark (present at an earlier tick)
+# passed in the same window. The suite was measuring tick phase, not the
+# reconciler. Same class as the mail-TLS cert assertion: a budget shorter than
+# the convergence period is a coin flip, and a previous round already tried to
+# fix this by adding a bounded wait — it just made it too short.
+WEBMAIL_CSS_TICK_S="${WEBMAIL_CSS_TICK_S:-360}"
 wait_for_annotation() {
-  local deployment="$1" budget="${2:-45}" i hash
+  local deployment="$1" budget="${2:-$WEBMAIL_CSS_TICK_S}" i hash
   if ! $KUBECTL -n "$NAMESPACE" get deployment "$deployment" -o name >/dev/null 2>&1; then
     red "  (deployment/$deployment ABSENT in $NAMESPACE — cannot read annotation)" >&2
     return 1
@@ -179,8 +192,8 @@ echo "$roundcube_default" | grep -q 'a.button.contacts' \
 # Bounded wait (not single-shot): the reconciler stamps these asynchronously,
 # so reading once races the settle window — the exact cause of the rc.20
 # "roundcube Deployment carries feature-css-hash annotation" false failure.
-bulwark_hash_A=$(wait_for_annotation bulwark 45 || true)
-roundcube_hash_A=$(wait_for_annotation roundcube 45 || true)
+bulwark_hash_A=$(wait_for_annotation bulwark || true)
+roundcube_hash_A=$(wait_for_annotation roundcube || true)
 assert "bulwark Deployment carries feature-css-hash annotation" \
   test -n "$bulwark_hash_A"
 assert "roundcube Deployment carries feature-css-hash annotation" \
