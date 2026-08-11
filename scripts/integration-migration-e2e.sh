@@ -90,7 +90,13 @@ cyn "2. capture whole-client bundle to the off-site target"
 parse "$(api POST /admin/tenant-bundles "{\"tenantId\":\"$TID\",\"targetConfigId\":\"$CFG\",\"async\":true,\"components\":{\"files\":true,\"mailboxes\":false,\"config\":true,\"secrets\":false}}" "$TOKEN")"
 BID=$(printf '%s' "$BODY"|jq -r '.data.bundleId // .data.id'); BST=timeout
 for i in $(seq 1 150); do parse "$(api GET "/admin/tenant-bundles/$BID" '' "$TOKEN")"; s=$(printf '%s' "$BODY"|jq -r '.data.status // empty'); [[ "$s" == completed || "$s" == partial || "$s" == failed ]] && { BST="$s"; break; }; sleep 4; done
-[[ "$BST" == completed ]] || { no "bundle terminal=$BST"; exit 1; }
+# `partial` names no failing leg, so every occurrence has cost a fresh cluster
+# run to find out which component died. The bundle record carries `lastError`
+# plus the artifact/size fields — print them instead of throwing them away.
+[[ "$BST" == completed ]] || {
+  no "bundle terminal=$BST — $(printf '%s' "$BODY" | jq -c '.data | {lastError, exportArtifact, sizeBytes, databaseDumps, startedAt, finishedAt}' 2>/dev/null | head -c 600)"
+  exit 1
+}
 ok "bundle $BID completed on the target"
 
 cyn "3. SIMULATE cluster-A-only: delete the tenant fully (row + namespace)"
