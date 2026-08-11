@@ -262,6 +262,14 @@ elif ! command -v docker >/dev/null 2>&1; then
   echo "  (skip G: docker not on PATH — install or set SKIP_RESTORE=1)"
 elif ! command -v psql >/dev/null 2>&1; then
   echo "  (skip G: psql not on PATH — install postgresql-client or set SKIP_RESTORE=1)"
+elif [[ ! -d "$REPO_ROOT/backend/src/db/migrations" ]]; then
+  # dr-restore-bundle.sh runs the TypeScript restore runner, and G0 applies the
+  # schema from backend/src/db/migrations. Neither exists on a host that
+  # received only scripts/ — which is exactly what the VM integration runner
+  # gets (run.sh ships `tar -C $REPO scripts`). Reported as five FAILURES on
+  # the 2026-08-10 multi-node run, including "G0 migration *.sql failed" for an
+  # UNEXPANDED glob: there was no directory for the shell to expand.
+  echo "  (skip G: no backend/src/db/migrations under $REPO_ROOT — this host has scripts/ only)"
 else
   REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
   PG_NAME="dr-restore-verify-$$"
@@ -382,6 +390,15 @@ fi
 echo
 echo "==> Phase H: Unit C full-mode CLI surface"
 
+# Same prerequisite as Phase G: every H assertion shells out to
+# dr-restore-bundle.sh, which needs the full repo (it execs the TS runner via
+# tsx). With scripts/ alone it now exits 2 with an actionable message — correct
+# behaviour, but it makes H1-H3's "expected exit 2" pass for the WRONG reason
+# and leaves H4 (--help text) unanswerable. Skip honestly instead.
+if [[ ! -d "$REPO_ROOT/backend" ]]; then
+  echo "  (skip H: no backend/ under $REPO_ROOT — this host has scripts/ only)"
+else
+
 # H1: --mode=full without --target-mail-node fails fast with exit 2.
 if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
     --bundle /dev/null --age-key /dev/null --mode full \
@@ -433,6 +450,8 @@ if "$REPO_ROOT/scripts/dr-restore-bundle.sh" --help 2>/dev/null | grep -q "parti
 else
   fail "H4 --help text doesn't mention 'partial|full'"
 fi
+
+fi   # end Phase H repo-layout guard
 
 echo
 echo "─── Summary ───"
