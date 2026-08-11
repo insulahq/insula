@@ -57,6 +57,15 @@ export const dnsApexDriftReportSchema = z.object({
   trigger: z.enum(['manual', 'scheduled']),
   /** The ingress address set the scan compared against. */
   expected: z.array(apexRecordSchema),
+  /**
+   * Where `expected` came from — an operator override, live node discovery,
+   * a deployment env var, or the local fallback. Shown in the UI so
+   * "why is my apex pointing there?" is answerable without reading code.
+   * Optional: reports stored before provenance was tracked lack it.
+   */
+  ingressSource: z.enum(['override', 'discovered', 'env', 'fallback']).optional(),
+  /** Nodes that produced a `discovered` set. Empty for other sources. */
+  ingressDiscoveredNodes: z.array(z.string()).optional(),
   domains: z.array(dnsApexDriftDomainSchema),
   /** Domains with at least one missing record. Drives the banner. */
   driftCount: z.number().int().min(0),

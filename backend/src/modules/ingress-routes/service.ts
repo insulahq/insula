@@ -22,6 +22,11 @@ async function getSetting(db: Database, key: string): Promise<string | null> {
   return row?.value ?? null;
 }
 
+/** Remove a setting so its resolution falls through to the next source. */
+async function clearSetting(db: Database, key: string): Promise<void> {
+  await db.delete(platformSettings).where(eq(platformSettings.key, key));
+}
+
 async function setSetting(db: Database, key: string, value: string): Promise<void> {
   await db
     .insert(platformSettings)
@@ -29,15 +34,53 @@ async function setSetting(db: Database, key: string, value: string): Promise<voi
     .onConflictDoUpdate({ target: platformSettings.key, set: { value } });
 }
 
+/**
+ * Resolve the effective ingress addresses.
+ *
+ * Precedence — operator intent always wins:
+ *   1. `ingress_default_ipv4/ipv6`     explicit operator override
+ *   2. `ingress_discovered_ipv4/ipv6`  live cluster state, maintained by the
+ *                                      ingress-nodes reconciler
+ *   3. INGRESS_DEFAULT_IPV4 env        deployment fallback
+ *   4. 127.0.0.1                       local-DinD convenience
+ *
+ * The override is kept separate from the discovered value rather than having
+ * the reconciler write the same key, because an operator may deliberately
+ * point tenant apexes at a load-balancer VIP or anycast address that is not
+ * any node's ExternalIP. A reconciler that owned one key would quietly undo
+ * that every tick.
+ *
+ * `ingressSource` is returned so the UI can say which of these is in effect —
+ * "why is my apex pointing there?" should be answerable without reading code.
+ */
+export type IngressAddressSource = 'override' | 'discovered' | 'env' | 'fallback';
+
 export async function getIngressSettings(db: Database) {
   const baseDomain = await getSetting(db, 'ingress_base_domain');
   const ipv4 = await getSetting(db, 'ingress_default_ipv4');
   const ipv6 = await getSetting(db, 'ingress_default_ipv6');
+  const discoveredIpv4 = await getSetting(db, 'ingress_discovered_ipv4');
+  const discoveredIpv6 = await getSetting(db, 'ingress_discovered_ipv6');
+  const discoveredNodes = await getSetting(db, 'ingress_discovered_nodes');
+
+  const hasOverride = Boolean(ipv4 || ipv6);
+  const hasDiscovered = Boolean(discoveredIpv4 || discoveredIpv6);
+  const ingressSource: IngressAddressSource = hasOverride
+    ? 'override'
+    : hasDiscovered
+      ? 'discovered'
+      : ENV_INGRESS_DEFAULT_IPV4
+        ? 'env'
+        : 'fallback';
 
   return {
     ingressBaseDomain: baseDomain ?? ENV_INGRESS_BASE_DOMAIN ?? 'ingress.localhost',
-    ingressDefaultIpv4: ipv4 ?? ENV_INGRESS_DEFAULT_IPV4 ?? '127.0.0.1',
-    ingressDefaultIpv6: ipv6 ?? null,
+    ingressDefaultIpv4:
+      ipv4 ?? (hasOverride ? null : discoveredIpv4) ?? ENV_INGRESS_DEFAULT_IPV4 ?? '127.0.0.1',
+    ingressDefaultIpv6: ipv6 ?? (hasOverride ? null : discoveredIpv6) ?? null,
+    ingressSource,
+    /** Nodes that produced the discovered set, for operator-facing provenance. */
+    ingressDiscoveredNodes: discoveredNodes ? discoveredNodes.split(',').filter(Boolean) : [],
   };
 }
 
@@ -70,13 +113,20 @@ export async function updateIngressSettings(
   if (input.ingressBaseDomain !== undefined) {
     await setSetting(db, 'ingress_base_domain', input.ingressBaseDomain);
   }
+  // An empty value CLEARS the override and hands the field back to node
+  // discovery. Without this there is no way back to automatic once a value has
+  // been saved once — and because the settings form is pre-filled with the
+  // EFFECTIVE address, saving an unrelated field would otherwise silently
+  // freeze whatever was discovered at that moment into a permanent override.
   if (input.ingressDefaultIpv4 !== undefined) {
-    await setSetting(db, 'ingress_default_ipv4', input.ingressDefaultIpv4);
+    const v = input.ingressDefaultIpv4.trim();
+    if (v) await setSetting(db, 'ingress_default_ipv4', v);
+    else await clearSetting(db, 'ingress_default_ipv4');
   }
   if (input.ingressDefaultIpv6 !== undefined) {
-    if (input.ingressDefaultIpv6) {
-      await setSetting(db, 'ingress_default_ipv6', input.ingressDefaultIpv6);
-    }
+    const v = (input.ingressDefaultIpv6 ?? '').trim();
+    if (v) await setSetting(db, 'ingress_default_ipv6', v);
+    else await clearSetting(db, 'ingress_default_ipv6');
   }
   return getIngressSettings(db);
 }

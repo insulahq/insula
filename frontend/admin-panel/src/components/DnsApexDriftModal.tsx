@@ -64,6 +64,9 @@ export default function DnsApexDriftModal({ report, onClose, onFixStarted }: Pro
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
               Scanned {new Date(report.scannedAt).toLocaleString()} ({report.trigger}) · expected{' '}
               {report.expected.map((r) => r.content).join(', ') || 'none configured'}
+              {report.ingressSource && (
+                <span data-testid="dns-apex-drift-source"> · {describeSource(report)}</span>
+              )}
             </p>
           </div>
           <button
@@ -202,6 +205,28 @@ export default function DnsApexDriftModal({ report, onClose, onFixStarted }: Pro
       </div>
     </div>
   );
+}
+
+/**
+ * Where the expected addresses came from. An operator asking "why is my apex
+ * pointing there?" should be able to answer it from this line alone.
+ */
+function describeSource(report: DnsApexDriftReport): string {
+  switch (report.ingressSource) {
+    case 'override': {
+      return 'source: operator override (clear it in Ingress settings to track cluster nodes)';
+    }
+    case 'discovered': {
+      const n = report.ingressDiscoveredNodes?.length ?? 0;
+      return `source: discovered from ${n} ingress node${n === 1 ? '' : 's'}`;
+    }
+    case 'env': {
+      return 'source: deployment environment variable';
+    }
+    default: {
+      return 'source: local fallback — no ingress addresses configured or discovered';
+    }
+  }
 }
 
 function DomainRow({

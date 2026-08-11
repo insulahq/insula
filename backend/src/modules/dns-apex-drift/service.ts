@@ -145,13 +145,16 @@ export async function scanApexDrift(
       scannedAt,
       trigger: opts.trigger,
       expected: [],
+      ingressSource: settings.ingressSource,
+      ingressDiscoveredNodes: settings.ingressDiscoveredNodes,
       domains: [],
       driftCount: 0,
       unmanagedCount: 0,
       errorCount: 0,
       scanError:
-        'No ingress addresses configured (Settings → Ingress: ingress_default_ipv4/ipv6). ' +
-        'Apex drift cannot be evaluated until at least one is set.',
+        'No ingress addresses available — no operator override is set and node discovery has not ' +
+        'reported any Ready, ingress-eligible node with an ExternalIP. Apex drift cannot be ' +
+        'evaluated until at least one address exists.',
     };
     await storeReport(db, report);
     return report;
@@ -188,6 +191,8 @@ export async function scanApexDrift(
     scannedAt,
     trigger: opts.trigger,
     expected,
+    ingressSource: settings.ingressSource,
+    ingressDiscoveredNodes: settings.ingressDiscoveredNodes,
     domains: results,
     driftCount: results.filter((r) => r.missing.length > 0).length,
     unmanagedCount: results.filter((r) => r.unmanaged.length > 0).length,
