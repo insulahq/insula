@@ -129,7 +129,12 @@ storage paths. Two path classes:
 
 - **No hardcoded pins** — `bootstrap.sh` runs verbatim inside the VMs; its version
   pins are the single source of truth. Zero local↔staging drift by construction.
-- **Trap-safe teardown** — `run.sh` tears down on EXIT (set `VMTEST_KEEP_ON_FAIL=1`
+- **Retained by default** — `run.sh` KEEPS the cluster on EXIT (`VMTEST_KEEP=1`, the
+  default) so follow-up questions don't cost another ~4h run. The next run reclaims
+  older runs automatically, so only the latest is retained; `VMTEST_KEEP_ALL=1` opts
+  out of that. Reclaim explicitly with `teardown.sh <run-id>`. CI should set
+  `VMTEST_KEEP=0`.
+- **Trap-safe teardown** — with `VMTEST_KEEP=0`, `run.sh` tears down on EXIT (set `VMTEST_KEEP_ON_FAIL=1`
   to keep a failed run for debugging). Golden image is cached across runs.
 - **Reuses the real harness** — `integration-all.sh` is called unchanged; the VM
   tier only provisions and sets the env contract. The baseline gate reporting
