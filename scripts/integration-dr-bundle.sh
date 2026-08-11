@@ -390,68 +390,85 @@ fi
 echo
 echo "==> Phase H: Unit C full-mode CLI surface"
 
-# Same prerequisite as Phase G: every H assertion shells out to
-# dr-restore-bundle.sh, which needs the full repo (it execs the TS runner via
-# tsx). With scripts/ alone it now exits 2 with an actionable message — correct
-# behaviour, but it makes H1-H3's "expected exit 2" pass for the WRONG reason
-# and leaves H4 (--help text) unanswerable. Skip honestly instead.
-if [[ ! -d "$REPO_ROOT/backend" ]]; then
-  echo "  (skip H: no backend/ under $REPO_ROOT — this host has scripts/ only)"
+# Phase H exercises the OPERATOR-FACING CLI, `insula dr restore` — not the
+# scripts/dr-restore-bundle.sh wrapper it replaced.
+#
+# ADR-055 folded the operator CLI into a single signed binary at
+# /usr/local/bin/insula, and dr.ts states its argv surface "mirrors that shim so
+# operators carry no new muscle memory". The shim needs the full repo (it execs
+# the TS runner through tsx) and therefore cannot run on a real node at all —
+# the VM integration runner receives scripts/ only, which is why every H
+# assertion failed there on 2026-08-10. Testing the shim also tested the wrong
+# thing: during an incident an operator runs the binary, and the binary is what
+# ships.
+#
+# Exit-code contract (dr.ts header, confirmed empirically against a live node):
+#   0 = success · 1 = runtime failure · 2 = usage error
+OPS_BIN="${PLATFORM_OPS_BIN:-}"
+if [[ -z "$OPS_BIN" && -n "${SSH_HOST:-}" ]]; then
+  for _c in /usr/local/bin/insula /usr/local/bin/platform-ops; do
+    if ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no \
+         -o ConnectTimeout=15 -q "$SSH_HOST" "test -x $_c" 2>/dev/null; then
+      OPS_BIN="$_c"; break
+    fi
+  done
+fi
+if [[ -z "${SSH_HOST:-}" || -z "$OPS_BIN" ]]; then
+  echo "  (skip H: no operator CLI reachable — set SSH_HOST (and PLATFORM_OPS_BIN if it is not at /usr/local/bin/insula))"
 else
+echo "  using $OPS_BIN on ${SSH_HOST#*@}"
 
-# H1: --mode=full without --target-mail-node fails fast with exit 2.
-if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
-    --bundle /dev/null --age-key /dev/null --mode full \
-    > "$WORK_DIR/h1.stdout" 2> "$WORK_DIR/h1.stderr"; then
-  fail "H1 mode=full without --target-mail-node should exit non-zero"
+# Run a dr subcommand on the node; echo "<rc>|<stdout+stderr first line>".
+# Every invocation below is DELIBERATELY invalid so it cannot reach a restore.
+h_run() {
+  local out rc
+  out=$(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no \
+        -o ConnectTimeout=20 -q "$SSH_HOST" "$OPS_BIN $* 2>&1"; printf '|RC=%s' "$?")
+  rc="${out##*|RC=}"
+  printf '%s|%s' "$rc" "$(printf '%s' "${out%|RC=*}" | head -1)"
+}
+
+# H1: --mode full without --target-mail-node → usage error naming the flag.
+_h=$(h_run dr restore --bundle /dev/null --age-key /dev/null --mode full)
+if [[ "${_h%%|*}" == "2" && "${_h#*|}" == *target-mail-node* ]]; then
+  ok "H1 mode=full without --target-mail-node exits 2 with clear error"
 else
-  EXIT_CODE=$?
-  if [[ "$EXIT_CODE" == "2" ]] && grep -q "target-mail-node" "$WORK_DIR/h1.stderr"; then
-    ok "H1 mode=full without --target-mail-node exits 2 with clear error"
+  fail "H1 expected exit 2 + target-mail-node mention; got: $_h"
+fi
+
+# H2: --mode full with a mail node but no typed cluster confirmation.
+_h=$(h_run dr restore --bundle /dev/null --age-key /dev/null --mode full --target-mail-node n1)
+if [[ "${_h%%|*}" == "2" && "${_h#*|}" == *confirm-cluster* ]]; then
+  ok "H2 mode=full without --confirm-cluster exits 2 with clear error"
+else
+  fail "H2 expected exit 2 + confirm-cluster mention; got: $_h"
+fi
+
+# H3: an unknown --mode value is a usage error, not a silent default.
+_h=$(h_run dr restore --bundle /dev/null --age-key /dev/null --mode bogus)
+if [[ "${_h%%|*}" == "2" ]]; then
+  ok "H3 unknown --mode value exits 2"
+else
+  fail "H3 expected exit 2; got: $_h"
+fi
+
+# H4: --help works and documents both modes. This is the command an operator
+# reaches for mid-incident; it answered "unknown argument '--help'" (exit 2)
+# until 2026-08-11.
+_h=$(h_run dr restore --help)
+if [[ "${_h%%|*}" == "0" ]]; then
+  _htext=$(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no \
+           -o ConnectTimeout=20 -q "$SSH_HOST" "$OPS_BIN dr restore --help 2>&1" || true)
+  if grep -q 'partial' <<<"$_htext" && grep -q 'full' <<<"$_htext"; then
+    ok "H4 --help exits 0 and documents both partial and full modes"
   else
-    fail "H1 expected exit 2 + target-mail-node mention; got exit $EXIT_CODE: $(cat "$WORK_DIR/h1.stderr")"
+    fail "H4 --help exited 0 but does not document both modes"
   fi
-fi
-
-# H2: --mode=full without --confirm-cluster fails fast.
-if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
-    --bundle /dev/null --age-key /dev/null --mode full \
-    --target-mail-node staging1 \
-    > "$WORK_DIR/h2.stdout" 2> "$WORK_DIR/h2.stderr"; then
-  fail "H2 mode=full without --confirm-cluster should exit non-zero"
 else
-  EXIT_CODE=$?
-  if [[ "$EXIT_CODE" == "2" ]] && grep -q "confirm-cluster" "$WORK_DIR/h2.stderr"; then
-    ok "H2 mode=full without --confirm-cluster exits 2 with clear error"
-  else
-    fail "H2 expected exit 2 + confirm-cluster mention; got exit $EXIT_CODE"
-  fi
+  fail "H4 --help should exit 0; got: $_h"
 fi
 
-# H3: unknown --mode value rejected (defense-in-depth — the TS-narrowed
-# union doesn't help if the operator typos).
-if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
-    --bundle /dev/null --age-key /dev/null --mode unknown-mode \
-    > "$WORK_DIR/h3.stdout" 2> "$WORK_DIR/h3.stderr"; then
-  fail "H3 mode=unknown-mode should exit non-zero"
-else
-  EXIT_CODE=$?
-  if [[ "$EXIT_CODE" == "2" ]]; then
-    ok "H3 unknown --mode value exits 2"
-  else
-    fail "H3 expected exit 2; got $EXIT_CODE"
-  fi
-fi
-
-# H4: --help mentions both modes (catches a future regression where
-# the help text drifts from the supported surface).
-if "$REPO_ROOT/scripts/dr-restore-bundle.sh" --help 2>/dev/null | grep -q "partial|full"; then
-  ok "H4 --help mentions both partial and full modes"
-else
-  fail "H4 --help text doesn't mention 'partial|full'"
-fi
-
-fi   # end Phase H repo-layout guard
+fi   # end Phase H operator-CLI guard
 
 echo
 echo "─── Summary ───"
