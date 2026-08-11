@@ -104,6 +104,21 @@ echo "════ vmtest run ${RUN}  apex=${APEX}  net=10.98.${OCTET}.0/24  mod
 
 cleanup() {
   local rc=$?
+  # RETAIN BY DEFAULT (2026-08-11). Throw-away-per-run keeps drift impossible,
+  # but it also destroys the only copy of the evidence the moment a run finds
+  # something: every follow-up question ("which pin is still on that node?",
+  # "what did the scheduler say?") then costs a fresh ~4h run to ask. Runs are
+  # unique per RUN id and the next run builds its own network + VMs, so keeping
+  # the last one costs disk and RAM, not correctness.
+  #
+  # Reclaim explicitly when done:  scripts/vm-integration-tests/teardown.sh <run-id>
+  # Restore the old behaviour with VMTEST_KEEP=0 (CI should set that).
+  if [[ "${VMTEST_KEEP:-1}" == "1" ]]; then
+    echo "── run ${RUN} RETAINED (rc=$rc; VMTEST_KEEP=1 is the default) ──"
+    echo "   inspect:  virsh -c qemu+ssh://\${VMTEST_HOST_SSH#*@}/system list --all | grep ${RUN}"
+    echo "   teardown: $HERE/teardown.sh ${RUN}"
+    return
+  fi
   if [[ "$rc" -ne 0 && "${VMTEST_KEEP_ON_FAIL:-0}" == "1" ]]; then
     echo "run FAILED (rc=$rc) — VMTEST_KEEP_ON_FAIL=1, leaving run ${RUN} up for debugging."
     echo "  teardown later:  RUN=${RUN} $HERE/teardown.sh ${RUN}"
@@ -112,6 +127,24 @@ cleanup() {
   echo "── teardown ${RUN} ──"; "$HERE/teardown.sh" "$RUN" || true
 }
 trap cleanup EXIT
+
+# Reclaim PREVIOUS runs before building this one. Retain-by-default (above) keeps
+# the last run's evidence, but a retained 6-VM topology is ~36GB — leave two of
+# them up and the next run dies in the memory preflight ("planned guest memory …
+# exceeds host available"), which is a confusing way to learn you forgot to tear
+# something down. So: the LAST run stays, older ones are reclaimed here.
+# VMTEST_KEEP_ALL=1 opts out (you then manage host RAM yourself).
+if [[ "${VMTEST_KEEP_ALL:-0}" != "1" ]]; then
+  # run.sh sources only config.env — VIRSH lives in lib/driver.sh, and without
+  # this the enumeration below silently finds nothing and reclaims nothing.
+  # shellcheck source=lib/driver.sh
+  source "$HERE/lib/driver.sh"
+  _stale=$(VIRSH list --all --name 2>/dev/null | grep '^vmt-' | sed -E 's/^vmt-([0-9a-f]+)-.*/\1/' | sort -u | grep -v "^${RUN}$" || true)
+  for _r in $_stale; do
+    echo "── reclaiming previous run ${_r} (retain-by-default keeps only the latest; VMTEST_KEEP_ALL=1 to keep them all) ──"
+    "$HERE/teardown.sh" "$_r" >/dev/null 2>&1 || true
+  done
+fi
 
 # seed_apex_dns <svc_ip> <pdns_api_key> <apex> <ingress_ip>
 # Create the run's apex zone in the services-VM PowerDNS with an apex A record + a
