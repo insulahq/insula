@@ -202,19 +202,34 @@ done
 
 # ─── dr-inputs.yaml content ─────────────────────────────────────────
 echo "==> Phase D: dr-inputs.yaml content"
-if ! command -v yq >/dev/null 2>&1; then
-  echo "  (skip D: yq not installed — apt-get install yq)" >&2
+# dr-inputs.yaml carries only top-level scalars, so a missing `yq` is no reason
+# to skip a DR assertion — PyYAML reads the same file, and every harness that
+# runs this suite has python3. Phase D used to skip outright wherever yq was
+# absent (this sandbox included), which is precisely the kind of permanent hole
+# a disaster-recovery suite must not have.
+y_get() {  # $1 = key, $2 = file
+  if command -v yq >/dev/null 2>&1; then
+    yq -r ".$1" "$2"
+  else
+    python3 -c 'import sys, yaml
+d = yaml.safe_load(open(sys.argv[2])) or {}
+v = d.get(sys.argv[1])
+print("null" if v is None else v)' "$1" "$2"
+  fi
+}
+if ! command -v yq >/dev/null 2>&1 && ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  fail "D needs a YAML reader — install yq or python3-yaml (refusing to skip a DR assertion)"
 else
-  VERSION=$(yq -r '.drBundleVersion' "$WORK_DIR/contents/dr-inputs.yaml")
+  VERSION=$(y_get drBundleVersion "$WORK_DIR/contents/dr-inputs.yaml")
   if [[ "$VERSION" == "1" ]]; then ok "D1 drBundleVersion=1"; else fail "D1 drBundleVersion=$VERSION (expected 1)"; fi
-  APEX=$(yq -r '.apexDomain' "$WORK_DIR/contents/dr-inputs.yaml")
+  APEX=$(y_get apexDomain "$WORK_DIR/contents/dr-inputs.yaml")
   if [[ -n "$APEX" && "$APEX" != "null" ]]; then ok "D1 apexDomain=$APEX"; else fail "D1 apexDomain empty"; fi
-  MODE=$(yq -r '.mailPortMode' "$WORK_DIR/contents/dr-inputs.yaml")
+  MODE=$(y_get mailPortMode "$WORK_DIR/contents/dr-inputs.yaml")
   case "$MODE" in
     haproxy|hostport) ok "D2 mailPortMode=$MODE" ;;
     *) fail "D2 mailPortMode=$MODE (expected haproxy|hostport)" ;;
   esac
-  TOPO=$(yq -r '.bundleTopology' "$WORK_DIR/contents/dr-inputs.yaml")
+  TOPO=$(y_get bundleTopology "$WORK_DIR/contents/dr-inputs.yaml")
   case "$TOPO" in
     single|ha) ok "D3 bundleTopology=$TOPO" ;;
     *) fail "D3 bundleTopology=$TOPO (expected single|ha)" ;;
@@ -255,140 +270,197 @@ done
 # bundle we just produced + populate an empty DB with the right rows.
 # Uses a throwaway local Postgres (docker run) so the live system-db
 # stays clean. Skipped when --skip-restore is set OR docker is missing.
-echo "==> Phase G: dr-restore-bundle.sh round-trip"
+echo "==> Phase G: DR restore round-trip (on the node, via the insula CLI)"
+#
+# Runs the REAL restore path: the signed operator binary, the real schema
+# migrations, and a real Postgres — the same CNPG cluster the platform uses,
+# but restoring into an ISOLATED throwaway database that is dropped afterwards.
+#
+# It used to spin up an ephemeral Postgres through the HARNESS's docker and
+# skipped whenever the harness could not reach the published port — which is the
+# case from a sandbox whose docker lives in another network namespace, and from
+# the VM runner, which has neither docker nor the repo. Net effect: the disaster
+# -recovery round-trip, including the A1 read-only freeze invariant, ran NOWHERE.
+# For a DR feature that is the worst possible place to have a permanent skip.
+#
+# The node has everything required and the harness does not: the full repo at
+# /opt/insula (87 migrations), the `insula` binary, kubectl, and — verified —
+# direct TCP reachability to the CNPG ClusterIP.
+G_SSH=(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no -o ConnectTimeout=20 -q)
+g_node() { "${G_SSH[@]}" "$SSH_HOST" "$@"; }
+# psql runs INSIDE the CNPG pod (the node has no psql client). -U postgres is
+# peer-trusted there, which is also how the throwaway database gets created.
+g_psql() { g_node "kubectl -n platform exec -i system-db-1 -c postgres -- psql -U postgres -v ON_ERROR_STOP=1 $*"; }
+# Row count in the THROWAWAY database. Every Phase G assertion below is made
+# against real database state rather than against what the CLI says it did.
+g_count() { g_psql "-d '$G_DB' -tAc 'SELECT COUNT(*) FROM $1'" 2>/dev/null | tr -d '[:space:]'; }
+
 if [[ "${SKIP_RESTORE:-0}" == "1" ]]; then
   echo "  (skip G: SKIP_RESTORE=1)"
-elif ! command -v docker >/dev/null 2>&1; then
-  echo "  (skip G: docker not on PATH — install or set SKIP_RESTORE=1)"
-elif ! command -v psql >/dev/null 2>&1; then
-  echo "  (skip G: psql not on PATH — install postgresql-client or set SKIP_RESTORE=1)"
-elif [[ ! -d "$REPO_ROOT/backend/src/db/migrations" ]]; then
-  # dr-restore-bundle.sh runs the TypeScript restore runner, and G0 applies the
-  # schema from backend/src/db/migrations. Neither exists on a host that
-  # received only scripts/ — which is exactly what the VM integration runner
-  # gets (run.sh ships `tar -C $REPO scripts`). Reported as five FAILURES on
-  # the 2026-08-10 multi-node run, including "G0 migration *.sql failed" for an
-  # UNEXPANDED glob: there was no directory for the shell to expand.
-  echo "  (skip G: no backend/src/db/migrations under $REPO_ROOT — this host has scripts/ only)"
+elif [[ -z "${SSH_HOST:-}" ]]; then
+  echo "  (skip G: SSH_HOST unset — the round-trip runs on the cluster node)"
+elif [[ -z "${OPS_BIN_G:=$(for c in /usr/local/bin/insula /usr/local/bin/platform-ops; do
+        "${G_SSH[@]}" "$SSH_HOST" "test -x $c" 2>/dev/null && { echo "$c"; break; }; done)}" ]]; then
+  echo "  (skip G: no insula/platform-ops binary on ${SSH_HOST#*@})"
+elif ! g_node 'test -d /opt/insula/backend/src/db/migrations' 2>/dev/null; then
+  echo "  (skip G: /opt/insula/backend/src/db/migrations missing on the node)"
 else
-  REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-  PG_NAME="dr-restore-verify-$$"
-  PG_PASS="dr-verify-$(openssl rand -hex 8)"
-  PG_PORT=$(shuf -i 55432-65432 -n 1)
-  cleanup_pg() {
-    docker rm -f "$PG_NAME" >/dev/null 2>&1 || true
+  # Unique, obviously-disposable name. Asserted below so a bug in this block can
+  # never point the restore at the live `platform` database.
+  G_DB="dr_verify_$(date +%s)_$$"
+  case "$G_DB" in platform|postgres|template*) echo "  (skip G: refusing unsafe db name $G_DB)"; G_DB=""; esac
+fi
+
+if [[ -n "${G_DB:-}" ]]; then
+  g_cleanup_db() {
+    g_psql "-d postgres -c 'DROP DATABASE IF EXISTS \"$G_DB\" WITH (FORCE)'" >/dev/null 2>&1 || true
+    g_node "rm -f /tmp/$G_DB.age" >/dev/null 2>&1 || true
   }
-  trap 'cleanup_pg; cleanup' EXIT
+  trap 'g_cleanup_db; cleanup' EXIT
 
-  echo "  spinning up ephemeral Postgres on :$PG_PORT..."
-  docker run -d --rm --name "$PG_NAME" -e POSTGRES_PASSWORD="$PG_PASS" -p "$PG_PORT:5432" postgres:18-alpine >/dev/null
-  # Wait for Postgres to accept connections FROM THIS HARNESS (max 30s).
-  #
-  # `docker exec … pg_isready` was the wrong probe: it asks the server about its
-  # own unix socket, which says nothing about whether the PUBLISHED PORT is
-  # reachable from here. Under DinD (or any daemon in a different network
-  # namespace) the container is perfectly healthy while localhost:$PG_PORT is
-  # refused — so the loop "succeeded", psql then failed on the first migration,
-  # and the suite reported
-  #     G0 migration 0000_tenant_rename.sql failed against ephemeral Postgres
-  # about a migration that is fine. Probe the path we actually use.
-  export DATABASE_URL="postgresql://postgres:$PG_PASS@localhost:$PG_PORT/postgres"
-  PG_REACHABLE=0
-  for _ in $(seq 1 30); do
-    if PGCONNECT_TIMEOUT=3 psql "$DATABASE_URL" -c 'SELECT 1' >/dev/null 2>&1; then
-      PG_REACHABLE=1; break
-    fi
-    sleep 1
-  done
-  if [[ "$PG_REACHABLE" -ne 1 ]]; then
-    # Environment, not product: skip Phase G rather than blame a migration.
-    echo "  (skip G: ephemeral Postgres started but localhost:$PG_PORT is unreachable from this harness —" >&2
-    echo "   published container ports are not routable here, e.g. a Docker-in-Docker daemon in another" >&2
-    echo "   network namespace. Run this suite where docker publishes to the harness's own loopback," >&2
-    echo "   or set SKIP_RESTORE=1 to elide Phase G explicitly.)" >&2
-  fi
-
-  # Apply schema migrations — every *.sql in backend/src/db/migrations
-  # in alphabetical order. Mirrors the platform-api startup migrator.
-  # MIGRATION_FAIL starts at 1 when Postgres is unreachable so the import block
-  # below is skipped without recording a product failure — the skip was already
-  # reported above.
-  MIGRATION_FAIL=$(( PG_REACHABLE == 1 ? 0 : 1 ))
-  if [[ "$PG_REACHABLE" -eq 1 ]]; then
-    for m in "$REPO_ROOT"/backend/src/db/migrations/*.sql; do
-      # Keep stderr: a swallowed psql error is how a connection refusal came to
-      # be reported as a broken migration in the first place.
-      if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$m" > "$WORK_DIR/migrate.out" 2>&1; then
-        fail "G0 migration $(basename "$m") failed against ephemeral Postgres: $(tail -3 "$WORK_DIR/migrate.out" | tr '\n' ' ')"
-        MIGRATION_FAIL=1
-        break
-      fi
-    done
-  fi
-  if [[ $MIGRATION_FAIL -eq 0 ]]; then
-    ok "G0 schema migrations applied to ephemeral Postgres"
-
-    # Run the importer against the empty DB.
-    if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
-        --bundle "$WORK_DIR/bundle.age" \
-        --age-key "$AGE_KEY_FILE" \
-        --mode partial \
-        > "$WORK_DIR/restore.stdout" 2> "$WORK_DIR/restore.stderr"; then
-      ok "G1 dr-restore-bundle.sh exited 0"
+  echo "  throwaway database: $G_DB (dropped on exit)"
+  if ! g_psql "-d postgres -c 'CREATE DATABASE \"$G_DB\"'" >"$WORK_DIR/g_create.out" 2>&1; then
+    fail "G0 could not create the throwaway database: $(tail -2 "$WORK_DIR/g_create.out" | tr '\n' ' ')"
+  else
+    # Apply the schema exactly as platform-api's startup migrator does: every
+    # *.sql in alphabetical order, stopping at the first failure. Streamed into
+    # the pod so the node needs no psql client.
+    G_MIGRATE_FAIL=0
+    G_MIGRATE_ERR=""
+    G_MIGRATE_ERR=$(g_node "set -e; for m in /opt/insula/backend/src/db/migrations/*.sql; do \
+        kubectl -n platform exec -i system-db-1 -c postgres -- \
+          psql -U postgres -v ON_ERROR_STOP=1 -q -d '$G_DB' -f - < \"\$m\" \
+          || { echo \"FAILED_AT=\$m\"; exit 1; }; done" 2>&1) || G_MIGRATE_FAIL=1
+    if [[ $G_MIGRATE_FAIL -ne 0 ]]; then
+      fail "G0 schema migrations failed against $G_DB: $(printf '%s' "$G_MIGRATE_ERR" | tail -3 | tr '\n' ' ')"
     else
-      fail "G1 dr-restore-bundle.sh failed: $(cat "$WORK_DIR/restore.stderr")"
-    fi
+      ok "G0 schema migrations applied to $G_DB (real migrations, real Postgres)"
 
-    # Verify the JSON result is well-formed + has the expected shape.
-    if jq -e '.ok == true' "$WORK_DIR/restore.stdout" >/dev/null 2>&1; then
-      CONFIGS=$(jq -r '.importResult.configsInserted' "$WORK_DIR/restore.stdout")
-      ASSIGNS=$(jq -r '.importResult.assignmentsInserted' "$WORK_DIR/restore.stdout")
-      ok "G2 importer reports configsInserted=$CONFIGS assignmentsInserted=$ASSIGNS"
-    else
-      fail "G2 importer JSON result is not ok=true"
-    fi
+      # Credentials: derive from the URL the PLATFORM itself uses
+      # (platform-db-credentials/url), NOT CNPG's default `system-db-app`
+      # secret. That secret describes an `app` role and `app` database this
+      # platform does not use — the login role is `platform` — so it produced
+      # "password authentication failed for user app" against a healthy cluster.
+      #
+      # Exactly two substitutions: the DATABASE becomes the throwaway, and the
+      # HOST becomes the service ClusterIP (the node has no cluster DNS for
+      # `system-db-rw.platform`). User, password and port carry over verbatim,
+      # so this cannot drift from the platform's real configuration.
+      G_LIVE_URL=$(g_node "kubectl -n platform get secret platform-db-credentials -o jsonpath='{.data.url}' | base64 -d")
+      G_IP=$(g_node "kubectl -n platform get svc system-db-rw -o jsonpath='{.spec.clusterIP}'")
+      G_URL=$(G_LIVE_URL="$G_LIVE_URL" G_IP="$G_IP" G_DB="$G_DB" python3 -c '
+import os, urllib.parse as u
+p = u.urlparse(os.environ["G_LIVE_URL"])
+creds, _, _ = os.environ["G_LIVE_URL"].partition("//")[2].rpartition("@")
+host = os.environ["G_IP"] + ":" + str(p.port or 5432)
+print(u.urlunparse(p._replace(netloc=(creds + "@" + host) if creds else host,
+                              path="/" + os.environ["G_DB"])))')
+      # Guard: the restore must NEVER be pointed at the live database.
+      case "$G_URL" in
+        *"/$G_DB") : ;;
+        *) fail "G0 refusing to run — derived DATABASE_URL does not target $G_DB"; G_DB="" ;;
+      esac
+      G_ROLE=$(printf '%s' "$G_LIVE_URL" | sed -E 's#^[a-z]+://([^:@]+).*#\1#')
+      g_psql "-d '$G_DB' -c 'GRANT ALL ON SCHEMA public TO \"$G_ROLE\"'" >/dev/null 2>&1 || true
+      g_psql "-d postgres -c 'GRANT ALL PRIVILEGES ON DATABASE \"$G_DB\" TO \"$G_ROLE\"'" >/dev/null 2>&1 || true
+      g_psql "-d '$G_DB' -c 'GRANT ALL ON ALL TABLES IN SCHEMA public TO \"$G_ROLE\"'" >/dev/null 2>&1 || true
 
-    # Verify the rows landed in the DB with readOnly=true on EVERY row.
-    NON_RO=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM backup_configurations WHERE read_only IS NOT TRUE")
-    if [[ "$NON_RO" == "0" ]]; then
-      TOTAL=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM backup_configurations")
-      ok "G3 every imported config has read_only=true (total=$TOTAL)"
-    else
-      fail "G3 $NON_RO row(s) in DB have read_only != true — A1 freeze invariant violated"
-    fi
+      # The bundle was captured from THIS cluster, so the node's own operator key
+      # decrypts it — no private key is copied from the harness to the node.
+      G_NODE_KEY=/var/lib/insula/operator-key/operator-private.key
+      scp -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no -q \
+          "$WORK_DIR/bundle.age" "$SSH_HOST:/tmp/$G_DB.age" 2>/dev/null || true
 
-    # Verify the assignments landed.
-    A_TOTAL=$(psql "$DATABASE_URL" -t -A -c "SELECT COUNT(*) FROM backup_target_assignments")
-    ok "G4 imported $A_TOTAL backup_target_assignments rows"
+      g_restore() {  # $1 = stdout file
+        g_node "DATABASE_URL='$G_URL' \
+                JWT_SECRET='dr-verify-not-a-real-secret-0123456789' \
+                $OPS_BIN_G dr restore --bundle /tmp/$G_DB.age --age-key $G_NODE_KEY --mode partial --json" \
+          > "$1" 2>"$1.err"
+      }
 
-    # Verify idempotency: re-running the importer is a no-op (every
-    # row is skipped via ON CONFLICT DO NOTHING).
-    if "$REPO_ROOT/scripts/dr-restore-bundle.sh" \
-        --bundle "$WORK_DIR/bundle.age" --age-key "$AGE_KEY_FILE" --mode partial \
-        > "$WORK_DIR/restore2.stdout" 2>&1; then
-      RE_INSERTED=$(jq -r '.importResult.configsInserted' "$WORK_DIR/restore2.stdout")
-      if [[ "$RE_INSERTED" == "0" ]]; then
-        ok "G5 re-running importer is idempotent (0 new inserts)"
+      G_IMPORTED=0
+      if g_restore "$WORK_DIR/restore.stdout"; then
+        ok "G1 insula dr restore --mode partial exited 0"
+        G_IMPORTED=1
       else
-        fail "G5 re-run inserted $RE_INSERTED configs — importer is not idempotent"
+        fail "G1 insula dr restore failed: $(tail -2 "$WORK_DIR/restore.stdout.err" | tr '\n' ' ')"
       fi
-    else
-      fail "G5 re-run failed"
+
+      # Counts straight from the bundle we just produced. Every assertion below
+      # compares DATABASE STATE to the BUNDLE, never to a hardcoded number, so
+      # this phase stays valid on any cluster.
+      B_CFGS=$(jq -r '.backupConfigurations | length' "$WORK_DIR/contents/dr-rows.json")
+      B_ASSIGNS=$(jq -r '.backupTargetAssignments | length' "$WORK_DIR/contents/dr-rows.json")
+
+      # `--json` emits {ok, bundleInfo, summary, driftNotes} (dr-ops.ts
+      # success()) — the import counts live in the summary PROSE, not in a
+      # machine-readable field. An earlier revision of this phase read
+      # `.importResult.configsInserted`, which does not exist: jq's `// 0`
+      # rendered the missing field as "configsInserted=0" and G2 PASSED while
+      # asserting nothing at all. G3/G4/G5 now carry the weight by querying the
+      # database directly.
+      if jq -e '.ok == true and (.summary | length) > 0' "$WORK_DIR/restore.stdout" >/dev/null 2>&1; then
+        ok "G2 restore reports ok=true — $(jq -r '.summary[0]' "$WORK_DIR/restore.stdout")"
+      else
+        fail "G2 restore JSON is not ok=true with a summary: $(head -c 200 "$WORK_DIR/restore.stdout")"
+      fi
+
+      # A1 FREEZE INVARIANT — the reason this phase must not be skipped. An
+      # imported backup config must never be writable: a restored cluster that
+      # can write to the ORIGINAL cluster's backup targets would corrupt the
+      # very backups it was restored from.
+      # Gate on G1. "0 rows violate the invariant" is trivially true of an EMPTY
+      # table, so without this gate G3 reports success precisely when the
+      # restore FAILED — a false green exactly where DR most needs a real one.
+      # Observed on the first node-side run: G1 failed on credentials and G3/G4
+      # still printed PASS with total=0.
+      if [[ "$G_IMPORTED" != "1" ]]; then
+        fail "G3/G4/G5 not evaluated — the import failed, so an empty table proves nothing"
+      else
+        G_CFGS=$(g_count backup_configurations)
+        G_NON_RO=$(g_psql "-d '$G_DB' -tAc 'SELECT COUNT(*) FROM backup_configurations WHERE read_only IS NOT TRUE'" 2>/dev/null | tr -d '[:space:]')
+        if [[ "$G_NON_RO" != "0" ]]; then
+          fail "G3 $G_NON_RO of $G_CFGS restored config(s) have read_only != true — A1 freeze invariant violated"
+        elif [[ "$G_CFGS" != "$B_CFGS" ]]; then
+          fail "G3 restored $G_CFGS backup_configurations but the bundle carries $B_CFGS"
+        else
+          ok "G3 all $G_CFGS bundle backup_configurations restored, every one read_only=true"
+        fi
+
+        G_ASSIGNS=$(g_count backup_target_assignments)
+        if [[ "$G_ASSIGNS" == "$B_ASSIGNS" && "${G_ASSIGNS:-0}" -gt 0 ]]; then
+          ok "G4 restored all $G_ASSIGNS backup_target_assignments carried by the bundle"
+        else
+          fail "G4 restored $G_ASSIGNS backup_target_assignments, bundle carries $B_ASSIGNS"
+        fi
+
+        # Idempotency: an operator re-running a restore after an interruption
+        # must not duplicate rows. Asserted on DATABASE STATE, not on the tool's
+        # own report — the end state is what the operator has to live with, and
+        # it does not depend on the CLI's output shape.
+        if g_restore "$WORK_DIR/restore2.stdout"; then
+          G_CFGS2=$(g_count backup_configurations)
+          G_ASSIGNS2=$(g_count backup_target_assignments)
+          # Unchanged counts alone cannot tell "correctly skipped the existing
+          # rows" apart from "did nothing at all" — both leave the table as it
+          # was. The summary reports "Imported N ... (M already present) ...",
+          # so assert the importer actually SAW and skipped every row.
+          G_SUM2=$(jq -r '.summary[0] // ""' "$WORK_DIR/restore2.stdout")
+          G_SKIPPED=$(printf '%s' "$G_SUM2" | sed -nE 's/.*\(([0-9]+) already present\).*/\1/p')
+          if [[ "$G_CFGS2" != "$G_CFGS" || "$G_ASSIGNS2" != "$G_ASSIGNS" ]]; then
+            fail "G5 re-run changed row counts: configs $G_CFGS->$G_CFGS2, assignments $G_ASSIGNS->$G_ASSIGNS2"
+          elif [[ "$G_SKIPPED" != "$B_CFGS" ]]; then
+            fail "G5 re-run reported '$G_SUM2' — expected it to skip $B_CFGS existing config(s)"
+          else
+            ok "G5 re-run is idempotent ($G_CFGS2 configs / $G_ASSIGNS2 assignments unchanged; $G_SKIPPED skipped as already present)"
+          fi
+        else
+          fail "G5 re-run failed: $(tail -2 "$WORK_DIR/restore2.stdout.err" | tr '\n' ' ')"
+        fi
+      fi   # end G1-gated assertions
     fi
   fi
 fi
-
-# ─────────────────────────────────────────────────────────────────────
-# Phase H — Unit C surface (full-mode CLI argv handling)
-# ─────────────────────────────────────────────────────────────────────
-# Real CNPG recovery + mail restore requires a multi-node staging
-# cluster with Longhorn + barman archive + mail PVC populated — that
-# coverage lives in the staging E2E suite. Here we exercise the CLI
-# surface: required-arg validation, label dispatch on the stdout JSON,
-# help-text presence.
-
-echo
-echo "==> Phase H: Unit C full-mode CLI surface"
 
 # Phase H exercises the OPERATOR-FACING CLI, `insula dr restore` — not the
 # scripts/dr-restore-bundle.sh wrapper it replaced.
