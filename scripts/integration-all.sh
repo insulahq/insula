@@ -1310,8 +1310,20 @@ assert_global_state "startup-baseline"
 # seconds, not 40 minutes, if the platform is already broken. --no-smoke skips.
 if [[ "$RUN_SMOKE" == 1 ]]; then
   log "Smoke gate: scripts/smoke-test.sh (abort on red; --no-smoke to skip)"
+  # Arm the mail DELIVERY gate. Without MAIL_E2E_USER/PASS smoke-test can only
+  # probe port liveness, and a listener answering "220" passes that while the
+  # server rejects every message at DATA ("452 mail system full") — the exact
+  # regression that shipped undetected in v2026.6.14. The suites' own mailboxes
+  # are ephemeral, so nothing was ever left behind for the gate to use and it
+  # skipped on every run. This provisions a throwaway one and cleans it up.
+  # shellcheck source=scripts/lib/ensure-mail-e2e-mailbox.sh
+  source "$SCRIPT_DIR/lib/ensure-mail-e2e-mailbox.sh"
+  ensure_mail_e2e_mailbox
+  trap 'cleanup_mail_e2e_mailbox' EXIT
   smoke_rc=0
-  ADMIN_PASSWORD="$ADMIN_PASSWORD" timeout --kill-after=15s 300s "$SCRIPT_DIR/smoke-test.sh" || smoke_rc=$?
+  ADMIN_PASSWORD="$ADMIN_PASSWORD" MAIL_E2E_USER="${MAIL_E2E_USER:-}" MAIL_E2E_PASS="${MAIL_E2E_PASS:-}" \
+    timeout --kill-after=15s 300s "$SCRIPT_DIR/smoke-test.sh" || smoke_rc=$?
+  cleanup_mail_e2e_mailbox
   SUITE_SECS["smoke-gate"]=0; SUITE_RC["smoke-gate"]=$smoke_rc
   if [[ $smoke_rc -ne 0 && $smoke_rc -ne $SKIP_RC ]]; then
     fail "smoke gate FAILED (rc=$smoke_rc) — aborting before the suite. Re-run with --no-smoke to bypass."
