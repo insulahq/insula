@@ -3,6 +3,7 @@ import { dnsServers, dnsProviderGroups, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { encrypt, decrypt } from '../oidc/crypto.js';
 import { createProvider } from './providers/index.js';
+import { normalizeNsHostnames, assertUniqueServerNameInGroup } from './validation.js';
 import type { DnsProviderAdapter } from './providers/types.js';
 import type { Database } from '../../db/index.js';
 
@@ -56,6 +57,10 @@ export async function createDnsServer(db: Database, input: CreateDnsServerInput,
   // Validate group_id if provided
   if (input.group_id) {
     await getProviderGroupById(db, input.group_id);
+    const existing = await db
+      .select({ id: dnsServers.id, displayName: dnsServers.displayName, groupId: dnsServers.groupId })
+      .from(dnsServers);
+    assertUniqueServerNameInGroup(existing, input.display_name, input.group_id);
   }
 
   const id = crypto.randomUUID();
@@ -79,7 +84,18 @@ export async function createDnsServer(db: Database, input: CreateDnsServerInput,
 }
 
 export async function updateDnsServer(db: Database, id: string, input: Partial<CreateDnsServerInput>, encryptionKey: string) {
-  await getDnsServerById(db, id);
+  const current = await getDnsServerById(db, id);
+
+  // Renaming into a collision, or moving into a group that already has this
+  // name, is caught here as well as on create.
+  if (input.display_name !== undefined || input.group_id !== undefined) {
+    const targetGroup = input.group_id !== undefined ? input.group_id : current.groupId;
+    const targetName = input.display_name ?? current.displayName;
+    const existing = await db
+      .select({ id: dnsServers.id, displayName: dnsServers.displayName, groupId: dnsServers.groupId })
+      .from(dnsServers);
+    assertUniqueServerNameInGroup(existing, targetName, targetGroup, id);
+  }
 
   const updateValues: Record<string, unknown> = {};
   if (input.display_name !== undefined) updateValues.displayName = input.display_name;
@@ -190,11 +206,13 @@ export async function createProviderGroup(db: Database, input: CreateProviderGro
     await db.update(dnsProviderGroups).set({ isDefault: 0 }).where(eq(dnsProviderGroups.isDefault, 1));
   }
 
+  const nsHostnames = normalizeNsHostnames(input.ns_hostnames);
+
   await db.insert(dnsProviderGroups).values({
     id,
     name: input.name,
     isDefault: input.is_default ? 1 : 0,
-    nsHostnames: input.ns_hostnames ?? null,
+    nsHostnames: nsHostnames.length > 0 ? nsHostnames : null,
   });
 
   return getProviderGroupById(db, id);
@@ -217,7 +235,10 @@ export async function updateProviderGroup(db: Database, id: string, input: Updat
   const updateValues: Record<string, unknown> = {};
   if (input.name !== undefined) updateValues.name = input.name;
   if (input.is_default !== undefined) updateValues.isDefault = input.is_default ? 1 : 0;
-  if (input.ns_hostnames !== undefined) updateValues.nsHostnames = input.ns_hostnames;
+  if (input.ns_hostnames !== undefined) {
+    const nsHostnames = normalizeNsHostnames(input.ns_hostnames);
+    updateValues.nsHostnames = nsHostnames.length > 0 ? nsHostnames : null;
+  }
 
   if (Object.keys(updateValues).length > 0) {
     await db.update(dnsProviderGroups).set(updateValues).where(eq(dnsProviderGroups.id, id));

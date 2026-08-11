@@ -138,8 +138,28 @@ function ProviderGroupForm({ onClose, initial }: ProviderGroupFormProps) {
     setNsHostnames([...nsHostnames, '']);
   };
 
+  // Indices of NS inputs whose hostname is already used by an earlier row.
+  //
+  // A group listing the same nameserver twice is not cosmetic: PowerDNS
+  // rejects an NS record set containing duplicate records with HTTP 422, so
+  // zone creation fails for every domain in the group. Catch it at entry
+  // instead of letting it surface as a provisioning failure later.
+  const nsDuplicateIndices = (() => {
+    const seen = new Map<string, number>();
+    const dupes = new Set<number>();
+    nsHostnames.forEach((hostname, index) => {
+      const key = hostname.trim().toLowerCase().replace(/\.+$/, '');
+      if (!key) return;
+      if (seen.has(key)) dupes.add(index);
+      else seen.set(key, index);
+    });
+    return dupes;
+  })();
+  const hasNsDuplicates = nsDuplicateIndices.size > 0;
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (hasNsDuplicates) return;
     const filteredNs = nsHostnames.map((s) => s.trim()).filter(Boolean);
     const payload = {
       name,
@@ -168,26 +188,41 @@ function ProviderGroupForm({ onClose, initial }: ProviderGroupFormProps) {
       <div>
         <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">NS Hostnames</label>
         <div className="space-y-2">
-          {nsHostnames.map((hostname, index) => (
-            <div key={index} className="flex items-center gap-2">
-              <input
-                type="text"
-                className={INPUT_CLASS}
-                placeholder={`ns${index + 1}.example.com`}
-                value={hostname}
-                onChange={(e) => updateNsHostname(index, e.target.value)}
-                data-testid={`provider-group-ns-input-${index}`}
-              />
-              <button
-                type="button"
-                onClick={() => removeNsHostname(index)}
-                className="shrink-0 rounded-md border border-gray-200 dark:border-gray-700 p-2 text-gray-400 hover:text-red-500 hover:border-red-300 dark:hover:border-red-700 dark:hover:text-red-400"
-                data-testid={`remove-ns-hostname-${index}`}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          ))}
+          {nsHostnames.map((hostname, index) => {
+            const isDuplicate = nsDuplicateIndices.has(index);
+            return (
+              <div key={index}>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    className={`${INPUT_CLASS}${isDuplicate ? ' border-red-400 dark:border-red-600 focus:border-red-500 dark:focus:border-red-500' : ''}`}
+                    placeholder={`ns${index + 1}.example.com`}
+                    value={hostname}
+                    onChange={(e) => updateNsHostname(index, e.target.value)}
+                    aria-invalid={isDuplicate}
+                    data-testid={`provider-group-ns-input-${index}`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeNsHostname(index)}
+                    className="shrink-0 rounded-md border border-gray-200 dark:border-gray-700 p-2 text-gray-400 hover:text-red-500 hover:border-red-300 dark:hover:border-red-700 dark:hover:text-red-400"
+                    data-testid={`remove-ns-hostname-${index}`}
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                {isDuplicate && (
+                  <p
+                    className="mt-1 text-xs text-red-600 dark:text-red-400"
+                    data-testid={`provider-group-ns-duplicate-${index}`}
+                  >
+                    Already listed above. Each nameserver may appear only once — a duplicate makes
+                    the DNS server reject the zone&apos;s NS record set.
+                  </p>
+                )}
+              </div>
+            );
+          })}
         </div>
         <button
           type="button"
@@ -205,7 +240,7 @@ function ProviderGroupForm({ onClose, initial }: ProviderGroupFormProps) {
       {error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}
       <div className="flex gap-2 justify-end">
         {isEdit && <button type="button" onClick={onClose} className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>}
-        <button type="submit" disabled={isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-provider-group">
+        <button type="submit" disabled={isPending || hasNsDuplicates} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-provider-group">
           {isPending && <Loader2 size={14} className="animate-spin" />} {isEdit ? 'Save' : 'Create Group'}
         </button>
       </div>
@@ -305,6 +340,8 @@ interface DnsServerFormProps {
 function DnsServerForm({ onClose, initial, groups = [] }: DnsServerFormProps) {
   const create = useCreateDnsServer();
   const update = useUpdateDnsServer();
+  const { data: allServersResponse } = useDnsServers();
+  const allServers = allServersResponse?.data ?? [];
   const isEdit = Boolean(initial);
 
   const [form, setForm] = useState({
@@ -337,8 +374,24 @@ function DnsServerForm({ onClose, initial, groups = [] }: DnsServerFormProps) {
     }
   };
 
+  // Two servers in the same group sharing a display name make every
+  // provisioning/health log line ("failed on <name>") ambiguous — exactly the
+  // signal you need when one member of a group is unhealthy. Names are only
+  // constrained within a group; the same name in a different group is fine.
+  const duplicateServerName = Boolean(
+    form.group_id &&
+      form.display_name.trim() &&
+      allServers.some(
+        (s) =>
+          s.groupId === form.group_id &&
+          s.id !== initial?.id &&
+          s.displayName.trim().toLowerCase() === form.display_name.trim().toLowerCase(),
+      ),
+  );
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (duplicateServerName) return;
     const payload = {
       display_name: form.display_name,
       provider_type: form.provider_type,
@@ -380,7 +433,25 @@ options {
   return (
     <form onSubmit={handleSubmit} className="border-b border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4 space-y-3" data-testid={isEdit ? 'edit-dns-server-form' : 'add-dns-server-form'}>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label><input type="text" className={INPUT_CLASS} placeholder="Primary DNS" value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} required data-testid="dns-server-name-input" /></div>
+        <div>
+          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Display Name</label>
+          <input
+            type="text"
+            className={`${INPUT_CLASS}${duplicateServerName ? ' border-red-400 dark:border-red-600 focus:border-red-500 dark:focus:border-red-500' : ''}`}
+            placeholder="Primary DNS"
+            value={form.display_name}
+            onChange={(e) => setForm({ ...form, display_name: e.target.value })}
+            required
+            aria-invalid={duplicateServerName}
+            data-testid="dns-server-name-input"
+          />
+          {duplicateServerName && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400" data-testid="dns-server-name-duplicate">
+              Another DNS server in this provider group already uses this name. Pick a distinct name
+              so provisioning and health messages identify the right server.
+            </p>
+          )}
+        </div>
         <div><label className="block text-xs font-medium text-gray-700 dark:text-gray-300">Provider</label>
           <select className={INPUT_CLASS} value={form.provider_type} onChange={(e) => setForm({ ...form, provider_type: e.target.value })} disabled={isEdit} data-testid="dns-provider-select">
             {PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
@@ -478,7 +549,7 @@ options {
       {error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{error instanceof Error ? error.message : 'Failed'}</div>}
       <div className="flex gap-2 justify-end">
         {isEdit && <button type="button" onClick={onClose} className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700/50">Cancel</button>}
-        <button type="submit" disabled={isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-dns-server">{isPending && <Loader2 size={14} className="animate-spin" />} {isEdit ? 'Save' : 'Add Server'}</button>
+        <button type="submit" disabled={isPending || duplicateServerName} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-dns-server">{isPending && <Loader2 size={14} className="animate-spin" />} {isEdit ? 'Save' : 'Add Server'}</button>
       </div>
     </form>
   );

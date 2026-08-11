@@ -31,7 +31,20 @@ export interface DnsProviderAdapter {
 
   listZones(): Promise<DnsZone[]>;
   getZone(name: string): Promise<DnsZone | null>;
-  createZone(name: string, kind: 'Native' | 'Master'): Promise<DnsZone>;
+  /**
+   * Create a zone.
+   *
+   * `nameservers` is the apex NS set, supplied by the domain's DNS provider
+   * group (`dns_provider_groups.ns_hostnames`). Self-hosted providers that
+   * require an explicit NS RRset (PowerDNS, BIND) MUST use it verbatim.
+   * Cloud providers that assign their own nameservers ignore it.
+   *
+   * Callers must pass a non-empty list for self-hosted providers — a zone
+   * whose NS records point at names that don't exist is a lame delegation
+   * that resolves for nobody, which is exactly what a hardcoded
+   * `ns1.<zone>` placeholder used to produce.
+   */
+  createZone(name: string, kind: 'Native' | 'Master', nameservers?: string[]): Promise<DnsZone>;
   deleteZone(name: string): Promise<void>;
 
   listRecords(zone: string): Promise<DnsRecord[]>;

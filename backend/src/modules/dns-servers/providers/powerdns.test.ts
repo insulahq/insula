@@ -127,7 +127,10 @@ describe('PowerDnsProvider', () => {
       globalThis.fetch = fn;
 
       const provider = new PowerDnsProvider(config);
-      const zone = await provider.createZone('example.com', 'Native');
+      const zone = await provider.createZone('example.com', 'Native', [
+        'ns1.example.test',
+        'ns2.example.test',
+      ]);
 
       expect(zone.name).toBe('example.com.');
       expect(zone.kind).toBe('Native');
@@ -136,7 +139,47 @@ describe('PowerDnsProvider', () => {
       const body = JSON.parse(calls[1].options.body as string);
       expect(body.name).toBe('example.com.');
       expect(body.kind).toBe('Native');
-      expect(body.nameservers).toEqual(['ns1.example.com.', 'ns2.example.com.']);
+      // The apex NS set comes from the caller (the domain's provider group),
+      // root-dot normalised. This used to be hardcoded to
+      // ['ns1.example.com.', 'ns2.example.com.'] — the zone's OWN name with a
+      // label glued on — which are hostnames that never exist and get no
+      // glue, making every provisioned zone a lame delegation.
+      expect(body.nameservers).toEqual(['ns1.example.test.', 'ns2.example.test.']);
+    });
+
+    it('refuses to create a zone with no nameservers', async () => {
+      const { fn } = mockFetch([
+        { status: 404, statusText: 'Not Found', body: 'not found' },
+      ]);
+      globalThis.fetch = fn;
+
+      const provider = new PowerDnsProvider(config);
+      await expect(provider.createZone('example.com', 'Native', [])).rejects.toThrow(
+        /no nameservers/i,
+      );
+      await expect(provider.createZone('example.com', 'Native')).rejects.toThrow(
+        /no nameservers/i,
+      );
+    });
+
+    it('deduplicates the nameserver list before sending it', async () => {
+      const { fn, calls } = mockFetch([
+        { status: 404, statusText: 'Not Found', body: 'not found' },
+        { status: 201, body: { name: 'example.com.', kind: 'Native', serial: 1 } },
+      ]);
+      globalThis.fetch = fn;
+
+      // PowerDNS answers 422 for an RRset containing the same record twice,
+      // which is how a provider group holding one hostname twice silently
+      // took out zone creation for every domain in it.
+      const provider = new PowerDnsProvider(config);
+      await provider.createZone('example.com', 'Native', [
+        'ns1.example.test',
+        'ns1.example.test.',
+      ]);
+
+      const body = JSON.parse(calls[1].options.body as string);
+      expect(body.nameservers).toEqual(['ns1.example.test.']);
     });
 
     it('should return existing zone if it already exists', async () => {

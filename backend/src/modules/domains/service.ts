@@ -6,6 +6,7 @@ import { encodeCursor, decodeCursor } from '../../shared/pagination.js';
 import { getTenantById } from '../tenants/service.js';
 import { assertTenantActive } from '../tenants/guards.js';
 import { getActiveServersForDomain, getProviderForServer, getDefaultGroup, getPrimaryServersForGroup, getActiveServers, getProviderGroupById } from '../dns-servers/service.js';
+import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
 import { reconcileIngress } from './k8s-ingress.js';
 import { deleteDomainCertificate, ensureDomainCertificate } from '../certificates/service.js';
@@ -223,38 +224,89 @@ export async function createDomain(db: Database, tenantId: string, input: Create
 
   const [created] = await db.select().from(domains).where(eq(domains.id, id));
 
-  // Auto-provision DNS zone on the domain's group servers (or all active if no group)
+  // ─── DNS zone provisioning ──────────────────────────────────────────────
+  //
+  // ONLY when the platform is authoritative for the zone. This block used to
+  // run for every dnsMode except `secondary`, which meant `cname` domains —
+  // where DNS is by definition the customer's to run — still got a zone
+  // created on the platform's own servers. That is not merely useless, it is
+  // destructive: creating `x.<apex>` as a child zone makes the name EXIST,
+  // and per RFC 4592 a wildcard never covers a name that exists, so the
+  // platform's own `*.<apex>` stopped resolving for that host.
+  //
+  // `canManageDnsZone()` is the same predicate dns-records/service.ts already
+  // gates record CRUD on — which is why records were correctly skipped in
+  // cname mode while the zone was created anyway. Now both agree.
   const encryptionKey = process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
-  try {
-    const activeServers = await getActiveServersForDomain(db, id);
+  const activeServers = await getActiveServersForDomain(db, id).catch(() => []);
+
+  // Apex NS set for the new zone, from the domain's provider group.
+  // Deduped: PowerDNS rejects an RRset containing the same record twice with
+  // a 422, which silently took out zone provisioning for any group that had
+  // a hostname entered twice.
+  let groupNsHostnames: string[] = [];
+  if (dnsGroupId) {
+    const group = await getProviderGroupById(db, dnsGroupId);
+    groupNsHostnames = Array.from(new Set((group.nsHostnames ?? []).map((ns) => ns.trim()).filter(Boolean)));
+  }
+
+  const isSecondary = input.dns_mode === 'secondary' && Boolean(input.master_ip);
+  const platformOwnsZone = canManageDnsZone({
+    dnsMode: input.dns_mode,
+    activeServers: activeServers.map((s) => ({
+      id: s.id,
+      providerType: s.providerType,
+      enabled: s.enabled,
+      role: s.role,
+    })),
+  });
+
+  if (platformOwnsZone && groupNsHostnames.length === 0) {
+    // Refuse rather than mint a lame delegation. A primary zone whose NS
+    // records point at names that don't exist resolves for nobody, and the
+    // old code produced exactly that silently.
+    throw new ApiError(
+      'DNS_GROUP_MISSING_NAMESERVERS',
+      `Cannot provision a primary DNS zone for '${input.domain_name}': its DNS provider group has no nameserver hostnames configured.`,
+      400,
+      {
+        domain: input.domain_name,
+        dnsGroupId,
+        operatorError: {
+          code: 'DNS_GROUP_MISSING_NAMESERVERS',
+          title: 'DNS provider group has no nameservers',
+          detail:
+            `A primary zone needs an apex NS record set. The provider group assigned to '${input.domain_name}' ` +
+            `has an empty ns_hostnames list, so the zone would be created pointing at nameservers that do not exist.`,
+          remediation: [
+            'Open Settings → DNS → Provider Groups and set the nameserver hostnames (e.g. ns1./ns2. of your DNS servers).',
+            'Then create the domain again.',
+          ],
+          retryable: true,
+        },
+      },
+    );
+  }
+
+  if (isSecondary || platformOwnsZone) {
     for (const server of activeServers) {
       try {
         const provider = getProviderForServer(server, encryptionKey);
-        if (input.dns_mode === 'secondary' && input.master_ip && provider.createSlaveZone) {
-          await provider.createSlaveZone(input.domain_name, input.master_ip);
-        } else {
+        if (isSecondary && provider.createSlaveZone) {
+          await provider.createSlaveZone(input.domain_name, input.master_ip as string);
+        } else if (platformOwnsZone) {
           const zoneKind = (server.zoneDefaultKind as 'Native' | 'Master') ?? 'Native';
-          await provider.createZone(input.domain_name, zoneKind);
+          // NS comes from the group — providers no longer invent placeholders.
+          await provider.createZone(input.domain_name, zoneKind, groupNsHostnames);
         }
-      } catch {
-        // DNS provisioning failure shouldn't block domain creation — log and continue
-      }
-    }
-
-    // Replace auto-created NS records with group's configured nameservers
-    if (dnsGroupId) {
-      const group = await getProviderGroupById(db, dnsGroupId);
-      if (group.nsHostnames && group.nsHostnames.length > 0) {
-        for (const server of activeServers) {
-          try {
-            const provider = getProviderForServer(server, encryptionKey);
-            if (provider.replaceNsRecords) {
-              await provider.replaceNsRecords(input.domain_name, group.nsHostnames);
-            }
-          } catch (err) {
-            console.warn(`[dns] Failed to set NS records on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
-          }
-        }
+      } catch (err) {
+        // Still non-blocking (one unreachable server must not fail the whole
+        // domain), but NEVER silent again — the previous bare `catch {}` with
+        // no logging is why broken zones went unnoticed for weeks.
+        console.warn(
+          `[dns] Zone provisioning failed for '${input.domain_name}' on ${server.displayName}:`,
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
 
@@ -263,12 +315,18 @@ export async function createDomain(db: Database, tenantId: string, input: Create
       try {
         const { syncRecordsFromProvider } = await import('../dns-records/service.js');
         await syncRecordsFromProvider(db, tenantId, created.id);
-      } catch {
-        // Non-blocking — records can be synced later via Sync Records
+      } catch (err) {
+        console.warn(
+          `[dns] Initial record sync failed for '${input.domain_name}':`,
+          err instanceof Error ? err.message : String(err),
+        );
       }
     }
-  } catch {
-    // No DNS servers configured — that's fine
+  } else {
+    console.log(
+      `[dns] Skipping zone provisioning for '${input.domain_name}' — platform is not authoritative ` +
+        `(dnsMode=${input.dns_mode}). Customer-managed DNS: creating a zone here would shadow the platform wildcard.`,
+    );
   }
 
   // Auto-create ingress route if workload was selected

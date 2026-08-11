@@ -13,6 +13,49 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Tenant domain creation provisioned a DNS zone in every mode, including
+  `cname` — which silently shadowed the platform wildcard.** The
+  "auto-provision DNS zone" block in `createDomain()` special-cased only
+  `secondary`; everything else fell through to `createZone()`. So a
+  customer-managed (`cname`) domain still got a zone on the platform's own DNS
+  servers. That is not merely useless: creating `x.<apex>` as a child zone
+  makes the name EXIST, and per RFC 4592 a wildcard never covers a name that
+  exists — so the platform's own `*.<apex>` stopped resolving for that host.
+  The correct predicate already existed and was already used to gate record
+  CRUD (`dns-servers/authority.ts:canManageDnsZone()`); `createDomain` just
+  never called it, which is why records were correctly skipped in cname mode
+  while the zone was created anyway. Both agree now.
+- **Every provisioned zone was a lame delegation.** The PowerDNS provider
+  hardcoded `nameservers: ["ns1.<zone>", "ns2.<zone>"]` — the zone's own name
+  with a label glued on. Those hostnames are never registered and get no glue,
+  so the zone was authoritative-looking and resolvable by nobody. The apex NS
+  set now comes from the domain's provider group, and creating a zone with an
+  empty NS list is refused outright (with an `OperatorError` pointing at the
+  group) rather than minting a broken zone.
+- **A provider group listing the same nameserver twice broke zone creation
+  silently.** PowerDNS rejects an RRset containing duplicate records with 422,
+  so the `replaceNsRecords()` fix-up failed — into a swallowed `console.warn`,
+  leaving the placeholder NS in place. Duplicate nameserver hostnames and
+  duplicate DNS-server names within a group are now rejected at the API with a
+  clear error, blocked in the admin UI before submit, and de-duplicated
+  defensively at the provider.
+- **Ingress routes wrote an A record for subdomains instead of a CNAME.** The
+  old code took the "always create A, simpler, no CNAME limitations" route,
+  which pinned every tenant subdomain to one hardcoded IP and made adding an
+  ingress node a manual per-domain DNS migration. Subdomains now CNAME to
+  `<slug>.ingress.<apex>` — the indirection the CNAME chain exists for, so node
+  membership changes are one central RRset edit. Apexes (where CNAME is
+  illegal) get A/AAAA records and now support MULTIPLE ingress addresses so a
+  multi-node cluster round-robins.
+- **The loopback fallback could be published into a customer's zone.**
+  `getIngressSettings()` falls back to `127.0.0.1` when `ingress_default_ipv4`
+  is unset (a local-DinD convenience); that value was written verbatim as an
+  apex A record. Loopback and unspecified addresses are now filtered out, and a
+  route whose zone would get no address records says so in the log.
+- **DNS provisioning failures were invisible.** Three bare `catch {}` blocks
+  (zone creation, initial record sync, ingress-route record creation) discarded
+  the error entirely — no status, no message. They are still non-blocking, but
+  they now log what failed and where.
 - **The host firewall blocked CoreDNS from reaching the node's own resolver,
   breaking ALL pod DNS.** The input chain exempted the pod CIDR for the
   control-plane ports but never for `:53`. That is dormant while the node's

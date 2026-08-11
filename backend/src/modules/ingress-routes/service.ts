@@ -41,6 +41,28 @@ export async function getIngressSettings(db: Database) {
   };
 }
 
+/**
+ * Split an ingress-IP setting into individual addresses.
+ *
+ * The setting is comma/whitespace separated so a multi-node cluster can
+ * publish every ingress-enabled address and have apex records round-robin
+ * across them.
+ *
+ * Loopback is dropped deliberately: `getIngressSettings()` falls back to
+ * `127.0.0.1` when nothing is configured (a convenience for local DinD), and
+ * without this filter that fallback gets written verbatim into a customer's
+ * public zone — an apex A record pointing at the visitor's own machine.
+ */
+export function parseIngressIps(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  const parts = raw
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((ip) => !/^127\./.test(ip) && ip !== '::1' && ip !== '0.0.0.0' && ip !== '::');
+  return Array.from(new Set(parts));
+}
+
 export async function updateIngressSettings(
   db: Database,
   input: { ingressBaseDomain?: string; ingressDefaultIpv4?: string; ingressDefaultIpv6?: string | null },
@@ -268,25 +290,52 @@ export async function createRoute(
   if (domain.dnsMode === 'primary') {
     const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
     try {
-      // Always create A record (simpler, no CNAME limitations)
-      await syncRecordToProviders(db, domain.domainName, 'create', {
-        type: 'A',
-        name: recordName,
-        content: settings.ingressDefaultIpv4,
-        ttl: 300,
-      });
-      // Also add AAAA if IPv6 configured
-      const ipv6 = await getSetting(db, 'ingress_default_ipv6');
-      if (ipv6) {
+      if (apex) {
+        // A zone apex cannot hold a CNAME (RFC 1034), so it must carry
+        // address records. Emit one per configured ingress IP: a multi-node
+        // cluster round-robins across all ingress-enabled addresses instead
+        // of pinning every tenant apex to whichever single IP happened to be
+        // in the setting.
+        const v4 = parseIngressIps(settings.ingressDefaultIpv4);
+        const v6 = parseIngressIps(await getSetting(db, 'ingress_default_ipv6'));
+        if (v4.length === 0 && v6.length === 0) {
+          console.warn(
+            `[ingress-dns] No usable ingress IP configured (ingress_default_ipv4/ipv6) — ` +
+              `apex records for '${hostname}' were NOT created. Set them in Settings → Ingress.`,
+          );
+        }
+        for (const ip of v4) {
+          await syncRecordToProviders(db, domain.domainName, 'create', {
+            type: 'A', name: recordName, content: ip, ttl: 300,
+          });
+        }
+        for (const ip of v6) {
+          await syncRecordToProviders(db, domain.domainName, 'create', {
+            type: 'AAAA', name: recordName, content: ip, ttl: 300,
+          });
+        }
+      } else {
+        // Subdomain → CNAME into the platform's ingress chain. This is the
+        // entire point of `<slug>.ingress.<apex>`: when ingress node
+        // membership changes, ONE centrally-owned RRset changes, instead of
+        // rewriting an A record inside every tenant zone. The previous code
+        // wrote an A record here ("simpler, no CNAME limitations"), which is
+        // what made adding a node a manual per-domain migration.
         await syncRecordToProviders(db, domain.domainName, 'create', {
-          type: 'AAAA',
+          type: 'CNAME',
           name: recordName,
-          content: ipv6,
+          content: ingressCname.endsWith('.') ? ingressCname : `${ingressCname}.`,
           ttl: 300,
         });
       }
-    } catch {
-      // DNS creation failure shouldn't block route creation
+    } catch (err) {
+      // Non-blocking (a DNS outage must not fail route creation) but never
+      // silent — the previous bare `catch {}` is why primary-mode zones sat
+      // there with no address records and nothing said a word.
+      console.warn(
+        `[ingress-dns] Failed to create DNS records for '${hostname}':`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
