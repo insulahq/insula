@@ -41,6 +41,10 @@ const SnapshotCreateProgressModal = lazy(() => import('@/components/SnapshotCrea
 // `platform.upgrade` task with `target.modal = 'platform-upgrade'` so the chip
 // re-opens live roll progress + post-flight convergence.
 const PlatformUpgradeProgressModal = lazy(() => import('@/components/PlatformUpgradeProgressModal'));
+// 2026-08-11: additive apex-DNS repair. Detection is passive; this modal only
+// appears for the operator-invoked fix, and the chip re-opens it so closing the
+// modal never abandons an in-flight repair.
+const DnsApexDriftTaskModal = lazy(() => import('@/components/DnsApexDriftTaskModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -75,6 +79,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'platform-storage-apply': {
     Component: ApplyHaProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'dns-apex-drift-fix': {
+    Component: DnsApexDriftTaskModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
   'mail-operation': {
     Component: MailTaskProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,

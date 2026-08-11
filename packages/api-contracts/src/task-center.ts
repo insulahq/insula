@@ -112,6 +112,11 @@ export const TASK_KIND_REGISTRY = [
   // chip with a re-openable progress modal (roll progress + post-flight gates)
   // so the operator can close the Upgrades page and reopen progress from Tasks.
   'platform.upgrade',
+  // 2026-08-11: additive repair of apex ingress records that drifted after an
+  // ingress-capable node was added. Detection is passive; this kind only
+  // exists for the operator-invoked fix, which fans out over domains and
+  // reports per-domain steps in its modal.
+  'dns.apex-drift-fix',
 ] as const;
 export type TaskKind = (typeof TASK_KIND_REGISTRY)[number];
 
