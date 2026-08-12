@@ -322,6 +322,11 @@ WAITCERT
   #
   # minica is the CA that signs Pebble's OWN directory TLS; it is NOT the same as
   # /roots/0, which signs the certs Pebble issues. Stalwart needs both.
+  # The patch lives in the repo; the block below runs on the CP node.
+  scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -q \
+      "$REPO/k8s/components/stalwart-extra-ca/extra-ca-patch.yaml" \
+      "root@${VMTEST_CP_IP}:/tmp/stalwart-extra-ca-patch.yaml" 2>/dev/null \
+    || echo "  WARN: could not copy the stalwart-extra-ca patch to the control plane" >&2
   PEBBLE_MINICA_B64=$(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
       "root@${VMTEST_PEBBLE_IP}" 'docker cp pebble:/test/certs/pebble.minica.pem - 2>/dev/null | tar xO' 2>/dev/null | base64 -w0)
   [[ -n "$PEBBLE_MINICA_B64" ]] || echo "  WARN: could not extract pebble.minica.pem from ${VMTEST_PEBBLE_IP}" >&2
@@ -398,7 +403,57 @@ ports: [{name: acme, port: 14000, protocol: TCP}]
 endpoints:
   - addresses: ["${VMTEST_PEBBLE_IP}"]
     conditions: {ready: true}
+---
+# Egress to Pebble. The platform's own 'stalwart-mail' NetworkPolicy is
+# Egress-restricted and permits 53/25/465/587/443/80/9000/3000 only - port
+# 14000 is not among them, so Stalwart's ACME account registration was
+# silently DROPPED. Proven on run 621500bc: from the node the directory
+# answered http=200 in 4ms, while from the Stalwart pod the SAME address
+# timed out on 14000 (curl exit 28) yet was merely REFUSED on 443 (exit 7) -
+# dropped-slow vs refused-fast is the NetworkPolicy signature.
+#
+# The chain that failure produced: account registration blocks -> the
+# platform-api JMAP curl hits its 10s cap -> x:AcmeProvider is never created
+# -> mail keeps the rcgen self-signed cert -> staging-all (mail-tls) and
+# mail-external-reachability both fail.
+#
+# This belongs in the HARNESS, not in the platform policy: production reaches
+# Let's Encrypt on 443, which is already allowed, so opening 14000 there would
+# widen production egress for a test-only dependency. NetworkPolicies are
+# additive, so this grants the missing rule without editing the platform's.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-stalwart-to-pebble, namespace: mail}
+spec:
+  podSelector: {matchLabels: {app: stalwart-mail}}
+  policyTypes: [Egress]
+  egress:
+    - to: [{ipBlock: {cidr: "${VMTEST_PEBBLE_IP}/32"}}]
+      ports: [{port: 14000, protocol: TCP}]
 PEBSVC
+    # Ensure the trust-store initContainer actually EXISTS before restarting.
+    # k8s/components/stalwart-extra-ca is wired into the DEVELOPMENT overlay only
+    # (staging and production carry zero references to it, correctly: production
+    # reaches the real Let's Encrypt, whose roots the image already trusts). On
+    # the release tier the env is staging/production, so the secret above was
+    # created and then mounted by nobody: Stalwart never trusted Pebble, its ACME
+    # account registration failed, x:AcmeProvider was never created and mail kept
+    # the rcgen self-signed cert. Proven on run 621500bc — the running Deployment
+    # had only protect-from-silent-data-loss and restore-state, no merge-ca-trust,
+    # and no pebble cert anywhere under /etc/ssl/certs.
+    # Applying the component's own patch keeps one definition of the trust merge.
+    if ! k3s kubectl -n mail get deploy stalwart-mail \
+         -o jsonpath='{.spec.template.spec.initContainers[*].name}' 2>/dev/null | grep -q merge-ca-trust; then
+      if [ -s /tmp/stalwart-extra-ca-patch.yaml ]; then
+        k3s kubectl -n mail patch deploy stalwart-mail --type=strategic \
+          --patch-file /tmp/stalwart-extra-ca-patch.yaml >/dev/null 2>&1 \
+          && echo "  stalwart-extra-ca patch applied (overlay does not carry the component)" \
+          || echo "  WARN: could not apply the stalwart-extra-ca patch — mail TLS will stay self-signed" >&2
+      else
+        echo "  WARN: /tmp/stalwart-extra-ca-patch.yaml missing — mail TLS will stay self-signed" >&2
+      fi
+    fi
+
     # Restart Stalwart so the component's initContainer rebuilds the trust store.
     k3s kubectl -n mail delete pod -l app=stalwart-mail --ignore-not-found >/dev/null 2>&1 || true
     k3s kubectl -n mail rollout status deploy/stalwart-mail --timeout=240s >/dev/null 2>&1 || true
