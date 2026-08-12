@@ -109,8 +109,23 @@ function githubHeaders(env: NodeJS.ProcessEnv, accept: string, withAuth = true):
 async function readRunningVersion(env: NodeJS.ProcessEnv): Promise<string | null> {
   try {
     const { createK8sClients } = await import('../../../modules/k8s-provisioner/k8s-client.js');
-    const kubeconfig = env.KUBECONFIG?.trim() || '/etc/rancher/k3s/k3s.yaml';
-    const k8s = existsSync(kubeconfig) ? createK8sClients(kubeconfig) : createK8sClients();
+    // Same resolution order the host-config converger uses: the k3s admin
+    // kubeconfig on control-plane nodes, else the least-privilege kubeconfig the
+    // host-config-kubeconfig DaemonSet writes onto WORKER hosts.
+    //
+    // This used to hardcode /etc/rancher/k3s/k3s.yaml, which k3s AGENTS do not
+    // have. The fallback then tried in-cluster config, which needs a projected
+    // ServiceAccount token a host process has no mount for — so the read always
+    // threw on a worker, readRunningVersion returned null, and self-upgrade
+    // silently dropped to the `releases` path. That path only ever returns the
+    // newest STABLE release, so a worker could never select a prerelease: host
+    // state (firewall shape, sysctls, packages, migrations) diverged from the
+    // control plane for the entire life of every RC.
+    const { resolveHostConfigKubeconfig } = await import('../host-config/index.js');
+    const kubeconfig = resolveHostConfigKubeconfig(env);
+    const k8s = kubeconfig && existsSync(kubeconfig)
+      ? createK8sClients(kubeconfig)
+      : createK8sClients();
     const cm = (await k8s.core.readNamespacedConfigMap({
       name: 'platform-version',
       namespace: 'platform',

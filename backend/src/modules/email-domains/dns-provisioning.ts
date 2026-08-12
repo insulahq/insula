@@ -360,7 +360,18 @@ export async function provisionEmailDns(
     options,
   );
 
+  // Whether the platform owns this zone. Resolved ONCE here rather than
+  // per-record inside syncRecordToProviders, because the answer also decides
+  // what the *_provisioned flags may claim.
+  const platformOwnsZone = await isZoneWritable(db, domainId);
+
   for (const rec of records) {
+    // The row is written in EVERY dnsMode, deliberately. In cname/secondary
+    // mode the customer runs their own DNS, so the platform cannot publish
+    // these — but the operator still needs to SEE the exact MX/SPF/DKIM/DMARC
+    // values to paste into their provider. Withholding the rows would leave
+    // the DNS page empty and the mail domain quietly unusable with nothing on
+    // screen explaining why.
     const id = crypto.randomUUID();
     await db.insert(dnsRecords).values({
       id,
@@ -372,6 +383,8 @@ export async function provisionEmailDns(
       priority: rec.priority,
     });
 
+    // No-ops (with a per-record info log) when the platform isn't
+    // authoritative — never throws, so a cname-mode enable is not an error.
     await syncRecordToProviders(db, domainId, domainName, 'create', {
       type: rec.recordType,
       name: rec.recordName,
@@ -381,15 +394,62 @@ export async function provisionEmailDns(
     }, encryptionKey);
   }
 
+  // `*_provisioned` means "published to DNS", NOT "we know the value".
+  // Setting these unconditionally claimed a cname-mode domain was fully
+  // provisioned when nothing had been pushed anywhere — the operator saw four
+  // green ticks and a mail domain that could never receive mail. Records are
+  // recorded either way; only the flags distinguish published from pending.
+  const published = platformOwnsZone ? 1 : 0;
   await db
     .update(emailDomains)
     .set({
-      mxProvisioned: 1,
-      spfProvisioned: 1,
-      dkimProvisioned: 1,
-      dmarcProvisioned: 1,
+      mxProvisioned: published,
+      spfProvisioned: published,
+      dkimProvisioned: published,
+      dmarcProvisioned: published,
     })
     .where(eq(emailDomains.domainId, domainId));
+
+  if (!platformOwnsZone) {
+    // A warning, not an error: customer-managed DNS is a supported mode, not a
+    // failure. The records are in the DB and rendered on the domain's DNS page
+    // for the operator to publish by hand.
+    console.warn(
+      `[email-dns] '${domainName}' uses customer-managed DNS — the ${records.length} mail record(s) ` +
+        `(MX/SPF/DKIM/DMARC) were saved but NOT published. Add them manually at the domain's ` +
+        `DNS Records page; mail will not deliver until they exist in the authoritative zone.`,
+    );
+  }
+}
+
+/**
+ * True when the platform can actually write this domain's zone.
+ *
+ * Same predicate the record push uses, hoisted so the caller can distinguish
+ * "recorded" from "published" without re-deriving it per record. Any failure
+ * to resolve (no servers configured at all) is treated as NOT writable — the
+ * safe direction, since it only downgrades a flag and adds a warning.
+ */
+async function isZoneWritable(db: Database, domainId: string): Promise<boolean> {
+  try {
+    const [domain] = await db
+      .select({ dnsMode: domains.dnsMode })
+      .from(domains)
+      .where(eq(domains.id, domainId));
+    if (!domain) return false;
+    const servers = await getActiveServersForDomain(db, domainId);
+    return canManageDnsZone({
+      dnsMode: domain.dnsMode as 'primary' | 'cname' | 'secondary',
+      activeServers: servers.map((s) => ({
+        id: s.id,
+        providerType: s.providerType,
+        enabled: s.enabled,
+        role: s.role,
+      })),
+    });
+  } catch {
+    return false;
+  }
 }
 
 // Round-3: idempotently publish / unpublish the webmail.<domain> A

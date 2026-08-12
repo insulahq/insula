@@ -318,7 +318,41 @@ POD_CIDR_V4="10.42.0.0/16"
 #
 # Service v6 must be /108 or larger (Kubernetes caps the service CIDR size);
 # /112 leaves 65k service IPs, far past what a node ever allocates.
-DUAL_STACK=false
+# Tri-state, resolved in preflight by resolve_dual_stack():
+#   auto  (default) — enable IFF this node has a global IPv6 AND that address is
+#                     provably routable (probe_ipv6_egress). "Bound" is not
+#                     enough: a SLAAC/RA address whose prefix the provider never
+#                     routed looks identical to a working one in `ip -6 addr`.
+#   true            — forced on by --dual-stack (errors when no v6 exists)
+#   false           — forced off by --no-dual-stack
+#
+# Why auto is gated on a REACHABILITY probe rather than mere detection: the two
+# mistakes are not symmetric. Forgetting the flag costs one flag on the next
+# install. Enabling it on an unroutable address publishes an AAAA that nothing
+# answers on — it reaches --node-external-ip, then the ingress-external-ips
+# reconciler copies it onto the Traefik Service, then tenant apex records — so
+# v6-only clients fail outright and every dual-stack client eats a connect
+# timeout first. And k3s fixes cluster-cidr/service-cidr at install, so undoing
+# it means re-bootstrapping the cluster. Same principle the mail AAAA path
+# already encodes: a wrong AAAA is worse than no AAAA.
+DUAL_STACK=auto
+# Set by --yes/--assume-yes. Suppresses the interactive holds below.
+ASSUME_YES=false
+# Reachability targets for the `auto` decision. Two independent anycast
+# operators, so one blocked destination isn't read as broken IPv6.
+#
+# IP LITERALS, not hostnames, and deliberately so: the question is "does IPv6
+# ROUTE", and a hostname probe also requires working AAAA resolution, which
+# conflates two failures. (It also bites in practice — the first cut of this used
+# `ipv6.cloudflare.com`, which does not resolve at all, so the "second" target
+# was dead weight and only the first was ever really testing anything.)
+#
+# TCP/443 rather than ICMP because ICMPv6 egress is filtered on plenty of
+# providers while HTTPS works. Certificate validation is skipped (-k at the call
+# site): connecting by IP can't match a cert, and a completed TCP+TLS handshake
+# already proves the packets round-trip, which is all we are asking.
+IPV6_PROBE_TARGETS=("[2606:4700:4700::1111]" "[2001:4860:4860::8888]")
+IPV6_PROBE_TIMEOUT=6
 POD_CIDR_V6="fd42:42::/56"
 SERVICE_CIDR_V6="fd42:43::/112"
 SERVICE_CIDR_V4="10.43.0.0/16"
@@ -869,15 +903,27 @@ FIREWALL TRUST (always-on set mode):
                          detected from the mesh interface if unset.
                          Same convenience: also added to --allow-source.
                          Optional.
-  --dual-stack           Bootstrap the cluster IPv4+IPv6 so IPv6-only
+  --dual-stack           FORCE the cluster to IPv4+IPv6 so IPv6-only
                          clients can reach the panels, API, tenant
                          routes and mail. Requires a usable IPv6
                          address on this node (global preferred, ULA
                          accepted) — refuses to continue without one.
-                         DEFAULT OFF, and k3s cannot change cluster
-                         CIDRs after install: turning this on later
-                         means re-bootstrapping the node, so decide at
-                         install time. See docs/roadmap/ROADMAP.md R13.
+                         k3s cannot change cluster CIDRs after install:
+                         turning this on later means re-bootstrapping
+                         the node. See docs/roadmap/ROADMAP.md R13.
+  --no-dual-stack        FORCE IPv4-only even on a v6-capable host.
+                         DEFAULT is AUTO: dual-stack is enabled when
+                         this node has a global IPv6 AND that address
+                         is provably routable (an HTTPS reachability
+                         probe, not just `ip -6 addr`). A bound but
+                         unrouted address installs IPv4-only and holds
+                         for confirmation, because publishing an AAAA
+                         nothing answers on breaks IPv6-only clients
+                         outright and costs every dual-stack client a
+                         connect timeout — and it cannot be undone
+                         without re-bootstrapping.
+  --yes, --assume-yes    Never hold for interactive confirmation.
+                         Non-TTY runs (--remote, CI) never hold anyway.
   --pod-cidr-v6 <cidr>   Pod IPv6 range for --dual-stack.
   --stalwart-acme-directory <url>
                          ACME directory Stalwart orders its MAIL certificate
@@ -1201,6 +1247,12 @@ parse_args() {
       --cluster-network-cidr) CLUSTER_NETWORK_CIDR="$2"; NODEIP_PIN_CIDR="$2"; shift 2 ;;
       --cluster-network-cidr-v6) CLUSTER_NETWORK_CIDR_V6="$2"; NODEIP_PIN_CIDR_V6="$2"; shift 2 ;;
       --dual-stack) DUAL_STACK=true; shift ;;
+      # Needed the moment the default stopped being "off": an operator on a
+      # v6-capable host must be able to pin IPv4-only without argument.
+      --no-dual-stack) DUAL_STACK=false; shift ;;
+      # Skip the interactive holds (see hold_for_operator). Required for any
+      # automated interactive run; non-TTY installs never hold regardless.
+      --yes|--assume-yes) ASSUME_YES=true; shift ;;
       --pod-cidr-v6) POD_CIDR_V6="$2"; shift 2 ;;
       # A FLAG, not just the env var: --remote forwards CLI args only (it
       # base64s them and re-execs on the target), so an exported
@@ -1369,6 +1421,10 @@ parse_args() {
   # at install time so an impossible request fails BEFORE the first mutation
   # instead of half-way through a k3s install that cannot be re-run with
   # different CIDRs.
+  # Turn `auto` into a hard true/false first, so an auto-enabled dual-stack gets
+  # exactly the same CIDR validation an explicit --dual-stack does.
+  resolve_dual_stack
+
   if [[ "$DUAL_STACK" == true ]]; then
     if [[ ! "$POD_CIDR_V6" =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
       error "Invalid --pod-cidr-v6: '${POD_CIDR_V6}'. Must be an IPv6 CIDR (e.g. fd42:42::/56)."
@@ -3335,6 +3391,106 @@ detect_public_ipv6() {
     fi
   done < <(ip -6 -o addr show 2>/dev/null)
   return 1
+}
+
+# Prove this node's IPv6 actually ROUTES, not merely that an address is bound.
+#
+# `ip -6 addr` cannot tell a working global address from a SLAAC/RA address whose
+# prefix the provider never routed — they are byte-identical. Since enabling
+# dual-stack on the latter bakes an unanswerable AAAA into a cluster that can
+# only be undone by re-bootstrapping, `auto` demands proof.
+#
+# Two independent targets so one operator-blocked destination is not mistaken for
+# broken IPv6, and TCP (not ICMP) because ICMPv6 egress is filtered on plenty of
+# providers while TCP/443 works. Short timeouts: this runs in preflight and must
+# not add meaningful install latency. Returns 0 on the first success.
+probe_ipv6_egress() {
+  local target
+  for target in "${IPV6_PROBE_TARGETS[@]}"; do
+    if curl -6 -sSk --max-time "${IPV6_PROBE_TIMEOUT}" -o /dev/null "https://${target}" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Hold the install until the operator acknowledges, so a warning that matters is
+# not scrolled past in a 20-minute log.
+#
+# Only holds on a real TTY. bootstrap runs non-interactively in three ways that
+# would otherwise HANG FOREVER: `--remote` (which base64s args and re-execs, and
+# whose own path READS STDIN for REMOTE_ENV_B64), CI, and the VM integration
+# harness. A prompt that blocks those is worse than no prompt, so non-TTY prints
+# the warning and continues — the message is still on the record.
+hold_for_operator() {
+  local msg="$1"
+  if [[ "$ASSUME_YES" == true ]]; then
+    log "  (--yes given — continuing without holding)"
+    return 0
+  fi
+  if [[ ! -t 0 ]]; then
+    log "  (non-interactive: not holding. Re-run on a TTY to be prompted, or pass --no-dual-stack/--dual-stack to be explicit.)"
+    return 0
+  fi
+  printf '\n  %s\n  Press ENTER to continue anyway, or Ctrl-C to abort and fix it first: ' "$msg" >&2
+  # shellcheck disable=SC2034
+  local _ack; IFS= read -r _ack || true
+  printf '\n' >&2
+}
+
+# Resolve DUAL_STACK=auto into a hard true/false. Called from preflight BEFORE
+# the CIDR validation below, so an auto-resolved `true` gets the same checks as
+# an explicit --dual-stack.
+resolve_dual_stack() {
+  [[ "$DUAL_STACK" != auto ]] && return 0
+
+  # Dual-stack is a CLUSTER-WIDE property fixed by the first server's
+  # --cluster-cidr/--service-cidr. A joining node cannot change it and must
+  # MATCH it: registering a family the cluster doesn't have (or omitting one it
+  # does) breaks kubelet registration either way.
+  #
+  # A joining node also cannot discover the cluster's families before it joins —
+  # it holds a join token, not a kubeconfig. So `auto` deliberately refuses to
+  # guess here and keeps the historical IPv4-only default; matching a dual-stack
+  # cluster requires an explicit --dual-stack from the operator, who knows what
+  # they built. Auto-detection applies ONLY to the first server, which is where
+  # the decision actually belongs.
+  #
+  # Found the hard way: staging's worker has routable global IPv6 while the
+  # cluster is IPv4-only (cluster-cidr=10.42.0.0/16). Auto-enabling on host
+  # capability alone would have handed k3s-agent `--node-ip=<v4>,<v6>` against a
+  # single-family cluster.
+  if [[ -n "$K3S_SERVER_IP" || -n "$K3S_TOKEN" || "$NODE_ROLE" == "worker" ]]; then
+    DUAL_STACK=false
+    if detect_public_ipv6 >/dev/null 2>&1; then
+      log "  dual-stack: not auto-decided on a JOIN — it is fixed cluster-wide by the first server."
+      log "             This host has global IPv6, but the cluster's address families are already set."
+      log "             Pass --dual-stack ONLY if this cluster was bootstrapped dual-stack."
+    fi
+    return 0
+  fi
+
+  if ! detect_public_ipv6 >/dev/null 2>&1; then
+    # No global v6 at all (a ULA-only host included): IPv4-only, silently. This
+    # is the ordinary case and needs no ceremony.
+    DUAL_STACK=false
+    return 0
+  fi
+
+  local v6; v6=$(detect_public_ipv6 2>/dev/null || echo "")
+  if probe_ipv6_egress; then
+    DUAL_STACK=true
+    log "  dual-stack: AUTO-ENABLED — global IPv6 ${v6} is routable (pass --no-dual-stack to install IPv4-only)"
+    return 0
+  fi
+
+  # The dangerous case, and the reason auto is probe-gated: an address is bound
+  # but nothing answers through it. Install IPv4-only and make the operator look.
+  DUAL_STACK=false
+  warn "global IPv6 ${v6} is bound to this host but is NOT ROUTABLE (no IPv6 egress to ${IPV6_PROBE_TARGETS[0]} or ${IPV6_PROBE_TARGETS[1]})."
+  warn "  Installing IPv4-ONLY. Publishing an AAAA that nothing answers on would break IPv6-only clients outright and add a connect timeout for every dual-stack client."
+  warn "  Cluster CIDRs cannot be changed later without re-bootstrapping, so this is the moment to fix it."
+  hold_for_operator "Fix IPv6 routing now and re-run to get dual-stack, or continue IPv4-only."
 }
 
 # Detect the IPv6 address to hand k3s as this node's v6 --node-ip.
@@ -9062,8 +9218,16 @@ run_preflight() {
       ui_fail "--dual-stack requested but this node has no usable IPv6 address"
       fatal=1
     fi
+  elif detect_public_ipv6 >/dev/null 2>&1 && probe_ipv6_egress; then
+    # Reachable global v6 but still IPv4-only: only possible via an explicit
+    # --no-dual-stack (auto would have enabled it). Worth a hold — the operator
+    # is one flag away from serving v6 and cannot change CIDRs later.
+    ui_warn "this node has ROUTABLE IPv6 but the cluster will be IPv4-only (--no-dual-stack) — IPv6-only clients will not reach the panels, tenant sites or mail. Cluster CIDRs cannot be changed later without re-bootstrapping."
+    hold_for_operator "Drop --no-dual-stack to serve IPv6, or continue IPv4-only."
   elif detect_node_ipv6 >/dev/null 2>&1; then
-    ui_warn "this node HAS IPv6 but the cluster will be IPv4-only — IPv6-only clients will not reach the panels, tenant sites or mail. Pass --dual-stack to serve them (cluster CIDRs cannot be changed later without re-bootstrapping)."
+    # v6 present but not globally routable (ULA-only, or bound-but-unrouted —
+    # resolve_dual_stack already warned + held for the latter).
+    ui_warn "this node has an IPv6 address but no routable global one — installing IPv4-only. IPv6-only clients will not reach the panels, tenant sites or mail."
   fi
 
   if (( fatal != 0 )); then

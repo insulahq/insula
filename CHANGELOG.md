@@ -12,7 +12,93 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.3-rc.8] - 2026-08-11
+### Fixed
+- **Auto dual-stack must not decide on a JOIN.** Dual-stack is a cluster-wide
+  property fixed by the first server's CIDRs; a joining node cannot change it
+  and must match it, and registering a family the cluster doesn't have breaks
+  kubelet registration. A joining node also holds a join token, not a
+  kubeconfig, so it cannot discover the cluster's families beforehand — `auto`
+  therefore keeps the historical IPv4-only default on any join, and matching a
+  dual-stack cluster needs an explicit `--dual-stack`. Caught on staging, whose
+  worker has routable global IPv6 while the cluster is IPv4-only: auto-enabling
+  on host capability alone would have handed `k3s-agent --node-ip=<v4>,<v6>`
+  against a single-family cluster.
+- **The IPv6 reachability probe targeted a hostname that doesn't exist.**
+  `ipv6.cloudflare.com` does not resolve, so the "second" target was dead weight
+  and only the first was ever testing anything. Both targets are now anycast IP
+  literals, which also stops the probe conflating "IPv6 routes" with "AAAA
+  resolution works" — the question being asked is the former.
+
+### Changed
+- **`bootstrap.sh` now enables dual-stack automatically on a host with PROVABLY
+  routable IPv6** (`--no-dual-stack` forces IPv4-only, `--dual-stack` still
+  forces it on). Previously IPv6 was opt-in and easy to forget, and preflight
+  could only warn about it after the fact.
+  The gate is a reachability probe, not address detection: `ip -6 addr` cannot
+  tell a working global address from a SLAAC/RA address whose prefix the
+  provider never routed — they are byte-identical. The two mistakes are not
+  symmetric. Forgetting the flag costs one flag on the next install; enabling on
+  an unrouted address publishes an AAAA nothing answers on, which reaches
+  `--node-external-ip`, then the `ingress-external-ips` reconciler copies it
+  onto the Traefik Service, then tenant apex records — so IPv6-only clients fail
+  outright and every dual-stack client eats a connect timeout first. And k3s
+  fixes cluster/service CIDRs at install, so undoing it means re-bootstrapping
+  the cluster. Same principle the mail AAAA path already encodes: a wrong AAAA
+  is worse than no AAAA.
+  A bound-but-unroutable address therefore installs IPv4-only, says so
+  explicitly, and **holds for operator confirmation** so the routing can be
+  fixed before committing to an irreversible CIDR choice. Holds are TTY-gated
+  and skippable with `--yes`: `--remote` and CI never block (the remote path
+  reads stdin itself, so a naive prompt would hang the install forever).
+  Existing clusters are unaffected — CIDRs cannot change after install.
+
+### Fixed
+- **Worker nodes could never take a prerelease, so host-migrations in an RC
+  silently never reached them.** `self-upgrade` reads the `platform-version`
+  ConfigMap to learn the cluster's pinned version; on a k3s AGENT that read
+  always failed, so it fell back to the "newest stable GitHub Release" path,
+  which by construction cannot select an RC. Observed on staging: the worker
+  sat on 2026.8.2 with no pod-CIDR `:53` firewall rule while all three
+  control-plane nodes had rc.8 and the migration applied — host state diverged
+  for the whole life of every RC, which meant nothing host-side was really
+  validated before a stable cut. Two halves were broken and either alone still
+  fails: the code hardcoded the control-plane-only `/etc/rancher/k3s/k3s.yaml`
+  (agents don't have it, and the in-cluster fallback needs a ServiceAccount
+  token a host process has no mount for), and the scoped worker kubeconfig had
+  no RBAC for that ConfigMap — the existing Role is namespaced to
+  `platform-system` while `platform-version` lives in `platform`. Resolution now
+  goes through the same helper the host-config converger uses, and a second
+  name-scoped Role grants `get` on that one ConfigMap (no list, no write,
+  nothing else). An already-stuck worker still needs one explicit
+  `insula self-upgrade --version <ver>` to cross over, since the fix ships in
+  the binary it can't yet fetch.
+
+### Fixed
+- **Enabling email on a customer-managed (`cname`/`secondary`) domain reported
+  four green provisioning ticks while nothing had been published.** The mail
+  records were always written to `dns_records` — that part was right, and is
+  what the domain's DNS page renders — but `mx/spf/dkim/dmarc_provisioned` were
+  then set to `1` unconditionally, including in modes where the platform has no
+  authority over the zone and pushed nothing anywhere. The operator saw a fully
+  provisioned mail domain that could never receive mail. Those flags now mean
+  what they say: they are set only when the records were actually published,
+  and a customer-managed domain instead emits a warning naming the record count
+  and pointing at the DNS Records page. Customer-managed DNS remains a
+  supported mode, so this path still never throws.
+
+### Added
+- **The mail DELIVERY gate now runs as part of `integration-all.sh`.** It does
+  an authenticated SMTPS send-to-self plus an IMAPS retrieve — the only check
+  that proves mail actually delivers, since the TCP/banner probes are liveness
+  only and pass while the server rejects at DATA with `452 mail system full`
+  (the Stalwart regression that shipped undetected in v2026.6.14). It had
+  skipped on every run because it needs a real mailbox and the suites' own
+  mailboxes are deliberately ephemeral, so nothing was ever left for it to use.
+  `scripts/lib/ensure-mail-e2e-mailbox.sh` now provisions a throwaway
+  tenant + domain + mailbox, exports the credentials, and deletes the tenant
+  afterwards. It honours a pre-set `MAIL_E2E_USER`/`MAIL_E2E_PASS` if you'd
+  rather pin it to a mailbox you maintain, and degrades to the previous
+  loud skip (never a hard failure) if provisioning can't complete.
 
 ### Added
 - **Ingress addresses are now discovered from live cluster state.**
