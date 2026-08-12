@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3] - 2026-08-12
+
 ### Fixed
 - **A stale k3s installer checksum killed fresh installs with shell garbage
   instead of stopping.** Upstream re-published `get.k3s.io`, so the integrity
