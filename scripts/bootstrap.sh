@@ -338,10 +338,20 @@ POD_CIDR_V4="10.42.0.0/16"
 DUAL_STACK=auto
 # Set by --yes/--assume-yes. Suppresses the interactive holds below.
 ASSUME_YES=false
-# Reachability targets for the `auto` decision. Two independent operators so one
-# blocked destination isn't read as broken IPv6; TCP/443 rather than ICMP because
-# ICMPv6 egress is filtered on many providers while HTTPS works.
-IPV6_PROBE_TARGETS=("ipv6.google.com" "ipv6.cloudflare.com")
+# Reachability targets for the `auto` decision. Two independent anycast
+# operators, so one blocked destination isn't read as broken IPv6.
+#
+# IP LITERALS, not hostnames, and deliberately so: the question is "does IPv6
+# ROUTE", and a hostname probe also requires working AAAA resolution, which
+# conflates two failures. (It also bites in practice — the first cut of this used
+# `ipv6.cloudflare.com`, which does not resolve at all, so the "second" target
+# was dead weight and only the first was ever really testing anything.)
+#
+# TCP/443 rather than ICMP because ICMPv6 egress is filtered on plenty of
+# providers while HTTPS works. Certificate validation is skipped (-k at the call
+# site): connecting by IP can't match a cert, and a completed TCP+TLS handshake
+# already proves the packets round-trip, which is all we are asking.
+IPV6_PROBE_TARGETS=("[2606:4700:4700::1111]" "[2001:4860:4860::8888]")
 IPV6_PROBE_TIMEOUT=6
 POD_CIDR_V6="fd42:42::/56"
 SERVICE_CIDR_V6="fd42:43::/112"
@@ -3397,7 +3407,7 @@ detect_public_ipv6() {
 probe_ipv6_egress() {
   local target
   for target in "${IPV6_PROBE_TARGETS[@]}"; do
-    if curl -6 -sS --max-time "${IPV6_PROBE_TIMEOUT}" -o /dev/null "https://${target}" 2>/dev/null; then
+    if curl -6 -sSk --max-time "${IPV6_PROBE_TIMEOUT}" -o /dev/null "https://${target}" 2>/dev/null; then
       return 0
     fi
   done
@@ -3433,6 +3443,32 @@ hold_for_operator() {
 # an explicit --dual-stack.
 resolve_dual_stack() {
   [[ "$DUAL_STACK" != auto ]] && return 0
+
+  # Dual-stack is a CLUSTER-WIDE property fixed by the first server's
+  # --cluster-cidr/--service-cidr. A joining node cannot change it and must
+  # MATCH it: registering a family the cluster doesn't have (or omitting one it
+  # does) breaks kubelet registration either way.
+  #
+  # A joining node also cannot discover the cluster's families before it joins —
+  # it holds a join token, not a kubeconfig. So `auto` deliberately refuses to
+  # guess here and keeps the historical IPv4-only default; matching a dual-stack
+  # cluster requires an explicit --dual-stack from the operator, who knows what
+  # they built. Auto-detection applies ONLY to the first server, which is where
+  # the decision actually belongs.
+  #
+  # Found the hard way: staging's worker has routable global IPv6 while the
+  # cluster is IPv4-only (cluster-cidr=10.42.0.0/16). Auto-enabling on host
+  # capability alone would have handed k3s-agent `--node-ip=<v4>,<v6>` against a
+  # single-family cluster.
+  if [[ -n "$K3S_SERVER_IP" || -n "$K3S_TOKEN" || "$NODE_ROLE" == "worker" ]]; then
+    DUAL_STACK=false
+    if detect_public_ipv6 >/dev/null 2>&1; then
+      log "  dual-stack: not auto-decided on a JOIN — it is fixed cluster-wide by the first server."
+      log "             This host has global IPv6, but the cluster's address families are already set."
+      log "             Pass --dual-stack ONLY if this cluster was bootstrapped dual-stack."
+    fi
+    return 0
+  fi
 
   if ! detect_public_ipv6 >/dev/null 2>&1; then
     # No global v6 at all (a ULA-only host included): IPv4-only, silently. This

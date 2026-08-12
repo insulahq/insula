@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Auto dual-stack must not decide on a JOIN.** Dual-stack is a cluster-wide
+  property fixed by the first server's CIDRs; a joining node cannot change it
+  and must match it, and registering a family the cluster doesn't have breaks
+  kubelet registration. A joining node also holds a join token, not a
+  kubeconfig, so it cannot discover the cluster's families beforehand — `auto`
+  therefore keeps the historical IPv4-only default on any join, and matching a
+  dual-stack cluster needs an explicit `--dual-stack`. Caught on staging, whose
+  worker has routable global IPv6 while the cluster is IPv4-only: auto-enabling
+  on host capability alone would have handed `k3s-agent --node-ip=<v4>,<v6>`
+  against a single-family cluster.
+- **The IPv6 reachability probe targeted a hostname that doesn't exist.**
+  `ipv6.cloudflare.com` does not resolve, so the "second" target was dead weight
+  and only the first was ever testing anything. Both targets are now anycast IP
+  literals, which also stops the probe conflating "IPv6 routes" with "AAAA
+  resolution works" — the question being asked is the former.
+
 ### Changed
 - **`bootstrap.sh` now enables dual-stack automatically on a host with PROVABLY
   routable IPv6** (`--no-dual-stack` forces IPv4-only, `--dual-stack` still
