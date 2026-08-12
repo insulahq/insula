@@ -75,10 +75,22 @@ case "$VMTEST_TIER" in
     # A check that verifies the wrong thing is worse than no check, because it
     # reads as evidence. So the release tier pins the ENVIRONMENT too, and
     # asserts the deployed image afterwards (below, post-bootstrap).
-    # Only an EXPLICIT operator override wins here — not config.env's dev default.
-    # The production overlay is the one that pins release images (cut-release.sh
-    # stamps it); development carries timestamp tags and staging carries no pins.
-    VMTEST_ENV="${_VMTEST_ENV_PRESET:-production}"
+    # Pick the env from the TAG, because the two are not interchangeable:
+    # bootstrap.sh refuses a prerelease on production outright —
+    #   "Production Flux source needs a CalVer release tag (got 'v2026.8.3-rc.8')"
+    # (its gate is ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$, which excludes -rc.N by
+    # construction, per ADR-053: production pulls SIGNED STABLE releases).
+    # An RC therefore has exactly one valid home — staging, whose Flux source is
+    # a semver RANGE (">=0.0.0-0", RC + stable). That is also where real RCs are
+    # validated, so it is the honest mirror. Staging bases on ../production and
+    # INHERITS its image pins, so the release image-tag assertion below still
+    # holds. Only an EXPLICIT operator override wins over this.
+    if [[ "$_tag" =~ ^v[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+      _tier_env=production      # stable CalVer
+    else
+      _tier_env=staging         # prerelease (-rc.N): production would refuse it
+    fi
+    VMTEST_ENV="${_VMTEST_ENV_PRESET:-$_tier_env}"
     VMTEST_RELEASE_TAG="$_tag"
     VMTEST_EXPECT_IMAGE_TAG="$_ver"
     export VMTEST_ENV VMTEST_RELEASE_TAG VMTEST_EXPECT_IMAGE_TAG
