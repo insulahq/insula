@@ -12,7 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.3-rc.9] - 2026-08-12
+### Fixed
+- **A stale k3s installer checksum killed fresh installs with shell garbage
+  instead of stopping.** Upstream re-published `get.k3s.io`, so the integrity
+  guard fired correctly — but it reported through `error()` → `ui_fail()`, and in
+  RICH mode every `ui_*` emitter prints to STDOUT by design. `fetch_verified_script`
+  is unusual in that its stdout IS a payload piped into `sh`, so the
+  human-readable failure text was captured by the caller and executed line by
+  line (`sh: 2: url:: not found`, `sh: 8: Syntax error: "(" unexpected`). The
+  guard that says "refusing to execute" printed noise and let the install carry
+  on. Its failure paths now write to stderr and never touch the payload channel,
+  every fetch call site refuses a zero-byte payload (piping "" into `sh` succeeds
+  and installs nothing, which would look like a clean install), and the pin is
+  updated to the current upstream installer — verified byte-identical to
+  `k3s-io/k3s` `install.sh` before trusting it. New harness
+  `test-bootstrap-installer-verify.sh` pins all of it, including a
+  pin-freshness assertion so the next upstream re-publish shows up as one red
+  test rather than a dead install.
 
 ### Fixed
 - **Auto dual-stack must not decide on a JOIN.** Dual-stack is a cluster-wide
