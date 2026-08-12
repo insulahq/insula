@@ -287,7 +287,42 @@ echo "==> Phase G: DR restore round-trip (on the node, via the insula CLI)"
 # /opt/insula (87 migrations), the `insula` binary, kubectl, and — verified —
 # direct TCP reachability to the CNPG ClusterIP.
 G_SSH=(ssh -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no -o ConnectTimeout=20 -q)
-g_node() { "${G_SSH[@]}" "$SSH_HOST" "$@"; }
+# kubectl/psql work from ANY node (they go through the API server). The restore
+# does not: it opens a direct TCP session to Postgres, and that is host-scoped.
+g_node()   { "${G_SSH[@]}" "$SSH_HOST" "$@"; }
+# Host used for the RESTORE itself. Defaults to SSH_HOST and is repointed at the
+# node running the CNPG primary once that is known — see g_primary_node_ip.
+G_DBHOST="${SSH_HOST:-}"
+g_dbnode() { "${G_SSH[@]}" "$G_DBHOST" "$@"; }
+
+# The node running the CNPG primary, as an SSH target.
+#
+# WHY this is needed at all: Postgres pods are NetworkPolicy-restricted, and a
+# connection originating from a NODE (host network, node IP as source) matches
+# no allowed peer. Measured on the 4-node VM cluster 621500bc:
+#
+#   from s3 (hosts the DB pod)  -> ClusterIP:5432  OK      podIP:5432  OK
+#   from s1 (any other node)    -> ClusterIP:5432  TIMEOUT
+#
+# so `insula dr restore` only reaches the database from the primary's own node.
+# The suite used to run it on SSH_HOST unconditionally and failed with a bare
+# "Connection terminated due to connection timeout" whenever the primary had
+# been scheduled elsewhere — which reads as a DR defect and is really placement.
+#
+# This mirrors what an operator must do today; the underlying restriction is
+# reported separately, since `dr restore` is documented to run from a host
+# precisely when platform-api is down.
+g_primary_node_ip() {
+  local node ip
+  node=$(g_node "kubectl -n platform get pod '$1' -o jsonpath='{.spec.nodeName}'" 2>/dev/null | tr -d '[:space:]')
+  [[ -n "$node" ]] || return 1
+  # Nested range, NOT a flat jsonpath: a flat one space-joins the v4 and v6
+  # addresses of a dual-stack node into a single unusable token.
+  ip=$(g_node "kubectl get node '$node' -o jsonpath='{range .status.addresses[?(@.type==\"InternalIP\")]}{.address}{\"\n\"}{end}'" 2>/dev/null \
+       | grep -vE '^\s*$' | grep -E '^[0-9]+\.' | head -1)
+  [[ -n "$ip" ]] || return 1
+  printf '%s@%s' "${SSH_HOST%%@*}" "$ip"
+}
 # psql runs INSIDE the CNPG pod (the node has no psql client). -U postgres is
 # peer-trusted there, which is also how the throwaway database gets created.
 # Resolve the CNPG PRIMARY rather than assuming system-db-1. With the default
@@ -321,6 +356,15 @@ else
   # never point the restore at the live `platform` database.
   G_PGPOD=$(g_primary)
   echo "  CNPG primary: $G_PGPOD"
+  # Run the restore on the primary's own node (see g_primary_node_ip).
+  if _dbhost=$(g_primary_node_ip "$G_PGPOD"); then
+    if [[ "$_dbhost" != "$G_DBHOST" ]]; then
+      echo "  restore host: ${_dbhost#*@} (node running $G_PGPOD; ${SSH_HOST#*@} cannot reach Postgres cross-node)"
+      G_DBHOST="$_dbhost"
+    fi
+  else
+    echo "  WARN: could not resolve the primary's node — running the restore on ${SSH_HOST#*@}" >&2
+  fi
   G_DB="dr_verify_$(date +%s)_$$"
   case "$G_DB" in platform|postgres|template*) echo "  (skip G: refusing unsafe db name $G_DB)"; G_DB=""; esac
 fi
@@ -328,7 +372,7 @@ fi
 if [[ -n "${G_DB:-}" ]]; then
   g_cleanup_db() {
     g_psql "-d postgres -c 'DROP DATABASE IF EXISTS \"$G_DB\" WITH (FORCE)'" >/dev/null 2>&1 || true
-    g_node "rm -f /tmp/$G_DB.age" >/dev/null 2>&1 || true
+    g_dbnode "rm -f /tmp/$G_DB.age /tmp/$G_DB.agekey" >/dev/null 2>&1 || true
   }
   trap 'g_cleanup_db; cleanup' EXIT
 
@@ -392,12 +436,25 @@ print(u.urlunparse(p._replace(netloc=(creds + "@" + host) if creds else host,
 
       # The bundle was captured from THIS cluster, so the node's own operator key
       # decrypts it — no private key is copied from the harness to the node.
+      # The operator key lives on the FIRST server only — verified on cluster
+      # 621500bc, where s1 had it and s3 (running the primary) did not. So when
+      # the restore moves to the primary's node, the key has to travel with it.
+      # Ship the copy Phase B already fetched, 0600, and delete it on exit.
       G_NODE_KEY=/var/lib/insula/operator-key/operator-private.key
+      if [[ "$G_DBHOST" != "${SSH_HOST:-}" ]]; then
+        G_NODE_KEY="/tmp/$G_DB.agekey"
+        if scp -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no -q \
+             "$AGE_KEY_FILE" "$G_DBHOST:$G_NODE_KEY" 2>/dev/null; then
+          g_dbnode "chmod 600 $G_NODE_KEY" >/dev/null 2>&1 || true
+        else
+          fail "G1 could not place the operator AGE key on ${G_DBHOST#*@}"
+        fi
+      fi
       scp -i "${SSH_KEY:-$HOME/hosting-platform.key}" -o StrictHostKeyChecking=no -q \
-          "$WORK_DIR/bundle.age" "$SSH_HOST:/tmp/$G_DB.age" 2>/dev/null || true
+          "$WORK_DIR/bundle.age" "$G_DBHOST:/tmp/$G_DB.age" 2>/dev/null || true
 
       g_restore() {  # $1 = stdout file
-        g_node "DATABASE_URL='$G_URL' \
+        g_dbnode "DATABASE_URL='$G_URL' \
                 JWT_SECRET='dr-verify-not-a-real-secret-0123456789' \
                 $OPS_BIN_G dr restore --bundle /tmp/$G_DB.age --age-key $G_NODE_KEY --mode partial --json" \
           > "$1" 2>"$1.err"
