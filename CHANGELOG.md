@@ -12,6 +12,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **A successful bootstrap now looks like one.** The completion report was built
+  out of `log()`, which maps to `ui_detail`, which dims — so the one screen an
+  operator reads start to finish rendered entirely in the grey reserved for
+  incidental chatter, with the admin URL styled identically to a passing kubectl
+  tip. It now has its own register: green banner, green section headings
+  (`Endpoints`, `Admin sign-in`, `Installed`, `Consoles`, …) and undimmed body,
+  via new `ui_banner` / `ui_section` / `ui_line` emitters. Body text uses the
+  terminal's default foreground rather than an explicit white, which would be
+  unreadable on a light background. The worker banner gets the same treatment —
+  two completion banners rendered differently is worse than either choice made
+  consistently.
+- **The advisory post-install smoke no longer reads as a failed install.** It ran
+  *after* the completion report and reported through `ui_warn`, so a run that
+  installed perfectly signed off with two yellow warnings — `Smoke FAILED (rc=1)`
+  and `Bootstrap exits 0 because --require-smoke-pass was not set` — as the last
+  thing on screen. First-boot timing (Flux still reconciling, oauth2-proxy/dex
+  restarting) trips a few checks on most installs, so this fired on healthy
+  clusters. The phase now runs **before** the report (still after every mandatory
+  step, so an outer timeout cannot skip real work) and hands it a verdict, shown
+  as one factual line under *Post-install checks (advisory)* with the counts, why
+  early failures are expected, and how to re-run. It raises **zero** warnings, so
+  the run tally stops reporting phantom problems. The `--require-smoke-pass` gate
+  is untouched: still a fatal `ERROR`, because the operator asked for a gate.
+  New harness `scripts/test-bootstrap-summary.sh` (30 checks) pins the colour
+  registers, the ordering, the zero-warning property and the gate.
+
 ### Fixed
 - **Worker nodes never got the operator CLI, so they never applied a single
   host-migration.** `bootstrap.sh` called the platform-ops install phase only on

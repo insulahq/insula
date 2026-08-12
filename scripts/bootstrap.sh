@@ -639,6 +639,11 @@ SKIP_LONGHORN=false
 SKIP_SMOKE=false               # --skip-smoke disables the post-install smoke run
 REQUIRE_SMOKE_PASS=false       # --require-smoke-pass makes smoke FAIL fatal (CI use)
 SMOKE_WAIT_SECONDS=300         # max wait for Flux Kustomizations to reach Ready
+# Verdict carried from run_post_install_smoke into print_summary. Empty = smoke
+# did not run (skipped, joining node, script absent), and the report then omits
+# the section entirely rather than claiming a result it does not have.
+SMOKE_VERDICT=""
+SMOKE_ADVICE=""
 OPERATOR_AGE_RECIPIENT=""      # public half (age1...) — optional, generated if empty
 FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it exists
 # --force-domain-change: opt-in to overwriting the existing
@@ -1118,6 +1123,10 @@ else
   ui_step() { :; }; ui_ok() { echo "OK: $*"; }; ui_detail() { echo "$*"; }
   ui_warn() { echo "WARN: $*" >&2; }; ui_fail() { echo "ERROR: $*" >&2; }
   ui_summary() { echo "$*"; }; ui_record() { :; }; ui_is_rich() { return 1; }
+  # Completion-report emitters. A missing stub here is not cosmetic — under
+  # `set -u` an undefined function aborts the run at the summary, i.e. AFTER a
+  # successful install, which would read as a late failure.
+  ui_banner() { echo "== $* =="; }; ui_section() { echo "$*"; }; ui_line() { echo "$*"; }
 fi
 
 # Re-point the three legacy emitters at the renderer. Doing it HERE, at the one
@@ -9012,22 +9021,18 @@ print_summary() {
   local server_ip
   server_ip="$(hostname -I | awk '{print $1}')"
 
-  log ""
-  log "════════════════════════════════════════════════"
-  log "  BOOTSTRAP COMPLETE"
-  log "════════════════════════════════════════════════"
-  log ""
-  log "  Server IP:    ${server_ip}"
-  log "  Domain:       ${PLATFORM_DOMAIN}"
-  log "  Environment:  ${PLATFORM_ENV}"
-  log "  Kubeconfig:   ${KUBECONFIG}"
-  log "  k3s version:  ${K3S_VERSION}"
-  log ""
-  log "  Endpoints:"
-  log "    Admin:   https://admin.${PLATFORM_DOMAIN}"
-  log "    Tenant:  https://tenant.${PLATFORM_DOMAIN}"
-  log "    API:     https://api.${PLATFORM_DOMAIN}"
-  log ""
+  ui_banner "BOOTSTRAP COMPLETE"
+  ui_section "This node"
+  ui_line "Server IP:    ${server_ip}"
+  ui_line "Domain:       ${PLATFORM_DOMAIN}"
+  ui_line "Environment:  ${PLATFORM_ENV}"
+  ui_line "Kubeconfig:   ${KUBECONFIG}"
+  ui_line "k3s version:  ${K3S_VERSION}"
+
+  ui_section "Endpoints"
+  ui_line "Admin:   https://admin.${PLATFORM_DOMAIN}"
+  ui_line "Tenant:  https://tenant.${PLATFORM_DOMAIN}"
+  ui_line "API:     https://api.${PLATFORM_DOMAIN}"
   # The first thing an operator wants after "here is your admin URL" is the
   # credentials for it. They were written ~700 lines earlier, during secret
   # generation, and had long scrolled away by the time this summary appeared —
@@ -9038,32 +9043,48 @@ print_summary() {
   # to /etc/insula, so both resolve, but the docs say /etc/insula and the two
   # should not disagree in front of someone who is already unsure what to trust.
   if [[ -f /etc/insula/admin-credentials ]]; then
-    log "  Admin sign-in:"
-    log "    sudo cat /etc/insula/admin-credentials"
-    log "    (ADMIN_EMAIL + ADMIN_PASSWORD; change the password and remove this file"
-    log "     once you have created a real admin user)"
-    log ""
+    ui_section "Admin sign-in"
+    ui_line "sudo cat /etc/insula/admin-credentials"
+    ui_line "(ADMIN_EMAIL + ADMIN_PASSWORD; change the password and remove this file"
+    ui_line " once you have created a real admin user)"
   fi
-  log "  Installed:"
-  log "    - k3s + Calico CNI"
-  log "    - Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
-  log "    - cert-manager (Let's Encrypt staging + production)"
-  log "    - Sealed Secrets"
-  [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
-  log "    - Platform namespaces + RBAC + network policies"
-  log ""
-  log "  To use kubectl from another machine:"
-  log "    scp root@${server_ip}:${KUBECONFIG} ./kubeconfig.yaml"
-  log "    sed -i 's/127.0.0.1/${server_ip}/g' kubeconfig.yaml"
-  log "    export KUBECONFIG=./kubeconfig.yaml"
-  log "    kubectl get nodes"
-  log ""
-  log "  Metrics UI (VictoriaMetrics VMUI, admin-gated):"
-  log "    https://admin.${PLATFORM_DOMAIN}/metrics/vmui/"
-  log "  Longhorn dashboard (admin-gated):"
-  log "    https://admin.${PLATFORM_DOMAIN}/longhorn/"
-  log ""
-  log "════════════════════════════════════════════════"
+
+  ui_section "Installed"
+  ui_line "- k3s + Calico CNI"
+  ui_line "- Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
+  ui_line "- cert-manager (Let's Encrypt staging + production)"
+  ui_line "- Sealed Secrets"
+  [[ "$SKIP_FLUX" != true ]] && ui_line "- Flux v2"
+  ui_line "- Platform namespaces + RBAC + network policies"
+
+  ui_section "Consoles"
+  ui_line "Metrics UI (VictoriaMetrics VMUI, admin-gated):"
+  ui_line "  https://admin.${PLATFORM_DOMAIN}/metrics/vmui/"
+  ui_line "Longhorn dashboard (admin-gated):"
+  ui_line "  https://admin.${PLATFORM_DOMAIN}/longhorn/"
+
+  ui_section "Use kubectl from another machine"
+  ui_line "scp root@${server_ip}:${KUBECONFIG} ./kubeconfig.yaml"
+  ui_line "sed -i 's/127.0.0.1/${server_ip}/g' kubeconfig.yaml"
+  ui_line "export KUBECONFIG=./kubeconfig.yaml"
+  ui_line "kubectl get nodes"
+
+  # Post-install smoke is ADVISORY and now runs before this report, so its
+  # verdict belongs here — reported once, in context, as one line of an otherwise
+  # successful install. It used to trail the report as two yellow warnings
+  # ("Smoke FAILED", "Bootstrap exits 0 because …"), which is the last thing on
+  # screen and reads as "the install failed" no matter what the banner said.
+  if [[ -n "$SMOKE_VERDICT" ]]; then
+    ui_section "Post-install checks (advisory)"
+    ui_line "$SMOKE_VERDICT"
+    if [[ -n "$SMOKE_ADVICE" ]]; then
+      ui_line ""
+      ui_line "These do not block the install — first-boot timing (Flux still"
+      ui_line "reconciling, oauth2-proxy/dex restarting) commonly trips a few."
+      ui_line "Re-run once the cluster settles:  make smoke"
+      ui_line "$SMOKE_ADVICE"
+    fi
+  fi
 }
 
 # ─── Phase 5: Post-install smoke (advisory) ──────────────────────────────────
@@ -9115,31 +9136,56 @@ run_post_install_smoke() {
   log "Waiting up to ${SMOKE_WAIT_SECONDS}s for Flux Kustomizations to reconcile..."
   if ! KUBECONFIG="$KUBECONFIG" kubectl wait kustomization --all -n flux-system \
       --for=condition=Ready --timeout="${SMOKE_WAIT_SECONDS}s" >/dev/null 2>&1; then
-    warn "Not all Kustomizations reached Ready within ${SMOKE_WAIT_SECONDS}s — running smoke anyway (some FAILs may be transient)"
+    # `log`, not `warn`: this fires on most first bootstraps (Flux is still
+    # reconciling) and it is not something the operator can act on — it is the
+    # explanation for the FAILs the advisory smoke is about to report. As a
+    # warning it padded the completion tally of a perfectly good install.
+    log "Not all Kustomizations reached Ready within ${SMOKE_WAIT_SECONDS}s — running smoke anyway (some FAILs are expected this early)."
   else
     log "All Flux Kustomizations Ready — running smoke."
   fi
 
-  local smoke_log="/var/log/hosting-platform-bootstrap-smoke.log"
+  # Overridable so the harness can point it at a writable temp path. Default is
+  # unchanged; a real (root) bootstrap never sets it.
+  local smoke_log="${SMOKE_LOG_FILE:-/var/log/hosting-platform-bootstrap-smoke.log}"
   log "Running smoke suite — log: $smoke_log"
   # Capture rc without tripping the parent `set -e` (we explicitly
   # decide whether to fatal based on REQUIRE_SMOKE_PASS).
   local rc=0
   KUBECONFIG="$KUBECONFIG" bash "$smoke_script" >"$smoke_log" 2>&1 || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    log "Smoke result: PASS (full log at $smoke_log)"
-    return 0
-  fi
   local summary
   summary=$(grep '^\[INFO\] run.summary' "$smoke_log" 2>/dev/null | tail -1 || true)
+  # Reduce "[INFO] run.summary — PASS=23 FAIL=4" to just "PASS=23 FAIL=4"; the
+  # operator does not need the smoke script's internal event name in a completion
+  # report. Matched by PATTERN rather than by stripping around the em-dash
+  # separator, so a change to emit()'s framing degrades to the rc fallback
+  # instead of leaking "[INFO] run.summary" into the report.
+  local counts
+  counts=$(grep -o 'PASS=[0-9]\+ FAIL=[0-9]\+' <<<"$summary" | tail -1 || true)
+  if [[ $rc -eq 0 ]]; then
+    log "Smoke result: PASS (full log at $smoke_log)"
+    SMOKE_VERDICT="All cluster-network checks passed${counts:+ (${counts})}."
+    SMOKE_ADVICE=""
+    return 0
+  fi
+
+  # --require-smoke-pass makes this fatal — the operator asked for a gate, so it
+  # stays an ERROR and exits here rather than being softened into a report line.
   if [[ "$REQUIRE_SMOKE_PASS" == "true" ]]; then
     # error() exits 1; this never returns.
     error "Smoke FAILED (rc=$rc) and --require-smoke-pass is set. ${summary:-see $smoke_log}"
   fi
-  warn "Smoke FAILED (rc=$rc) — advisory only. ${summary:-see $smoke_log}"
-  warn "Bootstrap exits 0 because --require-smoke-pass was not set. Investigate via:"
-  warn "  scripts/smoke-test-cluster-network.sh   (full output)"
-  warn "  make diagnose                           (forensic snapshot)"
+
+  # ADVISORY path. Deliberately `log` (dim), NOT `warn`: this phase cannot fail
+  # the install, and rendering it in warning yellow at the very end of a
+  # successful run told operators their bootstrap had broken when it had not.
+  # The verdict is carried into print_summary instead, where it is read in the
+  # context of the install that actually succeeded.
+  log "Smoke result: ${counts:-FAILED (rc=$rc)} — advisory, does not block the install."
+  log "Full output: $smoke_log"
+  SMOKE_VERDICT="${counts:-rc=$rc} — see ${smoke_log}"
+  SMOKE_ADVICE="Forensic snapshot:              make diagnose"
+  return 0
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -9503,7 +9549,6 @@ main() {
     # green path; a misconfigured backup target is a warning the
     # operator handles via the admin panel.
     configure_backup_target_s3 || true
-    print_summary
 
     install_platform_ops_cli
 
@@ -9511,9 +9556,17 @@ main() {
     # the operator can wire it into CI with --require-smoke-pass. Only
     # runs on the first server (the only role that has KUBECONFIG +
     # cluster-wide reachability for the matrix probes).
+    #
+    # ORDERING: this runs after every MANDATORY step (an advisory step placed
+    # mid-sequence lets an outer timeout skip real work silently) but BEFORE the
+    # completion report. The report has to be the last thing on screen — when the
+    # advisory smoke printed after it, a handful of first-boot timing failures
+    # were the operator's final impression of a successful install.
     if [[ -z "$K3S_SERVER_IP" ]]; then
       run_post_install_smoke
     fi
+
+    print_summary
   else
     apply_node_labels_and_taints
 
@@ -9524,14 +9577,9 @@ main() {
     # was born with.
     install_platform_ops_cli
 
-    # Worker — just confirm agent is running
-    log ""
-    log "════════════════════════════════════════════════"
-    log "  WORKER NODE BOOTSTRAP COMPLETE"
-    log "════════════════════════════════════════════════"
-    log ""
-    log "  Joined control plane: ${K3S_SERVER_IP}"
-    log "  k3s agent status: $(systemctl is-active k3s-agent)"
+    # Worker — same completion register as the server report (ui_banner/section/
+    # line), not `log`. Two banners rendered differently is worse than either
+    # choice made consistently.
     # Report the binary at its INSTALL path, not whatever `insula` PATH resolves
     # to — a worker's root PATH is not guaranteed to carry /usr/local/bin, and a
     # false "not installed" here would send an operator chasing a non-problem.
@@ -9539,13 +9587,14 @@ main() {
     # (it returns 0 early), so an empty result must render as an explicit
     # "not installed" — a blank field reads as "fine" at a glance.
     worker_cli_ver="$(platform_ops_installed_version "${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" 2>/dev/null || true)"
-    log "  operator CLI:      ${worker_cli_ver:-not installed}"
-    log "  host-config timer: $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
-    log ""
-    log "  Verify from the control plane:"
-    log "    kubectl get nodes"
-    log ""
-    log "════════════════════════════════════════════════"
+    ui_banner "WORKER NODE BOOTSTRAP COMPLETE"
+    ui_section "This node"
+    ui_line "Joined control plane: ${K3S_SERVER_IP}"
+    ui_line "k3s agent status:     $(systemctl is-active k3s-agent 2>/dev/null || echo unknown)"
+    ui_line "operator CLI:         ${worker_cli_ver:-not installed}"
+    ui_line "host-config timer:    $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
+    ui_section "Verify from the control plane"
+    ui_line "kubectl get nodes"
   fi
 
   marker_set "bootstrap-complete"

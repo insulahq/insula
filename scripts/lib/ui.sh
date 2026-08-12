@@ -185,6 +185,73 @@ ui_detail() {
   fi
 }
 
+# ── Completion report ────────────────────────────────────────────────
+# The end-of-run report is the ONE screen an operator actually reads, and it was
+# rendered entirely through ui_detail — because bootstrap.sh maps its legacy
+# `log()` onto ui_detail, and ui_detail dims. So a successful install signed off
+# in exactly the grey the renderer reserves for incidental context, with no
+# visual separation between "here is your admin URL" and "here is a kubectl tip".
+# Everything looked equally unimportant, which is the same failure as everything
+# looking equally important.
+#
+# These three give the report its own register: a green headline, green section
+# headings, undimmed body. Plain mode keeps the existing `INFO:` prefix for all
+# three — the streamed contract does not move for a colour change.
+#
+# On "white" body text: this uses the terminal's DEFAULT foreground rather than
+# an explicit white (\033[37m). Forcing white is correct on the dark terminals
+# most operators use and unreadable on a light one; default-fg renders white on
+# dark, black on light, and is undimmed either way — which is the actual ask.
+
+# ui_banner <title> — the completion headline. Green rule / title / rule.
+ui_banner() {
+  local title="$1"
+  local rule='════════════════════════════════════════════════'
+  ui_record "BANNER ${title}"
+  _ui_close_step_if_open
+  if ui_is_rich; then
+    printf '\n%s%s%s%s\n'  "$UI_C_BOLD" "$UI_C_GREEN" "$rule"  "$UI_C_RESET"
+    printf '%s%s  %s%s\n'  "$UI_C_BOLD" "$UI_C_GREEN" "$title" "$UI_C_RESET"
+    printf '%s%s%s%s\n'    "$UI_C_BOLD" "$UI_C_GREEN" "$rule"  "$UI_C_RESET"
+  else
+    printf 'INFO: %s\n' "$rule"
+    printf 'INFO: %s\n' "$title"
+    printf 'INFO: %s\n' "$rule"
+  fi
+}
+
+# ui_section <name…> — a heading INSIDE the report (Endpoints, Admin sign-in, …).
+# Green so the eye can jump between sections instead of reading a grey wall.
+ui_section() {
+  ui_record "SECTION ${*}"
+  _ui_close_step_if_open
+  if ui_is_rich; then
+    printf '\n  %s%s%s%s\n' "$UI_C_BOLD" "$UI_C_GREEN" "$*" "$UI_C_RESET"
+  else
+    printf 'INFO: %s\n' "$*"
+  fi
+}
+
+# ui_line <text…> — report body text. Deliberately NOT dimmed: this is the
+# distinction from ui_detail, which stays dim for in-flight context.
+ui_line() {
+  # An empty argument is a deliberate spacer inside a section. Emit a truly
+  # blank line rather than the indent, or the report ships trailing whitespace
+  # that shows up as a stray block when an operator selects the text.
+  if [[ -z "$*" ]]; then
+    _ui_close_step_if_open
+    printf '\n'
+    return 0
+  fi
+  ui_record "INFO ${*}"
+  _ui_close_step_if_open
+  if ui_is_rich; then
+    printf '    %s\n' "$*"
+  else
+    printf 'INFO: %s\n' "$*"
+  fi
+}
+
 # ── Running commands ─────────────────────────────────────────────────
 # ui_run <label> -- <command…>
 #
