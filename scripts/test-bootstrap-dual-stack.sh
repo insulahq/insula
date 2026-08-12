@@ -295,6 +295,10 @@ resolve_with() { # resolve_with <initial DUAL_STACK> -> prints resolved value
     source "$WORK/helpers.sh"
     IPV6_PROBE_TARGETS=("probe.invalid" "probe2.invalid"); IPV6_PROBE_TIMEOUT=1
     ASSUME_YES=true
+    # First-server shape: auto only ever decides here. bootstrap.sh initialises
+    # all three at the top, so this mirrors the real environment rather than
+    # papering over an unbound-variable bug.
+    NODE_ROLE=server; K3S_SERVER_IP=""; K3S_TOKEN=""
     DUAL_STACK="$1"
     resolve_dual_stack >/dev/null 2>&1
     printf '%s' "$DUAL_STACK" )
@@ -326,6 +330,27 @@ check "explicit --dual-stack survives a failing probe" "true"  "$(resolve_with t
 fake_curl 0
 check "explicit --no-dual-stack survives a passing probe" "false" "$(resolve_with false)"
 
+# A JOIN must never auto-decide: dual-stack is fixed cluster-wide by the first
+# server, and a joining node holds a token, not a kubeconfig — it cannot read the
+# cluster's families before joining. Registering a family the cluster does not
+# have breaks kubelet registration. Real case: staging's worker has routable
+# global IPv6 while the cluster is IPv4-only.
+resolve_join() { # resolve_join <NODE_ROLE> <K3S_SERVER_IP> <K3S_TOKEN>
+  ( set +e
+    source "$WORK/helpers.sh"
+    IPV6_PROBE_TARGETS=("probe.invalid"); IPV6_PROBE_TIMEOUT=1
+    ASSUME_YES=true; DUAL_STACK=auto
+    NODE_ROLE="$1"; K3S_SERVER_IP="$2"; K3S_TOKEN="$3"
+    resolve_dual_stack >/dev/null 2>&1
+    printf '%s' "$DUAL_STACK" )
+}
+
+fake_curl 0
+FAKE_V6_LINES="$GLOBAL_V6"; export FAKE_V6_LINES
+check "worker join + routable v6 -> OFF (cluster decides, not the host)" "false" "$(resolve_join worker 10.0.0.1 tok)"
+check "joining SERVER + routable v6 -> OFF (same rule)"                  "false" "$(resolve_join server 10.0.0.1 tok)"
+check "FIRST server + routable v6 -> ON (the only place auto decides)"   "true"  "$(resolve_join server "" "")"
+
 echo ""
 echo "hold_for_operator — must never hang an automated install"
 
@@ -344,6 +369,9 @@ echo ""
 echo "defaults + flags"
 has "$(grep -E '^DUAL_STACK=' "$BOOTSTRAP")" "DUAL_STACK=auto" "default is auto (not a hard false)"
 has "$(grep -E '^\s+--no-dual-stack\)' "$BOOTSTRAP")" "DUAL_STACK=false" "--no-dual-stack is parsed and forces off"
+probe_line=$(grep -E '^IPV6_PROBE_TARGETS=' "$BOOTSTRAP")
+has  "$probe_line" "[" "probe targets are IP literals (routing, not AAAA resolution)"
+hasnt "$probe_line" "ipv6.cloudflare.com" "no dead hostname target (does not resolve)"
 # resolve MUST run before the CIDR validation, or an auto-enabled dual-stack
 # would skip the /108 + shape checks that an explicit --dual-stack gets.
 rs_line=$(grep -n '^  resolve_dual_stack$' "$BOOTSTRAP" | head -1 | cut -d: -f1)
