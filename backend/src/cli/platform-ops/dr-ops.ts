@@ -35,6 +35,62 @@ interface DrErrorClasses {
   readonly MailRestoreError: new (...a: never[]) => Error & { detail?: string };
 }
 
+/**
+ * Does this look like "the database was not reachable" rather than a DR fault?
+ *
+ * Postgres pods are NetworkPolicy-restricted and every `from` peer is a pod or
+ * namespace selector, so a connection whose SOURCE is a node's host network
+ * matches nothing and is dropped. `dr restore` is documented to run from a host
+ * (it must work when platform-api is down), which means it only reaches the
+ * database from the node running the CNPG primary — everywhere else the pool
+ * simply times out. Measured on a 4-node cluster: from the primary's node,
+ * ClusterIP:5432 connects in milliseconds; from any other node it hangs until
+ * the timeout. That surfaced as a bare "UNEXPECTED — Connection terminated due
+ * to connection timeout", which tells an operator mid-incident nothing at all.
+ */
+export function isDbUnreachable(err: unknown): boolean {
+  const m = messageOf(err).toLowerCase();
+  return m.includes('connection terminated due to connection timeout')
+    || m.includes('timeout exceeded when trying to connect')
+    || m.includes('econnrefused')
+    || m.includes('etimedout')
+    || m.includes('ehostunreach')
+    || m.includes('enetunreach');
+}
+
+/**
+ * Best-effort: name the node the operator must run this on. Uses kubectl, which
+ * is unaffected by the restriction above because it goes through the API server.
+ * Never throws and never blocks for long — this runs on an error path during an
+ * incident, so a missing answer must not replace the error being reported.
+ */
+async function primaryNodeHint(): Promise<string> {
+  const { execFile } = await import('node:child_process');
+  const run = (args: string[]): Promise<string> => new Promise((resolve) => {
+    try {
+      const child = execFile('kubectl', args, { timeout: 8_000 }, (e, out) => resolve(e ? '' : String(out).trim()));
+      child.on('error', () => resolve(''));
+    } catch { resolve(''); }
+  });
+
+  // The primary carries cnpg.io/instanceRole=primary (role=primary on older CNPG).
+  let pod = '';
+  for (const sel of ['cnpg.io/cluster=system-db,cnpg.io/instanceRole=primary',
+                     'cnpg.io/cluster=system-db,role=primary']) {
+    pod = await run(['-n', 'platform', 'get', 'pods', '-l', sel, '-o', 'jsonpath={.items[0].metadata.name}']);
+    if (pod) break;
+  }
+  if (!pod) return '';
+  const node = await run(['-n', 'platform', 'get', 'pod', pod, '-o', 'jsonpath={.spec.nodeName}']);
+  if (!node) return '';
+  // Nested range, not a flat jsonpath: a flat one space-joins a dual-stack
+  // node's v4 and v6 addresses into a single unusable token.
+  const addrs = await run(['get', 'node', node, '-o',
+    'jsonpath={range .status.addresses[?(@.type=="InternalIP")]}{.address}{"\n"}{end}']);
+  const ips = addrs.split('\n').map((x) => x.trim()).filter(Boolean);
+  return ips.length ? `${node} (${ips.join(', ')})` : node;
+}
+
 /** Map a thrown DR error to a stable label (same taxonomy as dr-restore-runner). */
 function labelOf(err: unknown, c: DrErrorClasses): string {
   if (err instanceof c.LegacyBundleError) return 'LEGACY_BUNDLE';
@@ -121,6 +177,24 @@ export function realDrOps(): DrOps {
         });
         return success(req.mode, result);
       } catch (err) {
+        // A connection failure is not a DR fault and must not be reported as
+        // one. Say where the command CAN run, by name and address.
+        if (isDbUnreachable(err)) {
+          const where = await primaryNodeHint();
+          const onNode = where
+            ? `Run it on ${where} — the node currently running the CNPG primary.`
+            : 'Run it on the node currently running the CNPG primary '
+              + '(kubectl -n platform get pods -l cnpg.io/cluster=system-db '
+              + '-o wide, then use the pod marked primary).';
+          return {
+            ok: false,
+            errorCode: 'DB_UNREACHABLE',
+            detail: `${messageOf(err)} — the platform database was not reachable from this host. `
+              + `${onNode} Postgres only accepts connections from pods and from its own node, `
+              + `so a host-run restore fails anywhere else. `
+              + `(kubectl still works from any node; only the direct database connection is restricted.)`,
+          };
+        }
         const errorCode = labelOf(err, classes);
         // MailRestoreError carries a separated internal `.detail` (security
         // review LOW#11) — surface it on stderr for the operator terminal.
