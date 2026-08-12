@@ -542,6 +542,29 @@ HELM_INSTALLER_REF="v3.20.0"
 #     further down this script install);
 #   - the bytes that are verified are the exact bytes that get executed — no
 #     window between check and use.
+# STDOUT OF THIS FUNCTION IS A PAYLOAD — it is piped straight into `sh`.
+#
+# So it must NEVER emit diagnostics on stdout, and it deliberately does not use
+# error()/ui_fail() for its failure paths. In rich mode every ui_* emitter prints
+# to STDOUT by design (the renderer draws there), so a failure routed through
+# error() was captured by the caller's `$(...)` and piped into `sh`, which then
+# tried to EXECUTE the human-readable message:
+#
+#     : not found
+#     sh: 2: url:: not found
+#     sh: 3: expected:: not found
+#     sh: 8: Syntax error: "(" unexpected
+#
+# Worse, `exit 1` inside a command substitution only exits the SUBSHELL, so the
+# guard that says "refusing to execute" neither refused nor aborted — bootstrap
+# carried on past a failed integrity check. (The tampered body itself was never
+# executed, since the mismatch path never reaches the final printf; but the
+# install continued into an undefined state instead of stopping.)
+#
+# Both halves are fixed: diagnostics go to stderr here, and every call site
+# captures + checks before piping (see install_k3s_* / install_flux).
+_fvs_fail() { printf '%s\n' "$*" >&2; exit 1; }
+
 fetch_verified_script() {
   local url="$1" expected="$2" label="$3"
   local body actual
@@ -553,12 +576,12 @@ fetch_verified_script() {
   # curl failure short-circuits the printf, so the substitution's exit
   # status is still curl's.
   if ! body="$(curl --retry 3 --retry-delay 2 --retry-connrefused -fsSL "$url" && printf 'x')"; then
-    error "failed to download the ${label} installer from ${url}"
+    _fvs_fail "ERROR: failed to download the ${label} installer from ${url}"
   fi
   body="${body%x}"
   actual="$(printf '%s' "$body" | sha256sum | awk '{print $1}')"
   if [[ "$actual" != "$expected" ]]; then
-    error "$(printf '%s installer checksum MISMATCH — refusing to execute.\n  url:      %s\n  expected: %s\n  actual:   %s\nUpstream may have published a new installer, or the download was tampered with.\nReview the script, then update %s_INSTALLER_SHA256 in scripts/bootstrap.sh.' \
+    _fvs_fail "$(printf 'ERROR: %s installer checksum MISMATCH — refusing to execute.\n  url:      %s\n  expected: %s\n  actual:   %s\nUpstream may have published a new installer, or the download was tampered with.\nReview the script, then update %s_INSTALLER_SHA256 in scripts/bootstrap.sh.' \
       "$label" "$url" "$expected" "$actual" "$(printf '%s' "$label" | tr '[:lower:]' '[:upper:]')")"
   fi
   printf '%s' "$body"
@@ -4022,6 +4045,9 @@ install_k3s_server() {
   if [[ "$is_joining_server" == true ]]; then
     set +e
     k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    # A zero-byte payload would be piped into `sh`, which succeeds and installs
+    # NOTHING — a failed fetch must never look like a clean install.
+    [[ -n "$k3s_installer" ]] || { printf 'ERROR: empty k3s installer payload — refusing to execute.\n' >&2; exit 1; }
     printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
@@ -4054,6 +4080,9 @@ install_k3s_server() {
     fi
   else
     k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+    # A zero-byte payload would be piped into `sh`, which succeeds and installs
+    # NOTHING — a failed fetch must never look like a clean install.
+    [[ -n "$k3s_installer" ]] || { printf 'ERROR: empty k3s installer payload — refusing to execute.\n' >&2; exit 1; }
     printf '%s' "$k3s_installer" | \
       INSTALL_K3S_VERSION="$K3S_VERSION" \
       INSTALL_K3S_EXEC="server" \
@@ -4166,6 +4195,9 @@ install_k3s_worker() {
   local install_rc=0 k3s_installer=""
   set +e
   k3s_installer="$(fetch_verified_script https://get.k3s.io "$K3S_INSTALLER_SHA256" k3s)" || exit 1
+  # A zero-byte payload would be piped into `sh`, which succeeds and installs
+  # NOTHING — a failed fetch must never look like a clean install.
+  [[ -n "$k3s_installer" ]] || { printf 'ERROR: empty k3s installer payload — refusing to execute.\n' >&2; exit 1; }
   printf '%s' "$k3s_installer" | \
     INSTALL_K3S_VERSION="$K3S_VERSION" \
     INSTALL_K3S_EXEC="$exec_args" \
@@ -4550,6 +4582,9 @@ install_helm() {
   helm_installer="$(fetch_verified_script \
     "https://raw.githubusercontent.com/helm/helm/${HELM_INSTALLER_REF}/scripts/get-helm-3" \
     "$HELM_INSTALLER_SHA256" helm)" || exit 1
+  # A zero-byte payload would be piped into `bash`, which succeeds and installs
+  # NOTHING — a failed fetch must never look like a clean install.
+  [[ -n "$helm_installer" ]] || { printf 'ERROR: empty helm installer payload — refusing to execute.\n' >&2; exit 1; }
   printf '%s' "$helm_installer" | bash
   log "Helm installed."
 }
@@ -4574,6 +4609,9 @@ install_flux_cli() {
   # The official installer honours FLUX_VERSION (bare semver, no 'v').
   local flux_installer
   flux_installer="$(fetch_verified_script https://fluxcd.io/install.sh "$FLUX_INSTALLER_SHA256" flux)" || exit 1
+  # A zero-byte payload would be piped into `sh`, which succeeds and installs
+  # NOTHING — a failed fetch must never look like a clean install.
+  [[ -n "$flux_installer" ]] || { printf 'ERROR: empty flux installer payload — refusing to execute.\n' >&2; exit 1; }
   printf '%s' "$flux_installer" | FLUX_VERSION="$FLUX_VERSION" bash
   log "Flux CLI v${FLUX_VERSION} installed."
 }
