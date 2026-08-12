@@ -12,6 +12,13 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
+# Capture an OPERATOR-supplied VMTEST_ENV before config.env is sourced. config.env
+# sets VMTEST_ENV="${VMTEST_ENV:-dev}", after which an explicit choice and the
+# config default are indistinguishable — so the release tier's own
+# "${VMTEST_ENV:-production}" below could never fire, and a release run silently
+# deployed the DEVELOPMENT overlay. The tier does fail closed on the image-tag
+# assertion, but only after a full ~1h bootstrap.
+_VMTEST_ENV_PRESET="${VMTEST_ENV:-}"
 export VMTEST_CONFIG="${VMTEST_CONFIG:-$HERE/config.env}"
 source "$VMTEST_CONFIG"
 
@@ -68,7 +75,10 @@ case "$VMTEST_TIER" in
     # A check that verifies the wrong thing is worse than no check, because it
     # reads as evidence. So the release tier pins the ENVIRONMENT too, and
     # asserts the deployed image afterwards (below, post-bootstrap).
-    VMTEST_ENV="${VMTEST_ENV:-production}"
+    # Only an EXPLICIT operator override wins here — not config.env's dev default.
+    # The production overlay is the one that pins release images (cut-release.sh
+    # stamps it); development carries timestamp tags and staging carries no pins.
+    VMTEST_ENV="${_VMTEST_ENV_PRESET:-production}"
     VMTEST_RELEASE_TAG="$_tag"
     VMTEST_EXPECT_IMAGE_TAG="$_ver"
     export VMTEST_ENV VMTEST_RELEASE_TAG VMTEST_EXPECT_IMAGE_TAG
