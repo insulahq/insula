@@ -9273,6 +9273,34 @@ run_preflight() {
   fi
 }
 
+# Install the operator CLI (`insula`, cosign-verified) + its self-upgrade and
+# host-config converge timers. Best-effort + FAIL-CLOSED: a missing or
+# unverified asset is skipped, never fatal — bootstrap's green path does not
+# depend on it. The repo root holding platform/VERSION sits at scripts/.. on the
+# git-clone path and beside the flattened script on --remote (see the lib copy
+# near the top of this file).
+#
+# CALLED FOR BOTH ROLES, deliberately. This used to run only on the server
+# branch, on the reasoning that the CLI is a control-plane operator tool. That
+# was wrong: the timers it installs are what apply HOST-migrations, and a worker
+# is a host like any other — same kernel knobs, same firewall shape, same
+# packages. A worker with no converge timer keeps whatever host state it was
+# bootstrapped with, forever, while the control plane moves on.
+#
+# Observed on staging 2026-08-11: three servers on 2026.8.3-rc.8 with
+# 0003-pod-cidr-dns-firewall applied and 2 nft rules; the worker still on
+# 2026.8.2, migration never applied, 0 nft rules — and nothing reported it,
+# because a timer that was never installed emits no failures.
+install_platform_ops_cli() {
+  if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
+    phase_platform_ops "$(cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)" || true
+  elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
+    phase_platform_ops "${BOOTSTRAP_SCRIPT_DIR}" || true
+  else
+    warn "platform-ops: platform/VERSION not found near ${BOOTSTRAP_SCRIPT_DIR} — skipping CLI install."
+  fi
+}
+
 main() {
   parse_args "$@"
   check_root
@@ -9477,20 +9505,7 @@ main() {
     configure_backup_target_s3 || true
     print_summary
 
-    # Install the platform-ops operator CLI (cosign-verified) + its daily
-    # self-upgrade timer. Best-effort + FAIL-CLOSED: a missing or unverified
-    # asset is skipped, never fatal — bootstrap's green path does not depend
-    # on it. Dormant (logged no-op) until the release pipeline publishes a
-    # signed binary + ships platform/cosign.pub (a later workstream). The
-    # repo root holding platform/VERSION sits at scripts/.. on the git-clone
-    # path and beside the flattened script on --remote (see lib copy above).
-    if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
-      phase_platform_ops "$(cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)" || true
-    elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
-      phase_platform_ops "${BOOTSTRAP_SCRIPT_DIR}" || true
-    else
-      warn "platform-ops: platform/VERSION not found near ${BOOTSTRAP_SCRIPT_DIR} — skipping CLI install."
-    fi
+    install_platform_ops_cli
 
     # Phase 5: post-install cluster-network smoke. Advisory by default;
     # the operator can wire it into CI with --require-smoke-pass. Only
@@ -9501,6 +9516,14 @@ main() {
     fi
   else
     apply_node_labels_and_taints
+
+    # Workers need the operator CLI too — see install_platform_ops_cli. A worker
+    # is a HOST like any other: same kernel, same firewall, same packages, and
+    # the same host-migrations apply to it. Without the CLI there is no
+    # host-config converge timer, so a worker silently keeps the host state it
+    # was born with.
+    install_platform_ops_cli
+
     # Worker — just confirm agent is running
     log ""
     log "════════════════════════════════════════════════"
@@ -9509,6 +9532,15 @@ main() {
     log ""
     log "  Joined control plane: ${K3S_SERVER_IP}"
     log "  k3s agent status: $(systemctl is-active k3s-agent)"
+    # Report the binary at its INSTALL path, not whatever `insula` PATH resolves
+    # to — a worker's root PATH is not guaranteed to carry /usr/local/bin, and a
+    # false "not installed" here would send an operator chasing a non-problem.
+    # platform_ops_installed_version prints NOTHING when the binary is absent
+    # (it returns 0 early), so an empty result must render as an explicit
+    # "not installed" — a blank field reads as "fine" at a glance.
+    worker_cli_ver="$(platform_ops_installed_version "${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" 2>/dev/null || true)"
+    log "  operator CLI:      ${worker_cli_ver:-not installed}"
+    log "  host-config timer: $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
     log ""
     log "  Verify from the control plane:"
     log "    kubectl get nodes"

@@ -200,6 +200,33 @@ else
   fail "k8s/base/host-config-reader/daemonset.yaml is missing"
 fi
 
+# (7) EVERY node role gets the operator CLI, hence the converge timer.
+#
+# The whole worker-kubeconfig apparatus above exists so `host-config apply` can
+# run on a worker. That is dead weight if the worker never gets the binary that
+# runs it. bootstrap.sh used to call the install phase only on the server branch,
+# so workers came up with no CLI, no timer, and therefore no host-migrations —
+# diverging from the control plane for the entire life of a release, silently
+# (a timer that was never installed reports nothing).
+BOOTSTRAP="$REPO_ROOT/scripts/bootstrap.sh"
+if [[ -f "$BOOTSTRAP" ]]; then
+  # The helper must exist (both roles route through one path — two copies of the
+  # VERSION-lookup drifted is how the worker branch got missed in the first place).
+  grep -qE '^install_platform_ops_cli\(\)' "$BOOTSTRAP" \
+    || fail "bootstrap.sh must define install_platform_ops_cli() — the single CLI-install path for both roles"
+  # …and be CALLED at least twice: once per role branch.
+  calls=$(grep -cE '^[[:space:]]+install_platform_ops_cli$' "$BOOTSTRAP" || true)
+  if [[ "$calls" -lt 2 ]]; then
+    fail "bootstrap.sh calls install_platform_ops_cli ${calls}× — it must run on BOTH the server AND the worker branch (workers need the host-config converge timer to apply host-migrations)"
+  fi
+  # The install phase itself must stay role-agnostic — no role gate inside it.
+  if awk '/^install_platform_ops_cli\(\)/,/^}/' "$BOOTSTRAP" | grep -q 'NODE_ROLE'; then
+    fail "install_platform_ops_cli() branches on NODE_ROLE — the CLI install must be role-agnostic"
+  fi
+else
+  fail "scripts/bootstrap.sh is missing"
+fi
+
 if [[ "$FAILED" -ne 0 ]]; then
   echo "ci-host-config-check: FAILED" >&2
   exit 1

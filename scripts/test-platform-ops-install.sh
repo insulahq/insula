@@ -285,6 +285,62 @@ yes "dormant fetch + NO binary → no timer (nothing to converge with)" \
   "[ ! -e '$NOBIN/units/platform-ops-host-config.timer' ]"
 rm -rf "$DORM" "$EMPTY3" "$NOBIN"
 
+# ── 6. bootstrap.sh installs the CLI on WORKERS too, not just servers ───────
+#      A worker is a HOST: same kernel knobs, same firewall shape, same
+#      host-migrations. bootstrap.sh called the install phase only on the server
+#      branch, so workers came up with no `insula`, therefore no host-config
+#      converge timer, therefore no migrations — for the whole life of a release.
+#      Observed on staging 2026-08-11: three servers on 2026.8.3-rc.8 with
+#      0003-pod-cidr-dns-firewall applied + 2 nft rules; the worker still on
+#      2026.8.2 with the migration unapplied and 0 rules.
+#
+#      Sourcing bootstrap.sh defines its functions without running main() (it
+#      guards on BASH_SOURCE == $0), so the REAL helper both branches call can be
+#      exercised directly against a signed local release.
+BOOTSTRAP="$REPO_ROOT/scripts/bootstrap.sh"
+yes "bootstrap.sh parses (bash -n)" "bash -n '$BOOTSTRAP'"
+# shellcheck disable=SC1090
+source "$BOOTSTRAP" >/dev/null 2>&1 || true
+yes "bootstrap.sh defines install_platform_ops_cli" "declare -F install_platform_ops_cli >/dev/null"
+
+# Drive the helper exactly as the worker branch does: BOOTSTRAP_SCRIPT_DIR points
+# at a scripts/ dir whose PARENT holds platform/VERSION (the git-clone layout).
+WK=$(mktemp -d); mkdir -p "$WK/repo/platform" "$WK/repo/scripts" "$WK/units" "$WK/bin"
+printf '2026.6.1\n' > "$WK/repo/platform/VERSION"
+cp "$KEYDIR/pub.pem" "$WK/repo/platform/cosign.pub"
+WKREL="$WK/rel"; make_signed_release "$WKREL" 2026.6.1 "$KEYDIR/priv.pem"
+(
+  BOOTSTRAP_SCRIPT_DIR="$WK/repo/scripts" \
+  PLATFORM_OPS_BIN="$WK/bin/insula" \
+  PLATFORM_OPS_COSIGN_PUB_SRC="$WK/repo/platform/cosign.pub" \
+  PLATFORM_OPS_COSIGN_PUB_DST="$WK/etc/cosign.pub" \
+  PLATFORM_OPS_RELEASE_BASE="$WKREL" \
+  PLATFORM_OPS_SYSTEMD_DIR="$WK/units" PLATFORM_OPS_SKIP_SYSTEMCTL=1 \
+  install_platform_ops_cli
+) >/dev/null 2>&1
+yes "worker path → verified binary installed"          "[ -x '$WK/bin/insula' ]"
+yes "worker path → cosign trust anchor persisted"      "[ -f '$WK/etc/cosign.pub' ]"
+yes "worker path → host-config converge timer laid down" "[ -f '$WK/units/platform-ops-host-config.timer' ]"
+yes "worker path → self-upgrade timer laid down"       "[ -f '$WK/units/platform-ops-update.timer' ]"
+yes "worker path → converge service points at the installed binary" \
+  "grep -q '$WK/bin/insula' '$WK/units/platform-ops-host-config.service'"
+# The converge timer is the whole point: hourly, so a failed migration retries
+# within the hour rather than a day later.
+yes "worker path → converge timer is hourly" \
+  "grep -q 'OnCalendar=hourly' '$WK/units/platform-ops-host-config.timer'"
+
+# No repo root reachable from BOOTSTRAP_SCRIPT_DIR → warn + no-op, never fatal.
+NOWK=$(mktemp -d); mkdir -p "$NOWK/scripts" "$NOWK/units"
+(
+  BOOTSTRAP_SCRIPT_DIR="$NOWK/scripts" \
+  PLATFORM_OPS_BIN="$NOWK/bin/insula" \
+  PLATFORM_OPS_SYSTEMD_DIR="$NOWK/units" PLATFORM_OPS_SKIP_SYSTEMCTL=1 \
+  install_platform_ops_cli
+) >/dev/null 2>&1; rc=$?
+yes "worker path w/ no platform/VERSION → returns 0 (never fatal)" "[ $rc -eq 0 ]"
+yes "worker path w/ no platform/VERSION → nothing installed"       "[ ! -e '$NOWK/bin/insula' ]"
+rm -rf "$WK" "$NOWK"
+
 rm -rf "$KEYDIR"
 echo
 echo "platform-ops-install tests: $pass passed, $fail failed"

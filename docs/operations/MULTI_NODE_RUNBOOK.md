@@ -51,7 +51,7 @@ ssh root@<server-1> cat /var/lib/rancher/k3s/server/node-token
 # Run bootstrap against the new host:
 insula bootstrap \
   --remote <server-2-ip> --ssh-key ~/hosting-platform.key \
-  --role server \
+  --join-as server \
   --domain example.test \
   --env staging \
   --server <server-1-ip> \
@@ -86,7 +86,7 @@ Workers don't join etcd; they just take tenant workloads.
 ```bash
 insula bootstrap \
   --remote <worker-ip> --ssh-key ~/hosting-platform.key \
-  --role worker \
+  --join-as worker \
   --server <any-server-ip> \
   --token <K-token>
 ```
@@ -104,6 +104,31 @@ Workers default to `host-client-workloads=true` via the bootstrap
 message; this explicit label is only needed if you want a specific
 value. The node-sync reconciler (M1) picks up the labels within 60s
 and the node appears in the admin UI.
+
+#### Workers get the operator CLI too
+
+Bootstrap installs the cosign-verified `insula` binary and both of its
+timers on **workers as well as servers**. This is not cosmetic: a worker
+is a host like any other — same kernel knobs, same firewall shape, same
+packages — and `platform-ops-host-config.timer` is what applies
+**host-migrations**. A worker without it keeps whatever host state it was
+bootstrapped with while the control plane moves on, silently (a timer that
+was never installed reports no failures).
+
+Confirm after a join:
+
+```bash
+ssh root@<worker-ip> insula version
+ssh root@<worker-ip> systemctl is-active platform-ops-host-config.timer
+ssh root@<worker-ip> insula host-config status   # read-only converge report
+```
+
+> **Workers bootstrapped before this landed have no CLI**, and no
+> host-migration can install one — the migration runner *is* the binary.
+> Re-run the same `insula bootstrap … --join-as worker` command against the
+> node; it is idempotent, keeps the node joined, and installs the CLI plus
+> both timers. Verify with the three commands above. A node that reports
+> `insula: command not found` has never applied a host-migration.
 
 ## Common tasks
 

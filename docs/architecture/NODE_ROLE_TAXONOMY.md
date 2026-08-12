@@ -42,13 +42,13 @@ API keeps overhead minimal.
 
 ```
 ./scripts/bootstrap.sh \
-  --role server \
+  --join-as server \
   --host-client-workloads false      # default for servers
 ```
 
 ```
 ./scripts/bootstrap.sh --remote <worker-ip> --ssh-key <key> \
-  --role worker \
+  --join-as worker \
   --server <control-plane-ip> --token <k3s-join-token>
   # worker defaults: host-client-workloads=true (no taint)
 ```

@@ -12,6 +12,44 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Worker nodes never got the operator CLI, so they never applied a single
+  host-migration.** `bootstrap.sh` called the platform-ops install phase only on
+  the server branch, on the reasoning that `insula` is a control-plane operator
+  tool. That was backwards: the timers that phase installs are what apply
+  **host-migrations**, and a worker is a host like any other — same kernel knobs,
+  same firewall shape, same packages. A worker came up with no binary, therefore
+  no `platform-ops-host-config.timer`, therefore no convergence, and kept the
+  host state it was born with for the entire life of a release. Silently — a
+  timer that was never installed reports no failures. Observed on staging
+  2026-08-11: three servers on `2026.8.3-rc.8` with `0003-pod-cidr-dns-firewall`
+  applied and 2 nft rules; the worker still on `2026.8.2`, migration unapplied,
+  0 rules. The whole worker-kubeconfig apparatus (`host-config-reader` DaemonSet
+  + RBAC) existed to let `host-config apply` run on workers, and was dead weight
+  without the binary that runs it. Both roles now route through one
+  `install_platform_ops_cli` helper (a second copy of the VERSION-lookup drifting
+  is how this was missed), the worker completion banner reports CLI + timer
+  state, and `ci-host-config-check.sh` fails the build if the helper stops being
+  called on both branches or grows a `NODE_ROLE` gate.
+  **Existing workers need one idempotent `insula bootstrap … --join-as worker`
+  re-run** — no host-migration can fix this, because the migration runner *is*
+  the missing binary. See `docs/operations/MULTI_NODE_RUNBOOK.md`.
+- Corrected `--role server|worker` → `--join-as server|worker` in the multi-node,
+  deployment and node-role-taxonomy runbooks; `--role` is not a flag bootstrap
+  accepts, so every copy-pasted join command failed at argument parsing.
+
+### Security
+- Bumped `pymdown-extensions` 10.21.3 → **11.0.1** (docs toolchain), closing
+  `PYSEC-2026-3654` — exponential-backtracking ReDoS in the caret/tilde/betterem/
+  magiclink inline processors (CVSS 7.5). Not reachable in any shipped artifact:
+  the package appears only in `documentation/requirements*.txt`, consumed by the
+  docs-site workflow, and we enable none of the four affected extensions. Held
+  back from the 2026.8.3 cut because a major bump inside a stable release is
+  gratuitous risk; verified here by building the manual with both pins and
+  diffing the output — all 55 rendered pages are byte-identical. Lock regenerated
+  with `--generate-hashes` (also picks up `charset-normalizer` 3.5.0 and
+  `platformdirs` 4.11.2). Clears the red Component Watch gate.
+
 ## [2026.8.3] - 2026-08-12
 
 ### Fixed
