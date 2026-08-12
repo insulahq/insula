@@ -237,7 +237,6 @@ PARALLEL=(
   # (77) when the runner lacks sftp/sshpass. ~1-2 min.
   "sftp-reachability:integration-sftp-reachability.sh"
   "firewall:integration-firewall-e2e.sh"
-  "drain:integration-drain-e2e.sh"
   # (waf-crowdsec moved to SERIAL_POST — it BANS the shared harness outbound IP
   #  to verify enforcement from the banned vantage, which collateral-403s every
   #  concurrent sibling's auth. It must run isolated, not in this batch.)
@@ -431,6 +430,25 @@ fi
 # migration, then restores.
 if [[ "${INTEGRATION_INCLUDE_DISRUPTIVE:-1}" != "0" ]]; then
   SERIAL_POST=(
+    # drain CORDONS AND DRAINS A NODE: it evicts pods across every namespace,
+    # re-pins workloads (patching their pod templates) and clears
+    # tenants.node_name for the tenants it moves. None of that fits the PARALLEL
+    # contract above ("independent tenant namespaces, no cross-suite state
+    # sharing, race-safe"), and at ~441s it overlaps most of the batch.
+    #
+    # Measured on run 621500bc, where it ran parallel to its victims:
+    #   tier-flip  — "nodeSelector not applied (tenant.nodeName=<null>)"; drain
+    #                had logged "LOCAL clients.node_name cleared" and
+    #                "HA clients.node_name cleared", and applyTenantTier gates
+    #                its whole patch loop on that field
+    #   dr-bundle  — G1 "Connection terminated due to connection timeout" while
+    #                drain was evicting pods (41s suite inside drain's 441s)
+    #   grow       — file-manager "Deployment survived (uid unchanged) but its
+    #                POD TEMPLATE was patched", which is what a drain re-pin does
+    #
+    # Self-restoring (it uncordons at the end), so it belongs with the other
+    # permitted-but-disruptive suites rather than in the parallel batch.
+    "drain:integration-drain-e2e.sh"
     "mail-external-reachability:integration-mail-external-reachability.sh"
     "master-user-rotation:integration-master-user-rotation.sh"
     "postgres-barman-restore:integration-postgres-barman-restore.sh"
