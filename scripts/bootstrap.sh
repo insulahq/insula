@@ -5397,6 +5397,73 @@ install_sealed_secrets() {
   log "Sealed Secrets controller installed."
 }
 
+# Longhorn's per-disk `storageReserved`, sized for the disk rather than as a
+# flat percentage. MUST stay numerically identical to host-migration
+# 2026.8.2/0002-longhorn-disk-reservation.sh — bootstrap sets it for a FRESH
+# install, the migration converges EXISTING nodes, and the two disagreeing would
+# make the value flap on every hourly converge.
+# `scripts/test-longhorn-reservation.sh` runs both implementations over a table
+# of disk sizes and fails if they ever diverge.
+#
+#   reserved = 10% of capacity   <- MUST track kubelet's eviction floor
+#                                   (nodefs.available<10%, 50-memory-protection.yaml).
+#                                   Reserve LESS and Longhorn schedules replicas into
+#                                   space kubelet treats as its own reserve; the node
+#                                   sits in permanent DiskPressure that eviction CANNOT
+#                                   clear, because evicting pods does not delete replicas.
+#            + 20 GiB            <- OS + container images + logs. Near constant,
+#                                   hence absolute rather than a share.
+#   ...clamped to Longhorn's own 30%, so this can only ever REDUCE. Without the
+#   clamp the constant dominates on small disks and a 40 GB VM-tier node would go
+#   from 12 GiB reserved to 24 GiB — halving usable storage on the nodes with
+#   least to spare.
+longhorn_reservation_bytes() { # <disk_bytes> → reserved bytes on stdout
+  local max="$1" target ceiling
+  case "$max" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+  [ "$max" -gt 0 ] || { printf '0'; return 0; }
+  target=$(( max / 10 + 20 * 1024 * 1024 * 1024 ))
+  ceiling=$(( max * 30 / 100 ))
+  if [ "$target" -gt "$ceiling" ]; then target=$ceiling; fi
+  printf '%s' "$target"
+}
+
+rightsize_longhorn_disk_reservation() {
+  [[ "$SKIP_LONGHORN" == true ]] && return 0
+  kctl get crd nodes.longhorn.io >/dev/null 2>&1 || return 0
+
+  # storageMaximum is populated by longhorn-manager once it has inspected the
+  # disk, which can lag the Helm --wait. Poll briefly rather than skipping: a
+  # miss here is the exact "fresh install keeps the 30% default" failure this
+  # function exists to prevent.
+  local tries=0 node disks disk max target
+  while (( tries < 12 )); do
+    local any=0
+    for node in $(kctl -n longhorn-system get nodes.longhorn.io -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      disks=$(kctl -n longhorn-system get nodes.longhorn.io "$node" \
+                -o go-template='{{range $k, $v := .spec.disks}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null || true)
+      for disk in $disks; do
+        [[ -n "$disk" ]] || continue
+        max=$(kctl -n longhorn-system get nodes.longhorn.io "$node" \
+                -o jsonpath="{.status.diskStatus.${disk}.storageMaximum}" 2>/dev/null || echo "")
+        case "$max" in ''|*[!0-9]*) continue ;; esac
+        [[ "$max" -gt 0 ]] || continue
+        any=1
+        target="$(longhorn_reservation_bytes "$max")"
+        kctl -n longhorn-system patch nodes.longhorn.io "$node" --type=merge \
+          -p "{\"spec\":{\"disks\":{\"${disk}\":{\"storageReserved\":${target}}}}}" >/dev/null 2>&1 || true
+        log "Longhorn ${node}/${disk}: storageReserved → $(( target / 1024 / 1024 / 1024 ))GiB of $(( max / 1024 / 1024 / 1024 ))GiB disk."
+      done
+    done
+    (( any == 1 )) && return 0
+    tries=$(( tries + 1 ))
+    sleep 5
+  done
+  # Non-fatal: the hourly host-config converge runs the same migration and will
+  # correct it. Say so, rather than leaving the operator to notice the number.
+  warn "Longhorn disk not reporting storageMaximum yet — reservation left at the 30% default; the hourly host-config converge will right-size it."
+  return 0
+}
+
 install_longhorn() {
   if [[ "$SKIP_LONGHORN" == true ]]; then
     log "Skipping Longhorn (--skip-longhorn). Using local-path for storage."
@@ -5481,6 +5548,22 @@ install_longhorn() {
   # Set Longhorn as the default StorageClass, demote local-path
   kctl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || true
   kctl patch storageclass longhorn -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
+
+  # Right-size the default disk's reservation NOW, at install time.
+  #
+  # Longhorn reserves 30% of the default disk. That is well judged on the 80 GB
+  # reference node (24 GiB) and absurd on a big root disk — 150 GiB on a 512 GB
+  # one — because what it protects (OS, container images, logs) is roughly
+  # constant while a percentage scales with the disk.
+  #
+  # host-migration 2026.8.2/0002 already fixes this, and that was the whole
+  # problem: it is the ONLY place that fixed it. A migration converges an
+  # EXISTING node on the hourly host-config timer; it does nothing for the disk
+  # Longhorn creates during a fresh install. So every new cluster came up with
+  # the 30% default and stayed there until a converge tick happened to run —
+  # and an operator watching their brand-new 512 GB node reported 150 GB gone.
+  # Install-time defaults have to be fixed at install time.
+  rightsize_longhorn_disk_reservation
 
   # External CSI snapshotter — installs the snapshot.storage.k8s.io
   # CRDs (VolumeSnapshot, VolumeSnapshotContent, VolumeSnapshotClass)
@@ -7947,7 +8030,102 @@ POD_YAML
       warn "  Stalwart did not become Ready in 180s — verify manually."
   fi
 
+  # ACME order goes LAST, after the roll. See fire_stalwart_acme_renewal.
+  fire_stalwart_acme_renewal "$stalwart_hostname" || true
+
   log "  Stalwart full configuration complete."
+}
+
+# Order the mail TLS certificate — AFTER the listener roll above.
+#
+# THE BUG THIS FIXES (found on a live fresh install, 2026-08-12): the configure
+# pod fires the AcmeRenewal task as its step 5c, and that pod runs BEFORE the
+# Deployment roll that binds the newly-created listeners. `http-acme` on :80 is
+# one of those listeners — it is what answers Let's Encrypt's HTTP-01 challenge
+# through Traefik → stalwart-mail-acme. So the order was placed against a
+# listener that was configured but not yet bound: LE could not validate, the
+# order failed, and Stalwart does not retry until `renewBefore` (R23) — of a
+# certificate that does not exist.
+#
+# The install then looked completely clean while Stalwart served its built-in
+# `CN=rcgen self signed cert` (SAN: localhost) on 25/465/993 forever. Proven by
+# re-firing the identical task by hand after the roll on the affected node: the
+# cert was issued within seconds, with no config change of any kind.
+#
+# This is a pure ORDERING fix. Cert strategy is untouched — same Stalwart
+# http-acme listener, same Traefik → stalwart-mail-acme:80 path, same JMAP
+# AcmeRenewal task, same LE directory (ADR / AGENTS.md: mail cert strategy is
+# not to be changed).
+fire_stalwart_acme_renewal() {
+  local hostname="$1"
+  local pod="acme-renew-$$-${RANDOM}"
+
+  log "  Ordering mail TLS certificate for ${hostname} (ACME, post-listener-bind)..."
+  # Same spawn shape as the configure pod. Note every `$` that must survive to
+  # the CONTAINER is escaped (\$) — this heredoc is unquoted so bootstrap's own
+  # ${hostname} interpolates while the container's shell vars do not.
+  if ! cat <<ACME_POD | kctl apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod}
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-acme
+spec:
+  restartPolicy: Never
+  containers:
+    - name: acme
+      image: alpine:3.20
+      envFrom:
+        - secretRef:
+            name: stalwart-admin-creds
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -u
+          apk add -q --no-cache curl jq >/dev/null 2>&1 || { echo "acme: apk add failed"; exit 1; }
+          M=http://stalwart-mgmt.mail.svc.cluster.local:8080
+          AUTH="admin:\${recoveryPassword}"
+          A=\$(curl -s -u "\$AUTH" "\$M/jmap/session" | jq -r '.primaryAccounts[]?' | head -1)
+          [ -n "\$A" ] || { echo "acme: could not resolve accountId from /jmap/session"; exit 1; }
+          D=\$(curl -s -u "\$AUTH" -H 'Content-Type: application/json' -X POST "\$M/jmap" \
+                -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"accountId\":\"\$A\",\"ids\":null},\"c0\"]]}" \
+              | jq -r '.methodResponses[0][1].list[]? | select(.certificateManagement."@type"=="Automatic") | .id' | head -1)
+          [ -n "\$D" ] || { echo "acme: no domain has certificateManagement=Automatic — nothing to order"; exit 0; }
+          curl -s -u "\$AUTH" -H 'Content-Type: application/json' -X POST "\$M/jmap" \
+            -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Task/set\",{\"accountId\":\"\$A\",\"create\":{\"r\":{\"@type\":\"AcmeRenewal\",\"domainId\":\"\$D\"}}},\"c0\"]]}" \
+            | jq -c '.methodResponses[0][1]'
+          echo "acme: AcmeRenewal fired (domainId=\$D)"
+ACME_POD
+  then
+    warn "  could not spawn the ACME renewal pod — order the cert manually (docs/operations/STALWART_DEPLOYMENT.md)."
+    return 1
+  fi
+
+  kctl wait --for=jsonpath='{.status.phase}'=Succeeded -n mail "pod/${pod}" --timeout=120s >/dev/null 2>&1 || true
+  kctl logs -n mail "$pod" 2>&1 | sed 's/^/    /' || true
+  kctl delete pod -n mail "$pod" --grace-period=5 --wait=false >/dev/null 2>&1 || true
+
+  # VERIFY, don't assume. The whole failure mode was an order that silently did
+  # not happen, so bootstrap asserts the served certificate actually carries the
+  # mail hostname rather than trusting that firing the task was enough.
+  local i sans=""
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sans=$(kctl exec -n mail deploy/stalwart-mail -c stalwart -- sh -c \
+      "echo | openssl s_client -connect 127.0.0.1:465 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null" 2>/dev/null || echo "")
+    if printf '%s' "$sans" | grep -q "DNS:${hostname}"; then
+      log "  Mail TLS certificate issued — SAN contains ${hostname}."
+      return 0
+    fi
+    sleep 6
+  done
+  warn "  Mail TLS certificate NOT issued yet — Stalwart is still serving its self-signed cert (SAN: localhost)."
+  warn "    Mail clients will see a certificate error on 465/993/587."
+  warn "    Check: kubectl logs -n mail deploy/stalwart-mail -c stalwart | grep -i acme"
+  warn "    The HTTP-01 path must be reachable from the internet:"
+  warn "      curl -sI http://${hostname}/.well-known/acme-challenge/probe   (expect 404 from Stalwart, not a timeout)"
+  return 1
 }
 
 # Print why the Stalwart admin probe failed, instead of telling the operator to

@@ -77,6 +77,7 @@ jobs:
       - run: ./scripts/test-ci-no-cluster-push.sh
       - run: ./scripts/test-platform-ops-install.sh
       - run: ./scripts/test-bootstrap-summary.sh
+      - run: ./scripts/test-longhorn-reservation.sh
       - run: ./scripts/test-ci-migration-coverage.sh
       - run: ./scripts/test-ci-integration-coverage.sh
       - run: ./scripts/test-new-host-migration.sh

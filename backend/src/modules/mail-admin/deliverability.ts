@@ -192,7 +192,7 @@ async function runAllProbes(
   expectedIpv6: ReadonlyArray<string>,
 ): Promise<MailHealthDeliverabilityComponent> {
   const [forwardDns, ipv6Dns, reverseDns, blocklists, certSanMatch, smtpBanner] = await Promise.all([
-    probeForwardDns(deps, hostname, expectedIps),
+    probeForwardDns(deps, hostname, expectedIps, expectedIpv6),
     probeIpv6Dns(deps, hostname, expectedIpv6),
     // PTR over BOTH families. This used to run on expectedIps (IPv4) only, so a
     // dual-stack cluster's IPv6 mail addresses were never checked for reverse DNS
@@ -418,6 +418,7 @@ async function probeForwardDns(
   deps: DeliverabilityDeps,
   hostname: string,
   expectedIps: ReadonlyArray<string>,
+  expectedIpv6: ReadonlyArray<string> = [],
 ): Promise<MailHealthForwardDnsProbe> {
   const resolveAddrs = deps.resolveAddresses ?? defaultResolveAddresses;
   let resolvedIps: string[] = [];
@@ -433,7 +434,18 @@ async function probeForwardDns(
     resolveErr = (err as Error).message ?? String(err);
   }
 
-  const expectedSet = new Set(expectedIps);
+  // The expected set spans BOTH families, while `expectedIps` (used for
+  // `missingIps` below) stays IPv4 — AAAA coverage is probeIpv6Dns's job and
+  // reporting a missing AAAA here too would double-count it.
+  //
+  // Why the v6 set has to be here at all: resolvedIps deliberately merges A and
+  // AAAA, so on a dual-stack cluster every correctly-published AAAA was compared
+  // against an IPv4-only expected set and came back as an `extraIp` — i.e. the
+  // probe told the operator their own mail node's IPv6 address was not a cluster
+  // server node, on a cluster that was dual-stack end to end and whose Nodes page
+  // listed that exact address. A stray AAAA that belongs to no mail node is still
+  // flagged, which is the case this comparison exists for.
+  const expectedSet = new Set([...expectedIps, ...expectedIpv6]);
   const resolvedSet = new Set(resolvedIps);
   const missingIps = expectedIps.filter((ip) => !resolvedSet.has(ip));
   const extraIps = resolvedIps.filter((ip) => !expectedSet.has(ip));

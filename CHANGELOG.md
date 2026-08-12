@@ -12,6 +12,51 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Mail TLS certificate was never issued on a fresh install — Stalwart served
+  its built-in self-signed cert (`CN=rcgen self signed cert`, `SAN: localhost`)
+  on 25/465/993 indefinitely.** `configure_stalwart_full` fires the JMAP
+  `AcmeRenewal` task as its step 5c, from inside the configure pod — which runs
+  *before* the Deployment roll that binds the listeners that same run created.
+  `http-acme` on :80 is one of them, and it is what answers Let's Encrypt's
+  HTTP-01 challenge via Traefik → `stalwart-mail-acme`. The order was therefore
+  placed against a listener that was configured but not yet bound: LE could not
+  validate, the order failed, and Stalwart does not retry until `renewBefore`
+  (R23) — of a certificate that does not exist. Everything else was already
+  correct (AcmeProvider registered with a real LE account, `Domain
+  .certificateManagement = Automatic` with the right SAN, challenge path
+  reachable from the internet), which is why the install looked clean.
+  Diagnosed on a live fresh install by re-firing the identical task by hand
+  after the roll — the cert issued in seconds with no config change.
+  The order now runs after the roll, in `fire_stalwart_acme_renewal`, and
+  bootstrap **verifies the served certificate actually carries the mail
+  hostname** instead of assuming the task was enough; if it did not issue, the
+  operator gets the exact `curl` to test the challenge path. Pure ordering fix —
+  cert strategy, listener and Traefik path are unchanged.
+- **A fresh install reserved 30% of the root disk for Longhorn — 150 GiB on a
+  512 GB node.** The right-sizing rule (10% of capacity + 20 GiB, clamped to
+  Longhorn's 30% so it can only ever reduce) existed *only* as host-migration
+  `2026.8.2/0002`, and a migration converges an existing node on the hourly
+  host-config timer — it cannot fix a default applied by the install that
+  precedes it. Bootstrap now right-sizes the disk at install time via the same
+  formula, so a new cluster never comes up with the wrong number. New
+  `scripts/test-longhorn-reservation.sh` (31 checks) runs both implementations
+  over a table of disk sizes and fails if they ever diverge — if they did, the
+  value would flap on every converge. Verified on the affected node: 150.8 GiB →
+  70.2 GiB, ~80 GiB returned.
+- **Mail health reported a dual-stack cluster's own IPv6 address as "not a
+  cluster server node".** `probeForwardDns` merges A and AAAA into one resolved
+  set but compared it against `serverNodeIps`, which is IPv4-only — so every
+  correctly published AAAA came back as an `extraIp`, on a cluster that was
+  dual-stack end to end and whose Nodes page listed that exact address. The
+  expected set now spans both families; `missingIps` stays IPv4-only because
+  AAAA coverage is `probeIpv6Dns`'s finding and reporting it twice would
+  double-count the same gap in the modal's rollup. A stray AAAA belonging to no
+  mail node is still flagged, including on single-stack where the v6 probe is
+  inert. It survived because every dual-stack test asserted on `ipv6Dns` and
+  none checked what the *forward* probe did with the same AAAA — four
+  regression tests added.
+
 ### Changed
 - **A successful bootstrap now looks like one.** The completion report was built
   out of `log()`, which maps to `ui_detail`, which dims — so the one screen an
