@@ -138,7 +138,7 @@ The binary copies itself to the server and executes over SSH.
 insula bootstrap \
   --remote <worker-ip> \
   --ssh-key ~/.ssh/id_rsa \
-  --role worker \
+  --join-as worker \
   --server <control-plane-ip> \
   --token <k3s-token>
 ```
