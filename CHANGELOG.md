@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **`bootstrap.sh` now enables dual-stack automatically on a host with PROVABLY
+  routable IPv6** (`--no-dual-stack` forces IPv4-only, `--dual-stack` still
+  forces it on). Previously IPv6 was opt-in and easy to forget, and preflight
+  could only warn about it after the fact.
+  The gate is a reachability probe, not address detection: `ip -6 addr` cannot
+  tell a working global address from a SLAAC/RA address whose prefix the
+  provider never routed — they are byte-identical. The two mistakes are not
+  symmetric. Forgetting the flag costs one flag on the next install; enabling on
+  an unrouted address publishes an AAAA nothing answers on, which reaches
+  `--node-external-ip`, then the `ingress-external-ips` reconciler copies it
+  onto the Traefik Service, then tenant apex records — so IPv6-only clients fail
+  outright and every dual-stack client eats a connect timeout first. And k3s
+  fixes cluster/service CIDRs at install, so undoing it means re-bootstrapping
+  the cluster. Same principle the mail AAAA path already encodes: a wrong AAAA
+  is worse than no AAAA.
+  A bound-but-unroutable address therefore installs IPv4-only, says so
+  explicitly, and **holds for operator confirmation** so the routing can be
+  fixed before committing to an irreversible CIDR choice. Holds are TTY-gated
+  and skippable with `--yes`: `--remote` and CI never block (the remote path
+  reads stdin itself, so a naive prompt would hang the install forever).
+  Existing clusters are unaffected — CIDRs cannot change after install.
+
 ### Fixed
 - **Worker nodes could never take a prerelease, so host-migrations in an RC
   silently never reached them.** `self-upgrade` reads the `platform-version`
