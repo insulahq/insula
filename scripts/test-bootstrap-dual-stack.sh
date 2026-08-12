@@ -37,8 +37,12 @@ sed -n '/^resolve_cluster_network_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers
 sed -n '/^resolve_same_link_ipv6()/,/^}/p'        "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^resolve_dual_stack_node_ipv6()/,/^}/p'  "$BOOTSTRAP" >> "$WORK/helpers.sh"
 sed -n '/^cluster_cidr_args()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^detect_public_ipv6()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^probe_ipv6_egress()/,/^}/p'             "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^hold_for_operator()/,/^}/p'             "$BOOTSTRAP" >> "$WORK/helpers.sh"
+sed -n '/^resolve_dual_stack()/,/^}/p'            "$BOOTSTRAP" >> "$WORK/helpers.sh"
 for fn in detect_node_ipv6 resolve_cluster_network_ipv6 resolve_same_link_ipv6 resolve_dual_stack_node_ipv6 \
-          cluster_cidr_args; do
+          cluster_cidr_args detect_public_ipv6 probe_ipv6_egress hold_for_operator resolve_dual_stack; do
   grep -q "^${fn}()" "$WORK/helpers.sh" || { echo "FAIL: could not extract ${fn}() from $BOOTSTRAP" >&2; exit 1; }
 done
 # error() is called by the helpers on the refuse paths. It is FATAL in
@@ -46,6 +50,10 @@ done
 # this harness would "pass" a function that falls through its own guard.
 cat >> "$WORK/helpers.sh" <<'STUB'
 error() { echo "ERROR: $*" >&2; exit 1; }
+# resolve_dual_stack logs via log()/warn(); model them as non-fatal so the
+# resolution path is what's under test, not the logging.
+log()  { echo "LOG: $*"; }
+warn() { echo "WARN: $*" >&2; }
 STUB
 
 mkdir -p "$WORK/bin"
@@ -262,6 +270,89 @@ echo "validation refuses impossible requests"
 has "$src" 'Kubernetes caps the IPv6 service CIDR'  "service-cidr-v6 size is validated"
 has "$src" '--dual-stack requires an IPv6 address'  "--dual-stack is refused on a node with no v6"
 has "$src" '(( svc_v6_prefix < 108 ))'              "the /108 rule is enforced numerically"
+
+
+# ── auto dual-stack: detection is NOT enough, routability decides ───────────
+#
+# k3s fixes cluster CIDRs at install, so an auto-enable on an address that is
+# bound but unrouted is not a bug you fix forward — it is a cluster you rebuild,
+# with an AAAA published that nothing answers on. These assertions pin the whole
+# decision table.
+echo ""
+echo "resolve_dual_stack — auto resolution"
+
+# probe_ipv6_egress shells out to curl; fake it per-case.
+fake_curl() {
+  cat > "$WORK/bin/curl" <<FAKECURL
+#!/usr/bin/env bash
+exit $1
+FAKECURL
+  chmod +x "$WORK/bin/curl"
+}
+
+resolve_with() { # resolve_with <initial DUAL_STACK> -> prints resolved value
+  ( set +e
+    source "$WORK/helpers.sh"
+    IPV6_PROBE_TARGETS=("probe.invalid" "probe2.invalid"); IPV6_PROBE_TIMEOUT=1
+    ASSUME_YES=true
+    DUAL_STACK="$1"
+    resolve_dual_stack >/dev/null 2>&1
+    printf '%s' "$DUAL_STACK" )
+}
+
+GLOBAL_V6='2: eth0    inet6 2001:db8:1::5/64 scope global'
+ULA_ONLY='2: eth0    inet6 fd00:beef::7/64 scope global'
+NO_V6='1: lo    inet6 ::1/128 scope host'
+
+fake_curl 0
+FAKE_V6_LINES="$GLOBAL_V6"; export FAKE_V6_LINES
+check "global v6 + reachable  -> dual-stack ON"  "true"  "$(resolve_with auto)"
+
+fake_curl 7   # curl exit 7 = could not connect
+check "global v6 + UNREACHABLE -> stays OFF"     "false" "$(resolve_with auto)"
+
+fake_curl 0
+FAKE_V6_LINES="$ULA_ONLY"; export FAKE_V6_LINES
+check "ULA-only host -> OFF (never auto-enables on a non-global address)" "false" "$(resolve_with auto)"
+
+FAKE_V6_LINES="$NO_V6"; export FAKE_V6_LINES
+check "no v6 at all -> OFF" "false" "$(resolve_with auto)"
+
+# An explicit flag must win over the probe in BOTH directions — an operator who
+# said what they wanted does not get overridden by a network check.
+fake_curl 7
+FAKE_V6_LINES="$GLOBAL_V6"; export FAKE_V6_LINES
+check "explicit --dual-stack survives a failing probe" "true"  "$(resolve_with true)"
+fake_curl 0
+check "explicit --no-dual-stack survives a passing probe" "false" "$(resolve_with false)"
+
+echo ""
+echo "hold_for_operator — must never hang an automated install"
+
+# The remote/CI path pipes stdin (bootstrap reads REMOTE_ENV_B64 from it), so a
+# prompt that blocks there would hang the install forever.
+hold_out=$( ( set +e; source "$WORK/helpers.sh"; ASSUME_YES=false; \
+              timeout 5 bash -c 'source '"$WORK"'/helpers.sh; ASSUME_YES=false; hold_for_operator "x"' </dev/null ) 2>&1 )
+hold_rc=$?
+check "non-TTY stdin returns immediately (no hang)" "0" "$hold_rc"
+has "$hold_out" "non-interactive" "non-TTY says why it did not hold"
+
+hold_out2=$( ( set +e; source "$WORK/helpers.sh"; ASSUME_YES=true; hold_for_operator "x" ) 2>&1 )
+has "$hold_out2" "--yes given" "--yes skips the hold explicitly"
+
+echo ""
+echo "defaults + flags"
+has "$(grep -E '^DUAL_STACK=' "$BOOTSTRAP")" "DUAL_STACK=auto" "default is auto (not a hard false)"
+has "$(grep -E '^\s+--no-dual-stack\)' "$BOOTSTRAP")" "DUAL_STACK=false" "--no-dual-stack is parsed and forces off"
+# resolve MUST run before the CIDR validation, or an auto-enabled dual-stack
+# would skip the /108 + shape checks that an explicit --dual-stack gets.
+rs_line=$(grep -n '^  resolve_dual_stack$' "$BOOTSTRAP" | head -1 | cut -d: -f1)
+val_line=$(grep -n 'Invalid --service-cidr-v6' "$BOOTSTRAP" | head -1 | cut -d: -f1)
+if [[ -n "$rs_line" && -n "$val_line" && "$rs_line" -lt "$val_line" ]]; then
+  ok "resolve_dual_stack runs BEFORE the v6 CIDR validation"
+else
+  bad "resolve_dual_stack must run before the v6 CIDR validation (resolve=$rs_line validate=$val_line)"
+fi
 
 echo
 printf 'dual-stack: %d passed, %d failed\n' "$pass" "$fail"
