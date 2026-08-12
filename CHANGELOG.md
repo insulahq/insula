@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.3-rc.9] - 2026-08-12
+
 ### Fixed
 - **Auto dual-stack must not decide on a JOIN.** Dual-stack is a cluster-wide
   property fixed by the first server's CIDRs; a joining node cannot change it
