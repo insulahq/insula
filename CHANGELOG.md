@@ -12,6 +12,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Mail-server health failures now raise a notification** (`admin.mail_health_degraded`,
+  severity `error`, in-app + email, and any other channel the category is
+  configured for). Previously the only mail signal that ever reached a
+  notification channel was a DNSBL listing: health itself was computed *on
+  demand* for the admin modal, and the periodic collector published two
+  Prometheus gauges (`platform_mail_server_up`,
+  `platform_mail_outbound_queue_depth`) and nothing else — the cert and
+  deliverability findings were not in those gauges at all, so nothing periodic
+  even evaluated them. A cluster could serve Stalwart's self-signed
+  `SAN: localhost` certificate on 465/993, or have the pod down entirely, in
+  silence. New `mail-admin/health-scheduler.ts` runs the same health assessment
+  every 15 minutes (first pass 3 min after boot, so a cluster still finishing
+  its first reconcile does not alert on components that are merely not up yet)
+  and dispatches per failing component.
+  Policy is deliberately narrow, because a noisy alert is an ignored alert:
+  it fires only on components with `healthy === false`, never on
+  `not_implemented` ("not configured" is not "broken") and never on
+  warning-only findings — `probeDeliverability` keeps warnings healthy by
+  design, so a missing AAAA stays visible in the UI and pages nobody. Each
+  component deduplicates into a 12-hour bucket, so a sustained outage alerts
+  twice a day per component rather than every pass. Clusters with no mail
+  hostname configured are skipped entirely.
+  Also adds `notifications/seed-consistency.test.ts`: categories and templates
+  are seeded from two unconnected files, so a category shipped without a
+  template would dispatch a notification that renders as nothing — arguably
+  worse than none, because the alert now exists and says nothing. The guard is
+  general, not specific to this category.
+
 ### Fixed
 - **Mail TLS certificate was never issued on a fresh install — Stalwart served
   its built-in self-signed cert (`CN=rcgen self signed cert`, `SAN: localhost`)
