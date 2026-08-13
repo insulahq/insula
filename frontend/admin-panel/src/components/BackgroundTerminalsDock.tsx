@@ -1,6 +1,6 @@
 import { Terminal as TerminalIcon, X } from 'lucide-react';
 import { useTerminalSessions } from '@/stores/terminal-sessions';
-import { titleCase } from './NodeTerminalModal';
+import { titleCase } from './node-terminal-utils';
 
 /**
  * Floating dock that surfaces minimized terminal sessions. Sits bottom-

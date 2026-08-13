@@ -1,12 +1,29 @@
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { useTerminalSessions } from '@/stores/terminal-sessions';
-import {
-  NodeTerminalModal,
-  NodeTerminalStepUpDialog,
-  NodeTerminalOpenErrorBanner,
-  NodeTerminalOpeningOverlay,
-} from './NodeTerminalModal';
 import { BackgroundTerminalsDock } from './BackgroundTerminalsDock';
+
+// LAZY, NOT STATIC — and not for bundle size.
+//
+// This host is mounted in App.tsx, so it renders on every page. A static import
+// of NodeTerminalModal compiles that whole module into the ENTRY chunk, which
+// every page view downloads. NodeTerminalStepUpDialog contains a password input
+// (`step-up-password`), so the operator's password manager saw a password field
+// in the bytes of every page and popped its autofill prompt on every
+// navigation — while they were already signed in.
+//
+// Conditional rendering does NOT help: the markup ships regardless of whether
+// it is ever in the DOM. Same lesson as ChangePasswordModal (2026-08-04).
+// Guarded by scripts/ci-no-password-fields-in-entry-chunk.sh.
+//
+// These are named exports, hence the `.then(m => ({ default: m.X }))` shape.
+const NodeTerminalModal = lazy(() =>
+  import('./NodeTerminalModal').then((m) => ({ default: m.NodeTerminalModal })));
+const NodeTerminalStepUpDialog = lazy(() =>
+  import('./NodeTerminalModal').then((m) => ({ default: m.NodeTerminalStepUpDialog })));
+const NodeTerminalOpenErrorBanner = lazy(() =>
+  import('./NodeTerminalModal').then((m) => ({ default: m.NodeTerminalOpenErrorBanner })));
+const NodeTerminalOpeningOverlay = lazy(() =>
+  import('./NodeTerminalModal').then((m) => ({ default: m.NodeTerminalOpeningOverlay })));
 
 /**
  * App-level mount point for the node-terminal feature. Renders:
@@ -59,7 +76,10 @@ export function NodeTerminalHost() {
     ?? null;
 
   return (
-    <>
+    // fallback={null}: these are overlays over the page the operator is already
+    // looking at. A spinner here would flash over working UI for the few ms the
+    // chunk takes to arrive from the same origin.
+    <Suspense fallback={null}>
       {active && <NodeTerminalModal sessionId={active.id} nodeName={active.nodeName} />}
       {showOpeningOverlay && openingFor && <NodeTerminalOpeningOverlay nodeName={openingFor} />}
       {pendingStepUp && (
@@ -83,6 +103,6 @@ export function NodeTerminalHost() {
         />
       )}
       <BackgroundTerminalsDock />
-    </>
+    </Suspense>
   );
 }
