@@ -12,6 +12,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The password manager stopped prompting on every admin/tenant page.** Panel
+  routes were not code-split, so every page component was a static import in
+  `App.tsx` and every page's markup — `Login`, `AdminUsers`, `OidcPage`,
+  `RemoteStorageTargetsPage`, `SubUsers`, `Email`, `RouteDetail`,
+  `PrivateRegistryPanel`, the provider settings pages — compiled into the single
+  entry chunk that loads on **every** page view. Password managers detect those
+  fields in the shipped bytes and offer autofill on each navigation, even for an
+  operator who is already signed in. Conditional rendering does not help: the
+  markup ships whether or not it ever reaches the DOM. Extracting
+  `ChangePasswordModal` (2026-08-04) fixed one instance of the symptom; this
+  fixes the cause. All 50 admin and 27 tenant page imports are now
+  `React.lazy()` behind a `<Suspense>`, and the app-level `NodeTerminalHost`
+  lazy-loads the node-terminal overlays that carry the `step-up-password` input.
+  Admin entry chunk 2.5 MB → 680 kB, tenant → 312 kB, as a side effect.
+  `titleCase` moved out of `NodeTerminalModal.tsx` into `node-terminal-utils.ts`:
+  `BackgroundTerminalsDock` imported that one-line helper from the modal, and a
+  module that is *also* statically imported anywhere stays in that importer's
+  chunk (rolldown reports `INEFFECTIVE_DYNAMIC_IMPORT`) — so lazy-loading the
+  modal did nothing until the leaf edge was cut.
+  New CI guard `ci-no-password-fields-in-entry-chunk.sh`, wired into both panel
+  workflows: it greps the real built chunks that `index.html` loads eagerly
+  (entry script + every `modulepreload`) and fails if any contains a password
+  input. Unit tests cannot see this class of bug — the assertion has to be on
+  the shipped bytes. The guard also asserts password inputs still exist in
+  *some* lazy chunk, so it cannot pass by finding nothing at all. It caught a
+  case during development that a source grep had missed.
+
 ### Added
 - **Mail-server health failures now raise a notification** (`admin.mail_health_degraded`,
   severity `error`, in-app + email, and any other channel the category is

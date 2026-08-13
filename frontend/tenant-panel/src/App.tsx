@@ -1,35 +1,37 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
-import Login from '@/pages/Login';
-import Dashboard from '@/pages/Dashboard';
-import Domains from '@/pages/Domains';
-import Applications from '@/pages/Applications';
-import CronJobs from '@/pages/CronJobs';
-import Backups from '@/pages/Backups';
-import TenantRestoreCart from '@/pages/RestoreCart';
-import Email from '@/pages/Email';
-import Files from '@/pages/Files';
-import Snapshots from '@/pages/Snapshots';
-import Settings from '@/pages/Settings';
-import OidcProviders from '@/pages/settings/OidcProviders';
-import MtlsProviders from '@/pages/settings/MtlsProviders';
-import OpenZitiProviders from '@/pages/settings/OpenZitiProviders';
-import ZrokProviders from '@/pages/settings/ZrokProviders';
-import UserSettings from '@/pages/UserSettings';
-import DomainDetail from '@/pages/DomainDetail';
-import RouteDetail from '@/pages/RouteDetail';
-import SubUsers from '@/pages/SubUsers';
-import DatabaseManager from '@/pages/DatabaseManager';
-import SshKeys from '@/pages/SshKeys';
-import SftpUsers from '@/pages/SftpUsers';
-import PrivateWorkers from '@/pages/PrivateWorkers';
-import ResourceUsage from '@/pages/ResourceUsage';
-import Notifications from '@/pages/Notifications';
-import NotificationPreferences from '@/pages/NotificationPreferences';
-import Placeholder from '@/pages/Placeholder';
+import RouteFallback from '@/components/RouteFallback';
+const Login = lazy(() => import('@/pages/Login'));
+const Dashboard = lazy(() => import('@/pages/Dashboard'));
+const Domains = lazy(() => import('@/pages/Domains'));
+const Applications = lazy(() => import('@/pages/Applications'));
+const CronJobs = lazy(() => import('@/pages/CronJobs'));
+const Backups = lazy(() => import('@/pages/Backups'));
+const TenantRestoreCart = lazy(() => import('@/pages/RestoreCart'));
+const Email = lazy(() => import('@/pages/Email'));
+const Files = lazy(() => import('@/pages/Files'));
+const Snapshots = lazy(() => import('@/pages/Snapshots'));
+const Settings = lazy(() => import('@/pages/Settings'));
+const OidcProviders = lazy(() => import('@/pages/settings/OidcProviders'));
+const MtlsProviders = lazy(() => import('@/pages/settings/MtlsProviders'));
+const OpenZitiProviders = lazy(() => import('@/pages/settings/OpenZitiProviders'));
+const ZrokProviders = lazy(() => import('@/pages/settings/ZrokProviders'));
+const UserSettings = lazy(() => import('@/pages/UserSettings'));
+const DomainDetail = lazy(() => import('@/pages/DomainDetail'));
+const RouteDetail = lazy(() => import('@/pages/RouteDetail'));
+const SubUsers = lazy(() => import('@/pages/SubUsers'));
+const DatabaseManager = lazy(() => import('@/pages/DatabaseManager'));
+const SshKeys = lazy(() => import('@/pages/SshKeys'));
+const SftpUsers = lazy(() => import('@/pages/SftpUsers'));
+const PrivateWorkers = lazy(() => import('@/pages/PrivateWorkers'));
+const ResourceUsage = lazy(() => import('@/pages/ResourceUsage'));
+const Notifications = lazy(() => import('@/pages/Notifications'));
+const NotificationPreferences = lazy(() => import('@/pages/NotificationPreferences'));
+const Placeholder = lazy(() => import('@/pages/Placeholder'));
 import LifecycleGate from '@/components/LifecycleGate';
 import ErrorBoundary from '@/components/ErrorBoundary';
 
@@ -59,7 +61,8 @@ export default function App() {
     <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route
             element={
@@ -106,6 +109,7 @@ export default function App() {
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </QueryClientProvider>
     </ErrorBoundary>
