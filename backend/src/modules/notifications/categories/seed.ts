@@ -389,6 +389,23 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitWindowS: 43200, // at most once / 12h per (ip,list) via dedupeKey; cap the fan-out too
     rateLimitMax: 8,
   },
+  {
+    id: 'admin.mail_health_degraded',
+    displayName: 'Mail server health check failing',
+    description: 'A mail-server health component is FAILING — the Stalwart pod, its JMAP API, the '
+      + 'RocksDB store, the TLS certificate, a mail port, or the external deliverability probes. '
+      + 'Mail is likely not being delivered. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    // Matches the scheduler's 12h dedupe bucket per component. The cap is the
+    // backstop for the fan-out: six components, so eight leaves headroom for a
+    // total outage without turning one bad night into a mailbox full of alerts.
+    rateLimitWindowS: 43200,
+    rateLimitMax: 8,
+  },
   // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ──
   {
     id: 'admin.tenant_resource_saturation_warning',

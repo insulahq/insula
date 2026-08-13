@@ -1135,16 +1135,28 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // :9090 /metrics — no Stalwart scrape/port change), and run the
       // hourly DNSBL blocklist watch that alerts an admin when a sending
       // IP is listed. Both degrade to a logged skip when mail is absent.
+      //
+      // The health WATCH (2026-08) is a third, separate thing from the two
+      // above: the collector publishes gauges, the blocklist watch alerts on
+      // DNSBL listings, and neither evaluated the health COMPONENTS (pod, JMAP,
+      // RocksDB, cert, ports, deliverability) outside the on-demand admin
+      // modal. A cluster could serve a self-signed cert on 465/993 with nothing
+      // reaching any notification channel.
       {
         const { startMailHealthCollector } = await import('./modules/mail-events/mail-health-collector.js');
         const { startMailBlocklistScheduler } = await import('./modules/mail-admin/blocklist-scheduler.js');
+        const { startMailHealthScheduler } = await import('./modules/mail-admin/health-scheduler.js');
         const stopMailHealth = startMailHealthCollector(app.db, app.log);
         const stopBlocklist = startMailBlocklistScheduler(app.db, app.log, {
+          kubeconfigPath: process.env.KUBECONFIG_PATH,
+        });
+        const stopHealthWatch = startMailHealthScheduler(app.db, app.log, {
           kubeconfigPath: process.env.KUBECONFIG_PATH,
         });
         app.addHook('onClose', () => {
           stopMailHealth();
           stopBlocklist();
+          stopHealthWatch();
         });
       }
 

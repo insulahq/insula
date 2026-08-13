@@ -984,6 +984,49 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── admin.mail_health_degraded (a health component is FAILING) ──
+  {
+    categoryId: 'admin.mail_health_degraded',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[MAIL] Health check failing: {{component}}',
+    bodyTemplate: emailMjml(
+      'Mail health degraded: {{component}}',
+      'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}} '
+      + 'Mail delivery is likely affected. Open Monitoring → Mail for the full component '
+      + 'breakdown and per-probe remediation.',
+      'Open mail monitoring',
+      '{{panelUrl}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'component', type: 'string', required: true },
+      { name: 'mailHostname', type: 'string', required: true },
+      // Pre-rendered, already leading-space-padded, or empty. Templates cannot
+      // do conditionals, so an absent detail must render as nothing at all
+      // rather than as a stray separator.
+      { name: 'detail', type: 'string', required: false },
+      { name: 'panelUrl', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.mail_health_degraded',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[MAIL] {{component}} check failing',
+    bodyTemplate: 'The mail-server {{component}} check is FAILING on {{mailHostname}}.{{detail}} '
+      + 'Mail delivery is likely affected — see Monitoring → Mail.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'component', type: 'string', required: true },
+      { name: 'mailHostname', type: 'string', required: true },
+      { name: 'detail', type: 'string', required: false },
+      { name: 'panelUrl', type: 'string', required: false },
+    ],
+  },
+
   // ── admin.tenant_resource_saturation_warning / _critical ──
   ...(['admin.tenant_resource_saturation_warning', 'admin.tenant_resource_saturation_critical'] as const).flatMap((categoryId): SeedTemplate[] => {
     const crit = categoryId.endsWith('critical');

@@ -600,6 +600,38 @@ export async function notifyAdminMailBlocklisted(
   await dispatchSafe(db, 'admin.mail_blocklisted', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface AdminMailHealthDegradedPayload {
+  /** Operator-facing component name: 'pod' | 'JMAP API' | 'certificate' | … */
+  readonly component: string;
+  readonly mailHostname: string;
+  /**
+   * One sentence of specifics, ALREADY prefixed with a leading space (or ''):
+   * templates have no conditionals, so an absent detail must render as nothing
+   * rather than as a dangling separator.
+   */
+  readonly detail?: string;
+  readonly panelUrl?: string;
+}
+/**
+ * A mail-server health COMPONENT is failing (not merely warning).
+ *
+ * Until now the only mail signal that ever reached a notification channel was
+ * a DNSBL listing: mail health itself was computed on demand for the admin
+ * modal, and the periodic collector published Prometheus gauges only. So a
+ * cluster could serve a self-signed certificate on 465/993, or have Stalwart
+ * down entirely, and nothing told the operator on any configured channel.
+ *
+ * Callers pass a dedupeKey of `mail-health:<component>:<12h bucket>` so a
+ * sustained outage alerts twice a day per component, not every pass.
+ */
+export async function notifyAdminMailHealthDegraded(
+  db: Database,
+  payload: AdminMailHealthDegradedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.mail_health_degraded', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ─
 
 export interface AdminTenantSaturationPayload {
