@@ -89,7 +89,7 @@ async function processOne(
   const { db, k8s, log } = deps;
   const resolve = deps.resolveDigest ?? resolveTagDigest;
 
-  const [tenant] = await db.select({ status: tenants.status, namespace: tenants.namespace })
+  const [tenant] = await db.select({ status: tenants.status, namespace: tenants.kubernetesNamespace })
     .from(tenants).where(eq(tenants.id, row.tenantId));
   if (!tenant || tenant.status !== 'active') return false;
 
