@@ -4703,6 +4703,52 @@ kctl() {
   kubectl --kubeconfig="$KUBECONFIG" "$@"
 }
 
+# Fetch a pod's logs ONCE, force them into the transcript, and echo them back
+# for the caller to grep or print.
+#
+# WHY THIS EXISTS. `kctl` decides what to do with output by `[ -t 1 ]`:
+#
+#   kctl logs …                 statement position on a TTY → suppressed from
+#                               the screen, but ui_record'ed to the transcript
+#   kctl logs … | sed …         stdout is a PIPE → passthrough. Reaches the
+#                               SCREEN and is recorded NOWHERE
+#   x=$(kctl logs …)            command substitution → captured, recorded NOWHERE
+#
+# Every one-shot pod in the mail bootstrap read its logs through one of the two
+# unrecorded forms, so the single most valuable diagnostic in the whole install
+# — what the Stalwart configure pod actually did — existed only as text that
+# scrolled past on a terminal. `/var/log/insula-bootstrap.log` had a gap between
+# "condition met" and the next step. That is how an ACME order that never
+# succeeded looked exactly like a clean install (see fire_stalwart_acme_renewal).
+#
+# Capturing explicitly and calling ui_record ourselves is what makes the output
+# survive. Reading ONCE also stops the same logs being fetched three times to
+# answer three different questions about them.
+capture_pod_logs() { # <namespace> <pod> [label] → logs on stdout
+  local ns="$1" pod="$2" label="${3:-$2}" out=""
+  out="$(kctl logs -n "$ns" "$pod" 2>&1)" || true
+  if [[ -n "$out" ]]; then
+    ui_record "POD LOGS ${label} (${ns}/${pod})"$'\n'"$out"
+  else
+    # An empty log is itself a finding — it means the container produced no
+    # output at all, which is different from "we did not look".
+    ui_record "POD LOGS ${label} (${ns}/${pod}) — EMPTY"
+  fi
+  printf '%s' "$out"
+}
+
+# Show captured pod logs on screen, indented and dimmed, without re-fetching.
+# Pass the text, not the pod name — the caller already has it.
+print_pod_logs() { # <text> [indent]
+  local text="$1" indent="${2:-    }"
+  [[ -n "$text" ]] || return 0
+  if ui_is_rich; then
+    printf '%s%s%s\n' "$UI_C_DIM" "$(sed "s/^/${indent}/" <<<"$text")" "$UI_C_RESET"
+  else
+    sed "s/^/${indent}/" <<<"$text"
+  fi
+}
+
 install_traefik() {
   # Idempotency: check for the DaemonSet, not a Deployment or the chart.
   if kctl get daemonset -n traefik traefik &>/dev/null 2>&1; then
@@ -7348,7 +7394,7 @@ EOF
     log "  Master user provisioned (Roundcube SSO ready)."
   else
     warn "  Master-user provision Pod did not complete cleanly. Logs:"
-    kctl logs -n mail "$job_name" 2>&1 | tail -20 | sed 's/^/    /' || true
+    print_pod_logs "$(capture_pod_logs mail "$job_name" 'stalwart master-user' | tail -20)"
   fi
   kctl delete pod    -n mail "$job_name"       --ignore-not-found >/dev/null 2>&1 || true
   kctl delete secret -n mail "${params_secret}" --ignore-not-found >/dev/null 2>&1 || true
@@ -7986,15 +8032,19 @@ POD_YAML
   if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
        -n mail "pod/${pod_name}" --timeout="${configure_wait}" 2>/dev/null; then
     warn "  configure pod did not Succeed within ${configure_wait}."
-    kctl logs -n mail "${pod_name}" 2>&1 | tail -40 | sed 's/^/      /' || true
+    # Captured (and transcript-recorded) once, then reused for the marker checks
+    # below — three separate `kubectl logs` calls used to answer three questions
+    # about the same output, and recorded none of them.
+    local timeout_logs; timeout_logs="$(capture_pod_logs mail "${pod_name}" 'stalwart configure')"
+    print_pod_logs "$(tail -40 <<<"$timeout_logs")" '      '
     # A timeout is NOT automatically a configuration failure: everything that
     # matters prints `configure-ok` before the advisory cert poll begins. If the
     # marker is there, the config landed and only the observation was cut off.
-    if kctl logs -n mail "${pod_name}" 2>/dev/null | grep -q '^configure-ok '; then
+    if grep -q '^configure-ok ' <<<"$timeout_logs"; then
       warn "  ...but configure-ok was reached — configuration is COMPLETE; only the"
       warn "     advisory mail-TLS cert poll was cut off. Treating as success."
       local late_marker
-      late_marker=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
+      late_marker=$(grep -m1 '^configure-ok ' <<<"$timeout_logs" || true)
       kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
       kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
       if echo "$late_marker" | grep -q 'listeners_created=true'; then
@@ -8010,9 +8060,10 @@ POD_YAML
 
   # Match the marker ANYWHERE in the log, not just on the last line: the
   # advisory cert poll prints after it, so `tail -1` would miss it entirely.
-  local last_line
-  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
-  kctl logs -n mail "${pod_name}" 2>&1 | sed 's/^/    /' || true
+  local last_line configure_logs
+  configure_logs="$(capture_pod_logs mail "${pod_name}" 'stalwart configure')"
+  last_line=$(grep -m1 '^configure-ok ' <<<"$configure_logs" || true)
+  print_pod_logs "$configure_logs"
   kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
   kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
 
@@ -8104,7 +8155,7 @@ ACME_POD
   fi
 
   kctl wait --for=jsonpath='{.status.phase}'=Succeeded -n mail "pod/${pod}" --timeout=120s >/dev/null 2>&1 || true
-  kctl logs -n mail "$pod" 2>&1 | sed 's/^/    /' || true
+  print_pod_logs "$(capture_pod_logs mail "$pod" 'stalwart acme-renewal')"
   kctl delete pod -n mail "$pod" --grace-period=5 --wait=false >/dev/null 2>&1 || true
 
   # VERIFY, don't assume. The whole failure mode was an order that silently did
