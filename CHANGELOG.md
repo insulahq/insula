@@ -12,6 +12,32 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The mail bootstrap's one-shot Pods threw away their own output.** The
+  Stalwart configure pod does the most intricate work in the whole install —
+  listeners, DKIM, the ACME provider, the certificate order — and its logs never
+  reached `/var/log/insula-bootstrap.log`. The transcript had a hole between
+  "condition met" and the next step, which is how an ACME order that never
+  succeeded looked exactly like a clean install.
+  The cause is a property of the `kctl` wrapper worth writing down: it decides
+  what to do with output by `[ -t 1 ]`. In **statement position on a TTY** it
+  suppresses the output from the screen but records it to the transcript; when
+  its stdout is a **pipe** (`kctl logs … | sed …`) or a **command substitution**
+  (`x=$(kctl logs …)`) it passes straight through and records **nothing**. Every
+  pod-log reader in the mail path used one of the two unrecorded forms, so the
+  output existed only as text scrolling past on a terminal.
+  New `capture_pod_logs` fetches a pod's logs once, calls `ui_record` explicitly
+  so they survive in the transcript, and returns them for the caller to grep or
+  print (`print_pod_logs`). All six call sites — master-user provision, the
+  configure pod on both the success and timeout paths, and the ACME renewal pod
+  — now route through it. The timeout path previously ran `kubectl logs` three
+  times to ask three questions about the same output and recorded none of them;
+  it now reads once. An empty log is recorded as `— EMPTY`, because "the
+  container printed nothing" and "we never looked" are different findings.
+  Asserted in `scripts/test-bootstrap-quiet-wrappers.sh` (18 checks, under a
+  real pty via `script(1)` since the behaviour depends on `[ -t 1 ]`), including
+  a guard that fails if any call site returns to the unrecorded forms.
+
 ### Added
 - **Custom deployments can now pull the latest image and redeploy.** An
   **Update** control on every custom container and compose stack re-pulls each
