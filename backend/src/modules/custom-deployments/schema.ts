@@ -35,6 +35,8 @@ export {
   composeValidateRequestSchema,
   composeParseResultSchema,
   composeSchemaResponseSchema,
+  setAutoUpdateSchema,
+  updateNowResultSchema,
 } from '@insula/api-contracts';
 
 export type {
@@ -54,6 +56,8 @@ export type {
   CreateCustomDeploymentComposeInput,
   UpdateCustomDeploymentInput,
   SetAllowRootInput,
+  SetAutoUpdateInput,
+  UpdateNowResult,
   CustomDeploymentIssue,
   ValidateCustomDeploymentResult,
   RenderedManifest,

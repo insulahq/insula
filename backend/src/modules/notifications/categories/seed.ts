@@ -390,6 +390,17 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     rateLimitMax: 8,
   },
   {
+    id: 'tenant.custom_deployment_rolled_back',
+    displayName: 'Container auto-update rolled back',
+    description: 'An automatic image update for one of your containers failed to start, so the '
+      + 'previous image was restored and auto-update was switched off for that container.',
+    audience: 'tenant',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
     id: 'admin.mail_health_degraded',
     displayName: 'Mail server health check failing',
     description: 'A mail-server health component is FAILING — the Stalwart pod, its JMAP API, the '

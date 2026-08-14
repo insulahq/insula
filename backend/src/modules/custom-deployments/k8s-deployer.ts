@@ -279,7 +279,21 @@ async function applyDeployment(
       // RWO PVC; RollingUpdate would deadlock at Multi-Attach.
       strategy: { type: 'Recreate' },
       template: {
-        metadata: { labels: { ...labels, ...filterServiceLabels(service.labels) } },
+        metadata: {
+          labels: { ...labels, ...filterServiceLabels(service.labels) },
+          // THE re-pull mechanism. `imagePullPolicy: Always` only takes effect
+          // when a pod is (re)created, and a strategic-merge patch carrying an
+          // identical pod template is a no-op — no new ReplicaSet, no restart,
+          // no pull. Stamping the spec's roll marker into the template is what
+          // makes "Update now" and auto-update actually reach the registry.
+          //
+          // Sourced from the SPEC, never from Date.now() here: re-applying an
+          // unchanged spec (DR redeploy, any future reconciler) must not
+          // restart a healthy workload.
+          ...(input.spec.rolledAt
+            ? { annotations: { 'insula.host/rolled-at': input.spec.rolledAt } }
+            : {}),
+        },
         spec: podSpec,
       },
     },

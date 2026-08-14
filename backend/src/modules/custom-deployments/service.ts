@@ -9,9 +9,9 @@
 // at the route layer (see routes.ts) until PR-3 ships the parser.
 
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { deployments, tenants } from '../../db/schema.js';
+import { customDeploymentImageAudit, deployments, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getSettings } from '../system-settings/service.js';
 import { isCustomContainersAllowedByPlan } from '../subscriptions/service.js';
@@ -42,6 +42,7 @@ import {
   type CreateCustomDeploymentSimpleInput,
   type CreateCustomDeploymentComposeInput,
   type UpdateCustomDeploymentInput,
+  type UpdateNowResult,
 } from './schema.js';
 import { CUSTOM_SPEC_VERSION } from './schema.js';
 import { parseCompose } from './compose-parser.js';
@@ -531,6 +532,133 @@ export async function redeployCustomDeploymentRow(
   );
 }
 
+// ─── Pull-latest + redeploy ("Update now") ──────────────────────────────────
+
+/**
+ * Re-pull every image at its CURRENT tag and roll the pods.
+ *
+ * Distinct from upgradeTag, which points the deployment at a DIFFERENT tag.
+ * This one keeps the tenant's pinned tag and picks up a republished digest —
+ * the `:latest`/`:1.27`-moved case, and the only thing auto-update ever does.
+ *
+ * Works for compose stacks too: one Deployment per service, all rolled, since
+ * "update this stack" with per-service granularity would be a different (and
+ * much more confusing) feature.
+ *
+ * The roll marker goes in the SPEC. See customDeploymentSpecSchema.rolledAt for
+ * why a deploy-time timestamp would be wrong.
+ */
+export async function pullAndRedeploy(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  id: string,
+  now: () => Date = () => new Date(),
+): Promise<UpdateNowResult> {
+  const current = await getCustomDeployment(db, tenantId, id);
+  // Tenant-active is asserted by loadTenantContext below, with the correct
+  // action label — no separate check needed here.
+
+  // What the pods are running right now, so the caller can show a before/after
+  // and an auto-update has something to roll back to. Best-effort: a
+  // deployment that has never reported a digest just yields null.
+  const previousDigest = await getRunningDigest(db, id);
+
+  const nextSpec: CustomDeploymentSpec = {
+    ...current.customSpec,
+    rolledAt: now().toISOString(),
+  };
+
+  await db.update(deployments)
+    .set({
+      customSpec: nextSpec as unknown as Record<string, unknown>,
+      status: 'deploying',
+      statusMessage: null,
+      lastError: null,
+    })
+    .where(eq(deployments.id, id));
+
+  const { namespace, nodeName, storageTier } = await loadTenantContext(db, tenantId);
+  await deployToCluster(
+    db, k8s, id, namespace, current.name,
+    current.storagePath ?? `custom-deployment/${current.name}`,
+    nextSpec, nodeName, storageTier,
+  );
+
+  const services = Object.keys(nextSpec.services);
+  return {
+    rolled: true,
+    services,
+    previousDigest,
+    message: previousDigest
+      ? `Re-pulling ${services.length} image(s) at their current tags. Previously running ${previousDigest}.`
+      : `Re-pulling ${services.length} image(s) at their current tags.`,
+  };
+}
+
+/**
+ * Digest the pods most recently reported running, from the image audit the
+ * status reconciler populates out of `containerStatuses[].imageID`.
+ *
+ * Sentinel rows (digest still NULL while the kubelet pulls) are skipped —
+ * those mean "we know the image, not yet the digest", and treating one as the
+ * current digest would make a comparison against the registry meaningless.
+ */
+export async function getRunningDigest(db: Database, deploymentId: string): Promise<string | null> {
+  const rows = await db.select({ digest: customDeploymentImageAudit.resolvedDigest })
+    .from(customDeploymentImageAudit)
+    .where(and(
+      eq(customDeploymentImageAudit.deploymentId, deploymentId),
+      isNotNull(customDeploymentImageAudit.resolvedDigest),
+    ))
+    .orderBy(desc(customDeploymentImageAudit.pulledAt))
+    .limit(1);
+  return rows[0]?.digest ?? null;
+}
+
+// ─── Auto-update toggle ─────────────────────────────────────────────────────
+
+/**
+ * Enable/disable the hourly same-tag re-pull.
+ *
+ * Single-service only. A stack has N images with N independent digests, so
+ * "the image changed" has no single meaning — and rolling an entire stack
+ * because one sidecar was republished is not a behaviour to give anyone by
+ * default. Stacks still get the manual Update button.
+ *
+ * Persisting this does NOT redeploy: flipping a checkbox must never restart a
+ * running workload.
+ */
+export async function setAutoUpdate(
+  db: Database,
+  tenantId: string,
+  id: string,
+  enabled: boolean,
+): Promise<CustomDeploymentRow> {
+  const current = await getCustomDeployment(db, tenantId, id);
+  if (enabled && current.customSpec.sourceMode === 'compose') {
+    throw new ApiError(
+      'NOT_SUPPORTED_FOR_COMPOSE',
+      'Auto-update is available for single-container deployments only. A stack has one digest per service, '
+      + 'so there is no single "newer image" to act on — use Update now to re-pull the whole stack.',
+      400,
+      { field: 'enabled' },
+    );
+  }
+  const nextSpec: CustomDeploymentSpec = {
+    ...current.customSpec,
+    autoUpdate: enabled,
+    // Drop any half-finished rollback bookkeeping when auto-update is turned
+    // off, so re-enabling later starts from a clean slate rather than
+    // resurrecting a digest from weeks ago.
+    ...(enabled ? {} : { rollbackDigest: undefined }),
+  };
+  await db.update(deployments)
+    .set({ customSpec: nextSpec as unknown as Record<string, unknown> })
+    .where(eq(deployments.id, id));
+  return getCustomDeployment(db, tenantId, id);
+}
+
 // ─── Upgrade-tag (one-click) ────────────────────────────────────────────────
 
 export async function upgradeTag(
@@ -810,6 +938,7 @@ function buildSpecFromSimple(input: CreateCustomDeploymentSimpleInput): CustomDe
     configMaps: [],
     secrets: [],
     allowRoot: false,
+    autoUpdate: false,
     pullCredentialId: input.pull_credential_id,
   };
 }

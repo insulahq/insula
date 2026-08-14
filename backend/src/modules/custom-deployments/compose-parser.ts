@@ -325,6 +325,7 @@ export function parseCompose(input: ComposeParseInput): ComposeParseResult {
     configMaps,
     secrets,
     allowRoot: false,
+    autoUpdate: false,
   };
   return { spec, issues };
 }
