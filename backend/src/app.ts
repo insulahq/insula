@@ -1160,6 +1160,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         });
       }
 
+      // Custom-deployment auto-update (ADR-036): hourly same-tag re-pull for
+      // single-container deployments the tenant opted in. Never changes the
+      // pinned tag; rolls back and disables itself if the new image does not
+      // start. Needs a k8s client — skipped entirely without one (local dev).
+      {
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { startAutoUpdateScheduler } = await import('./modules/custom-deployments/auto-update-scheduler.js');
+          const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+          const stopAutoUpdate = startAutoUpdateScheduler(app.db, k8s, app.log, {
+            // Same key the PAT store uses (routes.ts pull-credentials path).
+            // Absent → private-registry digest checks are skipped, public
+            // images still work.
+            encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY,
+          });
+          app.addHook('onClose', () => { stopAutoUpdate(); });
+        } catch (err) {
+          app.log.warn({ err }, 'custom-deployment auto-update scheduler not started (no k8s client)');
+        }
+      }
+
       // Mail archive scheduler — ticks every 60s, fires
       // startMailArchive({ mode: 'no_downtime' }) when the
       // operator-configured interval (system_settings.mail_archive_

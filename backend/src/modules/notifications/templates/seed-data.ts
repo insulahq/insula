@@ -984,6 +984,47 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     ],
   },
 
+  // ── tenant.custom_deployment_rolled_back (auto-update failed) ──
+  {
+    categoryId: 'tenant.custom_deployment_rolled_back',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: '[CONTAINER] Auto-update rolled back: {{deploymentName}}',
+    bodyTemplate: emailMjml(
+      'Auto-update rolled back: {{deploymentName}}',
+      'A new image was published for {{deploymentName}} and pulled automatically, but the container '
+      + 'did not start. The previous image ({{restoredDigest}}) has been restored and auto-update has '
+      + 'been switched OFF for this container so it cannot happen again unattended. The image that '
+      + 'failed was {{failedDigest}}. Re-enable auto-update once the upstream image is fixed.',
+      'Open containers',
+      '{{panelUrl}}',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'failedDigest', type: 'string', required: true },
+      { name: 'restoredDigest', type: 'string', required: true },
+      { name: 'panelUrl', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tenant.custom_deployment_rolled_back',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: '[CONTAINER] Auto-update rolled back: {{deploymentName}}',
+    bodyTemplate: 'A new image for {{deploymentName}} failed to start. The previous image '
+      + '({{restoredDigest}}) was restored and auto-update is now OFF for this container.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'failedDigest', type: 'string', required: true },
+      { name: 'restoredDigest', type: 'string', required: true },
+      { name: 'panelUrl', type: 'string', required: false },
+    ],
+  },
+
   // ── admin.mail_health_degraded (a health component is FAILING) ──
   {
     categoryId: 'admin.mail_health_degraded',

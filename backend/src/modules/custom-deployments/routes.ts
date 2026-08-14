@@ -29,6 +29,7 @@ import {
   submitPullCredentialSchema,
   checkUpdatesBatchSchema,
   setAllowRootSchema,
+  setAutoUpdateSchema,
 } from './schema.js';
 import { checkForUpdate } from './update-checker.js';
 import { loadDecryptedToken } from './pat-store.js';
@@ -202,6 +203,50 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     }
     const k8s = requireK8s();
     const row = await service.upgradeTag(app.db, k8s, tenantId, id, body.image);
+    return success(row);
+  });
+
+  // ─── Update now (re-pull current tags) ───────────────────────────────────
+
+  /**
+   * Re-pull every image at its CURRENT tag and roll the pods.
+   *
+   * Distinct from /upgrade-tag, which points the deployment at a different
+   * tag. This is the "the tag was republished" case — `:latest` moved, or the
+   * vendor rebuilt `:1.27` — which is invisible to a tag-list comparison and
+   * was previously unreachable from the UI at all: `PATCH {restart:true}`
+   * re-applies an identical pod template, which Kubernetes treats as a no-op,
+   * so no pod ever restarted and no image was ever re-pulled.
+   *
+   * POST, not PUT: not idempotent in any useful sense — each call is a
+   * deliberate new roll.
+   */
+  app.post('/tenants/:tenantId/custom-deployments/:id/update-now', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const k8s = requireK8s();
+    const result = await service.pullAndRedeploy(app.db, k8s, tenantId, id);
+    return success(result);
+  });
+
+  // ─── Auto-update toggle ──────────────────────────────────────────────────
+
+  /**
+   * Enable/disable the hourly same-tag re-pull. Single-service only — the
+   * service layer 400s a compose deployment with NOT_SUPPORTED_FOR_COMPOSE.
+   * Does NOT redeploy: flipping a checkbox must not restart a workload.
+   */
+  app.put('/tenants/:tenantId/custom-deployments/:id/auto-update', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const parsed = setAutoUpdateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      throw new ApiError(
+        'INVALID_FIELD_VALUE',
+        'enabled must be a boolean',
+        400,
+        { field: 'enabled' },
+      );
+    }
+    const row = await service.setAutoUpdate(app.db, tenantId, id, parsed.data.enabled);
     return success(row);
   });
 

@@ -600,6 +600,37 @@ export async function notifyAdminMailBlocklisted(
   await dispatchSafe(db, 'admin.mail_blocklisted', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+export interface CustomDeploymentRolledBackPayload {
+  readonly deploymentName: string;
+  /** Digest that was pulled and failed to start. */
+  readonly failedDigest: string;
+  /** Digest restored, or 'none' when there was nothing to restore. */
+  readonly restoredDigest: string;
+}
+/**
+ * An auto-update pulled a republished image that never became Ready, so the
+ * platform restored the previous digest and switched auto-update OFF.
+ *
+ * The tenant MUST be told: their container silently changed underneath them,
+ * it broke, and the automation they enabled is now disabled. Every one of
+ * those three facts is something they would otherwise discover by accident.
+ */
+export async function notifyTenantCustomDeploymentRolledBack(
+  db: Database,
+  tenantId: string,
+  payload: CustomDeploymentRolledBackPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(
+    db,
+    'tenant.custom_deployment_rolled_back',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey },
+  );
+}
+
 export interface AdminMailHealthDegradedPayload {
   /** Operator-facing component name: 'pod' | 'JMAP API' | 'certificate' | … */
   readonly component: string;

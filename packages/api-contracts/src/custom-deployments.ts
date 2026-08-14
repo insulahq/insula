@@ -356,6 +356,36 @@ export const customDeploymentSpecSchema = z.object({
   /** Optional reference to a stored image-pull credential (PAT).
    *  When set, every service in this stack uses the same imagePullSecret. */
   pullCredentialId: uuidField.optional(),
+  /**
+   * Hourly re-pull of the SAME tag when its digest moves upstream.
+   *
+   * Deliberately never changes the tag the tenant pinned: `nginx:1.27`
+   * re-pulls when 1.27 is republished, and a brand-new `nginx:1.28` is
+   * reported by the updates pill for the tenant to apply by hand. Auto-update
+   * therefore cannot move anyone across a version boundary.
+   *
+   * Single-service only — a stack has N images with N independent digests and
+   * no meaningful "the image changed" event. The service layer rejects
+   * enabling it on a compose deployment.
+   */
+  autoUpdate: z.boolean().default(false),
+  /**
+   * Opaque roll marker, rendered into the pod template as an annotation.
+   *
+   * Changing it is what makes Kubernetes roll the pods: the deployer
+   * strategic-merge-patches the Deployment, and an identical pod template is a
+   * NO-OP — no new ReplicaSet, no restart, and therefore no re-pull no matter
+   * what `imagePullPolicy` says. It lives in the spec (not a timestamp
+   * generated at deploy time) precisely so re-applying an unchanged spec —
+   * the DR redeploy path, a future reconciler — does NOT restart the workload.
+   */
+  rolledAt: z.string().max(64).optional(),
+  /**
+   * Digest the tenant was last successfully running, captured before an
+   * auto-update rolls a new one. The rollback target; cleared once the new
+   * digest is confirmed healthy.
+   */
+  rollbackDigest: z.string().max(256).optional(),
 });
 
 // ─── Create / Update inputs ─────────────────────────────────────────────────
@@ -420,6 +450,28 @@ export const createCustomDeploymentSchema = z.discriminatedUnion('mode', [
  *  tenant must explicitly re-apply the spec after the flag is set. */
 export const setAllowRootSchema = z.object({
   allowRoot: z.boolean(),
+});
+
+/** Toggle the hourly same-tag re-pull. Single-service deployments only. */
+export const setAutoUpdateSchema = z.object({
+  enabled: z.boolean(),
+});
+
+/**
+ * Result of an operator-triggered "Update now".
+ *
+ * `rolled` is what actually happened, and is NOT the same as "a new image is
+ * running": the pods are told to re-pull and the kubelet decides. The digest
+ * the tenant ends up on is observed asynchronously by the status reconciler
+ * (from `containerStatuses[].imageID`) and shows up in the image audit.
+ */
+export const updateNowResultSchema = z.object({
+  rolled: z.boolean(),
+  /** Services whose pods were told to re-pull. All of them, for a stack. */
+  services: z.array(z.string()),
+  /** Digest observed running BEFORE the roll, when one was recorded. */
+  previousDigest: z.string().nullable(),
+  message: z.string(),
 });
 
 /** Update is a narrow patch — most fields are immutable post-create
@@ -564,6 +616,8 @@ export type CreateCustomDeploymentComposeInput = z.infer<typeof createCustomDepl
 export type CreateCustomDeploymentInput = z.infer<typeof createCustomDeploymentSchema>;
 export type UpdateCustomDeploymentInput = z.infer<typeof updateCustomDeploymentSchema>;
 export type SetAllowRootInput = z.infer<typeof setAllowRootSchema>;
+export type SetAutoUpdateInput = z.infer<typeof setAutoUpdateSchema>;
+export type UpdateNowResult = z.infer<typeof updateNowResultSchema>;
 export type CustomDeploymentIssue = z.infer<typeof customDeploymentIssueSchema>;
 export type ValidateCustomDeploymentResult = z.infer<typeof validateCustomDeploymentResultSchema>;
 export type RenderedManifest = z.infer<typeof renderedManifestSchema>;

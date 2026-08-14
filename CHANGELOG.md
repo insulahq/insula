@@ -12,7 +12,39 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Custom deployments can now pull the latest image and redeploy.** An
+  **Update** control on every custom container and compose stack re-pulls each
+  image at its *current* tag and rolls the pods — the `:latest`-moved and
+  `:1.27`-rebuilt case, which is invisible to the existing "Updates available"
+  pill (that compares tag *lists*, so a republished tag looks identical).
+  Single-container deployments additionally get an **Auto** toggle: an hourly
+  check that re-pulls automatically when the pinned tag's digest moves.
+  Auto-update **never changes the tag** — a genuinely newer tag (1.27 → 1.28)
+  stays a deliberate click on the pill, so automation cannot walk a tenant
+  across a version boundary. Stacks are excluded by design: N services means N
+  independent digests and no single "the image changed" event.
+  If an auto-update pulls an image that never becomes Ready, the previous
+  digest is restored (pinned as `repo@sha256:…`, because the tag now resolves
+  to the broken image), auto-update is switched **off** so the next tick cannot
+  repeat it, and the tenant is notified
+  (`tenant.custom_deployment_rolled_back`).
+  Deliberate safety property: "could not tell" is never treated as "it
+  changed". An unreachable registry, a missing `Docker-Content-Digest` header,
+  a malformed digest or a workload that has not yet reported one all mean
+  *skip* — otherwise one bad hour at a registry would roll every auto-update
+  workload on the platform, hourly.
+
 ### Fixed
+- **`restart` on a custom deployment never actually restarted anything.**
+  `PATCH {restart:true}` re-ran the deploy path, which strategic-merge-patches
+  the Deployment with an identical pod template — a no-op to Kubernetes. No new
+  ReplicaSet, no pod restart, and therefore no image re-pull however emphatic
+  `imagePullPolicy: Always` was. Deploys now carry a roll marker from the spec
+  (`rolledAt` → `insula.host/rolled-at` on the pod template), which is what
+  forces the new ReplicaSet. It lives in the spec rather than being generated
+  at deploy time on purpose: re-applying an unchanged spec (the DR redeploy
+  path) must not restart a healthy workload.
 - **The password manager stopped prompting on every admin/tenant page.** Panel
   routes were not code-split, so every page component was a static import in
   `App.tsx` and every page's markup — `Login`, `AdminUsers`, `OidcPage`,
