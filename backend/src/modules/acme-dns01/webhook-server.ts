@@ -243,14 +243,25 @@ async function handleRequest(
       });
     }
 
-    const parsed = challengePayloadSchema.safeParse(JSON.parse(await readBody(req)));
+    const raw = JSON.parse(await readBody(req)) as { request?: Record<string, unknown> };
+    const parsed = challengePayloadSchema.safeParse(raw);
     if (!parsed.success) {
+      // Name the FIELD, not just the rule. cert-manager surfaces this string
+      // verbatim as the Challenge's `Reason`, and "expected string to have
+      // >=1 characters" with no path is unactionable — it was, on the first
+      // live run of this webhook.
+      const issue = parsed.error.issues[0];
+      const path = issue?.path?.join('.') || '(root)';
+      logger.warn(
+        { path, message: issue?.message, received: Object.keys(raw?.request ?? {}) },
+        'acme-dns01: rejected a malformed ChallengePayload',
+      );
       return sendJson(res, 400, {
         kind: 'Status',
         apiVersion: 'v1',
         status: 'Failure',
         code: 400,
-        message: `malformed ChallengePayload: ${parsed.error.issues[0]?.message ?? 'invalid'}`,
+        message: `malformed ChallengePayload: ${path}: ${issue?.message ?? 'invalid'}`,
       });
     }
 
