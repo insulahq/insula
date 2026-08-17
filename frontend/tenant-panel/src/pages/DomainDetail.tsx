@@ -1,4 +1,6 @@
 import { useState, type FormEvent } from 'react';
+import ManagedCertificateCard from '@/components/ManagedCertificateCard';
+import { useCanManage } from '@/hooks/use-can-manage';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
@@ -756,12 +758,30 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
     return services.some(svc => (svc.ports ?? []).some(p => p.ingressEligible && p.exposeAsService));
   });
 
-  /** Validate a single DNS label (subdomain part). */
+  /**
+   * Validate the subdomain part, which may be a wildcard.
+   *
+   * Wildcards are allowed at any depth (`*`, `*.shop`), matching what
+   * the backend accepts — the shared validator in @insula/api-contracts
+   * has the final say, this is just the immediate hint. `*` must be a
+   * WHOLE leftmost label: `*x` is not a wildcard, it is a hostname with
+   * an illegal character.
+   */
   const validateSubdomain = (value: string): string | null => {
     if (!value) return null; // empty = apex, valid
     if (value.length > 63) return 'Max 63 characters';
-    if (/[^a-zA-Z0-9-]/.test(value)) return 'Only letters, numbers, and hyphens allowed';
-    if (value.startsWith('-') || value.endsWith('-')) return 'Cannot start or end with a hyphen';
+    const labels = value.split('.');
+    for (let i = 0; i < labels.length; i += 1) {
+      const label = labels[i];
+      if (label === '*') {
+        if (i !== 0) return 'A wildcard must be the leftmost label (e.g. *.shop)';
+        continue;
+      }
+      if (label.includes('*')) return "Use '*' as a whole label, e.g. *.shop";
+      if (!label) return 'Empty label';
+      if (/[^a-zA-Z0-9-]/.test(label)) return 'Only letters, numbers, and hyphens allowed';
+      if (label.startsWith('-') || label.endsWith('-')) return 'Cannot start or end with a hyphen';
+    }
     return null;
   };
 
@@ -1033,6 +1053,9 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
                 )}
                 <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
                   Enter subdomain (e.g., &apos;my-app&apos;) or leave empty to use the root domain. DNS records will be created automatically.
+                  Use <code className="rounded bg-gray-100 px-1 dark:bg-gray-700">*</code> for a wildcard that answers for every
+                  subdomain (<code className="rounded bg-gray-100 px-1 dark:bg-gray-700">*.shop</code> works too). A wildcard matches
+                  exactly one level and needs a wildcard certificate, which requires this domain to use the platform&apos;s DNS.
                 </p>
               </div>
               <div>
@@ -1625,6 +1648,7 @@ function SslTlsTab({ tenantId, domainId, sslAutoRenew }: {
   readonly domainId: string;
   readonly sslAutoRenew: number;
 }) {
+  const canManage = useCanManage();
   const { data: certData, isLoading, isError, error } = useSslCert(tenantId, domainId);
   const uploadCert = useUploadSslCert(tenantId, domainId);
   const deleteCert = useDeleteSslCert(tenantId, domainId);
@@ -1708,6 +1732,11 @@ function SslTlsTab({ tenantId, domainId, sslAutoRenew }: {
           </p>
         </div>
       </div>
+
+      {/* Managed (automatic) certificates — what cert-manager actually
+          has, including failures. The custom-certificate card below is
+          about a certificate the tenant supplies instead. */}
+      <ManagedCertificateCard tenantId={tenantId} domainId={domainId} canManage={canManage} />
 
       {/* Current Certificate Status */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">

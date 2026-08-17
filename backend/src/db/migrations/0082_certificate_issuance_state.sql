@@ -18,7 +18,12 @@ ALTER TABLE ssl_certificates
   ADD COLUMN IF NOT EXISTS fallback_active INTEGER NOT NULL DEFAULT 0,
   ADD COLUMN IF NOT EXISTS last_error TEXT,
   ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMP,
-  ADD COLUMN IF NOT EXISTS last_issued_at TIMESTAMP;
+  ADD COLUMN IF NOT EXISTS last_issued_at TIMESTAMP,
+  -- Cooldown anchor for the on-demand reissue button. Let's Encrypt
+  -- caps duplicate certificates (same exact SAN set) at 5 per week, so
+  -- an unthrottled button can burn a domain's issuance budget in a
+  -- minute and lock it out for seven days.
+  ADD COLUMN IF NOT EXISTS last_reissue_at TIMESTAMP;
 
 -- Existing rows only exist because a certificate WAS parsed from a
 -- Secret, so they are issued by definition. Leaving them 'unknown' would

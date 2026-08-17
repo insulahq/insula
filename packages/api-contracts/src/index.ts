@@ -39,6 +39,7 @@ export * from './node-health.js';
 export * from './cron-jobs.js';
 export * from './cron-expression.js';
 export * from './wildcard-hostname.js';
+export * from './tls-certificates.js';
 export * from './metrics.js';
 export * from './subscriptions.js';
 export * from './catalog.js';
