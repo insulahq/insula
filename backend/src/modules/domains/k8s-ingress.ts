@@ -51,6 +51,7 @@ import {
   listTLSOptions,
 } from '../ingress-routes/traefik-apply.js';
 import { loadRouteMtlsPolicy } from '../ingress-mtls/service.js';
+import { serviceObjectName } from '../custom-deployments/k8s-deployer.js';
 import type { RouteMtlsPolicy } from '../ingress-mtls/service.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
@@ -307,25 +308,42 @@ export async function reconcileIngress(
       if (dep?.customSpec) {
         const spec = dep.customSpec as {
           services?: Record<string, {
-            ports?: Array<{ containerPort: number; exposeAsService?: boolean; ingressEligible?: boolean }>;
+            ports?: Array<{
+              name: string;
+              containerPort: number;
+              exposeAsService?: boolean;
+              ingressEligible?: boolean;
+            }>;
           }>;
         };
         const services = Object.entries(spec.services ?? {});
         if (services.length > 0) {
-          let resolved: { svcName: string; port: number } | undefined;
+          let resolved: { svcName: string; portName: string; port: number } | undefined;
           if (route.servicePort) {
             for (const [svcName, svc] of services) {
               const p = (svc.ports ?? []).find((p) => p.containerPort === route.servicePort);
-              if (p) { resolved = { svcName, port: p.containerPort }; break; }
+              if (p) { resolved = { svcName, portName: p.name, port: p.containerPort }; break; }
             }
           } else {
             for (const [svcName, svc] of services) {
               const p = (svc.ports ?? []).find((p) => p.ingressEligible && p.exposeAsService);
-              if (p) { resolved = { svcName, port: p.containerPort }; break; }
+              if (p) { resolved = { svcName, portName: p.name, port: p.containerPort }; break; }
             }
           }
           if (resolved) {
-            const k8sSvcName = services.length <= 1 ? dep.name : `${dep.name}-${resolved.svcName}`;
+            // Derive the name from the SAME function the deployer used to
+            // create the object. This used to be re-derived here as
+            // `dep.name` / `${dep.name}-${svcName}`, dropping the port
+            // suffix the deployer appends — so Traefik was pointed at a
+            // Service that does not exist and every hostname routed to a
+            // custom deployment answered 404 while the route, the
+            // certificate and the pods all looked healthy.
+            const k8sSvcName = serviceObjectName(
+              dep.name,
+              resolved.svcName,
+              services.length,
+              resolved.portName,
+            );
             return { serviceName: k8sSvcName, port: resolved.port };
           }
         }
