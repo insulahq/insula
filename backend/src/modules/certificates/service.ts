@@ -42,6 +42,7 @@ import {
   type CertEnvironment,
   type ConfiguredIssuers,
 } from './issuer-selector.js';
+import { readCertificateHealth, shouldFallBack } from './status.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -283,6 +284,7 @@ function buildCertificateResource(params: {
   readonly secretName: string;
   readonly dnsNames: readonly string[];
   readonly issuerName: string;
+  readonly domainId?: string;
 }) {
   return {
     apiVersion: 'cert-manager.io/v1',
@@ -294,6 +296,10 @@ function buildCertificateResource(params: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/managed-by': 'insula',
         'app.kubernetes.io/component': 'tls-cert',
+        // Lets the status reconciler enumerate every Certificate that
+        // belongs to a domain — including sub-wildcards and per-host
+        // fallbacks, which name-guessing from the domain alone misses.
+        ...(params.domainId ? { 'insula.host/domain-id': params.domainId } : {}),
       },
     },
     spec: {
@@ -402,6 +408,7 @@ export async function ensureDomainCertificate(
     secretName,
     dnsNames,
     issuerName: selection.issuerName,
+    domainId,
   });
 
   try {
@@ -765,17 +772,50 @@ export async function ensureRouteCertificate(
   // Step 1: ensure the domain-level cert. If it produces a wildcard or
   // matches the hostname as apex, we can reuse its secret.
   const domainCert = await ensureDomainCertificate(db, k8s, domainId, logger);
-  if (
+  const coveredByDomainCert =
     !domainCert.skipped &&
-    domainCert.secretName &&
-    hostnameIsCoveredByDomainCert(hostname, domain.domainName, domainCert.wildcard === true)
-  ) {
-    return {
-      skipped: false,
-      secretName: domainCert.secretName,
-      sharedWithDomain: true,
-      issuerName: domainCert.issuerName,
-    };
+    !!domainCert.secretName &&
+    hostnameIsCoveredByDomainCert(hostname, domain.domainName, domainCert.wildcard === true);
+
+  if (coveredByDomainCert) {
+    // Covered on paper — but is that certificate actually ISSUED?
+    //
+    // Pointing an IngressRoute at the Secret of an order that has been
+    // failing for an hour serves Traefik's default certificate, i.e. a
+    // browser warning, with no signal anywhere. If the wildcard has been
+    // failing past the grace period we fall through and give this
+    // hostname its own HTTP-01 certificate instead; cert-manager keeps
+    // retrying the wildcard, and the next reconcile switches back the
+    // moment it goes Ready.
+    const health = domainCert.certificateName
+      ? await readCertificateHealth(k8s, namespace, domainCert.certificateName)
+      : null;
+    const degraded = health ? shouldFallBack(health, new Date()) : false;
+
+    if (!degraded) {
+      return {
+        skipped: false,
+        secretName: domainCert.secretName,
+        sharedWithDomain: true,
+        issuerName: domainCert.issuerName,
+      };
+    }
+
+    // A wildcard ROUTE hostname has nothing to fall back to — no
+    // per-hostname certificate can serve `*.a.example.test`.
+    if (isWildcardHostname(hostname)) {
+      return {
+        skipped: true,
+        reason:
+          `The wildcard certificate for '${domain.domainName}' is failing (${health?.message ?? 'unknown error'}), ` +
+          `and a wildcard hostname cannot be served by a per-hostname certificate.`,
+      };
+    }
+
+    logger.warn(
+      { hostname, domain: domain.domainName, message: health?.message },
+      'ensureRouteCertificate: wildcard is failing past the grace period — issuing a per-hostname certificate',
+    );
   }
 
   // Step 2: hostname not covered by the domain cert.
@@ -835,6 +875,7 @@ export async function ensureRouteCertificate(
     secretName,
     dnsNames,
     issuerName: selection.issuerName,
+    domainId,
   });
 
   try {

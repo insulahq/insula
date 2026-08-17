@@ -2112,11 +2112,29 @@ export const sslCertificates = pgTable('ssl_certificates', {
   issuer: varchar('issuer', { length: 500 }),
   subject: varchar('subject', { length: 500 }),
   expiresAt: timestamp('expires_at'),
+  // ── Issuance state (0082) ──
+  // Presence of a TLS Secret used to be the ONLY signal, so a
+  // permanently failed order was indistinguishable from one still in
+  // flight and nothing ever reported it. These carry what cert-manager
+  // actually says.
+  /** issued | issuing | failed | unknown */
+  status: varchar('status', { length: 20 }).notNull().default('unknown'),
+  /** dns01 | http01 | ca — how the last order was validated. */
+  challengeType: varchar('challenge_type', { length: 10 }),
+  /** ClusterIssuer that signed (or is trying to sign) it. */
+  issuerName: varchar('issuer_name', { length: 255 }),
+  isWildcard: integer('is_wildcard').notNull().default(0),
+  /** 1 while per-hostname HTTP-01 certs stand in for a failing wildcard. */
+  fallbackActive: integer('fallback_active').notNull().default(0),
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at'),
+  lastIssuedAt: timestamp('last_issued_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
   uniqueIndex('ssl_certs_domain_unique').on(table.domainId),
   index('ssl_certs_tenant_idx').on(table.tenantId),
+  index('ssl_certs_status_idx').on(table.status),
 ]);
 
 // ─── Platform Settings ───

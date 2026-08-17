@@ -61,10 +61,17 @@ export const domainResponseSchema = z.object({
   dnsGroupId: z.string().nullable().optional(),
   sslAutoRenew: z.number(),
   /** TLS certificate summary — enriched from ssl_certificates LEFT JOIN. */
-  tlsCertStatus: z.enum(['active', 'expiring', 'expired', 'pending', 'none']).optional(),
+  tlsCertStatus: z.enum(['active', 'expiring', 'expired', 'pending', 'failed', 'none']).optional(),
   tlsCertIssuer: z.string().nullable().optional(),
   tlsCertExpiresAt: z.string().nullable().optional(),
   tlsCertWildcard: z.boolean().optional(),
+  /** Why the last issuance attempt failed, straight from cert-manager. */
+  tlsCertError: z.string().nullable().optional(),
+  tlsCertErrorAt: z.string().nullable().optional(),
+  /** ClusterIssuer that signed (or is trying to sign) the certificate. */
+  tlsCertIssuerName: z.string().nullable().optional(),
+  /** True while per-hostname certs stand in for a failing wildcard. */
+  tlsCertFallbackActive: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
