@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.5] - 2026-08-17
+
 ### Fixed
 - **Releases shipped `:latest` for six runtime images instead of the digests they
   claimed to pin.** `cut-release.sh` rewrites the production platform-config

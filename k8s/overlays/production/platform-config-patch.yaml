@@ -29,22 +29,22 @@ data:
   # ImagePullBackOffs — the dev overlay sets this but production didn't, so
   # file-manager was broken on every non-dev cluster (surfaced by the ADR-053
   # prod-mirror staging, 2026-06-22).
-  file-manager-image: "ghcr.io/insulahq/insula/file-manager:latest"
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:aeac12d@sha256:53da9f0204cfd12a3d5e7c9b2f9ed63563de826507ce94d5bf937f6ea7e42ab0"
   # Mail-archive checkpoint binary. Production does NOT follow the development
   # overlay's CI pin (no cluster tracks a branch here — ADR-053's admin-controlled
   # pull model), so this is stamped at release time. Until cut-release.sh does
   # that, it is the same mutable `:latest` every other job image on this overlay
   # uses; see docs/roadmap/ROADMAP.md.
-  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:latest"
+  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260807162401-aeac12d@sha256:315274ae1f4b56a11a6df69894ff016fec0e9d51e68b0963ef582d08301edde6"
   # The remaining runtime-launched images. These MUST be listed here even though
   # the values below are placeholders: cut-release.sh stamps each one from the
   # development overlay's digest-pinned value when a release is cut, and it fails
   # closed on a key that is pinned in development but absent here — without the
   # line, production would silently inherit the base `:latest` instead.
-  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:latest"
-  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:latest"
-  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:latest"
-  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:latest"
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:aeac12d@sha256:22cf8f8fbe1eb5387fc7d5f28358cd17c6b9cd11220b8c47ddc0063ce92182c1"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:aeac12d@sha256:6c5e5ab8cc2230df6e8eb20775baf740977d7b8b31685b27d0c868ed11306a00"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:aeac12d@sha256:ea45bdf01e415ef1fafdcbdf2daccefb13e127015c043b6c6b6cb763845a6123"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:aeac12d@sha256:ab368f107d421ebaaef4c9d27cfaf9e4d934c29eff140b4f75739b661c09f45b"
   # Admin node-terminal (ADR-041 — super_admin-only privileged root shell
   # on cluster nodes via nsenter into host PID 1). ENABLED in production:
   # it's a break-glass tool operators need, and it's still gated by the
