@@ -44,6 +44,14 @@ spec:
             - containerPort: 9090
               name: metrics
               protocol: TCP
+            # ACME DNS-01 solver webhook (ADR-058) — an aggregated API
+            # server the kube-apiserver proxies cert-manager's challenge
+            # payloads to. Its own TLS listener with mutual auth, so it
+            # cannot share :3000. Starts only when the serving cert
+            # below is mounted.
+            - containerPort: 8443
+              name: acme-webhook
+              protocol: TCP
           env:
             - name: NODE_ENV
               value: production
@@ -523,6 +531,13 @@ spec:
             - name: extra-ca-trust
               mountPath: /etc/ssl/platform-extra-ca
               readOnly: true
+            # Serving certificate for the ACME DNS-01 solver webhook.
+            # Optional on purpose: its absence is how platform-api knows
+            # not to start the webhook at all (local dev, and clusters
+            # that have not applied k8s/base/acme-webhook).
+            - name: acme-webhook-tls
+              mountPath: /etc/acme-webhook-tls
+              readOnly: true
       volumes:
         - name: platform-snapshots
           hostPath:
@@ -535,6 +550,10 @@ spec:
         - name: extra-ca-trust
           secret:
             secretName: platform-extra-ca-trust
+            optional: true
+        - name: acme-webhook-tls
+          secret:
+            secretName: platform-acme-webhook-tls
             optional: true
 ---
 apiVersion: v1

@@ -140,25 +140,46 @@ function customClusterAcmeIssuer(): string | null {
  * overridden per-issuer via env vars for custom cluster setups; an explicit
  * CERT_ISSUER_* always wins over the cluster-wide custom issuer.
  */
-export function getConfiguredIssuers(): ConfiguredIssuers {
-  const custom = customClusterAcmeIssuer();
+export function getConfiguredIssuers(operatorIssuer?: string | null): ConfiguredIssuers {
+  // Operator intent order: an explicit per-issuer env var, then the
+  // cluster-wide custom ACME endpoint (whether it came from the admin
+  // UI's TLS settings or `bootstrap --acme-server`), then the stock name.
+  const custom = customIssuerName(operatorIssuer) ?? customClusterAcmeIssuer();
   return {
     letsencryptProdHttp01:
       process.env.CERT_ISSUER_PROD_HTTP01 ?? custom ?? 'letsencrypt-prod-http01',
     letsencryptStagingHttp01:
       process.env.CERT_ISSUER_STAGING_HTTP01 ?? custom ?? 'letsencrypt-staging-http01',
+    // Solved by the platform's own webhook (ADR-058) — one issuer per
+    // ACME environment, provider-agnostic.
+    platformDns01Prod:
+      process.env.CERT_ISSUER_DNS01_PLATFORM ?? 'letsencrypt-prod-dns01-insula',
+    platformDns01Staging:
+      process.env.CERT_ISSUER_DNS01_PLATFORM_STAGING ?? 'letsencrypt-staging-dns01-insula',
+    // Legacy per-provider issuers: honoured only when the operator set
+    // one explicitly. They used to be defaulted, which is how every
+    // wildcard order ended up pointed at a webhook nobody installed.
     dns01Issuers: {
-      powerdns: process.env.CERT_ISSUER_DNS01_POWERDNS ?? 'letsencrypt-prod-dns01-powerdns',
-      cloudflare: process.env.CERT_ISSUER_DNS01_CLOUDFLARE ?? 'letsencrypt-prod-dns01-cloudflare',
-      route53: process.env.CERT_ISSUER_DNS01_ROUTE53 ?? 'letsencrypt-prod-dns01-route53',
-      hetzner: process.env.CERT_ISSUER_DNS01_HETZNER ?? 'letsencrypt-prod-dns01-hetzner',
-      cloudns: process.env.CERT_ISSUER_DNS01_CLOUDNS ?? 'letsencrypt-prod-dns01-cloudns',
+      ...(process.env.CERT_ISSUER_DNS01_POWERDNS ? { powerdns: process.env.CERT_ISSUER_DNS01_POWERDNS } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_CLOUDFLARE ? { cloudflare: process.env.CERT_ISSUER_DNS01_CLOUDFLARE } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_ROUTE53 ? { route53: process.env.CERT_ISSUER_DNS01_ROUTE53 } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_HETZNER ? { hetzner: process.env.CERT_ISSUER_DNS01_HETZNER } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_CLOUDNS ? { cloudns: process.env.CERT_ISSUER_DNS01_CLOUDNS } : {}),
     },
     localCaIssuer:
       process.env.CERT_ISSUER_LOCAL_CA ?? 'local-ca-issuer',
     fallbackIssuer:
       process.env.CERT_ISSUER_FALLBACK ?? custom ?? 'letsencrypt-prod-http01',
   };
+}
+
+/** A non-stock issuer name, or null when it's one of the built-ins. */
+function customIssuerName(name: string | null | undefined): string | null {
+  const trimmed = name?.trim();
+  if (!trimmed || STOCK_CLUSTER_ISSUERS.has(trimmed)) return null;
+  if (trimmed.startsWith('letsencrypt-prod-dns01-')) return null;
+  if (trimmed.startsWith('letsencrypt-staging-dns01-')) return null;
+  return trimmed;
 }
 
 // ─── k8s error helpers ────────────────────────────────────────────────────
@@ -340,10 +361,16 @@ export async function ensureDomainCertificate(
   }
   const namespace = tenant.kubernetesNamespace;
 
-  // Resolve DNS authority inputs
+  // Resolve DNS authority inputs.
+  //
+  // The operator's TLS-settings issuer is now an INPUT, not a log line:
+  // it used to be read below purely to note that the selector disagreed
+  // with it, so an admin pointing the platform at their own ACME
+  // endpoint had no effect on tenant domains at all.
   const activeServers = await getActiveServersForDomain(db, domainId);
   const environment = getEnvironment();
-  const issuers = getConfiguredIssuers();
+  const operatorIssuer = await getClusterIssuerName(db).catch(() => null);
+  const issuers = getConfiguredIssuers(operatorIssuer);
 
   // For customer domains we always try to issue a wildcard if possible —
   // it covers apex, all existing subdomains, and anything we add in the
@@ -360,18 +387,6 @@ export async function ensureDomainCertificate(
     environment,
     issuers,
   });
-
-  // Verify the configured fallback issuer exists (safety check — a
-  // mistyped env var would otherwise result in a permanently Pending
-  // Certificate CR). We just log a warning if we can't look it up;
-  // cert-manager will still surface the real error at reconcile time.
-  const defaultIssuerFromDb = await getClusterIssuerName(db).catch(() => null);
-  if (defaultIssuerFromDb && defaultIssuerFromDb !== selection.issuerName) {
-    logger.info(
-      { selected: selection.issuerName, default: defaultIssuerFromDb, domain: domain.domainName },
-      'ensureDomainCertificate: selected issuer differs from tls-settings default — using selector choice',
-    );
-  }
 
   const wildcard = selection.wildcardCapable && selection.challengeType !== 'http01';
   const dnsNames = wildcard
@@ -776,7 +791,7 @@ export async function ensureRouteCertificate(
   const wildcardHostname = isWildcardHostname(hostname);
   const activeServers = await getActiveServersForDomain(db, domainId);
   const environment = getEnvironment();
-  const issuers = getConfiguredIssuers();
+  const issuers = getConfiguredIssuers(await getClusterIssuerName(db).catch(() => null));
   const selection = selectIssuerForDomain({
     dnsMode: domain.dnsMode as 'primary' | 'cname' | 'secondary',
     activeServers: activeServers.map((s) => ({

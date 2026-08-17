@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Platform ACME DNS-01 solver webhook (ADR-058).
+#
+# Makes wildcard certificates possible for every DNS provider type the
+# platform supports, without copying provider credentials into the
+# cert-manager namespace and without deploying a third-party solver per
+# provider. The webhook itself is served by platform-api on port 8443;
+# only the cluster-side registration lives here.
+#
+# Ordering note: the APIService is registered even before platform-api
+# rolls with the new listener. That is safe — an unavailable APIService
+# only affects requests to this API group, i.e. DNS-01 orders, which
+# could not succeed before it existed either.
+
+resources:
+  - certificate.yaml
+  - service.yaml
+  - apiservice.yaml
+  - rbac.yaml
+  - networkpolicy.yaml
+  - clusterissuers.yaml
