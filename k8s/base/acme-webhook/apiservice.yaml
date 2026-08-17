@@ -1,0 +1,33 @@
+# Aggregated API registration for the DNS-01 solver.
+#
+# cert-manager does not call a webhook URL directly — it POSTs a
+# ChallengePayload to `/apis/acme.insula.host/v1alpha1/insula-dns` on the
+# kube-apiserver, which proxies here. Without this APIService the
+# ClusterIssuers below resolve to nothing and every wildcard order stalls
+# with `no solver configured`.
+#
+# `cert-manager.io/inject-ca-from` makes ca-injector keep `caBundle` in
+# sync with the serving certificate's CA, so a CA rotation does not need
+# an operator to re-copy anything.
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1alpha1.acme.insula.host
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+  annotations:
+    cert-manager.io/inject-ca-from: platform/platform-acme-webhook-tls
+spec:
+  group: acme.insula.host
+  version: v1alpha1
+  groupPriorityMinimum: 1000
+  versionPriority: 15
+  service:
+    name: platform-acme-webhook
+    namespace: platform
+    port: 443
+  # Never true: the aggregator must verify the injected CA. Skipping
+  # verification would let anything that can answer on that Service IP
+  # publish DNS records in customer zones.
+  insecureSkipTLSVerify: false

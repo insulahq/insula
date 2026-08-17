@@ -10,6 +10,7 @@ import type {
   PullCredentialResponse,
   SubmitPullCredentialInput,
   CustomDeploymentSpec,
+  UpdateNowResult,
 } from '@insula/api-contracts';
 
 /**
@@ -88,6 +89,44 @@ export function useUpdateCustomDeployment(tenantId: string | undefined) {
       apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(patch),
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['custom-deployment', tenantId, vars.id] });
+    },
+  });
+}
+
+/**
+ * Re-pull every image at its CURRENT tag and roll the pods.
+ *
+ * NOT the same as the `restart` patch: that re-applies an identical pod
+ * template, which Kubernetes treats as a no-op, so nothing restarts and no
+ * image is re-pulled. This endpoint stamps a roll marker that forces a new
+ * ReplicaSet, which is what makes `imagePullPolicy: Always` actually fetch.
+ */
+export function useUpdateNowCustomDeployment(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ data: UpdateNowResult }>(`${BASE(tenantId!)}/${id}/update-now`, {
+        method: 'POST',
+      }),
+    onSuccess: (_data, id) => {
+      queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['custom-deployment', tenantId, id] });
+    },
+  });
+}
+
+/** Toggle the hourly same-tag re-pull. Single-container deployments only. */
+export function useSetAutoUpdate(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}/auto-update`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled }),
       }),
     onSuccess: (_data, vars) => {
       queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });

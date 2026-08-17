@@ -102,6 +102,40 @@ Emit outcomes, not narration. Before adding a line, ask which of these it is:
 - an **outcome** the operator acts on → `ui_ok` / `ui_warn` / `ui_fail`
 - **context** worth showing but not an outcome (an endpoint, a chosen value) →
   `ui_detail` / `ui.detail()`
+- part of the **end-of-run report** → `ui_banner` / `ui_section` / `ui_line`
 - none of the above → it belongs in the transcript only: `ui_record`
 
 If it would be identical on a healthy run and a broken one, it is noise.
+
+## The completion report
+
+The end-of-run report is the one screen an operator reads start to finish, so it
+gets its own register — green headline, green section headings, undimmed body:
+
+```
+ui_banner  "BOOTSTRAP COMPLETE"      → green rule / title / rule
+ui_section "Endpoints"               → green heading inside the report
+ui_line    "Admin: https://admin/…"  → body text, NOT dimmed
+```
+
+`ui_line` is deliberately distinct from `ui_detail`: detail is dim because it is
+incidental context during a run; report body is not, because it is the payload.
+Building a report out of `ui_detail` (which is what bootstrap.sh's legacy `log()`
+maps to) renders a successful install entirely in grey, with an admin URL styled
+identically to a passing kubectl tip. Asserted in `scripts/test-bootstrap-summary.sh`.
+
+Body text uses the terminal's **default foreground**, never an explicit white.
+Forcing `\033[37m` is right on the dark terminals most operators use and
+unreadable on a light one.
+
+### Advisory results belong in the report, not after it
+
+An advisory step — one that cannot fail the run — must not emit `ui_warn`, and
+must not print after the report. Post-install smoke did both: two yellow warnings
+("Smoke FAILED", "Bootstrap exits 0 because --require-smoke-pass was not set")
+were the last thing on screen after a successful install, which reads as a failed
+install regardless of what the banner said. Advisory steps now run **before** the
+report and hand it a verdict to render as one factual line.
+
+A gate the operator explicitly opted into (`--require-smoke-pass`) is not
+advisory and stays a fatal `ui_fail`.

@@ -1,63 +1,65 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TASK_CENTER_QUERY_KEY } from '@/hooks/use-task-center';
 import Layout from '@/components/layout/Layout';
 import ProtectedRoute from '@/components/layout/ProtectedRoute';
 import { NodeTerminalHost } from '@/components/NodeTerminalHost';
-import Login from '@/pages/Login';
-import Dashboard from '@/pages/Dashboard';
-import TenantsLayout from '@/pages/tenants/TenantsLayout';
-import TenantsListTab from '@/pages/tenants/TenantsListTab';
-import DomainsTab from '@/pages/tenants/DomainsTab';
-import WorkloadsTab from '@/pages/tenants/WorkloadsTab';
-import UsersTab from '@/pages/tenants/UsersTab';
-import EmailAccountsTab from '@/pages/tenants/EmailAccountsTab';
-import CronJobsTab from '@/pages/tenants/CronJobsTab';
-import TenantDetail from '@/pages/TenantDetail';
-import Monitoring from '@/pages/Monitoring';
-import Applications from '@/pages/Applications';
-import UserSettings from '@/pages/UserSettings';
-import DomainDetail from '@/pages/DomainDetail';
-import RestoreCartPage from '@/pages/RestoreCart';
-import BackupsDashboard from '@/pages/backups/BackupsDashboard';
-import SystemBackupsPage from '@/pages/backups/SystemBackupsPage';
-import TenantsBackupsPage from '@/pages/backups/TenantsBackupsPage';
-import MailBackupsPage from '@/pages/backups/MailBackupsPage';
-import RemoteStorageTargetsPage from '@/pages/backups/RemoteStorageTargetsPage';
-import DisasterRecoveryPage from '@/pages/backups/DisasterRecoveryPage';
-import EmailDomainsPage from '@/pages/email/EmailDomainsPage';
-import EmailSettingsPage from '@/pages/email/EmailSettingsPage';
-import EmailOperationsPage from '@/pages/email/EmailOperationsPage';
-import EmailDriftPage from '@/pages/email/EmailDriftPage';
-import AuditLogs from '@/pages/AuditLogs';
-import Placeholder from '@/pages/Placeholder';
+const Login = lazy(() => import('@/pages/Login'));
+const Dashboard = lazy(() => import('@/pages/Dashboard'));
+const TenantsLayout = lazy(() => import('@/pages/tenants/TenantsLayout'));
+const TenantsListTab = lazy(() => import('@/pages/tenants/TenantsListTab'));
+const DomainsTab = lazy(() => import('@/pages/tenants/DomainsTab'));
+const WorkloadsTab = lazy(() => import('@/pages/tenants/WorkloadsTab'));
+const UsersTab = lazy(() => import('@/pages/tenants/UsersTab'));
+const EmailAccountsTab = lazy(() => import('@/pages/tenants/EmailAccountsTab'));
+const CronJobsTab = lazy(() => import('@/pages/tenants/CronJobsTab'));
+const TenantDetail = lazy(() => import('@/pages/TenantDetail'));
+const Monitoring = lazy(() => import('@/pages/Monitoring'));
+const Applications = lazy(() => import('@/pages/Applications'));
+const UserSettings = lazy(() => import('@/pages/UserSettings'));
+const DomainDetail = lazy(() => import('@/pages/DomainDetail'));
+const RestoreCartPage = lazy(() => import('@/pages/RestoreCart'));
+const BackupsDashboard = lazy(() => import('@/pages/backups/BackupsDashboard'));
+const SystemBackupsPage = lazy(() => import('@/pages/backups/SystemBackupsPage'));
+const TenantsBackupsPage = lazy(() => import('@/pages/backups/TenantsBackupsPage'));
+const MailBackupsPage = lazy(() => import('@/pages/backups/MailBackupsPage'));
+const RemoteStorageTargetsPage = lazy(() => import('@/pages/backups/RemoteStorageTargetsPage'));
+const DisasterRecoveryPage = lazy(() => import('@/pages/backups/DisasterRecoveryPage'));
+const EmailDomainsPage = lazy(() => import('@/pages/email/EmailDomainsPage'));
+const EmailSettingsPage = lazy(() => import('@/pages/email/EmailSettingsPage'));
+const EmailOperationsPage = lazy(() => import('@/pages/email/EmailOperationsPage'));
+const EmailDriftPage = lazy(() => import('@/pages/email/EmailDriftPage'));
+const AuditLogs = lazy(() => import('@/pages/AuditLogs'));
+const Placeholder = lazy(() => import('@/pages/Placeholder'));
 // Cluster group (operations / infrastructure)
-import NodesPage from '@/pages/cluster/NodesPage';
-import StoragePage from '@/pages/cluster/StoragePage';
-import ClusterPoliciesPage from '@/pages/cluster/ClusterPoliciesPage';
-import NetworkingPage from '@/pages/cluster/NetworkingPage';
-import IngressTlsPage from '@/pages/cluster/IngressTlsPage';
-import LoadBalancerPage from '@/pages/cluster/LoadBalancerPage';
-import TunnelsPage from '@/pages/cluster/TunnelsPage';
+const NodesPage = lazy(() => import('@/pages/cluster/NodesPage'));
+const StoragePage = lazy(() => import('@/pages/cluster/StoragePage'));
+const ClusterPoliciesPage = lazy(() => import('@/pages/cluster/ClusterPoliciesPage'));
+const NetworkingPage = lazy(() => import('@/pages/cluster/NetworkingPage'));
+const IngressTlsPage = lazy(() => import('@/pages/cluster/IngressTlsPage'));
+const LoadBalancerPage = lazy(() => import('@/pages/cluster/LoadBalancerPage'));
+const TunnelsPage = lazy(() => import('@/pages/cluster/TunnelsPage'));
 // Platform Settings group (product configuration)
-import UpgradesPage from '@/pages/platform/UpgradesPage';
-import IdentityPage from '@/pages/platform/IdentityPage';
-import LimitsPage from '@/pages/platform/LimitsPage';
-import IntegrationsPage from '@/pages/platform/IntegrationsPage';
-import DnsProvidersPage from '@/pages/platform/DnsProvidersPage';
-import PlansPage from '@/pages/platform/PlansPage';
-import PleskMigrationPage from '@/pages/platform/PleskMigrationPage';
-import AiPage from '@/pages/platform/AiPage';
-import LifecycleHooksPage from '@/pages/platform/LifecycleHooksPage';
-import NotificationsPage from '@/pages/platform/NotificationsPage';
-import ExportImportPage from '@/pages/platform/ExportImportPage';
+const UpgradesPage = lazy(() => import('@/pages/platform/UpgradesPage'));
+const IdentityPage = lazy(() => import('@/pages/platform/IdentityPage'));
+const LimitsPage = lazy(() => import('@/pages/platform/LimitsPage'));
+const IntegrationsPage = lazy(() => import('@/pages/platform/IntegrationsPage'));
+const DnsProvidersPage = lazy(() => import('@/pages/platform/DnsProvidersPage'));
+const PlansPage = lazy(() => import('@/pages/platform/PlansPage'));
+const PleskMigrationPage = lazy(() => import('@/pages/platform/PleskMigrationPage'));
+const AiPage = lazy(() => import('@/pages/platform/AiPage'));
+const LifecycleHooksPage = lazy(() => import('@/pages/platform/LifecycleHooksPage'));
+const NotificationsPage = lazy(() => import('@/pages/platform/NotificationsPage'));
+const ExportImportPage = lazy(() => import('@/pages/platform/ExportImportPage'));
 // Security group
-import IdentityAndSessionsPage from '@/pages/IdentityAndSessionsPage';
-import NetworkTrustPage from '@/pages/NetworkTrustPage';
-import PosturePage from '@/pages/PosturePage';
-import WebDefensePage from '@/pages/WebDefensePage';
-import OidcPage from '@/pages/security/OidcPage';
+const IdentityAndSessionsPage = lazy(() => import('@/pages/IdentityAndSessionsPage'));
+const NetworkTrustPage = lazy(() => import('@/pages/NetworkTrustPage'));
+const PosturePage = lazy(() => import('@/pages/PosturePage'));
+const WebDefensePage = lazy(() => import('@/pages/WebDefensePage'));
+const OidcPage = lazy(() => import('@/pages/security/OidcPage'));
 import ErrorBoundary from '@/components/ErrorBoundary';
+import RouteFallback from '@/components/RouteFallback';
 
 // MutationCache subscriber: refresh the Task Center chip after every
 // successful mutation. Long-running ops register a `tasks` row inside
@@ -90,7 +92,8 @@ export default function App() {
     <ErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
           <Route path="/login" element={<Login />} />
           <Route
             element={
@@ -182,6 +185,7 @@ export default function App() {
             <Route path="*" element={<Placeholder title="Page Not Found" />} />
           </Route>
         </Routes>
+        </Suspense>
       </BrowserRouter>
     </QueryClientProvider>
     </ErrorBoundary>

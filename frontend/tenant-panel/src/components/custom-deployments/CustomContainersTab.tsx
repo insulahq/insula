@@ -14,13 +14,15 @@
 
 import { useMemo, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, ArrowUpCircle, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowUpCircle, Download, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import {
   useCustomDeployments,
   useCheckUpdatesBatch,
   useDeleteCustomDeployment,
   useUpdateCustomDeployment,
+  useUpdateNowCustomDeployment,
+  useSetAutoUpdate,
   useUpgradeTag,
   type CustomDeploymentRow,
 } from '@/hooks/use-custom-deployments';
@@ -56,6 +58,28 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
 
   const deleteMutation = useDeleteCustomDeployment(tenantId);
   const restartMutation = useUpdateCustomDeployment(tenantId);
+  const updateNowMutation = useUpdateNowCustomDeployment(tenantId);
+  const autoUpdateMutation = useSetAutoUpdate(tenantId);
+  // Which row is mid-update, so the button can show a spinner + disable
+  // rather than letting an impatient operator queue three rolls.
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  const onUpdateNow = (row: CustomDeploymentRow) => {
+    setActionMenuOpen(null);
+    const isStack = row.customSpec?.sourceMode === 'compose';
+    const what = isStack
+      ? `all ${Object.keys(row.customSpec?.services ?? {}).length} images in "${row.name}"`
+      : `"${row.name}"`;
+    if (!confirm(`Re-pull ${what} at the current tag and restart? The container stops briefly while the new image starts.`)) {
+      return;
+    }
+    setUpdatingId(row.id);
+    updateNowMutation.mutate(row.id, { onSettled: () => setUpdatingId(null) });
+  };
+
+  const onToggleAutoUpdate = (row: CustomDeploymentRow, enabled: boolean) => {
+    autoUpdateMutation.mutate({ id: row.id, enabled });
+  };
 
   const onRestart = (row: CustomDeploymentRow) => {
     setActionMenuOpen(null);
@@ -177,13 +201,53 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
                         </div>
                       )}
                     </td>
-                    <td className="px-4 py-3">
-                      <UpdatesPill
-                        result={updates}
-                        loading={updatesQuery.isLoading}
-                        canManage={canManage}
-                        onUpgrade={() => setActiveModal({ kind: 'upgrade', row })}
-                      />
+                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex flex-col gap-1.5">
+                        <UpdatesPill
+                          result={updates}
+                          loading={updatesQuery.isLoading}
+                          canManage={canManage}
+                          onUpgrade={() => setActiveModal({ kind: 'upgrade', row })}
+                        />
+                        {canManage && (
+                          <div className="flex items-center gap-3">
+                            {/* Re-pull the CURRENT tag. Separate from the pill,
+                                which only appears when a NEWER TAG exists — a
+                                republished tag (`:latest`, a rebuilt `:1.27`)
+                                is invisible to that check. */}
+                            <button
+                              type="button"
+                              onClick={() => onUpdateNow(row)}
+                              disabled={updatingId === row.id}
+                              title="Re-pull the current tag and restart"
+                              data-testid={`custom-update-now-${row.id}`}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50 dark:text-blue-400 dark:hover:text-blue-300"
+                            >
+                              <RefreshCw size={12} className={updatingId === row.id ? 'animate-spin' : undefined} />
+                              {updatingId === row.id ? 'Updating…' : 'Update'}
+                            </button>
+                            {/* Single-container only: a stack has one digest per
+                                service, so "the image changed" has no single
+                                meaning to act on. */}
+                            {row.customSpec?.sourceMode === 'simple' && (
+                              <label
+                                className="inline-flex cursor-pointer items-center gap-1 text-xs text-gray-600 dark:text-gray-400"
+                                title="Check hourly and re-pull automatically when this tag is republished. Never changes the tag."
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={row.customSpec?.autoUpdate ?? false}
+                                  onChange={(e) => onToggleAutoUpdate(row, e.target.checked)}
+                                  disabled={autoUpdateMutation.isPending}
+                                  data-testid={`custom-auto-update-${row.id}`}
+                                  className="h-3 w-3 rounded border-gray-300 text-blue-600 focus:ring-blue-500 dark:border-gray-600 dark:bg-gray-800"
+                                />
+                                Auto
+                              </label>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                       {canManage && (
@@ -193,6 +257,7 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
                           onToggle={() => setActionMenuOpen(actionMenuOpen === row.id ? null : row.id)}
                           onEdit={() => onEdit(row)}
                           onRestart={() => onRestart(row)}
+                          onUpdateNow={() => onUpdateNow(row)}
                           onUpgrade={() => { setActionMenuOpen(null); setActiveModal({ kind: 'upgrade', row }); }}
                           onPat={() => { setActionMenuOpen(null); setActiveModal({ kind: 'pat', row }); }}
                           onDelete={() => onDelete(row)}
@@ -279,12 +344,13 @@ interface ActionMenuProps {
   onToggle: () => void;
   onEdit: () => void;
   onRestart: () => void;
+  onUpdateNow: () => void;
   onUpgrade: () => void;
   onPat: () => void;
   onDelete: () => void;
 }
 
-function ActionMenu({ row, open, onToggle, onEdit, onRestart, onUpgrade, onPat, onDelete }: ActionMenuProps) {
+function ActionMenu({ row, open, onToggle, onEdit, onRestart, onUpdateNow, onUpgrade, onPat, onDelete }: ActionMenuProps) {
   const btnRef = useRef<HTMLButtonElement>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
@@ -328,6 +394,14 @@ function ActionMenu({ row, open, onToggle, onEdit, onRestart, onUpgrade, onPat, 
             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
           >
             <RefreshCw size={14} /> Restart
+          </button>
+          <button
+            type="button"
+            onClick={onUpdateNow}
+            title="Re-pull the current tag and restart"
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <Download size={14} /> Update (re-pull image)
           </button>
           {row.customSpec?.sourceMode === 'simple' && (
             <button

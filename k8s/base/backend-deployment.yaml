@@ -44,6 +44,14 @@ spec:
             - containerPort: 9090
               name: metrics
               protocol: TCP
+            # ACME DNS-01 solver webhook (ADR-058) — an aggregated API
+            # server the kube-apiserver proxies cert-manager's challenge
+            # payloads to. Its own TLS listener with mutual auth, so it
+            # cannot share :3000. Starts only when the serving cert
+            # below is mounted.
+            - containerPort: 8443
+              name: acme-webhook
+              protocol: TCP
           env:
             - name: NODE_ENV
               value: production
@@ -69,6 +77,25 @@ spec:
                 configMapKeyRef:
                   name: platform-config
                   key: cert-issuer-prod-http01
+                  optional: true
+            # Wildcard (DNS-01) issuer override, same purpose as the HTTP-01
+            # pair above. A cluster on a custom ACME endpoint (bootstrap
+            # --acme-server, or the ephemeral Pebble in the VM integration
+            # tier) has no route to Let's Encrypt, so its wildcard orders must
+            # point at that endpoint too — otherwise the HTTP-01 certs issue
+            # from Pebble while every wildcard silently waits on an ACME
+            # server it cannot reach.
+            - name: CERT_ISSUER_DNS01_PLATFORM
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-dns01-platform
+                  optional: true
+            - name: CERT_ISSUER_DNS01_PLATFORM_STAGING
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-dns01-platform-staging
                   optional: true
             - name: CERT_ISSUER_FALLBACK
               valueFrom:
@@ -523,6 +550,13 @@ spec:
             - name: extra-ca-trust
               mountPath: /etc/ssl/platform-extra-ca
               readOnly: true
+            # Serving certificate for the ACME DNS-01 solver webhook.
+            # Optional on purpose: its absence is how platform-api knows
+            # not to start the webhook at all (local dev, and clusters
+            # that have not applied k8s/base/acme-webhook).
+            - name: acme-webhook-tls
+              mountPath: /etc/acme-webhook-tls
+              readOnly: true
       volumes:
         - name: platform-snapshots
           hostPath:
@@ -535,6 +569,10 @@ spec:
         - name: extra-ca-trust
           secret:
             secretName: platform-extra-ca-trust
+            optional: true
+        - name: acme-webhook-tls
+          secret:
+            secretName: platform-acme-webhook-tls
             optional: true
 ---
 apiVersion: v1

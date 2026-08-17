@@ -11,10 +11,22 @@ kind: Kustomization
 #   - dev overlay uses `local-ca-issuer` for a self-signed local CA
 #     (see k8s/overlays/dind/cert-manager/)
 #   - staging overlay uses `letsencrypt-staging-http01`
-#   - production overlay uses `letsencrypt-prod-http01` and (if a
-#     PowerDNS API Secret is available) `letsencrypt-prod-dns01-powerdns`
-#     for wildcard issuance on customer domains the platform is
-#     authoritative for.
+#   - production overlay uses `letsencrypt-prod-http01`
+#
+# WILDCARD issuance does NOT live here — it goes through
+# `letsencrypt-{prod,staging}-dns01-insula` in k8s/base/acme-webhook/,
+# solved by the platform's own DNS-01 webhook against the domain's
+# provider group (ADR-058).
+#
+# The `powerdns`, `hetzner` and `cloudns` ClusterIssuers that used to sit
+# in this directory were REMOVED: all three referenced third-party
+# cert-manager webhooks that bootstrap never installed (the PowerDNS one
+# also carried a hardcoded `apiUrl` from its upstream install snippet),
+# so every wildcard order routed to them sat Pending forever. The two
+# below survive because their solvers are NATIVE to cert-manager — they
+# work as soon as an operator creates the referenced credential Secret,
+# and are selected only when CERT_ISSUER_DNS01_CLOUDFLARE /
+# CERT_ISSUER_DNS01_ROUTE53 is set explicitly.
 #
 # The backend chooses which ClusterIssuer to use per-Certificate based on
 # the domain's (dnsMode, dns_provider_type, wildcardRequested) tuple.
@@ -24,11 +36,8 @@ kind: Kustomization
 resources:
   - clusterissuer-letsencrypt-http01.yaml
   - clusterissuer-letsencrypt-staging-http01.yaml
-  - clusterissuer-letsencrypt-dns01-powerdns.yaml
   - clusterissuer-letsencrypt-dns01-cloudflare.yaml
   - clusterissuer-letsencrypt-dns01-route53.yaml
-  - clusterissuer-letsencrypt-dns01-hetzner.yaml
-  - clusterissuer-letsencrypt-dns01-cloudns.yaml
 
 labels:
   - pairs:

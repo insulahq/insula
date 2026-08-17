@@ -63,6 +63,7 @@ import { resourceQuotaRoutes } from './modules/resource-quotas/routes.js';
 import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { dnsApexDriftRoutes } from './modules/dns-apex-drift/routes.js';
+import { certificateRoutes } from './modules/certificates/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { nodeRoutes } from './modules/nodes/routes.js';
@@ -561,6 +562,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(oidcRoutes, { prefix: '/api/v1' });
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(dnsApexDriftRoutes, { prefix: '/api/v1' });
+  await app.register(certificateRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
   await app.register(provisioningRoutes, { prefix: '/api/v1' });
   await app.register(nodeRoutes, { prefix: '/api/v1' });
@@ -1135,17 +1137,50 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       // :9090 /metrics — no Stalwart scrape/port change), and run the
       // hourly DNSBL blocklist watch that alerts an admin when a sending
       // IP is listed. Both degrade to a logged skip when mail is absent.
+      //
+      // The health WATCH (2026-08) is a third, separate thing from the two
+      // above: the collector publishes gauges, the blocklist watch alerts on
+      // DNSBL listings, and neither evaluated the health COMPONENTS (pod, JMAP,
+      // RocksDB, cert, ports, deliverability) outside the on-demand admin
+      // modal. A cluster could serve a self-signed cert on 465/993 with nothing
+      // reaching any notification channel.
       {
         const { startMailHealthCollector } = await import('./modules/mail-events/mail-health-collector.js');
         const { startMailBlocklistScheduler } = await import('./modules/mail-admin/blocklist-scheduler.js');
+        const { startMailHealthScheduler } = await import('./modules/mail-admin/health-scheduler.js');
         const stopMailHealth = startMailHealthCollector(app.db, app.log);
         const stopBlocklist = startMailBlocklistScheduler(app.db, app.log, {
+          kubeconfigPath: process.env.KUBECONFIG_PATH,
+        });
+        const stopHealthWatch = startMailHealthScheduler(app.db, app.log, {
           kubeconfigPath: process.env.KUBECONFIG_PATH,
         });
         app.addHook('onClose', () => {
           stopMailHealth();
           stopBlocklist();
+          stopHealthWatch();
         });
+      }
+
+      // Custom-deployment auto-update (ADR-036): hourly same-tag re-pull for
+      // single-container deployments the tenant opted in. Never changes the
+      // pinned tag; rolls back and disables itself if the new image does not
+      // start. Needs a k8s client — skipped entirely without one (local dev).
+      {
+        try {
+          const { createK8sClients } = await import('./modules/k8s-provisioner/k8s-client.js');
+          const { startAutoUpdateScheduler } = await import('./modules/custom-deployments/auto-update-scheduler.js');
+          const k8s = createK8sClients(process.env.KUBECONFIG_PATH);
+          const stopAutoUpdate = startAutoUpdateScheduler(app.db, k8s, app.log, {
+            // Same key the PAT store uses (routes.ts pull-credentials path).
+            // Absent → private-registry digest checks are skipped, public
+            // images still work.
+            encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY,
+          });
+          app.addHook('onClose', () => { stopAutoUpdate(); });
+        } catch (err) {
+          app.log.warn({ err }, 'custom-deployment auto-update scheduler not started (no k8s client)');
+        }
       }
 
       // Mail archive scheduler — ticks every 60s, fires

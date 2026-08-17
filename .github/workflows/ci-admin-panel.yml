@@ -32,3 +32,7 @@ jobs:
       - run: npm run typecheck -w @insula/admin-panel
       - run: npm run test -w @insula/admin-panel
       - run: npm run build -w @insula/admin-panel
+      # A password input in an eagerly-loaded chunk makes the operator's
+      # password manager prompt on every navigation. Bundle-level check —
+      # unit tests cannot see it. Reuses the dist/ built above.
+      - run: ./scripts/ci-no-password-fields-in-entry-chunk.sh --skip-build admin-panel
