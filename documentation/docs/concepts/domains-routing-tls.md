@@ -50,12 +50,32 @@ A **route** connects a hostname to one of the tenant's workloads. One domain
 can have several routes (apex, `www`, `api.`, …), each pointing at a deployment.
 Routes are what the ingress layer reads to decide where a request goes.
 
+A route may be a **wildcard** (`*.example.test`, or `*.shop.example.test` at any
+depth). A wildcard matches exactly one label — the same rule certificates
+follow — so `*.example.test` serves `shop.example.test` but not
+`a.b.example.test`. Exact hostnames always take precedence over a wildcard,
+including the platform's own hostnames on a tenant domain (webmail,
+autodiscover), which a wildcard can never capture.
+
 ## Ingress and automatic TLS
 
 All inbound web traffic enters through **Traefik** (the ingress controller,
 ADR-038), which routes each request to the right tenant pod by hostname.
 **cert-manager** obtains and renews a free **Let's Encrypt** certificate for
 every route automatically — HTTPS works without manual certificate handling.
+
+**Wildcard certificates** are validated over DNS rather than HTTP, so they are
+only possible for domains the platform can write records for: Primary DNS mode
+with an enabled primary server in the domain's provider group. The platform
+performs that DNS validation itself, publishing the challenge record through
+whichever provider the group is configured with (PowerDNS, BIND, Cloudflare,
+Route53, Hetzner, ClouDNS) — no per-provider setup and no DNS credentials stored
+anywhere but the platform database (ADR-058).
+
+When issuance fails, it is reported rather than retried in silence: the tenant
+and the operator are both notified with the certificate authority's own reason,
+and a failing wildcard falls back to per-hostname certificates so sites keep
+serving HTTPS while the wildcard is retried.
 
 Edge defense rides on the same path: a CrowdSec IP-reputation check runs on
 every route, and an optional OWASP ModSecurity WAF can be enabled per route
