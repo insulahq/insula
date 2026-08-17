@@ -72,14 +72,23 @@ export function canManageDnsZone(input: DomainAuthorityInput): boolean {
  *   - At least one active primary server uses a provider type for
  *     which cert-manager has a DNS-01 solver configured.
  *
- * Phase 2c ships only the RFC2136 solver targeting PowerDNS (see
- * k8s/base/cert-manager/clusterissuer-letsencrypt-dns01-powerdns.yaml).
- * Cloudflare, Route53, and Hetzner all have off-the-shelf cert-manager
- * solvers that could be added in a later phase — just update this
- * allowlist and provision the matching ClusterIssuer + Secret.
+ * The platform solves DNS-01 with its OWN cert-manager webhook (ADR-058),
+ * which publishes the challenge TXT through the same DnsProviderAdapter
+ * used everywhere else. So this list is simply "provider types whose
+ * adapter can write records" — no per-provider cert-manager solver, no
+ * credentials copied into the cert-manager namespace.
+ *
+ * `mock` is deliberately absent: it satisfies the adapter interface but
+ * publishes nothing a real ACME server could resolve, so a wildcard
+ * order against it would fail validation rather than fail fast here.
+ *
+ * (Historically this list existed because cert-manager had no PowerDNS
+ * solver and the shipped ClusterIssuer pointed at a third-party webhook
+ * that was never installed — see the ADR for that failure mode.)
  */
 export const DNS01_SOLVER_PROVIDERS: ReadonlySet<string> = new Set([
   'powerdns',
+  'rndc',
   'cloudflare',
   'route53',
   'hetzner',

@@ -1,0 +1,74 @@
+# RBAC for the platform's ACME DNS-01 solver webhook.
+#
+# Three separate grants, each for a different actor:
+#   1. cert-manager may "create" the solver resource (that is how a
+#      ChallengePayload reaches us through the aggregator).
+#   2. platform-api may read the requestheader client CA, which it needs
+#      to verify that a caller really is the aggregator. Without it the
+#      webhook refuses to start (fail closed).
+#   3. the aggregator may reach the webhook's discovery endpoints as
+#      system:anonymous during APIService health checks.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: insula-acme-webhook-solver
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+rules:
+  - apiGroups: ['acme.insula.host']
+    resources: ['insula-dns']
+    verbs: ['create']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: insula-acme-webhook-solver
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: insula-acme-webhook-solver
+subjects:
+  - kind: ServiceAccount
+    name: cert-manager
+    namespace: cert-manager
+---
+# `extension-apiserver-authentication-reader` is a built-in Role in
+# kube-system that grants get on the ConfigMap holding the cluster's
+# requestheader CA. Every aggregated API server binds to it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: insula-acme-webhook-authentication-reader
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: extension-apiserver-authentication-reader
+subjects:
+  - kind: ServiceAccount
+    name: platform-api
+    namespace: platform
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: insula-acme-webhook-auth-delegator
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: platform-api
+    namespace: platform

@@ -175,16 +175,29 @@ describe('canIssueWildcardCert', () => {
     ).toBe(false);
   });
 
-  it('returns false when only non-dns01 providers exist in primary mode', () => {
+  it('returns false when only non-writable providers exist in primary mode', () => {
+    // `mock` satisfies the adapter interface but publishes nothing a real
+    // ACME server can resolve. `rndc` (BIND) DOES write records, so since
+    // the platform solves DNS-01 through its own webhook it now qualifies.
+    expect(
+      canIssueWildcardCert({
+        dnsMode: 'primary',
+        activeServers: [
+          { id: 's2', providerType: 'mock', enabled: 1, role: 'primary' },
+        ],
+      }),
+    ).toBe(false);
+  });
+
+  it('returns true for a BIND/rndc primary — the platform solver writes through it', () => {
     expect(
       canIssueWildcardCert({
         dnsMode: 'primary',
         activeServers: [
           { id: 's1', providerType: 'rndc', enabled: 1, role: 'primary' },
-          { id: 's2', providerType: 'mock', enabled: 1, role: 'primary' },
         ],
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('returns true when at least one PowerDNS server exists alongside others', () => {
