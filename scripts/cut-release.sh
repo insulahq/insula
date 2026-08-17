@@ -490,6 +490,15 @@ git -C "$ROOT" add platform/VERSION CHANGELOG.md
 [ -f "$ROOT/k8s/overlays/production/kustomization.yaml" ] \
   && git -C "$ROOT" add k8s/overlays/production/kustomization.yaml
 [ -f "$PV_PATCH" ] && git -C "$ROOT" add k8s/overlays/production/platform-version-patch.yaml
+# The runtime-image digest stamps written into the production platform-config
+# above. This line was MISSING: the script announced "stamped N runtime-image
+# digest pin(s)", left the edit in the working tree, and committed everything
+# else — so v2026.8.1 through v2026.8.4 each shipped `:latest` for
+# file-manager, rocksdb-secondary-checkpoint, tenant-backup-tools,
+# migration-tools, claim-validator and node-terminal, while `development`
+# carried proper digests. A production cluster then pulled whatever `latest`
+# happened to be, which is exactly what digest pinning exists to prevent.
+[ -f "$PROD_PC" ] && git -C "$ROOT" add k8s/overlays/production/platform-config-patch.yaml
 git -C "$ROOT" commit -qm "chore(release): ${TAG}"
 git -C "$ROOT" tag -a "$TAG" -m "Release ${TAG}"
 
