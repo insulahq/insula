@@ -352,6 +352,62 @@ export async function notifyTenantSuspiciousActivity(
   await dispatchSafe(db, 'security.suspicious_activity', { kind: 'user', userId }, payload);
 }
 
+export interface TenantCertificatePayload {
+  readonly hostname: string;
+  readonly errorMessage?: string;
+  readonly expiresAt?: string;
+}
+
+/**
+ * TLS issuance failed for a tenant hostname.
+ *
+ * Both audiences get told: the tenant because their visitors are the
+ * ones seeing the browser warning and the usual cause (DNS not pointed
+ * at the platform yet) is theirs to fix, the operator because a
+ * platform-side cause (a broken DNS-01 solver, an exhausted ACME rate
+ * limit) is invisible to the tenant.
+ */
+export async function notifyTenantCertificateFailed(
+  db: Database,
+  tenantId: string,
+  payload: TenantCertificatePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tls.certificate_failed', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export async function notifyTenantCertificateIssued(
+  db: Database,
+  tenantId: string,
+  payload: TenantCertificatePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tls.certificate_issued', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+/** A wildcard could not be issued; per-hostname certs are standing in. */
+export async function notifyTenantCertificateFallback(
+  db: Database,
+  tenantId: string,
+  payload: TenantCertificatePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tls.certificate_fallback', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminCertIssuanceFailedPayload {
+  readonly certSubject: string;
+  readonly tenantName?: string;
+  readonly errorMessage?: string;
+}
+export async function notifyAdminCertIssuanceFailed(
+  db: Database,
+  payload: AdminCertIssuanceFailedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_issuance_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminCertExpiringPayload {
   readonly certSubject: string;
   readonly expiresAt: string;
