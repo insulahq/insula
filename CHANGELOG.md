@@ -12,6 +12,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Releases shipped `:latest` for six runtime images instead of the digests they
+  claimed to pin.** `cut-release.sh` rewrites the production platform-config
+  from `:latest` to the digest-pinned values `development` carries, prints
+  `stamped 6 runtime-image digest pin(s)`, and then never staged the file — the
+  release commit adds its files by name, so the stamp stayed in the working tree
+  and the tag went out without it. v2026.8.1 through v2026.8.4 each carry **0**
+  digest pins in `k8s/overlays/production/platform-config-patch.yaml` while
+  `development` carries 8, so production resolved file-manager,
+  rocksdb-secondary-checkpoint, tenant-backup-tools, migration-tools,
+  claim-validator and node-terminal at pull time — mutable tags, in the one
+  overlay whose purpose is that a signed release is reproducible.
+  The test meant to cover this passed throughout because it asserted the file
+  **on disk** after the cut, which is not what a tag carries; it now asserts the
+  **committed** content and that the cut leaves nothing unstaged. This release is
+  the first to actually carry the pins.
+
 ## [2026.8.4] - 2026-08-17
 
 ### Added
