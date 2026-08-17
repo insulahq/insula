@@ -5372,6 +5372,60 @@ EOF
   # Optional custom ACME issuer (--acme-server). Points cert-manager at any ACME
   # directory instead of Let's Encrypt — a test CA (Pebble) for ephemeral/air-gapped
   # clusters, or an alternate real ACME endpoint. CLUSTER_ISSUER_NAME was pinned to
+  # Wildcard-capable DNS-01 issuers, solved by the platform's own webhook
+  # (ADR-058). Created here rather than shipped through Flux because they
+  # carry the operator's ACME contact address, which is not knowable at
+  # manifest-render time — the same reason k8s/base/cert-manager/ is not
+  # imported into k8s/base/kustomization.yaml. The solver itself (APIService,
+  # Service, serving cert, RBAC) DOES come from Flux; only these two objects
+  # need the address. Existing clusters get them from platform-upgrade
+  # migration 0009 instead.
+  #
+  # No credential Secret and no per-provider issuer: the webhook publishes the
+  # challenge TXT through whichever DNS provider group the domain is bound to,
+  # reading credentials the platform already holds.
+  kctl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${le_email}
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-insula-account
+    solvers:
+    - dns01:
+        webhook:
+          groupName: acme.insula.host
+          solverName: insula-dns
+          config: {}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${le_email}
+    privateKeySecretRef:
+      name: letsencrypt-staging-dns01-insula-account
+    solvers:
+    - dns01:
+        webhook:
+          groupName: acme.insula.host
+          solverName: insula-dns
+          config: {}
+EOF
+
   # acme-custom-http01 at parse time, so every platform Certificate uses this issuer.
   # Same HTTP-01 solver as the LE issuers (ingressClassName traefik + server-only
   # toleration + quota-exempt priorityClass), so the REAL ACME issuance path runs,

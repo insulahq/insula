@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Globe, Plus, X, Loader2, Shield, Lock, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Globe, Plus, X, Loader2, Shield, Lock, AlertTriangle } from 'lucide-react';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import { useDomains, useCreateDomain } from '@/hooks/use-domains';
