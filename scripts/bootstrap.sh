@@ -4321,6 +4321,39 @@ detect_calico_mtu() {
   echo "$mtu"
 }
 
+# ─── Cached, retried manifest fetch ──────────────────────────────────────────
+#
+# `kubectl apply -f <url>` inside a swallowed `|| true` is how two separate
+# install steps failed invisibly on 2026-08-17: raw.githubusercontent.com
+# answered 429 (a per-egress-IP rate limit) and the installer reported the
+# downstream symptom minutes later — "Calico CRDs never registered", then
+# "no matches for kind VolumeSnapshotClass". Neither message names the cause.
+#
+# Downloads to $2 with backoff, prefers an already-present copy (which is also
+# the air-gapped install path), and returns non-zero with the HTTP status named
+# so the caller can report something actionable.
+fetch_manifest_cached() {
+  local url="$1" dest="$2" tries="${3:-5}"
+  if [[ -s "$dest" ]]; then
+    log "  using pre-staged manifest ${dest}"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  local _try _http=""
+  for (( _try = 1; _try <= tries; _try++ )); do
+    _http="$(curl -fsSL --max-time 60 -w '%{http_code}' -o "${dest}.tmp" "$url" 2>/dev/null || echo "000")"
+    if [[ "$_http" == "200" && -s "${dest}.tmp" ]]; then
+      mv "${dest}.tmp" "$dest"
+      return 0
+    fi
+    rm -f "${dest}.tmp"
+    warn "  download failed (HTTP ${_http}) for ${url##*/}, attempt ${_try}/${tries} — retrying in $(( _try * 10 ))s"
+    sleep $(( _try * 10 ))
+  done
+  warn "  giving up on ${url} (last HTTP ${_http})"
+  return 1
+}
+
 install_calico() {
   export KUBECONFIG
 
@@ -4354,25 +4387,9 @@ install_calico() {
   # MINUTES LATER. The operator is then sent looking at a healthy operator that
   # was never deployed. A pre-staged copy at $calico_manifest is used when
   # present, which also covers air-gapped installs.
-  mkdir -p "$(dirname "$calico_manifest")"
-  if [[ -s "$calico_manifest" ]]; then
-    log "  using pre-staged manifest ${calico_manifest}"
-  else
-    local _try _http=""
-    for _try in 1 2 3 4 5; do
-      _http="$(curl -fsSL --max-time 60 -w '%{http_code}' -o "${calico_manifest}.tmp" "$calico_url" 2>/dev/null || echo "000")"
-      if [[ "$_http" == "200" && -s "${calico_manifest}.tmp" ]]; then
-        mv "${calico_manifest}.tmp" "$calico_manifest"
-        break
-      fi
-      rm -f "${calico_manifest}.tmp"
-      warn "  tigera-operator manifest download failed (HTTP ${_http}), attempt ${_try}/5 — retrying in $((_try * 10))s"
-      sleep $((_try * 10))
-    done
-    if [[ ! -s "$calico_manifest" ]]; then
-      error "Could not download the tigera-operator manifest from ${calico_url} (last HTTP ${_http}). Pre-stage it at ${calico_manifest} and re-run."
-      return 1
-    fi
+  if ! fetch_manifest_cached "$calico_url" "$calico_manifest"; then
+    error "Could not download the tigera-operator manifest from ${calico_url}. Pre-stage it at ${calico_manifest} and re-run."
+    return 1
   fi
 
   local _apply_out
@@ -5747,7 +5764,16 @@ install_longhorn() {
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml" \
     "deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml" \
     "deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml"; do
-    kctl apply -f "${snap_base}/${f}" 2>&1 | grep -v "unchanged" || true
+    # Same masked-failure story as tigera-operator above: this used to apply
+    # straight from the URL with `|| true`, so a 429 left the VolumeSnapshot
+    # CRDs absent and the failure only surfaced later as "no matches for kind
+    # VolumeSnapshotClass" while applying the platform overlay.
+    local _snap_cache="/var/lib/insula/cache/external-snapshotter-${snap_ver}-$(basename "$f")"
+    if fetch_manifest_cached "${snap_base}/${f}" "$_snap_cache"; then
+      kctl apply -f "$_snap_cache" 2>&1 | grep -v "unchanged" || true
+    else
+      warn "  skipping ${f##*/} — VolumeSnapshot CRDs will be missing and Longhorn's VolumeSnapshotClass apply will fail"
+    fi
   done
 
   marker_set "longhorn-installed"
