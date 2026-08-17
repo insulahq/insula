@@ -282,6 +282,15 @@ yes "cut stamps a digest-pinned runtime image into the production platform-confi
   "grep -q 'file-manager:abc1234@sha256:1111' '$R/k8s/overlays/production/platform-config-patch.yaml'"
 yes "a non-digest key is left untouched" \
   "grep -q 'private-worker-agent:latest' '$R/k8s/overlays/production/platform-config-patch.yaml'"
+# The stamp has to reach the RELEASE COMMIT, not just the working tree.
+# cut-release stamped the file and then never staged it, so every release from
+# v2026.8.1 to v2026.8.4 shipped `:latest` for six runtime images while this
+# very test passed — it asserted the file on disk, which is not what a tag
+# carries. Assert the committed content, and that nothing is left dirty.
+yes "the stamped digest is in the release COMMIT (not just the working tree)" \
+  "git -C '$R' show HEAD:k8s/overlays/production/platform-config-patch.yaml | grep -q 'file-manager:abc1234@sha256:1111'"
+yes "the cut leaves no unstaged stamp behind" \
+  "[ -z \"\$(git -C '$R' status --porcelain -- k8s/overlays/production/platform-config-patch.yaml)\" ]"
 rm -rf "$R"
 
 # FAIL CLOSED: pinned on development, absent from production => the release would
