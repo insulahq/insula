@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import ManagedCertificateCard from '@/components/ManagedCertificateCard';
 import { useParams, Link } from 'react-router-dom';
 import {
   ArrowLeft, Loader2, AlertCircle, Plus, Trash2, Globe, X,
@@ -406,7 +407,9 @@ function RoutingTab({ tenantId, domainId, domainName, dnsMode }: {
           <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
             {isCname
               ? 'For CNAME domains, use the domain name itself.'
-              : `Enter the full hostname (e.g., ${domainName} for apex, or blog.${domainName} for a subdomain).`
+              : `Enter the full hostname (e.g., ${domainName} for apex, or blog.${domainName} for a subdomain). ` +
+                `Wildcards work at any depth — *.${domainName} or *.shop.${domainName} — matching exactly one label ` +
+                `and requiring a DNS-01 wildcard certificate.`
             }
           </p>
         </div>
@@ -748,6 +751,11 @@ function SslTlsTab({ tenantId, domainId, sslAutoRenew }: {
           </p>
         </div>
       </div>
+
+      {/* Managed (automatic) certificates — cert-manager's own view,
+          including the failures the old Secret-presence check could not
+          see. The card below is about an operator-supplied cert. */}
+      <ManagedCertificateCard tenantId={tenantId} domainId={domainId} canManage />
 
       {/* Current Certificate Status */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm">

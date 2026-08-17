@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Globe, Plus, X, Loader2, Shield, Lock } from 'lucide-react';
+import { Globe, Plus, X, Loader2, Shield, Lock, AlertTriangle, RefreshCw } from 'lucide-react';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useCanManage } from '@/hooks/use-can-manage';
 import { useDomains, useCreateDomain } from '@/hooks/use-domains';
@@ -252,16 +252,21 @@ function AddDomainModal({ tenantId, onClose }: { readonly tenantId: string; read
   );
 }
 
-function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: number; tlsCertStatus?: string; tlsCertIssuer?: string | null; tlsCertExpiresAt?: string | null; tlsCertWildcard?: boolean } }) {
+function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: number; tlsCertStatus?: string; tlsCertIssuer?: string | null; tlsCertExpiresAt?: string | null; tlsCertWildcard?: boolean; tlsCertError?: string | null; tlsCertFallbackActive?: boolean } }) {
   const status = domain.tlsCertStatus ?? (domain.sslAutoRenew ? 'pending' : 'none');
   const issuer = domain.tlsCertIssuer;
   const expiry = domain.tlsCertExpiresAt ? new Date(domain.tlsCertExpiresAt) : null;
   const isWildcard = domain.tlsCertWildcard ?? false;
+  const fallbackActive = domain.tlsCertFallbackActive ?? false;
 
   const daysUntilExpiry = expiry ? Math.ceil((expiry.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
 
   const tooltip = [
     `Status: ${status.charAt(0).toUpperCase() + status.slice(1)}`,
+    // The failure reason is the whole point of the badge when an order
+    // is stuck — a bare "Failed" sends people to the wrong place.
+    status === 'failed' && domain.tlsCertError ? `Reason: ${domain.tlsCertError}` : null,
+    fallbackActive ? 'Wildcard unavailable — using per-hostname certificates' : null,
     issuer ? `Issuer: ${issuer}` : null,
     isWildcard ? 'Type: Wildcard' : 'Type: Single-hostname',
     expiry ? `Expires: ${expiry.toLocaleDateString()} (${daysUntilExpiry}d)` : 'Expires: N/A',
@@ -271,6 +276,7 @@ function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: num
     active: 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300',
     expiring: 'bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-300',
     expired: 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300',
+    failed: 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300',
     pending: 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300',
     none: 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400',
   };
@@ -279,11 +285,13 @@ function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: num
     active: 'Active',
     expiring: `${daysUntilExpiry}d`,
     expired: 'Expired',
+    failed: 'Failed',
     pending: 'Pending',
     none: 'None',
   };
 
   const shortIssuer = issuer?.includes("Let's Encrypt") ? 'LE' : issuer?.includes('DigiCert') ? 'DC' : issuer ? 'Custom' : '';
+  const hideDetail = status === 'none' || status === 'pending' || status === 'failed';
 
   return (
     <span
@@ -291,10 +299,11 @@ function TlsBadge({ domain }: { readonly domain: { id: string; sslAutoRenew: num
       title={tooltip}
       data-testid={`ssl-badge-${domain.id}`}
     >
-      <Lock size={10} />
+      {status === 'failed' ? <AlertTriangle size={10} /> : <Lock size={10} />}
       {labels[status] ?? status}
-      {shortIssuer && status !== 'none' && status !== 'pending' && <span className="opacity-70">· {shortIssuer}</span>}
-      {isWildcard && status !== 'none' && status !== 'pending' && <span className="opacity-70">· WC</span>}
+      {shortIssuer && !hideDetail && <span className="opacity-70">· {shortIssuer}</span>}
+      {isWildcard && !hideDetail && <span className="opacity-70">· WC</span>}
+      {fallbackActive && <span className="opacity-70" title="Per-hostname certificates in use">· fallback</span>}
     </span>
   );
 }

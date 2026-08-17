@@ -2129,6 +2129,8 @@ export const sslCertificates = pgTable('ssl_certificates', {
   lastError: text('last_error'),
   lastErrorAt: timestamp('last_error_at'),
   lastIssuedAt: timestamp('last_issued_at'),
+  /** Anchors the reissue cooldown that protects the ACME rate limit. */
+  lastReissueAt: timestamp('last_reissue_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [
