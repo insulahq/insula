@@ -158,9 +158,58 @@ const TENANT_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: true,
     gdprBasis: 'contract',
   },
+  {
+    // TLS state is tenant-visible: their visitors are the ones seeing a
+    // browser warning, and the usual cause (DNS not pointed at us yet,
+    // or a customer-managed zone) is something only they can fix.
+    id: 'tls.certificate_failed',
+    displayName: 'Certificate could not be issued',
+    description:
+      'A TLS certificate for one of your domains could not be issued. Visitors will see a security warning until it is.',
+    audience: 'tenant',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tls.certificate_issued',
+    displayName: 'Certificate issued',
+    description: 'A TLS certificate for one of your domains was issued or renewed.',
+    audience: 'tenant',
+    defaultSeverity: 'info',
+    defaultChannels: ['in_app'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'tls.certificate_fallback',
+    displayName: 'Wildcard certificate unavailable',
+    description:
+      'A wildcard certificate could not be issued, so individual per-hostname certificates are being used instead. New subdomains will not be covered automatically until the wildcard succeeds.',
+    audience: 'tenant',
+    defaultSeverity: 'warning',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
 ];
 
 const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
+  {
+    // Distinct from cert_renewal_failed: this is FIRST issuance, where
+    // the tenant has no working certificate at all (browser warning),
+    // not a renewal of one that is still valid for weeks.
+    id: 'admin.cert_issuance_failed',
+    displayName: 'Certificate issuance failed',
+    description:
+      'A TLS certificate for a tenant domain could not be issued. The hostname has no valid certificate until this is resolved.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+  },
   {
     id: 'admin.cert_expiring',
     displayName: 'Certificate expiring',
@@ -387,6 +436,34 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     isMandatory: false,
     gdprBasis: 'legitimate_interest',
     rateLimitWindowS: 43200, // at most once / 12h per (ip,list) via dedupeKey; cap the fan-out too
+    rateLimitMax: 8,
+  },
+  {
+    id: 'tenant.custom_deployment_rolled_back',
+    displayName: 'Container auto-update rolled back',
+    description: 'An automatic image update for one of your containers failed to start, so the '
+      + 'previous image was restored and auto-update was switched off for that container.',
+    audience: 'tenant',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'contract',
+  },
+  {
+    id: 'admin.mail_health_degraded',
+    displayName: 'Mail server health check failing',
+    description: 'A mail-server health component is FAILING — the Stalwart pod, its JMAP API, the '
+      + 'RocksDB store, the TLS certificate, a mail port, or the external deliverability probes. '
+      + 'Mail is likely not being delivered. See Monitoring → Mail.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    // Matches the scheduler's 12h dedupe bucket per component. The cap is the
+    // backstop for the fan-out: six components, so eight leaves headroom for a
+    // total outage without turning one bad night into a mailbox full of alerts.
+    rateLimitWindowS: 43200,
     rateLimitMax: 8,
   },
   // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ──

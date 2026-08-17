@@ -249,6 +249,57 @@ export class PowerDnsProvider implements DnsProviderAdapter {
     return toZone(zone);
   }
 
+  /**
+   * Remove a single value from an RRset, keeping the rest.
+   *
+   * `deleteRecord` above sends `changetype: DELETE`, which drops the
+   * ENTIRE (name, type) set — correct for "delete this A record", fatal
+   * for ACME DNS-01: an order covering `example.test` and
+   * `*.example.test` puts two TXT values on
+   * `_acme-challenge.example.test`, and cleaning up the first would
+   * strip the second while Let's Encrypt is still checking it.
+   *
+   * Reads the current set, drops the matching value, and REPLACEs with
+   * what's left (or DELETEs when nothing is).
+   */
+  async deleteRecordValue(zone: string, input: DnsRecordInput): Promise<void> {
+    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const recordName = input.name === '@' || input.name === ''
+      ? normalized
+      : input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
+    const target = formatContent(input);
+
+    let remaining: Array<{ content: string; disabled: boolean }> = [];
+    try {
+      const zoneDetail = await this.request<{
+        rrsets?: Array<{ name: string; type: string; records: Array<{ content: string; disabled: boolean }> }>;
+      }>(`/zones/${normalized}`);
+      const rrset = zoneDetail.rrsets?.find(rr => rr.name === recordName && rr.type === input.type);
+      if (!rrset) return; // already gone — idempotent
+      remaining = rrset.records.filter(r => r.content !== target);
+      if (remaining.length === rrset.records.length) return; // value not present
+    } catch {
+      return; // zone gone — nothing to clean up
+    }
+
+    await this.request<void>(`/zones/${normalized}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        rrsets: [
+          remaining.length > 0
+            ? {
+                name: recordName,
+                type: input.type,
+                ttl: input.ttl ?? 60,
+                changetype: 'REPLACE',
+                records: remaining,
+              }
+            : { name: recordName, type: input.type, changetype: 'DELETE', records: [] },
+        ],
+      }),
+    });
+  }
+
   async replaceNsRecords(zone: string, nameservers: string[]): Promise<void> {
     const normalized = zone.endsWith('.') ? zone : `${zone}.`;
     const records = nameservers.map(ns => ({

@@ -639,6 +639,11 @@ SKIP_LONGHORN=false
 SKIP_SMOKE=false               # --skip-smoke disables the post-install smoke run
 REQUIRE_SMOKE_PASS=false       # --require-smoke-pass makes smoke FAIL fatal (CI use)
 SMOKE_WAIT_SECONDS=300         # max wait for Flux Kustomizations to reach Ready
+# Verdict carried from run_post_install_smoke into print_summary. Empty = smoke
+# did not run (skipped, joining node, script absent), and the report then omits
+# the section entirely rather than claiming a result it does not have.
+SMOKE_VERDICT=""
+SMOKE_ADVICE=""
 OPERATOR_AGE_RECIPIENT=""      # public half (age1...) — optional, generated if empty
 FORCE_ROTATE_OPERATOR_KEY=false # regenerate + overwrite ConfigMap even if it exists
 # --force-domain-change: opt-in to overwriting the existing
@@ -1118,6 +1123,10 @@ else
   ui_step() { :; }; ui_ok() { echo "OK: $*"; }; ui_detail() { echo "$*"; }
   ui_warn() { echo "WARN: $*" >&2; }; ui_fail() { echo "ERROR: $*" >&2; }
   ui_summary() { echo "$*"; }; ui_record() { :; }; ui_is_rich() { return 1; }
+  # Completion-report emitters. A missing stub here is not cosmetic — under
+  # `set -u` an undefined function aborts the run at the summary, i.e. AFTER a
+  # successful install, which would read as a late failure.
+  ui_banner() { echo "== $* =="; }; ui_section() { echo "$*"; }; ui_line() { echo "$*"; }
 fi
 
 # Re-point the three legacy emitters at the renderer. Doing it HERE, at the one
@@ -4312,6 +4321,39 @@ detect_calico_mtu() {
   echo "$mtu"
 }
 
+# ─── Cached, retried manifest fetch ──────────────────────────────────────────
+#
+# `kubectl apply -f <url>` inside a swallowed `|| true` is how two separate
+# install steps failed invisibly on 2026-08-17: raw.githubusercontent.com
+# answered 429 (a per-egress-IP rate limit) and the installer reported the
+# downstream symptom minutes later — "Calico CRDs never registered", then
+# "no matches for kind VolumeSnapshotClass". Neither message names the cause.
+#
+# Downloads to $2 with backoff, prefers an already-present copy (which is also
+# the air-gapped install path), and returns non-zero with the HTTP status named
+# so the caller can report something actionable.
+fetch_manifest_cached() {
+  local url="$1" dest="$2" tries="${3:-5}"
+  if [[ -s "$dest" ]]; then
+    log "  using pre-staged manifest ${dest}"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  local _try _http=""
+  for (( _try = 1; _try <= tries; _try++ )); do
+    _http="$(curl -fsSL --max-time 60 -w '%{http_code}' -o "${dest}.tmp" "$url" 2>/dev/null || echo "000")"
+    if [[ "$_http" == "200" && -s "${dest}.tmp" ]]; then
+      mv "${dest}.tmp" "$dest"
+      return 0
+    fi
+    rm -f "${dest}.tmp"
+    warn "  download failed (HTTP ${_http}) for ${url##*/}, attempt ${_try}/${tries} — retrying in $(( _try * 10 ))s"
+    sleep $(( _try * 10 ))
+  done
+  warn "  giving up on ${url} (last HTTP ${_http})"
+  return 1
+}
+
 install_calico() {
   export KUBECONFIG
 
@@ -4332,8 +4374,29 @@ install_calico() {
   # bootstrap 2026-07-11: operator stalled → CRDs never registered → "no matches for kind
   # Installation".)
   local calico_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+  local calico_manifest="/var/lib/insula/cache/tigera-operator-${CALICO_VERSION}.yaml"
   log "Installing tigera-operator (its runtime CRDs can take a few min on slow hardware)..."
-  kubectl apply --server-side --force-conflicts -f "$calico_url" >/dev/null 2>&1 || true
+
+  # Fetch to a FILE first, with retries, instead of letting kubectl pull the
+  # URL inside a swallowed `|| true`.
+  #
+  # WHY (2026-08-17, VM tier): raw.githubusercontent.com answered 429 Too Many
+  # Requests — a per-egress-IP rate limit, nothing to do with this cluster.
+  # `kubectl apply -f <url> >/dev/null 2>&1 || true` discarded that, so nothing
+  # was created and the install reported "Calico CRDs never registered" FIVE
+  # MINUTES LATER. The operator is then sent looking at a healthy operator that
+  # was never deployed. A pre-staged copy at $calico_manifest is used when
+  # present, which also covers air-gapped installs.
+  if ! fetch_manifest_cached "$calico_url" "$calico_manifest"; then
+    error "Could not download the tigera-operator manifest from ${calico_url}. Pre-stage it at ${calico_manifest} and re-run."
+    return 1
+  fi
+
+  local _apply_out
+  if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_manifest" 2>&1)"; then
+    error "tigera-operator apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
+    return 1
+  fi
   kubectl wait --for=condition=available --timeout=180s \
     deployment/tigera-operator -n tigera-operator >/dev/null 2>&1 || true
   local _crd _kicked=false calico_ok=true
@@ -4692,6 +4755,52 @@ kctl() {
     return "$_rc"
   fi
   kubectl --kubeconfig="$KUBECONFIG" "$@"
+}
+
+# Fetch a pod's logs ONCE, force them into the transcript, and echo them back
+# for the caller to grep or print.
+#
+# WHY THIS EXISTS. `kctl` decides what to do with output by `[ -t 1 ]`:
+#
+#   kctl logs …                 statement position on a TTY → suppressed from
+#                               the screen, but ui_record'ed to the transcript
+#   kctl logs … | sed …         stdout is a PIPE → passthrough. Reaches the
+#                               SCREEN and is recorded NOWHERE
+#   x=$(kctl logs …)            command substitution → captured, recorded NOWHERE
+#
+# Every one-shot pod in the mail bootstrap read its logs through one of the two
+# unrecorded forms, so the single most valuable diagnostic in the whole install
+# — what the Stalwart configure pod actually did — existed only as text that
+# scrolled past on a terminal. `/var/log/insula-bootstrap.log` had a gap between
+# "condition met" and the next step. That is how an ACME order that never
+# succeeded looked exactly like a clean install (see fire_stalwart_acme_renewal).
+#
+# Capturing explicitly and calling ui_record ourselves is what makes the output
+# survive. Reading ONCE also stops the same logs being fetched three times to
+# answer three different questions about them.
+capture_pod_logs() { # <namespace> <pod> [label] → logs on stdout
+  local ns="$1" pod="$2" label="${3:-$2}" out=""
+  out="$(kctl logs -n "$ns" "$pod" 2>&1)" || true
+  if [[ -n "$out" ]]; then
+    ui_record "POD LOGS ${label} (${ns}/${pod})"$'\n'"$out"
+  else
+    # An empty log is itself a finding — it means the container produced no
+    # output at all, which is different from "we did not look".
+    ui_record "POD LOGS ${label} (${ns}/${pod}) — EMPTY"
+  fi
+  printf '%s' "$out"
+}
+
+# Show captured pod logs on screen, indented and dimmed, without re-fetching.
+# Pass the text, not the pod name — the caller already has it.
+print_pod_logs() { # <text> [indent]
+  local text="$1" indent="${2:-    }"
+  [[ -n "$text" ]] || return 0
+  if ui_is_rich; then
+    printf '%s%s%s\n' "$UI_C_DIM" "$(sed "s/^/${indent}/" <<<"$text")" "$UI_C_RESET"
+  else
+    sed "s/^/${indent}/" <<<"$text"
+  fi
 }
 
 install_traefik() {
@@ -5317,6 +5426,60 @@ EOF
   # Optional custom ACME issuer (--acme-server). Points cert-manager at any ACME
   # directory instead of Let's Encrypt — a test CA (Pebble) for ephemeral/air-gapped
   # clusters, or an alternate real ACME endpoint. CLUSTER_ISSUER_NAME was pinned to
+  # Wildcard-capable DNS-01 issuers, solved by the platform's own webhook
+  # (ADR-058). Created here rather than shipped through Flux because they
+  # carry the operator's ACME contact address, which is not knowable at
+  # manifest-render time — the same reason k8s/base/cert-manager/ is not
+  # imported into k8s/base/kustomization.yaml. The solver itself (APIService,
+  # Service, serving cert, RBAC) DOES come from Flux; only these two objects
+  # need the address. Existing clusters get them from platform-upgrade
+  # migration 0009 instead.
+  #
+  # No credential Secret and no per-provider issuer: the webhook publishes the
+  # challenge TXT through whichever DNS provider group the domain is bound to,
+  # reading credentials the platform already holds.
+  kctl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${le_email}
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-insula-account
+    solvers:
+    - dns01:
+        webhook:
+          groupName: acme.insula.host
+          solverName: insula-dns
+          config: {}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${le_email}
+    privateKeySecretRef:
+      name: letsencrypt-staging-dns01-insula-account
+    solvers:
+    - dns01:
+        webhook:
+          groupName: acme.insula.host
+          solverName: insula-dns
+          config: {}
+EOF
+
   # acme-custom-http01 at parse time, so every platform Certificate uses this issuer.
   # Same HTTP-01 solver as the LE issuers (ingressClassName traefik + server-only
   # toleration + quota-exempt priorityClass), so the REAL ACME issuance path runs,
@@ -5386,6 +5549,73 @@ install_sealed_secrets() {
     --timeout 300s
 
   log "Sealed Secrets controller installed."
+}
+
+# Longhorn's per-disk `storageReserved`, sized for the disk rather than as a
+# flat percentage. MUST stay numerically identical to host-migration
+# 2026.8.2/0002-longhorn-disk-reservation.sh — bootstrap sets it for a FRESH
+# install, the migration converges EXISTING nodes, and the two disagreeing would
+# make the value flap on every hourly converge.
+# `scripts/test-longhorn-reservation.sh` runs both implementations over a table
+# of disk sizes and fails if they ever diverge.
+#
+#   reserved = 10% of capacity   <- MUST track kubelet's eviction floor
+#                                   (nodefs.available<10%, 50-memory-protection.yaml).
+#                                   Reserve LESS and Longhorn schedules replicas into
+#                                   space kubelet treats as its own reserve; the node
+#                                   sits in permanent DiskPressure that eviction CANNOT
+#                                   clear, because evicting pods does not delete replicas.
+#            + 20 GiB            <- OS + container images + logs. Near constant,
+#                                   hence absolute rather than a share.
+#   ...clamped to Longhorn's own 30%, so this can only ever REDUCE. Without the
+#   clamp the constant dominates on small disks and a 40 GB VM-tier node would go
+#   from 12 GiB reserved to 24 GiB — halving usable storage on the nodes with
+#   least to spare.
+longhorn_reservation_bytes() { # <disk_bytes> → reserved bytes on stdout
+  local max="$1" target ceiling
+  case "$max" in ''|*[!0-9]*) printf '0'; return 0 ;; esac
+  [ "$max" -gt 0 ] || { printf '0'; return 0; }
+  target=$(( max / 10 + 20 * 1024 * 1024 * 1024 ))
+  ceiling=$(( max * 30 / 100 ))
+  if [ "$target" -gt "$ceiling" ]; then target=$ceiling; fi
+  printf '%s' "$target"
+}
+
+rightsize_longhorn_disk_reservation() {
+  [[ "$SKIP_LONGHORN" == true ]] && return 0
+  kctl get crd nodes.longhorn.io >/dev/null 2>&1 || return 0
+
+  # storageMaximum is populated by longhorn-manager once it has inspected the
+  # disk, which can lag the Helm --wait. Poll briefly rather than skipping: a
+  # miss here is the exact "fresh install keeps the 30% default" failure this
+  # function exists to prevent.
+  local tries=0 node disks disk max target
+  while (( tries < 12 )); do
+    local any=0
+    for node in $(kctl -n longhorn-system get nodes.longhorn.io -o jsonpath='{.items[*].metadata.name}' 2>/dev/null); do
+      disks=$(kctl -n longhorn-system get nodes.longhorn.io "$node" \
+                -o go-template='{{range $k, $v := .spec.disks}}{{$k}}{{"\n"}}{{end}}' 2>/dev/null || true)
+      for disk in $disks; do
+        [[ -n "$disk" ]] || continue
+        max=$(kctl -n longhorn-system get nodes.longhorn.io "$node" \
+                -o jsonpath="{.status.diskStatus.${disk}.storageMaximum}" 2>/dev/null || echo "")
+        case "$max" in ''|*[!0-9]*) continue ;; esac
+        [[ "$max" -gt 0 ]] || continue
+        any=1
+        target="$(longhorn_reservation_bytes "$max")"
+        kctl -n longhorn-system patch nodes.longhorn.io "$node" --type=merge \
+          -p "{\"spec\":{\"disks\":{\"${disk}\":{\"storageReserved\":${target}}}}}" >/dev/null 2>&1 || true
+        log "Longhorn ${node}/${disk}: storageReserved → $(( target / 1024 / 1024 / 1024 ))GiB of $(( max / 1024 / 1024 / 1024 ))GiB disk."
+      done
+    done
+    (( any == 1 )) && return 0
+    tries=$(( tries + 1 ))
+    sleep 5
+  done
+  # Non-fatal: the hourly host-config converge runs the same migration and will
+  # correct it. Say so, rather than leaving the operator to notice the number.
+  warn "Longhorn disk not reporting storageMaximum yet — reservation left at the 30% default; the hourly host-config converge will right-size it."
+  return 0
 }
 
 install_longhorn() {
@@ -5473,6 +5703,22 @@ install_longhorn() {
   kctl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 2>/dev/null || true
   kctl patch storageclass longhorn -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
 
+  # Right-size the default disk's reservation NOW, at install time.
+  #
+  # Longhorn reserves 30% of the default disk. That is well judged on the 80 GB
+  # reference node (24 GiB) and absurd on a big root disk — 150 GiB on a 512 GB
+  # one — because what it protects (OS, container images, logs) is roughly
+  # constant while a percentage scales with the disk.
+  #
+  # host-migration 2026.8.2/0002 already fixes this, and that was the whole
+  # problem: it is the ONLY place that fixed it. A migration converges an
+  # EXISTING node on the hourly host-config timer; it does nothing for the disk
+  # Longhorn creates during a fresh install. So every new cluster came up with
+  # the 30% default and stayed there until a converge tick happened to run —
+  # and an operator watching their brand-new 512 GB node reported 150 GB gone.
+  # Install-time defaults have to be fixed at install time.
+  rightsize_longhorn_disk_reservation
+
   # External CSI snapshotter — installs the snapshot.storage.k8s.io
   # CRDs (VolumeSnapshot, VolumeSnapshotContent, VolumeSnapshotClass)
   # and the snapshot-controller Deployment. Required by:
@@ -5518,7 +5764,16 @@ install_longhorn() {
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml" \
     "deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml" \
     "deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml"; do
-    kctl apply -f "${snap_base}/${f}" 2>&1 | grep -v "unchanged" || true
+    # Same masked-failure story as tigera-operator above: this used to apply
+    # straight from the URL with `|| true`, so a 429 left the VolumeSnapshot
+    # CRDs absent and the failure only surfaced later as "no matches for kind
+    # VolumeSnapshotClass" while applying the platform overlay.
+    local _snap_cache="/var/lib/insula/cache/external-snapshotter-${snap_ver}-$(basename "$f")"
+    if fetch_manifest_cached "${snap_base}/${f}" "$_snap_cache"; then
+      kctl apply -f "$_snap_cache" 2>&1 | grep -v "unchanged" || true
+    else
+      warn "  skipping ${f##*/} — VolumeSnapshot CRDs will be missing and Longhorn's VolumeSnapshotClass apply will fail"
+    fi
   done
 
   marker_set "longhorn-installed"
@@ -7256,7 +7511,7 @@ EOF
     log "  Master user provisioned (Roundcube SSO ready)."
   else
     warn "  Master-user provision Pod did not complete cleanly. Logs:"
-    kctl logs -n mail "$job_name" 2>&1 | tail -20 | sed 's/^/    /' || true
+    print_pod_logs "$(capture_pod_logs mail "$job_name" 'stalwart master-user' | tail -20)"
   fi
   kctl delete pod    -n mail "$job_name"       --ignore-not-found >/dev/null 2>&1 || true
   kctl delete secret -n mail "${params_secret}" --ignore-not-found >/dev/null 2>&1 || true
@@ -7894,15 +8149,19 @@ POD_YAML
   if ! kctl wait --for=jsonpath='{.status.phase}'=Succeeded \
        -n mail "pod/${pod_name}" --timeout="${configure_wait}" 2>/dev/null; then
     warn "  configure pod did not Succeed within ${configure_wait}."
-    kctl logs -n mail "${pod_name}" 2>&1 | tail -40 | sed 's/^/      /' || true
+    # Captured (and transcript-recorded) once, then reused for the marker checks
+    # below — three separate `kubectl logs` calls used to answer three questions
+    # about the same output, and recorded none of them.
+    local timeout_logs; timeout_logs="$(capture_pod_logs mail "${pod_name}" 'stalwart configure')"
+    print_pod_logs "$(tail -40 <<<"$timeout_logs")" '      '
     # A timeout is NOT automatically a configuration failure: everything that
     # matters prints `configure-ok` before the advisory cert poll begins. If the
     # marker is there, the config landed and only the observation was cut off.
-    if kctl logs -n mail "${pod_name}" 2>/dev/null | grep -q '^configure-ok '; then
+    if grep -q '^configure-ok ' <<<"$timeout_logs"; then
       warn "  ...but configure-ok was reached — configuration is COMPLETE; only the"
       warn "     advisory mail-TLS cert poll was cut off. Treating as success."
       local late_marker
-      late_marker=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
+      late_marker=$(grep -m1 '^configure-ok ' <<<"$timeout_logs" || true)
       kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
       kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
       if echo "$late_marker" | grep -q 'listeners_created=true'; then
@@ -7918,9 +8177,10 @@ POD_YAML
 
   # Match the marker ANYWHERE in the log, not just on the last line: the
   # advisory cert poll prints after it, so `tail -1` would miss it entirely.
-  local last_line
-  last_line=$(kctl logs -n mail "${pod_name}" 2>/dev/null | grep -m1 '^configure-ok ')
-  kctl logs -n mail "${pod_name}" 2>&1 | sed 's/^/    /' || true
+  local last_line configure_logs
+  configure_logs="$(capture_pod_logs mail "${pod_name}" 'stalwart configure')"
+  last_line=$(grep -m1 '^configure-ok ' <<<"$configure_logs" || true)
+  print_pod_logs "$configure_logs"
   kctl delete pod    -n mail "${pod_name}"    --grace-period=10 --wait=false 2>/dev/null || true
   kctl delete secret -n mail "${params_secret}" --wait=false 2>/dev/null || true
 
@@ -7938,7 +8198,102 @@ POD_YAML
       warn "  Stalwart did not become Ready in 180s — verify manually."
   fi
 
+  # ACME order goes LAST, after the roll. See fire_stalwart_acme_renewal.
+  fire_stalwart_acme_renewal "$stalwart_hostname" || true
+
   log "  Stalwart full configuration complete."
+}
+
+# Order the mail TLS certificate — AFTER the listener roll above.
+#
+# THE BUG THIS FIXES (found on a live fresh install, 2026-08-12): the configure
+# pod fires the AcmeRenewal task as its step 5c, and that pod runs BEFORE the
+# Deployment roll that binds the newly-created listeners. `http-acme` on :80 is
+# one of those listeners — it is what answers Let's Encrypt's HTTP-01 challenge
+# through Traefik → stalwart-mail-acme. So the order was placed against a
+# listener that was configured but not yet bound: LE could not validate, the
+# order failed, and Stalwart does not retry until `renewBefore` (R23) — of a
+# certificate that does not exist.
+#
+# The install then looked completely clean while Stalwart served its built-in
+# `CN=rcgen self signed cert` (SAN: localhost) on 25/465/993 forever. Proven by
+# re-firing the identical task by hand after the roll on the affected node: the
+# cert was issued within seconds, with no config change of any kind.
+#
+# This is a pure ORDERING fix. Cert strategy is untouched — same Stalwart
+# http-acme listener, same Traefik → stalwart-mail-acme:80 path, same JMAP
+# AcmeRenewal task, same LE directory (ADR / AGENTS.md: mail cert strategy is
+# not to be changed).
+fire_stalwart_acme_renewal() {
+  local hostname="$1"
+  local pod="acme-renew-$$-${RANDOM}"
+
+  log "  Ordering mail TLS certificate for ${hostname} (ACME, post-listener-bind)..."
+  # Same spawn shape as the configure pod. Note every `$` that must survive to
+  # the CONTAINER is escaped (\$) — this heredoc is unquoted so bootstrap's own
+  # ${hostname} interpolates while the container's shell vars do not.
+  if ! cat <<ACME_POD | kctl apply -f - >/dev/null 2>&1
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${pod}
+  namespace: mail
+  labels:
+    app.kubernetes.io/component: stalwart-acme
+spec:
+  restartPolicy: Never
+  containers:
+    - name: acme
+      image: alpine:3.20
+      envFrom:
+        - secretRef:
+            name: stalwart-admin-creds
+      command: ["sh", "-c"]
+      args:
+        - |
+          set -u
+          apk add -q --no-cache curl jq >/dev/null 2>&1 || { echo "acme: apk add failed"; exit 1; }
+          M=http://stalwart-mgmt.mail.svc.cluster.local:8080
+          AUTH="admin:\${recoveryPassword}"
+          A=\$(curl -s -u "\$AUTH" "\$M/jmap/session" | jq -r '.primaryAccounts[]?' | head -1)
+          [ -n "\$A" ] || { echo "acme: could not resolve accountId from /jmap/session"; exit 1; }
+          D=\$(curl -s -u "\$AUTH" -H 'Content-Type: application/json' -X POST "\$M/jmap" \
+                -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Domain/get\",{\"accountId\":\"\$A\",\"ids\":null},\"c0\"]]}" \
+              | jq -r '.methodResponses[0][1].list[]? | select(.certificateManagement."@type"=="Automatic") | .id' | head -1)
+          [ -n "\$D" ] || { echo "acme: no domain has certificateManagement=Automatic — nothing to order"; exit 0; }
+          curl -s -u "\$AUTH" -H 'Content-Type: application/json' -X POST "\$M/jmap" \
+            -d "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Task/set\",{\"accountId\":\"\$A\",\"create\":{\"r\":{\"@type\":\"AcmeRenewal\",\"domainId\":\"\$D\"}}},\"c0\"]]}" \
+            | jq -c '.methodResponses[0][1]'
+          echo "acme: AcmeRenewal fired (domainId=\$D)"
+ACME_POD
+  then
+    warn "  could not spawn the ACME renewal pod — order the cert manually (docs/operations/STALWART_DEPLOYMENT.md)."
+    return 1
+  fi
+
+  kctl wait --for=jsonpath='{.status.phase}'=Succeeded -n mail "pod/${pod}" --timeout=120s >/dev/null 2>&1 || true
+  print_pod_logs "$(capture_pod_logs mail "$pod" 'stalwart acme-renewal')"
+  kctl delete pod -n mail "$pod" --grace-period=5 --wait=false >/dev/null 2>&1 || true
+
+  # VERIFY, don't assume. The whole failure mode was an order that silently did
+  # not happen, so bootstrap asserts the served certificate actually carries the
+  # mail hostname rather than trusting that firing the task was enough.
+  local i sans=""
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sans=$(kctl exec -n mail deploy/stalwart-mail -c stalwart -- sh -c \
+      "echo | openssl s_client -connect 127.0.0.1:465 2>/dev/null | openssl x509 -noout -ext subjectAltName 2>/dev/null" 2>/dev/null || echo "")
+    if printf '%s' "$sans" | grep -q "DNS:${hostname}"; then
+      log "  Mail TLS certificate issued — SAN contains ${hostname}."
+      return 0
+    fi
+    sleep 6
+  done
+  warn "  Mail TLS certificate NOT issued yet — Stalwart is still serving its self-signed cert (SAN: localhost)."
+  warn "    Mail clients will see a certificate error on 465/993/587."
+  warn "    Check: kubectl logs -n mail deploy/stalwart-mail -c stalwart | grep -i acme"
+  warn "    The HTTP-01 path must be reachable from the internet:"
+  warn "      curl -sI http://${hostname}/.well-known/acme-challenge/probe   (expect 404 from Stalwart, not a timeout)"
+  return 1
 }
 
 # Print why the Stalwart admin probe failed, instead of telling the operator to
@@ -9012,22 +9367,18 @@ print_summary() {
   local server_ip
   server_ip="$(hostname -I | awk '{print $1}')"
 
-  log ""
-  log "════════════════════════════════════════════════"
-  log "  BOOTSTRAP COMPLETE"
-  log "════════════════════════════════════════════════"
-  log ""
-  log "  Server IP:    ${server_ip}"
-  log "  Domain:       ${PLATFORM_DOMAIN}"
-  log "  Environment:  ${PLATFORM_ENV}"
-  log "  Kubeconfig:   ${KUBECONFIG}"
-  log "  k3s version:  ${K3S_VERSION}"
-  log ""
-  log "  Endpoints:"
-  log "    Admin:   https://admin.${PLATFORM_DOMAIN}"
-  log "    Tenant:  https://tenant.${PLATFORM_DOMAIN}"
-  log "    API:     https://api.${PLATFORM_DOMAIN}"
-  log ""
+  ui_banner "BOOTSTRAP COMPLETE"
+  ui_section "This node"
+  ui_line "Server IP:    ${server_ip}"
+  ui_line "Domain:       ${PLATFORM_DOMAIN}"
+  ui_line "Environment:  ${PLATFORM_ENV}"
+  ui_line "Kubeconfig:   ${KUBECONFIG}"
+  ui_line "k3s version:  ${K3S_VERSION}"
+
+  ui_section "Endpoints"
+  ui_line "Admin:   https://admin.${PLATFORM_DOMAIN}"
+  ui_line "Tenant:  https://tenant.${PLATFORM_DOMAIN}"
+  ui_line "API:     https://api.${PLATFORM_DOMAIN}"
   # The first thing an operator wants after "here is your admin URL" is the
   # credentials for it. They were written ~700 lines earlier, during secret
   # generation, and had long scrolled away by the time this summary appeared —
@@ -9038,32 +9389,48 @@ print_summary() {
   # to /etc/insula, so both resolve, but the docs say /etc/insula and the two
   # should not disagree in front of someone who is already unsure what to trust.
   if [[ -f /etc/insula/admin-credentials ]]; then
-    log "  Admin sign-in:"
-    log "    sudo cat /etc/insula/admin-credentials"
-    log "    (ADMIN_EMAIL + ADMIN_PASSWORD; change the password and remove this file"
-    log "     once you have created a real admin user)"
-    log ""
+    ui_section "Admin sign-in"
+    ui_line "sudo cat /etc/insula/admin-credentials"
+    ui_line "(ADMIN_EMAIL + ADMIN_PASSWORD; change the password and remove this file"
+    ui_line " once you have created a real admin user)"
   fi
-  log "  Installed:"
-  log "    - k3s + Calico CNI"
-  log "    - Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
-  log "    - cert-manager (Let's Encrypt staging + production)"
-  log "    - Sealed Secrets"
-  [[ "$SKIP_FLUX" != true ]]       && log "    - Flux v2"
-  log "    - Platform namespaces + RBAC + network policies"
-  log ""
-  log "  To use kubectl from another machine:"
-  log "    scp root@${server_ip}:${KUBECONFIG} ./kubeconfig.yaml"
-  log "    sed -i 's/127.0.0.1/${server_ip}/g' kubeconfig.yaml"
-  log "    export KUBECONFIG=./kubeconfig.yaml"
-  log "    kubectl get nodes"
-  log ""
-  log "  Metrics UI (VictoriaMetrics VMUI, admin-gated):"
-  log "    https://admin.${PLATFORM_DOMAIN}/metrics/vmui/"
-  log "  Longhorn dashboard (admin-gated):"
-  log "    https://admin.${PLATFORM_DOMAIN}/longhorn/"
-  log ""
-  log "════════════════════════════════════════════════"
+
+  ui_section "Installed"
+  ui_line "- k3s + Calico CNI"
+  ui_line "- Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"
+  ui_line "- cert-manager (Let's Encrypt staging + production)"
+  ui_line "- Sealed Secrets"
+  [[ "$SKIP_FLUX" != true ]] && ui_line "- Flux v2"
+  ui_line "- Platform namespaces + RBAC + network policies"
+
+  ui_section "Consoles"
+  ui_line "Metrics UI (VictoriaMetrics VMUI, admin-gated):"
+  ui_line "  https://admin.${PLATFORM_DOMAIN}/metrics/vmui/"
+  ui_line "Longhorn dashboard (admin-gated):"
+  ui_line "  https://admin.${PLATFORM_DOMAIN}/longhorn/"
+
+  ui_section "Use kubectl from another machine"
+  ui_line "scp root@${server_ip}:${KUBECONFIG} ./kubeconfig.yaml"
+  ui_line "sed -i 's/127.0.0.1/${server_ip}/g' kubeconfig.yaml"
+  ui_line "export KUBECONFIG=./kubeconfig.yaml"
+  ui_line "kubectl get nodes"
+
+  # Post-install smoke is ADVISORY and now runs before this report, so its
+  # verdict belongs here — reported once, in context, as one line of an otherwise
+  # successful install. It used to trail the report as two yellow warnings
+  # ("Smoke FAILED", "Bootstrap exits 0 because …"), which is the last thing on
+  # screen and reads as "the install failed" no matter what the banner said.
+  if [[ -n "$SMOKE_VERDICT" ]]; then
+    ui_section "Post-install checks (advisory)"
+    ui_line "$SMOKE_VERDICT"
+    if [[ -n "$SMOKE_ADVICE" ]]; then
+      ui_line ""
+      ui_line "These do not block the install — first-boot timing (Flux still"
+      ui_line "reconciling, oauth2-proxy/dex restarting) commonly trips a few."
+      ui_line "Re-run once the cluster settles:  make smoke"
+      ui_line "$SMOKE_ADVICE"
+    fi
+  fi
 }
 
 # ─── Phase 5: Post-install smoke (advisory) ──────────────────────────────────
@@ -9115,31 +9482,56 @@ run_post_install_smoke() {
   log "Waiting up to ${SMOKE_WAIT_SECONDS}s for Flux Kustomizations to reconcile..."
   if ! KUBECONFIG="$KUBECONFIG" kubectl wait kustomization --all -n flux-system \
       --for=condition=Ready --timeout="${SMOKE_WAIT_SECONDS}s" >/dev/null 2>&1; then
-    warn "Not all Kustomizations reached Ready within ${SMOKE_WAIT_SECONDS}s — running smoke anyway (some FAILs may be transient)"
+    # `log`, not `warn`: this fires on most first bootstraps (Flux is still
+    # reconciling) and it is not something the operator can act on — it is the
+    # explanation for the FAILs the advisory smoke is about to report. As a
+    # warning it padded the completion tally of a perfectly good install.
+    log "Not all Kustomizations reached Ready within ${SMOKE_WAIT_SECONDS}s — running smoke anyway (some FAILs are expected this early)."
   else
     log "All Flux Kustomizations Ready — running smoke."
   fi
 
-  local smoke_log="/var/log/hosting-platform-bootstrap-smoke.log"
+  # Overridable so the harness can point it at a writable temp path. Default is
+  # unchanged; a real (root) bootstrap never sets it.
+  local smoke_log="${SMOKE_LOG_FILE:-/var/log/hosting-platform-bootstrap-smoke.log}"
   log "Running smoke suite — log: $smoke_log"
   # Capture rc without tripping the parent `set -e` (we explicitly
   # decide whether to fatal based on REQUIRE_SMOKE_PASS).
   local rc=0
   KUBECONFIG="$KUBECONFIG" bash "$smoke_script" >"$smoke_log" 2>&1 || rc=$?
-  if [[ $rc -eq 0 ]]; then
-    log "Smoke result: PASS (full log at $smoke_log)"
-    return 0
-  fi
   local summary
   summary=$(grep '^\[INFO\] run.summary' "$smoke_log" 2>/dev/null | tail -1 || true)
+  # Reduce "[INFO] run.summary — PASS=23 FAIL=4" to just "PASS=23 FAIL=4"; the
+  # operator does not need the smoke script's internal event name in a completion
+  # report. Matched by PATTERN rather than by stripping around the em-dash
+  # separator, so a change to emit()'s framing degrades to the rc fallback
+  # instead of leaking "[INFO] run.summary" into the report.
+  local counts
+  counts=$(grep -o 'PASS=[0-9]\+ FAIL=[0-9]\+' <<<"$summary" | tail -1 || true)
+  if [[ $rc -eq 0 ]]; then
+    log "Smoke result: PASS (full log at $smoke_log)"
+    SMOKE_VERDICT="All cluster-network checks passed${counts:+ (${counts})}."
+    SMOKE_ADVICE=""
+    return 0
+  fi
+
+  # --require-smoke-pass makes this fatal — the operator asked for a gate, so it
+  # stays an ERROR and exits here rather than being softened into a report line.
   if [[ "$REQUIRE_SMOKE_PASS" == "true" ]]; then
     # error() exits 1; this never returns.
     error "Smoke FAILED (rc=$rc) and --require-smoke-pass is set. ${summary:-see $smoke_log}"
   fi
-  warn "Smoke FAILED (rc=$rc) — advisory only. ${summary:-see $smoke_log}"
-  warn "Bootstrap exits 0 because --require-smoke-pass was not set. Investigate via:"
-  warn "  scripts/smoke-test-cluster-network.sh   (full output)"
-  warn "  make diagnose                           (forensic snapshot)"
+
+  # ADVISORY path. Deliberately `log` (dim), NOT `warn`: this phase cannot fail
+  # the install, and rendering it in warning yellow at the very end of a
+  # successful run told operators their bootstrap had broken when it had not.
+  # The verdict is carried into print_summary instead, where it is read in the
+  # context of the install that actually succeeded.
+  log "Smoke result: ${counts:-FAILED (rc=$rc)} — advisory, does not block the install."
+  log "Full output: $smoke_log"
+  SMOKE_VERDICT="${counts:-rc=$rc} — see ${smoke_log}"
+  SMOKE_ADVICE="Forensic snapshot:              make diagnose"
+  return 0
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -9270,6 +9662,34 @@ run_preflight() {
 
   if (( fatal != 0 )); then
     error "preflight failed — nothing has been changed on this host. Fix the items above and re-run."
+  fi
+}
+
+# Install the operator CLI (`insula`, cosign-verified) + its self-upgrade and
+# host-config converge timers. Best-effort + FAIL-CLOSED: a missing or
+# unverified asset is skipped, never fatal — bootstrap's green path does not
+# depend on it. The repo root holding platform/VERSION sits at scripts/.. on the
+# git-clone path and beside the flattened script on --remote (see the lib copy
+# near the top of this file).
+#
+# CALLED FOR BOTH ROLES, deliberately. This used to run only on the server
+# branch, on the reasoning that the CLI is a control-plane operator tool. That
+# was wrong: the timers it installs are what apply HOST-migrations, and a worker
+# is a host like any other — same kernel knobs, same firewall shape, same
+# packages. A worker with no converge timer keeps whatever host state it was
+# bootstrapped with, forever, while the control plane moves on.
+#
+# Observed on staging 2026-08-11: three servers on 2026.8.3-rc.8 with
+# 0003-pod-cidr-dns-firewall applied and 2 nft rules; the worker still on
+# 2026.8.2, migration never applied, 0 nft rules — and nothing reported it,
+# because a timer that was never installed emits no failures.
+install_platform_ops_cli() {
+  if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
+    phase_platform_ops "$(cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)" || true
+  elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
+    phase_platform_ops "${BOOTSTRAP_SCRIPT_DIR}" || true
+  else
+    warn "platform-ops: platform/VERSION not found near ${BOOTSTRAP_SCRIPT_DIR} — skipping CLI install."
   fi
 }
 
@@ -9475,45 +9895,52 @@ main() {
     # green path; a misconfigured backup target is a warning the
     # operator handles via the admin panel.
     configure_backup_target_s3 || true
-    print_summary
 
-    # Install the platform-ops operator CLI (cosign-verified) + its daily
-    # self-upgrade timer. Best-effort + FAIL-CLOSED: a missing or unverified
-    # asset is skipped, never fatal — bootstrap's green path does not depend
-    # on it. Dormant (logged no-op) until the release pipeline publishes a
-    # signed binary + ships platform/cosign.pub (a later workstream). The
-    # repo root holding platform/VERSION sits at scripts/.. on the git-clone
-    # path and beside the flattened script on --remote (see lib copy above).
-    if [[ -r "${BOOTSTRAP_SCRIPT_DIR}/../platform/VERSION" ]]; then
-      phase_platform_ops "$(cd "${BOOTSTRAP_SCRIPT_DIR}/.." && pwd)" || true
-    elif [[ -r "${BOOTSTRAP_SCRIPT_DIR}/platform/VERSION" ]]; then
-      phase_platform_ops "${BOOTSTRAP_SCRIPT_DIR}" || true
-    else
-      warn "platform-ops: platform/VERSION not found near ${BOOTSTRAP_SCRIPT_DIR} — skipping CLI install."
-    fi
+    install_platform_ops_cli
 
     # Phase 5: post-install cluster-network smoke. Advisory by default;
     # the operator can wire it into CI with --require-smoke-pass. Only
     # runs on the first server (the only role that has KUBECONFIG +
     # cluster-wide reachability for the matrix probes).
+    #
+    # ORDERING: this runs after every MANDATORY step (an advisory step placed
+    # mid-sequence lets an outer timeout skip real work silently) but BEFORE the
+    # completion report. The report has to be the last thing on screen — when the
+    # advisory smoke printed after it, a handful of first-boot timing failures
+    # were the operator's final impression of a successful install.
     if [[ -z "$K3S_SERVER_IP" ]]; then
       run_post_install_smoke
     fi
+
+    print_summary
   else
     apply_node_labels_and_taints
-    # Worker — just confirm agent is running
-    log ""
-    log "════════════════════════════════════════════════"
-    log "  WORKER NODE BOOTSTRAP COMPLETE"
-    log "════════════════════════════════════════════════"
-    log ""
-    log "  Joined control plane: ${K3S_SERVER_IP}"
-    log "  k3s agent status: $(systemctl is-active k3s-agent)"
-    log ""
-    log "  Verify from the control plane:"
-    log "    kubectl get nodes"
-    log ""
-    log "════════════════════════════════════════════════"
+
+    # Workers need the operator CLI too — see install_platform_ops_cli. A worker
+    # is a HOST like any other: same kernel, same firewall, same packages, and
+    # the same host-migrations apply to it. Without the CLI there is no
+    # host-config converge timer, so a worker silently keeps the host state it
+    # was born with.
+    install_platform_ops_cli
+
+    # Worker — same completion register as the server report (ui_banner/section/
+    # line), not `log`. Two banners rendered differently is worse than either
+    # choice made consistently.
+    # Report the binary at its INSTALL path, not whatever `insula` PATH resolves
+    # to — a worker's root PATH is not guaranteed to carry /usr/local/bin, and a
+    # false "not installed" here would send an operator chasing a non-problem.
+    # platform_ops_installed_version prints NOTHING when the binary is absent
+    # (it returns 0 early), so an empty result must render as an explicit
+    # "not installed" — a blank field reads as "fine" at a glance.
+    worker_cli_ver="$(platform_ops_installed_version "${PLATFORM_OPS_BIN:-/usr/local/bin/insula}" 2>/dev/null || true)"
+    ui_banner "WORKER NODE BOOTSTRAP COMPLETE"
+    ui_section "This node"
+    ui_line "Joined control plane: ${K3S_SERVER_IP}"
+    ui_line "k3s agent status:     $(systemctl is-active k3s-agent 2>/dev/null || echo unknown)"
+    ui_line "operator CLI:         ${worker_cli_ver:-not installed}"
+    ui_line "host-config timer:    $(systemctl is-active platform-ops-host-config.timer 2>/dev/null || echo inactive)"
+    ui_section "Verify from the control plane"
+    ui_line "kubectl get nodes"
   fi
 
   marker_set "bootstrap-complete"

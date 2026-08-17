@@ -10,13 +10,13 @@ interface NodeTerminalModalProps {
   readonly nodeName: string;
 }
 
-// Capitalize the first character so a node name like `k8s-local` renders
-// as `K8s-local` in the title (operator request — node names are
-// case-insensitive identifiers so this is purely cosmetic).
-export function titleCase(name: string): string {
-  if (!name) return name;
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
+// Moved to ./node-terminal-utils so BackgroundTerminalsDock can use it WITHOUT
+// statically importing this module — that edge dragged the step-up password
+// input into the entry chunk. Re-exported so existing importers keep working.
+// `export … from` creates no local binding, hence the separate import for the
+// three uses below.
+import { titleCase } from './node-terminal-utils';
+export { titleCase } from './node-terminal-utils';
 
 /**
  * Visible shell of an active terminal session. The xterm Terminal +

@@ -352,6 +352,62 @@ export async function notifyTenantSuspiciousActivity(
   await dispatchSafe(db, 'security.suspicious_activity', { kind: 'user', userId }, payload);
 }
 
+export interface TenantCertificatePayload {
+  readonly hostname: string;
+  readonly errorMessage?: string;
+  readonly expiresAt?: string;
+}
+
+/**
+ * TLS issuance failed for a tenant hostname.
+ *
+ * Both audiences get told: the tenant because their visitors are the
+ * ones seeing the browser warning and the usual cause (DNS not pointed
+ * at the platform yet) is theirs to fix, the operator because a
+ * platform-side cause (a broken DNS-01 solver, an exhausted ACME rate
+ * limit) is invisible to the tenant.
+ */
+export async function notifyTenantCertificateFailed(
+  db: Database,
+  tenantId: string,
+  payload: TenantCertificatePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tls.certificate_failed', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export async function notifyTenantCertificateIssued(
+  db: Database,
+  tenantId: string,
+  payload: TenantCertificatePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tls.certificate_issued', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+/** A wildcard could not be issued; per-hostname certs are standing in. */
+export async function notifyTenantCertificateFallback(
+  db: Database,
+  tenantId: string,
+  payload: TenantCertificatePayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'tls.certificate_fallback', { kind: 'tenant', tenantId }, payload, tenantId, { dedupeKey });
+}
+
+export interface AdminCertIssuanceFailedPayload {
+  readonly certSubject: string;
+  readonly tenantName?: string;
+  readonly errorMessage?: string;
+}
+export async function notifyAdminCertIssuanceFailed(
+  db: Database,
+  payload: AdminCertIssuanceFailedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.cert_issuance_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 export interface AdminCertExpiringPayload {
   readonly certSubject: string;
   readonly expiresAt: string;
@@ -598,6 +654,69 @@ export async function notifyAdminMailBlocklisted(
   dedupeKey?: string,
 ): Promise<void> {
   await dispatchSafe(db, 'admin.mail_blocklisted', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
+export interface CustomDeploymentRolledBackPayload {
+  readonly deploymentName: string;
+  /** Digest that was pulled and failed to start. */
+  readonly failedDigest: string;
+  /** Digest restored, or 'none' when there was nothing to restore. */
+  readonly restoredDigest: string;
+}
+/**
+ * An auto-update pulled a republished image that never became Ready, so the
+ * platform restored the previous digest and switched auto-update OFF.
+ *
+ * The tenant MUST be told: their container silently changed underneath them,
+ * it broke, and the automation they enabled is now disabled. Every one of
+ * those three facts is something they would otherwise discover by accident.
+ */
+export async function notifyTenantCustomDeploymentRolledBack(
+  db: Database,
+  tenantId: string,
+  payload: CustomDeploymentRolledBackPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(
+    db,
+    'tenant.custom_deployment_rolled_back',
+    { kind: 'tenant', tenantId },
+    payload,
+    tenantId,
+    { dedupeKey },
+  );
+}
+
+export interface AdminMailHealthDegradedPayload {
+  /** Operator-facing component name: 'pod' | 'JMAP API' | 'certificate' | … */
+  readonly component: string;
+  readonly mailHostname: string;
+  /**
+   * One sentence of specifics, ALREADY prefixed with a leading space (or ''):
+   * templates have no conditionals, so an absent detail must render as nothing
+   * rather than as a dangling separator.
+   */
+  readonly detail?: string;
+  readonly panelUrl?: string;
+}
+/**
+ * A mail-server health COMPONENT is failing (not merely warning).
+ *
+ * Until now the only mail signal that ever reached a notification channel was
+ * a DNSBL listing: mail health itself was computed on demand for the admin
+ * modal, and the periodic collector published Prometheus gauges only. So a
+ * cluster could serve a self-signed certificate on 465/993, or have Stalwart
+ * down entirely, and nothing told the operator on any configured channel.
+ *
+ * Callers pass a dedupeKey of `mail-health:<component>:<12h bucket>` so a
+ * sustained outage alerts twice a day per component, not every pass.
+ */
+export async function notifyAdminMailHealthDegraded(
+  db: Database,
+  payload: AdminMailHealthDegradedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.mail_health_degraded', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
 // ── Resource monitoring (2026-07): per-tenant CPU/memory/storage saturation ─

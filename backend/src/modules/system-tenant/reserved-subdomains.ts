@@ -36,6 +36,7 @@
  */
 
 import { inArray } from 'drizzle-orm';
+import { wildcardMatchesHostname } from '@insula/api-contracts';
 import { platformSettings } from '../../db/schema.js';
 import {
   adminHost,
@@ -220,4 +221,38 @@ export async function isReservedPlatformHostname(
 ): Promise<boolean> {
   const reserved = await getReservedPlatformHostnames(db);
   return reserved.fqdns.has(normalize(hostname));
+}
+
+/**
+ * Every reserved hostname that `pattern` would answer for, where
+ * `pattern` may be a wildcard (`*.<apex>`).
+ *
+ * An exact-match check is not enough once wildcard routing exists: a
+ * single `*.<apex>` route covers `admin.<apex>`, `mail.<apex>`, the
+ * webmail host and everything else in the reserved set at once, while
+ * matching none of them literally.
+ *
+ * Returns `[fqdn, reason]` pairs, sorted, so the caller can name what
+ * it refused instead of emitting a bare "reserved" error.
+ */
+export async function reservedHostnamesCoveredBy(
+  db: Database,
+  pattern: string,
+): Promise<ReadonlyArray<readonly [string, string]>> {
+  return matchReservedHostnames(await getReservedPlatformHostnames(db), pattern);
+}
+
+/** Pure half of `reservedHostnamesCoveredBy` — no DB, unit-testable. */
+export function matchReservedHostnames(
+  reserved: ReservedHostnames,
+  pattern: string,
+): ReadonlyArray<readonly [string, string]> {
+  const candidate = normalize(pattern);
+  const hits: Array<readonly [string, string]> = [];
+  for (const [fqdn, reason] of reserved.reasons) {
+    if (wildcardMatchesHostname(candidate, fqdn)) {
+      hits.push([fqdn, reason] as const);
+    }
+  }
+  return hits.sort((a, b) => a[0].localeCompare(b[0]));
 }

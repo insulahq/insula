@@ -67,6 +67,83 @@ contains "no-tty still yields captured value"  "CAPTURED=[jsonpath-value]" "$pla
 pbetween=$(sed -n '/MARK-success-begin/,/MARK-success-end/p' <<<"$plain" | grep -v MARK- || true)
 contains "no-tty leaves the log exhaustive"    "jsonpath-value"           "$pbetween"
 
+# ─── capture_pod_logs: one-shot pod output MUST reach the transcript ─────────
+#
+# The mail bootstrap runs its real work in throwaway Pods. Their logs are the
+# only record of what happened, and every reader used one of the two kctl forms
+# that record NOTHING:
+#
+#   kctl logs … | sed …     → stdout is a pipe → passthrough → screen only
+#   x=$(kctl logs …)        → command substitution → captured, recorded nowhere
+#
+# So /var/log/insula-bootstrap.log had a hole exactly where the Stalwart
+# configure pod's output should have been, which is how an ACME order that never
+# succeeded read as a clean install. These assertions are the reason that cannot
+# regress: they check the TRANSCRIPT, not the screen.
+
+cat > "$WORK/podprobe.sh" <<EOF
+set -uo pipefail
+KUBECONFIG=/dev/null
+RECORD_FILE="$WORK/recorded"
+: > "\$RECORD_FILE"
+ui_record() { printf '%s\n' "\$*" >> "\$RECORD_FILE"; }
+ui_is_rich() { return 1; }
+UI_C_DIM=""; UI_C_RESET=""
+kubectl() {
+  case "\$*" in
+    *emptypod*) return 0 ;;
+    *) echo "configure-ok listeners_created=true"; echo "AcmeProvider created (id=abc)" ;;
+  esac
+}
+EOF
+sed -n '/^kctl() {/,/^}/p'             "$REPO_ROOT/scripts/bootstrap.sh" >> "$WORK/podprobe.sh"
+sed -n '/^capture_pod_logs() {/,/^}/p' "$REPO_ROOT/scripts/bootstrap.sh" >> "$WORK/podprobe.sh"
+sed -n '/^print_pod_logs() {/,/^}/p'   "$REPO_ROOT/scripts/bootstrap.sh" >> "$WORK/podprobe.sh"
+grep -q 'capture_pod_logs()' "$WORK/podprobe.sh" || { echo "FAIL: could not extract capture_pod_logs()" >&2; exit 1; }
+
+cat >> "$WORK/podprobe.sh" <<'EOF'
+logs="$(capture_pod_logs mail configpod 'stalwart configure')"
+echo "RETURNED=[$(head -1 <<<"$logs")]"
+grep -q '^configure-ok ' <<<"$logs" && echo "MARKER=found"
+echo "SCREEN-begin"; print_pod_logs "$logs"; echo "SCREEN-end"
+empty="$(capture_pod_logs mail emptypod 'empty one')"
+echo "EMPTY=[${empty}]"
+EOF
+
+rm -f "$WORK/podout" "$WORK/recorded"
+script -qec "bash $WORK/podprobe.sh" "$WORK/podout" >/dev/null 2>&1
+podout=$(sed 's/\r$//' "$WORK/podout" | grep -v '^Script ')
+recorded=$(cat "$WORK/recorded" 2>/dev/null || true)
+
+echo "capture_pod_logs (on a real terminal — the case that lost the output):"
+contains "returns the logs to the caller"       "RETURNED=[configure-ok listeners_created=true]" "$podout"
+contains "caller can still grep the marker"     "MARKER=found"                  "$podout"
+# THE regression assertion. Everything else here is secondary to this line.
+contains "pod output REACHES THE TRANSCRIPT"    "configure-ok listeners_created=true" "$recorded"
+contains "transcript keeps every line, not just the first" "AcmeProvider created (id=abc)" "$recorded"
+contains "transcript labels which pod it came from" "POD LOGS stalwart configure (mail/configpod)" "$recorded"
+# An empty log is a finding in itself — "the container said nothing" is not the
+# same as "we never looked", and the transcript must be able to tell them apart.
+contains "an empty log is recorded as EMPTY"    "empty one (mail/emptypod) — EMPTY" "$recorded"
+contains "an empty log returns empty"           "EMPTY=[]"                      "$podout"
+# And it must still be visible on screen, not merely archived.
+screen=$(sed -n '/SCREEN-begin/,/SCREEN-end/p' <<<"$podout")
+contains "output is ALSO shown on screen"       "configure-ok"                  "$screen"
+
+echo "no call site may go back to the unrecorded forms:"
+# `kctl logs` piped or in command substitution is the exact shape that lost the
+# output. capture_pod_logs is the only sanctioned reader.
+# Skip comment lines (the helper's own docblock names these forms in prose) and
+# the one sanctioned reader inside capture_pod_logs itself.
+stray=$(grep -n 'kctl logs' "$REPO_ROOT/scripts/bootstrap.sh" \
+          | grep -vE '^[0-9]+:[[:space:]]*#' \
+          | grep -v 'out="$(kctl logs' || true)
+if [[ -z "$stray" ]]; then
+  ok "every pod-log read goes through capture_pod_logs"
+else
+  bad "raw 'kctl logs' call site(s) bypass the transcript:"$'\n'"$stray"
+fi
+
 echo
 if (( fail == 0 )); then echo "test-bootstrap-quiet-wrappers: OK (${pass} checks)"
 else echo "test-bootstrap-quiet-wrappers: ${fail} FAILED / ${pass} passed" >&2; fi

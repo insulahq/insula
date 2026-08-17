@@ -6,24 +6,32 @@
  * ClusterIssuer should sign the certificate. Pure function — no DB,
  * no k8s calls. Callers resolve the inputs and pass them in.
  *
- * Selection matrix (summary):
+ * Selection matrix:
  *
  *   environment=development        → local-ca-issuer            (no ACME)
- *   environment=staging            → letsencrypt-staging-http01
+ *   environment=staging:
+ *     wildcard wanted AND the platform can write the zone
+ *                                  → letsencrypt-staging-dns01-insula
+ *     everything else              → letsencrypt-staging-http01
  *   environment=production:
- *     wildcardRequested=true AND primary + DNS-01-capable provider
- *                                  → letsencrypt-prod-dns01-<provider>
+ *     wildcard wanted AND the platform can write the zone
+ *                                  → letsencrypt-prod-dns01-insula
  *     everything else              → letsencrypt-prod-http01
  *
- * Wildcard certs are DNS-01 only (Let's Encrypt policy). Supported
- * DNS-01 solver providers: powerdns, cloudflare, route53, hetzner,
- * cloudns. The issuer is selected dynamically based on the domain's
- * primary DNS provider type.
+ * Wildcard certs are DNS-01 only (Let's Encrypt policy). DNS-01 is solved
+ * by the platform's OWN webhook (ADR-058), which writes the challenge TXT
+ * through whichever provider the domain's group is configured with — so
+ * there is one issuer per environment instead of one per provider type,
+ * and adding a provider needs no cert-manager change at all.
+ *
+ * The previous per-provider issuers (`…-dns01-powerdns`, `-cloudflare`,
+ * `-route53`, `-hetzner`, `-cloudns`) are still honoured when an operator
+ * sets the matching CERT_ISSUER_DNS01_* env var, so a cluster that had
+ * hand-wired a working solver keeps it.
  */
 
 import {
   canIssueWildcardCert,
-  DNS01_SOLVER_PROVIDERS,
   type DomainAuthorityInput,
   type DomainAuthorityServer,
 } from '../dns-servers/authority.js';
@@ -34,6 +42,10 @@ export type ChallengeType = 'dns01' | 'http01' | 'ca';
 export interface ConfiguredIssuers {
   readonly letsencryptProdHttp01: string;
   readonly letsencryptStagingHttp01: string;
+  /** Platform solver-webhook issuers, per ACME environment. */
+  readonly platformDns01Prod: string;
+  readonly platformDns01Staging: string;
+  /** Legacy per-provider overrides; a set entry wins for that provider. */
   readonly dns01Issuers: Readonly<Record<string, string>>;
   readonly localCaIssuer: string;
   readonly fallbackIssuer: string;
@@ -53,36 +65,45 @@ export interface IssuerSelection {
   readonly wildcardCapable: boolean;
 }
 
+/**
+ * A provider-specific DNS-01 issuer the operator explicitly configured,
+ * else null. Checked before the platform solver so an existing hand-wired
+ * setup is never silently repointed.
+ */
+function explicitProviderIssuer(input: IssuerSelectorInput): string | null {
+  for (const server of input.activeServers) {
+    if (server.enabled !== 1 || server.role !== 'primary') continue;
+    const configured = input.issuers.dns01Issuers[server.providerType];
+    if (configured) return configured;
+  }
+  return null;
+}
+
 export function selectIssuerForDomain(input: IssuerSelectorInput): IssuerSelection {
   if (input.environment === 'development') {
     return {
       issuerName: input.issuers.localCaIssuer,
       challengeType: 'ca',
-      wildcardCapable: true, // local CA can sign wildcards, we just don't
-                             // exercise that path for dev cert names
+      wildcardCapable: true, // a local CA signs wildcards happily
     };
   }
 
-  if (input.environment === 'staging') {
-    return {
-      issuerName: input.issuers.letsencryptStagingHttp01,
-      challengeType: 'http01',
-      wildcardCapable: false,
-    };
-  }
-
-  // production
   const authorityInput: DomainAuthorityInput = {
     dnsMode: input.dnsMode,
     activeServers: input.activeServers,
   };
 
+  // Wildcards need DNS-01, and DNS-01 needs the platform to be able to
+  // write TXT records in the zone. Staging gets the same treatment as
+  // production now that the solver is ours — a staging cluster that
+  // could never issue a wildcard was unable to exercise this path at
+  // all, which is how the broken issuer shipped in the first place.
   if (input.wildcardRequested && canIssueWildcardCert(authorityInput)) {
-    const dns01Server = input.activeServers.find(
-      (s) => s.enabled === 1 && s.role === 'primary' && DNS01_SOLVER_PROVIDERS.has(s.providerType),
-    );
-    const providerType = dns01Server?.providerType ?? 'powerdns';
-    const issuerName = input.issuers.dns01Issuers[providerType] ?? input.issuers.fallbackIssuer;
+    const issuerName =
+      explicitProviderIssuer(input) ??
+      (input.environment === 'staging'
+        ? input.issuers.platformDns01Staging
+        : input.issuers.platformDns01Prod);
     return {
       issuerName,
       challengeType: 'dns01' as ChallengeType,
@@ -91,7 +112,10 @@ export function selectIssuerForDomain(input: IssuerSelectorInput): IssuerSelecti
   }
 
   return {
-    issuerName: input.issuers.letsencryptProdHttp01,
+    issuerName:
+      input.environment === 'staging'
+        ? input.issuers.letsencryptStagingHttp01
+        : input.issuers.letsencryptProdHttp01,
     challengeType: 'http01',
     wildcardCapable: false,
   };

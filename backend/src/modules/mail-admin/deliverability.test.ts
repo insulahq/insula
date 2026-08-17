@@ -123,6 +123,63 @@ describe('forward DNS probe', () => {
     expect(r.forwardDns?.severity).toBe('fail');
     expect(r.forwardDns?.actual).toMatch(/ENOTFOUND/);
   });
+
+  // REGRESSION (reported from a live dual-stack install, 2026-08-12).
+  //
+  // resolvedIps deliberately merges A + AAAA, but the expected set was built
+  // from serverNodeIps alone — IPv4 only. So on a dual-stack cluster every
+  // CORRECTLY published AAAA came back as an `extraIp`, and the probe told the
+  // operator that their own mail node's IPv6 address was not a cluster server
+  // node, on a cluster that was dual-stack end to end and whose Nodes page
+  // listed that exact address.
+  //
+  // It survived because every dual-stack test in this file asserts on
+  // `r.ipv6Dns` and none asserted what the FORWARD probe did with the same
+  // AAAA — including 'is ok when every mail node has a matching AAAA' below,
+  // which passed while forwardDns was reporting a warning on the same data.
+  it('does not flag a correctly published AAAA as an extra IP', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10'] }),
+    }));
+    expect(r.forwardDns?.extraIps).toEqual([]);
+    expect(r.forwardDns?.severity).toBe('ok');
+  });
+
+  it('still flags an AAAA that belongs to no mail node', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:9::10', '2001:db8:99::1'] }),
+    }));
+    expect(r.forwardDns?.extraIps).toEqual(['2001:db8:99::1']);
+    expect(r.forwardDns?.severity).toBe('warning');
+  });
+
+  // A missing AAAA is probeIpv6Dns's finding, not this one's — reporting it in
+  // both places would double-count the same gap in the modal's rollup.
+  it('does not report a missing AAAA as a missing IP', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
+      serverNodeIpv6s: ['2001:db8:9::10'],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: [] }),
+    }));
+    expect(r.forwardDns?.missingIps).toEqual([]);
+    expect(r.forwardDns?.severity).toBe('ok');
+    expect(r.ipv6Dns?.missingIpv6).toEqual(['2001:db8:9::10']);
+  });
+
+  // Single-stack must keep flagging a stray AAAA: with serverNodeIpv6s empty
+  // the v6 probe is inert, so this comparison is the only thing watching.
+  it('flags a stray AAAA on a single-stack cluster', async () => {
+    const r = await probeDeliverability(makeDeps({
+      serverNodeIps: ['198.51.100.10'],
+      serverNodeIpv6s: [],
+      resolveAddresses: async () => ({ a: ['198.51.100.10'], aaaa: ['2001:db8:99::1'] }),
+    }));
+    expect(r.forwardDns?.extraIps).toEqual(['2001:db8:99::1']);
+  });
 });
 
 describe('IPv6 DNS (AAAA coverage) probe', () => {

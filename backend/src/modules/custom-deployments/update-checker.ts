@@ -43,7 +43,7 @@ const REQUEST_TIMEOUT_MS = 8_000;
 /** docker.io's distribution endpoint lives at `registry-1.docker.io`
  *  even though refs say `docker.io/library/nginx`. The Docker Hub
  *  auth realm is a separate host. */
-const DOCKER_HUB_INDEX_HOST = 'registry-1.docker.io';
+export const DOCKER_HUB_INDEX_HOST = 'registry-1.docker.io';
 
 /**
  * Block tenant-driven SSRF via WWW-Authenticate realm. A hostile
@@ -257,7 +257,7 @@ async function probeRegistry(
  * an anonymous request — Docker Hub etc. issue read-only anon tokens
  * for public repos.
  */
-async function fetchBearerToken(
+export async function fetchBearerToken(
   fetchImpl: typeof fetch,
   wwwAuth: string,
   authCreds: { username: string; password: string } | undefined,
@@ -386,7 +386,7 @@ function unknownResult(current: string | null, reason: string): UpdateCheckResul
   return result('unknown', current, null, reason);
 }
 
-async function timedFetch(
+export async function timedFetch(
   fetchImpl: typeof fetch,
   url: string,
   init: RequestInit,

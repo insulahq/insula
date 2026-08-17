@@ -127,6 +127,34 @@ export function serviceResourceName(
   return `${deploymentName}-${serviceName}`;
 }
 
+/**
+ * Name of the k8s **Service** object for one port of one stack service.
+ *
+ * NOT the same as `serviceResourceName` above — that names the workload
+ * (Deployment/StatefulSet and its `app=` label); a Service additionally
+ * carries the port name, because one stack service can expose several
+ * ports and each gets its own Service object.
+ *
+ * Exported because the ingress reconciler has to resolve exactly this
+ * name to point a route at the workload. It used to re-derive the name
+ * itself and omitted the port suffix, so Traefik was handed a Service
+ * that does not exist:
+ *
+ *     ERR kubernetes service not found: tenant-x/wildapp
+ *
+ * and every hostname routed to a custom deployment answered 404 —
+ * silently, because the route, the certificate and the pods were all
+ * healthy. Both sides now derive the name from this one function.
+ */
+export function serviceObjectName(
+  deploymentName: string,
+  serviceName: string,
+  serviceCount: number,
+  portName: string,
+): string {
+  return `${serviceResourceName(deploymentName, serviceName, serviceCount)}-${portName}`;
+}
+
 // ─── ConfigMap / Secret renderers ───────────────────────────────────────────
 
 /**
@@ -279,7 +307,21 @@ async function applyDeployment(
       // RWO PVC; RollingUpdate would deadlock at Multi-Attach.
       strategy: { type: 'Recreate' },
       template: {
-        metadata: { labels: { ...labels, ...filterServiceLabels(service.labels) } },
+        metadata: {
+          labels: { ...labels, ...filterServiceLabels(service.labels) },
+          // THE re-pull mechanism. `imagePullPolicy: Always` only takes effect
+          // when a pod is (re)created, and a strategic-merge patch carrying an
+          // identical pod template is a no-op — no new ReplicaSet, no restart,
+          // no pull. Stamping the spec's roll marker into the template is what
+          // makes "Update now" and auto-update actually reach the registry.
+          //
+          // Sourced from the SPEC, never from Date.now() here: re-applying an
+          // unchanged spec (DR redeploy, any future reconciler) must not
+          // restart a healthy workload.
+          ...(input.spec.rolledAt
+            ? { annotations: { 'insula.host/rolled-at': input.spec.rolledAt } }
+            : {}),
+        },
         spec: podSpec,
       },
     },
@@ -706,7 +748,7 @@ async function applyService(
   serviceCount: number,
 ): Promise<void> {
   const owningDeploymentName = serviceResourceName(input.deploymentName, serviceName, serviceCount);
-  const name = `${owningDeploymentName}-${port.name}`;
+  const name = serviceObjectName(input.deploymentName, serviceName, serviceCount, port.name);
   const labels = {
     app: owningDeploymentName,
     'insula.host/deployment-id': input.deploymentId,

@@ -12,6 +12,314 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Wildcard routes and the wildcard certificates to serve them.** A tenant can
+  now route `*.example.test` — and `*.shop.example.test`, at any depth — and the
+  platform obtains a certificate that covers it. Neither half existed before:
+  the domain-name validator rejected `*`, and the reconciler emitted
+  ``Host(`*.example.test`)``, which Traefik v3 treats as an exact string and so
+  matches nothing at all.
+  Wildcards render as `HostRegexp` matching exactly ONE label, mirroring RFC 6125
+  certificate semantics, and carry an explicit LOW priority. That priority is not
+  cosmetic: Traefik derives priority from rule LENGTH by default, and the
+  wildcard regexp is longer than ``Host(`webmail.example.test`)`` — so an
+  unconstrained wildcard would have outranked the platform's own
+  webmail/autodiscover Ingresses on a tenant's own domain and swallowed their
+  traffic. Exact hostnames keep Traefik's default, so their behaviour is
+  unchanged. Reserved-hostname enforcement became coverage-aware in the same
+  move: `*.<apex>` answers for admin/mail/webmail without matching any of them
+  literally, which a Set-membership check walks straight past.
+- **The platform serves its own ACME DNS-01 solver (ADR-058).** Wildcard TLS had
+  never worked on any cluster. Three of the five shipped DNS-01 ClusterIssuers —
+  PowerDNS (the primary target), Hetzner, ClouDNS — referenced third-party
+  cert-manager webhooks that bootstrap never installs, the PowerDNS one carrying
+  a hardcoded `apiUrl` copied from its upstream README; the other two need
+  credential Secrets nothing creates. The selector still answered
+  `wildcardCapable: true`, cert-manager left the order Pending, and the status
+  reconciler read "no Secret yet" as "still issuing" — so the failure was
+  invisible end to end while the platform already held working write credentials
+  for the same zone.
+  platform-api now serves the solver itself as an aggregated API
+  (`acme.insula.host`), publishing the challenge TXT through the same
+  `DnsProviderAdapter` used for every other DNS write. One issuer per ACME
+  environment replaces the per-provider matrix, so PowerDNS, BIND/rndc,
+  Cloudflare, Route53, Hetzner and ClouDNS all get wildcards — as does any
+  provider added later — and no DNS credential is ever copied into the
+  `cert-manager` namespace. Authentication is mTLS against the cluster's
+  requestheader CA plus an aggregator-asserted-user allowlist; if that CA cannot
+  be read the webhook refuses to start, because this endpoint writes records
+  into customer zones.
+- **A TLS view that shows failures, and a button to retry.** `GET
+  …/domains/:id/tls` returns cert-manager's live state for every certificate a
+  domain owns — including the failure message — plus whether a wildcard is
+  possible and, when it isn't, which of the three distinct causes applies.
+  `POST …/tls/reissue` forces a fresh order (rate-limited to one per hour per
+  domain, because Let's Encrypt caps duplicate certificates at 5 per week) and
+  reports progress through the task centre. Both panels grew a Managed
+  Certificates card and a `failed` TLS badge carrying the reason.
+- **Certificate failures now reach someone.** Issuance state is classified from
+  the Certificate CR itself and persisted, and a failure notifies both the tenant
+  (`tls.certificate_failed` — their visitors see the warning, and the usual cause
+  is DNS they control) and the operator (`admin.cert_issuance_failed`). A
+  wildcard that keeps failing past a grace period falls back to per-hostname
+  HTTP-01 certificates so sites keep serving valid TLS, raises
+  `tls.certificate_fallback`, and switches back automatically once the wildcard
+  succeeds.
+
+### Fixed
+- **Every hostname routed to a custom deployment answered 404.** The deployer
+  creates a Service named `<workload>-<portName>` (`wildapp-http`); the ingress
+  reconciler re-derived `<workload>` (`wildapp`) and handed that to Traefik,
+  which logged `kubernetes service not found` once per reconcile and served
+  nothing. The route, the certificate and the pods were all healthy, so the only
+  symptom was a 404 on a site that had just deployed successfully. Both sides now
+  derive the name from one shared function, with a test pinning them together.
+- **bootstrap turned two failed downloads into misleading errors, minutes
+  later.** `raw.githubusercontent.com` rate-limits per egress IP; a 429 on the
+  tigera-operator manifest was discarded by `>/dev/null 2>&1 || true`, so nothing
+  was applied and the install reported "Calico CRDs never registered" five
+  minutes on — pointing the operator at a healthy operator that had never been
+  deployed. The same pattern on the external-snapshotter CRDs surfaced a phase
+  later as `no matches for kind "VolumeSnapshotClass"`. Both now fetch with
+  backoff, name the HTTP status when they fail, and accept a pre-staged copy
+  under `/var/lib/insula/cache/` (which also covers air-gapped installs).
+- **The TLS-settings issuer an operator chose was read and then ignored** — it
+  existed only to log that the selector disagreed with it. It is now an input to
+  certificate issuance for tenant domains.
+- **A wildcard + apex order could strip its own challenge.** Such an order puts
+  two TXT values on one `_acme-challenge` name, and PowerDNS deletes by RRset —
+  so cleaning up the first challenge removed the second while the CA was still
+  reading it. The provider interface gained a value-scoped delete.
+- **Protected-directory child routes bypassed the Traefik backtick guard**, and
+  would have emitted a dead `Host()` rule for a wildcard host — silently dropping
+  the basic-auth gate on that route.
+- **A hostname could be issued against the wrong zone.** With both
+  `example.test` and `a.example.test` registered, the reconciler picked whichever
+  domain row came back first; it now takes the longest suffix match.
+- **The mail bootstrap's one-shot Pods threw away their own output.** The
+  Stalwart configure pod does the most intricate work in the whole install —
+  listeners, DKIM, the ACME provider, the certificate order — and its logs never
+  reached `/var/log/insula-bootstrap.log`. The transcript had a hole between
+  "condition met" and the next step, which is how an ACME order that never
+  succeeded looked exactly like a clean install.
+  The cause is a property of the `kctl` wrapper worth writing down: it decides
+  what to do with output by `[ -t 1 ]`. In **statement position on a TTY** it
+  suppresses the output from the screen but records it to the transcript; when
+  its stdout is a **pipe** (`kctl logs … | sed …`) or a **command substitution**
+  (`x=$(kctl logs …)`) it passes straight through and records **nothing**. Every
+  pod-log reader in the mail path used one of the two unrecorded forms, so the
+  output existed only as text scrolling past on a terminal.
+  New `capture_pod_logs` fetches a pod's logs once, calls `ui_record` explicitly
+  so they survive in the transcript, and returns them for the caller to grep or
+  print (`print_pod_logs`). All six call sites — master-user provision, the
+  configure pod on both the success and timeout paths, and the ACME renewal pod
+  — now route through it. The timeout path previously ran `kubectl logs` three
+  times to ask three questions about the same output and recorded none of them;
+  it now reads once. An empty log is recorded as `— EMPTY`, because "the
+  container printed nothing" and "we never looked" are different findings.
+  Asserted in `scripts/test-bootstrap-quiet-wrappers.sh` (18 checks, under a
+  real pty via `script(1)` since the behaviour depends on `[ -t 1 ]`), including
+  a guard that fails if any call site returns to the unrecorded forms.
+
+### Added
+- **Custom deployments can now pull the latest image and redeploy.** An
+  **Update** control on every custom container and compose stack re-pulls each
+  image at its *current* tag and rolls the pods — the `:latest`-moved and
+  `:1.27`-rebuilt case, which is invisible to the existing "Updates available"
+  pill (that compares tag *lists*, so a republished tag looks identical).
+  Single-container deployments additionally get an **Auto** toggle: an hourly
+  check that re-pulls automatically when the pinned tag's digest moves.
+  Auto-update **never changes the tag** — a genuinely newer tag (1.27 → 1.28)
+  stays a deliberate click on the pill, so automation cannot walk a tenant
+  across a version boundary. Stacks are excluded by design: N services means N
+  independent digests and no single "the image changed" event.
+  If an auto-update pulls an image that never becomes Ready, the previous
+  digest is restored (pinned as `repo@sha256:…`, because the tag now resolves
+  to the broken image), auto-update is switched **off** so the next tick cannot
+  repeat it, and the tenant is notified
+  (`tenant.custom_deployment_rolled_back`).
+  Deliberate safety property: "could not tell" is never treated as "it
+  changed". An unreachable registry, a missing `Docker-Content-Digest` header,
+  a malformed digest or a workload that has not yet reported one all mean
+  *skip* — otherwise one bad hour at a registry would roll every auto-update
+  workload on the platform, hourly.
+
+### Fixed
+- **`restart` on a custom deployment never actually restarted anything.**
+  `PATCH {restart:true}` re-ran the deploy path, which strategic-merge-patches
+  the Deployment with an identical pod template — a no-op to Kubernetes. No new
+  ReplicaSet, no pod restart, and therefore no image re-pull however emphatic
+  `imagePullPolicy: Always` was. Deploys now carry a roll marker from the spec
+  (`rolledAt` → `insula.host/rolled-at` on the pod template), which is what
+  forces the new ReplicaSet. It lives in the spec rather than being generated
+  at deploy time on purpose: re-applying an unchanged spec (the DR redeploy
+  path) must not restart a healthy workload.
+- **The password manager stopped prompting on every admin/tenant page.** Panel
+  routes were not code-split, so every page component was a static import in
+  `App.tsx` and every page's markup — `Login`, `AdminUsers`, `OidcPage`,
+  `RemoteStorageTargetsPage`, `SubUsers`, `Email`, `RouteDetail`,
+  `PrivateRegistryPanel`, the provider settings pages — compiled into the single
+  entry chunk that loads on **every** page view. Password managers detect those
+  fields in the shipped bytes and offer autofill on each navigation, even for an
+  operator who is already signed in. Conditional rendering does not help: the
+  markup ships whether or not it ever reaches the DOM. Extracting
+  `ChangePasswordModal` (2026-08-04) fixed one instance of the symptom; this
+  fixes the cause. All 50 admin and 27 tenant page imports are now
+  `React.lazy()` behind a `<Suspense>`, and the app-level `NodeTerminalHost`
+  lazy-loads the node-terminal overlays that carry the `step-up-password` input.
+  Admin entry chunk 2.5 MB → 680 kB, tenant → 312 kB, as a side effect.
+  `titleCase` moved out of `NodeTerminalModal.tsx` into `node-terminal-utils.ts`:
+  `BackgroundTerminalsDock` imported that one-line helper from the modal, and a
+  module that is *also* statically imported anywhere stays in that importer's
+  chunk (rolldown reports `INEFFECTIVE_DYNAMIC_IMPORT`) — so lazy-loading the
+  modal did nothing until the leaf edge was cut.
+  New CI guard `ci-no-password-fields-in-entry-chunk.sh`, wired into both panel
+  workflows: it greps the real built chunks that `index.html` loads eagerly
+  (entry script + every `modulepreload`) and fails if any contains a password
+  input. Unit tests cannot see this class of bug — the assertion has to be on
+  the shipped bytes. The guard also asserts password inputs still exist in
+  *some* lazy chunk, so it cannot pass by finding nothing at all. It caught a
+  case during development that a source grep had missed.
+
+### Added
+- **Mail-server health failures now raise a notification** (`admin.mail_health_degraded`,
+  severity `error`, in-app + email, and any other channel the category is
+  configured for). Previously the only mail signal that ever reached a
+  notification channel was a DNSBL listing: health itself was computed *on
+  demand* for the admin modal, and the periodic collector published two
+  Prometheus gauges (`platform_mail_server_up`,
+  `platform_mail_outbound_queue_depth`) and nothing else — the cert and
+  deliverability findings were not in those gauges at all, so nothing periodic
+  even evaluated them. A cluster could serve Stalwart's self-signed
+  `SAN: localhost` certificate on 465/993, or have the pod down entirely, in
+  silence. New `mail-admin/health-scheduler.ts` runs the same health assessment
+  every 15 minutes (first pass 3 min after boot, so a cluster still finishing
+  its first reconcile does not alert on components that are merely not up yet)
+  and dispatches per failing component.
+  Policy is deliberately narrow, because a noisy alert is an ignored alert:
+  it fires only on components with `healthy === false`, never on
+  `not_implemented` ("not configured" is not "broken") and never on
+  warning-only findings — `probeDeliverability` keeps warnings healthy by
+  design, so a missing AAAA stays visible in the UI and pages nobody. Each
+  component deduplicates into a 12-hour bucket, so a sustained outage alerts
+  twice a day per component rather than every pass. Clusters with no mail
+  hostname configured are skipped entirely.
+  Also adds `notifications/seed-consistency.test.ts`: categories and templates
+  are seeded from two unconnected files, so a category shipped without a
+  template would dispatch a notification that renders as nothing — arguably
+  worse than none, because the alert now exists and says nothing. The guard is
+  general, not specific to this category.
+
+### Fixed
+- **Mail TLS certificate was never issued on a fresh install — Stalwart served
+  its built-in self-signed cert (`CN=rcgen self signed cert`, `SAN: localhost`)
+  on 25/465/993 indefinitely.** `configure_stalwart_full` fires the JMAP
+  `AcmeRenewal` task as its step 5c, from inside the configure pod — which runs
+  *before* the Deployment roll that binds the listeners that same run created.
+  `http-acme` on :80 is one of them, and it is what answers Let's Encrypt's
+  HTTP-01 challenge via Traefik → `stalwart-mail-acme`. The order was therefore
+  placed against a listener that was configured but not yet bound: LE could not
+  validate, the order failed, and Stalwart does not retry until `renewBefore`
+  (R23) — of a certificate that does not exist. Everything else was already
+  correct (AcmeProvider registered with a real LE account, `Domain
+  .certificateManagement = Automatic` with the right SAN, challenge path
+  reachable from the internet), which is why the install looked clean.
+  Diagnosed on a live fresh install by re-firing the identical task by hand
+  after the roll — the cert issued in seconds with no config change.
+  The order now runs after the roll, in `fire_stalwart_acme_renewal`, and
+  bootstrap **verifies the served certificate actually carries the mail
+  hostname** instead of assuming the task was enough; if it did not issue, the
+  operator gets the exact `curl` to test the challenge path. Pure ordering fix —
+  cert strategy, listener and Traefik path are unchanged.
+- **A fresh install reserved 30% of the root disk for Longhorn — 150 GiB on a
+  512 GB node.** The right-sizing rule (10% of capacity + 20 GiB, clamped to
+  Longhorn's 30% so it can only ever reduce) existed *only* as host-migration
+  `2026.8.2/0002`, and a migration converges an existing node on the hourly
+  host-config timer — it cannot fix a default applied by the install that
+  precedes it. Bootstrap now right-sizes the disk at install time via the same
+  formula, so a new cluster never comes up with the wrong number. New
+  `scripts/test-longhorn-reservation.sh` (31 checks) runs both implementations
+  over a table of disk sizes and fails if they ever diverge — if they did, the
+  value would flap on every converge. Verified on the affected node: 150.8 GiB →
+  70.2 GiB, ~80 GiB returned.
+- **Mail health reported a dual-stack cluster's own IPv6 address as "not a
+  cluster server node".** `probeForwardDns` merges A and AAAA into one resolved
+  set but compared it against `serverNodeIps`, which is IPv4-only — so every
+  correctly published AAAA came back as an `extraIp`, on a cluster that was
+  dual-stack end to end and whose Nodes page listed that exact address. The
+  expected set now spans both families; `missingIps` stays IPv4-only because
+  AAAA coverage is `probeIpv6Dns`'s finding and reporting it twice would
+  double-count the same gap in the modal's rollup. A stray AAAA belonging to no
+  mail node is still flagged, including on single-stack where the v6 probe is
+  inert. It survived because every dual-stack test asserted on `ipv6Dns` and
+  none checked what the *forward* probe did with the same AAAA — four
+  regression tests added.
+
+### Changed
+- **A successful bootstrap now looks like one.** The completion report was built
+  out of `log()`, which maps to `ui_detail`, which dims — so the one screen an
+  operator reads start to finish rendered entirely in the grey reserved for
+  incidental chatter, with the admin URL styled identically to a passing kubectl
+  tip. It now has its own register: green banner, green section headings
+  (`Endpoints`, `Admin sign-in`, `Installed`, `Consoles`, …) and undimmed body,
+  via new `ui_banner` / `ui_section` / `ui_line` emitters. Body text uses the
+  terminal's default foreground rather than an explicit white, which would be
+  unreadable on a light background. The worker banner gets the same treatment —
+  two completion banners rendered differently is worse than either choice made
+  consistently.
+- **The advisory post-install smoke no longer reads as a failed install.** It ran
+  *after* the completion report and reported through `ui_warn`, so a run that
+  installed perfectly signed off with two yellow warnings — `Smoke FAILED (rc=1)`
+  and `Bootstrap exits 0 because --require-smoke-pass was not set` — as the last
+  thing on screen. First-boot timing (Flux still reconciling, oauth2-proxy/dex
+  restarting) trips a few checks on most installs, so this fired on healthy
+  clusters. The phase now runs **before** the report (still after every mandatory
+  step, so an outer timeout cannot skip real work) and hands it a verdict, shown
+  as one factual line under *Post-install checks (advisory)* with the counts, why
+  early failures are expected, and how to re-run. It raises **zero** warnings, so
+  the run tally stops reporting phantom problems. The `--require-smoke-pass` gate
+  is untouched: still a fatal `ERROR`, because the operator asked for a gate.
+  New harness `scripts/test-bootstrap-summary.sh` (30 checks) pins the colour
+  registers, the ordering, the zero-warning property and the gate.
+
+### Fixed
+- **Worker nodes never got the operator CLI, so they never applied a single
+  host-migration.** `bootstrap.sh` called the platform-ops install phase only on
+  the server branch, on the reasoning that `insula` is a control-plane operator
+  tool. That was backwards: the timers that phase installs are what apply
+  **host-migrations**, and a worker is a host like any other — same kernel knobs,
+  same firewall shape, same packages. A worker came up with no binary, therefore
+  no `platform-ops-host-config.timer`, therefore no convergence, and kept the
+  host state it was born with for the entire life of a release. Silently — a
+  timer that was never installed reports no failures. Observed on staging
+  2026-08-11: three servers on `2026.8.3-rc.8` with `0003-pod-cidr-dns-firewall`
+  applied and 2 nft rules; the worker still on `2026.8.2`, migration unapplied,
+  0 rules. The whole worker-kubeconfig apparatus (`host-config-reader` DaemonSet
+  + RBAC) existed to let `host-config apply` run on workers, and was dead weight
+  without the binary that runs it. Both roles now route through one
+  `install_platform_ops_cli` helper (a second copy of the VERSION-lookup drifting
+  is how this was missed), the worker completion banner reports CLI + timer
+  state, and `ci-host-config-check.sh` fails the build if the helper stops being
+  called on both branches or grows a `NODE_ROLE` gate.
+  **Existing workers need one idempotent `insula bootstrap … --join-as worker`
+  re-run** — no host-migration can fix this, because the migration runner *is*
+  the missing binary. See `docs/operations/MULTI_NODE_RUNBOOK.md`.
+- Corrected `--role server|worker` → `--join-as server|worker` in the multi-node,
+  deployment and node-role-taxonomy runbooks; `--role` is not a flag bootstrap
+  accepts, so every copy-pasted join command failed at argument parsing.
+
+### Security
+- Bumped `pymdown-extensions` 10.21.3 → **11.0.1** (docs toolchain), closing
+  `PYSEC-2026-3654` — exponential-backtracking ReDoS in the caret/tilde/betterem/
+  magiclink inline processors (CVSS 7.5). Not reachable in any shipped artifact:
+  the package appears only in `documentation/requirements*.txt`, consumed by the
+  docs-site workflow, and we enable none of the four affected extensions. Held
+  back from the 2026.8.3 cut because a major bump inside a stable release is
+  gratuitous risk; verified here by building the manual with both pins and
+  diffing the output — all 55 rendered pages are byte-identical. Lock regenerated
+  with `--generate-hashes` (also picks up `charset-normalizer` 3.5.0 and
+  `platformdirs` 4.11.2). Clears the red Component Watch gate.
+
 ## [2026.8.3] - 2026-08-12
 
 ### Fixed

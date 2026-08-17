@@ -15,7 +15,7 @@
 #
 # Certificates issued with this ClusterIssuer cover a single hostname
 # each. Wildcard issuance is not possible with HTTP-01 — if you need a
-# wildcard cert, use `letsencrypt-prod-dns01-powerdns` instead.
+# wildcard cert, use `letsencrypt-prod-dns01-insula` instead (ADR-058).
 #
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
