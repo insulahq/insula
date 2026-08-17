@@ -78,6 +78,25 @@ spec:
                   name: platform-config
                   key: cert-issuer-prod-http01
                   optional: true
+            # Wildcard (DNS-01) issuer override, same purpose as the HTTP-01
+            # pair above. A cluster on a custom ACME endpoint (bootstrap
+            # --acme-server, or the ephemeral Pebble in the VM integration
+            # tier) has no route to Let's Encrypt, so its wildcard orders must
+            # point at that endpoint too — otherwise the HTTP-01 certs issue
+            # from Pebble while every wildcard silently waits on an ACME
+            # server it cannot reach.
+            - name: CERT_ISSUER_DNS01_PLATFORM
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-dns01-platform
+                  optional: true
+            - name: CERT_ISSUER_DNS01_PLATFORM_STAGING
+              valueFrom:
+                configMapKeyRef:
+                  name: platform-config
+                  key: cert-issuer-dns01-platform-staging
+                  optional: true
             - name: CERT_ISSUER_FALLBACK
               valueFrom:
                 configMapKeyRef:
