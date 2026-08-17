@@ -6,9 +6,16 @@
  */
 
 import { eq, and } from 'drizzle-orm';
+import {
+  isWildcardHostname,
+  normalizeHostname,
+  relativeRecordName,
+  validateRouteHostname,
+} from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { syncRecordToProviders } from '../dns-records/service.js';
+import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import type { Database } from '../../db/index.js';
 
@@ -136,10 +143,18 @@ export async function updateIngressSettings(
 /**
  * Generate a DNS-safe CNAME slug from a hostname.
  * e.g., "blog.example.com" → "blog-example-com"
+ *
+ * A wildcard hostname gets an explicit `wildcard-` prefix rather than
+ * being fed through the character filter: `*.example.com` would
+ * otherwise collapse to `example-com`, colliding with the apex route's
+ * slug and pointing two different routes at one CNAME target.
  */
 export function hostnameToSlug(hostname: string): string {
-  return hostname
-    .toLowerCase()
+  const normalized = normalizeHostname(hostname);
+  const base = isWildcardHostname(normalized)
+    ? `wildcard-${normalized.slice(2)}`
+    : normalized;
+  return base
     .replace(/[^a-z0-9-]/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
@@ -183,7 +198,7 @@ export async function createRoute(
   db: Database,
   domainId: string,
   tenantId: string,
-  hostname: string,
+  hostnameInput: string,
   deploymentId?: string | null,
   path?: string,
   privateWorkerId?: string | null,
@@ -229,15 +244,39 @@ export async function createRoute(
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
   }
 
-  // Validate hostname belongs to domain
-  // hostname must be either:
-  // - the domain name itself (apex): "example.com"
-  // - a subdomain: "*.example.com" where * is non-empty
-  if (hostname !== domain.domainName && !hostname.endsWith(`.${domain.domainName}`)) {
+  // Validate the hostname against the domain it must live under.
+  //
+  // Accepts the apex, any subdomain, and wildcards at any depth
+  // (`*.example.com`, `*.a.example.com`). The shared validator is also
+  // what both panels use, so the client-side hint and the server-side
+  // rejection can never disagree.
+  const hostnameCheck = validateRouteHostname(hostnameInput, domain.domainName);
+  if (!hostnameCheck.ok) {
+    throw new ApiError('INVALID_HOSTNAME', hostnameCheck.error as string, 400);
+  }
+  const hostname = hostnameCheck.hostname as string;
+
+  // Reserved-hostname guard, coverage-aware.
+  //
+  // Domain creation already refuses reserved names one-by-one, but a
+  // wildcard matches names it never mentions: a single route for
+  // `*.<apex>` answers for admin.<apex>, mail.<apex> and the webmail
+  // host. Traefik priority banding keeps exact platform rules ahead of
+  // any wildcard (see routePriority), so this is defence in depth — but
+  // silently accepting a route that claims the platform's own hostnames
+  // is not something to leave to one mechanism.
+  const reservedHits = await reservedHostnamesCoveredBy(db, hostname);
+  if (reservedHits.length > 0) {
+    const listed = reservedHits.slice(0, 3).map(([fqdn]) => fqdn).join(', ');
+    const more = reservedHits.length > 3 ? ` (+${reservedHits.length - 3} more)` : '';
     throw new ApiError(
-      'INVALID_HOSTNAME',
-      `Hostname '${hostname}' must be '${domain.domainName}' or a subdomain of it (e.g., www.${domain.domainName})`,
-      400,
+      'RESERVED_PLATFORM_HOSTNAME',
+      isWildcardHostname(hostname)
+        ? `'${hostname}' would cover platform hostnames reserved by the platform: ${listed}${more}. ` +
+          `Route the specific hostnames you need instead.`
+        : `'${hostname}' is reserved by the platform (${reservedHits[0][1]})`,
+      409,
+      { hostname, reserved: reservedHits.map(([fqdn]) => fqdn) },
     );
   }
 
@@ -338,7 +377,11 @@ export async function createRoute(
 
   // Auto-create DNS records for PRIMARY domains
   if (domain.dnsMode === 'primary') {
-    const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
+    // `relativeRecordName` handles the wildcard shapes the old
+    // `String.replace` mangled: `*.example.com` → `*`,
+    // `*.a.example.com` → `*.a`, and it will not rewrite a repeated
+    // suffix in the middle of a name.
+    const recordName = relativeRecordName(hostname, domain.domainName);
     try {
       if (apex) {
         // A zone apex cannot hold a CNAME (RFC 1034), so it must carry
@@ -393,7 +436,7 @@ export async function createRoute(
   // This enables local DinD testing without external DNS
   if (hostname.endsWith('.local') && domain.dnsMode !== 'primary') {
     try {
-      const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
+      const recordName = relativeRecordName(hostname, domain.domainName);
       await syncRecordToProviders(db, domain.domainName, 'create', {
         type: 'A',
         name: recordName,

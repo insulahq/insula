@@ -4321,6 +4321,39 @@ detect_calico_mtu() {
   echo "$mtu"
 }
 
+# ─── Cached, retried manifest fetch ──────────────────────────────────────────
+#
+# `kubectl apply -f <url>` inside a swallowed `|| true` is how two separate
+# install steps failed invisibly on 2026-08-17: raw.githubusercontent.com
+# answered 429 (a per-egress-IP rate limit) and the installer reported the
+# downstream symptom minutes later — "Calico CRDs never registered", then
+# "no matches for kind VolumeSnapshotClass". Neither message names the cause.
+#
+# Downloads to $2 with backoff, prefers an already-present copy (which is also
+# the air-gapped install path), and returns non-zero with the HTTP status named
+# so the caller can report something actionable.
+fetch_manifest_cached() {
+  local url="$1" dest="$2" tries="${3:-5}"
+  if [[ -s "$dest" ]]; then
+    log "  using pre-staged manifest ${dest}"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  local _try _http=""
+  for (( _try = 1; _try <= tries; _try++ )); do
+    _http="$(curl -fsSL --max-time 60 -w '%{http_code}' -o "${dest}.tmp" "$url" 2>/dev/null || echo "000")"
+    if [[ "$_http" == "200" && -s "${dest}.tmp" ]]; then
+      mv "${dest}.tmp" "$dest"
+      return 0
+    fi
+    rm -f "${dest}.tmp"
+    warn "  download failed (HTTP ${_http}) for ${url##*/}, attempt ${_try}/${tries} — retrying in $(( _try * 10 ))s"
+    sleep $(( _try * 10 ))
+  done
+  warn "  giving up on ${url} (last HTTP ${_http})"
+  return 1
+}
+
 install_calico() {
   export KUBECONFIG
 
@@ -4341,8 +4374,29 @@ install_calico() {
   # bootstrap 2026-07-11: operator stalled → CRDs never registered → "no matches for kind
   # Installation".)
   local calico_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+  local calico_manifest="/var/lib/insula/cache/tigera-operator-${CALICO_VERSION}.yaml"
   log "Installing tigera-operator (its runtime CRDs can take a few min on slow hardware)..."
-  kubectl apply --server-side --force-conflicts -f "$calico_url" >/dev/null 2>&1 || true
+
+  # Fetch to a FILE first, with retries, instead of letting kubectl pull the
+  # URL inside a swallowed `|| true`.
+  #
+  # WHY (2026-08-17, VM tier): raw.githubusercontent.com answered 429 Too Many
+  # Requests — a per-egress-IP rate limit, nothing to do with this cluster.
+  # `kubectl apply -f <url> >/dev/null 2>&1 || true` discarded that, so nothing
+  # was created and the install reported "Calico CRDs never registered" FIVE
+  # MINUTES LATER. The operator is then sent looking at a healthy operator that
+  # was never deployed. A pre-staged copy at $calico_manifest is used when
+  # present, which also covers air-gapped installs.
+  if ! fetch_manifest_cached "$calico_url" "$calico_manifest"; then
+    error "Could not download the tigera-operator manifest from ${calico_url}. Pre-stage it at ${calico_manifest} and re-run."
+    return 1
+  fi
+
+  local _apply_out
+  if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_manifest" 2>&1)"; then
+    error "tigera-operator apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
+    return 1
+  fi
   kubectl wait --for=condition=available --timeout=180s \
     deployment/tigera-operator -n tigera-operator >/dev/null 2>&1 || true
   local _crd _kicked=false calico_ok=true
@@ -5372,6 +5426,60 @@ EOF
   # Optional custom ACME issuer (--acme-server). Points cert-manager at any ACME
   # directory instead of Let's Encrypt — a test CA (Pebble) for ephemeral/air-gapped
   # clusters, or an alternate real ACME endpoint. CLUSTER_ISSUER_NAME was pinned to
+  # Wildcard-capable DNS-01 issuers, solved by the platform's own webhook
+  # (ADR-058). Created here rather than shipped through Flux because they
+  # carry the operator's ACME contact address, which is not knowable at
+  # manifest-render time — the same reason k8s/base/cert-manager/ is not
+  # imported into k8s/base/kustomization.yaml. The solver itself (APIService,
+  # Service, serving cert, RBAC) DOES come from Flux; only these two objects
+  # need the address. Existing clusters get them from platform-upgrade
+  # migration 0009 instead.
+  #
+  # No credential Secret and no per-provider issuer: the webhook publishes the
+  # challenge TXT through whichever DNS provider group the domain is bound to,
+  # reading credentials the platform already holds.
+  kctl apply -f - <<EOF
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${le_email}
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-insula-account
+    solvers:
+    - dns01:
+        webhook:
+          groupName: acme.insula.host
+          solverName: insula-dns
+          config: {}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${le_email}
+    privateKeySecretRef:
+      name: letsencrypt-staging-dns01-insula-account
+    solvers:
+    - dns01:
+        webhook:
+          groupName: acme.insula.host
+          solverName: insula-dns
+          config: {}
+EOF
+
   # acme-custom-http01 at parse time, so every platform Certificate uses this issuer.
   # Same HTTP-01 solver as the LE issuers (ingressClassName traefik + server-only
   # toleration + quota-exempt priorityClass), so the REAL ACME issuance path runs,
@@ -5656,7 +5764,16 @@ install_longhorn() {
     "client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml" \
     "deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml" \
     "deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml"; do
-    kctl apply -f "${snap_base}/${f}" 2>&1 | grep -v "unchanged" || true
+    # Same masked-failure story as tigera-operator above: this used to apply
+    # straight from the URL with `|| true`, so a 429 left the VolumeSnapshot
+    # CRDs absent and the failure only surfaced later as "no matches for kind
+    # VolumeSnapshotClass" while applying the platform overlay.
+    local _snap_cache="/var/lib/insula/cache/external-snapshotter-${snap_ver}-$(basename "$f")"
+    if fetch_manifest_cached "${snap_base}/${f}" "$_snap_cache"; then
+      kctl apply -f "$_snap_cache" 2>&1 | grep -v "unchanged" || true
+    else
+      warn "  skipping ${f##*/} — VolumeSnapshot CRDs will be missing and Longhorn's VolumeSnapshotClass apply will fail"
+    fi
   done
 
   marker_set "longhorn-installed"

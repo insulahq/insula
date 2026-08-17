@@ -58,6 +58,23 @@ export interface DnsProviderAdapter {
 
   // Optional — replace all NS records at zone root with specific nameservers
   replaceNsRecords?(zone: string, nameservers: string[]): Promise<void>;
+
+  /**
+   * Optional — delete ONE value from a record set, leaving any other
+   * values at the same (name, type) in place.
+   *
+   * Required for correct ACME DNS-01 cleanup on RRset-oriented providers.
+   * PowerDNS keys records by (name, type) and its `deleteRecord` removes
+   * the whole RRset; a single ACME order for `example.test` +
+   * `*.example.test` produces TWO TXT values at
+   * `_acme-challenge.example.test`, so cleaning up the first challenge
+   * would delete the second one's proof mid-validation.
+   *
+   * Providers that address records individually (Cloudflare, Route53)
+   * don't need this — the solver falls back to looking the record id up
+   * and calling `deleteRecord`.
+   */
+  deleteRecordValue?(zone: string, record: DnsRecordInput): Promise<void>;
 }
 
 // ─── Provider Config Types ───────────────────────────────────────────────────

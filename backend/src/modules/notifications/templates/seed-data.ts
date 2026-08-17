@@ -425,9 +425,118 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       { name: 'limit', type: 'string', required: true },
     ],
   },
+
+  {
+    categoryId: 'tls.certificate_failed',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Certificate could not be issued for {{hostname}}',
+    bodyTemplate: emailMjml(
+      'Certificate could not be issued',
+      'We could not obtain a TLS certificate for {{hostname}}: {{errorMessage}} ' +
+        'Visitors will see a security warning until this is resolved. ' +
+        'The most common cause is DNS for the domain not yet pointing at the platform.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'hostname', type: 'string', required: true },
+      { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tls.certificate_failed',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Certificate failed for {{hostname}}',
+    bodyTemplate: 'TLS certificate for {{hostname}} could not be issued: {{errorMessage}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'hostname', type: 'string', required: true },
+      { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tls.certificate_issued',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Certificate active for {{hostname}}',
+    bodyTemplate: 'A TLS certificate for {{hostname}} is active until {{expiresAt}}.',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'hostname', type: 'string', required: true },
+      { name: 'expiresAt', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tls.certificate_fallback',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Using per-hostname certificates for {{hostname}}',
+    bodyTemplate: emailMjml(
+      'Wildcard certificate unavailable',
+      'The wildcard certificate for {{hostname}} could not be issued ({{errorMessage}}), so each hostname is being ' +
+        'secured with its own certificate instead. Your sites stay reachable over HTTPS; new subdomains just need ' +
+        'their own certificate until the wildcard succeeds. We keep retrying it in the background.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'hostname', type: 'string', required: true },
+      { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tls.certificate_fallback',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Wildcard unavailable for {{hostname}}',
+    bodyTemplate:
+      'Using per-hostname certificates for {{hostname}} while the wildcard is retried: {{errorMessage}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'hostname', type: 'string', required: true },
+      { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
 ];
 
 const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
+  {
+    categoryId: 'admin.cert_issuance_failed',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Certificate issuance failed for {{certSubject}}',
+    bodyTemplate: emailMjml(
+      'Certificate issuance failed',
+      'The certificate for {{certSubject}} (tenant {{tenantName}}) could not be issued: {{errorMessage}}. ' +
+        'The hostname has no valid certificate until this is resolved.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'certSubject', type: 'string', required: true },
+      { name: 'tenantName', type: 'string', required: false },
+      { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'admin.cert_issuance_failed',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Cert issuance failed',
+    bodyTemplate: 'Certificate for {{certSubject}} could not be issued: {{errorMessage}}',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'certSubject', type: 'string', required: true },
+      { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
+
   {
     categoryId: 'admin.cert_expiring',
     channel: 'email',
