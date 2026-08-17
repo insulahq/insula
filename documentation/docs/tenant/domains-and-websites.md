@@ -163,6 +163,45 @@ By default the platform gets and **renews certificates for you automatically**
 (via Let's Encrypt) once your domain is verified — you don't have to do
 anything. The **TLS Mode** badge shows **Automatic**.
 
+### Wildcard certificates and `*` routes
+
+A **wildcard** route answers for every subdomain at one level:
+`*.example.test` serves `shop.example.test`, `blog.example.test` and anything
+else you have not routed individually. Add one by entering `*` as the subdomain
+when you create a route (or `*.shop` for a wildcard one level deeper —
+wildcards work at any depth).
+
+A wildcard matches **exactly one label**. `*.example.test` covers
+`shop.example.test` but not `a.b.example.test`; if you need that level too, add
+`*.b.example.test` as its own route.
+
+An exact route always wins over a wildcard, so you can point
+`shop.example.test` at a different app while `*.example.test` catches the rest.
+
+Wildcard hostnames need a **wildcard certificate**, which certificate
+authorities only issue after a DNS check. That means the domain must be in
+**Primary** DNS mode with a working DNS server configured by your provider —
+the SSL/TLS tab tells you when it isn't, and why. Everything else (verification,
+renewal) is unchanged.
+
+### Managed certificates: what the panel shows
+
+The **Managed Certificates** card on the SSL/TLS tab lists every certificate the
+platform holds for the domain, with the names it covers, the issuer, the expiry,
+and — when something has gone wrong — the reason straight from the certificate
+authority. Common causes are DNS that does not point at the platform yet, or a
+domain that is not in Primary mode when a wildcard was requested.
+
+**Request Certificate** asks for a new one immediately. Use it after fixing the
+cause of a failure rather than waiting for the automatic retry. It is limited to
+once an hour per domain, because certificate authorities cap how many identical
+certificates they will issue per week.
+
+If a wildcard certificate cannot be obtained, the platform issues an individual
+certificate per hostname instead, so your sites keep working over HTTPS, and
+keeps retrying the wildcard in the background. You are notified when that
+happens, and again when the wildcard succeeds.
+
 ### Upload your own certificate
 
 If you already have a certificate from another provider:
