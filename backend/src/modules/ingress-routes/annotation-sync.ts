@@ -46,6 +46,8 @@ import {
   basicAuthSpec,
   forwardAuthSpec,
   headersSpec,
+  routeMatch,
+  routePriority,
 } from './traefik-types.js';
 import type {
   MiddlewareBody,
@@ -721,12 +723,22 @@ async function buildProtectedDirChildRoutes(
     }));
 
     // Child route: match the hostname AND the directory path. Higher
-    // priority than the parent route (`Host(...)`) so the basic-auth
-    // gate wins for paths under /dir.
+    // priority than the parent route so the basic-auth gate wins for
+    // paths under /dir.
+    //
+    // This used to interpolate the hostname straight into a
+    // `Host(...)` literal — which skipped the backtick guard and, once
+    // wildcard routes existed, emitted a `Host()` rule for a `*.` host
+    // that matches nothing (so a protected directory on a wildcard
+    // route would have silently lost its auth gate). Both are fixed by
+    // going through the shared builders.
     routes.push({
-      match: `Host(\`${hostname}\`) && PathPrefix(\`${dir.path}\`)`,
+      match: routeMatch(hostname, dir.path),
       kind: 'Rule',
-      priority: 100,
+      // Exact hosts keep the historical 100 (above the parent's
+      // length-derived default); wildcard hosts stay inside the
+      // low wildcard band, one step above their own parent.
+      priority: routePriority(hostname, dir.path, { child: true }) ?? 100,
       middlewares: [
         ...parentMiddlewareRefs,
         { name: mwName, namespace },

@@ -93,10 +93,14 @@ async function enrichWithCertInfo(
   db: Database,
   rows: (typeof domains.$inferSelect)[],
 ): Promise<(typeof domains.$inferSelect & {
-  tlsCertStatus: 'active' | 'expiring' | 'expired' | 'pending' | 'none';
+  tlsCertStatus: 'active' | 'expiring' | 'expired' | 'pending' | 'failed' | 'none';
   tlsCertIssuer: string | null;
   tlsCertExpiresAt: string | null;
   tlsCertWildcard: boolean;
+  tlsCertError: string | null;
+  tlsCertErrorAt: string | null;
+  tlsCertIssuerName: string | null;
+  tlsCertFallbackActive: boolean;
 })[]> {
   if (rows.length === 0) return [];
   const domainIds = rows.map((r) => r.id);
@@ -106,6 +110,12 @@ async function enrichWithCertInfo(
       issuer: sslCertificates.issuer,
       subject: sslCertificates.subject,
       expiresAt: sslCertificates.expiresAt,
+      status: sslCertificates.status,
+      lastError: sslCertificates.lastError,
+      lastErrorAt: sslCertificates.lastErrorAt,
+      issuerName: sslCertificates.issuerName,
+      isWildcard: sslCertificates.isWildcard,
+      fallbackActive: sslCertificates.fallbackActive,
     })
     .from(sslCertificates)
     .where(inArray(sslCertificates.domainId, domainIds));
@@ -123,17 +133,39 @@ async function enrichWithCertInfo(
         tlsCertIssuer: null,
         tlsCertExpiresAt: null,
         tlsCertWildcard: false,
+        tlsCertError: null,
+        tlsCertErrorAt: null,
+        tlsCertIssuerName: null,
+        tlsCertFallbackActive: false,
       };
     }
     const expired = cert.expiresAt ? cert.expiresAt < now : false;
     const expiring = cert.expiresAt ? !expired && cert.expiresAt < expiringThreshold : false;
-    const isWildcard = cert.subject ? cert.subject.startsWith('*.') : false;
+    const isWildcard = cert.isWildcard === 1 || (cert.subject?.startsWith('*.') ?? false);
+
+    // Issuance state comes FIRST: a domain whose order is failing has no
+    // usable certificate, and reporting the expiry of a cert that was
+    // never issued (or has since been replaced by a failing renewal) is
+    // exactly the reassurance that hid this class of bug.
+    const issuanceState =
+      cert.status === 'failed'
+        ? ('failed' as const)
+        : cert.expiresAt === null && (cert.status === 'issuing' || cert.status === 'unknown')
+          ? ('pending' as const)
+          : null;
+
     return {
       ...row,
-      tlsCertStatus: (expired ? 'expired' : expiring ? 'expiring' : 'active') as 'active' | 'expiring' | 'expired',
+      tlsCertStatus:
+        issuanceState ??
+        ((expired ? 'expired' : expiring ? 'expiring' : 'active') as 'active' | 'expiring' | 'expired'),
       tlsCertIssuer: cert.issuer ?? null,
       tlsCertExpiresAt: cert.expiresAt ? cert.expiresAt.toISOString() : null,
       tlsCertWildcard: isWildcard,
+      tlsCertError: cert.lastError ?? null,
+      tlsCertErrorAt: cert.lastErrorAt ? cert.lastErrorAt.toISOString() : null,
+      tlsCertIssuerName: cert.issuerName ?? null,
+      tlsCertFallbackActive: cert.fallbackActive === 1,
     };
   });
 }

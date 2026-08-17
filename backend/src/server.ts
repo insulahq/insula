@@ -18,10 +18,12 @@ const app = await buildApp({ config, db });
 // ReferenceError, masking the real Fastify boot timeout in the logs.
 let expiryCheckTimer: NodeJS.Timeout | null = null;
 let autoUpgradeTimer: NodeJS.Timeout | null = null;
+let acmeWebhook: { close(): Promise<void> } | null = null;
 
 const shutdown = async () => {
   if (expiryCheckTimer) clearInterval(expiryCheckTimer);
   if (autoUpgradeTimer) clearInterval(autoUpgradeTimer);
+  if (acmeWebhook) await acmeWebhook.close().catch(() => {});
   await app.close();
   await closeDb();
   process.exit(0);
@@ -109,6 +111,32 @@ const startupK8s = (() => {
     // The runner never throws for a migration failure; this guards an infra
     // error (pool/DB). Non-fatal — the API serves regardless.
     app.log.warn({ err }, '[platform-migrations] runner errored (continuing)');
+  }
+})();
+
+// ACME DNS-01 solver webhook (ADR-058). Serves the aggregated API that
+// cert-manager calls to publish challenge TXT records through the
+// platform's own DNS provider groups — the path that makes wildcard
+// certificates possible without copying DNS credentials into the
+// cert-manager namespace. No-op unless its serving cert is mounted.
+(async () => {
+  try {
+    const { startAcmeDns01WebhookIfConfigured } = await import('./modules/acme-dns01/index.js');
+    acmeWebhook = await startAcmeDns01WebhookIfConfigured({
+      db,
+      k8s: startupK8s,
+      encryptionKey: process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64),
+      logger: {
+        info: (obj, msg) => app.log.info(obj as object, msg),
+        warn: (obj, msg) => app.log.warn(obj as object, msg),
+        error: (obj, msg) => app.log.error(obj as object, msg),
+      },
+    });
+  } catch (err) {
+    // Never fatal: the management API must keep serving even if the
+    // solver cannot start. Wildcard orders will stall and the cert
+    // reconciler reports that to the operator.
+    app.log.error({ err }, '[acme-dns01] solver webhook failed to start (continuing)');
   }
 })();
 

@@ -1,0 +1,58 @@
+# REFERENCE COPY — not applied by Kustomize/Flux.
+#
+# Wildcard-capable ACME issuers, solved by the platform's own webhook.
+# The live objects are created with the operator's real ACME contact
+# address by `install_cert_manager()` in bootstrap.sh (fresh install) and
+# by platform-upgrade migration 0009 (existing cluster). This file exists
+# so the intended shape is reviewable in one place.
+#
+# One issuer per ACME environment rather than one per DNS provider: the
+# solver writes the challenge TXT through whichever DnsProviderAdapter
+# the domain's provider group is configured with, so PowerDNS, BIND,
+# Cloudflare, Route53, Hetzner and ClouDNS all validate through this same
+# issuer, with their credentials staying in the platform database.
+#
+# The email is patched per environment the same way the HTTP-01 issuers
+# are (bootstrap.sh / overlay patch) — Let's Encrypt rejects the
+# placeholder.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: operator@example.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-dns01-insula-account
+    solvers:
+      - dns01:
+          webhook:
+            groupName: acme.insula.host
+            solverName: insula-dns
+            # No config: the solver resolves the zone and the credentials
+            # from the platform's own domain + provider-group tables.
+            config: {}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging-dns01-insula
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: operator@example.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-dns01-insula-account
+    solvers:
+      - dns01:
+          webhook:
+            groupName: acme.insula.host
+            solverName: insula-dns
+            config: {}

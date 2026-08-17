@@ -26,6 +26,13 @@
  */
 
 import { eq } from 'drizzle-orm';
+import {
+  certCoversHostname,
+  certDnsNamesForHostname,
+  isWildcardHostname,
+  normalizeHostname,
+  wildcardBase,
+} from '@insula/api-contracts';
 import { domains, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { isAutoTlsEnabled, getClusterIssuerName } from '../tls-settings/service.js';
@@ -35,6 +42,7 @@ import {
   type CertEnvironment,
   type ConfiguredIssuers,
 } from './issuer-selector.js';
+import { readCertificateHealth, shouldFallBack } from './status.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -133,25 +141,46 @@ function customClusterAcmeIssuer(): string | null {
  * overridden per-issuer via env vars for custom cluster setups; an explicit
  * CERT_ISSUER_* always wins over the cluster-wide custom issuer.
  */
-export function getConfiguredIssuers(): ConfiguredIssuers {
-  const custom = customClusterAcmeIssuer();
+export function getConfiguredIssuers(operatorIssuer?: string | null): ConfiguredIssuers {
+  // Operator intent order: an explicit per-issuer env var, then the
+  // cluster-wide custom ACME endpoint (whether it came from the admin
+  // UI's TLS settings or `bootstrap --acme-server`), then the stock name.
+  const custom = customIssuerName(operatorIssuer) ?? customClusterAcmeIssuer();
   return {
     letsencryptProdHttp01:
       process.env.CERT_ISSUER_PROD_HTTP01 ?? custom ?? 'letsencrypt-prod-http01',
     letsencryptStagingHttp01:
       process.env.CERT_ISSUER_STAGING_HTTP01 ?? custom ?? 'letsencrypt-staging-http01',
+    // Solved by the platform's own webhook (ADR-058) — one issuer per
+    // ACME environment, provider-agnostic.
+    platformDns01Prod:
+      process.env.CERT_ISSUER_DNS01_PLATFORM ?? 'letsencrypt-prod-dns01-insula',
+    platformDns01Staging:
+      process.env.CERT_ISSUER_DNS01_PLATFORM_STAGING ?? 'letsencrypt-staging-dns01-insula',
+    // Legacy per-provider issuers: honoured only when the operator set
+    // one explicitly. They used to be defaulted, which is how every
+    // wildcard order ended up pointed at a webhook nobody installed.
     dns01Issuers: {
-      powerdns: process.env.CERT_ISSUER_DNS01_POWERDNS ?? 'letsencrypt-prod-dns01-powerdns',
-      cloudflare: process.env.CERT_ISSUER_DNS01_CLOUDFLARE ?? 'letsencrypt-prod-dns01-cloudflare',
-      route53: process.env.CERT_ISSUER_DNS01_ROUTE53 ?? 'letsencrypt-prod-dns01-route53',
-      hetzner: process.env.CERT_ISSUER_DNS01_HETZNER ?? 'letsencrypt-prod-dns01-hetzner',
-      cloudns: process.env.CERT_ISSUER_DNS01_CLOUDNS ?? 'letsencrypt-prod-dns01-cloudns',
+      ...(process.env.CERT_ISSUER_DNS01_POWERDNS ? { powerdns: process.env.CERT_ISSUER_DNS01_POWERDNS } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_CLOUDFLARE ? { cloudflare: process.env.CERT_ISSUER_DNS01_CLOUDFLARE } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_ROUTE53 ? { route53: process.env.CERT_ISSUER_DNS01_ROUTE53 } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_HETZNER ? { hetzner: process.env.CERT_ISSUER_DNS01_HETZNER } : {}),
+      ...(process.env.CERT_ISSUER_DNS01_CLOUDNS ? { cloudns: process.env.CERT_ISSUER_DNS01_CLOUDNS } : {}),
     },
     localCaIssuer:
       process.env.CERT_ISSUER_LOCAL_CA ?? 'local-ca-issuer',
     fallbackIssuer:
       process.env.CERT_ISSUER_FALLBACK ?? custom ?? 'letsencrypt-prod-http01',
   };
+}
+
+/** A non-stock issuer name, or null when it's one of the built-ins. */
+function customIssuerName(name: string | null | undefined): string | null {
+  const trimmed = name?.trim();
+  if (!trimmed || STOCK_CLUSTER_ISSUERS.has(trimmed)) return null;
+  if (trimmed.startsWith('letsencrypt-prod-dns01-')) return null;
+  if (trimmed.startsWith('letsencrypt-staging-dns01-')) return null;
+  return trimmed;
 }
 
 // ─── k8s error helpers ────────────────────────────────────────────────────
@@ -255,6 +284,7 @@ function buildCertificateResource(params: {
   readonly secretName: string;
   readonly dnsNames: readonly string[];
   readonly issuerName: string;
+  readonly domainId?: string;
 }) {
   return {
     apiVersion: 'cert-manager.io/v1',
@@ -266,6 +296,10 @@ function buildCertificateResource(params: {
         'app.kubernetes.io/part-of': 'hosting-platform',
         'app.kubernetes.io/managed-by': 'insula',
         'app.kubernetes.io/component': 'tls-cert',
+        // Lets the status reconciler enumerate every Certificate that
+        // belongs to a domain — including sub-wildcards and per-host
+        // fallbacks, which name-guessing from the domain alone misses.
+        ...(params.domainId ? { 'insula.host/domain-id': params.domainId } : {}),
       },
     },
     spec: {
@@ -333,10 +367,16 @@ export async function ensureDomainCertificate(
   }
   const namespace = tenant.kubernetesNamespace;
 
-  // Resolve DNS authority inputs
+  // Resolve DNS authority inputs.
+  //
+  // The operator's TLS-settings issuer is now an INPUT, not a log line:
+  // it used to be read below purely to note that the selector disagreed
+  // with it, so an admin pointing the platform at their own ACME
+  // endpoint had no effect on tenant domains at all.
   const activeServers = await getActiveServersForDomain(db, domainId);
   const environment = getEnvironment();
-  const issuers = getConfiguredIssuers();
+  const operatorIssuer = await getClusterIssuerName(db).catch(() => null);
+  const issuers = getConfiguredIssuers(operatorIssuer);
 
   // For customer domains we always try to issue a wildcard if possible —
   // it covers apex, all existing subdomains, and anything we add in the
@@ -354,18 +394,6 @@ export async function ensureDomainCertificate(
     issuers,
   });
 
-  // Verify the configured fallback issuer exists (safety check — a
-  // mistyped env var would otherwise result in a permanently Pending
-  // Certificate CR). We just log a warning if we can't look it up;
-  // cert-manager will still surface the real error at reconcile time.
-  const defaultIssuerFromDb = await getClusterIssuerName(db).catch(() => null);
-  if (defaultIssuerFromDb && defaultIssuerFromDb !== selection.issuerName) {
-    logger.info(
-      { selected: selection.issuerName, default: defaultIssuerFromDb, domain: domain.domainName },
-      'ensureDomainCertificate: selected issuer differs from tls-settings default — using selector choice',
-    );
-  }
-
   const wildcard = selection.wildcardCapable && selection.challengeType !== 'http01';
   const dnsNames = wildcard
     ? [domain.domainName, `*.${domain.domainName}`]
@@ -380,6 +408,7 @@ export async function ensureDomainCertificate(
     secretName,
     dnsNames,
     issuerName: selection.issuerName,
+    domainId,
   });
 
   try {
@@ -688,15 +717,12 @@ export function hostnameIsCoveredByDomainCert(
   domainName: string,
   wildcard: boolean,
 ): boolean {
-  const lowerHost = hostname.toLowerCase();
-  const lowerDomain = domainName.toLowerCase();
-  if (lowerHost === lowerDomain) return true;
-  if (!wildcard) return false;
-  const suffix = `.${lowerDomain}`;
-  if (!lowerHost.endsWith(suffix)) return false;
-  // Single-label subdomain only (wildcards are not recursive per RFC 6125)
-  const prefix = lowerHost.slice(0, -suffix.length);
-  return prefix.length > 0 && !prefix.includes('.');
+  // Delegates to the shared SAN matcher so the panels, the reconciler
+  // and this module cannot disagree about what a certificate covers.
+  const sans = wildcard
+    ? certDnsNamesForHostname(`*.${normalizeHostname(domainName)}`)
+    : [normalizeHostname(domainName)];
+  return certCoversHostname(hostname, sans);
 }
 
 export interface EnsureRouteCertificateResult {
@@ -746,25 +772,66 @@ export async function ensureRouteCertificate(
   // Step 1: ensure the domain-level cert. If it produces a wildcard or
   // matches the hostname as apex, we can reuse its secret.
   const domainCert = await ensureDomainCertificate(db, k8s, domainId, logger);
-  if (
+  const coveredByDomainCert =
     !domainCert.skipped &&
-    domainCert.secretName &&
-    hostnameIsCoveredByDomainCert(hostname, domain.domainName, domainCert.wildcard === true)
-  ) {
-    return {
-      skipped: false,
-      secretName: domainCert.secretName,
-      sharedWithDomain: true,
-      issuerName: domainCert.issuerName,
-    };
+    !!domainCert.secretName &&
+    hostnameIsCoveredByDomainCert(hostname, domain.domainName, domainCert.wildcard === true);
+
+  if (coveredByDomainCert) {
+    // Covered on paper — but is that certificate actually ISSUED?
+    //
+    // Pointing an IngressRoute at the Secret of an order that has been
+    // failing for an hour serves Traefik's default certificate, i.e. a
+    // browser warning, with no signal anywhere. If the wildcard has been
+    // failing past the grace period we fall through and give this
+    // hostname its own HTTP-01 certificate instead; cert-manager keeps
+    // retrying the wildcard, and the next reconcile switches back the
+    // moment it goes Ready.
+    const health = domainCert.certificateName
+      ? await readCertificateHealth(k8s, namespace, domainCert.certificateName)
+      : null;
+    const degraded = health ? shouldFallBack(health, new Date()) : false;
+
+    if (!degraded) {
+      return {
+        skipped: false,
+        secretName: domainCert.secretName,
+        sharedWithDomain: true,
+        issuerName: domainCert.issuerName,
+      };
+    }
+
+    // A wildcard ROUTE hostname has nothing to fall back to — no
+    // per-hostname certificate can serve `*.a.example.test`.
+    if (isWildcardHostname(hostname)) {
+      return {
+        skipped: true,
+        reason:
+          `The wildcard certificate for '${domain.domainName}' is failing (${health?.message ?? 'unknown error'}), ` +
+          `and a wildcard hostname cannot be served by a per-hostname certificate.`,
+      };
+    }
+
+    logger.warn(
+      { hostname, domain: domain.domainName, message: health?.message },
+      'ensureRouteCertificate: wildcard is failing past the grace period — issuing a per-hostname certificate',
+    );
   }
 
-  // Step 2: hostname not covered — create a per-hostname cert. Use the
-  // same issuer the domain cert used (typically the HTTP-01 issuer;
-  // DNS-01 wildcards would have been covered above).
+  // Step 2: hostname not covered by the domain cert.
+  //
+  // A WILDCARD hostname (`*.a.example.test`, from a wildcard route) needs
+  // its own DNS-01 order: it is not covered by the domain's `*.example.test`
+  // (RFC 6125 wildcards are not recursive), and HTTP-01 cannot validate a
+  // wildcard at all — issuing one through the HTTP-01 issuer would create
+  // an order that can never succeed and would sit Pending forever.
+  //
+  // Anything else is a plain per-hostname cert on whichever issuer the
+  // domain resolves to.
+  const wildcardHostname = isWildcardHostname(hostname);
   const activeServers = await getActiveServersForDomain(db, domainId);
   const environment = getEnvironment();
-  const issuers = getConfiguredIssuers();
+  const issuers = getConfiguredIssuers(await getClusterIssuerName(db).catch(() => null));
   const selection = selectIssuerForDomain({
     dnsMode: domain.dnsMode as 'primary' | 'cname' | 'secondary',
     activeServers: activeServers.map((s) => ({
@@ -773,20 +840,42 @@ export async function ensureRouteCertificate(
       enabled: s.enabled,
       role: s.role,
     })),
-    wildcardRequested: false, // per-hostname cert — no wildcard here
+    wildcardRequested: wildcardHostname,
     environment,
     issuers,
   });
 
-  const certName = certificateNameFor(hostname, false);
-  const secretName = tlsSecretNameFor(hostname, false);
+  if (wildcardHostname && (!selection.wildcardCapable || selection.challengeType === 'http01')) {
+    logger.warn(
+      { hostname, issuer: selection.issuerName, dnsMode: domain.dnsMode },
+      'ensureRouteCertificate: wildcard hostname needs DNS-01 but the domain has no DNS-01-capable primary provider',
+    );
+    return {
+      skipped: true,
+      reason:
+        `'${hostname}' needs a DNS-01 wildcard certificate, which requires the domain to be in ` +
+        `primary DNS mode with an enabled primary provider the platform can write TXT records to.`,
+    };
+  }
+
+  // A wildcard cert is named after the name it sits under, so
+  // `*.a.example.test` and `*.example.test` get distinct CRs/Secrets
+  // instead of colliding on one `example-test-wildcard-tls`.
+  const certSubject = wildcardHostname ? (wildcardBase(hostname) as string) : hostname;
+  const certName = certificateNameFor(certSubject, wildcardHostname);
+  const secretName = tlsSecretNameFor(certSubject, wildcardHostname);
+
+  // `*.a.example.test` is requested together with `a.example.test` so one
+  // cert serves the wildcard route AND a route on the name itself.
+  const dnsNames = certDnsNamesForHostname(hostname);
 
   const body = buildCertificateResource({
     name: certName,
     namespace,
     secretName,
-    dnsNames: [hostname],
+    dnsNames,
     issuerName: selection.issuerName,
+    domainId,
   });
 
   try {
@@ -805,8 +894,10 @@ export async function ensureRouteCertificate(
   }
 
   logger.info(
-    { hostname, issuer: selection.issuerName },
-    'ensureRouteCertificate: per-hostname Certificate ensured',
+    { hostname, issuer: selection.issuerName, dnsNames, wildcard: wildcardHostname },
+    wildcardHostname
+      ? 'ensureRouteCertificate: wildcard Certificate ensured'
+      : 'ensureRouteCertificate: per-hostname Certificate ensured',
   );
 
   return {

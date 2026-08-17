@@ -25,11 +25,132 @@
 
 import { eq } from 'drizzle-orm';
 import crypto from 'crypto';
+import { certCoversHostname } from '@insula/api-contracts';
 import { domains, sslCertificates, tenants } from '../../db/schema.js';
 import { tlsSecretNameFor } from './service.js';
-import { notifyAdminCertExpiring, notifyAdminCertRenewalFailed } from '../notifications/events.js';
+import { listCertificateHealth, shouldFallBack } from './status.js';
+import type { CertificateHealth } from './status.js';
+import {
+  notifyAdminCertExpiring,
+  notifyAdminCertIssuanceFailed,
+  notifyAdminCertRenewalFailed,
+  notifyTenantCertificateFailed,
+  notifyTenantCertificateFallback,
+} from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+interface DomainRow {
+  readonly domainId: string;
+  readonly domainName: string;
+  readonly tenantId: string;
+  readonly namespace: string | null;
+}
+
+/**
+ * The Certificate that represents a domain's TLS state.
+ *
+ * A domain can own several: the domain-level cert, per-hostname certs,
+ * and sub-wildcards from wildcard routes. The domain-level one is what
+ * the panels report on, so prefer a cert whose SANs actually cover the
+ * domain name, wildcard first.
+ */
+export function pickDomainCertificate(
+  certs: readonly CertificateHealth[],
+  domainId: string,
+  domainName: string,
+): CertificateHealth | null {
+  const mine = certs.filter(
+    (c) => c.domainId === domainId || certCoversHostname(domainName, c.dnsNames),
+  );
+  if (mine.length === 0) return null;
+  return (
+    mine.find((c) => c.wildcard && certCoversHostname(domainName, c.dnsNames)) ??
+    mine.find((c) => certCoversHostname(domainName, c.dnsNames)) ??
+    mine[0]
+  );
+}
+
+/**
+ * Persist what cert-manager reports, and tell someone when it is bad.
+ *
+ * Notifications are edge-triggered on the stored status, so a domain
+ * stuck failing for a week produces one notification, not one per
+ * reconcile tick. `dispatchSafe` never throws.
+ */
+async function recordCertificateState(
+  db: Database,
+  d: DomainRow,
+  health: CertificateHealth,
+): Promise<void> {
+  const [existing] = await db
+    .select({
+      id: sslCertificates.id,
+      status: sslCertificates.status,
+      fallbackActive: sslCertificates.fallbackActive,
+    })
+    .from(sslCertificates)
+    .where(eq(sslCertificates.domainId, d.domainId));
+
+  const now = new Date();
+  const failed = health.state === 'failed';
+  const fallback = shouldFallBack(health, now);
+  const errorMessage = health.message?.slice(0, 500);
+
+  const stateFields = {
+    status: health.state,
+    issuerName: health.issuerName ?? null,
+    isWildcard: health.wildcard ? 1 : 0,
+    fallbackActive: fallback ? 1 : 0,
+    ...(failed ? { lastError: errorMessage ?? null, lastErrorAt: health.lastFailureAt ?? now } : {}),
+    ...(health.state === 'issued' ? { lastIssuedAt: now, lastError: null } : {}),
+    updatedAt: now,
+  };
+
+  if (existing) {
+    await db.update(sslCertificates).set(stateFields).where(eq(sslCertificates.id, existing.id));
+  } else {
+    // No row yet: the domain has NEVER had a certificate parsed from a
+    // Secret. That is exactly the case the old reconciler dropped on the
+    // floor — and the one an operator most needs to see.
+    await db.insert(sslCertificates).values({
+      id: crypto.randomUUID(),
+      domainId: d.domainId,
+      tenantId: d.tenantId,
+      certificate: '# Managed by cert-manager',
+      privateKeyEncrypted: '# Managed by cert-manager',
+      subject: health.wildcard ? `*.${d.domainName}` : d.domainName,
+      createdAt: now,
+      ...stateFields,
+    });
+  }
+
+  const wasFailed = existing?.status === 'failed';
+  if (failed && !wasFailed) {
+    const dedupeKey = `cert-failed:${d.domainName}:${health.lastFailureAt?.toISOString() ?? now.toISOString()}`;
+    await notifyTenantCertificateFailed(
+      db,
+      d.tenantId,
+      { hostname: d.domainName, errorMessage },
+      dedupeKey,
+    );
+    await notifyAdminCertIssuanceFailed(
+      db,
+      { certSubject: d.domainName, errorMessage },
+      dedupeKey,
+    );
+  }
+
+  const wasFallback = (existing?.fallbackActive ?? 0) === 1;
+  if (fallback && !wasFallback) {
+    await notifyTenantCertificateFallback(
+      db,
+      d.tenantId,
+      { hostname: d.domainName, errorMessage },
+      `cert-fallback:${d.domainName}:${health.lastFailureAt?.toISOString() ?? now.toISOString()}`,
+    );
+  }
+}
 
 // ─── K8s error helpers ──────────────────────────────────────────────────────
 
@@ -75,10 +196,33 @@ export async function reconcileCertificateStatuses(
   let checked = 0;
   let synced = 0;
   const errors: string[] = [];
+  // One Certificate list per namespace, not per domain — a tenant with
+  // twenty domains would otherwise issue twenty identical LISTs.
+  const certsByNamespace = new Map<string, readonly CertificateHealth[]>();
 
   for (const d of domainsWithTenants) {
     if (!d.namespace) continue;
     checked++;
+
+    // What cert-manager reports, independent of whether a Secret exists.
+    // This is the half that was missing: a Certificate that never
+    // completed produced no Secret, and "no Secret" was read as "still
+    // issuing, skip", so a permanently failed order was silent forever.
+    try {
+      if (!certsByNamespace.has(d.namespace)) {
+        certsByNamespace.set(d.namespace, await listCertificateHealth(k8s, d.namespace));
+      }
+      const health = pickDomainCertificate(
+        certsByNamespace.get(d.namespace) ?? [],
+        d.domainId,
+        d.domainName,
+      );
+      if (health) {
+        await recordCertificateState(db, d, health);
+      }
+    } catch (err) {
+      errors.push(`${d.domainName}: status read failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
     try {
       // Try to read the TLS secret for this domain.

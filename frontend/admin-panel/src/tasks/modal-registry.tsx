@@ -45,6 +45,10 @@ const PlatformUpgradeProgressModal = lazy(() => import('@/components/PlatformUpg
 // appears for the operator-invoked fix, and the chip re-opens it so closing the
 // modal never abandons an in-flight repair.
 const DnsApexDriftTaskModal = lazy(() => import('@/components/DnsApexDriftTaskModal'));
+// 2026-08-17: on-demand TLS certificate reissue (ADR-058 follow-up). The
+// chip re-opens the step checklist, which carries cert-manager's own
+// message for a stuck order.
+const TlsReissueTaskModal = lazy(() => import('@/components/TlsReissueTaskModal'));
 
 // Registry: modal key (matches `TaskTarget.modal`) → component. The
 // chip wraps the rendered component in <Suspense> so the lazy import
@@ -82,6 +86,9 @@ const REGISTRY: Record<string, RegistryEntry> = {
   },
   'dns-apex-drift-fix': {
     Component: DnsApexDriftTaskModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
+  },
+  'tls-cert-reissue': {
+    Component: TlsReissueTaskModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,
   },
   'mail-operation': {
     Component: MailTaskProgressModal as unknown as ComponentType<Record<string, unknown> & ModalCloseProps>,

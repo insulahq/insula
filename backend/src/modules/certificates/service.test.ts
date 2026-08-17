@@ -141,16 +141,16 @@ describe('ensureDomainCertificate', () => {
 
     expect(result.skipped).toBe(false);
     expect(result.wildcard).toBe(true);
-    expect(result.issuerName).toBe('letsencrypt-prod-dns01-powerdns');
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-insula');
 
     const call = k8s._createCustom.mock.calls[0][0];
     expect(call.body.spec.dnsNames).toEqual(['acme.com', '*.acme.com']);
-    expect(call.body.spec.issuerRef.name).toBe('letsencrypt-prod-dns01-powerdns');
+    expect(call.body.spec.issuerRef.name).toBe('letsencrypt-prod-dns01-insula');
     expect(call.body.metadata.name).toBe('acme-com-wildcard-cert');
     expect(call.body.spec.secretName).toBe('acme-com-wildcard-tls');
   });
 
-  it('uses Cloudflare DNS-01 issuer when primary mode with Cloudflare provider', async () => {
+  it('uses the platform DNS-01 solver for a Cloudflare-backed domain too', async () => {
     vi.mocked(dnsServersService.getActiveServersForDomain).mockResolvedValue([
       { id: 's1', providerType: 'cloudflare', enabled: 1, role: 'primary' } as never,
     ]);
@@ -161,7 +161,9 @@ describe('ensureDomainCertificate', () => {
     const result = await service.ensureDomainCertificate(db as never, k8s, 'd1', makeLogger());
 
     expect(result.wildcard).toBe(true);
-    expect(result.issuerName).toBe('letsencrypt-prod-dns01-cloudflare');
+    // One issuer for every provider type — the solver webhook writes the
+    // TXT through whichever provider the domain's group is configured with.
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-insula');
   });
 
   it('uses local-ca-issuer in development environment', async () => {
@@ -562,8 +564,20 @@ describe('getConfiguredIssuers — cluster-wide custom ACME issuer', () => {
   it('leaves the DNS-01 issuers alone — an HTTP-01 issuer cannot solve a wildcard order', () => {
     process.env.CLUSTER_ISSUER_NAME = 'acme-custom-http01';
     const i = service.getConfiguredIssuers();
-    expect(i.dns01Issuers.powerdns).toBe('letsencrypt-prod-dns01-powerdns');
-    expect(i.dns01Issuers.cloudflare).toBe('letsencrypt-prod-dns01-cloudflare');
+    expect(i.platformDns01Prod).toBe('letsencrypt-prod-dns01-insula');
+    expect(i.platformDns01Staging).toBe('letsencrypt-staging-dns01-insula');
+    // No per-provider defaults: an unset provider must NOT resolve to an
+    // issuer name that has no solver behind it.
+    expect(i.dns01Issuers).toEqual({});
+  });
+
+  it('takes the operator TLS-settings issuer as the custom HTTP-01 endpoint', () => {
+    // This value used to be read purely to log that the selector was
+    // ignoring it.
+    const i = service.getConfiguredIssuers('acme-operator-http01');
+    expect(i.letsencryptProdHttp01).toBe('acme-operator-http01');
+    expect(i.fallbackIssuer).toBe('acme-operator-http01');
+    expect(i.platformDns01Prod).toBe('letsencrypt-prod-dns01-insula');
   });
 
   it.each(['letsencrypt-prod-http01', 'letsencrypt-staging-http01', 'local-ca-issuer', 'selfsigned-issuer'])(

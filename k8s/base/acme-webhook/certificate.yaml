@@ -1,0 +1,79 @@
+# Serving certificate for the platform's ACME DNS-01 solver webhook.
+#
+# An aggregated API server must present TLS that the kube-apiserver
+# trusts. cert-manager's ca-injector copies the CA out of this chain into
+# the APIService's caBundle (see apiservice.yaml), so the trust anchor is
+# generated in-cluster and never has to be managed by an operator.
+#
+# Chain: selfsigned Issuer → CA Certificate → CA Issuer → serving cert.
+# The extra hop exists because ca-injector injects the CA of an issuer,
+# and a directly self-signed leaf has no CA to inject.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: acme-webhook-selfsign
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: acme-webhook-ca
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  secretName: acme-webhook-ca
+  isCA: true
+  commonName: insula-acme-webhook-ca
+  duration: 43800h # 5 years — rotating this means re-injecting caBundle
+  renewBefore: 8760h # 1 year
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: acme-webhook-selfsign
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: acme-webhook-ca
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  ca:
+    secretName: acme-webhook-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: platform-acme-webhook-tls
+  namespace: platform
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: acme-webhook
+spec:
+  secretName: platform-acme-webhook-tls
+  duration: 8760h # 1 year
+  renewBefore: 720h # 30 days
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  # The aggregator dials the Service, so these are the only names that
+  # ever appear in SNI.
+  dnsNames:
+    - platform-acme-webhook.platform.svc
+    - platform-acme-webhook.platform.svc.cluster.local
+  issuerRef:
+    name: acme-webhook-ca
+    kind: Issuer
+    group: cert-manager.io

@@ -2609,3 +2609,26 @@ never `applied`; consecutive-failure counting so a repeat failure states how lon
 it has been repeating and a blocked chain announces itself; and an authoring
 contract distinguishing "not applicable → exit 0 loudly" from "tried and failed →
 exit 1".
+
+
+## ADR-058: The platform owns its ACME DNS-01 solver
+
+See [ADR-058-platform-owned-acme-dns01-solver.md](ADR-058-platform-owned-acme-dns01-solver.md).
+
+Proposed (2026-08-17): wildcard TLS had never worked. Three of the five shipped
+DNS-01 ClusterIssuers — PowerDNS (our primary target), Hetzner, ClouDNS —
+referenced third-party cert-manager webhooks that bootstrap never installs, the
+PowerDNS one carrying a hardcoded `apiUrl` copied from its upstream README; the
+other two need credential Secrets nothing creates. The selector still reported
+`wildcardCapable: true`, cert-manager left the order Pending, and the status
+reconciler read "no Secret yet" as "still issuing", so the failure was invisible
+end to end. Meanwhile the platform already held working write credentials for the
+same zone in `dns_servers`. Decision: serve ONE solver webhook from platform-api
+(aggregated API `acme.insula.host`, mTLS against the cluster requestheader CA,
+fail-closed if that CA can't be read) backed by the existing DnsProviderAdapter,
+with one issuer per ACME environment instead of one per provider. Every provider
+type gets wildcards, including any added later; no DNS credential leaves the
+platform database; staging can finally exercise the path. Also adds
+`deleteRecordValue` to the provider interface — a wildcard+apex order puts two TXT
+values on one name and PowerDNS's RRset-scoped delete would strip the second
+mid-validation.

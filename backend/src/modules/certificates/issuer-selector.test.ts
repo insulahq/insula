@@ -5,13 +5,11 @@ describe('selectIssuerForDomain', () => {
   const defaults = {
     letsencryptProdHttp01: 'letsencrypt-prod-http01',
     letsencryptStagingHttp01: 'letsencrypt-staging-http01',
-    dns01Issuers: {
-      powerdns: 'letsencrypt-prod-dns01-powerdns',
-      cloudflare: 'letsencrypt-prod-dns01-cloudflare',
-      route53: 'letsencrypt-prod-dns01-route53',
-      hetzner: 'letsencrypt-prod-dns01-hetzner',
-      cloudns: 'letsencrypt-prod-dns01-cloudns',
-    },
+    platformDns01Prod: 'letsencrypt-prod-dns01-insula',
+    platformDns01Staging: 'letsencrypt-staging-dns01-insula',
+    // Empty by default: per-provider issuers are legacy overrides now,
+    // only present when an operator set CERT_ISSUER_DNS01_* explicitly.
+    dns01Issuers: {},
     localCaIssuer: 'local-ca-issuer',
     fallbackIssuer: 'letsencrypt-prod-http01',
   };
@@ -27,7 +25,7 @@ describe('selectIssuerForDomain', () => {
       issuers: defaults,
     };
     expect(selectIssuerForDomain(input)).toEqual({
-      issuerName: 'letsencrypt-prod-dns01-powerdns',
+      issuerName: 'letsencrypt-prod-dns01-insula',
       challengeType: 'dns01',
       wildcardCapable: true,
     });
@@ -101,7 +99,7 @@ describe('selectIssuerForDomain', () => {
       issuers: defaults,
     };
     const result = selectIssuerForDomain(input);
-    expect(result.issuerName).toBe('letsencrypt-prod-dns01-cloudflare');
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-insula');
     expect(result.challengeType).toBe('dns01');
     expect(result.wildcardCapable).toBe(true);
   });
@@ -117,7 +115,7 @@ describe('selectIssuerForDomain', () => {
       issuers: defaults,
     };
     const result = selectIssuerForDomain(input);
-    expect(result.issuerName).toBe('letsencrypt-prod-dns01-route53');
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-insula');
     expect(result.challengeType).toBe('dns01');
     expect(result.wildcardCapable).toBe(true);
   });
@@ -133,7 +131,7 @@ describe('selectIssuerForDomain', () => {
       issuers: defaults,
     };
     const result = selectIssuerForDomain(input);
-    expect(result.issuerName).toBe('letsencrypt-prod-dns01-hetzner');
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-insula');
     expect(result.challengeType).toBe('dns01');
     expect(result.wildcardCapable).toBe(true);
   });
@@ -149,16 +147,17 @@ describe('selectIssuerForDomain', () => {
       issuers: defaults,
     };
     const result = selectIssuerForDomain(input);
-    expect(result.issuerName).toBe('letsencrypt-prod-dns01-cloudns');
+    expect(result.issuerName).toBe('letsencrypt-prod-dns01-insula');
     expect(result.challengeType).toBe('dns01');
     expect(result.wildcardCapable).toBe(true);
   });
 
-  it('falls back to HTTP-01 when wildcard requested but no DNS-01 provider present', () => {
+  it('falls back to HTTP-01 when wildcard requested but no writable provider present', () => {
     const input: IssuerSelectorInput = {
       dnsMode: 'primary',
       activeServers: [
-        { id: 's1', providerType: 'rndc', enabled: 1, role: 'primary' },
+        // `mock` writes nowhere a resolver can see it.
+        { id: 's1', providerType: 'mock', enabled: 1, role: 'primary' },
       ],
       wildcardRequested: true,
       environment: 'production',
@@ -170,20 +169,54 @@ describe('selectIssuerForDomain', () => {
     expect(result.wildcardCapable).toBe(false);
   });
 
-  it('uses fallback issuer when provider type has no configured dns01 issuer', () => {
-    const input: IssuerSelectorInput = {
+  it('uses the platform solver issuer for every provider type', () => {
+    // Previously this fell back to the HTTP-01 issuer while still
+    // reporting challengeType 'dns01' — i.e. it produced a wildcard
+    // order on an issuer that can never validate one, and the order sat
+    // Pending forever with nobody told.
+    for (const providerType of ['powerdns', 'rndc', 'cloudflare', 'route53', 'hetzner', 'cloudns']) {
+      const result = selectIssuerForDomain({
+        dnsMode: 'primary',
+        activeServers: [{ id: 's1', providerType, enabled: 1, role: 'primary' }],
+        wildcardRequested: true,
+        environment: 'production',
+        issuers: defaults,
+      });
+      expect(result, providerType).toEqual({
+        issuerName: 'letsencrypt-prod-dns01-insula',
+        challengeType: 'dns01',
+        wildcardCapable: true,
+      });
+    }
+  });
+
+  it('honours an explicitly configured per-provider issuer', () => {
+    // An operator who already hand-wired a working solver keeps it.
+    const result = selectIssuerForDomain({
       dnsMode: 'primary',
-      activeServers: [
-        { id: 's1', providerType: 'powerdns', enabled: 1, role: 'primary' },
-      ],
+      activeServers: [{ id: 's1', providerType: 'cloudflare', enabled: 1, role: 'primary' }],
       wildcardRequested: true,
       environment: 'production',
-      issuers: { ...defaults, dns01Issuers: {} },
-    };
-    const result = selectIssuerForDomain(input);
-    expect(result.issuerName).toBe('letsencrypt-prod-http01'); // fallbackIssuer
-    expect(result.challengeType).toBe('dns01');
-    expect(result.wildcardCapable).toBe(true);
+      issuers: { ...defaults, dns01Issuers: { cloudflare: 'my-cloudflare-issuer' } },
+    });
+    expect(result.issuerName).toBe('my-cloudflare-issuer');
+  });
+
+  it('issues wildcards on staging too, via the staging solver issuer', () => {
+    // Staging used to be HTTP-01 only, so the wildcard path could not be
+    // exercised anywhere before production.
+    const result = selectIssuerForDomain({
+      dnsMode: 'primary',
+      activeServers: [{ id: 's1', providerType: 'powerdns', enabled: 1, role: 'primary' }],
+      wildcardRequested: true,
+      environment: 'staging',
+      issuers: defaults,
+    });
+    expect(result).toEqual({
+      issuerName: 'letsencrypt-staging-dns01-insula',
+      challengeType: 'dns01',
+      wildcardCapable: true,
+    });
   });
 
   it('returns wildcard=false when wildcardRequested=false even with PowerDNS primary', () => {
