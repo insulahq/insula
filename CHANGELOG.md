@@ -12,7 +12,90 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Wildcard routes and the wildcard certificates to serve them.** A tenant can
+  now route `*.example.test` — and `*.shop.example.test`, at any depth — and the
+  platform obtains a certificate that covers it. Neither half existed before:
+  the domain-name validator rejected `*`, and the reconciler emitted
+  ``Host(`*.example.test`)``, which Traefik v3 treats as an exact string and so
+  matches nothing at all.
+  Wildcards render as `HostRegexp` matching exactly ONE label, mirroring RFC 6125
+  certificate semantics, and carry an explicit LOW priority. That priority is not
+  cosmetic: Traefik derives priority from rule LENGTH by default, and the
+  wildcard regexp is longer than ``Host(`webmail.example.test`)`` — so an
+  unconstrained wildcard would have outranked the platform's own
+  webmail/autodiscover Ingresses on a tenant's own domain and swallowed their
+  traffic. Exact hostnames keep Traefik's default, so their behaviour is
+  unchanged. Reserved-hostname enforcement became coverage-aware in the same
+  move: `*.<apex>` answers for admin/mail/webmail without matching any of them
+  literally, which a Set-membership check walks straight past.
+- **The platform serves its own ACME DNS-01 solver (ADR-058).** Wildcard TLS had
+  never worked on any cluster. Three of the five shipped DNS-01 ClusterIssuers —
+  PowerDNS (the primary target), Hetzner, ClouDNS — referenced third-party
+  cert-manager webhooks that bootstrap never installs, the PowerDNS one carrying
+  a hardcoded `apiUrl` copied from its upstream README; the other two need
+  credential Secrets nothing creates. The selector still answered
+  `wildcardCapable: true`, cert-manager left the order Pending, and the status
+  reconciler read "no Secret yet" as "still issuing" — so the failure was
+  invisible end to end while the platform already held working write credentials
+  for the same zone.
+  platform-api now serves the solver itself as an aggregated API
+  (`acme.insula.host`), publishing the challenge TXT through the same
+  `DnsProviderAdapter` used for every other DNS write. One issuer per ACME
+  environment replaces the per-provider matrix, so PowerDNS, BIND/rndc,
+  Cloudflare, Route53, Hetzner and ClouDNS all get wildcards — as does any
+  provider added later — and no DNS credential is ever copied into the
+  `cert-manager` namespace. Authentication is mTLS against the cluster's
+  requestheader CA plus an aggregator-asserted-user allowlist; if that CA cannot
+  be read the webhook refuses to start, because this endpoint writes records
+  into customer zones.
+- **A TLS view that shows failures, and a button to retry.** `GET
+  …/domains/:id/tls` returns cert-manager's live state for every certificate a
+  domain owns — including the failure message — plus whether a wildcard is
+  possible and, when it isn't, which of the three distinct causes applies.
+  `POST …/tls/reissue` forces a fresh order (rate-limited to one per hour per
+  domain, because Let's Encrypt caps duplicate certificates at 5 per week) and
+  reports progress through the task centre. Both panels grew a Managed
+  Certificates card and a `failed` TLS badge carrying the reason.
+- **Certificate failures now reach someone.** Issuance state is classified from
+  the Certificate CR itself and persisted, and a failure notifies both the tenant
+  (`tls.certificate_failed` — their visitors see the warning, and the usual cause
+  is DNS they control) and the operator (`admin.cert_issuance_failed`). A
+  wildcard that keeps failing past a grace period falls back to per-hostname
+  HTTP-01 certificates so sites keep serving valid TLS, raises
+  `tls.certificate_fallback`, and switches back automatically once the wildcard
+  succeeds.
+
 ### Fixed
+- **Every hostname routed to a custom deployment answered 404.** The deployer
+  creates a Service named `<workload>-<portName>` (`wildapp-http`); the ingress
+  reconciler re-derived `<workload>` (`wildapp`) and handed that to Traefik,
+  which logged `kubernetes service not found` once per reconcile and served
+  nothing. The route, the certificate and the pods were all healthy, so the only
+  symptom was a 404 on a site that had just deployed successfully. Both sides now
+  derive the name from one shared function, with a test pinning them together.
+- **bootstrap turned two failed downloads into misleading errors, minutes
+  later.** `raw.githubusercontent.com` rate-limits per egress IP; a 429 on the
+  tigera-operator manifest was discarded by `>/dev/null 2>&1 || true`, so nothing
+  was applied and the install reported "Calico CRDs never registered" five
+  minutes on — pointing the operator at a healthy operator that had never been
+  deployed. The same pattern on the external-snapshotter CRDs surfaced a phase
+  later as `no matches for kind "VolumeSnapshotClass"`. Both now fetch with
+  backoff, name the HTTP status when they fail, and accept a pre-staged copy
+  under `/var/lib/insula/cache/` (which also covers air-gapped installs).
+- **The TLS-settings issuer an operator chose was read and then ignored** — it
+  existed only to log that the selector disagreed with it. It is now an input to
+  certificate issuance for tenant domains.
+- **A wildcard + apex order could strip its own challenge.** Such an order puts
+  two TXT values on one `_acme-challenge` name, and PowerDNS deletes by RRset —
+  so cleaning up the first challenge removed the second while the CA was still
+  reading it. The provider interface gained a value-scoped delete.
+- **Protected-directory child routes bypassed the Traefik backtick guard**, and
+  would have emitted a dead `Host()` rule for a wildcard host — silently dropping
+  the basic-auth gate on that route.
+- **A hostname could be issued against the wrong zone.** With both
+  `example.test` and `a.example.test` registered, the reconciler picked whichever
+  domain row came back first; it now takes the longest suffix match.
 - **The mail bootstrap's one-shot Pods threw away their own output.** The
   Stalwart configure pod does the most intricate work in the whole install —
   listeners, DKIM, the ACME provider, the certificate order — and its logs never
