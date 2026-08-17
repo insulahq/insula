@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.4] - 2026-08-17
+
 ### Added
 - **Wildcard routes and the wildcard certificates to serve them.** A tenant can
   now route `*.example.test` — and `*.shop.example.test`, at any depth — and the
