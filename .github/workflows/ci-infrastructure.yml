@@ -189,6 +189,14 @@ jobs:
       - name: Verify externalTrafficPolicy is set with externalIPs, and never at helm-install time
         run: ./scripts/ci-service-etp-check.sh
 
+  tls-wildcard-guard:
+    name: Wildcard TLS + DNS-01 solver guardrail (ADR-058)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify wildcard routing, solver registration and failure visibility
+        run: ./scripts/ci-tls-wildcard-check.sh
+
   system-tenant-guard:
     name: SYSTEM tenant protection guardrail (ADR-040)
     runs-on: ubuntu-latest

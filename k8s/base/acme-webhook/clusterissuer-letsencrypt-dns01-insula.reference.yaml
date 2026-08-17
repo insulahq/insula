@@ -1,4 +1,10 @@
+# REFERENCE COPY — not applied by Kustomize/Flux.
+#
 # Wildcard-capable ACME issuers, solved by the platform's own webhook.
+# The live objects are created with the operator's real ACME contact
+# address by `install_cert_manager()` in bootstrap.sh (fresh install) and
+# by platform-upgrade migration 0009 (existing cluster). This file exists
+# so the intended shape is reviewable in one place.
 #
 # One issuer per ACME environment rather than one per DNS provider: the
 # solver writes the challenge TXT through whichever DnsProviderAdapter

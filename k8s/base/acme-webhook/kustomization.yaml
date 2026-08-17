@@ -20,4 +20,12 @@ resources:
   - apiservice.yaml
   - rbac.yaml
   - networkpolicy.yaml
-  - clusterissuers.yaml
+
+# clusterissuer-letsencrypt-dns01-insula.reference.yaml is deliberately NOT
+# listed. ClusterIssuers carry the operator's Let's Encrypt contact address,
+# which is not knowable at render time — shipping them through Flux would
+# deploy `operator@example.com`, and Let's Encrypt rejects that contact. They
+# are created with the real address by bootstrap.sh on a fresh install and by
+# platform-upgrade migration 0009 on an existing cluster (which copies the
+# address off the HTTP-01 issuer that is already there). Same reasoning as
+# k8s/base/cert-manager/, which base/kustomization.yaml also does not import.
