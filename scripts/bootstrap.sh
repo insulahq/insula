@@ -4341,8 +4341,45 @@ install_calico() {
   # bootstrap 2026-07-11: operator stalled → CRDs never registered → "no matches for kind
   # Installation".)
   local calico_url="https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/tigera-operator.yaml"
+  local calico_manifest="/var/lib/insula/cache/tigera-operator-${CALICO_VERSION}.yaml"
   log "Installing tigera-operator (its runtime CRDs can take a few min on slow hardware)..."
-  kubectl apply --server-side --force-conflicts -f "$calico_url" >/dev/null 2>&1 || true
+
+  # Fetch to a FILE first, with retries, instead of letting kubectl pull the
+  # URL inside a swallowed `|| true`.
+  #
+  # WHY (2026-08-17, VM tier): raw.githubusercontent.com answered 429 Too Many
+  # Requests — a per-egress-IP rate limit, nothing to do with this cluster.
+  # `kubectl apply -f <url> >/dev/null 2>&1 || true` discarded that, so nothing
+  # was created and the install reported "Calico CRDs never registered" FIVE
+  # MINUTES LATER. The operator is then sent looking at a healthy operator that
+  # was never deployed. A pre-staged copy at $calico_manifest is used when
+  # present, which also covers air-gapped installs.
+  mkdir -p "$(dirname "$calico_manifest")"
+  if [[ -s "$calico_manifest" ]]; then
+    log "  using pre-staged manifest ${calico_manifest}"
+  else
+    local _try _http=""
+    for _try in 1 2 3 4 5; do
+      _http="$(curl -fsSL --max-time 60 -w '%{http_code}' -o "${calico_manifest}.tmp" "$calico_url" 2>/dev/null || echo "000")"
+      if [[ "$_http" == "200" && -s "${calico_manifest}.tmp" ]]; then
+        mv "${calico_manifest}.tmp" "$calico_manifest"
+        break
+      fi
+      rm -f "${calico_manifest}.tmp"
+      warn "  tigera-operator manifest download failed (HTTP ${_http}), attempt ${_try}/5 — retrying in $((_try * 10))s"
+      sleep $((_try * 10))
+    done
+    if [[ ! -s "$calico_manifest" ]]; then
+      error "Could not download the tigera-operator manifest from ${calico_url} (last HTTP ${_http}). Pre-stage it at ${calico_manifest} and re-run."
+      return 1
+    fi
+  fi
+
+  local _apply_out
+  if ! _apply_out="$(kubectl apply --server-side --force-conflicts -f "$calico_manifest" 2>&1)"; then
+    error "tigera-operator apply failed: $(printf '%s' "$_apply_out" | tail -3 | tr '\n' ' ')"
+    return 1
+  fi
   kubectl wait --for=condition=available --timeout=180s \
     deployment/tigera-operator -n tigera-operator >/dev/null 2>&1 || true
   local _crd _kicked=false calico_ok=true
