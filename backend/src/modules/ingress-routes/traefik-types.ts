@@ -16,6 +16,13 @@
  * accepts for these CRDs.
  */
 
+import {
+  isWildcardHostname,
+  labelCount,
+  normalizeHostname,
+  wildcardBase,
+} from '@insula/api-contracts';
+
 export const TRAEFIK_GROUP = 'traefik.io';
 export const TRAEFIK_VERSION = 'v1alpha1';
 export const INGRESSROUTE_PLURAL = 'ingressroutes';
@@ -558,10 +565,123 @@ export function encodeMatchLiteral(s: string): string {
   return s;
 }
 
+/**
+ * Traefik v3 rule for a hostname, wildcard-aware.
+ *
+ * `Host()` in Traefik v3 is an EXACT match — it has no wildcard form, so a
+ * literal `Host(`*.example.test`)` compiles fine and then matches nothing.
+ * Wildcards must go through `HostRegexp`, which takes a Go regexp.
+ *
+ * The generated regexp deliberately matches exactly ONE label
+ * (`[^.]+`), mirroring RFC 6125 certificate semantics: `*.example.test`
+ * serves `shop.example.test` but not `a.b.example.test`. A tenant who
+ * needs the deeper level registers `*.b.example.test` as its own route,
+ * which then gets its own wildcard certificate.
+ *
+ * `(?i)` because Traefik does not lowercase the Host header before
+ * matching a regexp (it does for `Host()`), and hostnames are
+ * case-insensitive.
+ */
 export function hostMatch(hostname: string): string {
-  return `Host(\`${encodeMatchLiteral(hostname)}\`)`;
+  const host = encodeMatchLiteral(normalizeHostname(hostname));
+  if (!isWildcardHostname(host)) {
+    return `Host(\`${host}\`)`;
+  }
+  const base = wildcardBase(host) as string;
+  return `HostRegexp(\`(?i)^[^.]+\\.${escapeRegexpLiteral(base)}$\`)`;
+}
+
+/** Escape a hostname for embedding in a Go regexp literal. */
+export function escapeRegexpLiteral(s: string): string {
+  return s.replace(/[.\\+*?()|[\]{}^$]/g, '\\$&');
 }
 
 export function hostAndPathMatch(hostname: string, pathPrefix: string): string {
-  return `Host(\`${encodeMatchLiteral(hostname)}\`) && PathPrefix(\`${encodeMatchLiteral(pathPrefix)}\`)`;
+  return `${hostMatch(hostname)} && PathPrefix(\`${encodeMatchLiteral(pathPrefix)}\`)`;
+}
+
+/**
+ * Compose the match for a route row: host, optionally narrowed by path.
+ * Single place so the HTTPS reconciler, the force-HTTPS companion and the
+ * protected-directory child routes cannot drift apart (they had three
+ * copies of this expression, one of which interpolated the hostname
+ * without the backtick guard).
+ */
+export function routeMatch(hostname: string, pathPrefix?: string | null): string {
+  return pathPrefix && pathPrefix !== '/'
+    ? hostAndPathMatch(hostname, pathPrefix)
+    : hostMatch(hostname);
+}
+
+// ─── Route priority ──────────────────────────────────────────────────
+//
+// Traefik evaluates the HIGHEST priority first and, left to itself,
+// derives a route's priority from its rule LENGTH ("the longest rule
+// wins"). Introducing wildcards breaks that default in a way that is
+// not merely cosmetic — it is a hostname-hijack vector:
+//
+//   `HostRegexp(`(?i)^[^.]+\.example\.test$`)`   → length 39
+//   `Host(`webmail.example.test`)`               → length 29
+//
+// The platform serves webmail / autodiscover / admin hostnames on tenant
+// domains from its OWN Ingresses, which carry no explicit priority. So a
+// tenant wildcard would outrank them on length alone and quietly swallow
+// the tenant's webmail traffic into the tenant's own workload.
+//
+// Fix: wildcards are pinned to a tiny priority band (≤ WILDCARD_PRIORITY_
+// CEILING) that sits below the shortest realistic exact-host rule
+// (`Host(`a.io`)` is already 12). Exact-host routes keep Traefik's
+// default, so their behaviour is completely unchanged by this feature.
+//
+// Ordering inside the wildcard band, most specific first:
+//   deeper wildcard   `*.a.example.test` beats `*.example.test`
+//   path-narrowed     `*.example.test` + /api beats the same host at /
+//   child route       a protected directory beats its own parent
+//
+// Note the deliberate consequence: an exact hostname beats a wildcard
+// even when the wildcard carries a longer path. Host specificity is the
+// stronger signal — the tenant named that host explicitly.
+
+/**
+ * Highest priority any wildcard route may carry. Must stay below the
+ * rule length of the shortest exact `Host()` rule Traefik can generate,
+ * because exact rules (ours and the platform's) rely on that default.
+ */
+export const WILDCARD_PRIORITY_CEILING = 10;
+
+/** Depth is capped so a pathological name can't climb out of the band. */
+const MAX_WILDCARD_DEPTH = 7;
+
+/**
+ * Explicit Traefik priority for a route, or `undefined` to leave
+ * Traefik's length-derived default in place (exact hostnames).
+ */
+export function routePriority(
+  hostname: string,
+  pathPrefix?: string | null,
+  opts?: { readonly child?: boolean },
+): number | undefined {
+  const host = normalizeHostname(hostname);
+  if (!isWildcardHostname(host)) return undefined;
+
+  const parent = wildcardBase(host) as string;
+  const depth = Math.min(labelCount(parent), MAX_WILDCARD_DEPTH);
+  const pathBonus = pathPrefix && pathPrefix !== '/' ? 1 : 0;
+  const childBonus = opts?.child ? 1 : 0;
+
+  return Math.min(depth + pathBonus + childBonus, WILDCARD_PRIORITY_CEILING);
+}
+
+/**
+ * Priority fragment for spreading into a TraefikRoute — omits the field
+ * entirely for exact hosts rather than writing `priority: undefined`,
+ * which would serialise into the CR as an explicit null.
+ */
+export function routePriorityFields(
+  hostname: string,
+  pathPrefix?: string | null,
+  opts?: { readonly child?: boolean },
+): { priority?: number } {
+  const priority = routePriority(hostname, pathPrefix, opts);
+  return priority === undefined ? {} : { priority };
 }

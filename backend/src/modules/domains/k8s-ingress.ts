@@ -24,6 +24,7 @@
  */
 
 import { eq, inArray } from 'drizzle-orm';
+import { longestMatchingDomain } from '@insula/api-contracts';
 import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
@@ -33,7 +34,8 @@ import {
   buildIngressRoute,
   buildTLSOption,
   clientAuthTypeForVerifyMode,
-  hostMatch,
+  routeMatch,
+  routePriorityFields,
   middlewareName,
 } from '../ingress-routes/traefik-types.js';
 import type { TraefikRoute } from '../ingress-routes/traefik-types.js';
@@ -389,10 +391,11 @@ export async function reconcileIngress(
     // spec.middlewareRefs, so the same list flows into both the
     // primary route AND every protected-dir child route below.
     const primary: TraefikRoute = {
-      match: route.path && route.path !== '/'
-        ? `${hostMatch(canonicalHost)} && PathPrefix(\`${route.path}\`)`
-        : hostMatch(canonicalHost),
+      match: routeMatch(canonicalHost, route.path),
       kind: 'Rule',
+      // Wildcards get an explicit low priority; exact hosts keep
+      // Traefik's default so their behaviour is unchanged.
+      ...routePriorityFields(canonicalHost, route.path),
       ...(spec.middlewareRefs.length > 0 ? { middlewares: spec.middlewareRefs } : {}),
       services: [{ name: backend.serviceName, port: backend.port }],
     };
@@ -441,9 +444,13 @@ export async function reconcileIngress(
       // Find the domain row matching this hostname so we can pass its
       // id to ensureRouteCertificate (it looks up dns_provider settings
       // by domainId).
-      const matchingDomain = tenantDomains.find((d) =>
-        d.domainName === hostname || hostname.endsWith(`.${d.domainName}`),
-      );
+      //
+      // MOST SPECIFIC wins: a tenant can hold both `example.test` and
+      // `a.example.test` as separate domains with different DNS provider
+      // groups. The previous `find()` took whichever row came back first,
+      // so `x.a.example.test` could be issued against the parent zone —
+      // and a wildcard hostname resolves through its parent name.
+      const matchingDomain = longestMatchingDomain(hostname, tenantDomains);
       if (!matchingDomain) continue;
       try {
         const cert = await ensureRouteCertificate(db, k8s, matchingDomain.id, hostname);
@@ -626,13 +633,10 @@ export function buildForceHttpsRoutes(
       canonicalHost = route.hostname.replace(/^www\./, '');
     }
 
-    const match = route.path && route.path !== '/'
-      ? `${hostMatch(canonicalHost)} && PathPrefix(\`${route.path}\`)`
-      : hostMatch(canonicalHost);
-
     out.push({
-      match,
+      match: routeMatch(canonicalHost, route.path),
       kind: 'Rule',
+      ...routePriorityFields(canonicalHost, route.path),
       middlewares: [{ name: middlewareName(route.id, 'force-https'), namespace }],
       services: [{ name: backend.serviceName, port: backend.port }],
     });
