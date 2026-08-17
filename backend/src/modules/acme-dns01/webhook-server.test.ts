@@ -99,6 +99,20 @@ describe('ChallengePayload contract', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it("accepts cert-manager's EMPTY uid — its client does not populate that field", () => {
+    // Requiring uid rejected every real challenge on the first live run.
+    const parsed = challengePayloadSchema.safeParse({
+      request: {
+        uid: '',
+        action: 'Present',
+        dnsName: '*.example.test',
+        key: 'token',
+        resolvedFQDN: '_acme-challenge.example.test.',
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
   it('rejects a payload missing the fields the solver needs', () => {
     expect(challengePayloadSchema.safeParse({ request: { uid: 'x' } }).success).toBe(false);
     expect(

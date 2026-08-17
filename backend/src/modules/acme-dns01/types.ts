@@ -21,7 +21,18 @@ export const ACME_WEBHOOK_VERSION = 'v1alpha1';
 export const ACME_WEBHOOK_SOLVER_NAME = 'insula-dns';
 
 export const challengeRequestSchema = z.object({
-  uid: z.string().min(1),
+  /**
+   * Echoed back on the response.
+   *
+   * NOT required: cert-manager's webhook CLIENT does not populate this —
+   * `uid` is filled in server-side by the Go apiserver scaffold, so the
+   * value that arrives over the wire is the empty string. Requiring it
+   * rejected every real challenge with "Too small: expected string to
+   * have >=1 characters", which cert-manager then surfaced as the
+   * Challenge's Reason. Caught on the first live run against
+   * cert-manager; no unit test of ours had the real payload.
+   */
+  uid: z.string().default(''),
   action: z.enum(['Present', 'CleanUp']),
   type: z.string().optional(),
   /** The identifier being validated, e.g. `example.test` or `*.example.test`. */
