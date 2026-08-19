@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.6] - 2026-08-19
+
 ### Fixed
 - **Most DNS record types were never written to the DNS server, and the panel
   reported success anyway.** Verified against a real PowerDNS 4.9: `MX` was
