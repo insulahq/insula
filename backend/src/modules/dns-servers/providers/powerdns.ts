@@ -1,5 +1,6 @@
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, PowerDnsConfig } from './types.js';
 import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
+import { fqdn, qualifyName, formatContent } from '../wire-format.js';
 
 /**
  * PowerDNS Authoritative Server provider (API v4 / v5).
@@ -58,7 +59,7 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async getZone(name: string): Promise<DnsZone | null> {
-    const normalized = name.endsWith('.') ? name : `${name}.`;
+    const normalized = fqdn(name);
     try {
       const zone = await this.request<PdnsZone>(`/zones/${normalized}`);
       return toZone(zone);
@@ -68,7 +69,7 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async createZone(name: string, kind: 'Native' | 'Master', nameservers?: string[]): Promise<DnsZone> {
-    const normalized = name.endsWith('.') ? name : `${name}.`;
+    const normalized = fqdn(name);
 
     // Check if zone already exists
     const existing = await this.getZone(normalized);
@@ -110,12 +111,12 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async deleteZone(name: string): Promise<void> {
-    const normalized = name.endsWith('.') ? name : `${name}.`;
+    const normalized = fqdn(name);
     await this.request<void>(`/zones/${normalized}`, { method: 'DELETE' });
   }
 
   async listRecords(zone: string): Promise<DnsRecord[]> {
-    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const normalized = fqdn(zone);
     const zoneData = await this.request<PdnsZoneDetail>(`/zones/${normalized}`);
 
     const records: DnsRecord[] = [];
@@ -135,24 +136,31 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async createRecord(zone: string, input: DnsRecordInput): Promise<DnsRecord> {
-    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
-    // '@' means zone root; other names become FQDN with trailing dot
-    const recordName = input.name === '@' || input.name === ''
-      ? normalized
-      : input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
+    const normalized = fqdn(zone);
+    const recordName = qualifyName(zone, input.name);
+
+    // Build the content FIRST: formatContent throws on a record whose
+    // mandatory numeric fields are missing, and failing before the GET keeps
+    // the error about the record rather than about the zone.
+    const newContent = formatContent(input);
 
     // PowerDNS RRSets are keyed by (name, type). REPLACE replaces ALL records
     // in the set, so we must include existing records to avoid overwriting them.
     let existingRecords: Array<{ content: string; disabled: boolean }> = [];
     try {
-      const zone = await this.request<{ rrsets?: Array<{ name: string; type: string; records: Array<{ content: string; disabled: boolean }> }> }>(`/zones/${normalized}`);
-      const rrset = zone.rrsets?.find(rr => rr.name === recordName && rr.type === input.type);
+      const zoneDetail = await this.request<{ rrsets?: Array<{ name: string; type: string; records: Array<{ content: string; disabled: boolean }> }> }>(`/zones/${normalized}`);
+      // DNS names are case-insensitive and PowerDNS echoes back whatever case
+      // the RRset was created with — compare case-folded or an existing set
+      // gets silently clobbered.
+      const rrset = zoneDetail.rrsets?.find(
+        rr => rr.name.toLowerCase() === recordName.toLowerCase()
+          && rr.type.toUpperCase() === input.type.toUpperCase(),
+      );
       if (rrset) {
         existingRecords = rrset.records.filter(r => !r.disabled);
       }
     } catch { /* zone might not exist yet */ }
 
-    const newContent = formatContent(input);
     // Don't add duplicate
     if (!existingRecords.some(r => r.content === newContent)) {
       existingRecords.push({ content: newContent, disabled: false });
@@ -172,10 +180,10 @@ export class PowerDnsProvider implements DnsProviderAdapter {
     });
 
     return {
-      id: `${recordName}|${input.type}|${formatContent(input)}`,
+      id: `${recordName}|${input.type}|${newContent}`,
       type: input.type,
       name: recordName,
-      content: formatContent(input),
+      content: newContent,
       ttl: input.ttl ?? 3600,
       priority: input.priority ?? null,
     };
@@ -183,16 +191,28 @@ export class PowerDnsProvider implements DnsProviderAdapter {
 
   async updateRecord(zone: string, recordId: string, input: Partial<DnsRecordInput>): Promise<DnsRecord> {
     const [name, type] = recordId.split('|');
-    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const normalized = fqdn(zone);
+    const recordName = qualifyName(zone, name);
+    const recordType = (input.type ?? type).toUpperCase();
 
-    const content = input.content ?? recordId.split('|')[2];
+    // Route the new value through formatContent so an update lands in the
+    // same wire format a create would produce — otherwise editing an MX in
+    // the panel wrote a bare hostname straight back and 422'd.
+    const content = formatContent({
+      type: recordType,
+      name: recordName,
+      content: input.content ?? recordId.split('|')[2],
+      priority: input.priority,
+      weight: input.weight,
+      port: input.port,
+    });
 
     await this.request<void>(`/zones/${normalized}`, {
       method: 'PATCH',
       body: JSON.stringify({
         rrsets: [{
-          name,
-          type: input.type ?? type,
+          name: recordName,
+          type: recordType,
           ttl: input.ttl ?? 3600,
           changetype: 'REPLACE',
           records: [{ content, disabled: false }],
@@ -201,9 +221,9 @@ export class PowerDnsProvider implements DnsProviderAdapter {
     });
 
     return {
-      id: `${name}|${input.type ?? type}|${content}`,
-      type: input.type ?? type,
-      name,
+      id: `${recordName}|${recordType}|${content}`,
+      type: recordType,
+      name: recordName,
       content,
       ttl: input.ttl ?? 3600,
       priority: input.priority ?? null,
@@ -212,11 +232,8 @@ export class PowerDnsProvider implements DnsProviderAdapter {
 
   async deleteRecord(zone: string, recordId: string): Promise<void> {
     const [name, type] = recordId.split('|');
-    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
-    // Ensure record name is FQDN with trailing dot
-    const recordName = name === '@' || name === ''
-      ? normalized
-      : name.endsWith('.') ? name : `${name}.${normalized}`;
+    const normalized = fqdn(zone);
+    const recordName = qualifyName(zone, name);
 
     await this.request<void>(`/zones/${normalized}`, {
       method: 'PATCH',
@@ -232,7 +249,7 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async createSlaveZone(name: string, masterIp: string): Promise<DnsZone> {
-    const normalized = name.endsWith('.') ? name : `${name}.`;
+    const normalized = fqdn(name);
 
     // Check if zone already exists
     const existing = await this.getZone(normalized);
@@ -263,10 +280,8 @@ export class PowerDnsProvider implements DnsProviderAdapter {
    * what's left (or DELETEs when nothing is).
    */
   async deleteRecordValue(zone: string, input: DnsRecordInput): Promise<void> {
-    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
-    const recordName = input.name === '@' || input.name === ''
-      ? normalized
-      : input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
+    const normalized = fqdn(zone);
+    const recordName = qualifyName(zone, input.name);
     const target = formatContent(input);
 
     let remaining: Array<{ content: string; disabled: boolean }> = [];
@@ -274,7 +289,10 @@ export class PowerDnsProvider implements DnsProviderAdapter {
       const zoneDetail = await this.request<{
         rrsets?: Array<{ name: string; type: string; records: Array<{ content: string; disabled: boolean }> }>;
       }>(`/zones/${normalized}`);
-      const rrset = zoneDetail.rrsets?.find(rr => rr.name === recordName && rr.type === input.type);
+      const rrset = zoneDetail.rrsets?.find(
+        rr => rr.name.toLowerCase() === recordName.toLowerCase()
+          && rr.type.toUpperCase() === input.type.toUpperCase(),
+      );
       if (!rrset) return; // already gone — idempotent
       remaining = rrset.records.filter(r => r.content !== target);
       if (remaining.length === rrset.records.length) return; // value not present
@@ -301,7 +319,7 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async replaceNsRecords(zone: string, nameservers: string[]): Promise<void> {
-    const normalized = zone.endsWith('.') ? zone : `${zone}.`;
+    const normalized = fqdn(zone);
     const records = nameservers.map(ns => ({
       content: ns.endsWith('.') ? ns : `${ns}.`,
       disabled: false,
@@ -322,7 +340,7 @@ export class PowerDnsProvider implements DnsProviderAdapter {
   }
 
   async getZoneAxfrStatus(name: string): Promise<{ synced: boolean; lastSoaSerial?: number }> {
-    const normalized = name.endsWith('.') ? name : `${name}.`;
+    const normalized = fqdn(name);
     try {
       const zoneData = await this.request<PdnsZoneDetail>(`/zones/${normalized}`);
       const soaRrset = zoneData.rrsets?.find((rrset) => rrset.type === 'SOA');
@@ -364,25 +382,12 @@ function toZone(z: PdnsZone): DnsZone {
   return { name: z.name, kind: z.kind, serial: z.serial };
 }
 
-function formatContent(input: DnsRecordInput): string {
-  if (input.type === 'MX' && input.priority != null) {
-    return `${input.priority} ${input.content}`;
-  }
-  // PowerDNS requires TXT/SPF records to be double-quoted
-  if ((input.type === 'TXT' || input.type === 'SPF') && !input.content.startsWith('"')) {
-    return `"${input.content}"`;
-  }
-  // CNAME, MX, NS, PTR targets must be FQDN with trailing dot
-  if (['CNAME', 'NS', 'PTR', 'DNAME'].includes(input.type) && !input.content.endsWith('.')) {
-    return `${input.content}.`;
-  }
-  return input.content;
-}
-
 function parsePriority(type: string, content: string): number | null {
-  if (type === 'MX') {
-    const parts = content.split(/\s+/);
-    return parts.length >= 2 ? parseInt(parts[0], 10) : null;
+  if (type === 'MX' || type === 'SRV') {
+    const parts = content.trim().split(/\s+/);
+    if (parts.length < 2) return null;
+    const n = parseInt(parts[0], 10);
+    return Number.isNaN(n) ? null : n;
   }
   return null;
 }

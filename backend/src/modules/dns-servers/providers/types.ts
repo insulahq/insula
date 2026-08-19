@@ -21,7 +21,14 @@ export interface DnsRecordInput {
   readonly name: string;
   readonly content: string;
   readonly ttl?: number;
+  /** MX preference / SRV priority. REQUIRED for MX and SRV — the wire
+   *  format embeds it in the record content, and providers reject content
+   *  that is missing it. */
   readonly priority?: number;
+  /** SRV weight. REQUIRED for SRV. */
+  readonly weight?: number;
+  /** SRV port. REQUIRED for SRV. */
+  readonly port?: number;
 }
 
 export interface DnsProviderAdapter {

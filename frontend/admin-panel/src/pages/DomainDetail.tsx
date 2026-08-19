@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { dnsRecordFieldsFor } from '@insula/api-contracts';
 import ManagedCertificateCard from '@/components/ManagedCertificateCard';
 import { useParams, Link } from 'react-router-dom';
 import {
@@ -474,19 +475,29 @@ function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; read
     record_value: '',
     ttl: '3600',
     priority: '',
+    weight: '',
+    port: '',
   });
+
+  // The form carried a `priority` in state but never rendered an input for
+  // it, so it was always '' — every MX created here was refused by the DNS
+  // server. SRV needs weight+port on top.
+  const fields = dnsRecordFieldsFor(form.record_type);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
+      const numeric = (raw: string) => (raw.trim() === '' ? undefined : Number(raw));
       await createRecord.mutateAsync({
         record_type: form.record_type,
         record_name: form.record_name || undefined,
         record_value: form.record_value,
         ttl: Number(form.ttl) || 3600,
-        priority: form.priority ? Number(form.priority) : undefined,
+        priority: fields.priority ? numeric(form.priority) : undefined,
+        weight: fields.srvFields ? numeric(form.weight) : undefined,
+        port: fields.srvFields ? numeric(form.port) : undefined,
       });
-      setForm({ record_type: 'A', record_name: '', record_value: '', ttl: '3600', priority: '' });
+      setForm({ record_type: 'A', record_name: '', record_value: '', ttl: '3600', priority: '', weight: '', port: '' });
       setShowForm(false);
     } catch { /* error available via createRecord.error */ }
   };
@@ -525,7 +536,7 @@ function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; read
                 className={INPUT_CLASS}
                 data-testid="dns-type-select"
               >
-                {['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS'].map((t) => (
+                {['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'CAA'].map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
@@ -548,7 +559,7 @@ function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; read
                 id="dns-value"
                 type="text"
                 className={INPUT_CLASS}
-                placeholder="192.168.1.1"
+                placeholder={fields.valuePlaceholder}
                 value={form.record_value}
                 onChange={(e) => setForm({ ...form, record_value: e.target.value })}
                 required
@@ -579,6 +590,33 @@ function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; read
               </button>
             </div>
           </div>
+
+          {(fields.priority || fields.srvFields) && (
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-5">
+              {fields.priority && (
+                <div>
+                  <label htmlFor="dns-priority" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Priority</label>
+                  <input id="dns-priority" type="number" min={0} max={65535} className={INPUT_CLASS} placeholder="10" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} required data-testid="dns-priority-input" />
+                </div>
+              )}
+              {fields.srvFields && (
+                <>
+                  <div>
+                    <label htmlFor="dns-weight" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Weight</label>
+                    <input id="dns-weight" type="number" min={0} max={65535} className={INPUT_CLASS} placeholder="5" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} required data-testid="dns-weight-input" />
+                  </div>
+                  <div>
+                    <label htmlFor="dns-port" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Port</label>
+                    <input id="dns-port" type="number" min={0} max={65535} className={INPUT_CLASS} placeholder="5060" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} required data-testid="dns-port-input" />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {fields.valueHint && (
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400" data-testid="dns-value-hint">{fields.valueHint}</p>
+          )}
           {createRecord.error && (
             <div className="mt-3 flex items-center gap-2 text-sm text-red-600 dark:text-red-400" data-testid="dns-create-error">
               <AlertCircle size={14} />

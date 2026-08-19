@@ -268,7 +268,11 @@ describe('PowerDnsProvider', () => {
       expect(body.rrsets[0].changetype).toBe('REPLACE');
     });
 
-    it('should format MX records with priority', async () => {
+    // Uses the shape the PANEL actually sends — a bare hostname plus a
+    // separate priority. The previous version of this test pre-formatted
+    // the content (`'mail.example.com.'`), so it passed for years while
+    // every real MX write was 422'd by PowerDNS.
+    it('should format MX records from a bare hostname + priority', async () => {
       const { fn, calls } = mockFetch([
         { status: 200, body: { rrsets: [] } },
         { status: 204 },
@@ -277,11 +281,73 @@ describe('PowerDnsProvider', () => {
 
       const provider = new PowerDnsProvider(config);
       await provider.createRecord('example.com', {
-        type: 'MX', name: 'mail', content: 'mail.example.com.', priority: 10,
+        type: 'MX', name: 'mail', content: 'mail.example.com', priority: 10,
       });
 
       const body = JSON.parse(calls[1].options.body as string);
       expect(body.rrsets[0].records[0].content).toBe('10 mail.example.com.');
+    });
+
+    it('should refuse an MX with no priority before issuing any request', async () => {
+      const { fn, calls } = mockFetch([{ status: 200, body: { rrsets: [] } }, { status: 204 }]);
+      globalThis.fetch = fn;
+
+      const provider = new PowerDnsProvider(config);
+      await expect(provider.createRecord('example.com', {
+        type: 'MX', name: 'mail', content: 'mail.example.com',
+      })).rejects.toThrow(/require a priority/i);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('should compose SRV content from priority/weight/port', async () => {
+      const { fn, calls } = mockFetch([
+        { status: 200, body: { rrsets: [] } },
+        { status: 204 },
+      ]);
+      globalThis.fetch = fn;
+
+      const provider = new PowerDnsProvider(config);
+      await provider.createRecord('example.com', {
+        type: 'SRV', name: '_sip._tcp', content: 'sip.example.com',
+        priority: 10, weight: 5, port: 5060,
+      });
+
+      const body = JSON.parse(calls[1].options.body as string);
+      expect(body.rrsets[0].records[0].content).toBe('10 5 5060 sip.example.com.');
+    });
+
+    // The bug that published every mail record to `example.com.example.com.`
+    it('should not append the zone to a record name that is already the apex', async () => {
+      const { fn, calls } = mockFetch([
+        { status: 200, body: { rrsets: [] } },
+        { status: 204 },
+      ]);
+      globalThis.fetch = fn;
+
+      const provider = new PowerDnsProvider(config);
+      await provider.createRecord('example.com', {
+        type: 'TXT', name: 'example.com', content: 'v=spf1 mx ~all',
+      });
+
+      const body = JSON.parse(calls[1].options.body as string);
+      expect(body.rrsets[0].name).toBe('example.com.');
+    });
+
+    it('should preserve other values in an existing RRset regardless of name case', async () => {
+      const { fn, calls } = mockFetch([
+        { status: 200, body: { rrsets: [{ name: 'Example.com.', type: 'MX', records: [{ content: '10 mail1.example.com.', disabled: false }] }] } },
+        { status: 204 },
+      ]);
+      globalThis.fetch = fn;
+
+      const provider = new PowerDnsProvider(config);
+      await provider.createRecord('example.com', {
+        type: 'MX', name: '@', content: 'mail2.example.com', priority: 20,
+      });
+
+      const body = JSON.parse(calls[1].options.body as string);
+      expect(body.rrsets[0].records.map((r: { content: string }) => r.content))
+        .toEqual(['10 mail1.example.com.', '20 mail2.example.com.']);
     });
   });
 

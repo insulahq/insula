@@ -4,19 +4,45 @@ import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getReservedPlatformHostnames } from '../system-tenant/reserved-subdomains.js';
+import { computeRecordDiff, type DnsRecordDiffEntry } from './diff.js';
 import type { Database } from '../../db/index.js';
 import type { CreateDnsRecordInput, UpdateDnsRecordInput } from './schema.js';
 import type { DnsRecord as DnsRecordRow } from '../../db/schema.js';
 
 const encryptionKey = () => process.env.PLATFORM_ENCRYPTION_KEY ?? '0'.repeat(64) /* Dev-only fallback — production requires PLATFORM_ENCRYPTION_KEY env var */;
 
+/**
+ * Result of pushing one record to the domain's authoritative servers.
+ *
+ * `syncRecordToProviders` deliberately never throws — a dozen callers
+ * (ingress-routes, dkim publish, stalwart dns-sync, apex-drift repair)
+ * treat DNS publication as best-effort and must not fail their own
+ * transaction on it. Callers that DO owe the operator an answer
+ * (record CRUD, the Sync Records push button) inspect this instead.
+ *
+ * Before ADR-058's follow-up, every provider error here was a
+ * `console.warn` and the API still answered 201 Created. MX, SRV and CAA
+ * records were rejected by PowerDNS for years while the panel reported
+ * success — see `formatContent` in dns-servers/wire-format.ts.
+ */
+export type DnsSyncOutcome =
+  | { readonly status: 'published'; readonly servers: number }
+  | { readonly status: 'skipped'; readonly reason: string }
+  | { readonly status: 'failed'; readonly errors: ReadonlyArray<{ server: string; message: string }> };
+
+/** Collapse per-server failures into one operator-facing sentence. */
+export function describeSyncFailure(outcome: Extract<DnsSyncOutcome, { status: 'failed' }>): string {
+  if (outcome.errors.length === 1) return outcome.errors[0].message;
+  return outcome.errors.map((e) => `${e.server}: ${e.message}`).join('; ');
+}
+
 export async function syncRecordToProviders(
   db: Database,
   domainName: string,
   action: 'create' | 'update' | 'delete',
-  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string },
+  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; weight?: number | null; port?: number | null; id?: string },
   domainId?: string,
-) {
+): Promise<DnsSyncOutcome> {
   try {
     // Phase 2c: gate record writes on DNS authority. Previously this function
     // happily iterated all servers and logged warnings when writes silently
@@ -43,47 +69,76 @@ export async function syncRecordToProviders(
         if (!canManage) {
           // Not an error — dnsMode=cname is the default for customer-managed
           // domains, and record writes simply don't apply.
-          console.info(
-            `[dns-sync] Skipping ${action} on '${domainName}' — platform is not authoritative for this zone (dnsMode=${domain.dnsMode})`,
-          );
-          return;
+          const reason = `platform is not authoritative for this zone (dnsMode=${domain.dnsMode})`;
+          console.info(`[dns-sync] Skipping ${action} on '${domainName}' — ${reason}`);
+          return { status: 'skipped', reason };
         }
 
-        for (const server of servers) {
-          try {
-            const provider = getProviderForServer(server, encryptionKey());
-            if (action === 'create' || action === 'update') {
-              await provider.createRecord(domainName, { type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 3600, priority: record.priority ?? undefined });
-            } else if (action === 'delete' && record.id) {
-              await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
-            }
-          } catch (err) {
-            console.warn(`[dns-sync] Failed to ${action} record on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
-          }
-        }
-        return;
+        return await pushToServers(servers, domainName, action, record);
       }
     }
 
     // Backwards-compat fallback: no domainId → push to all active servers.
     // Callers that hit this path haven't migrated to the domain-scoped API
-    // yet; they get the old silent-failure behaviour until they do.
+    // yet; authority can't be resolved without a domain, so we just try.
     const servers = await getActiveServers(db);
-    for (const server of servers) {
-      try {
-        const provider = getProviderForServer(server, encryptionKey());
-        if (action === 'create' || action === 'update') {
-          await provider.createRecord(domainName, { type: record.type, name: record.name, content: record.content, ttl: record.ttl ?? 3600, priority: record.priority ?? undefined });
-        } else if (action === 'delete' && record.id) {
-          await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
-        }
-      } catch (err) {
-        console.warn(`[dns-sync] Failed to ${action} record on ${server.displayName}:`, err instanceof Error ? err.message : String(err));
-      }
-    }
+    return await pushToServers(servers, domainName, action, record);
   } catch (err) {
-    console.warn('[dns-sync] Failed to get active DNS servers:', err instanceof Error ? err.message : String(err));
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn('[dns-sync] Failed to get active DNS servers:', message);
+    return { status: 'failed', errors: [{ server: '(resolution)', message }] };
   }
+}
+
+/**
+ * Push one record to every server, collecting failures rather than
+ * swallowing them.
+ *
+ * All-or-nothing by design: a record that reaches some primaries but not
+ * others leaves the zone inconsistent, and the operator has to know. In
+ * practice a provider group has a single primary (record CRUD targets the
+ * group's primary — see the DNS provider groups section of AGENTS.md), so
+ * "any failure" and "total failure" coincide.
+ */
+async function pushToServers(
+  servers: ReadonlyArray<{ id: string; displayName: string; providerType: string; enabled: number; role: string }>,
+  domainName: string,
+  action: 'create' | 'update' | 'delete',
+  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; weight?: number | null; port?: number | null; id?: string },
+): Promise<DnsSyncOutcome> {
+  if (servers.length === 0) {
+    return { status: 'skipped', reason: 'no DNS servers are configured for this domain' };
+  }
+
+  const errors: Array<{ server: string; message: string }> = [];
+  for (const server of servers) {
+    try {
+      const provider = getProviderForServer(server as never, encryptionKey());
+      if (action === 'create' || action === 'update') {
+        await provider.createRecord(domainName, {
+          type: record.type,
+          name: record.name,
+          content: record.content,
+          ttl: record.ttl ?? 3600,
+          // weight/port matter for SRV; without them the provider cannot
+          // build valid content and refuses the record outright.
+          priority: record.priority ?? undefined,
+          weight: record.weight ?? undefined,
+          port: record.port ?? undefined,
+        });
+      } else if (action === 'delete' && record.id) {
+        await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[dns-sync] Failed to ${action} ${record.type} '${record.name}' on ${server.displayName}: ${message}`);
+      errors.push({ server: server.displayName, message });
+    }
+  }
+
+  return errors.length > 0
+    ? { status: 'failed', errors }
+    : { status: 'published', servers: servers.length };
 }
 
 async function verifyDomainOwnership(db: Database, tenantId: string, domainId: string) {
@@ -110,15 +165,33 @@ export async function listDnsRecords(db: Database, tenantId: string, domainId: s
 /**
  * ADR-040 §3 Q5 reservation enforcement for DNS records.
  *
- * Refuses records that:
- *   (a) Have an effective FQDN (record_name + parent domain) matching
- *       a platform-reserved hostname. Catches a tenant who somehow
- *       owns a parent zone like `<apex>` adding `admin` as a record.
- *   (b) Are CNAME/A/AAAA records whose *value* points at a reserved
- *       platform hostname. Blocks the hijack-by-CNAME pattern where a
- *       tenant points their own zone at `admin.<apex>`.
+ * Refuses records whose effective FQDN (record_name + parent domain)
+ * matches a platform-reserved hostname — catching a tenant who somehow
+ * owns a parent zone like `<apex>` and adds `admin` as a record.
  *
- * Throws `RESERVED_PLATFORM_HOSTNAME` (HTTP 409) when either applies.
+ * Throws `RESERVED_PLATFORM_HOSTNAME` (HTTP 409) when it applies.
+ *
+ * ── Why there is no check on the record VALUE ──────────────────────
+ * This used to also refuse CNAME/A/AAAA/MX/NS/SRV records whose *target*
+ * was a reserved hostname, to block a supposed "hijack by CNAME". It
+ * blocked no attack and broke the platform's own documented flows:
+ *
+ *   - The tenant panel tells customers to CNAME their hostname at the
+ *     ingress base domain, which is reserved by the `ingress` label.
+ *   - `buildEmailDnsRecords` points every tenant MX at `mail.<apex>`,
+ *     which is reserved as the platform mail server. A tenant adding
+ *     that record by hand — the documented fallback when the platform
+ *     cannot write the zone — got a 409.
+ *
+ * Pointing a record you already own at a platform hostname grants
+ * nothing: name resolution is not authorization. Traefik routes on the
+ * Host header, so a CNAME to `admin.<apex>` still arrives carrying the
+ * tenant's own hostname and matches no admin route; and every admin UI
+ * Ingress carries a mandatory auth gate (`ci-admin-auth-check.sh`).
+ * The controls that DO stop a hijack are the check below (the record's
+ * own name) and the reserved-hostname guard in `domains/service.ts`
+ * that stops the tenant registering `admin.<apex>` in the first place.
+ * Both are unchanged.
  */
 async function assertNotReservedHostname(
   db: Database,
@@ -163,29 +236,6 @@ async function assertNotReservedHostname(
     );
   }
 
-  // Case (b): record-value targets pointing at a reserved hostname.
-  // Cover every record type whose value is a hostname rather than an
-  // arbitrary string. CNAME/A/AAAA are the obvious hijack vectors;
-  // MX/NS/SRV are checked for completeness so a future audit can't
-  // find a record type that points at a reserved hostname unchecked.
-  // (TXT/SPF/CAA values are strings, not hostnames — not checked.)
-  const targetType = input.record_type as string;
-  const hostnameTargetTypes = new Set(['CNAME', 'A', 'AAAA', 'MX', 'NS', 'SRV']);
-  if (hostnameTargetTypes.has(targetType)) {
-    const target = lower(input.record_value);
-    if (reserved.fqdns.has(target)) {
-      const reason = reserved.reasons.get(target) ?? 'platform-reserved hostname';
-      throw new ApiError(
-        'RESERVED_PLATFORM_HOSTNAME',
-        `DNS record target '${target}' is a platform-reserved hostname (${reason}).`,
-        409,
-        {
-          hostname: target,
-          reservedFor: reason,
-        },
-      );
-    }
-  }
 }
 
 export async function createDnsRecord(
@@ -230,10 +280,23 @@ export async function createDnsRecord(
   // Sync to external DNS servers (domain-scoped)
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain) {
-    await syncRecordToProviders(db, domain.domainName, 'create', {
+    const outcome = await syncRecordToProviders(db, domain.domainName, 'create', {
       type: input.record_type, name: input.record_name ?? '@', content: input.record_value,
-      ttl: input.ttl, priority: input.priority,
+      ttl: input.ttl, priority: input.priority, weight: input.weight, port: input.port,
     }, domainId);
+
+    // A record the authoritative server refused is not a record. Keeping the
+    // local row while answering 201 is exactly how MX/SRV/CAA appeared to
+    // work in the panel for years while never existing in DNS.
+    if (outcome.status === 'failed') {
+      await db.delete(dnsRecords).where(eq(dnsRecords.id, id));
+      throw new ApiError(
+        'DNS_PUBLISH_FAILED',
+        `The DNS server rejected this record: ${describeSyncFailure(outcome)}`,
+        502,
+        { recordType: input.record_type, recordName: input.record_name ?? '@', errors: outcome.errors },
+      );
+    }
   }
 
   return created;
@@ -257,18 +320,10 @@ export async function updateDnsRecord(
     throw new ApiError('DNS_RECORD_NOT_FOUND', `DNS record '${recordId}' not found`, 404);
   }
 
-  // ADR-040 §3 Q5: also enforce reserved-hostname rules on UPDATE.
-  // Without this, a tenant could create a benign record and PATCH
-  // its `record_value` to a platform-reserved hostname, bypassing the
-  // create-time check. Re-use the same helper as createDnsRecord by
-  // synthesizing the input shape with the updated value.
-  if (input.record_value !== undefined) {
-    await assertNotReservedHostname(db, domainId, tenantId, {
-      record_type: record.recordType,
-      record_name: record.recordName,
-      record_value: input.record_value,
-    } as CreateDnsRecordInput);
-  }
+  // No reserved-hostname re-check on UPDATE: the guard keys off the
+  // record's own name, and `updateDnsRecordSchema` cannot change it.
+  // (It used to re-check the record VALUE — see assertNotReservedHostname
+  // for why that check is gone.)
 
   const updateValues: Record<string, unknown> = {};
   if (input.record_value !== undefined) updateValues.recordValue = input.record_value;
@@ -292,14 +347,37 @@ export async function updateDnsRecord(
   // Sync updated record to external DNS servers (domain-scoped)
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain && updated) {
-    await syncRecordToProviders(db, domain.domainName, 'update', {
+    const outcome = await syncRecordToProviders(db, domain.domainName, 'update', {
       type: updated.recordType,
       name: updated.recordName ?? '@',
       content: updated.recordValue ?? '',
       ttl: updated.ttl,
       priority: updated.priority,
+      weight: updated.weight,
+      port: updated.port,
       id: recordId,
     }, domainId);
+
+    // Restore the pre-edit row so the panel never shows a value the
+    // authoritative server never accepted.
+    if (outcome.status === 'failed') {
+      await db
+        .update(dnsRecords)
+        .set({
+          recordValue: record.recordValue,
+          ttl: record.ttl,
+          priority: record.priority,
+          weight: record.weight,
+          port: record.port,
+        })
+        .where(eq(dnsRecords.id, recordId));
+      throw new ApiError(
+        'DNS_PUBLISH_FAILED',
+        `The DNS server rejected this change: ${describeSyncFailure(outcome)}`,
+        502,
+        { recordType: updated.recordType, recordName: updated.recordName ?? '@', errors: outcome.errors },
+      );
+    }
   }
 
   return updated;
@@ -322,25 +400,32 @@ export async function deleteDnsRecord(
     throw new ApiError('DNS_RECORD_NOT_FOUND', `DNS record '${recordId}' not found`, 404);
   }
 
-  await db.delete(dnsRecords).where(eq(dnsRecords.id, recordId));
-
-  // Sync deletion to external DNS servers (domain-scoped)
+  // Delete REMOTELY FIRST, then locally. The reverse order loses the row
+  // whenever the provider call fails, leaving a record that is gone from the
+  // panel but still resolving in DNS — with nothing left to retry from.
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (domain && record.recordType && record.recordValue) {
-    await syncRecordToProviders(db, domain.domainName, 'delete', {
+    const outcome = await syncRecordToProviders(db, domain.domainName, 'delete', {
       type: record.recordType, name: record.recordName ?? '@', content: record.recordValue ?? '',
       id: recordId,
     }, domainId);
+
+    if (outcome.status === 'failed') {
+      throw new ApiError(
+        'DNS_PUBLISH_FAILED',
+        `The DNS server rejected this deletion: ${describeSyncFailure(outcome)}`,
+        502,
+        { recordType: record.recordType, recordName: record.recordName ?? '@', errors: outcome.errors },
+      );
+    }
   }
+
+  await db.delete(dnsRecords).where(eq(dnsRecords.id, recordId));
 }
 
-export interface DnsRecordDiffEntry {
-  readonly type: string;
-  readonly name: string;
-  readonly local: { value: string; ttl: number; id: string } | null;
-  readonly remote: { value: string; ttl: number } | null;
-  readonly status: 'in_sync' | 'conflict' | 'local_only' | 'remote_only';
-}
+/** Re-exported so existing importers of this module keep working; the
+ *  type and the comparison itself live in `./diff.ts`. */
+export type { DnsRecordDiffEntry } from './diff.js';
 
 export async function diffRecordsWithProvider(
   db: Database,
@@ -371,97 +456,46 @@ export async function diffRecordsWithProvider(
     throw new ApiError('DNS_PROVIDER_ERROR', 'Failed to fetch records from DNS server', 503);
   }
 
-  // Normalize names for comparison
-  const domainFqdn = domainRow.domainName.endsWith('.') ? domainRow.domainName : `${domainRow.domainName}.`;
+  return computeRecordDiff(domainRow.domainName, localRecords, remoteRecords);
+}
 
-  function normalizeRecordName(name: string | null | undefined): string {
-    if (!name || name === '@') return '@';
-    const n = name.endsWith('.') ? name : `${name}.`;
-    // Strip the domain suffix to get relative name
-    if (n === domainFqdn) return '@';
-    if (n.endsWith(`.${domainFqdn}`)) return n.slice(0, -(domainFqdn.length + 1));
-    return name;
+/**
+ * Adopt a provider-side value into the local row without pushing it back.
+ *
+ * Used by the Sync Records "pull" action: the value being written came FROM
+ * the provider, so re-publishing it is at best a no-op and at worst a
+ * spurious failure on a record the provider already accepts.
+ */
+export async function updateDnsRecordLocalOnly(
+  db: Database,
+  tenantId: string,
+  domainId: string,
+  recordId: string,
+  input: UpdateDnsRecordInput,
+) {
+  await verifyDomainOwnership(db, tenantId, domainId);
+
+  const [record] = await db
+    .select()
+    .from(dnsRecords)
+    .where(and(eq(dnsRecords.id, recordId), eq(dnsRecords.domainId, domainId)));
+  if (!record) {
+    throw new ApiError('DNS_RECORD_NOT_FOUND', `DNS record '${recordId}' not found`, 404);
   }
 
-  // Normalize value for comparison (strip TXT quotes, trailing dots on CNAME/NS/MX targets)
-  function normalizeValue(value: string): string {
-    let v = value;
-    if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
-    return v;
+  const updateValues: Record<string, unknown> = {};
+  if (input.record_value !== undefined) updateValues.recordValue = input.record_value;
+  if (input.ttl !== undefined) updateValues.ttl = input.ttl;
+  if (input.priority !== undefined) updateValues.priority = input.priority;
+  if (input.weight !== undefined) updateValues.weight = input.weight;
+  if (input.port !== undefined) updateValues.port = input.port;
+
+  if (Object.keys(updateValues).length > 0) {
+    await db.update(dnsRecords).set(updateValues).where(eq(dnsRecords.id, recordId));
   }
 
-  // Build maps keyed by "type|normalizedName|normalizedValue"
-  const localMap = new Map<string, typeof localRecords[0]>();
-  for (const r of localRecords) {
-    const key = `${r.recordType}|${normalizeRecordName(r.recordName)}|${normalizeValue(r.recordValue ?? '')}`;
-    localMap.set(key, r);
-  }
-
-  const remoteMap = new Map<string, { type: string; name: string; content: string; ttl: number }>();
-  for (const r of remoteRecords) {
-    const key = `${r.type}|${normalizeRecordName(r.name)}|${normalizeValue(r.content)}`;
-    remoteMap.set(key, r);
-  }
-
-  // Compute diff
-  const diff: DnsRecordDiffEntry[] = [];
-  const seen = new Set<string>();
-
-  // Check local records against remote
-  for (const [key, local] of localMap) {
-    seen.add(key);
-    const remote = remoteMap.get(key);
-    if (remote) {
-      diff.push({
-        type: local.recordType,
-        name: normalizeRecordName(local.recordName),
-        local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id },
-        remote: { value: remote.content, ttl: remote.ttl },
-        status: 'in_sync',
-      });
-    } else {
-      // Check if there's a remote with same type+name but different value (conflict)
-      const typeNamePrefix = key.split('|').slice(0, 2).join('|');
-      const conflicting = Array.from(remoteMap.entries()).find(([k]) => k.startsWith(typeNamePrefix + '|') && !seen.has(k));
-      if (conflicting) {
-        seen.add(conflicting[0]);
-        diff.push({
-          type: local.recordType,
-          name: normalizeRecordName(local.recordName),
-          local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id },
-          remote: { value: conflicting[1].content, ttl: conflicting[1].ttl },
-          status: 'conflict',
-        });
-      } else {
-        diff.push({
-          type: local.recordType,
-          name: normalizeRecordName(local.recordName),
-          local: { value: local.recordValue ?? '', ttl: local.ttl, id: local.id },
-          remote: null,
-          status: 'local_only',
-        });
-      }
-    }
-  }
-
-  // Check remote records not yet seen (remote_only)
-  for (const [key, remote] of remoteMap) {
-    if (!seen.has(key)) {
-      diff.push({
-        type: remote.type,
-        name: normalizeRecordName(remote.name),
-        local: null,
-        remote: { value: remote.content, ttl: remote.ttl },
-        status: 'remote_only',
-      });
-    }
-  }
-
-  // Sort: conflicts first, then remote_only, then local_only, then in_sync
-  const statusOrder = { conflict: 0, remote_only: 1, local_only: 2, in_sync: 3 };
-  diff.sort((a, b) => statusOrder[a.status] - statusOrder[b.status] || a.type.localeCompare(b.type) || a.name.localeCompare(b.name));
-
-  return diff;
+  const [updated] = await db.select().from(dnsRecords).where(eq(dnsRecords.id, recordId));
+  return updated;
 }
 
 export async function createDnsRecordLocalOnly(db: Database, tenantId: string, domainId: string, input: CreateDnsRecordInput) {
