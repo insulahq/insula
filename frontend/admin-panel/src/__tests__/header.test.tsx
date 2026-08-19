@@ -103,6 +103,27 @@ describe('Admin Header user menu', () => {
     expect(screen.queryByTestId('user-menu-password-form')).not.toBeInTheDocument();
   });
 
+  it('makes every always-visible input opaque to password managers', () => {
+    // The header renders on EVERY page, so an input here decides whether
+    // password managers nag on every page. An anonymous input (no name, no
+    // id, no autocomplete) on an origin with a saved login gets treated as a
+    // username field and offered a fill prompt everywhere.
+    const { container } = render(<Header onMenuClick={vi.fn()} />, { wrapper: createWrapper() });
+
+    const inputs = Array.from(container.querySelectorAll('input'));
+    expect(inputs.length).toBeGreaterThan(0);
+
+    for (const input of inputs) {
+      expect(input.getAttribute('name'), 'every header input needs a name').toBeTruthy();
+      expect(input.getAttribute('autocomplete')).toBe('off');
+      // autocomplete="off" alone is ignored by most managers.
+      expect(input.hasAttribute('data-1p-ignore')).toBe(true);
+      expect(input.getAttribute('data-lpignore')).toBe('true');
+      expect(input.hasAttribute('data-bwignore')).toBe(true);
+      expect(input.getAttribute('data-form-type')).toBe('other');
+    }
+  });
+
   it('opens the change-password modal and closes the dropdown when Change Password is clicked', async () => {
     const user = userEvent.setup();
     render(<Header onMenuClick={vi.fn()} />, { wrapper: createWrapper() });
