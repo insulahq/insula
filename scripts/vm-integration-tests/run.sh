@@ -737,6 +737,12 @@ export KUBECONFIG=/root/.kube/config KUBECTL=kubectl LOCAL_KUBECTL=1 NODE_PATH=/
 # dr-bundle's external-tier decrypt (Phase B) runs instead of self-skipping.
 export AGE_KEY_FILE=/root/operator-age.key
 export BACKUP_S3_ENDPOINT=http://s3.${APEX}:9000 BACKUP_S3_BUCKET=$(printf %q "${VMTEST_MINIO_BUCKET:-backups}") BACKUP_S3_REGION=us-east-1
+# The run's PowerDNS — the services VM has always run one, but only the harness
+# talked to it. The platform needs its coordinates to be REGISTERED as a DNS
+# provider, otherwise canManageDnsZone() is false and every record write on this
+# tier is silently skipped (which is why the MX/SRV/CAA breakage survived).
+export VMTEST_DNS_IP=$(printf %q "${VMTEST_DNS_IP:-}") VMTEST_PDNS_API_KEY=$(printf %q "${VMTEST_PDNS_API_KEY:-}")
+export VMTEST_APEX=$(printf %q "${APEX}")
 export BACKUP_S3_ACCESS_KEY=$(printf %q "${VMTEST_MINIO_USER:-}") BACKUP_S3_SECRET_KEY=$(printf %q "${VMTEST_MINIO_PW:-}")
 export BACKUP_SFTP_HOST=sftp.${APEX} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
 export BACKUP_CIFS_HOST=cifs.${APEX} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIFS_SHARE:-backups}") BACKUP_CIFS_USER=$(printf %q "${VMTEST_CIFS_USER:-}") BACKUP_CIFS_PASSWORD=$(printf %q "${VMTEST_CIFS_PW:-}")
@@ -803,6 +809,10 @@ kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || 
 # (grow NO_SNAPSHOT_TARGET, dr-drill-shim suspended ScheduledBackup, backup-rclone-shim, dr-bundle).
 echo "── configuring backup targets (services-VM S3 → tenant/system/mail classes) ──"
 bash scripts/vm-integration-tests/setup-backup-targets.sh || true
+# Register the run's PowerDNS with the PLATFORM (not just with the harness), so
+# the tenant DNS-record path is actually exercised end to end.
+echo "── registering the services-VM PowerDNS as the platform DNS provider ──"
+bash scripts/vm-integration-tests/setup-dns-provider.sh || true
 bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$RUNNER_SCRIPT" \

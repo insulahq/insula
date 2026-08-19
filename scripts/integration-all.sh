@@ -236,6 +236,15 @@ PARALLEL=(
   # why the port-forwarding sftp-gateway-e2e suite never caught them. Self-skips
   # (77) when the runner lacks sftp/sshpass. ~1-2 min.
   "sftp-reachability:integration-sftp-reachability.sh"
+  # Tenant DNS records, end to end, against the run's REAL PowerDNS: creates
+  # every record type the tenant UI offers through the PLATFORM API, reads each
+  # one back from the DNS server, and resolves it with dig. Also asserts Sync
+  # Records reaches all-in-sync, that a record the server rejects is not
+  # persisted, and that ACME issuance waits for domain verification.
+  # Requires setup-dns-provider.sh (run.sh does it); fails loudly without it
+  # rather than skipping — a silent skip is exactly how MX/SRV/CAA stayed broken
+  # while the API answered 201 Created. ~1 min.
+  "dns-records-e2e:integration-dns-records-e2e.sh"
   "firewall:integration-firewall-e2e.sh"
   # (waf-crowdsec moved to SERIAL_POST — it BANS the shared harness outbound IP
   #  to verify enforcement from the banned vantage, which collateral-403s every
