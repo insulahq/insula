@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import {
   ShieldAlert,
   AlertTriangle,
@@ -1117,7 +1118,7 @@ function RecoverModal({ defaultTarget, brokenNode, candidates, onClose, onStarte
 
           <div>
             <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Type <code className="font-mono px-1 rounded bg-gray-100 dark:bg-gray-700">{target}</code> to confirm
+              Type <ConfirmToken value={target} /> to confirm
             </label>
             <input
               type="text"

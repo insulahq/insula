@@ -14,6 +14,7 @@
  * pin lives on the latter).
  */
 import { useState } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, HardDrive, Loader2, Trash2, X } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
@@ -162,7 +163,7 @@ function ReclaimModal({ pv, onClose }: { readonly pv: SupersededSystemPv; readon
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-                  Type <code className="font-mono text-red-600 dark:text-red-400">{pv.name}</code> to confirm
+                  Type <ConfirmToken value={pv.name} className="text-red-600 dark:text-red-400" /> to confirm
                 </label>
                 <input
                   type="text"

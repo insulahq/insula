@@ -228,7 +228,9 @@ async function runReissue(
 
   // 2 — recreate
   await setStep(1, 'running');
-  const ensured = await ensureDomainCertificate(db, k8s, request.domainId);
+  // force: an operator asking for a reissue has decided the domain is
+  // ready, even if our own verification probe last said otherwise.
+  const ensured = await ensureDomainCertificate(db, k8s, request.domainId, undefined, { force: true });
   if (ensured.skipped) {
     await setStep(1, 'failed', ensured.reason);
     await tasks.finish(db, taskId, {

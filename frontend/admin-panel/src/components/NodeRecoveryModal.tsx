@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { Loader2, AlertTriangle, X } from 'lucide-react';
 import {
   useCleanStalePods,
@@ -96,7 +97,7 @@ export default function NodeRecoveryModal({ entry, onClose }: Props) {
         <div className="flex items-start justify-between border-b border-gray-200 px-5 py-4 dark:border-gray-700">
           <div>
             <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Recover node: <span className="font-mono">{entry.name}</span>
+              Recover node: <ConfirmToken value={entry.name} />
             </h2>
             <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
               severity: <span className={

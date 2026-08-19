@@ -1,4 +1,5 @@
 import { Fragment, useMemo, useState, type FormEvent } from 'react';
+import ActionsMenu, { ActionsMenuItem, ActionsMenuSeparator } from '@/components/ui/ActionsMenu';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { config } from '@/lib/runtime-config';
 import { ArrowLeft, Edit, Pause, Play, Square, Trash2, Loader2, CreditCard, Save, UserCheck, Cpu, ToggleLeft, ToggleRight, Rocket, ServerCrash, FolderOpen, Mail, RefreshCw, Copy, CheckCircle, AlertCircle, AlertTriangle } from 'lucide-react';
@@ -112,6 +113,8 @@ export default function TenantDetail() {
   const deleteTenant = useDeleteTenant();
   const updateTenant = useUpdateTenant(id ?? '');
   const impersonate = useImpersonate();
+  // Read once instead of casting `tenant` at four separate call sites.
+  const provisioningStatus = (tenant as Record<string, unknown> | undefined)?.provisioningStatus as string | undefined;
   const systemInfo = useSystemInfo();
   const triggerProvision = useTriggerProvisioning();
   const bulkRestart = useBulkRestartDeployments();
@@ -283,7 +286,7 @@ export default function TenantDetail() {
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">{name}</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">{email}</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
           <button
             onClick={async () => {
               if (!id) return;
@@ -313,162 +316,148 @@ export default function TenantDetail() {
             {impersonate.isPending ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />}
             <span className="hidden sm:inline">Login as Tenant</span>
           </button>
-          {(tenant as Record<string, unknown>).provisioningStatus === 'unprovisioned' || (tenant as Record<string, unknown>).provisioningStatus === 'failed' ? (
-            <button
-              onClick={async () => {
-                if (!id) return;
-                try {
-                  await triggerProvision.mutateAsync({ tenantId: id });
-                  setProvisioningOpen(true);
-                } catch { /* error shown via mutation state */ }
-              }}
-              disabled={triggerProvision.isPending}
-              className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-brand-600 disabled:opacity-50"
-              data-testid="provision-button"
+          {/* Everything except "Login as Tenant" lives in here. The header
+              had nine buttons, with Delete sitting beside the primary
+              action — one mis-click apart. */}
+          <ActionsMenu testId="tenant-actions">
+            {provisioningStatus === 'unprovisioned' || provisioningStatus === 'failed' ? (
+              <ActionsMenuItem
+                onClick={async () => {
+                  if (!id) return;
+                  try {
+                    await triggerProvision.mutateAsync({ tenantId: id });
+                    setProvisioningOpen(true);
+                  } catch { /* error shown via mutation state */ }
+                }}
+                disabled={triggerProvision.isPending}
+                icon={<Rocket size={14} />}
+                testId="provision-button"
+              >
+                Provision
+              </ActionsMenuItem>
+            ) : provisioningStatus === 'provisioning' ? (
+              <ActionsMenuItem
+                onClick={() => setProvisioningOpen(true)}
+                icon={<Loader2 size={14} className="animate-spin" />}
+                testId="provision-status-button"
+              >
+                Provisioning…
+              </ActionsMenuItem>
+            ) : provisioningStatus === 'provisioned' ? (
+              <ActionsMenuItem
+                onClick={async () => {
+                  if (!id) return;
+                  try {
+                    await triggerProvision.mutateAsync({ tenantId: id });
+                    setProvisioningOpen(true);
+                  } catch { /* error shown via mutation state */ }
+                }}
+                disabled={triggerProvision.isPending}
+                icon={<RefreshCw size={14} />}
+                title="Re-run provisioning to fix inconsistent K8s state"
+                testId="reprovision-button"
+              >
+                Re-provision
+              </ActionsMenuItem>
+            ) : null}
+
+            <ActionsMenuItem
+              onClick={() => bulkRestart.mutate(undefined)}
+              disabled={bulkRestart.isPending}
+              icon={<RefreshCw size={14} />}
+              title="Pull latest images and restart all running deployments"
+              testId="refresh-all-apps-button"
             >
-              {triggerProvision.isPending ? <Loader2 size={14} className="animate-spin" /> : <Rocket size={14} />}
-              <span className="hidden sm:inline">Provision</span>
-            </button>
-          ) : (tenant as Record<string, unknown>).provisioningStatus === 'provisioning' ? (
-            <button
-              onClick={() => setProvisioningOpen(true)}
-              className="inline-flex items-center gap-2 rounded-lg bg-brand-50 dark:bg-brand-900/30 px-4 py-2 text-sm font-medium text-brand-700 dark:text-brand-300 shadow-sm hover:bg-brand-100 dark:hover:bg-brand-900/50"
-              data-testid="provision-status-button"
-            >
-              <Loader2 size={14} className="animate-spin" />
-              <span className="hidden sm:inline">Provisioning...</span>
-            </button>
-          ) : (tenant as Record<string, unknown>).provisioningStatus === 'provisioned' ? (
-            <button
-              onClick={async () => {
-                if (!id) return;
-                try {
-                  await triggerProvision.mutateAsync({ tenantId: id });
-                  setProvisioningOpen(true);
-                } catch { /* error shown via mutation state */ }
-              }}
-              disabled={triggerProvision.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700/50 disabled:opacity-50"
-              title="Re-run provisioning to fix inconsistent K8s state"
-              data-testid="reprovision-button"
-            >
-              {triggerProvision.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-              <span className="hidden sm:inline">Re-provision</span>
-            </button>
-          ) : null}
-          <button
-            onClick={() => bulkRestart.mutate(undefined)}
-            disabled={bulkRestart.isPending}
-            className="inline-flex items-center gap-2 rounded-lg border border-blue-200 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 px-4 py-2 text-sm font-medium text-blue-600 dark:text-blue-400 shadow-sm hover:bg-blue-100 dark:hover:bg-blue-900/40 disabled:opacity-50"
-            title="Pull latest images and restart all running deployments"
-            data-testid="refresh-all-apps-button"
-          >
-            {bulkRestart.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-            <span className="hidden sm:inline">Refresh All Apps</span>
-          </button>
-          <button
-            onClick={() => setEditOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 shadow-sm hover:bg-gray-50 dark:hover:bg-gray-700/50"
-            data-testid="edit-button"
-          >
-            <Edit size={14} />
-            <span className="hidden sm:inline">Edit</span>
-          </button>
-          {/* Lifecycle action buttons — explicit per-status mapping
-              aligned with the registry transitions (ADR-033). The
-              status dropdown (LifecycleStatusControl in the Account
-              card) duplicates these for keyboard-driven operators;
-              the buttons here are the discoverable surface. The
-              previously-shown "Decommission" button (delete namespace
-              keep DB row) is intentionally removed — Archive (with
-              snapshot, restorable) or Delete (hard remove) cover
-              every operator intent. The Decommission API endpoint is
-              retained for backward compatibility with curl callers. */}
-          {/* ADR-040: SYSTEM tenant cannot transition through suspend /
-              archive / delete. Hide every destructive action; the
-              backend service-layer + lifecycle hook would reject anyway
-              but the UI affordance prevents the operator from going
-              down a dead-end path. */}
-          {/* notifications-system Phase 1: per-action toggle that
-              suppresses the tenant-facing notification dispatched by
-              the lifecycle hook registry. Default ON; operator opts
-              out by unchecking. SYSTEM tenant doesn't get destructive
-              actions so the checkbox is hidden there. */}
-          {!tenant.isSystem && (
-            <label
-              className="ml-2 flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
-              title="Send the tenant an in-app + email notification about this lifecycle action"
-              data-testid="notify-tenant-toggle"
-            >
-              <input
-                type="checkbox"
-                checked={notifyTenant}
-                onChange={(e) => setNotifyTenant(e.target.checked)}
-                className="rounded"
-                data-testid="notify-tenant-checkbox"
-              />
-              Notify tenant
-            </label>
-          )}
-          {tenant.status === 'active' && !tenant.isSystem && (
-            <button
-              onClick={handleSuspend}
-              disabled={updateTenant.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-orange-200 dark:border-orange-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-orange-600 dark:text-orange-400 shadow-sm hover:bg-orange-50 dark:hover:bg-orange-900/20 disabled:opacity-50"
-              data-testid="suspend-button"
-              title="Scale workloads to 0, swap ingress to suspended page, disable mail/cron — fully reversible via Reactivate."
-            >
-              {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <Pause size={14} />}
-              <span className="hidden sm:inline">Suspend</span>
-            </button>
-          )}
-          {tenant.status === 'suspended' && !tenant.isSystem && (
-            <button
-              onClick={handleReactivate}
-              disabled={updateTenant.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-green-600 dark:text-green-400 shadow-sm hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
-              data-testid="reactivate-button"
-              title="Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron."
-            >
-              {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-              <span className="hidden sm:inline">Reactivate</span>
-            </button>
-          )}
-          {(tenant.status === 'active' || tenant.status === 'suspended') && !tenant.isSystem && (tenant as Record<string, unknown>).provisioningStatus === 'provisioned' && (
-            <button
-              onClick={handleArchive}
-              disabled={updateTenant.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-amber-600 dark:text-amber-400 shadow-sm hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
-              data-testid="archive-button"
-              title="Take a final snapshot, then delete PVC/workloads/mailboxes. Tenant row + snapshot retained for the configured retention window. Restorable."
-            >
-              {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <ServerCrash size={14} />}
-              <span className="hidden sm:inline">Archive</span>
-            </button>
-          )}
-          {tenant.status === 'archived' && !tenant.isSystem && (
-            <button
-              onClick={handleReactivate}
-              disabled={updateTenant.isPending}
-              className="inline-flex items-center gap-2 rounded-lg border border-green-200 dark:border-green-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-green-600 dark:text-green-400 shadow-sm hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
-              data-testid="restore-button"
-              title="Recreate PVC + restore data from the pre-archive snapshot. Workloads need to be redeployed after restore completes."
-            >
-              {updateTenant.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-              <span className="hidden sm:inline">Restore</span>
-            </button>
-          )}
-          {!tenant.isSystem && (
-            <button
-              onClick={() => setDeleteOpen(true)}
-              className="inline-flex items-center gap-2 rounded-lg border border-red-200 dark:border-red-800 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-red-600 dark:text-red-400 shadow-sm hover:bg-red-50 dark:hover:bg-red-900/20"
-              data-testid="delete-button"
-              title="Hard delete — removes the tenant row, the namespace, and triggers all orphan-cleanup hooks (DNS zones, backup bundles, PVs, cluster-scoped refs). Irreversible."
-            >
-              <Trash2 size={14} />
-              <span className="hidden sm:inline">Delete</span>
-            </button>
-          )}
+              Refresh All Apps
+            </ActionsMenuItem>
+
+            <ActionsMenuItem onClick={() => setEditOpen(true)} icon={<Edit size={14} />} testId="edit-button">
+              Edit
+            </ActionsMenuItem>
+
+            {/* ADR-040: SYSTEM tenant cannot suspend / archive / delete, so
+                the whole lifecycle group is hidden for it. The backend would
+                reject anyway; hiding it keeps the operator off a dead end. */}
+            {!tenant.isSystem && <ActionsMenuSeparator />}
+
+            {/* notifications-system Phase 1: suppresses the tenant-facing
+                notification the lifecycle hooks dispatch. It configures the
+                actions below it, so it sits with them — and it must NOT close
+                the menu, hence the stopPropagation. */}
+            {!tenant.isSystem && (
+              <label
+                onClick={(e) => e.stopPropagation()}
+                className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-gray-600 dark:text-gray-400"
+                title="Send the tenant an in-app + email notification about this lifecycle action"
+                data-testid="notify-tenant-toggle"
+              >
+                <input
+                  type="checkbox"
+                  checked={notifyTenant}
+                  onChange={(e) => setNotifyTenant(e.target.checked)}
+                  className="rounded"
+                  data-testid="notify-tenant-checkbox"
+                />
+                Notify tenant
+              </label>
+            )}
+
+            {tenant.status === 'active' && !tenant.isSystem && (
+              <ActionsMenuItem
+                onClick={handleSuspend}
+                disabled={updateTenant.isPending}
+                icon={<Pause size={14} />}
+                title="Scale workloads to 0, swap ingress to suspended page, disable mail/cron — fully reversible via Reactivate."
+                testId="suspend-button"
+              >
+                Suspend
+              </ActionsMenuItem>
+            )}
+            {tenant.status === 'suspended' && !tenant.isSystem && (
+              <ActionsMenuItem
+                onClick={handleReactivate}
+                disabled={updateTenant.isPending}
+                icon={<Play size={14} />}
+                title="Restore workloads to pre-suspend replica counts, unpatch ingress, re-enable mail/cron."
+                testId="reactivate-button"
+              >
+                Reactivate
+              </ActionsMenuItem>
+            )}
+            {(tenant.status === 'active' || tenant.status === 'suspended') && !tenant.isSystem && provisioningStatus === 'provisioned' && (
+              <ActionsMenuItem
+                onClick={handleArchive}
+                disabled={updateTenant.isPending}
+                icon={<ServerCrash size={14} />}
+                title="Take a final snapshot, then delete PVC/workloads/mailboxes. Tenant row + snapshot retained for the configured retention window. Restorable."
+                testId="archive-button"
+              >
+                Archive
+              </ActionsMenuItem>
+            )}
+            {tenant.status === 'archived' && !tenant.isSystem && (
+              <ActionsMenuItem
+                onClick={handleReactivate}
+                disabled={updateTenant.isPending}
+                icon={<Play size={14} />}
+                title="Recreate PVC + restore data from the pre-archive snapshot. Workloads need to be redeployed after restore completes."
+                testId="restore-button"
+              >
+                Restore
+              </ActionsMenuItem>
+            )}
+            {!tenant.isSystem && (
+              <ActionsMenuItem
+                onClick={() => setDeleteOpen(true)}
+                icon={<Trash2 size={14} />}
+                tone="danger"
+                title="Hard delete — removes the tenant row, the namespace, and triggers all orphan-cleanup hooks (DNS zones, backup bundles, PVs, cluster-scoped refs). Irreversible."
+                testId="delete-button"
+              >
+                Delete
+              </ActionsMenuItem>
+            )}
+          </ActionsMenu>
         </div>
       </div>
 

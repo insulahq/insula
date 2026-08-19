@@ -93,6 +93,9 @@ describe('ensureDomainCertificate', () => {
     domainName: 'acme.com',
     dnsMode: 'cname',
     dnsGroupId: null,
+    // ACME issuance is gated on verification — these cases exercise what
+    // happens AFTER that gate, so the domain is verified.
+    status: 'verified',
   };
   const tenant = { id: 'c1', kubernetesNamespace: 'tenant-acme' };
 
@@ -611,5 +614,42 @@ describe('getConfiguredIssuers — cluster-wide custom ACME issuer', () => {
     process.env.CLUSTER_ISSUER_NAME = '   ';
     const blank = service.getConfiguredIssuers();
     expect(blank.letsencryptStagingHttp01).toBe('letsencrypt-staging-http01');
+  });
+});
+
+describe('ACME issuance is gated on domain verification', () => {
+  /**
+   * Unverified domains were ordering Let's Encrypt certificates. The orders
+   * can never validate (DNS does not point at us yet), so each one failed,
+   * raised a cert-not-ready alert nobody could action, and consumed the
+   * ACCOUNT-WIDE Let's Encrypt rate limits every tenant shares.
+   */
+  function dbWith(domainStatus: string) {
+    const rows: Record<string, unknown[]> = {
+      settings: [{ key: 'tls_auto', value: 'true' }],
+    };
+    void rows;
+    const domainRow = { id: 'd1', tenantId: 't1', domainName: 'acme.test', status: domainStatus, sslAutoRenew: 1 };
+    return {
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve([domainRow]),
+        }),
+      }),
+    } as never;
+  }
+
+  it.each(['unverified', 'pending'])('skips a %s domain instead of ordering', async (status) => {
+    const result = await service.ensureDomainCertificate(dbWith(status), {} as never, 'd1');
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toMatch(/waits for verification/i);
+  });
+
+  it('an explicit operator reissue can still force it', async () => {
+    // It gets PAST the gate and then fails on the stub cluster — which is
+    // the assertion: verification is no longer what stopped it.
+    await expect(
+      service.ensureDomainCertificate(dbWith('unverified'), {} as never, 'd1', undefined, { force: true }),
+    ).rejects.toThrow(/createNamespacedCustomObject|Certificate/i);
   });
 });

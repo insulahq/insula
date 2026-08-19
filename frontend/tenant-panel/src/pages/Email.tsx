@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { useSearchParams } from 'react-router-dom';
 import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle } from 'lucide-react';
 import clsx from 'clsx';
@@ -524,7 +525,7 @@ function DisableEmailCard({
 
             <div className="mt-4">
               <label htmlFor="disable-confirm-input" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Type <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{domain.domainName}</span> to confirm
+                Type <ConfirmToken value={domain.domainName} className="font-bold text-gray-900 dark:text-gray-100" /> to confirm
               </label>
               <input
                 id="disable-confirm-input"

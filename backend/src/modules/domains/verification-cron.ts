@@ -23,6 +23,8 @@ import { domains, systemSettings, tenants } from '../../db/schema.js';
 import { getPlatformIngressIps, getPlatformConfig, verifyDomain } from './verification.js';
 import { setDomainVerificationStatus } from './service.js';
 import { notifyDomainRegression, notifyDomainGraceUnverified } from './notifications.js';
+import { ensureDomainCertificate } from '../certificates/service.js';
+import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { PlatformIngressIps } from './verification.js';
 
 const CRON_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -203,6 +205,24 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
         { domain: candidate.domainName, transition },
         '[verify-cron] verification complete',
       );
+
+      // Verification is now the TRIGGER for ACME issuance.
+      // `ensureDomainCertificate` refuses to order for an unverified domain
+      // (doomed orders burn shared Let's Encrypt rate limits and raise
+      // cert-not-ready alerts nobody can action), so something has to ask
+      // again once the domain actually verifies. This is that something.
+      if (transition === 'first_pass' || transition === 'recovery') {
+        try {
+          await ensureDomainCertificate(db, createK8sClients(), candidate.id);
+        } catch (certErr) {
+          // Non-blocking: the reconciler retries, and a failure here must
+          // not abort the rest of the verification sweep.
+          log.warn(
+            { err: certErr, domain: candidate.domainName },
+            '[verify-cron] certificate request after verification failed',
+          );
+        }
+      }
 
       // Emit regression notification if applicable
       if (transition === 'regression' && !platformIpsChanged) {

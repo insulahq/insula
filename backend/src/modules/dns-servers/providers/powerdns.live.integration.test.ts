@@ -147,6 +147,63 @@ describe.skipIf(!API_URL)('PowerDnsProvider against a live PowerDNS', () => {
     expect(names.filter((n) => n.includes(`${ZONE}.${ZONE}`))).toEqual([]);
   });
 
+  // ── The AUTO-PROVISIONED sets ────────────────────────────────────────
+  // Everything above is a tenant typing into a form. These two are what the
+  // platform writes by itself when a mail domain is enabled or a route is
+  // created — the records that were failing in production with nobody told.
+
+  it('publishes the full mail record set exactly as buildEmailDnsRecords emits it', async () => {
+    // Same shapes as email-domains/dns-provisioning.ts: the record NAME is
+    // the full FQDN (not a label), MX carries a separate priority, and the
+    // SRV values arrive already packed as `<prio> <weight> <port> <target>`.
+    const MAIL_HOST = 'mail.platform.test';
+    const specs = [
+      { type: 'MX',  name: ZONE,                      content: MAIL_HOST,            priority: 10 },
+      { type: 'TXT', name: ZONE,                      content: 'v=spf1 mx ~all' },
+      { type: 'TXT', name: `sel._domainkey.${ZONE}`,  content: 'v=DKIM1; k=rsa; p=MIIBIjANBg' },
+      { type: 'TXT', name: `_dmarc.${ZONE}`,          content: 'v=DMARC1; p=none' },
+      { type: 'SRV', name: `_imaps._tcp.${ZONE}`,     content: `0 1 993 ${MAIL_HOST}`,  priority: 0 },
+      { type: 'SRV', name: `_imap._tcp.${ZONE}`,      content: `10 1 143 ${MAIL_HOST}`, priority: 10 },
+      { type: 'SRV', name: `_submissions._tcp.${ZONE}`, content: `0 1 465 ${MAIL_HOST}`, priority: 0 },
+      { type: 'SRV', name: `_submission._tcp.${ZONE}`,  content: `10 1 587 ${MAIL_HOST}`, priority: 10 },
+    ];
+
+    for (const spec of specs) {
+      await provider.createRecord(ZONE, { ...spec, ttl: 3600 });
+    }
+
+    const stored = await provider.listRecords(ZONE);
+    const at = (name: string, type: string) =>
+      stored.filter((r) => r.name === name && r.type === type).map((r) => r.content);
+
+    expect(at(`${ZONE}.`, 'MX')).toContain(`10 ${MAIL_HOST}.`);
+    expect(at(`${ZONE}.`, 'TXT')).toContain('"v=spf1 mx ~all"');
+    expect(at(`sel._domainkey.${ZONE}.`, 'TXT')).toContain('"v=DKIM1; k=rsa; p=MIIBIjANBg"');
+    expect(at(`_dmarc.${ZONE}.`, 'TXT')).toContain('"v=DMARC1; p=none"');
+    expect(at(`_imaps._tcp.${ZONE}.`, 'SRV')).toContain(`0 1 993 ${MAIL_HOST}.`);
+    expect(at(`_submission._tcp.${ZONE}.`, 'SRV')).toContain(`10 1 587 ${MAIL_HOST}.`);
+
+    // Not one of them may land at `<apex>.<apex>.`, which is where every
+    // mail record used to go.
+    expect(stored.filter((r) => r.name.includes(`${ZONE}.${ZONE}`))).toEqual([]);
+  });
+
+  it('publishes the route records ingress-routes provisions', async () => {
+    // Apex → A/AAAA at the ingress IPs; subdomain → CNAME into the
+    // `<slug>.ingress.<apex>` chain.
+    await provider.createRecord(ZONE, { type: 'A', name: '@', content: '203.0.113.10', ttl: 300 });
+    await provider.createRecord(ZONE, { type: 'AAAA', name: '@', content: '2001:db8::10', ttl: 300 });
+    await provider.createRecord(ZONE, { type: 'CNAME', name: 'shop', content: 'slug.ingress.platform.test.', ttl: 300 });
+
+    const stored = await provider.listRecords(ZONE);
+    const at = (name: string, type: string) =>
+      stored.filter((r) => r.name === name && r.type === type).map((r) => r.content);
+
+    expect(at(`${ZONE}.`, 'A')).toContain('203.0.113.10');
+    expect(at(`${ZONE}.`, 'AAAA')).toContain('2001:db8::10');
+    expect(at(`shop.${ZONE}.`, 'CNAME')).toContain('slug.ingress.platform.test.');
+  });
+
   it('removes one value from a multi-value set and leaves the rest', async () => {
     await provider.deleteRecordValue(ZONE, { type: 'MX', name: '@', content: 'mail2.platform.test', priority: 20 });
     const mx = (await provider.listRecords(ZONE)).filter((r) => r.type === 'MX' && r.name === `${ZONE}.`);

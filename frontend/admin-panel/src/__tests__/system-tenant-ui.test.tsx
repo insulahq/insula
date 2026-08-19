@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -76,12 +77,17 @@ describe('TenantDetail — SYSTEM tenant gating (ADR-040)', () => {
     expect(screen.getByText(/platform-managed/i)).toBeInTheDocument();
   });
 
-  it('hides Suspend, Archive, and Delete buttons on SYSTEM', async () => {
+  it('hides Suspend, Archive, and Delete on SYSTEM even with the Actions menu OPEN', async () => {
+    // Opening the menu matters: with it closed the assertions below would
+    // pass for every tenant, SYSTEM or not.
+    const user = userEvent.setup();
     setupMockApi(buildTenantPayload({ isSystem: true }));
     renderTenantDetail();
     await waitFor(() => {
       expect(screen.getByTestId('system-tenant-banner')).toBeInTheDocument();
     });
+    await user.click(screen.getByTestId('tenant-actions-button'));
+
     expect(screen.queryByTestId('suspend-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('archive-button')).not.toBeInTheDocument();
     expect(screen.queryByTestId('delete-button')).not.toBeInTheDocument();
@@ -109,12 +115,18 @@ describe('TenantDetail — SYSTEM tenant gating (ADR-040)', () => {
     expect(screen.queryByTestId('system-tenant-banner')).not.toBeInTheDocument();
   });
 
-  it('shows Suspend + Delete buttons on a normal active tenant', async () => {
+  it('shows Suspend + Delete inside the Actions menu on a normal active tenant', async () => {
+    const user = userEvent.setup();
     setupMockApi(buildTenantPayload({ isSystem: false, name: 'Acme Corp', status: 'active' }));
     renderTenantDetail();
     await waitFor(() => {
-      expect(screen.getByTestId('suspend-button')).toBeInTheDocument();
+      expect(screen.getByTestId('tenant-actions-button')).toBeInTheDocument();
     });
+
+    // The lifecycle actions moved out of the title bar and into the menu.
+    await user.click(screen.getByTestId('tenant-actions-button'));
+
+    expect(screen.getByTestId('suspend-button')).toBeInTheDocument();
     expect(screen.getByTestId('delete-button')).toBeInTheDocument();
     expect(screen.getByTestId('lifecycle-status-edit')).toBeInTheDocument();
   });

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { dnsRecordFieldsFor } from '@insula/api-contracts';
 import ManagedCertificateCard from '@/components/ManagedCertificateCard';
 import { useCanManage } from '@/hooks/use-can-manage';
@@ -418,7 +419,7 @@ export default function DomainDetail() {
 
             <div className="mt-4">
               <label htmlFor="delete-confirm-input" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Type <span className="font-mono font-bold text-gray-900 dark:text-gray-100">{domain.domainName}</span> to confirm
+                Type <ConfirmToken value={domain.domainName} className="font-bold text-gray-900 dark:text-gray-100" /> to confirm
               </label>
               <input
                 id="delete-confirm-input"

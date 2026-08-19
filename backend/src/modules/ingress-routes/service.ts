@@ -14,7 +14,7 @@ import {
 } from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { syncRecordToProviders } from '../dns-records/service.js';
+import { syncRecordToProviders, describeSyncFailure, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import type { Database } from '../../db/index.js';
@@ -377,6 +377,11 @@ export async function createRoute(
 
   // Auto-create DNS records for PRIMARY domains
   if (domain.dnsMode === 'primary') {
+    // Collected so a provider rejection is REPORTED rather than inferred
+    // from an absent record. Route creation still succeeds — a DNS outage
+    // must not lose the route — but the operator is told the hostname will
+    // not resolve until the records land.
+    const outcomes: DnsSyncOutcome[] = [];
     // `relativeRecordName` handles the wildcard shapes the old
     // `String.replace` mangled: `*.example.com` → `*`,
     // `*.a.example.com` → `*.a`, and it will not rewrite a repeated
@@ -398,14 +403,14 @@ export async function createRoute(
           );
         }
         for (const ip of v4) {
-          await syncRecordToProviders(db, domain.domainName, 'create', {
+          outcomes.push(await syncRecordToProviders(db, domain.domainName, 'create', {
             type: 'A', name: recordName, content: ip, ttl: 300,
-          });
+          }, domainId));
         }
         for (const ip of v6) {
-          await syncRecordToProviders(db, domain.domainName, 'create', {
+          outcomes.push(await syncRecordToProviders(db, domain.domainName, 'create', {
             type: 'AAAA', name: recordName, content: ip, ttl: 300,
-          });
+          }, domainId));
         }
       } else {
         // Subdomain → CNAME into the platform's ingress chain. This is the
@@ -414,12 +419,12 @@ export async function createRoute(
         // rewriting an A record inside every tenant zone. The previous code
         // wrote an A record here ("simpler, no CNAME limitations"), which is
         // what made adding a node a manual per-domain migration.
-        await syncRecordToProviders(db, domain.domainName, 'create', {
+        outcomes.push(await syncRecordToProviders(db, domain.domainName, 'create', {
           type: 'CNAME',
           name: recordName,
           content: ingressCname.endsWith('.') ? ingressCname : `${ingressCname}.`,
           ttl: 300,
-        });
+        }, domainId));
       }
     } catch (err) {
       // Non-blocking (a DNS outage must not fail route creation) but never
@@ -428,6 +433,15 @@ export async function createRoute(
       console.warn(
         `[ingress-dns] Failed to create DNS records for '${hostname}':`,
         err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    const rejected = outcomes.filter((o) => o.status === 'failed');
+    if (rejected.length > 0) {
+      console.error(
+        `[ingress-dns] '${hostname}' will NOT resolve — the DNS server rejected `
+        + `${rejected.length} of ${outcomes.length} record(s): `
+        + rejected.map((o) => describeSyncFailure(o)).join('; '),
       );
     }
   }
@@ -603,25 +617,42 @@ export async function autoProvisionRouteDns(
 
   const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
 
+  const outcomes: DnsSyncOutcome[] = [];
   try {
-    // Always create A record (simpler, no CNAME limitations at apex or subdomain)
-    await syncRecordToProviders(db, domain.domainName, 'create', {
+    // `domainId` is REQUIRED here: without it the sync falls back to every
+    // active server instead of the domain's own provider group, and skips
+    // the authority gate. The matching auto-DELETE always passed it, so a
+    // create could land on servers the delete would never clean up.
+    outcomes.push(await syncRecordToProviders(db, domain.domainName, 'create', {
       type: 'A',
       name: recordName,
       content: settings.ingressDefaultIpv4,
       ttl: 300,
-    });
+    }, domainId));
     const ipv6 = await getSetting(db, 'ingress_default_ipv6');
     if (ipv6) {
-      await syncRecordToProviders(db, domain.domainName, 'create', {
+      outcomes.push(await syncRecordToProviders(db, domain.domainName, 'create', {
         type: 'AAAA',
         name: recordName,
         content: ipv6,
         ttl: 300,
-      });
+      }, domainId));
     }
-  } catch {
-    // Non-blocking — DNS provisioning failure should not break callers
+  } catch (err) {
+    // Non-blocking — DNS provisioning failure should not break callers —
+    // but never silent.
+    console.warn(
+      `[ingress-dns] auto-provision failed for '${hostname}':`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  const rejected = outcomes.filter((o) => o.status === 'failed');
+  if (rejected.length > 0) {
+    console.error(
+      `[ingress-dns] '${hostname}' will NOT resolve — the DNS server rejected `
+      + `${rejected.length} record(s): ${rejected.map((o) => describeSyncFailure(o)).join('; ')}`,
+    );
   }
 }
 

@@ -51,14 +51,19 @@ const MAIL_SERVER_IPV6 = (): string | undefined =>
 // mtaStsPolicyId() helper removed 2026-05-06 along with the MTA-STS
 // records — see the comment block where the records were dropped.
 
+export interface MailDnsSyncOutcome {
+  readonly status: 'published' | 'skipped' | 'failed';
+  readonly message?: string;
+}
+
 export async function syncRecordToProviders(
   db: Database,
   domainId: string,
   domainName: string,
   action: 'create' | 'delete',
-  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; id?: string },
+  record: { type: string; name: string; content: string; ttl?: number; priority?: number | null; weight?: number | null; port?: number | null; id?: string },
   encryptionKey: string,
-) {
+): Promise<MailDnsSyncOutcome> {
   try {
     // Phase 2c: only push records when the platform has authority over the
     // zone. Previously this silently tried to write and swallowed errors,
@@ -68,7 +73,7 @@ export async function syncRecordToProviders(
       .select({ dnsMode: domains.dnsMode })
       .from(domains)
       .where(eq(domains.id, domainId));
-    if (!domain) return;
+    if (!domain) return { status: 'skipped', message: 'domain row not found' };
 
     const servers = await getActiveServersForDomain(db, domainId);
     const canManage = canManageDnsZone({
@@ -84,9 +89,10 @@ export async function syncRecordToProviders(
       console.info(
         `[email-dns] Skipping ${action} of ${record.type} '${record.name}' — platform is not authoritative for '${domainName}' (dnsMode=${domain.dnsMode})`,
       );
-      return;
+      return { status: 'skipped', message: `dnsMode=${domain.dnsMode}` };
     }
 
+    const errors: string[] = [];
     for (const server of servers) {
       try {
         const provider = getProviderForServer(server, encryptionKey);
@@ -97,13 +103,31 @@ export async function syncRecordToProviders(
             content: record.content,
             ttl: record.ttl ?? 3600,
             priority: record.priority ?? undefined,
+            weight: record.weight ?? undefined,
+            port: record.port ?? undefined,
           });
         } else if (action === 'delete' && record.id) {
           await provider.deleteRecord(domainName, `${record.name}|${record.type}|${record.content}`);
         }
-      } catch { /* DNS sync failure shouldn't block — log and continue */ }
+      } catch (err) {
+        // This was a bare `catch {}` with not even a log line. Every mail
+        // record PowerDNS rejected — which, until the wire-format fix, was
+        // the MX and every SRV — vanished here while the email-domain row
+        // was still marked provisioned.
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[email-dns] ${action} ${record.type} '${record.name}' failed on ${server.displayName}: ${message}`,
+        );
+        errors.push(`${server.displayName}: ${message}`);
+      }
     }
-  } catch { /* no servers configured */ }
+    if (errors.length > 0) return { status: 'failed', message: errors.join('; ') };
+    return { status: 'published' };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(`[email-dns] could not resolve DNS servers for '${domainName}': ${message}`);
+    return { status: 'failed', message };
+  }
 }
 
 export type DnsRecordPurpose =
@@ -364,6 +388,7 @@ export async function provisionEmailDns(
   // per-record inside syncRecordToProviders, because the answer also decides
   // what the *_provisioned flags may claim.
   const platformOwnsZone = await isZoneWritable(db, domainId);
+  const rejected: string[] = [];
 
   for (const rec of records) {
     // The row is written in EVERY dnsMode, deliberately. In cname/secondary
@@ -385,13 +410,16 @@ export async function provisionEmailDns(
 
     // No-ops (with a per-record info log) when the platform isn't
     // authoritative — never throws, so a cname-mode enable is not an error.
-    await syncRecordToProviders(db, domainId, domainName, 'create', {
+    const outcome = await syncRecordToProviders(db, domainId, domainName, 'create', {
       type: rec.recordType,
       name: rec.recordName,
       content: rec.recordValue,
       ttl: rec.ttl,
       priority: rec.priority,
     }, encryptionKey);
+    if (outcome.status === 'failed') {
+      rejected.push(`${rec.recordType} ${rec.recordName}: ${outcome.message ?? 'rejected'}`);
+    }
   }
 
   // `*_provisioned` means "published to DNS", NOT "we know the value".
@@ -399,7 +427,11 @@ export async function provisionEmailDns(
   // provisioned when nothing had been pushed anywhere — the operator saw four
   // green ticks and a mail domain that could never receive mail. Records are
   // recorded either way; only the flags distinguish published from pending.
-  const published = platformOwnsZone ? 1 : 0;
+  //
+  // A REJECTED write counts as not-published for the same reason: until the
+  // wire-format fix, PowerDNS refused the MX and every SRV, and these flags
+  // still went green because only `platformOwnsZone` was consulted.
+  const published = platformOwnsZone && rejected.length === 0 ? 1 : 0;
   await db
     .update(emailDomains)
     .set({
@@ -409,6 +441,14 @@ export async function provisionEmailDns(
       dmarcProvisioned: published,
     })
     .where(eq(emailDomains.domainId, domainId));
+
+  if (platformOwnsZone && rejected.length > 0) {
+    console.error(
+      `[email-dns] '${domainName}': the DNS server REJECTED ${rejected.length} of `
+      + `${records.length} mail record(s) — mail will not deliver until they exist. `
+      + rejected.join(' | '),
+    );
+  }
 
   if (!platformOwnsZone) {
     // A warning, not an error: customer-managed DNS is a supported mode, not a
