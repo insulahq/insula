@@ -18,7 +18,7 @@ import { authenticate, requireRole, requirePanel } from '../../middleware/auth.j
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import { alertState, monitoringRuleOverrides, monitoringEvaluatorLease } from '../../db/schema.js';
-import { SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, ruleById } from './rules.js';
+import { SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, ruleById, describeSubject } from './rules.js';
 import { vmReachable } from './evaluator.js';
 import { queryRange } from './vm-client.js';
 
@@ -74,11 +74,25 @@ export async function monitoringRoutes(app: FastifyInstance): Promise<void> {
       app.db.select().from(monitoringRuleOverrides),
       app.db.select().from(monitoringEvaluatorLease),
     ]);
-    const stateById = new Map(states.map((s) => [s.ruleId, s]));
+    // A rule now has one alert_state row PER SUBJECT, so it cannot be
+    // reduced to a single row — `new Map(states.map(s => [s.ruleId, s]))`
+    // silently kept whichever subject happened to come last.
+    const statesByRule = new Map<string, typeof states>();
+    for (const st of states) {
+      const bucket = statesByRule.get(st.ruleId);
+      if (bucket) bucket.push(st);
+      else statesByRule.set(st.ruleId, [st]);
+    }
+    /** Firing beats resolved; among equals, most recent wins. */
+    const worstOf = (rows: typeof states) =>
+      [...rows].sort((a, b) =>
+        (a.state === 'firing' ? 0 : 1) - (b.state === 'firing' ? 0 : 1)
+        || (b.since?.getTime() ?? 0) - (a.since?.getTime() ?? 0))[0];
     const ovById = new Map(overrides.map((o) => [o.ruleId, o]));
 
     const rules: SloRuleStatus[] = SLO_RULES.map((r) => {
-      const st = stateById.get(r.id);
+      const rows = statesByRule.get(r.id) ?? [];
+      const st = rows.length > 0 ? worstOf(rows) : undefined;
       const ov = ovById.get(r.id);
       return {
         id: r.id,
@@ -93,10 +107,24 @@ export async function monitoringRoutes(app: FastifyInstance): Promise<void> {
         since: st?.since?.toISOString() ?? null,
         lastValue: st?.lastValue ?? null,
         lastEvaluatedAt: st?.lastEvaluatedAt?.toISOString() ?? null,
+        // Firing first, so the panel leads with what is actually broken.
+        subjects: rows
+          .map((row) => {
+            const labels = (row.subjectLabels ?? {}) as Record<string, string>;
+            return {
+              key: row.subjectKey,
+              label: describeSubject(r, labels),
+              labels,
+              state: row.state as 'firing' | 'resolved',
+              since: row.since?.toISOString() ?? null,
+              lastValue: row.lastValue ?? null,
+            };
+          })
+          .sort((a, b) => (a.state === 'firing' ? 0 : 1) - (b.state === 'firing' ? 0 : 1)),
       };
     });
     // Synthetic watcher rule surfaces too when it has state.
-    const unreachable = stateById.get(MONITORING_UNREACHABLE_RULE_ID);
+    const unreachable = (statesByRule.get(MONITORING_UNREACHABLE_RULE_ID) ?? [])[0];
     if (unreachable) {
       rules.push({
         id: MONITORING_UNREACHABLE_RULE_ID,
@@ -111,6 +139,7 @@ export async function monitoringRoutes(app: FastifyInstance): Promise<void> {
         since: unreachable.since?.toISOString() ?? null,
         lastValue: unreachable.lastValue ?? null,
         lastEvaluatedAt: unreachable.lastEvaluatedAt?.toISOString() ?? null,
+        subjects: [],
       });
     }
 
@@ -133,8 +162,16 @@ export async function monitoringRoutes(app: FastifyInstance): Promise<void> {
       .select()
       .from(alertState)
       .orderBy(sql`CASE state WHEN 'firing' THEN 0 ELSE 1 END, since DESC`);
+    const ruleFor = new Map(SLO_RULES.map((r) => [r.id, r]));
     return success(states.map((s) => ({
       ruleId: s.ruleId,
+      // Which object is affected. Active Alerts listed a rule name and
+      // nothing else, so a firing cert alert named no certificate.
+      subjectKey: s.subjectKey,
+      subjectLabels: (s.subjectLabels ?? {}) as Record<string, string>,
+      subject: ruleFor.has(s.ruleId)
+        ? describeSubject(ruleFor.get(s.ruleId)!, (s.subjectLabels ?? {}) as Record<string, string>)
+        : null,
       state: s.state,
       severity: s.severity,
       since: s.since?.toISOString() ?? null,

@@ -536,6 +536,18 @@ export interface AdminSloAlertPayload {
   readonly severity: 'critical' | 'warning';
   readonly description?: string;
   readonly value?: string;
+  /**
+   * WHICH object is affected, rendered for humans — e.g.
+   * `certificate=wildcard-tls namespace=tenant-acme`.
+   *
+   * Absent only for genuinely cluster-wide rules. Before this existed the
+   * admin got "Certificate not Ready" with no way to tell which
+   * certificate, in which namespace, for which tenant — the alert named a
+   * symptom and nothing else.
+   */
+  readonly subject?: string;
+  /** Raw labels behind `subject`, so surfaces can link to the object. */
+  readonly subjectLabels?: Record<string, string>;
 }
 /**
  * Fire when an SLO monitoring rule (ADR-051 evaluator) transitions to

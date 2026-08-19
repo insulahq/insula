@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SLO_RULES, ruleById, renderExpr } from './rules.js';
+import { SLO_RULES, ruleById, renderExpr, describeSubject, subjectKey } from './rules.js';
 
 describe('SLO_RULES — mail monitoring additions', () => {
   const MAIL_RULES = [
@@ -61,5 +61,65 @@ describe('SLO_RULES — node CPU', () => {
     expect(ruleById('node-cpu-critical')!.severity).toBe('critical');
     // Sustained-only: CPU spikes are normal, so the window is longer than memory's.
     expect(ruleById('node-cpu')!.forSeconds).toBeGreaterThanOrEqual(600);
+  });
+});
+
+describe('rules keep the labels that identify what is broken', () => {
+  // The defect this guards: every rule aggregated with a bare `max(...)` /
+  // `min(...)` / `sum(...)`, which collapses all series into ONE anonymous
+  // scalar. `cert-not-ready` was `max(certmanager_certificate_ready_status
+  // {condition="False"}) > 0` — the answer is literally `1`, so the alert
+  // could never name the certificate, the namespace or the tenant.
+  const TOP_LEVEL_AGG = /(?:^|[\s(])(sum|min|max|count|avg|group)\s*(?:by\s*\(([^)]*)\))?\s*\(/g;
+
+  it.each(SLO_RULES.filter((r) => r.subjectLabels.length > 0).map((r) => [r.id, r] as const))(
+    '%s aggregates by its subject labels (or not at all)',
+    (_id, rule) => {
+      TOP_LEVEL_AGG.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = TOP_LEVEL_AGG.exec(rule.expr)) !== null) {
+        const [, fn, byList] = m;
+        // `sum by (le) (...)` inside histogram_quantile is a different beast;
+        // those rules have no subject labels and are filtered out above.
+        expect(
+          byList,
+          `${rule.id}: \`${fn}(\` has no \`by (...)\` — it discards ${rule.subjectLabels.join('/')} `
+          + 'and the alert cannot say what is affected',
+        ).toBeDefined();
+        const grouped = (byList ?? '').split(',').map((x) => x.trim());
+        for (const label of rule.subjectLabels) {
+          expect(grouped, `${rule.id}: ${fn} by (...) drops '${label}'`).toContain(label);
+        }
+      }
+    },
+  );
+
+  it('every rule declares subjectLabels (explicitly empty for platform-wide)', () => {
+    for (const rule of SLO_RULES) {
+      expect(Array.isArray(rule.subjectLabels), `${rule.id} is missing subjectLabels`).toBe(true);
+    }
+  });
+
+  it('renders a subject naming the certificate and its namespace', () => {
+    const rule = ruleById('cert-not-ready')!;
+    const label = describeSubject(rule, { name: 'wildcard-tls', namespace: 'tenant-acme' });
+    expect(label).toContain('wildcard-tls');
+    expect(label).toContain('tenant-acme');
+  });
+
+  it('accepts exported_namespace, which is what a relabelling scrape produces', () => {
+    const rule = ruleById('cert-not-ready')!;
+    expect(describeSubject(rule, { name: 'apex-tls', exported_namespace: 'platform' }))
+      .toContain('platform');
+  });
+
+  it('gives platform-wide rules no subject rather than an empty one', () => {
+    expect(describeSubject(ruleById('api-latency-p95')!, {})).toBeNull();
+  });
+
+  it('keys subjects stably regardless of label order', () => {
+    const rule = ruleById('cert-not-ready')!;
+    expect(subjectKey(rule, { namespace: 'a', name: 'b' }))
+      .toBe(subjectKey(rule, { name: 'b', namespace: 'a' }));
   });
 });

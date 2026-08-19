@@ -3979,15 +3979,28 @@ export type NewPlatformUpgradeSnapshotRow = typeof platformUpgradeSnapshots.$inf
 // Live alert state per rule — the evaluator (modules/monitoring) is the
 // only writer. Severity-transition semantics + the 24h re-fire throttle
 // mirror node_health_state.
+// One row per (rule, SUBJECT) — not per rule.
+//
+// This was keyed by rule_id alone, which made it structurally impossible to
+// say WHICH object an alert was about: "a certificate is not Ready" with no
+// way to record that cert A is broken while cert B is fine. Combined with
+// rules that aggregated their labels away, every alert in the system was
+// anonymous. `subject_key` is the rule's subjectLabels rendered stably
+// (empty string for genuinely cluster-wide rules); `subject_labels` keeps
+// the raw label set so the panel can render and link to the object.
 export const alertState = pgTable('alert_state', {
-  ruleId: varchar('rule_id', { length: 100 }).primaryKey(),
+  ruleId: varchar('rule_id', { length: 100 }).notNull(),
+  subjectKey: varchar('subject_key', { length: 512 }).notNull().default(''),
+  subjectLabels: jsonb('subject_labels').$type<Record<string, string>>().notNull().default({}),
   state: varchar('state', { length: 16 }).notNull(), // firing | resolved
   severity: varchar('severity', { length: 16 }).notNull(), // warning | critical
   since: timestamp('since', { withTimezone: true }).notNull().defaultNow(),
   lastValue: doublePrecision('last_value'),
   lastNotifiedAt: timestamp('last_notified_at', { withTimezone: true }),
   lastEvaluatedAt: timestamp('last_evaluated_at', { withTimezone: true }).notNull().defaultNow(),
-});
+}, (table) => ({
+  pk: primaryKey({ columns: [table.ruleId, table.subjectKey] }),
+}));
 export type AlertStateRow = typeof alertState.$inferSelect;
 
 // Single-row lease for the 60s evaluator — conditional-UPDATE claim so

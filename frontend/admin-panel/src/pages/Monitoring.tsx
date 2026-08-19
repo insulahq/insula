@@ -447,6 +447,9 @@ function MonitoringAlertTable({
         <thead className="bg-gray-50 dark:bg-gray-900/40">
           <tr>
             <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Rule</th>
+            {/* Without this the table said "cert-not-ready" and stopped —
+                no certificate, no namespace, nothing to act on. */}
+            <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Affected</th>
             <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Severity</th>
             <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Since</th>
             <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">Last value</th>
@@ -454,8 +457,13 @@ function MonitoringAlertTable({
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
           {alerts.map((a) => (
-            <tr key={`${a.ruleId}-${a.since ?? ''}`} data-testid={`alert-row-${a.ruleId}`}>
+            <tr key={`${a.ruleId}-${a.subjectKey ?? ''}-${a.since ?? ''}`} data-testid={`alert-row-${a.ruleId}`}>
               <td className="px-4 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">{a.ruleId}</td>
+              <td className="px-4 py-2 text-sm text-gray-700 dark:text-gray-300" data-testid={`alert-subject-${a.ruleId}`}>
+                {a.subject
+                  ? <span className="font-mono text-xs">{a.subject}</span>
+                  : <span className="text-gray-400 dark:text-gray-500">platform-wide</span>}
+              </td>
               <td className="px-4 py-2">
                 <span
                   className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${

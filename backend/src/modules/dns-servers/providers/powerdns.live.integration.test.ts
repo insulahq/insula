@@ -77,11 +77,15 @@ function panelBody(type: string) {
 }
 
 describe.skipIf(!API_URL)('PowerDnsProvider against a live PowerDNS', () => {
-  const provider = new PowerDnsProvider({
-    api_url: API_URL!, api_key: API_KEY, server_id: 'localhost', api_version: 'v4',
-  });
+  // Built in beforeAll, not here: `describe.skipIf` still EVALUATES the
+  // describe body, so constructing the provider at collection time crashed
+  // the whole file when PDNS_API_URL was unset (i.e. every normal test run).
+  let provider!: PowerDnsProvider;
 
   beforeAll(async () => {
+    provider = new PowerDnsProvider({
+      api_url: API_URL!, api_key: API_KEY, server_id: 'localhost', api_version: 'v4',
+    });
     const conn = await provider.testConnection();
     expect(conn.status, `cannot reach PowerDNS at ${API_URL}: ${conn.message}`).toBe('ok');
     try { await provider.deleteZone(ZONE); } catch { /* first run */ }

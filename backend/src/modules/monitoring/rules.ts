@@ -28,12 +28,76 @@ export interface SloRule {
   /**
    * MetricsQL expression. `$T` is replaced with the effective threshold
    * (default below or operator override) before querying.
+   *
+   * IMPORTANT: any aggregation MUST carry a `by (...)` clause listing this
+   * rule's `subjectLabels`. A bare `max(x) > 0` collapses every series into
+   * one anonymous scalar, and the alert can then only say "something is
+   * wrong" — never *what*. That is precisely how `cert-not-ready` fired for
+   * months without ever naming the certificate or the tenant.
    */
   readonly expr: string;
+  /**
+   * Labels that identify WHICH object a firing series is about, most
+   * significant first. Drives:
+   *   - the `by (...)` clause the expr must use,
+   *   - the per-subject alert_state row (one per object, not per rule),
+   *   - the subject line in notifications and the panel.
+   *
+   * Empty ONLY for genuinely cluster-wide rules (whole-ingress error
+   * ratio, "is monitoring up") where there is no narrower subject.
+   */
+  readonly subjectLabels: readonly string[];
   /** Default threshold substituted for $T (also shown in the UI). */
   readonly threshold: number;
   /** Seconds the violation must persist before firing. */
   readonly forSeconds: number;
+}
+
+/**
+ * Human-readable subject for a firing series, e.g.
+ * `certificate "wildcard-tls" in namespace "tenant-acme"`.
+ *
+ * Returns null for cluster-wide rules so callers can fall back to the rule
+ * name rather than rendering an empty parenthetical.
+ */
+export function describeSubject(
+  rule: Pick<SloRule, 'subjectLabels'>,
+  labels: Record<string, string>,
+): string | null {
+  const parts: string[] = [];
+  for (const key of rule.subjectLabels) {
+    // cert-manager (and any metric relabelled by a ServiceMonitor) may
+    // expose the namespace as `exported_namespace`; accept either.
+    const value = labels[key] ?? labels[`exported_${key}`];
+    if (value) parts.push(`${SUBJECT_LABEL_NAMES[key] ?? key}=${value}`);
+  }
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+/** Friendlier names for the labels that show up in subject lines. */
+const SUBJECT_LABEL_NAMES: Record<string, string> = {
+  name: 'certificate',
+  namespace: 'namespace',
+  node: 'node',
+  instance: 'target',
+  job: 'job',
+  pod: 'pod',
+  kind: 'kind',
+  hostname: 'host',
+  result: 'result',
+};
+
+/**
+ * Stable key for a firing series within a rule — the alert_state primary
+ * key alongside rule_id. Order-independent of label-map iteration.
+ */
+export function subjectKey(
+  rule: Pick<SloRule, 'subjectLabels'>,
+  labels: Record<string, string>,
+): string {
+  return rule.subjectLabels
+    .map((k) => `${k}=${labels[k] ?? labels[`exported_${k}`] ?? ''}`)
+    .join(',');
 }
 
 // 99.5% availability SLO ⇒ error budget 0.5%. Burn-rate multipliers per
@@ -51,7 +115,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Kernel OOM killer fired',
     description: 'The kernel global OOM killer fired on a node (root-cgroup oom event counter). The backstop layer behind kubelet eviction — normally means an unlimited allocation burst outran the 256Mi eviction threshold. Victims follow oom_score_adj, so tenants die first; check Monitoring → Node health for what was hit.',
     severity: 'warning',
-    expr: 'sum(increase(container_oom_events_total{id="/"}[15m])) > $T',
+    expr: 'sum by (node) (increase(container_oom_events_total{id="/"}[15m])) > $T',
+    subjectLabels: ['node'],
     threshold: 0,
     forSeconds: 0,
   },
@@ -60,7 +125,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'SYSTEM container OOM-killed',
     description: 'A container in a platform/system namespace was OOM-killed. The tenant-first eviction design (platform-critical PriorityClass + eviction-hard) makes this abnormal — investigate immediately.',
     severity: 'critical',
-    expr: 'sum(increase(container_oom_events_total{namespace=~"platform|platform-system|platform-tenant-ops|mail|kube-system|flux-system|longhorn-system|cert-manager|cnpg-system"}[15m])) > $T',
+    expr: 'sum by (namespace, pod, container) (increase(container_oom_events_total{namespace=~"platform|platform-system|platform-tenant-ops|mail|kube-system|flux-system|longhorn-system|cert-manager|cnpg-system"}[15m])) > $T',
+    subjectLabels: ['namespace', 'pod', 'container'],
     threshold: 0,
     forSeconds: 0,
   },
@@ -70,6 +136,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     description: 'Traefik websecure 5xx ratio over 5m burns the 99.5% error budget at ≥14.4×.',
     severity: 'critical',
     expr: '(sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure",code=~"5.."}[5m])) / sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure"}[5m]))) > $T',
+    subjectLabels: [],
     threshold: 14.4 * 0.005,
     forSeconds: 300,
   },
@@ -79,6 +146,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     description: 'Traefik websecure 5xx ratio over 6h burns the 99.5% error budget at ≥6×.',
     severity: 'warning',
     expr: '(sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure",code=~"5.."}[6h])) / sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure"}[6h]))) > $T',
+    subjectLabels: [],
     threshold: 6 * 0.005,
     forSeconds: 1800,
   },
@@ -88,6 +156,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     description: 'p95 request duration through Traefik websecure exceeds the SLO target.',
     severity: 'warning',
     expr: 'histogram_quantile(0.95, sum by (le) (rate(traefik_entrypoint_request_duration_seconds_bucket{entrypoint="websecure"}[5m]))) > $T',
+    subjectLabels: [],
     threshold: 0.5,
     forSeconds: 600,
   },
@@ -96,7 +165,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Certificate expiring',
     description: 'A cert-manager certificate expires within the threshold window (seconds).',
     severity: 'critical',
-    expr: '(min(certmanager_certificate_expiration_timestamp_seconds) - time()) < $T',
+    expr: '(certmanager_certificate_expiration_timestamp_seconds - time()) < $T',
+    subjectLabels: ['namespace', 'name'],
     threshold: 14 * 86400,
     forSeconds: 3600,
   },
@@ -105,7 +175,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Certificate not Ready',
     description: 'A cert-manager certificate reports Ready=False.',
     severity: 'warning',
-    expr: 'max(certmanager_certificate_ready_status{condition="False"}) > $T',
+    expr: 'certmanager_certificate_ready_status{condition="False"} > $T',
+    subjectLabels: ['namespace', 'name'],
     threshold: 0,
     forSeconds: 1800,
   },
@@ -114,7 +185,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Longhorn storage headroom',
     description: 'A node\'s Longhorn data disk usage ratio exceeds the threshold.',
     severity: 'warning',
-    expr: 'max(longhorn_node_storage_usage_bytes / longhorn_node_storage_capacity_bytes) > $T',
+    expr: 'max by (node) (longhorn_node_storage_usage_bytes / longhorn_node_storage_capacity_bytes) > $T',
+    subjectLabels: ['node'],
     threshold: 0.8,
     forSeconds: 900,
   },
@@ -123,7 +195,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Longhorn storage headroom — critical',
     description: 'A node\'s Longhorn data disk usage ratio exceeds the critical threshold.',
     severity: 'critical',
-    expr: 'max(longhorn_node_storage_usage_bytes / longhorn_node_storage_capacity_bytes) > $T',
+    expr: 'max by (node) (longhorn_node_storage_usage_bytes / longhorn_node_storage_capacity_bytes) > $T',
+    subjectLabels: ['node'],
     threshold: 0.9,
     forSeconds: 900,
   },
@@ -132,7 +205,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Node memory pressure',
     description: 'Node working-set memory ratio (cadvisor root cgroup) exceeds the threshold.',
     severity: 'warning',
-    expr: 'max(container_memory_working_set_bytes{id="/"} / on (node) machine_memory_bytes) > $T',
+    expr: 'max by (node) (container_memory_working_set_bytes{id="/"} / on (node) machine_memory_bytes) > $T',
+    subjectLabels: ['node'],
     threshold: 0.9,
     forSeconds: 600,
   },
@@ -141,7 +215,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Node memory pressure — critical',
     description: 'Node working-set memory ratio exceeds the critical threshold.',
     severity: 'critical',
-    expr: 'max(container_memory_working_set_bytes{id="/"} / on (node) machine_memory_bytes) > $T',
+    expr: 'max by (node) (container_memory_working_set_bytes{id="/"} / on (node) machine_memory_bytes) > $T',
+    subjectLabels: ['node'],
     threshold: 0.95,
     forSeconds: 600,
   },
@@ -154,7 +229,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Node CPU saturation',
     description: 'Node CPU utilisation ratio (root cgroup rate ÷ machine cores) has been sustained above the threshold.',
     severity: 'warning',
-    expr: 'max(rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    expr: 'max by (node) (rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    subjectLabels: ['node'],
     threshold: 0.85,
     forSeconds: 900,
   },
@@ -163,7 +239,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Node CPU saturation — critical',
     description: 'Node CPU utilisation ratio has been sustained above the critical threshold.',
     severity: 'critical',
-    expr: 'max(rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    expr: 'max by (node) (rate(container_cpu_usage_seconds_total{id="/"}[5m]) / on (node) machine_cpu_cores) > $T',
+    subjectLabels: ['node'],
     threshold: 0.95,
     forSeconds: 900,
   },
@@ -172,7 +249,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'system-db instance down',
     description: 'A CNPG postgres exporter target is not up.',
     severity: 'critical',
-    expr: '(count(up{job="cnpg"} == 0) or vector(0)) > $T',
+    expr: 'up{job="cnpg"} <= $T',
+    subjectLabels: ['instance', 'job'],
     threshold: 0,
     forSeconds: 300,
   },
@@ -181,7 +259,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'system-db replication lag',
     description: 'CNPG streaming replication lag (seconds) exceeds the threshold.',
     severity: 'warning',
-    expr: 'max(cnpg_pg_replication_lag) > $T',
+    expr: 'max by (namespace, pod) (cnpg_pg_replication_lag) > $T',
+    subjectLabels: ['namespace', 'pod'],
     threshold: 30,
     forSeconds: 600,
   },
@@ -198,7 +277,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // metric. max by (kind) dedupes the per-replica export; clamp_min
     // folds the -1 "probe failed" sentinel to 0 so a collector outage
     // cannot false-fire.
-    expr: '(sum(max by (kind) (clamp_min(platform_flux_unready_resources, 0))) or vector(0)) > $T',
+    expr: 'max by (kind) (clamp_min(platform_flux_unready_resources, 0)) > $T',
+    subjectLabels: ['kind'],
     threshold: 0,
     forSeconds: 900,
   },
@@ -207,7 +287,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Scrape target down',
     description: 'At least one scrape job has a down target.',
     severity: 'warning',
-    expr: '(count(up == 0) or vector(0)) > $T',
+    expr: 'up <= $T',
+    subjectLabels: ['instance', 'job'],
     threshold: 0,
     forSeconds: 600,
   },
@@ -216,7 +297,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'ACME renewal activity',
     description: 'platform-api fired/forced ACME renewals in the last hour — the LE-order-storm canary (#43). Healthy steady state is ZERO.',
     severity: 'warning',
-    expr: 'sum(increase(platform_acme_renewals_total{result=~"fired|forced|error"}[1h])) > $T',
+    expr: 'sum by (result) (increase(platform_acme_renewals_total{result=~"fired|forced|error"}[1h])) > $T',
+    subjectLabels: ['result'],
     threshold: 3,
     forSeconds: 0,
   },
@@ -226,6 +308,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     description: 'Pending/retrying AcmeRenewal tasks piling up in Stalwart (the 97-task storm shape).',
     severity: 'warning',
     expr: 'max(platform_stalwart_acme_task_queue_depth) > $T',
+    subjectLabels: [],
     threshold: 15,
     forSeconds: 600,
   },
@@ -241,6 +324,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     severity: 'critical',
     // count(==0) so an absent series (mail not deployed) yields 0, not a fire.
     expr: '(count(platform_mail_server_up == 0) or vector(0)) > $T',
+    subjectLabels: [],
     threshold: 0,
     forSeconds: 300,
   },
@@ -252,6 +336,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // >= 0 filter drops the -1 "probe failed" sentinel so a down server
     // (already covered by mail-server-down) can\'t double-fire here.
     expr: 'max(platform_mail_outbound_queue_depth >= 0) > $T',
+    subjectLabels: [],
     threshold: 500,
     forSeconds: 900,
   },
@@ -263,7 +348,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     // `>= 0` filter drops the -1 "probe inconclusive" sentinel; the
     // self-signed bootstrap cert reports a year-4096 expiry so it never
     // trips this rule (it has its own mail-cert-self-signed rule).
-    expr: 'min(platform_mail_tls_cert_expiry_seconds >= 0) < $T',
+    expr: 'min by (hostname) (platform_mail_tls_cert_expiry_seconds >= 0) < $T',
+    subjectLabels: ['hostname'],
     threshold: 14 * 86400,
     forSeconds: 3600,
   },
@@ -272,7 +358,8 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     name: 'Mail TLS certificate self-signed',
     description: 'The served mail TLS certificate is still the rcgen self-signed bootstrap cert — ACME issuance never completed, so external servers reject the TLS.',
     severity: 'warning',
-    expr: 'max(platform_mail_tls_cert_self_signed) > $T',
+    expr: 'max by (hostname) (platform_mail_tls_cert_self_signed) > $T',
+    subjectLabels: ['hostname'],
     threshold: 0,
     forSeconds: 1800,
   },
@@ -282,6 +369,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     description: 'One or more active mailboxes are at 100% of their storage quota (platform_mail_mailboxes_over_quota) — new mail to them is being rejected by Stalwart.',
     severity: 'warning',
     expr: 'max(platform_mail_mailboxes_over_quota) > $T',
+    subjectLabels: [],
     threshold: 0,
     forSeconds: 900,
   },

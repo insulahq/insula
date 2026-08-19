@@ -15,6 +15,12 @@ import { apiFetch } from '@/lib/api-client';
  */
 export interface MonitoringAlert {
   readonly ruleId: string;
+  /** Stable per-object key within the rule ('' for platform-wide rules). */
+  readonly subjectKey?: string;
+  /** Human-readable object, e.g. `certificate=wildcard-tls namespace=tenant-acme`. */
+  readonly subject?: string | null;
+  /** Raw labels behind `subject`. */
+  readonly subjectLabels?: Record<string, string>;
   readonly state: 'firing' | 'resolved' | string;
   readonly severity: 'warning' | 'critical' | string;
   readonly since: string | null;
