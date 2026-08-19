@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type FormEvent } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { X, Loader2, AlertTriangle, CheckCircle, Snowflake } from 'lucide-react';
 import { useMarkBackupTargetWritable, type MarkWritablePayload } from '@/hooks/use-backup-config';
 
@@ -152,12 +153,12 @@ export default function MarkBackupTargetWritableModal({
             </div>
 
             <div>
-              <label htmlFor="mw-confirm" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                Type the target name to confirm:{' '}
-                <code className="font-mono text-xs bg-gray-100 dark:bg-gray-700 px-1 rounded">
-                  {targetName}
-                </code>
-              </label>
+              {/* The token sits OUTSIDE the <label>: it is a button now, and
+                  nesting it would make clicking the label activate it. */}
+              <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                <label htmlFor="mw-confirm">Type the target name to confirm:</label>{' '}
+                <ConfirmToken value={targetName} />
+              </span>
               <input
                 id="mw-confirm"
                 type="text"

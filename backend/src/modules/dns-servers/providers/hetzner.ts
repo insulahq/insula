@@ -1,3 +1,4 @@
+import { formatContent } from '../wire-format.js';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, HetznerDnsConfig } from './types.js';
 import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
 
@@ -97,7 +98,10 @@ export class HetznerDnsProvider implements DnsProviderAdapter {
 
     const resp = await this.request<{ record: HtzRecord }>('/records', {
       method: 'POST',
-      body: JSON.stringify({ zone_id: zoneId, type: input.type, name: cleanName, value: input.content, ttl: input.ttl ?? 3600 }),
+      // Hetzner's `value` is the full presentation-format RDATA. It was
+      // sent the bare content, so an MX arrived without its preference and
+      // an SRV without priority/weight/port — both rejected.
+      body: JSON.stringify({ zone_id: zoneId, type: input.type, name: cleanName, value: formatContent(input), ttl: input.ttl ?? 3600 }),
     });
 
     return { id: resp.record.id, type: resp.record.type, name: input.name, content: resp.record.value, ttl: resp.record.ttl ?? 3600, priority: null };
@@ -111,7 +115,7 @@ export class HetznerDnsProvider implements DnsProviderAdapter {
       body: JSON.stringify({
         zone_id: zoneId,
         type: input.type, name: input.name?.replace(/\.$/, '') ?? '@',
-        value: input.content, ttl: input.ttl ?? 3600,
+        value: formatContent(input as DnsRecordInput), ttl: input.ttl ?? 3600,
       }),
     });
 

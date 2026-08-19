@@ -1,3 +1,4 @@
+import { splitContent } from '../wire-format.js';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, ClouDnsConfig } from './types.js';
 import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
 
@@ -126,14 +127,21 @@ export class ClouDnsProvider implements DnsProviderAdapter {
       .replace(/\.$/, '')
       .replace(new RegExp(`\\.?${clean.replace(/\./g, '\\.')}$`), '') || '';
 
+    // ClouDNS wants the numeric fields as their own query params. Only
+    // `priority` was ever sent, so SRV (which requires weight AND port)
+    // was rejected, and an MX carrying its preference inside `record`
+    // never had it parsed out.
+    const split = splitContent(input);
     const params: Record<string, string | number> = {
       'domain-name': clean,
       'record-type': input.type,
       host,
-      record: input.content,
+      record: split.content,
       ttl: input.ttl ?? 3600,
     };
-    if (input.priority !== undefined) params.priority = input.priority;
+    if (split.priority !== undefined) params.priority = split.priority;
+    if (split.weight !== undefined) params.weight = split.weight;
+    if (split.port !== undefined) params.port = split.port;
 
     const result = await this.request<{ data: { id: string | number } }>(
       `/dns/add-record.json?${this.qs(params)}`,

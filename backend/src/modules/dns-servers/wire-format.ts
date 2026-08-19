@@ -136,3 +136,66 @@ export function qualifyName(zone: string, name: string | null | undefined): stri
   if (raw.endsWith(`.${zoneBare}`)) return `${raw}.`;
   return `${raw}.${zoneFqdn}`;
 }
+
+/**
+ * The same record, decomposed for provider APIs that take the numeric
+ * fields SEPARATELY rather than packed into the RDATA string.
+ *
+ * Two shapes exist in the wild and both must be produced from one source:
+ *   * COMPOSED (`formatContent`) — PowerDNS, BIND/rndc, Hetzner, Route53:
+ *     the value IS the presentation-format RDATA, `10 mail.example.test.`
+ *   * SPLIT (this) — Cloudflare, ClouDNS: `content` is the bare target and
+ *     priority/weight/port ride alongside as their own API fields.
+ *
+ * Every provider previously rolled its own half-version of this, and all of
+ * them were wrong in the same direction: Hetzner and Route53 sent a bare
+ * hostname as an MX value, Cloudflare and ClouDNS never sent weight or port
+ * so SRV could not be created, and rndc composed MX without the trailing dot.
+ */
+export interface SplitRecordContent {
+  /** Bare RDATA target — canonicalised hostname, TXT left unquoted. */
+  readonly content: string;
+  readonly priority?: number;
+  readonly weight?: number;
+  readonly port?: number;
+}
+
+export function splitContent(input: DnsRecordInput): SplitRecordContent {
+  const type = input.type.toUpperCase();
+  const raw = input.content.trim();
+
+  if (type === 'MX') {
+    if (hasNumericPrefix(raw, 1)) {
+      const [pref, target] = raw.split(/\s+/);
+      return { content: fqdn(target), priority: Number(pref) };
+    }
+    if (input.priority == null) {
+      throw new Error(
+        "MX records require a priority (preference) — it is a distinct field, "
+        + 'not part of the hostname.',
+      );
+    }
+    return { content: fqdn(raw), priority: input.priority };
+  }
+
+  if (type === 'SRV') {
+    if (hasNumericPrefix(raw, 3)) {
+      const [prio, weight, port, target] = raw.split(/\s+/);
+      return { content: fqdn(target), priority: Number(prio), weight: Number(weight), port: Number(port) };
+    }
+    if (input.priority == null || input.weight == null || input.port == null) {
+      throw new Error('SRV records require priority, weight and port.');
+    }
+    return { content: fqdn(raw), priority: input.priority, weight: input.weight, port: input.port };
+  }
+
+  // TXT stays unquoted here: these APIs quote it themselves, and a
+  // double-quoted value comes back with literal quotes in the answer.
+  if (type === 'TXT' || type === 'SPF') {
+    return { content: raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw };
+  }
+
+  if (HOSTNAME_CONTENT_TYPES.has(type)) return { content: fqdn(raw) };
+
+  return { content: raw };
+}

@@ -14,6 +14,7 @@
  * docs/roadmap/RETAINED_VOLUME_RESTORE.md.
  */
 import { useState } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { AlertTriangle, Clock, History, Loader2, RotateCcw, X } from 'lucide-react';
 import type { RetainedVolume } from '@insula/api-contracts';
 import { useRetainedVolumes, useRestoreRetained } from '@/hooks/use-storage-lifecycle';
@@ -200,7 +201,7 @@ function RestoreRetainedModal({
           </dl>
           <div>
             <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
-              Type <code className="font-mono text-amber-600 dark:text-amber-400">{vol.pvName}</code> to confirm
+              Type <ConfirmToken value={vol.pvName} className="text-amber-600 dark:text-amber-400" /> to confirm
             </label>
             <input
               type="text"

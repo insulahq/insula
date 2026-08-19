@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fqdn, qualifyName, formatContent } from './wire-format.js';
+import { fqdn, qualifyName, formatContent, splitContent } from './wire-format.js';
 
 /**
  * Every expectation here was checked against a real PowerDNS 4.9 API.
@@ -146,5 +146,51 @@ describe('fqdn', () => {
   it('adds a trailing dot exactly once', () => {
     expect(fqdn('example.test')).toBe('example.test.');
     expect(fqdn('example.test.')).toBe('example.test.');
+  });
+});
+
+describe('splitContent — for providers that take numeric fields separately', () => {
+  it('splits an MX preference out of the target', () => {
+    expect(splitContent({ type: 'MX', name: '@', content: 'mail.example.test', priority: 10 }))
+      .toEqual({ content: 'mail.example.test.', priority: 10 });
+  });
+
+  it('parses an MX whose content already carries its preference', () => {
+    // Cloudflare/ClouDNS were sent this verbatim alongside a separate
+    // priority, so the preference was counted twice.
+    expect(splitContent({ type: 'MX', name: '@', content: '20 mail.example.test.' }))
+      .toEqual({ content: 'mail.example.test.', priority: 20 });
+  });
+
+  it('splits all three SRV fields', () => {
+    expect(splitContent({
+      type: 'SRV', name: '_sip._tcp', content: 'sip.example.test',
+      priority: 10, weight: 5, port: 5060,
+    })).toEqual({ content: 'sip.example.test.', priority: 10, weight: 5, port: 5060 });
+  });
+
+  it('parses a pre-packed SRV value — the shape mail provisioning emits', () => {
+    expect(splitContent({ type: 'SRV', name: '_imaps._tcp', content: '0 1 993 mail.example.test' }))
+      .toEqual({ content: 'mail.example.test.', priority: 0, weight: 1, port: 993 });
+  });
+
+  it('refuses SRV without weight and port instead of dropping them silently', () => {
+    expect(() => splitContent({ type: 'SRV', name: '_x._tcp', content: 'x.example.test', priority: 1 }))
+      .toThrow(/priority, weight and port/i);
+  });
+
+  it('leaves TXT unquoted — these APIs add their own quoting', () => {
+    expect(splitContent({ type: 'TXT', name: '@', content: '"v=spf1 mx ~all"' }))
+      .toEqual({ content: 'v=spf1 mx ~all' });
+  });
+
+  it('canonicalises hostname targets', () => {
+    expect(splitContent({ type: 'CNAME', name: 'x', content: 'target.example.test' }))
+      .toEqual({ content: 'target.example.test.' });
+  });
+
+  it('agrees with formatContent on what the target is', () => {
+    const input = { type: 'MX' as const, name: '@', content: 'mail.example.test', priority: 10 };
+    expect(formatContent(input)).toBe(`${splitContent(input).priority} ${splitContent(input).content}`);
   });
 });
