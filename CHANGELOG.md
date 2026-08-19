@@ -12,6 +12,90 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.6] - 2026-08-19
+
+### Fixed
+- **Most DNS record types were never written to the DNS server, and the panel
+  reported success anyway.** Verified against a real PowerDNS 4.9: `MX` was
+  rejected with `Not in expected format` even on the platform's own mail path
+  (the target was never canonicalised), `SRV` and `CAA` could not be built at
+  all (`weight`/`port` were absent from the provider input, and CAA needs
+  `<flags> <tag> "<value>"`), and every mail record was published to
+  `<apex>.<apex>.` because the zone was appended to names that were already
+  fully qualified. All of it was invisible: one sync path logged a
+  `console.warn` and the other had an empty `catch {}`, and the API answered
+  `201 Created` regardless. Record writes now surface provider rejections as
+  `DNS_PUBLISH_FAILED` and roll back the local row, so a record that appears
+  in the list exists in the zone.
+- **The same composition bug existed in every other DNS provider.** Hetzner and
+  Route53 sent a bare hostname as an MX value; Cloudflare and ClouDNS never
+  sent weight or port, so SRV could not be created, and double-counted an MX
+  preference that was already in the content; BIND/rndc composed MX without the
+  trailing dot. The two wire shapes — packed RDATA and separate numeric
+  fields — now come from one shared module.
+- **Sync Records could never reach all-green.** The comparison claimed in its
+  own comment to strip trailing dots and only stripped quotes, so every
+  CNAME/NS/MX row was a permanent conflict; `SOA` was compared at all despite
+  the server rewriting its serial on every change. Both sides are now
+  canonicalised through the same code that performs the writes, and `SOA` is
+  excluded.
+- **Ingress route DNS was written to the wrong servers.** Every route-creation
+  path omitted the domain id, so it skipped the authority gate and fanned out
+  to every configured server instead of the domain's own provider group —
+  while the matching deletions were correctly scoped, leaving records no
+  cleanup would ever remove.
+- **Mail DNS reported itself provisioned when the server had refused it.** The
+  `*_provisioned` flags were derived from zone ownership alone; a rejected
+  write now counts as not-published and is logged with what was refused.
+- **Every SLO alert was anonymous.** All 24 rules aggregated with a bare
+  `max()`/`min()`/`sum()`, which collapses every series into one scalar and
+  discards the labels that say *what* is broken — `cert-not-ready` evaluated
+  to literally `1`. The evaluator then reduced the result to a single number
+  without reading the labels it already had, and `alert_state` was keyed by
+  rule alone, so there was nowhere to record that one certificate was failing
+  and another was fine. Alerts are now tracked per affected object; the
+  notification, the SLO page and a new **Affected** column all name it
+  (`certificate=<name> namespace=<namespace>`, `node=<node>`, …). Two broken
+  certificates are two alerts that resolve independently.
+- **Certificates were ordered for domains that had not been verified.** Nothing
+  filtered domain status, so creating a domain immediately requested a
+  Let's Encrypt certificate. Such an order cannot validate, and every failure
+  both raised a `cert-not-ready` alert nobody could action and consumed
+  Let's Encrypt rate limits that are shared by *every* domain on the platform.
+  Issuance now waits for verification and is triggered by it; an explicit
+  operator reissue still forces it.
+- **Password managers prompted on every admin and tenant page.** The header
+  search box carried no `name`, `id` or `autocomplete`, which password
+  managers treat as a username field on an origin with a saved login.
+
+### Changed
+- The reserved-hostname guard no longer rejects records whose *value* points at
+  a platform hostname. It blocked the platform's own documented setups — an
+  `MX` at the platform mail server, a `CNAME` at the ingress base domain —
+  while preventing no attack: name resolution is not authorization, Traefik
+  routes on the `Host` header, and every admin UI sits behind a mandatory auth
+  gate. The check on a record's *own* name, and the guard that stops a tenant
+  registering a reserved hostname as a domain, are unchanged.
+- `SOA` is no longer offered when adding a DNS record: a zone has exactly one
+  and the authoritative server owns it, including the serial.
+- The tenant detail page's title bar now carries only **Login as Tenant**; every
+  other action moved into an **Actions** menu, with destructive entries
+  separated and tinted.
+
+### Added
+- DNS record forms collect the fields each type actually needs — priority for
+  `MX`, priority/weight/port for `SRV` — and show the expected value format.
+  Previously the forms offered twelve record types but collected only
+  type/name/value/TTL, so several could not be created correctly at all.
+- Destructive confirmation dialogs let you click the name you are asked to
+  re-type to copy it.
+- `scripts/integration-dns-powerdns.sh` drives every record type the tenant UI
+  offers against a real PowerDNS, using only inputs that UI can produce, and
+  reads each record back — including the auto-provisioned mail set (MX, SPF,
+  DKIM, DMARC and the four autodiscovery SRVs) and the route records. Gated in
+  CI. The mocked tests it supplements asserted the request body the platform
+  *sent*, which is why they never noticed the server rejecting it.
+
 ## [2026.8.5] - 2026-08-17
 
 ### Fixed
