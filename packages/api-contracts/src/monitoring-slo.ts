@@ -29,6 +29,24 @@ export const sloRuleStatusSchema = z.object({
   since: z.string().datetime().nullable(),
   lastValue: z.number().nullable(),
   lastEvaluatedAt: z.string().datetime().nullable(),
+  /**
+   * The individual objects this rule is firing for — which certificate, which
+   * node, which scrape target. A rule can be firing for several at once.
+   *
+   * Alerts used to be rule-scoped and anonymous: "Certificate not Ready" with
+   * no way to tell which certificate, in which namespace, for which tenant.
+   */
+  subjects: z.array(z.object({
+    /** Stable key within the rule (empty for cluster-wide rules). */
+    key: z.string(),
+    /** Human-readable, e.g. `certificate=wildcard-tls namespace=tenant-acme`. */
+    label: z.string().nullable(),
+    /** Raw labels, so the panel can deep-link to the object. */
+    labels: z.record(z.string(), z.string()),
+    state: alertStateValueSchema,
+    since: z.string().datetime().nullable(),
+    lastValue: z.number().nullable(),
+  })).default([]),
 });
 export type SloRuleStatus = z.infer<typeof sloRuleStatusSchema>;
 
