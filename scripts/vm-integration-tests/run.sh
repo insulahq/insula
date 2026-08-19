@@ -502,7 +502,12 @@ RUNNER_IP="${VMTEST_RUNNER_IP:?spawn-cluster did not emit VMTEST_RUNNER_IP}"
 SSHR=(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${RUNNER_IP}")
 echo "── provisioning runner ${RUNNER_IP} (node+ws, version-matched kubectl+kubeconfig, cli tools) ──"
 # a) harness scripts
-tar czf - -C "$REPO" scripts | "${SSHR[@]}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
+# --exclude the operator's gitignored profile. It carries the STAGING
+# ADMIN_PASSWORD and SSH_KEY, and copying it to a throwaway VM both leaks those
+# credentials onto disposable disks and lets the profile retarget the suites at
+# the operator's real cluster (see the INTEGRATION_ENV note below).
+tar czf - --exclude=integration.env -C "$REPO" scripts \
+  | "${SSHR[@]}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
 # b) the run's SSH key → runner, at the harness's DEFAULT SSH_KEY path, so the runner can SSH
 #    to cluster nodes (ssh_cp kubectl probes + the node-terminal/firewall/drain SSH suites).
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
@@ -720,7 +725,33 @@ export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX}
 # staging.example.test and abort "cannot resolve ingress IP (set RESOLVE_IP)".
 export HTTPS_TEST_DOMAIN_BASE=${APEX} RESOLVE_IP=${VMTEST_CP_IP}
 export INTEGRATION_REQUIRE_CONVERGE=${REQUIRE_CONVERGE}
-export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=
+# INTEGRATION_ENV must name a REAL file, not be empty.
+#
+# lib/integration-env.sh searches: $INTEGRATION_ENV, then scripts/integration.env,
+# then ~/.config/insula/integration.env — FIRST EXISTING file wins. An EMPTY
+# value does not suppress the search, it merely fails candidate #1 and hands the
+# run to the operator's own profile. Its caller-wins guard then protects only the
+# vars run.sh exports: MAIL_HOST is not one of them, so the tier inherited
+# MAIL_HOST=mail.<operator staging apex> and the smoke gate attempted an SMTP
+# AUTH against the REAL staging server, failed "Login denied", and aborted the
+# whole run before a single suite. Exactly the "config that names two different
+# clusters" the lib documents but cannot prevent.
+#
+# Pointing it at a written tier profile makes candidate #1 win, so neither the
+# repo-local nor the ~/.config profile is ever reached.
+mkdir -p /root/insula/scripts
+{
+  echo "# Generated per run by vm-integration-tests/run.sh — this ephemeral"
+  echo "# cluster's own targets. Deliberately the ONLY profile the tier loads."
+  echo "MAIL_HOST=mail.${APEX}"
+  echo "PLATFORM_BASE_DOMAIN=${APEX}"
+  echo "PLATFORM_DOMAIN=${APEX}"
+  echo "MAIL_DOMAIN_APEX=${APEX}"
+  # The cluster is remote from the runner, so mail is probed over the network
+  # rather than by exec-ing into a local DinD container.
+  echo "MAIL_PROBE_MODE=host"
+} > /root/insula/scripts/vmtier.env
+export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=/root/insula/scripts/vmtier.env
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
 # version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
 # CONTROL_HOST point at the first control-plane node; SSH_KEY is present so ssh_cp uses SSH.
