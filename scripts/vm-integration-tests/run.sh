@@ -497,7 +497,9 @@ ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
 #    suite from a workstation against staging. This decouples the system-under-test from the
 #    runner: a control-plane node reused as the runner is under-provisioned (EOL distro node,
 #    no node_modules, no peer SSH key) + under platform load, which yields false pos/neg.
-#    INTEGRATION_ENV= forces the profile search to no-op (no operator integration.env leaks in).
+#    INTEGRATION_ENV points at a per-run scripts/vmtier.env so the profile search stops at
+#    candidate #1 (an EMPTY value does NOT suppress it — it hands the run to the operator's
+#    scripts/integration.env, which pins their real staging cluster).
 RUNNER_IP="${VMTEST_RUNNER_IP:?spawn-cluster did not emit VMTEST_RUNNER_IP}"
 SSHR=(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${RUNNER_IP}")
 echo "── provisioning runner ${RUNNER_IP} (node+ws, version-matched kubectl+kubeconfig, cli tools) ──"
@@ -727,7 +729,7 @@ export HTTPS_TEST_DOMAIN_BASE=${APEX} RESOLVE_IP=${VMTEST_CP_IP}
 export INTEGRATION_REQUIRE_CONVERGE=${REQUIRE_CONVERGE}
 # INTEGRATION_ENV must name a REAL file, not be empty.
 #
-# lib/integration-env.sh searches: $INTEGRATION_ENV, then scripts/integration.env,
+# lib/integration-env.sh searches: \$INTEGRATION_ENV, then scripts/integration.env,
 # then ~/.config/insula/integration.env — FIRST EXISTING file wins. An EMPTY
 # value does not suppress the search, it merely fails candidate #1 and hands the
 # run to the operator's own profile. Its caller-wins guard then protects only the
@@ -750,6 +752,16 @@ mkdir -p /root/insula/scripts
   # The cluster is remote from the runner, so mail is probed over the network
   # rather than by exec-ing into a local DinD container.
   echo "MAIL_PROBE_MODE=host"
+  # STANDARD mail ports. smoke-test.sh defaults to the dev DinD NodePort
+  # mapping (2025/2587/2143/2993), which nothing listens on here — the
+  # operator profile used to supply these, so replacing it without them
+  # reproduced the same partial-config trap in the other direction: seven
+  # TCP/banner probes failed against ports that do not exist while mail
+  # delivery itself passed.
+  echo "MAIL_PORT_SMTP=25"
+  echo "MAIL_PORT_SUBMISSION=587"
+  echo "MAIL_PORT_IMAP=143"
+  echo "MAIL_PORT_IMAPS=993"
 } > /root/insula/scripts/vmtier.env
 export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=/root/insula/scripts/vmtier.env
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
