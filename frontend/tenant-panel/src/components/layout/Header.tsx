@@ -62,9 +62,26 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
       <div className="relative flex-1 max-w-md">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
+        {/* This input is on EVERY page, so it decides whether password
+            managers nag on every page. An anonymous text-ish input (no
+            name, no id, no autocomplete) on an origin the user has saved a
+            login for is exactly what 1Password/Bitwarden/LastPass/Dashlane
+            treat as a username field — they offered to fill it everywhere.
+            Naming it and opting out per-vendor is the only reliable fix;
+            `autocomplete="off"` alone is ignored by most of them.
+            Keep these attributes on any always-visible input we add. */}
         <input
           type="search"
+          id="global-search"
+          name="global-search"
+          aria-label="Search domains and databases"
           placeholder="Search domains, databases..."
+          autoComplete="off"
+          data-1p-ignore
+          data-lpignore="true"
+          data-bwignore
+          data-form-type="other"
+          data-testid="global-search-input"
           className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 py-2 pl-9 pr-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:bg-white dark:focus:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-brand-500"
         />
       </div>
