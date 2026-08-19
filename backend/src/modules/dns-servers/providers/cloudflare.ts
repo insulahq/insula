@@ -1,3 +1,4 @@
+import { splitContent } from '../wire-format.js';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, CloudflareConfig } from './types.js';
 import { describeFetchFailure } from '../../../shared/fetch-error.js';
 
@@ -91,11 +92,22 @@ export class CloudflareDnsProvider implements DnsProviderAdapter {
     const zoneId = await this.getZoneId(zone);
     const cleanName = input.name.replace(/\.$/, '');
 
+    // Cloudflare takes the numeric fields SEPARATELY. It was sent
+    // `input.content` verbatim with only `priority` alongside, so an MX
+    // whose content already carried its preference was double-counted and
+    // SRV — which needs weight and port — could not be created at all.
+    const split = splitContent(input);
     const record = await this.request<CfRecord>(`/zones/${zoneId}/dns_records`, {
       method: 'POST',
       body: JSON.stringify({
-        type: input.type, name: cleanName, content: input.content,
-        ttl: input.ttl ?? 1, priority: input.priority,
+        type: input.type,
+        name: cleanName,
+        content: split.content,
+        ttl: input.ttl ?? 1,
+        ...(split.priority != null ? { priority: split.priority } : {}),
+        ...(input.type.toUpperCase() === 'SRV'
+          ? { data: { priority: split.priority, weight: split.weight, port: split.port, target: split.content } }
+          : {}),
       }),
     });
 

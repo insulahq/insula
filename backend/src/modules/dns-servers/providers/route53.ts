@@ -1,5 +1,15 @@
 import crypto from 'crypto';
 import { describeFetchFailure, summarizeUpstreamBody } from '../../../shared/fetch-error.js';
+import { formatContent } from '../wire-format.js';
+
+/** Route53 takes RRDATA inside an XML document — a TXT value containing
+ *  `&` or `<` would otherwise produce a malformed request body. */
+function escapeXml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, Route53Config } from './types.js';
 
 /**
@@ -108,7 +118,7 @@ export class Route53DnsProvider implements DnsProviderAdapter {
     <Action>UPSERT</Action>
     <ResourceRecordSet>
       <Name>${name}</Name><Type>${input.type}</Type><TTL>${input.ttl ?? 300}</TTL>
-      <ResourceRecords><ResourceRecord><Value>${input.content}</Value></ResourceRecord></ResourceRecords>
+      <ResourceRecords><ResourceRecord><Value>${escapeXml(formatContent(input))}</Value></ResourceRecord></ResourceRecords>
     </ResourceRecordSet>
   </Change></Changes></ChangeBatch>
 </ChangeResourceRecordSetsRequest>`;

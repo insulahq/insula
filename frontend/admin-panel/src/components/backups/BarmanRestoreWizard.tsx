@@ -17,6 +17,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import { X, AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, Loader2, Check, Trash2, RotateCw } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -730,7 +731,7 @@ function InFlight({
             </p>
             <label className="block">
               <span className="text-gray-700 dark:text-gray-300">
-                Type <code className="rounded bg-gray-100 px-1 font-mono dark:bg-gray-800">{sourceName}</code> to confirm:
+                Type <ConfirmToken value={sourceName} /> to confirm:
               </span>
               <input
                 type="text"

@@ -101,14 +101,23 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
     const body = request.body as { type: string; name: string; value: string; ttl?: number; local_id?: string };
 
     if (body.local_id) {
-      // Update existing local record
-      const updated = await service.updateDnsRecord(app.db, tenantId, domainId, body.local_id, {
+      // Adopt the REMOTE value into the local row — local-only by definition.
+      // This used to call updateDnsRecord(), which pushes back to the provider:
+      // a pull would immediately re-publish what it had just read, and could
+      // fail on a record the provider was already happy with.
+      const updated = await service.updateDnsRecordLocalOnly(app.db, tenantId, domainId, body.local_id, {
         record_value: body.value,
         ttl: body.ttl,
       });
       return success(updated);
     } else {
-      // Create new local record (without syncing to remote — it already exists there)
+      // Create new local record (without syncing to remote — it already exists there).
+      //
+      // `body.value` is the remote record's full wire content (`10 mail.example.test.`
+      // for MX, `10 5 5060 sip.example.test.` for SRV). It is stored verbatim rather
+      // than split into the priority/weight/port columns: wire-format.ts passes
+      // already-formatted content straight through, so the row round-trips back to
+      // the provider unchanged and the diff compares equal.
       const created = await service.createDnsRecordLocalOnly(app.db, tenantId, domainId, {
         record_type: body.type as 'A',
         record_name: body.name,
@@ -123,15 +132,39 @@ export async function dnsRecordRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/domains/:domainId/dns-records/push
   app.post('/tenants/:tenantId/domains/:domainId/dns-records/push', async (request) => {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
-    const body = request.body as { type: string; name: string; value: string; ttl?: number };
+    const body = request.body as {
+      type: string; name: string; value: string; ttl?: number;
+      priority?: number; weight?: number; port?: number;
+    };
 
     const [domain] = await app.db.select().from(domains).where(eq(domains.id, domainId));
     if (!domain) throw new ApiError('DOMAIN_NOT_FOUND', 'Domain not found', 404);
 
-    await service.syncRecordToProviders(app.db, domain.domainName, 'create', {
+    const outcome = await service.syncRecordToProviders(app.db, domain.domainName, 'create', {
       type: body.type, name: body.name, content: body.value, ttl: body.ttl ?? 3600,
+      priority: body.priority, weight: body.weight, port: body.port,
     }, domainId);
 
-    return success({ message: 'Record pushed to DNS server' });
+    // This used to answer `{ message: 'Record pushed to DNS server' }`
+    // unconditionally — including when the provider had just rejected the
+    // record — which is why Push appeared to do nothing at all.
+    if (outcome.status === 'failed') {
+      throw new ApiError(
+        'DNS_PUBLISH_FAILED',
+        `The DNS server rejected this record: ${service.describeSyncFailure(outcome)}`,
+        502,
+        { recordType: body.type, recordName: body.name, errors: outcome.errors },
+      );
+    }
+    if (outcome.status === 'skipped') {
+      throw new ApiError(
+        'DNS_NOT_AUTHORITATIVE',
+        `Cannot push this record — ${outcome.reason}.`,
+        409,
+        { reason: outcome.reason },
+      );
+    }
+
+    return success({ message: `Record published to ${outcome.servers} DNS server(s)` });
   });
 }

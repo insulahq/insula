@@ -224,7 +224,15 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
   });
 
   describe('createDnsRecord enforcement', () => {
-    it('rejects a CNAME pointing at a platform-reserved hostname', async () => {
+    // ── Record VALUES are no longer checked ────────────────────────
+    // Pointing a record you already own AT a platform hostname grants
+    // nothing (Traefik routes on the Host header; every admin-UI Ingress
+    // carries a mandatory auth gate), and the check broke the platform's
+    // own documented flows — the panel tells tenants to CNAME at the
+    // ingress base domain, and every tenant MX targets `mail.<apex>`.
+    // What still stops a hijack is the record's own NAME (below) plus
+    // the domain-create guard.
+    it('ALLOWS a CNAME whose target is a platform-reserved hostname', async () => {
       const db = getTestDb();
       const region = await seedRegion(db);
       const plan = await seedPlan(db);
@@ -234,18 +242,14 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
       await expect(
         createDnsRecord(db, tenant.id, domain.id, {
           record_type: 'CNAME',
-          record_name: 'admin',
-          record_value: `admin.${TEST_APEX}`,
+          record_name: 'www',
+          record_value: `ingress.${TEST_APEX}`,
           ttl: 3600,
         } as never),
-      ).rejects.toMatchObject({ code: 'RESERVED_PLATFORM_HOSTNAME' });
+      ).resolves.toBeDefined();
     });
 
-    it('rejects an A record pointing at a reserved hostname value', async () => {
-      // Real A records take IPs not hostnames; the platform-reserved
-      // hostname-as-record-value path is mostly there for CNAMEs but
-      // we cover the case defensively. Use AAAA which has the same
-      // pattern.
+    it('ALLOWS an MX pointing at the platform mail server — the documented tenant setup', async () => {
       const db = getTestDb();
       const region = await seedRegion(db);
       const plan = await seedPlan(db);
@@ -254,9 +258,29 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
 
       await expect(
         createDnsRecord(db, tenant.id, domain.id, {
-          record_type: 'AAAA',
-          record_name: 'www',
-          record_value: `bulwark.${TEST_APEX}`,
+          record_type: 'MX',
+          record_name: '@',
+          record_value: `mail.${TEST_APEX}`,
+          ttl: 3600,
+          priority: 10,
+        } as never),
+      ).resolves.toBeDefined();
+    });
+
+    it('STILL rejects a record whose own FQDN is a reserved hostname', async () => {
+      // Case (a) — the real anti-hijack control. A tenant holding the
+      // apex zone must not be able to add `admin` as a record under it.
+      const db = getTestDb();
+      const region = await seedRegion(db);
+      const plan = await seedPlan(db);
+      const tenant = await seedTenant(db, region.id, plan.id);
+      const domain = await seedDomain(db, tenant.id, { domainName: TEST_APEX });
+
+      await expect(
+        createDnsRecord(db, tenant.id, domain.id, {
+          record_type: 'A',
+          record_name: 'admin',
+          record_value: '203.0.113.10',
           ttl: 3600,
         } as never),
       ).rejects.toMatchObject({ code: 'RESERVED_PLATFORM_HOSTNAME' });
@@ -279,31 +303,11 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
       ).resolves.toBeDefined();
     });
 
-    it('rejects an MX record pointing at a reserved hostname (review MEDIUM #6)', async () => {
-      // The original Phase 5 check only covered CNAME/A/AAAA; MX/NS/SRV
-      // are added defensively so future audits can't find a record
-      // type that points at a reserved hostname unchecked.
-      const db = getTestDb();
-      const region = await seedRegion(db);
-      const plan = await seedPlan(db);
-      const tenant = await seedTenant(db, region.id, plan.id);
-      const domain = await seedDomain(db, tenant.id, { domainName: 'acme.com' });
-
-      await expect(
-        createDnsRecord(db, tenant.id, domain.id, {
-          record_type: 'MX',
-          record_name: '@',
-          record_value: `mail.${TEST_APEX}`,
-          ttl: 3600,
-          priority: 10,
-        } as never),
-      ).rejects.toMatchObject({ code: 'RESERVED_PLATFORM_HOSTNAME' });
-    });
-
-    it('updateDnsRecord re-applies the reserved check on record_value PATCH (review MEDIUM #4)', async () => {
-      // Without this check, a tenant could create a benign record and
-      // PATCH the value to a reserved hostname later — bypassing
-      // create-time enforcement.
+    it('updateDnsRecord ALLOWS re-pointing a record at a reserved hostname', async () => {
+      // The old create-time value check had a matching PATCH check so it
+      // could not be bypassed. Both are gone together — re-pointing your
+      // own CNAME at a platform hostname is a normal thing to do (that is
+      // how a tenant moves a hostname onto the platform ingress).
       const db = getTestDb();
       const region = await seedRegion(db);
       const plan = await seedPlan(db);
@@ -319,9 +323,9 @@ describe.skipIf(!dbAvailable)('reserved-subdomains (integration)', () => {
 
       await expect(
         updateDnsRecord(db, tenant.id, domain.id, benign.id, {
-          record_value: `admin.${TEST_APEX}`,
+          record_value: `ingress.${TEST_APEX}`,
         } as never),
-      ).rejects.toMatchObject({ code: 'RESERVED_PLATFORM_HOSTNAME' });
+      ).resolves.toBeDefined();
     });
 
     it('SYSTEM tenant CAN create a CNAME pointing at a platform-reserved hostname', async () => {
