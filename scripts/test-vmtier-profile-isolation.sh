@@ -65,6 +65,18 @@ else
   bad "tier profile does not pin MAIL_HOST — smoke can inherit the operator's mail server again"
 fi
 
+# 3b. The tier profile must be COMPLETE. Replacing the operator profile with a
+#     partial one just moves the two-clusters problem: MAIL_PORT_* absent meant
+#     smoke probed the dev DinD NodePorts (2025/2587/2143/2993), which nothing
+#     on a real cluster listens on.
+for _v in MAIL_PORT_SMTP MAIL_PORT_SUBMISSION MAIL_PORT_IMAP MAIL_PORT_IMAPS MAIL_PROBE_MODE; do
+  if grep -qE "echo \"${_v}=" "$RUN_SH"; then
+    ok "tier profile defines ${_v}"
+  else
+    bad "tier profile is missing ${_v} — smoke falls back to a default that does not apply here"
+  fi
+done
+
 # 4. Guard the lib's search semantics the above relies on: first EXISTING
 #    candidate wins, with $INTEGRATION_ENV first.
 if [[ -r "$LIB" ]]; then
