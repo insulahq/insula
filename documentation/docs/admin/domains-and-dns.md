@@ -69,9 +69,46 @@ skipped by the ingress reconciler until you bind one.
 ### DNS Records tab
 
 For Primary / Secondary domains, manage the zone's records directly. Click
-**Add Record**, choose a **type** (A, AAAA, CNAME, MX, TXT, SRV, NS),
-enter the **name**, **value**, **TTL**, and a **priority** where the type
-needs one (MX, SRV). The records are pushed to the configured DNS provider.
+**Add Record**, choose a **type** (A, AAAA, CNAME, MX, TXT, SRV, NS, CAA,
+PTR, ALIAS, DNAME), then enter the **name**, **value** and **TTL**. The
+form shows the extra fields the chosen type needs:
+
+| Type | Extra fields | Value format |
+|------|--------------|--------------|
+| MX | **Priority** | the mail host, e.g. `mail.example.test` |
+| SRV | **Priority**, **Weight**, **Port** | the target host, e.g. `sip.example.test` |
+| CAA | — | `<flags> <tag> "<value>"`, e.g. `0 issue "letsencrypt.org"` |
+| everything else | — | the plain value |
+
+Enter hostnames without a trailing dot — the platform canonicalises them
+for the provider.
+
+`SOA` is not listed: a zone has exactly one and the DNS server owns it,
+including the serial, so it cannot be added or edited here.
+
+The record is pushed to the domain's DNS provider **before** the panel
+reports success. If the provider rejects it the record is not kept and the
+error is shown — a record that appears in this list exists in the zone.
+
+!!! note "Pointing records at the platform"
+    Pointing a record at a platform hostname is expected and allowed —
+    an `MX` at the platform mail server, or a `CNAME` at the ingress base
+    domain. Only the record's **own** name is checked against the
+    [reserved set](#reserved-platform-hostnames).
+
+#### Sync Records
+
+**Sync Records** compares this domain's records against what the DNS
+server actually holds and lets you reconcile either direction:
+
+- **in sync** — identical on both sides.
+- **conflict** — same name and type, different value. **Pull** takes the
+  server's value; **Push** overwrites the server with yours.
+- **local only** / **remote only** — present on one side. Push or Pull to
+  copy it across.
+
+`SOA` is excluded: the server rewrites its serial on every change, so it
+can never match.
 
 ### SSL/TLS tab
 
@@ -79,6 +116,17 @@ The TLS mode shows as:
 
 - **Automatic** — certificates are provisioned and renewed via Let's
   Encrypt. This is the default.
+
+!!! important "Certificates wait for domain verification"
+    A certificate is only ordered once the domain reaches **verified**.
+    Until then the SSL/TLS tab shows no certificate, and that is expected:
+    an ACME order for a domain whose DNS does not point at the platform
+    cannot succeed, and repeated failures consume Let's Encrypt rate
+    limits that are shared by **every** domain on the platform.
+
+    Issuance starts automatically the moment verification passes. Use
+    **Verify Now** if you have just corrected the DNS, or **Reissue** on
+    the SSL/TLS tab to order anyway.
 - **Custom Certificate** — you've uploaded your own cert; delete it to
   revert to automatic.
 - **No TLS** — not configured yet.
@@ -98,8 +146,13 @@ shows issuer, type, and expiry once a cert is in place.
 Some hostnames are reserved for the platform itself — the apex domain, and
 the subdomains used by internal services (Longhorn, the mail server, the
 webmail UI, etc.). If a tenant (or you) tries to create a domain or DNS
-record that collides with one of these, the platform refuses it with a
+record **named** after one of these, the platform refuses it with a
 **409 `RESERVED_PLATFORM_HOSTNAME`** error.
+
+The check applies to the hostname being created, not to what a record
+points *at*. Targeting a platform hostname is a normal, supported setup
+(that is how tenant mail and tenant routing work) and resolves nothing on
+its own — the admin UIs are protected by authentication, not by DNS.
 
 The reserved set is derived partly from the **Platform URLs** you set in
 [Platform → Integrations](platform-settings.md) and the mail/webmail URLs

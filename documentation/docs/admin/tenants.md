@@ -87,13 +87,26 @@ tenant panel; use **Login as Tenant** to reach it.
 
 ### Header actions
 
-| Button | What it does |
+**Login as Tenant** sits on its own in the title bar; everything else is
+under the **Actions** menu beside it.
+
+| Action | What it does |
 |--------|--------------|
 | **Login as Tenant** | Opens the tenant panel in a new tab, signed in as that customer (impersonation). Requires the Tenant Panel URL to be set in [Platform → Identity](platform-settings.md). |
 | **Provision / Re-provision** | Builds (or rebuilds) the tenant's cluster resources. Appears as *Provision* when unprovisioned/failed, *Re-provision* when already provisioned (to repair drifted state). |
 | **Refresh All Apps** | Pulls the latest images and restarts every running deployment for the tenant. |
 | **Edit** | Edits the contact fields (name, emails). |
-| **Notify tenant** | A checkbox next to the lifecycle buttons — when ticked (default), the customer gets an in-app + email notification about the lifecycle action you're about to take. |
+| **Notify tenant** | A checkbox above the lifecycle actions — when ticked (default), the customer gets an in-app + email notification about the lifecycle action you're about to take. |
+| **Suspend / Reactivate / Archive / Restore** | The lifecycle transitions, described below. Which one appears depends on the tenant's current status. |
+| **Delete** | Hard delete, shown last and in red. Irreversible. |
+
+The SYSTEM tenant shows only the non-destructive entries — it cannot be
+suspended, archived or deleted.
+
+!!! tip "Typing a name to confirm"
+    Destructive dialogs ask you to re-type an exact name (a tenant, a node,
+    a volume). Click the highlighted name to copy it instead of
+    transcribing it.
 
 ## The lifecycle: suspend, resume, archive, restore, delete
 
