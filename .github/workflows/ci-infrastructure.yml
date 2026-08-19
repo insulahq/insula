@@ -272,7 +272,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
+        # Same guard as the shellcheck job above: the tool is pre-installed on
+        # ubuntu-latest, and the unconditional `apt-get` here HUNG for 29 min
+        # (then 15+ min on a re-run) on the v2026.8.6 promote PR while the
+        # identical tree passed this job in 1m31s elsewhere. Only install when
+        # it is genuinely missing, and bound it so a wedged mirror fails fast
+        # instead of holding a runner for hours.
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            timeout 300 sudo apt-get update
+            timeout 300 sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
       - name: Verify runner validation + embedding + per-script authoring contract
         run: ./scripts/ci-host-migrations-check.sh
 
