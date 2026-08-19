@@ -340,11 +340,30 @@ export interface EnsureCertificateResult {
  *   - no k8s tenant → no-op, returns { skipped: true }
  *   - otherwise → create/replace Certificate CR in the tenant namespace
  */
+/**
+ * Domain states an ACME order can plausibly succeed for.
+ *
+ * `unverified`/`pending` means the platform has NOT confirmed the customer
+ * pointed DNS at us, so a Let's Encrypt order cannot validate. Issuing
+ * anyway is not merely useless — it is actively harmful:
+ *   * every order fails, and (since the cert-status work) each failure
+ *     raises a `cert-not-ready` alert the operator cannot action;
+ *   * it burns Let's Encrypt's per-account limits — 5 failed validations
+ *     per account/hostname/hour and 300 new orders per 3 hours — which are
+ *     shared across every tenant on the platform. A handful of parked
+ *     domains can therefore block issuance for domains that ARE ready.
+ *
+ * Certificates are (re)requested when verification flips the domain to
+ * `verified` — see domains/verification-cron.ts.
+ */
+const ISSUABLE_DOMAIN_STATUSES: ReadonlySet<string> = new Set(['verified', 'active']);
+
 export async function ensureDomainCertificate(
   db: Database,
   k8s: K8sClients | undefined,
   domainId: string,
   logger: CertLogger = noopLogger,
+  options: { readonly force?: boolean } = {},
 ): Promise<EnsureCertificateResult> {
   if (!(await isAutoTlsEnabled(db))) {
     logger.info({ domainId }, 'ensureDomainCertificate: auto-TLS disabled, skipping');
@@ -359,6 +378,15 @@ export async function ensureDomainCertificate(
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domain) {
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
+  }
+
+  // Gate on verification BEFORE anything is created. `force` exists for the
+  // explicit operator reissue path, where the human has decided the domain
+  // is ready regardless of what our own probe last saw.
+  if (!options.force && !ISSUABLE_DOMAIN_STATUSES.has(domain.status)) {
+    const reason = `domain is '${domain.status}' — ACME issuance waits for verification`;
+    logger.info({ domainId, status: domain.status }, `ensureDomainCertificate: ${reason}`);
+    return { skipped: true, reason };
   }
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));
@@ -750,6 +778,7 @@ export async function ensureRouteCertificate(
   domainId: string,
   hostname: string,
   logger: CertLogger = noopLogger,
+  options: { readonly force?: boolean } = {},
 ): Promise<EnsureRouteCertificateResult> {
   if (!(await isAutoTlsEnabled(db))) {
     return { skipped: true, reason: 'auto-TLS disabled' };
@@ -761,6 +790,15 @@ export async function ensureRouteCertificate(
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domain) {
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found`, 404);
+  }
+
+  // Gate on verification BEFORE anything is created. `force` exists for the
+  // explicit operator reissue path, where the human has decided the domain
+  // is ready regardless of what our own probe last saw.
+  if (!options.force && !ISSUABLE_DOMAIN_STATUSES.has(domain.status)) {
+    const reason = `domain is '${domain.status}' — ACME issuance waits for verification`;
+    logger.info({ domainId, status: domain.status }, `ensureDomainCertificate: ${reason}`);
+    return { skipped: true, reason };
   }
 
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, domain.tenantId));

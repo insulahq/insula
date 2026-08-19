@@ -1,5 +1,6 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { formatContent } from '../wire-format.js';
 import type { DnsProviderAdapter, DnsZone, DnsRecord, DnsRecordInput, RndcConfig } from './types.js';
 
 const exec = promisify(execFile);
@@ -81,7 +82,10 @@ export class RndcDnsProvider implements DnsProviderAdapter {
   async createRecord(zone: string, input: DnsRecordInput): Promise<DnsRecord> {
     const normalized = zone.endsWith('.') ? zone : `${zone}.`;
     const name = input.name.endsWith('.') ? input.name : `${input.name}.${normalized}`;
-    const content = input.type === 'MX' && input.priority ? `${input.priority} ${input.content}` : input.content;
+    // Was MX-only, and even then produced a non-canonical target. BIND
+    // wants the same presentation-format RDATA every other authoritative
+    // server does, for every type.
+    const content = formatContent(input);
 
     // rndc addrecord zone name ttl type content (BIND 9.11+)
     await this.rndc('addrecord', normalized, name, String(input.ttl ?? 3600), input.type, content);

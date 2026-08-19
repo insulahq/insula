@@ -53,6 +53,30 @@ by meaning rather than alphabetically:
 - **Evaluated** keeps rules that have never been evaluated at the bottom rather
   than treating "no timestamp" as the newest value.
 
+### Which object is affected
+
+Alerts are tracked **per affected object**, not per rule. The **Active Alerts**
+tab has an **Affected** column, and the same identifier appears in the
+notification you receive:
+
+| Rule | Affected reads |
+|---|---|
+| Certificate not Ready / expiring | `certificate=<name> namespace=<namespace>` |
+| Node CPU / memory, Longhorn headroom | `node=<node>` |
+| Scrape target down, CNPG down | `target=<instance> job=<job>` |
+| Mail certificate | `host=<hostname>` |
+| SYSTEM container OOM-killed | `namespace=… pod=… container=…` |
+
+Two broken certificates are two alerts, and each resolves on its own — fixing
+one does not clear the other. Rules with no narrower subject (whole-ingress
+error ratio, p95 latency, "is monitoring reachable") show **platform-wide**.
+
+!!! note "SOA and certificate alerts you cannot action"
+    A `cert-not-ready` alert naming a domain that is still **unverified** is
+    expected while DNS is being set up — the platform does not order a
+    certificate until the domain verifies. See
+    [Domains and DNS](../admin/domains-and-dns.md#ssltls-tab).
+
 ## Node health and recovery actions
 
 The **Node Health** tab is the one to watch. A 5-minute reconciler tracks, per

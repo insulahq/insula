@@ -1,4 +1,5 @@
 import { useId, useState } from 'react';
+import ConfirmToken from '@/components/ui/ConfirmToken';
 import {
   AlertTriangle,
   Archive,
@@ -863,7 +864,7 @@ function RestoreConfirmModal({
           </div>
           <div className="space-y-1">
             <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
-              Type <code className="rounded bg-gray-100 dark:bg-gray-800 px-1">REPLACE</code> to confirm:
+              Type <ConfirmToken value="REPLACE" /> to confirm:
             </label>
             <input
               type="text"
