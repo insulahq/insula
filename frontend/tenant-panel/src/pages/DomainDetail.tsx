@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { dnsRecordFieldsFor } from '@insula/api-contracts';
 import ManagedCertificateCard from '@/components/ManagedCertificateCard';
 import { useCanManage } from '@/hooks/use-can-manage';
 import { useParams, Link, useNavigate } from 'react-router-dom';
@@ -1107,7 +1108,7 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [showSyncModal, setShowSyncModal] = useState(false);
   const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
-  const [editValues, setEditValues] = useState<{ record_value: string; ttl: number; priority?: number }>({ record_value: '', ttl: 3600 });
+  const [editValues, setEditValues] = useState<{ record_value: string; ttl: number; priority?: number; weight?: number; port?: number }>({ record_value: '', ttl: 3600 });
   const recordsRaw = response?.data ?? [];
   const { sortedData: records, sortKey, sortDirection, onSort } = useSortable(recordsRaw, 'recordName');
 
@@ -1116,18 +1117,30 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
     record_name: '',
     record_value: '',
     ttl: '3600',
+    priority: '',
+    weight: '',
+    port: '',
   });
+
+  // MX needs a priority; SRV needs priority+weight+port; CAA needs its
+  // flags/tag inline. Without these inputs the form could only ever produce
+  // records the DNS server rejects.
+  const fields = dnsRecordFieldsFor(form.record_type);
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
     try {
+      const numeric = (raw: string) => (raw.trim() === '' ? undefined : Number(raw));
       await createRecord.mutateAsync({
         record_type: form.record_type,
         record_name: form.record_name || undefined,
         record_value: form.record_value,
         ttl: Number(form.ttl) || 3600,
+        priority: fields.priority ? numeric(form.priority) : undefined,
+        weight: fields.srvFields ? numeric(form.weight) : undefined,
+        port: fields.srvFields ? numeric(form.port) : undefined,
       });
-      setForm({ record_type: 'A', record_name: '', record_value: '', ttl: '3600' });
+      setForm({ record_type: 'A', record_name: '', record_value: '', ttl: '3600', priority: '', weight: '', port: '' });
       setShowForm(false);
     } catch { /* error via createRecord.error */ }
   };
@@ -1143,6 +1156,8 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
       record_value: r.recordValue ?? '',
       ttl: r.ttl,
       priority: r.priority ?? undefined,
+      weight: r.weight ?? undefined,
+      port: r.port ?? undefined,
     });
   };
 
@@ -1159,6 +1174,8 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
         record_value: editValues.record_value,
         ttl: editValues.ttl,
         priority: editValues.priority,
+        weight: editValues.weight,
+        port: editValues.port,
       });
       cancelEditing();
     } catch { /* error via updateRecord.error */ }
@@ -1198,7 +1215,9 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
             <div>
               <label htmlFor="dns-type" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Type</label>
               <select id="dns-type" value={form.record_type} onChange={(e) => setForm({ ...form, record_type: e.target.value as 'A' })} className={INPUT_CLASS} data-testid="dns-type-select">
-                {['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'CAA', 'PTR', 'SOA', 'ALIAS', 'DNAME'].map((t) => <option key={t} value={t}>{t}</option>)}
+                {/* No SOA: a zone has exactly one and the authoritative
+                    server owns it — the provider refuses a second. */}
+                {['A', 'AAAA', 'CNAME', 'MX', 'TXT', 'SRV', 'NS', 'CAA', 'PTR', 'ALIAS', 'DNAME'].map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
             </div>
             <div>
@@ -1207,7 +1226,7 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
             </div>
             <div>
               <label htmlFor="dns-value" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Value</label>
-              <input id="dns-value" type="text" className={INPUT_CLASS} placeholder="192.168.1.1" value={form.record_value} onChange={(e) => setForm({ ...form, record_value: e.target.value })} required data-testid="dns-value-input" />
+              <input id="dns-value" type="text" className={INPUT_CLASS} placeholder={fields.valuePlaceholder} value={form.record_value} onChange={(e) => setForm({ ...form, record_value: e.target.value })} required data-testid="dns-value-input" />
             </div>
             <div className="flex items-end">
               <button type="submit" disabled={createRecord.isPending} className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" data-testid="submit-dns-record">
@@ -1216,6 +1235,33 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
               </button>
             </div>
           </div>
+
+          {(fields.priority || fields.srvFields) && (
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-4">
+              {fields.priority && (
+                <div>
+                  <label htmlFor="dns-priority" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Priority</label>
+                  <input id="dns-priority" type="number" min={0} max={65535} className={INPUT_CLASS} placeholder="10" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })} required data-testid="dns-priority-input" />
+                </div>
+              )}
+              {fields.srvFields && (
+                <>
+                  <div>
+                    <label htmlFor="dns-weight" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Weight</label>
+                    <input id="dns-weight" type="number" min={0} max={65535} className={INPUT_CLASS} placeholder="5" value={form.weight} onChange={(e) => setForm({ ...form, weight: e.target.value })} required data-testid="dns-weight-input" />
+                  </div>
+                  <div>
+                    <label htmlFor="dns-port" className="block text-xs font-medium text-gray-700 dark:text-gray-300">Port</label>
+                    <input id="dns-port" type="number" min={0} max={65535} className={INPUT_CLASS} placeholder="5060" value={form.port} onChange={(e) => setForm({ ...form, port: e.target.value })} required data-testid="dns-port-input" />
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {fields.valueHint && (
+            <p className="mt-2 text-xs text-gray-500 dark:text-gray-400" data-testid="dns-value-hint">{fields.valueHint}</p>
+          )}
           {createRecord.error && (
             <div className="mt-3 flex items-center gap-2 text-sm text-red-600" data-testid="dns-create-error">
               <AlertCircle size={14} />
@@ -1267,6 +1313,51 @@ function DnsTab({ tenantId, domainId }: { readonly tenantId: string; readonly do
                         className={INPUT_CLASS}
                         data-testid={`edit-value-${r.id}`}
                       />
+                      {/* MX/SRV keep their numeric fields in separate columns;
+                          editing the value alone would push an unpublishable
+                          record and the API would reject it. */}
+                      {(() => {
+                        const f = dnsRecordFieldsFor(r.recordType);
+                        if (!f.priority && !f.srvFields) return null;
+                        const num = (v: string) => (v.trim() === '' ? undefined : Number(v));
+                        return (
+                          <div className="mt-1.5 flex items-center gap-1.5">
+                            {f.priority && (
+                              <input
+                                type="number" min={0} max={65535}
+                                value={editValues.priority ?? ''}
+                                onChange={(e) => setEditValues({ ...editValues, priority: num(e.target.value) })}
+                                className={INPUT_CLASS + ' w-20'}
+                                placeholder="prio"
+                                aria-label="Priority"
+                                data-testid={`edit-priority-${r.id}`}
+                              />
+                            )}
+                            {f.srvFields && (
+                              <>
+                                <input
+                                  type="number" min={0} max={65535}
+                                  value={editValues.weight ?? ''}
+                                  onChange={(e) => setEditValues({ ...editValues, weight: num(e.target.value) })}
+                                  className={INPUT_CLASS + ' w-20'}
+                                  placeholder="weight"
+                                  aria-label="Weight"
+                                  data-testid={`edit-weight-${r.id}`}
+                                />
+                                <input
+                                  type="number" min={0} max={65535}
+                                  value={editValues.port ?? ''}
+                                  onChange={(e) => setEditValues({ ...editValues, port: num(e.target.value) })}
+                                  className={INPUT_CLASS + ' w-20'}
+                                  placeholder="port"
+                                  aria-label="Port"
+                                  data-testid={`edit-port-${r.id}`}
+                                />
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="px-5 py-2">
                       <input
@@ -1385,6 +1476,9 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
       name: entry.name,
       value: entry.local.value,
       ttl: entry.local.ttl,
+      priority: entry.local.priority ?? undefined,
+      weight: entry.local.weight ?? undefined,
+      port: entry.local.port ?? undefined,
     });
     markCompleted(entryKey(entry));
   };
@@ -1413,6 +1507,9 @@ function SyncRecordsModal({ tenantId, domainId, onClose }: {
           name: entry.name,
           value: entry.local.value,
           ttl: entry.local.ttl,
+          priority: entry.local.priority ?? undefined,
+          weight: entry.local.weight ?? undefined,
+          port: entry.local.port ?? undefined,
         });
         markCompleted(entryKey(entry));
       }

@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { CreateDnsRecordInput, UpdateDnsRecordInput } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 import type { DnsRecordResponse } from '@/types/api';
 
@@ -14,14 +15,6 @@ export function useDnsRecords(tenantId: string | undefined, domainId: string | u
   });
 }
 
-interface CreateDnsRecordInput {
-  readonly record_type: 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT' | 'SRV' | 'NS';
-  readonly record_name?: string;
-  readonly record_value: string;
-  readonly ttl?: number;
-  readonly priority?: number;
-}
-
 export function useCreateDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
@@ -34,12 +27,6 @@ export function useCreateDnsRecord(tenantId: string | undefined, domainId: strin
       queryClient.invalidateQueries({ queryKey: ['dns-records', tenantId, domainId] });
     },
   });
-}
-
-interface UpdateDnsRecordInput {
-  readonly record_value?: string;
-  readonly ttl?: number;
-  readonly priority?: number;
 }
 
 export function useUpdateDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
@@ -83,7 +70,12 @@ export function useSyncDnsRecords(tenantId: string | undefined, domainId: string
 export interface DnsRecordDiffEntry {
   readonly type: string;
   readonly name: string;
-  readonly local: { value: string; ttl: number; id: string } | null;
+  /** priority/weight/port travel with the entry so Push can send a
+   *  complete MX/SRV record — see backend dns-records/diff.ts. */
+  readonly local: {
+    value: string; ttl: number; id: string;
+    priority?: number | null; weight?: number | null; port?: number | null;
+  } | null;
   readonly remote: { value: string; ttl: number } | null;
   readonly status: 'in_sync' | 'conflict' | 'local_only' | 'remote_only';
 }
@@ -118,7 +110,7 @@ export function usePullDnsRecord(tenantId: string | undefined, domainId: string 
 export function usePushDnsRecord(tenantId: string | undefined, domainId: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { type: string; name: string; value: string; ttl?: number }) =>
+    mutationFn: (input: { type: string; name: string; value: string; ttl?: number; priority?: number; weight?: number; port?: number }) =>
       apiFetch(`${basePath(tenantId!, domainId!)}/push`, {
         method: 'POST', body: JSON.stringify(input),
       }),

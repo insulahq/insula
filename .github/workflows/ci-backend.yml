@@ -30,6 +30,26 @@ jobs:
       - run: npm run lint -w @insula/backend
       - run: npm run typecheck -w @insula/backend
 
+  # Every record type the tenant UI offers, written to a REAL PowerDNS using
+  # only the inputs that UI can produce, then read back.
+  #
+  # The mocked provider tests assert the request body we SEND; they cannot
+  # see that PowerDNS REJECTS it. That gap let MX, SRV and CAA stay broken
+  # indefinitely — the 422 was swallowed and the API still answered 201 —
+  # and published every mail record to `<apex>.<apex>.`.
+  dns-powerdns-live:
+    name: DNS record types against a live PowerDNS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build -w @insula/api-contracts
+      - run: ./scripts/integration-dns-powerdns.sh
+
   # Mail-subsystem SDK shape probe — catches v0-positional
   # @kubernetes/client-node casts that silently fail on the v1 SDK.
   # Same probe as in ci-infrastructure.yml, wired here so it also runs
