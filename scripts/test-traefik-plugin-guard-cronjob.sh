@@ -112,6 +112,21 @@ out=$(run_guard); rc=$?
 [ "$rc" = "0" ] && ok "no pods → exit 0" || bad "no pods → exit 0 (rc=$rc)"
 printf '%s' "$out" | grep -q "no Traefik pods found" && ok "no pods → explains itself" || bad "no pods → explains itself"
 
+echo "== a kubectl FAILURE is not mistaken for \"no pods\" =="
+# Fail-open is the whole bug class this guard exists for: an RBAC change or an
+# API-server blip must surface as a failed Job, not a silent clean pass.
+cat > "$D/bin/kubectl" <<'STUB'
+#!/usr/bin/env bash
+echo "Error from server (Forbidden): pods is forbidden" >&2
+exit 1
+STUB
+chmod +x "$D/bin/kubectl"
+export PODS=""
+out=$(run_guard); rc=$?
+[ "$rc" != "0" ] && ok "kubectl failure exits non-zero" || bad "kubectl failure exits non-zero (rc=$rc)"
+printf '%s' "$out" | grep -q "kubectl get pods FAILED" && ok "kubectl failure is named in the log" || bad "kubectl failure named"
+[ "$(deleted_count)" = "0" ] && ok "kubectl failure deletes nothing" || bad "kubectl failure deletes nothing"
+
 echo "== the fail marker matches bootstrap.sh's marker verbatim =="
 # If these ever drift, the runtime guard silently stops detecting what the
 # install-time guard detects.

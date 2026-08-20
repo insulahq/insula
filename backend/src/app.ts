@@ -909,9 +909,13 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         const stopIngressCollector = startIngressRouterCollector(
           async () => {
             try {
-              const { getPlatformConfig } = await import('./modules/domains/verification.js');
-              const cfg = await getPlatformConfig(app.db);
-              const apex = cfg.ingressHostname?.replace(/^ingress\./, '') ?? '';
+              // getPlatformApex, NOT ingress_base_domain: the supported
+              // "rename platform apex" action deliberately leaves
+              // ingress_base_domain alone, so deriving from it would leave
+              // this probe watching the OLD hostnames — blind to the live
+              // panels, which is the exact outage it exists to catch.
+              const { getPlatformApex } = await import('./modules/system-settings/platform-domain.js');
+              const apex = await getPlatformApex(app.db);
               // No apex configured yet (fresh cluster) → probe nothing rather
               // than emit a permanent -1 for a hostname that does not exist.
               return apex ? [`admin.${apex}`, `tenant.${apex}`] : [];

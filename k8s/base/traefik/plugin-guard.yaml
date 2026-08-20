@@ -87,7 +87,7 @@ metadata:
     app.kubernetes.io/component: traefik-plugin-guard
 spec:
   # Every 2 min: bounds the outage to roughly one detection window plus a pod
-  # restart. Forbid + a per-pod minimum age make a tight restart loop
+  # restart. Forbid + the verdict-line check below make a tight restart loop
   # impossible even while egress is still down — worst case is one recycle
   # per pod per 2 minutes, which is the correct behaviour when the cause is a
   # transient network fault that has not cleared yet.
@@ -162,8 +162,22 @@ spec:
                   FAIL_MARKER='Plugins are disabled because an error has occurred'
                   OK_MARKER='Plugins loaded.'
 
+                  # Capture the exit code SEPARATELY from the output. Folding a
+                  # kubectl failure (RBAC change, API-server blip, bad context)
+                  # into an empty result would make it indistinguishable from
+                  # "no Traefik pods" and exit 0 — a guard against a fail-open
+                  # bug must not itself fail open. A non-zero exit here lands in
+                  # failedJobsHistoryLimit where an operator can see it.
+                  set +e
                   pods=$$(kubectl -n "$${NS}" get pods -l "$${SEL}" \
-                            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+                            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>&1)
+                  kubectl_rc=$$?
+                  set -e
+
+                  if [ "$${kubectl_rc}" -ne 0 ]; then
+                    echo "traefik-plugin-guard: kubectl get pods FAILED (rc=$${kubectl_rc}): $${pods}" >&2
+                    exit 1
+                  fi
 
                   if [ -z "$${pods}" ]; then
                     echo "traefik-plugin-guard: no Traefik pods found (selector $${SEL}) — nothing to check"
@@ -177,7 +191,11 @@ spec:
                   # stamp, which BusyBox does not parse reliably — and it would
                   # still be a guess where an exact signal exists.
                   for name in $${pods}; do
-                    logs=$$(kubectl -n "$${NS}" logs "$${name}" --tail=400 2>/dev/null || true)
+                    # --since as well as --tail: the plugin verdict is logged ONCE at
+                    # startup, so if access logging is ever enabled a busy node could
+                    # scroll it out of a line-bounded window and the pod would be
+                    # classified "no verdict yet" forever, i.e. never recycled.
+                    logs=$$(kubectl -n "$${NS}" logs "$${name}" --tail=2000 --since=24h 2>/dev/null || true)
 
                     if printf '%s' "$${logs}" | grep -qF "$${FAIL_MARKER}"; then
                       echo "traefik-plugin-guard: $${name} has NO PLUGINS — both panels would 404. Recycling."

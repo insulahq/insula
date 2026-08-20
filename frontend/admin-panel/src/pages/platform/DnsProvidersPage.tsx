@@ -104,11 +104,11 @@ export default function DnsServers() {
       {/* Provider Groups Section */}
       <ProviderGroupsSection groups={groups} servers={servers} />
 
+      <DnsResolverCard />
+
       {/* Servers Section */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-servers-section">
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-5 py-4">
-        <DnsResolverCard />
-
           <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Servers</h2>
           <button type="button" onClick={() => setShowAdd((p) => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-dns-server-button">
             {showAdd ? <X size={14} /> : <Plus size={14} />} {showAdd ? 'Cancel' : 'Add Server'}
