@@ -73,18 +73,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   that stayed "pending" after it had been issued. Work that finishes in the
   background is now watched until it completes instead of being read once.
 
+- New zones are created with a 14-day SOA expire instead of 7. Expire is how
+  long a secondary keeps answering when it cannot reach the primary; at 7 days
+  a long weekend outage can take a domain off the internet while a perfectly
+  good copy of the zone sits on the secondary.
+
 ### Added
 - **Refresh Route DNS** for Primary-mode domains, in both the tenant domain page
   and the admin Domains tab. Rewrites a domain's entry-point records from the
   current set — the repair for "a new server was added and existing sites don't
   use it". Subdomains already self-heal; the apex cannot, which is why this
   exists.
-
-### Changed
-- New zones are created with a 14-day SOA expire instead of 7. Expire is how
-  long a secondary keeps answering when it cannot reach the primary; at 7 days
-  a long weekend outage can take a domain off the internet while a perfectly
-  good copy of the zone sits on the secondary.
 
 ## [2026.8.8] - 2026-08-20
 
