@@ -497,12 +497,19 @@ ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" \
 #    suite from a workstation against staging. This decouples the system-under-test from the
 #    runner: a control-plane node reused as the runner is under-provisioned (EOL distro node,
 #    no node_modules, no peer SSH key) + under platform load, which yields false pos/neg.
-#    INTEGRATION_ENV= forces the profile search to no-op (no operator integration.env leaks in).
+#    INTEGRATION_ENV points at a per-run scripts/vmtier.env so the profile search stops at
+#    candidate #1 (an EMPTY value does NOT suppress it — it hands the run to the operator's
+#    scripts/integration.env, which pins their real staging cluster).
 RUNNER_IP="${VMTEST_RUNNER_IP:?spawn-cluster did not emit VMTEST_RUNNER_IP}"
 SSHR=(ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${RUNNER_IP}")
 echo "── provisioning runner ${RUNNER_IP} (node+ws, version-matched kubectl+kubeconfig, cli tools) ──"
 # a) harness scripts
-tar czf - -C "$REPO" scripts | "${SSHR[@]}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
+# --exclude the operator's gitignored profile. It carries the STAGING
+# ADMIN_PASSWORD and SSH_KEY, and copying it to a throwaway VM both leaks those
+# credentials onto disposable disks and lets the profile retarget the suites at
+# the operator's real cluster (see the INTEGRATION_ENV note below).
+tar czf - --exclude=integration.env -C "$REPO" scripts \
+  | "${SSHR[@]}" "mkdir -p /root/insula && tar xzf - -C /root/insula"
 # b) the run's SSH key → runner, at the harness's DEFAULT SSH_KEY path, so the runner can SSH
 #    to cluster nodes (ssh_cp kubectl probes + the node-terminal/firewall/drain SSH suites).
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$VMTEST_SSH_KEY" \
@@ -720,7 +727,43 @@ export DOMAIN=admin.${APEX} PLATFORM_DOMAIN=${APEX} PLATFORM_BASE_DOMAIN=${APEX}
 # staging.example.test and abort "cannot resolve ingress IP (set RESOLVE_IP)".
 export HTTPS_TEST_DOMAIN_BASE=${APEX} RESOLVE_IP=${VMTEST_CP_IP}
 export INTEGRATION_REQUIRE_CONVERGE=${REQUIRE_CONVERGE}
-export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=
+# INTEGRATION_ENV must name a REAL file, not be empty.
+#
+# lib/integration-env.sh searches: \$INTEGRATION_ENV, then scripts/integration.env,
+# then ~/.config/insula/integration.env — FIRST EXISTING file wins. An EMPTY
+# value does not suppress the search, it merely fails candidate #1 and hands the
+# run to the operator's own profile. Its caller-wins guard then protects only the
+# vars run.sh exports: MAIL_HOST is not one of them, so the tier inherited
+# MAIL_HOST=mail.<operator staging apex> and the smoke gate attempted an SMTP
+# AUTH against the REAL staging server, failed "Login denied", and aborted the
+# whole run before a single suite. Exactly the "config that names two different
+# clusters" the lib documents but cannot prevent.
+#
+# Pointing it at a written tier profile makes candidate #1 win, so neither the
+# repo-local nor the ~/.config profile is ever reached.
+mkdir -p /root/insula/scripts
+{
+  echo "# Generated per run by vm-integration-tests/run.sh — this ephemeral"
+  echo "# cluster's own targets. Deliberately the ONLY profile the tier loads."
+  echo "MAIL_HOST=mail.${APEX}"
+  echo "PLATFORM_BASE_DOMAIN=${APEX}"
+  echo "PLATFORM_DOMAIN=${APEX}"
+  echo "MAIL_DOMAIN_APEX=${APEX}"
+  # The cluster is remote from the runner, so mail is probed over the network
+  # rather than by exec-ing into a local DinD container.
+  echo "MAIL_PROBE_MODE=host"
+  # STANDARD mail ports. smoke-test.sh defaults to the dev DinD NodePort
+  # mapping (2025/2587/2143/2993), which nothing listens on here — the
+  # operator profile used to supply these, so replacing it without them
+  # reproduced the same partial-config trap in the other direction: seven
+  # TCP/banner probes failed against ports that do not exist while mail
+  # delivery itself passed.
+  echo "MAIL_PORT_SMTP=25"
+  echo "MAIL_PORT_SUBMISSION=587"
+  echo "MAIL_PORT_IMAP=143"
+  echo "MAIL_PORT_IMAPS=993"
+} > /root/insula/scripts/vmtier.env
+export CURL_INSECURE=${CURL_INSECURE_VAL} INTEGRATION_ENV=/root/insula/scripts/vmtier.env
 # Drive the cluster over SSH (ssh_cp kubectl probes + SSH-based suites) AND with a local,
 # version-matched kubectl+kubeconfig for the direct kubectl/kubectl-exec calls. SSH_HOST/
 # CONTROL_HOST point at the first control-plane node; SSH_KEY is present so ssh_cp uses SSH.
@@ -737,6 +780,12 @@ export KUBECONFIG=/root/.kube/config KUBECTL=kubectl LOCAL_KUBECTL=1 NODE_PATH=/
 # dr-bundle's external-tier decrypt (Phase B) runs instead of self-skipping.
 export AGE_KEY_FILE=/root/operator-age.key
 export BACKUP_S3_ENDPOINT=http://s3.${APEX}:9000 BACKUP_S3_BUCKET=$(printf %q "${VMTEST_MINIO_BUCKET:-backups}") BACKUP_S3_REGION=us-east-1
+# The run's PowerDNS — the services VM has always run one, but only the harness
+# talked to it. The platform needs its coordinates to be REGISTERED as a DNS
+# provider, otherwise canManageDnsZone() is false and every record write on this
+# tier is silently skipped (which is why the MX/SRV/CAA breakage survived).
+export VMTEST_DNS_IP=$(printf %q "${VMTEST_DNS_IP:-}") VMTEST_PDNS_API_KEY=$(printf %q "${VMTEST_PDNS_API_KEY:-}")
+export VMTEST_APEX=$(printf %q "${APEX}")
 export BACKUP_S3_ACCESS_KEY=$(printf %q "${VMTEST_MINIO_USER:-}") BACKUP_S3_SECRET_KEY=$(printf %q "${VMTEST_MINIO_PW:-}")
 export BACKUP_SFTP_HOST=sftp.${APEX} BACKUP_SFTP_PORT=${VMTEST_SFTP_PORT:-2222} BACKUP_SFTP_USER=$(printf %q "${VMTEST_SFTP_USER:-}") BACKUP_SFTP_PASSWORD=$(printf %q "${VMTEST_SFTP_PW:-}") BACKUP_SFTP_PATH=${VMTEST_SFTP_PATH:-upload}
 export BACKUP_CIFS_HOST=cifs.${APEX} BACKUP_CIFS_SHARE=$(printf %q "${VMTEST_CIFS_SHARE:-backups}") BACKUP_CIFS_USER=$(printf %q "${VMTEST_CIFS_USER:-}") BACKUP_CIFS_PASSWORD=$(printf %q "${VMTEST_CIFS_PW:-}")
@@ -803,6 +852,10 @@ kubectl -n mail rollout status deploy/bulwark --timeout=120s >/dev/null 2>&1 || 
 # (grow NO_SNAPSHOT_TARGET, dr-drill-shim suspended ScheduledBackup, backup-rclone-shim, dr-bundle).
 echo "── configuring backup targets (services-VM S3 → tenant/system/mail classes) ──"
 bash scripts/vm-integration-tests/setup-backup-targets.sh || true
+# Register the run's PowerDNS with the PLATFORM (not just with the harness), so
+# the tenant DNS-record path is actually exercised end to end.
+echo "── registering the services-VM PowerDNS as the platform DNS provider ──"
+bash scripts/vm-integration-tests/setup-dns-provider.sh || true
 bash scripts/integration-all.sh --report-json $(printf %q "$RUNNER_REPORT") ${VMTEST_INTEGRATION_ARGS}
 RUN
 scp -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "$RUNNER_SCRIPT" \

@@ -162,3 +162,40 @@ export const fluxUnreadyResources = new Gauge({
   labelNames: ['kind'] as const,
   registers: [metricsRegistry],
 });
+
+/**
+ * Platform-migration registry health.
+ *
+ * The registry HALTS on the first failing migration — deliberately, so no later
+ * migration runs on a broken base. That behaviour is right; the problem was
+ * that it then told nobody. A halted registry emitted one `warn` line into a
+ * pod log: no alert, no admin surface, no smoke assertion.
+ *
+ * The cost of that silence, 2026-08-19: migration 0009 (create the wildcard
+ * DNS-01 ClusterIssuers, ADR-058) 403'd because platform-api's ClusterRole had
+ * no `create` on clusterissuers. It failed on DEV, then on STAGING, then on
+ * production — every tier faithfully rolled out a broken migration and none of
+ * them said a word. It surfaced days later as a wildcard certificate that sat
+ * "Issuing" forever, because the issuer it referenced had never been created.
+ *
+ * `id` is the migration that failed, so the alert can name it. A gauge, not a
+ * counter: it reflects current registry state and clears when the migration
+ * finally applies.
+ */
+export const platformMigrationFailed = new Gauge({
+  name: 'platform_migration_failed',
+  help: '1 when a platform-migration failed on the last run (labelled by id); the registry halts here',
+  labelNames: ['id'] as const,
+  registers: [metricsRegistry],
+});
+
+/**
+ * Migrations that have not applied yet. Non-zero for longer than a deploy takes
+ * means the registry is stuck — either halted on a failure above, or never
+ * reached (lock held, skipped).
+ */
+export const platformMigrationsPending = new Gauge({
+  name: 'platform_migrations_pending',
+  help: 'Platform-migrations not yet applied (0 on a converged cluster)',
+  registers: [metricsRegistry],
+});
