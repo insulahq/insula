@@ -152,11 +152,11 @@ ExecStart=${bin} self-upgrade --check
 # (hourly + 15-min jitter), which is why an upgrade could report healthy while
 # host state was still on the old release.
 #
-# `systemctl start`, NOT `${bin} host-config apply` inline: this unit runs under
+# 'systemctl start', NOT an inline 'host-config apply': this unit runs under
 # ProtectSystem=strict, which mounts /proc read-only and would block the sysctl
 # writes the converge performs. Starting the sibling unit runs it under its own
 # (deliberately weaker) hardening. --no-block so a long converge cannot stall
-# the update unit, and `-` so a converge failure cannot fail an upgrade that
+# the update unit, and a leading '-' so a converge failure cannot fail an upgrade that
 # genuinely installed — the failure surfaces via the host-migration status relay
 # and the upgrade's host-migrations-converged gate.
 ExecStartPost=-/usr/bin/systemctl start --no-block platform-ops-host-config.service
