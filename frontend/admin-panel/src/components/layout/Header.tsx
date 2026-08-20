@@ -11,6 +11,10 @@ import TaskCenterChip from '@/components/TaskCenterChip';
 // only fetched when the operator opens the dialog.
 const ChangePasswordModal = lazy(() => import('@/components/ChangePasswordModal'));
 
+const PLACEHOLDER_TEXT = 'Search (coming soon)';
+const PLACEHOLDER_CLASS =
+  'w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm text-gray-400 select-none dark:border-gray-600 dark:bg-gray-700 dark:text-gray-500 opacity-70';
+
 interface HeaderProps {
   readonly onMenuClick: () => void;
 }
@@ -60,27 +64,23 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
       <div className="relative flex-1 max-w-md">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
-        {/* See the tenant panel's Header for the full reasoning: this input
-            is on EVERY page, and an anonymous input (no name, no id, no
-            autocomplete) on an origin with a saved login is what makes
-            password managers offer to fill on every page. `disabled` does
-            not stop them from decorating it. Keep these attributes on any
-            always-visible input we add. */}
-        <input
-          type="search"
-          id="global-search"
-          name="global-search"
-          aria-label="Search"
-          placeholder="Search (coming soon)"
-          disabled
-          autoComplete="off"
-          data-1p-ignore
-          data-lpignore="true"
-          data-bwignore
-          data-form-type="other"
-          data-testid="global-search-input"
-          className="w-full rounded-lg border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:bg-gray-700 cursor-not-allowed opacity-50"
-        />
+        {/* NOT an <input> — see the tenant panel's Header for the full
+            reasoning. This box is a non-functional placeholder ("coming
+            soon"), and an always-present input on an origin with a saved
+            login is what makes password managers offer to fill on every
+            page. `disabled`, `autocomplete="off"` and the per-vendor
+            opt-outs all failed to stop it, because browsers' own built-in
+            managers honour none of them.
+
+            When search ships, make this a button that opens a dialog and
+            mount the real input inside the dialog. */}
+        <div
+          aria-hidden="true"
+          data-testid="global-search-placeholder"
+          className={PLACEHOLDER_CLASS}
+        >
+          {PLACEHOLDER_TEXT}
+        </div>
       </div>
 
       <div className="ml-auto flex items-center gap-2">

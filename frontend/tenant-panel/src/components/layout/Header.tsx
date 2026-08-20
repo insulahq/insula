@@ -13,6 +13,10 @@ import ResourceMetricsModal, { formatCpuCompact, formatBytesCompact } from '@/co
 // only fetched when the user opens the dialog.
 const ChangePasswordModal = lazy(() => import('@/components/ChangePasswordModal'));
 
+const PLACEHOLDER_TEXT = 'Search domains, databases…';
+const PLACEHOLDER_CLASS =
+  'w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 py-2 pl-9 pr-4 text-sm text-gray-400 dark:text-gray-500 select-none';
+
 interface HeaderProps {
   readonly onMenuClick: () => void;
 }
@@ -62,28 +66,30 @@ export default function Header({ onMenuClick }: HeaderProps) {
 
       <div className="relative flex-1 max-w-md">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500" />
-        {/* This input is on EVERY page, so it decides whether password
-            managers nag on every page. An anonymous text-ish input (no
-            name, no id, no autocomplete) on an origin the user has saved a
-            login for is exactly what 1Password/Bitwarden/LastPass/Dashlane
-            treat as a username field — they offered to fill it everywhere.
-            Naming it and opting out per-vendor is the only reliable fix;
-            `autocomplete="off"` alone is ignored by most of them.
-            Keep these attributes on any always-visible input we add. */}
-        <input
-          type="search"
-          id="global-search"
-          name="global-search"
-          aria-label="Search domains and databases"
-          placeholder="Search domains, databases..."
-          autoComplete="off"
-          data-1p-ignore
-          data-lpignore="true"
-          data-bwignore
-          data-form-type="other"
-          data-testid="global-search-input"
-          className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 py-2 pl-9 pr-4 text-sm text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:bg-white dark:focus:bg-gray-800 focus:outline-none focus:ring-1 focus:ring-brand-500"
-        />
+        {/* NOT an <input>. This search box is a non-functional placeholder —
+            no value, no onChange, no submit handler — and an always-present
+            input on an origin the user has saved a login for is what password
+            managers treat as a username field, so it nagged on every page.
+
+            Two earlier fixes tried to make the input invisible to managers:
+            first naming it, then per-vendor opt-outs (`data-1p-ignore` is
+            1Password only, `data-lpignore` LastPass only, `data-form-type`
+            Dashlane only). Both were reported as still broken, because the
+            browsers' OWN built-in managers honour none of those, nor
+            `autocomplete="off"`, nor `disabled`.
+
+            A non-functional control has no reason to be a form field at all.
+            Rendering a div removes the trigger for every manager, including
+            built-ins, with nothing to keep in sync. When search is actually
+            implemented, make it a button that opens a dialog and mount the
+            real input INSIDE that dialog — never persistently in the header. */}
+        <div
+          aria-hidden="true"
+          data-testid="global-search-placeholder"
+          className={PLACEHOLDER_CLASS}
+        >
+          {PLACEHOLDER_TEXT}
+        </div>
       </div>
 
       <div className="ml-auto flex items-center gap-2">

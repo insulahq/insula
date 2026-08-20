@@ -142,6 +142,25 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   // We chose single-POST-with-force over a separate GET because the verify
   // mutation already exists on both panels; callers that want a no-op read
   // can just check domain.verificationCacheAt before calling.
+  // POST /tenants/:tenantId/domains/:domainId/refresh-route-dns
+  //
+  // Re-derive the ingress-route DNS records from the CURRENT ingress address
+  // set. The apex A/AAAA records are a snapshot taken when the route was
+  // created, so adding an ingress-capable node leaves every existing tenant
+  // apex pointing at the old set with nothing in the product saying so.
+  // Subdomains ride the <slug>.ingress.<apex> CNAME chain and self-heal;
+  // the apex cannot, because RFC 1034 forbids a CNAME at a zone apex.
+  //
+  // Primary mode only — enforced in the service, which 409s rather than
+  // quietly doing nothing on a zone the platform does not control.
+  app.post('/tenants/:tenantId/domains/:domainId/refresh-route-dns', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    // Ownership check: throws if the domain is not this tenant's.
+    await service.getDomainById(app.db, tenantId, domainId);
+    const { refreshRouteDnsForDomain } = await import('../ingress-routes/service.js');
+    return success(await refreshRouteDnsForDomain(app.db, domainId));
+  });
+
   app.post('/tenants/:tenantId/domains/:domainId/verify', async (request) => {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const query = request.query as Record<string, unknown>;
@@ -175,6 +194,32 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       const now = new Date();
       await service.setDomainVerificationStatus(app.db, domainId, result);
       await app.db.update(domains).set({ lastVerifiedAt: now }).where(eq(domains.id, domainId));
+
+      // A domain becoming verified is the EVENT that makes a certificate
+      // issuable — issuance is gated on exactly this status. Waiting for the
+      // next scheduler tick instead meant an operator watched "pending" for
+      // up to an hour after their DNS was demonstrably correct, which is the
+      // "takes unnecessarily long" complaint.
+      //
+      // Fire-and-forget on purpose: cert issuance talks to ACME and can take
+      // tens of seconds, and this request already returns the verification
+      // result the caller asked for. A failure here must not turn a
+      // successful verification into an error response — it is logged, and
+      // the scheduler remains the backstop.
+      if (result.verified) {
+        void (async () => {
+          try {
+            const { ensureDomainCertificate } = await import('../certificates/service.js');
+            await ensureDomainCertificate(app.db, getK8s(), domainId);
+          } catch (err) {
+            app.log.warn(
+              { domainId, err: err instanceof Error ? err.message : String(err) },
+              'post-verification certificate request failed; scheduler will retry',
+            );
+          }
+        })();
+      }
+
       return result;
     };
 

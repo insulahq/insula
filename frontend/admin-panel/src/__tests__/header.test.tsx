@@ -103,26 +103,6 @@ describe('Admin Header user menu', () => {
     expect(screen.queryByTestId('user-menu-password-form')).not.toBeInTheDocument();
   });
 
-  it('makes every always-visible input opaque to password managers', () => {
-    // The header renders on EVERY page, so an input here decides whether
-    // password managers nag on every page. An anonymous input (no name, no
-    // id, no autocomplete) on an origin with a saved login gets treated as a
-    // username field and offered a fill prompt everywhere.
-    const { container } = render(<Header onMenuClick={vi.fn()} />, { wrapper: createWrapper() });
-
-    const inputs = Array.from(container.querySelectorAll('input'));
-    expect(inputs.length).toBeGreaterThan(0);
-
-    for (const input of inputs) {
-      expect(input.getAttribute('name'), 'every header input needs a name').toBeTruthy();
-      expect(input.getAttribute('autocomplete')).toBe('off');
-      // autocomplete="off" alone is ignored by most managers.
-      expect(input.hasAttribute('data-1p-ignore')).toBe(true);
-      expect(input.getAttribute('data-lpignore')).toBe('true');
-      expect(input.hasAttribute('data-bwignore')).toBe(true);
-      expect(input.getAttribute('data-form-type')).toBe('other');
-    }
-  });
 
   it('opens the change-password modal and closes the dropdown when Change Password is clicked', async () => {
     const user = userEvent.setup();
@@ -164,5 +144,20 @@ describe('Admin Header user menu', () => {
 
     await user.click(screen.getByTestId('user-menu-button'));
     expect(screen.queryByTestId('user-menu-dropdown')).not.toBeInTheDocument();
+  });
+  it('renders NO form field at all — the header is on every page', () => {
+    // Two earlier fixes tried to make an always-present input invisible to
+    // password managers (naming it, then per-vendor opt-out attributes) and
+    // both were reported as still nagging: browsers' own built-in managers
+    // honour none of those, nor autocomplete="off", nor disabled.
+    //
+    // The search box is a non-functional placeholder, so the durable fix is
+    // that it is not a field. Assert the ABSENCE of any input/textarea/select
+    // rather than the presence of opt-out attributes — attributes are a
+    // per-vendor allow-list that silently stops covering the next manager.
+    const { container } = render(<Header onMenuClick={vi.fn()} />, { wrapper: createWrapper() });
+    expect(container.querySelectorAll('input')).toHaveLength(0);
+    expect(container.querySelectorAll('textarea')).toHaveLength(0);
+    expect(container.querySelectorAll('select')).toHaveLength(0);
   });
 });

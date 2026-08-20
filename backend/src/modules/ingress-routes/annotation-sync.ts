@@ -47,6 +47,8 @@ import {
   forwardAuthSpec,
   headersSpec,
   routeMatch,
+  wwwRedirectHosts,
+  escapeRegexpLiteral,
   routePriority,
 } from './traefik-types.js';
 import type {
@@ -183,6 +185,10 @@ export function sanitiseHeaderMap(headers: Record<string, string>): Record<strin
 // ─── Middleware-spec builder ────────────────────────────────────────────────
 
 export interface RouteSettingsLike {
+  /** Needed by the www-redirect middleware, which targets a literal host
+   *  rather than recomputing one from a regex capture (a capture-based
+   *  target is what let the old pattern redirect a host to itself). */
+  hostname: string;
   forceHttps: number;
   wwwRedirect: string;
   redirectUrl: string | null;
@@ -485,22 +491,33 @@ export function buildMiddlewaresForRoute(
   // form.
   if (route.wwwRedirect === 'add-www' || route.wwwRedirect === 'remove-www') {
     const name = middlewareName(routeId, 'wwwredir');
-    // We don't know the hostname here (this is a pure builder). The
-    // regex below uses Traefik's $1/$2 capture syntax to preserve the
-    // scheme + path while toggling the www. prefix. The reconciler
-    // could be smarter (host-aware patterns) but this is sufficient
-    // for the catalog use case.
-    const spec = route.wwwRedirect === 'add-www'
-      ? redirectRegexSpec({
-          regex: '^https?://(?:www\\.)?([^/]+)(/.*)?$',
-          replacement: 'https://www.$1$2',
-          permanent: true,
-        })
-      : redirectRegexSpec({
-          regex: '^https?://www\\.([^/]+)(/.*)?$',
-          replacement: 'https://$1$2',
-          permanent: true,
-        });
+    // Host-aware, and attached ONLY to the alternate-host router (see
+    // k8s-ingress.ts). Both facts matter:
+    //
+    // The old pattern made `www.` an OPTIONAL non-capturing group
+    // (`^https?://(?:www\.)?([^/]+)…`) and was attached to the canonical
+    // router. So on add-www it matched the CANONICAL host as well, captured
+    // the bare name, and rewrote it to itself — an infinite redirect on the
+    // very hostname the route serves.
+    //
+    // Redirecting to a known literal host instead of recomputing it from a
+    // capture makes a self-redirect impossible to express: the target is a
+    // constant, and this middleware never runs on a request for it.
+    const { canonical, alternate } = wwwRedirectHosts(
+      route.hostname,
+      route.wwwRedirect as 'add-www' | 'remove-www',
+    );
+    // Anchored to the ALTERNATE host and targeting the canonical one as a
+    // literal. Attaching this only to the alternate-host router would already
+    // prevent a loop, but that is a wiring guarantee — one refactor away from
+    // being wrong. Anchoring makes the self-redirect unrepresentable: the
+    // pattern cannot match the host it redirects to.
+    const altPattern = escapeRegexpLiteral(alternate ?? route.hostname);
+    const spec = redirectRegexSpec({
+      regex: `^https?://${altPattern}(/.*)?$`,
+      replacement: `https://${canonical}$1`,
+      permanent: true,
+    });
     middlewares.push(buildMiddleware({
       name,
       namespace,
