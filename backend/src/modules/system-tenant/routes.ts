@@ -57,7 +57,10 @@ function requireInternalToken(req: FastifyRequest): void {
 }
 
 export async function systemTenantRoutes(app: FastifyInstance): Promise<void> {
-  app.post('/internal/system-tenant/ensure', async (request: FastifyRequest, _reply: FastifyReply) => {
+  // rateLimit:false — called machine-to-machine with the internal bearer, so
+  // the global limiter would key it on the caller pod IP rather than a user.
+  // requireInternalToken (constant-time) is the control that applies.
+  app.post('/internal/system-tenant/ensure', { config: { rateLimit: false } }, async (request: FastifyRequest, _reply: FastifyReply) => {
     requireInternalToken(request);
 
     const cfg = app.config as Record<string, unknown> | undefined;
