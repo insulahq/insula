@@ -8,6 +8,7 @@ import {
 } from '@/hooks/use-dns-servers';
 import { useDnsApexDriftReport, useScanDnsApexDrift } from '@/hooks/use-dns-apex-drift';
 import DnsApexDriftBanner from '@/components/DnsApexDriftBanner';
+import DnsResolverCard from '@/components/DnsResolverCard';
 import DnsApexDriftModal from '@/components/DnsApexDriftModal';
 import DnsApexDriftTaskModal from '@/components/DnsApexDriftTaskModal';
 
@@ -102,6 +103,8 @@ export default function DnsServers() {
 
       {/* Provider Groups Section */}
       <ProviderGroupsSection groups={groups} servers={servers} />
+
+      <DnsResolverCard />
 
       {/* Servers Section */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm" data-testid="dns-servers-section">

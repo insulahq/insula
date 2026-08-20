@@ -281,6 +281,23 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     forSeconds: 0,
   },
   {
+    id: 'ingress-router-down',
+    name: 'Panel hostname has no ingress router',
+    description:
+      'A panel hostname reaches Traefik but matches NO router, so real users get a bare 404 while pods, certs and Flux all look healthy. The usual cause is Traefik failing to download its plugins at startup, which disables the whole plugin subsystem and drops every router whose middleware is a plugin. The traefik-plugin-guard CronJob recycles the pod automatically; this alert fires if that has not restored routing.',
+    severity: 'critical',
+    // COUNT of series whose value is exactly 0, not `min <= $T`: the gauge
+    // reports -1 when the probe itself could not run, and any `<=` form would
+    // page on that. A collector outage is not a user-visible outage.
+    expr: 'count by (host) (platform_ingress_router_up == 0) > $T',
+    subjectLabels: ['host'],
+    threshold: 0,
+    // Two minutes: long enough that a single Traefik roll (or the plugin-guard
+    // recycling a pod) does not page, short enough that a real outage is not
+    // sitting unreported.
+    forSeconds: 120,
+  },
+  {
     id: 'platform-migrations-pending',
     name: 'Platform migrations not converged',
     description: 'Platform-migrations have been pending for longer than a deploy takes. Either the registry halted on a failure (see platform-migration-failed) or it never ran — the escape hatch is set, or the advisory lock is stuck.',

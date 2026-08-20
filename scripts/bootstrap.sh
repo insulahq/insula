@@ -4926,7 +4926,72 @@ install_traefik() {
   # statement and every flag after it leaks out as a separate top-level
   # command, e.g. `--set: command not found`). All design commentary
   # belongs above this block, not interleaved between --set flags.
+  # ── Delayed start: wait for egress before Traefik loads its plugins ──
+  #
+  # Traefik fetches its Yaegi plugins from plugins.traefik.io at PROCESS START
+  # and, if any one fails, disables the WHOLE plugin subsystem and keeps
+  # serving. Every router with a plugin middleware is then dropped, including
+  # platform-ingress, so admin.<apex> and tenant.<apex> return a bare 404 while
+  # pods look Ready and certs look valid. On a node REBOOT the network is
+  # routinely not up yet when Traefik starts, which is exactly how production
+  # went down on 2026-08-20.
+  #
+  # A persisted plugin cache does NOT help: measured against traefik v3.7.6
+  # with both archives already in /plugins-storage and no network, Traefik
+  # still calls the registry unconditionally. So the only cheap fix is to not
+  # start until the registry is reachable.
+  #
+  # Bounded on purpose: after ~5 min we give up and start anyway. Routers
+  # without plugin middlewares (webmail, longhorn UI) then still serve, and the
+  # traefik-plugin-guard CronJob recycles the pod once egress returns. Blocking
+  # forever would trade a partial outage for a total one.
+  #
+  # Image is the one the platform CronJobs already use, so a reboot needs no
+  # new pull (IfNotPresent + already cached) — a fresh image here would need
+  # the very network we are waiting for.
+  local traefik_values="/tmp/insula-traefik-values.$$.yaml"
+  # shellcheck disable=SC2064
+  trap "rm -f '${traefik_values}'" RETURN
+  cat > "${traefik_values}" <<'TRAEFIKVALUES'
+deployment:
+  initContainers:
+    - name: wait-for-plugin-registry
+      image: alpine/k8s:1.33.13
+      imagePullPolicy: IfNotPresent
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -u
+          tries=0
+          max=60
+          until curl -fsS --max-time 5 -o /dev/null https://plugins.traefik.io/public/; do
+            tries=$((tries + 1))
+            if [ "$tries" -ge "$max" ]; then
+              echo "wait-for-plugin-registry: still unreachable after $tries tries - starting anyway; traefik-plugin-guard will recycle if plugins fail" >&2
+              exit 0
+            fi
+            echo "wait-for-plugin-registry: plugins.traefik.io unreachable (try $tries/$max) - waiting"
+            sleep 5
+          done
+          echo "wait-for-plugin-registry: registry reachable after $tries retries"
+TRAEFIKVALUES
+
   helm_cmd upgrade --install traefik traefik/traefik \
+    -f "${traefik_values}" \
     --namespace traefik \
     --create-namespace \
     --version "${TRAEFIK_CHART_VERSION}" \

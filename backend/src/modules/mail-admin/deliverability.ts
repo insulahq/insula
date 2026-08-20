@@ -25,6 +25,7 @@
  */
 
 import { Resolver } from 'node:dns/promises';
+import { getCachedCustomServers } from '../dns-resolver/service.js';
 import net from 'node:net';
 import tls from 'node:tls';
 import type {
@@ -1002,6 +1003,18 @@ export function extractEhloHostname(ehloLine: string | null): string | null {
  * coredns's automatic Node-name records were shadowing the real lookup.
  */
 function externalDnsServers(): string[] {
+  // Platform-configured upstreams win when the operator has explicitly set
+  // `custom` mode — one setting, one answer, instead of mail silently
+  // disagreeing with domain verification about the same name.
+  //
+  // In `host` mode this returns null and we keep the explicit external
+  // resolver below. Mail must NOT be routed through CoreDNS: that is what
+  // made a correctly configured staging cluster report the wrong PTR on
+  // 2026-05-27 (CoreDNS node-name records shadowed the real lookup), which
+  // is the bug this function was written to avoid.
+  const configured = getCachedCustomServers();
+  if (configured && configured.length > 0) return configured;
+
   const fromEnv = process.env.MAIL_HEALTH_EXTERNAL_DNS;
   if (fromEnv && fromEnv.trim().length > 0) {
     return fromEnv.split(',').map((s) => s.trim()).filter(Boolean);

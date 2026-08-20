@@ -87,7 +87,11 @@ export function useVerifyDomain(tenantId: string | undefined) {
   return useMutation({
     mutationFn: (domainId: string) =>
       apiFetch<{ data: VerificationResult }>(
-        `/api/v1/tenants/${tenantId}/domains/${domainId}/verify`,
+        // force=true: results (INCLUDING failures) cache for 24h server-side.
+        // Without this the button returns the stored failure, so an operator
+        // who fixes their DNS sees no change for a day and reasonably
+        // concludes the fix did not work.
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/verify?force=true`,
         { method: 'POST' },
       ),
     onSuccess: () => {

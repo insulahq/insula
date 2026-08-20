@@ -199,3 +199,23 @@ export const platformMigrationsPending = new Gauge({
   help: 'Platform-migrations not yet applied (0 on a converged cluster)',
   registers: [metricsRegistry],
 });
+
+/**
+ * Ingress router health, per panel hostname.
+ *
+ * 1 = a router matched · 0 = Traefik served its unrouted 404 · -1 = probe failed.
+ *
+ * Exists because the 2026-08-20 outage was invisible to every other signal:
+ * Traefik dropped the routers whose middleware came from a plugin it had
+ * failed to download, and pods/certs/Flux all stayed green while both panels
+ * 404'd. Refreshed every 60s by modules/monitoring/ingress-router-collector.ts.
+ *
+ * -1 is NOT a failure state for alerting — a collector outage must not page.
+ * The rule keys on `== 0`.
+ */
+export const ingressRouterUp = new Gauge({
+  name: 'platform_ingress_router_up',
+  help: 'Panel hostname routes through Traefik (1 routed, 0 no router, -1 probe failed)',
+  labelNames: ['host'] as const,
+  registers: [metricsRegistry],
+});

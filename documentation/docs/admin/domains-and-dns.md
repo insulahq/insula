@@ -58,6 +58,16 @@ tells you the ingress hostname the tenant must point at; for Primary /
 Secondary it explains the nameserver delegation — then lets you re-check.
 The routing tab shows the last-verified and cache timestamps.
 
+!!! warning "Verification results are cached for 24 hours"
+    A verification result — **including a failure** — is cached against the
+    domain for 24h. If DNS was wrong when the check last ran, fixing the DNS
+    does not change what the panel shows until that cache expires: the
+    **Verify Now** button returns the stored result rather than re-checking.
+
+    Check the **cache timestamp** on the routing tab before concluding that a
+    fix did not work. If it predates your DNS change, the panel is showing you
+    a stale answer, not a current failure.
+
 ### Routing tab
 
 Routes map a **hostname** (apex or subdomain) to a **deployment**. Add a
@@ -182,6 +192,31 @@ The model is **provider groups** containing **servers**:
 Each server row has a **Test** action to confirm connectivity before you
 rely on it. A group's row summarizes how many primary and secondary
 servers it holds.
+
+## Upstream DNS (which resolver the platform uses)
+
+Also on **Platform Settings → DNS Providers**. This controls the resolver the
+*platform itself* uses for domain verification, mail deliverability checks and
+DNS drift scans. It does not affect what your tenants' visitors resolve.
+
+- **Use the cluster's own resolver** (default) — whatever the platform pods
+  inherit: cluster DNS, forwarding to the node's `/etc/resolv.conf`. The card
+  shows the addresses currently in effect, because on a node that has joined a
+  mesh VPN the VPN agent owns that file and can rewrite it without notice.
+- **Use specific upstream servers** — up to four addresses, IPv4 and/or IPv6,
+  bypassing cluster DNS entirely.
+
+Use **Test** before **Save**. It resolves a well-known name through the
+addresses you typed *without storing them*, so a typo or a blackholed resolver
+shows up immediately instead of surfacing later as unexplained verification
+failures.
+
+!!! note "Mail checks keep their own resolver on the default setting"
+    Mail deliverability probes (PTR, blocklists) deliberately do not use the
+    cluster resolver: cluster DNS synthesises node-name records that shadow real
+    PTR answers and made a correctly configured cluster report the wrong PTR.
+    On the default setting mail keeps an explicit external resolver; if you
+    configure specific upstreams above, mail uses those too.
 
 !!! note "DNS is a consumed service"
     Insula does not run the DNS servers; it drives PowerDNS or BIND over

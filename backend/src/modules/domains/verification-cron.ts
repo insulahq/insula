@@ -17,6 +17,7 @@
  */
 
 import { and, eq, isNotNull, isNull, lt, not, inArray, or, sql } from 'drizzle-orm';
+import { getPlatformResolver } from '../dns-resolver/service.js';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
 import { domains, systemSettings, tenants } from '../../db/schema.js';
@@ -141,7 +142,13 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
 
   let currentPlatformIps: PlatformIngressIps;
   try {
-    currentPlatformIps = await getPlatformIngressIps(db, platformConfig.ingressHostname);
+    // MUST pass the configured resolver. This value is handed to verifyDomain
+    // as `precomputedPlatformIps`, where `precomputed ?? getPlatformIngressIps(..., resolver)`
+    // short-circuits — so resolving it here with the default pod resolver
+    // silently bypasses the operator's DNS setting for every domain the
+    // hourly cron checks, which is the common path.
+    const resolver = await getPlatformResolver(db);
+    currentPlatformIps = await getPlatformIngressIps(db, platformConfig.ingressHostname, resolver);
   } catch (err) {
     log.warn({ err }, '[verify-cron] getPlatformIngressIps failed — skipping tick');
     return;

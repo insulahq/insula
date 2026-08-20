@@ -133,3 +133,5 @@ export * from './monitoring-slo.js';
 export * from './tenant-snapshots.js';
 export * from './email-connection.js';
 export * from './dns-apex-drift.js';
+export * from './ip.js';
+export * from './dns-resolver.js';
