@@ -80,10 +80,22 @@ fi
 
 ## Forcing function — when a migration is REQUIRED
 
-`scripts/ci-migration-coverage.sh` (CI) fingerprints the host-firewall shape
-rendered by `scripts/bootstrap.sh` (nft set declarations + input-chain
-drop/accept rules) and compares it to the committed baseline
-`scripts/.firewall-shape.sha256`. **A PR that changes that shape MUST** either:
+`scripts/ci-migration-coverage.sh` (CI) fingerprints everything `bootstrap.sh`
+renders ONCE at install time and compares it to the committed baseline
+`scripts/.firewall-shape.sha256` (the filename predates the wider scope):
+
+- the **host-firewall shape** (nft set declarations + input-chain drop/accept rules),
+- the **infra version pins** (k3s, Calico, Longhorn, Traefik, CNPG, Flux, …),
+- the **systemd units/timers** emitted by `scripts/lib/bootstrap-phases.sh`.
+
+Units were added 2026-08-20 after the v2026.8.7 converge-on-self-upgrade trigger
+nearly shipped fresh-install-only: bootstrap writes each unit once, so editing
+one has the same reach as a pin bump, but the guard was not looking at unit
+content. Note the guard does **not** cover `/etc/sysctl.d`, `limits.d` or
+`modules-load.d` — `platform-ops host-config` reconverges those hourly, so they
+are not a fresh-vs-existing gap.
+
+**A PR that changes any of those MUST** either:
 
 1. add a host-migration here that idempotently backfills the change onto
    existing nodes, **and** refresh the baseline

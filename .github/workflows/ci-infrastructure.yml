@@ -169,7 +169,7 @@ jobs:
           fetch-depth: 0
       - name: Ensure base ref is available
         run: git fetch origin main --depth=200 || true
-      - name: Verify a bootstrap firewall-shape change ships a host-migration
+      - name: Verify an install-time host-shape change ships a host-migration
         run: ./scripts/ci-migration-coverage.sh
 
   integration-test-coverage:
