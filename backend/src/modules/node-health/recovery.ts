@@ -45,6 +45,21 @@ const SAFE_NAMESPACES: ReadonlySet<string> = new Set([
   'flux-system',
   'platform-system',
   'tigera-operator',
+  // `platform` added 2026-08-20. It holds the platform's own Deployments and
+  // CronJobs (version-poller, snapshot/backup jobs), whose Failed pods are the
+  // single most common source of stale records — a node reboot routinely
+  // leaves a few behind when a Job fires before its dependencies are up. Until
+  // now those were refused, so the operator-facing "clean stale pod records"
+  // action could not clean the case operators actually hit, and an admin had
+  // to delete them with kubectl.
+  //
+  // Widening this set is a real boundary change, so note what still protects
+  // it: only Failed / Evicted / Unknown-state pods are ever selected (never a
+  // Running one), tenant-* namespaces remain refused, and `platform` also
+  // hosts the CNPG system-db whose instance pods are refused by
+  // isStatefulCnpgInstance() regardless of phase — asserted in
+  // stale-pods.test.ts.
+  'platform',
 ]);
 
 interface RawPod {
@@ -191,21 +206,22 @@ export async function recyclePod(input: {
  * carrying `cnpg.io/instance` even if it's in a Failed state
  * (CNPG operator handles failover).
  */
-export async function cleanStalePodsOnNode(input: {
-  readonly k8s: K8sClients;
-  readonly db: Database;
-  readonly actorUserId: string;
-  readonly node: string;
-  readonly reason: string;
-}): Promise<{ readonly recovered: number; readonly deleted: ReadonlyArray<string> }> {
-  const list = (await input.k8s.core.listPodForAllNamespaces({
-    fieldSelector: `spec.nodeName=${input.node}`,
-  } as Parameters<typeof input.k8s.core.listPodForAllNamespaces>[0])) as unknown as {
-    items?: ReadonlyArray<RawPod>;
-  };
-
-  const targets: Array<{ ns: string; name: string }> = [];
-  for (const pod of list.items ?? []) {
+/**
+ * The ONE definition of "stale pod record", shared by the cleanup action and
+ * the count the UI uses to decide whether to offer it.
+ *
+ * Kept as a single function on purpose: a separate count would drift from the
+ * delete, and a modal offering to clean 3 pods that then removes 0 (or refuses
+ * a node that does have them) is worse than not offering it at all.
+ *
+ * Refuses tenant namespaces and CNPG instances even when Failed — those are
+ * not disposable records.
+ */
+export function selectStalePodTargets(
+  pods: ReadonlyArray<RawPod>,
+): Array<{ ns: string; name: string; node: string }> {
+  const targets: Array<{ ns: string; name: string; node: string }> = [];
+  for (const pod of pods) {
     const ns = pod.metadata?.namespace ?? '';
     const name = pod.metadata?.name ?? '';
     if (!ns || !name) continue;
@@ -221,8 +237,48 @@ export async function cleanStalePodsOnNode(input: {
     const isStale = phase === 'Failed' || reasonStr === 'Evicted' || hasUnknownState;
     if (!isStale) continue;
 
-    targets.push({ ns, name });
+    targets.push({ ns, name, node: pod.spec?.nodeName ?? '' });
   }
+  return targets;
+}
+
+/**
+ * Per-node count of stale pod records, using the predicate above.
+ *
+ * Exists because the recovery modal only *suggested* cleanup when a node had
+ * evictions or disk/memory pressure — and a plain node REBOOT produces neither
+ * while routinely leaving Failed pods behind (a Job that ran while its
+ * dependencies were still coming up). The most common cause of stale records
+ * was the one case the heuristic missed.
+ */
+export async function countStalePodsByNode(
+  k8s: K8sClients,
+): Promise<Record<string, number>> {
+  const list = (await k8s.core.listPodForAllNamespaces()) as unknown as {
+    items?: ReadonlyArray<RawPod>;
+  };
+  const counts: Record<string, number> = {};
+  for (const t of selectStalePodTargets(list.items ?? [])) {
+    if (!t.node) continue;
+    counts[t.node] = (counts[t.node] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export async function cleanStalePodsOnNode(input: {
+  readonly k8s: K8sClients;
+  readonly db: Database;
+  readonly actorUserId: string;
+  readonly node: string;
+  readonly reason: string;
+}): Promise<{ readonly recovered: number; readonly deleted: ReadonlyArray<string> }> {
+  const list = (await input.k8s.core.listPodForAllNamespaces({
+    fieldSelector: `spec.nodeName=${input.node}`,
+  } as Parameters<typeof input.k8s.core.listPodForAllNamespaces>[0])) as unknown as {
+    items?: ReadonlyArray<RawPod>;
+  };
+
+  const targets = selectStalePodTargets(list.items ?? []);
 
   const deleted: string[] = [];
   for (const t of targets) {

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useStalePodCounts } from '@/hooks/use-node-health';
 import ConfirmToken from '@/components/ui/ConfirmToken';
 import { Loader2, AlertTriangle, X } from 'lucide-react';
 import {
@@ -20,7 +21,7 @@ interface ActionDef {
   /** True when the entry's symptoms match this action — controls
    *  whether the action shows up by default. Operator can still
    *  pick any action via "show all". */
-  readonly suggestedWhen: (entry: NodeHealthEntry) => boolean;
+  readonly suggestedWhen: (entry: NodeHealthEntry, stalePods?: number) => boolean;
 }
 
 const ACTIONS: ReadonlyArray<ActionDef> = [
@@ -29,7 +30,15 @@ const ACTIONS: ReadonlyArray<ActionDef> = [
     label: 'Clean stale pod records on this node',
     description:
       'Bulk-deletes Failed/Evicted/ContainerStatusUnknown pods on this node. Refuses tenant + CNPG instance pods. Zero risk — they are already dead K8s records.',
-    suggestedWhen: (e) => e.evictionsLastHour > 0 || e.pressures.includes('disk') || e.pressures.includes('memory'),
+    // stalePods is the DIRECT signal and takes precedence: a plain node reboot
+    // leaves Failed pods behind while producing neither evictions nor pressure,
+    // so the pressure heuristic missed the single most common cause of stale
+    // records. The pressure terms stay as a fallback for when the count could
+    // not be fetched (stalePods === undefined).
+    suggestedWhen: (e, stalePods) =>
+      (stalePods ?? 0) > 0
+      || (stalePods === undefined
+        && (e.evictionsLastHour > 0 || e.pressures.includes('disk') || e.pressures.includes('memory'))),
   },
   {
     kind: 'restart-csi-plugin',
@@ -53,7 +62,13 @@ interface Props {
 }
 
 export default function NodeRecoveryModal({ entry, onClose }: Props) {
-  const suggested = ACTIONS.filter((a) => a.suggestedWhen(entry));
+  // undefined while loading or if the endpoint fails — suggestedWhen treats
+  // that as "unknown" and falls back to the pressure heuristic rather than
+  // silently hiding the action.
+  const { data: stalePodCounts } = useStalePodCounts(true);
+  const stalePods = stalePodCounts?.[entry.name];
+
+  const suggested = ACTIONS.filter((a) => a.suggestedWhen(entry, stalePods));
   const initialKind = suggested[0]?.kind ?? 'clean-stale-pods';
   const [kind, setKind] = useState<ActionKind>(initialKind);
   const [reason, setReason] = useState('');

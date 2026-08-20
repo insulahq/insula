@@ -12,6 +12,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **"Clean stale pod records" was not offered in the case that produces them.**
+  The action was only suggested when a node had evictions or disk/memory
+  pressure — a plain reboot causes neither, while routinely leaving Failed pods
+  behind from jobs that fired before their dependencies were up. It is now
+  suggested whenever the node actually has stale records, counted with the same
+  predicate the cleanup uses so the count and the action cannot disagree.
+- **The same action could not clean the platform's own namespace.** `platform`
+  was outside the recovery allow-list, so the Failed pods a reboot most commonly
+  leaves — the platform's scheduled jobs — had to be removed with `kubectl`.
+  It is now included; only Failed/Evicted/Unknown records are ever selected,
+  tenant namespaces stay refused, and the database instance pods that also live
+  there remain protected.
+
+### Changed
+- **The host-migration coverage guard now also fingerprints bootstrap's Helm
+  values.** Traefik, cert-manager, sealed-secrets, Longhorn and CNPG are
+  installed once at bootstrap, so a `--set` change reaches new installs only —
+  yet the guard did not look at them and reported "unchanged" for a change
+  existing clusters would never receive. Both the flags and the values files are
+  covered, and the guard fails loudly rather than silently covering nothing.
+- Panel test suites resolve shared contracts from source instead of the built
+  output, so a stale build can no longer surface as a confusing "not a function"
+  failure that CI never reproduces.
+
 ## [2026.8.8] - 2026-08-20
 
 ### Fixed

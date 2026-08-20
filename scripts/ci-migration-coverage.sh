@@ -21,6 +21,8 @@
 #   1. firewall_shape        — nft sets + input-chain rules from bootstrap.sh
 #   2. infra_pin_shape       — bootstrap-pinned component versions
 #   3. install_time_unit_shape — the systemd units/timers bootstrap emits (2026-08-20)
+#   4. helm_values_shape       — the --set flags and values-file heredocs of
+#                                bootstrap's helm installs (2026-08-20)
 #
 # (3) was added after the converge-on-self-upgrade trigger (v2026.8.7) nearly
 # shipped as fresh-install-only: bootstrap writes each unit ONCE, so editing one
@@ -55,6 +57,13 @@ BASE_REF="${BASE_REF:-origin/main}"
 # empty or incomplete set is a HARD FAIL, never a pass — the same lesson as
 # "0 violations is also true of an empty table".
 REQUIRED_UNITS="${FWSHAPE_REQUIRED_UNITS:-platform-ops-update.service platform-ops-update.timer platform-ops-host-config.service platform-ops-host-config.timer}"
+
+# Helm releases that MUST appear in the values shape — same anti-vacuity role as
+# REQUIRED_UNITS. If the extraction stops matching (someone reformats the helm
+# block, switches to a values file under a name that is not *VALUES, or the awk
+# breaks), the fingerprint would quietly shrink and every future --set change
+# would pass. Empty or incomplete is a HARD FAIL.
+REQUIRED_HELM_RELEASES="${FWSHAPE_REQUIRED_HELM_RELEASES:-traefik cert-manager longhorn cnpg}"
 
 # Structural firewall lines: nft set declarations + the input-chain
 # drop/accept rules + chain policies. Comments are stripped FIRST (so a
@@ -144,15 +153,94 @@ install_time_unit_shape() {
   done
 }
 
+# Helm values passed by bootstrap's `helm upgrade --install` calls.
+#
+# bootstrap installs Traefik, cert-manager, sealed-secrets, Longhorn and CNPG
+# ONCE. A `--set` change therefore has exactly the reach of a pin bump — FRESH
+# INSTALLS ONLY — but until 2026-08-20 nothing fingerprinted it, so the guard
+# reported "unchanged — OK" for a change existing clusters would never receive.
+# Found while adding the Traefik plugin-wait initContainer (v2026.8.8), whose
+# host-migration had to be written by hand for exactly this reason.
+#
+# TWO sources are hashed, because a values FILE hides its content from a flag
+# scan:
+#   1. --set / --set-string / --set-file / -f flags inside a helm block
+#   2. the body of any heredoc whose delimiter ends in VALUES
+#
+# CONTRACT: a helm values heredoc MUST be named <SOMETHING>VALUES to be
+# covered. That is asserted below, so a values file smuggled in under another
+# name fails the guard rather than slipping past it.
+helm_values_shape() {
+  sed -E 's/#.*$//' "$BOOTSTRAP" \
+    | awk '
+        # Enter a helm block; stay in it while lines continue with a backslash.
+        # The invocation line itself is part of the shape: the release name,
+        # chart and --version are as fresh-install-only as any --set.
+        /helm_cmd[[:space:]]+(upgrade|install)/ { inblk = 1; print "helm|" $0; next }
+        inblk {
+          line = $0
+          if (line ~ /(--set(-string|-file)?|--version|[[:space:]]-f)[[:space:]]/) print "helm|" line
+          if (line !~ /\\[[:space:]]*$/) inblk = 0
+        }
+      ' \
+    | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//' \
+    | grep -v '^$'
+
+  # Values-file heredoc bodies. Comments are NOT stripped inside these: the
+  # body is a YAML document that ships verbatim into the chart, so a '#' may
+  # be data. Blank lines are dropped so reformatting is not a change.
+  awk '
+      /<<[[:space:]]*.?[A-Za-z_][A-Za-z0-9_]*VALUES.?[[:space:]]*$/ && !inbody {
+        d = $0; sub(/^.*<<[[:space:]]*/, "", d); gsub(/["\x27]/, "", d)
+        inbody = 1; delim = d; next
+      }
+      inbody {
+        t = $0; sub(/^[[:space:]]+/, "", t)
+        if (t == delim) { inbody = 0; next }
+        gsub(/[[:space:]]+/, " ", $0)
+        if ($0 != "") print "helmvalues|" delim "|" $0
+      }
+    ' "$BOOTSTRAP"
+}
+
 # The coverage hash spans the firewall shape, the infra version pins AND the
 # install-time systemd units — a change to any of the three is a "fresh-render
 # vs existing-node" delta that an existing cluster only gets via a migration.
-render_shape() { firewall_shape; infra_pin_shape; install_time_unit_shape; }
+render_shape() { firewall_shape; infra_pin_shape; install_time_unit_shape; helm_values_shape; }
 current_hash() { render_shape | sha256sum | awk '{print $1}'; }
 
 # Fail closed if the unit extraction found nothing (or lost a known unit) — see
 # REQUIRED_UNITS. Runs before every mode INCLUDING --update-baseline, so a
 # broken parser can never be frozen into the baseline as "correct".
+assert_helm_shape_non_vacuous() {
+  local shape missing=""
+  # Test seam: when FWSHAPE_BOOTSTRAP points at a fixture that is not a real
+  # bootstrap.sh, "no helm blocks" is expected, not a broken extraction. The
+  # canary still runs for the DEFAULT bootstrap (i.e. in CI, where it matters)
+  # and for any fixture whose test opts in by setting the release list.
+  if [ -n "${FWSHAPE_BOOTSTRAP:-}" ] && [ -z "${FWSHAPE_REQUIRED_HELM_RELEASES:-}" ]; then
+    return 0
+  fi
+  shape="$(helm_values_shape)"
+  if [ -z "$shape" ]; then
+    echo "::error::ci-migration-coverage: helm values shape is EMPTY — the helm-block extraction matched nothing." >&2
+    echo "  This guard would silently pass every future --set / values-file change. Fix helm_values_shape()." >&2
+    return 1
+  fi
+  local r
+  for r in $REQUIRED_HELM_RELEASES; do
+    printf '%s\n' "$shape" | grep -qF -- "$r" || missing="$missing $r"
+  done
+  if [ -n "$missing" ]; then
+    echo "::error::ci-migration-coverage: expected helm release(s) absent from the fingerprint:$missing" >&2
+    echo "  Either the release was removed (update FWSHAPE_REQUIRED_HELM_RELEASES), or the" >&2
+    echo "  extraction broke. NOTE: a values file is only covered when its heredoc delimiter" >&2
+    echo "  ends in VALUES — rename it, do not weaken the guard." >&2
+    return 1
+  fi
+  return 0
+}
+
 assert_unit_shape_non_vacuous() {
   local shape missing=""
   shape="$(install_time_unit_shape)"
@@ -201,6 +289,7 @@ shape_at_base() {
 }
 
 assert_unit_shape_non_vacuous || exit 1
+assert_helm_shape_non_vacuous || exit 1
 
 case "${1:-}" in
   --print) render_shape; exit 0 ;;
@@ -214,7 +303,7 @@ cur="$(current_hash)"
 base="$(cat "$BASELINE" 2>/dev/null || echo "")"
 
 if [[ "$cur" == "$base" ]]; then
-  echo "ci-migration-coverage: firewall shape + infra pins + install-time units unchanged — OK."
+  echo "ci-migration-coverage: firewall shape + infra pins + install-time units + helm values unchanged — OK."
   exit 0
 fi
 
