@@ -13,6 +13,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The whole platform shared one 100-request/minute budget for SFTP logins.**
+  The API rate limiter keys on the authenticated user, falling back to the
+  source IP. The sftp-gateway calls the platform machine-to-machine with no
+  JWT, so every tenant's login keyed on the single gateway pod IP — roughly 25
+  SFTP logins per minute for the entire platform (about four internal calls per
+  session), after which logins failed with an error no tenant could see or act
+  on. The limit never applied to an attacker: an unauthenticated caller is
+  rejected by the shared-secret check before it, and SFTP credential
+  brute-force is limited by the gateway itself, keyed on the real client IP.
+  Per-file transfers were never affected — an upload of ten thousand small
+  files makes about four API calls, not ten thousand.
+- **Mail telemetry batches were silently dropped once the mail stack got busy.**
+  The webhook receiver shared the same single-IP budget, so past 100 batches a
+  minute events were rejected and the data simply went missing — a gap in
+  operator-visible mail statistics that opened exactly when mail was busiest.
+- **Backup and restore streaming could fail part-way through a bundle.** The
+  internal artifact upload and download endpoints shared that budget too, so
+  several tenants backing up or restoring at once could exhaust it mid-run. A
+  bundle that loses a component is recorded as partial — a failure whose cause
+  looks nothing like a rate limit.
+- **A shared internal secret was compared in non-constant time.** Two mail
+  endpoints checked their bearer token with a plain string comparison, while
+  every other internal endpoint in the platform used a constant-time compare.
+  The check now lives in one tested module rather than being copy-pasted per
+  route.
 - **"Clean stale pod records" was not offered in the case that produces them.**
   The action was only suggested when a node had evictions or disk/memory
   pressure — a plain reboot causes neither, while routinely leaving Failed pods
