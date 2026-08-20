@@ -91,6 +91,13 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
   // method was POST.
   app.put('/internal/bundles/:bundleId/components/:component/:artifactName', {
     schema: { tags: ['TenantBundles-Internal'], summary: 'Stream a component artifact upload from a tenant Job' },
+    // rateLimit:false — capture Jobs upload artifact after artifact with no
+    // JWT, so the global limiter keyed EVERY tenant's backup onto one bucket.
+    // Several tenants backing up at once would 429 mid-bundle, and a bundle
+    // that loses a component lands as `status: partial` — a failure whose
+    // cause looks nothing like a rate limit. The HMAC token bound to
+    // (bundleId, component, artifactName) is the control here.
+    config: { rateLimit: false },
   }, async (request, reply) => {
     const { bundleId, component, artifactName } = request.params as {
       bundleId: string;
@@ -170,6 +177,8 @@ export async function backupsV2InternalUploadRoutes(app: FastifyInstance): Promi
       tags: ['TenantBundles-Internal'],
       summary: 'Stream a tarball into per-tenant restic repo (no intermediate file)',
     },
+    // See the sibling upload route: JWT-less Job traffic, HMAC token is the auth.
+    config: { rateLimit: false },
   }, async (request, reply) => {
     const { bundleId, component } = request.params as {
       bundleId: string;

@@ -54,6 +54,11 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
 
   app.get('/internal/bundles/:bundleId/components/:component/:artifactName', {
     schema: { tags: ['TenantBundles-Internal'], summary: 'Stream a component artifact download to a tenant Job' },
+    // rateLimit:false — restore Jobs pull artifact after artifact with no JWT,
+    // so the global limiter keyed every concurrent restore onto one bucket.
+    // A 429 mid-restore is the worst possible time to fail. The HMAC token
+    // bound to (bundleId, component, artifactName) is the control here.
+    config: { rateLimit: false },
   }, async (request, reply) => {
     const { bundleId, component, artifactName } = request.params as {
       bundleId: string;
@@ -142,6 +147,8 @@ export async function backupsV2InternalDownloadRoutes(app: FastifyInstance): Pro
   // the capture path).
   app.get('/internal/bundles/:bundleId/files-restic-tar', {
     schema: { tags: ['TenantBundles-Internal'], summary: 'Stream a files restic snapshot as a tar to a restore Job' },
+    // See the sibling download route: JWT-less Job traffic, HMAC token is the auth.
+    config: { rateLimit: false },
   }, async (request, reply) => {
     const { bundleId } = request.params as { bundleId: string };
     const token = (request.query as { token?: string }).token ?? '';

@@ -25,6 +25,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole } from '../../middleware/auth.js';
+import { assertInternalBearer, INTERNAL_BEARER_ROUTE } from './internal-bearer.js';
 import { success } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
 import * as service from './service.js';
@@ -1205,30 +1206,12 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       // global hooks must skip this route. Without skipAuth=true,
       // authenticate fires first, sees our internal token, fails JWT
       // verification, and the handler's token check never runs.
-      config: { skipAuth: true },
+      config: { skipAuth: true, rateLimit: false },
     },
     async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
-      // SECURITY: fail closed when the internal token is unset.
-      // Earlier versions of this code read only PLATFORM_INTERNAL_TOKEN,
-      // but the canonical env var across config/index.ts, file-manager
-      // and private-workers is PLATFORM_INTERNAL_SECRET — and that's
-      // what every Deployment actually sets. Accept either name with
-      // PLATFORM_INTERNAL_SECRET preferred so this endpoint works on
-      // existing installs without a Deployment-side rename.
-      const expectedToken = process.env.PLATFORM_INTERNAL_SECRET
-        ?? process.env.PLATFORM_INTERNAL_TOKEN;
-      if (!expectedToken) {
-        throw new ApiError(
-          'INTERNAL_TOKEN_NOT_CONFIGURED',
-          'PLATFORM_INTERNAL_SECRET env var must be set for /internal/* endpoints',
-          503,
-        );
-      }
-      const auth = req.headers['authorization'] ?? '';
-      const token = Array.isArray(auth) ? auth[0] : auth;
-      if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
-        throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
-      }
+      // Accepts either env-var name (PLATFORM_INTERNAL_SECRET preferred) and
+      // fails closed when neither is set — see assertInternalBearer.
+      assertInternalBearer(req.headers);
       const body = req.body as { totalSnapshotSizeBytes?: unknown; snapshotCount?: unknown };
       const totalSnapshotSizeBytes = Number(body.totalSnapshotSizeBytes ?? 0);
       const snapshotCount = Number(body.snapshotCount ?? 0);
@@ -1248,22 +1231,9 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // (PLATFORM_INTERNAL_SECRET bearer).
   app.post(
     '/internal/mail/standby-replicate-report',
-    { config: { skipAuth: true } },
+    INTERNAL_BEARER_ROUTE,
     async (req: { body: unknown; headers: Record<string, string | string[] | undefined> }) => {
-      const expectedToken = process.env.PLATFORM_INTERNAL_SECRET
-        ?? process.env.PLATFORM_INTERNAL_TOKEN;
-      if (!expectedToken) {
-        throw new ApiError(
-          'INTERNAL_TOKEN_NOT_CONFIGURED',
-          'PLATFORM_INTERNAL_SECRET env var must be set for /internal/* endpoints',
-          503,
-        );
-      }
-      const auth = req.headers['authorization'] ?? '';
-      const token = Array.isArray(auth) ? auth[0] : auth;
-      if (!token.startsWith('Bearer ') || token.slice(7) !== expectedToken) {
-        throw new ApiError('UNAUTHORIZED', 'Invalid internal token', 401);
-      }
+      assertInternalBearer(req.headers);
       const body = req.body as {
         node?: unknown;
         sizeBytes?: unknown;
@@ -1962,7 +1932,13 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
   // sufficient for the threat model (operator-action-only failures).
   app.get(
     '/internal/mail/stalwart-data-expectation',
-    { config: { skipAuth: true } },
+    // Deliberately NOT rateLimit:false — unlike its siblings this route is
+    // anonymous (see the reasoning above), so it keeps a bound. The bound is
+    // generous relative to its real caller: one Stalwart init container per
+    // pod start, which polls a handful of times before giving up. 60/min
+    // leaves room for a restart storm without leaving an unauthenticated
+    // endpoint completely unthrottled.
+    { config: { skipAuth: true, rateLimit: { max: 60, timeWindow: '1 minute' } } },
     async () => {
       const { mailboxes, emailDomains } = await import('../../db/schema.js');
       const { sql, isNotNull } = await import('drizzle-orm');
