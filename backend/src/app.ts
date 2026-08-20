@@ -148,6 +148,7 @@ import { platformUpgradeRoutes } from './modules/platform-upgrades/routes.js';
 import { sslCertRoutes } from './modules/ssl-certs/routes.js';
 import { eolScannerRoutes } from './modules/eol-scanner/routes.js';
 import { tlsSettingsRoutes } from './modules/tls-settings/routes.js';
+import { dnsResolverRoutes } from './modules/dns-resolver/routes.js';
 import { ingressRouteRoutes } from './modules/ingress-routes/routes.js';
 import { ingressAuthRoutes } from './modules/ingress-auth/routes.js';
 import { oidcProvidersRoutes } from './modules/ingress-auth/providers-routes.js';
@@ -646,6 +647,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(sslCertRoutes, { prefix: '/api/v1' });
   await app.register(eolScannerRoutes, { prefix: '/api/v1' });
   await app.register(tlsSettingsRoutes, { prefix: '/api/v1' });
+  await app.register(dnsResolverRoutes, { prefix: '/api/v1' });
   await app.register(ingressRouteRoutes, { prefix: '/api/v1' });
   await app.register(ingressAuthRoutes, { prefix: '/api/v1' });
   await app.register(oidcProvidersRoutes, { prefix: '/api/v1' });
@@ -896,6 +898,34 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log,
         );
         app.addHook('onClose', () => stopFluxCollector());
+
+      }
+
+      // Ingress-router probe (feeds the ingress-router-down rule). Asks the
+      // only question that matched the 2026-08-20 outage: does a request for
+      // the panel hostname still match a router? Every other signal was green.
+      {
+        const { startIngressRouterCollector } = await import('./modules/monitoring/ingress-router-collector.js');
+        const stopIngressCollector = startIngressRouterCollector(
+          async () => {
+            try {
+              // getPlatformApex, NOT ingress_base_domain: the supported
+              // "rename platform apex" action deliberately leaves
+              // ingress_base_domain alone, so deriving from it would leave
+              // this probe watching the OLD hostnames — blind to the live
+              // panels, which is the exact outage it exists to catch.
+              const { getPlatformApex } = await import('./modules/system-settings/platform-domain.js');
+              const apex = await getPlatformApex(app.db);
+              // No apex configured yet (fresh cluster) → probe nothing rather
+              // than emit a permanent -1 for a hostname that does not exist.
+              return apex ? [`admin.${apex}`, `tenant.${apex}`] : [];
+            } catch {
+              return [];
+            }
+          },
+          app.log,
+        );
+        app.addHook('onClose', () => stopIngressCollector());
       }
 
       // Node-terminal scheduler: idle-session sweep + orphan-Pod reap.

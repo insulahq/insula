@@ -28,49 +28,20 @@
  */
 
 import { z } from 'zod';
+import {
+  ipv4BarePattern,
+  ipv4CidrPattern,
+  ipv6BarePattern,
+  ipv6CidrPattern,
+} from './ip.js';
 
 // ─── CIDR validation ──────────────────────────────────────────────────────
 //
-// IPv4: octet-bounded (0-255 per octet, NOT just [0-9]{1,3}). The looser
-// pattern in cluster-network.ts accepts `999.999.999.999/16` which fails
-// silently at nginx-reload time; here we reject at the API boundary so
-// the operator gets a clear 400 instead of a silent reconcile loop.
-const ipv4Octet = '(25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)';
-const ipv4CidrPattern = new RegExp(
-  `^${ipv4Octet}(?:\\.${ipv4Octet}){3}\\/([1-9]|[12]\\d|3[0-2])$`,
-);
-const ipv4BarePattern = new RegExp(`^${ipv4Octet}(?:\\.${ipv4Octet}){3}$`);
+// Patterns live in ./ip.ts so the DNS resolver settings validate addresses
+// identically (extracted 2026-08-20). `/0` prefixes are NOT matched by the
+// CIDR patterns — a `0.0.0.0/0` trust entry would let any source IP spoof
+// XFF, which is exactly the boundary this feature protects.
 
-// IPv6: require at least one "::" or seven "::" segments, with hex
-// groups of 1-4 chars. Rejects `:::::` and `zz::` (the bare pattern
-// in cluster-network.ts let those through). nginx/k3s both want
-// canonical RFC 4291 form; this regex covers the common shapes
-// (full, compressed with ::, embedded IPv4). For exhaustive
-// validation we'd need a parser, but this is tight enough to
-// reject the common garbage inputs.
-const ipv6Group = '[0-9a-fA-F]{1,4}';
-const ipv6Full = `(?:${ipv6Group}:){7}${ipv6Group}`;
-const ipv6Compressed =
-  `(?:(?:${ipv6Group}:){1,7}:)|` +
-  `(?:(?:${ipv6Group}:){1,6}:${ipv6Group})|` +
-  `(?:(?:${ipv6Group}:){1,5}(?::${ipv6Group}){1,2})|` +
-  `(?:(?:${ipv6Group}:){1,4}(?::${ipv6Group}){1,3})|` +
-  `(?:(?:${ipv6Group}:){1,3}(?::${ipv6Group}){1,4})|` +
-  `(?:(?:${ipv6Group}:){1,2}(?::${ipv6Group}){1,5})|` +
-  `(?:${ipv6Group}:(?::${ipv6Group}){1,6})|` +
-  `(?::(?::${ipv6Group}){1,7})|` +
-  `(?:::)`;
-const ipv6Address = `(?:${ipv6Full}|${ipv6Compressed})`;
-const ipv6CidrPattern = new RegExp(
-  `^${ipv6Address}\\/([1-9]|[1-9]\\d|1[01]\\d|12[0-8])$`,
-);
-const ipv6BarePattern = new RegExp(`^${ipv6Address}$`);
-
-/**
- * Accept IPv4/v6 single addr or CIDR. /0 prefixes are REJECTED — a
- * `0.0.0.0/0` trust entry would let any source IP spoof XFF, which
- * is exactly the security boundary this feature protects.
- */
 const cidrOrIpString = z
   .string()
   .min(1)

@@ -8,6 +8,18 @@ vi.mock('node:dns/promises', () => ({
     resolve4: vi.fn(),
     resolve6: vi.fn(),
   },
+  // Named export too: verification.ts now resolves the operator-configured
+  // resolver via dns-resolver/service.ts, which constructs a `Resolver`. The
+  // stub only has to be constructible — these tests drive the default export
+  // through the injected-resolver parameter, and getDnsResolverSettings
+  // degrades to `host` (the default export) for the stub db they pass.
+  Resolver: class {
+    setServers(): void {}
+    resolveNs = vi.fn();
+    resolveCname = vi.fn();
+    resolve4 = vi.fn();
+    resolve6 = vi.fn();
+  },
 }));
 
 // Mock dns-servers service (for secondary/AXFR checks)

@@ -1,4 +1,5 @@
 import { loadConfig } from './config/index.js';
+import { primeDnsResolverCache } from './modules/dns-resolver/service.js';
 import { getDb, getPool, closeDb } from './db/index.js';
 import { buildApp } from './app.js';
 import { suspendExpiredTenants } from './modules/subscriptions/expiry-checker.js';
@@ -34,6 +35,12 @@ process.on('SIGTERM', shutdown);
 
 await app.listen({ port: config.PORT, host: '0.0.0.0' });
 console.log(`Server listening on port ${config.PORT}`);
+
+// Warm the DNS-resolver settings cache so mail deliverability's SYNC accessor
+// (which has no db handle) sees the operator's choice on the first probe
+// rather than one TTL later. Non-fatal: a cold cache degrades to the previous
+// per-module defaults.
+void primeDnsResolverCache(app.db);
 
 // One k8s client set shared by the post-listen startup passes below (built
 // once rather than per-IIFE). null when no kubeconfig is available (e.g. a
