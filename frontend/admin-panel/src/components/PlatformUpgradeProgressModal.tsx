@@ -26,6 +26,12 @@ const PHASE = {
   error: { label: 'Failed', cls: 'text-red-600 dark:text-red-400' },
 } as const;
 
+/** The two gates that make "healthy" mean converged rather than "images rolled". */
+const CONVERGENCE_GATES = [
+  { id: 'migrations-converged', label: 'Platform migrations' },
+  { id: 'host-migrations-converged', label: 'Host migrations' },
+] as const;
+
 export default function PlatformUpgradeProgressModal({ version, onClose }: Props) {
   const postQ = usePostflight(true);
   const post = postQ.data?.data;
@@ -45,7 +51,19 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
   // after the upgrade has actually finished.
   const rolled = !!prog && prog.total > 0 && prog.atTarget >= prog.total && (prog.percent ?? 0) >= 100;
   const converged = !active && (post?.phase === 'healthy' || post?.phase === 'idle');
-  const done = !stuck && (rolled || converged);
+  // …but ROLLED IS NOT DONE. Images are only the part Flux can see: platform
+  // migrations run after the new pod is serving, and host migrations converge
+  // per node. `rolled || converged` reported 100% Done the moment the last
+  // Deployment hit its tag — which is exactly what three clusters showed on
+  // 2026-08-19 while their migration registry sat halted at 0008.
+  //
+  // Absent gates keep the old behaviour rather than hanging the modal open on
+  // missing data: only a gate that EXISTS and is not passing holds `done` back.
+  const convergencePending = CONVERGENCE_GATES.some(({ id }) => {
+    const g = post?.gates?.find((x) => x.id === id);
+    return g !== undefined && g.status !== 'pass';
+  });
+  const done = !stuck && !convergencePending && (rolled || converged);
   const percent = done ? 100 : (prog?.percent ?? (active ? 0 : 100));
   // Connection is flaky mid-roll (admin-panel + platform-api pods restart).
   // failureCount rises on each failed poll and resets on the next success →
@@ -129,6 +147,43 @@ export default function PlatformUpgradeProgressModal({ version, onClose }: Props
               })}
             </ul>
           )}
+
+          {/* Convergence rows — the half of an upgrade Flux cannot see.
+              Images rolling is not the upgrade finishing: platform migrations
+              land seconds after the new pod starts, host migrations when the
+              node converges (immediately after its self-upgrade, else hourly).
+              On 2026-08-19 every deployment reported Ready on three clusters
+              whose migration registry had halted, and the upgrade called itself
+              healthy.
+
+              Rendered in the SAME vocabulary as the component rows above, and
+              deliberately as "Converging" (blue) rather than "Incomplete" while
+              in their normal window — a gate that cries wolf gets dismissed.
+              Red only once the run is genuinely stuck. */}
+          {CONVERGENCE_GATES.map(({ id, label }) => {
+            const g = post?.gates?.find((x) => x.id === id);
+            if (!g) return null; // not reported (e.g. no node has checked in yet)
+            const ok = g.status === 'pass';
+            // `stuck` is the modal's existing streak-based "this is not moving"
+            // signal — the only thing that turns a pending gate red.
+            const failed = !ok && stuck;
+            return (
+              <div key={id} className="flex items-center justify-between text-sm" data-testid={`convergence-${id}`}>
+                <span className="text-gray-700 dark:text-gray-300">{label}</span>
+                <span className="flex items-center gap-1.5 text-xs">
+                  {ok
+                    ? <CheckCircle size={13} className="text-green-600 dark:text-green-400" />
+                    : failed
+                      ? <AlertTriangle size={13} className="text-red-500" />
+                      : <Loader2 size={13} className="animate-spin text-blue-500" />}
+                  <span className={`font-medium ${ok ? PHASE.ready.cls : failed ? PHASE.error.cls : PHASE.starting.cls}`}>
+                    {ok ? 'Applied' : failed ? 'Stalled' : 'Converging'}
+                  </span>
+                  <span className="text-gray-400 dark:text-gray-500">{g.detail}</span>
+                </span>
+              </div>
+            );
+          })}
 
           {/* Reconnecting hint — the modal keeps polling through the roll. */}
           {reconnecting && (
