@@ -72,6 +72,10 @@ export function useCreateDomain(tenantId: string | undefined) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
+      // These operations write or remove dns_records rows server-side, so the
+      // domain's DNS Records list is stale the moment they succeed. Without this
+      // the new records only appear after a full page reload.
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }
@@ -140,6 +144,7 @@ export function useDeleteDomain(tenantId: string | undefined) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }

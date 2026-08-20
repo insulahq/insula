@@ -13,6 +13,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **DNS records written by the panel only appeared after a page reload.** Enabling
+  or disabling mail, rotating a DKIM key, and creating, changing or deleting an
+  ingress route or a domain all write DNS records on the server, but the panel
+  never re-asked for the domain's DNS Records list afterwards — so it kept showing
+  the copy it had fetched earlier. The records were on the DNS server and in the
+  database the whole time; only the page was out of date.
+
+  Reported twice — first for ingress-route records, then for mail records — before
+  it was recognised as one systemic bug rather than two. An audit found the same
+  omission in **18 places across both panels**; all are fixed, and a CI guard now
+  fails the build if a DNS-writing action forgets to refresh the list.
+
+  Certificate status was a separate case and already correct: the domain list
+  polls while a certificate is issuing, so it settles on its own.
 - **The whole platform shared one 100-request/minute budget for SFTP logins.**
   The API rate limiter keys on the authenticated user, falling back to the
   source IP. The sftp-gateway calls the platform machine-to-machine with no
