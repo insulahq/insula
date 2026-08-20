@@ -12,6 +12,41 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A node reboot could leave both panels serving a bare 404 indefinitely.**
+  Traefik downloads its plugins from an external registry at process start; if
+  that fetch fails it disables the whole plugin subsystem and keeps serving,
+  dropping every route whose middleware is a plugin — which is both panels. The
+  cluster looks perfect throughout: pods Ready, certificates valid, GitOps
+  green. On a reboot the network is routinely not up yet when Traefik starts,
+  and nothing self-heals, so it stayed broken until someone restarted the pod by
+  hand. Traefik now waits for the registry before starting, and a guard recycles
+  a pod that came up without plugins. A plugin cache is *not* a fix and was
+  measured, not assumed — with both archives cached and no network, Traefik
+  still calls the registry unconditionally.
+- **Domain verification could not be re-run after a failure.** Results —
+  including failures — cache for 24 hours, and neither panel asked for a fresh
+  check, so fixing your DNS and clicking Verify returned the stale failure until
+  the cache expired. The cache behaviour is now documented with the timestamp to
+  check; the button still honours the cache, so use the routing tab's cache
+  timestamp to tell a stale answer from a current one.
+
+### Added
+- **An alert for "the panel has no route"** — the 2026-08-20 outage was
+  invisible to every existing signal because none of them measured whether a
+  request for the panel hostname still matched a route. This probes that
+  directly and names the affected hostname. It deliberately does not fire when
+  the probe itself cannot run: a monitoring outage must not look like a site
+  outage.
+- **Upstream DNS is now an operator setting** (*Platform Settings → DNS
+  Providers*). The platform previously had two different, invisible resolver
+  paths — domain verification used cluster DNS while mail checks used their own
+  hardcoded servers — so two lookups of the same name could disagree and neither
+  could be inspected or changed. Choose the cluster's own resolver (shown, since
+  a mesh VPN agent can rewrite it) or up to four explicit IPv4/IPv6 upstreams.
+  **Test** probes candidates without saving them, so a blackholed resolver
+  cannot be locked in.
+
 ## [2026.8.7] - 2026-08-20
 
 ### Fixed
