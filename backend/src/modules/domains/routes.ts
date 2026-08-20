@@ -142,6 +142,25 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
   // We chose single-POST-with-force over a separate GET because the verify
   // mutation already exists on both panels; callers that want a no-op read
   // can just check domain.verificationCacheAt before calling.
+  // POST /tenants/:tenantId/domains/:domainId/refresh-route-dns
+  //
+  // Re-derive the ingress-route DNS records from the CURRENT ingress address
+  // set. The apex A/AAAA records are a snapshot taken when the route was
+  // created, so adding an ingress-capable node leaves every existing tenant
+  // apex pointing at the old set with nothing in the product saying so.
+  // Subdomains ride the <slug>.ingress.<apex> CNAME chain and self-heal;
+  // the apex cannot, because RFC 1034 forbids a CNAME at a zone apex.
+  //
+  // Primary mode only — enforced in the service, which 409s rather than
+  // quietly doing nothing on a zone the platform does not control.
+  app.post('/tenants/:tenantId/domains/:domainId/refresh-route-dns', async (request) => {
+    const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
+    // Ownership check: throws if the domain is not this tenant's.
+    await service.getDomainById(app.db, tenantId, domainId);
+    const { refreshRouteDnsForDomain } = await import('../ingress-routes/service.js');
+    return success(await refreshRouteDnsForDomain(app.db, domainId));
+  });
+
   app.post('/tenants/:tenantId/domains/:domainId/verify', async (request) => {
     const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
     const query = request.query as Record<string, unknown>;

@@ -14,7 +14,7 @@ import {
 } from '@insula/api-contracts';
 import { ingressRoutes, domains, platformSettings, dnsRecords, deployments, catalogEntries, privateWorkers } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
-import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, type DnsSyncOutcome } from '../dns-records/service.js';
+import { syncRecordToProviders, describeSyncFailure, provisionManagedRecord, deleteManagedRecords, type DnsSyncOutcome } from '../dns-records/service.js';
 import { reservedHostnamesCoveredBy } from '../system-tenant/reserved-subdomains.js';
 import { resolveIngressBackend, NotIngressableError } from '../domains/k8s-ingress.js';
 import type { Database } from '../../db/index.js';
@@ -725,4 +725,83 @@ export async function autoDeleteRouteDns(
       await db.delete(dnsRecords).where(eq(dnsRecords.id, rec.id));
     }
   }
+}
+
+/**
+ * Re-provision the DNS records for every ingress route on a PRIMARY domain.
+ *
+ * The apex A/AAAA set is a snapshot of the ingress addresses at the moment a
+ * route was created. Add an ingress-capable node and every existing tenant
+ * apex keeps pointing at the old set — traffic never reaches the new node, and
+ * nothing in the product said so. Subdomains ride the `<slug>.ingress.<apex>`
+ * CNAME chain and are unaffected, which is exactly why that chain exists; the
+ * apex cannot use it (RFC 1034 forbids a CNAME at a zone apex).
+ *
+ * Replaces only rows this subsystem owns (managed_by = 'ingress-route'): a
+ * hand-made record is the operator's and is never touched.
+ *
+ * cname-mode domains are refused rather than silently no-oped — the platform
+ * has no authority over that zone, and "succeeded, changed nothing" is the
+ * kind of answer that sends someone hunting in the wrong place.
+ */
+export async function refreshRouteDnsForDomain(
+  db: Database,
+  domainId: string,
+): Promise<{
+  hostnames: number;
+  created: number;
+  removed: number;
+  failures: Array<{ hostname: string; detail: string }>;
+}> {
+  const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
+  if (!domain) throw new ApiError('NOT_FOUND', 'Domain not found', 404);
+  if (domain.dnsMode !== 'primary') {
+    throw new ApiError(
+      'DNS_MODE_NOT_PRIMARY',
+      `Refreshing route DNS needs primary mode; '${domain.domainName}' is in ${domain.dnsMode} mode, `
+      + `where the platform does not control the zone.`,
+      409,
+    );
+  }
+
+  const routes = await db
+    .select({ hostname: ingressRoutes.hostname })
+    .from(ingressRoutes)
+    .where(eq(ingressRoutes.domainId, domainId));
+
+  const failures: Array<{ hostname: string; detail: string }> = [];
+  let created = 0;
+  let removed = 0;
+
+  for (const route of routes) {
+    // Drop the rows we own for this hostname first, so a record pointing at a
+    // decommissioned node actually disappears instead of accumulating
+    // alongside the new set.
+    const recordName = isApexHostname(route.hostname, domain.domainName)
+      ? '@'
+      : relativeRecordName(route.hostname, domain.domainName);
+
+    try {
+      const stale = await deleteManagedRecords(db, 'ingress-route', domainId, recordName);
+      for (const rec of stale) {
+        await syncRecordToProviders(db, domain.domainName, 'delete', {
+          type: rec.recordType,
+          name: rec.recordName ?? '',
+          content: rec.recordValue ?? '',
+          id: 'auto',
+        }, domainId);
+        removed++;
+      }
+      const before = created;
+      await autoProvisionRouteDns(db, domainId, route.hostname);
+      created = before + 1;
+    } catch (err) {
+      failures.push({
+        hostname: route.hostname,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return { hostnames: routes.length, created, removed, failures };
 }

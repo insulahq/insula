@@ -151,3 +151,28 @@ export function useMigrateDomainDns(tenantId: string | undefined) {
     },
   });
 }
+
+/**
+ * Re-derive ingress-route DNS from the CURRENT ingress address set.
+ *
+ * Apex A/AAAA records are a snapshot taken when the route was created, so
+ * adding an ingress-capable node leaves existing apexes pointing at the old
+ * set. Subdomains ride the <slug>.ingress.<apex> CNAME chain and self-heal.
+ * Primary mode only — the API 409s otherwise.
+ */
+export function useRefreshRouteDns(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (domainId: string) =>
+      apiFetch<{ data: { hostnames: number; created: number; removed: number; failures: Array<{ hostname: string; detail: string }> } }>(
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/refresh-route-dns`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      // The records list is the thing this action changes — invalidate it, or
+      // the panel shows the pre-refresh set until a manual reload.
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
+      queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
+    },
+  });
+}
