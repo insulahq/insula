@@ -161,6 +161,35 @@ else
   log "  node-health: no tick yet — skipping (cluster fresh-booted)"
 fi
 
+# Platform-migration gate: the registry HALTS on the first failing migration,
+# so a stuck one means the cluster is running new code against an unconverged
+# base. This runs after EVERY deploy — it is the check that should have stopped
+# 2026-08-19's migration 0009 at DEV instead of letting it reach STAGING and
+# production, where it surfaced days later as a wildcard cert stuck "Issuing".
+# Fails RED: pending migrations are never a normal steady state, and the whole
+# point is that this stops being something you have to go looking for.
+PM_BODY=$(curl -s -H "$AUTH_HEADER" "${API_URL}/api/v1/admin/platform/migrations" 2>/dev/null || true)
+if echo "$PM_BODY" | jq -e '.data.converged != null' >/dev/null 2>&1; then
+  PM_PENDING=$(echo "$PM_BODY" | jq -r '.data.pending // 0')
+  PM_DRIFT=$(echo "$PM_BODY" | jq -r '.data.drift // 0')
+  if [[ "$PM_PENDING" != "0" ]]; then
+    check_status "GET /admin/platform/migrations (${PM_PENDING} migration(s) NOT applied)" "200" "FAIL"
+    echo "    pending — the registry halted or never ran; check the platform-api log:"
+    echo "$PM_BODY" | jq -r '.data.migrations[] | select(.status=="pending") | "      \(.id)  (\(.version))  \(.description)"' 2>/dev/null | head -10
+  elif [[ "$PM_DRIFT" != "0" ]]; then
+    # Drift = a shipped migration was edited after it applied. Not a halt, but
+    # it breaks the order-stable contract, so surface it rather than pass mute.
+    check_status "GET /admin/platform/migrations (${PM_DRIFT} edited after applying)" "200" "FAIL"
+    echo "$PM_BODY" | jq -r '.data.migrations[] | select(.status=="drift") | "      \(.id) drifted"' 2>/dev/null | head -5
+  else
+    check_status "GET /admin/platform/migrations (converged)" "200" "200"
+  fi
+else
+  # An older backend has no such route. Say so rather than skipping quietly —
+  # a silent skip here is the exact shape of the bug this gate exists for.
+  log "  platform-migrations: endpoint unavailable (backend predates it) — NOT verified"
+fi
+
 # ─── Clients (same params as frontend) ─────────────────────────────────────────
 
 log "── Clients ──"

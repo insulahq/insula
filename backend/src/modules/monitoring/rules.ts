@@ -264,6 +264,32 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     threshold: 30,
     forSeconds: 600,
   },
+  // ── Platform-migration registry (added after the 2026-08-19 incident) ──
+  // The registry halts on the first failing migration so nothing runs on a
+  // broken base — correct, and previously silent. Migration 0009 403'd on
+  // DEV, then STAGING, then production, and every tier rolled it out without
+  // a word; it surfaced days later as a wildcard certificate stuck "Issuing"
+  // because the ClusterIssuer it referenced was never created.
+  {
+    id: 'platform-migration-failed',
+    name: 'Platform migration FAILED',
+    description: 'A platform-migration threw on the last run and the registry HALTED — no later migration has been applied. The cluster is running new code against an unconverged base. The alert names the failing migration; the reason is in the platform-api log.',
+    severity: 'critical',
+    expr: 'max by (id) (platform_migration_failed) > $T',
+    subjectLabels: ['id'],
+    threshold: 0,
+    forSeconds: 0,
+  },
+  {
+    id: 'platform-migrations-pending',
+    name: 'Platform migrations not converged',
+    description: 'Platform-migrations have been pending for longer than a deploy takes. Either the registry halted on a failure (see platform-migration-failed) or it never ran — the escape hatch is set, or the advisory lock is stuck.',
+    severity: 'warning',
+    expr: 'max(platform_migrations_pending) > $T',
+    subjectLabels: [],
+    threshold: 0,
+    forSeconds: 900,
+  },
   {
     id: 'flux-reconcile-errors',
     name: 'Flux resources not ready',
