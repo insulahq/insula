@@ -1,4 +1,5 @@
 import dns from 'node:dns/promises';
+import { getPlatformResolver, type DnsLike } from '../dns-resolver/service.js';
 import { getActiveServers, getProviderForServer } from '../dns-servers/service.js';
 import type { Database } from '../../db/index.js';
 
@@ -42,6 +43,7 @@ export interface PlatformIngressIps {
 export async function getPlatformIngressIps(
   db: Database,
   ingressBaseDomain?: string,
+  resolver: DnsLike = dns,
 ): Promise<PlatformIngressIps> {
   const v4Set = new Set<string>();
   const v6Set = new Set<string>();
@@ -93,8 +95,8 @@ export async function getPlatformIngressIps(
   if (ingressBaseDomain) {
     try {
       const [v4Result, v6Result] = await Promise.allSettled([
-        dns.resolve4(ingressBaseDomain),
-        dns.resolve6(ingressBaseDomain),
+        resolver.resolve4(ingressBaseDomain),
+        resolver.resolve6(ingressBaseDomain),
       ]);
       if (v4Result.status === 'fulfilled') {
         for (const ip of v4Result.value) {
@@ -127,9 +129,10 @@ export async function getPlatformIngressIps(
 export async function verifyNsDelegation(
   domain: string,
   expectedNs: readonly string[],
+  resolver: DnsLike = dns,
 ): Promise<VerificationCheck> {
   try {
-    const actualNs = await dns.resolveNs(domain);
+    const actualNs = await resolver.resolveNs(domain);
     const normalizedActual = actualNs.map((ns) => ns.toLowerCase().replace(/\.$/, ''));
     const normalizedExpected = expectedNs.map((ns) => ns.toLowerCase().replace(/\.$/, ''));
 
@@ -158,9 +161,10 @@ export async function verifyNsDelegation(
 export async function verifyCnameRecord(
   hostname: string,
   expectedTarget: string,
+  resolver: DnsLike = dns,
 ): Promise<VerificationCheck> {
   try {
-    const cnames = await dns.resolveCname(hostname);
+    const cnames = await resolver.resolveCname(hostname);
     const normalizedCnames = cnames.map((c) => c.toLowerCase().replace(/\.$/, ''));
     const normalizedTarget = expectedTarget.toLowerCase().replace(/\.$/, '');
 
@@ -184,16 +188,17 @@ export async function verifyCnameRecord(
 
 /**
  * Resolve IPs for a hostname using both A and AAAA queries.
- * dns.resolve4/6 follow CNAME chains transparently.
+ * resolve4/6 follow CNAME chains transparently.
  * Returns an empty array (and optionally logs into `errors`) if no records exist.
  */
 async function resolveAllIps(
   hostname: string,
   errors: string[],
+  resolver: DnsLike = dns,
 ): Promise<{ v4: string[]; v6: string[] }> {
   const [v4Result, v6Result] = await Promise.allSettled([
-    dns.resolve4(hostname),
-    dns.resolve6(hostname),
+    resolver.resolve4(hostname),
+    resolver.resolve6(hostname),
   ]);
 
   const v4: string[] = [];
@@ -236,9 +241,10 @@ export async function verifyResolvesToPlatform(
   ingressBaseDomain: string,
   db: Database,
   precomputedPlatformIps?: PlatformIngressIps,
+  resolver: DnsLike = dns,
 ): Promise<VerificationCheck> {
   // Get platform IPs (from cache if pre-fetched by cron)
-  const platformIps = precomputedPlatformIps ?? await getPlatformIngressIps(db, ingressBaseDomain);
+  const platformIps = precomputedPlatformIps ?? await getPlatformIngressIps(db, ingressBaseDomain, resolver);
 
   if (platformIps.v4.size === 0 && platformIps.v6.size === 0) {
     const detail = platformIps.source === 'none'
@@ -249,7 +255,7 @@ export async function verifyResolvesToPlatform(
 
   // Resolve customer hostname IPs (follows CNAME chain transparently)
   const customerErrors: string[] = [];
-  const customerIps = await resolveAllIps(hostname, customerErrors);
+  const customerIps = await resolveAllIps(hostname, customerErrors, resolver);
   const allCustomerIps = [...customerIps.v4, ...customerIps.v6];
 
   if (allCustomerIps.length === 0) {
@@ -268,7 +274,7 @@ export async function verifyResolvesToPlatform(
   // Build a friendly CNAME-chain prefix for the detail message (best-effort)
   let chainPrefix = '';
   try {
-    const cnames = await dns.resolveCname(hostname);
+    const cnames = await resolver.resolveCname(hostname);
     if (cnames.length > 0) {
       chainPrefix = `${hostname} → ${cnames.join(' → ')} → `;
     }
@@ -300,10 +306,11 @@ export async function verifyResolvesToPlatform(
 export async function verifyResolvesToIngress(
   hostname: string,
   ingressBaseDomain: string,
+  resolver: DnsLike = dns,
 ): Promise<VerificationCheck> {
   // Resolve ingress base IPs first — if this fails it's an operator config problem
   const ingressErrors: string[] = [];
-  const ingressIpsResult = await resolveAllIps(ingressBaseDomain, ingressErrors);
+  const ingressIpsResult = await resolveAllIps(ingressBaseDomain, ingressErrors, resolver);
   const ingressIps = [...ingressIpsResult.v4, ...ingressIpsResult.v6];
 
   if (ingressIps.length === 0) {
@@ -315,7 +322,7 @@ export async function verifyResolvesToIngress(
 
   // Resolve customer hostname IPs (follows CNAME chain transparently)
   const customerErrors: string[] = [];
-  const customerIpsResult = await resolveAllIps(hostname, customerErrors);
+  const customerIpsResult = await resolveAllIps(hostname, customerErrors, resolver);
   const customerIps = [...customerIpsResult.v4, ...customerIpsResult.v6];
 
   if (customerIps.length === 0) {
@@ -334,7 +341,7 @@ export async function verifyResolvesToIngress(
   // Build a friendly CNAME-chain prefix for the detail message (best-effort)
   let chainPrefix = '';
   try {
-    const cnames = await dns.resolveCname(hostname);
+    const cnames = await resolver.resolveCname(hostname);
     if (cnames.length > 0) {
       chainPrefix = `${hostname} → ${cnames.join(' → ')} → `;
     }
@@ -413,9 +420,15 @@ export async function verifyDomain(
 ): Promise<VerificationResult> {
   const checks: VerificationCheck[] = [];
 
+  // Resolve the operator-configured resolver ONCE per verification and thread
+  // it through every lookup. Omitting it here is not a compile error — the
+  // params default to the pod resolver — so the setting would silently do
+  // nothing. That is precisely the failure this module exists to end.
+  const resolver = await getPlatformResolver(db);
+
   switch (dnsMode) {
     case 'primary': {
-      const nsCheck = await verifyNsDelegation(domain, platformConfig.nameservers);
+      const nsCheck = await verifyNsDelegation(domain, platformConfig.nameservers, resolver);
       checks.push(nsCheck);
       break;
     }
@@ -427,6 +440,7 @@ export async function verifyDomain(
         platformConfig.ingressHostname,
         db,
         precomputedPlatformIps,
+        resolver,
       );
       checks.push(cnameCheck);
       break;

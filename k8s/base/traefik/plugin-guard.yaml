@@ -1,0 +1,214 @@
+# Traefik plugin-load self-heal (runtime).
+#
+# WHY THIS EXISTS
+# Traefik downloads its Yaegi plugins from plugins.traefik.io at PROCESS START.
+# If any single plugin fails to download it disables the WHOLE plugin subsystem
+# and keeps serving:
+#
+#   INF Loading plugins... plugins=["crowdsec","modsecurity"]
+#   ERR Plugins are disabled because an error has occurred.
+#       unable to install plugin crowdsec: ... context deadline exceeded
+#   ERR invalid middleware "traefik-modsecurity-crs@kubernetescrd" ... does not exist
+#       routerName=platform-platform-ingress-...@kubernetescrd
+#
+# Every router whose middleware is a plugin is then dropped — including
+# platform-ingress, which carries BOTH panels. The cluster looks perfect:
+# pods Running and Ready, valid certs, Flux READY=True, API healthy — and
+# admin.<apex> / tenant.<apex> return Traefik's bare `404 page not found`.
+#
+# Nothing self-heals: plugins are only installed at process start.
+#
+# bootstrap.sh has had a detector+recycler (ensure_traefik_plugins_loaded) since
+# the 2026-08-04 fresh-install occurrence, but it is only called from
+# install_traefik and verify_install — INSTALL-TIME ONLY. A node reboot re-enters
+# the identical failure with nothing watching, which took production down on
+# 2026-08-20 and stayed down until an operator restarted the pod by hand.
+#
+# A persisted plugin cache does NOT fix this: measured 2026-08-20 against
+# traefik:v3.7.6 with both archives present in /plugins-storage and no network,
+# Traefik still calls the registry unconditionally and still disables plugins
+# ("dial tcp: lookup plugins.traefik.io: network is unreachable"). The download
+# is not cache-gated, so only vendoring (--experimental.localPlugins) removes
+# the startup network dependency. Until then, this guard bounds the outage.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: traefik-plugin-guard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: traefik-plugin-guard
+---
+# Namespace-scoped: read Traefik's logs, and delete ONLY Traefik pods.
+# No cluster-wide delete — the blast radius of this guard is one DaemonSet.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: traefik-plugin-guard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # delete is NOT resourceName-scoped because DaemonSet pod names are random;
+  # the guard filters by label itself and only ever deletes what it inspected.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: traefik-plugin-guard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: traefik-plugin-guard
+subjects:
+  - kind: ServiceAccount
+    name: traefik-plugin-guard
+    namespace: traefik
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: traefik-plugin-guard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: traefik-plugin-guard
+spec:
+  # Every 2 min: bounds the outage to roughly one detection window plus a pod
+  # restart. Forbid + the verdict-line check below make a tight restart loop
+  # impossible even while egress is still down — worst case is one recycle
+  # per pod per 2 minutes, which is the correct behaviour when the cause is a
+  # transient network fault that has not cleared yet.
+  schedule: "*/2 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 60
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/part-of: hosting-platform
+            app.kubernetes.io/component: traefik-plugin-guard
+        spec:
+          serviceAccountName: traefik-plugin-guard
+          restartPolicy: OnFailure
+          tolerations:
+            - key: insula.host/server-only
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 1
+                  preference:
+                    matchExpressions:
+                      - key: insula.host/node-role
+                        operator: In
+                        values: ["server"]
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: guard
+              # alpine/k8s ships kubectl on Alpine and provides /bin/sh
+              # (rancher/kubectl is distroless — no shell). Pinned to match
+              # the cluster's k3s v1.33.x, same as ingress-external-ips.
+              image: alpine/k8s:1.33.13
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -eu
+                  # NOTE: every shell variable below is written $${VAR}. An
+                  # unescaped one is expanded by Flux postBuild.substituteFrom
+                  # against platform-cluster-config and blanked out before the
+                  # pod ever runs.
+                  NS=traefik
+                  SEL=app.kubernetes.io/name=traefik
+                  FAIL_MARKER='Plugins are disabled because an error has occurred'
+                  OK_MARKER='Plugins loaded.'
+
+                  # Capture the exit code SEPARATELY from the output. Folding a
+                  # kubectl failure (RBAC change, API-server blip, bad context)
+                  # into an empty result would make it indistinguishable from
+                  # "no Traefik pods" and exit 0 — a guard against a fail-open
+                  # bug must not itself fail open. A non-zero exit here lands in
+                  # failedJobsHistoryLimit where an operator can see it.
+                  set +e
+                  pods=$$(kubectl -n "$${NS}" get pods -l "$${SEL}" \
+                            -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>&1)
+                  kubectl_rc=$$?
+                  set -e
+
+                  if [ "$${kubectl_rc}" -ne 0 ]; then
+                    echo "traefik-plugin-guard: kubectl get pods FAILED (rc=$${kubectl_rc}): $${pods}" >&2
+                    exit 1
+                  fi
+
+                  if [ -z "$${pods}" ]; then
+                    echo "traefik-plugin-guard: no Traefik pods found (selector $${SEL}) — nothing to check"
+                    exit 0
+                  fi
+
+                  # Decide from the VERDICT LINE, never from pod age. Traefik
+                  # logs exactly one of these within seconds of start, so a pod
+                  # that has logged neither has not decided yet and must be left
+                  # alone. An age heuristic would need `date -d` on an RFC3339
+                  # stamp, which BusyBox does not parse reliably — and it would
+                  # still be a guess where an exact signal exists.
+                  for name in $${pods}; do
+                    # --since as well as --tail: the plugin verdict is logged ONCE at
+                    # startup, so if access logging is ever enabled a busy node could
+                    # scroll it out of a line-bounded window and the pod would be
+                    # classified "no verdict yet" forever, i.e. never recycled.
+                    logs=$$(kubectl -n "$${NS}" logs "$${name}" --tail=2000 --since=24h 2>/dev/null || true)
+
+                    if printf '%s' "$${logs}" | grep -qF "$${FAIL_MARKER}"; then
+                      echo "traefik-plugin-guard: $${name} has NO PLUGINS — both panels would 404. Recycling."
+                      if kubectl -n "$${NS}" delete pod "$${name}" --wait=false >/dev/null 2>&1; then
+                        echo "traefik-plugin-guard: recycled $${name}"
+                      else
+                        echo "traefik-plugin-guard: FAILED to delete $${name}" >&2
+                      fi
+                    elif printf '%s' "$${logs}" | grep -qF "$${OK_MARKER}"; then
+                      echo "traefik-plugin-guard: $${name} plugins OK"
+                    else
+                      echo "traefik-plugin-guard: $${name} has not logged a plugin verdict yet — skipping"
+                    fi
+                  done
+
+                  echo "traefik-plugin-guard: pass complete"
