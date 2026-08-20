@@ -231,6 +231,36 @@ run_helm 1 1; expect "new --set flag + migration + baseline → OK" 0 $?
 fake_helm "" "replicas: 3"
 run_helm 0 0; expect "values-heredoc body change → FAIL" 1 $?
 
+echo "== a --set hidden behind a pre-block VARIABLE is still fingerprinted =="
+# Real bypass found by review 2026-08-20: bootstrap assigned
+#   dual_stack_svc_args="--set service.ipFamilyPolicy=PreferDualStack"
+# BEFORE the helm call and referenced it as a bare ${dual_stack_svc_args}, so
+# neither line carried literal --set text inside the block. A block-scoped scan
+# missed a real fresh-install-only value.
+cat > "$D/varhelm.sh" <<'VARHELM'
+#!/usr/bin/env bash
+install_thing() {
+  local extra_args=""
+  if [ "$X" = "true" ]; then
+    extra_args="--set service.ipFamilyPolicy=PreferDualStack"
+  fi
+  helm_cmd upgrade --install traefik traefik/traefik \
+    --namespace traefik \
+    ${extra_args} \
+    --set deployment.kind=DaemonSet
+}
+VARHELM
+FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_BASELINE="$D/varbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  bash "$GUARD" --update-baseline >/dev/null 2>&1
+got=$(FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_REQUIRED_HELM_RELEASES=traefik bash "$GUARD" --print 2>/dev/null | grep -c "ipFamilyPolicy")
+[ "$got" -ge 1 ] && ok "variable-assigned --set is captured" || bad "variable-assigned --set is captured (got $got)"
+
+# ...and changing that variable's value must demand coverage.
+sed -i 's/PreferDualStack/RequireDualStack/' "$D/varhelm.sh"
+FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_BASELINE="$D/varbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  MIGRATION_ADDED=0 WAIVER=0 BASELINE_UPDATED=0 bash "$GUARD" >/dev/null 2>&1
+expect "changing a variable-assigned --set → FAIL" 1 $?
+
 echo "== anti-vacuity: a helm fingerprint that matched nothing must FAIL =="
 printf '#!/usr/bin/env bash\necho no helm here\n' > "$D/nohelm.sh"
 FWSHAPE_BOOTSTRAP="$D/nohelm.sh" FWSHAPE_BASELINE="$D/helmbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \

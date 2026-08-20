@@ -58,7 +58,7 @@ const SAFE_NAMESPACES: ReadonlySet<string> = new Set([
   // Running one), tenant-* namespaces remain refused, and `platform` also
   // hosts the CNPG system-db whose instance pods are refused by
   // isStatefulCnpgInstance() regardless of phase — asserted in
-  // stale-pods.test.ts.
+  // stale-pods.test.ts against the labels a LIVE cluster actually sets.
   'platform',
 ]);
 
@@ -80,11 +80,28 @@ interface RawPod {
 
 function isStatefulCnpgInstance(pod: RawPod): boolean {
   const labels = pod.metadata?.labels ?? {};
-  // Set on every CNPG-managed Postgres instance pod (system-db-1 etc).
-  // Force-deleting one of these mid-flight could corrupt the cluster
-  // — refuse from a button. Operators who really need to restart a
+  // Refuse any CNPG-managed Postgres INSTANCE pod. Force-deleting one
+  // mid-flight can corrupt the cluster — operators who really need to move a
   // primary use the CNPG operator's failover endpoints instead.
-  return Boolean(labels['cnpg.io/instance']);
+  //
+  // 2026-08-20: this previously tested `cnpg.io/instance`, which CloudNativePG
+  // DOES NOT SET — verified against a live cluster, where zero pods carry it
+  // and the real system-db-1 has cnpg.io/cluster, cnpg.io/instanceName,
+  // cnpg.io/instanceRole and cnpg.io/podRole. The guard therefore always
+  // returned false. It was inert only because the `platform` namespace (where
+  // the CNPG cluster actually lives — k8s/base/database.yaml) was refused
+  // outright; allowing that namespace is what made it load-bearing.
+  //
+  // Several signals are checked rather than one, and ANY of them refuses:
+  // over-refusing a CNPG-adjacent pod costs an operator one kubectl command,
+  // while under-refusing costs a database. The label set is upstream's and can
+  // change again.
+  return (
+    labels['cnpg.io/podRole'] === 'instance'
+    || Boolean(labels['cnpg.io/instanceName'])
+    || Boolean(labels['cnpg.io/instanceRole'])
+    || Boolean(labels['cnpg.io/cluster'])
+  );
 }
 
 function ensureSafeNamespace(namespace: string): void {
@@ -182,7 +199,14 @@ export async function recyclePod(input: {
       'RECOVERY_REFUSED_CNPG_INSTANCE',
       `Refusing to delete CNPG instance pod '${input.namespace}/${input.podName}'. Use the CNPG failover flow instead.`,
       403,
-      { pod: input.podName, instance: pod.metadata?.labels?.['cnpg.io/instance'] ?? null },
+      {
+        pod: input.podName,
+        // Report the labels CNPG actually sets — the old diagnostic read
+        // `cnpg.io/instance`, which nothing sets, so this always said null.
+        cluster: pod.metadata?.labels?.['cnpg.io/cluster'] ?? null,
+        instanceName: pod.metadata?.labels?.['cnpg.io/instanceName'] ?? null,
+        instanceRole: pod.metadata?.labels?.['cnpg.io/instanceRole'] ?? null,
+      },
     );
   }
 

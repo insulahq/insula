@@ -20,8 +20,5 @@ export default defineConfig({
       // `tsc --build --force`.
       '@insula/api-contracts': path.resolve(__dirname, '../../packages/api-contracts/src/index.ts'),
     },
-    // The contracts source uses explicit `.js` specifiers (NodeNext ESM), which
-    // point at `.ts` files on disk; without this Vite cannot resolve them.
-    extensions: ['.mjs', '.js', '.mts', '.ts', '.jsx', '.tsx', '.json'],
   },
 });

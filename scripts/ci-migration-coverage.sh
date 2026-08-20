@@ -63,7 +63,7 @@ REQUIRED_UNITS="${FWSHAPE_REQUIRED_UNITS:-platform-ops-update.service platform-o
 # block, switches to a values file under a name that is not *VALUES, or the awk
 # breaks), the fingerprint would quietly shrink and every future --set change
 # would pass. Empty or incomplete is a HARD FAIL.
-REQUIRED_HELM_RELEASES="${FWSHAPE_REQUIRED_HELM_RELEASES:-traefik cert-manager longhorn cnpg}"
+REQUIRED_HELM_RELEASES="${FWSHAPE_REQUIRED_HELM_RELEASES:-traefik cert-manager sealed-secrets longhorn cnpg}"
 
 # Structural firewall lines: nft set declarations + the input-chain
 # drop/accept rules + chain policies. Comments are stripped FIRST (so a
@@ -173,13 +173,23 @@ install_time_unit_shape() {
 helm_values_shape() {
   sed -E 's/#.*$//' "$BOOTSTRAP" \
     | awk '
-        # Enter a helm block; stay in it while lines continue with a backslash.
-        # The invocation line itself is part of the shape: the release name,
-        # chart and --version are as fresh-install-only as any --set.
+        # (a) Every --set ANYWHERE in the file, not just inside a helm block.
+        #
+        # A block-scoped scan is bypassable, and bootstrap already contained
+        # one bypass: `dual_stack_svc_args="--set service.ipFamilyPolicy=..."`
+        # is assigned BEFORE the helm call and referenced as a bare
+        # ${dual_stack_svc_args}, so neither line carried literal `--set` text
+        # inside the block and the value never entered the fingerprint.
+        # Matching file-wide closes the class instead of that one instance.
+        /--set(-string|-file)?[[:space:]=]/ { print "helm|" $0; next }
+
+        # (b) The helm invocation line: release, chart and --version are as
+        # fresh-install-only as any --set. Stay in the block while lines
+        # continue with a backslash, to catch -f/--version continuations.
         /helm_cmd[[:space:]]+(upgrade|install)/ { inblk = 1; print "helm|" $0; next }
         inblk {
           line = $0
-          if (line ~ /(--set(-string|-file)?|--version|[[:space:]]-f)[[:space:]]/) print "helm|" line
+          if (line ~ /(--version|[[:space:]]-f)[[:space:]]/) print "helm|" line
           if (line !~ /\\[[:space:]]*$/) inblk = 0
         }
       ' \

@@ -48,14 +48,42 @@ describe('selectStalePodTargets', () => {
   });
 
   it('REFUSES a CNPG instance pod in `platform` even when Failed', () => {
-    // `platform` is now a safe namespace AND hosts the CNPG system-db. The
-    // instance-label guard is the only thing standing between this action and
-    // a force-deleted Postgres pod, so assert it directly.
+    // `platform` is a safe namespace AND hosts the CNPG system-db, so this
+    // guard is the only thing between the action and a Postgres pod.
+    //
+    // The label set below is copied VERBATIM from a live cluster
+    // (`kubectl -n platform get pod system-db-1 -o jsonpath='{.metadata.labels}'`).
+    // The previous fixture invented `cnpg.io/instance`, which nothing sets —
+    // so it asserted the code against its own wrong assumption and passed
+    // while the real pod was unprotected.
+    const realCnpgLabels = {
+      'app.kubernetes.io/managed-by': 'cloudnative-pg',
+      'cnpg.io/cluster': 'system-db',
+      'cnpg.io/instanceName': 'system-db-1',
+      'cnpg.io/instanceRole': 'primary',
+      'cnpg.io/podRole': 'instance',
+      role: 'primary',
+    };
     const out = selectStalePodTargets([
-      pod({ ns: 'platform', name: 'system-db-1', phase: 'Failed', labels: { 'cnpg.io/instance': 'system-db-1' } }),
+      pod({ ns: 'platform', name: 'system-db-1', phase: 'Failed', labels: realCnpgLabels }),
       pod({ ns: 'platform', name: 'version-poller-x', phase: 'Failed' }),
     ]);
     expect(out.map((t) => t.name)).toEqual(['version-poller-x']);
+  });
+
+  it('refuses on EACH CNPG signal independently', () => {
+    // Upstream label sets change. Any one of these means "CNPG instance".
+    for (const labels of [
+      { 'cnpg.io/podRole': 'instance' },
+      { 'cnpg.io/instanceName': 'system-db-1' },
+      { 'cnpg.io/instanceRole': 'replica' },
+      { 'cnpg.io/cluster': 'system-db' },
+    ]) {
+      const out = selectStalePodTargets([
+        pod({ ns: 'platform', name: 'db-x', phase: 'Failed', labels }),
+      ]);
+      expect(out, `should refuse ${JSON.stringify(labels)}`).toEqual([]);
+    }
   });
 
   it('carries the node so counts can be grouped', () => {

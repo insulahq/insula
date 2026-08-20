@@ -201,7 +201,7 @@ export default function NodeRecoveryModal({ entry, onClose }: Props) {
                 />
               </div>
               <div className="col-span-2 rounded border border-gray-200 bg-gray-50 p-2 text-[11px] text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-400">
-                Allowed: calico-system · longhorn-system · ingress-nginx · kube-system · cnpg-system (operator only) · cert-manager · flux-system · platform-system · tigera-operator. Tenant + CNPG instance pods are refused.
+                Allowed: calico-system · longhorn-system · ingress-nginx · kube-system · cnpg-system (operator only) · cert-manager · flux-system · platform-system · platform · tigera-operator. Tenant + CNPG instance pods are refused.
               </div>
             </div>
           )}
