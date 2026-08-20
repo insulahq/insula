@@ -8,6 +8,28 @@ interface ListDomainsParams {
   readonly cursor?: string;
 }
 
+/**
+ * Certificate issuance and DNS provisioning finish SERVER-SIDE, after the
+ * mutation that started them has already returned. Invalidating on mutation
+ * success therefore refetches too early and the panel keeps showing the
+ * pre-work state until the user reloads — "requested a certificate, still says
+ * pending".
+ *
+ * Invalidation cannot fix that on its own; the query has to keep looking while
+ * the work is in flight. Poll only while something is actually transitional
+ * and stop as soon as nothing is, so an idle domains page costs nothing.
+ */
+const TRANSITIONAL_CERT_STATUSES = new Set(['pending', 'issuing', 'unknown']);
+
+function domainsNeedPolling(items: ReadonlyArray<{ tlsCertStatus?: string; status?: string }> | undefined): boolean {
+  if (!items) return false;
+  return items.some(
+    (d) =>
+      (d.tlsCertStatus !== undefined && TRANSITIONAL_CERT_STATUSES.has(d.tlsCertStatus))
+      || d.status === 'pending',
+  );
+}
+
 export function useDomains(tenantId: string | undefined, params: ListDomainsParams = {}) {
   const searchParams = new URLSearchParams();
   if (params.search) searchParams.set('search', params.search);
@@ -22,6 +44,14 @@ export function useDomains(tenantId: string | undefined, params: ListDomainsPara
   return useQuery({
     queryKey: ['domains', tenantId ?? 'all', params],
     queryFn: () => apiFetch<PaginatedResponse<Domain>>(path),
+    // 5s while a certificate is issuing or a domain is still pending; off
+    // otherwise, so an idle list costs nothing.
+    refetchInterval: (query) =>
+      domainsNeedPolling(
+        (query.state.data as { data?: ReadonlyArray<{ tlsCertStatus?: string; status?: string }> } | undefined)?.data,
+      )
+        ? 5000
+        : false,
   });
 }
 

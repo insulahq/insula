@@ -194,6 +194,32 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       const now = new Date();
       await service.setDomainVerificationStatus(app.db, domainId, result);
       await app.db.update(domains).set({ lastVerifiedAt: now }).where(eq(domains.id, domainId));
+
+      // A domain becoming verified is the EVENT that makes a certificate
+      // issuable — issuance is gated on exactly this status. Waiting for the
+      // next scheduler tick instead meant an operator watched "pending" for
+      // up to an hour after their DNS was demonstrably correct, which is the
+      // "takes unnecessarily long" complaint.
+      //
+      // Fire-and-forget on purpose: cert issuance talks to ACME and can take
+      // tens of seconds, and this request already returns the verification
+      // result the caller asked for. A failure here must not turn a
+      // successful verification into an error response — it is logged, and
+      // the scheduler remains the backstop.
+      if (result.verified) {
+        void (async () => {
+          try {
+            const { ensureDomainCertificate } = await import('../certificates/service.js');
+            await ensureDomainCertificate(app.db, getK8s(), domainId);
+          } catch (err) {
+            app.log.warn(
+              { domainId, err: err instanceof Error ? err.message : String(err) },
+              'post-verification certificate request failed; scheduler will retry',
+            );
+          }
+        })();
+      }
+
       return result;
     };
 
