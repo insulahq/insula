@@ -12,6 +12,56 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Wildcard certificates never issued, and no object anywhere reported a
+  failure.** `platform-api`'s ClusterRole could not `create` ClusterIssuers, so
+  the platform migration that installs the DNS-01 issuers took a 403 and the
+  migration registry HALTED on it. The issuer was therefore never created, and
+  a Certificate that references a missing issuer produces no CertificateRequest,
+  no Order and no Challenge — so there was no failing resource to inspect and no
+  event to find. Every cluster was affected. The role now grants `create` on
+  `clusterissuers` only (deliberately not `update`/`patch`/`delete`, and
+  namespaced `issuers` stay read-only).
+- **A halted migration registry was silent.** One failed migration blocks every
+  later one indefinitely, and nothing surfaced it: no metric, no alert, no API.
+  A halted or drifting registry now raises a critical alert that names the
+  failing migration, and is readable at `GET /admin/platform/migrations`.
+- **An upgrade reported success while its migrations were still stuck.** The
+  progress modal treated "all Deployments rolled" as done, which is what let the
+  issuer failure above ride out an upgrade unnoticed. Post-flight now has
+  `migrations-converged` and `host-migrations-converged` gates and the modal
+  will not report done while either is failing. Both fail closed — an unreadable
+  registry is a failure, not a pass.
+- **Host migrations could lag an upgrade by up to an hour.** The converge ran
+  only on its own timer, so host state and platform state were briefly
+  inconsistent after every self-upgrade. `platform-ops-update.service` now
+  triggers the converge on completion (non-fatal, non-blocking). bootstrap
+  writes that unit once at install time, so existing nodes are amended by host
+  migration `2026.8.7/0001-converge-on-self-upgrade` rather than silently
+  keeping the old behaviour — fresh installs get it from bootstrap.
+- **Bootstrap died on every fresh install.** Backticked prose in a comment
+  inside an *unquoted* systemd-unit heredoc was command substitution and was
+  executed (`line 132: -: command not found`). Same class of defect as the
+  nftables heredoc in 2026.8.x; `ci-heredoc-backtick-check.sh` covers it.
+
+### Security
+- **The VM integration harness copied the operator's local credential profile
+  into every disposable test VM.** The run tarball swept up a gitignored
+  environment file containing staging admin credentials and an SSH key, and
+  exporting an empty override did not suppress the profile search. The tarball
+  now excludes it and each run writes its own scoped profile, covered by
+  `test-vmtier-profile-isolation.sh`.
+
+### Added
+- Platform-migration convergence metrics and the `/admin/platform/migrations`
+  endpoint, plus a smoke-test assertion so a halted registry fails the
+  post-deploy check.
+- An end-to-end DNS-record suite that drives every tenant-reachable record type
+  through the platform API against a real PowerDNS in the VM tier.
+- CI guards `ci-platform-migration-rbac.sh` (a migration that touches a cluster
+  resource must have the RBAC to do it — the guard fails if it finds nothing to
+  check, so it cannot pass vacuously) and `test-vmtier-profile-isolation.sh`.
+
 ## [2026.8.6] - 2026-08-19
 
 ### Fixed

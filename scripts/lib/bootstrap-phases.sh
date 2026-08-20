@@ -145,6 +145,21 @@ Type=oneshot
 # Do NOT add an EnvironmentFile= here without security review: PLATFORM_OPS_COSIGN_PUB
 # / PLATFORM_OPS_BIN would then become attacker-influenceable trust-anchor seams.
 ExecStart=${bin} self-upgrade --check
+# Converge IMMEDIATELY after a self-upgrade instead of waiting for the hourly
+# tick. Host-migrations are embedded in the cosign-signed binary, so a node can
+# only run a release's migrations once it HAS that release — this is the moment
+# it does. Without it the node sits on an unapplied migration for up to ~75 min
+# (hourly + 15-min jitter), which is why an upgrade could report healthy while
+# host state was still on the old release.
+#
+# 'systemctl start', NOT an inline 'host-config apply': this unit runs under
+# ProtectSystem=strict, which mounts /proc read-only and would block the sysctl
+# writes the converge performs. Starting the sibling unit runs it under its own
+# (deliberately weaker) hardening. --no-block so a long converge cannot stall
+# the update unit, and a leading '-' so a converge failure cannot fail an upgrade that
+# genuinely installed — the failure surfaces via the host-migration status relay
+# and the upgrade's host-migrations-converged gate.
+ExecStartPost=-/usr/bin/systemctl start --no-block platform-ops-host-config.service
 Nice=10
 # Hardening: the check runs as root (to atomically replace the binary) but needs
 # write access to only the binary dir + the trust-anchor dir. Lock the rest down.
