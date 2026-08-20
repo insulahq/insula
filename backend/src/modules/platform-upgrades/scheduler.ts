@@ -166,7 +166,9 @@ export function realUpgradeReconcilerDeps(db: Database, k8s: K8sClients): Upgrad
   return {
     getPending: () => settings.get('pending_update_version'),
     readPrevVerdict: async () => (await readPostflightState(db)).verdict,
-    observe: (nowMs) => runPostflight(settings, k8s, nowMs),
+    // `db` is what lets the migration gates see the registry — without it the
+    // postflight degrades to the deployment-only gates it had before.
+    observe: (nowMs) => runPostflight(settings, k8s, nowMs, db),
     notifyStuck: (state) => notifyUpgradeStuck(db, state),
     finalizeConverged: (target) => finalizeUpgradeTask(db, target),
     liveProgress: async (target) => {
@@ -174,7 +176,7 @@ export function realUpgradeReconcilerDeps(db: Database, k8s: K8sClients): Upgrad
       return { pct: p.percent, atTarget: p.atTarget, total: p.total };
     },
     updateProgress: (target, pct, text) => progressByRef(db, 'platform.upgrade', target, { pct, text: toSafeText(text) }),
-    checkConvergence: (nowMs) => checkConvergence(settings, k8s, nowMs),
+    checkConvergence: (nowMs) => checkConvergence(settings, k8s, nowMs, db),
     // Claim the slow streak slot at most once per STREAK_ADVANCE_MS (shared clock
     // setting → HA-safe). Returns true (and stamps the clock) only when due.
     dueForStreak: async (nowMs) => {
