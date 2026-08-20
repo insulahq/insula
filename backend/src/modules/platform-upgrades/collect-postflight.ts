@@ -21,6 +21,7 @@ import {
   advanceStreak,
   ABORT_THRESHOLD,
   type PostflightFacts,
+  type PostflightMigrationFacts,
   type PostflightPhase,
   type PostflightVerdict,
   type PostflightGate,
@@ -101,13 +102,66 @@ async function crashloopingPods(k8s: K8sClients): Promise<number> {
   }
 }
 
-export async function collectPostflightFacts(k8s: K8sClients, pendingVersion: string | null): Promise<PostflightFacts> {
-  const [cnpg, deploys, loops] = await Promise.all([
+/**
+ * Platform-migration registry facts. `db` is optional so callers that have no
+ * database handle (tests, the offline CLI path) degrade to the deployment-only
+ * gates rather than failing — but an UNREADABLE registry is reported as such,
+ * never as "converged", because a fail-open here is exactly what let a halted
+ * registry ride three tiers on 2026-08-19.
+ */
+async function migrationFacts(db: Database | null): Promise<PostflightMigrationFacts> {
+  if (!db) return {};
+  try {
+    const { listMigrationStatus } = await import('./index.js');
+    const items = await listMigrationStatus(db);
+    return {
+      migrationsReadable: true,
+      migrationsPending: items.filter((m) => m.status === 'pending').length,
+      // The registry halts on the first failure, so a pending tail behind a
+      // failure is a symptom, not a separate problem — name the cause.
+      migrationsFailed: [],
+    };
+  } catch {
+    return { migrationsReadable: false };
+  }
+}
+
+/** Per-node host-migration convergence, via the existing read-only relay. */
+async function hostMigrationFacts(k8s: K8sClients): Promise<PostflightMigrationFacts> {
+  try {
+    const { readHostMigrationStatus } = await import('./host-migration-status.js');
+    const status = await readHostMigrationStatus(k8s);
+    const nodes = status.nodes ?? [];
+    // No node has reported yet → leave undefined so the gate is omitted rather
+    // than blocking an otherwise healthy upgrade on missing data.
+    if (nodes.length === 0) return {};
+    const bad = nodes.filter((n) => (n.failedCount ?? 0) > 0 || (n.blockedCount ?? 0) > 0);
+    return {
+      hostMigrationsDegraded: status.degraded === true || bad.length > 0,
+      hostMigrationsDetail: bad.length > 0
+        ? `${bad.length}/${nodes.length} node(s) blocked: ${bad.map((n) => n.node).join(', ')}`
+        : `${nodes.length} node(s) converged`,
+    };
+  } catch {
+    return {};
+  }
+}
+
+export async function collectPostflightFacts(
+  k8s: K8sClients,
+  pendingVersion: string | null,
+  db: Database | null = null,
+): Promise<PostflightFacts> {
+  const [cnpg, deploys, loops, migrations, hostMigrations] = await Promise.all([
     cnpgReady(k8s),
     deploymentHealth(k8s),
     crashloopingPods(k8s),
+    migrationFacts(db),
+    hostMigrationFacts(k8s),
   ]);
   return {
+    ...migrations,
+    ...hostMigrations,
     pendingVersion,
     runningVersion: RUNNING_VERSION,
     cnpgReady: cnpg.ready,
@@ -125,11 +179,11 @@ export async function collectPostflightFacts(k8s: K8sClients, pendingVersion: st
  * it persisted. Idempotent at the data layer (a re-run just advances the streak
  * one more observation). MUST be called on a controlled cadence, not per UI poll.
  */
-async function assess(settings: SettingsIO, k8s: K8sClients, nowMs: number, advance: boolean): Promise<PostflightState> {
+async function assess(settings: SettingsIO, k8s: K8sClients, nowMs: number, advance: boolean, db: Database | null = null): Promise<PostflightState> {
   // Normalise '' (our cleared sentinel from a prior healthy run) → null, so a
   // confirmed-converged cluster reads as `idle` and never re-accrues a streak.
   const pendingVersion = normalizePending(await settings.get(KEY_PENDING));
-  const facts = await collectPostflightFacts(k8s, pendingVersion);
+  const facts = await collectPostflightFacts(k8s, pendingVersion, db);
   const result = evaluatePostflight(facts);
 
   const prevRaw = await settings.get(KEY_STREAK);
@@ -188,8 +242,8 @@ async function assess(settings: SettingsIO, k8s: K8sClients, nowMs: number, adva
  * called on a controlled cadence, not per UI poll (the streak is what escalates
  * a stuck upgrade to `abort-recommended`).
  */
-export const runPostflight = (settings: SettingsIO, k8s: K8sClients, nowMs: number): Promise<PostflightState> =>
-  assess(settings, k8s, nowMs, true);
+export const runPostflight = (settings: SettingsIO, k8s: K8sClients, nowMs: number, db: Database | null = null): Promise<PostflightState> =>
+  assess(settings, k8s, nowMs, true, db);
 
 /**
  * FAST convergence check (busy cadence): evaluate + persist the blob + clear
@@ -197,8 +251,8 @@ export const runPostflight = (settings: SettingsIO, k8s: K8sClients, nowMs: numb
  * Lets the reconciler finalize the Task Center row within seconds of the roll
  * completing while stuck-detection stays on the slow streak cadence.
  */
-export const checkConvergence = (settings: SettingsIO, k8s: K8sClients, nowMs: number): Promise<PostflightState> =>
-  assess(settings, k8s, nowMs, false);
+export const checkConvergence = (settings: SettingsIO, k8s: K8sClients, nowMs: number, db: Database | null = null): Promise<PostflightState> =>
+  assess(settings, k8s, nowMs, false, db);
 
 /** Read-only view of the last persisted post-flight state (the GET route). Never advances the streak. */
 export async function readPostflightState(db: Database): Promise<PostflightState> {
