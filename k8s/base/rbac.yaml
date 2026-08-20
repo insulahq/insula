@@ -186,16 +186,38 @@ rules:
     resources: ["storageclasses"]
     verbs: ["get", "list", "watch"]
   # Phase 2c: the backend `certificates` module creates and manages
-  # cert-manager Certificate CRs in customer namespaces. Issuers and
-  # ClusterIssuers are read-only (operators provision them via
-  # k8s/base/cert-manager/) so the backend can validate the selected
-  # issuer exists, but cannot modify them.
+  # cert-manager Certificate CRs in customer namespaces. Issuers stay
+  # read-only (operators provision them via k8s/base/cert-manager/) so the
+  # backend can validate the selected issuer exists, but cannot modify them.
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cert-manager.io"]
-    resources: ["issuers", "clusterissuers"]
+    resources: ["issuers"]
     verbs: ["get", "list", "watch"]
+  # ClusterIssuers: read + CREATE, deliberately without update/patch/delete.
+  #
+  # ADR-058's wildcard DNS-01 ClusterIssuers cannot ship through Flux — they
+  # carry the operator's Let's Encrypt contact address, and a rendered
+  # manifest would deploy `operator@example.com`, which LE rejects. Fresh
+  # installs get them from bootstrap.sh; existing clusters from
+  # platform-migration 0009, which copies the address off the HTTP-01 issuer
+  # already on the cluster.
+  #
+  # That migration was added without this verb, so on every already-running
+  # cluster it 403'd, the migration registry HALTED on it (no later migration
+  # runs on a broken base), and `letsencrypt-prod-dns01-insula` was never
+  # created. Wildcard Certificates then referenced a ClusterIssuer that did
+  # not exist: cert-manager never created an Order, so there was no Challenge
+  # and no failure event either — the Certificate simply sat "Issuing" forever.
+  # Observed on a 2026.8.6 cluster whose wildcard cert had been pending for days.
+  #
+  # create-only keeps the original intent: the migration is create-if-absent
+  # and never overwrites, so an operator's hand-tuned issuer is still safe
+  # from the platform.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["clusterissuers"]
+    verbs: ["get", "list", "watch", "create"]
   # Phase B3: Longhorn backup-target reconciliation. The backend's
   # backup-config module owns the admin-panel UI for defining S3 backup
   # targets; activating one writes the `longhorn-backup-credentials`
