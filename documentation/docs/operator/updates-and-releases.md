@@ -60,6 +60,21 @@ to the pending version. If the cluster is not converging after several
 consecutive checks, the verdict turns to **abort-recommended** and you are
 prompted to roll back.
 
+Convergence is **not** just "every workload restarted". Post-flight also gates on
+**Platform migrations applied** and **Host migrations applied**, and the upgrade
+is not reported as complete while either is failing — a release whose migrations
+are stuck is an incomplete upgrade, even when every pod is running the new image.
+
+!!! note "Why migrations gate the verdict"
+    One failed platform migration halts every later one indefinitely. Without
+    this gate an upgrade could report success while, for example, the migration
+    that installs the wildcard-certificate issuers had been refused — leaving
+    certificates that never issue and no failing object to point at. A halted
+    registry now also raises a critical alert naming the migration that failed.
+
+    If the migration status cannot be read at all, that is a **failure**, never a
+    silent pass.
+
 !!! warning "Apply rolls every workload"
     An upgrade restarts platform services as it re-pins. Tenant sites see brief,
     rolling restarts. Pick a low-traffic window for production and watch
@@ -101,11 +116,12 @@ When a node needs attention it expands itself and shows:
 - anything an operator has skipped, with the reason recorded.
 
 !!! note "There is no Retry button, on purpose"
-    Migrations re-run **automatically every hour** on each node, so a transient
-    failure clears itself and a fixed cause is picked up without you doing
-    anything. A button would only wait for that same converge. Fix the cause on
-    the node, then run `insula host-config apply` if you don't want to wait out
-    the hour.
+    Migrations re-run **automatically every hour** on each node, and a node also
+    converges immediately after it self-upgrades — so host state does not lag the
+    platform version by up to an hour any more. A transient failure clears itself
+    and a fixed cause is picked up without you doing anything; a button would only
+    wait for that same converge. Fix the cause on the node, then run
+    `insula host-config apply` if you don't want to wait out the hour.
 
 If a migration can *never* apply to a host — it targets something that host
 doesn't have — record a skip so the rest of the chain proceeds. Never create the
@@ -117,6 +133,30 @@ walks through both, and the card links straight to it.
 A node that has never converged, or one running an older agent, reports *not
 reported yet* rather than an error — that is normal on a fresh install and is
 not flagged as a problem.
+
+## Platform migration state (cluster-wide)
+
+Host migrations run per node; **platform migrations** run once for the cluster and
+change platform state rather than the host — creating a cluster resource, seeding
+a setting, reconciling something the API owns.
+
+They halt on the first failure for the same reason host migrations do: a later
+migration may assume an earlier one applied. A halted registry therefore stays
+halted until the cause is fixed — it does not skip ahead and it does not retry
+its way out of a deterministic failure.
+
+You can see the state three ways:
+
+- the **Post-flight** panel during an upgrade (**Platform migrations applied**),
+- a **critical alert** that names the migration that failed,
+- `GET /api/v1/admin/platform/migrations`, which reports each migration, how many
+  are pending, and whether the registry has converged.
+
+!!! tip "A migration that touches a cluster resource needs the permission to do it"
+    The most common cause of a halted registry is a migration that creates or
+    modifies a cluster resource the platform's own role is not allowed to touch —
+    it fails with a 403 and blocks everything after it. A CI guard now checks that
+    pairing, so this should not reach a release.
 
 ## `platform-ops` on your hosts
 
