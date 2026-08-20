@@ -115,3 +115,21 @@ export function useRestartCsiPlugin() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['node-health'] }),
   });
 }
+
+/**
+ * Per-node count of pods the clean-stale-pods action would delete.
+ *
+ * Fetched only where it is needed (the recovery modal), not folded into the
+ * 30s health poll — the endpoint lists pods cluster-wide.
+ */
+export function useStalePodCounts(enabled: boolean) {
+  return useQuery({
+    queryKey: ['node-health', 'stale-pods'],
+    queryFn: () => apiFetch<{ data: { byNode: Record<string, number> } }>(
+      '/api/v1/admin/node-health/stale-pods',
+    ),
+    select: (r) => r.data.byNode,
+    enabled,
+    staleTime: 10_000,
+  });
+}

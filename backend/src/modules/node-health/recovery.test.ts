@@ -74,19 +74,20 @@ describe('recyclePod', () => {
     })).rejects.toBeInstanceOf(ApiError);
   });
 
-  it('refuses CNPG instance pods (label cnpg.io/instance)', async () => {
+  it('refuses CNPG instance pods (real CNPG labels)', async () => {
     const { k8s } = makeFakeK8s({
       readPodResult: {
-        metadata: { name: 'system-db-1', namespace: 'platform', labels: { 'cnpg.io/instance': 'system-db-1' } },
+        metadata: { name: 'system-db-1', namespace: 'platform', labels: { 'cnpg.io/cluster': 'system-db', 'cnpg.io/podRole': 'instance', 'cnpg.io/instanceName': 'system-db-1' } },
         spec: { nodeName: 'staging1' },
       },
     });
     const { db } = makeFakeDb();
-    // platform isn't on the allow-list anyway; force a system ns to
-    // exercise the cnpg-instance guard specifically.
+    // `platform` IS on the allow-list as of 2026-08-20 (it hosts the CNPG
+    // system-db); cnpg-system is used here to exercise the instance guard on
+    // its own, independent of the namespace check.
     const { k8s: k8s2 } = makeFakeK8s({
       readPodResult: {
-        metadata: { name: 'system-db-1', namespace: 'cnpg-system', labels: { 'cnpg.io/instance': 'system-db-1' } },
+        metadata: { name: 'system-db-1', namespace: 'cnpg-system', labels: { 'cnpg.io/cluster': 'system-db', 'cnpg.io/podRole': 'instance', 'cnpg.io/instanceName': 'system-db-1' } },
         spec: { nodeName: 'staging1' },
       },
     });
@@ -164,7 +165,7 @@ describe('cleanStalePodsOnNode', () => {
         // candidate: ContainerStatusUnknown in longhorn-system
         { metadata: { name: 'unk-1', namespace: 'longhorn-system' }, spec: { nodeName: 'worker' }, status: { containerStatuses: [{ state: { unknown: {} } }] } },
         // refuse: CNPG instance even though Failed
-        { metadata: { name: 'pg-1', namespace: 'cnpg-system', labels: { 'cnpg.io/instance': 'system-db-1' } }, spec: { nodeName: 'worker' }, status: { phase: 'Failed' } },
+        { metadata: { name: 'pg-1', namespace: 'cnpg-system', labels: { 'cnpg.io/cluster': 'system-db', 'cnpg.io/podRole': 'instance', 'cnpg.io/instanceName': 'system-db-1' } }, spec: { nodeName: 'worker' }, status: { phase: 'Failed' } },
         // refuse: tenant namespace
         { metadata: { name: 'wp-evicted', namespace: 'tenant-acme-aabbccdd' }, spec: { nodeName: 'worker' }, status: { phase: 'Failed', reason: 'Evicted' } },
         // skip: healthy pod (Running)

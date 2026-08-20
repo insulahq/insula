@@ -192,6 +192,115 @@ sed -i '/platform-ops-host-config.timer/,+3d' "$D/lib/bootstrap-phases.sh"
 run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 1 0 1
 expect "required unit missing → hard FAIL" 1 $?
 
+echo "== helm --set flags and values-file heredocs are fingerprinted (2026-08-20) =="
+# bootstrap installs Traefik/cert-manager/Longhorn/CNPG ONCE, so a --set change
+# is as fresh-install-only as a pin bump. Until v2026.8.8 nothing hashed it.
+fake_helm() {  # $1 = extra --set line, $2 = values-heredoc body line
+  local extra="${1:-}" vline="${2:-replicas: 1}"
+  cat > "$D/helm.sh" <<HELMEOF
+#!/usr/bin/env bash
+install_traefik() {
+  cat > "\$vals" <<'TRAEFIKVALUES'
+deployment:
+  ${vline}
+TRAEFIKVALUES
+  helm_cmd upgrade --install traefik traefik/traefik \\
+    --namespace traefik \\
+    -f "\${vals}" \\
+    --set deployment.kind=DaemonSet \\
+    ${extra}
+    --set service.spec.type=ClusterIP
+}
+HELMEOF
+}
+fake_helm "" "replicas: 1"
+FWSHAPE_BOOTSTRAP="$D/helm.sh" FWSHAPE_BASELINE="$D/helmbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  bash "$GUARD" --update-baseline >/dev/null 2>&1
+run_helm() { FWSHAPE_BOOTSTRAP="$D/helm.sh" FWSHAPE_BASELINE="$D/helmbase" \
+  FWSHAPE_REQUIRED_HELM_RELEASES=traefik MIGRATION_ADDED="$1" WAIVER=0 BASELINE_UPDATED="$2" \
+  bash "$GUARD" >/dev/null 2>&1; }
+
+run_helm 0 0; expect "helm values unchanged → OK" 0 $?
+
+# THE regression: a new --set must demand a host-migration.
+fake_helm "--set experimental.plugins.crowdsec.version=v1.7.0 \\" "replicas: 1"
+run_helm 0 0; expect "new --set flag + no coverage → FAIL" 1 $?
+run_helm 1 1; expect "new --set flag + migration + baseline → OK" 0 $?
+
+# A values FILE hides its content from a flag scan — the heredoc body must count.
+fake_helm "" "replicas: 3"
+run_helm 0 0; expect "values-heredoc body change → FAIL" 1 $?
+
+echo "== a --set hidden behind a pre-block VARIABLE is still fingerprinted =="
+# Real bypass found by review 2026-08-20: bootstrap assigned
+#   dual_stack_svc_args="--set service.ipFamilyPolicy=PreferDualStack"
+# BEFORE the helm call and referenced it as a bare ${dual_stack_svc_args}, so
+# neither line carried literal --set text inside the block. A block-scoped scan
+# missed a real fresh-install-only value.
+cat > "$D/varhelm.sh" <<'VARHELM'
+#!/usr/bin/env bash
+install_thing() {
+  local extra_args=""
+  if [ "$X" = "true" ]; then
+    extra_args="--set service.ipFamilyPolicy=PreferDualStack"
+  fi
+  helm_cmd upgrade --install traefik traefik/traefik \
+    --namespace traefik \
+    ${extra_args} \
+    --set deployment.kind=DaemonSet
+}
+VARHELM
+FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_BASELINE="$D/varbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  bash "$GUARD" --update-baseline >/dev/null 2>&1
+got=$(FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_REQUIRED_HELM_RELEASES=traefik bash "$GUARD" --print 2>/dev/null | grep -c "ipFamilyPolicy")
+[ "$got" -ge 1 ] && ok "variable-assigned --set is captured" || bad "variable-assigned --set is captured (got $got)"
+
+# ...and changing that variable's value must demand coverage.
+sed -i 's/PreferDualStack/RequireDualStack/' "$D/varhelm.sh"
+FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_BASELINE="$D/varbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  MIGRATION_ADDED=0 WAIVER=0 BASELINE_UPDATED=0 bash "$GUARD" >/dev/null 2>&1
+expect "changing a variable-assigned --set → FAIL" 1 $?
+
+echo "== --set on the helm_cmd line itself must not drop -f/--version =="
+# Rule-ordering regression found by review 2026-08-20: when a line matched both
+# the file-wide --set rule and the helm_cmd rule, the --set rule printed and
+# `next`ed before inblk was set, so every continuation of that block vanished
+# from the fingerprint while the release name still appeared — so the
+# anti-vacuity canary passed too. Silent coverage loss, which is the exact
+# thing this guard exists to prevent.
+cat > "$D/oneline.sh" <<'ONELINE'
+#!/usr/bin/env bash
+install_x() {
+  helm_cmd upgrade --install cnpg cnpg/cloudnative-pg --set foo=bar \
+    -f values.yaml \
+    --values other.yaml \
+    --version 1.2.3
+}
+ONELINE
+shape=$(FWSHAPE_BOOTSTRAP="$D/oneline.sh" FWSHAPE_REQUIRED_HELM_RELEASES=cnpg bash "$GUARD" --print 2>/dev/null)
+printf '%s' "$shape" | grep -q -- "-f values.yaml"      && ok "-f survives a one-line helm_cmd --set"      || bad "-f survives a one-line helm_cmd --set"
+printf '%s' "$shape" | grep -q -- "--values other.yaml" && ok "--values (long form) is captured"           || bad "--values (long form) is captured"
+printf '%s' "$shape" | grep -q -- "--version 1.2.3"     && ok "--version survives a one-line helm_cmd --set" || bad "--version survives"
+
+echo "== anti-vacuity: a helm fingerprint that matched nothing must FAIL =="
+printf '#!/usr/bin/env bash\necho no helm here\n' > "$D/nohelm.sh"
+FWSHAPE_BOOTSTRAP="$D/nohelm.sh" FWSHAPE_BASELINE="$D/helmbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  MIGRATION_ADDED=1 BASELINE_UPDATED=1 bash "$GUARD" >/dev/null 2>&1
+expect "no helm blocks → hard FAIL (not a silent pass)" 1 $?
+FWSHAPE_BOOTSTRAP="$D/nohelm.sh" FWSHAPE_BASELINE="$D/vac2" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  bash "$GUARD" --update-baseline >/dev/null 2>&1
+expect "--update-baseline refuses a vacuous helm shape" 1 $?
+# A values file renamed out of the *VALUES convention must fail loudly.
+fake_helm "" "replicas: 1"
+sed -i 's/TRAEFIKVALUES/TRAEFIKCONF/g' "$D/helm.sh"
+FWSHAPE_BOOTSTRAP="$D/helm.sh" FWSHAPE_BASELINE="$D/helmbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \
+  MIGRATION_ADDED=1 BASELINE_UPDATED=1 bash "$GUARD" >/dev/null 2>&1
+rc=$?
+# still passes the canary (traefik is present via the invocation line) but the
+# body is no longer hashed — assert the body really did drop out of the shape.
+body=$(FWSHAPE_BOOTSTRAP="$D/helm.sh" FWSHAPE_REQUIRED_HELM_RELEASES=traefik bash "$GUARD" --print 2>/dev/null | grep -c "^helmvalues|")
+[ "$body" = "0" ] && ok "non-*VALUES heredoc is NOT silently hashed" || bad "non-*VALUES heredoc leaked into shape ($body lines)"
+
 echo "== real repo passes its own committed baseline =="
 bash "$GUARD" >/dev/null 2>&1; expect "live repo OK" 0 $?
 

@@ -92,7 +92,13 @@ When a node is in trouble, you get **recovery actions** without leaving the
 panel:
 
 - **Clean stale pod records on this node** — bulk-deletes Failed/Evicted pods
-  (refuses tenant + database pods; zero risk).
+  (refuses tenant + database pods; zero risk). It is **suggested automatically
+  whenever the node actually has stale records**, which is the usual state after
+  a reboot: a scheduled job that fires before its dependencies are up leaves a
+  Failed pod behind, and a reboot produces neither the evictions nor the
+  disk/memory pressure that used to be required for the action to be offered.
+  Restart *counts* on healthy pods are not stale records — they are a history of
+  the reboot and are neither clearable nor a problem.
 - **Restart Longhorn CSI plugin on this node** — re-registers the storage driver
   when a baseline driver is missing.
 - **Recycle a specific system pod** — deletes a pod with runaway storage so its

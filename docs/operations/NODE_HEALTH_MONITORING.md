@@ -158,14 +158,28 @@ All actions are super_admin/admin only, audit-logged, and
 Recovery actions accept these namespaces only:
 
 ```
-calico-system  longhorn-system  ingress-nginx  kube-system
+calico-system  longhorn-system  traefik        kube-system
 cnpg-system    cert-manager     flux-system    platform-system
-tigera-operator
+tigera-operator  platform
 ```
 
-Tenant namespaces (`client-*`) and CNPG instance pods (label
-`cnpg.io/instance`) are **always** refused regardless of any other
-condition. Use the per-tenant / CNPG-failover flows for those.
+`platform` was added 2026-08-20: it holds the platform's own Deployments and
+CronJobs, whose Failed pods are the most common stale records after a node
+reboot, and which previously could not be cleaned from the UI at all.
+
+Tenant namespaces (`tenant-*`) and CNPG **instance** pods are **always**
+refused regardless of any other condition. Use the per-tenant / CNPG-failover
+flows for those.
+
+!!! warning "The CNPG guard checks the labels CNPG actually sets"
+    It previously tested `cnpg.io/instance` — a label **nothing sets**, verified
+    against a live cluster where zero pods carried it. The guard therefore always
+    returned false; it was inert only because `platform`, the namespace that
+    actually hosts the CNPG cluster, was refused outright. It now refuses on any
+    of `cnpg.io/podRole=instance`, `cnpg.io/instanceName`, `cnpg.io/instanceRole`
+    or `cnpg.io/cluster`. If you change this, verify against
+    `kubectl -n platform get pod <db>-1 -o jsonpath='{.metadata.labels}'` — not
+    against the test fixture, which is what hid the bug.
 
 ### Audit log
 
