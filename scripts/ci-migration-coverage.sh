@@ -129,7 +129,11 @@ install_time_unit_shape() {
       }
       in_body {
         t = $0
-        sub(/^[[:space:]]+/, "", t)                     # <<- strips leading tabs
+        # Leading indentation is dropped here so the tab-stripping heredoc form
+        # compares equal. (Do NOT write that operator literally in a comment:
+        # ci-heredoc-expansion-check.sh reads it as opening a heredoc named by
+        # the next word, and then reports every later backtick as unquoted.)
+        sub(/^[[:space:]]+/, "", t)
         if (t == cur_delim) { in_body = 0; next }       # end of this heredoc
         sub(/#.*$/, "", t)                              # strip comments
         gsub(/[[:space:]]+/, " ", t)
