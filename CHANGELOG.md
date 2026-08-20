@@ -38,6 +38,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   every other internal endpoint in the platform used a constant-time compare.
   The check now lives in one tested module rather than being copy-pasted per
   route.
+- **The file manager could not save, upload, or open ordinary website files.**
+  The web firewall inspected the file's own bytes as though they were request
+  parameters, and refused them. On a platform for hosting websites, a tenant
+  could not save `index.html` or `index.php`, could not upload a PHP file, and
+  every raw upload failed regardless of content — the firewall rejected the
+  upload's content type outright, so even a plain text file was refused.
+  Reading a PHP file back was blocked too, as suspected source-code leakage.
+  The panel showed a bare `403 Forbidden` with no usable message, because the
+  request never reached the platform at all.
+
+  The same bytes have always reached the same file over SFTP, which has no
+  firewall in front of it — so the rules never prevented the content from being
+  stored, they only blocked the panel while leaving the command-line path open.
+  File content is now treated as what it is: opaque data being written to the
+  tenant's own volume, never interpreted by the platform.
+
+  The file's *destination path* keeps full firewall coverage — that is the
+  field an attack would actually use — as does every other endpoint. Verified
+  against a live cluster: path traversal and script injection in a file path,
+  and injection on unrelated endpoints, are all still refused.
 - **"Clean stale pod records" was not offered in the case that produces them.**
   The action was only suggested when a node had evictions or disk/memory
   pressure — a plain reboot causes neither, while routinely leaving Failed pods

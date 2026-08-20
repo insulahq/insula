@@ -162,3 +162,113 @@ data:
          pass,\
          nolog,\
          ctl:ruleRemoveById=920440"
+
+    # ── File-manager content is opaque DATA, not a request parameter ──
+    #
+    # POST /api/v1/tenants/:id/files/write carries the bytes of a file the
+    # tenant is saving into their own volume, as ARGS:json.content. CRS scans
+    # it as though it were a parameter the platform interprets, so writing an
+    # ordinary website file is refused. Measured on a live cluster (CRS 4.28.0):
+    #
+    #   <h1>hello</h1>                          reaches the app
+    #   <!doctype html><html>…</html>           403   941100 + 941160
+    #   <html><head><script src=…>              403
+    #   <?php echo $_GET["q"]; ?>               403
+    #   #!/bin/sh … cat /etc/passwd             403
+    #   SELECT * FROM users WHERE id=1 OR 1=1   403
+    #
+    # A tenant could not save index.html or index.php through the file manager
+    # — on a web hosting platform. The block happens at the edge, so the API
+    # never sees the request and the panel surfaces a bare nginx 403 with no
+    # usable error.
+    #
+    # Why removing this target costs nothing: the SAME bytes already reach the
+    # SAME file over SFTP, which has no WAF in front of it. The rule never
+    # prevented the content from being stored — it only blocked the UI path
+    # while leaving the CLI path open. And the content is never interpreted by
+    # the platform: it is written to a file, not evaluated, not rendered into
+    # an admin page, not concatenated into a query.
+    #
+    # Scoped by tag rather than by rule ID so a CRS upgrade that adds new XSS
+    # or injection rules does not silently re-break saving a PHP file. Every
+    # other argument on this endpoint — `path` above all — keeps full CRS
+    # coverage, which is what actually matters here: `path` is the field a
+    # traversal attack would use.
+    #
+    # Non-chained, matching a platform-API-specific URI, for the reason given
+    # in the crl.pem rule above: a dangling `chain` bleeds into the next-loaded
+    # (dynamic) exclusion file.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/write" \
+        "id:9000104,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS:json.content"
+
+    # ── Raw upload: the body IS the file ──────────────────────────
+    #
+    # POST /api/v1/tenants/:id/files/upload-raw sends the file bytes as the
+    # request body with Content-Type: application/octet-stream. Two problems,
+    # both measured on a live cluster:
+    #
+    #   920420 "Request content type is not allowed by policy" rejects
+    #   application/octet-stream outright — so EVERY raw upload failed, even a
+    #   plain text file. (Control: plain text via upload-raw 403; the same
+    #   bytes via multipart upload 401. The content was never the issue.)
+    #
+    #   Body-inspection rules then scan the file itself, so a .php or .html
+    #   upload trips the injection families on its way to disk.
+    #
+    # The body of this endpoint is, by definition, an arbitrary file. Scanning
+    # it as a request payload is a category error — and SFTP writes the same
+    # bytes to the same place with no WAF at all. The `path` query argument is
+    # untouched and keeps full coverage.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/upload-raw" \
+        "id:9000105,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveById=920420,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;ARGS_POST"
+
+    # ── Multipart upload: same reasoning, different variables ─────
+    #
+    # POST /api/v1/tenants/:id/files/upload sends the file as a multipart part.
+    # 933110 "PHP Injection Attack: PHP Script File Upload Found" fires on the
+    # FILENAME, so uploading index.php was refused on a platform whose purpose
+    # is hosting PHP sites. FILES_TMP_CONTENT covers the part's bytes.
+    #
+    # FILES_NAMES (the form field name) keeps coverage — that is our own field
+    # name, not tenant data, so a match there is a real anomaly.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/upload(\?|$)" \
+        "id:9000106,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveById=920420,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;FILES,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;FILES_TMP_CONTENT,\
+         ctl:ruleRemoveTargetByTag=OWASP_CRS;REQUEST_BODY"
+
+    # ── Reading a file back must not be treated as data leakage ───
+    #
+    # The RESPONSE-side rules fire when the file manager returns file contents:
+    # 953120 "PHP source code leakage" matches `<?php` in the response body,
+    # and 959100 aggregates it into an outbound block. Opening index.php in the
+    # editor — or downloading it — is the tenant reading THEIR OWN file, which
+    # they authenticated for. The leakage rules exist to catch a compromised
+    # app spilling source it did not mean to; an endpoint whose entire job is
+    # returning file bytes is not that.
+    #
+    # Scoped to the file read/download endpoints only. Every other response on
+    # the platform keeps outbound inspection.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/(read|download)" \
+        "id:9000107,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveByTag=OWASP_CRS/LEAKAGE,\
+         ctl:ruleRemoveById=953100,\
+         ctl:ruleRemoveById=953110,\
+         ctl:ruleRemoveById=953120"
