@@ -159,7 +159,7 @@ jobs:
         run: ./scripts/ci-firewall-check.sh
 
   migration-coverage-guard:
-    name: Migration coverage (firewall shape → host-migration)
+    name: Migration coverage (install-time host shape → host-migration)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
