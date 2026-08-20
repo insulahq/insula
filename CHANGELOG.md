@@ -12,6 +12,138 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **DNS records written by the panel only appeared after a page reload.** Enabling
+  or disabling mail, rotating a DKIM key, and creating, changing or deleting an
+  ingress route or a domain all write DNS records on the server, but the panel
+  never re-asked for the domain's DNS Records list afterwards — so it kept showing
+  the copy it had fetched earlier. The records were on the DNS server and in the
+  database the whole time; only the page was out of date.
+
+  Reported twice — first for ingress-route records, then for mail records — before
+  it was recognised as one systemic bug rather than two. An audit found the same
+  omission in **18 places across both panels**; all are fixed, and a CI guard now
+  fails the build if a DNS-writing action forgets to refresh the list.
+
+  Certificate status was a separate case and already correct: the domain list
+  polls while a certificate is issuing, so it settles on its own.
+- **The whole platform shared one 100-request/minute budget for SFTP logins.**
+  The API rate limiter keys on the authenticated user, falling back to the
+  source IP. The sftp-gateway calls the platform machine-to-machine with no
+  JWT, so every tenant's login keyed on the single gateway pod IP — roughly 25
+  SFTP logins per minute for the entire platform (about four internal calls per
+  session), after which logins failed with an error no tenant could see or act
+  on. The limit never applied to an attacker: an unauthenticated caller is
+  rejected by the shared-secret check before it, and SFTP credential
+  brute-force is limited by the gateway itself, keyed on the real client IP.
+  Per-file transfers were never affected — an upload of ten thousand small
+  files makes about four API calls, not ten thousand.
+- **Mail telemetry batches were silently dropped once the mail stack got busy.**
+  The webhook receiver shared the same single-IP budget, so past 100 batches a
+  minute events were rejected and the data simply went missing — a gap in
+  operator-visible mail statistics that opened exactly when mail was busiest.
+- **Backup and restore streaming could fail part-way through a bundle.** The
+  internal artifact upload and download endpoints shared that budget too, so
+  several tenants backing up or restoring at once could exhaust it mid-run. A
+  bundle that loses a component is recorded as partial — a failure whose cause
+  looks nothing like a rate limit.
+- **A shared internal secret was compared in non-constant time.** Two mail
+  endpoints checked their bearer token with a plain string comparison, while
+  every other internal endpoint in the platform used a constant-time compare.
+  The check now lives in one tested module rather than being copy-pasted per
+  route.
+- **The file manager could not save, upload, or open ordinary website files.**
+  The web firewall inspected the file's own bytes as though they were request
+  parameters, and refused them. On a platform for hosting websites, a tenant
+  could not save `index.html` or `index.php`, could not upload a PHP file, and
+  every raw upload failed regardless of content — the firewall rejected the
+  upload's content type outright, so even a plain text file was refused.
+  Reading a PHP file back was blocked too, as suspected source-code leakage.
+  The panel showed a bare `403 Forbidden` with no usable message, because the
+  request never reached the platform at all.
+
+  The same bytes have always reached the same file over SFTP, which has no
+  firewall in front of it — so the rules never prevented the content from being
+  stored, they only blocked the panel while leaving the command-line path open.
+  File content is now treated as what it is: opaque data being written to the
+  tenant's own volume, never interpreted by the platform.
+
+  The file's *destination path* keeps full firewall coverage — that is the
+  field an attack would actually use — as does every other endpoint. Verified
+  against a live cluster: path traversal and script injection in a file path,
+  and injection on unrelated endpoints, are all still refused.
+- **"Clean stale pod records" was not offered in the case that produces them.**
+  The action was only suggested when a node had evictions or disk/memory
+  pressure — a plain reboot causes neither, while routinely leaving Failed pods
+  behind from jobs that fired before their dependencies were up. It is now
+  suggested whenever the node actually has stale records, counted with the same
+  predicate the cleanup uses so the count and the action cannot disagree.
+- **The same action could not clean the platform's own namespace.** `platform`
+  was outside the recovery allow-list, so the Failed pods a reboot most commonly
+  leaves — the platform's scheduled jobs — had to be removed with `kubectl`.
+  It is now included; only Failed/Evicted/Unknown records are ever selected,
+  tenant namespaces stay refused, and the database instance pods that also live
+  there remain protected.
+- **The guard protecting database pods from the recovery actions never worked.**
+  It matched a label the database operator does not set — verified against a live
+  cluster, where no pod carried it — so it always passed. It was harmless only
+  because the namespace holding the database was refused outright, which is no
+  longer true. It now matches the labels actually in use, checked against a real
+  cluster rather than a test fixture.
+
+### Changed
+- **The host-migration coverage guard now also fingerprints bootstrap's Helm
+  values.** Traefik, cert-manager, sealed-secrets, Longhorn and CNPG are
+  installed once at bootstrap, so a `--set` change reaches new installs only —
+  yet the guard did not look at them and reported "unchanged" for a change
+  existing clusters would never receive. Both the flags and the values files are
+  covered, and the guard fails loudly rather than silently covering nothing. A
+  value hidden behind a shell variable is covered too — one already existed and
+  was escaping the fingerprint.
+- Panel test suites resolve shared contracts from source instead of the built
+  output, so a stale build can no longer surface as a confusing "not a function"
+  failure that CI never reproduces.
+- **Turning on a www redirect broke the route entirely** — neither the `www`
+  nor the bare form worked. The non-canonical spelling was never routed at all
+  (so it 404'd), and the redirect matched the address it was redirecting *to*,
+  so the other one looped. Both spellings are now served, the redirect targets
+  a fixed address so it cannot point at itself, and the certificate covers both
+  names — previously it would have worked over `http://` and failed the TLS
+  handshake over `https://`.
+- **DNS records the platform created for a route never appeared in the
+  panel**, though they existed at the DNS server — so the list said one thing
+  and the internet said another, and removing a route could not clean them up.
+  Records are now recorded as the platform creates them, and marked as
+  platform-managed so a hand-made record is never touched by an automatic
+  repair.
+- **No IPv6 records on a dual-stack cluster.** The IPv6 address was read from a
+  different place than the IPv4 one, so unless it had been set by hand no `AAAA`
+  record was ever written. The same path also created a single address record
+  instead of one per entry point, pinning every site to whichever came first.
+- **Deleting a large selection in the File Manager failed partway** with "too
+  many requests", leaving some files gone and no indication which. The whole
+  selection is now one operation, and any items that could not be removed are
+  listed while the rest still go.
+- **Certificates took far longer than necessary to appear.** A domain becoming
+  verified is what makes a certificate obtainable, but nothing acted on it — the
+  request waited for a periodic sweep. Verifying now requests the certificate
+  immediately.
+- **Pages showed stale content until reloaded** — most visibly a certificate
+  that stayed "pending" after it had been issued. Work that finishes in the
+  background is now watched until it completes instead of being read once.
+
+- New zones are created with a 14-day SOA expire instead of 7. Expire is how
+  long a secondary keeps answering when it cannot reach the primary; at 7 days
+  a long weekend outage can take a domain off the internet while a perfectly
+  good copy of the zone sits on the secondary.
+
+### Added
+- **Refresh Route DNS** for Primary-mode domains, in both the tenant domain page
+  and the admin Domains tab. Rewrites a domain's entry-point records from the
+  current set — the repair for "a new server was added and existing sites don't
+  use it". Subdomains already self-heal; the apex cannot, which is why this
+  exists.
+
 ## [2026.8.8] - 2026-08-20
 
 ### Fixed

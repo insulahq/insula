@@ -38,7 +38,13 @@ export async function mailEventsWebhookRoutes(app: FastifyInstance): Promise<voi
     done(null, body);
   });
 
-  app.post('/internal/mail/events', async (request, reply) => {
+  // rateLimit:false — Stalwart POSTs telemetry BATCHES here, unauthenticated
+  // by JWT (the HMAC over the raw body is the auth), so the global limiter
+  // keyed every batch from the whole mail stack onto one pod IP: 100/min for
+  // the entire platform. Past that, events were rejected with a 429 and the
+  // telemetry simply went missing — a silent gap in operator-visible data,
+  // worst exactly when mail is busiest. verifyWebhookSignature is the control.
+  app.post('/internal/mail/events', { config: { rateLimit: false } }, async (request, reply) => {
     const master = process.env.PLATFORM_INTERNAL_SECRET;
     if (!master) {
       // Misconfiguration — fail closed, loudly.

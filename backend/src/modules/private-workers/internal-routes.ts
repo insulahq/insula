@@ -59,7 +59,13 @@ export async function privateWorkerInternalRoutes(app: FastifyInstance): Promise
     }
   });
 
-  app.post('/internal/private-workers/connect-event', async (request, reply) => {
+  // Opt out of the global limiter for the same reason as the sftp-gateway
+  // routes: the tunnel calls this machine-to-machine with no JWT, so the
+  // limiter keys every worker's connect-event on one source IP. A fleet
+  // reconnecting together (a node drain, a tunnel restart) would throttle
+  // itself precisely when it most needs to re-register. The secret gate above
+  // and the NetworkPolicy are the controls that actually apply here.
+  app.post('/internal/private-workers/connect-event', { config: { rateLimit: false } }, async (request, reply) => {
     const parsed = connectEventSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: 'invalid payload' });

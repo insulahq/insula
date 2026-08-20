@@ -212,6 +212,22 @@ jobs:
       - name: Verify SYSTEM tenant scheduler filters + DB invariants
         run: ./scripts/ci-system-tenant-check.sh
 
+  dns-records-invalidation-guard:
+    name: DNS-writing mutations invalidate the dns-records query
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify panel mutations refresh the DNS Records list
+        run: ./scripts/ci-dns-records-invalidation-check.sh
+
+  internal-route-ratelimit-guard:
+    name: /internal routes declare a rate limit and an auth gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify /internal/* rate-limit opt-outs are gated
+        run: ./scripts/ci-internal-route-ratelimit-check.sh
+
   tenant-scope-guard:
     name: Tenant-scoped routes enforce tenant ownership
     runs-on: ubuntu-latest

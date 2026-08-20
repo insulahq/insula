@@ -34,3 +34,9 @@ jobs:
         run: npm run build -w @insula/api-contracts
       - name: Verify dist was produced
         run: test -f packages/api-contracts/dist/index.d.ts && test -f packages/api-contracts/dist/index.js
+      - name: Verify dist actually EXPORTS what consumers call
+        # File presence is not the failure mode. A dist whose .d.ts and .js
+        # disagree typechecks clean and only breaks at runtime ("X is not a
+        # function"). The panels' vitest now resolves contracts from source, so
+        # this is the CI step that imports the compiled output for real.
+        run: ./scripts/ci-api-contracts-runtime-exports.sh

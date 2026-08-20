@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
-import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain } from '@/hooks/use-domains';
+import { useDomains, useVerifyDomain, useDeleteDomain, useDnsProviderGroups, useMigrateDomainDns, useDomainDeletePreview, useIngressBaseDomain, useRefreshRouteDns } from '@/hooks/use-domains';
 import { useIngressRoutes, useCreateIngressRoute, useUpdateIngressRoute, useDeleteIngressRoute } from '@/hooks/use-ingress-routes';
 import { useEmailDomains } from '@/hooks/use-email';
 import { useDeployments } from '@/hooks/use-deployments';
@@ -41,6 +41,7 @@ export default function DomainDetail() {
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const verifyDomain = useVerifyDomain(tenantId ?? undefined);
+  const refreshRouteDns = useRefreshRouteDns(tenantId ?? undefined);
   const deleteDomain = useDeleteDomain(tenantId ?? undefined);
   const migrateDns = useMigrateDomainDns(tenantId ?? undefined);
   const { data: groupsData } = useDnsProviderGroups();
@@ -144,6 +145,21 @@ export default function DomainDetail() {
             >
               <RefreshCw size={14} />
               Migrate DNS
+            </button>
+          )}
+          {/* Primary mode only: in cname/secondary mode the platform does not
+              control the zone, so there is nothing to refresh. */}
+          {domain.dnsMode === 'primary' && (
+            <button
+              type="button"
+              onClick={() => refreshRouteDns.mutate(domainId!)}
+              disabled={refreshRouteDns.isPending}
+              title="Re-create this domain's ingress DNS records from the current set of ingress-enabled nodes. Use after adding or removing a node."
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+              data-testid="refresh-route-dns-button"
+            >
+              {refreshRouteDns.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              Refresh Route DNS
             </button>
           )}
           <button

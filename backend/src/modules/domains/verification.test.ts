@@ -33,12 +33,17 @@ vi.mock('drizzle-orm', () => ({
   and: vi.fn().mockReturnValue({ _tag: 'and' }),
   gt: vi.fn().mockReturnValue({ _tag: 'gt' }),
   inArray: vi.fn().mockReturnValue({ _tag: 'inArray' }),
+  // `ne` excludes ingress_mode='none' nodes: a node the operator removed from
+  // ingress still has a public IP, and counting it would verify a cname-mode
+  // domain pointed at a node that will never serve its traffic.
+  ne: vi.fn().mockReturnValue({ _tag: 'ne' }),
 }));
 
 // Mock schema import used by getPlatformIngressIps
 vi.mock('../../db/schema.js', () => ({
   clusterNodes: {
     publicIp: 'publicIp_column',
+    ingressMode: 'ingressMode_column',
     lastSeenAt: 'lastSeenAt_column',
     role: 'role_column',
   },
