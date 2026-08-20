@@ -185,6 +185,35 @@ node, or move/upsize the noisy tenant. A **SYSTEM** row in that card is
 different: platform components should never lose the memory fight — treat it
 as an incident and check node sizing immediately.
 
+## Something fails with "Too Many Requests" (429)
+
+The API allows **100 requests per minute per user**. That budget is shared by
+everything that user's session is doing — page polling included — so it is
+bulk actions that hit it first.
+
+Symptoms and what to do:
+
+- **Selecting many files and deleting them.** The file manager sends one
+  bulk request rather than one per file, so this is no longer a problem.
+  If you script against the API directly, delete in batches rather than a
+  request per path.
+- **Scripted or automated calls.** Space them out, or batch them. The error
+  response carries a `retry_after` value in seconds — honour it and back off
+  rather than retrying immediately.
+
+!!! note "SFTP and SSH are not subject to this limit"
+    File transfers do not consume the API budget: the gateway contacts the
+    platform a handful of times per **login session**, not per file. Uploading
+    thousands of small files over SFTP is fine.
+
+    Older releases were different: SFTP *logins* shared a single platform-wide
+    budget of roughly 25 per minute, and past it logins failed with an error the
+    tenant could not see. Mail telemetry and backup/restore streaming shared
+    that same budget — the latter could leave a bundle recorded as `partial`.
+    If you see unexplained SFTP login failures, busy-hour gaps in mail
+    statistics, or partial bundles when several tenants back up at once, check
+    the changelog and upgrade.
+
 ## A node is running out of disk
 
 1. **Monitoring → Node Health** flags DiskPressure as critical; **Cluster →
