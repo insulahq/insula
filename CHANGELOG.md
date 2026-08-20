@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.7] - 2026-08-20
+
 ### Fixed
 - **Wildcard certificates never issued, and no object anywhere reported a
   failure.** `platform-api`'s ClusterRole could not `create` ClusterIssuers, so
