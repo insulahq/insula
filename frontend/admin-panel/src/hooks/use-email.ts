@@ -51,6 +51,10 @@ export function useEnableEmailDomain(tenantId: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['email-domains', tenantId] });
+      // These operations write or remove dns_records rows server-side, so the
+      // domain's DNS Records list is stale the moment they succeed. Without this
+      // the new records only appear after a full page reload.
+      qc.invalidateQueries({ queryKey: ['dns-records'] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
@@ -63,6 +67,7 @@ export function useDisableEmailDomain(tenantId: string) {
       apiFetch<void>(`/api/v1/tenants/${tenantId}/email/domains/${domainId}/disable`, { method: 'DELETE' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['email-domains', tenantId] });
+      qc.invalidateQueries({ queryKey: ['dns-records'] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
@@ -313,6 +318,7 @@ export function useRotateDkimKey(tenantId: string, domainId: string) {
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, domainId] });
+      qc.invalidateQueries({ queryKey: ['dns-records'] });
       qc.invalidateQueries({ queryKey: ['admin-email-domains'] });
     },
   });
@@ -328,6 +334,7 @@ export function useActivateDkimKey(tenantId: string, domainId: string) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['dkim-keys', tenantId, domainId] });
+      qc.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }
