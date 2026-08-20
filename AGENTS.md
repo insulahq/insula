@@ -110,7 +110,8 @@ The hard-won rules. Violating these is how past sessions broke things.
   ADR-045 W10c) — embedded in the signed `platform-ops` binary, run host-side by the `platform-ops
   host-config` converger in `enforce` mode; **NOT by Flux/RC** (Flux only applies app overlays). Author one
   with `scripts/new-host-migration.sh <name>` (idempotent, `# idempotent:`/`# allow-paths:` headers). CI guard
-  `ci-migration-coverage.sh` **fails any pin change with no matching host-migration** (refresh
+  `ci-migration-coverage.sh` **fails any pin, firewall-shape or bootstrap systemd-unit change with no
+  matching host-migration** (refresh
   `scripts/.firewall-shape.sha256` via `--update-baseline`). k3s is the exception (`platform-ops cluster
   upgrade`, SUC Plans).
 - Every operator-facing failure renders an `OperatorError` via `<ErrorPanel>`.

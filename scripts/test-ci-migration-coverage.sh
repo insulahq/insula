@@ -112,6 +112,86 @@ run "$D/argp2.sh" "$D/argpbase" 0 0 0; expect "arg-parser var assignment edit �
 printf '#!/usr/bin/env bash\nLONGHORN_VERSION="v1.11.1"   # 2026-07-01 reviewed\n' > "$D/pin3.sh"
 run "$D/pin3.sh" "$D/pinbase" 0 0 0; expect "pin comment edit → still OK" 0 $?
 
+echo "== install-time systemd UNITS are fingerprinted (2026-08-20) =="
+# bootstrap writes each unit ONCE, so a unit edit reaches fresh installs only —
+# the gap that let the v2026.8.7 converge trigger nearly ship fresh-install-only.
+# $1 = extra [Service] directive ('' for base), $2 = trailing comment text.
+fake_lib() {
+  local extra="${1:-}" cmt="${2:-baseline}"
+  mkdir -p "$D/lib"
+  cat > "$D/lib/bootstrap-phases.sh" <<LIBEOF
+#!/usr/bin/env bash
+install_timer() {
+  cat > "\${dir}/platform-ops-update.service" <<UNIT
+[Unit]
+Description=Insula platform-ops self-upgrade check
+# ${cmt}
+
+[Service]
+Type=oneshot
+ExecStart=\${bin} self-upgrade --check
+${extra}
+UNIT
+  cat > "\${dir}/platform-ops-update.timer" <<'UNIT'
+[Timer]
+OnCalendar=daily
+UNIT
+  cat > "\${dir}/platform-ops-host-config.service" <<UNIT
+[Service]
+Type=oneshot
+ExecStart=\${bin} host-config apply
+UNIT
+  cat > "\${dir}/platform-ops-host-config.timer" <<'UNIT'
+[Timer]
+OnCalendar=hourly
+UNIT
+}
+LIBEOF
+}
+# Run with a fixture lib dir as well as a fixture bootstrap.
+run_lib() { # <bootstrap> <baseline> <libdir> <MIGRATION_ADDED> <WAIVER> <BASELINE_UPDATED>
+  FWSHAPE_BOOTSTRAP="$1" FWSHAPE_BASELINE="$2" FWSHAPE_LIB_DIR="$3" \
+  MIGRATION_ADDED="$4" WAIVER="$5" BASELINE_UPDATED="$6" \
+  bash "$GUARD" >/dev/null 2>&1
+}
+fake_lib "" "baseline"
+FWSHAPE_BOOTSTRAP="$D/bootstrap.sh" FWSHAPE_BASELINE="$D/unitbase" FWSHAPE_LIB_DIR="$D/lib" \
+  bash "$GUARD" --update-baseline >/dev/null
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 0 0 0
+expect "units unchanged → OK" 0 $?
+
+# THE regression: adding a directive to a unit must demand a host-migration.
+fake_lib "ExecStartPost=-/usr/bin/systemctl start --no-block platform-ops-host-config.service" "baseline"
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 0 0 0
+expect "unit directive added + no coverage → FAIL" 1 $?
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 1 0 1
+expect "unit directive added + migration + baseline → OK" 0 $?
+
+# A comment-only edit inside a unit must NOT churn the hash (else waiver fatigue).
+fake_lib "" "reworded explanatory comment"
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 0 0 0
+expect "unit comment edit → still OK" 0 $?
+
+# Moving a unit to a different path IS a change (destination is fingerprinted).
+fake_lib "" "baseline"
+sed -i 's|\${dir}/platform-ops-update.service|${dir}/renamed-update.service|' "$D/lib/bootstrap-phases.sh"
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 0 0 0
+expect "unit moved to a new path → FAIL" 1 $?
+
+echo "== anti-vacuity: a fingerprint that matched nothing must FAIL, never pass =="
+mkdir -p "$D/emptylib"
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/emptylib" 1 0 1
+expect "no units extracted → hard FAIL (not a silent pass)" 1 $?
+# --update-baseline must not be able to freeze a broken extraction as correct.
+FWSHAPE_BOOTSTRAP="$D/bootstrap.sh" FWSHAPE_BASELINE="$D/vac" FWSHAPE_LIB_DIR="$D/emptylib" \
+  bash "$GUARD" --update-baseline >/dev/null 2>&1
+expect "--update-baseline refuses a vacuous shape" 1 $?
+# A required unit disappearing (extraction silently lost it) must FAIL too.
+fake_lib "" "baseline"
+sed -i '/platform-ops-host-config.timer/,+3d' "$D/lib/bootstrap-phases.sh"
+run_lib "$D/bootstrap.sh" "$D/unitbase" "$D/lib" 1 0 1
+expect "required unit missing → hard FAIL" 1 $?
+
 echo "== real repo passes its own committed baseline =="
 bash "$GUARD" >/dev/null 2>&1; expect "live repo OK" 0 $?
 
