@@ -173,7 +173,16 @@ install_time_unit_shape() {
 helm_values_shape() {
   sed -E 's/#.*$//' "$BOOTSTRAP" \
     | awk '
-        # (a) Every --set ANYWHERE in the file, not just inside a helm block.
+        # (a) The helm invocation line FIRST. Release, chart and --version are
+        # as fresh-install-only as any --set, and this rule must win when a
+        # line matches both patterns: if the file-wide --set rule below ran
+        # first it would print and `next` before inblk was ever set, silently
+        # dropping every -f/--version continuation of that block. That is the
+        # same silent-coverage-loss class this guard exists to prevent, so the
+        # ordering is load-bearing — see the one-line-helm_cmd test.
+        /helm_cmd[[:space:]]+(upgrade|install)/ { inblk = 1; print "helm|" $0; next }
+
+        # (b) Every --set ANYWHERE in the file, not just inside a helm block.
         #
         # A block-scoped scan is bypassable, and bootstrap already contained
         # one bypass: `dual_stack_svc_args="--set service.ipFamilyPolicy=..."`
@@ -181,15 +190,15 @@ helm_values_shape() {
         # ${dual_stack_svc_args}, so neither line carried literal `--set` text
         # inside the block and the value never entered the fingerprint.
         # Matching file-wide closes the class instead of that one instance.
-        /--set(-string|-file)?[[:space:]=]/ { print "helm|" $0; next }
+        # NOTE: no `next` — a --set line inside a block must still fall through
+        # to the continuation tracker below so `inblk` is cleared correctly.
+        /--set(-string|-file)?[[:space:]=]/ { print "helm|" $0 }
 
-        # (b) The helm invocation line: release, chart and --version are as
-        # fresh-install-only as any --set. Stay in the block while lines
-        # continue with a backslash, to catch -f/--version continuations.
-        /helm_cmd[[:space:]]+(upgrade|install)/ { inblk = 1; print "helm|" $0; next }
         inblk {
           line = $0
-          if (line ~ /(--version|[[:space:]]-f)[[:space:]]/) print "helm|" line
+          # --values is the long form of -f; matching only -f would leave the
+          # same kind of hole this rule set is meant to close.
+          if (line ~ /(--version|[[:space:]](-f|--values))[[:space:]]/) print "helm|" line
           if (line !~ /\\[[:space:]]*$/) inblk = 0
         }
       ' \

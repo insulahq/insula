@@ -7,9 +7,9 @@
  * action:
  *
  *   - Refuses to touch tenant pods (namespace `tenant-*`) and CNPG
- *     cluster instances (label `cnpg.io/instance` set). Tenant data
- *     and stateful primaries should never get force-deleted from a
- *     button — those have their own lifecycle paths.
+ *     cluster instances (see isStatefulCnpgInstance for the labels).
+ *     Tenant data and stateful primaries should never get force-deleted
+ *     from a button — those have their own lifecycle paths.
  *   - Audit-logs the action with the operator's user id + reason.
  *   - Is idempotent — running twice on a recovered node returns
  *     `{ recovered: 0 }` not an error.
@@ -31,7 +31,7 @@ import crypto from 'node:crypto';
  * Anything outside this set is treated as user-data and refused.
  *
  * Note `cnpg-system` is on the list — but the per-pod guard below
- * still refuses pods carrying `cnpg.io/instance` (those are Postgres
+ * still refuses CNPG instance pods (see isStatefulCnpgInstance) (those are Postgres
  * instance pods, not the operator). Only the cnpg operator
  * Deployment pod itself is recyclable.
  */
@@ -226,8 +226,8 @@ export async function recyclePod(input: {
 /**
  * Bulk-delete every pod on this node whose phase is Failed/Evicted/
  * ContainerStatusUnknown — the stale records that pile up after a
- * DiskPressure-driven eviction storm. Refuses to touch any pod
- * carrying `cnpg.io/instance` even if it's in a Failed state
+ * DiskPressure-driven eviction storm. Refuses to touch a CNPG instance
+ * pod (see isStatefulCnpgInstance) even if it's in a Failed state
  * (CNPG operator handles failover).
  */
 /**

@@ -261,6 +261,27 @@ FWSHAPE_BOOTSTRAP="$D/varhelm.sh" FWSHAPE_BASELINE="$D/varbase" FWSHAPE_REQUIRED
   MIGRATION_ADDED=0 WAIVER=0 BASELINE_UPDATED=0 bash "$GUARD" >/dev/null 2>&1
 expect "changing a variable-assigned --set → FAIL" 1 $?
 
+echo "== --set on the helm_cmd line itself must not drop -f/--version =="
+# Rule-ordering regression found by review 2026-08-20: when a line matched both
+# the file-wide --set rule and the helm_cmd rule, the --set rule printed and
+# `next`ed before inblk was set, so every continuation of that block vanished
+# from the fingerprint while the release name still appeared — so the
+# anti-vacuity canary passed too. Silent coverage loss, which is the exact
+# thing this guard exists to prevent.
+cat > "$D/oneline.sh" <<'ONELINE'
+#!/usr/bin/env bash
+install_x() {
+  helm_cmd upgrade --install cnpg cnpg/cloudnative-pg --set foo=bar \
+    -f values.yaml \
+    --values other.yaml \
+    --version 1.2.3
+}
+ONELINE
+shape=$(FWSHAPE_BOOTSTRAP="$D/oneline.sh" FWSHAPE_REQUIRED_HELM_RELEASES=cnpg bash "$GUARD" --print 2>/dev/null)
+printf '%s' "$shape" | grep -q -- "-f values.yaml"      && ok "-f survives a one-line helm_cmd --set"      || bad "-f survives a one-line helm_cmd --set"
+printf '%s' "$shape" | grep -q -- "--values other.yaml" && ok "--values (long form) is captured"           || bad "--values (long form) is captured"
+printf '%s' "$shape" | grep -q -- "--version 1.2.3"     && ok "--version survives a one-line helm_cmd --set" || bad "--version survives"
+
 echo "== anti-vacuity: a helm fingerprint that matched nothing must FAIL =="
 printf '#!/usr/bin/env bash\necho no helm here\n' > "$D/nohelm.sh"
 FWSHAPE_BOOTSTRAP="$D/nohelm.sh" FWSHAPE_BASELINE="$D/helmbase" FWSHAPE_REQUIRED_HELM_RELEASES=traefik \

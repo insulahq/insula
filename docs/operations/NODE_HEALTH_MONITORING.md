@@ -158,7 +158,7 @@ All actions are super_admin/admin only, audit-logged, and
 Recovery actions accept these namespaces only:
 
 ```
-calico-system  longhorn-system  ingress-nginx  kube-system
+calico-system  longhorn-system  traefik        kube-system
 cnpg-system    cert-manager     flux-system    platform-system
 tigera-operator  platform
 ```
