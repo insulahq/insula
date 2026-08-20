@@ -115,11 +115,31 @@ Open a route → **Redirects** tab. Changes apply within a few seconds.
 | **Force HTTPS** | Sends all insecure `http://` visitors to secure `https://`. Needs a valid certificate. Recommended on. |
 | **www Redirect** | Keep one canonical address. **Add www** sends `example.com` → `www.example.com`; **Remove www** does the reverse; **None** leaves both as-is. |
 
+Both spellings stay reachable when a redirect is on: the non-canonical one is
+served purely to issue the redirect, and the certificate covers both names, so
+`https://` works on either. You do not need a second route for the `www` form.
+
 !!! info "Where is the webroot / PHP version setting?"
     There is no separate webroot or PHP-version switch here. Which web server
     and language version your site runs are set by **the application you
     deploy** — see [Deployments & applications](deployments-and-applications.md).
     Your files live in the [File Manager](files-and-sftp.md).
+
+### Refresh Route DNS (Primary mode)
+
+Primary-mode domains show a **Refresh Route DNS** button on the domain page.
+
+Your domain's apex records (`example.com` itself) point at the platform's
+entry-point addresses as they were **when the route was created**. If your
+provider later adds a server that also accepts web traffic, those existing
+records do not know about it. Subdomains update themselves — they follow a
+pointer the platform keeps current — but the apex cannot, because the DNS
+standard forbids that kind of pointer at the top of a zone.
+
+**Refresh Route DNS** rewrites the apex records from the current set. Use it
+after being told new capacity was added. It replaces only the records the
+platform created; anything you added by hand is left alone. It is not offered
+in CNAME or Secondary mode, where the platform does not control your zone.
 
 ## HSTS (HTTPS-only enforcement)
 

@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import type { BulkDeleteResult } from '@insula/api-contracts';
 import type * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, API_BASE } from '@/lib/api-client';
@@ -141,6 +142,27 @@ export function useDeleteFile() {
       apiFetch(`/api/v1/tenants/${tenantId}/files/delete`, {
         method: 'POST',
         body: JSON.stringify({ path }),
+      }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
+  });
+}
+
+/**
+ * Delete many paths in ONE request.
+ *
+ * Looping useDeleteFile() per selected file fired hundreds of sequential
+ * requests on a select-all: it tripped the API rate limit (429) and, worse,
+ * the awaiting loop threw on the first rejection and left a partial delete
+ * with no report of what had gone.
+ */
+export function useBulkDeleteFiles() {
+  const { tenantId } = useTenantContext();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (paths: string[]) =>
+      apiFetch<{ data: BulkDeleteResult }>(`/api/v1/tenants/${tenantId}/files/bulk-delete`, {
+        method: 'POST',
+        body: JSON.stringify({ paths }),
       }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
   });

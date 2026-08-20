@@ -44,6 +44,46 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - Panel test suites resolve shared contracts from source instead of the built
   output, so a stale build can no longer surface as a confusing "not a function"
   failure that CI never reproduces.
+- **Turning on a www redirect broke the route entirely** — neither the `www`
+  nor the bare form worked. The non-canonical spelling was never routed at all
+  (so it 404'd), and the redirect matched the address it was redirecting *to*,
+  so the other one looped. Both spellings are now served, the redirect targets
+  a fixed address so it cannot point at itself, and the certificate covers both
+  names — previously it would have worked over `http://` and failed the TLS
+  handshake over `https://`.
+- **DNS records the platform created for a route never appeared in the
+  panel**, though they existed at the DNS server — so the list said one thing
+  and the internet said another, and removing a route could not clean them up.
+  Records are now recorded as the platform creates them, and marked as
+  platform-managed so a hand-made record is never touched by an automatic
+  repair.
+- **No IPv6 records on a dual-stack cluster.** The IPv6 address was read from a
+  different place than the IPv4 one, so unless it had been set by hand no `AAAA`
+  record was ever written. The same path also created a single address record
+  instead of one per entry point, pinning every site to whichever came first.
+- **Deleting a large selection in the File Manager failed partway** with "too
+  many requests", leaving some files gone and no indication which. The whole
+  selection is now one operation, and any items that could not be removed are
+  listed while the rest still go.
+- **Certificates took far longer than necessary to appear.** A domain becoming
+  verified is what makes a certificate obtainable, but nothing acted on it — the
+  request waited for a periodic sweep. Verifying now requests the certificate
+  immediately.
+- **Pages showed stale content until reloaded** — most visibly a certificate
+  that stayed "pending" after it had been issued. Work that finishes in the
+  background is now watched until it completes instead of being read once.
+
+- New zones are created with a 14-day SOA expire instead of 7. Expire is how
+  long a secondary keeps answering when it cannot reach the primary; at 7 days
+  a long weekend outage can take a domain off the internet while a perfectly
+  good copy of the zone sits on the secondary.
+
+### Added
+- **Refresh Route DNS** for Primary-mode domains, in both the tenant domain page
+  and the admin Domains tab. Rewrites a domain's entry-point records from the
+  current set — the repair for "a new server was added and existing sites don't
+  use it". Subdomains already self-heal; the apex cannot, which is why this
+  exists.
 
 ## [2026.8.8] - 2026-08-20
 

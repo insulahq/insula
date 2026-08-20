@@ -613,6 +613,38 @@ export function routeMatch(hostname: string, pathPrefix?: string | null): string
     : hostMatch(hostname);
 }
 
+/**
+ * The two hostnames a www-redirect route serves.
+ *
+ * `canonical` is where traffic is actually served; `alternate` is the other
+ * form, which must ALSO be routed so Traefik can redirect it. Returning
+ * alternate = null for `none` keeps the single-host case unchanged.
+ *
+ * This exists because the previous implementation computed only the canonical
+ * host and matched only that: with add-www on `example.com` the router matched
+ * `www.example.com` alone, so the bare apex reached Traefik and matched
+ * nothing — a 404. Meanwhile the redirect middleware's regex made `www.` an
+ * OPTIONAL non-capturing group, so it matched the canonical host too and
+ * rewrote it to itself: an infinite redirect. Both halves of the route were
+ * broken, which is exactly what "enabling www-redirect kills the route" meant.
+ */
+export function wwwRedirectHosts(
+  hostname: string,
+  wwwRedirect: 'none' | 'add-www' | 'remove-www',
+): { canonical: string; alternate: string | null } {
+  const host = normalizeHostname(hostname);
+  // A wildcard host has no meaningful www/non-www pair — `*.example.com`
+  // already covers `www.example.com`, and prefixing it produces nonsense.
+  if (wwwRedirect === 'none' || isWildcardHostname(host)) {
+    return { canonical: host, alternate: null };
+  }
+  const bare = host.startsWith('www.') ? host.slice(4) : host;
+  const www = `www.${bare}`;
+  return wwwRedirect === 'add-www'
+    ? { canonical: www, alternate: bare }
+    : { canonical: bare, alternate: www };
+}
+
 // ─── Route priority ──────────────────────────────────────────────────
 //
 // Traefik evaluates the HIGHEST priority first and, left to itself,

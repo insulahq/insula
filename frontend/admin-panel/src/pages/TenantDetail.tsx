@@ -12,7 +12,7 @@ import TransitionProgressModal from '@/components/TransitionProgressModal';
 import TenantUsersTab from '@/components/TenantUsersTab';
 import { useAdminSubUsers } from '@/hooks/use-sub-users';
 import { useTenant, useDeleteTenant, useUpdateTenant } from '@/hooks/use-tenants';
-import { useDomains } from '@/hooks/use-domains';
+import { useDomains, useRefreshRouteDns } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
 // BackupScheduleEditor removed 2026-05-28 — tenants no longer have
 // per-tenant schedules. The platform-global `backup_schedules.tenant_bundle`
@@ -625,7 +625,7 @@ export default function TenantDetail() {
         </div>
 
         <div className="p-5">
-          {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} />}
+          {activeTab === 'domains' && <DomainsTab data={domainsQuery.data} isLoading={domainsQuery.isLoading} error={domainsQuery.error} tenantId={id} />}
           {activeTab === 'applications' && <ApplicationsTab tenantId={id} />}
           {activeTab === 'deployments' && <DeploymentsTab data={deploymentsQuery.data} isLoading={deploymentsQuery.isLoading} error={deploymentsQuery.error} tenantId={id} />}
           {activeTab === 'files' && (
@@ -944,7 +944,7 @@ function TabEmpty({ resource }: { readonly resource: string }) {
   );
 }
 
-function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
+function DomainsTab({ data, isLoading, error, tenantId }: TabContentProps<Domain> & { readonly tenantId: string | undefined }) {
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load domains." />;
   const items = data?.data ?? [];
@@ -960,6 +960,7 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
           <SortableHeader label="SSL" sortKey="sslAutoRenew" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
           <SortableHeader label="Created" sortKey="createdAt" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+          <th className="py-2 text-right font-medium uppercase text-gray-500 dark:text-gray-400">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -970,10 +971,54 @@ function DomainsTab({ data, isLoading, error }: TabContentProps<Domain>) {
             <td className="py-2 text-gray-600 dark:text-gray-400">{d.sslAutoRenew ? 'Auto' : 'Manual'}</td>
             <td className="py-2"><StatusBadge status={d.status as 'active' | 'pending' | 'error'} /></td>
             <td className="py-2 text-gray-500 dark:text-gray-400">{new Date(d.createdAt).toLocaleDateString()}</td>
+            <td className="py-2 text-right">
+              {/* Primary mode only — in cname/secondary mode the platform does
+                  not control the zone, so there is nothing to refresh. */}
+              {d.dnsMode === 'primary' && (
+                <RefreshRouteDnsButton tenantId={tenantId} domainId={d.id} />
+              )}
+            </td>
           </tr>
         ))}
       </tbody>
     </table>
+  );
+}
+
+/**
+ * Re-create a primary domain's ingress DNS records from the CURRENT set of
+ * ingress-enabled nodes. Apex A/AAAA records are a snapshot taken when the
+ * route was created, so adding a node leaves them pointing at the old set.
+ */
+function RefreshRouteDnsButton({ tenantId, domainId }: { readonly tenantId: string | undefined; readonly domainId: string }) {
+  const refresh = useRefreshRouteDns(tenantId);
+  const result = refresh.data?.data;
+  return (
+    <span className="inline-flex items-center gap-2">
+      {result && (
+        <span
+          className={result.failures.length > 0
+            ? 'text-xs text-red-600 dark:text-red-400'
+            : 'text-xs text-green-700 dark:text-green-400'}
+          data-testid="refresh-route-dns-result"
+        >
+          {result.failures.length > 0
+            ? `${result.failures.length} failed`
+            : `${result.created} host${result.created === 1 ? '' : 's'} refreshed`}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={() => refresh.mutate(domainId)}
+        disabled={refresh.isPending}
+        title="Re-create this domain's ingress DNS records from the current ingress-enabled nodes. Use after adding or removing a node."
+        className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+        data-testid="refresh-route-dns-button"
+      >
+        {refresh.isPending ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+        Refresh DNS
+      </button>
+    </span>
   );
 }
 

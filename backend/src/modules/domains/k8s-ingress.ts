@@ -35,6 +35,7 @@ import {
   buildTLSOption,
   clientAuthTypeForVerifyMode,
   routeMatch,
+  wwwRedirectHosts,
   routePriorityFields,
   middlewareName,
 } from '../ingress-routes/traefik-types.js';
@@ -393,13 +394,16 @@ export async function reconcileIngress(
     // redirect for the non-canonical form. We keep the same canonical-
     // hostname behaviour here so cert provisioning targets the right
     // SAN.
-    let canonicalHost = route.hostname;
-    if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
-      canonicalHost = `www.${route.hostname}`;
-    } else if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
-      canonicalHost = route.hostname.replace(/^www\./, '');
-    }
+    const { canonical: canonicalHost, alternate: alternateHost } = wwwRedirectHosts(
+      route.hostname,
+      route.wwwRedirect as 'none' | 'add-www' | 'remove-www',
+    );
     tlsHostnames.add(canonicalHost);
+    // The alternate form needs a certificate too: a browser hitting
+    // https://<alternate> completes the TLS handshake BEFORE Traefik can
+    // issue the redirect, so a cert covering only the canonical name fails
+    // with a name mismatch and the redirect is never seen.
+    if (alternateHost) tlsHostnames.add(alternateHost);
 
     // Primary route: matches the canonical hostname (no path prefix
     // unless explicitly set in route.path).
@@ -420,7 +424,29 @@ export async function reconcileIngress(
     // Protected-directory child routes (higher priority — set by
     // buildProtectedDirChildRoutes; they reuse parentMiddlewareRefs
     // which already carries crowdsec at slot 0).
-    const entryRoutes: TraefikRoute[] = [primary, ...spec.childRoutes];
+    // Alternate-host router: the ONLY thing that makes the non-canonical form
+    // reachable. Without it the bare/www variant matched no router at all and
+    // Traefik answered 404 — half of "enabling www-redirect kills the route".
+    //
+    // It carries the redirect middleware and nothing else, which is what makes
+    // a self-redirect structurally impossible: this router never serves a
+    // request for the canonical host, so the redirect cannot fire on its own
+    // target no matter what the pattern says.
+    const alternateRoutes: TraefikRoute[] = [];
+    if (alternateHost) {
+      const wwwRef = spec.middlewareRefs.filter((m) => m.name.endsWith('-wwwredir'));
+      alternateRoutes.push({
+        match: routeMatch(alternateHost, route.path),
+        kind: 'Rule',
+        ...routePriorityFields(alternateHost, route.path),
+        ...(wwwRef.length > 0 ? { middlewares: wwwRef } : {}),
+        // A service is required by the CRD even though the middleware
+        // short-circuits with a 308 before the backend is consulted.
+        services: [{ name: backend.serviceName, port: backend.port }],
+      });
+    }
+
+    const entryRoutes: TraefikRoute[] = [primary, ...alternateRoutes, ...spec.childRoutes];
 
     // Partition on mTLS. verify_mode `optional_no_ca` needs no CA; `on`
     // and `optional` require the CA Secret (route-mtls-<id>) materialised
@@ -644,12 +670,10 @@ export function buildForceHttpsRoutes(
     // Use the same canonical-hostname logic the HTTPS path uses so the
     // www redirect Middleware target matches the HTTPS-side advertised
     // host (add-www → www.<host>, remove-www → <host> sans www).
-    let canonicalHost = route.hostname;
-    if (route.wwwRedirect === 'add-www' && !route.hostname.startsWith('www.')) {
-      canonicalHost = `www.${route.hostname}`;
-    } else if (route.wwwRedirect === 'remove-www' && route.hostname.startsWith('www.')) {
-      canonicalHost = route.hostname.replace(/^www\./, '');
-    }
+    const { canonical: canonicalHost, alternate: altHost } = wwwRedirectHosts(
+      route.hostname,
+      route.wwwRedirect as 'none' | 'add-www' | 'remove-www',
+    );
 
     out.push({
       match: routeMatch(canonicalHost, route.path),

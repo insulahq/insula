@@ -70,6 +70,37 @@ export const deleteInputSchema = z.object({
 
 export type DeleteInput = z.infer<typeof deleteInputSchema>;
 
+/**
+ * Bulk delete.
+ *
+ * The panel used to loop the single-path endpoint once per selected file. A
+ * select-all on a large directory therefore fired hundreds of sequential HTTP
+ * requests, tripped the global API rate limit (100/window) with a 429, and —
+ * worse than the 429 — the loop threw on the first rejection, leaving a
+ * PARTIAL delete with no report of which files had gone. Each request also
+ * re-patched the file-manager's last-access annotation, so one select-all was
+ * also hundreds of kube-API writes.
+ */
+export const MAX_BULK_DELETE_PATHS = 1000;
+
+export const bulkDeleteInputSchema = z.object({
+  paths: z.array(z.string().min(1)).min(1).max(MAX_BULK_DELETE_PATHS),
+});
+
+export type BulkDeleteInput = z.infer<typeof bulkDeleteInputSchema>;
+
+/**
+ * Per-path outcome. Deliberately NOT all-or-nothing: a bulk delete that stops
+ * at the first failure is what produced the untraceable partial state. The
+ * caller is told exactly which paths went and which did not.
+ */
+export const bulkDeleteResultSchema = z.object({
+  deleted: z.array(z.string()),
+  failed: z.array(z.object({ path: z.string(), error: z.string() })),
+});
+
+export type BulkDeleteResult = z.infer<typeof bulkDeleteResultSchema>;
+
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 export const copyInputSchema = z.object({

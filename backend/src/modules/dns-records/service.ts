@@ -1,4 +1,5 @@
-import { eq, and } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { eq, and, isNull } from 'drizzle-orm';
 import { dnsRecords, domains, tenants } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveServers, getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
@@ -560,4 +561,136 @@ export async function syncRecordsFromProvider(
 
   // Return updated list
   return db.select().from(dnsRecords).where(eq(dnsRecords.domainId, domainId));
+}
+
+// ─── Platform-provisioned records ───────────────────────────────────────────
+
+/** Subsystems allowed to own a dns_records row. NULL means user-created. */
+export type DnsRecordOwner = 'ingress-route' | 'mail' | 'dkim' | 'jmap' | 'apex-drift';
+
+export interface ManagedRecordInput {
+  readonly type: string;
+  readonly name: string | null;
+  readonly content: string;
+  readonly ttl?: number;
+  readonly priority?: number | null;
+  readonly weight?: number | null;
+  readonly port?: number | null;
+}
+
+/**
+ * Provision a DNS record the PLATFORM owns: publish it to the providers AND
+ * record it locally, so the panel shows what actually exists.
+ *
+ * WHY THIS EXISTS
+ * Five subsystems (ingress routes, email domains, DKIM, JMAP autodiscover,
+ * apex-drift repair) called syncRecordToProviders directly. That writes to the
+ * DNS SERVER only — no row was ever inserted into dns_records. The result:
+ * records existed upstream, the domain's DNS Records list showed nothing, and
+ * the route-teardown path that deletes them by name found nothing to delete.
+ * Reported twice by the operator (ingress routes, then mail) before it was
+ * recognised as one bug in five places rather than five bugs.
+ *
+ * Ordering is deliberate and the opposite of createDnsRecord's: publish FIRST,
+ * persist only on success. createDnsRecord inserts first because it must
+ * return a row id to an interactive caller and can roll back within one
+ * request. Auto-provisioning has no such caller, runs repeatedly, and must
+ * never leave a local row claiming a record the provider rejected — the panel
+ * showing a record that does not resolve is precisely the failure this whole
+ * change is about.
+ *
+ * Idempotent: re-provisioning the same (owner, type, name, content) is a
+ * no-op, so reconcilers can run every tick without duplicating rows.
+ */
+export async function provisionManagedRecord(
+  db: Database,
+  owner: DnsRecordOwner,
+  domain: { id: string; domainName: string },
+  record: ManagedRecordInput,
+): Promise<DnsSyncOutcome> {
+  const outcome = await syncRecordToProviders(db, domain.domainName, 'create', {
+    type: record.type,
+    name: record.name ?? '',
+    content: record.content,
+    ttl: record.ttl ?? 300,
+    priority: record.priority ?? null,
+    weight: record.weight ?? null,
+    port: record.port ?? null,
+  }, domain.id);
+
+  // Only 'published' means the record exists upstream. 'skipped' is a
+  // deliberate no-op (the platform has no authority over this zone), and
+  // persisting a row for it would advertise a record we never wrote.
+  if (outcome.status !== 'published') return outcome;
+
+  const existing = await db
+    .select({ id: dnsRecords.id })
+    .from(dnsRecords)
+    .where(and(
+      eq(dnsRecords.domainId, domain.id),
+      eq(dnsRecords.recordType, record.type as never),
+      record.name ? eq(dnsRecords.recordName, record.name) : isNull(dnsRecords.recordName),
+      eq(dnsRecords.recordValue, record.content),
+    ));
+
+  if (existing.length > 0) {
+    // Already tracked. Claim ownership if an older row predates managed_by,
+    // so a refresh can replace it instead of orphaning it.
+    await db.update(dnsRecords)
+      .set({ managedBy: owner, ttl: record.ttl ?? 300 })
+      .where(eq(dnsRecords.id, existing[0].id));
+    return outcome;
+  }
+
+  await db.insert(dnsRecords).values({
+    id: randomUUID(),
+    domainId: domain.id,
+    recordType: record.type as never,
+    recordName: record.name,
+    recordValue: record.content,
+    ttl: record.ttl ?? 300,
+    priority: record.priority ?? null,
+    weight: record.weight ?? null,
+    port: record.port ?? null,
+    managedBy: owner,
+  });
+
+  return outcome;
+}
+
+/**
+ * Remove every local row a subsystem owns for a domain, optionally narrowed to
+ * one record name. Used by "refresh" flows to replace what they created.
+ *
+ * NEVER deletes a NULL-managed row: those are the operator's, and a reconciler
+ * silently removing a hand-made record would be far worse than a stale one.
+ */
+export async function deleteManagedRecords(
+  db: Database,
+  owner: DnsRecordOwner,
+  domainId: string,
+  recordName?: string | null,
+): Promise<Array<{ id: string; recordType: string; recordName: string | null; recordValue: string | null }>> {
+  const rows = await db
+    .select({
+      id: dnsRecords.id,
+      recordType: dnsRecords.recordType,
+      recordName: dnsRecords.recordName,
+      recordValue: dnsRecords.recordValue,
+    })
+    .from(dnsRecords)
+    .where(and(
+      eq(dnsRecords.domainId, domainId),
+      eq(dnsRecords.managedBy, owner),
+      recordName === undefined
+        ? undefined
+        : recordName === null
+          ? isNull(dnsRecords.recordName)
+          : eq(dnsRecords.recordName, recordName),
+    ));
+
+  for (const r of rows) {
+    await db.delete(dnsRecords).where(eq(dnsRecords.id, r.id));
+  }
+  return rows as Array<{ id: string; recordType: string; recordName: string | null; recordValue: string | null }>;
 }

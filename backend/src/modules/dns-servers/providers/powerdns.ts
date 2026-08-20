@@ -6,6 +6,35 @@ import { fqdn, qualifyName, formatContent } from '../wire-format.js';
  * PowerDNS Authoritative Server provider (API v4 / v5).
  * Uses the PowerDNS REST API for zone and record management.
  */
+/**
+ * SOA EXPIRE for zones this platform creates: 14 days.
+ *
+ * PowerDNS's built-in default is 604800 (7 days) — the window a secondary
+ * keeps answering while the primary is unreachable. When it lapses the
+ * secondary SERVFAILs and the domain stops resolving even though it still
+ * holds the zone. 14 days survives a long weekend plus a slow recovery.
+ */
+export const SOA_EXPIRE_SECONDS = 1209600;
+
+/**
+ * Return `soaContent` with only the EXPIRE field replaced.
+ *
+ * SOA rdata is "primary rname serial refresh retry expire minimum" — expire is
+ * field 5 (0-indexed). Everything else is left exactly as the server wrote it,
+ * so this cannot invent a serial (which would break AXFR) or override a
+ * deliberately tuned refresh/retry.
+ *
+ * Returns null when the content is not well-formed SOA rdata, so the caller
+ * patches nothing rather than writing a corrupted apex record.
+ */
+export function withSoaExpire(soaContent: string, expire = SOA_EXPIRE_SECONDS): string | null {
+  const parts = soaContent.trim().split(/\s+/);
+  if (parts.length < 7) return null;
+  if (parts[5] === String(expire)) return null; // already correct — no-op
+  parts[5] = String(expire);
+  return parts.join(' ');
+}
+
 export class PowerDnsProvider implements DnsProviderAdapter {
   readonly providerType = 'powerdns';
   private readonly baseUrl: string;
@@ -107,7 +136,59 @@ export class PowerDnsProvider implements DnsProviderAdapter {
         nameservers: apexNs,
       }),
     });
+
+    await this.applySoaDefaults(normalized);
+
     return toZone(zone);
+  }
+
+  /**
+   * Raise the zone's SOA EXPIRE to SOA_EXPIRE_SECONDS.
+   *
+   * PowerDNS synthesises the apex SOA from its server-side
+   * `default-soa-content`, which ships with expire = 604800 (7 days). EXPIRE
+   * is how long a SECONDARY keeps serving the zone when it cannot reach the
+   * primary; once it lapses the secondary goes SERVFAIL and the domain stops
+   * resolving entirely, even though a perfectly good copy of the zone is
+   * sitting on disk. Seven days is a short window for a primary outage that
+   * happens over a holiday. 14 days is the common operational default and
+   * what RFC 1912 §2.2 points at.
+   *
+   * Only EXPIRE is changed: primary, RNAME, serial, refresh, retry and
+   * minimum are whatever the server chose, so this neither fights a
+   * deliberate server config nor invents a serial that breaks AXFR.
+   *
+   * Best-effort. A zone that exists with a 7-day expire is strictly better
+   * than a zone-creation failure, so a rejection here is logged and swallowed.
+   */
+  private async applySoaDefaults(normalizedZone: string): Promise<void> {
+    try {
+      const detail = await this.request<PdnsZoneDetail>(`/zones/${normalizedZone}`);
+      const soa = detail.rrsets?.find((r) => r.type === 'SOA');
+      const current = soa?.records?.[0]?.content;
+      if (!soa || !current) return;
+
+      const rewritten = withSoaExpire(current);
+      if (!rewritten) return; // malformed, or already at the target
+
+      await this.request<void>(`/zones/${normalizedZone}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          rrsets: [{
+            name: soa.name,
+            type: 'SOA',
+            ttl: soa.ttl ?? 3600,
+            changetype: 'REPLACE',
+            records: [{ content: rewritten, disabled: false }],
+          }],
+        }),
+      });
+    } catch (err) {
+      console.warn(
+        `[powerdns] could not raise SOA expire on '${normalizedZone}':`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   async deleteZone(name: string): Promise<void> {

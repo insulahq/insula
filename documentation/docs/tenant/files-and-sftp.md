@@ -28,6 +28,7 @@ and an actions toolbar.
 | **New File** / **New Folder** | Buttons in the toolbar. |
 | **Download** | Per-file action. |
 | **Rename / Delete** | Per-file actions. |
+| **Delete many** | Select items (or **Select all**) → **Delete** in the bulk toolbar. The whole selection is deleted in a single operation, and if any item cannot be removed you are told which ones — the rest still go. |
 | **Copy / Move** | Select items → **Copy** or **Move** in the bulk toolbar. |
 | **Archive (zip/tar)** | Select items → **Archive**. Extract an archive from its row action. |
 | **Permissions / Ownership** | Select items → **Permissions** or **Ownership** (advanced — change file access modes). |

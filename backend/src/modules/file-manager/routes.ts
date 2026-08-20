@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
-import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@insula/api-contracts';
+import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, bulkDeleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@insula/api-contracts';
 import { tenants } from '../../db/schema.js';
 import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -367,6 +367,54 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     }
 
     return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/bulk-delete — delete many paths
+  //
+  // ONE request for a whole selection. The panel used to loop the single-path
+  // endpoint, so a select-all fired hundreds of sequential requests: it tripped
+  // the global rate limit (100/window) with a 429, and the client loop threw on
+  // the first rejection — leaving a partial delete the user could not see. Each
+  // request also re-patched the file-manager last-access annotation, making one
+  // select-all hundreds of kube-API writes too.
+  //
+  // Per-path results, never all-or-nothing: one undeletable file must not hide
+  // the outcome of the other 499.
+  app.post('/tenants/:tenantId/files/bulk-delete', {
+    schema: { tags: ['Files'], summary: 'Delete many files or directories', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = bulkDeleteInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    // Touched ONCE for the whole batch, not per path.
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
+
+    const deleted: string[] = [];
+    const failed: Array<{ path: string; error: string }> = [];
+
+    for (const path of parsed.data.paths) {
+      try {
+        const result = await fileManagerRequest(
+          k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/rm',
+          { method: 'POST', body: JSON.stringify({ path }), contentType: 'application/json' },
+        );
+        if (result.status === 200) {
+          deleted.push(path);
+        } else {
+          let msg = `HTTP ${result.status}`;
+          try { msg = JSON.parse(result.body).error || msg; } catch { /* non-JSON body */ }
+          failed.push({ path, error: msg });
+        }
+      } catch (err) {
+        // Keep going: the whole point is that one bad path does not abort the
+        // batch and strand the caller without a report.
+        failed.push({ path, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return success({ deleted, failed });
   });
 
   // POST /api/v1/tenants/:tenantId/files/copy — copy file or directory
