@@ -56,12 +56,20 @@ export async function getPlatformIngressIps(
   // the getPlatformConfig function below for the same pattern).
   try {
     const { clusterNodes } = await import('../../db/schema.js');
-    const { and, gt, inArray } = await import('drizzle-orm');
+    const { and, gt, inArray, ne } = await import('drizzle-orm');
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     // HIGH fix from code review: explicit role filter — both server and
     // worker run the ingress DaemonSet today, but documenting the intent
     // protects us against a future role (e.g. `storage_only`) that
     // shouldn't accept tenant ingress traffic.
+    //
+    // ingress_mode='none' is excluded because this set decides whether a
+    // cname-mode domain VERIFIES. A node the operator has explicitly taken out
+    // of ingress still has a public IP, so counting it meant a customer could
+    // point their domain at a node that will never serve their traffic and be
+    // told the domain was correctly configured — then get no site. Traefik
+    // already refuses to schedule there (the DaemonSet's nodeAffinity excludes
+    // `none`), so the two now agree on what "an ingress node" is.
     const nodes = await db
       .select({ publicIp: clusterNodes.publicIp, publicIpv6: clusterNodes.publicIpv6 })
       .from(clusterNodes)
@@ -69,6 +77,7 @@ export async function getPlatformIngressIps(
         and(
           gt(clusterNodes.lastSeenAt, sevenDaysAgo),
           inArray(clusterNodes.role, ['server', 'worker']),
+          ne(clusterNodes.ingressMode, 'none'),
         ),
       );
     for (const node of nodes) {
