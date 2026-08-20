@@ -28,6 +28,20 @@ export interface PostflightGate {
 export type PostflightPhase = 'idle' | 'reconciling' | 'healthy';
 export type PostflightVerdict = 'idle' | 'healthy' | 'reconciling' | 'abort-recommended';
 
+/** Migration facts. Optional so a caller that cannot read them degrades to the
+ *  pre-existing four gates rather than failing. */
+export interface PostflightMigrationFacts {
+  /** false when the registry could not be read at all. */
+  readonly migrationsReadable?: boolean;
+  /** Ids of migrations that FAILED — the registry halts on the first. */
+  readonly migrationsFailed?: readonly string[];
+  /** Count not yet applied (0 on a converged cluster). */
+  readonly migrationsPending?: number;
+  /** undefined = not reported yet by any node. */
+  readonly hostMigrationsDegraded?: boolean;
+  readonly hostMigrationsDetail?: string;
+}
+
 export interface PostflightResult {
   readonly gates: readonly PostflightGate[];
   /** True when no gate is a hard `fail`. */
@@ -37,7 +51,7 @@ export interface PostflightResult {
   readonly phase: PostflightPhase;
 }
 
-export interface PostflightFacts {
+export interface PostflightFacts extends PostflightMigrationFacts {
   /** The in-flight target (platform_settings pending_update_version); null = no upgrade in flight. */
   readonly pendingVersion: string | null;
   /** The live pod's running version. */
@@ -105,6 +119,71 @@ export function evaluatePostflight(facts: PostflightFacts): PostflightResult {
     status: facts.crashloopingPods === 0 ? 'pass' : 'fail',
     detail: facts.crashloopingPods === 0 ? 'none crash-looping' : `${facts.crashloopingPods} pod(s) crash-looping`,
   });
+
+  // 5-6. Migrations. An upgrade is not done when its images are — the images
+  //       are only the part Flux can see.
+  //
+  //       Both gates are 'fail' (which reads as *reconciling*, not *broken* —
+  //       see the phase note below) rather than 'warn', because a cluster
+  //       running new code against an unconverged base is exactly the state
+  //       that must not clear `pending_update_version`. On 2026-08-19 all four
+  //       gates above passed on three clusters whose platform-migration
+  //       registry had halted at 0008, so the upgrade reported healthy while
+  //       the wildcard ClusterIssuer it needed had never been created.
+  //
+  //       UX note: these are DELIBERATELY not surfaced as errors while still
+  //       converging. Platform migrations land seconds after the pod starts;
+  //       host migrations land when the node's converge runs. Calling either
+  //       "incomplete" during its normal window would train operators to
+  //       dismiss the signal, so the modal renders `reconciling` gates as
+  //       progress and only the stalled/failed reasons in red.
+  if (facts.migrationsReadable === false) {
+    // Unreadable ≠ converged. Distinct detail so it is never mistaken for
+    // "0 pending".
+    gates.push({
+      id: 'migrations-converged',
+      label: 'Platform migrations applied',
+      status: 'fail',
+      detail: 'migration status unreadable',
+    });
+  } else if (facts.migrationsFailed && facts.migrationsFailed.length > 0) {
+    gates.push({
+      id: 'migrations-converged',
+      label: 'Platform migrations applied',
+      status: 'fail',
+      // Name the migration: "a migration failed" is what made this invisible.
+      detail: `HALTED on ${facts.migrationsFailed.join(', ')} — later migrations are blocked`,
+    });
+  } else {
+    const pending = facts.migrationsPending ?? 0;
+    gates.push({
+      id: 'migrations-converged',
+      label: 'Platform migrations applied',
+      status: pending === 0 ? 'pass' : 'fail',
+      detail: pending === 0 ? 'registry converged' : `${pending} migration(s) not yet applied`,
+    });
+  }
+
+  // Host migrations converge per node on their own timer (immediately after a
+  // self-upgrade installs the release's binary, then hourly). Unknown is
+  // tolerated as a pass: a cluster whose nodes have not reported yet must not
+  // block an otherwise healthy upgrade forever — the dedicated status relay and
+  // its own alerting own that case.
+  if (facts.hostMigrationsDegraded === true) {
+    gates.push({
+      id: 'host-migrations-converged',
+      label: 'Host migrations applied',
+      status: 'fail',
+      detail: facts.hostMigrationsDetail || 'one or more nodes have a failed or blocked host-migration',
+    });
+  } else if (facts.hostMigrationsDegraded === false) {
+    gates.push({
+      id: 'host-migrations-converged',
+      label: 'Host migrations applied',
+      status: 'pass',
+      detail: facts.hostMigrationsDetail || 'all nodes converged',
+    });
+  }
 
   const failures = gates.filter((g) => g.status === 'fail').length;
   const warnings = gates.filter((g) => g.status === 'warn').length;

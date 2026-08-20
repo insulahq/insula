@@ -97,3 +97,81 @@ describe('advanceStreak', () => {
     expect(advanceStreak(-5, reconciling).consecutiveFailures).toBe(1);
   });
 });
+
+describe('convergence gates — an upgrade is not done when its images are', () => {
+  /**
+   * 2026-08-19: version-converged, cnpg-healthy, deployments-available and
+   * no-crashloops ALL passed on three clusters whose platform-migration
+   * registry had halted at 0008. The upgrade reported healthy while the
+   * wildcard ClusterIssuer it needed had never been created.
+   */
+  const rolled = {
+    pendingVersion: '2026.8.7',
+    runningVersion: '2026.8.7',
+    cnpgReady: true,
+    cnpgDetail: 'primary elected',
+    deploymentsTotal: 8,
+    deploymentsAvailable: 8,
+    deploymentsReadable: true,
+    crashloopingPods: 0,
+  };
+  const gate = (r: ReturnType<typeof evaluatePostflight>, id: string) => r.gates.find((g) => g.id === id);
+
+  it('is NOT healthy when a platform migration is still pending', () => {
+    const r = evaluatePostflight({ ...rolled, migrationsReadable: true, migrationsPending: 1 });
+    expect(r.phase).toBe('reconciling');
+    expect(gate(r, 'migrations-converged')?.status).toBe('fail');
+  });
+
+  it('names the failing migration rather than saying "a migration failed"', () => {
+    const r = evaluatePostflight({
+      ...rolled, migrationsReadable: true, migrationsPending: 3,
+      migrationsFailed: ['0009_seed_wildcard_dns01_issuers'],
+    });
+    expect(gate(r, 'migrations-converged')?.detail).toContain('0009_seed_wildcard_dns01_issuers');
+    expect(gate(r, 'migrations-converged')?.detail).toMatch(/blocked|HALTED/i);
+  });
+
+  it('treats an UNREADABLE registry as not-converged, never as converged', () => {
+    // Fail-open here is what let the halt ride three tiers.
+    const r = evaluatePostflight({ ...rolled, migrationsReadable: false });
+    expect(gate(r, 'migrations-converged')?.status).toBe('fail');
+    expect(gate(r, 'migrations-converged')?.detail).toMatch(/unreadable/i);
+  });
+
+  it('IS healthy once images, migrations and host config have all converged', () => {
+    const r = evaluatePostflight({
+      ...rolled, migrationsReadable: true, migrationsPending: 0,
+      hostMigrationsDegraded: false, hostMigrationsDetail: '1 node(s) converged',
+    });
+    expect(r.phase).toBe('healthy');
+    expect(r.ok).toBe(true);
+  });
+
+  it('fails when a node has a blocked host-migration', () => {
+    const r = evaluatePostflight({
+      ...rolled, migrationsReadable: true, migrationsPending: 0,
+      hostMigrationsDegraded: true, hostMigrationsDetail: '1/3 node(s) blocked: sv2',
+    });
+    expect(r.phase).toBe('reconciling');
+    expect(gate(r, 'host-migrations-converged')?.detail).toContain('sv2');
+  });
+
+  it('does NOT block on nodes that have not reported yet', () => {
+    // Missing data must not hold an otherwise healthy upgrade open forever —
+    // the host-migration status relay owns that case with its own alerting.
+    const r = evaluatePostflight({ ...rolled, migrationsReadable: true, migrationsPending: 0 });
+    expect(gate(r, 'host-migrations-converged')).toBeUndefined();
+    expect(r.phase).toBe('healthy');
+  });
+
+  it('keeps the pre-existing gates working when migration facts are absent', () => {
+    // A caller with no db handle degrades to the original four gates rather
+    // than failing shut on every upgrade.
+    const r = evaluatePostflight(rolled);
+    expect(r.gates.map((g) => g.id)).toEqual(
+      expect.arrayContaining(['version-converged', 'cnpg-healthy', 'deployments-available', 'no-crashloops']),
+    );
+    expect(r.phase).toBe('healthy');
+  });
+});
