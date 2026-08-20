@@ -85,6 +85,7 @@ jobs:
       - run: ./scripts/test-longhorn-reservation.sh
       - run: ./scripts/test-ci-migration-coverage.sh
       - run: ./scripts/test-vmtier-profile-isolation.sh
+      - run: ./scripts/ci-platform-migration-rbac.sh
       - run: ./scripts/test-ci-integration-coverage.sh
       - run: ./scripts/test-new-host-migration.sh
       - run: ./scripts/test-cut-release-audit.sh
