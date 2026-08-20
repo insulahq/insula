@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.8] - 2026-08-20
+
 ### Fixed
 - **A node reboot could leave both panels serving a bare 404 indefinitely.**
   Traefik downloads its plugins from an external registry at process start; if
