@@ -6,6 +6,9 @@ resources:
   - middlewares-admin-auth.yaml
   - middlewares-crowdsec.yaml
   - middlewares-modsecurity.yaml
+  # Runtime self-heal for the plugin-download failure that silently 404s both
+  # panels. bootstrap.sh only checks this at install time; see the file header.
+  - plugin-guard.yaml
   # middlewares-waf.yaml is DEAD CODE — Coraza scaffolding kept in tree
   # for when upstream stabilises. See the file's header comment.
   # - middlewares-waf.yaml
