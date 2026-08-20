@@ -64,6 +64,10 @@ export function useCreateDomain(tenantId: string | undefined) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
+      // These operations write or remove dns_records rows server-side, so the
+      // domain's DNS Records list is stale the moment they succeed. Without this
+      // the new records only appear after a full page reload.
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }
@@ -88,6 +92,7 @@ export function useDeleteDomain(tenantId: string | undefined) {
       apiFetch<void>(`/api/v1/tenants/${tenantId}/domains/${domainId}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains'] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
       // Round-3: deleting a domain cascades to email_domains and
       // mailboxes via migration 0020, so refresh those caches too.
       queryClient.invalidateQueries({ queryKey: ['email-domains', tenantId] });
