@@ -35,7 +35,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 - **Host migrations could lag an upgrade by up to an hour.** The converge ran
   only on its own timer, so host state and platform state were briefly
   inconsistent after every self-upgrade. `platform-ops-update.service` now
-  triggers the converge on completion (non-fatal, non-blocking).
+  triggers the converge on completion (non-fatal, non-blocking). bootstrap
+  writes that unit once at install time, so existing nodes are amended by host
+  migration `2026.8.7/0001-converge-on-self-upgrade` rather than silently
+  keeping the old behaviour — fresh installs get it from bootstrap.
 - **Bootstrap died on every fresh install.** Backticked prose in a comment
   inside an *unquoted* systemd-unit heredoc was command substitution and was
   executed (`line 132: -: command not found`). Same class of defect as the
