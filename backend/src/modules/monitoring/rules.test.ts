@@ -123,3 +123,42 @@ describe('rules keep the labels that identify what is broken', () => {
       .toBe(subjectKey(rule, { name: 'b', namespace: 'a' }));
   });
 });
+
+describe('platform-migration registry alerting', () => {
+  /**
+   * The 2026-08-19 incident: migration 0009 403'd (platform-api's ClusterRole
+   * had no `create` on clusterissuers), the registry HALTED, and DEV, STAGING
+   * and production all ran for days against an unconverged base. Nothing
+   * alerted; it surfaced as a wildcard certificate stuck "Issuing" because the
+   * ClusterIssuer it referenced had never been created.
+   */
+  it('a failed migration is a CRITICAL rule', () => {
+    const r = ruleById('platform-migration-failed');
+    expect(r, 'platform-migration-failed rule is missing').toBeDefined();
+    expect(r!.severity).toBe('critical');
+    // forSeconds=0: a halted registry is not a transient to ride out.
+    expect(r!.forSeconds).toBe(0);
+  });
+
+  it('names WHICH migration failed, rather than "a migration failed"', () => {
+    const r = ruleById('platform-migration-failed')!;
+    expect(r.subjectLabels).toContain('id');
+    expect(describeSubject(r, { id: '0009_seed_wildcard_dns01_issuers' }))
+      .toContain('0009_seed_wildcard_dns01_issuers');
+  });
+
+  it('reads the gauge the runner publishes', () => {
+    // If these drift apart the rule silently never fires — which is the whole
+    // failure mode being fixed.
+    expect(ruleById('platform-migration-failed')!.expr).toContain('platform_migration_failed');
+    expect(ruleById('platform-migrations-pending')!.expr).toContain('platform_migrations_pending');
+  });
+
+  it('also catches a registry that never ran, not just one that failed', () => {
+    // A halt is not the only way to end up unconverged: the escape hatch or a
+    // stuck advisory lock leave migrations pending with nothing failed.
+    const r = ruleById('platform-migrations-pending');
+    expect(r).toBeDefined();
+    expect(r!.forSeconds).toBeGreaterThan(0); // tolerate a deploy in flight
+  });
+});

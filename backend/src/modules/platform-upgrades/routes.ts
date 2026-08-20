@@ -111,6 +111,43 @@ export async function platformUpgradeRoutes(app: FastifyInstance): Promise<void>
     return success(await readHostMigrationsPreview(k8s));
   });
 
+  // GET /api/v1/admin/platform/migrations — the PLATFORM-migration registry.
+  //
+  // The sibling endpoint below does this for HOST migrations, for exactly the
+  // reason in its comment ("the only way to find out was to SSH to a node").
+  // The platform registry never got the same treatment, and it bit identically
+  // on 2026-08-19: migration 0009 403'd, the registry HALTED, and DEV, STAGING
+  // and production all ran for days with an unconverged base. The only trace
+  // was one warn line in a pod log; `insula migrations list` over SSH was the
+  // only query surface. It surfaced as a wildcard certificate stuck "Issuing"
+  // because the ClusterIssuer it referenced had never been created.
+  //
+  // Read-only: applying is startup's job (and `insula migrations apply`).
+  app.get('/admin/platform/migrations', {
+    schema: {
+      tags: ['Platform Updates'], summary: 'Platform-migration registry status', security: [{ bearerAuth: [] }],
+      response: { 200: { type: 'object', properties: { data: { type: 'object', properties: {
+        converged: { type: 'boolean' },
+        pending: { type: 'number' },
+        drift: { type: 'number' },
+        migrations: { type: 'array', items: { type: 'object', additionalProperties: true } },
+      } } } } },
+    },
+  }, async () => {
+    const { listMigrationStatus } = await import('./index.js');
+    const items = await listMigrationStatus(app.db);
+    const pending = items.filter((m) => m.status === 'pending').length;
+    const drift = items.filter((m) => m.status === 'drift').length;
+    return success({
+      // `converged` is the one field a health check needs: everything shipped
+      // in this build has applied.
+      converged: pending === 0,
+      pending,
+      drift,
+      migrations: items,
+    });
+  });
+
   // GET /api/v1/admin/platform/host-migrations/status — per-node applied /
   // pending / failed / blocked state, relayed by the host-config-reconciler
   // DaemonSet. A failed migration blocks every later one, and before this the

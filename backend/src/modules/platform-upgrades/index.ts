@@ -13,7 +13,37 @@ import { realMigrationStore } from './registry/store.js';
 import { ensureHostDesiredConfigMaps } from './host-desired-state.js';
 import { PLATFORM_MIGRATIONS } from './migrations/index.js';
 import { platformMigrations } from '../../db/schema.js';
+import { platformMigrationFailed, platformMigrationsPending } from '../../shared/metrics.js';
 import type { MigrationLogger, RunMigrationsResult } from './registry/types.js';
+
+/**
+ * Publish registry health so a halted run is VISIBLE.
+ *
+ * The runner already halts correctly on a failure; what was missing is anyone
+ * finding out. These gauges back the `platform-migration-failed` /
+ * `platform-migrations-pending` SLO rules and the smoke gate — see
+ * shared/metrics.ts for the incident that motivated them.
+ *
+ * Always re-published, including the healthy case, so a migration that finally
+ * applies CLEARS its alert instead of leaving a stuck series behind.
+ */
+export function publishMigrationMetrics(result: RunMigrationsResult): void {
+  try {
+    // A skipped pass (lock held by a peer, or the escape hatch) says nothing
+    // about registry health — leave the previous values rather than reporting
+    // a false all-clear.
+    if (!result.ran) return;
+
+    platformMigrationFailed.reset();
+    for (const o of result.outcomes) {
+      if (o.status === 'failed') platformMigrationFailed.set({ id: o.id }, 1);
+    }
+    // `pending` is the count at the START of the pass; subtract what applied.
+    platformMigrationsPending.set(Math.max(0, result.pending - result.applied));
+  } catch {
+    // Metrics must never be able to fail a boot.
+  }
+}
 
 export interface RunStartupMigrationsOpts {
   readonly db: Database;
@@ -56,6 +86,7 @@ export async function runStartupMigrations(opts: RunStartupMigrationsOpts): Prom
     }
   }
 
+  publishMigrationMetrics(result);
   return result;
 }
 
