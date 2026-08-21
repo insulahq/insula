@@ -563,6 +563,14 @@ _mail_wait_settled() {
   mailhost=$(_resolve_mail_hostname)
   while :; do
     candidates=$(_resolve_mail_ips "$mailhost")
+    # The DNS A-records alone are NOT enough: after a legitimate mail-stack
+    # migration the pod serves hostPort on a node the (static, VM-tier) DNS
+    # does not name. Sweep the live pod hostIP too, re-read EVERY iteration —
+    # a migration can complete while this gate is waiting. Same candidate
+    # priority as _resolve_serving_mail_host, for the same reason.
+    local _sw_ip
+    _sw_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$_sw_ip" ]] && candidates=$(printf '%s\n%s\n' "$_sw_ip" "$candidates" | grep -vE '^$' | awk '!seen[$0]++')
     while IFS= read -r ip; do
       [[ -z "$ip" ]] && continue
       if ( sleep 0.3; printf "QUIT\r\n"; sleep 0.3 ) \

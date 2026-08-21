@@ -766,7 +766,17 @@ mkdir -p /root/insula/scripts
 {
   echo "# Generated per run by vm-integration-tests/run.sh — this ephemeral"
   echo "# cluster's own targets. Deliberately the ONLY profile the tier loads."
-  echo "MAIL_HOST=mail.${APEX}"
+  # MAIL_HOST is deliberately EMPTY, not mail.${APEX}. A non-empty value is
+  # an operator PIN: _resolve_serving_mail_host echoes it verbatim and skips
+  # its sweep, so every mail probe hits the STATIC dnsmasq A-record (the CP
+  # node) forever. The mail-migration suite then legitimately moves Stalwart
+  # to another node — hostPort follows the pod, DNS here cannot — and every
+  # later mail scenario fails "Connection refused" against a healthy stack
+  # (run 3897175c: banners + settle gate dead from the first post-migration
+  # scenario to the end of the run). Empty keeps the caller-wins guard
+  # satisfied (the var IS set, so an operator profile cannot leak in) while
+  # letting the sweep find the serving node dynamically.
+  echo "MAIL_HOST="
   echo "PLATFORM_BASE_DOMAIN=${APEX}"
   echo "PLATFORM_DOMAIN=${APEX}"
   echo "MAIL_DOMAIN_APEX=${APEX}"
