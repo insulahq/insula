@@ -78,16 +78,55 @@ describe('buildForceHttpsRoutes', () => {
     expect(out[0].match).toBe('Host(`api.example.com`) && PathPrefix(`/api`)');
   });
 
-  it('uses the canonical (post-www-redirect) hostname so the HTTP route matches the same host the HTTPS route advertises', () => {
+  it('emits BOTH the canonical and the alternate host under a www redirect', () => {
     const routes = [
-      // add-www: HTTPS route matches www.example.com → the HTTP route
-      // MUST also match www.example.com (not example.com) so the
-      // operator's force-https toggle works on the same canonical host.
+      // add-www: HTTPS advertises www.example.com AND answers example.com
+      // (redirecting). The HTTP side must mirror that. This test used to
+      // assert toHaveLength(1) — codifying the very bug it now guards
+      // against: the bare host had NO :80 router, so http://example.com
+      // was Traefik's unrouted 404 while the other three legs worked
+      // (seen live on production, 2026-08-21).
       { ...baseRoute, id: 'eeeeeeee-5555-5555-5555-555555555555', hostname: 'example.com', wwwRedirect: 'add-www', forceHttps: 1 },
     ];
     const out = buildForceHttpsRoutes(routes, resolveBackend, 'ns-x');
-    expect(out).toHaveLength(1);
+    expect(out).toHaveLength(2);
     expect(out[0].match).toBe('Host(`www.example.com`)');
+    expect(out[1].match).toBe('Host(`example.com`)');
+  });
+
+  it('the alternate-host route carries the wwwredir Middleware, not force-https', () => {
+    // wwwredir's redirectRegex matches ^https?:// and targets the canonical
+    // over https — so http://<alt> lands on https://<canonical> in ONE 308.
+    // force-https here would bounce via https://<alt> first (two redirects),
+    // and the https-side alternate router would then still have to fire.
+    const routes = [
+      { ...baseRoute, id: 'eeeeeeee-5555-5555-5555-555555555555', hostname: 'example.com', wwwRedirect: 'add-www', forceHttps: 1 },
+    ];
+    const out = buildForceHttpsRoutes(routes, resolveBackend, 'ns-x');
+    expect(out[0].middlewares).toEqual([{ name: 'r-eeeeeeee-force-https', namespace: 'ns-x' }]);
+    expect(out[1].middlewares).toEqual([{ name: 'r-eeeeeeee-wwwredir', namespace: 'ns-x' }]);
+    // Both need a services[] entry to satisfy the CRD.
+    expect(out[1].services).toEqual([{ name: 'app-svc', port: 8080 }]);
+  });
+
+  it('remove-www mirrors: canonical bare host plus the www alternate', () => {
+    const routes = [
+      { ...baseRoute, id: 'abcdabcd-7777-7777-7777-777777777777', hostname: 'www.example.com', wwwRedirect: 'remove-www', forceHttps: 1 },
+    ];
+    const out = buildForceHttpsRoutes(routes, resolveBackend, 'ns-x');
+    expect(out.map((r) => r.match)).toEqual([
+      'Host(`example.com`)',
+      'Host(`www.example.com`)',
+    ]);
+  });
+
+  it('emits NO alternate when wwwRedirect is none (wildcards and plain hosts)', () => {
+    const routes = [
+      { ...baseRoute, id: 'aaaa2222-8888-8888-8888-888888888888', hostname: 'plain.example.com', wwwRedirect: 'none' as const, forceHttps: 1 },
+    ];
+    const out = buildForceHttpsRoutes(routes, resolveBackend, 'ns-x');
+    expect(out).toHaveLength(1);
+    expect(out[0].match).toBe('Host(`plain.example.com`)');
   });
 
   it('omits routes whose backend cannot be resolved (suspended/orphaned routes)', () => {

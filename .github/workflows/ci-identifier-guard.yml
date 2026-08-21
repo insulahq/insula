@@ -65,8 +65,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install gitleaks (latest stable)
+        # Authenticated — same reason as ci-infrastructure.yml's copy: the
+        # unauthenticated api.github.com budget is 60/hr per shared runner IP
+        # and a 403 fails the whole workflow (seen 2026-08-21).
+        env:
+          GH_API_TOKEN: ${{ github.token }}
         run: |
-          ver=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+          ver=$(curl -fsSL -H "Authorization: Bearer ${GH_API_TOKEN}" \
+                  https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
                   | grep -oE '"tag_name": *"v[^"]+"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
           [ -n "$ver" ] || { echo "could not resolve gitleaks version"; exit 1; }
           echo "gitleaks v$ver"

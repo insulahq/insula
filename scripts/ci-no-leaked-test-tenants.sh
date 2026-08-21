@@ -53,7 +53,7 @@ fail() { printf '%b✗%b %s\n' "$RED" "$RESET" "$*"; }
 # creates tenants. Must stay in sync with
 # backend/src/modules/k8s-provisioner/service.ts:TENANT_TEST_NAMESPACE_PATTERN
 # — a Bats-style regression test for that file lives next door.
-TEST_NAMESPACE_REGEX='^tenant-(integration-test|lifecycle-e2e|passkey-e2e|pvc-test|reaper-test|bundle-test|ingress-test|drain-test|tier-test|grow-test|mail-test|provision-test|mtls-test|firewall-test)-'
+TEST_NAMESPACE_REGEX='^tenant-(integration-test|lifecycle-e2e|passkey-e2e|pvc-test|reaper-test|bundle-test|ingress-test|drain-test|tier-test|grow-test|mail-test|mail-e2e|provision-test|mtls-test|firewall-test)-'
 
 # kubectl wrapper that runs locally when LOCAL_KUBECTL=1, else over SSH.
 kc() {
@@ -74,9 +74,33 @@ if ! kc version --client >/dev/null 2>&1; then
 fi
 
 # ── Check 1: leftover tenant namespaces matching test patterns ─────
-leftover_ns=$(kc get ns -o jsonpath='{.items[*].metadata.name}' 2>/dev/null \
-  | tr ' ' '\n' \
-  | grep -E "$TEST_NAMESPACE_REGEX" || true)
+# A namespace whose deletion is ALREADY IN FLIGHT (Terminating) is not a
+# leak — the post-run cleanup pass issues its lifecycle DELETEs seconds
+# before this guard runs, and namespace finalizers (PVC detach, Longhorn
+# volume teardown) legitimately take tens of seconds. Verdict run 164415f7
+# flagged exactly that: a tenant deleted at 19:16:50 whose namespace was
+# still Terminating when the guard listed it, and gone minutes later.
+# Bounded wait: poll Terminating namespaces up to NS_TERMINATION_WAIT
+# (default 180s); only namespaces that PERSIST past the wait (stuck
+# finalizer — a real leak) or were never deleted at all are flagged.
+list_test_ns() {
+  # "<name> <phase>" per line for every test-pattern namespace.
+  kc get ns -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.phase}{"\n"}{end}' 2>/dev/null \
+    | grep -E "^${TEST_NAMESPACE_REGEX#^}" || true
+}
+NS_TERMINATION_WAIT="${NS_TERMINATION_WAIT:-180}"
+_ns_wait_deadline=$(( $(date +%s) + NS_TERMINATION_WAIT ))
+while :; do
+  _ns_rows=$(list_test_ns)
+  # Nothing left, or something is present that is NOT Terminating (no
+  # deletion was ever issued — waiting cannot help): stop polling.
+  [[ -z "$_ns_rows" ]] && break
+  if echo "$_ns_rows" | awk '{print $2}' | grep -qv '^Terminating$'; then break; fi
+  if (( $(date +%s) >= _ns_wait_deadline )); then break; fi
+  warn "test namespaces still Terminating — waiting for finalizers ($(echo "$_ns_rows" | wc -l) left)"
+  sleep 10
+done
+leftover_ns=$(echo "${_ns_rows:-}" | awk 'NF {print $1}')
 
 ns_count=0
 [[ -n "$leftover_ns" ]] && ns_count=$(echo "$leftover_ns" | grep -c .)
