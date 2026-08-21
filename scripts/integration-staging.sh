@@ -536,6 +536,50 @@ _resolve_mail_host() {
 # nodes) PLUS the active Stalwart pod's hostIP, which serves the port
 # directly and is the most reliable. Returns the first serving IP; falls
 # back to the first candidate so a genuine outage still fails loudly.
+
+# Wait (bounded) for the mail data plane to SETTLE before asserting on it.
+#
+# Why this exists: in a full integration-all run, mail-external-reachability
+# and mail-mobility legitimately toggle the port-exposure mode / migrate the
+# mail stack, and their EXIT-trap restores kick off a Stalwart roll + port
+# re-plumb that takes MINUTES to converge. The serial retry pass starts right
+# after, so this suite's mail scenarios walked into a converging stack and
+# reported "Connection refused" on every port against a platform that was
+# healthy two minutes later (run 2bf807f9: retry at 06:47, Stalwart
+# ReplicaSets still rolling at 07:08). `_resolve_serving_mail_host` retries
+# for ~30s, which covers a haproxy blip but not an infra-restore convergence.
+#
+# The gate: wait for (a) the stalwart Deployment rollout to complete and
+# (b) an SMTP 220 banner from some candidate IP — up to MAIL_SETTLE_TIMEOUT
+# (default 300s). Past the bound it FAILS LOUDLY: a mail stack that cannot
+# serve a banner five minutes after nothing touched it is a real outage, and
+# this gate must never absorb one. Bounded-wait-then-assert distinguishes
+# "converging" from "broken"; a bare assert cannot.
+_mail_wait_settled() {
+  local budget="${MAIL_SETTLE_TIMEOUT:-300}" t0 elapsed
+  t0=$(date +%s)
+  ssh_cp "kubectl -n mail rollout status deploy/stalwart-mail --timeout=${budget}s" >/dev/null 2>&1 || true
+  local mailhost candidates ip
+  mailhost=$(_resolve_mail_hostname)
+  while :; do
+    candidates=$(_resolve_mail_ips "$mailhost")
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      if ( sleep 0.3; printf "QUIT\r\n"; sleep 0.3 ) \
+           | timeout 7 ncat -w 5 "$ip" 25 2>/dev/null | grep -qE '^220[ -]'; then
+        log "mail data plane settled (220 from $ip after $(( $(date +%s) - t0 ))s)"
+        return 0
+      fi
+    done <<<"$candidates"
+    elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed >= budget )); then
+      fail "mail data plane did NOT settle within ${budget}s — no SMTP 220 from any of: $(echo "$candidates" | tr '\n' ' ')"
+      return 1
+    fi
+    sleep 10
+  done
+}
+
 _resolve_serving_mail_host() {
   if [[ -n "${MAIL_HOST:-}" ]]; then
     echo "$MAIL_HOST"
@@ -3425,6 +3469,7 @@ scenario_mail_tls() {
   # "force" re-runs the ban check + reload; it is a cheap no-op (2 JMAP gets,
   # no recycle) when the entry survived and the IP is not banned.
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
 
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   # Mail hostname: read the LIVE value from /admin/webmail-settings so
@@ -3443,6 +3488,7 @@ scenario_mail_tls() {
   # must not look like a port scan to Stalwart's autoban. `force` re-arms
   # even when an earlier scenario already armed-then-lost it via a roll.
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
   local mail_host; mail_host=$(_resolve_serving_mail_host)
   if [[ -z "$mail_host" ]]; then
     fail "mail-tls/resolve: could not auto-resolve mail host (DNS of ${mail_hostname} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
@@ -4131,6 +4177,7 @@ except Exception as e:
   # whole loop accept-then-drops and the rename reads as broken. `force`
   # re-checks/unbans/reloads (cheap no-op when the entry survived).
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
 
   # ── Wait up to ~120s for the renamed host to be served on ANY mail
   # node, then assert the SMTP 465 banner ──
@@ -4520,6 +4567,7 @@ for c in cands:
   # (the recurring `staging-all` mail-flake tail). `force` re-registers +
   # reloads on the new node so the post-migration state is clean.
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
 
   # ── Part C: pre-migration snapshot carries the distinct tag ──────
   log "mail-migration-fixes: PART C — pre-migration tag visible to operators"

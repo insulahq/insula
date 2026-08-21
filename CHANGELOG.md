@@ -15,6 +15,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.8.9] - 2026-08-21
 
 ### Fixed
+- **A domain's HTTPS kept serving the ingress default certificate even after its
+  certificate was issued.** The route's ingress resource is built when the route
+  is created — while the domain is still unverified, so no certificate exists
+  yet and the resource is built without a TLS reference. When the certificate
+  arrived moments later, nothing revisited the resource: the certificate sat
+  ready while visitors saw the ingress controller's self-signed default
+  indefinitely. The moment a domain verifies, its ingress is now re-reconciled
+  so the issued certificate is actually served. Found by the full integration
+  suite: certificate Ready in 20 seconds, yet the endpoint still presenting the
+  default certificate.
 - **A new domain could wait up to an hour for its TLS certificate.** Certificate
   issuance is deliberately held back until a domain's DNS verifies, so the
   platform never asks a certificate authority for a name that cannot be proven.

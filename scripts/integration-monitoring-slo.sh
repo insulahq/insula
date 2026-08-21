@@ -273,9 +273,13 @@ else
   fi
 
   # forSeconds=300 + up to ~2 evaluation ticks of slack.
+  # The /alerts rows carry subjectKey/subjectLabels/subject BETWEEN ruleId and
+  # state (per-subject alerts, 9df21c5d) — an adjacency regex on the raw row can
+  # never match. The jq below projects {ruleId, state} so adjacency is
+  # guaranteed by construction, not by serializer field order.
   il_wait_for 480 "D1 cnpg-down reaches state=firing" \
     '"ruleId":"cnpg-down","state":"firing"' '-' \
-    "curl -sk -H 'Authorization: Bearer $TOKEN' '$API_URL/api/v1/admin/monitoring/alerts' | jq -c '.data[]'" \
+    "curl -sk -H 'Authorization: Bearer $TOKEN' '$API_URL/api/v1/admin/monitoring/alerts' | jq -c '.data[] | {ruleId, state}'" \
     || true
 
   # The #57 contract: BOTH default channels leave a delivery row. The
@@ -299,7 +303,7 @@ else
 
   il_wait_for 240 "D3 cnpg-down resolves" \
     '"ruleId":"cnpg-down","state":"resolved"' '-' \
-    "curl -sk -H 'Authorization: Bearer $TOKEN' '$API_URL/api/v1/admin/monitoring/alerts' | jq -c '.data[]'" \
+    "curl -sk -H 'Authorization: Bearer $TOKEN' '$API_URL/api/v1/admin/monitoring/alerts' | jq -c '.data[] | {ruleId, state}'" \
     || true
 
   SINCE=$(( $(date +%s) - D_START_EPOCH + 60 ))
