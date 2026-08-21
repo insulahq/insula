@@ -1170,8 +1170,17 @@ snapshot_global_state() {
 import json,sys
 b=sys.stdin.read().split('\n')
 def d(i):
-    try: return json.loads(b[i]).get('data',{})
+    # An ERROR envelope ({'error':...}) parses as valid JSON, so `.get('data',{})`
+    # silently yields {} — and the snapshot becomes a full keyset of EMPTY
+    # values instead of READ_ERR. That all-empty 'canonical' then makes every
+    # healthy later snapshot look like total drift, and the gate blames
+    # whichever innocent suite just finished (run 1dd72dcc: mailbox-quota
+    # 'leaked' 22 keys whose canonical was '' across the board — an expired
+    # token, not a mutation). Anything without a real data object is READ_ERR.
+    try: j = json.loads(b[i])
     except Exception: return None
+    if not isinstance(j, dict) or 'error' in j or not isinstance(j.get('data'), dict): return None
+    return j['data']
 ss,wm,mp,mb,oi,tp=[d(i) for i in range(6)]
 if any(x is None for x in (ss,wm,mp,mb,oi,tp)): print('READ_ERR'); sys.exit()
 o={}
