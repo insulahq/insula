@@ -230,6 +230,6 @@ images:
   - name: ghcr.io/insulahq/insula/backup-rclone
     newTag: "20260821005453-07d50fb"
   - name: ghcr.io/insulahq/insula/sftp-gateway
-    newTag: "20260821001256-66315c4"
+    newTag: "20260821005426-07d50fb"
   - name: ghcr.io/insulahq/insula/tenant-backup-tools
     newTag: "20260821005422-07d50fb"
