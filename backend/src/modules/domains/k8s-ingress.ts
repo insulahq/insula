@@ -682,6 +682,30 @@ export function buildForceHttpsRoutes(
       middlewares: [{ name: middlewareName(route.id, 'force-https'), namespace }],
       services: [{ name: backend.serviceName, port: backend.port }],
     });
+
+    // The ALTERNATE host needs a :80 router too. This helper computed
+    // `altHost` from day one and then never used it, so with add-www a
+    // visitor typing http://<apex> got Traefik's unrouted 404 while
+    // http://www.<apex>, https://<apex> and https://www.<apex> all worked —
+    // observed live on production (forever.example.test shape, 2026-08-21).
+    //
+    // It carries the route's wwwredir Middleware, not force-https: the
+    // wwwredir redirectRegex matches `^https?://<alt>` and targets
+    // `https://<canonical>`, so http://<alt> reaches the canonical HTTPS
+    // origin in ONE 308 instead of bouncing through https://<alt> first.
+    // The Middleware exists exactly when altHost does — annotation-sync
+    // creates it for every route whose wwwRedirect is not 'none', which is
+    // the same condition wwwRedirectHosts() uses to return a non-null alt.
+    if (altHost) {
+      out.push({
+        match: routeMatch(altHost, route.path),
+        kind: 'Rule',
+        ...routePriorityFields(altHost, route.path),
+        middlewares: [{ name: middlewareName(route.id, 'wwwredir'), namespace }],
+        // Required by the CRD; the middleware 308s before the backend is hit.
+        services: [{ name: backend.serviceName, port: backend.port }],
+      });
+    }
   }
   return out;
 }

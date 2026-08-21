@@ -15,6 +15,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.8.9] - 2026-08-21
 
 ### Fixed
+- **With a www redirect configured, the non-canonical hostname answered plain
+  HTTP with a 404 instead of redirecting.** The HTTP-side route builder computed
+  the alternate hostname and then never emitted a route for it, so with
+  "add www" a visitor typing `http://example.com` hit the ingress controller's
+  unrouted 404 — while `http://www.example.com`, `https://example.com` and
+  `https://www.example.com` all worked. Observed live on a production domain.
+  The alternate host now gets its own HTTP route carrying the www-redirect
+  rule, taking the visitor to the canonical HTTPS address in a single redirect.
 - **A domain's HTTPS kept serving the ingress default certificate even after its
   certificate was issued.** The route's ingress resource is built when the route
   is created — while the domain is still unverified, so no certificate exists
