@@ -12,8 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.8.9] - 2026-08-21
-
 ### Fixed
 - **With a www redirect configured, the non-canonical hostname answered plain
   HTTP with a 404 instead of redirecting.** The HTTP-side route builder computed
@@ -62,6 +60,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   branch and only fired on a pull request that forced a full rebuild. The images
   now pick up security updates at build time; verified against the same gate,
   which goes from failing to reporting zero findings.
+- **Verifying a domain issued its certificate but kept serving the placeholder.**
+  The verify action — which the panels run automatically when a domain page is
+  opened — requested the certificate but never updated the route to serve it,
+  so the browser kept showing the ingress default certificate. To anyone
+  watching, that was indistinguishable from the certificate never being
+  requested. The route is now updated in the same step.
+
+### Changed
+- **Requesting a certificate re-issue now runs a fresh DNS verification first —
+  before anything is touched.** Previously the re-issue deleted the existing,
+  still-valid certificate and then placed a new order regardless of DNS state.
+  Since a re-issue is clicked precisely when something seems broken, an operator
+  with misconfigured DNS destroyed their working certificate and burned a doomed
+  order against the certificate authority's weekly limit. Now: if the fresh
+  check fails, the re-issue refuses, the existing certificate is left untouched,
+  and the message explains what to fix. The check is live, not cached, so a
+  just-fixed domain passes immediately.
+
+## [2026.8.9] - 2026-08-21
+
+### Fixed
 - **DNS records written by the panel only appeared after a page reload.** Enabling
   or disabling mail, rotating a DKIM key, and creating, changing or deleting an
   ingress route or a domain all write DNS records on the server, but the panel

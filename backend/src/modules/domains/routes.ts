@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { authenticate, requireRole, requireTenantAccess, requireTenantRoleByMethod } from '../../middleware/auth.js';
-import { domains } from '../../db/schema.js';
+import { domains, tenants } from '../../db/schema.js';
 import { createDomainSchema, updateDomainSchema } from './schema.js';
 import * as service from './service.js';
 import { bulkVerifyDomains, bulkDeleteDomains } from './bulk.js';
@@ -208,13 +208,37 @@ export async function domainRoutes(app: FastifyInstance): Promise<void> {
       // the scheduler remains the backstop.
       if (result.verified) {
         void (async () => {
+          const k8s = getK8s();
           try {
             const { ensureDomainCertificate } = await import('../certificates/service.js');
-            await ensureDomainCertificate(app.db, getK8s(), domainId);
+            await ensureDomainCertificate(app.db, k8s, domainId);
           } catch (err) {
             app.log.warn(
               { domainId, err: err instanceof Error ? err.message : String(err) },
               'post-verification certificate request failed; scheduler will retry',
+            );
+          }
+          // The cert alone is NOT enough — the same gap as the create path
+          // and the cron: the tenant IngressRoute was built while this domain
+          // was unverified, so it carries no tls.secretName and Traefik keeps
+          // serving its DEFAULT cert. To the operator who just clicked Verify
+          // and is watching the browser, that is indistinguishable from "the
+          // certificate was never requested". Re-reconcile so the issued
+          // secret is actually served. (This route is the path the panels
+          // auto-fire on page mount, so it is the one operators actually hit.)
+          try {
+            const { reconcileIngress } = await import('./k8s-ingress.js');
+            const [tenantRow] = await app.db
+              .select({ kubernetesNamespace: tenants.kubernetesNamespace })
+              .from(tenants)
+              .where(eq(tenants.id, tenantId));
+            if (k8s && tenantRow?.kubernetesNamespace) {
+              await reconcileIngress(app.db, k8s, tenantId, tenantRow.kubernetesNamespace);
+            }
+          } catch (err) {
+            app.log.warn(
+              { domainId, err: err instanceof Error ? err.message : String(err) },
+              'post-verification ingress reconcile failed; a later mutation will restamp',
             );
           }
         })();
