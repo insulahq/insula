@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.10] - 2026-08-21
+
 ### Fixed
 - **With a www redirect configured, the non-canonical hostname answered plain
   HTTP with a 404 instead of redirecting.** The HTTP-side route builder computed
