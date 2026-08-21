@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.9] - 2026-08-21
+
 ### Fixed
 - **DNS records written by the panel only appeared after a page reload.** Enabling
   or disabling mail, rotating a DKIM key, and creating, changing or deleting an
