@@ -222,7 +222,7 @@ images:
   # "latest" here is the pre-first-pin placeholder (matches the base tag); the
   # next build of each image rewrites it.
   - name: ghcr.io/insulahq/insula/security-probe
-    newTag: "20260807162559-aeac12d"
+    newTag: "20260821001522-606b48b"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
     newTag: "20260807162533-aeac12d"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
