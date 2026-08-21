@@ -29,6 +29,10 @@ export function useCreateIngressRoute(tenantId: string | undefined, domainId: st
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
+      // These operations write or remove dns_records rows server-side, so the
+      // domain's DNS Records list is stale the moment they succeed. Without this
+      // the new records only appear after a full page reload.
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }
@@ -44,6 +48,7 @@ export function useUpdateIngressRoute(tenantId: string | undefined, domainId: st
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }
@@ -59,6 +64,7 @@ export function useDeleteIngressRoute(tenantId: string | undefined, domainId: st
       ),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ingress-routes', tenantId, domainId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }

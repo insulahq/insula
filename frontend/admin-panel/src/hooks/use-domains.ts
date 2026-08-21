@@ -8,6 +8,28 @@ interface ListDomainsParams {
   readonly cursor?: string;
 }
 
+/**
+ * Certificate issuance and DNS provisioning finish SERVER-SIDE, after the
+ * mutation that started them has already returned. Invalidating on mutation
+ * success therefore refetches too early and the panel keeps showing the
+ * pre-work state until the user reloads — "requested a certificate, still says
+ * pending".
+ *
+ * Invalidation cannot fix that on its own; the query has to keep looking while
+ * the work is in flight. Poll only while something is actually transitional
+ * and stop as soon as nothing is, so an idle domains page costs nothing.
+ */
+const TRANSITIONAL_CERT_STATUSES = new Set(['pending', 'issuing', 'unknown']);
+
+function domainsNeedPolling(items: ReadonlyArray<{ tlsCertStatus?: string; status?: string }> | undefined): boolean {
+  if (!items) return false;
+  return items.some(
+    (d) =>
+      (d.tlsCertStatus !== undefined && TRANSITIONAL_CERT_STATUSES.has(d.tlsCertStatus))
+      || d.status === 'pending',
+  );
+}
+
 export function useDomains(tenantId: string | undefined, params: ListDomainsParams = {}) {
   const searchParams = new URLSearchParams();
   if (params.search) searchParams.set('search', params.search);
@@ -22,6 +44,14 @@ export function useDomains(tenantId: string | undefined, params: ListDomainsPara
   return useQuery({
     queryKey: ['domains', tenantId ?? 'all', params],
     queryFn: () => apiFetch<PaginatedResponse<Domain>>(path),
+    // 5s while a certificate is issuing or a domain is still pending; off
+    // otherwise, so an idle list costs nothing.
+    refetchInterval: (query) =>
+      domainsNeedPolling(
+        (query.state.data as { data?: ReadonlyArray<{ tlsCertStatus?: string; status?: string }> } | undefined)?.data,
+      )
+        ? 5000
+        : false,
   });
 }
 
@@ -42,6 +72,10 @@ export function useCreateDomain(tenantId: string | undefined) {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
+      // These operations write or remove dns_records rows server-side, so the
+      // domain's DNS Records list is stale the moment they succeed. Without this
+      // the new records only appear after a full page reload.
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
     },
   });
 }
@@ -109,6 +143,32 @@ export function useDeleteDomain(tenantId: string | undefined) {
         method: 'DELETE',
       }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
+    },
+  });
+}
+
+/**
+ * Re-derive ingress-route DNS from the CURRENT ingress address set.
+ *
+ * Apex A/AAAA records are a snapshot taken when the route was created, so
+ * adding an ingress-capable node leaves existing apexes pointing at the old
+ * set. Subdomains ride the <slug>.ingress.<apex> CNAME chain and self-heal.
+ * Primary mode only — the API 409s otherwise.
+ */
+export function useRefreshRouteDns(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (domainId: string) =>
+      apiFetch<{ data: { hostnames: number; created: number; removed: number; failures: Array<{ hostname: string; detail: string }> } }>(
+        `/api/v1/tenants/${tenantId}/domains/${domainId}/refresh-route-dns`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      // The records list is the thing this action changes — invalidate it, or
+      // the panel shows the pre-refresh set until a manual reload.
+      queryClient.invalidateQueries({ queryKey: ['dns-records'] });
       queryClient.invalidateQueries({ queryKey: ['domains', tenantId] });
     },
   });

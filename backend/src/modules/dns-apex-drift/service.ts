@@ -4,7 +4,7 @@ import { ApiError } from '../../shared/errors.js';
 import { getActiveServersForDomain, getProviderForServer } from '../dns-servers/service.js';
 import { canManageDnsZone } from '../dns-servers/authority.js';
 import { getIngressSettings, parseIngressIps } from '../ingress-routes/service.js';
-import { syncRecordToProviders } from '../dns-records/service.js';
+import { syncRecordToProviders, provisionManagedRecord } from '../dns-records/service.js';
 import { diffApexRecords, buildExpectedApexRecords } from './detector.js';
 import * as tasks from '../tasks/service.js';
 import type { Database } from '../../db/index.js';
@@ -321,12 +321,17 @@ async function runFix(
     let domainAdded = 0;
     for (const record of domain.missing) {
       try {
-        await syncRecordToProviders(
+        // provisionManagedRecord, not a bare sync: the repair writes to the
+        // DNS server AND records the row, so a record this scan created shows
+        // up in the domain's DNS Records list like everything else. A bare
+        // sync left the panel claiming the apex had no records while they
+        // existed upstream — the same invisible-write bug fixed for ingress
+        // routes.
+        await provisionManagedRecord(
           db,
-          domain.domainName,
-          'create',
+          'apex-drift',
+          { id: domain.domainId, domainName: domain.domainName },
           { type: record.type, name: '@', content: record.content, ttl: 300 },
-          domain.domainId,
         );
         domainAdded += 1;
       } catch (err) {

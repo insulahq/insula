@@ -21,7 +21,7 @@ import {
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
   useDeleteFile, useDownloadFile, useUploadFiles, useCopyFile,
   useArchiveFiles, useExtractArchive, useGitClone, useAuthenticatedBlobUrl,
-  useDiskUsage, useFolderSize, useChmod, useChown,
+  useDiskUsage, useFolderSize, useChmod, useChown, useBulkDeleteFiles,
 } from '@/hooks/use-file-manager';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
@@ -1958,20 +1958,41 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
 
 function BulkDeleteDialog({ paths, onClose, onSuccess }: { readonly paths: string[]; readonly onClose: () => void; readonly onSuccess: () => void }) {
-  const deleteFile = useDeleteFile();
-  const [pending, setPending] = useState(false);
+  // ONE request for the whole selection. This used to loop the single-path
+  // endpoint: a select-all fired hundreds of sequential requests, tripped the
+  // API rate limit, and the await-loop threw on the first 429 — leaving files
+  // half-deleted with nothing told to the user.
+  const bulkDelete = useBulkDeleteFiles();
+  const [failed, setFailed] = useState<ReadonlyArray<{ path: string; error: string }>>([]);
 
-  const handleDelete = async () => {
-    setPending(true);
-    try { for (const path of paths) await deleteFile.mutateAsync(path); onSuccess(); } finally { setPending(false); }
+  const handleDelete = () => {
+    setFailed([]);
+    bulkDelete.mutate(paths, {
+      onSuccess: (res) => {
+        // Partial success is a real outcome, not an error: report exactly
+        // which paths survived instead of closing as if everything worked.
+        if (res.data.failed.length === 0) { onSuccess(); return; }
+        setFailed(res.data.failed);
+      },
+    });
   };
 
   return (
-    <SimpleDialog title="Delete Selected" onClose={onClose} onConfirm={handleDelete} isPending={pending} confirmLabel="Delete All" destructive>
+    <SimpleDialog title="Delete Selected" onClose={onClose} onConfirm={handleDelete} isPending={bulkDelete.isPending} confirmLabel="Delete All" destructive>
       <p className="text-sm text-gray-600 dark:text-gray-400">Delete <strong className="text-gray-900 dark:text-gray-100">{paths.length} item{paths.length > 1 ? 's' : ''}</strong>? This cannot be undone.</p>
       <ul className="mt-2 max-h-40 overflow-y-auto text-xs text-gray-500 dark:text-gray-400 space-y-0.5">
         {paths.map(p => <li key={p} className="truncate">{p}</li>)}
       </ul>
+      {failed.length > 0 && (
+        <div className="mt-3 rounded-md border border-red-300 bg-red-50 p-2 dark:border-red-700 dark:bg-red-900/30" data-testid="bulk-delete-failures">
+          <p className="text-sm font-medium text-red-800 dark:text-red-300">
+            {paths.length - failed.length} deleted, {failed.length} failed
+          </p>
+          <ul className="mt-1 max-h-32 overflow-y-auto text-xs text-red-700 dark:text-red-400 space-y-0.5">
+            {failed.map((f) => <li key={f.path} className="truncate">{f.path} — {f.error}</li>)}
+          </ul>
+        </div>
+      )}
     </SimpleDialog>
   );
 }

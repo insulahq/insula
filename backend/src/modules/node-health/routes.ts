@@ -8,6 +8,7 @@ import { readMemoryEvents } from './memory-events.js';
 import {
   recyclePod,
   cleanStalePodsOnNode,
+  countStalePodsByNode,
   restartCsiPluginOnNode,
 } from './recovery.js';
 
@@ -127,6 +128,28 @@ export async function nodeHealthRoutes(app: FastifyInstance): Promise<void> {
     const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
     const k8s = createK8sClients(kubeconfigPath);
     return success(await recyclePod({ k8s, db: app.db, actorUserId: userId, ...body }));
+  });
+
+  /**
+   * GET /api/v1/admin/node-health/stale-pods
+   *
+   * Per-node count of pods the clean-stale-pods action would delete, using the
+   * SAME predicate as the action itself so the two cannot disagree.
+   *
+   * Deliberately NOT folded into /summary: that endpoint is polled every 30s by
+   * the Monitoring page and reads one indexed table, whereas this lists pods
+   * cluster-wide. The recovery modal calls this only when it opens.
+   */
+  app.get('/admin/node-health/stale-pods', {
+    schema: {
+      tags: ['NodeHealth'],
+      summary: 'Per-node count of stale (Failed/Evicted/Unknown) system pods',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async () => {
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined;
+    const k8s = createK8sClients(kubeconfigPath);
+    return success({ byNode: await countStalePodsByNode(k8s) });
   });
 
   /**

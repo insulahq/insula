@@ -27,6 +27,7 @@ import type { MiddlewareBody } from './traefik-types.js';
 
 const baseRoute: RouteSettingsLike = {
   forceHttps: 0,
+  hostname: 'example.com',
   wwwRedirect: 'none',
   redirectUrl: null,
   ipAllowlist: null,
@@ -74,33 +75,64 @@ describe('buildMiddlewaresForRoute — forceHttps', () => {
 // ─── www redirect ───────────────────────────────────────────────────────
 
 describe('buildMiddlewaresForRoute — wwwRedirect', () => {
-  it('emits an add-www redirectRegex when wwwRedirect="add-www"', () => {
+  /**
+   * Applies the middleware's own regex to a URL, the way Traefik would, so the
+   * test proves BEHAVIOUR rather than restating the pattern. The previous
+   * tests asserted the shape of the pattern ("matches ^https?://", "contains
+   * www\\.") — which the buggy pattern satisfied perfectly while redirecting
+   * the canonical host to itself.
+   */
+  const applyRedirect = (spec: { regex: string; replacement: string }, url: string): string | null => {
+    const re = new RegExp(spec.regex);
+    if (!re.test(url)) return null;
+    return url.replace(re, spec.replacement.replace(/\$(\d)/g, '$$$1'));
+  };
+
+  it('add-www: redirects the bare host to www and NEVER to itself', () => {
     const { middlewares, referenceList } = buildMiddlewaresForRoute(
-      { ...baseRoute, wwwRedirect: 'add-www' },
+      { ...baseRoute, hostname: 'example.com', wwwRedirect: 'add-www' },
       ROUTE_ID,
       NS,
     );
     const mw = findMw(middlewares, 'wwwredir');
-    const spec = mw?.spec as { redirectRegex?: { regex: string; replacement: string; permanent: boolean } };
-    // The regex is the PCRE that matches non-www and www variants both;
-    // the replacement injects www. into the canonical form.
-    expect(spec?.redirectRegex?.regex).toMatch(/^\^https\?:\/\//);
-    expect(spec?.redirectRegex?.replacement).toContain('www.');
-    expect(spec?.redirectRegex?.permanent).toBe(true);
+    const spec = (mw?.spec as { redirectRegex: { regex: string; replacement: string; permanent: boolean } }).redirectRegex;
+
+    expect(applyRedirect(spec, 'https://example.com/a')).toBe('https://www.example.com/a');
+    expect(spec.permanent).toBe(true);
+
+    // THE REGRESSION: the old pattern made `www.` optional and non-capturing,
+    // so it matched the canonical host, captured the bare name and rebuilt the
+    // same URL — an infinite redirect on the hostname the route serves.
+    const canonical = 'https://www.example.com/a';
+    expect(applyRedirect(spec, canonical)).not.toBe(canonical);
+
     expect(referenceList).toContainEqual({ name: `r-${ROUTE_ID.slice(0, 8)}-wwwredir`, namespace: NS });
   });
 
-  it('emits a remove-www redirectRegex when wwwRedirect="remove-www" — replacement strips www', () => {
+  it('remove-www: redirects the www host to bare and NEVER to itself', () => {
     const { middlewares } = buildMiddlewaresForRoute(
-      { ...baseRoute, wwwRedirect: 'remove-www' },
+      { ...baseRoute, hostname: 'www.example.com', wwwRedirect: 'remove-www' },
       ROUTE_ID,
       NS,
     );
     const mw = findMw(middlewares, 'wwwredir');
-    const spec = mw?.spec as { redirectRegex?: { regex: string; replacement: string } };
-    expect(spec?.redirectRegex?.regex).toContain('www\\.');
-    // The replacement is the bare host (no www. prefix).
-    expect(spec?.redirectRegex?.replacement).not.toContain('www.');
+    const spec = (mw?.spec as { redirectRegex: { regex: string; replacement: string } }).redirectRegex;
+
+    expect(applyRedirect(spec, 'https://www.example.com/a')).toBe('https://example.com/a');
+    const canonical = 'https://example.com/a';
+    expect(applyRedirect(spec, canonical)).not.toBe(canonical);
+  });
+
+  it('targets a LITERAL host, so no input can produce a self-redirect', () => {
+    // The redirect target is a constant, not a capture from the request. That
+    // is what makes the loop unrepresentable rather than merely unlikely.
+    const { middlewares } = buildMiddlewaresForRoute(
+      { ...baseRoute, hostname: 'example.com', wwwRedirect: 'add-www' },
+      ROUTE_ID,
+      NS,
+    );
+    const spec = (findMw(middlewares, 'wwwredir')?.spec as { redirectRegex: { replacement: string } }).redirectRegex;
+    expect(spec.replacement).toContain('https://www.example.com');
   });
 
   it('emits NO wwwredir Middleware when wwwRedirect="none"', () => {

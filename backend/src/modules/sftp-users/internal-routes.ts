@@ -183,8 +183,32 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  /**
+   * Opt these routes out of the global limiter.
+   *
+   * The limiter keys on `user.sub ?? request.ip`. These calls carry no JWT —
+   * they are machine-to-machine from the sftp-gateway — so every one of them
+   * keys on the SAME gateway pod IP. That makes one 100-req/min bucket shared
+   * by every SFTP login on the platform. At ~4 calls per session (auth,
+   * ensure-file-manager, update-login, audit) it caps the WHOLE platform at
+   * ~25 SFTP logins per minute, after which logins fail with a 429 that the
+   * tenant can neither see nor do anything about.
+   *
+   * Removing it costs nothing defensively:
+   *   - anyone who cannot produce PLATFORM_INTERNAL_SECRET is already 403'd by
+   *     the hook above, before the handler runs
+   *   - a NetworkPolicy restricts which pods can open the connection at all
+   *   - SFTP *credential* brute-force is limited by the gateway itself
+   *     (5 failures / 5 min) keyed on the REAL client IP — the key that
+   *     actually separates an attacker from a busy tenant, which the
+   *     gateway-pod-IP key never could
+   *
+   * So the global limit here only ever throttled ourselves.
+   */
+  const internalRouteOpts = { config: { rateLimit: false } };
+
   // POST /internal/sftp/auth — Password-based authentication
-  app.post('/internal/sftp/auth', async (request) => {
+  app.post('/internal/sftp/auth', internalRouteOpts, async (request) => {
     const { username, password, source_ip } = passwordAuthSchema.parse(request.body);
 
     const [user] = await app.db
@@ -241,7 +265,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /internal/sftp/auth-key — Public key authentication
-  app.post('/internal/sftp/auth-key', async (request) => {
+  app.post('/internal/sftp/auth-key', internalRouteOpts, async (request) => {
     const { username, public_key_fingerprint, source_ip } = keyAuthSchema.parse(request.body);
 
     // Look up SFTP user to get tenantId
@@ -309,7 +333,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /internal/sftp/audit — Batch insert audit events
-  app.post('/internal/sftp/audit', async (request, reply) => {
+  app.post('/internal/sftp/audit', internalRouteOpts, async (request, reply) => {
     const parsed = auditBatchSchema.safeParse(request.body);
     if (!parsed.success) {
       reply.status(400).send({ error: 'No events provided' });
@@ -335,7 +359,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /internal/sftp/ensure-file-manager — Start file-manager sidecar
-  app.post('/internal/sftp/ensure-file-manager', async (request, reply) => {
+  app.post('/internal/sftp/ensure-file-manager', internalRouteOpts, async (request, reply) => {
     const { namespace } = ensureFileManagerSchema.parse(request.body);
 
     // Verify namespace belongs to an actual tenant (prevent arbitrary namespace access)
@@ -370,7 +394,7 @@ export async function sftpInternalRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // POST /internal/sftp/update-login — Record last login
-  app.post('/internal/sftp/update-login', async (request) => {
+  app.post('/internal/sftp/update-login', internalRouteOpts, async (request) => {
     const { username, source_ip } = updateLoginSchema.parse(request.body);
 
     const [user] = await app.db

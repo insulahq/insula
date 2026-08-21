@@ -1146,6 +1146,15 @@ export const dnsRecords = pgTable('dns_records', {
   priority: integer('priority'),
   weight: integer('weight'),
   port: integer('port'),
+  // Migration 0084. Which subsystem provisioned this row: 'ingress-route',
+  // 'mail', 'dkim', 'jmap', 'apex-drift'. NULL = user-created.
+  //
+  // Auto-provisioning used to write to the DNS server and never insert here,
+  // so platform-created records were invisible in the panel and the cleanup
+  // that removes them by name had nothing to find. Owning the row means a
+  // reconciler can replace exactly what it created — and must never touch a
+  // NULL row, which belongs to the user.
+  managedBy: varchar('managed_by', { length: 32 }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

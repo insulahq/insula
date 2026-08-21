@@ -7,9 +7,9 @@
  * action:
  *
  *   - Refuses to touch tenant pods (namespace `tenant-*`) and CNPG
- *     cluster instances (label `cnpg.io/instance` set). Tenant data
- *     and stateful primaries should never get force-deleted from a
- *     button — those have their own lifecycle paths.
+ *     cluster instances (see isStatefulCnpgInstance for the labels).
+ *     Tenant data and stateful primaries should never get force-deleted
+ *     from a button — those have their own lifecycle paths.
  *   - Audit-logs the action with the operator's user id + reason.
  *   - Is idempotent — running twice on a recovered node returns
  *     `{ recovered: 0 }` not an error.
@@ -31,7 +31,7 @@ import crypto from 'node:crypto';
  * Anything outside this set is treated as user-data and refused.
  *
  * Note `cnpg-system` is on the list — but the per-pod guard below
- * still refuses pods carrying `cnpg.io/instance` (those are Postgres
+ * still refuses CNPG instance pods (see isStatefulCnpgInstance) (those are Postgres
  * instance pods, not the operator). Only the cnpg operator
  * Deployment pod itself is recyclable.
  */
@@ -45,6 +45,21 @@ const SAFE_NAMESPACES: ReadonlySet<string> = new Set([
   'flux-system',
   'platform-system',
   'tigera-operator',
+  // `platform` added 2026-08-20. It holds the platform's own Deployments and
+  // CronJobs (version-poller, snapshot/backup jobs), whose Failed pods are the
+  // single most common source of stale records — a node reboot routinely
+  // leaves a few behind when a Job fires before its dependencies are up. Until
+  // now those were refused, so the operator-facing "clean stale pod records"
+  // action could not clean the case operators actually hit, and an admin had
+  // to delete them with kubectl.
+  //
+  // Widening this set is a real boundary change, so note what still protects
+  // it: only Failed / Evicted / Unknown-state pods are ever selected (never a
+  // Running one), tenant-* namespaces remain refused, and `platform` also
+  // hosts the CNPG system-db whose instance pods are refused by
+  // isStatefulCnpgInstance() regardless of phase — asserted in
+  // stale-pods.test.ts against the labels a LIVE cluster actually sets.
+  'platform',
 ]);
 
 interface RawPod {
@@ -65,11 +80,28 @@ interface RawPod {
 
 function isStatefulCnpgInstance(pod: RawPod): boolean {
   const labels = pod.metadata?.labels ?? {};
-  // Set on every CNPG-managed Postgres instance pod (system-db-1 etc).
-  // Force-deleting one of these mid-flight could corrupt the cluster
-  // — refuse from a button. Operators who really need to restart a
+  // Refuse any CNPG-managed Postgres INSTANCE pod. Force-deleting one
+  // mid-flight can corrupt the cluster — operators who really need to move a
   // primary use the CNPG operator's failover endpoints instead.
-  return Boolean(labels['cnpg.io/instance']);
+  //
+  // 2026-08-20: this previously tested `cnpg.io/instance`, which CloudNativePG
+  // DOES NOT SET — verified against a live cluster, where zero pods carry it
+  // and the real system-db-1 has cnpg.io/cluster, cnpg.io/instanceName,
+  // cnpg.io/instanceRole and cnpg.io/podRole. The guard therefore always
+  // returned false. It was inert only because the `platform` namespace (where
+  // the CNPG cluster actually lives — k8s/base/database.yaml) was refused
+  // outright; allowing that namespace is what made it load-bearing.
+  //
+  // Several signals are checked rather than one, and ANY of them refuses:
+  // over-refusing a CNPG-adjacent pod costs an operator one kubectl command,
+  // while under-refusing costs a database. The label set is upstream's and can
+  // change again.
+  return (
+    labels['cnpg.io/podRole'] === 'instance'
+    || Boolean(labels['cnpg.io/instanceName'])
+    || Boolean(labels['cnpg.io/instanceRole'])
+    || Boolean(labels['cnpg.io/cluster'])
+  );
 }
 
 function ensureSafeNamespace(namespace: string): void {
@@ -167,7 +199,14 @@ export async function recyclePod(input: {
       'RECOVERY_REFUSED_CNPG_INSTANCE',
       `Refusing to delete CNPG instance pod '${input.namespace}/${input.podName}'. Use the CNPG failover flow instead.`,
       403,
-      { pod: input.podName, instance: pod.metadata?.labels?.['cnpg.io/instance'] ?? null },
+      {
+        pod: input.podName,
+        // Report the labels CNPG actually sets — the old diagnostic read
+        // `cnpg.io/instance`, which nothing sets, so this always said null.
+        cluster: pod.metadata?.labels?.['cnpg.io/cluster'] ?? null,
+        instanceName: pod.metadata?.labels?.['cnpg.io/instanceName'] ?? null,
+        instanceRole: pod.metadata?.labels?.['cnpg.io/instanceRole'] ?? null,
+      },
     );
   }
 
@@ -187,25 +226,26 @@ export async function recyclePod(input: {
 /**
  * Bulk-delete every pod on this node whose phase is Failed/Evicted/
  * ContainerStatusUnknown — the stale records that pile up after a
- * DiskPressure-driven eviction storm. Refuses to touch any pod
- * carrying `cnpg.io/instance` even if it's in a Failed state
+ * DiskPressure-driven eviction storm. Refuses to touch a CNPG instance
+ * pod (see isStatefulCnpgInstance) even if it's in a Failed state
  * (CNPG operator handles failover).
  */
-export async function cleanStalePodsOnNode(input: {
-  readonly k8s: K8sClients;
-  readonly db: Database;
-  readonly actorUserId: string;
-  readonly node: string;
-  readonly reason: string;
-}): Promise<{ readonly recovered: number; readonly deleted: ReadonlyArray<string> }> {
-  const list = (await input.k8s.core.listPodForAllNamespaces({
-    fieldSelector: `spec.nodeName=${input.node}`,
-  } as Parameters<typeof input.k8s.core.listPodForAllNamespaces>[0])) as unknown as {
-    items?: ReadonlyArray<RawPod>;
-  };
-
-  const targets: Array<{ ns: string; name: string }> = [];
-  for (const pod of list.items ?? []) {
+/**
+ * The ONE definition of "stale pod record", shared by the cleanup action and
+ * the count the UI uses to decide whether to offer it.
+ *
+ * Kept as a single function on purpose: a separate count would drift from the
+ * delete, and a modal offering to clean 3 pods that then removes 0 (or refuses
+ * a node that does have them) is worse than not offering it at all.
+ *
+ * Refuses tenant namespaces and CNPG instances even when Failed — those are
+ * not disposable records.
+ */
+export function selectStalePodTargets(
+  pods: ReadonlyArray<RawPod>,
+): Array<{ ns: string; name: string; node: string }> {
+  const targets: Array<{ ns: string; name: string; node: string }> = [];
+  for (const pod of pods) {
     const ns = pod.metadata?.namespace ?? '';
     const name = pod.metadata?.name ?? '';
     if (!ns || !name) continue;
@@ -221,8 +261,48 @@ export async function cleanStalePodsOnNode(input: {
     const isStale = phase === 'Failed' || reasonStr === 'Evicted' || hasUnknownState;
     if (!isStale) continue;
 
-    targets.push({ ns, name });
+    targets.push({ ns, name, node: pod.spec?.nodeName ?? '' });
   }
+  return targets;
+}
+
+/**
+ * Per-node count of stale pod records, using the predicate above.
+ *
+ * Exists because the recovery modal only *suggested* cleanup when a node had
+ * evictions or disk/memory pressure — and a plain node REBOOT produces neither
+ * while routinely leaving Failed pods behind (a Job that ran while its
+ * dependencies were still coming up). The most common cause of stale records
+ * was the one case the heuristic missed.
+ */
+export async function countStalePodsByNode(
+  k8s: K8sClients,
+): Promise<Record<string, number>> {
+  const list = (await k8s.core.listPodForAllNamespaces()) as unknown as {
+    items?: ReadonlyArray<RawPod>;
+  };
+  const counts: Record<string, number> = {};
+  for (const t of selectStalePodTargets(list.items ?? [])) {
+    if (!t.node) continue;
+    counts[t.node] = (counts[t.node] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export async function cleanStalePodsOnNode(input: {
+  readonly k8s: K8sClients;
+  readonly db: Database;
+  readonly actorUserId: string;
+  readonly node: string;
+  readonly reason: string;
+}): Promise<{ readonly recovered: number; readonly deleted: ReadonlyArray<string> }> {
+  const list = (await input.k8s.core.listPodForAllNamespaces({
+    fieldSelector: `spec.nodeName=${input.node}`,
+  } as Parameters<typeof input.k8s.core.listPodForAllNamespaces>[0])) as unknown as {
+    items?: ReadonlyArray<RawPod>;
+  };
+
+  const targets = selectStalePodTargets(list.items ?? []);
 
   const deleted: string[] = [];
   for (const t of targets) {

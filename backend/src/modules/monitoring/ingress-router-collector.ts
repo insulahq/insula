@@ -28,9 +28,19 @@ export interface CollectorLog {
   warn: (...args: unknown[]) => void;
 }
 
-/** In-cluster address of the Traefik Service (namespace `traefik`, port 80). */
+/**
+ * In-cluster address of the Traefik Service — the HTTPS (`websecure`)
+ * entrypoint.
+ *
+ * MUST be :443, not :80. Every platform router binds `entryPoints:
+ * ["websecure"]`, so a request to the plaintext entrypoint matches NOTHING and
+ * gets Traefik's unrouted 404 — which is precisely the signal this collector
+ * treats as "the panel is down". Probing :80 therefore reported both panels as
+ * broken on a cluster where both were serving fine, i.e. a permanent false
+ * critical alert on every install. Caught on DEV within minutes of deploying.
+ */
 const TRAEFIK_SERVICE_URL = process.env.TRAEFIK_SERVICE_URL
-  ?? 'http://traefik.traefik.svc.cluster.local:80/';
+  ?? 'https://traefik.traefik.svc.cluster.local:443/';
 
 const PROBE_TIMEOUT_MS = 5_000;
 
@@ -51,6 +61,30 @@ export interface ProbeResult {
   readonly detail: string;
 }
 
+/**
+ * Per-host dispatcher.
+ *
+ * Two things have to be the panel hostname or Traefik cannot route the probe:
+ *   - the Host HEADER, which the HTTP router matches on, and
+ *   - the TLS SNI, which selects the certificate and the HTTPS router.
+ * The TCP connection still goes to the Traefik Service, so this stays a
+ * cluster-internal probe with no dependency on external DNS or hairpin NAT.
+ *
+ * Certificate verification is off ON PURPOSE: the probe asks "did a router
+ * match", not "is the certificate valid" — cert health has its own alert. A
+ * cluster using a private CA, or mid-issuance, must not read as a routing
+ * outage.
+ */
+async function dispatcherFor(host: string): Promise<unknown | undefined> {
+  try {
+    const { Agent } = await import('undici');
+    return new Agent({ connect: { rejectUnauthorized: false, servername: host } });
+  } catch {
+    // undici unavailable (unit tests inject fetch anyway) — fall through.
+    return undefined;
+  }
+}
+
 export async function probeHostRouted(
   host: string,
   fetchImpl: typeof fetch = fetch,
@@ -58,12 +92,14 @@ export async function probeHostRouted(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
+    const dispatcher = fetchImpl === fetch ? await dispatcherFor(host) : undefined;
     const res = await fetchImpl(TRAEFIK_SERVICE_URL, {
       method: 'GET',
       headers: { Host: host },
       redirect: 'manual',
       signal: controller.signal,
-    });
+      ...(dispatcher ? { dispatcher } : {}),
+    } as RequestInit);
 
     // Only a 404 can be the unrouted case; anything else means a router
     // matched and the backend answered (including 401/403/5xx, which are

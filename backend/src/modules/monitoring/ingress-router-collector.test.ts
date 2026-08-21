@@ -44,6 +44,42 @@ describe('probeHostRouted', () => {
   });
 });
 
+describe('probe target', () => {
+  it('probes the HTTPS (websecure) entrypoint, not plaintext :80', async () => {
+    // Every platform router binds entryPoints: ["websecure"]. Probing :80
+    // matches NO router, so Traefik answers its unrouted 404 — the exact
+    // signal this collector reads as "the panel is down". The first version
+    // did that and reported both panels broken on a healthy cluster: a
+    // permanent false critical alert on every install.
+    //
+    // Asserted on the URL the probe actually requests, because the unit tests
+    // inject fetch and would otherwise pass against any target at all — which
+    // is why the original bug survived them and only surfaced on a cluster.
+    let requested = '';
+    const f = (async (url: unknown) => {
+      requested = String(url);
+      return { status: 200, text: async () => '' } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await probeHostRouted('admin.example.test', f);
+    expect(requested).toMatch(/^https:\/\//);
+    expect(requested).toContain(':443');
+  });
+
+  it('sends the panel hostname as the Host header', async () => {
+    // Traefik's HTTP router matches on Host; without it the probe tests
+    // nothing about the panel it claims to be checking.
+    let sent: Record<string, string> | undefined;
+    const f = (async (_u: unknown, init?: RequestInit) => {
+      sent = init?.headers as Record<string, string>;
+      return { status: 200, text: async () => '' } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    await probeHostRouted('tenant.example.test', f);
+    expect(sent?.Host).toBe('tenant.example.test');
+  });
+});
+
 describe('collectIngressRoutersOnce', () => {
   beforeEach(() => ingressRouterUp.reset());
 
