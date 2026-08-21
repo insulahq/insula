@@ -4096,6 +4096,18 @@ scenario_mail_hostname_rename() {
   # a bogus mail-e2e-* hostname. Cleared after the explicit restore.
   printf '%s' "$original" > /tmp/integration.mail_hostname_restore
 
+  # A FUNCTION-scope restore too. The EXIT trap above fires at PROCESS
+  # exit — but a mid-scenario `return 1` (any failed assertion, or the
+  # mail settle gate) leaves the renamed hostname LIVE for every later
+  # scenario in this same process: run 4's batch aborted here after the
+  # rename, and the mail/mail_tls scenarios then failed against
+  # 'mail-e2e-rename.<apex>' greetings, cascading a single fault into
+  # four. RETURN fires on every exit path of this function; the explicit
+  # step-7 restore below still runs on success and the double PATCH is
+  # idempotent. The trap clears itself so later scenarios are unaffected.
+  # shellcheck disable=SC2064 — $original is intentionally expanded NOW.
+  trap "api_raw PATCH /admin/webmail-settings '{\"mailServerHostname\":\"${original}\"}' >/dev/null 2>&1 || true; trap - RETURN" RETURN
+
   # STABLE test hostname (exactly ONE label under the canonical apex, so it
   # resolves via the `*.<apex>` wildcard). Deliberately NOT timestamped:
   # Let's Encrypt rate-limits per REGISTERED DOMAIN (the apex's eTLD+1),
