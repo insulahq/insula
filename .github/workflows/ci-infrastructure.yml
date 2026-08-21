@@ -419,8 +419,16 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install gitleaks (latest stable)
+        # The version lookup MUST authenticate. Unauthenticated api.github.com
+        # calls share a 60/hr budget per RUNNER IP — shared across every tenant
+        # of that IP — and a 403 here failed the whole Infrastructure CI run on
+        # a merge to development (2026-08-21, run 32462915013). GITHUB_TOKEN
+        # raises that to 5000/hr scoped to this repo.
+        env:
+          GH_API_TOKEN: ${{ github.token }}
         run: |
-          ver=$(curl -fsSL https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+          ver=$(curl -fsSL -H "Authorization: Bearer ${GH_API_TOKEN}" \
+                  https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
                   | grep -oE '"tag_name": *"v[^"]+"' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
           [ -n "$ver" ] || { echo "could not resolve gitleaks version"; exit 1; }
           echo "gitleaks v$ver"
