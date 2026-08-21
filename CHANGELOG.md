@@ -15,6 +15,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.8.9] - 2026-08-21
 
 ### Fixed
+- **A new domain could wait up to an hour for its TLS certificate.** Certificate
+  issuance is deliberately held back until a domain's DNS verifies, so the
+  platform never asks a certificate authority for a name that cannot be proven.
+  On the create path the certificate was requested *before* that first
+  verification ran — so it was correctly skipped, the domain verified moments
+  later, and nothing asked again. The only retry was the hourly verification
+  sweep.
+
+  The effect was the opposite of what the gate was for: a domain whose DNS was
+  already correct sat without a certificate — and therefore without working
+  HTTPS — until the next sweep. It now asks again the instant the domain
+  verifies, which is within seconds of creation for correctly configured DNS.
+
+  Found by the full integration suite against a real cluster, where a freshly
+  created domain never received a certificate at all.
 - **Container images shipped known-vulnerable base packages.** The Debian-based
   images installed packages but never applied the base image's pending security
   updates, so they shipped whatever the pinned base contained — indefinitely.

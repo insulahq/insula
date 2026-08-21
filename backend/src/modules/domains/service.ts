@@ -30,6 +30,29 @@ export type VerificationTransition =
   | 'no_change';   // any other / same status
 
 /**
+ * Does this verification transition mean we should (re-)ask for a certificate?
+ *
+ * ACME issuance is gated on verification: `ensureDomainCertificate` refuses to
+ * order for an unverified domain, because a doomed order burns shared Let's
+ * Encrypt rate limits and raises cert-not-ready alerts nobody can action. That
+ * gate means SOMETHING has to ask again at the moment a domain actually
+ * verifies — and every caller that runs a verification is such a moment.
+ *
+ * This lives in one place because it did not, once: the rule was threaded into
+ * the hourly verification cron but missed on the create path, where the cert is
+ * attempted BEFORE the post-create verification runs. A domain whose DNS was
+ * already correct therefore got no certificate until the next hourly sweep —
+ * the exact "certificates take unreasonably long" problem the gate was added to
+ * fix. Caught by integration-all: `cert skipped (domain is 'unverified')`.
+ *
+ * `no_change` is excluded deliberately — an already-verified domain re-passing
+ * its check must not re-enter issuance on every sweep.
+ */
+export function shouldIssueCertificateAfter(transition: VerificationTransition): boolean {
+  return transition === 'first_pass' || transition === 'recovery';
+}
+
+/**
  * Atomically update a domain's verification status and cache, then return
  * the old status, new status, and lifecycle transition type.
  *
@@ -409,7 +432,22 @@ export async function createDomain(db: Database, tenantId: string, input: Create
       const { verifyDomain: runVerify, getPlatformConfig } = await import('./verification.js');
       const platformConfig = await getPlatformConfig(db);
       const result = await runVerify(input.domain_name, input.dns_mode, platformConfig, db);
-      await setDomainVerificationStatus(db, id, result);
+      const { transition } = await setDomainVerificationStatus(db, id, result);
+
+      // The ensureDomainCertificate call ABOVE ran while this domain was still
+      // 'unverified', so the gate skipped it. Ask again now that the domain has
+      // actually verified — otherwise it waits for the hourly cron.
+      if (k8s && shouldIssueCertificateAfter(transition)) {
+        try {
+          await ensureDomainCertificate(db, k8s, id);
+        } catch (certErr) {
+          // Non-blocking: the ingress reconciler retries, and a cert failure
+          // must not make domain creation look broken.
+          console.warn(
+            `[domains.createDomain] post-verification ensureDomainCertificate failed for ${input.domain_name}: ${(certErr as Error).message}`,
+          );
+        }
+      }
     } catch (err) {
       // Non-fatal — domain stays 'unverified' until next cron tick
       console.warn(`[domains.createDomain] post-create verify failed: ${(err as Error).message}`);

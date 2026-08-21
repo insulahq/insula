@@ -22,7 +22,7 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
 import { domains, systemSettings, tenants } from '../../db/schema.js';
 import { getPlatformIngressIps, getPlatformConfig, verifyDomain } from './verification.js';
-import { setDomainVerificationStatus } from './service.js';
+import { setDomainVerificationStatus, shouldIssueCertificateAfter } from './service.js';
 import { notifyDomainRegression, notifyDomainGraceUnverified } from './notifications.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -218,7 +218,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
       // (doomed orders burn shared Let's Encrypt rate limits and raise
       // cert-not-ready alerts nobody can action), so something has to ask
       // again once the domain actually verifies. This is that something.
-      if (transition === 'first_pass' || transition === 'recovery') {
+      if (shouldIssueCertificateAfter(transition)) {
         try {
           await ensureDomainCertificate(db, createK8sClients(), candidate.id);
         } catch (certErr) {
