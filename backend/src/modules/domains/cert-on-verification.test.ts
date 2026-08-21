@@ -72,9 +72,25 @@ describe('every verification call site asks for a certificate', () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(new URL('./service.ts', import.meta.url), 'utf-8');
 
-    const verifyBlock = src.slice(src.indexOf('post-create DNS verification'));
+    // Bound the slice at `return created;` (the end of createDomain) — an
+    // unbounded slice runs to end-of-file, where updateDomain ALSO calls
+    // reconcileIngress, and the assertion below matches that instead. That
+    // exact vacuity was caught by a mutation check: deleting the re-reconcile
+    // block left all assertions green.
+    const start = src.indexOf('post-create DNS verification');
+    const verifyBlock = src.slice(start, src.indexOf('return created;', start));
     expect(verifyBlock).toContain('shouldIssueCertificateAfter');
     expect(verifyBlock).toContain('ensureDomainCertificate');
+    // The cert alone is not enough: the IngressRoute was built while the
+    // domain was unverified, so it has NO tls.secretName and Traefik serves
+    // its default cert for the host. Only a re-reconcile stamps the issued
+    // secret in — nothing else ever revisits tenant IngressRoutes. (Caught by
+    // integration-all: Certificate Ready in 20s, then "TLS cert does NOT
+    // cover <host> … cert names: …traefik.default".)
+    // Assert the CALL, not the bare name: the catch block's warn message also
+    // contains the string 'reconcileIngress', so a name match survives the
+    // call being deleted (second vacuity caught by the same mutation check).
+    expect(verifyBlock).toContain('await reconcileIngress(');
   });
 
   it('the verification cron re-asks too', async () => {
@@ -83,6 +99,8 @@ describe('every verification call site asks for a certificate', () => {
 
     expect(src).toContain('shouldIssueCertificateAfter');
     expect(src).toContain('ensureDomainCertificate');
+    // Same IngressRoute-stamping requirement as the create path.
+    expect(src).toContain('await reconcileIngress(');
     // Both call sites must share the predicate rather than re-spelling the
     // transition list — re-spelling it is how they drifted apart.
     expect(src).not.toMatch(/transition === 'first_pass'\s*\|\|\s*transition === 'recovery'/);
