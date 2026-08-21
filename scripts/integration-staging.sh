@@ -4105,7 +4105,8 @@ scenario_mail_hostname_rename() {
   # four. RETURN fires on every exit path of this function; the explicit
   # step-7 restore below still runs on success and the double PATCH is
   # idempotent. The trap clears itself so later scenarios are unaffected.
-  # shellcheck disable=SC2064 — $original is intentionally expanded NOW.
+  # $original is intentionally expanded NOW, not at trap time.
+  # shellcheck disable=SC2064
   trap "api_raw PATCH /admin/webmail-settings '{\"mailServerHostname\":\"${original}\"}' >/dev/null 2>&1 || true; trap - RETURN" RETURN
 
   # STABLE test hostname (exactly ONE label under the canonical apex, so it
