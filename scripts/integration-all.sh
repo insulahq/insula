@@ -1170,8 +1170,8 @@ snapshot_global_state() {
 import json,sys
 b=sys.stdin.read().split('\n')
 def d(i):
-    # An ERROR envelope ({'error':...}) parses as valid JSON, so `.get('data',{})`
-    # silently yields {} — and the snapshot becomes a full keyset of EMPTY
+    # An ERROR envelope parses as valid JSON, so the old get('data', empty-dict)
+    # silently yields an empty dict — and the snapshot becomes a full keyset of EMPTY
     # values instead of READ_ERR. That all-empty 'canonical' then makes every
     # healthy later snapshot look like total drift, and the gate blames
     # whichever innocent suite just finished (run 1dd72dcc: mailbox-quota
