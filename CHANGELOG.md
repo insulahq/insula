@@ -12,6 +12,72 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **With a www redirect configured, the non-canonical hostname answered plain
+  HTTP with a 404 instead of redirecting.** The HTTP-side route builder computed
+  the alternate hostname and then never emitted a route for it, so with
+  "add www" a visitor typing `http://example.com` hit the ingress controller's
+  unrouted 404 — while `http://www.example.com`, `https://example.com` and
+  `https://www.example.com` all worked. Observed live on a production domain.
+  The alternate host now gets its own HTTP route carrying the www-redirect
+  rule, taking the visitor to the canonical HTTPS address in a single redirect.
+- **A domain's HTTPS kept serving the ingress default certificate even after its
+  certificate was issued.** The route's ingress resource is built when the route
+  is created — while the domain is still unverified, so no certificate exists
+  yet and the resource is built without a TLS reference. When the certificate
+  arrived moments later, nothing revisited the resource: the certificate sat
+  ready while visitors saw the ingress controller's self-signed default
+  indefinitely. The moment a domain verifies, its ingress is now re-reconciled
+  so the issued certificate is actually served. Found by the full integration
+  suite: certificate Ready in 20 seconds, yet the endpoint still presenting the
+  default certificate.
+- **A new domain could wait up to an hour for its TLS certificate.** Certificate
+  issuance is deliberately held back until a domain's DNS verifies, so the
+  platform never asks a certificate authority for a name that cannot be proven.
+  On the create path the certificate was requested *before* that first
+  verification ran — so it was correctly skipped, the domain verified moments
+  later, and nothing asked again. The only retry was the hourly verification
+  sweep.
+
+  The effect was the opposite of what the gate was for: a domain whose DNS was
+  already correct sat without a certificate — and therefore without working
+  HTTPS — until the next sweep. It now asks again the instant the domain
+  verifies, which is within seconds of creation for correctly configured DNS.
+
+  Found by the full integration suite against a real cluster, where a freshly
+  created domain never received a certificate at all.
+- **Container images shipped known-vulnerable base packages.** The Debian-based
+  images installed packages but never applied the base image's pending security
+  updates, so they shipped whatever the pinned base contained — indefinitely.
+  Bumping the pin would not have helped: the pin already referenced the current
+  published image, and Debian rebuilds those far less often than it publishes
+  security fixes. The images carried a set of `util-linux` flaws (mount
+  time-of-check/time-of-use races and a bypass allowing execution from
+  filesystems mounted to forbid it) for which fixes had been available.
+
+  It stayed hidden because the vulnerability gate only runs when an image is
+  rebuilt, and these images change rarely — so the gate was silent on the main
+  branch and only fired on a pull request that forced a full rebuild. The images
+  now pick up security updates at build time; verified against the same gate,
+  which goes from failing to reporting zero findings.
+- **Verifying a domain issued its certificate but kept serving the placeholder.**
+  The verify action — which the panels run automatically when a domain page is
+  opened — requested the certificate but never updated the route to serve it,
+  so the browser kept showing the ingress default certificate. To anyone
+  watching, that was indistinguishable from the certificate never being
+  requested. The route is now updated in the same step.
+
+### Changed
+- **Requesting a certificate re-issue now runs a fresh DNS verification first —
+  before anything is touched.** Previously the re-issue deleted the existing,
+  still-valid certificate and then placed a new order regardless of DNS state.
+  Since a re-issue is clicked precisely when something seems broken, an operator
+  with misconfigured DNS destroyed their working certificate and burned a doomed
+  order against the certificate authority's weekly limit. Now: if the fresh
+  check fails, the re-issue refuses, the existing certificate is left untouched,
+  and the message explains what to fix. The check is live, not cached, so a
+  just-fixed domain passes immediately.
+
 ## [2026.8.9] - 2026-08-21
 
 ### Fixed

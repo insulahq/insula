@@ -18,14 +18,14 @@ data:
   public-url: "https://admin.${DOMAIN}"
   cors-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
   # Per-tenant sidecar image — pull from GHCR on real clusters.
-  file-manager-image: "ghcr.io/insulahq/insula/file-manager:aeac12d@sha256:53da9f0204cfd12a3d5e7c9b2f9ed63563de826507ce94d5bf937f6ea7e42ab0"
+  file-manager-image: "ghcr.io/insulahq/insula/file-manager:d86a110@sha256:d1c2e67ff58eff5e06a2b69bccab8d97d52dcf10ebadc3124d2ff321263ceb9d"
   # Mail-archive checkpoint binary. CI-MANAGED — rewritten by
   # .github/scripts/pin-config-image.sh from ci-rocksdb-secondary-checkpoint.yml
   # after every push to development. Do not hand-edit; the next build overwrites
   # it. Format is `:<tag>@sha256:<digest>` — the digest is authoritative (proven
   # on k3s v1.31.4: a deliberately WRONG tag with a right digest still ran the
   # digest's image), the tag is there so this line stays readable.
-  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260807162401-aeac12d@sha256:315274ae1f4b56a11a6df69894ff016fec0e9d51e68b0963ef582d08301edde6"
+  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260821005913-d86a110@sha256:4003b47f2866c3ad58543bb6540e3284cfa2bf6db7d6c4d44d36256eab0543ae"
   # Private Worker — clients dial in to this WSS host with their token.
   # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
   # ingress (set up at install time, no per-tenant DNS work needed).
@@ -34,10 +34,10 @@ data:
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
   # CI-MANAGED (pin-config-image.sh) — do not hand-edit; the next build of each
   # image overwrites these with `:<tag>@sha256:<digest>`.
-  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:aeac12d@sha256:22cf8f8fbe1eb5387fc7d5f28358cd17c6b9cd11220b8c47ddc0063ce92182c1"
-  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:aeac12d@sha256:6c5e5ab8cc2230df6e8eb20775baf740977d7b8b31685b27d0c868ed11306a00"
-  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:aeac12d@sha256:ea45bdf01e415ef1fafdcbdf2daccefb13e127015c043b6c6b6cb763845a6123"
-  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:aeac12d@sha256:ab368f107d421ebaaef4c9d27cfaf9e4d934c29eff140b4f75739b661c09f45b"
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:d86a110@sha256:e68f8e9fdd123bdd67af66a347ff8f19907d4689c6528c092b80aaf1bd3e5164"
+  migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:d86a110@sha256:6b273692942d9a9737427d93c2a1b7701ad1726fce282e356b719c5116e477cb"
+  claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:d86a110@sha256:5fc52c692b7e6f79d140ee19e26aef8057757f300ab266259caf24febc20821b"
+  node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:d86a110@sha256:70c9d45ea44adf08f40ae54fbf8cfae49fbba15fc072bd121220c5d033f7a6ae"
   # Longhorn dashboard URL for the Storage Configuration iframe.
   # 2026-06-12: path route on the admin host (same-origin) — the
   # longhorn.<apex> subdomain was removed.

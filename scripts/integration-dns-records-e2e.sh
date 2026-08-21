@@ -227,8 +227,16 @@ R=$(api POST "/tenants/${TENANT_ID}/domains/${DOMAIN_ID}/dns-records" \
 code=$(code_of "$R")
 if [[ "$code" == "201" ]]; then
   fail "an MX with no priority was accepted (${code}) — the API is lying again"
-else
+elif [[ "$code" == "429" ]]; then
+  # A rate-limit answer is NOT evidence the validator works: this branch used
+  # to accept ANY non-201, so a 429 (or a 401, or a 500) scored a pass and the
+  # assertion proved nothing. The whole suite shares one admin token with the
+  # parallel batch, so 429s are reachable here.
+  fail "rate-limited (429) — the MX-priority validator was never exercised"
+elif [[ "$code" == "400" || "$code" == "422" ]]; then
   pass "MX without a priority is refused (HTTP ${code}), not silently persisted"
+else
+  fail "MX without a priority got HTTP ${code} — expected a validation refusal (400/422)"
   LEFT=$(body_of "$(api GET "/tenants/${TENANT_ID}/domains/${DOMAIN_ID}/dns-records")" \
          | jqp "d=json.load(sys.stdin).get('data') or [];print(sum(1 for r in d if r.get('recordName')=='nope'))")
   [[ "${LEFT:-0}" == "0" ]] && pass "and no local row was left behind" \

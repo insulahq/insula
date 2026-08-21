@@ -22,9 +22,10 @@ import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
 import { domains, systemSettings, tenants } from '../../db/schema.js';
 import { getPlatformIngressIps, getPlatformConfig, verifyDomain } from './verification.js';
-import { setDomainVerificationStatus } from './service.js';
+import { setDomainVerificationStatus, shouldIssueCertificateAfter } from './service.js';
 import { notifyDomainRegression, notifyDomainGraceUnverified } from './notifications.js';
 import { ensureDomainCertificate } from '../certificates/service.js';
+import { reconcileIngress } from './k8s-ingress.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { PlatformIngressIps } from './verification.js';
 
@@ -50,7 +51,7 @@ export async function fetchVerifyCandidates(
   db: Database,
   since: Date,
   limit = MAX_CANDIDATES_PER_TICK,
-): Promise<Array<{ id: string; domainName: string; dnsMode: 'primary' | 'cname' | 'secondary'; status: string; verifiedAt: Date | null; tenantId: string; createdAt: Date }>> {
+): Promise<Array<{ id: string; domainName: string; dnsMode: 'primary' | 'cname' | 'secondary'; status: string; verifiedAt: Date | null; tenantId: string; kubernetesNamespace: string; createdAt: Date }>> {
   return db
     .select({
       id: domains.id,
@@ -59,6 +60,9 @@ export async function fetchVerifyCandidates(
       status: domains.status,
       verifiedAt: domains.verifiedAt,
       tenantId: domains.tenantId,
+      // Needed by the post-verification reconcileIngress below — the tenant
+      // join is already here for the SYSTEM-tenant filter.
+      kubernetesNamespace: tenants.kubernetesNamespace,
       createdAt: domains.createdAt,
     })
     .from(domains)
@@ -180,6 +184,7 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
     status: string;
     verifiedAt: Date | null;
     tenantId: string;
+    kubernetesNamespace: string;
     createdAt: Date;
   }>;
   try {
@@ -218,15 +223,28 @@ async function tick(db: Database, log: FastifyBaseLogger): Promise<void> {
       // (doomed orders burn shared Let's Encrypt rate limits and raise
       // cert-not-ready alerts nobody can action), so something has to ask
       // again once the domain actually verifies. This is that something.
-      if (transition === 'first_pass' || transition === 'recovery') {
+      if (shouldIssueCertificateAfter(transition)) {
+        const k8s = createK8sClients();
         try {
-          await ensureDomainCertificate(db, createK8sClients(), candidate.id);
+          await ensureDomainCertificate(db, k8s, candidate.id);
         } catch (certErr) {
           // Non-blocking: the reconciler retries, and a failure here must
           // not abort the rest of the verification sweep.
           log.warn(
             { err: certErr, domain: candidate.domainName },
             '[verify-cron] certificate request after verification failed',
+          );
+        }
+        // Same reason as createDomain's post-verification block: the tenant
+        // IngressRoute was built while the domain was unverified, so it has no
+        // tls.secretName and Traefik serves its default cert. Nothing else
+        // ever revisits it — stamp the now-issued secret in.
+        try {
+          await reconcileIngress(db, k8s, candidate.tenantId, candidate.kubernetesNamespace);
+        } catch (ingErr) {
+          log.warn(
+            { err: ingErr, domain: candidate.domainName },
+            '[verify-cron] post-verification ingress reconcile failed',
           );
         }
       }

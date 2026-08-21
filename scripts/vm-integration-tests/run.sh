@@ -287,6 +287,27 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
     $K -n flux-system scale deploy --all --replicas=0 >/dev/null 2>&1 || true
     $K -n flux-system patch kustomization platform --type merge -p '{"spec":{"suspend":true}}' >/dev/null 2>&1 || true
     $K -n platform patch cm platform-config --type merge -p '{"data":{"cluster-issuer-name":"acme-custom-http01","cert-issuer-staging-http01":"acme-custom-http01","cert-issuer-prod-http01":"acme-custom-http01","cert-issuer-fallback":"acme-custom-http01"}}' >/dev/null 2>&1 || true
+    # Raise the API rate limit for this DISPOSABLE run — IN THE DATABASE.
+    #
+    # The limiter buckets on `user.sub ?? request.ip` at 100 req/min. The
+    # PARALLEL group runs ~28 suites that all authenticate as the SAME admin, so
+    # they share ONE bucket and throttle each OTHER. Measured: 7 flaky suites on
+    # 2026-08-21 run 406f1f0a, 11 on run 2bf807f9 — every one "failed under
+    # parallel load, PASSED on serial retry".
+    #
+    # This MUST go in the DB, not `kubectl set env`. Scaling Flux to 0 does not
+    # hold for a whole run: on 2bf807f9 the controllers were back at 1/1 with
+    # the platform Kustomization un-suspended, and the Deployment had been
+    # reverted — API_RATE_LIMIT was ABSENT from the spec and empty in the pod,
+    # so the raise silently did nothing and the run got FLAKIER, not less.
+    #
+    # `resolveRateLimitMax` reads system_settings.api_rate_limit BEFORE the env
+    # var, and Flux does not manage database rows — so this survives any
+    # Deployment revert or later restart. Still read once per process, hence
+    # before the restart below.
+    $K -n platform exec system-db-1 -c postgres -- \
+      psql -U postgres -d platform -c \
+      "UPDATE system_settings SET api_rate_limit = 5000;" >/dev/null 2>&1 || true
     $K -n platform rollout restart deploy/platform-api >/dev/null 2>&1 || true
     $K -n platform rollout status deploy/platform-api --timeout=120s >/dev/null 2>&1 || true
     for iss in letsencrypt-prod-http01 letsencrypt-staging-http01 local-ca-issuer; do
@@ -296,7 +317,7 @@ if [[ -n "${VMTEST_PEBBLE_IP:-}" ]]; then
       $K -n "$ns" patch certificate "$nm" --type merge -p '{"spec":{"issuerRef":{"name":"acme-custom-http01","kind":"ClusterIssuer","group":"cert-manager.io"}}}' >/dev/null 2>&1 || true
       [ -n "$sec" ] && $K -n "$ns" delete secret "$sec" --ignore-not-found >/dev/null 2>&1 || true
     done
-    echo "  platform-config → acme-custom-http01; platform-api restarted; stuck certs reissued"
+    echo "  platform-config → acme-custom-http01; api_rate_limit=5000 (DB); platform-api restarted; stuck certs reissued"
 FORCEACME
   echo "── waiting for the platform TLS cert (Pebble) to issue ──"
   ssh -i "$VMTEST_SSH_KEY" -o StrictHostKeyChecking=no "root@${VMTEST_CP_IP}" bash -s <<'WAITCERT' || true
@@ -745,7 +766,17 @@ mkdir -p /root/insula/scripts
 {
   echo "# Generated per run by vm-integration-tests/run.sh — this ephemeral"
   echo "# cluster's own targets. Deliberately the ONLY profile the tier loads."
-  echo "MAIL_HOST=mail.${APEX}"
+  # MAIL_HOST is deliberately EMPTY, not mail.${APEX}. A non-empty value is
+  # an operator PIN: _resolve_serving_mail_host echoes it verbatim and skips
+  # its sweep, so every mail probe hits the STATIC dnsmasq A-record (the CP
+  # node) forever. The mail-migration suite then legitimately moves Stalwart
+  # to another node — hostPort follows the pod, DNS here cannot — and every
+  # later mail scenario fails "Connection refused" against a healthy stack
+  # (run 3897175c: banners + settle gate dead from the first post-migration
+  # scenario to the end of the run). Empty keeps the caller-wins guard
+  # satisfied (the var IS set, so an operator profile cannot leak in) while
+  # letting the sweep find the serving node dynamically.
+  echo "MAIL_HOST="
   echo "PLATFORM_BASE_DOMAIN=${APEX}"
   echo "PLATFORM_DOMAIN=${APEX}"
   echo "MAIL_DOMAIN_APEX=${APEX}"

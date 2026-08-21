@@ -536,6 +536,83 @@ _resolve_mail_host() {
 # nodes) PLUS the active Stalwart pod's hostIP, which serves the port
 # directly and is the most reliable. Returns the first serving IP; falls
 # back to the first candidate so a genuine outage still fails loudly.
+
+# Wait (bounded) for the mail data plane to SETTLE before asserting on it.
+#
+# Why this exists: in a full integration-all run, mail-external-reachability
+# and mail-mobility legitimately toggle the port-exposure mode / migrate the
+# mail stack, and their EXIT-trap restores kick off a Stalwart roll + port
+# re-plumb that takes MINUTES to converge. The serial retry pass starts right
+# after, so this suite's mail scenarios walked into a converging stack and
+# reported "Connection refused" on every port against a platform that was
+# healthy two minutes later (run 2bf807f9: retry at 06:47, Stalwart
+# ReplicaSets still rolling at 07:08). `_resolve_serving_mail_host` retries
+# for ~30s, which covers a haproxy blip but not an infra-restore convergence.
+#
+# The gate: wait for (a) the stalwart Deployment rollout to complete and
+# (b) an SMTP 220 banner from some candidate IP — up to MAIL_SETTLE_TIMEOUT
+# (default 300s). Past the bound it FAILS LOUDLY: a mail stack that cannot
+# serve a banner five minutes after nothing touched it is a real outage, and
+# this gate must never absorb one. Bounded-wait-then-assert distinguishes
+# "converging" from "broken"; a bare assert cannot.
+_mail_wait_settled() {
+  local budget="${MAIL_SETTLE_TIMEOUT:-300}" t0 elapsed
+  t0=$(date +%s)
+  ssh_cp "kubectl -n mail rollout status deploy/stalwart-mail --timeout=${budget}s" >/dev/null 2>&1 || true
+  local mailhost candidates ip
+  mailhost=$(_resolve_mail_hostname)
+  while :; do
+    candidates=$(_resolve_mail_ips "$mailhost")
+    # The DNS A-records alone are NOT enough: after a legitimate mail-stack
+    # migration the pod serves hostPort on a node the (static, VM-tier) DNS
+    # does not name. Sweep the live pod hostIP too, re-read EVERY iteration —
+    # a migration can complete while this gate is waiting. Same candidate
+    # priority as _resolve_serving_mail_host, for the same reason.
+    local _sw_ip
+    _sw_ip=$(ssh_cp "kubectl -n mail get pod -l app=stalwart-mail --field-selector=status.phase=Running -o jsonpath='{.items[0].status.hostIP}'" 2>/dev/null | tr -d '[:space:]')
+    [[ -n "$_sw_ip" ]] && candidates=$(printf '%s\n%s\n' "$_sw_ip" "$candidates" | grep -vE '^$' | awk '!seen[$0]++')
+    while IFS= read -r ip; do
+      [[ -z "$ip" ]] && continue
+      # Primary probe: clean SMTP session (banner + QUIT) via ncat. Capture
+      # rc + stderr instead of discarding them — when this path fails, the
+      # failure message must say HOW (connect refused vs connected-but-
+      # silent vs ncat error), not just "no 220".
+      local _np_out _np_rc _np_err
+      _np_err="${TMPDIR:-/tmp}/.mail-settle-ncat-err.$$"
+      _np_out=$( ( sleep 0.3; printf "QUIT\r\n"; sleep 0.3 ) \
+           | timeout 7 ncat -w 5 "$ip" 25 2>"$_np_err" ); _np_rc=$?
+      if grep -qE '^220[ -]' <<<"$_np_out"; then
+        rm -f "$_np_err"
+        log "mail data plane settled (220 from $ip after $(( $(date +%s) - t0 ))s)"
+        return 0
+      fi
+      # Fallback probe: raw /dev/tcp banner read from this same shell. The
+      # 164415f7 verdict run failed three scenarios on "no SMTP 220 within
+      # 300s" while an independent raw-TCP probe from the SAME runner VM got
+      # the banner every 3s throughout the window (reproduced once more
+      # post-run) — the ncat pipeline, not the mail plane, was the outage.
+      # A banner via EITHER mechanism means the data plane IS serving; the
+      # mechanism disagreement is logged loudly (with the ncat rc + stderr
+      # we just captured) so the next occurrence is diagnosable.
+      local _fb_line
+      _fb_line=$(timeout 8 bash -c 'exec 3<>/dev/tcp/'"$ip"'/25 || exit 9; IFS= read -t 5 -r l <&3; printf "QUIT\r\n" >&3 2>/dev/null; printf %s "$l"' 2>/dev/null)
+      if [[ "$_fb_line" == 220* ]]; then
+        log "mail data plane settled (220 from $ip after $(( $(date +%s) - t0 ))s) — via raw-TCP FALLBACK; ncat probe saw nothing (rc=$_np_rc, out='${_np_out:0:40}', err='$(head -c 120 "$_np_err" 2>/dev/null | tr '\n' ' ')') — ncat-vs-raw divergence, investigate if recurring"
+        rm -f "$_np_err"
+        return 0
+      fi
+      _last_probe_detail="ip=$ip ncat_rc=$_np_rc ncat_err='$(head -c 120 "$_np_err" 2>/dev/null | tr '\n' ' ')' raw='${_fb_line:0:20}'"
+      rm -f "$_np_err"
+    done <<<"$candidates"
+    elapsed=$(( $(date +%s) - t0 ))
+    if (( elapsed >= budget )); then
+      fail "mail data plane did NOT settle within ${budget}s — no SMTP 220 (ncat AND raw /dev/tcp) from any of: $(echo "$candidates" | tr '\n' ' ')— last probe: ${_last_probe_detail:-none}"
+      return 1
+    fi
+    sleep 10
+  done
+}
+
 _resolve_serving_mail_host() {
   if [[ -n "${MAIL_HOST:-}" ]]; then
     echo "$MAIL_HOST"
@@ -1427,6 +1504,73 @@ scenario_https() {
     fail "HTTPS GET https://$domain/ returned $status (expected 2xx/3xx/403 from tenant workload, got default-backend or pod-not-ready)"
     return 1
   fi
+
+  # 8. Force-https + add-www: EVERY host x scheme leg must answer.
+  #    Production found the gap first (2026-08-21): with both options on,
+  #    the :80 router existed only for the CANONICAL host, so
+  #    http://<bare> was Traefik's unrouted 404 while the other three
+  #    legs worked. No suite probed that leg, which is exactly why the
+  #    operator hit it before the harness did. This step pins all four.
+  local rid
+  rid=$(api GET "/tenants/$cid/domains/$dom_id/routes" | jq -r '.data[0].id // empty')
+  if [[ -z "$rid" ]]; then
+    fail "step 8: no ingress route found for domain $dom_id"
+    return 1
+  fi
+  # The REDIRECTS endpoint, not the generic route PATCH. The generic PATCH's
+  # schema does not declare these fields, and zod's default object behavior
+  # STRIPS unknown keys — HTTP 200, fields silently discarded. That exact
+  # silent strip made this step probe a route whose www_redirect was still
+  # 'none' (run 4dd72dcc-era: DB showed force_https=1, www_redirect=none
+  # after a 200 PATCH) and blame the :80 alternate router. The /redirects
+  # endpoint is the one the panels use.
+  api PATCH "/tenants/$cid/routes/$rid/redirects" \
+    '{"force_https": true, "www_redirect": "add-www"}' >/dev/null
+  # Assert PERSISTENCE before waiting on behavior: a 200 that did not stick
+  # must fail here, loudly, not as a 60s-later routing mystery.
+  local _persisted
+  _persisted=$(api GET "/tenants/$cid/routes/$rid" \
+    | jq -r '[.data.forceHttps // .data.force_https, .data.wwwRedirect // .data.www_redirect] | join("/")')
+  if [[ "$_persisted" != "1/add-www" && "$_persisted" != "true/add-www" ]]; then
+    fail "redirect settings did NOT persist (got '$_persisted') — the API accepted the PATCH and dropped it"
+    return 1
+  fi
+  ok "route $rid patched AND persisted: force_https=on, www_redirect=add-www"
+
+  # The PATCH reconciles inline; give the Traefik watch a bounded moment.
+  local www="www.$domain" leg_ok=0 t=0
+  while (( t < 60 )); do
+    # THE leg production lost: http://<bare> must 308 STRAIGHT to the
+    # canonical https URL — one hop, no bounce via https://<bare>.
+    local code loc
+    code=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://$domain/")
+    loc=$(curl -s -o /dev/null -m 10 -w "%{redirect_url}" "http://$domain/")
+    if [[ "$code" =~ ^30[178]$ && "$loc" == "https://$www/"* ]]; then leg_ok=1; break; fi
+    sleep 5; t=$((t+5))
+  done
+  if (( leg_ok )); then
+    ok "http://<bare> -> $loc in ONE redirect (after ${t}s)"
+  else
+    fail "http://$domain/ -> HTTP ${code:-000} redirect='${loc:-}' — expected a single 30x to https://$www/ (the :80 alternate-host router is missing)"
+    return 1
+  fi
+  local c2 l2
+  c2=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://$www/")
+  l2=$(curl -s -o /dev/null -m 10 -w "%{redirect_url}" "http://$www/")
+  [[ "$c2" =~ ^30[178]$ && "$l2" == https://* ]] \
+    && ok "http://www -> $l2 (force-https)" \
+    || { fail "http://$www/ -> HTTP $c2 redirect='$l2' — force-https leg broken"; return 1; }
+  local c3 l3
+  c3=$(curl -sk -o /dev/null -m 10 -w "%{http_code}" "https://$domain/")
+  l3=$(curl -sk -o /dev/null -m 10 -w "%{redirect_url}" "https://$domain/")
+  [[ "$c3" =~ ^30[178]$ && "$l3" == "https://$www/"* ]] \
+    && ok "https://<bare> -> $l3 (wwwredir)" \
+    || { fail "https://$domain/ -> HTTP $c3 redirect='$l3' — https-side wwwredir leg broken"; return 1; }
+  local c4
+  c4=$(curl -sk -o /dev/null -m 10 -w "%{http_code}" "https://$www/")
+  [[ "$c4" =~ ^(200|301|302|403)$ ]] \
+    && ok "https://www -> $c4 (canonical serves)" \
+    || { fail "https://$www/ -> HTTP $c4 — canonical HTTPS leg broken"; return 1; }
 }
 
 # ─── scenario 4: re-provision after delete ─────────────────────────
@@ -3223,13 +3367,22 @@ except Exception as e:
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
-  # Token cache written by _remint_token — a bearer token on tmpfs must not
-  # outlive the run.
-  rm -f "${_TOKEN_CACHE:-}" 2>/dev/null || true
+  # Every call below goes through api_raw(), NOT raw curl with $TOKEN: the
+  # main shell's $TOKEN is the STARTUP token (subshell re-mints only reach
+  # the cache file), and a full staging-all run outlives the token TTL. The
+  # 164415f7 verdict run proved the failure mode in the audit log — the
+  # trap's DELETE got HTTP 401 at suite end while `|| true` swallowed it and
+  # the log claimed success; the tenant leaked for 73 minutes until
+  # integration-cleanup.sh deleted it with a fresh token, and the leak guard
+  # flagged the still-Terminating namespace. api_raw() re-mints on 401 and
+  # returns the status line, which we now CHECK and report honestly.
+  local _cl_status
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null || true)
   if [[ -n "$cid" ]]; then
     log "cleanup: deleting test client $cid"
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+    _cl_status=$(api_raw DELETE "/tenants/$cid" 2>/dev/null | tail -1)
+    [[ "$_cl_status" == 2* ]] \
+      || log "cleanup: WARNING — DELETE /tenants/$cid returned HTTP ${_cl_status:-none}; tenant may leak (integration-cleanup.sh is the backstop)"
     rm -f /tmp/integration.cid
   fi
   # HIGH fix: drain mail-scenario clients persisted to /tmp/integration.cids
@@ -3240,7 +3393,9 @@ cleanup() {
     while IFS= read -r mcid; do
       [[ -n "$mcid" ]] || continue
       log "cleanup: deleting mail-scenario client $mcid"
-      curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$mcid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+      _cl_status=$(api_raw DELETE "/tenants/$mcid" 2>/dev/null | tail -1)
+      [[ "$_cl_status" == 2* || "$_cl_status" == 404 ]] \
+        || log "cleanup: WARNING — DELETE /tenants/$mcid returned HTTP ${_cl_status:-none}; tenant may leak"
     done < /tmp/integration.cids
     rm -f /tmp/integration.cids
   fi
@@ -3253,12 +3408,17 @@ cleanup() {
     local rest_hn; rest_hn=$(cat /tmp/integration.mail_hostname_restore 2>/dev/null || true)
     if [[ -n "$rest_hn" ]]; then
       log "cleanup: restoring mail server hostname to $rest_hn"
-      curl -sk -X PATCH "$ADMIN_HOST/api/v1/admin/webmail-settings" \
-        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-        -d "{\"mailServerHostname\":\"$rest_hn\"}" >/dev/null 2>&1 || true
+      _cl_status=$(api_raw PATCH "/admin/webmail-settings" "{\"mailServerHostname\":\"$rest_hn\"}" 2>/dev/null | tail -1)
+      [[ "$_cl_status" == 2* ]] \
+        || log "cleanup: WARNING — hostname restore returned HTTP ${_cl_status:-none}; mail hostname may be left as a mail-e2e-* probe value"
     fi
     rm -f /tmp/integration.mail_hostname_restore
   fi
+  # Token cache written by _remint_token — a bearer token on tmpfs must not
+  # outlive the run. Removed LAST: the api_raw() calls above need it to pick
+  # up the freshest token (deleting it first re-created the very stale-token
+  # cleanup this function is guarding against).
+  rm -f "${_TOKEN_CACHE:-}" "${TMPDIR:-/tmp}/.mail-settle-ncat-err.$$" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -3425,6 +3585,7 @@ scenario_mail_tls() {
   # "force" re-runs the ban check + reload; it is a cheap no-op (2 JMAP gets,
   # no recycle) when the entry survived and the IP is not banned.
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
 
   local mail_domain_apex="${MAIL_DOMAIN_APEX:-$(resolve_platform_apex)}"
   # Mail hostname: read the LIVE value from /admin/webmail-settings so
@@ -3443,6 +3604,7 @@ scenario_mail_tls() {
   # must not look like a port scan to Stalwart's autoban. `force` re-arms
   # even when an earlier scenario already armed-then-lost it via a roll.
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
   local mail_host; mail_host=$(_resolve_serving_mail_host)
   if [[ -z "$mail_host" ]]; then
     fail "mail-tls/resolve: could not auto-resolve mail host (DNS of ${mail_hostname} + kubectl hostIP both empty); set MAIL_HOST=<ip> to override"
@@ -3975,6 +4137,19 @@ scenario_mail_hostname_rename() {
   # a bogus mail-e2e-* hostname. Cleared after the explicit restore.
   printf '%s' "$original" > /tmp/integration.mail_hostname_restore
 
+  # A FUNCTION-scope restore too. The EXIT trap above fires at PROCESS
+  # exit — but a mid-scenario `return 1` (any failed assertion, or the
+  # mail settle gate) leaves the renamed hostname LIVE for every later
+  # scenario in this same process: run 4's batch aborted here after the
+  # rename, and the mail/mail_tls scenarios then failed against
+  # 'mail-e2e-rename.<apex>' greetings, cascading a single fault into
+  # four. RETURN fires on every exit path of this function; the explicit
+  # step-7 restore below still runs on success and the double PATCH is
+  # idempotent. The trap clears itself so later scenarios are unaffected.
+  # $original is intentionally expanded NOW, not at trap time.
+  # shellcheck disable=SC2064
+  trap "api_raw PATCH /admin/webmail-settings '{\"mailServerHostname\":\"${original}\"}' >/dev/null 2>&1 || true; trap - RETURN" RETURN
+
   # STABLE test hostname (exactly ONE label under the canonical apex, so it
   # resolves via the `*.<apex>` wildcard). Deliberately NOT timestamped:
   # Let's Encrypt rate-limits per REGISTERED DOMAIN (the apex's eTLD+1),
@@ -4131,6 +4306,7 @@ except Exception as e:
   # whole loop accept-then-drops and the rename reads as broken. `force`
   # re-checks/unbans/reloads (cheap no-op when the entry survived).
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
 
   # ── Wait up to ~120s for the renamed host to be served on ANY mail
   # node, then assert the SMTP 465 banner ──
@@ -4520,6 +4696,7 @@ for c in cands:
   # (the recurring `staging-all` mail-flake tail). `force` re-registers +
   # reloads on the new node so the post-migration state is clean.
   _mail_allowlist_harness_ip force
+  _mail_wait_settled || return 1
 
   # ── Part C: pre-migration snapshot carries the distinct tag ──────
   log "mail-migration-fixes: PART C — pre-migration tag visible to operators"

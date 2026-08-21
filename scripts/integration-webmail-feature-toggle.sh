@@ -110,11 +110,26 @@ patch_settings() {
   # surfaced once the full runner started exporting ADMIN_TOKEN (before that,
   # Phase B/C/D silently skipped and never reached this line).
   local url="${PLATFORM_API_URL:-${ADMIN_HOST:-https://${DOMAIN:?set PLATFORM_API_URL, ADMIN_HOST, or DOMAIN}}}/api/v1/admin/webmail-settings"
-  curl -sS -fX PATCH \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    -H "Content-Type: application/json" \
-    --data "$body" \
-    "$url" > /dev/null
+  # Retry transient gateway errors: under integration-all's parallel phase the
+  # API can exceed Traefik's upstream timeout and a single PATCH comes back
+  # 504 against a healthy platform (verdict run 164415f7 — failed in batch,
+  # passed alone). The PATCH is idempotent, so retrying is safe; a 4xx or a
+  # 5xx that survives the retries still fails loudly.
+  local attempt code
+  for attempt in 1 2 3 4; do
+    code=$(curl -sS -o /dev/null -w '%{http_code}' -X PATCH \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      --data "$body" \
+      "$url" 2>/dev/null) || code=000
+    case "$code" in
+      2*) return 0 ;;
+      502|503|504|000) [ "$attempt" -lt 4 ] && sleep $(( attempt * 5 )) ;;
+      *) red "PATCH webmail-settings returned HTTP $code"; return 1 ;;
+    esac
+  done
+  red "PATCH webmail-settings still HTTP $code after 4 attempts"
+  return 1
 }
 
 wait_for_hash_change() {
