@@ -1471,6 +1471,57 @@ scenario_https() {
     fail "HTTPS GET https://$domain/ returned $status (expected 2xx/3xx/403 from tenant workload, got default-backend or pod-not-ready)"
     return 1
   fi
+
+  # 8. Force-https + add-www: EVERY host x scheme leg must answer.
+  #    Production found the gap first (2026-08-21): with both options on,
+  #    the :80 router existed only for the CANONICAL host, so
+  #    http://<bare> was Traefik's unrouted 404 while the other three
+  #    legs worked. No suite probed that leg, which is exactly why the
+  #    operator hit it before the harness did. This step pins all four.
+  local rid
+  rid=$(api GET "/tenants/$cid/domains/$dom_id/routes" | jq -r '.data[0].id // empty')
+  if [[ -z "$rid" ]]; then
+    fail "step 8: no ingress route found for domain $dom_id"
+    return 1
+  fi
+  api PATCH "/tenants/$cid/domains/$dom_id/routes/$rid" \
+    '{"force_https": true, "www_redirect": "add-www"}' >/dev/null
+  ok "route $rid patched: force_https=on, www_redirect=add-www"
+
+  # The PATCH reconciles inline; give the Traefik watch a bounded moment.
+  local www="www.$domain" leg_ok=0 t=0
+  while (( t < 60 )); do
+    # THE leg production lost: http://<bare> must 308 STRAIGHT to the
+    # canonical https URL — one hop, no bounce via https://<bare>.
+    local code loc
+    code=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://$domain/")
+    loc=$(curl -s -o /dev/null -m 10 -w "%{redirect_url}" "http://$domain/")
+    if [[ "$code" =~ ^30[178]$ && "$loc" == "https://$www/"* ]]; then leg_ok=1; break; fi
+    sleep 5; t=$((t+5))
+  done
+  if (( leg_ok )); then
+    ok "http://<bare> -> $loc in ONE redirect (after ${t}s)"
+  else
+    fail "http://$domain/ -> HTTP ${code:-000} redirect='${loc:-}' — expected a single 30x to https://$www/ (the :80 alternate-host router is missing)"
+    return 1
+  fi
+  local c2 l2
+  c2=$(curl -s -o /dev/null -m 10 -w "%{http_code}" "http://$www/")
+  l2=$(curl -s -o /dev/null -m 10 -w "%{redirect_url}" "http://$www/")
+  [[ "$c2" =~ ^30[178]$ && "$l2" == https://* ]] \
+    && ok "http://www -> $l2 (force-https)" \
+    || { fail "http://$www/ -> HTTP $c2 redirect='$l2' — force-https leg broken"; return 1; }
+  local c3 l3
+  c3=$(curl -sk -o /dev/null -m 10 -w "%{http_code}" "https://$domain/")
+  l3=$(curl -sk -o /dev/null -m 10 -w "%{redirect_url}" "https://$domain/")
+  [[ "$c3" =~ ^30[178]$ && "$l3" == "https://$www/"* ]] \
+    && ok "https://<bare> -> $l3 (wwwredir)" \
+    || { fail "https://$domain/ -> HTTP $c3 redirect='$l3' — https-side wwwredir leg broken"; return 1; }
+  local c4
+  c4=$(curl -sk -o /dev/null -m 10 -w "%{http_code}" "https://$www/")
+  [[ "$c4" =~ ^(200|301|302|403)$ ]] \
+    && ok "https://www -> $c4 (canonical serves)" \
+    || { fail "https://$www/ -> HTTP $c4 — canonical HTTPS leg broken"; return 1; }
 }
 
 # ─── scenario 4: re-provision after delete ─────────────────────────
