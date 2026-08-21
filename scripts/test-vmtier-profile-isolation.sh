@@ -57,12 +57,22 @@ else
   bad "INTEGRATION_ENV does not point at a tier-owned profile path"
 fi
 
-# 3. That profile must actually define the tier's own mail target — the var
-#    whose absence caused the cross-cluster probe.
-if grep -qE 'MAIL_HOST=mail\.\$\{APEX\}' "$RUN_SH"; then
-  ok "tier profile pins MAIL_HOST at the run's own apex"
+# 3. That profile must DEFINE MAIL_HOST — the var whose absence caused the
+#    cross-cluster probe — but define it EMPTY, not pinned to a hostname.
+#    Both halves matter:
+#      - defined  → the operator's own profile can never leak in (isolation,
+#        the original bug this guard exists for)
+#      - EMPTY    → _resolve_serving_mail_host's sweep stays active. A
+#        hostname pin bypasses the sweep, so after a legitimate mail-stack
+#        migration every probe kept hitting the STATIC dnsmasq A-record and
+#        failed "Connection refused" against a healthy mail server for the
+#        rest of the run (run 3897175c — the tier's only failure).
+if grep -qE '^\s*echo "MAIL_HOST="\s*$' "$RUN_SH"; then
+  ok "tier profile defines MAIL_HOST empty (isolation kept, serving-node sweep active)"
+elif grep -qE 'MAIL_HOST=mail\.' "$RUN_SH"; then
+  bad "tier profile PINS MAIL_HOST to a hostname — the serving-node sweep is bypassed and any mail migration strands every later probe"
 else
-  bad "tier profile does not pin MAIL_HOST — smoke can inherit the operator's mail server again"
+  bad "tier profile does not define MAIL_HOST — smoke can inherit the operator's mail server again"
 fi
 
 # 3b. The tier profile must be COMPLETE. Replacing the operator profile with a
