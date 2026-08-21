@@ -26,8 +26,16 @@
 #     C2. all 6 (category × channel) templates seeded
 #   D — Induced alert lifecycle (skippable: SKIP_ALERT_SCENARIO=1; ~8–11
 #       min because cnpg-down carries forSeconds=300)
-#     D1. override cnpg-down threshold → −1: `(count(...) or vector(0))
-#         > -1` passes with value 0 → alert fires after the for-window
+#     D1. override cnpg-down threshold → 1: the rule is
+#         `up{job="cnpg"} <= $T`, and a HEALTHY exporter reports up=1,
+#         so 1 <= 1 holds → alert fires after the for-window.
+#         MIND THE DIRECTION: this rule fires when `up` drops to/below
+#         the threshold, so forcing a fire means RAISING $T. An earlier
+#         form was `(count(...) or vector(0)) > $T`, where -1 was the
+#         force value; the expr was rewritten to carry subject labels
+#         (so alerts name WHICH instance is down) and the comparison
+#         inverted. -1 now makes the rule IMPOSSIBLE to fire, which is
+#         how this phase silently burned its 480s wait.
 #     D2. delivery rows written for admin.slo_alert_critical: in_app
 #         'sent' AND an email row PRESENT with any status — the #57
 #         contract: email deliveries must never silently vanish (they
@@ -254,10 +262,12 @@ else
   il_phase_begin "D: induced cnpg-down alert lifecycle"
   D_START_EPOCH="$(date +%s)"
 
-  PATCH_RESP="$(api PATCH '/admin/monitoring/rules/cnpg-down' '{"threshold": -1}')"
-  if [[ "$(jq -r '.data.threshold' <<<"$PATCH_RESP")" == "-1" ]]; then
+  # `up{job="cnpg"} <= $T` fires when up falls to/below $T. up=1 on a
+  # healthy exporter, so $T=1 forces a fire. See the D1 header note.
+  PATCH_RESP="$(api PATCH '/admin/monitoring/rules/cnpg-down' '{"threshold": 1}')"
+  if [[ "$(jq -r '.data.threshold' <<<"$PATCH_RESP")" == "1" ]]; then
     OVERRIDE_SET=1
-    il_ok "D1 override set (cnpg-down threshold → -1)"
+    il_ok "D1 override set (cnpg-down threshold → 1)"
   else
     il_fail "D1 override PATCH failed: $(head -c 200 <<<"$PATCH_RESP")"
   fi
