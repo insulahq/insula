@@ -447,6 +447,23 @@ export async function createDomain(db: Database, tenantId: string, input: Create
             `[domains.createDomain] post-verification ensureDomainCertificate failed for ${input.domain_name}: ${(certErr as Error).message}`,
           );
         }
+        // Re-reconcile the tenant IngressRoute too. The reconcile that ran at
+        // route/domain creation happened while this domain was still
+        // 'unverified', so ensureRouteCertificate skipped and the IngressRoute
+        // was built with NO tls.secretName — Traefik serves its DEFAULT cert
+        // for the host. The Certificate going Ready moments later changes
+        // nothing on its own: no reconcile loop revisits tenant IngressRoutes,
+        // so the route would keep the default cert until some unrelated
+        // mutation re-reconciled. (Caught by integration-all: `cert-manager
+        // Certificate Ready=True (after 20s)` followed by `TLS cert does NOT
+        // cover <host> … cert names: …traefik.default`.)
+        try {
+          await reconcileIngress(db, k8s, tenantId, tenant.kubernetesNamespace);
+        } catch (ingErr) {
+          console.warn(
+            `[domains.createDomain] post-verification reconcileIngress failed for ${tenant.kubernetesNamespace}: ${(ingErr as Error).message}`,
+          );
+        }
       }
     } catch (err) {
       // Non-fatal — domain stays 'unverified' until next cron tick
