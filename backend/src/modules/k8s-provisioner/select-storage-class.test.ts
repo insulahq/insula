@@ -43,6 +43,7 @@ describe('selectTenantStorageClass', () => {
       ['tenant-tier-test-1779099999-dddd'],
       ['tenant-grow-test-1779099999-eeee'],
       ['tenant-mail-test-1779099999-ffff'],
+      ['tenant-mail-e2e-1787334106-7fe3766b'],
       ['tenant-mtls-test-1779099999-1111'],
       ['tenant-firewall-test-1779099999-2222'],
       ['tenant-provision-test-1779099999-3333'],

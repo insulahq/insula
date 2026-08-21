@@ -193,6 +193,7 @@ const TENANT_TEST_NAMESPACE_PATTERN = new RegExp(
     'tier-test',
     'grow-test',
     'mail-test',
+    'mail-e2e',
     'provision-test',
     'mtls-test',
     'firewall-test',
