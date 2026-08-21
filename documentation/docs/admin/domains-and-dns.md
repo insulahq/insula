@@ -136,7 +136,18 @@ The TLS mode shows as:
 
     Issuance starts automatically the moment verification passes. Use
     **Verify Now** if you have just corrected the DNS, or **Reissue** on
-    the SSL/TLS tab to order anyway.
+    the SSL/TLS tab.
+
+    **Reissue always re-verifies first.** It runs a fresh DNS check —
+    live lookups, not the cached result — before touching anything. If
+    that check fails, the reissue refuses and the existing certificate
+    is left in place: replacing a working certificate with a doomed
+    order would take the site's HTTPS down *and* consume the shared
+    rate limit. If the check passes, the old certificate is replaced
+    with a brand-new order immediately. This means a reissue clicked
+    right after fixing DNS works on the first try, and one clicked
+    while DNS is still wrong tells you exactly what to fix instead of
+    making things worse.
 - **Custom Certificate** — you've uploaded your own cert; delete it to
   revert to automatic.
 - **No TLS** — not configured yet.
