@@ -573,15 +573,40 @@ _mail_wait_settled() {
     [[ -n "$_sw_ip" ]] && candidates=$(printf '%s\n%s\n' "$_sw_ip" "$candidates" | grep -vE '^$' | awk '!seen[$0]++')
     while IFS= read -r ip; do
       [[ -z "$ip" ]] && continue
-      if ( sleep 0.3; printf "QUIT\r\n"; sleep 0.3 ) \
-           | timeout 7 ncat -w 5 "$ip" 25 2>/dev/null | grep -qE '^220[ -]'; then
+      # Primary probe: clean SMTP session (banner + QUIT) via ncat. Capture
+      # rc + stderr instead of discarding them — when this path fails, the
+      # failure message must say HOW (connect refused vs connected-but-
+      # silent vs ncat error), not just "no 220".
+      local _np_out _np_rc _np_err
+      _np_err="${TMPDIR:-/tmp}/.mail-settle-ncat-err.$$"
+      _np_out=$( ( sleep 0.3; printf "QUIT\r\n"; sleep 0.3 ) \
+           | timeout 7 ncat -w 5 "$ip" 25 2>"$_np_err" ); _np_rc=$?
+      if grep -qE '^220[ -]' <<<"$_np_out"; then
+        rm -f "$_np_err"
         log "mail data plane settled (220 from $ip after $(( $(date +%s) - t0 ))s)"
         return 0
       fi
+      # Fallback probe: raw /dev/tcp banner read from this same shell. The
+      # 164415f7 verdict run failed three scenarios on "no SMTP 220 within
+      # 300s" while an independent raw-TCP probe from the SAME runner VM got
+      # the banner every 3s throughout the window (reproduced once more
+      # post-run) — the ncat pipeline, not the mail plane, was the outage.
+      # A banner via EITHER mechanism means the data plane IS serving; the
+      # mechanism disagreement is logged loudly (with the ncat rc + stderr
+      # we just captured) so the next occurrence is diagnosable.
+      local _fb_line
+      _fb_line=$(timeout 8 bash -c 'exec 3<>/dev/tcp/'"$ip"'/25 || exit 9; IFS= read -t 5 -r l <&3; printf "QUIT\r\n" >&3 2>/dev/null; printf %s "$l"' 2>/dev/null)
+      if [[ "$_fb_line" == 220* ]]; then
+        log "mail data plane settled (220 from $ip after $(( $(date +%s) - t0 ))s) — via raw-TCP FALLBACK; ncat probe saw nothing (rc=$_np_rc, out='${_np_out:0:40}', err='$(head -c 120 "$_np_err" 2>/dev/null | tr '\n' ' ')') — ncat-vs-raw divergence, investigate if recurring"
+        rm -f "$_np_err"
+        return 0
+      fi
+      _last_probe_detail="ip=$ip ncat_rc=$_np_rc ncat_err='$(head -c 120 "$_np_err" 2>/dev/null | tr '\n' ' ')' raw='${_fb_line:0:20}'"
+      rm -f "$_np_err"
     done <<<"$candidates"
     elapsed=$(( $(date +%s) - t0 ))
     if (( elapsed >= budget )); then
-      fail "mail data plane did NOT settle within ${budget}s — no SMTP 220 from any of: $(echo "$candidates" | tr '\n' ' ')"
+      fail "mail data plane did NOT settle within ${budget}s — no SMTP 220 (ncat AND raw /dev/tcp) from any of: $(echo "$candidates" | tr '\n' ' ')— last probe: ${_last_probe_detail:-none}"
       return 1
     fi
     sleep 10
@@ -3342,13 +3367,22 @@ except Exception as e:
 # ─── teardown ─────────────────────────────────────────────────────
 
 cleanup() {
-  # Token cache written by _remint_token — a bearer token on tmpfs must not
-  # outlive the run.
-  rm -f "${_TOKEN_CACHE:-}" 2>/dev/null || true
+  # Every call below goes through api_raw(), NOT raw curl with $TOKEN: the
+  # main shell's $TOKEN is the STARTUP token (subshell re-mints only reach
+  # the cache file), and a full staging-all run outlives the token TTL. The
+  # 164415f7 verdict run proved the failure mode in the audit log — the
+  # trap's DELETE got HTTP 401 at suite end while `|| true` swallowed it and
+  # the log claimed success; the tenant leaked for 73 minutes until
+  # integration-cleanup.sh deleted it with a fresh token, and the leak guard
+  # flagged the still-Terminating namespace. api_raw() re-mints on 401 and
+  # returns the status line, which we now CHECK and report honestly.
+  local _cl_status
   local cid; cid=$(cat /tmp/integration.cid 2>/dev/null || true)
   if [[ -n "$cid" ]]; then
     log "cleanup: deleting test client $cid"
-    curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$cid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+    _cl_status=$(api_raw DELETE "/tenants/$cid" 2>/dev/null | tail -1)
+    [[ "$_cl_status" == 2* ]] \
+      || log "cleanup: WARNING — DELETE /tenants/$cid returned HTTP ${_cl_status:-none}; tenant may leak (integration-cleanup.sh is the backstop)"
     rm -f /tmp/integration.cid
   fi
   # HIGH fix: drain mail-scenario clients persisted to /tmp/integration.cids
@@ -3359,7 +3393,9 @@ cleanup() {
     while IFS= read -r mcid; do
       [[ -n "$mcid" ]] || continue
       log "cleanup: deleting mail-scenario client $mcid"
-      curl -sk -X DELETE "$ADMIN_HOST/api/v1/tenants/$mcid" -H "Authorization: Bearer $TOKEN" >/dev/null || true
+      _cl_status=$(api_raw DELETE "/tenants/$mcid" 2>/dev/null | tail -1)
+      [[ "$_cl_status" == 2* || "$_cl_status" == 404 ]] \
+        || log "cleanup: WARNING — DELETE /tenants/$mcid returned HTTP ${_cl_status:-none}; tenant may leak"
     done < /tmp/integration.cids
     rm -f /tmp/integration.cids
   fi
@@ -3372,12 +3408,17 @@ cleanup() {
     local rest_hn; rest_hn=$(cat /tmp/integration.mail_hostname_restore 2>/dev/null || true)
     if [[ -n "$rest_hn" ]]; then
       log "cleanup: restoring mail server hostname to $rest_hn"
-      curl -sk -X PATCH "$ADMIN_HOST/api/v1/admin/webmail-settings" \
-        -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-        -d "{\"mailServerHostname\":\"$rest_hn\"}" >/dev/null 2>&1 || true
+      _cl_status=$(api_raw PATCH "/admin/webmail-settings" "{\"mailServerHostname\":\"$rest_hn\"}" 2>/dev/null | tail -1)
+      [[ "$_cl_status" == 2* ]] \
+        || log "cleanup: WARNING — hostname restore returned HTTP ${_cl_status:-none}; mail hostname may be left as a mail-e2e-* probe value"
     fi
     rm -f /tmp/integration.mail_hostname_restore
   fi
+  # Token cache written by _remint_token — a bearer token on tmpfs must not
+  # outlive the run. Removed LAST: the api_raw() calls above need it to pick
+  # up the freshest token (deleting it first re-created the very stale-token
+  # cleanup this function is guarding against).
+  rm -f "${_TOKEN_CACHE:-}" "${TMPDIR:-/tmp}/.mail-settle-ncat-err.$$" 2>/dev/null || true
 }
 trap cleanup EXIT
 
