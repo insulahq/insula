@@ -15,6 +15,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [2026.8.9] - 2026-08-21
 
 ### Fixed
+- **Container images shipped known-vulnerable base packages.** The Debian-based
+  images installed packages but never applied the base image's pending security
+  updates, so they shipped whatever the pinned base contained — indefinitely.
+  Bumping the pin would not have helped: the pin already referenced the current
+  published image, and Debian rebuilds those far less often than it publishes
+  security fixes. The images carried a set of `util-linux` flaws (mount
+  time-of-check/time-of-use races and a bypass allowing execution from
+  filesystems mounted to forbid it) for which fixes had been available.
+
+  It stayed hidden because the vulnerability gate only runs when an image is
+  rebuilt, and these images change rarely — so the gate was silent on the main
+  branch and only fired on a pull request that forced a full rebuild. The images
+  now pick up security updates at build time; verified against the same gate,
+  which goes from failing to reporting zero findings.
 - **DNS records written by the panel only appeared after a page reload.** Enabling
   or disabling mail, rotating a DKIM key, and creating, changing or deleting an
   ingress route or a domain all write DNS records on the server, but the panel

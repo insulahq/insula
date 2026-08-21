@@ -49,7 +49,21 @@ FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Apply base-image security updates before installing.
+#
+# The base is pinned by digest, so its packages are frozen at whatever the
+# published image shipped -- and Debian rebuilds that image far less often
+# than it publishes security fixes. Bumping the digest does NOT help: the
+# pin here already IS the current trixie-slim, and it still carries
+# util-linux 2.41-5 while Debian-Security has 2.41.5-0+deb13u1 (the mount
+# TOCTOU / SUID nosuid-bypass set, CVE-2026-53612..53615).
+#
+# Without this line the image ships those CVEs forever. It only surfaced
+# because this image is rebuilt rarely: Trivy gates CRITICAL/HIGH with
+# ignore-unfixed, so the gate stayed silent on development and fired on the
+# first PR that forced a full rebuild.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends \
       restic \
       isync \
