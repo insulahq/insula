@@ -93,6 +93,21 @@ describe('every verification call site asks for a certificate', () => {
     expect(verifyBlock).toContain('await reconcileIngress(');
   });
 
+  it('the manual/UI verify route issues AND re-stamps the ingress', async () => {
+    // This is the path the panels auto-fire on page mount, so it is the one
+    // operators actually exercise. It had the cert call but NOT the ingress
+    // re-stamp — the Certificate went Ready while Traefik kept serving its
+    // default cert, which the operator (watching a browser) reported as
+    // "certificate requests are still not triggered". The cert alone is
+    // invisible; serving it is the observable outcome.
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('./routes.ts', import.meta.url), 'utf-8');
+    const start = src.indexOf('/verify', src.indexOf("app.post('/tenants/:tenantId/domains/:domainId/verify'"));
+    const block = src.slice(start, src.indexOf('migrate-dns', start));
+    expect(block).toContain('ensureDomainCertificate(');
+    expect(block).toContain('await reconcileIngress(');
+  });
+
   it('the verification cron re-asks too', async () => {
     const { readFileSync } = await import('node:fs');
     const src = readFileSync(new URL('./verification-cron.ts', import.meta.url), 'utf-8');

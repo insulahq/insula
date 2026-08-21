@@ -20,6 +20,8 @@ import { ApiError } from '../../shared/errors.js';
 import * as tasks from '../tasks/service.js';
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { deleteDomainCertificate, ensureDomainCertificate, certificateNameFor } from './service.js';
+import { verifyDomain, getPlatformConfig } from '../domains/verification.js';
+import { setDomainVerificationStatus } from '../domains/service.js';
 import { readCertificateHealth } from './status.js';
 import { notifyTenantCertificateIssued } from '../notifications/events.js';
 import type { Database } from '../../db/index.js';
@@ -185,6 +187,7 @@ export async function requestCertificateReissue(
 }
 
 const REISSUE_STEPS = [
+  'Verify DNS (fresh check)',
   'Remove the previous certificate',
   'Request a new certificate',
   'Wait for the certificate authority',
@@ -220,19 +223,63 @@ async function runReissue(
   const namespace = tenant?.kubernetesNamespace;
   if (!namespace) throw new Error(`Tenant ${domain.tenantId} has no Kubernetes namespace`);
 
+  // 0 — a FRESH DNS verification, before anything is touched.
+  //
+  // This step is the gate the whole reissue hangs on, and its position
+  // matters as much as its existence. The previous flow deleted the working
+  // certificate FIRST and then ordered with force:true — "the operator has
+  // decided the domain is ready" — so an operator whose DNS was actually
+  // broken (the very situation that usually prompts a reissue click)
+  // destroyed their still-valid certificate AND burned a doomed ACME order.
+  // Let's Encrypt caps duplicate certificates at 5/week; a few desperate
+  // clicks locked the domain out of issuance for days, now with no
+  // certificate at all.
+  //
+  // Fresh, not cached: the cached verification may be up to 24h stale in
+  // either direction. A tenant who just fixed their DNS must not be refused
+  // on a stale fail, and one whose DNS just broke must not get a doomed
+  // order approved on a stale pass. The result is persisted, so the domain
+  // row reflects this check like any other verification.
+  await setStep(0, 'running');
+  const platformConfig = await getPlatformConfig(db);
+  const verification = await verifyDomain(
+    domain.domainName,
+    domain.dnsMode as 'primary' | 'cname' | 'secondary',
+    platformConfig,
+    db,
+  );
+  await setDomainVerificationStatus(db, request.domainId, verification);
+  if (!verification.verified) {
+    const detail = verification.checks
+      .filter((c) => c.status === 'fail')
+      .map((c) => c.detail)
+      .join('; ');
+    await setStep(0, 'failed', detail || 'DNS verification failed');
+    await tasks.finish(db, taskId, {
+      status: 'failed',
+      error:
+        `DNS for '${domain.domainName}' does not currently verify — the existing certificate was left untouched. ` +
+        `Fix the DNS configuration and try again (a certificate order for an unverifiable domain is refused by the ` +
+        `certificate authority and counts against its rate limits). ${detail ? `Details: ${detail}` : ''}`,
+    });
+    return;
+  }
+  await setStep(0, 'done', 'DNS verified');
+
   // 1 — drop the old CR + Secret so cert-manager starts a fresh order
   // rather than sitting on the existing one until its renewal window.
-  await setStep(0, 'running');
-  await deleteDomainCertificate(db, k8s, request.domainId);
-  await setStep(0, 'done');
-
-  // 2 — recreate
+  // Only reachable after the fresh verification above passed.
   await setStep(1, 'running');
-  // force: an operator asking for a reissue has decided the domain is
-  // ready, even if our own verification probe last said otherwise.
+  await deleteDomainCertificate(db, k8s, request.domainId);
+  await setStep(1, 'done');
+
+  // 2 — recreate. force is kept only to bypass any stale DB status — the
+  // domain was verified SECONDS ago by step 0, which is a far stronger
+  // claim than the status column.
+  await setStep(2, 'running');
   const ensured = await ensureDomainCertificate(db, k8s, request.domainId, undefined, { force: true });
   if (ensured.skipped) {
-    await setStep(1, 'failed', ensured.reason);
+    await setStep(2, 'failed', ensured.reason);
     await tasks.finish(db, taskId, {
       status: 'failed',
       error: ensured.reason ?? 'Certificate provisioning was skipped',
@@ -240,13 +287,13 @@ async function runReissue(
     return;
   }
   await setStep(
-    1,
+    2,
     'done',
     `${ensured.issuerName} · ${(ensured.dnsNames ?? []).join(', ')}`,
   );
 
   // 3 — wait for the CA. Bounded: this task reports back either way.
-  await setStep(2, 'running');
+  await setStep(3, 'running');
   const deadline = Date.now() + ISSUANCE_TIMEOUT_MS;
   let lastMessage: string | undefined;
   let issued = false;
@@ -264,7 +311,7 @@ async function runReissue(
       break;
     }
     if (health.state === 'failed') {
-      await setStep(2, 'failed', health.message);
+      await setStep(3, 'failed', health.message);
       await tasks.finish(db, taskId, {
         status: 'failed',
         error: health.message ?? 'The certificate authority rejected the order',
@@ -284,7 +331,7 @@ async function runReissue(
     // Not a failure of the request — DNS-01 validation legitimately
     // takes longer than this sometimes. Say exactly that instead of
     // reporting an error the tenant cannot act on.
-    await setStep(2, 'failed', lastMessage ?? 'Still pending when the task timed out');
+    await setStep(3, 'failed', lastMessage ?? 'Still pending when the task timed out');
     await tasks.finish(db, taskId, {
       status: 'failed',
       error:
@@ -293,15 +340,15 @@ async function runReissue(
     });
     return;
   }
-  await setStep(2, 'done');
+  await setStep(3, 'done');
 
   // 4 — verify what we actually got, rather than trusting step 3.
-  await setStep(3, 'running');
+  await setStep(4, 'running');
   const finalHealth = ensured.certificateName
     ? await readCertificateHealth(k8s, namespace, ensured.certificateName)
     : null;
   const sans = finalHealth?.dnsNames ?? ensured.dnsNames ?? [];
-  await setStep(3, 'done', sans.join(', '), 100);
+  await setStep(4, 'done', sans.join(', '), 100);
 
   await db
     .update(sslCertificates)
