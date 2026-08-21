@@ -1492,9 +1492,25 @@ scenario_https() {
     fail "step 8: no ingress route found for domain $dom_id"
     return 1
   fi
-  api PATCH "/tenants/$cid/domains/$dom_id/routes/$rid" \
+  # The REDIRECTS endpoint, not the generic route PATCH. The generic PATCH's
+  # schema does not declare these fields, and zod's default object behavior
+  # STRIPS unknown keys — HTTP 200, fields silently discarded. That exact
+  # silent strip made this step probe a route whose www_redirect was still
+  # 'none' (run 4dd72dcc-era: DB showed force_https=1, www_redirect=none
+  # after a 200 PATCH) and blame the :80 alternate router. The /redirects
+  # endpoint is the one the panels use.
+  api PATCH "/tenants/$cid/routes/$rid/redirects" \
     '{"force_https": true, "www_redirect": "add-www"}' >/dev/null
-  ok "route $rid patched: force_https=on, www_redirect=add-www"
+  # Assert PERSISTENCE before waiting on behavior: a 200 that did not stick
+  # must fail here, loudly, not as a 60s-later routing mystery.
+  local _persisted
+  _persisted=$(api GET "/tenants/$cid/routes/$rid" \
+    | jq -r '[.data.forceHttps // .data.force_https, .data.wwwRedirect // .data.www_redirect] | join("/")')
+  if [[ "$_persisted" != "1/add-www" && "$_persisted" != "true/add-www" ]]; then
+    fail "redirect settings did NOT persist (got '$_persisted') — the API accepted the PATCH and dropped it"
+    return 1
+  fi
+  ok "route $rid patched AND persisted: force_https=on, www_redirect=add-www"
 
   # The PATCH reconciles inline; give the Traefik watch a bounded moment.
   local www="www.$domain" leg_ok=0 t=0
@@ -4079,6 +4095,19 @@ scenario_mail_hostname_rename() {
   # window — otherwise the cluster (and every subsequent run) inherits
   # a bogus mail-e2e-* hostname. Cleared after the explicit restore.
   printf '%s' "$original" > /tmp/integration.mail_hostname_restore
+
+  # A FUNCTION-scope restore too. The EXIT trap above fires at PROCESS
+  # exit — but a mid-scenario `return 1` (any failed assertion, or the
+  # mail settle gate) leaves the renamed hostname LIVE for every later
+  # scenario in this same process: run 4's batch aborted here after the
+  # rename, and the mail/mail_tls scenarios then failed against
+  # 'mail-e2e-rename.<apex>' greetings, cascading a single fault into
+  # four. RETURN fires on every exit path of this function; the explicit
+  # step-7 restore below still runs on success and the double PATCH is
+  # idempotent. The trap clears itself so later scenarios are unaffected.
+  # $original is intentionally expanded NOW, not at trap time.
+  # shellcheck disable=SC2064
+  trap "api_raw PATCH /admin/webmail-settings '{\"mailServerHostname\":\"${original}\"}' >/dev/null 2>&1 || true; trap - RETURN" RETURN
 
   # STABLE test hostname (exactly ONE label under the canonical apex, so it
   # resolves via the `*.<apex>` wildcard). Deliberately NOT timestamped:
