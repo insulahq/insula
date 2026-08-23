@@ -25,7 +25,7 @@ import { alertState, monitoringRuleOverrides } from '../../db/schema.js';
 import { notifyAdminSloAlertFiring, notifyAdminSloAlertResolved } from '../notifications/events.js';
 import { queryInstant, type VmClientOptions } from './vm-client.js';
 import {
-  SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, describeSubject, subjectKey,
+  SLO_RULES, MONITORING_UNREACHABLE_RULE_ID, renderExpr, describeSubject, subjectKey, formatSloValue,
   type SloRule,
 } from './rules.js';
 
@@ -59,7 +59,7 @@ export function vmReachable(): boolean {
 }
 
 interface TransitionInput {
-  readonly rule: Pick<SloRule, 'id' | 'name' | 'description' | 'severity'>;
+  readonly rule: Pick<SloRule, 'id' | 'name' | 'description' | 'severity' | 'unit'>;
   readonly violated: boolean;
   readonly value: number | null;
   readonly now: Date;
@@ -143,7 +143,9 @@ async function applyRuleState(
         ruleName: rule.name,
         severity: rule.severity,
         description: rule.description,
-        value: value != null ? String(value) : undefined,
+        // Human-readable per the rule's unit — a raw `0.03865979381443299` is
+        // useless in an alert; this renders it as `3.87%` / `620ms` / a count.
+        value: value != null ? formatSloValue(value, rule.unit) : undefined,
         // Without this the admin gets "Certificate not Ready" and no way to
         // tell which certificate, in which namespace, for which tenant.
         subject: subject.label ?? undefined,

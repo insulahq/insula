@@ -3,6 +3,7 @@ import { notifications } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
 import { getActiveChannels } from './channels/registry.js';
 import { legacyCategoryIdForType } from './categories/seed.js';
+import { notificationActionPath } from './action-path.js';
 import type { NotificationRecord } from './channels/types.js';
 import type { Database } from '../../db/index.js';
 
@@ -59,7 +60,17 @@ export async function listNotifications(
     .orderBy(desc(notifications.createdAt))
     .limit(limit);
 
-  return rows;
+  // Attach the page each notification should open when clicked. Computed
+  // here (not stored) so the map stays in one place and covers historical
+  // rows too — the frontend just navigates to `actionPath`.
+  return rows.map((row) => ({
+    ...row,
+    actionPath: notificationActionPath({
+      categoryId: row.categoryId ?? null,
+      resourceType: row.resourceType ?? null,
+      resourceId: row.resourceId ?? null,
+    }),
+  }));
 }
 
 export async function markAsRead(db: Database, userId: string, ids: string[]) {

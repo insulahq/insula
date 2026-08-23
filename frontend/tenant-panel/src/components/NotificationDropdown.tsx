@@ -1,10 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Bell, Info, AlertTriangle, XCircle, CheckCircle, CheckCheck } from 'lucide-react';
 import {
   useNotifications,
   useUnreadCount,
   useMarkAllNotificationsRead,
+  useMarkNotificationsRead,
   type NotificationEntry,
 } from '@/hooks/use-notifications';
 import { formatRelativeTime } from '@/lib/format-relative-time';
@@ -29,6 +30,8 @@ export default function NotificationDropdown() {
   const { data, isLoading } = useNotifications(10);
   const { data: unreadData } = useUnreadCount();
   const markAllRead = useMarkAllNotificationsRead();
+  const markRead = useMarkNotificationsRead();
+  const navigate = useNavigate();
 
   const notifications: readonly NotificationEntry[] = data?.data ?? [];
   const unreadCount = unreadData?.data?.count ?? 0;
@@ -49,6 +52,17 @@ export default function NotificationDropdown() {
     if (unreadCount > 0) {
       markAllRead.mutate();
     }
+  };
+
+  // Click-through: open the page this notification is about (server-resolved
+  // `actionPath`) and mark it read. Legacy rows with no page fall back to the
+  // full notifications list.
+  const handleItemClick = (item: NotificationEntry) => {
+    if (item.isRead === 0) {
+      markRead.mutate([item.id]);
+    }
+    setOpen(false);
+    navigate(item.actionPath ?? '/notifications');
   };
 
   return (
@@ -104,11 +118,14 @@ export default function NotificationDropdown() {
                 const Icon = typeIcons[item.type] ?? Info;
                 const color = typeColors[item.type] ?? 'text-gray-400';
                 return (
-                  <div
+                  <button
                     key={item.id}
-                    className={`flex items-start gap-3 border-b border-gray-50 px-4 py-3 last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/60 transition-colors ${
+                    type="button"
+                    onClick={() => handleItemClick(item)}
+                    className={`flex w-full items-start gap-3 border-b border-gray-50 px-4 py-3 text-left last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/60 transition-colors ${
                       !item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''
                     }`}
+                    data-testid="notification-item"
                   >
                     <Icon size={16} className={`mt-0.5 shrink-0 ${color}`} />
                     <div className="min-w-0 flex-1">
@@ -116,7 +133,7 @@ export default function NotificationDropdown() {
                       <p className="text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
                       <p className="mt-0.5 text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
           </div>
