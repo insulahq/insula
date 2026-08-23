@@ -742,6 +742,39 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
   },
 
   {
+    categoryId: 'admin.custom_deployment_failed',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Custom deployment failed: {{deploymentName}} ({{tenantLabel}})',
+    bodyTemplate: emailMjml(
+      'Custom deployment failed',
+      'Tenant {{tenantLabel}} — deployment {{deploymentName}} entered a failed state: {{reason}}. '
+      + 'The container keeps restarting until the image/config is fixed or the deployment is stopped. '
+      + 'Investigate in the tenant’s Custom Containers tab.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.custom_deployment_failed',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Custom deployment failed: {{deploymentName}}',
+    bodyTemplate: 'Tenant {{tenantLabel}} — {{deploymentName}} failed: {{reason}}. It keeps restarting until fixed or stopped (Custom Containers tab).',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+    ],
+  },
+  {
     categoryId: 'admin.security_hardening_drift',
     channel: 'email',
     locale: 'en',
