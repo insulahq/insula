@@ -51,6 +51,43 @@ export interface SloRule {
   readonly threshold: number;
   /** Seconds the violation must persist before firing. */
   readonly forSeconds: number;
+  /**
+   * How to render the metric's raw value in the alert. Without this the admin
+   * saw a raw float like `0.03865979381443299`. 'ratio' → percent, 'seconds' →
+   * a duration, 'count' → an integer. Defaults to 'count'.
+   */
+  readonly unit?: 'ratio' | 'seconds' | 'count';
+}
+
+/** Render a raw metric value for humans, per the rule's unit. */
+export function formatSloValue(value: number, unit: SloRule['unit'] = 'count'): string {
+  if (!Number.isFinite(value)) return 'n/a';
+  switch (unit) {
+    case 'ratio':
+      return `${(value * 100).toFixed(2)}%`;
+    case 'seconds':
+      return formatSeconds(value);
+    case 'count':
+    default:
+      return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+}
+
+/**
+ * Duration formatter. Handles NEGATIVE values (a `cert-expiry` alert on an
+ * already-expired certificate yields `expiration - now < 0`) by scaling the
+ * magnitude and keeping the sign — otherwise `-172800` rendered as the
+ * unreadable `-172800000ms`, exactly the raw-number regression this avoids.
+ */
+function formatSeconds(value: number): string {
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs < 1) return `${sign}${Math.round(abs * 1000)}ms`; // sub-second (e.g. p95 latency)
+  const s = Math.round(abs);
+  if (s < 60) return `${sign}${s}s`;
+  if (s < 3600) return `${sign}${Math.round(s / 60)}m`;
+  if (s < 86400) return `${sign}${(s / 3600).toFixed(1)}h`;
+  return `${sign}${(s / 86400).toFixed(1)}d`;
 }
 
 /**
@@ -132,23 +169,27 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
   },
   {
     id: 'api-availability-fast-burn',
-    name: 'API availability — fast burn',
-    description: 'Traefik websecure 5xx ratio over 5m burns the 99.5% error budget at ≥14.4×.',
+    name: 'API availability — high error rate',
+    description: 'A large share of HTTPS requests are failing with 5xx errors right now (last 5 min; SLO target is under 0.5%). Something is broken. Find the failing routes and tenant workloads in Monitoring → SLOs, then check those apps'
+      + ' logs and pods.',
     severity: 'critical',
     expr: '(sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure",code=~"5.."}[5m])) / sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure"}[5m]))) > $T',
     subjectLabels: [],
     threshold: 14.4 * 0.005,
     forSeconds: 300,
+    unit: 'ratio',
   },
   {
     id: 'api-availability-slow-burn',
-    name: 'API availability — slow burn',
-    description: 'Traefik websecure 5xx ratio over 6h burns the 99.5% error budget at ≥6×.',
+    name: 'API availability — elevated error rate',
+    description: 'HTTPS requests have been failing with 5xx errors above the acceptable rate over the last 6 hours (SLO target is under 0.5%). Find which routes/tenant workloads are erroring in Monitoring → SLOs and check those apps'
+      + ' logs.',
     severity: 'warning',
     expr: '(sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure",code=~"5.."}[6h])) / sum(rate(traefik_entrypoint_requests_total{entrypoint="websecure"}[6h]))) > $T',
     subjectLabels: [],
     threshold: 6 * 0.005,
     forSeconds: 1800,
+    unit: 'ratio',
   },
   {
     id: 'api-latency-p95',
@@ -159,6 +200,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: [],
     threshold: 0.5,
     forSeconds: 600,
+    unit: 'seconds',
   },
   {
     id: 'cert-expiry',
@@ -169,6 +211,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['namespace', 'name'],
     threshold: 14 * 86400,
     forSeconds: 3600,
+    unit: 'seconds',
   },
   {
     id: 'cert-not-ready',
@@ -189,6 +232,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0.8,
     forSeconds: 900,
+    unit: 'ratio',
   },
   {
     id: 'longhorn-headroom-critical',
@@ -199,6 +243,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0.9,
     forSeconds: 900,
+    unit: 'ratio',
   },
   {
     id: 'node-memory',
@@ -209,6 +254,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0.9,
     forSeconds: 600,
+    unit: 'ratio',
   },
   {
     id: 'node-memory-critical',
@@ -219,6 +265,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0.95,
     forSeconds: 600,
+    unit: 'ratio',
   },
   // Node CPU utilisation — reads the root-cgroup CPU counter + machine_cpu_cores
   // that are ALREADY scraped (cadvisor allowlist) but were previously unused.
@@ -233,6 +280,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0.85,
     forSeconds: 900,
+    unit: 'ratio',
   },
   {
     id: 'node-cpu-critical',
@@ -243,6 +291,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['node'],
     threshold: 0.95,
     forSeconds: 900,
+    unit: 'ratio',
   },
   {
     id: 'cnpg-down',
@@ -263,6 +312,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['namespace', 'pod'],
     threshold: 30,
     forSeconds: 600,
+    unit: 'seconds',
   },
   // ── Platform-migration registry (added after the 2026-08-19 incident) ──
   // The registry halts on the first failing migration so nothing runs on a
@@ -395,6 +445,7 @@ export const SLO_RULES: ReadonlyArray<SloRule> = [
     subjectLabels: ['hostname'],
     threshold: 14 * 86400,
     forSeconds: 3600,
+    unit: 'seconds',
   },
   {
     id: 'mail-cert-self-signed',

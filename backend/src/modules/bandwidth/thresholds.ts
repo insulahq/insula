@@ -89,7 +89,7 @@ export async function evaluateBandwidthThresholds(db: Database, logger: BwLogger
     try {
       const { notifyAdminTenantBandwidth, notifyTenantBandwidth } = await import('../notifications/events.js');
       const dedupeKey = `bw:${t.id}:${threshold}:${monthBucket}`;
-      await notifyAdminTenantBandwidth(db, level, { tenantLabel: t.name, usedPct, used: usedStr, limit: limitStr }, dedupeKey);
+      await notifyAdminTenantBandwidth(db, t.id, level, { tenantLabel: t.name, usedPct, used: usedStr, limit: limitStr }, dedupeKey);
       await notifyTenantBandwidth(db, t.id, level, { usedPct, used: usedStr, limit: limitStr }, dedupeKey);
       fired += 1;
     } catch (err) {

@@ -90,8 +90,8 @@ describe('listNotifications', () => {
     const now = new Date();
     const older = new Date(now.getTime() - 60000);
     const items = [
-      { id: 'n1', userId: 'u1', createdAt: now },
-      { id: 'n2', userId: 'u1', createdAt: older },
+      { id: 'n1', userId: 'u1', createdAt: now, categoryId: 'admin.slo_alert_warning', resourceType: null, resourceId: null },
+      { id: 'n2', userId: 'u1', createdAt: older, categoryId: null, resourceType: null, resourceId: null },
     ];
 
     const limitFn = vi.fn().mockResolvedValue(items);
@@ -104,9 +104,12 @@ describe('listNotifications', () => {
 
     const result = await listNotifications(db, 'u1', { limit: 20 });
 
-    expect(result).toEqual(items);
     expect(result[0].id).toBe('n1');
     expect(result[1].id).toBe('n2');
+    // Every row is enriched with a click-through target; a mapped category
+    // resolves to its page, an unmapped/legacy one to null.
+    expect(result[0].actionPath).toBe('/monitoring');
+    expect(result[1].actionPath).toBeNull();
     expect(limitFn).toHaveBeenCalledWith(20);
   });
 

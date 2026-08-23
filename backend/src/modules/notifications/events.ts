@@ -750,6 +750,7 @@ export interface AdminTenantSaturationPayload {
  */
 export async function notifyAdminTenantResourceSaturation(
   db: Database,
+  tenantId: string,
   level: 'warning' | 'critical',
   payload: AdminTenantSaturationPayload,
   dedupeKey?: string,
@@ -757,7 +758,9 @@ export async function notifyAdminTenantResourceSaturation(
   const categoryId = level === 'critical'
     ? 'admin.tenant_resource_saturation_critical'
     : 'admin.tenant_resource_saturation_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>
+  // (recipients stay admin-scoped — tenantId only sets resourceType/resourceId).
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 // ── Per-tenant OOM kill (Phase 1d) ──────────────────────────────────────────
@@ -775,10 +778,12 @@ export interface AdminOomPayload {
  */
 export async function notifyAdminTenantOom(
   db: Database,
+  tenantId: string,
   payload: AdminOomPayload,
   dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
+  await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 // ── Custom deployment failure (CrashLoopBackOff / ImagePullBackOff / OOM) ────
@@ -800,10 +805,12 @@ export interface AdminCustomDeploymentFailedPayload {
  */
 export async function notifyAdminCustomDeploymentFailed(
   db: Database,
+  tenantId: string,
   payload: AdminCustomDeploymentFailedPayload,
   dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.custom_deployment_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
+  await dispatchSafe(db, 'admin.custom_deployment_failed', { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 // ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
@@ -816,12 +823,14 @@ export interface AdminBandwidthPayload {
 }
 export async function notifyAdminTenantBandwidth(
   db: Database,
+  tenantId: string,
   level: 'warning' | 'critical',
   payload: AdminBandwidthPayload,
   dedupeKey?: string,
 ): Promise<void> {
   const categoryId = level === 'critical' ? 'admin.tenant_bandwidth_critical' : 'admin.tenant_bandwidth_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 export interface TenantBandwidthPayload {

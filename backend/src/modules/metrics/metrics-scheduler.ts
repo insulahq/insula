@@ -97,6 +97,7 @@ export function startMetricsScheduler(db: Database): NodeJS.Timeout {
             for (const o of ooms) {
               await notifyAdminTenantOom(
                 db,
+                tenant.id,
                 { tenantLabel: tenant.name, podName: o.podName, containerName: o.containerName, restartCount: String(o.restartCount) },
                 `oom:${tenant.id}:${o.podName}:${o.containerName}:${o.restartCount}`,
               );

@@ -174,6 +174,16 @@ families:
 Each source can be enabled, disabled, and routed independently. Email is sent
 asynchronously, so a slow relay never blocks the platform.
 
+### Reading a notification
+
+Open the **bell** in the top bar to see recent notifications. Each one is
+**clickable** — selecting it marks it read and takes you straight to the page
+where you act on it: an SLO alert opens **Monitoring**, a node alert opens
+**Cluster → Nodes**, and a tenant-specific alert (OOM, resource saturation,
+bandwidth, a failed custom deployment) opens **that tenant's** page rather than
+the full list. Alert values are shown in the metric's own units — a percentage
+(`3.87%`), a duration (`620ms`, `1.1d`), or a plain count — never a raw ratio.
+
 !!! tip "Wire up a Provider on day one"
     Configure at least one SMTP Provider and confirm a test notification arrives.
     Monitoring you never see is monitoring you don't have.
