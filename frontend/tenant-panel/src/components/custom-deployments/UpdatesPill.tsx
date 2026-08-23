@@ -1,15 +1,17 @@
-// Compact "Updates available?" pill. Five visual states:
+// Compact "Updates available?" pill. Visual states:
 //
 //   no-update   → silent green checkmark
-//   patch       → blue "patch available"
-//   minor       → amber "minor available"
-//   major       → red "major available"
-//   unknown     → muted "—" with the registry's reason on hover
+//   patch       → blue "patch available"       (semver → onUpgrade)
+//   minor       → amber "minor available"       (semver → onUpgrade)
+//   major       → red "major available"         (semver → onUpgrade)
+//   digest      → amber "update available"      (moving tag republished → onRepull)
+//   unknown     → muted "unknown" with the registry's reason on hover
 //
-// Clicking a non-no-update pill opens the upgrade modal (handled by
-// the parent — this component just exposes onUpgrade).
+// A semver bump opens the upgrade (change-tag) modal via onUpgrade. A `digest`
+// update means the SAME tag was republished, so the fix is a re-pull — wired
+// to onRepull instead.
 
-import { ArrowUpCircle, Check, HelpCircle, Loader2 } from 'lucide-react';
+import { ArrowUpCircle, Check, HelpCircle, Loader2, RefreshCw } from 'lucide-react';
 import clsx from 'clsx';
 import type { UpdateCheckResult } from '@insula/api-contracts';
 
@@ -18,9 +20,11 @@ interface UpdatesPillProps {
   readonly loading: boolean;
   readonly canManage: boolean;
   readonly onUpgrade: () => void;
+  /** Re-pull the current tag (for a `digest` update). */
+  readonly onRepull: () => void;
 }
 
-export function UpdatesPill({ result, loading, canManage, onUpgrade }: UpdatesPillProps) {
+export function UpdatesPill({ result, loading, canManage, onUpgrade, onRepull }: UpdatesPillProps) {
   if (loading && !result) {
     return <Loader2 size={14} className="animate-spin text-gray-400" />;
   }
@@ -35,6 +39,21 @@ export function UpdatesPill({ result, loading, canManage, onUpgrade }: UpdatesPi
       <span className={clsx(baseCls, 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300')}>
         <Check size={12} /> up to date
       </span>
+    );
+  }
+
+  if (result.status === 'digest') {
+    // Moving tag (`latest`, `1.27`) republished to a new image → re-pull.
+    return (
+      <button
+        type="button"
+        disabled={!canManage}
+        onClick={onRepull}
+        className={clsx(baseCls, 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300', canManage ? 'cursor-pointer hover:brightness-95' : 'cursor-default')}
+        title={`The registry re-published ${result.current ?? 'this tag'}${result.latest ? ` (${result.latest})` : ''} — click to re-pull`}
+      >
+        <RefreshCw size={12} /> update available
+      </button>
     );
   }
 
