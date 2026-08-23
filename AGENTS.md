@@ -212,18 +212,27 @@ packages/api-contracts/src/  → shared.ts (envelopes, PaginationParams), auth.t
    body exists.
 > *Why:* parallel agents kept producing incompatible types — shared contracts make those compile errors.
 
-### Ingress routing — CNAME chain
-Per-hostname routing resolves through a CNAME chain so node migrations need **zero client DNS
-changes**:
+### Ingress routing — direct A/AAAA
+Every route — apex, subdomain, **and wildcard** — resolves with **`A`/`AAAA` records pointing
+straight at the ingress IP(s)**, one record per ingress-capable address and family:
 ```
-blog.example.test → <slug>.ingress.<apex> → <node>.<apex> → <IP>
-(client domain)     (platform routing)       (platform infra)
+blog.example.test → A/AAAA → <ingress IP(s)>
+*.sites.example.test → A/AAAA (wildcard) → <ingress IP(s)>
 ```
-- Subdomains → `CNAME` to `<slug>.ingress.<apex>`; apex domains → `A`/`AAAA` to the ingress IP
-  (CNAME is illegal at the apex).
+- No `<slug>.<ingress_base_domain>` CNAME hop. The old chain minted a synthetic per-route name
+  (`wildcard-sites-example-test.<ingress_base_domain>`) in a shared zone; operators found it
+  opaque, and it was never needed for the single-ingress reality (routes use the default node).
+  Removed 2026-08 by operator decision.
+- **Trade-off:** when the ingress addresses change, the owned records must be rewritten — one
+  **`refreshRouteDnsForDomain`** (admin/tenant "Refresh route DNS", `POST …/refresh-route-dns`)
+  per primary-mode domain. `createRoute` + `autoProvisionRouteDns` share
+  `provisionIngressAddressRecords`, so create/refresh stay symmetric.
+- Managed DNS records default to **TTL 3600** (`provisionManagedRecord`); manual records already did.
 - **`ingress_routes` is the single source of truth** for all Ingress rules — the reconciler builds
-  K8s Ingress from it, not from `domains.workloadId`.
-- Platform settings: `ingress_base_domain`, `ingress_default_ipv4/ipv6`.
+  K8s Ingress from it, not from `domains.workloadId`. (`ingress_routes.ingress_cname` is retained as
+  a legacy display field; it no longer drives DNS.)
+- Platform settings: `ingress_default_ipv4/ipv6` (the ingress addresses); `ingress_base_domain`
+  remains the platform's own apex for admin/mail/etc., no longer a tenant CNAME target.
 
 ### Deployment & GitOps
 - **Single k3s cluster** on cloud VPS (no hybrid/home-server split). Scale by adding worker nodes.
