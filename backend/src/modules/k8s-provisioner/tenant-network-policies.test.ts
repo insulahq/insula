@@ -9,14 +9,52 @@ describe('buildTenantNetworkPolicies', () => {
   const specOf = (name: string) =>
     (byName[name] as { spec: Record<string, unknown> }).spec;
 
-  it('emits exactly the five expected policies', () => {
+  it('emits exactly the six expected policies', () => {
     expect(policies.map((p) => p.name).sort()).toEqual([
       'allow-backup-jobs-egress',
       'allow-intra-namespace',
       'allow-platform-api',
+      'allow-platform-services-egress',
       'default-deny-ingress',
       'tenant-egress',
     ]);
+  });
+
+  it('allow-platform-services-egress opens ALL tenant pods to ingress + mail + SFTP (not port 25-only, scoped peers)', () => {
+    const spec = specOf('allow-platform-services-egress');
+    expect(spec.policyTypes).toEqual(['Egress']);
+    // Applies to every workload in the namespace, not a labelled subset.
+    expect(spec.podSelector).toEqual({});
+    const egress = spec.egress as Array<{ to: Array<Record<string, unknown>>; ports: Array<{ port: number }> }>;
+
+    // HTTP(S) ingress → the Traefik pods only (webcron etc.). NetworkPolicy is
+    // post-DNAT, so these are Traefik's CONTAINER ports (web 8000 / websecure
+    // 8443), the DNAT target of the :80/:443 hostPorts — NOT the :8080 dashboard.
+    const http = egress.find((r) => r.ports.some((p) => p.port === 8443))!;
+    expect(http.to[0]).toEqual({
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'traefik' } },
+      podSelector: { matchLabels: { 'app.kubernetes.io/name': 'traefik' } },
+    });
+    expect(http.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([8000, 8443]);
+    // The Traefik dashboard/API port must NOT be opened.
+    expect(http.ports.some((p) => p.port === 8080)).toBe(false);
+
+    // Mail server → the mail namespace on the client mail ports.
+    const mail = egress.find((r) => r.ports.some((p) => p.port === 587))!;
+    expect(mail.to[0]).toEqual({
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'mail' } },
+    });
+    expect(mail.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 110, 143, 465, 587, 993, 995, 4190]);
+
+    // SFTP gateway → the platform-system sftp-gateway pod only, :23022.
+    const sftp = egress.find((r) => r.ports.some((p) => p.port === 23022))!;
+    expect(sftp.to[0]).toEqual({
+      namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform-system' } },
+      podSelector: { matchLabels: { app: 'sftp-gateway' } },
+    });
+
+    // Defense-in-depth: it must NOT smuggle a broad ipBlock (the 2026-07 hole).
+    expect(JSON.stringify(spec)).not.toContain('ipBlock');
   });
 
   it('allow-backup-jobs-egress lets ONLY backup/restore Jobs reach platform-api:3000 AND the rclone-shim:9000', () => {
