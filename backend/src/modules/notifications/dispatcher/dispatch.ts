@@ -186,8 +186,25 @@ async function writeDelivery(
  * Main dispatcher entrypoint. Returns even on per-recipient failures —
  * a single bad SMTP delivery shouldn't abort the whole fan-out.
  */
+/**
+ * The dedupe_key columns (notifications, notification_deliveries) are
+ * varchar(128). A caller that inlines a long value (e.g. a full error reason)
+ * overflows it — the delivery INSERT throws, dispatchSafe swallows it, and the
+ * whole notification vanishes with no row and no log. Clamp defensively at the
+ * dispatch boundary so no caller can ever silently kill a notification this way:
+ * a too-long key keeps a readable prefix plus a stable hash of the whole, so it
+ * fits AND stays unique/deterministic (the same input dedupes against itself).
+ */
+export const DEDUPE_KEY_MAX = 128;
+export function clampDedupeKey(key: string | undefined): string | undefined {
+  if (key === undefined || key.length <= DEDUPE_KEY_MAX) return key;
+  const hash = crypto.createHash('sha256').update(key).digest('hex').slice(0, 16);
+  return `${key.slice(0, DEDUPE_KEY_MAX - hash.length - 1)}:${hash}`;
+}
+
 export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<EmitResult> {
   const eventId = opts.eventId ?? crypto.randomUUID();
+  const dedupeKey = clampDedupeKey(opts.dedupeKey);
   const statuses: PerChannelStatus[] = [];
 
   // 1. Resolve category.
@@ -238,8 +255,8 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     // previously-written notifications row with the same key for this
     // user in the last 30 days means we already fired this warning —
     // skip every channel for this recipient.
-    if (opts.dedupeKey) {
-      const existing = await findDedupedNotification(db, userId, opts.dedupeKey);
+    if (dedupeKey) {
+      const existing = await findDedupedNotification(db, userId, dedupeKey);
       if (existing) {
         for (const channel of category.defaultChannels) {
           statuses.push({ userId, channel, status: 'skipped', error: 'duplicate' });
@@ -288,7 +305,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'muted',
           recipientHash: null,
           contentHash,
-          dedupeKey: opts.dedupeKey,
+          dedupeKey: dedupeKey,
         });
         statuses.push({ userId, channel, status: 'muted' });
         continue;
@@ -310,7 +327,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'muted',
           recipientHash: null,
           contentHash,
-          dedupeKey: opts.dedupeKey,
+          dedupeKey: dedupeKey,
         });
         statuses.push({ userId, channel, status: 'muted' });
         continue;
@@ -336,7 +353,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'skipped',
           recipientHash: null,
           contentHash,
-          dedupeKey: opts.dedupeKey,
+          dedupeKey: dedupeKey,
           lastError: 'recipient_email_missing',
         });
         statuses.push({ userId, channel, status: 'skipped', error: 'recipient_email_missing' });
@@ -366,7 +383,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
             status: 'rate_limited',
             recipientHash: null,
             contentHash,
-            dedupeKey: opts.dedupeKey,
+            dedupeKey: dedupeKey,
           });
           statuses.push({ userId, channel, status: 'rate_limited' });
           continue;
@@ -395,7 +412,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'skipped',
           recipientHash: null,
           contentHash,
-          dedupeKey: opts.dedupeKey,
+          dedupeKey: dedupeKey,
           lastError: 'template_not_found',
         });
         statuses.push({ userId, channel, status: 'skipped', error: 'template_not_found' });
@@ -422,7 +439,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'skipped',
           recipientHash: null,
           contentHash,
-          dedupeKey: opts.dedupeKey,
+          dedupeKey: dedupeKey,
           lastError: `render_failed: ${msg}`.slice(0, 1000),
         });
         statuses.push({ userId, channel, status: 'skipped', error: msg });
@@ -449,7 +466,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           eventId,
           locale,
           tenantId: opts.tenantId ?? null,
-          dedupeKey: opts.dedupeKey ?? null,
+          dedupeKey: dedupeKey ?? null,
         });
         await writeDelivery(db, {
           notificationId,
@@ -464,7 +481,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
           status: 'sent',
           recipientHash,
           contentHash,
-          dedupeKey: opts.dedupeKey,
+          dedupeKey: dedupeKey,
         });
         statuses.push({ userId, channel, status: 'sent', notificationId });
         continue;
@@ -488,7 +505,7 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
         status: 'queued',
         recipientHash,
         contentHash,
-        dedupeKey: opts.dedupeKey,
+        dedupeKey: dedupeKey,
         // Persist the MERGED variables (defaults + caller) — the queue
         // worker re-renders from this column at send time and must see
         // the exact context the dispatcher validated here.
