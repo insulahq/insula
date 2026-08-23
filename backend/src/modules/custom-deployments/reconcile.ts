@@ -13,14 +13,22 @@
 //   3. Capture the first scheduled node (for the "Node" admin column).
 //   4. Record image-audit rows from pod.containerStatuses.
 
+import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { deployments } from '../../db/schema.js';
+import { deployments, tenants } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { recordImageAudit } from './image-audit.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
+
+// Restarts after which a not-ready container is treated as crash-looping,
+// independent of whether this snapshot caught it `waiting` or `terminated`.
+// k8s enters CrashLoopBackOff around the 3rd restart; matching that avoids
+// flagging a container that legitimately restarts once or twice during startup.
+const CRASH_RESTART_THRESHOLD = 3;
 
 type DbStatus = 'running' | 'stopped' | 'pending' | 'failed';
 
@@ -112,7 +120,7 @@ interface PodObservation {
   readonly pendingReason: string | null;
 }
 
-async function readFirstPodObservation(
+export async function readFirstPodObservation(
   k8s: K8sClients,
   namespace: string,
   deploymentName: string,
@@ -125,7 +133,10 @@ async function readFirstPodObservation(
         name?: string;
         state?: {
           waiting?: { reason?: string; message?: string };
-          terminated?: { reason?: string; message?: string };
+          terminated?: { reason?: string; message?: string; exitCode?: number };
+        };
+        lastState?: {
+          terminated?: { reason?: string; message?: string; exitCode?: number };
         };
         ready?: boolean;
         restartCount?: number;
@@ -149,15 +160,38 @@ async function readFirstPodObservation(
   for (const pod of pods.items ?? []) {
     if (!node && pod.spec?.nodeName) node = pod.spec.nodeName;
     for (const cs of pod.status?.containerStatuses ?? []) {
+      const name = cs.name ?? 'container';
       const waitingReason = cs.state?.waiting?.reason;
-      const terminatedReason = cs.state?.terminated?.reason;
-      if (waitingReason && (waitingReason.includes('Err') || waitingReason.includes('BackOff'))) {
-        failureReason = `${cs.name ?? 'container'}: ${waitingReason} — ${cs.state?.waiting?.message ?? ''}`.trim();
+      // A crash-looping container alternates between `terminated` (just exited)
+      // and `waiting` (CrashLoopBackOff). The reconcile takes ONE snapshot, so
+      // relying on the instantaneous reason misses the crash whenever it samples
+      // the `terminated` half — the status then fell through to 'pending' and the
+      // UI showed "Starting…" forever (reproduced on DEV 2026-08-23). Read the
+      // termination from state OR lastState, and treat restartCount as the
+      // deterministic crash-loop signal so detection no longer depends on timing.
+      const terminated = cs.state?.terminated ?? cs.lastState?.terminated;
+      const restarts = cs.restartCount ?? 0;
+
+      if (terminated?.reason === 'OOMKilled') {
+        // Check OOM FIRST: an out-of-memory crash-loop shows waiting=CrashLoopBackOff
+        // too, but "OOMKilled" is the actionable diagnosis (raise the memory limit),
+        // so it must win over the generic backoff message.
+        failureReason = `${name}: OOMKilled (restart count ${restarts})`;
+      } else if (waitingReason && (waitingReason.includes('Err') || waitingReason.includes('BackOff'))) {
+        // Explicit CrashLoopBackOff / ImagePullBackOff / ErrImagePull.
+        failureReason = `${name}: ${waitingReason} — ${cs.state?.waiting?.message ?? ''}`.trim();
+      } else if (!cs.ready && restarts >= CRASH_RESTART_THRESHOLD) {
+        // Sampled mid-crash (terminated) or between backoffs: a container that
+        // has restarted this many times and still isn't ready is crash-looping,
+        // whatever state this snapshot caught. Name the exit code/reason so the
+        // operator has something to act on.
+        const detail = terminated?.exitCode != null
+          ? `last exit ${terminated.exitCode}${terminated.reason ? ` (${terminated.reason})` : ''}`
+          : 'repeatedly restarting';
+        failureReason = `${name}: CrashLoopBackOff — ${detail}, ${restarts} restarts`;
       } else if (waitingReason && !cs.ready) {
-        pendingReason = `${cs.name ?? 'container'}: ${waitingReason}`;
-      }
-      if (terminatedReason === 'OOMKilled') {
-        failureReason = `${cs.name ?? 'container'}: OOMKilled (restart count ${cs.restartCount ?? 0})`;
+        // ContainerCreating / PodInitializing — genuinely still starting.
+        pendingReason = `${name}: ${waitingReason}`;
       }
     }
   }
@@ -202,5 +236,33 @@ export async function applyReconcileOutcome(
       currentNodeName: outcome.node,
     })
     .where(eq(deployments.id, rowId));
+
+  // Notify the operator when a deployment ENTERS the failed state. Fires on the
+  // transition (was-not-failed -> failed) so a container that keeps restarting
+  // for the same reason does not spam; the dedupeKey (id + reason) also re-alerts
+  // only when the failure reason itself changes. Best-effort: a notification
+  // hiccup must never break the reconcile tick.
+  if (outcome.status === 'failed' && current.status !== 'failed') {
+    try {
+      const [t] = await db.select({ name: tenants.name })
+        .from(tenants)
+        .where(eq(tenants.id, current.tenantId))
+        .limit(1);
+      const reason = outcome.statusMessage ?? 'no diagnostic reason reported';
+      // dedupe_key is varchar(128): NEVER inline the full reason (it can exceed
+      // that and make the delivery INSERT throw, which dispatchSafe swallows — the
+      // notification then vanishes silently). Key on the deployment + a short hash
+      // of the reason so identical repeats dedupe while a NEW failure reason (or a
+      // recovery→failure) re-alerts.
+      const reasonHash = createHash('sha1').update(reason).digest('hex').slice(0, 12);
+      await notifyAdminCustomDeploymentFailed(
+        db,
+        { tenantLabel: t?.name ?? current.tenantId, deploymentName: current.name, reason },
+        `cdfail:${rowId}:${reasonHash}`,
+      );
+    } catch {
+      // status is already persisted; the notification is advisory.
+    }
+  }
   return true;
 }
