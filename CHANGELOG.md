@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.11] - 2026-08-23
+
 ### Added
 - **Every in-app notification is now clickable and takes you where you act on
   it.** Selecting a notification in the bell dropdown marks it read and opens the
