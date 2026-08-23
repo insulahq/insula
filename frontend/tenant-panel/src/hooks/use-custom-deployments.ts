@@ -194,6 +194,27 @@ export function useCheckUpdatesBatch(tenantId: string | undefined, deploymentIds
   });
 }
 
+/**
+ * Manual "Check for updates": re-probe every registry NOW, bypassing the
+ * backend's 60-minute cache (`force: true`). The result is written straight
+ * into the `useCheckUpdatesBatch` query cache under the same key, so the pills
+ * refresh without a second round-trip.
+ */
+export function useForceCheckUpdatesBatch(tenantId: string | undefined, deploymentIds: readonly string[]) {
+  const queryClient = useQueryClient();
+  const key = ['custom-deployments-updates', tenantId, [...deploymentIds].sort().join(',')];
+  return useMutation({
+    mutationFn: () =>
+      apiFetch<{ data: CheckUpdatesBatchResult }>(`${BASE(tenantId!)}/check-updates-batch`, {
+        method: 'POST',
+        body: JSON.stringify({ deployment_ids: [...deploymentIds], force: true }),
+      }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(key, data);
+    },
+  });
+}
+
 // ─── Pull credentials (PAT) ─────────────────────────────────────────────────
 
 export function usePullCredential(tenantId: string | undefined, id: string | undefined) {

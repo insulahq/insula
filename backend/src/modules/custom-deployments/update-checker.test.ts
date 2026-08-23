@@ -176,13 +176,18 @@ describe('checkForUpdate — error paths', () => {
     expect(r.reason).toMatch(/404/);
   });
 
-  it('returns "unknown" when current tag is not semver', async () => {
+  it('returns "unknown" for a non-semver tag when the running digest is not yet observed', async () => {
+    // HEAD /manifests/latest → a digest, but no runningImageId supplied.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      makeResponse(200, null, { 'docker-content-digest': `sha256:${'a'.repeat(64)}` }),
+    ) as unknown as typeof fetch;
     const r = await checkForUpdate({
       db: stubDb().db,
       image: 'ghcr.io/o/a:latest',
+      fetchImpl,
     });
     expect(r.status).toBe('unknown');
-    expect(r.reason).toMatch(/semver/);
+    expect(r.reason).toMatch(/running digest/);
   });
 
   it('returns "unknown" when the image reference is unparseable', async () => {
@@ -228,6 +233,117 @@ describe('checkForUpdate — error paths', () => {
     // We can't easily count cache writes via the stub without
     // restructuring; assert by spying on the insert call.
     expect(db.insert).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Digest fallback for non-semver tags ────────────────────────────────────
+//
+// `latest`, `1.27`, `24.04` can't be semver-ordered, so the checker compares
+// the registry's current digest for that exact tag against what the pod runs.
+
+const DIGEST_A = `sha256:${'a'.repeat(64)}`;
+const DIGEST_B = `sha256:${'b'.repeat(64)}`;
+
+function headDigest(digest: string): typeof fetch {
+  // resolveTagDigest issues HEAD /manifests/<tag>; return the digest header.
+  return vi.fn().mockResolvedValue(
+    makeResponse(200, null, { 'docker-content-digest': digest }),
+  ) as unknown as typeof fetch;
+}
+
+describe('checkForUpdate — digest fallback (non-semver tag)', () => {
+  it('returns "digest" when the registry republished the tag to a new digest', async () => {
+    const r = await checkForUpdate({
+      db: stubDb().db,
+      image: 'docker.io/library/nginx:latest',
+      runningImageId: `docker-pullable://nginx@${DIGEST_B}`,
+      fetchImpl: headDigest(DIGEST_A),
+    });
+    expect(r.status).toBe('digest');
+    expect(r.current).toBe('latest');
+    expect(r.latest).toMatch(/^sha256:/);
+    expect(r.reason).toMatch(/re-published/);
+  });
+
+  it('returns "no-update" when the running digest matches the registry', async () => {
+    const r = await checkForUpdate({
+      db: stubDb().db,
+      image: 'docker.io/library/nginx:latest',
+      runningImageId: `nginx@${DIGEST_A}`,
+      fetchImpl: headDigest(DIGEST_A),
+    });
+    expect(r.status).toBe('no-update');
+    expect(r.latest).toBeNull();
+  });
+
+  it('returns "unknown" (not a false positive) when the registry digest cannot be resolved', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(makeResponse(404)) as unknown as typeof fetch;
+    const r = await checkForUpdate({
+      db: stubDb().db,
+      image: 'ghcr.io/o/a:24.04',
+      runningImageId: `ghcr.io/o/a@${DIGEST_A}`,
+      fetchImpl,
+    });
+    expect(r.status).toBe('unknown');
+    expect(r.reason).toMatch(/404|not found/);
+  });
+});
+
+describe('checkForUpdate — lazy running-digest resolver', () => {
+  it('does NOT resolve the running digest for a semver tag (avoids a needless DB read)', async () => {
+    const resolveRunningImageId = vi.fn(async () => DIGEST_A);
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      makeResponse(200, { tags: ['1.0.0', '1.1.0'] }),
+    ) as unknown as typeof fetch;
+    const r = await checkForUpdate({
+      db: stubDb().db, image: 'ghcr.io/o/a:1.0.0', resolveRunningImageId, fetchImpl,
+    });
+    expect(r.status).toBe('minor');
+    expect(resolveRunningImageId).not.toHaveBeenCalled();
+  });
+
+  it('resolves the running digest lazily for a non-semver tag and compares it', async () => {
+    const resolveRunningImageId = vi.fn(async () => `nginx@${DIGEST_B}`);
+    const r = await checkForUpdate({
+      db: stubDb().db, image: 'docker.io/library/nginx:latest',
+      resolveRunningImageId, fetchImpl: headDigest(DIGEST_A),
+    });
+    expect(resolveRunningImageId).toHaveBeenCalledTimes(1);
+    expect(r.status).toBe('digest');
+  });
+});
+
+describe('checkForUpdate — force bypasses the cache', () => {
+  // A stub whose cache read returns one FRESH semver row.
+  function stubDbWithFreshCache(): Database {
+    const row = {
+      severity: 'no-update', currentTag: '1.0.0', latestTag: null,
+      reason: null, checkedAt: new Date(),
+    };
+    return {
+      select: vi.fn(() => ({ from: vi.fn(() => ({ where: vi.fn(async () => [row]) })) })),
+      insert: vi.fn(() => ({ values: vi.fn(async () => {}) })),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => {}) })) })),
+    } as unknown as Database;
+  }
+
+  it('serves the fresh cache and does NOT probe when force is unset', async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const r = await checkForUpdate({ db: stubDbWithFreshCache(), image: 'ghcr.io/o/a:1.0.0', fetchImpl });
+    expect(r.status).toBe('no-update');
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('re-probes the registry when force is set, even with a fresh cache', async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(
+      makeResponse(200, { tags: ['1.0.0', '1.1.0'] }),
+    ) as unknown as typeof fetch;
+    const r = await checkForUpdate({
+      db: stubDbWithFreshCache(), image: 'ghcr.io/o/a:1.0.0', force: true, fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalled();
+    expect(r.status).toBe('minor');
+    expect(r.latest).toBe('1.1.0');
   });
 });
 

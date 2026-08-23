@@ -105,6 +105,19 @@ Custom containers appear in the same table with a **Mode** column (Docker or
 Compose) and an **Updates** column. Use the row's actions to upgrade the image
 tag, **Stop**/**Start**, or remove the container.
 
+!!! tip "The Updates column"
+    The **Updates** column checks the registry for you. For a version-numbered
+    tag (`1.27.3`) it tells you when a newer **patch / minor / major** tag
+    exists — click the pill to upgrade. For a moving tag (`latest`, `1.27`,
+    `24.04`) it can't compare version numbers, so instead it watches whether the
+    registry has **re-published that same tag** to a new image; when it has, the
+    pill shows **update available** and clicking it re-pulls the current tag.
+    **up to date** means the tag hasn't moved. **unknown** means the registry
+    couldn't be checked (private image with no stored credentials, a rate limit,
+    or the running image hasn't been observed yet) — hover the pill for the
+    reason. The check runs when you open the tab and is cached for an hour; press
+    **Check for updates** to re-check every container right now.
+
 !!! warning "If a container keeps failing"
     When a container can't start — a bad image, a wrong command, or it runs out
     of memory — its status shows **failed** with the reason next to it (for

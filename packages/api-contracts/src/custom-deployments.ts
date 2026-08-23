@@ -526,11 +526,16 @@ export const validateCustomDeploymentResultSchema = z.object({
 // ─── Update checker ─────────────────────────────────────────────────────────
 
 export const updateCheckResultSchema = z.object({
-  status: z.enum(['no-update', 'patch', 'minor', 'major', 'unknown']),
+  /** `no-update`/`patch`/`minor`/`major` come from semver tag comparison.
+   *  `digest` means the running tag is NOT semver (`latest`, `1.27`, `24.04`)
+   *  but the registry has republished it to a new digest — i.e. an update is
+   *  available via re-pull, not a tag change. `unknown` = detection failed
+   *  (see `reason`). */
+  status: z.enum(['no-update', 'patch', 'minor', 'major', 'digest', 'unknown']),
   /** Current tag resolved from the running image reference. */
   current: z.string().nullable(),
-  /** Latest tag found in the registry that is `>= current` by semver
-   *  ordering; null when nothing newer exists or detection failed. */
+  /** For semver statuses, the newer tag found. For `digest`, the short form of
+   *  the registry's current digest (`sha256:abc123…`). Null otherwise. */
   latest: z.string().nullable(),
   /** Why we returned `unknown` — useful for the UI tooltip. */
   reason: z.string().nullable(),
@@ -542,6 +547,10 @@ export const updateCheckResultSchema = z.object({
 
 export const checkUpdatesBatchSchema = z.object({
   deployment_ids: z.array(uuidField).min(1).max(100),
+  /** Bypass the 60-minute server cache and re-probe every registry now.
+   *  Set by the tenant panel's manual "Check for updates" button; the
+   *  automatic once-per-open check leaves it unset (uses the cache). */
+  force: z.boolean().optional(),
 });
 
 export const checkUpdatesBatchResultSchema = z.object({

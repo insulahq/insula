@@ -17,13 +17,41 @@
 // happens here so a single source-of-truth toggles the behaviour.
 
 import { randomUUID } from 'node:crypto';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, isNull, isNotNull } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import {
   customDeploymentImageAudit,
   systemSettings,
 } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+
+/**
+ * The digest the deployment's pods are CURRENTLY running for a SPECIFIC image,
+ * as observed by the kubelet and recorded here (`sha256:…`, most-recent pull
+ * first). Null when nothing has been observed yet (still pulling / pull-audit
+ * disabled). Used by the update checker's digest fallback to tell a republished
+ * moving tag (`:latest`, `:1.27`) apart from an up-to-date one.
+ *
+ * MUST be scoped by `image`: a compose stack records one row per distinct
+ * image, so an unscoped "newest digest for this deployment" would return some
+ * OTHER service's digest and make the checked image look changed when it isn't.
+ */
+export async function getRunningDigest(
+  db: Database,
+  deploymentId: string,
+  image: string,
+): Promise<string | null> {
+  const [row] = await db.select({ digest: customDeploymentImageAudit.resolvedDigest })
+    .from(customDeploymentImageAudit)
+    .where(and(
+      eq(customDeploymentImageAudit.deploymentId, deploymentId),
+      eq(customDeploymentImageAudit.image, image),
+      isNotNull(customDeploymentImageAudit.resolvedDigest),
+    ))
+    .orderBy(desc(customDeploymentImageAudit.pulledAt))
+    .limit(1);
+  return row?.digest ?? null;
+}
 
 /** Cache key for the operator toggle. Setting is read once per reconciler
  *  tick, not per deployment, so the SELECT cost is amortised. */
