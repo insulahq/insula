@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Custom container deployments now detect updates for moving image tags.** The
+  **Updates** column previously showed "unknown" for almost every container,
+  because it only understood three-part version tags (`1.27.3`) — `latest`,
+  `alpine`, and two-part tags like `1.27` or `24.04` all fell through. It now
+  falls back to comparing the registry's current digest for that exact tag
+  against what the container is actually running: **up to date** when the tag
+  hasn't moved, **update available** (click to re-pull) when the registry has
+  re-published it. Version-numbered tags still show patch/minor/major upgrades.
+- **A "Check for updates" button** on the Custom Containers tab re-checks every
+  container against its registry immediately, bypassing the hourly cache.
+
 ## [2026.8.11] - 2026-08-23
 
 ### Added
