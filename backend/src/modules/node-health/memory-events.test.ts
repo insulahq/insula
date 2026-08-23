@@ -110,6 +110,51 @@ describe('summarizeForNotification', () => {
   it('returns nothing for an empty batch', () => {
     expect(summarizeForNotification([])).toHaveLength(0);
   });
+
+  it('names the tenant, pod, and container, and gives an action path + advice', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ uid: 'u1', ns: 'client-acme', pod: 'acme-web-7d9', container: 'app', restarts: 3, node: 'sv1' })],
+      NOW,
+    );
+    const [s] = summarizeForNotification(events, (ns) => (ns === 'client-acme' ? 'Acme Corp' : undefined));
+    // WHO: resolved tenant display name, not the raw namespace or a bare count.
+    expect(s.summary).toContain('tenant "Acme Corp"');
+    expect(s.summary).toContain('pod acme-web-7d9');
+    expect(s.summary).toContain('container app');
+    // Action path + advice — the thing the old count-only summary lacked.
+    expect(s.summary).toContain('Monitoring -> Node health -> Memory events');
+    expect(s.summary.toLowerCase()).toContain('plan/memory limit');
+    // And it must NOT be the old identity-free phrasing.
+    expect(s.summary).not.toMatch(/^\d+ tenant container\(s\) OOM-killed at their limit$/);
+  });
+
+  it('falls back to the namespace when no tenant name resolves', () => {
+    const events = collectOomKilledContainers([oomPod({ ns: 'client-ghost', pod: 'p1', container: 'c1' })], NOW);
+    const [s] = summarizeForNotification(events); // no resolver
+    expect(s.summary).toContain('tenant "client-ghost"');
+  });
+
+  it('names up to MAX_NAMED then summarizes the rest as "+N more"', () => {
+    const pods = Array.from({ length: 5 }, (_, i) =>
+      oomPod({ uid: `u${i}`, ns: `client-t${i}`, pod: `pod-${i}`, container: 'app', node: 'sv1' }));
+    const events = collectOomKilledContainers(pods, NOW);
+    const [s] = summarizeForNotification(events, (ns) => ns.replace('client-', 'Tenant '));
+    expect(s.summary).toContain('5 tenant container(s) OOM-killed at their memory limit');
+    expect(s.summary).toContain('+2 more'); // 5 named-capped at 3
+    expect(s.summary).toContain('pod-0');
+    expect(s.summary).not.toContain('pod-4'); // beyond the cap
+  });
+
+  it('critical (SYSTEM) events use the raw namespace and an investigate-now advice', () => {
+    const events = collectOomKilledContainers(
+      [oomPod({ ns: 'platform', pod: 'platform-api-x', container: 'api', node: 'sv1' })],
+      NOW,
+    );
+    const [s] = summarizeForNotification(events, () => 'should-not-be-used');
+    expect(s.severity).toBe('critical');
+    expect(s.summary).toContain('platform (container api, pod platform-api-x)');
+    expect(s.summary.toLowerCase()).toContain('investigate now');
+  });
 });
 
 function oomPod(overrides: Partial<{

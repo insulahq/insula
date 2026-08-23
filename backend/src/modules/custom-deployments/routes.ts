@@ -228,6 +228,22 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     return success(result);
   });
 
+  // ─── Stop / Start (break a CrashLoopBackOff without deleting) ─────────────
+
+  /** Scale the deployment to 0 replicas and mark it 'stopped'. Config/PVC kept. */
+  app.post('/tenants/:tenantId/custom-deployments/:id/stop', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const k8s = requireK8s();
+    return success(await service.stopCustomDeployment(app.db, k8s, tenantId, id));
+  });
+
+  /** Scale a stopped deployment back to 1 replica. */
+  app.post('/tenants/:tenantId/custom-deployments/:id/start', async (request) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const k8s = requireK8s();
+    return success(await service.startCustomDeployment(app.db, k8s, tenantId, id));
+  });
+
   // ─── Auto-update toggle ──────────────────────────────────────────────────
 
   /**

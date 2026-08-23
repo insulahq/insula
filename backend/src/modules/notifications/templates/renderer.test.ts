@@ -40,13 +40,17 @@ describe('renderTemplate — plaintext path', () => {
     expect(() => renderTemplate(tpl(), {})).toThrow(/Missing required template variable/);
   });
 
-  it('html-escapes user-controlled vars by default', () => {
+  it('does NOT HTML-escape plaintext bodies (in-app + text/plain are not HTML)', () => {
+    // Plaintext is shown as text: the in-app dropdown renders it through React
+    // (escapes at display) and email uses a text/plain part. HTML-escaping here
+    // was wrong — it turned symbols like `=` into `&#x3D;` in the message.
+    // Injection safety for the HTML (MJML) path is asserted in the email tests.
     const r = renderTemplate(
-      tpl({ bodyTemplate: 'Hello {{userName}}' }),
-      { userName: '<script>alert(1)</script>' },
+      tpl({ bodyTemplate: 'value: {{userName}}' }),
+      { userName: 'a=b & <x>' },
     );
-    expect(r.body).not.toContain('<script>');
-    expect(r.body).toContain('&lt;script&gt;');
+    expect(r.body).toBe('value: a=b & <x>');
+    expect(r.body).not.toContain('&#x3D;');
   });
 
   it('falls back to no subject when template has none', () => {

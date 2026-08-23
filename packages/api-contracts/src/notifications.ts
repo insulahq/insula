@@ -11,6 +11,9 @@ export const notificationResponseSchema = z.object({
   isRead: z.number(),
   readAt: z.string().nullable(),
   createdAt: z.string(),
+  /** In-app page the notification opens when clicked (server-resolved from the
+   *  category). Null for the legacy family, which has no specific landing page. */
+  actionPath: z.string().nullable(),
 });
 
 export type NotificationResponse = z.infer<typeof notificationResponseSchema>;
