@@ -50,28 +50,36 @@ const COMPILED_CACHE = new LRUCache<string, CompiledTemplate>({
 });
 
 // Strict mode: throw on missing variables instead of rendering ''.
-// noEscape: false so HTML-escaping is default.
 interface HandlebarsCompileOpts {
   strict: boolean;
   noEscape: boolean;
   knownHelpersOnly: boolean;
   knownHelpers: Record<string, boolean>;
 }
-const COMPILE_OPTS: HandlebarsCompileOpts = {
+// HTML-escaping variant — for MJML bodies, which render into HTML email where an
+// un-escaped variable would be an injection vector.
+const COMPILE_OPTS_HTML: HandlebarsCompileOpts = {
   strict: true,
   noEscape: false,
   knownHelpersOnly: true,
   knownHelpers: {},
 };
+// Raw variant — for plaintext bodies and ALL subjects. These are shown as text
+// (the in-app dropdown renders {message} through React, which escapes at display
+// time; email subjects are plaintext headers). HTML-escaping here is wrong: it
+// turned symbols like `=` into `&#x3D;` in the in-app message.
+const COMPILE_OPTS_RAW: HandlebarsCompileOpts = { ...COMPILE_OPTS_HTML, noEscape: true };
 
 function compile(template: NotificationTemplateResponse): CompiledTemplate {
   const cacheKey = `${template.id}::${template.version}`;
   const cached = COMPILED_CACHE.get(cacheKey);
   if (cached) return cached;
 
-  const body = Handlebars.compile(template.bodyTemplate, COMPILE_OPTS);
+  const bodyOpts = template.bodyFormat === 'mjml' ? COMPILE_OPTS_HTML : COMPILE_OPTS_RAW;
+  const body = Handlebars.compile(template.bodyTemplate, bodyOpts);
+  // Subjects are always plaintext (a title / an email Subject header) — never escape.
   const subject = template.subjectTemplate
-    ? Handlebars.compile(template.subjectTemplate, COMPILE_OPTS)
+    ? Handlebars.compile(template.subjectTemplate, COMPILE_OPTS_RAW)
     : null;
   const compiled: CompiledTemplate = { body, subject };
   COMPILED_CACHE.set(cacheKey, compiled);

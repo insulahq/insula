@@ -362,8 +362,16 @@ func TestSanitizePath(t *testing.T) {
 		{"traversal attempt", "../../etc/passwd", "/data", "/data/etc/passwd"},
 		{"double slash", "//etc/passwd", "/data", "/data/etc/passwd"},
 		{"null byte", "file\x00.txt", "/data", "/data"},
-		{"root escape", "/", "/data", "/data"},
 		{"subdir", "/sub/dir/file.txt", "/data/home", "/data/home/sub/dir/file.txt"},
+		// Trailing slash is preserved: "/" means "the CONTENTS of the root", so it
+		// must map to dataRoot+"/", NOT bare dataRoot. Bare dataRoot made rsync
+		// --list-only echo the jail's own basename (see sanitizePath doc + the
+		// TestRewriteRsyncCommand_ListRootPreservesContents regression).
+		{"root lists contents", "/", "/data/home", "/data/home/"},
+		{"root of a shallow jail", "/", "/data", "/data/"},
+		{"trailing slash on subdir", "/public_html/", "/data/home", "/data/home/public_html/"},
+		{"trailing slash survives traversal clamp", "/../../", "/data/home", "/data/home/"},
+		{"no trailing slash unchanged", "/public_html", "/data/home", "/data/home/public_html"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -372,6 +380,39 @@ func TestSanitizePath(t *testing.T) {
 				t.Errorf("sanitizePath(%q, %q) = %q, want %q", tt.arg, tt.dataRoot, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestRewriteRsyncCommand_ListRootPreservesContents pins the fix for the jail
+// name disclosure. `rsync --list-only <host>:/` sends the server the exact
+// command below (captured live from the gateway), with the source path "/". The
+// gateway must rewrite that "/" to dataRoot WITH its trailing slash preserved, so
+// the server-side rsync lists the CONTENTS of the jail. Stripping the slash (the
+// pre-fix behaviour) made rsync list the jail directory ITSELF, printing its own
+// basename — a scoped user could read the name of their chroot even though every
+// escape stays confined. See sanitizePath.
+func TestRewriteRsyncCommand_ListRootPreservesContents(t *testing.T) {
+	const dataRoot = "/data/public_html"
+	// Exactly what `rsync --list-only user@gw:/` makes the client send server-side.
+	got := rewriteRsyncCommand("rsync --server --sender -de.LsfxCIvu --list-only . /", dataRoot)
+	if got == nil {
+		t.Fatal("legitimate --list-only invocation was refused")
+	}
+	last := got[len(got)-1]
+	if last != dataRoot+"/" {
+		t.Errorf("list-root path = %q, want %q (a bare %q lists the jail dir itself and leaks its basename)",
+			last, dataRoot+"/", dataRoot)
+	}
+	// The "." reference placeholder must be preserved untouched so the wire
+	// protocol still parses.
+	foundDot := false
+	for _, tok := range got {
+		if tok == "." {
+			foundDot = true
+		}
+	}
+	if !foundDot {
+		t.Errorf("rewritten command dropped the '.' reference: %v", got)
 	}
 }
 

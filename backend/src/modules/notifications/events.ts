@@ -750,6 +750,7 @@ export interface AdminTenantSaturationPayload {
  */
 export async function notifyAdminTenantResourceSaturation(
   db: Database,
+  tenantId: string,
   level: 'warning' | 'critical',
   payload: AdminTenantSaturationPayload,
   dedupeKey?: string,
@@ -757,7 +758,9 @@ export async function notifyAdminTenantResourceSaturation(
   const categoryId = level === 'critical'
     ? 'admin.tenant_resource_saturation_critical'
     : 'admin.tenant_resource_saturation_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>
+  // (recipients stay admin-scoped — tenantId only sets resourceType/resourceId).
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 // ── Per-tenant OOM kill (Phase 1d) ──────────────────────────────────────────
@@ -775,10 +778,39 @@ export interface AdminOomPayload {
  */
 export async function notifyAdminTenantOom(
   db: Database,
+  tenantId: string,
   payload: AdminOomPayload,
   dedupeKey?: string,
 ): Promise<void> {
-  await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
+  await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, tenantId, { dedupeKey });
+}
+
+// ── Custom deployment failure (CrashLoopBackOff / ImagePullBackOff / OOM) ────
+
+export interface AdminCustomDeploymentFailedPayload {
+  /** Tenant display name, resolved so the admin doesn't decode a namespace. */
+  readonly tenantLabel: string;
+  /** The custom deployment's name (what the tenant sees in their panel). */
+  readonly deploymentName: string;
+  /** Diagnostic reason, e.g. "app: CrashLoopBackOff — back-off restarting failed container". */
+  readonly reason: string;
+}
+/**
+ * A tenant custom deployment transitioned into `failed`. Before this the status
+ * flipped to failed in the DB (with a diagnostic message) but nothing told the
+ * operator — the container just restarted forever with no signal. `dedupeKey`
+ * (deployment id + reason) fires once per distinct failure episode; a NEW reason
+ * re-alerts, a still-failing-for-the-same-reason deployment does not.
+ */
+export async function notifyAdminCustomDeploymentFailed(
+  db: Database,
+  tenantId: string,
+  payload: AdminCustomDeploymentFailedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
+  await dispatchSafe(db, 'admin.custom_deployment_failed', { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 // ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
@@ -791,12 +823,14 @@ export interface AdminBandwidthPayload {
 }
 export async function notifyAdminTenantBandwidth(
   db: Database,
+  tenantId: string,
   level: 'warning' | 'critical',
   payload: AdminBandwidthPayload,
   dedupeKey?: string,
 ): Promise<void> {
   const categoryId = level === 'critical' ? 'admin.tenant_bandwidth_critical' : 'admin.tenant_bandwidth_warning';
-  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, undefined, { dedupeKey });
+  // tenantId tags the row so the admin notification deep-links to /tenants/<id>.
+  await dispatchSafe(db, categoryId, { kind: 'admin' }, payload, tenantId, { dedupeKey });
 }
 
 export interface TenantBandwidthPayload {

@@ -179,9 +179,12 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Subscription renewed',
-    bodyTemplate: 'Your subscription was renewed for another billing cycle.',
+    bodyTemplate: 'Your subscription was renewed for another billing cycle.{{#if nextBillingAt}} Next billing: {{nextBillingAt}}.{{/if}}',
     bodyFormat: 'plaintext',
-    variablesSchema: COMMON_VARS,
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'nextBillingAt', type: 'string', required: false },
+    ],
   },
 
   // ── subscription.changed ───────────────────────────────────────────
@@ -258,9 +261,10 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Scheduled task failed',
-    bodyTemplate: 'The scheduled task "{{taskName}}" failed.',
+    bodyTemplate: 'The scheduled task "{{taskName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'errorMessage', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'taskName', type: 'string', required: true },
     ],
@@ -588,9 +592,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Cert renewal failed',
-    bodyTemplate: 'Renewal of {{certSubject}} failed.',
+    bodyTemplate: 'Renewal of {{certSubject}} failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'errorMessage', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'certSubject', type: 'string', required: true },
     ],
@@ -617,9 +622,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Backup failed',
-    bodyTemplate: 'Backup "{{backupName}}" failed.',
+    bodyTemplate: 'Backup "{{backupName}}" failed.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'errorMessage', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'backupName', type: 'string', required: true },
     ],
@@ -646,9 +652,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Backup target unreachable',
-    bodyTemplate: 'Backup target {{targetName}} is unreachable.',
+    bodyTemplate: 'Backup target {{targetName}} is unreachable.{{#if errorMessage}} {{errorMessage}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'errorMessage', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'targetName', type: 'string', required: true },
     ],
@@ -742,6 +749,39 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
   },
 
   {
+    categoryId: 'admin.custom_deployment_failed',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Custom deployment failed: {{deploymentName}} ({{tenantLabel}})',
+    bodyTemplate: emailMjml(
+      'Custom deployment failed',
+      'Tenant {{tenantLabel}} — deployment {{deploymentName}} entered a failed state: {{reason}}. '
+      + 'The container keeps restarting until the image/config is fixed or the deployment is stopped. '
+      + 'Investigate in the tenant’s Custom Containers tab.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+    ],
+  },
+  {
+    categoryId: 'admin.custom_deployment_failed',
+    channel: 'in_app',
+    locale: 'en',
+    subjectTemplate: 'Custom deployment failed: {{deploymentName}}',
+    bodyTemplate: 'Tenant {{tenantLabel}} — {{deploymentName}} failed: {{reason}}. It keeps restarting until fixed or stopped (Custom Containers tab).',
+    bodyFormat: 'plaintext',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'tenantLabel', type: 'string', required: true },
+      { name: 'deploymentName', type: 'string', required: true },
+      { name: 'reason', type: 'string', required: true },
+    ],
+  },
+  {
     categoryId: 'admin.security_hardening_drift',
     channel: 'email',
     locale: 'en',
@@ -762,9 +802,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'Hardening drift',
-    bodyTemplate: 'Hardening drift on {{nodeName}}.',
+    bodyTemplate: 'Hardening drift on {{nodeName}}.{{#if driftSummary}} {{driftSummary}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'driftSummary', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'nodeName', type: 'string', required: true },
     ],
@@ -888,9 +929,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'WAL archiving failing',
-    bodyTemplate: 'WAL archiving for {{clusterName}} is failing (pg_wal at {{pressurePercent}}%). Fix the backup target.',
+    bodyTemplate: 'WAL archiving for {{clusterName}} is failing (pg_wal at {{pressurePercent}}%). Fix the backup target.{{#if reason}} {{reason}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'reason', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'clusterName', type: 'string', required: true },
       { name: 'pressurePercent', type: 'string', required: true },
@@ -920,9 +962,10 @@ const ADMIN_TEMPLATES: readonly SeedTemplate[] = [
     channel: 'in_app',
     locale: 'en',
     subjectTemplate: 'WAL archiving auto-disabled',
-    bodyTemplate: 'WAL archiving for {{clusterName}} was auto-disabled (kept failing + filling disk). No PITR until you fix the target + re-enable.',
+    bodyTemplate: 'WAL archiving for {{clusterName}} was auto-disabled (kept failing + filling disk). No PITR until you fix the target + re-enable.{{#if reason}} {{reason}}{{/if}}',
     bodyFormat: 'plaintext',
     variablesSchema: [
+      { name: 'reason', type: 'string', required: false },
       ...COMMON_VARS,
       { name: 'clusterName', type: 'string', required: true },
     ],

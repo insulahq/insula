@@ -24,7 +24,9 @@ import {
 import {
   deployCustomDeployment,
   deleteCustomDeployment,
+  scaleCustomDeployment,
 } from './k8s-deployer.js';
+import { checkImageReachable } from './image-reachability.js';
 import {
   upsertPullCredential,
   getPullCredential,
@@ -120,7 +122,27 @@ export async function validateSimpleSpec(
     singleServiceOnly: true,
     deploymentName: input.name,
   });
-  return { ok: result.ok, issues: result.issues, spec };
+  const issues = [...result.issues, ...await checkSpecImagesReachable(spec)];
+  return { ok: !issues.some((i) => i.severity === 'error'), issues, spec };
+}
+
+/**
+ * Pre-flight every service image: reject a malformed reference and probe the
+ * registry so a typo / nonexistent tag fails at validate/create time instead of
+ * silently sitting in ImagePullBackOff. Creds-less (public probe): a public typo
+ * is a hard error (404), a private image only warns (401) — never a false block.
+ * Best-effort: a registry outage degrades to a warning, never throws.
+ */
+async function checkSpecImagesReachable(spec: CustomDeploymentSpec): Promise<CustomDeploymentIssue[]> {
+  const issues: CustomDeploymentIssue[] = [];
+  for (const [name, svc] of Object.entries(spec.services)) {
+    try {
+      issues.push(...await checkImageReachable(svc.image, `services.${name}.image`));
+    } catch {
+      // A probe implementation error must never block a deployment.
+    }
+  }
+  return issues;
 }
 
 /**
@@ -174,6 +196,13 @@ export async function createSimpleDeployment(
       422,
       { issues: validation.issues },
     );
+  }
+
+  // Pre-flight the image: fail fast on a malformed or nonexistent reference
+  // rather than deploying it and waiting for ImagePullBackOff.
+  const imageIssues = await checkSpecImagesReachable(spec);
+  if (imageIssues.some((i) => i.severity === 'error')) {
+    throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }
 
   // Uniqueness: per-tenant deployment name (catalog already enforces
@@ -248,9 +277,9 @@ export async function validateComposeSpec(
     singleServiceOnly: false,
     deploymentName: input.name,
   });
-  // Merge parser issues + validator issues for the editor's pane.
-  const allIssues = [...parsed.issues, ...semantic.issues];
-  return { ok: semantic.ok, issues: allIssues, spec: parsed.spec };
+  // Merge parser + validator + image-reachability issues for the editor's pane.
+  const allIssues = [...parsed.issues, ...semantic.issues, ...await checkSpecImagesReachable(parsed.spec)];
+  return { ok: !allIssues.some((i) => i.severity === 'error'), issues: allIssues, spec: parsed.spec };
 }
 
 /**
@@ -311,6 +340,13 @@ export async function createComposeDeployment(
       422,
       { issues: [...parsed.issues, ...validation.issues] },
     );
+  }
+
+  // Pre-flight every service image — reject a malformed or nonexistent reference
+  // instead of deploying the stack and waiting for ImagePullBackOff.
+  const imageIssues = await checkSpecImagesReachable(parsed.spec);
+  if (imageIssues.some((i) => i.severity === 'error')) {
+    throw new ApiError('CUSTOM_DEPLOYMENT_INVALID', firstErrorIssue(imageIssues), 422, { issues: imageIssues });
   }
 
   // Uniqueness — per the existing deployments_client_name_unique constraint.
@@ -629,6 +665,49 @@ export async function getRunningDigest(db: Database, deploymentId: string): Prom
  * Persisting this does NOT redeploy: flipping a checkbox must never restart a
  * running workload.
  */
+/**
+ * Stop a custom deployment: scale its k8s Deployment(s) to 0 and mark it
+ * 'stopped'. This is the BREAK for a CrashLoopBackOff — the container stops
+ * restarting, but the deployment row, its config, PVC and pull secret are all
+ * kept, so Start brings it back without re-creating anything. Idempotent.
+ */
+export async function stopCustomDeployment(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  id: string,
+): Promise<CustomDeploymentRow> {
+  const current = await getCustomDeployment(db, tenantId, id); // 404s if not this tenant's
+  const namespace = await loadTenantNamespace(db, tenantId);
+  await scaleCustomDeployment(k8s, namespace, id, 0);
+  await db.update(deployments)
+    .set({ status: 'stopped', statusMessage: null, currentNodeName: null })
+    .where(eq(deployments.id, current.id));
+  return getCustomDeployment(db, tenantId, id);
+}
+
+/**
+ * Start a stopped custom deployment: scale its Deployment(s) back to 1. If the
+ * k8s objects were never created (0 patched) the row is left as-is with a clear
+ * message rather than a misleading 'deploying' that will never converge.
+ */
+export async function startCustomDeployment(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  id: string,
+): Promise<CustomDeploymentRow> {
+  const current = await getCustomDeployment(db, tenantId, id);
+  const namespace = await loadTenantNamespace(db, tenantId);
+  const patched = await scaleCustomDeployment(k8s, namespace, id, 1);
+  await db.update(deployments)
+    .set(patched > 0
+      ? { status: 'deploying', statusMessage: null, lastError: null }
+      : { status: 'failed', statusMessage: 'No k8s Deployment exists to start — redeploy this container.' })
+    .where(eq(deployments.id, current.id));
+  return getCustomDeployment(db, tenantId, id);
+}
+
 export async function setAutoUpdate(
   db: Database,
   tenantId: string,

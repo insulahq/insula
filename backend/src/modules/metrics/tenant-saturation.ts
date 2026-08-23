@@ -64,6 +64,7 @@ export async function evaluateTenantSaturation(
       const { notifyAdminTenantResourceSaturation } = await import('../notifications/events.js');
       await notifyAdminTenantResourceSaturation(
         db,
+        tenantId,
         level,
         {
           tenantLabel,

@@ -23,6 +23,9 @@ export interface NotificationEntry {
   readonly isRead: 0 | 1;
   readonly readAt: string | null;
   readonly createdAt: string;
+  /** In-app page to open when the notification is clicked (server-resolved
+   *  from the category). Null for the legacy family with no landing page. */
+  readonly actionPath: string | null;
 }
 
 interface NotificationsResponse {
