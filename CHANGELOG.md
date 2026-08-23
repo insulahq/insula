@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.13] - 2026-08-23
+
+### Added
+- **Tenant apps can now reach the platform's own mail server, SFTP gateway, and
+  web ingress.** A container you run on the platform (a PHP app sending mail via
+  `mail.<apex>`, a job fetching one of your sites over HTTPS, a tool uploading
+  files via SFTP to `files.<apex>`) previously could not connect to those
+  services when its pod happened to land on the same node that serves them —
+  which is *every* pod on a single-node cluster, and unpredictable on a
+  multi-node one. Tenant workloads are now allowed to reach the mail
+  (SMTP/submission/IMAP/sieve), SFTP, and HTTP(S) ingress services. These stay
+  gated by their own authentication (mailbox login, SFTP credentials) and the
+  web firewall, exactly as they are for connections from the public internet.
+
+### Changed
+- **Domain routes now use direct `A`/`AAAA` DNS records** pointing at the
+  cluster's ingress address(es), instead of a per-route `CNAME` into an internal
+  routing name. Simpler and human-readable; if the ingress addresses change, use
+  **Refresh route DNS** on the domain to rewrite the records. New managed DNS
+  records default to a **1-hour TTL**.
+- On the **domain** and **route** detail pages, the name in the title bar is now
+  a link that opens the live site in a new tab.
+
 ## [2026.8.12] - 2026-08-23
 
 ### Added
