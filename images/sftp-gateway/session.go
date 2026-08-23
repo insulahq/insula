@@ -284,14 +284,33 @@ func confineHome(homePath string) string {
 
 // sanitizePath cleans a path argument and confines it under dataRoot.
 // Returns dataRoot if the path would escape or contains null bytes.
+//
+// TRAILING SLASH IS SIGNIFICANT and is preserved. rsync and scp distinguish
+// "dir/" (act on the directory's CONTENTS) from "dir" (act on the directory
+// itself as one entry). filepath.Clean drops the trailing slash, which silently
+// turned `rsync --list-only /` into "list the jail directory itself" — so rsync
+// echoed back the jail's own basename (e.g. `public_html`), a name a scoped user
+// is never meant to learn, instead of listing its in-scope contents. It is not a
+// confinement escape (the path is still clamped under dataRoot), but it discloses
+// the scope directory's name and misreads exactly like a breach. Re-appending the
+// caller's trailing slash keeps rsync/scp semantics intact and keeps the jail's
+// own name invisible.
 func sanitizePath(arg, dataRoot string) string {
 	if strings.ContainsRune(arg, 0) {
 		return dataRoot
 	}
+	trailingSlash := strings.HasSuffix(arg, "/")
 	clean := filepath.Clean("/" + arg)
 	joined := filepath.Clean(dataRoot + clean)
 	if !strings.HasPrefix(joined, dataRoot+"/") && joined != dataRoot {
-		return dataRoot
+		joined = dataRoot
+	}
+	// filepath.Clean stripped any trailing slash; restore it when the caller's
+	// argument had one so "list/copy CONTENTS" does not degrade to "the dir
+	// itself". dataRoot never carries a trailing slash, so this is the only place
+	// one can reappear.
+	if trailingSlash && !strings.HasSuffix(joined, "/") {
+		joined += "/"
 	}
 	return joined
 }
