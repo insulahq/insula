@@ -12,6 +12,53 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Every in-app notification is now clickable and takes you where you act on
+  it.** Selecting a notification in the bell dropdown marks it read and opens the
+  relevant page: an SLO alert opens Monitoring, a node alert opens Cluster →
+  Nodes, and a tenant-specific alert (OOM, resource saturation, bandwidth, a
+  failed custom deployment) opens *that tenant's* page rather than the full list.
+  Previously a notification told you something was wrong but gave you no way in.
+- **Custom container deployments are checked for a reachable image at create
+  time.** A reference that is merely well-formed but not actually pullable
+  (wrong tag, non-existent repository) is caught up front — a missing image is
+  rejected, an access-denied or transient registry error is surfaced as a
+  warning — instead of failing silently after the deployment is accepted.
+
+### Fixed
+- **SLO alerts showed a raw metric number instead of a readable value.** An
+  availability alert read `Current value: 0.03865979381443299` with no unit and
+  no next step. Values now render in the metric's own terms — a percentage
+  (`3.87%`), a duration (`620ms`, `1.1d`), or a plain count — and the
+  availability rules' descriptions were rewritten in plain language with a
+  pointer to where to look.
+- **A failed custom deployment could restart forever on "Starting…" with no
+  notification and no way to stop it.** Failure is now detected by restart count
+  (independent of which instant the reconciler samples), the operator gets a
+  notification naming the tenant, the deployment, and the reason, the tenant
+  panel shows the diagnostic, and a Stop/Start control breaks the loop without
+  deleting the deployment's configuration.
+- **Memory-pressure and OOM notifications named nothing actionable.** Tenant
+  container OOM-kills and evictions now name the tenant, pod, and container (with
+  a "+N more" roll-up) and point to Node health → Memory events, instead of a
+  bare count.
+- **Eight in-app notification types dropped the diagnostic detail their email
+  kept.** Backup failures, certificate-renewal failures, WAL-archive problems,
+  security-hardening drift, and scheduled-task failures now carry the same
+  error/reason text in the panel that the email always had.
+- **An over-long notification de-duplication key could make a notification vanish
+  silently.** The delivery row's `dedupe_key` is bounded; a caller that built a
+  key longer than the limit made the insert throw, and the error was swallowed —
+  the notification simply never appeared. Over-long keys are now clamped at the
+  dispatch boundary, and plaintext in-app bodies no longer HTML-escape ordinary
+  symbols (`=` was rendering as `&#x3D;`).
+- **A tenant SFTP user confined to a sub-directory could see its own chroot
+  folder name.** `rsync --list-only` against the jail root had its trailing slash
+  stripped by path sanitisation, so the listing named the jail directory itself.
+  This was a cosmetic disclosure of the confinement directory's basename, not an
+  escape — the user could never leave or read outside the jail — and the listing
+  is now scoped to the directory's contents.
+
 ## [2026.8.10] - 2026-08-21
 
 ### Fixed
