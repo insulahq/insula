@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.13] - 2026-08-23
+
 ### Added
 - **Tenant apps can now reach the platform's own mail server, SFTP gateway, and
   web ingress.** A container you run on the platform (a PHP app sending mail via
