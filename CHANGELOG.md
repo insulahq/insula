@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.12] - 2026-08-23
+
 ### Added
 - **Custom container deployments now detect updates for moving image tags.** The
   **Updates** column previously showed "unknown" for almost every container,
