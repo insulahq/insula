@@ -103,7 +103,17 @@ container images instead of catalog apps. Two ways:
 
 Custom containers appear in the same table with a **Mode** column (Docker or
 Compose) and an **Updates** column. Use the row's actions to upgrade the image
-tag, start/stop, or remove the container.
+tag, **Stop**/**Start**, or remove the container.
+
+!!! warning "If a container keeps failing"
+    When a container can't start — a bad image, a wrong command, or it runs out
+    of memory — its status shows **failed** with the reason next to it (for
+    example `CrashLoopBackOff — last exit 1`, `ImagePullBackOff`, or `OOMKilled`).
+    Kubernetes will keep restarting it. Click **Stop** to break the restart loop:
+    it scales the container to zero but **keeps your configuration, storage and
+    registry credentials**, so you can fix the image or command and then **Start**
+    it again. (Your provider's administrators are also notified when one of your
+    containers enters the failed state.)
 
 !!! note "Don't see Custom Containers?"
     This is an optional, plan-gated feature. If the tab is missing or empty,

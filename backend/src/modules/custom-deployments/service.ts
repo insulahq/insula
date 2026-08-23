@@ -24,6 +24,7 @@ import {
 import {
   deployCustomDeployment,
   deleteCustomDeployment,
+  scaleCustomDeployment,
 } from './k8s-deployer.js';
 import {
   upsertPullCredential,
@@ -629,6 +630,49 @@ export async function getRunningDigest(db: Database, deploymentId: string): Prom
  * Persisting this does NOT redeploy: flipping a checkbox must never restart a
  * running workload.
  */
+/**
+ * Stop a custom deployment: scale its k8s Deployment(s) to 0 and mark it
+ * 'stopped'. This is the BREAK for a CrashLoopBackOff — the container stops
+ * restarting, but the deployment row, its config, PVC and pull secret are all
+ * kept, so Start brings it back without re-creating anything. Idempotent.
+ */
+export async function stopCustomDeployment(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  id: string,
+): Promise<CustomDeploymentRow> {
+  const current = await getCustomDeployment(db, tenantId, id); // 404s if not this tenant's
+  const namespace = await loadTenantNamespace(db, tenantId);
+  await scaleCustomDeployment(k8s, namespace, id, 0);
+  await db.update(deployments)
+    .set({ status: 'stopped', statusMessage: null, currentNodeName: null })
+    .where(eq(deployments.id, current.id));
+  return getCustomDeployment(db, tenantId, id);
+}
+
+/**
+ * Start a stopped custom deployment: scale its Deployment(s) back to 1. If the
+ * k8s objects were never created (0 patched) the row is left as-is with a clear
+ * message rather than a misleading 'deploying' that will never converge.
+ */
+export async function startCustomDeployment(
+  db: Database,
+  k8s: K8sClients,
+  tenantId: string,
+  id: string,
+): Promise<CustomDeploymentRow> {
+  const current = await getCustomDeployment(db, tenantId, id);
+  const namespace = await loadTenantNamespace(db, tenantId);
+  const patched = await scaleCustomDeployment(k8s, namespace, id, 1);
+  await db.update(deployments)
+    .set(patched > 0
+      ? { status: 'deploying', statusMessage: null, lastError: null }
+      : { status: 'failed', statusMessage: 'No k8s Deployment exists to start — redeploy this container.' })
+    .where(eq(deployments.id, current.id));
+  return getCustomDeployment(db, tenantId, id);
+}
+
 export async function setAutoUpdate(
   db: Database,
   tenantId: string,

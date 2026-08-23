@@ -781,6 +781,31 @@ export async function notifyAdminTenantOom(
   await dispatchSafe(db, 'admin.tenant_pod_oom', { kind: 'admin' }, payload, undefined, { dedupeKey });
 }
 
+// ── Custom deployment failure (CrashLoopBackOff / ImagePullBackOff / OOM) ────
+
+export interface AdminCustomDeploymentFailedPayload {
+  /** Tenant display name, resolved so the admin doesn't decode a namespace. */
+  readonly tenantLabel: string;
+  /** The custom deployment's name (what the tenant sees in their panel). */
+  readonly deploymentName: string;
+  /** Diagnostic reason, e.g. "app: CrashLoopBackOff — back-off restarting failed container". */
+  readonly reason: string;
+}
+/**
+ * A tenant custom deployment transitioned into `failed`. Before this the status
+ * flipped to failed in the DB (with a diagnostic message) but nothing told the
+ * operator — the container just restarted forever with no signal. `dedupeKey`
+ * (deployment id + reason) fires once per distinct failure episode; a NEW reason
+ * re-alerts, a still-failing-for-the-same-reason deployment does not.
+ */
+export async function notifyAdminCustomDeploymentFailed(
+  db: Database,
+  payload: AdminCustomDeploymentFailedPayload,
+  dedupeKey?: string,
+): Promise<void> {
+  await dispatchSafe(db, 'admin.custom_deployment_failed', { kind: 'admin' }, payload, undefined, { dedupeKey });
+}
+
 // ── Monthly bandwidth (BW-3): admin + tenant alerts at 80/90/100% ───────────
 
 export interface AdminBandwidthPayload {

@@ -23,9 +23,9 @@
  * category rate limits back-stop bursts.
  */
 
-import { lt, sql } from 'drizzle-orm';
+import { inArray, lt, sql } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
-import { nodeMemoryEvents } from '../../db/schema.js';
+import { nodeMemoryEvents, tenants } from '../../db/schema.js';
 import { notifyAdminNodeMemoryEvents } from '../notifications/events.js';
 import type { NodeMemoryEvent } from '@insula/api-contracts';
 
@@ -71,6 +71,8 @@ export interface NormalizedMemoryEvent {
   readonly nodeName: string;
   readonly namespace: string | null;
   readonly podName: string | null;
+  /** OOM-killed container name (container-oom only); null for pod/node events. */
+  readonly containerName: string | null;
   readonly systemWorkload: boolean;
   readonly message: string;
   readonly occurredAt: Date;
@@ -136,6 +138,7 @@ export function collectOomKilledContainers(
           nodeName,
           namespace,
           podName,
+          containerName: cs.name ?? null,
           systemWorkload: namespace !== null && SYSTEM_NAMESPACES.has(namespace),
           message: oomExplicit
             ? `container ${cs.name ?? '?'} OOM-killed at its memory limit (restart #${cs.restartCount ?? 0})`
@@ -186,6 +189,7 @@ export function normalizeMemoryEvents(
       nodeName,
       namespace,
       podName: e.involvedObject?.name ?? null,
+      containerName: null,
       systemWorkload: namespace !== null && SYSTEM_NAMESPACES.has(namespace),
       message: (e.message ?? '').slice(0, 1000),
       occurredAt,
@@ -204,6 +208,7 @@ export function normalizeMemoryEvents(
       nodeName,
       namespace: null,
       podName: null,
+      containerName: null,
       // A kernel OOM kill is a node-level system incident by definition.
       systemWorkload: true,
       message: (e.message ?? '').slice(0, 1000),
@@ -220,29 +225,99 @@ export function normalizeMemoryEvents(
  */
 export function summarizeForNotification(
   inserted: ReadonlyArray<NormalizedMemoryEvent>,
+  labelForNamespace: (ns: string) => string | undefined = () => undefined,
 ): Array<{ nodeName: string; severity: 'critical' | 'warning'; summary: string }> {
-  const groups = new Map<string, { nodeName: string; severity: 'critical' | 'warning'; oom: number; sysEvict: number; tenantEvict: number; sysOomk: number; tenantOomk: number }>();
+  interface Group {
+    nodeName: string;
+    severity: 'critical' | 'warning';
+    oom: number;
+    sysEvict: NormalizedMemoryEvent[];
+    tenantEvict: NormalizedMemoryEvent[];
+    sysOomk: NormalizedMemoryEvent[];
+    tenantOomk: NormalizedMemoryEvent[];
+  }
+  const groups = new Map<string, Group>();
   for (const e of inserted) {
     const severity: 'critical' | 'warning' = e.systemWorkload ? 'critical' : 'warning';
-    const key = `${e.nodeName} ${severity}`;
-    const g = groups.get(key) ?? { nodeName: e.nodeName, severity, oom: 0, sysEvict: 0, tenantEvict: 0, sysOomk: 0, tenantOomk: 0 };
+    const key = `${e.nodeName} ${severity}`;
+    const g = groups.get(key) ?? { nodeName: e.nodeName, severity, oom: 0, sysEvict: [], tenantEvict: [], sysOomk: [], tenantOomk: [] };
     if (e.kind === 'system-oom') g.oom += 1;
-    else if (e.kind === 'container-oom') {
-      if (e.systemWorkload) g.sysOomk += 1;
-      else g.tenantOomk += 1;
-    } else if (e.systemWorkload) g.sysEvict += 1;
-    else g.tenantEvict += 1;
+    else if (e.kind === 'container-oom') (e.systemWorkload ? g.sysOomk : g.tenantOomk).push(e);
+    else (e.systemWorkload ? g.sysEvict : g.tenantEvict).push(e);
     groups.set(key, g);
   }
   return [...groups.values()].map((g) => {
     const parts: string[] = [];
     if (g.oom > 0) parts.push(`kernel SystemOOM (${g.oom} event${g.oom === 1 ? '' : 's'})`);
-    if (g.sysEvict > 0) parts.push(`${g.sysEvict} SYSTEM pod(s) evicted`);
-    if (g.sysOomk > 0) parts.push(`${g.sysOomk} SYSTEM container(s) OOM-killed at their limit`);
-    if (g.tenantEvict > 0) parts.push(`${g.tenantEvict} tenant pod(s) evicted`);
-    if (g.tenantOomk > 0) parts.push(`${g.tenantOomk} tenant container(s) OOM-killed at their limit`);
-    return { nodeName: g.nodeName, severity: g.severity, summary: parts.join(', ') };
+    const named = (label: string, evs: NormalizedMemoryEvent[]): void => {
+      if (evs.length === 0) return;
+      parts.push(`${evs.length} ${label}: ${joinNamed(evs.map((e) => describeEvent(e, labelForNamespace)))}`);
+    };
+    named('SYSTEM pod(s) evicted', g.sysEvict);
+    named('SYSTEM container(s) OOM-killed at their memory limit', g.sysOomk);
+    named('tenant pod(s) evicted', g.tenantEvict);
+    named('tenant container(s) OOM-killed at their memory limit', g.tenantOomk);
+    const advice = g.severity === 'warning'
+      ? "Raise the tenant's plan/memory limit if this recurs. Details: Monitoring -> Node health -> Memory events."
+      : 'A SYSTEM workload was hit - investigate now. Details: Monitoring -> Node health -> Memory events.';
+    return { nodeName: g.nodeName, severity: g.severity, summary: `${parts.join('; ')}. ${advice}` };
   });
+}
+
+/** How many affected objects to name individually before switching to "+N more". */
+const MAX_NAMED = 3;
+
+/**
+ * Human identity of one memory event: the tenant NAME (or namespace for SYSTEM
+ * workloads) plus pod + container when known. This is what the notification was
+ * missing - it named a count and a node and nothing you could act on.
+ */
+function describeEvent(
+  e: NormalizedMemoryEvent,
+  labelForNamespace: (ns: string) => string | undefined,
+): string {
+  const who = e.systemWorkload
+    ? (e.namespace ?? 'node')
+    : (e.namespace ? (labelForNamespace(e.namespace) ?? e.namespace) : 'unknown tenant');
+  const prefix = e.systemWorkload ? who : `tenant "${who}"`;
+  const bits: string[] = [];
+  if (e.containerName) bits.push(`container ${e.containerName}`);
+  if (e.podName) bits.push(`pod ${e.podName}`);
+  return bits.length > 0 ? `${prefix} (${bits.join(', ')})` : prefix;
+}
+
+/** Join named descriptions with a "+N more" tail when the list is long. */
+function joinNamed(descriptions: string[]): string {
+  if (descriptions.length <= MAX_NAMED) return descriptions.join('; ');
+  return `${descriptions.slice(0, MAX_NAMED).join('; ')}; +${descriptions.length - MAX_NAMED} more`;
+}
+
+/**
+ * Map each affected TENANT namespace to its display name for the notification.
+ * Only tenant-tier events carry a resolvable namespace; SYSTEM ones use the raw
+ * namespace. A namespace with no tenant row (already deleted) is simply absent
+ * from the map and the summary falls back to the namespace string.
+ */
+async function resolveTenantLabels(
+  db: Database,
+  events: ReadonlyArray<NormalizedMemoryEvent>,
+): Promise<Map<string, string>> {
+  const namespaces = [...new Set(
+    events.filter((e) => !e.systemWorkload && e.namespace).map((e) => e.namespace as string),
+  )];
+  const out = new Map<string, string>();
+  if (namespaces.length === 0) return out;
+  try {
+    const rows = await db
+      .select({ ns: tenants.kubernetesNamespace, name: tenants.name })
+      .from(tenants)
+      .where(inArray(tenants.kubernetesNamespace, namespaces));
+    for (const r of rows) if (r.ns) out.set(r.ns, r.name);
+  } catch {
+    // Best-effort: a lookup failure just means the summary shows the namespace
+    // instead of the display name — never block the notification.
+  }
+  return out;
 }
 
 /**
@@ -286,7 +361,10 @@ export async function recordMemoryEvents(
     await db.delete(nodeMemoryEvents)
       .where(lt(nodeMemoryEvents.occurredAt, new Date(now.getTime() - RETENTION_MS)));
 
-    for (const n of summarizeForNotification(inserted)) {
+    // Resolve the affected tenant namespaces to their display names so the
+    // notification can say WHO was hit, not just "1 tenant container(s)".
+    const nsToLabel = await resolveTenantLabels(db, inserted);
+    for (const n of summarizeForNotification(inserted, (ns) => nsToLabel.get(ns))) {
       const hour = now.toISOString().slice(0, 13); // YYYY-MM-DDTHH
       await notifyAdminNodeMemoryEvents(db, n.severity, { nodeName: n.nodeName, summary: n.summary },
         `node-memory:${n.severity}:${n.nodeName}:${hour}`);

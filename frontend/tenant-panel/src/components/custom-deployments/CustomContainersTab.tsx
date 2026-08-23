@@ -14,7 +14,7 @@
 
 import { useMemo, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, ArrowUpCircle, Download, FileText, Loader2, MoreVertical, Pencil, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowUpCircle, Download, FileText, Loader2, MoreVertical, Pencil, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import {
   useCustomDeployments,
@@ -22,6 +22,7 @@ import {
   useDeleteCustomDeployment,
   useUpdateCustomDeployment,
   useUpdateNowCustomDeployment,
+  useStopStartCustomDeployment,
   useSetAutoUpdate,
   useUpgradeTag,
   type CustomDeploymentRow,
@@ -59,6 +60,7 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
   const deleteMutation = useDeleteCustomDeployment(tenantId);
   const restartMutation = useUpdateCustomDeployment(tenantId);
   const updateNowMutation = useUpdateNowCustomDeployment(tenantId);
+  const stopStartMutation = useStopStartCustomDeployment(tenantId);
   const autoUpdateMutation = useSetAutoUpdate(tenantId);
   // Which row is mid-update, so the button can show a spinner + disable
   // rather than letting an impatient operator queue three rolls.
@@ -79,6 +81,15 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
 
   const onToggleAutoUpdate = (row: CustomDeploymentRow, enabled: boolean) => {
     autoUpdateMutation.mutate({ id: row.id, enabled });
+  };
+
+  const onStopStart = (row: CustomDeploymentRow) => {
+    const action = row.status === 'stopped' ? 'start' : 'stop';
+    if (action === 'stop'
+      && !confirm(`Stop "${row.name}"? It scales to 0 and stops restarting — its config, storage and settings are kept, and Start brings it back.`)) {
+      return;
+    }
+    stopStartMutation.mutate({ id: row.id, action });
   };
 
   const onRestart = (row: CustomDeploymentRow) => {
@@ -195,6 +206,20 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
                       <span className={clsx('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium', getStatusColor(row.status))}>
                         {row.status}
                       </span>
+                      {/* The reconciler's diagnostic (CrashLoopBackOff / ImagePullBackOff /
+                          OOMKilled / timeout). Previously only lastError was shown, so a
+                          crash-looping container displayed a bare status with no reason. */}
+                      {row.statusMessage && (
+                        <div
+                          className={clsx('mt-1 text-xs', row.status === 'failed'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-amber-600 dark:text-amber-400')}
+                          title={row.statusMessage}
+                          data-testid={`custom-status-message-${row.id}`}
+                        >
+                          {row.statusMessage.length > 120 ? `${row.statusMessage.slice(0, 120)}…` : row.statusMessage}
+                        </div>
+                      )}
                       {row.lastError && (
                         <div className="mt-1 text-xs text-red-600 dark:text-red-400" title={row.lastError}>
                           {row.lastError.slice(0, 80)}
@@ -225,6 +250,27 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
                             >
                               <RefreshCw size={12} className={updatingId === row.id ? 'animate-spin' : undefined} />
                               {updatingId === row.id ? 'Updating…' : 'Update'}
+                            </button>
+                            {/* Break a CrashLoopBackOff without deleting: scale to 0.
+                                Start scales back to 1. */}
+                            <button
+                              type="button"
+                              onClick={() => onStopStart(row)}
+                              disabled={stopStartMutation.isPending}
+                              title={row.status === 'stopped'
+                                ? 'Start this container (scale to 1)'
+                                : 'Stop this container (scale to 0) — breaks a restart loop; config and storage are kept'}
+                              data-testid={`custom-stop-start-${row.id}`}
+                              className={clsx(
+                                'inline-flex items-center gap-1 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50',
+                                row.status === 'stopped'
+                                  ? 'text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300'
+                                  : 'text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300',
+                              )}
+                            >
+                              {row.status === 'stopped'
+                                ? (<><Play size={12} />Start</>)
+                                : (<><Square size={12} />Stop</>)}
                             </button>
                             {/* Single-container only: a stack has one digest per
                                 service, so "the image changed" has no single

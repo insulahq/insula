@@ -450,6 +450,21 @@ const ADMIN_CATEGORIES: readonly CategoryDefinition[] = [
     gdprBasis: 'contract',
   },
   {
+    id: 'admin.custom_deployment_failed',
+    displayName: 'Custom deployment failed',
+    description: 'A tenant custom container entered a failed state (CrashLoopBackOff, '
+      + 'ImagePullBackOff, OOMKilled, or timed out). The notification names the tenant, the '
+      + 'deployment, and the container reason so the operator can diagnose it without hunting '
+      + 'through the cluster; the container will keep restarting until fixed or stopped.',
+    audience: 'admin',
+    defaultSeverity: 'error',
+    defaultChannels: ['in_app', 'email'],
+    isMandatory: false,
+    gdprBasis: 'legitimate_interest',
+    rateLimitWindowS: 3600, // dedupeKey already fires once per (deployment,reason); cap the fan-out
+    rateLimitMax: 20,
+  },
+  {
     id: 'admin.mail_health_degraded',
     displayName: 'Mail server health check failing',
     description: 'A mail-server health component is FAILING — the Stalwart pod, its JMAP API, the '

@@ -889,6 +889,36 @@ function isK8s409(err: unknown): boolean {
  * `insula.host/deployment-id=<id>` so we don't have to
  * know the exact list of resources at delete time. Idempotent.
  */
+/**
+ * Scale every k8s Deployment belonging to a custom deployment to `replicas`.
+ * Used by Stop (0) / Start (1) so an operator can BREAK a CrashLoopBackOff
+ * without deleting the deployment and losing its config/PVC. Multi-service
+ * stacks have one Deployment per service; the deployment-id label covers them
+ * all. Returns how many Deployments were patched (0 = nothing deployed yet).
+ */
+export async function scaleCustomDeployment(
+  k8s: K8sClients,
+  namespace: string,
+  deploymentId: string,
+  replicas: number,
+): Promise<number> {
+  const labelSelector = `insula.host/deployment-id=${deploymentId}`;
+  const list = await k8s.apps.listNamespacedDeployment(
+    { namespace, labelSelector } as Parameters<typeof k8s.apps.listNamespacedDeployment>[0],
+  ) as unknown as { items: Array<{ metadata?: { name?: string } }> };
+  let patched = 0;
+  for (const item of list.items ?? []) {
+    const n = item.metadata?.name;
+    if (!n) continue;
+    await k8s.apps.patchNamespacedDeployment(
+      { name: n, namespace, body: { spec: { replicas } } } as unknown as Parameters<typeof k8s.apps.patchNamespacedDeployment>[0],
+      STRATEGIC_MERGE_PATCH,
+    ).catch(swallow404);
+    patched += 1;
+  }
+  return patched;
+}
+
 export async function deleteCustomDeployment(
   k8s: K8sClients,
   namespace: string,

@@ -119,6 +119,21 @@ export function useUpdateNowCustomDeployment(tenantId: string | undefined) {
   });
 }
 
+/** Stop (scale to 0) or start (scale to 1) — breaks a CrashLoopBackOff. */
+export function useStopStartCustomDeployment(tenantId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, action }: { id: string; action: 'stop' | 'start' }) =>
+      apiFetch<{ data: CustomDeploymentRow }>(`${BASE(tenantId!)}/${id}/${action}`, {
+        method: 'POST',
+      }),
+    onSuccess: (_data, vars) => {
+      queryClient.invalidateQueries({ queryKey: ['custom-deployments', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['custom-deployment', tenantId, vars.id] });
+    },
+  });
+}
+
 /** Toggle the hourly same-tag re-pull. Single-container deployments only. */
 export function useSetAutoUpdate(tenantId: string | undefined) {
   const queryClient = useQueryClient();
