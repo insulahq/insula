@@ -257,6 +257,7 @@ export async function applyReconcileOutcome(
       const reasonHash = createHash('sha1').update(reason).digest('hex').slice(0, 12);
       await notifyAdminCustomDeploymentFailed(
         db,
+        current.tenantId,
         { tenantLabel: t?.name ?? current.tenantId, deploymentName: current.name, reason },
         `cdfail:${rowId}:${reasonHash}`,
       );

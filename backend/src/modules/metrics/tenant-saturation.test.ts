@@ -46,7 +46,10 @@ describe('evaluateTenantSaturation', () => {
     const fired = await evaluateTenantSaturation(db, 't1', 'Acme', M([2, 2], [1, 4], [5, 50]));
     expect(fired).toBe(1);
     expect(notify).toHaveBeenCalledTimes(1);
-    const [, level, payload, key] = notify.mock.calls[0];
+    // Signature: (db, tenantId, level, payload, dedupeKey) — tenantId tags the
+    // row so the admin alert deep-links to that tenant.
+    const [, tenantId, level, payload, key] = notify.mock.calls[0];
+    expect(tenantId).toBe('t1');
     expect(level).toBe('critical');
     expect(payload).toMatchObject({ resource: 'CPU', usedPct: '100', limit: '2', unit: ' cores' });
     expect(key).toMatch(/^sat:t1:CPU:critical:\d{4}-\d{2}-\d{2}T\d{2}$/);
@@ -55,15 +58,16 @@ describe('evaluateTenantSaturation', () => {
   it('fires WARNING for memory at 90%', async () => {
     await evaluateTenantSaturation(db, 't1', 'Acme', M([0.1, 2], [3.6, 4], [5, 50]));
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify.mock.calls[0][1]).toBe('warning');
-    expect(notify.mock.calls[0][2]).toMatchObject({ resource: 'memory' });
+    expect(notify.mock.calls[0][1]).toBe('t1');
+    expect(notify.mock.calls[0][2]).toBe('warning');
+    expect(notify.mock.calls[0][3]).toMatchObject({ resource: 'memory' });
   });
 
   it('fires storage critical at 95% (its lower crit threshold)', async () => {
     await evaluateTenantSaturation(db, 't1', 'Acme', M([0.1, 2], [1, 4], [47.5, 50]));
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify.mock.calls[0][1]).toBe('critical');
-    expect(notify.mock.calls[0][2]).toMatchObject({ resource: 'storage' });
+    expect(notify.mock.calls[0][2]).toBe('critical');
+    expect(notify.mock.calls[0][3]).toMatchObject({ resource: 'storage' });
   });
 
   it('skips dimensions with available <= 0 (unlimited/unknown)', async () => {

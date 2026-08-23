@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bell, Info, AlertTriangle, XCircle, CheckCircle, CheckCheck } from 'lucide-react';
-import { useNotifications, useUnreadCount, useMarkAllNotificationsRead } from '@/hooks/use-notifications';
+import { useNotifications, useUnreadCount, useMarkAllNotificationsRead, useMarkNotificationsRead } from '@/hooks/use-notifications';
 import { formatRelativeTime } from '@/lib/format-relative-time';
 
 const typeIcons = {
@@ -24,6 +24,7 @@ export default function NotificationDropdown() {
   const { data, isLoading } = useNotifications(10);
   const { data: unreadData } = useUnreadCount();
   const markAllRead = useMarkAllNotificationsRead();
+  const markRead = useMarkNotificationsRead();
   const navigate = useNavigate();
 
   const notifications = data?.data ?? [];
@@ -45,6 +46,17 @@ export default function NotificationDropdown() {
     if (unreadCount > 0) {
       markAllRead.mutate();
     }
+  };
+
+  // Clicking a notification takes the operator straight to the page where they
+  // act on it (server-resolved `actionPath`), and marks it read on the way.
+  // Falls back to the full notifications list for the legacy family.
+  const handleItemClick = (item: { id: string; isRead: number; actionPath: string | null }) => {
+    if (!item.isRead) {
+      markRead.mutate([item.id]);
+    }
+    setOpen(false);
+    navigate(item.actionPath ?? '/platform/notifications');
   };
 
   return (
@@ -96,9 +108,12 @@ export default function NotificationDropdown() {
                 const Icon = typeIcons[item.type] ?? Info;
                 const color = typeColors[item.type] ?? 'text-gray-400';
                 return (
-                  <div
+                  <button
                     key={item.id}
-                    className={`flex items-start gap-3 border-b border-gray-50 px-4 py-3 last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/60 transition-colors ${!item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''}`}
+                    type="button"
+                    onClick={() => handleItemClick(item)}
+                    className={`flex w-full items-start gap-3 border-b border-gray-50 px-4 py-3 text-left last:border-b-0 hover:bg-gray-50 dark:border-gray-700 dark:hover:bg-gray-700/60 transition-colors ${!item.isRead ? 'bg-brand-50/30 dark:bg-brand-900/10' : ''}`}
+                    data-testid="notification-item"
                   >
                     <Icon size={16} className={`mt-0.5 shrink-0 ${color}`} />
                     <div className="min-w-0 flex-1">
@@ -106,7 +121,7 @@ export default function NotificationDropdown() {
                       <p className="text-xs text-gray-500 dark:text-gray-400">{item.message}</p>
                       <p className="mt-0.5 text-xs text-gray-400">{formatRelativeTime(item.createdAt)}</p>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
           </div>
@@ -115,7 +130,7 @@ export default function NotificationDropdown() {
             <button
               onClick={() => {
                 setOpen(false);
-                navigate('/monitoring');
+                navigate('/platform/notifications');
               }}
               className="w-full rounded-lg py-1.5 text-center text-xs font-medium text-brand-600 hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-900/20"
               data-testid="notification-view-all"
