@@ -32,6 +32,7 @@ import {
   setAutoUpdateSchema,
 } from './schema.js';
 import { checkForUpdate } from './update-checker.js';
+import { getRunningDigest } from './image-audit.js';
 import { loadDecryptedToken } from './pat-store.js';
 import type { CallerRole } from './role-types.js';
 
@@ -291,6 +292,7 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
     // registry reasonable (Docker Hub anon throttles at 100/6h per IP).
     const CONCURRENCY = 8;
     const ids = parsed.data.deployment_ids;
+    const force = parsed.data.force ?? false;
     const results: Record<string, unknown> = {};
     const probe = async (id: string): Promise<void> => {
       try {
@@ -307,6 +309,12 @@ export async function customDeploymentRoutes(app: FastifyInstance): Promise<void
         const r = await checkForUpdate({
           db: app.db,
           image,
+          // Lazily resolve the pod's running digest for THIS image — only the
+          // non-semver (digest) path reads it, so a batch of semver tags does
+          // no extra DB work. Scoped by image so a compose stack can't compare
+          // the checked service against another service's digest.
+          resolveRunningImageId: () => getRunningDigest(app.db, id, image),
+          force,
           ...(cred ? { authCreds: cred } : {}),
         });
         results[id] = {
