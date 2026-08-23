@@ -612,7 +612,7 @@ export async function provisionManagedRecord(
     type: record.type,
     name: record.name ?? '',
     content: record.content,
-    ttl: record.ttl ?? 300,
+    ttl: record.ttl ?? 3600,
     priority: record.priority ?? null,
     weight: record.weight ?? null,
     port: record.port ?? null,
@@ -637,7 +637,7 @@ export async function provisionManagedRecord(
     // Already tracked. Claim ownership if an older row predates managed_by,
     // so a refresh can replace it instead of orphaning it.
     await db.update(dnsRecords)
-      .set({ managedBy: owner, ttl: record.ttl ?? 300 })
+      .set({ managedBy: owner, ttl: record.ttl ?? 3600 })
       .where(eq(dnsRecords.id, existing[0].id));
     return outcome;
   }
@@ -648,7 +648,7 @@ export async function provisionManagedRecord(
     recordType: record.type as never,
     recordName: record.name,
     recordValue: record.content,
-    ttl: record.ttl ?? 300,
+    ttl: record.ttl ?? 3600,
     priority: record.priority ?? null,
     weight: record.weight ?? null,
     port: record.port ?? null,

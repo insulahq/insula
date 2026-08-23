@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import ConfirmToken from '@/components/ui/ConfirmToken';
 import { dnsRecordFieldsFor } from '@insula/api-contracts';
 import ManagedCertificateCard from '@/components/ManagedCertificateCard';
+import { HostnameLink } from '@/components/HostnameLink';
 import { useCanManage } from '@/hooks/use-can-manage';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
@@ -100,7 +101,7 @@ export default function DomainDetail() {
         </Link>
         <span className="text-gray-300 dark:text-gray-600">/</span>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
-          {domain.domainName}
+          <HostnameLink host={domain.domainName} />
         </h1>
         {/* Verification status badge */}
         {domain.status === 'verified' && (

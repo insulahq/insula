@@ -192,6 +192,41 @@ export function getWwwCompanionHostname(
   return null;
 }
 
+/**
+ * Provision the ingress ADDRESS records (A + AAAA) for a hostname under a
+ * primary-mode domain — one record per configured ingress IP, both families.
+ *
+ * EVERY route (apex, subdomain, wildcard) now points DIRECTLY at the ingress
+ * IP(s). There is no `<slug>.<ingress_base_domain>` CNAME hop: a tenant name
+ * resolves straight to the cluster. The cost is that changing the ingress
+ * addresses means rewriting these owned records (via "Refresh route DNS" /
+ * `refreshRouteDnsForDomain`) — an explicit, per-domain owned RRset, not a
+ * synthetic per-route slug in a shared platform zone.
+ *
+ * `recordName` comes from `relativeRecordName`, so it is already the correct
+ * zone-relative shape: `@` for the apex, `*` / `*.a` for wildcards, `www` for
+ * a plain subdomain. TTL is inherited from provisionManagedRecord (3600).
+ */
+export async function provisionIngressAddressRecords(
+  db: Database,
+  domain: { id: string; domainName: string },
+  recordName: string,
+  settings: Awaited<ReturnType<typeof getIngressSettings>>,
+): Promise<DnsSyncOutcome[]> {
+  const outcomes: DnsSyncOutcome[] = [];
+  for (const ip of parseIngressIps(settings.ingressDefaultIpv4)) {
+    outcomes.push(await provisionManagedRecord(db, 'ingress-route',
+      { id: domain.id, domainName: domain.domainName },
+      { type: 'A', name: recordName, content: ip }));
+  }
+  for (const ip of parseIngressIps(settings.ingressDefaultIpv6)) {
+    outcomes.push(await provisionManagedRecord(db, 'ingress-route',
+      { id: domain.id, domainName: domain.domainName },
+      { type: 'AAAA', name: recordName, content: ip }));
+  }
+  return outcomes;
+}
+
 // ─── Route CRUD ─────────────────────────────────────────────────────────────
 
 export async function createRoute(
@@ -388,50 +423,26 @@ export async function createRoute(
     // suffix in the middle of a name.
     const recordName = relativeRecordName(hostname, domain.domainName);
     try {
-      if (apex) {
-        // A zone apex cannot hold a CNAME (RFC 1034), so it must carry
-        // address records. Emit one per configured ingress IP: a multi-node
-        // cluster round-robins across all ingress-enabled addresses instead
-        // of pinning every tenant apex to whichever single IP happened to be
-        // in the setting.
-        const v4 = parseIngressIps(settings.ingressDefaultIpv4);
-        // Resolved, NOT the raw override key: `settings.ingressDefaultIpv6`
-        // falls back to the DISCOVERED address the ingress-nodes reconciler
-        // maintains. Reading the raw key meant a dual-stack cluster that had
-        // never been given an explicit override produced zero AAAA records.
-        const v6 = parseIngressIps(settings.ingressDefaultIpv6);
-        if (v4.length === 0 && v6.length === 0) {
-          console.warn(
-            `[ingress-dns] No usable ingress IP configured (ingress_default_ipv4/ipv6) — ` +
-              `apex records for '${hostname}' were NOT created. Set them in Settings → Ingress.`,
-          );
-        }
-        for (const ip of v4) {
-          outcomes.push(await provisionManagedRecord(db, 'ingress-route',
-            { id: domainId, domainName: domain.domainName },
-            { type: 'A', name: recordName, content: ip, ttl: 300 }));
-        }
-        for (const ip of v6) {
-          outcomes.push(await provisionManagedRecord(db, 'ingress-route',
-            { id: domainId, domainName: domain.domainName },
-            { type: 'AAAA', name: recordName, content: ip, ttl: 300 }));
-        }
-      } else {
-        // Subdomain → CNAME into the platform's ingress chain. This is the
-        // entire point of `<slug>.ingress.<apex>`: when ingress node
-        // membership changes, ONE centrally-owned RRset changes, instead of
-        // rewriting an A record inside every tenant zone. The previous code
-        // wrote an A record here ("simpler, no CNAME limitations"), which is
-        // what made adding a node a manual per-domain migration.
-        outcomes.push(await provisionManagedRecord(db, 'ingress-route',
-          { id: domainId, domainName: domain.domainName },
-          {
-            type: 'CNAME',
-            name: recordName,
-            content: ingressCname.endsWith('.') ? ingressCname : `${ingressCname}.`,
-            ttl: 300,
-          }));
+      // Every route — apex, subdomain, AND wildcard — gets A/AAAA records
+      // pointing straight at the ingress IP(s), one per configured address and
+      // family. No `<slug>.<ingress_base_domain>` CNAME hop: the tenant name
+      // resolves directly to the cluster. (A wildcard `*.sub` becomes a
+      // wildcard A/AAAA record, which is valid and matches every subdomain.)
+      const v4 = parseIngressIps(settings.ingressDefaultIpv4);
+      // Resolved, NOT the raw override key: `settings.ingressDefaultIpv6`
+      // falls back to the DISCOVERED address the ingress-nodes reconciler
+      // maintains. Reading the raw key meant a dual-stack cluster that had
+      // never been given an explicit override produced zero AAAA records.
+      const v6 = parseIngressIps(settings.ingressDefaultIpv6);
+      if (v4.length === 0 && v6.length === 0) {
+        console.warn(
+          `[ingress-dns] No usable ingress IP configured (ingress_default_ipv4/ipv6) — ` +
+            `records for '${hostname}' were NOT created. Set them in Settings → Ingress.`,
+        );
       }
+      outcomes.push(...await provisionIngressAddressRecords(
+        db, { id: domainId, domainName: domain.domainName }, recordName, settings,
+      ));
     } catch (err) {
       // Non-blocking (a DNS outage must not fail route creation) but never
       // silent — the previous bare `catch {}` is why primary-mode zones sat
@@ -461,7 +472,7 @@ export async function createRoute(
         type: 'A',
         name: recordName,
         content: settings.ingressDefaultIpv4,
-        ttl: 300,
+        ttl: 3600,
       });
     } catch {
       // Non-blocking
@@ -619,33 +630,21 @@ export async function autoProvisionRouteDns(
   if (!domain || domain.dnsMode !== 'primary') return;
 
   const settings = await getIngressSettings(db);
-  const apex = isApexHostname(hostname, domain.domainName);
 
-  const recordName = apex ? '@' : hostname.replace(`.${domain.domainName}`, '');
+  // `relativeRecordName` (not `hostname.replace`) gets the wildcard/apex shape
+  // right: `@` for the apex, `*` / `*.a` for wildcards, `www` for a subdomain.
+  const recordName = relativeRecordName(hostname, domain.domainName);
 
   const outcomes: DnsSyncOutcome[] = [];
   try {
-    // `domainId` is REQUIRED here: without it the sync falls back to every
-    // active server instead of the domain's own provider group, and skips
-    // the authority gate. The matching auto-DELETE always passed it, so a
-    // create could land on servers the delete would never clean up.
-    // One record PER ingress address, both families. Previously this wrote a
-    // single A from the raw setting string and read IPv6 from the raw
-    // override key, so a multi-node cluster pinned every hostname to one
-    // node and a dual-stack cluster with a DISCOVERED (never overridden)
-    // IPv6 produced no AAAA at all.
-    const v4s = parseIngressIps(settings.ingressDefaultIpv4);
-    const v6s = parseIngressIps(settings.ingressDefaultIpv6);
-    for (const ip of v4s) {
-      outcomes.push(await provisionManagedRecord(db, 'ingress-route',
-        { id: domainId, domainName: domain.domainName },
-        { type: 'A', name: recordName, content: ip, ttl: 300 }));
-    }
-    for (const ip of v6s) {
-      outcomes.push(await provisionManagedRecord(db, 'ingress-route',
-        { id: domainId, domainName: domain.domainName },
-        { type: 'AAAA', name: recordName, content: ip, ttl: 300 }));
-    }
+    // `domainId` is REQUIRED (inside provisionIngressAddressRecords): without
+    // it the sync falls back to every active server instead of the domain's
+    // own provider group, and skips the authority gate. One record PER ingress
+    // address, both families — direct A/AAAA at the ingress IP(s), matching the
+    // create path.
+    outcomes.push(...await provisionIngressAddressRecords(
+      db, { id: domainId, domainName: domain.domainName }, recordName, settings,
+    ));
   } catch (err) {
     // Non-blocking — DNS provisioning failure should not break callers —
     // but never silent.
@@ -681,13 +680,10 @@ export async function autoDeleteRouteDns(
   const [domain] = await db.select().from(domains).where(eq(domains.id, domainId));
   if (!domain || domain.dnsMode !== 'primary') return;
 
-  // 2. Determine the record name relative to the domain
-  //    hostname: "app.example.com", domainName: "example.com" → "app"
-  //    hostname: "example.com",     domainName: "example.com" → "@" (apex)
-  const apex = hostname.toLowerCase() === domain.domainName.toLowerCase();
-  const recordName = apex
-    ? '@'
-    : hostname.replace(`.${domain.domainName}`, '');
+  // 2. Determine the record name relative to the domain. `relativeRecordName`
+  //    (not `hostname.replace`) gets wildcards right: `*.sub.example.com` → `*.sub`.
+  //    "app.example.com" → "app"; "example.com" → "@" (apex).
+  const recordName = relativeRecordName(hostname, domain.domainName);
 
   // 3. Delete from external DNS provider(s)
   const settings = await getIngressSettings(db);

@@ -8,6 +8,7 @@ import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
+import { HostnameLink } from '@/components/HostnameLink';
 import MtlsSection from '@/components/MtlsSection';
 import {
   useRouteDetail,
@@ -117,7 +118,7 @@ export default function RouteDetail() {
           Back
         </Link>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="route-hostname-heading">
-          {route.hostname}{route.path && route.path !== '/' ? route.path : ''}
+          <HostnameLink host={route.hostname} path={route.path} />
         </h1>
         <span className={clsx(
           'inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium',

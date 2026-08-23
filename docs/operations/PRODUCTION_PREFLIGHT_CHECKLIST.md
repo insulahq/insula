@@ -70,7 +70,8 @@ done
 
 - [ ] Apex `<apex>` → ingress IPv4 (A) / IPv6 (AAAA) — apex uses A/AAAA, **never CNAME**
 - [ ] `admin.`, `tenant.`, `webmail.`, `mail.`, `stalwart.` resolve to the ingress IP
-- [ ] Wildcard `*.ingress.<apex>` → ingress IP (tested with a random subdomain)
+- [ ] Tenant routes resolve directly: a route's hostname → ingress IP via its own `A`/`AAAA`
+      (managed-mode routes get per-domain A/AAAA; the old `*.ingress.<apex>` chain is retired)
 - [ ] TTLs low (≤ 5 min) during cutover so mistakes are cheap to fix
 - [ ] Platform settings plan: `ingress_base_domain`, `ingress_default_ipv4/ipv6` will match the above
 

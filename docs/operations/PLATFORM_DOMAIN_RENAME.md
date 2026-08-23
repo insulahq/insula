@@ -16,7 +16,7 @@ apex" *and* "the CNAME target tenant subdomains point at". R16 split them:
 | Setting | Means | Moves on rename? |
 |---------|-------|------------------|
 | `platform_domain` (apex/brand) | `admin.<apex>`, `tenant.<apex>`, `webmail.<apex>`, `mail.<apex>`, `stalwart.<apex>`, `tunnels.<apex>` | **Yes** |
-| `ingress_base_domain` (CNAME target) | `<slug>.ingress.<ingress_base_domain>` for tenant sites | **No** |
+| `ingress_base_domain` (platform apex) | platform's own hostnames; no longer a tenant CNAME target (routes use direct A/AAAA) | **No** |
 
 `getPlatformApex()` resolves `platform_domain`, falling back to
 `ingress_base_domain` when unset (so upgrades are zero-change; migration `0066`
