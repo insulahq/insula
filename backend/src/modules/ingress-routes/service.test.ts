@@ -86,24 +86,18 @@ describe('ingress-routes service', () => {
     });
   });
 
-  describe('DNS record type for route creation', () => {
-    it('should use A record for apex hostname', () => {
-      const hostname = 'example.com';
-      const domainName = 'example.com';
-      const isApex = isApexHostname(hostname, domainName);
-      expect(isApex).toBe(true);
-      // Apex domains get A/AAAA records (CNAME not allowed at apex)
-      const recordType = isApex ? 'A' : 'CNAME';
-      expect(recordType).toBe('A');
+  describe('DNS record shape for route creation', () => {
+    // Every route now points straight at the ingress IP(s) with A/AAAA — apex,
+    // subdomain, AND wildcard alike. There is no `<slug>.<ingress_base_domain>`
+    // CNAME hop any more.
+    it('treats a subdomain the same as the apex (no CNAME)', () => {
+      expect(isApexHostname('example.com', 'example.com')).toBe(true);
+      expect(isApexHostname('blog.example.com', 'example.com')).toBe(false);
+      // The record TYPE no longer depends on apex-vs-subdomain; both are A/AAAA.
     });
 
-    it('should use CNAME record for subdomain', () => {
-      const hostname = 'blog.example.com';
-      const domainName = 'example.com';
-      const isApex = isApexHostname(hostname, domainName);
-      expect(isApex).toBe(false);
-      const recordType = isApex ? 'A' : 'CNAME';
-      expect(recordType).toBe('CNAME');
+    it('does not treat a wildcard as the apex', () => {
+      expect(isApexHostname('*.example.com', 'example.com')).toBe(false);
     });
 
     it('should detect .local domains for auto-resolve', () => {
@@ -111,36 +105,6 @@ describe('ingress-routes service', () => {
       expect('blog.test.local'.endsWith('.local')).toBe(true);
       expect('example.com'.endsWith('.local')).toBe(false);
       expect('mylocal.com'.endsWith('.local')).toBe(false);
-    });
-
-    it('should extract subdomain from hostname', () => {
-      const hostname = 'blog.example.com';
-      const domainName = 'example.com';
-      const subdomain = hostname.replace(`.${domainName}`, '');
-      expect(subdomain).toBe('blog');
-    });
-
-    it('should handle nested subdomain extraction', () => {
-      const hostname = 'api.v2.example.com';
-      const domainName = 'example.com';
-      const subdomain = hostname.replace(`.${domainName}`, '');
-      expect(subdomain).toBe('api.v2');
-    });
-  });
-
-  describe('CNAME chain construction', () => {
-    it('should build full CNAME target from slug + base domain', () => {
-      const slug = hostnameToSlug('blog.example.com');
-      const baseDomain = 'ingress.platform.example.net';
-      const target = `${slug}.${baseDomain}`;
-      expect(target).toBe('blog-example-com.ingress.platform.example.net');
-    });
-
-    it('should build apex CNAME target', () => {
-      const slug = hostnameToSlug('example.com');
-      const baseDomain = 'ingress.platform.example.net';
-      const target = `${slug}.${baseDomain}`;
-      expect(target).toBe('example-com.ingress.platform.example.net');
     });
   });
 });

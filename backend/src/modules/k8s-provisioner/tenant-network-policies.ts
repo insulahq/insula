@@ -1,7 +1,7 @@
 /**
  * Tenant-namespace NetworkPolicies — the per-tenant isolation boundary.
  *
- * Four policies are applied to every tenant namespace:
+ * These policies are applied to every tenant namespace:
  *
  *   1. default-deny-ingress   — deny cross-namespace ingress except from
  *                               Traefik (so the tenant's web app stays
@@ -15,6 +15,12 @@
  *                               intra-namespace, and the public internet
  *                               MINUS the cluster-internal pod/service CIDRs
  *                               and the cloud metadata endpoint.
+ *   5. allow-platform-services-egress — tenant workloads → the platform's
+ *                               public, authenticated services: HTTP(S) ingress
+ *                               (Traefik), the mail server, and the SFTP
+ *                               gateway. Additive over tenant-egress.
+ *   6. allow-backup-jobs-egress — backup/restore Jobs → platform-api + the
+ *                               rclone-shim (scoped by component label).
  *
  * ── Why the pod-CIDR ipBlock was REMOVED (2026-07-27) ──────────────────────
  * Policies 1 and 3 used to carry an `ipBlock: 10.42.0.0/16` (the whole k3s
@@ -55,6 +61,34 @@ const CLUSTER_CIDRS_CM_NAME = 'platform-cluster-cidrs';
 const CLUSTER_CIDRS_CM_NAMESPACE = 'platform';
 
 const FILE_MANAGER_PORT = 8111;
+
+/**
+ * Platform services a tenant workload legitimately reaches — all internet-facing
+ * and authenticated/WAF-gated, so authorization (not network isolation) is the
+ * boundary. Egress must be ALLOWED explicitly: a hostPort connection is DNAT'd
+ * to the target pod's IP, which lands in the pod CIDR that `tenant-egress`
+ * excepts — so without these rules `mail.<apex>`, `files.<apex>` and the HTTP(S)
+ * ingress are all unreachable from a tenant pod (proven on the testing cluster),
+ * despite tenant-egress claiming to allow mail. Both the public-IP hostPort path
+ * and the ClusterIP land on the same guarded service pod, so the traffic goes
+ * through Traefik's WAF / Stalwart's auth / the SFTP gateway's auth either way.
+ */
+// Traefik's web(:80)/websecure(:443) hostPorts map to CONTAINER ports 8000/8443.
+// A NetworkPolicy is evaluated on the POST-DNAT packet, so it must name the
+// container ports, not the hostPorts (proven on the testing cluster: an allow
+// for :443 never matched; :8443 did). This is the web + websecure data plane
+// ONLY — deliberately not Traefik's dashboard/API/metrics entrypoint (a separate
+// internal port), so tenants get the ingress but not its control surface.
+const TRAEFIK_ENTRYPOINT_PORTS = [8000, 8443] as const;
+// The mail server's client ports — the SAME six everywhere else in the codebase
+// (Service, HAProxy frontends, port-exposure MAIL_HOST_PORTS, the firewall
+// annotation). Stalwart publishes hostPort == containerPort, so these match
+// directly after DNAT. POP3 (110/995) is intentionally absent: nothing in the
+// mail stack serves it — add it here only if/when POP3 is actually wired up.
+const MAIL_CLIENT_PORTS = [25, 143, 465, 587, 993, 4190] as const;
+const SFTP_GATEWAY_PORT = 23022;
+
+const tcp = (port: number) => ({ protocol: 'TCP', port });
 
 export interface TenantNetworkCidrs {
   /** IPv4 pod CIDR — always present. */
@@ -207,12 +241,17 @@ export function buildTenantNetworkPolicies(
   // ── Egress: internet MINUS cluster-internal, per IP family ──
   // NetworkPolicy `except` entries must sit inside the rule's `cidr`.
   // We except the pod + service CIDRs (all in-cluster ClusterIP + pod
-  // traffic) and the metadata IP. We deliberately do NOT except the whole
-  // RFC-1918 space or node IPs: a tenant app legitimately reaches the mail
-  // server on the node's public/host IP (mail.<apex>), and self-hosted
-  // clusters may sit on private node IPs — blocking those would break
-  // outbound mail. Cross-tenant / cross-service reach is already cut by
-  // excepting the pod + service CIDRs.
+  // traffic) and the metadata IP, which cuts cross-tenant / cross-service
+  // reach. We do NOT except node IPs / RFC-1918: a tenant may sit behind a
+  // private node IP, and reaching a plain host service (e.g. sshd) is fine.
+  //
+  // NOTE: excepting the pod CIDR ALSO blocks the platform's own hostPort
+  // services (`mail.<apex>`, `files.<apex>`, the HTTP ingress) — a hostPort
+  // connection is DNAT'd to the target pod, whose IP is in the excepted pod
+  // CIDR, so a NetworkPolicy evaluated post-DNAT denies it. Those services are
+  // re-allowed explicitly by `allow-platform-services-egress` below (this
+  // policy alone left mail/SFTP/ingress unreachable from tenant pods — proven
+  // on the testing cluster, contradicting an earlier comment here).
   const v4Except = [cidrs.podV4, cidrs.svcV4, METADATA_IP_V4];
   const egressRules: Array<Record<string, unknown>> = [
     // DNS — CoreDNS in kube-system. Matched on the post-DNAT pod endpoint,
@@ -316,6 +355,68 @@ export function buildTenantNetworkPolicies(
           podSelector: {},
           policyTypes: ['Egress'],
           egress: egressRules,
+        },
+      },
+    },
+    {
+      // Every tenant workload may reach the platform's public, authenticated
+      // services — HTTP(S) ingress (Traefik, incl. webcron hitting a site), the
+      // mail server (SMTP/submission/IMAP/sieve), and the SFTP gateway. These
+      // are internet-facing and gated by WAF / SMTP auth / SFTP auth, so opening
+      // the NETWORK path adds no exposure the internet doesn't already have.
+      //
+      // The mail leg matters for `thisNodeOnly` port-exposure, where Stalwart
+      // itself binds the mail hostPorts (a real pod → DNAT → pod CIDR, same trap
+      // as Traefik/SFTP below). In the HA `allServerNodes` mode the front is the
+      // stalwart-haproxy DaemonSet running hostNetwork — NOT subject to
+      // NetworkPolicy on Calico — reached via the node IP that tenant-egress
+      // already permits, so that path neither needs nor is changed by this rule.
+      //
+      // WHY IT'S REQUIRED (the subtle part): a hostPort connection is DNAT'd to
+      // the target pod's IP, which lands in the pod CIDR that tenant-egress
+      // excepts. NetworkPolicy on the SOURCE node evaluates the packet AFTER
+      // that DNAT only when source and target share a node — so a tenant pod
+      // CO-LOCATED with the service (always, on a single-node cluster; and the
+      // roll of the dice on a multi-node one, since `mail.<apex>` etc. round-
+      // robin across the ingress nodes) is denied, while a cross-node hit
+      // happens to work (the source node sees the remote node IP, which is not
+      // excepted). Verified on `testing` (single node → total) and `staging`
+      // (multi-node → same-node blocked, cross-node open). This rule closes the
+      // gap for all of them. Additive: unions over tenant-egress. Both the
+      // public-IP hostPort path and the ClusterIP land on these same guarded
+      // pods, so traffic always passes their security.
+      name: 'allow-platform-services-egress',
+      body: {
+        metadata: { name: 'allow-platform-services-egress', namespace },
+        spec: {
+          podSelector: {},
+          policyTypes: ['Egress'],
+          egress: [
+            {
+              to: [{
+                namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'traefik' } },
+                podSelector: { matchLabels: { 'app.kubernetes.io/name': 'traefik' } },
+              }],
+              ports: TRAEFIK_ENTRYPOINT_PORTS.map(tcp),
+            },
+            {
+              // Scope to the Stalwart pod specifically (consistent with the
+              // Traefik/SFTP legs) so a future sidecar/job added to the mail
+              // namespace isn't silently reachable from every tenant pod.
+              to: [{
+                namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'mail' } },
+                podSelector: { matchLabels: { app: 'stalwart-mail' } },
+              }],
+              ports: MAIL_CLIENT_PORTS.map(tcp),
+            },
+            {
+              to: [{
+                namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform-system' } },
+                podSelector: { matchLabels: { app: 'sftp-gateway' } },
+              }],
+              ports: [tcp(SFTP_GATEWAY_PORT)],
+            },
+          ],
         },
       },
     },

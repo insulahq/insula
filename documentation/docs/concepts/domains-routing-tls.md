@@ -57,6 +57,15 @@ follow — so `*.example.test` serves `shop.example.test` but not
 including the platform's own hostnames on a tenant domain (webmail,
 autodiscover), which a wildcard can never capture.
 
+In **Primary** mode the platform points every route — apex, subdomain, and
+wildcard alike — with `A`/`AAAA` records straight at the cluster's ingress
+address(es), one record per ingress-capable IP. If those addresses ever change,
+use **Refresh route DNS** on the domain to rewrite the records. (In **CNAME**
+mode you set your own record at your DNS host, as shown on the domain page.)
+
+On both the **domain** and **route** detail pages, the name in the title bar is
+a link — click it to open the live site in a new tab.
+
 ## Ingress and automatic TLS
 
 All inbound web traffic enters through **Traefik** (the ingress controller,

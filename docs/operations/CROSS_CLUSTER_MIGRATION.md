@@ -77,10 +77,11 @@ The import restores the tenant on B, but the platform will not steal traffic fro
 a live A automatically. Finish the move deliberately:
 
 1. **Verify on B:** the tenant is `active`, its site loads, mailboxes present.
-2. **DNS cutover:** re-point the tenant's ingress so traffic lands on B. In the
-   CNAME chain `blog.<apex>` → `<slug>.ingress.<apex>` → node → IP, update the
-   `<slug>.ingress.<apex>` A/AAAA (or the apex A/AAAA) to **B's ingress IP**
-   (`ingress_default_ipv4/6` on B). Do this at your DNS provider / provider group.
+2. **DNS cutover:** re-point the tenant's routes so traffic lands on B. Each
+   route resolves with `A`/`AAAA` records straight at the ingress IP(s), so set
+   `ingress_default_ipv4/6` to **B's ingress IP** and run **Refresh route DNS**
+   (`POST …/refresh-route-dns`) for the domain — that rewrites every route's
+   A/AAAA (apex, subdomain, wildcard) to B's address at your provider group.
 3. **Mail:** if the domain's DNS moved, re-publish MX + the DKIM/SPF records for
    B (the import regenerates DKIM; the records must be served from the new DNS).
 4. **Decommission on A:** once B is serving and verified, delete the tenant on A

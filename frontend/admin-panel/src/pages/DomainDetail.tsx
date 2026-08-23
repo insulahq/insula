@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import StatusBadge from '@/components/ui/StatusBadge';
+import { HostnameLink } from '@/components/HostnameLink';
 import { useDomains, useVerifyDomain } from '@/hooks/use-domains';
 import { useIngressSettings } from '@/hooks/use-ingress-settings';
 import { useDnsRecords, useCreateDnsRecord, useDeleteDnsRecord } from '@/hooks/use-dns-records';
@@ -69,7 +70,7 @@ export default function DomainDetail() {
         </Link>
         <span className="text-gray-300">/</span>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100" data-testid="domain-name-heading">
-          {domain.domainName}
+          <HostnameLink host={domain.domainName} />
         </h1>
         <StatusBadge status={domain.status as 'verified' | 'unverified' | 'active' | 'pending' | 'suspended' | 'deleted'} />
         <button
