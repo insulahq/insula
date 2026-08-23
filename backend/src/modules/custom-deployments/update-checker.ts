@@ -36,7 +36,9 @@ import {
   pickLatestStable,
   classifyBump,
   type BumpSeverity,
+  type SemverVersion,
 } from './semver-compare.js';
+import { resolveTagDigest, digestChanged } from './image-digest.js';
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 8_000;
@@ -111,7 +113,9 @@ export function isRealmUrlBlocked(realm: string): boolean {
   return false;
 }
 
-export type UpdateCheckStatus = BumpSeverity;
+/** `digest` = a non-semver tag was republished to a new digest (update via
+ *  re-pull, not a tag change). See UpdateCheckResult in api-contracts. */
+export type UpdateCheckStatus = BumpSeverity | 'digest';
 
 export interface UpdateCheckResult {
   readonly status: UpdateCheckStatus;
@@ -128,6 +132,18 @@ export interface CheckUpdateOptions {
   /** When provided, basic-auth credentials forwarded to the auth
    *  realm. The token is decrypted by the caller (pat-store). */
   readonly authCreds?: { username: string; password: string };
+  /** The digest the deployment's pods are currently running (`sha256:…`,
+   *  from custom_deployment_image_audit). Enables the digest fallback for
+   *  non-semver tags — without it such a tag can only be reported `unknown`.
+   *  Prefer `resolveRunningImageId` in batch callers so the (per-deployment)
+   *  DB read only happens for the non-semver tags that actually need it. */
+  readonly runningImageId?: string | null;
+  /** Lazy variant of `runningImageId` — awaited only on the digest path, so a
+   *  batch of semver-tagged deployments does no extra DB work. */
+  readonly resolveRunningImageId?: () => Promise<string | null>;
+  /** Skip the 60-minute cache and re-probe the registry now (manual
+   *  "Check for updates"). The fresh result is still written to the cache. */
+  readonly force?: boolean;
   /** Override the registry probe — used by tests. Default: real fetch. */
   readonly fetchImpl?: typeof fetch;
 }
@@ -151,19 +167,35 @@ export async function checkForUpdate(
     return unknownResult(null, 'unparseable image reference');
   }
   const currentTag = ref.tag ?? 'latest';
+  const currentSemver = parseSemver(currentTag);
 
-  const cached = await readCache(options.db, ref, currentTag);
-  if (cached && Date.now() - cached.checkedAt.getTime() < CACHE_TTL_MS) {
-    return cached;
+  // Semver tags: compare against the registry's tag list. Non-semver tags
+  // (`latest`, `1.27`, `24.04`) can't be ordered, so fall back to a digest
+  // comparison — "has this exact tag been republished?" — which is what most
+  // real deployments actually need.
+  return currentSemver
+    ? checkSemverUpdate(ref, currentTag, currentSemver, options)
+    : checkDigestUpdate(ref, currentTag, options);
+}
+
+// ─── Semver path: is there a newer TAG? ─────────────────────────────────────
+
+async function checkSemverUpdate(
+  ref: ParsedImageReference,
+  currentTag: string,
+  currentSemver: SemverVersion,
+  options: CheckUpdateOptions,
+): Promise<UpdateCheckResult> {
+  if (!options.force) {
+    const cached = await readCache(options.db, ref, currentTag);
+    if (cached && Date.now() - cached.checkedAt.getTime() < CACHE_TTL_MS) {
+      return cached;
+    }
   }
 
-  // Probe (synchronously for now — a future optimisation is to fire
-  // the refresh in the background and return the stale cache; doing
-  // so requires a circuit-breaker and the cache row exists for at
-  // most a tiny fraction of deployments, so Phase 1 keeps it simple).
   let probe: UpdateCheckResult;
   try {
-    probe = await probeRegistry(ref, currentTag, options);
+    probe = await probeRegistry(ref, currentTag, currentSemver, options);
   } catch (err) {
     const reason = err instanceof Error ? safeErrorMessage(err.message) : 'probe error';
     return unknownResult(currentTag, reason);
@@ -178,18 +210,74 @@ export async function checkForUpdate(
   return probe;
 }
 
+// ─── Digest path: has this exact (non-semver) tag been republished? ─────────
+
+/** Short display form of a digest, e.g. `sha256:abc123def456…`. */
+function shortDigest(digest: string): string {
+  return digest.length > 19 ? `${digest.slice(0, 19)}…` : digest;
+}
+
+async function checkDigestUpdate(
+  ref: ParsedImageReference,
+  currentTag: string,
+  options: CheckUpdateOptions,
+): Promise<UpdateCheckResult> {
+  const running = options.runningImageId
+    ?? (options.resolveRunningImageId ? await options.resolveRunningImageId() : null);
+
+  // The registry digest is the expensive part — cache it (stored as the
+  // cache row's `latest`). The comparison against the running digest is cheap
+  // and MUST stay live: caching the comparison would keep saying "update
+  // available" for up to 60 min after the tenant re-pulls.
+  let registryDigest: string | null = null;
+  if (!options.force) {
+    const cached = await readCache(options.db, ref, currentTag);
+    if (cached && cached.latest && Date.now() - cached.checkedAt.getTime() < CACHE_TTL_MS) {
+      registryDigest = cached.latest;
+    }
+  }
+
+  if (!registryDigest) {
+    const res = await resolveTagDigest(ref, currentTag, {
+      ...(options.authCreds ? { authCreds: options.authCreds } : {}),
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    });
+    if (!res.digest) {
+      return unknownResult(currentTag, res.reason ?? 'could not resolve the registry digest');
+    }
+    registryDigest = res.digest;
+    // Cache the resolved digest (definitive). Severity stored is advisory —
+    // checkDigestUpdate always recomputes the status against the live running
+    // digest, so a redeploy is reflected immediately on the next check.
+    await writeCache(options.db, ref, currentTag, {
+      status: 'digest', current: currentTag, latest: registryDigest, reason: null, checkedAt: new Date(),
+    });
+  }
+
+  if (!running) {
+    return unknownResult(
+      currentTag,
+      'not semver — cannot tell if the registry tag moved until the pod’s running digest is observed',
+    );
+  }
+
+  const changed = digestChanged(running, registryDigest);
+  return result(
+    changed ? 'digest' : 'no-update',
+    currentTag,
+    changed ? shortDigest(registryDigest) : null,
+    changed ? 'the registry re-published this tag with a new image' : null,
+  );
+}
+
 // ─── Registry probe ─────────────────────────────────────────────────────────
 
 async function probeRegistry(
   ref: ParsedImageReference,
   currentTag: string,
+  currentSemver: SemverVersion,
   opts: CheckUpdateOptions,
 ): Promise<UpdateCheckResult> {
-  const currentSemver = parseSemver(currentTag);
-  if (!currentSemver) {
-    return unknownResult(currentTag, 'current tag is not semver-shaped');
-  }
-
   const fetchImpl = opts.fetchImpl ?? fetch;
   const indexHost = ref.registryHost === 'docker.io' ? DOCKER_HUB_INDEX_HOST : ref.registryHost;
   const url = `https://${indexHost}/v2/${ref.repository}/tags/list`;

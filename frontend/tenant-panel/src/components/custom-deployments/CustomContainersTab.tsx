@@ -19,6 +19,7 @@ import clsx from 'clsx';
 import {
   useCustomDeployments,
   useCheckUpdatesBatch,
+  useForceCheckUpdatesBatch,
   useDeleteCustomDeployment,
   useUpdateCustomDeployment,
   useUpdateNowCustomDeployment,
@@ -56,6 +57,7 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
 
   const deploymentIds = useMemo(() => rows.map((r) => r.id), [rows]);
   const updatesQuery = useCheckUpdatesBatch(tenantId, deploymentIds);
+  const forceCheck = useForceCheckUpdatesBatch(tenantId, deploymentIds);
 
   const deleteMutation = useDeleteCustomDeployment(tenantId);
   const restartMutation = useUpdateCustomDeployment(tenantId);
@@ -130,6 +132,19 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
     <div className="space-y-4">
       {canManage && (
         <div className="flex items-center justify-end gap-2">
+          {rows.length > 0 && (
+            <button
+              type="button"
+              onClick={() => forceCheck.mutate()}
+              disabled={forceCheck.isPending}
+              title="Re-check every container's registry for updates now (bypasses the hourly cache)"
+              data-testid="custom-check-updates"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700 mr-auto"
+            >
+              <RefreshCw size={14} className={forceCheck.isPending ? 'animate-spin' : undefined} />
+              {forceCheck.isPending ? 'Checking…' : 'Check for updates'}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveModal({ kind: 'simple-wizard' })}
@@ -233,6 +248,7 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
                           loading={updatesQuery.isLoading}
                           canManage={canManage}
                           onUpgrade={() => setActiveModal({ kind: 'upgrade', row })}
+                          onRepull={() => onUpdateNow(row)}
                         />
                         {canManage && (
                           <div className="flex items-center gap-3">
@@ -368,7 +384,12 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
             (() => {
               const s = Object.values(activeModal.row.customSpec?.services ?? {})[0];
               const updates = updatesQuery.data?.data.results?.[activeModal.row.id];
-              if (s && updates?.latest && updates.status !== 'unknown' && updates.status !== 'no-update') {
+              // Only a SEMVER bump yields a real tag to pre-fill. For `digest`,
+              // `latest` is a truncated display digest (`sha256:…`, with an
+              // ellipsis) — pre-filling it would build an invalid image ref, so
+              // the digest path uses re-pull (onRepull), never this modal.
+              const isSemverBump = updates?.status === 'patch' || updates?.status === 'minor' || updates?.status === 'major';
+              if (s && updates?.latest && isSemverBump) {
                 const idx = s.image.lastIndexOf(':');
                 return idx > 0 && !s.image.includes('@') ? `${s.image.slice(0, idx)}:${updates.latest}` : s.image;
               }
