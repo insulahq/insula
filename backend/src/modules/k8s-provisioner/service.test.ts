@@ -242,15 +242,15 @@ describe('K8s Provisioner Service', () => {
       });
     });
 
-    it('should create five NetworkPolicies: deny ingress + intra-ns + platform-api + egress + backup-jobs-egress', async () => {
+    it('should create six NetworkPolicies: deny ingress + intra-ns + platform-api + egress + platform-services-egress + backup-jobs-egress', async () => {
       const { applyNetworkPolicy } = await import('./service.js');
       await applyNetworkPolicy(mockK8s, 'test-ns');
-      expect(mockK8s.networking.createNamespacedNetworkPolicy).toHaveBeenCalledTimes(5);
+      expect(mockK8s.networking.createNamespacedNetworkPolicy).toHaveBeenCalledTimes(6);
 
       const mockFn = mockK8s.networking.createNamespacedNetworkPolicy as unknown as ReturnType<typeof vi.fn>;
       const calls = mockFn.mock.calls as Array<[{ body: { metadata: { name: string }; spec: { ingress?: Array<{ _from?: unknown[] }>; policyTypes: string[] } } }]>;
       const names = calls.map(c => c[0].body.metadata.name).sort();
-      expect(names).toEqual(['allow-backup-jobs-egress', 'allow-intra-namespace', 'allow-platform-api', 'default-deny-ingress', 'tenant-egress']);
+      expect(names).toEqual(['allow-backup-jobs-egress', 'allow-intra-namespace', 'allow-platform-api', 'allow-platform-services-egress', 'default-deny-ingress', 'tenant-egress']);
 
       // The intra-namespace rule is the critical one for multi-component
       // apps — without it, default-deny-ingress blocks wordpress → mariadb.
