@@ -76,11 +76,16 @@ const FILE_MANAGER_PORT = 8111;
 // Traefik's web(:80)/websecure(:443) hostPorts map to CONTAINER ports 8000/8443.
 // A NetworkPolicy is evaluated on the POST-DNAT packet, so it must name the
 // container ports, not the hostPorts (proven on the testing cluster: an allow
-// for :443 never matched; :8443 did). Deliberately NOT the :8080 dashboard/API.
+// for :443 never matched; :8443 did). This is the web + websecure data plane
+// ONLY — deliberately not Traefik's dashboard/API/metrics entrypoint (a separate
+// internal port), so tenants get the ingress but not its control surface.
 const TRAEFIK_ENTRYPOINT_PORTS = [8000, 8443] as const;
-// Mail + SFTP publish hostPort == containerPort, so their well-known ports match
-// directly after DNAT.
-const MAIL_CLIENT_PORTS = [25, 110, 143, 465, 587, 993, 995, 4190] as const;
+// The mail server's client ports — the SAME six everywhere else in the codebase
+// (Service, HAProxy frontends, port-exposure MAIL_HOST_PORTS, the firewall
+// annotation). Stalwart publishes hostPort == containerPort, so these match
+// directly after DNAT. POP3 (110/995) is intentionally absent: nothing in the
+// mail stack serves it — add it here only if/when POP3 is actually wired up.
+const MAIL_CLIENT_PORTS = [25, 143, 465, 587, 993, 4190] as const;
 const SFTP_GATEWAY_PORT = 23022;
 
 const tcp = (port: number) => ({ protocol: 'TCP', port });
@@ -356,10 +361,16 @@ export function buildTenantNetworkPolicies(
     {
       // Every tenant workload may reach the platform's public, authenticated
       // services — HTTP(S) ingress (Traefik, incl. webcron hitting a site), the
-      // mail server (SMTP/submission/IMAP/POP/sieve), and the SFTP gateway.
-      // These are internet-facing and gated by WAF / SMTP auth / SFTP auth, so
-      // opening the NETWORK path adds no exposure the internet doesn't already
-      // have.
+      // mail server (SMTP/submission/IMAP/sieve), and the SFTP gateway. These
+      // are internet-facing and gated by WAF / SMTP auth / SFTP auth, so opening
+      // the NETWORK path adds no exposure the internet doesn't already have.
+      //
+      // The mail leg matters for `thisNodeOnly` port-exposure, where Stalwart
+      // itself binds the mail hostPorts (a real pod → DNAT → pod CIDR, same trap
+      // as Traefik/SFTP below). In the HA `allServerNodes` mode the front is the
+      // stalwart-haproxy DaemonSet running hostNetwork — NOT subject to
+      // NetworkPolicy on Calico — reached via the node IP that tenant-egress
+      // already permits, so that path neither needs nor is changed by this rule.
       //
       // WHY IT'S REQUIRED (the subtle part): a hostPort connection is DNAT'd to
       // the target pod's IP, which lands in the pod CIDR that tenant-egress
@@ -389,7 +400,13 @@ export function buildTenantNetworkPolicies(
               ports: TRAEFIK_ENTRYPOINT_PORTS.map(tcp),
             },
             {
-              to: [{ namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'mail' } } }],
+              // Scope to the Stalwart pod specifically (consistent with the
+              // Traefik/SFTP legs) so a future sidecar/job added to the mail
+              // namespace isn't silently reachable from every tenant pod.
+              to: [{
+                namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'mail' } },
+                podSelector: { matchLabels: { app: 'stalwart-mail' } },
+              }],
               ports: MAIL_CLIENT_PORTS.map(tcp),
             },
             {

@@ -39,12 +39,14 @@ describe('buildTenantNetworkPolicies', () => {
     // The Traefik dashboard/API port must NOT be opened.
     expect(http.ports.some((p) => p.port === 8080)).toBe(false);
 
-    // Mail server → the mail namespace on the client mail ports.
+    // Mail server → the Stalwart pod in the mail namespace, on the SIX real
+    // client mail ports (no POP3 110/995 — nothing serves it).
     const mail = egress.find((r) => r.ports.some((p) => p.port === 587))!;
     expect(mail.to[0]).toEqual({
       namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'mail' } },
+      podSelector: { matchLabels: { app: 'stalwart-mail' } },
     });
-    expect(mail.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 110, 143, 465, 587, 993, 995, 4190]);
+    expect(mail.ports.map((p) => p.port).sort((a, b) => a - b)).toEqual([25, 143, 465, 587, 993, 4190]);
 
     // SFTP gateway → the platform-system sftp-gateway pod only, :23022.
     const sftp = egress.find((r) => r.ports.some((p) => p.port === 23022))!;
