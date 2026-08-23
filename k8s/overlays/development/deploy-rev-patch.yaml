@@ -10,12 +10,12 @@ metadata:
   name: platform-api
   namespace: platform
   labels:
-    insula.host/version: "2026.8.9-dc034c2"
+    insula.host/version: "2026.8.10-8d2b0ef"
 spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.8.9-dc034c2"
+        insula.host/deploy-rev: "2026.8.10-8d2b0ef"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -23,12 +23,12 @@ metadata:
   name: admin-panel
   namespace: platform
   labels:
-    insula.host/version: "2026.8.9-dc034c2"
+    insula.host/version: "2026.8.10-8d2b0ef"
 spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.8.9-dc034c2"
+        insula.host/deploy-rev: "2026.8.10-8d2b0ef"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,9 +36,9 @@ metadata:
   name: tenant-panel
   namespace: platform
   labels:
-    insula.host/version: "2026.8.9-dc034c2"
+    insula.host/version: "2026.8.10-8d2b0ef"
 spec:
   template:
     metadata:
       annotations:
-        insula.host/deploy-rev: "2026.8.9-dc034c2"
+        insula.host/deploy-rev: "2026.8.10-8d2b0ef"
