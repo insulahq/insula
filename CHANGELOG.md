@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Email aliases now actually deliver.** The "Aliases & Forwarding" tab has
+  been wired to the mail server (rows were previously stored but never
+  provisioned, so alias mail bounced as unknown-recipient): an alias delivers
+  to up to 20 destinations — local mailboxes or external addresses —
+  and can be edited or temporarily disabled from a new edit dialog matching
+  the mailbox UX. Disabled aliases reject mail instead of silently accepting.
+- **The domain catch-all works.** The catch-all address on Settings & DNS is
+  now enforced by the mail server; clearing it returns unknown names to being
+  rejected.
+
+### Fixed
+- **Mailbox storage usage ("used") was always 0.** The usage sync still
+  called an API removed with the mail-server 0.16 upgrade (with mismatched
+  credentials on top) — every request failed silently. It now reads the live
+  per-account disk usage in a single query; the mailbox list shows real
+  numbers within one sync interval.
+
+
 ## [2026.8.14] - 2026-08-24
 
 ### Added
@@ -37,7 +56,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   reports it (`docker.io/library/nginx:latest`) while the check looked it up
   under the name you typed (`nginx:latest`) — so the running digest was never
   found. The lookup now matches canonical image references.
-
 
 ### Added
 - **Send-only mail accounts.** A new account type for addresses like
