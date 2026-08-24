@@ -181,6 +181,7 @@ async function ensurePlatformApiTokenSecret(
     const code = (err as { statusCode?: number; code?: number })?.statusCode
       ?? (err as { code?: number })?.code;
     if (code !== 404) throw err;
+    // backup-coverage: excluded:derived-from-platform-internal-secret
     await core.createNamespacedSecret({
       namespace: MAIL_NAMESPACE,
       body: {
