@@ -33,11 +33,26 @@ A **mailbox** is a real inbox with its own address and password.
    limit for the mailbox).
 3. Create it. The new mailbox appears in the list with a usage bar.
 
+**Send-only accounts**
+
+Choose **Send-only** as the account type to create an address like
+`no-reply@example.com` that can authenticate and **send** mail (via SMTP with
+an app password) but has no inbox: nothing is stored, there is no webmail, and
+incoming mail is **bounced back to the sender** — unless you configure
+forwarding (below), in which case it is forwarded without keeping a copy.
+
 **Manage a mailbox**
 
 Each row shows the address, a used/quota bar, and actions. Click a mailbox to
 edit it — you can change the **quota**, enable/disable it, and set an
 **auto-reply (vacation message)** with its own subject and body.
+
+**Forward incoming mail**
+
+In the edit dialog, enable **Forward incoming mail** and enter one or more
+target addresses (comma-separated, up to 20). A normal mailbox forwards **and
+keeps a local copy**; a send-only account forwards **without storing
+anything**. Clearing the list turns forwarding off.
 
 !!! tip "Quotas at a glance"
     The bar fills up as the mailbox stores more mail. If someone's inbox is

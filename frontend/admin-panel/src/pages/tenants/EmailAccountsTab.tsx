@@ -22,6 +22,15 @@ function StatusPill({ status }: { readonly status: string }) {
 }
 
 function TypePill({ type }: { readonly type: string }) {
+  if (type === 'send_only') {
+    return (
+      <span className="inline-flex items-center rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-700 dark:bg-sky-900/30 dark:text-sky-300">
+        Send-only
+      </span>
+    );
+  }
+  // `forward_only` is a dead legacy value (migrated to `mailbox` in 0085);
+  // kept only so a stale cached row still renders something sensible.
   if (type === 'forward_only') {
     return (
       <span className="inline-flex items-center rounded-full bg-purple-100 px-2 py-0.5 text-xs font-medium text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">

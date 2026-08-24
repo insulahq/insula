@@ -21,6 +21,8 @@ deliverability consistent.
 |---|---|
 | **Mail domain** | A tenant domain with email turned on (e.g. `acme.com`). |
 | **Mailbox** | A real account that receives and stores mail (`jane@acme.com`). |
+| **Send-only account** | An SMTP-submission-only address (`no-reply@acme.com`): sends but stores nothing; inbound is bounced or forwarded on. |
+| **Forwarding** | Per-mailbox targets incoming mail is redirected to. Mailboxes keep a local copy; send-only accounts don't. |
 | **Alias** | A forwarding address with no storage of its own. |
 | **App password** | A generated credential for IMAP/SMTP clients and scripts. |
 
