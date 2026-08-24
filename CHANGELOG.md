@@ -12,6 +12,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Send-only mail accounts.** A new account type for addresses like
+  `no-reply@your-domain` that can authenticate and send via SMTP (app
+  passwords) but have no inbox: nothing is stored, webmail and IMAP/POP3 are
+  disabled, and incoming mail is bounced back to the sender with a clear
+  notice. Pick **Send-only** in the mailbox create form.
+- **Per-mailbox forwarding.** Any mail account can forward incoming mail to up
+  to 20 addresses (edit dialog → **Forward incoming mail**). A normal mailbox
+  forwards *and keeps a local copy*; a send-only account forwards *without
+  storing anything*. Forwarding is enforced by the mail server itself
+  (per-account Sieve script managed by the platform) and re-converged on every
+  platform restart, so it survives mailbox recreation and restores.
+
+### Fixed
+- `./scripts/local.sh mail-up` no longer reports a spurious "Pod not ready
+  within 3 minutes" — the readiness wait watched a label no Stalwart pod
+  carries (and raced pod creation); it now waits on the Deployment.
+
 ## [2026.8.13] - 2026-08-23
 
 ### Added

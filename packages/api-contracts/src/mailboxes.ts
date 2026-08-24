@@ -2,6 +2,23 @@ import { z } from 'zod';
 import { paginatedResponseSchema } from './shared.js';
 import { createLoginPasswordResultSchema } from './login-passwords.js';
 
+// Mailbox account types:
+//   `mailbox`   — normal account: stores mail, IMAP/POP3/webmail access.
+//   `send_only` — SMTP-submission-only account (e.g. no-reply@): can
+//                 authenticate and send but has no usable inbox. Inbound
+//                 mail is rejected with a bounce unless forwarding is set,
+//                 in which case it is forwarded WITHOUT a local copy.
+// The legacy `forward_only` enum value was never implemented or creatable
+// and is intentionally absent here (DB rows are migrated to `mailbox`).
+export const mailboxTypeSchema = z.enum(['mailbox', 'send_only']);
+export type MailboxType = z.infer<typeof mailboxTypeSchema>;
+
+// Forwarding targets. A `mailbox`-type account forwards AND keeps a local
+// copy; a `send_only` account forwards without storing. Empty array = off.
+export const forwardingAddressesSchema = z
+  .array(z.string().email().max(255))
+  .max(20);
+
 // No `password` field: a mailbox's human-facing credentials are "login
 // passwords" (Stalwart app passwords). On create the backend mints a
 // hidden, never-shown primary secret and auto-issues the first login
@@ -14,12 +31,26 @@ export const createMailboxSchema = z.object({
   // must not exceed that max — the backend rejects with
   // MAILBOX_QUOTA_EXCEEDS_LIMIT. The absolute ceiling here is a sanity bound.
   quota_mb: z.number().int().min(50).max(102400).optional(),
-  mailbox_type: z.enum(['mailbox', 'forward_only']).default('mailbox'),
+  mailbox_type: mailboxTypeSchema.default('mailbox'),
+  forwarding_addresses: forwardingAddressesSchema.optional(),
+}).superRefine((input, ctx) => {
+  // A send-only account stores nothing, so a storage quota is meaningless —
+  // reject it loudly instead of silently ignoring it.
+  if (input.mailbox_type === 'send_only' && input.quota_mb !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['quota_mb'],
+      message: 'quota_mb is not applicable to send-only accounts',
+    });
+  }
 });
 
 export type CreateMailboxInput = z.infer<typeof createMailboxSchema>;
 
 // No `password` field — credentials are managed via login passwords.
+// `mailbox_type` is intentionally NOT updatable: converting between a
+// stored mailbox and a send-only account changes the Stalwart-side
+// permission set and storage semantics — recreate instead.
 export const updateMailboxSchema = z.object({
   display_name: z.string().max(255).optional(),
   quota_mb: z.number().int().min(50).max(102400).optional(),
@@ -27,6 +58,9 @@ export const updateMailboxSchema = z.object({
   auto_reply: z.boolean().optional(),
   auto_reply_subject: z.string().max(255).optional(),
   auto_reply_body: z.string().max(10000).optional(),
+  // Empty array disables forwarding. The backend rejects targets equal to
+  // the mailbox's own address (mail loop) with FORWARDING_SELF_TARGET.
+  forwarding_addresses: forwardingAddressesSchema.optional(),
 });
 
 export type UpdateMailboxInput = z.infer<typeof updateMailboxSchema>;
@@ -44,6 +78,8 @@ export const mailboxResponseSchema = z.object({
   mailboxType: z.string(),
   autoReply: z.number(),
   autoReplySubject: z.string().nullable(),
+  // null/[] = forwarding off. See forwardingAddressesSchema for semantics.
+  forwardingAddresses: z.array(z.string()).nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

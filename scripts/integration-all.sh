@@ -227,6 +227,11 @@ PARALLEL=(
   # endpoint. Creates a disposable tenant + email domain, cleans up via
   # trap. ~1-2 min.
   "mailbox-quota:integration-mailbox-quota-e2e.sh"
+  # Send-only accounts + per-mailbox forwarding: contract rejections,
+  # normalization, send-only guards, and (kubectl-gated) live Sieve script
+  # + real SMTP delivery through the forward/keep-copy/bounce matrix.
+  # Creates a disposable tenant + email domain, cleans up via trap. ~1-2 min.
+  "mailbox-forwarding:integration-mailbox-forwarding-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
   # Tenant SFTP reachability at the ADVERTISED files.<apex>:23022 — provisions
   # its own probe tenant, then connects from OFF-cluster and round-trips a file.

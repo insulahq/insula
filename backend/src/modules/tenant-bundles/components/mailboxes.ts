@@ -170,8 +170,16 @@ const STDIN_FILENAME = 'maildir.tar';
 export async function listTenantMailboxAddresses(db: Database, tenantId: string): Promise<string[]> {
   // `mailboxes.full_address` (camelCase = `fullAddress` per Drizzle
   // convention) is the canonical address column. Audited 2026-05-05.
+  // Send-only accounts are excluded: they have no mail store to capture,
+  // and the per-address JMAP capture treats an auth/enumeration failure
+  // as fatal for the WHOLE tenant bundle — one no-reply@ would fail every
+  // backup. Their config (forwarding targets) lives in the mailboxes
+  // table, which the config-tables component already captures.
+  // NOTE: the type column is camelCase "mailboxType" (created from the
+  // Drizzle property name in migration 0000), unlike the snake_case
+  // columns around it — a bare mailbox_type here is a 42703 at runtime.
   const rawDb = db as unknown as { execute: (q: ReturnType<typeof sql>) => Promise<{ rows: { full_address: string }[] }> };
-  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE tenant_id = ${tenantId} ORDER BY full_address`);
+  const r = await rawDb.execute(sql`SELECT full_address FROM mailboxes WHERE tenant_id = ${tenantId} AND "mailboxType" != 'send_only' ORDER BY full_address`);
   return r.rows.map((row) => row.full_address);
 }
 

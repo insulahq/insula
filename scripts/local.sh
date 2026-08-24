@@ -942,8 +942,13 @@ cmd_mail_up() {
   k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dind/stalwart-mail
   echo ""
   echo "Waiting for Stalwart 0.16 pod (up to 3 minutes)..."
-  k3s_exec kubectl wait --for=condition=Ready pod \
-    -l app.kubernetes.io/name=stalwart-mail \
+  # Wait on the Deployment, not a pod label: the earlier pod selector
+  # (`app.kubernetes.io/name`, which no stalwart pod carries) matched
+  # nothing, so kubectl wait errored immediately with "no matching
+  # resources found" on every run — and even a correct pod label races
+  # the ReplicaSet creating the pod. The Deployment object exists the
+  # moment apply returns.
+  k3s_exec kubectl wait --for=condition=Available deployment/stalwart-mail \
     -n mail --timeout=180s || {
     echo "Pod not ready within 3 minutes. Recent events:"
     k3s_exec kubectl get events -n mail --sort-by=.lastTimestamp | tail -20

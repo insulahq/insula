@@ -296,7 +296,13 @@ def restore_sieve(client: JmapAuxClient, payload: dict[str, Any],
     # SieveScript/set/create with `forbidden`. List established empirically
     # against testing.example.test 2026-05-22 — extend as new
     # reserved names surface in upstream.
-    RESERVED_SIEVE_NAMES = {"vacation"}
+    #
+    # "platform-mail-rules" is PLATFORM-reserved, not Stalwart-reserved:
+    # it is the platform-managed forwarding / send-only script (see
+    # backend stalwart-jmap/sieve.ts). The platform DB is authoritative
+    # for it — restoring a stale snapshot copy over the live one would
+    # silently change the mailbox's forwarding behaviour.
+    RESERVED_SIEVE_NAMES = {"vacation", "platform-mail-rules"}
 
     existing = _existing_ids(client, using, "SieveScript/get", acct)
     existing_names: dict[str, str] = {}

@@ -867,6 +867,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       })();
 
+      // Converge platform-managed mailbox mail rules (send-only permission
+      // profile + forwarding/ereject Sieve scripts) on boot — the platform
+      // DB is authoritative and Stalwart-side state can drift (mail-drift
+      // recreate, tenant restore, ManageSieve edits). Fire-and-forget:
+      // walking the mailboxes round-trips Stalwart per row and must not
+      // block readiness.
+      void (async () => {
+        try {
+          const { reconcileAllMailboxMailRules } = await import('./modules/mailboxes/mail-rules-reconcile.js');
+          await reconcileAllMailboxMailRules(app.db);
+        } catch (err) {
+          app.log.warn({ err }, 'startup: mailbox mail-rules reconcile skipped');
+        }
+      })();
+
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
 

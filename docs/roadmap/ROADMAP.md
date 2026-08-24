@@ -39,6 +39,7 @@
 | [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
+| [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | Proposed 2026-08-24 — both are DB-only today (rows never reach Stalwart, so the advertised behaviour silently doesn't happen); the per-mailbox Sieve mechanism shipped with send-only/forwarding is the natural base |
 
 ---
 
@@ -1061,3 +1062,35 @@ it before then audits and changes images against a path no traffic takes.
 Outbound IPv6 already works — the default `V4ThenV6` uses it as the fallback for
 destinations with no A record. Making IPv6 the *preferred* egress path is a
 deliverability/reputation decision for the operator, not engineering work.
+
+---
+
+## R28 — Make email aliases + auto-reply real
+
+**Proposed 2026-08-24** (found while building send-only accounts + per-mailbox
+forwarding). Two long-advertised email features are **DB-only fictions** — the
+API accepts and stores them, the UI renders them, and the mail server never
+hears about either:
+
+- **Aliases** (`email_aliases`, the tenant panel's "Aliases & Forwarding" tab,
+  `email_domains.catch_all_address`): rows are written but no JMAP call ever
+  provisions them in Stalwart — mail to an alias address is simply rejected as
+  an unknown recipient.
+- **Auto-reply** (`mailboxes.auto_reply{,_subject,_body}`, the edit-mailbox
+  vacation panel): stored, rendered, never pushed — no vacation response is
+  ever sent.
+
+The send-only/forwarding work shipped the missing substrate: a platform-managed
+per-account Sieve script (`platform-mail-rules`, `stalwart-jmap/sieve.ts`) with
+admin cross-account install, boot-time reconcile, and a raised interpreter
+redirect ceiling. Follow-ups:
+
+- **Auto-reply**: extend `buildMailRulesScript` with a `vacation` block from
+  the existing columns (the Sieve `vacation` extension is enabled server-side;
+  interpreter `maxOutMessages` already has headroom).
+- **Aliases**: single-target aliases map to Stalwart's native
+  `x:Account.aliases` list; multi-target aliases need either a `list`-type
+  principal or the same redirect-script approach on a hidden account. The
+  catch-all needs the domain-level Stalwart setting.
+- Until then the UI oversells: consider a "not yet active" notice on the alias
+  tab + vacation panel if this stays open long.

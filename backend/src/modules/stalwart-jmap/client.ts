@@ -1717,3 +1717,76 @@ export async function findMailboxByEmail(params: {
     .find((p) => (p.emails ?? []).some((e) => e.toLowerCase() === target));
   return match ?? null;
 }
+
+// ── Low-level helpers for sibling stalwart-jmap modules ─────────────────────
+//
+// `sieve.ts` (platform-managed per-account Sieve scripts + send-only
+// permission profile) needs two primitives client.ts keeps private:
+// a capability-parameterised single-method call and the JMAP binary
+// upload endpoint. Exported here rather than duplicating transport/auth.
+
+/**
+ * Single JMAP method call with caller-chosen capabilities. Same admin
+ * Basic-Auth + transport as every other helper in this module.
+ */
+export async function rawStalwartCall<T>(params: {
+  using: readonly string[];
+  method: string;
+  args: Record<string, unknown>;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<T> {
+  const { using, method, args, baseUrl = STALWART_MGMT_URL, env = process.env } = params;
+  const callId = 'c0';
+  const req: JmapRequest = {
+    using: [JMAP_CORE, ...using.filter((u) => u !== JMAP_CORE)],
+    methodCalls: [[method, args, callId]],
+  };
+  const res = await jmapPost(baseUrl, adminBasicAuth(env), req);
+  return extractResponse<T>(res, method, callId);
+}
+
+/**
+ * Upload a blob into a target account's blob store (admin cross-account —
+ * Stalwart's `impersonate` permission on the admin role allows targeting
+ * any accountId). Returns the blobId for use in e.g. SieveScript/set.
+ */
+export async function uploadBlob(params: {
+  /** Target account (the USER's principal id, not the admin session id). */
+  accountId: string;
+  content: string;
+  contentType: string;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<{ blobId: string }> {
+  const { accountId, content, contentType, baseUrl = STALWART_MGMT_URL, env = process.env } = params;
+  const url = `${baseUrl}/jmap/upload/${encodeURIComponent(accountId)}/`;
+  const timeoutMs = Number(process.env.JMAP_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: adminBasicAuth(env),
+      'Content-Type': contentType,
+      Accept: 'application/json',
+    },
+    body: content,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new JmapError(
+      `JMAP blob upload to ${url} failed: HTTP ${res.status} ${res.statusText}`,
+      'httpError',
+      { status: res.status, body: text.slice(0, 500) },
+    );
+  }
+  const data = (await res.json()) as { blobId?: unknown };
+  if (typeof data?.blobId !== 'string' || data.blobId.length === 0) {
+    throw new JmapError(
+      `JMAP blob upload to ${url} returned no blobId`,
+      'malformedResponse',
+      data,
+    );
+  }
+  return { blobId: data.blobId };
+}

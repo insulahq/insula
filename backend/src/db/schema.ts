@@ -120,7 +120,12 @@ export const tlsModeEnum = pgEnum('tls_mode', ['auto', 'custom', 'none']);
 export const ingressStatusEnum = pgEnum('ingress_status', ['active', 'pending', 'error']);
 export const billingStatusEnum = pgEnum('billing_status', ['draft', 'invoiced', 'paid', 'failed']);
 export const mailboxStatusEnum = pgEnum('mailbox_status', ['active', 'disabled']);
-export const mailboxTypeEnum = pgEnum('mailbox_type', ['mailbox', 'forward_only']);
+// `forward_only` is a dead legacy value — never creatable via any API and
+// migrated to `mailbox` in 0085 (Postgres cannot cheaply drop enum values).
+// `send_only` = SMTP-submission-only account (no-reply@): no inbox access,
+// inbound rejected or forwarded without a local copy. See api-contracts
+// mailboxTypeSchema for the authoritative wire-facing enum.
+export const mailboxTypeEnum = pgEnum('mailbox_type', ['mailbox', 'forward_only', 'send_only']);
 export const accessLevelEnum = pgEnum('access_level', ['full', 'read_only']);
 export const smtpProviderTypeEnum = pgEnum('smtp_provider_type', ['direct', 'mailgun', 'postmark', 'stalwart-internal']);
 
@@ -1682,6 +1687,11 @@ export const mailboxes = pgTable('mailboxes', {
   usedMb: integer('used_mb').notNull().default(0),
   status: mailboxStatusEnum().notNull().default('active'),
   mailboxType: mailboxTypeEnum().notNull().default('mailbox'),
+  // Forwarding targets (Sieve `redirect` in Stalwart). NULL/[] = off.
+  // `mailbox` type keeps a local copy (`redirect :copy`); `send_only`
+  // forwards without storing. The platform DB is authoritative; the
+  // boot-time mail-rules reconcile re-pushes the script to Stalwart.
+  forwardingAddresses: jsonb('forwarding_addresses').$type<string[]>(),
   autoReply: integer('auto_reply').notNull().default(0),
   autoReplySubject: varchar('auto_reply_subject', { length: 255 }),
   autoReplyBody: text('auto_reply_body'),

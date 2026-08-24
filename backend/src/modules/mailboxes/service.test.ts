@@ -64,6 +64,14 @@ vi.mock('../tenants/service.js', () => ({
   getTenantById: vi.fn().mockResolvedValue({ id: 'c1', status: 'active' }),
 }));
 
+// Mock the sieve/mail-rules helpers (send-only + forwarding). Individual
+// tests assert call shapes / force failures via these.
+vi.mock('../stalwart-jmap/sieve.js', () => ({
+  applyMailRules: vi.fn().mockResolvedValue(undefined),
+  applySendOnlyPermissions: vi.fn().mockResolvedValue(undefined),
+  ensureSieveInterpreterLimits: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Track select call results per test
 let selectResults: unknown[][];
 let selectCallIndex: number;
@@ -823,5 +831,159 @@ describe('signWebmailJwt', () => {
     const b = signWebmailJwt({ mailbox: 'a@x.com' }, 'secret-two-at-least-16', 30);
     // Third segment is the signature, which MUST differ
     expect(a.split('.')[2]).not.toBe(b.split('.')[2]);
+  });
+});
+
+// ── Send-only accounts + forwarding (2026-08) ───────────────────────────────
+
+describe('createMailbox — send-only + forwarding', () => {
+  beforeEach(() => {
+    selectCallIndex = 0;
+    vi.clearAllMocks();
+  });
+
+  it('send-only create skips the size-limit lookup and stores quota 0', async () => {
+    const created = {
+      id: 'mb-so', emailDomainId: 'ed1', tenantId: 'c1', localPart: 'no-reply',
+      fullAddress: 'no-reply@example.com', displayName: null, quotaMb: 0,
+      usedMb: 0, status: 'active', mailboxType: 'send_only', autoReply: 0,
+      forwardingAddresses: null,
+    };
+    // Selects: emailDomain, domain, plan, count, existing, created —
+    // NO size-limit select (send-only has no quota).
+    selectResults = [
+      [{ id: 'ed1', tenantId: 'c1', domainId: 'd1' }],
+      [{ domainName: 'example.com' }],
+      [{ planLimit: 50, override: null }],
+      [{ count: 0 }],
+      [],
+      [created],
+    ];
+    const db = createMockDb();
+
+    const result = await createMailbox(db as never, 'c1', 'ed1', {
+      local_part: 'no-reply', mailbox_type: 'send_only',
+    });
+
+    expect(result.mailboxType).toBe('send_only');
+    const insertedRow = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls[0][0];
+    expect(insertedRow.quotaMb).toBe(0);
+    expect(insertedRow.mailboxType).toBe('send_only');
+    expect(insertedRow.forwardingAddresses).toBeNull();
+  });
+
+  it('rejects forwarding to the mailbox own address (mail loop)', async () => {
+    selectResults = [
+      [{ id: 'ed1', tenantId: 'c1', domainId: 'd1' }],
+      [{ domainName: 'example.com' }],
+      [{ planLimit: 50, override: null }],
+      [{ count: 0 }],
+      [],
+    ];
+    const db = createMockDb();
+
+    await expect(createMailbox(db as never, 'c1', 'ed1', {
+      local_part: 'info', mailbox_type: 'mailbox',
+      forwarding_addresses: ['INFO@example.com'],
+    })).rejects.toMatchObject({ code: 'FORWARDING_SELF_TARGET', status: 422 });
+  });
+});
+
+const sieve = await import('../stalwart-jmap/sieve.js');
+
+describe('updateMailbox — send-only + forwarding', () => {
+  beforeEach(() => {
+    selectCallIndex = 0;
+    vi.clearAllMocks();
+  });
+
+  it('rejects quota edits on a send-only account', async () => {
+    selectResults = [[{ id: 'mb1', tenantId: 'c1', fullAddress: 'no-reply@example.com', mailboxType: 'send_only', stalwartPrincipalId: 'sp1' }]];
+    const db = createMockDb();
+    await expect(updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 2048 }))
+      .rejects.toMatchObject({ code: 'SEND_ONLY_MAILBOX', status: 409 });
+  });
+
+  it('rejects auto-reply edits on a send-only account', async () => {
+    selectResults = [[{ id: 'mb1', tenantId: 'c1', fullAddress: 'no-reply@example.com', mailboxType: 'send_only', stalwartPrincipalId: 'sp1' }]];
+    const db = createMockDb();
+    await expect(updateMailbox(db as never, 'c1', 'mb1', { auto_reply: true }))
+      .rejects.toMatchObject({ code: 'SEND_ONLY_MAILBOX', status: 409 });
+  });
+
+  it('rejects a forwarding edit when the mailbox has no Stalwart principal', async () => {
+    selectResults = [[{ id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', mailboxType: 'mailbox', stalwartPrincipalId: null }]];
+    const db = createMockDb();
+    await expect(updateMailbox(db as never, 'c1', 'mb1', { forwarding_addresses: ['dest@example.net'] }))
+      .rejects.toMatchObject({ code: 'MAILBOX_NOT_PROVISIONED', status: 409 });
+  });
+
+  it('pushes the Sieve script BEFORE the DB write and stores normalized targets', async () => {
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', mailboxType: 'mailbox', stalwartPrincipalId: 'sp1' };
+    const updated = { ...mailbox, forwardingAddresses: ['dest@example.net'] };
+    selectResults = [[mailbox], [updated]];
+    const db = createMockDb();
+
+    const result = await updateMailbox(db as never, 'c1', 'mb1', {
+      // Duplicate + mixed case → normalized to a single lowercase target.
+      forwarding_addresses: ['Dest@example.net', 'dest@example.net'],
+    });
+
+    expect(sieve.applyMailRules).toHaveBeenCalledWith({
+      principalId: 'sp1',
+      mailboxType: 'mailbox',
+      forwardingAddresses: ['dest@example.net'],
+    });
+    const setArg = (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mock.results[0].value.set.mock.calls[0][0];
+    expect(setArg.forwardingAddresses).toEqual(['dest@example.net']);
+    expect(result.forwardingAddresses).toEqual(['dest@example.net']);
+  });
+
+  it('clears forwarding with an empty array (stored as NULL, script removed)', async () => {
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', mailboxType: 'mailbox', stalwartPrincipalId: 'sp1' };
+    selectResults = [[mailbox], [{ ...mailbox, forwardingAddresses: null }]];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', { forwarding_addresses: [] });
+
+    expect(sieve.applyMailRules).toHaveBeenCalledWith({
+      principalId: 'sp1',
+      mailboxType: 'mailbox',
+      forwardingAddresses: [],
+    });
+    const setArg = (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mock.results[0].value.set.mock.calls[0][0];
+    expect(setArg.forwardingAddresses).toBeNull();
+  });
+
+  it('fails VISIBLY (502) and skips the DB write when the mail server rejects the script', async () => {
+    (sieve.applyMailRules as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('stalwart down'));
+    const mailbox = { id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com', mailboxType: 'mailbox', stalwartPrincipalId: 'sp1' };
+    selectResults = [[mailbox]];
+    const db = createMockDb();
+
+    await expect(updateMailbox(db as never, 'c1', 'mb1', { forwarding_addresses: ['dest@example.net'] }))
+      .rejects.toMatchObject({ code: 'MAIL_SERVER_ERROR', status: 502 });
+    expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).not.toHaveBeenCalled();
+  });
+});
+
+describe('generateWebmailToken — send-only guard', () => {
+  beforeEach(() => {
+    selectCallIndex = 0;
+    process.env.JWT_SECRET = 'test-webmail-secret-at-least-16-chars-long';
+  });
+
+  it('refuses to mint a webmail token for a send-only account', async () => {
+    selectResults = [
+      [{ tenantId: 'c1' }],
+      [{ status: 'active' }],
+      [{ roleName: 'tenant_admin', tenantId: 'c1' }],
+      [{ id: 'mb1', fullAddress: 'no-reply@example.com', mailboxType: 'send_only' }],
+    ];
+    const db = createMockDb();
+    const app = { log: { warn: vi.fn(), error: vi.fn() } } as unknown as Parameters<typeof generateWebmailToken>[0];
+
+    await expect(generateWebmailToken(app, db as never, 'u1', 'mb1'))
+      .rejects.toMatchObject({ code: 'SEND_ONLY_MAILBOX', status: 409 });
   });
 });

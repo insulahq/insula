@@ -283,6 +283,8 @@ export async function recreateDriftItemEmpty(
         id: mailboxes.id,
         fullAddress: mailboxes.fullAddress,
         emailDomainId: mailboxes.emailDomainId,
+        mailboxType: mailboxes.mailboxType,
+        forwardingAddresses: mailboxes.forwardingAddresses,
       })
       .from(mailboxes)
       .where(eq(mailboxes.id, item.platformRowId));
@@ -392,6 +394,33 @@ export async function recreateDriftItemEmpty(
       .update(mailboxes)
       .set({ stalwartPrincipalId: newStalwartId })
       .where(eq(mailboxes.id, mbRow.id));
+
+    // Re-apply platform-managed mail rules to the fresh principal — the
+    // recreated account starts with default permissions and no Sieve
+    // script, which would silently turn a send-only/forwarding mailbox
+    // back into a normal stored inbox. Best-effort: the boot reconcile
+    // (mail-rules-reconcile.ts) converges any failure here.
+    const declaresMailRules =
+      mbRow.mailboxType === 'send_only' || (mbRow.forwardingAddresses?.length ?? 0) > 0;
+    if (declaresMailRules) {
+      try {
+        const { applyMailRules, applySendOnlyPermissions } = await import('../stalwart-jmap/sieve.js');
+        if (mbRow.mailboxType === 'send_only') {
+          await applySendOnlyPermissions({ accountId, principalId: newStalwartId, baseUrl });
+        }
+        await applyMailRules({
+          principalId: newStalwartId,
+          mailboxType: mbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
+          forwardingAddresses: mbRow.forwardingAddresses ?? [],
+          baseUrl,
+        });
+      } catch (err) {
+        log.warn({
+          mailboxId: mbRow.id,
+          err: err instanceof Error ? err.message : String(err),
+        }, 'recreate: mail-rules re-apply failed (boot reconcile will converge)');
+      }
+    }
     followUp =
       `Stalwart mailbox principal for '${item.expectedName}' was recreated ` +
       `EMPTY. The previous Maildir is unrecoverable from Stalwart. ` +
