@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.15] - 2026-08-24
+
 ### Added
 - **Email aliases now actually deliver.** The "Aliases & Forwarding" tab has
   been wired to the mail server (rows were previously stored but never
