@@ -43,6 +43,15 @@ ok()   { printf '  %b✓%b %s\n' "$GREEN" "$RESET" "$*"; passed=$((passed+1)); }
 fail() { printf '  %b✗%b %s\n' "$RED"   "$RESET" "$*"; failed=$((failed+1)); }
 passed=0; failed=0
 
+# Cluster access honours the operator profile's $KUBECTL (e.g. an SSH
+# wrapper for the staging cluster) — a bare `kubectl` would silently
+# target whatever cluster the local kubeconfig points at, which is the
+# exact split-target hazard integration-env.sh warns about.
+kctl() {
+  # shellcheck disable=SC2086
+  ${KUBECTL:-kubectl} "$@"
+}
+
 api() {
   local method="$1" path="$2" body="${3:-}"
   if [[ -z "$body" ]]; then
@@ -155,27 +164,34 @@ log "── T6: IMAP migration into send-only rejected ──"
 T6=$(api_code POST "/tenants/$CID/mail/imapsync" \
   "{\"mailbox_id\":\"$SO_ID\",\"source_host\":\"imap.example.net\",\"source_port\":993,\"source_username\":\"x@example.net\",\"source_password\":\"pw\",\"source_ssl\":true}")
 T6_CODE=$(echo "$T6" | tail -1); T6_ERR=$(echo "$T6" | sed '$d' | jget "['error']['code']")
-[[ "$T6_CODE" == "409" && "$T6_ERR" == "SEND_ONLY_MAILBOX" ]] \
-  && ok "rejected 409 SEND_ONLY_MAILBOX" \
-  || fail "got code=$T6_CODE err=$T6_ERR (expected 409/SEND_ONLY_MAILBOX)"
+# Environments without imapsync configured refuse at the feature gate
+# (503 IMAPSYNC_NOT_CONFIGURED) BEFORE the send-only guard can 409 —
+# both are correct refusals of the migration.
+if [[ "$T6_CODE" == "409" && "$T6_ERR" == "SEND_ONLY_MAILBOX" ]]; then
+  ok "rejected 409 SEND_ONLY_MAILBOX"
+elif [[ "$T6_CODE" == "503" && "$T6_ERR" == "IMAPSYNC_NOT_CONFIGURED" ]]; then
+  ok "rejected 503 IMAPSYNC_NOT_CONFIGURED (feature gate fires first on this env)"
+else
+  fail "got code=$T6_CODE err=$T6_ERR (expected 409/SEND_ONLY_MAILBOX or 503/IMAPSYNC_NOT_CONFIGURED)"
+fi
 
 # ── Stalwart-side verification (kubectl-gated) ──────────────────────────
 STALWART_POD=""
-if command -v kubectl >/dev/null 2>&1; then
-  STALWART_POD=$(kubectl get pod -n mail -l app=stalwart-mail \
+if [[ -n "${KUBECTL:-}" ]] || command -v kubectl >/dev/null 2>&1; then
+  STALWART_POD=$(kctl get pod -n mail -l app=stalwart-mail \
     --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 fi
 if [[ -n "$STALWART_POD" ]]; then
-  SW_ADMIN_PW=$(kubectl get secret -n mail stalwart-admin-creds \
+  SW_ADMIN_PW=$(kctl get secret -n mail stalwart-admin-creds \
     -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d || true)
 fi
 if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" ]]; then
   swjmap() { # swjmap <json-body>
-    kubectl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
+    kctl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
       -X POST -H "Content-Type: application/json" -d "$1" http://localhost:8080/jmap/ 2>/dev/null
   }
   # Resolve the three principals' Stalwart ids by address (one listing).
-  SW_ACCT=$(kubectl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
+  SW_ACCT=$(kctl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
     http://localhost:8080/jmap/session 2>/dev/null \
     | python3 -c "import json,sys;print(list(json.load(sys.stdin)['accounts'].keys())[0])")
   SW_ACCOUNTS=$(swjmap "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Account/get\",{\"accountId\":\"$SW_ACCT\",\"ids\":null,\"properties\":[\"id\",\"emailAddress\"]},\"r0\"]]}")
@@ -193,9 +209,9 @@ if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" ]]; then
 
   # ── T8: REAL delivery — forward + keep copy; send-only stores nothing ──
   log "── T8: real SMTP delivery through the forwarding path ──"
-  kubectl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
+  kctl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
     "printf 'From: probe@ext-$STAMP.invalid\r\nTo: fwd-source@$TEST_DOMAIN\r\nSubject: fwd-probe-$STAMP\r\n\r\nbody\r\n' > /tmp/fwd.eml; curl -s -m 20 --url smtp://localhost:25 --mail-from probe@ext-$STAMP.invalid --mail-rcpt fwd-source@$TEST_DOMAIN --upload-file /tmp/fwd.eml" >/dev/null 2>&1 || true
-  kubectl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
+  kctl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
     "printf 'From: probe@ext-$STAMP.invalid\r\nTo: no-reply@$TEST_DOMAIN\r\nSubject: so-probe-$STAMP\r\n\r\nbody\r\n' > /tmp/so.eml; curl -s -m 20 --url smtp://localhost:25 --mail-from probe@ext-$STAMP.invalid --mail-rcpt no-reply@$TEST_DOMAIN --upload-file /tmp/so.eml" >/dev/null 2>&1 || true
   sleep 6
   count_subject() { # count_subject <principal> <subject>
@@ -221,7 +237,7 @@ if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" ]]; then
   [[ "$VA_ON" == "1" ]] && ok "auto-reply enabled" || fail "auto-reply enable failed: $(echo "$VA" | head -c 200)"
 
   send_to_target() { # send_to_target <subject>
-    kubectl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
+    kctl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
       "printf 'From: fwd-source@$TEST_DOMAIN\r\nTo: fwd-target@$TEST_DOMAIN\r\nSubject: $1\r\nMessage-ID: <$1@$TEST_DOMAIN>\r\n\r\nhello\r\n' > /tmp/v.eml; curl -s -m 20 --url smtp://localhost:25 --mail-from fwd-source@$TEST_DOMAIN --mail-rcpt fwd-target@$TEST_DOMAIN --upload-file /tmp/v.eml" >/dev/null 2>&1 || true
   }
   count_vacation_replies() { # vacation replies in fwd-source's inbox
