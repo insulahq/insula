@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, RefreshCw, Loader2, CheckCircle, AlertCircle, AlertOctagon } from 'lucide-react';
 import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
 import { useBackupConfigs } from '@/hooks/use-backup-config';
+import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
 import { useSweepNamespaceIntegrity } from '@/hooks/use-namespace-integrity';
@@ -25,13 +26,21 @@ interface StorageSettingsProps {
   readonly embedded?: boolean;
 }
 
+const SHIM_CLASS_LABELS = [
+  { className: 'system', label: 'System (platform DB & state)' },
+  { className: 'tenant', label: 'Tenant (files & databases)' },
+  { className: 'mail', label: 'Mail (Stalwart data)' },
+] as const;
+
 export default function StorageSettings({ embedded = false }: StorageSettingsProps = {}) {
   const [showIframe, setShowIframe] = useState(false);
   const { data: configsResp, isLoading } = useBackupConfigs();
+  const { data: assignmentsResp } = useShimAssignments();
   const { data: urls } = usePlatformUrls();
 
   const configs = configsResp?.data ?? [];
   const activeConfig = configs.find((c) => c.active);
+  const assignments = assignmentsResp?.data.assignments ?? [];
   // Prefer the DB-resolved URL; fall back to the ConfigMap-derived
   // value during the window between first paint and the query resolving.
   const longhornUrl = resolveLonghornUrl(urls);
@@ -108,12 +117,12 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
         )}
       </div>
 
-      {/* ─── Active backup target summary ─── */}
+      {/* ─── Backup target summary ─── */}
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Cloud size={20} className="text-gray-700 dark:text-gray-300" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Active Backup Target</h2>
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Backup Targets</h2>
           </div>
           <Link
             to="/backups/targets"
@@ -124,6 +133,45 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
           </Link>
         </div>
 
+        {/* Class assignments (restic/rclone shim) — the primary backup path. */}
+        <div data-testid="storage-class-assignments">
+          <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Backup-class assignments</h3>
+          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+            Where each backup class uploads its restic snapshots.
+          </p>
+          <dl className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3 text-sm">
+            {SHIM_CLASS_LABELS.map(({ className, label }) => {
+              const row = assignments.find((a) => a.className === className);
+              return (
+                <div key={className}>
+                  <dt className="text-gray-500 dark:text-gray-400">{label}</dt>
+                  <dd className="mt-1 text-gray-900 dark:text-gray-100" data-testid={`storage-assignment-${className}`}>
+                    {row?.targetName ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <CheckCircle size={13} className="text-green-600 dark:text-green-400" />
+                        {row.targetName}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300">
+                        <AlertTriangle size={13} /> Unassigned
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              );
+            })}
+          </dl>
+        </div>
+
+        {/* Longhorn volume backups — separate mechanism: the ACTIVATED target
+            drives the Longhorn BackupTarget CR (volume-level backups), not the
+            class assignments above. */}
+        <div className="border-t border-gray-200 dark:border-gray-700 pt-4" data-testid="longhorn-volume-backup-target">
+        <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Longhorn volume backups</h3>
+        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+          Volume-level backups use the target marked <em>Active</em> under Backups → Targets —
+          independent of the class assignments above.
+        </p>
         {isLoading ? (
           <p className="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
         ) : activeConfig ? (
@@ -175,18 +223,21 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
             )}
           </dl>
         ) : (
-          <div className="rounded-lg bg-gray-50 dark:bg-gray-900/30 p-4 text-sm" data-testid="no-active-target">
+          <div className="mt-2 rounded-lg bg-gray-50 dark:bg-gray-900/30 p-4 text-sm" data-testid="no-active-target">
             <p className="text-gray-700 dark:text-gray-300">
-              No backup target is active. Longhorn volumes won't be backed up until one is configured.
+              No target is activated for Longhorn volume-level backups. Class backups
+              (assignments above) are unaffected — but Longhorn volume snapshots won't be
+              copied off-cluster until a target is marked Active.
             </p>
             <Link
               to="/backups/targets"
               className="mt-2 inline-flex items-center gap-1.5 text-brand-600 dark:text-brand-400 hover:underline"
             >
-              Configure →
+              Activate a target →
             </Link>
           </div>
         )}
+        </div>
       </div>
 
       {showIframe && longhornUrl && <LonghornIframeModal url={longhornUrl} onClose={() => setShowIframe(false)} />}

@@ -190,3 +190,93 @@ describe('reconcileMailResticShim', () => {
     expect(core.createNamespacedSecret).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ensurePlatformApiTokenSecret (2026-08-24) — the stats-reporting token
+// Secret consumed by the snapshot Jobs + standby DaemonSet. Tested
+// through reconcileMailResticShim: it must run BEFORE the binding gate
+// (target-less clusters report too) and never fail the reconcile.
+// ---------------------------------------------------------------------------
+
+import { afterEach, beforeEach } from 'vitest';
+
+describe('platform-api-sa-token ensure', () => {
+  const TOKEN = 'itest-internal-secret-0001';
+  const TOKEN_B64 = Buffer.from(TOKEN).toString('base64');
+
+  beforeEach(() => {
+    vi.stubEnv('PLATFORM_INTERNAL_SECRET', TOKEN);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function saCore(read: 'missing' | 'match' | 'drift' | 'error') {
+    const readImpl =
+      read === 'missing'
+        ? vi.fn().mockRejectedValue({ statusCode: 404 })
+        : read === 'error'
+          ? vi.fn().mockRejectedValue({ statusCode: 500 })
+          : vi.fn().mockResolvedValue({
+              data: { token: read === 'match' ? TOKEN_B64 : 'c3RhbGU=' },
+            });
+    return {
+      readNamespacedSecret: readImpl,
+      createNamespacedSecret: vi.fn().mockResolvedValue({}),
+      replaceNamespacedSecret: vi.fn().mockResolvedValue({}),
+    };
+  }
+
+  it('creates the Secret even with NO mail binding (standby reports target-less)', async () => {
+    const db = fakeDb({ mail: false, legacy: false });
+    const core = saCore('missing');
+    const r = await reconcileMailResticShim(db, { core } as never, silentLog());
+
+    expect(r.state).toBe('STATE_NO_MAIL_TARGET');
+    expect(core.createNamespacedSecret).toHaveBeenCalledTimes(1);
+    const body = (core.createNamespacedSecret.mock.calls[0][0] as { body: Record<string, unknown> }).body;
+    expect((body.metadata as Record<string, unknown>).name).toBe('platform-api-sa-token');
+    expect((body.metadata as Record<string, unknown>).namespace).toBe(MAIL_NAMESPACE);
+    expect((body.data as Record<string, unknown>).token).toBe(TOKEN_B64);
+  });
+
+  it('leaves a current Secret untouched (no write churn on the 5-min tick)', async () => {
+    const db = fakeDb({ mail: false, legacy: false });
+    const core = saCore('match');
+    await reconcileMailResticShim(db, { core } as never, silentLog());
+
+    expect(core.createNamespacedSecret).not.toHaveBeenCalled();
+    expect(core.replaceNamespacedSecret).not.toHaveBeenCalled();
+  });
+
+  it('repairs a drifted Secret via replace', async () => {
+    const db = fakeDb({ mail: false, legacy: false });
+    const core = saCore('drift');
+    await reconcileMailResticShim(db, { core } as never, silentLog());
+
+    expect(core.replaceNamespacedSecret).toHaveBeenCalledTimes(1);
+    const body = (core.replaceNamespacedSecret.mock.calls[0][0] as { body: Record<string, unknown> }).body;
+    expect((body.data as Record<string, unknown>).token).toBe(TOKEN_B64);
+  });
+
+  it('ensure failure is non-fatal — reconcile continues', async () => {
+    const db = fakeDb({ mail: false, legacy: false });
+    const core = saCore('error');
+    const log = silentLog();
+    const r = await reconcileMailResticShim(db, { core } as never, log);
+
+    expect(r.state).toBe('STATE_NO_MAIL_TARGET');
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it('env unset → no Secret calls at all', async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('PLATFORM_INTERNAL_SECRET', '');
+    const db = fakeDb({ mail: false, legacy: false });
+    const core = saCore('missing');
+    await reconcileMailResticShim(db, { core } as never, silentLog());
+
+    expect(core.readNamespacedSecret).not.toHaveBeenCalled();
+    expect(core.createNamespacedSecret).not.toHaveBeenCalled();
+  });
+});
