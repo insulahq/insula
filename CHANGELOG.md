@@ -20,6 +20,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   forwarding. Enabling auto-reply now requires a message body.
 
 ### Fixed
+- **Tenants with more than one domain: every domain after the first served
+  Traefik's self-signed default certificate — while the UI truthfully said
+  the real certificate was issued.** Traefik only serves certificates that
+  an IngressRoute actually references, and the tenant ingress referenced
+  only the first domain's certificate Secret; the others sat issued but
+  unreferenced. The reconciler now creates one IngressRoute per
+  certificate, so every issued certificate is served (and cleans them up
+  when a domain is removed).
 - **Custom deployments using a moving tag (`:latest`, `:1.27`, `:24.04`)
   showed "unknown" in the Updates column forever.** The update checker
   compares the registry's digest against the digest the pods actually run,
