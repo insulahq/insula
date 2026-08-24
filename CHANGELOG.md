@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.14] - 2026-08-24
+
 ### Added
 - **Auto-reply (vacation messages) now actually replies.** The mailbox
   edit dialog's auto-reply has been wired to the mail server (it was
