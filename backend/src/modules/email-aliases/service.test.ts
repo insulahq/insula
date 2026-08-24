@@ -139,7 +139,9 @@ describe('listAliases', () => {
 describe('updateAlias', () => {
   it('should update alias destinations', async () => {
     const updatedAlias = { ...ALIAS, destinationAddresses: ['new@example.com'] };
-    const db = createMockDb([[ALIAS], [updatedAlias]]);
+    // Selects: alias row → email_domains (unprovisioned alias re-provision
+    // attempt — ALIAS fixture has no stalwartListId) → updated row.
+    const db = createMockDb([[ALIAS], [{ id: 'ed1', stalwartDomainId: null }], [updatedAlias]]);
     const result = await updateAlias(db, 'c1', 'a1', {
       destination_addresses: ['new@example.com'],
     });
@@ -167,5 +169,121 @@ describe('deleteAlias', () => {
       code: 'EMAIL_ALIAS_NOT_FOUND',
       status: 404,
     });
+  });
+});
+
+// ── Stalwart-backed aliases (R28, 2026-08-24) ───────────────────────────────
+
+vi.mock('../stalwart-jmap/client.js', () => ({
+  getCachedPrincipalsAccountId: vi.fn().mockResolvedValue('acct-1'),
+}));
+vi.mock('../stalwart-jmap/mailing-lists.js', () => ({
+  createMailingList: vi.fn().mockResolvedValue('list-1'),
+  updateMailingListRecipients: vi.fn().mockResolvedValue(undefined),
+  destroyMailingList: vi.fn().mockResolvedValue(undefined),
+  listMailingLists: vi.fn().mockResolvedValue([]),
+  setDomainCatchAll: vi.fn().mockResolvedValue(undefined),
+}));
+
+const lists = await import('../stalwart-jmap/mailing-lists.js');
+const { normalizeAliasDestinations } = await import('./service.js');
+
+const PROVISIONED_DOMAIN = { ...DOMAIN, stalwartDomainId: 'sd-1' };
+
+describe('normalizeAliasDestinations', () => {
+  it('trims, lowercases, dedupes', () => {
+    expect(normalizeAliasDestinations([' A@x.test ', 'a@x.test', 'b@y.test'], 'src@x.test'))
+      .toEqual(['a@x.test', 'b@y.test']);
+  });
+  it('rejects the alias delivering to itself (loop)', () => {
+    expect(() => normalizeAliasDestinations(['SRC@x.test'], 'src@x.test'))
+      .toThrowError(/own address/);
+  });
+  it('rejects an empty destination set', () => {
+    expect(() => normalizeAliasDestinations(['  '], 'src@x.test')).toThrowError(/at least one/);
+  });
+});
+
+describe('createAlias — Stalwart provisioning', () => {
+  it('provisions a MailingList and stores its id', async () => {
+    const created = { ...ALIAS, stalwartListId: 'list-1' };
+    const db = createMockDb([[PROVISIONED_DOMAIN], [PARENT_DOMAIN], [], [], [created]]);
+    const result = await createAlias(db as never, 'c1', 'ed1', {
+      source_address: 'info@example.com',
+      destination_addresses: ['User@Example.com'],
+    });
+    expect(lists.createMailingList).toHaveBeenCalledWith(expect.objectContaining({
+      localPart: 'info',
+      stalwartDomainId: 'sd-1',
+      destinations: ['user@example.com'],
+    }));
+    expect(result.stalwartListId).toBe('list-1');
+  });
+
+  it('fails VISIBLY (502) when the mail server rejects the list — no DB row', async () => {
+    (lists.createMailingList as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+    const db = createMockDb([[PROVISIONED_DOMAIN], [PARENT_DOMAIN], [], []]);
+    await expect(createAlias(db as never, 'c1', 'ed1', {
+      source_address: 'info@example.com',
+      destination_addresses: ['user@example.com'],
+    })).rejects.toMatchObject({ code: 'MAIL_SERVER_ERROR', status: 502 });
+    expect((db as unknown as { insert: ReturnType<typeof vi.fn> }).insert).not.toHaveBeenCalled();
+  });
+
+  it('stores the row unprovisioned when the domain has no Stalwart id (boot reconcile converges)', async () => {
+    const created = { ...ALIAS, stalwartListId: null };
+    const db = createMockDb([[{ ...DOMAIN, stalwartDomainId: null }], [PARENT_DOMAIN], [], [], [created]]);
+    const result = await createAlias(db as never, 'c1', 'ed1', {
+      source_address: 'info@example.com',
+      destination_addresses: ['user@example.com'],
+    });
+    expect(result.stalwartListId).toBeNull();
+  });
+});
+
+describe('updateAlias — Stalwart pushes', () => {
+  it('destination change pushes recipients before the DB write', async () => {
+    const row = { ...ALIAS, stalwartListId: 'list-1' };
+    const db = createMockDb([[row], [{ ...row, destinationAddresses: ['x@y.test'] }]]);
+    await updateAlias(db as never, 'c1', 'a1', { destination_addresses: ['X@y.test'] });
+    expect(lists.updateMailingListRecipients).toHaveBeenCalledWith(expect.objectContaining({
+      listId: 'list-1',
+      destinations: ['x@y.test'],
+    }));
+  });
+
+  it('disable destroys the list and clears the stored id', async () => {
+    const row = { ...ALIAS, stalwartListId: 'list-1' };
+    const db = createMockDb([[row], [{ ...row, enabled: 0, stalwartListId: null }]]);
+    await updateAlias(db as never, 'c1', 'a1', { enabled: false });
+    expect(lists.destroyMailingList).toHaveBeenCalledWith(expect.objectContaining({ listId: 'list-1' }));
+  });
+
+  it('re-enable recreates the list via the email domain', async () => {
+    const row = { ...ALIAS, enabled: 0, stalwartListId: null };
+    const db = createMockDb([[row], [PROVISIONED_DOMAIN], [{ ...row, enabled: 1, stalwartListId: 'list-1' }]]);
+    await updateAlias(db as never, 'c1', 'a1', { enabled: true });
+    expect(lists.createMailingList).toHaveBeenCalledWith(expect.objectContaining({
+      localPart: 'info',
+      stalwartDomainId: 'sd-1',
+    }));
+  });
+
+  it('push failure surfaces 502 and skips the DB write', async () => {
+    (lists.updateMailingListRecipients as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('down'));
+    const row = { ...ALIAS, stalwartListId: 'list-1' };
+    const db = createMockDb([[row]]);
+    await expect(updateAlias(db as never, 'c1', 'a1', { destination_addresses: ['x@y.test'] }))
+      .rejects.toMatchObject({ code: 'MAIL_SERVER_ERROR', status: 502 });
+    expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteAlias — Stalwart cleanup', () => {
+  it('destroys the backing list best-effort', async () => {
+    const row = { ...ALIAS, stalwartListId: 'list-1' };
+    const db = createMockDb([[row]]);
+    await deleteAlias(db as never, 'c1', 'a1');
+    expect(lists.destroyMailingList).toHaveBeenCalledWith(expect.objectContaining({ listId: 'list-1' }));
   });
 });

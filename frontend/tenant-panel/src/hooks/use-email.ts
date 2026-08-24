@@ -58,11 +58,14 @@ export interface Mailbox {
   readonly createdAt: string;
 }
 
-interface EmailAlias {
+export interface EmailAlias {
   readonly id: string;
   readonly sourceAddress: string;
   readonly destinationAddresses: readonly string[];
   readonly enabled: number;
+  /** Stalwart MailingList id — null while unprovisioned (domain not
+   *  enabled on the mail server yet). */
+  readonly stalwartListId?: string | null;
 }
 
 interface DomainsResponse { readonly data: readonly EmailDomain[] }
@@ -330,6 +333,15 @@ export function useCreateEmailAlias(tenantId: string, emailDomainId: string) {
   return useMutation({
     mutationFn: (input: Record<string, unknown>) =>
       apiFetch<AliasResponse>(`/api/v1/tenants/${tenantId}/email/domains/${emailDomainId}/aliases`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', tenantId] }),
+  });
+}
+
+export function useUpdateEmailAlias(tenantId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Record<string, unknown> }) =>
+      apiFetch<AliasResponse>(`/api/v1/tenants/${tenantId}/email/aliases/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', tenantId] }),
   });
 }

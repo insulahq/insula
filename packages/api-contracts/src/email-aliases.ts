@@ -21,6 +21,9 @@ export const emailAliasResponseSchema = z.object({
   sourceAddress: z.string(),
   destinationAddresses: z.array(z.string()),
   enabled: z.number(),
+  // Stalwart MailingList id backing the alias; null while unprovisioned
+  // (domain not on the mail server yet — boot reconcile converges).
+  stalwartListId: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
