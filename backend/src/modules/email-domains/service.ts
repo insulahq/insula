@@ -385,6 +385,39 @@ export async function destroyStalwartArtifactsForEmailDomain(
     }
   }
 
+  // 1b. Alias MailingLists — linked to the Domain via domainId exactly
+  //     like mailbox principals; an undamaged Domain destroy needs them
+  //     gone first, and a leftover list would keep FORWARDING mail for a
+  //     torn-down domain (review 2026-08-24). Destroy by DB rows first,
+  //     then sweep any list still addressing this email domain's rows
+  //     (covers rows whose stalwart_list_id was stale/null).
+  try {
+    const { destroyMailingList } = await import('../stalwart-jmap/mailing-lists.js');
+    const aliasRows = await db
+      .select({ id: emailAliases.id, stalwartListId: emailAliases.stalwartListId })
+      .from(emailAliases)
+      .where(eq(emailAliases.emailDomainId, emailDomain.id));
+    for (const alias of aliasRows) {
+      if (!alias.stalwartListId) continue;
+      try {
+        await destroyMailingList({
+          accountId,
+          listId: alias.stalwartListId,
+          baseUrl: process.env.STALWART_MGMT_URL,
+        });
+        await db.update(emailAliases).set({ stalwartListId: null }).where(eq(emailAliases.id, alias.id));
+      } catch (err) {
+        failures.push(`alias ${alias.id}: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(
+          { aliasId: alias.id, stalwartListId: alias.stalwartListId, err: err instanceof Error ? err.message : String(err) },
+          'Stalwart MailingList destroy failed — the Domain destroy below may be refused (objectIsLinked)',
+        );
+      }
+    }
+  } catch (err) {
+    failures.push(`aliases: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // 2. DkimSignature rows — destroying the Domain principal alone
   //    strands them as registry orphans (observed in the 2026-06-07
   //    DKIM E2E), and Stalwart refuses the Domain destroy with
@@ -807,6 +840,33 @@ export async function updateEmailDomain(
   // max_mailboxes + max_quota_mb removed in migration 0019 —
   // plan-based limits now come from hosting_plans.max_mailboxes.
   if (input.catch_all_address !== undefined) updateValues.catchAllAddress = input.catch_all_address;
+
+  // Catch-all is a native Stalwart domain field (Domain.catchAllAddress,
+  // verified live) — push BEFORE the DB write, fail-visible. Before
+  // 2026-08 this column was stored and never sent anywhere, so the
+  // "catch-all" setting silently did nothing (ROADMAP R28).
+  if (input.catch_all_address !== undefined && existing.stalwartDomainId) {
+    const { getCachedPrincipalsAccountId } = await import('../stalwart-jmap/client.js');
+    const { setDomainCatchAll } = await import('../stalwart-jmap/mailing-lists.js');
+    const accountId = await getCachedPrincipalsAccountId();
+    if (accountId) {
+      try {
+        await setDomainCatchAll({
+          accountId,
+          stalwartDomainId: existing.stalwartDomainId,
+          catchAllAddress: input.catch_all_address ?? null,
+        });
+      } catch (err) {
+        throw new ApiError(
+          'MAIL_SERVER_ERROR',
+          `Catch-all update failed at the mail server: ${err instanceof Error ? err.message : String(err)}`,
+          502,
+          {},
+          'Check Stalwart JMAP API reachability and logs, then retry',
+        );
+      }
+    }
+  }
   if (input.spam_threshold_junk !== undefined) updateValues.spamThresholdJunk = String(input.spam_threshold_junk);
   if (input.spam_threshold_reject !== undefined) updateValues.spamThresholdReject = String(input.spam_threshold_reject);
 

@@ -28,6 +28,7 @@ import {
   useUpdateMailbox,
   useEmailAliases,
   useCreateEmailAlias,
+  useUpdateEmailAlias,
   useDeleteEmailAlias,
   useWebmailToken,
   useEnableEmailDomain,
@@ -48,6 +49,7 @@ import {
   useMailUsage,
   useMailboxUsage,
   type Mailbox,
+  type EmailAlias,
   type EmailDomain,
   type DnsRecordDisplay,
   type DkimKey,
@@ -1188,6 +1190,8 @@ function AliasesTab({
   const { data: res, isLoading } = useEmailAliases(tenantId, emailDomain.id);
   const deleteAlias = useDeleteEmailAlias(tenantId);
   const [showForm, setShowForm] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [editingAlias, setEditingAlias] = useState<EmailAlias | null>(null);
   const [form, setForm] = useState({ source: '', destinations: '' });
   const createAlias = useCreateEmailAlias(tenantId, emailDomain.id);
 
@@ -1207,7 +1211,9 @@ function AliasesTab({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-500 dark:text-gray-400">{aliases.length} alias{aliases.length !== 1 ? 'es' : ''}</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          {aliases.length} alias{aliases.length !== 1 ? 'es' : ''} — an alias is an address without its own inbox that delivers to one or more destinations
+        </p>
         <button type="button" onClick={() => setShowForm(p => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-alias-button">
           {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Create Alias'}
         </button>
@@ -1217,18 +1223,19 @@ function AliasesTab({
         <form onSubmit={handleCreate} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="create-alias-form">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Source</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Alias address</label>
               <div className="mt-1 flex">
                 <input className="flex-1 rounded-l-lg border border-r-0 border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100" value={form.source} onChange={e => setForm({ ...form, source: e.target.value })} required placeholder="support" data-testid="alias-source" />
                 <span className="inline-flex items-center rounded-r-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 px-3 text-sm text-gray-500 dark:text-gray-400">@{domainName}</span>
               </div>
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Forward to (comma-separated)</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Deliver to (comma-separated, max 20)</label>
               <input className={INPUT_CLASS + ' mt-1'} value={form.destinations} onChange={e => setForm({ ...form, destinations: e.target.value })} required placeholder="john@example.com, jane@example.com" data-testid="alias-destinations" />
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Local mailboxes or external addresses. Nothing is stored on the alias itself.</p>
             </div>
           </div>
-          {createAlias.error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{createAlias.error instanceof Error ? createAlias.error.message : 'Failed'}</div>}
+          {createAlias.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{createAlias.error instanceof Error ? createAlias.error.message : 'Failed'}</div>}
           <div className="flex justify-end">
             <button type="submit" disabled={createAlias.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-alias">
               {createAlias.isPending && <Loader2 size={14} className="animate-spin" />} Create Alias
@@ -1240,24 +1247,133 @@ function AliasesTab({
       {isLoading && <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin text-brand-500" /></div>}
 
       {!isLoading && (
-        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm divide-y divide-gray-100">
+        <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 shadow-sm divide-y divide-gray-100 dark:divide-gray-700">
           {aliases.map(a => (
             <div key={a.id} className="flex items-center justify-between px-5 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 min-w-0">
                 <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">{a.sourceAddress}</span>
-                <ArrowRight size={14} className="text-gray-400 dark:text-gray-500" />
-                <span className="text-sm text-gray-600 dark:text-gray-400">{a.destinationAddresses.join(', ')}</span>
+                {a.enabled !== 1 && (
+                  <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400" data-testid={`alias-disabled-badge-${a.id}`}>
+                    Disabled
+                  </span>
+                )}
+                <ArrowRight size={14} className="shrink-0 text-gray-400 dark:text-gray-500" />
+                <span className="truncate text-sm text-gray-600 dark:text-gray-400" title={a.destinationAddresses.join(', ')}>{a.destinationAddresses.join(', ')}</span>
               </div>
-              <button type="button" onClick={() => deleteAlias.mutate(a.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-alias-${a.id}`}>
-                <Trash2 size={12} /> Delete
-              </button>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setEditingAlias(a)} className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700" data-testid={`edit-alias-${a.id}`}>
+                  <Edit2 size={12} /> Edit
+                </button>
+                {deleteConfirmId === a.id ? (
+                  <div className="flex gap-1">
+                    <button type="button" onClick={async () => { await deleteAlias.mutateAsync(a.id); setDeleteConfirmId(null); }} className="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700">Confirm</button>
+                    <button type="button" onClick={() => setDeleteConfirmId(null)} className="rounded-md border border-gray-200 dark:border-gray-700 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-400">Cancel</button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => setDeleteConfirmId(a.id)} className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 px-2.5 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30" data-testid={`delete-alias-${a.id}`}>
+                    <Trash2 size={12} /> Delete
+                  </button>
+                )}
+              </div>
             </div>
           ))}
           {aliases.length === 0 && (
-            <div className="px-5 py-10 text-center text-sm text-gray-500">No aliases yet. Create one to forward emails.</div>
+            <div className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No aliases yet. Create one to deliver an extra address into existing inboxes.</div>
           )}
         </div>
       )}
+
+      {editingAlias && (
+        <EditAliasModal
+          tenantId={tenantId}
+          alias={editingAlias}
+          onClose={() => setEditingAlias(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function EditAliasModal({
+  tenantId,
+  alias,
+  onClose,
+}: {
+  readonly tenantId: string;
+  readonly alias: EmailAlias;
+  readonly onClose: () => void;
+}) {
+  const updateAlias = useUpdateEmailAlias(tenantId);
+  const [destinations, setDestinations] = useState(alias.destinationAddresses.join(', '));
+  const [enabled, setEnabled] = useState(alias.enabled === 1);
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    const input: Record<string, unknown> = {};
+    const desired = [...new Set(destinations.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))];
+    const current = alias.destinationAddresses.map(d => d.toLowerCase());
+    const changed = desired.length !== current.length || desired.some((d, i) => d !== current[i]);
+    // A cleared field while DISABLING keeps the stored destinations —
+    // the contract requires ≥1 destination, and disable-with-clear is a
+    // legitimate one-step action (review 2026-08-24).
+    if (changed && desired.length > 0) input.destination_addresses = desired;
+    if (enabled !== (alias.enabled === 1)) input.enabled = enabled;
+    if (Object.keys(input).length === 0) { onClose(); return; }
+    try {
+      await updateAlias.mutateAsync({ id: alias.id, input });
+      onClose();
+    } catch { /* error rendered below */ }
+  };
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl bg-white dark:bg-gray-800 shadow-xl" onClick={(e) => e.stopPropagation()} data-testid="edit-alias-modal">
+        <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
+          <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
+            <Edit2 size={16} className="text-brand-500" />
+            Edit {alias.sourceAddress}
+          </h3>
+          <button type="button" onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700" data-testid="edit-alias-close">
+            <X size={16} />
+          </button>
+        </div>
+        <form onSubmit={handleSubmit} className="space-y-4 p-6">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Deliver to (comma-separated, max 20)</label>
+            <input
+              type="text"
+              className={INPUT_CLASS + ' mt-1'}
+              value={destinations}
+              onChange={(e) => setDestinations(e.target.value)}
+              required={enabled}
+              data-testid="edit-alias-destinations"
+            />
+            <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Local mailboxes or external addresses.</p>
+          </div>
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} data-testid="edit-alias-enabled" />
+            Enabled
+          </label>
+          {!enabled && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">While disabled, mail to this address is rejected as an unknown recipient.</p>
+          )}
+          {updateAlias.error && (
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+              <AlertCircle size={14} />
+              {updateAlias.error instanceof Error ? updateAlias.error.message : 'Update failed'}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={onClose} className="rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+              Cancel
+            </button>
+            <button type="submit" disabled={updateAlias.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-edit-alias">
+              {updateAlias.isPending && <Loader2 size={14} className="animate-spin" />}
+              Save changes
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
