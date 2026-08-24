@@ -9460,6 +9460,22 @@ print_summary() {
     ui_line " once you have created a real admin user)"
   fi
 
+  # Same lesson as the admin-credentials block above: the key-generated
+  # notice printed thousands of log lines earlier and scrolled away —
+  # operators finished a successful install without knowing the single
+  # most important DR artifact existed. Repeat it in the summary.
+  if [[ -f "${MARKER_DIR}/operator-key/operator-private.key" ]]; then
+    ui_section "Operator age key — IMPORTANT, copy it offline now"
+    ui_line "Private key: ${MARKER_DIR}/operator-key/operator-private.key"
+    ui_line "This key decrypts every platform secrets bundle (disaster recovery)."
+    ui_line "Without it, your secret backups cannot be restored. From your workstation:"
+    ui_line "  make secrets-fetch HOST=root@${server_ip}"
+    ui_line "then verify the copy and delete the key from this server:"
+    ui_line "  shred -u ${MARKER_DIR}/operator-key/operator-private.key"
+    ui_line "Lost the key later? 'insula operator-key rotate' mints a new one"
+    ui_line "(bundles made before the rotation stay locked to the old key)."
+  fi
+
   ui_section "Installed"
   ui_line "- k3s + Calico CNI"
   ui_line "- Traefik v3 Ingress Controller (DaemonSet, ports 80/443, CrowdSec + ModSecurity-CRS)"

@@ -141,6 +141,15 @@ function ManifestPanel({ loading, error, items, recipient }: ManifestPanelProps)
             <code className="font-mono text-gray-900 dark:text-gray-100 break-all">
               {recipient ?? <span className="text-amber-600 dark:text-amber-400">(missing — bootstrap has not run)</span>}
             </code>
+            <p className="mt-2 text-gray-500 dark:text-gray-400" data-testid="operator-key-loss-note">
+              The matching <em>private</em> key was written to{' '}
+              <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">/var/lib/hosting-platform/operator-key/</code>{' '}
+              at bootstrap — keep it offline. Lost it? Run{' '}
+              <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">insula operator-key rotate</code>{' '}
+              on a control-plane node: it mints a new keypair, updates this recipient, and
+              triggers a fresh export. Bundles exported <em>before</em> the rotation stay
+              readable only with the old key.
+            </p>
           </div>
 
           <ul className="space-y-1 text-sm" data-testid="bundle-manifest-list">

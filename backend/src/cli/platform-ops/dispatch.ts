@@ -33,6 +33,7 @@ import {
   nodeTerminalCommand,
   backupCommand,
 } from './housekeeping.js';
+import { operatorKeyCommand } from './operator-key-ops.js';
 
 const HELP = `platform-ops — Insula operator CLI
 
@@ -78,6 +79,13 @@ Commands:
   backup rotate-key      Rotate BACKUP_TARGET_KEY (DESTRUCTIVE — invalidates
                          all remote backups)
   backup key-status [--json] Show BACKUP_TARGET_KEY fingerprint + rotation times
+  operator-key rotate [--recipient age1...] [--yes] [--skip-bundle]
+                         Re-generate the operator AGE key (bundle encryption) —
+                         the recovery path when the private key is lost. Updates
+                         the cluster recipient + triggers a fresh bundle export;
+                         bundles from BEFORE the rotation stay on the old key
+  operator-key status [--json]
+                         Show the cluster recipient + local key-file state
   backup target list [--json]
                          List backup targets + their class bindings (in-pod)
   backup target add      Create a target (pipe createBackupConfig JSON on stdin)
@@ -196,6 +204,8 @@ export async function dispatch(argv: string[], deps: Deps): Promise<number> {
       return nodeTerminalCommand(rest, deps);
     case 'backup':
       return backupCommand(rest, deps);
+    case 'operator-key':
+      return operatorKeyCommand(rest, deps);
     case 'shell':
       return shellCommand(rest, deps);
     case 'bootstrap':

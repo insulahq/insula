@@ -96,6 +96,26 @@ KUBECONFIG=/tmp/k8s-staging/kubeconfig \
 
 Decrypts to a tmpdir, applies every `*.yaml` Secret manifest with `kubectl apply`, then shreds the tmpdir. Pods using restored Secrets need a rollout restart to pick up the new values.
 
+## Rotation flow — operator age key (lost or compromised)
+
+`insula operator-key rotate` (embedded `scripts/operator-key-rotate.sh`) is the
+recovery path when the operator private key is lost, and the deliberate-rotation
+path when it may have leaked:
+
+```bash
+insula operator-key status     # cluster recipient vs the key file on this host
+insula operator-key rotate     # interactive; --yes to skip the prompt
+insula operator-key rotate --recipient age1...   # operator-held key, nothing written server-side
+```
+
+What it does: mints a new keypair (old key files are preserved as
+`*.old-<stamp>`, never deleted), updates `ConfigMap platform/platform-operator-recipient`,
+and triggers an immediate `secrets-backup` Job so the newest off-site bundle is
+encrypted to the NEW key. What it cannot do: re-encrypt bundles exported before
+the rotation — those remain readable only with the old key. After rotating,
+`make secrets-fetch` the new key offline and `shred -u` it on the server, same
+as after bootstrap.
+
 ## Rotation flow — admin password
 
 The CLI is the canonical path. Two modes:
