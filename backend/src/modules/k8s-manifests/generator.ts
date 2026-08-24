@@ -307,9 +307,15 @@ export async function generateTenantManifests(
     }));
 
     // Pair each domain with an explicit cert-manager Certificate CR.
-    // Traefik's TLSStore is keyed by SNI hostname, so a Certificate per
-    // domain still resolves correctly at request time (the IngressRoute
-    // only needs to reference one primary secret to register the host).
+    //
+    // NOTE: Traefik only serves certificates that some IngressRoute
+    // actually REFERENCES — a Ready Secret nobody points at never enters
+    // the SNI store. This provision-time manifest references only the
+    // first domain's secret; the ingress reconciler (domains/
+    // k8s-ingress.ts) takes over on its first run and splits the
+    // IngressRoute per certificate secret so every domain's cert is
+    // served (live incident 2026-08-24: second domain served TRAEFIK
+    // DEFAULT CERT while the UI said "issued").
     if (autoTls) {
       const clusterIssuer = await getClusterIssuerName(db);
       for (const domain of tenantDomains) {

@@ -14,6 +14,11 @@ import {
   updatePrincipal as jmapUpdatePrincipal,
   type JmapAccountId,
 } from '../stalwart-jmap/client.js';
+import {
+  applyMailRules,
+  applySendOnlyPermissions,
+  ensureSieveInterpreterLimits,
+} from '../stalwart-jmap/sieve.js';
 import type { Database } from '../../db/index.js';
 import { issueLoginPasswordForPrincipal } from '../login-passwords/service.js';
 import { assertTenantActive } from '../tenants/guards.js';
@@ -115,6 +120,7 @@ const mailboxColumns = {
   usedMb: mailboxes.usedMb,
   status: mailboxes.status,
   mailboxType: mailboxes.mailboxType,
+  forwardingAddresses: mailboxes.forwardingAddresses,
   autoReply: mailboxes.autoReply,
   autoReplySubject: mailboxes.autoReplySubject,
   autoReplyBody: mailboxes.autoReplyBody,
@@ -122,6 +128,39 @@ const mailboxColumns = {
   createdAt: mailboxes.createdAt,
   updatedAt: mailboxes.updatedAt,
 } as const;
+
+/**
+ * Normalise + validate forwarding targets: trim, lowercase, dedupe, and
+ * reject the mailbox's own address (a guaranteed mail loop — Sieve
+ * redirect back to self re-runs the same script).
+ */
+function normalizeForwardingAddresses(
+  addresses: readonly string[],
+  ownAddress: string,
+): string[] {
+  const own = ownAddress.toLowerCase();
+  const normalized = [...new Set(addresses.map((a) => a.trim().toLowerCase()).filter(Boolean))];
+  if (normalized.includes(own)) {
+    throw new ApiError(
+      'FORWARDING_SELF_TARGET',
+      'A mailbox cannot forward to its own address',
+      422,
+      { address: ownAddress },
+      'Remove the mailbox’s own address from the forwarding targets',
+    );
+  }
+  return normalized;
+}
+
+function sendOnlyFieldError(field: string): ApiError {
+  return new ApiError(
+    'SEND_ONLY_MAILBOX',
+    `'${field}' is not applicable to a send-only account`,
+    409,
+    { field },
+    'Send-only accounts have no stored mail; only display name, status and forwarding can be changed',
+  );
+}
 
 export async function createMailbox(
   db: Database,
@@ -200,20 +239,32 @@ export async function createMailbox(
     );
   }
 
+  // 4a. Send-only accounts store nothing: quota is forced to 0 (the
+  // contract already rejects an explicit quota_mb for them) and the
+  // forwarding targets are validated against the final address.
+  const isSendOnly = input.mailbox_type === 'send_only';
+  const forwardingAddresses = normalizeForwardingAddresses(
+    input.forwarding_addresses ?? [],
+    fullAddress,
+  );
+
   // 4b. Resolve the per-mailbox size cap (plan + optional override). When
   // no quota is requested we default to the effective max; a requested
   // quota above the max is rejected (visible, like the count cap above).
-  const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
-  if (input.quota_mb !== undefined && input.quota_mb > sizeLimit.limit) {
-    throw new ApiError(
-      'MAILBOX_QUOTA_EXCEEDS_LIMIT',
-      `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
-      409,
-      { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
-      'Choose a smaller size or ask your administrator to raise the plan limit',
-    );
+  let effectiveQuotaMb = 0;
+  if (!isSendOnly) {
+    const sizeLimit = await getTenantMailboxSizeLimit(db, tenantId);
+    if (input.quota_mb !== undefined && input.quota_mb > sizeLimit.limit) {
+      throw new ApiError(
+        'MAILBOX_QUOTA_EXCEEDS_LIMIT',
+        `Requested mailbox size (${input.quota_mb} MB) exceeds the maximum allowed (${sizeLimit.limit} MB)`,
+        409,
+        { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
+        'Choose a smaller size or ask your administrator to raise the plan limit',
+      );
+    }
+    effectiveQuotaMb = input.quota_mb ?? sizeLimit.limit;
   }
-  const effectiveQuotaMb = input.quota_mb ?? sizeLimit.limit;
 
   // 5. Mint a hidden primary secret (ADR-049 "generate-and-forget"):
   // the account needs a valid primary credential in Stalwart, but no
@@ -315,11 +366,54 @@ export async function createMailbox(
       // we apply the storage quota via the proven `quota/storage` patch so
       // the limit is enforced at the mail server from the first byte rather
       // than only after a later quota edit. Best-effort (see helper).
-      if (stalwartPrincipalId) {
+      // Send-only accounts store nothing — no quota to enforce.
+      if (stalwartPrincipalId && !isSendOnly) {
         await syncMailboxStorageQuota(accountId, stalwartPrincipalId, effectiveQuotaMb, {
           fullAddress,
           op: 'createMailbox',
         });
+      }
+
+      // 5d. Send-only profile + platform mail rules — FAIL-VISIBLY. These
+      // define the account's advertised behaviour (no inbox / forwarding);
+      // a mailbox silently created without them would accept+store mail it
+      // promised to bounce or forward. On failure, destroy the principal
+      // (compensating cleanup, same as the DB-failure path) and surface a
+      // 502 so the operator retries.
+      if (stalwartPrincipalId && (isSendOnly || forwardingAddresses.length > 0)) {
+        try {
+          if (isSendOnly) {
+            await applySendOnlyPermissions({ accountId, principalId: stalwartPrincipalId });
+          }
+          if (forwardingAddresses.length > 0) {
+            await ensureSieveInterpreterLimits({ accountId });
+          }
+          await applyMailRules({
+            principalId: stalwartPrincipalId,
+            mailboxType: input.mailbox_type,
+            forwardingAddresses,
+            // Auto-reply is not settable at create (contract) — off.
+            autoReply: null,
+          });
+        } catch (err) {
+          await jmapDestroyPrincipal({
+            accountId,
+            id: stalwartPrincipalId,
+            baseUrl: process.env.STALWART_MGMT_URL,
+          }).catch((cleanupErr) => {
+            log.warn({
+              stalwartPrincipalId,
+              err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+            }, 'compensating Stalwart destroy failed after mail-rules provisioning error');
+          });
+          throw new ApiError(
+            'MAIL_SERVER_ERROR',
+            `Mailbox mail-rules provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+            502,
+            {},
+            'Check Stalwart JMAP API reachability and logs, then retry',
+          );
+        }
       }
     }
   }
@@ -339,6 +433,7 @@ export async function createMailbox(
       displayName: input.display_name ?? null,
       quotaMb: effectiveQuotaMb,
       mailboxType: input.mailbox_type,
+      forwardingAddresses: forwardingAddresses.length > 0 ? forwardingAddresses : null,
       status: 'active',
       stalwartPrincipalId,
     });
@@ -432,6 +527,70 @@ export async function updateMailbox(
   // Verify mailbox exists and belongs to client. Capture for later JMAP
   // sync so we don't burn a second SELECT on stalwartPrincipalId.
   const existingMailbox = await getMailbox(db, tenantId, mailboxId);
+  const isSendOnly = existingMailbox.mailboxType === 'send_only';
+
+  // Send-only accounts have no stored mail: storage quota and auto-reply
+  // edits are rejected loudly instead of silently accepted-and-ignored.
+  if (isSendOnly) {
+    if (input.quota_mb !== undefined) throw sendOnlyFieldError('quota_mb');
+    if (
+      input.auto_reply !== undefined ||
+      input.auto_reply_subject !== undefined ||
+      input.auto_reply_body !== undefined
+    ) {
+      throw sendOnlyFieldError('auto_reply');
+    }
+  }
+
+  // Mail-rules validation — pure checks only; the Stalwart push happens
+  // below, AFTER every other validation, so a rejected field elsewhere in
+  // the same PATCH (e.g. an over-limit quota) can't leave the mail server
+  // already mutated while the DB keeps the old state (review 2026-08-24).
+  // Forwarding AND auto-reply both live in the platform-managed Sieve
+  // script, so an edit to either regenerates it from the MERGED desired
+  // state (input value where present, else the stored row).
+  const rulesTouched =
+    input.forwarding_addresses !== undefined ||
+    input.auto_reply !== undefined ||
+    input.auto_reply_subject !== undefined ||
+    input.auto_reply_body !== undefined;
+
+  let normalizedForwarding: string[] | undefined;
+  if (input.forwarding_addresses !== undefined) {
+    normalizedForwarding = normalizeForwardingAddresses(
+      input.forwarding_addresses,
+      existingMailbox.fullAddress,
+    );
+  }
+  if (rulesTouched && !existingMailbox.stalwartPrincipalId) {
+    throw new ApiError(
+      'MAILBOX_NOT_PROVISIONED',
+      'This mailbox is not provisioned to the mail server yet — forwarding/auto-reply cannot be configured',
+      409,
+      { mailbox_id: mailboxId },
+      'Enable the email domain (or wait for principals-sync) and retry',
+    );
+  }
+
+  // Desired auto-reply state (merged). Enabling with an empty body is
+  // rejected loudly — before 2026-08 the fields were stored but never
+  // reached the mail server, and a bodyless vacation reply is exactly
+  // the kind of silent no-op that era normalised.
+  const desiredAutoReplyEnabled =
+    (input.auto_reply !== undefined ? input.auto_reply : existingMailbox.autoReply === 1) && !isSendOnly;
+  const desiredAutoReplySubject =
+    input.auto_reply_subject !== undefined ? input.auto_reply_subject : existingMailbox.autoReplySubject;
+  const desiredAutoReplyBody =
+    input.auto_reply_body !== undefined ? input.auto_reply_body : existingMailbox.autoReplyBody;
+  if (desiredAutoReplyEnabled && !desiredAutoReplyBody?.trim()) {
+    throw new ApiError(
+      'AUTO_REPLY_BODY_REQUIRED',
+      'Auto-reply needs a message body',
+      422,
+      { mailbox_id: mailboxId },
+      'Provide the auto-reply text (or disable auto-reply)',
+    );
+  }
 
   // Enforce the per-mailbox size cap on quota edits — a quota above the
   // tenant's effective max (plan + optional override) is rejected
@@ -446,6 +605,43 @@ export async function updateMailbox(
         { requested: input.quota_mb, limit: sizeLimit.limit, source: sizeLimit.source },
         'Choose a smaller size or ask your administrator to raise the plan limit',
       );
+    }
+  }
+
+  // Mail-rules push: Sieve script to Stalwart BEFORE the DB write —
+  // forwarding/auto-reply must fail VISIBLY (a DB row that claims
+  // behaviour the mail server doesn't implement is exactly the failure
+  // mode this feature replaces). The platform DB stays authoritative: on
+  // a partial failure the boot reconcile re-pushes the DB state.
+  let forwardingUpdate: string[] | null | undefined;
+  if (rulesTouched && existingMailbox.stalwartPrincipalId) {
+    const desiredForwarding =
+      normalizedForwarding ?? (existingMailbox.forwardingAddresses ?? []);
+    try {
+      if (desiredForwarding.length > 0) {
+        const accountId = await getJmapAccountId();
+        if (accountId) await ensureSieveInterpreterLimits({ accountId });
+      }
+      await applyMailRules({
+        principalId: existingMailbox.stalwartPrincipalId,
+        mailboxType: isSendOnly ? 'send_only' : 'mailbox',
+        forwardingAddresses: desiredForwarding,
+        autoReply: desiredAutoReplyEnabled && desiredAutoReplyBody
+          ? { subject: desiredAutoReplySubject ?? null, body: desiredAutoReplyBody }
+          : null,
+      });
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+      throw new ApiError(
+        'MAIL_SERVER_ERROR',
+        `Forwarding/auto-reply update failed at the mail server: ${err instanceof Error ? err.message : String(err)}`,
+        502,
+        {},
+        'Check Stalwart JMAP API reachability and logs, then retry',
+      );
+    }
+    if (normalizedForwarding !== undefined) {
+      forwardingUpdate = normalizedForwarding.length > 0 ? normalizedForwarding : null;
     }
   }
 
@@ -470,6 +666,9 @@ export async function updateMailbox(
   }
   if (input.auto_reply_body !== undefined) {
     updateData.autoReplyBody = input.auto_reply_body;
+  }
+  if (forwardingUpdate !== undefined) {
+    updateData.forwardingAddresses = forwardingUpdate;
   }
 
   if (Object.keys(updateData).length > 0) {
@@ -629,6 +828,7 @@ export async function getAccessibleMailboxes(
       usedMb: mailboxes.usedMb,
       status: mailboxes.status,
       mailboxType: mailboxes.mailboxType,
+      forwardingAddresses: mailboxes.forwardingAddresses,
       autoReply: mailboxes.autoReply,
       autoReplySubject: mailboxes.autoReplySubject,
       autoReplyBody: mailboxes.autoReplyBody,
@@ -723,6 +923,19 @@ export async function generateWebmailToken(
       403,
       { mailbox_id: mailboxId },
       'Request access from your administrator',
+    );
+  }
+
+  // Send-only accounts have no inbox — a webmail session would open an
+  // engine that cannot authenticate (IMAP) or shows a permanently empty
+  // store. Reject instead of minting a dead token.
+  if (mailbox.mailboxType === 'send_only') {
+    throw new ApiError(
+      'SEND_ONLY_MAILBOX',
+      'This is a send-only account — it has no mailbox to open in webmail',
+      409,
+      { mailbox_id: mailboxId },
+      'Use the account’s login passwords for SMTP submission instead',
     );
   }
 

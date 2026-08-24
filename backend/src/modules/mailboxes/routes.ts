@@ -62,6 +62,7 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
           usedMb: mailboxes.usedMb,
           status: mailboxes.status,
           mailboxType: mailboxes.mailboxType,
+          forwardingAddresses: mailboxes.forwardingAddresses,
           autoReply: mailboxes.autoReply,
           autoReplySubject: mailboxes.autoReplySubject,
           createdAt: mailboxes.createdAt,
