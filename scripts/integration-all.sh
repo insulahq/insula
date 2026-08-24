@@ -232,6 +232,10 @@ PARALLEL=(
   # + real SMTP delivery through the forward/keep-copy/bounce matrix.
   # Creates a disposable tenant + email domain, cleans up via trap. ~1-2 min.
   "mailbox-forwarding:integration-mailbox-forwarding-e2e.sh"
+  # Real email aliases (Stalwart MailingList fan-out), domain catch-all
+  # set/clear, and the usage-sync rewrite — API + live SMTP matrix.
+  # Creates a disposable tenant, cleans up via trap. ~1-2 min.
+  "email-aliases:integration-email-aliases-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
   # Tenant SFTP reachability at the ADVERTISED files.<apex>:23022 — provisions
   # its own probe tenant, then connects from OFF-cluster and round-trips a file.
