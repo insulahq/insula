@@ -168,3 +168,81 @@ describe('k8s-ingress reconciler', () => {
     });
   });
 });
+
+// ── groupRoutesByCertSecret (per-secret IngressRoute split, 2026-08-24) ─────
+//
+// Traefik only serves certificates some IngressRoute references; grouping
+// routes by their host's cert secret is what guarantees every issued
+// Secret is referenced (live incident: second tenant domain served
+// TRAEFIK DEFAULT CERT while its cert sat Ready-but-unreferenced).
+
+import { groupRoutesByCertSecret } from './k8s-ingress.js';
+import type { TraefikRoute } from '../ingress-routes/traefik-types.js';
+
+function route(match: string): TraefikRoute {
+  return { match: `Host(\`${match}\`)`, kind: 'Rule', services: [{ name: 'web', port: 80 }] };
+}
+
+describe('groupRoutesByCertSecret', () => {
+  it('single domain: everything stays under the stable primary key', () => {
+    const g = groupRoutesByCertSecret(
+      [{ host: 'a.test', routes: [route('a.test')] }],
+      new Map([['a.test', 'a-tls']]),
+      'a-tls',
+    );
+    expect([...g.keys()]).toEqual(['']);
+    expect(g.get('')).toHaveLength(1);
+  });
+
+  it('two domains, two secrets: second secret becomes its own group', () => {
+    const g = groupRoutesByCertSecret(
+      [
+        { host: 'a.test', routes: [route('a.test')] },
+        { host: 'b.test', routes: [route('b.test')] },
+      ],
+      new Map([['a.test', 'a-tls'], ['b.test', 'b-tls']]),
+      'a-tls',
+    );
+    expect(g.get('')).toHaveLength(1);
+    expect(g.get('b-tls')).toHaveLength(1);
+  });
+
+  it('hosts without a cert (issuance skipped) join the primary group', () => {
+    const g = groupRoutesByCertSecret(
+      [
+        { host: 'a.test', routes: [route('a.test')] },
+        { host: 'nocert.test', routes: [route('nocert.test')] },
+      ],
+      new Map([['a.test', 'a-tls']]),
+      'a-tls',
+    );
+    expect(g.get('')).toHaveLength(2);
+    expect(g.size).toBe(1);
+  });
+
+  it('two hosts sharing one wildcard secret collapse into one group', () => {
+    const g = groupRoutesByCertSecret(
+      [
+        { host: 'www.a.test', routes: [route('www.a.test')] },
+        { host: 'a.test', routes: [route('a.test')] },
+      ],
+      new Map([['www.a.test', 'a-wild-tls'], ['a.test', 'a-wild-tls']]),
+      'a-wild-tls',
+    );
+    expect(g.get('')).toHaveLength(2);
+    expect(g.size).toBe(1);
+  });
+
+  it('an alternate (www) host with a different cert gets its own group', () => {
+    const g = groupRoutesByCertSecret(
+      [
+        { host: 'a.test', routes: [route('a.test')] },
+        { host: 'www.a.test', routes: [route('www.a.test')] },
+      ],
+      new Map([['a.test', 'apex-tls'], ['www.a.test', 'www-tls']]),
+      'apex-tls',
+    );
+    expect(g.get('')).toHaveLength(1);
+    expect(g.get('www-tls')).toHaveLength(1);
+  });
+});

@@ -563,3 +563,116 @@ describe('Email connection guide', () => {
     expect(screen.queryByTestId('email-connection-guide-modal')).not.toBeInTheDocument();
   });
 });
+
+// ── Send-only accounts + forwarding (2026-08) ───────────────────────────────
+
+describe('Send-only accounts + forwarding', () => {
+  const sendOnlyMailbox = {
+    id: 'mb-so',
+    emailDomainId: 'd1',
+    tenantId: 'tenant-1',
+    fullAddress: 'no-reply@example.com',
+    displayName: null,
+    quotaMb: 0,
+    usedMb: 0,
+    status: 'active',
+    mailboxType: 'send_only',
+    forwardingAddresses: null,
+    autoReply: 0,
+    autoReplySubject: null,
+  };
+
+  function mockDomainWithMailboxes(mailboxes: unknown[]) {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [{ id: 'd1', domainName: 'example.com' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseMailboxes.mockReturnValue({
+      data: { data: mailboxes },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useMailboxes>);
+  }
+
+  it('create form offers the account-type selector and hides quota for send-only', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    mockDomainWithMailboxes([]);
+
+    renderWithProviders(<Email />);
+    fireEvent.click(screen.getByTestId('add-mailbox-button'));
+
+    expect(screen.getByTestId('mailbox-type')).toBeInTheDocument();
+    expect(screen.getByTestId('mailbox-quota')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('mailbox-type'), { target: { value: 'send_only' } });
+    expect(screen.queryByTestId('mailbox-quota')).not.toBeInTheDocument();
+  });
+
+  it('send-only row: badge shown, webmail hidden, no quota bar', () => {
+    mockDomainWithMailboxes([sendOnlyMailbox]);
+
+    renderWithProviders(<Email />);
+    expect(screen.getByTestId('send-only-badge-mb-so')).toBeInTheDocument();
+    expect(screen.queryByTestId('webmail-mb-so')).not.toBeInTheDocument();
+    expect(screen.getByText('— no storage')).toBeInTheDocument();
+  });
+
+  it('forwarding badge appears when targets are set', () => {
+    mockDomainWithMailboxes([{ ...sendOnlyMailbox, forwardingAddresses: ['a@example.org'] }]);
+
+    renderWithProviders(<Email />);
+    expect(screen.getByTestId('forwarding-badge-mb-so')).toBeInTheDocument();
+  });
+
+  it('send-only edit modal hides quota + auto-reply and explains the bounce default', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    mockDomainWithMailboxes([sendOnlyMailbox]);
+
+    renderWithProviders(<Email />);
+    fireEvent.click(screen.getByTestId('edit-mailbox-mb-so'));
+
+    expect(screen.getByTestId('edit-mailbox-modal')).toBeInTheDocument();
+    expect(screen.queryByTestId('edit-mailbox-quota')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('edit-mailbox-auto-reply')).not.toBeInTheDocument();
+    expect(screen.getByTestId('edit-mailbox-forwarding')).toBeInTheDocument();
+    expect(screen.getByText(/incoming mail to this address is bounced/i)).toBeInTheDocument();
+  });
+
+  it('submits normalized forwarding_addresses when forwarding is enabled', async () => {
+    const { fireEvent } = await import('@testing-library/react');
+    const mutateAsync = vi.fn().mockResolvedValue({ data: { id: 'mb-1' } });
+    mockedUseUpdateMailbox.mockReturnValue({
+      mutateAsync,
+      isPending: false,
+      error: null,
+    } as unknown as ReturnType<typeof useUpdateMailbox>);
+    mockDomainWithMailboxes([
+      {
+        id: 'mb-1',
+        emailDomainId: 'd1',
+        tenantId: 'tenant-1',
+        fullAddress: 'alice@example.com',
+        displayName: 'Alice',
+        quotaMb: 1024,
+        usedMb: 128,
+        status: 'active',
+        mailboxType: 'mailbox',
+        forwardingAddresses: null,
+        autoReply: 0,
+        autoReplySubject: null,
+      },
+    ]);
+
+    renderWithProviders(<Email />);
+    fireEvent.click(screen.getByTestId('edit-mailbox-mb-1'));
+    fireEvent.click(screen.getByTestId('edit-mailbox-forwarding'));
+    fireEvent.change(screen.getByTestId('edit-mailbox-forwarding-addresses'), {
+      target: { value: ' Bob@example.org , bob@example.org, carol@example.net ' },
+    });
+    fireEvent.click(screen.getByTestId('submit-edit-mailbox'));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    const call = mutateAsync.mock.calls[0][0] as { id: string; input: Record<string, unknown> };
+    expect(call.input.forwarding_addresses).toEqual(['bob@example.org', 'carol@example.net']);
+  });
+});

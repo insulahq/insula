@@ -34,7 +34,7 @@ data:
   private-worker-agent-image: "ghcr.io/insulahq/insula/private-worker-agent:latest"
   # CI-MANAGED (pin-config-image.sh) — do not hand-edit; the next build of each
   # image overwrites these with `:<tag>@sha256:<digest>`.
-  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:d86a110@sha256:e68f8e9fdd123bdd67af66a347ff8f19907d4689c6528c092b80aaf1bd3e5164"
+  tenant-backup-tools-image: "ghcr.io/insulahq/insula/tenant-backup-tools:4d8d0af@sha256:92df7899c9b5dc2f6b04b1e7c78dd2d12bdf2ce535308c79abb61d88401c8618"
   migration-tools-image: "ghcr.io/insulahq/insula/migration-tools:d86a110@sha256:6b273692942d9a9737427d93c2a1b7701ad1726fce282e356b719c5116e477cb"
   claim-validator-image: "ghcr.io/insulahq/insula/claim-validator:d86a110@sha256:5fc52c692b7e6f79d140ee19e26aef8057757f300ab266259caf24febc20821b"
   node-terminal-image: "ghcr.io/insulahq/insula/node-terminal:d86a110@sha256:70c9d45ea44adf08f40ae54fbf8cfae49fbba15fc072bd121220c5d033f7a6ae"

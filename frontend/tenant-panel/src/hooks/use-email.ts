@@ -51,6 +51,7 @@ export interface Mailbox {
   readonly usedMb: number;
   readonly status: string;
   readonly mailboxType: string;
+  readonly forwardingAddresses?: readonly string[] | null;
   readonly autoReply: number;
   readonly autoReplySubject?: string | null;
   readonly autoReplyBody?: string | null;

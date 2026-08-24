@@ -19,7 +19,7 @@
 
 import type { Database } from '../../db/index.js';
 import { mailboxes } from '../../db/schema.js';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 
 const STALWART_MGMT_URL =
   process.env.STALWART_MGMT_URL ?? 'http://stalwart-mgmt.mail.svc.cluster.local:8080';
@@ -147,11 +147,13 @@ export async function reconcileMailboxUsage(
     ? `Basic ${Buffer.from(`admin:${adminSecret}`).toString('base64')}`
     : '';
 
-  // List active mailboxes that need a usage update
+  // List active mailboxes that need a usage update. Send-only accounts
+  // store nothing (quota 0, no inbox) — skip them so they don't inflate
+  // the per-cycle failure counter forever.
   const rows = await db
     .select({ id: mailboxes.id, fullAddress: mailboxes.fullAddress })
     .from(mailboxes)
-    .where(eq(mailboxes.status, 'active'));
+    .where(and(eq(mailboxes.status, 'active'), ne(mailboxes.mailboxType, 'send_only')));
 
   let synced = 0;
   let failed = 0;
