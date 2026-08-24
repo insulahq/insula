@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { API_BASE } from '@/lib/api-client';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, ArrowUpCircle } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, Eye, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, ArrowUpCircle } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -14,6 +14,7 @@ import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import DeployWorkloadModal from '@/components/DeployWorkloadModal';
 import InstalledAppDetailModal from '@/components/InstalledAppDetailModal';
+import AppPreviewModal from '@/components/AppPreviewModal';
 import { CustomContainersTab } from '@/components/custom-deployments/CustomContainersTab';
 import { getStatusColor } from '@/lib/status-colors';
 import type { CatalogEntry } from '@/types/api';
@@ -939,6 +940,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [deleteDataFolder, setDeleteDataFolder] = useState(false);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
+  const [previewDeployment, setPreviewDeployment] = useState<{ id: string; name: string } | null>(null);
 
   // ─── Delete preview for soft-delete modal ─────────────────────────────────
   const deletePreview = useDeletePreview(tenantId ?? undefined, softDeleteConfirm?.id);
@@ -1249,6 +1251,18 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                       )}
                       {deployment.status === 'running' || showStopOnStuck ? 'Stop' : 'Start'}
                     </button>
+                    {deployment.status === 'running' && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setPreviewDeployment({ id: deployment.id, name: deployment.name }); }}
+                        className="flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-3 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                        data-testid={`preview-app-${deployment.id}`}
+                        title="View the running app in a sandboxed preview — no route needed"
+                      >
+                        <Eye size={14} />
+                        Preview
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={(e) => { e.stopPropagation(); setSelectedDeploymentId(deployment.id); }}
@@ -1375,6 +1389,15 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
           restartDeployment.mutate(id);
         }}
       />
+
+      {previewDeployment && tenantId && (
+        <AppPreviewModal
+          tenantId={tenantId}
+          deploymentId={previewDeployment.id}
+          deploymentName={previewDeployment.name}
+          onClose={() => setPreviewDeployment(null)}
+        />
+      )}
 
       {/* Soft-Delete Confirmation Modal */}
       {softDeleteConfirm && (

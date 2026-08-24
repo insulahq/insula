@@ -99,15 +99,20 @@ describe('buildTenantNetworkPolicies', () => {
     expect(JSON.stringify(spec)).not.toContain('ipBlock');
   });
 
-  it('allow-platform-api scopes :8111 to the platform-api pod only — NO pod-CIDR ipBlock', () => {
+  it('allow-platform-api admits ONLY the platform-api pod (all ports) — NO pod-CIDR ipBlock', () => {
     const spec = specOf('allow-platform-api');
-    const rule = (spec.ingress as Array<{ _from: unknown[]; ports: unknown[] }>)[0];
+    const rule = (spec.ingress as Array<{ _from: unknown[]; ports?: unknown[] }>)[0];
     expect(rule._from).toHaveLength(1);
     expect(rule._from[0]).toEqual({
       namespaceSelector: { matchLabels: { 'kubernetes.io/metadata.name': 'platform' } },
       podSelector: { matchLabels: { app: 'platform-api' } },
     });
-    expect(rule.ports).toEqual([{ protocol: 'TCP', port: 8111 }]);
+    // App-preview (2026-08-24): the port allowlist (was :8111 file-manager
+    // only) is gone — the preview proxy reaches arbitrary workload Service
+    // ports, and platform-api holds cluster-admin credentials anyway, so
+    // the port pin added no boundary. The PEER selector staying pinned to
+    // the platform-api pod is what matters.
+    expect(rule.ports).toBeUndefined();
     expect(JSON.stringify(spec)).not.toContain('ipBlock');
   });
 

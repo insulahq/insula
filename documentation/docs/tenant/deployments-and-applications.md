@@ -46,6 +46,7 @@ memory, and storage usage. The card buttons:
 | Button | What it does |
 |---|---|
 | **Stop** / **Start** | Pause or resume the app. Stopping keeps all your data and settings — it just frees up resources. |
+| **Preview** | Opens the running app in a sandboxed viewer — **before any domain or route is assigned**. Great for checking that the app came up correctly. The preview link expires after ~15 minutes; app logins/cookies are disabled inside it, and apps that assume they run at a domain root may render without styles. Assign a route for full fidelity. |
 | **Details** | Opens the full detail panel (below). |
 | Trash icon | Deletes the deployment. Prefer **Stop** if you only want to pause it. |
 
@@ -103,7 +104,8 @@ container images instead of catalog apps. Two ways:
 
 Custom containers appear in the same table with a **Mode** column (Docker or
 Compose) and an **Updates** column. Use the row's actions to upgrade the image
-tag, **Stop**/**Start**, or remove the container.
+tag, **Preview** the running container without a route, **Stop**/**Start**, or
+remove the container.
 
 !!! tip "The Updates column"
     The **Updates** column checks the registry for you. For a version-numbered

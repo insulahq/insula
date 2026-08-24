@@ -60,8 +60,6 @@ const METADATA_IP_V4 = '169.254.169.254/32';
 const CLUSTER_CIDRS_CM_NAME = 'platform-cluster-cidrs';
 const CLUSTER_CIDRS_CM_NAMESPACE = 'platform';
 
-const FILE_MANAGER_PORT = 8111;
-
 /**
  * Platform services a tenant workload legitimately reaches — all internet-facing
  * and authenticated/WAF-gated, so authorization (not network isolation) is the
@@ -341,7 +339,11 @@ export function buildTenantNetworkPolicies(
                   },
                 },
               ],
-              ports: [{ protocol: 'TCP', port: FILE_MANAGER_PORT }],
+              // No port restriction (was TCP/8111 file-manager only): the
+              // app-preview proxy (2026-08-24) reaches arbitrary workload
+              // Service ports. platform-api already holds cluster-admin
+              // k8s credentials (it can exec into these pods), so a port
+              // allowlist here added no real boundary — only breakage.
             },
           ],
         },
