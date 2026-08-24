@@ -132,6 +132,9 @@ export async function ensureStalwartPrincipals(
       quotaMb: mailboxesTable.quotaMb,
       mailboxType: mailboxesTable.mailboxType,
       forwardingAddresses: mailboxesTable.forwardingAddresses,
+      autoReply: mailboxesTable.autoReply,
+      autoReplySubject: mailboxesTable.autoReplySubject,
+      autoReplyBody: mailboxesTable.autoReplyBody,
     })
     .from(mailboxesTable)
     .where(inArray(mailboxesTable.fullAddress, addresses as string[]));
@@ -320,7 +323,9 @@ export async function ensureStalwartPrincipals(
       // send-only/forwarding mailbox back into a plain stored inbox until
       // the next boot reconcile. Best-effort like the quota patch above.
       const declaresMailRules =
-        dbRow.mailboxType === 'send_only' || (dbRow.forwardingAddresses?.length ?? 0) > 0;
+        dbRow.mailboxType === 'send_only'
+        || (dbRow.forwardingAddresses?.length ?? 0) > 0
+        || dbRow.autoReply === 1;
       if (declaresMailRules) {
         try {
           const { applyMailRules, applySendOnlyPermissions } = await import('../../stalwart-jmap/sieve.js');
@@ -335,6 +340,9 @@ export async function ensureStalwartPrincipals(
             principalId: newPrincipalId,
             mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
             forwardingAddresses: dbRow.forwardingAddresses ?? [],
+            autoReply: dbRow.autoReply === 1 && dbRow.autoReplyBody?.trim()
+              ? { subject: dbRow.autoReplySubject, body: dbRow.autoReplyBody }
+              : null,
             baseUrl: jmapBaseUrl,
           });
         } catch (rulesErr) {

@@ -39,7 +39,7 @@
 | [R25](#r25--migration--dr-recover-completeness) | Migration / DR-recover completeness | P2 | Proposed 2026-08-04 — a recreated tenant needs manual follow-up steps (database replay, email re-enable); fold them into the recreate engine |
 | [R26](#r26--pin-the-k3s-installer-to-a-version-tag-not-master) | Pin the k3s installer to a version tag, not master | P2 | Proposed 2026-08-04 — get.k3s.io serves master, so any upstream edit to install.sh breaks every fresh install until the digest is re-pinned |
 | [R27](#r27--dual-stack-tenant-services-end-to-end-ipv6) | Dual-stack tenant Services (end-to-end IPv6) | P4 | Proposed 2026-08-10 — the residual from R13: globally-routable pod addressing + catalog images binding `::`. COUPLED and inert individually; both only become load-bearing if tenant Services stop being SingleStack IPv4. Needs a provider-delegated prefix |
-| [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | Proposed 2026-08-24 — both are DB-only today (rows never reach Stalwart, so the advertised behaviour silently doesn't happen); the per-mailbox Sieve mechanism shipped with send-only/forwarding is the natural base |
+| [R28](#r28--make-email-aliases-and-auto-reply-real) | Make email aliases + auto-reply real (Stalwart-backed) | P2 | **Auto-reply shipped 2026-08-24** (vacation block in platform-mail-rules); ALIASES + catch-all remain DB-only — rows never reach Stalwart, so alias mail is rejected as unknown-recipient |
 
 ---
 
@@ -1085,9 +1085,10 @@ per-account Sieve script (`platform-mail-rules`, `stalwart-jmap/sieve.ts`) with
 admin cross-account install, boot-time reconcile, and a raised interpreter
 redirect ceiling. Follow-ups:
 
-- **Auto-reply**: extend `buildMailRulesScript` with a `vacation` block from
-  the existing columns (the Sieve `vacation` extension is enabled server-side;
-  interpreter `maxOutMessages` already has headroom).
+- **Auto-reply**: ✅ SHIPPED 2026-08-24 — `vacation` block in
+  `buildMailRulesScript` (subject + dot-stuffed multi-line body), pushed on
+  every auto-reply edit, converged by the boot reconcile, body required while
+  enabled.
 - **Aliases**: single-target aliases map to Stalwart's native
   `x:Account.aliases` list; multi-target aliases need either a `list`-type
   principal or the same redirect-script approach on a hidden account. The

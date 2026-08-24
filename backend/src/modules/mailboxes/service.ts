@@ -392,6 +392,8 @@ export async function createMailbox(
             principalId: stalwartPrincipalId,
             mailboxType: input.mailbox_type,
             forwardingAddresses,
+            // Auto-reply is not settable at create (contract) — off.
+            autoReply: null,
           });
         } catch (err) {
           await jmapDestroyPrincipal({
@@ -540,25 +542,54 @@ export async function updateMailbox(
     }
   }
 
-  // Forwarding validation — pure checks only; the Stalwart push happens
+  // Mail-rules validation — pure checks only; the Stalwart push happens
   // below, AFTER every other validation, so a rejected field elsewhere in
   // the same PATCH (e.g. an over-limit quota) can't leave the mail server
   // already mutated while the DB keeps the old state (review 2026-08-24).
+  // Forwarding AND auto-reply both live in the platform-managed Sieve
+  // script, so an edit to either regenerates it from the MERGED desired
+  // state (input value where present, else the stored row).
+  const rulesTouched =
+    input.forwarding_addresses !== undefined ||
+    input.auto_reply !== undefined ||
+    input.auto_reply_subject !== undefined ||
+    input.auto_reply_body !== undefined;
+
   let normalizedForwarding: string[] | undefined;
   if (input.forwarding_addresses !== undefined) {
     normalizedForwarding = normalizeForwardingAddresses(
       input.forwarding_addresses,
       existingMailbox.fullAddress,
     );
-    if (!existingMailbox.stalwartPrincipalId) {
-      throw new ApiError(
-        'MAILBOX_NOT_PROVISIONED',
-        'This mailbox is not provisioned to the mail server yet — forwarding cannot be configured',
-        409,
-        { mailbox_id: mailboxId },
-        'Enable the email domain (or wait for principals-sync) and retry',
-      );
-    }
+  }
+  if (rulesTouched && !existingMailbox.stalwartPrincipalId) {
+    throw new ApiError(
+      'MAILBOX_NOT_PROVISIONED',
+      'This mailbox is not provisioned to the mail server yet — forwarding/auto-reply cannot be configured',
+      409,
+      { mailbox_id: mailboxId },
+      'Enable the email domain (or wait for principals-sync) and retry',
+    );
+  }
+
+  // Desired auto-reply state (merged). Enabling with an empty body is
+  // rejected loudly — before 2026-08 the fields were stored but never
+  // reached the mail server, and a bodyless vacation reply is exactly
+  // the kind of silent no-op that era normalised.
+  const desiredAutoReplyEnabled =
+    (input.auto_reply !== undefined ? input.auto_reply : existingMailbox.autoReply === 1) && !isSendOnly;
+  const desiredAutoReplySubject =
+    input.auto_reply_subject !== undefined ? input.auto_reply_subject : existingMailbox.autoReplySubject;
+  const desiredAutoReplyBody =
+    input.auto_reply_body !== undefined ? input.auto_reply_body : existingMailbox.autoReplyBody;
+  if (desiredAutoReplyEnabled && !desiredAutoReplyBody?.trim()) {
+    throw new ApiError(
+      'AUTO_REPLY_BODY_REQUIRED',
+      'Auto-reply needs a message body',
+      422,
+      { mailbox_id: mailboxId },
+      'Provide the auto-reply text (or disable auto-reply)',
+    );
   }
 
   // Enforce the per-mailbox size cap on quota edits — a quota above the
@@ -577,34 +608,41 @@ export async function updateMailbox(
     }
   }
 
-  // Forwarding push: Sieve script to Stalwart BEFORE the DB write —
-  // forwarding must fail VISIBLY (a DB row that claims forwarding the
-  // mail server doesn't do is exactly the failure mode this feature
-  // replaces). The platform DB stays authoritative: on a partial failure
-  // the boot reconcile re-pushes the DB state.
+  // Mail-rules push: Sieve script to Stalwart BEFORE the DB write —
+  // forwarding/auto-reply must fail VISIBLY (a DB row that claims
+  // behaviour the mail server doesn't implement is exactly the failure
+  // mode this feature replaces). The platform DB stays authoritative: on
+  // a partial failure the boot reconcile re-pushes the DB state.
   let forwardingUpdate: string[] | null | undefined;
-  if (normalizedForwarding !== undefined && existingMailbox.stalwartPrincipalId) {
+  if (rulesTouched && existingMailbox.stalwartPrincipalId) {
+    const desiredForwarding =
+      normalizedForwarding ?? (existingMailbox.forwardingAddresses ?? []);
     try {
-      if (normalizedForwarding.length > 0) {
+      if (desiredForwarding.length > 0) {
         const accountId = await getJmapAccountId();
         if (accountId) await ensureSieveInterpreterLimits({ accountId });
       }
       await applyMailRules({
         principalId: existingMailbox.stalwartPrincipalId,
         mailboxType: isSendOnly ? 'send_only' : 'mailbox',
-        forwardingAddresses: normalizedForwarding,
+        forwardingAddresses: desiredForwarding,
+        autoReply: desiredAutoReplyEnabled && desiredAutoReplyBody
+          ? { subject: desiredAutoReplySubject ?? null, body: desiredAutoReplyBody }
+          : null,
       });
     } catch (err) {
       if (err instanceof ApiError) throw err;
       throw new ApiError(
         'MAIL_SERVER_ERROR',
-        `Forwarding update failed at the mail server: ${err instanceof Error ? err.message : String(err)}`,
+        `Forwarding/auto-reply update failed at the mail server: ${err instanceof Error ? err.message : String(err)}`,
         502,
         {},
         'Check Stalwart JMAP API reachability and logs, then retry',
       );
     }
-    forwardingUpdate = normalizedForwarding.length > 0 ? normalizedForwarding : null;
+    if (normalizedForwarding !== undefined) {
+      forwardingUpdate = normalizedForwarding.length > 0 ? normalizedForwarding : null;
+    }
   }
 
   const updateData: Record<string, unknown> = {};

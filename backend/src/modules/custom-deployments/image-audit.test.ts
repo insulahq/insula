@@ -152,3 +152,83 @@ describe('recordImageAudit — dedupe', () => {
     await expect(recordImageAudit(db, k8s, 'dep-1', 'ns', 'my-app')).resolves.not.toThrow();
   });
 });
+
+// ── getRunningDigest — canonical image matching (2026-08-24) ────────────────
+//
+// Audit rows carry the image AS THE KUBELET REPORTS IT (containerd
+// normalises `nginx:latest` → `docker.io/library/nginx:latest`), while the
+// caller passes the deployment's SPEC string. A literal string match made
+// every Docker Hub short ref miss → running digest "never observed" →
+// `:latest` deployments pinned on `unknown` forever.
+
+import { getRunningDigest } from './image-audit.js';
+
+function stubRowsDb(rows: Array<{ image: string; digest: string }>): Database {
+  return {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          orderBy: vi.fn(async () => rows),
+        })),
+      })),
+    })),
+  } as unknown as Database;
+}
+
+describe('getRunningDigest — canonical image matching', () => {
+  const DIG_A = 'sha256:' + 'a'.repeat(64);
+  const DIG_B = 'sha256:' + 'b'.repeat(64);
+
+  it('matches a short spec ref against the kubelet-normalised row', async () => {
+    const db = stubRowsDb([{ image: 'docker.io/library/nginx:latest', digest: DIG_A }]);
+    expect(await getRunningDigest(db, 'dep-1', 'nginx:latest')).toBe(DIG_A);
+  });
+
+  it('matches a fully-qualified spec ref against a short kubelet row', async () => {
+    const db = stubRowsDb([{ image: 'nginx:latest', digest: DIG_A }]);
+    expect(await getRunningDigest(db, 'dep-1', 'docker.io/library/nginx:latest')).toBe(DIG_A);
+  });
+
+  it('scopes by repository — another service in the compose stack never matches', async () => {
+    const db = stubRowsDb([
+      { image: 'docker.io/library/redis:7', digest: DIG_B },
+      { image: 'docker.io/library/nginx:latest', digest: DIG_A },
+    ]);
+    expect(await getRunningDigest(db, 'dep-1', 'nginx:latest')).toBe(DIG_A);
+  });
+
+  it('falls back to repo-level match when the kubelet reports a sibling tag or digest form', async () => {
+    const db = stubRowsDb([{ image: 'docker.io/library/nginx@' + DIG_A, digest: DIG_A }]);
+    expect(await getRunningDigest(db, 'dep-1', 'nginx:latest')).toBe(DIG_A);
+  });
+
+  it('prefers the exact tag match over a repo-only match', async () => {
+    const db = stubRowsDb([
+      { image: 'docker.io/library/nginx:1.27', digest: DIG_B },
+      { image: 'docker.io/library/nginx:latest', digest: DIG_A },
+    ]);
+    expect(await getRunningDigest(db, 'dep-1', 'nginx:latest')).toBe(DIG_A);
+  });
+
+  it('returns null when nothing for the repository was observed', async () => {
+    const db = stubRowsDb([{ image: 'docker.io/library/redis:7', digest: DIG_B }]);
+    expect(await getRunningDigest(db, 'dep-1', 'nginx:latest')).toBeNull();
+  });
+});
+
+describe('getRunningDigest — compose same-repo safety (review 2026-08-24)', () => {
+  const DIG_A = 'sha256:' + 'a'.repeat(64);
+  const DIG_B = 'sha256:' + 'b'.repeat(64);
+
+  it('never returns a SIBLING TAG row of the same repo (other compose service)', async () => {
+    // web=app:v1, worker=app:v2 — checking v1 with only v2 observed must
+    // NOT borrow v2's digest and fake an update state.
+    const db = stubRowsDb([{ image: 'docker.io/library/app:v2', digest: DIG_B }]);
+    expect(await getRunningDigest(db, 'dep-1', 'app:v1')).toBeNull();
+  });
+
+  it('still accepts the tagless digest-pinned kubelet form for the same repo', async () => {
+    const db = stubRowsDb([{ image: 'docker.io/library/app@' + DIG_A, digest: DIG_A }]);
+    expect(await getRunningDigest(db, 'dep-1', 'app:v1')).toBe(DIG_A);
+  });
+});

@@ -933,6 +933,7 @@ describe('updateMailbox — send-only + forwarding', () => {
       principalId: 'sp1',
       mailboxType: 'mailbox',
       forwardingAddresses: ['dest@example.net'],
+      autoReply: null,
     });
     const setArg = (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mock.results[0].value.set.mock.calls[0][0];
     expect(setArg.forwardingAddresses).toEqual(['dest@example.net']);
@@ -950,6 +951,7 @@ describe('updateMailbox — send-only + forwarding', () => {
       principalId: 'sp1',
       mailboxType: 'mailbox',
       forwardingAddresses: [],
+      autoReply: null,
     });
     const setArg = (db as unknown as { update: ReturnType<typeof vi.fn> }).update.mock.results[0].value.set.mock.calls[0][0];
     expect(setArg.forwardingAddresses).toBeNull();
@@ -985,5 +987,82 @@ describe('generateWebmailToken — send-only guard', () => {
 
     await expect(generateWebmailToken(app, db as never, 'u1', 'mb1'))
       .rejects.toMatchObject({ code: 'SEND_ONLY_MAILBOX', status: 409 });
+  });
+});
+
+describe('updateMailbox — auto-reply (vacation) push', () => {
+  beforeEach(() => {
+    selectCallIndex = 0;
+    vi.clearAllMocks();
+  });
+
+  const baseRow = {
+    id: 'mb1', tenantId: 'c1', fullAddress: 'info@example.com',
+    mailboxType: 'mailbox', stalwartPrincipalId: 'sp1',
+    forwardingAddresses: null, autoReply: 0, autoReplySubject: null, autoReplyBody: null,
+  };
+
+  it('enabling auto-reply pushes the vacation state to Stalwart before the DB write', async () => {
+    const updated = { ...baseRow, autoReply: 1, autoReplySubject: 'OOO', autoReplyBody: 'Away.' };
+    selectResults = [[baseRow], [updated]];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', {
+      auto_reply: true, auto_reply_subject: 'OOO', auto_reply_body: 'Away.',
+    });
+
+    expect(sieve.applyMailRules).toHaveBeenCalledWith({
+      principalId: 'sp1',
+      mailboxType: 'mailbox',
+      forwardingAddresses: [],
+      autoReply: { subject: 'OOO', body: 'Away.' },
+    });
+  });
+
+  it('keeps existing forwarding targets in the regenerated script on an auto-reply-only edit', async () => {
+    const row = { ...baseRow, forwardingAddresses: ['dest@example.net'], autoReplyBody: 'Away.' };
+    selectResults = [[row], [{ ...row, autoReply: 1 }]];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', { auto_reply: true });
+
+    expect(sieve.applyMailRules).toHaveBeenCalledWith({
+      principalId: 'sp1',
+      mailboxType: 'mailbox',
+      forwardingAddresses: ['dest@example.net'],
+      autoReply: { subject: null, body: 'Away.' },
+    });
+  });
+
+  it('rejects enabling auto-reply without a body (422, nothing pushed)', async () => {
+    selectResults = [[baseRow]];
+    const db = createMockDb();
+
+    await expect(updateMailbox(db as never, 'c1', 'mb1', { auto_reply: true }))
+      .rejects.toMatchObject({ code: 'AUTO_REPLY_BODY_REQUIRED', status: 422 });
+    expect(sieve.applyMailRules).not.toHaveBeenCalled();
+    expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).not.toHaveBeenCalled();
+  });
+
+  it('disabling auto-reply pushes the script without a vacation block', async () => {
+    const row = { ...baseRow, autoReply: 1, autoReplySubject: 'OOO', autoReplyBody: 'Away.' };
+    selectResults = [[row], [{ ...row, autoReply: 0 }]];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', { auto_reply: false });
+
+    expect(sieve.applyMailRules).toHaveBeenCalledWith({
+      principalId: 'sp1',
+      mailboxType: 'mailbox',
+      forwardingAddresses: [],
+      autoReply: null,
+    });
+  });
+
+  it('rejects an auto-reply edit when the mailbox has no Stalwart principal', async () => {
+    selectResults = [[{ ...baseRow, stalwartPrincipalId: null, autoReplyBody: 'Away.' }]];
+    const db = createMockDb();
+    await expect(updateMailbox(db as never, 'c1', 'mb1', { auto_reply: true }))
+      .rejects.toMatchObject({ code: 'MAILBOX_NOT_PROVISIONED', status: 409 });
   });
 });

@@ -23,6 +23,7 @@
  * all IngressRoutes uniformly.
  */
 
+import { createHash } from 'node:crypto';
 import { eq, inArray } from 'drizzle-orm';
 import { longestMatchingDomain } from '@insula/api-contracts';
 import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } from '../../db/schema.js';
@@ -146,6 +147,37 @@ export function resolveIngressBackend(
  * Builds rules from ingress_routes that have deployments assigned.
  * If no routable routes exist, deletes the Ingress.
  */
+/**
+ * Group plain (non-mTLS) route builds by the certificate Secret serving
+ * each build's host. Key `''` = the stable `<ns>-ingress` object (no cert
+ * or the primary secret); every other key becomes its own
+ * `<ns>-ingress-tls-<hash>` split so Traefik actually references — and
+ * therefore serves — every issued certificate.
+ *
+ * KNOWN RESIDUAL: mTLS-partitioned routes reference only their CANONICAL
+ * host's secret; a www-alternate host on an mTLS route with a DIFFERENT
+ * per-hostname cert still ends up unreferenced (rare combination —
+ * mTLS + www-redirect + non-wildcard certs; tracked, not fixed here to
+ * avoid changing the alternate host's client-cert posture).
+ *
+ * Exported pure for unit tests.
+ */
+export function groupRoutesByCertSecret(
+  builds: ReadonlyArray<{ host: string; routes: TraefikRoute[] }>,
+  hostCertSecret: ReadonlyMap<string, string>,
+  primaryTlsSecret: string | null,
+): Map<string, TraefikRoute[]> {
+  const grouped = new Map<string, TraefikRoute[]>();
+  for (const build of builds) {
+    const secret = hostCertSecret.get(build.host);
+    const key = secret && secret !== primaryTlsSecret ? secret : '';
+    const bucket = grouped.get(key);
+    if (bucket) bucket.push(...build.routes);
+    else grouped.set(key, [...build.routes]);
+  }
+  return grouped;
+}
+
 export async function reconcileIngress(
   db: Database,
   k8s: K8sClients,
@@ -161,6 +193,7 @@ export async function reconcileIngress(
   if (domainIds.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
     await gcOrphanMiddlewares(k8s, namespace, new Set());
+    await gcOrphanTlsSplits(k8s, namespace, new Set());
     return;
   }
 
@@ -209,6 +242,7 @@ export async function reconcileIngress(
   if (updatedRoutes.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
     await gcOrphanMiddlewares(k8s, namespace, new Set());
+    await gcOrphanTlsSplits(k8s, namespace, new Set());
     return;
   }
 
@@ -379,7 +413,9 @@ export async function reconcileIngress(
   // different TLS options for the same host"). So mTLS-enabled routes go
   // into their OWN IngressRoute (each with a per-route TLSOption); all
   // other routes stay in the shared tenant IngressRoute.
-  const plainRoutes: TraefikRoute[] = [];
+  // Plain routes keep their HOST association so they can later be grouped
+  // by TLS-certificate Secret — see the per-secret IngressRoute split below.
+  const plainBuilds: Array<{ host: string; routes: TraefikRoute[] }> = [];
   const mtlsBuilds: Array<{ routeId: string; host: string; policy: RouteMtlsPolicy; routes: TraefikRoute[] }> = [];
   const tlsHostnames = new Set<string>();
   for (const route of updatedRoutes as RouteRowLike[]) {
@@ -459,11 +495,17 @@ export async function reconcileIngress(
       if (mtlsPolicy && !mtlsPolicy.hasCa) {
         console.warn(`[ingress-reconcile] ${canonicalHost}: mTLS enabled (verify_mode=${mtlsPolicy.verifyMode}) but no CA available — enforcement skipped`);
       }
-      plainRoutes.push(...entryRoutes);
+      // The alternate (www/non-www) host may resolve to a DIFFERENT
+      // certificate than the canonical one — keep it as its own build so
+      // the per-secret grouping can place each router with its cert.
+      plainBuilds.push({ host: canonicalHost, routes: [primary, ...spec.childRoutes] });
+      if (alternateHost && alternateRoutes.length > 0) {
+        plainBuilds.push({ host: alternateHost, routes: alternateRoutes });
+      }
     }
   }
 
-  if (plainRoutes.length === 0 && mtlsBuilds.length === 0) {
+  if (plainBuilds.length === 0 && mtlsBuilds.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
     // Also drop the HTTP entrypoint companion if it was previously
     // applied — otherwise it orphans on the cluster after the last
@@ -471,12 +513,13 @@ export async function reconcileIngress(
     await deleteIngressRoute(k8s.custom, namespace, `${ingressName}-http`);
     await gcOrphanMiddlewares(k8s, namespace, new Set());
     await gcOrphanMtls(k8s, namespace, new Set(), new Set());
+    await gcOrphanTlsSplits(k8s, namespace, new Set());
     return;
   }
 
   // Resolve TLS secret names via the certificates module. cert-manager
   // owns the Certificate CR + Secret lifecycle; we just pick which Secret
-  // each IngressRoute references. `primaryTlsSecret` (first host) serves
+  // each IngressRoute references. `primaryTlsSecret` (first host) anchors
   // the shared tenant IngressRoute (Traefik SNI-routes additional hosts
   // from the default store); `hostCertSecret` gives each split mTLS
   // IngressRoute its own hostname's server cert.
@@ -484,7 +527,11 @@ export async function reconcileIngress(
   const hostCertSecret = new Map<string, string>();
   let primaryTlsSecret: string | null = null;
   if (autoTls) {
-    for (const hostname of tlsHostnames) {
+    // Sorted iteration pins WHICH cert becomes `primaryTlsSecret` — the
+    // primary now decides object membership (stable `<ns>-ingress` vs a
+    // `-tls-<hash>` split), and an unordered DB read would let it flap
+    // between reconciles, churning objects for no user-visible change.
+    for (const hostname of [...tlsHostnames].sort()) {
       // Find the domain row matching this hostname so we can pass its
       // id to ensureRouteCertificate (it looks up dns_provider settings
       // by domainId).
@@ -515,23 +562,57 @@ export async function reconcileIngress(
     }
   }
 
-  // Shared tenant IngressRoute for all non-mTLS routes.
-  if (plainRoutes.length > 0) {
-    const ingressBody = buildIngressRoute({
-      name: ingressName,
-      namespace,
-      routes: plainRoutes,
-      entryPoints: ['websecure'],
-      ...(primaryTlsSecret ? { tls: { secretName: primaryTlsSecret } } : {}),
-      labels: {
-        'hosting-platform/tenant-id': tenantId,
-      },
-    });
-    await applyIngressRoute(k8s.custom, ingressBody);
+  // Non-mTLS routes, grouped BY CERTIFICATE SECRET. An IngressRoute's
+  // `tls.secretName` is single-valued, and Traefik only loads certificates
+  // that some IngressRoute actually references — a Ready cert-manager
+  // Secret nobody points at never enters the SNI store, so every domain
+  // after the first served TRAEFIK DEFAULT CERT while the UI said
+  // "issued" (live incident websites.<apex> 2026-08-24). One IngressRoute
+  // per secret registers every issued certificate; SNI matching across
+  // routers is global, so routing behaviour is unchanged.
+  const groupedBySecret = groupRoutesByCertSecret(plainBuilds, hostCertSecret, primaryTlsSecret);
+
+  const expectedTlsSplits = new Set<string>();
+  if (plainBuilds.length > 0) {
+    const primaryRoutes = groupedBySecret.get('') ?? [];
+    if (primaryRoutes.length > 0) {
+      await applyIngressRoute(k8s.custom, buildIngressRoute({
+        name: ingressName,
+        namespace,
+        routes: primaryRoutes,
+        entryPoints: ['websecure'],
+        ...(primaryTlsSecret ? { tls: { secretName: primaryTlsSecret } } : {}),
+        labels: {
+          'hosting-platform/tenant-id': tenantId,
+        },
+      }));
+    } else {
+      // Every plain route carries a non-primary secret — the stable name
+      // would be empty; drop it so it doesn't serve a stale route set.
+      await deleteIngressRoute(k8s.custom, namespace, ingressName);
+    }
+    for (const [secret, routes] of groupedBySecret) {
+      if (secret === '') continue;
+      const short = createHash('sha256').update(secret).digest('hex').slice(0, 8);
+      const splitName = `${ingressName}-tls-${short}`;
+      await applyIngressRoute(k8s.custom, buildIngressRoute({
+        name: splitName,
+        namespace,
+        routes,
+        entryPoints: ['websecure'],
+        tls: { secretName: secret },
+        labels: {
+          'hosting-platform/tenant-id': tenantId,
+          'hosting-platform/purpose': 'tls-split',
+        },
+      }));
+      expectedTlsSplits.add(splitName);
+    }
   } else {
     // Every route is mTLS — the shared IngressRoute would carry nothing.
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
   }
+  await gcOrphanTlsSplits(k8s, namespace, expectedTlsSplits);
 
   // Per-route mTLS IngressRoutes + TLSOptions. Traefik enforces the CA
   // check at the TLS handshake (per connection); revocation is enforced
@@ -755,6 +836,31 @@ async function gcOrphanMiddlewares(
  * disabled/deleted, or the route removed). Scoped by our own labels so we
  * never touch a resource we didn't create.
  */
+/**
+ * GC the per-certificate split IngressRoutes (`<ns>-ingress-tls-<hash>`)
+ * whose secret no longer serves any route — a removed domain would
+ * otherwise leave its split object routing stale hosts forever.
+ */
+async function gcOrphanTlsSplits(
+  k8s: K8sClients,
+  namespace: string,
+  keep: ReadonlySet<string>,
+): Promise<void> {
+  try {
+    const routes = await listIngressRoutes(k8s.custom, namespace, 'hosting-platform/purpose=tls-split');
+    for (const ir of routes) {
+      if (keep.has(ir.name)) continue;
+      try {
+        await deleteIngressRoute(k8s.custom, namespace, ir.name);
+      } catch (err) {
+        console.warn(`[ingress-reconcile] GC of orphan tls-split IngressRoute ${namespace}/${ir.name} failed:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn(`[ingress-reconcile] failed to list tls-split IngressRoutes for GC in ${namespace}:`, err);
+  }
+}
+
 async function gcOrphanMtls(
   k8s: K8sClients,
   namespace: string,

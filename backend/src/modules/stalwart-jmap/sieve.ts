@@ -63,6 +63,20 @@ export const REQUIRED_MAX_OUT_MESSAGES = 25;
 
 export type MailRulesMailboxType = 'mailbox' | 'send_only';
 
+/** Vacation auto-reply state as declared in the platform DB. */
+export interface MailRulesAutoReply {
+  readonly subject: string | null;
+  readonly body: string;
+}
+
+export interface MailRulesState {
+  readonly mailboxType: MailRulesMailboxType;
+  readonly forwardingAddresses: readonly string[];
+  /** Null/absent = auto-reply off. Only meaningful for `mailbox` type
+   *  (send-only accounts reject auto-reply at the service layer). */
+  readonly autoReply?: MailRulesAutoReply | null;
+}
+
 /**
  * Escape a string for inclusion in a double-quoted Sieve string
  * (RFC 5228 §2.4.2: backslash and double-quote).
@@ -72,29 +86,69 @@ function sieveQuote(value: string): string {
 }
 
 /**
+ * Encode a possibly-multiline string as a Sieve multi-line literal
+ * (RFC 5228 §2.4.2: `text:` … CRLF `.` CRLF), dot-stuffed like SMTP —
+ * a body line starting with `.` gets a second dot so a lone `.` line
+ * can never terminate the literal early.
+ */
+function sieveTextBlock(value: string): string {
+  const stuffed = value
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => (line.startsWith('.') ? `.${line}` : line))
+    .join('\r\n');
+  return `text:\r\n${stuffed}\r\n.\r\n`;
+}
+
+/**
  * Build the platform-mail-rules script for a mailbox's desired state.
- * Returns null when no script is needed (normal mailbox, no forwarding)
- * — the caller then removes any existing platform script.
+ * Returns null when no script is needed (normal mailbox, no forwarding,
+ * no auto-reply) — the caller then removes any existing platform script.
+ *
+ * Vacation runs BEFORE the redirects: both are out-messages, but a
+ * runtime error in a redirect (e.g. the interpreter ceiling) must not
+ * silently swallow the auto-reply.
  *
  * Exported pure for unit tests.
  */
-export function buildMailRulesScript(
-  mailboxType: MailRulesMailboxType,
-  forwardingAddresses: readonly string[],
-): string | null {
-  const targets = forwardingAddresses.filter((a) => a.trim().length > 0);
-  if (mailboxType === 'mailbox' && targets.length === 0) return null;
+export function buildMailRulesScript(state: MailRulesState): string | null {
+  const { mailboxType } = state;
+  const targets = state.forwardingAddresses.filter((a) => a.trim().length > 0);
+  const autoReply = mailboxType === 'mailbox' && state.autoReply?.body?.trim()
+    ? state.autoReply
+    : null;
+  if (mailboxType === 'mailbox' && targets.length === 0 && !autoReply) return null;
+
+  const requires: string[] = [];
+  if (mailboxType === 'send_only' && targets.length === 0) requires.push('ereject');
+  if (mailboxType === 'mailbox' && targets.length > 0) requires.push('copy');
+  if (autoReply) requires.push('vacation');
 
   const lines: string[] = [
     '# Managed by the hosting platform — do not edit.',
-    '# Regenerated from the mailbox forwarding settings on every change.',
+    '# Regenerated from the mailbox forwarding/auto-reply settings on every change.',
   ];
-  if (targets.length === 0) {
+  if (requires.length > 0) {
+    lines.push(`require [${requires.map((r) => `"${r}"`).join(', ')}];`);
+  }
+  if (autoReply) {
+    // Per-sender reply interval stays the server default (Stalwart
+    // interpreter `defaultExpiryVacation`); an omitted :subject falls
+    // back to the interpreter's default subject / "Auto: " prefix.
+    // The subject is a SINGLE-LINE quoted string: collapse CR/LF and
+    // other control characters to spaces — a raw newline inside the
+    // quoted string is a Sieve grammar violation (breaking the whole
+    // script, forwarding included) and a header-injection vector into
+    // the composed reply's Subject: (review 2026-08-24).
+    // eslint-disable-next-line no-control-regex
+    const subject = autoReply.subject?.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    const subjectArg = subject ? `:subject ${sieveQuote(subject)} ` : '';
+    lines.push(`vacation ${subjectArg}${sieveTextBlock(autoReply.body)};`);
+  }
+  if (mailboxType === 'send_only' && targets.length === 0) {
     // send_only, no forwarding: refuse inbound with a bounce.
-    lines.push('require ["ereject"];');
     lines.push('ereject "This address does not accept incoming mail.";');
   } else if (mailboxType === 'mailbox') {
-    lines.push('require ["copy"];');
     for (const t of targets) lines.push(`redirect :copy ${sieveQuote(t)};`);
   } else {
     // send_only: plain redirect cancels the implicit keep — not stored.
@@ -150,16 +204,14 @@ function firstSetError(
  * fail VISIBLY; a silently-dropped script is exactly the DB-only-fiction
  * failure mode this feature replaces).
  */
-export async function applyMailRules(params: {
+export async function applyMailRules(params: MailRulesState & {
   /** The USER's Stalwart principal id (JMAP account id for its data). */
   principalId: string;
-  mailboxType: MailRulesMailboxType;
-  forwardingAddresses: readonly string[];
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const { principalId, mailboxType, forwardingAddresses, baseUrl, env } = params;
-  const script = buildMailRulesScript(mailboxType, forwardingAddresses);
+  const { principalId, baseUrl, env } = params;
+  const script = buildMailRulesScript(params);
   const existingId = await findPlatformScriptId(principalId, baseUrl, env);
 
   if (script === null) {

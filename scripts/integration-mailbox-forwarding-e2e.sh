@@ -211,8 +211,45 @@ if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" ]]; then
     || fail "source copy count=$C_SRC (expected 1)"
   [[ "$C_SO" == "0" ]] && ok "send-only stored nothing (ereject bounce)" \
     || fail "send-only stored count=$C_SO (expected 0)"
+
+  # ── T10: vacation auto-reply — reply arrives ONCE per sender ───────────
+  log "── T10: enable auto-reply on fwd-target, real reply round-trip ──"
+  TGT_MB_ID=$(api GET "/tenants/$CID/mailboxes" | python3 -c "import json,sys;print(next((m['id'] for m in json.load(sys.stdin)['data'] if m['localPart']=='fwd-target'),''))")
+  VA=$(api PATCH "/tenants/$CID/mailboxes/$TGT_MB_ID" \
+    "{\"auto_reply\":true,\"auto_reply_subject\":\"OOO probe\",\"auto_reply_body\":\"I am away until Monday.\"}")
+  VA_ON=$(echo "$VA" | jget "['data']['autoReply']")
+  [[ "$VA_ON" == "1" ]] && ok "auto-reply enabled" || fail "auto-reply enable failed: $(echo "$VA" | head -c 200)"
+
+  send_to_target() { # send_to_target <subject>
+    kubectl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
+      "printf 'From: fwd-source@$TEST_DOMAIN\r\nTo: fwd-target@$TEST_DOMAIN\r\nSubject: $1\r\nMessage-ID: <$1@$TEST_DOMAIN>\r\n\r\nhello\r\n' > /tmp/v.eml; curl -s -m 20 --url smtp://localhost:25 --mail-from fwd-source@$TEST_DOMAIN --mail-rcpt fwd-target@$TEST_DOMAIN --upload-file /tmp/v.eml" >/dev/null 2>&1 || true
+  }
+  count_vacation_replies() { # vacation replies in fwd-source's inbox
+    swjmap "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:ietf:params:jmap:mail\"],\"methodCalls\":[[\"Email/query\",{\"accountId\":\"$SRC_SP\",\"filter\":{\"subject\":\"OOO probe\"}},\"r0\"]]}" \
+      | python3 -c "import json,sys;r=json.load(sys.stdin)['methodResponses'][0][1];print(len(r.get('ids',[])) if 'ids' in r else -1)"
+  }
+  send_to_target "vac-one-$STAMP"
+  sleep 8
+  C1=$(count_vacation_replies)
+  [[ "$C1" == "1" ]] && ok "vacation reply arrived at the sender" || fail "vacation replies=$C1 (expected 1)"
+
+  # ── T11: duplicate suppression — a second mail gets NO second reply ───
+  log "── T11: second send → no duplicate vacation reply ──"
+  send_to_target "vac-two-$STAMP"
+  sleep 8
+  C2=$(count_vacation_replies)
+  [[ "$C2" == "1" ]] && ok "no duplicate reply (per-sender suppression)" || fail "vacation replies=$C2 (expected still 1)"
+
+  # ── T12: disabling auto-reply removes the vacation block ──────────────
+  log "── T12: disable auto-reply → vacation gone from the script ──"
+  api PATCH "/tenants/$CID/mailboxes/$TGT_MB_ID" '{"auto_reply":false}' >/dev/null
+  sleep 1
+  T12=$(swjmap "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:ietf:params:jmap:sieve\"],\"methodCalls\":[[\"SieveScript/get\",{\"accountId\":\"$TGT_SP\",\"ids\":null},\"r0\"]]}" \
+    | python3 -c "import json,sys;l=json.load(sys.stdin)['methodResponses'][0][1].get('list',[]);m=[s for s in l if s.get('name')=='platform-mail-rules'];print('present-active' if any(x.get('isActive') for x in m) else ('present-inactive' if m else 'absent'))")
+  [[ "$T12" == "absent" ]] && ok "platform-mail-rules removed (no forwarding, no auto-reply)" \
+    || fail "script state after disable: $T12 (expected absent)"
 else
-  log "── T7/T8 skipped: kubectl cannot reach the mail namespace ──"
+  log "── T7/T8/T10-T12 skipped: kubectl cannot reach the mail namespace ──"
 fi
 
 # ── T9: clear forwarding ────────────────────────────────────────────────

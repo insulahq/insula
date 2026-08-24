@@ -24,6 +24,7 @@ import {
   systemSettings,
 } from '../../db/schema.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { parseImageReference, formatImageReference } from './image-reference.js';
 
 /**
  * The digest the deployment's pods are CURRENTLY running for a SPECIFIC image,
@@ -41,16 +42,47 @@ export async function getRunningDigest(
   deploymentId: string,
   image: string,
 ): Promise<string | null> {
-  const [row] = await db.select({ digest: customDeploymentImageAudit.resolvedDigest })
+  // The audit rows store the image string AS THE KUBELET REPORTS IT —
+  // containerd normalises Docker Hub short refs (`nginx:latest` →
+  // `docker.io/library/nginx:latest`), while `image` here is the
+  // deployment's SPEC string as the user typed it. A literal
+  // `eq(image)` therefore matched NOTHING for every short ref, which
+  // pinned all `:latest`-style deployments on `unknown` forever (the
+  // running digest was "never observed"). Compare CANONICAL references
+  // instead: exact host/repo:tag first, then host/repo alone — the
+  // kubelet may report a sibling tag or the digest-pinned form for the
+  // same image (a known containerStatuses[].image quirk).
+  const want = parseImageReference(image);
+  if (!want) return null;
+  const wantExact = formatImageReference(want);
+  const wantRepo = `${want.registryHost}/${want.repository}`;
+
+  const rows = await db.select({
+    digest: customDeploymentImageAudit.resolvedDigest,
+    image: customDeploymentImageAudit.image,
+  })
     .from(customDeploymentImageAudit)
     .where(and(
       eq(customDeploymentImageAudit.deploymentId, deploymentId),
-      eq(customDeploymentImageAudit.image, image),
       isNotNull(customDeploymentImageAudit.resolvedDigest),
     ))
-    .orderBy(desc(customDeploymentImageAudit.pulledAt))
-    .limit(1);
-  return row?.digest ?? null;
+    .orderBy(desc(customDeploymentImageAudit.pulledAt));
+
+  let repoMatch: string | null = null;
+  for (const row of rows) {
+    const got = parseImageReference(row.image);
+    if (!got) continue;
+    if (formatImageReference(got) === wantExact) return row.digest;
+    if (`${got.registryHost}/${got.repository}` !== wantRepo) continue;
+    // Repo matches but not the exact ref. Only a TAGLESS row (the
+    // kubelet reported the digest-pinned form) is safely attributable
+    // to the checked image — a row carrying a DIFFERENT tag may belong
+    // to another service of the same compose stack using the same
+    // repository, and returning its digest would fake an update state
+    // for this one (review 2026-08-24).
+    if (repoMatch === null && got.tag === null) repoMatch = row.digest;
+  }
+  return repoMatch;
 }
 
 /** Cache key for the operator toggle. Setting is read once per reconciler
