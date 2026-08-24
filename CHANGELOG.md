@@ -13,6 +13,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **`insula operator-key rotate` — recover from a lost operator age key.**
+  Mints a new keypair (old key files are preserved, never deleted), updates
+  the cluster recipient, and immediately triggers a fresh secrets-bundle
+  export so the newest off-site bundle is readable with the new key.
+  Bundles exported before the rotation stay encrypted to the old key.
+  `insula operator-key status` shows the cluster recipient and whether the
+  key file on the host matches it. The DR → Secrets Bundle page and the
+  operator manual now explain the loss-recovery path.
+- **Bootstrap's completion summary now calls out the operator age key** —
+  where it is, why it matters, how to copy it offline and remove it from
+  the server (previously only mentioned in a log line thousands of lines
+  earlier that had long scrolled away).
 - **Pages refresh themselves when a backup task finishes.** Manual system,
   tenant and mail backup runs (and restores, snapshots, target switches)
   now invalidate the affected pages' data the moment the task center sees
