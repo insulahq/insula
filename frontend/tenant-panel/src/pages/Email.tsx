@@ -1,7 +1,7 @@
 import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
 import ConfirmToken from '@/components/ui/ConfirmToken';
 import { useSearchParams } from 'react-router-dom';
-import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle } from 'lucide-react';
+import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle, Send, CornerUpRight } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useSortable } from '@/hooks/use-sortable';
@@ -660,7 +660,9 @@ function MailboxesTab({
   // Empty quota = use the plan max (the backend defaults it). The max is
   // shown to the user and bounds the input (Q1: default to plan, allow
   // smaller, show the max available size).
-  const [form, setForm] = useState({ local_part: '', display_name: '', quota_mb: '' });
+  // mailbox_type 'send_only' = SMTP-submission-only account (no inbox,
+  // quota not applicable — the field is hidden and never sent).
+  const [form, setForm] = useState({ local_part: '', display_name: '', quota_mb: '', mailbox_type: 'mailbox' as 'mailbox' | 'send_only' });
   const { data: usageData } = useMailboxUsage(tenantId);
   const maxSizeMb = usageData?.data?.maxMailboxSizeMb;
 
@@ -670,9 +672,16 @@ function MailboxesTab({
 
   const handleCreate = async (e: FormEvent) => {
     e.preventDefault();
+    const isSendOnly = form.mailbox_type === 'send_only';
     try {
-      const res = await createMailbox.mutateAsync({ local_part: form.local_part, display_name: form.display_name || undefined, quota_mb: form.quota_mb ? Number(form.quota_mb) : undefined });
-      setForm({ local_part: '', display_name: '', quota_mb: '' });
+      const res = await createMailbox.mutateAsync({
+        local_part: form.local_part,
+        display_name: form.display_name || undefined,
+        // Send-only accounts store nothing — the backend rejects quota_mb for them.
+        quota_mb: !isSendOnly && form.quota_mb ? Number(form.quota_mb) : undefined,
+        mailbox_type: form.mailbox_type,
+      });
+      setForm({ local_part: '', display_name: '', quota_mb: '', mailbox_type: 'mailbox' });
       setShowForm(false);
       // Open the Login passwords modal straight onto the "Initial"
       // password reveal so the operator can hand it to the user.
@@ -750,13 +759,32 @@ function MailboxesTab({
               <input className={INPUT_CLASS + ' mt-1'} value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })} placeholder="John Doe" data-testid="mailbox-display-name" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Quota (MB)</label>
-              <input type="number" className={INPUT_CLASS + ' mt-1'} value={form.quota_mb} onChange={e => setForm({ ...form, quota_mb: e.target.value })} min={50} max={maxSizeMb} placeholder={maxSizeMb ? String(maxSizeMb) : undefined} data-testid="mailbox-quota" />
-              {maxSizeMb != null && <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Max {maxSizeMb} MB (plan limit). Leave blank to use the maximum.</p>}
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Account Type</label>
+              <select
+                className={INPUT_CLASS + ' mt-1'}
+                value={form.mailbox_type}
+                onChange={e => setForm({ ...form, mailbox_type: e.target.value as 'mailbox' | 'send_only' })}
+                data-testid="mailbox-type"
+              >
+                <option value="mailbox">Mailbox (stores mail)</option>
+                <option value="send_only">Send-only (no inbox, e.g. no-reply@)</option>
+              </select>
+              {form.mailbox_type === 'send_only' && (
+                <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  Can send via SMTP but stores nothing. Incoming mail is bounced — or forwarded if you configure forwarding after creation.
+                </p>
+              )}
             </div>
+            {form.mailbox_type !== 'send_only' && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Quota (MB)</label>
+                <input type="number" className={INPUT_CLASS + ' mt-1'} value={form.quota_mb} onChange={e => setForm({ ...form, quota_mb: e.target.value })} min={50} max={maxSizeMb} placeholder={maxSizeMb ? String(maxSizeMb) : undefined} data-testid="mailbox-quota" />
+                {maxSizeMb != null && <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Max {maxSizeMb} MB (plan limit). Leave blank to use the maximum.</p>}
+              </div>
+            )}
           </div>
           <p className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
-            <Key size={12} className="text-amber-500" /> A first login password is generated automatically and shown once — give it to the user for webmail and mail apps.
+            <Key size={12} className="text-amber-500" /> A first login password is generated automatically and shown once — give it to the user for {form.mailbox_type === 'send_only' ? 'SMTP sending from apps and scripts' : 'webmail and mail apps'}.
           </p>
           {createMailbox.error && <div className="flex items-center gap-2 text-sm text-red-600"><AlertCircle size={14} />{createMailbox.error instanceof Error ? createMailbox.error.message : 'Failed'}</div>}
           <div className="flex justify-end">
@@ -784,21 +812,41 @@ function MailboxesTab({
               {mailboxes.map(mb => (
                 <tr key={mb.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/50">
                   <td className="px-5 py-3.5">
-                    <div className="font-medium text-gray-900 dark:text-gray-100">{mb.fullAddress}</div>
+                    <div className="flex items-center gap-2 font-medium text-gray-900 dark:text-gray-100">
+                      {mb.fullAddress}
+                      {mb.mailboxType === 'send_only' && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-sky-100 dark:bg-sky-900/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-sky-700 dark:text-sky-300" data-testid={`send-only-badge-${mb.id}`}>
+                          <Send size={9} /> Send-only
+                        </span>
+                      )}
+                      {(mb.forwardingAddresses?.length ?? 0) > 0 && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-violet-100 dark:bg-violet-900/40 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-700 dark:text-violet-300"
+                          title={`Forwards to ${(mb.forwardingAddresses ?? []).join(', ')}`}
+                          data-testid={`forwarding-badge-${mb.id}`}
+                        >
+                          <CornerUpRight size={9} /> Forwards
+                        </span>
+                      )}
+                    </div>
                     {mb.displayName && <div className="text-xs text-gray-500 dark:text-gray-400">{mb.displayName}</div>}
                   </td>
                   <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
-                    <div className="flex items-center gap-2">
-                      <div className="h-1.5 w-16 rounded-full bg-gray-200 dark:bg-gray-700">
-                        <div className="h-1.5 rounded-full bg-brand-500" style={{ width: `${Math.min(100, (mb.usedMb / mb.quotaMb) * 100)}%` }} />
+                    {mb.mailboxType === 'send_only' ? (
+                      <span className="text-xs text-gray-400 dark:text-gray-500">— no storage</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <div className="h-1.5 w-16 rounded-full bg-gray-200 dark:bg-gray-700">
+                          <div className="h-1.5 rounded-full bg-brand-500" style={{ width: `${Math.min(100, mb.quotaMb > 0 ? (mb.usedMb / mb.quotaMb) * 100 : 0)}%` }} />
+                        </div>
+                        <span className="text-xs">{mb.usedMb}/{mb.quotaMb} MB</span>
                       </div>
-                      <span className="text-xs">{mb.usedMb}/{mb.quotaMb} MB</span>
-                    </div>
+                    )}
                   </td>
                   <td className="px-5 py-3.5"><StatusBadge status={mb.status === 'active' ? 'active' : 'suspended'} /></td>
                   <td className="px-5 py-3.5 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button
+                      {mb.mailboxType !== 'send_only' && <button
                         type="button"
                         onClick={() => handleOpenWebmail(mb.id)}
                         disabled={openingWebmailFor === mb.id}
@@ -816,7 +864,7 @@ function MailboxesTab({
                           <ExternalLink size={12} />
                         )}
                         Webmail
-                      </button>
+                      </button>}
                       <button type="button" onClick={() => setPwTarget({ mailbox: mb as Mailbox })} className="inline-flex items-center gap-1 rounded-md border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/30 px-2.5 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50" data-testid={`login-passwords-${mb.id}`}>
                         <Key size={12} /> Passwords
                       </button>
@@ -848,7 +896,9 @@ function MailboxesTab({
       {mailboxes.length > 0 && (
         <ImapSyncPanel
           tenantId={tenantId}
-          mailboxes={mailboxes.map(m => ({ id: m.id, fullAddress: m.fullAddress }))}
+          // Send-only accounts cannot be migration targets (no store; the
+          // backend rejects them with SEND_ONLY_MAILBOX anyway).
+          mailboxes={mailboxes.filter(m => m.mailboxType !== 'send_only').map(m => ({ id: m.id, fullAddress: m.fullAddress }))}
         />
       )}
 
@@ -893,6 +943,7 @@ function EditMailboxModal({
   const updateMailbox = useUpdateMailbox(tenantId);
   const { data: usageData } = useMailboxUsage(tenantId);
   const maxSizeMb = usageData?.data?.maxMailboxSizeMb;
+  const isSendOnly = mailbox.mailboxType === 'send_only';
   const [displayName, setDisplayName] = useState(mailbox.displayName ?? '');
   const [quotaMb, setQuotaMb] = useState(String(mailbox.quotaMb));
   const [status, setStatus] = useState<'active' | 'disabled'>(
@@ -901,6 +952,9 @@ function EditMailboxModal({
   const [autoReply, setAutoReply] = useState(mailbox.autoReply === 1);
   const [autoReplySubject, setAutoReplySubject] = useState(mailbox.autoReplySubject ?? '');
   const [autoReplyBody, setAutoReplyBody] = useState(mailbox.autoReplyBody ?? '');
+  const existingForwarding = mailbox.forwardingAddresses ?? [];
+  const [forwardingEnabled, setForwardingEnabled] = useState(existingForwarding.length > 0);
+  const [forwardingInput, setForwardingInput] = useState(existingForwarding.join(', '));
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -909,7 +963,7 @@ function EditMailboxModal({
       input.display_name = displayName;
     }
     const parsedQuota = Number(quotaMb);
-    if (Number.isFinite(parsedQuota) && parsedQuota !== mailbox.quotaMb) {
+    if (!isSendOnly && Number.isFinite(parsedQuota) && parsedQuota !== mailbox.quotaMb) {
       input.quota_mb = parsedQuota;
     }
     const currentStatus = mailbox.status === 'disabled' ? 'disabled' : 'active';
@@ -917,14 +971,25 @@ function EditMailboxModal({
       input.status = status;
     }
     const currentAutoReply = mailbox.autoReply === 1;
-    if (autoReply !== currentAutoReply) {
+    if (!isSendOnly && autoReply !== currentAutoReply) {
       input.auto_reply = autoReply;
     }
-    if (autoReplySubject !== (mailbox.autoReplySubject ?? '')) {
+    if (!isSendOnly && autoReplySubject !== (mailbox.autoReplySubject ?? '')) {
       input.auto_reply_subject = autoReplySubject;
     }
-    if (autoReplyBody !== (mailbox.autoReplyBody ?? '')) {
+    if (!isSendOnly && autoReplyBody !== (mailbox.autoReplyBody ?? '')) {
       input.auto_reply_body = autoReplyBody;
+    }
+    // Forwarding: comma-separated input → normalized list; only sent when
+    // it actually changed (empty list = disable).
+    const desiredForwarding = forwardingEnabled
+      ? [...new Set(forwardingInput.split(',').map(a => a.trim().toLowerCase()).filter(Boolean))]
+      : [];
+    const forwardingChanged =
+      desiredForwarding.length !== existingForwarding.length ||
+      desiredForwarding.some((a, i) => a !== existingForwarding[i]?.toLowerCase());
+    if (forwardingChanged) {
+      input.forwarding_addresses = desiredForwarding;
     }
     // Nothing changed? Just close.
     if (Object.keys(input).length === 0) {
@@ -976,7 +1041,7 @@ function EditMailboxModal({
                 data-testid="edit-mailbox-display-name"
               />
             </div>
-            <div>
+            {!isSendOnly && <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Quota (MB)</label>
               <input
                 type="number"
@@ -988,7 +1053,7 @@ function EditMailboxModal({
                 data-testid="edit-mailbox-quota"
               />
               {maxSizeMb != null && <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Max {maxSizeMb} MB (plan limit)</p>}
-            </div>
+            </div>}
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Status</label>
               <select
@@ -1004,6 +1069,42 @@ function EditMailboxModal({
           </div>
 
           <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+              <input
+                type="checkbox"
+                checked={forwardingEnabled}
+                onChange={(e) => setForwardingEnabled(e.target.checked)}
+                data-testid="edit-mailbox-forwarding"
+              />
+              <CornerUpRight size={14} className="text-violet-500" />
+              Forward incoming mail
+            </label>
+            {forwardingEnabled && (
+              <div className="space-y-1 pl-6">
+                <label className="block text-xs font-medium text-gray-600 dark:text-gray-400">Forward to (comma-separated, max 20)</label>
+                <input
+                  type="text"
+                  className={INPUT_CLASS + ' mt-1'}
+                  value={forwardingInput}
+                  onChange={(e) => setForwardingInput(e.target.value)}
+                  placeholder="person@example.com, team@example.org"
+                  data-testid="edit-mailbox-forwarding-addresses"
+                />
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {isSendOnly
+                    ? 'Forwarded messages are NOT stored in this account.'
+                    : 'A copy of each forwarded message is also kept in this mailbox.'}
+                </p>
+              </div>
+            )}
+            {!forwardingEnabled && isSendOnly && (
+              <p className="pl-6 text-xs text-gray-500 dark:text-gray-400">
+                Without forwarding, incoming mail to this address is bounced back to the sender.
+              </p>
+            )}
+          </div>
+
+          {!isSendOnly && <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
             <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
               <input
                 type="checkbox"
@@ -1039,7 +1140,7 @@ function EditMailboxModal({
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
           {updateMailbox.error && (
             <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">

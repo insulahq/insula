@@ -130,6 +130,8 @@ export async function ensureStalwartPrincipals(
       stalwartPrincipalId: mailboxesTable.stalwartPrincipalId,
       displayName: mailboxesTable.displayName,
       quotaMb: mailboxesTable.quotaMb,
+      mailboxType: mailboxesTable.mailboxType,
+      forwardingAddresses: mailboxesTable.forwardingAddresses,
     })
     .from(mailboxesTable)
     .where(inArray(mailboxesTable.fullAddress, addresses as string[]));
@@ -310,6 +312,39 @@ export async function ensureStalwartPrincipals(
               err: quotaErr instanceof Error ? quotaErr.message : String(quotaErr),
             },
             'mailbox quota apply failed after principal recreate (non-fatal)',
+          );
+        }
+      }
+      // Re-apply platform-managed mail rules — the fresh principal starts
+      // with default permissions and no Sieve script, which would turn a
+      // send-only/forwarding mailbox back into a plain stored inbox until
+      // the next boot reconcile. Best-effort like the quota patch above.
+      const declaresMailRules =
+        dbRow.mailboxType === 'send_only' || (dbRow.forwardingAddresses?.length ?? 0) > 0;
+      if (declaresMailRules) {
+        try {
+          const { applyMailRules, applySendOnlyPermissions } = await import('../../stalwart-jmap/sieve.js');
+          if (dbRow.mailboxType === 'send_only') {
+            await applySendOnlyPermissions({
+              accountId: principalsAccountId,
+              principalId: newPrincipalId,
+              baseUrl: jmapBaseUrl,
+            });
+          }
+          await applyMailRules({
+            principalId: newPrincipalId,
+            mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
+            forwardingAddresses: dbRow.forwardingAddresses ?? [],
+            baseUrl: jmapBaseUrl,
+          });
+        } catch (rulesErr) {
+          app.log.warn(
+            {
+              module: 'ensure-stalwart-principals',
+              address,
+              err: rulesErr instanceof Error ? rulesErr.message : String(rulesErr),
+            },
+            'mail-rules re-apply failed after principal recreate (boot reconcile will converge)',
           );
         }
       }

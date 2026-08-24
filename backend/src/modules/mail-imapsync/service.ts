@@ -258,6 +258,7 @@ export async function createImapSyncJob(
       id: mailboxes.id,
       tenantId: mailboxes.tenantId,
       fullAddress: mailboxes.fullAddress,
+      mailboxType: mailboxes.mailboxType,
     })
     .from(mailboxes)
     .where(eq(mailboxes.id, input.mailbox_id));
@@ -266,6 +267,17 @@ export async function createImapSyncJob(
       'MAILBOX_NOT_FOUND',
       `Mailbox '${input.mailbox_id}' not found for tenant '${tenantId}'`,
       404,
+    );
+  }
+  // A send-only account has no store and IMAP access is disabled — an
+  // imapsync migration INTO it can never deliver.
+  if (mb.mailboxType === 'send_only') {
+    throw new ApiError(
+      'SEND_ONLY_MAILBOX',
+      'This is a send-only account — it cannot be the target of an IMAP migration',
+      409,
+      { mailbox_id: input.mailbox_id },
+      'Create a normal mailbox as the migration target',
     );
   }
 

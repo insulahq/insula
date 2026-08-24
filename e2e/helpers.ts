@@ -4,7 +4,10 @@ import path from 'path';
 
 // Backend API isn't publicly exposed — calls go through the admin-panel
 // nginx sidecar which reverse-proxies /api/* to platform-api internally.
-const API_BASE = process.env.API_URL ?? 'http://admin.k8s-platform.test:2010';
+// Dev stack serves HTTPS-only on :2011 (see playwright.config.ts). Node
+// fetch rejects the local-CA cert unless NODE_TLS_REJECT_UNAUTHORIZED=0 is
+// exported for the run (CI targets real certs and overrides API_URL).
+const API_BASE = process.env.API_URL ?? 'https://admin.k8s-platform.test:2011';
 
 export async function loginAsAdmin(page: Page) {
   await page.goto('/login');
@@ -74,8 +77,10 @@ async function getTenantAuth(): Promise<{ token: string; user: string }> {
 
   // Check if test tenant already exists
   const tenantsRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
-  const tenantsData = await tenantsRes.json() as { data: { id: string; companyEmail: string }[] };
-  let tenantId = tenantsData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
+  // The wire field is `primaryEmail` (renamed from the legacy `companyEmail`
+  // — matching either keeps this helper working across both shapes).
+  const tenantsData = await tenantsRes.json() as { data: { id: string; primaryEmail?: string; companyEmail?: string }[] };
+  let tenantId = tenantsData.data?.find((c) => (c.primaryEmail ?? c.companyEmail) === 'e2e-test@k8s-platform.test')?.id;
 
   // Create test tenant if not exists
   if (!tenantId) {
@@ -106,8 +111,8 @@ async function getTenantAuth(): Promise<{ token: string; user: string }> {
       // Race condition: another worker created the tenant — retry search
       await new Promise(r => setTimeout(r, 1000));
       const retryRes = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, { headers });
-      const retryData = await retryRes.json() as { data: { id: string; companyEmail: string }[] };
-      tenantId = retryData.data?.find((c: { companyEmail: string }) => c.companyEmail === 'e2e-test@k8s-platform.test')?.id;
+      const retryData = await retryRes.json() as { data: { id: string; primaryEmail?: string; companyEmail?: string }[] };
+      tenantId = retryData.data?.find((c) => (c.primaryEmail ?? c.companyEmail) === 'e2e-test@k8s-platform.test')?.id;
       if (!tenantId) {
         throw new Error(`Failed to create or find test tenant: ${JSON.stringify(createData)}`);
       }
