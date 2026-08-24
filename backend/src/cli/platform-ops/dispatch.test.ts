@@ -412,6 +412,15 @@ describe('dispatch', () => {
     expect(err.join('\n')).toMatch(/rotate-key/);
   });
 
+  it('operator-key rotate launches its script; bad subcommand → exit 2', async () => {
+    const runEmbeddedScript = vi.fn(async () => 0);
+    const { deps, err } = fakeDeps({ runEmbeddedScript });
+    expect(await dispatch(['operator-key', 'rotate', '--yes'], deps)).toBe(0);
+    expect(runEmbeddedScript).toHaveBeenCalledWith('ops/operator-key-rotate.sh', ['--yes']);
+    expect(await dispatch(['operator-key'], deps)).toBe(2);
+    expect(err.join('\n')).toMatch(/rotate.*status/);
+  });
+
   // Drift backstop: the set of asset keys the CLI actually LAUNCHES must equal
   // the EMBEDDED_SCRIPTS manifest keys exactly — both directions. ⊆ proves the
   // CLI never launches an un-embedded script (a runtime "asset missing"); ⊇
@@ -433,6 +442,7 @@ describe('dispatch', () => {
       ['component-watch'],
       ['node-terminal', 'gc'],
       ['backup', 'rotate-key'],
+      ['operator-key', 'rotate'],
     ];
     for (const argv of invocations) expect(await dispatch(argv, deps)).toBe(0);
 

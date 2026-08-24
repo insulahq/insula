@@ -31,6 +31,7 @@ export const EMBEDDED_SCRIPTS = {
   'ops/component-watch.sh': 'component-watch.sh',
   'ops/node-terminal-cleanup-stale-artifacts.sh': 'node-terminal-cleanup-stale-artifacts.sh',
   'ops/backup-target-key-rotate.sh': 'backup-target-key-rotate.sh',
+  'ops/operator-key-rotate.sh': 'operator-key-rotate.sh',
 } as const;
 
 /** Asset key the CLI is allowed to launch — `keyof` the manifest. */
