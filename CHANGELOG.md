@@ -13,6 +13,31 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Auto-reply (vacation messages) now actually replies.** The mailbox
+  edit dialog's auto-reply has been wired to the mail server (it was
+  previously stored but never sent): each sender receives the reply once per
+  vacation period, automated senders are never answered, and it composes with
+  forwarding. Enabling auto-reply now requires a message body.
+
+### Fixed
+- **Tenants with more than one domain: every domain after the first served
+  Traefik's self-signed default certificate — while the UI truthfully said
+  the real certificate was issued.** Traefik only serves certificates that
+  an IngressRoute actually references, and the tenant ingress referenced
+  only the first domain's certificate Secret; the others sat issued but
+  unreferenced. The reconciler now creates one IngressRoute per
+  certificate, so every issued certificate is served (and cleans them up
+  when a domain is removed).
+- **Custom deployments using a moving tag (`:latest`, `:1.27`, `:24.04`)
+  showed "unknown" in the Updates column forever.** The update checker
+  compares the registry's digest against the digest the pods actually run,
+  but the pod-observed record stores the image name as the container runtime
+  reports it (`docker.io/library/nginx:latest`) while the check looked it up
+  under the name you typed (`nginx:latest`) — so the running digest was never
+  found. The lookup now matches canonical image references.
+
+
+### Added
 - **Send-only mail accounts.** A new account type for addresses like
   `no-reply@your-domain` that can authenticate and send via SMTP (app
   passwords) but have no inbox: nothing is stored, webmail and IMAP/POP3 are
