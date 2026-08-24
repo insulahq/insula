@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback } from 'react';
 import { API_BASE } from '@/lib/api-client';
 import { useNavigate } from 'react-router-dom';
 import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, ExternalLink, Star, Flame, ChevronDown, RotateCcw, History, LayoutGrid, Tag, Play, Square, RefreshCw, Trash2, CheckSquare, ChevronLeft, ChevronRight, Eye, EyeOff } from 'lucide-react';
+import AppPreviewModal from '@/components/AppPreviewModal';
 import clsx from 'clsx';
 import CatalogRepoSettings from '@/components/CatalogRepoSettings';
 import DeploymentUpgradesTab from '@/components/DeploymentUpgradesTab';
@@ -973,6 +974,7 @@ function InstalledTab() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectAll, setSelectAll] = useState(false);
   const [bulkAction, setBulkAction] = useState<'start' | 'stop' | 'restart' | 'delete' | null>(null);
+  const [previewDeployment, setPreviewDeployment] = useState<{ id: string; tenantId: string; name: string } | null>(null);
   const [sortField, setSortField] = useState<'name' | 'status' | 'createdAt' | 'node'>('createdAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [searchQuery, setSearchQuery] = useState('');
@@ -1347,6 +1349,17 @@ function InstalledTab() {
                                 <Square size={14} />
                               </button>
                             )}
+                            {isRunning && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewDeployment({ id: d.id, tenantId: d.tenantId, name: d.name })}
+                                className="rounded-md p-1.5 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700/50 transition-colors"
+                                title="View the running app in a sandboxed preview — no route needed"
+                                data-testid={`preview-btn-${d.id}`}
+                              >
+                                <Eye size={14} />
+                              </button>
+                            )}
                             {(isRunning || isStuck) && (
                               <button
                                 type="button"
@@ -1435,6 +1448,14 @@ function InstalledTab() {
             </div>
           )}
         </>
+      )}
+      {previewDeployment && (
+        <AppPreviewModal
+          tenantId={previewDeployment.tenantId}
+          deploymentId={previewDeployment.id}
+          deploymentName={previewDeployment.name}
+          onClose={() => setPreviewDeployment(null)}
+        />
       )}
     </div>
   );

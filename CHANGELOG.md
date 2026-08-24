@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **Preview a deployment before assigning a route.** Catalog apps and custom
+  containers now have a **Preview** button next to Start/Stop (admin and
+  tenant panels) that opens the running app in a sandboxed viewer via a
+  short-lived proxy link — no domain, DNS, or ingress route needed. Multi-port
+  deployments get a target picker. The preview is hard-sandboxed (server-sent
+  `CSP: sandbox`, credentials stripped in both directions), so previewed app
+  code can never touch the panel session; app logins inside the preview are
+  disabled by design, and apps that assume they run at a domain root may
+  render without styles — assign a route for full fidelity.
+
+### Changed
+- **Tenant-namespace NetworkPolicy `allow-platform-api` no longer pins
+  ports** (was TCP/8111, file-manager only): the preview proxy reaches
+  arbitrary workload Service ports. The peer selector stays pinned to the
+  platform-api pod; platform-api already holds cluster-admin credentials,
+  so the port pin bounded little — but this IS a deliberate widening of
+  that rule. Existing tenant namespaces converge on the next platform-api
+  start.
 - **`insula operator-key rotate` — recover from a lost operator age key.**
   Mints a new keypair (old key files are preserved, never deleted), updates
   the cluster recipient, and immediately triggers a fresh secrets-bundle
