@@ -1738,6 +1738,10 @@ export const emailAliases = pgTable('email_aliases', {
   sourceAddress: varchar('source_address', { length: 255 }).notNull(),
   destinationAddresses: jsonb('destination_addresses').$type<string[]>().notNull(),
   enabled: integer('enabled').notNull().default(1),
+  // Stalwart MailingList id backing this alias (0086). NULL until
+  // provisioned; disabled aliases have their list destroyed (id kept
+  // null). Platform DB authoritative; boot reconcile converges.
+  stalwartListId: text('stalwart_list_id'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

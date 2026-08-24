@@ -68,15 +68,20 @@ straight into that mailbox's webmail in a new tab — no separate password promp
 
 ## Aliases & forwarding
 
-An **alias** is an address with no inbox of its own that forwards to one or more
-real addresses. For example, `sales@example.com` → `you@example.com`.
+An **alias** is an address with no inbox of its own that delivers to one or
+more destinations — local mailboxes or external addresses. For example,
+`sales@example.com` → `you@example.com`, or `team@example.com` → three
+colleagues at once.
 
 On the **Aliases & Forwarding** tab, create an alias by entering the alias
-address and one or more **Forward to** addresses (comma-separated). Delete an
-alias to stop the forwarding.
+address and one or more **Deliver to** addresses (comma-separated, up to 20).
+Click an alias to **edit** its destinations or temporarily **disable** it —
+while disabled, mail to the address is rejected as an unknown recipient.
+Deleting the alias stops delivery permanently.
 
 A **catch-all** address (which receives mail sent to any unknown name on the
-domain) is set on the **Settings & DNS** tab.
+domain) is set on the **Settings & DNS** tab. Clearing it returns unknown
+names to being rejected.
 
 ## DNS for mail
 

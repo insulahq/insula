@@ -1790,3 +1790,33 @@ export async function uploadBlob(params: {
   }
   return { blobId: data.blobId };
 }
+
+/**
+ * Cached admin principals-account id (session primaryAccounts) with a
+ * 5-minute TTL — the same recovery semantics as mailboxes/service.ts's
+ * local cache (a Stalwart rebuild mints new ids; the TTL picks the new
+ * one up without a platform-api restart). Returns null when Stalwart is
+ * unreachable (unit tests, stacks without the mail overlay).
+ */
+const PRINCIPALS_ACCOUNT_TTL_MS = 5 * 60 * 1000;
+let _principalsAccountCache: JmapAccountId | null = null;
+let _principalsAccountCachedAt = 0;
+
+export async function getCachedPrincipalsAccountId(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<JmapAccountId | null> {
+  if (_principalsAccountCache && Date.now() - _principalsAccountCachedAt < PRINCIPALS_ACCOUNT_TTL_MS) {
+    return _principalsAccountCache;
+  }
+  try {
+    const session = await getJmapSession(env.STALWART_MGMT_URL, env);
+    const id = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+    if (id) {
+      _principalsAccountCache = id;
+      _principalsAccountCachedAt = Date.now();
+    }
+    return id ?? null;
+  } catch {
+    return null;
+  }
+}

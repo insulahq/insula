@@ -142,45 +142,67 @@ export async function reconcileMailboxUsage(
     warn: () => {},
   },
 ): Promise<{ synced: number; failed: number }> {
-  const adminSecret = process.env.STALWART_ADMIN_SECRET ?? '';
-  const auth = adminSecret
-    ? `Basic ${Buffer.from(`admin:${adminSecret}`).toString('base64')}`
-    : '';
+  // 2026-08 rewrite: the old implementation called the 0.15 REST API
+  // (`/api/principal/<addr>`, dropped in Stalwart 0.16) with a
+  // DIFFERENT env var (STALWART_ADMIN_SECRET) than the JMAP client's
+  // credential chain — every request 404'd/401'd and `used_mb` stayed
+  // 0 forever. Read the whole directory in ONE `x:Account/get`
+  // (`usedDiskQuota` is bytes; observed live on v0.16.16) and map by
+  // primary address.
 
   // List active mailboxes that need a usage update. Send-only accounts
   // store nothing (quota 0, no inbox) — skip them so they don't inflate
   // the per-cycle failure counter forever.
   const rows = await db
-    .select({ id: mailboxes.id, fullAddress: mailboxes.fullAddress })
+    .select({ id: mailboxes.id, fullAddress: mailboxes.fullAddress, usedMb: mailboxes.usedMb })
     .from(mailboxes)
     .where(and(eq(mailboxes.status, 'active'), ne(mailboxes.mailboxType, 'send_only')));
+  if (rows.length === 0) return { synced: 0, failed: 0 };
 
   let synced = 0;
   let failed = 0;
 
-  for (const row of rows) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(
-        `${STALWART_MGMT_URL}/api/principal/${encodeURIComponent(row.fullAddress)}`,
-        {
-          signal: controller.signal,
-          headers: auth ? { Authorization: auth } : {},
-        },
-      ).finally(() => clearTimeout(timeout));
+  const { getCachedPrincipalsAccountId, accountGet } = await import('../stalwart-jmap/client.js');
+  const accountId = await getCachedPrincipalsAccountId();
+  if (!accountId) {
+    logger.warn({}, 'reconcileMailboxUsage: Stalwart unreachable — skipping cycle');
+    return { synced: 0, failed: rows.length };
+  }
 
-      if (!res.ok) {
-        failed += 1;
-        continue;
-      }
-      const data = (await res.json()) as { usedQuota?: number };
-      const usedBytes = Number(data.usedQuota ?? 0);
-      if (!Number.isFinite(usedBytes)) {
-        failed += 1;
-        continue;
-      }
-      const usedMb = Math.round(usedBytes / (1024 * 1024));
+  let usedByAddress: Map<string, number>;
+  try {
+    const res = await accountGet({
+      accountId,
+      ids: null,
+      properties: ['id', 'emailAddress', 'usedDiskQuota'],
+      baseUrl: process.env.STALWART_MGMT_URL,
+    });
+    usedByAddress = new Map(
+      (res.list ?? [])
+        .filter((a): a is typeof a & { emailAddress: string } => typeof (a as { emailAddress?: unknown }).emailAddress === 'string')
+        .map((a) => [
+          (a as { emailAddress: string }).emailAddress.toLowerCase(),
+          Number((a as { usedDiskQuota?: unknown }).usedDiskQuota ?? 0),
+        ]),
+    );
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : String(err) },
+      'reconcileMailboxUsage: x:Account/get failed — skipping cycle');
+    return { synced: 0, failed: rows.length };
+  }
+
+  for (const row of rows) {
+    const usedBytes = usedByAddress.get(row.fullAddress.toLowerCase());
+    if (usedBytes === undefined || !Number.isFinite(usedBytes)) {
+      failed += 1;
+      continue;
+    }
+    const usedMb = Math.round(usedBytes / (1024 * 1024));
+    if (usedMb === row.usedMb) {
+      synced += 1;
+      continue; // unchanged — skip the write
+    }
+    try {
       await db
         .update(mailboxes)
         .set({ usedMb })

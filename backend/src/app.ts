@@ -882,6 +882,17 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         }
       })();
 
+      // Converge email aliases (Stalwart MailingLists) + domain catch-alls
+      // on boot — same authoritative-DB pattern as the mail-rules sweep.
+      void (async () => {
+        try {
+          const { reconcileAllEmailAliases } = await import('./modules/email-aliases/aliases-reconcile.js');
+          await reconcileAllEmailAliases(app.db);
+        } catch (err) {
+          app.log.warn({ err }, 'startup: email-alias reconcile skipped');
+        }
+      })();
+
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));
 

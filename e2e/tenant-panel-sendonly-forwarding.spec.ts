@@ -1,7 +1,5 @@
-import { test, expect, request as pwRequest, type Page } from '@playwright/test';
-import fs from 'fs';
-import path from 'path';
-import { loginAsAdminTenant } from './helpers';
+import { test, expect, type Page } from '@playwright/test';
+import { loginAsAdminTenant, ensureSharedEmailDomain } from './helpers';
 
 /**
  * Send-only accounts + per-mailbox forwarding — real-browser flow over the
@@ -13,110 +11,12 @@ import { loginAsAdminTenant } from './helpers';
  * the REAL form and cleans them up through the REAL delete buttons.
  */
 
-const API_BASE = process.env.API_URL ?? 'https://admin.k8s-platform.test:2011';
 
 test.use({ ignoreHTTPSErrors: true });
 
 const STAMP = Date.now().toString(36);
 const SO_LOCAL = `no-reply-${STAMP}`;
 const FWD_LOCAL = `fwd-ui-${STAMP}`;
-
-async function ensureEmailDomain(): Promise<void> {
-  // Admin-token bootstrap: make sure the shared tenant has an enabled
-  // email domain so the Mailboxes tab renders its create form. Uses
-  // Playwright's APIRequestContext (NOT node fetch — the worker's global
-  // fetch mangles chunked responses from the dev ingress) and reuses the
-  // token cached by the admin-setup project (a fresh login per worker
-  // trips the shared login rate limiter).
-  const ctx = await pwRequest.newContext({ ignoreHTTPSErrors: true });
-  try {
-    let token: string | undefined;
-    const adminAuthPath = path.join(__dirname, '.auth/admin-auth.json');
-    if (fs.existsSync(adminAuthPath)) {
-      token = (JSON.parse(fs.readFileSync(adminAuthPath, 'utf-8')) as { token?: string }).token;
-    }
-    if (!token) {
-      const loginRes = await ctx.post(`${API_BASE}/api/v1/auth/login`, {
-        data: { email: 'admin@k8s-platform.test', password: 'admin' },
-      });
-      token = ((await loginRes.json()) as { data: { token: string } }).data.token;
-    }
-    const headers = { Authorization: `Bearer ${token}` };
-
-    const tenants = (await (await ctx.get(`${API_BASE}/api/v1/tenants?limit=100`, { headers })).json()) as {
-      data: { id: string; primaryEmail?: string; companyEmail?: string }[];
-    };
-    let tenantId = tenants.data.find(
-      (t) => (t.primaryEmail ?? t.companyEmail) === 'e2e-test@k8s-platform.test',
-    )?.id;
-    if (!tenantId) {
-      // First spec to run — create the shared tenant the same way helpers.ts
-      // getTenantAuth() does.
-      const plans = (await (await ctx.get(`${API_BASE}/api/v1/plans`, { headers })).json()) as { data: { id: string }[] };
-      const regions = (await (await ctx.get(`${API_BASE}/api/v1/regions`, { headers })).json()) as { data: { id: string }[] };
-      const created = (await (
-        await ctx.post(`${API_BASE}/api/v1/tenants`, {
-          headers,
-          data: {
-            name: 'E2E Test Tenant',
-            primary_email: 'e2e-test@k8s-platform.test',
-            plan_id: plans.data[0]?.id,
-            region_id: regions.data[0]?.id,
-          },
-        })
-      ).json()) as { data?: { id: string } };
-      tenantId = created.data?.id;
-    }
-    if (!tenantId) throw new Error('shared E2E tenant missing and could not be created');
-
-    // Domain/email ops need an ACTIVE tenant; the shared tenant is created
-    // pending (no auto-provision). Provision + wait, idempotent.
-    const status = async () =>
-      (((await (await ctx.get(`${API_BASE}/api/v1/tenants/${tenantId}`, { headers })).json()) as {
-        data?: { status?: string };
-      }).data?.status ?? '');
-    if ((await status()) !== 'active') {
-      await ctx.post(`${API_BASE}/api/v1/admin/tenants/${tenantId}/provision`, { headers, data: {} });
-      for (let i = 0; i < 45 && (await status()) !== 'active'; i++) {
-        await new Promise((r) => setTimeout(r, 4000));
-      }
-      if ((await status()) !== 'active') throw new Error('shared E2E tenant did not reach active');
-    }
-
-    // Sweep leftovers from earlier (interrupted) runs of THIS spec — the
-    // shared tenant's plan caps total mailboxes, so orphans starve creates.
-    const boxes = (await (await ctx.get(`${API_BASE}/api/v1/tenants/${tenantId}/mailboxes`, { headers })).json()) as {
-      data?: { id: string; localPart: string }[];
-    };
-    for (const mb of boxes.data ?? []) {
-      if (/^(no-reply|fwd-ui)-/.test(mb.localPart)) {
-        await ctx.delete(`${API_BASE}/api/v1/tenants/${tenantId}/mailboxes/${mb.id}`, { headers });
-      }
-    }
-
-    const eds = (await (await ctx.get(`${API_BASE}/api/v1/tenants/${tenantId}/email/domains`, { headers })).json()) as {
-      data?: { id: string; enabled: number }[];
-    };
-    if ((eds.data ?? []).some((d) => d.enabled === 1)) return;
-
-    const dom = (await (
-      await ctx.post(`${API_BASE}/api/v1/tenants/${tenantId}/domains`, {
-        headers,
-        data: { domain_name: `sofui${STAMP}.com`, dns_mode: 'cname' },
-      })
-    ).json()) as { data?: { id: string } };
-    if (!dom.data?.id) throw new Error('domain create failed');
-    const enable = (await (
-      await ctx.post(`${API_BASE}/api/v1/tenants/${tenantId}/email/domains/${dom.data.id}/enable`, {
-        headers,
-        data: {},
-      })
-    ).json()) as { data?: { id: string } };
-    if (!enable.data?.id) throw new Error('email enable failed');
-  } finally {
-    await ctx.dispose();
-  }
-}
 
 async function openMailboxesTab(page: Page): Promise<void> {
   await page.goto('/email');
@@ -133,7 +33,7 @@ async function deleteMailboxRow(page: Page, localPart: string): Promise<void> {
 
 test.describe('send-only accounts + forwarding (tenant panel)', () => {
   test.beforeAll(async () => {
-    await ensureEmailDomain();
+    await ensureSharedEmailDomain();
   });
 
   test('create form: selecting Send-only hides the quota field', async ({ page }) => {

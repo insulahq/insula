@@ -34,6 +34,7 @@ vi.mock('../hooks/use-email', () => ({
   useUpdateMailbox: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useEmailAliases: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
   useCreateEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useUpdateEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useDeleteEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useWebmailToken: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
@@ -674,5 +675,84 @@ describe('Send-only accounts + forwarding', () => {
     expect(mutateAsync).toHaveBeenCalledTimes(1);
     const call = mutateAsync.mock.calls[0][0] as { id: string; input: Record<string, unknown> };
     expect(call.input.forwarding_addresses).toEqual(['bob@example.org', 'carol@example.net']);
+  });
+});
+
+// ── Aliases tab — unified edit UX (R28, 2026-08-24) ────────────────────────
+
+import { useEmailAliases, useUpdateEmailAlias } from '../hooks/use-email';
+const mockedUseEmailAliases = vi.mocked(useEmailAliases);
+const mockedUseUpdateEmailAlias = vi.mocked(useUpdateEmailAlias);
+
+describe('Aliases tab (unified UX)', () => {
+  const ALIAS_ROW = {
+    id: 'al-1',
+    sourceAddress: 'team@example.com',
+    destinationAddresses: ['a@example.org', 'b@example.org'],
+    enabled: 1,
+  };
+
+  function setupWithAlias(alias = ALIAS_ROW) {
+    mockedUseEmailDomains.mockReturnValue({
+      data: { data: [{ id: 'd1', domainName: 'example.com' }] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailDomains>);
+    mockedUseEmailAliases.mockReturnValue({
+      data: { data: [alias] },
+      isLoading: false,
+    } as unknown as ReturnType<typeof useEmailAliases>);
+  }
+
+  async function openAliases() {
+    const { fireEvent } = await import('@testing-library/react');
+    fireEvent.click(screen.getByRole('button', { name: /Aliases/ }));
+    return fireEvent;
+  }
+
+  it('renders the alias row with an Edit button and no disabled badge when enabled', async () => {
+    setupWithAlias();
+    renderWithProviders(<Email />);
+    await openAliases();
+    expect(screen.getByTestId('edit-alias-al-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('alias-disabled-badge-al-1')).not.toBeInTheDocument();
+  });
+
+  it('shows the Disabled badge for a disabled alias', async () => {
+    setupWithAlias({ ...ALIAS_ROW, enabled: 0 });
+    renderWithProviders(<Email />);
+    await openAliases();
+    expect(screen.getByTestId('alias-disabled-badge-al-1')).toBeInTheDocument();
+  });
+
+  it('edit modal submits normalized destinations and enabled flag changes only', async () => {
+    const mutateAsync = vi.fn().mockResolvedValue({ data: { id: 'al-1' } });
+    mockedUseUpdateEmailAlias.mockReturnValue({
+      mutateAsync, isPending: false, error: null,
+    } as unknown as ReturnType<typeof useUpdateEmailAlias>);
+    setupWithAlias();
+    renderWithProviders(<Email />);
+    const fireEvent = await openAliases();
+
+    fireEvent.click(screen.getByTestId('edit-alias-al-1'));
+    expect(screen.getByTestId('edit-alias-modal')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('edit-alias-destinations'), {
+      target: { value: ' C@example.org , c@example.org ' },
+    });
+    fireEvent.click(screen.getByTestId('submit-edit-alias'));
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(mutateAsync).toHaveBeenCalledTimes(1);
+    const call = mutateAsync.mock.calls[0][0] as { id: string; input: Record<string, unknown> };
+    expect(call.id).toBe('al-1');
+    expect(call.input.destination_addresses).toEqual(['c@example.org']);
+    expect(call.input.enabled).toBeUndefined();
+  });
+
+  it('delete uses the confirm pattern (no immediate delete)', async () => {
+    setupWithAlias();
+    renderWithProviders(<Email />);
+    const fireEvent = await openAliases();
+    fireEvent.click(screen.getByTestId('delete-alias-al-1'));
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeInTheDocument();
   });
 });
