@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.15] - 2026-08-24
+
 ### Added
 - **Email aliases now actually deliver.** The "Aliases & Forwarding" tab has
   been wired to the mail server (rows were previously stored but never
@@ -29,7 +31,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   credentials on top) — every request failed silently. It now reads the live
   per-account disk usage in a single query; the mailbox list shows real
   numbers within one sync interval.
-
 
 ## [2026.8.14] - 2026-08-24
 
