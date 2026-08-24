@@ -518,6 +518,7 @@ _apply_dev_overlay() {
   # avoids accidentally rewriting other shell-style variables (Stalwart
   # bootstrap CronJob escapes, etc.).
   rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
+  rendered=$(_collapse_flux_escapes "$rendered")
   # Stage the rendered manifest on the workspace side then docker-cp into
   # the k3s container. Piping via `docker exec ... sh -c 'cat > file'`
   # silently fails when -i is missing (no stdin attached) — we hit that
@@ -939,7 +940,7 @@ cmd_mail_up() {
   echo "Deploying Stalwart 0.16 mail server..."
   _ensure_k3s_running
   _sync_manifests
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dind/stalwart-mail
+  _dind_render_apply /tmp/k8s-sync/overlays/dind/stalwart-mail stalwart-mail
   echo ""
   echo "Waiting for Stalwart 0.16 pod (up to 3 minutes)..."
   # Wait on the Deployment, not a pod label: the earlier pod selector
@@ -1071,7 +1072,7 @@ cmd_webmail_up() {
   # Seed the roundcube role/db BEFORE the pod waits — the password auth
   # path must be ready the moment Roundcube serves its first request.
   _ensure_roundcube_db
-  k3s_exec kubectl apply -k /tmp/k8s-sync/overlays/dind/roundcube
+  _dind_render_apply /tmp/k8s-sync/overlays/dind/roundcube roundcube
   echo ""
   echo "Waiting for Roundcube pod (up to 3 minutes)..."
   k3s_exec kubectl wait --for=condition=Ready pod -l app=roundcube -n mail --timeout=180s || {
@@ -1107,6 +1108,42 @@ cmd_webmail_logs() {
 # ─── Bulwark webmail commands (JMAP-native, ADR-039) ────────────────────────
 
 # Render the dev/bulwark overlay through kustomize → sed-substitute
+# Collapse Flux postBuild escapes the way real clusters do. Flux's
+# envsubst rewrites `$${` → `${` (and `$$$${` → `$${`) during overlay
+# substitution; plain `kubectl apply -k` / raw kustomize output keeps
+# them doubled, so shells inside ConfigMap scripts expand `$$` to the
+# PID at runtime — the backup-rclone-shim launcher crashlooped with
+# GOMEMLIMIT="7{GOMEMLIMIT:-200MiB}" exactly this way (2026-08-24).
+# Every dind apply path that consumes Flux-authored manifests MUST run
+# its rendered stream through this.
+_collapse_flux_escapes() {
+  printf '%s' "$1" | sed 's|\$\$\$\${|__FLUXESC__|g; s|\$\${|${|g; s|__FLUXESC__|$${|g'
+}
+
+# Render a dind kustomize path the way Flux renders it on real clusters
+# (kustomize build → ${DOMAIN} substitution → Flux-escape collapse),
+# then apply. Use this instead of raw `kubectl apply -k` for any
+# Flux-authored overlay.
+_dind_render_apply() {
+  local kpath="$1"
+  local staged_name="$2"
+  local rendered
+  rendered=$(k3s_exec kubectl kustomize "$kpath" 2>&1) || {
+    echo "  kustomize build failed for $kpath:"
+    echo "$rendered" | sed 's/^/    /'
+    return 1
+  }
+  rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
+  rendered=$(_collapse_flux_escapes "$rendered")
+  local staged="${PROJECT_DIR}/.local.${staged_name}-rendered.yaml"
+  echo "$rendered" > "$staged"
+  docker cp "$staged" "${K3S_CONTAINER}:/tmp/${staged_name}-rendered.yaml" >/dev/null
+  k3s_exec kubectl apply -f "/tmp/${staged_name}-rendered.yaml"
+  local rc=$?
+  rm -f "$staged"
+  return $rc
+}
+
 # ${DOMAIN} → apply. Same pattern as _apply_dev_overlay but scoped to
 # the bulwark stack so we don't touch the rest of the platform.
 _bulwark_render_apply() {
@@ -1117,11 +1154,8 @@ _bulwark_render_apply() {
   rendered=$(echo "$rendered" | sed "s|\${DOMAIN}|${PLATFORM_BASE_DOMAIN}|g")
   # Manifests escape $${VAR} for Flux postBuild envsubst (so Flux
   # doesn't try to resolve JS template literals as substitution
-  # variables). Production rendering collapses `$${` → `${`; dev
-  # applies via `kubectl apply -k` so we do the same collapse here
-  # — otherwise the impersonator's Node script sees `$$` instead of
-  # `$` and template strings break.
-  rendered=$(echo "$rendered" | sed 's|\$\$\$\${|\${|g; s|\$\${|\${|g')
+  # variables). Collapse them the way Flux does on real clusters.
+  rendered=$(_collapse_flux_escapes "$rendered")
   local staged="${PROJECT_DIR}/.local.bulwark-rendered.yaml"
   echo "$rendered" > "$staged"
   docker cp "$staged" "${K3S_CONTAINER}:/tmp/bulwark-rendered.yaml" >/dev/null
