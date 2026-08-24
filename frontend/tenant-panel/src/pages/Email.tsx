@@ -1135,8 +1135,12 @@ function EditMailboxModal({
                     value={autoReplyBody}
                     onChange={(e) => setAutoReplyBody(e.target.value)}
                     placeholder="Thank you for your message. I'm currently out of the office and will respond when I return."
+                    required={autoReply}
                     data-testid="edit-mailbox-auto-reply-body"
                   />
+                  <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                    Each sender receives the reply once per vacation period; automated senders are never answered.
+                  </p>
                 </div>
               </div>
             )}

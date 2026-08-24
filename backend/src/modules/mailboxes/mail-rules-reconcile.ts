@@ -33,11 +33,18 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
       fullAddress: mailboxes.fullAddress,
       mailboxType: mailboxes.mailboxType,
       forwardingAddresses: mailboxes.forwardingAddresses,
+      autoReply: mailboxes.autoReply,
+      autoReplySubject: mailboxes.autoReplySubject,
+      autoReplyBody: mailboxes.autoReplyBody,
       stalwartPrincipalId: mailboxes.stalwartPrincipalId,
     })
     .from(mailboxes)
     .where(and(
-      or(eq(mailboxes.mailboxType, 'send_only'), isNotNull(mailboxes.forwardingAddresses)),
+      or(
+        eq(mailboxes.mailboxType, 'send_only'),
+        isNotNull(mailboxes.forwardingAddresses),
+        eq(mailboxes.autoReply, 1),
+      ),
       ne(mailboxes.status, 'disabled'),
     ));
   if (rows.length === 0) return;
@@ -72,6 +79,9 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
         principalId: row.stalwartPrincipalId,
         mailboxType: row.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
         forwardingAddresses: row.forwardingAddresses ?? [],
+        autoReply: row.autoReply === 1 && row.autoReplyBody?.trim()
+          ? { subject: row.autoReplySubject, body: row.autoReplyBody }
+          : null,
       });
       applied += 1;
     } catch (err) {

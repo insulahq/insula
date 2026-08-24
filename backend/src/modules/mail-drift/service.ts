@@ -285,6 +285,9 @@ export async function recreateDriftItemEmpty(
         emailDomainId: mailboxes.emailDomainId,
         mailboxType: mailboxes.mailboxType,
         forwardingAddresses: mailboxes.forwardingAddresses,
+        autoReply: mailboxes.autoReply,
+        autoReplySubject: mailboxes.autoReplySubject,
+        autoReplyBody: mailboxes.autoReplyBody,
       })
       .from(mailboxes)
       .where(eq(mailboxes.id, item.platformRowId));
@@ -401,7 +404,9 @@ export async function recreateDriftItemEmpty(
     // back into a normal stored inbox. Best-effort: the boot reconcile
     // (mail-rules-reconcile.ts) converges any failure here.
     const declaresMailRules =
-      mbRow.mailboxType === 'send_only' || (mbRow.forwardingAddresses?.length ?? 0) > 0;
+      mbRow.mailboxType === 'send_only'
+      || (mbRow.forwardingAddresses?.length ?? 0) > 0
+      || mbRow.autoReply === 1;
     if (declaresMailRules) {
       try {
         const { applyMailRules, applySendOnlyPermissions } = await import('../stalwart-jmap/sieve.js');
@@ -412,6 +417,9 @@ export async function recreateDriftItemEmpty(
           principalId: newStalwartId,
           mailboxType: mbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
           forwardingAddresses: mbRow.forwardingAddresses ?? [],
+          autoReply: mbRow.autoReply === 1 && mbRow.autoReplyBody?.trim()
+            ? { subject: mbRow.autoReplySubject, body: mbRow.autoReplyBody }
+            : null,
           baseUrl,
         });
       } catch (err) {
