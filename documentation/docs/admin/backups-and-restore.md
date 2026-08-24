@@ -43,6 +43,15 @@ again, retention prunes and new backups against them are refused.
 - **Targets, Schedules & Retention** — bind the `system` class to a Remote
   Storage Target and set its schedule and retention.
 
+!!! warning "Enabling WAL streaming or scheduled base backups restarts Postgres"
+    The **first** enable of WAL streaming or scheduled base backups
+    reconfigures the platform database's archive settings and performs a
+    rolling restart of its Postgres instance(s) — the panel asks you to
+    confirm. This can take up to ~5 minutes, during which the admin panel
+    and API may be briefly unavailable. Hosted websites and tenant
+    databases are **not** affected. Saving settings on an already-active
+    configuration does not restart anything.
+
 The cluster-wide **Secrets bundle** lives on the
 [Disaster Recovery](#disaster-recovery) page, not here.
 
@@ -76,6 +85,20 @@ and a short id. To restore, open a snapshot's **Restore** dialog:
 
 (The other mail-backup paths — the Stalwart-native archive and per-tenant
 mailbox bundles — are described in [Email](email.md).)
+
+Right after (re)assigning a mail target the page may briefly report a
+transitional state instead of the snapshot list — *credentials are being
+provisioned*, *backup gateway is restarting*, or *repository not
+initialized yet* (a fresh repository is created by the first completed
+snapshot upload). These resolve on their own within a minute or two;
+only a persistent "not reachable" indicates a genuinely broken target.
+
+Triggering a manual snapshot while **no** mail target is assigned still
+works, but the snapshot stays on-cluster only — the panel shows a
+warning that nothing is uploaded off-site.
+
+Backup pages refresh automatically when a backup, restore, or snapshot
+task finishes — no manual reload needed.
 
 ## Remote Storage Targets
 

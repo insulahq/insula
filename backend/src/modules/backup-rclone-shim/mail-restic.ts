@@ -136,11 +136,82 @@ export interface MailResticShimResult {
 // Reconcile
 // ---------------------------------------------------------------------------
 
+/**
+ * Secret consumed by the snapshot-upload sidecar AND the standby-
+ * replicate DaemonSet to POST run stats to the platform's /internal/
+ * mail/* endpoints (bearer = PLATFORM_INTERNAL_SECRET). The manifests
+ * have always referenced it with `optional: true` — but NOTHING ever
+ * created it, so every stats report silently skipped and the mail
+ * backups page showed 0 snapshots / 0 B forever while the repo filled
+ * up fine (live incident 2026-08-24). Owned here because this
+ * reconciler already runs in the mail namespace on a 5-minute tick
+ * and inline on target assignment.
+ */
+const PLATFORM_API_TOKEN_SECRET = 'platform-api-sa-token';
+
+async function ensurePlatformApiTokenSecret(
+  core: MailResticShimClients['core'],
+  log: Pick<Logger, 'warn'>,
+): Promise<void> {
+  const token = process.env.PLATFORM_INTERNAL_SECRET?.trim();
+  if (!token) {
+    log.warn({}, 'mail-restic-shim: PLATFORM_INTERNAL_SECRET unset — snapshot stats reporting stays disabled');
+    return;
+  }
+  const desired = Buffer.from(token).toString('base64');
+  try {
+    const existing = (await core.readNamespacedSecret({
+      name: PLATFORM_API_TOKEN_SECRET,
+      namespace: MAIL_NAMESPACE,
+    } as Parameters<typeof core.readNamespacedSecret>[0])) as { data?: Record<string, string> };
+    if (existing.data?.token === desired) return;
+    await core.replaceNamespacedSecret({
+      name: PLATFORM_API_TOKEN_SECRET,
+      namespace: MAIL_NAMESPACE,
+      body: {
+        metadata: {
+          name: PLATFORM_API_TOKEN_SECRET,
+          namespace: MAIL_NAMESPACE,
+          labels: { 'app.kubernetes.io/managed-by': 'platform-api-mail-restic-shim' },
+        },
+        data: { token: desired },
+      },
+    } as Parameters<typeof core.replaceNamespacedSecret>[0]);
+  } catch (err) {
+    const code = (err as { statusCode?: number; code?: number })?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (code !== 404) throw err;
+    // backup-coverage: excluded:derived-from-platform-internal-secret
+    await core.createNamespacedSecret({
+      namespace: MAIL_NAMESPACE,
+      body: {
+        metadata: {
+          name: PLATFORM_API_TOKEN_SECRET,
+          namespace: MAIL_NAMESPACE,
+          labels: { 'app.kubernetes.io/managed-by': 'platform-api-mail-restic-shim' },
+        },
+        data: { token: desired },
+      },
+    } as Parameters<typeof core.createNamespacedSecret>[0]);
+  }
+}
+
 export async function reconcileMailResticShim(
   db: Database,
   clients: MailResticShimClients,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<MailResticShimResult> {
+  // Stats-reporting token first — independent of any target binding
+  // (the standby DaemonSet reports even on target-less clusters).
+  try {
+    await ensurePlatformApiTokenSecret(clients.core, log);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      'mail-restic-shim: platform-api-sa-token ensure failed (stats reporting degraded; retried next tick)',
+    );
+  }
+
   // 1. Determine class binding. Phase 2 legacy purge (2026-05-22)
   // narrowed `backup_target_assignments.backup_class` to the three
   // shim classes (CHECK constraint enforces it), so the legacy

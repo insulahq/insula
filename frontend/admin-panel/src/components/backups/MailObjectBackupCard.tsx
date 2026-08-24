@@ -94,6 +94,12 @@ export default function MailObjectBackupCard({ ov, loading }: { ov: SystemBackup
           </span>
         )}
       </div>
+      {trigger.data?.data?.warning && (
+        <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-300" data-testid="mail-object-backup-warning">
+          <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+          {trigger.data.data.warning}
+        </p>
+      )}
     </div>
   );
 }

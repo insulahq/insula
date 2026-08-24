@@ -73,6 +73,10 @@ export const mailSnapshotBackupTargetUpdateSchema = z.object({
 export type MailSnapshotBackupTargetUpdate = z.infer<typeof mailSnapshotBackupTargetUpdateSchema>;
 
 export const mailSnapshotTriggerResponseSchema = z.object({
+  /** Set when the snapshot runs LOCALLY ONLY (no mail backup target
+   *  bound) — the task will report success without an off-site upload,
+   *  which read as "complete but 0 snapshots" before 2026-08-24. */
+  warning: z.string().nullable().optional(),
   jobName: z.string().min(1),
   startedAt: z.string().datetime(),
   /**

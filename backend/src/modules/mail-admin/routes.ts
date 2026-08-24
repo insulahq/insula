@@ -678,7 +678,10 @@ export async function mailAdminRoutes(app: FastifyInstance): Promise<void> {
       const kubeconfigPath = cfg.KUBECONFIG_PATH as string | undefined;
       app.log.warn({ userId }, 'mail-admin: manual snapshot trigger requested');
       try {
-        const result = await triggerMailSnapshot({ kubeconfigPath });
+        // db MUST be threaded here: it drives the DR-safety writable-guard
+        // AND the target-bound check behind the local-only `warning` field —
+        // without it the guard silently skips and the warning always fires.
+        const result = await triggerMailSnapshot({ kubeconfigPath, db: app.db });
         app.log.warn({ userId, jobName: result.jobName }, 'mail-admin: manual snapshot Job created');
 
         // Task-center wiring (2026-05-16): chip + modal for the

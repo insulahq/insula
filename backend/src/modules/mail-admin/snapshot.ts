@@ -327,6 +327,11 @@ function assertLabelSafe(value: string, field: string): void {
  * Returns immediately with the Job name. UI polls
  * GET /admin/mail/snapshot/jobs/:name for status.
  */
+const LOCAL_ONLY_SNAPSHOT_WARNING =
+  'No mail backup target is assigned — this snapshot is stored on-cluster only '
+  + 'and will NOT be uploaded off-site. Assign a target under Backups → Mail '
+  + 'to enable off-site copies.';
+
 export async function triggerMailSnapshot(
   opts: SnapshotOptions & SnapshotPurposeOptions,
 ): Promise<MailSnapshotTriggerResponse> {
@@ -341,6 +346,7 @@ export async function triggerMailSnapshot(
   // refuse the snapshot before we spawn the Job. Otherwise the Job
   // will fail mid-flight against the upstream that the shim refuses
   // to write through.
+  let mailTargetBound = false;
   if (opts.db) {
     const { eq, inArray } = await import('drizzle-orm');
     const { backupTargetAssignments, backupConfigurations } = await import('../../db/schema.js');
@@ -355,6 +361,7 @@ export async function triggerMailSnapshot(
       .orderBy(backupTargetAssignments.priority)
       .limit(1);
     if (rows[0]?.targetId) {
+      mailTargetBound = true;
       const { requireWritableTarget } = await import('../backup-config/writable-guard.js');
       await requireWritableTarget(opts.db, rows[0].targetId);
     }
@@ -401,7 +408,7 @@ export async function triggerMailSnapshot(
     if (code === 409 && opts.tolerateExisting) {
       // Deterministic-name collision — this minute's fire already
       // exists (tick retry or a second platform-api replica). Success.
-      return mailSnapshotTriggerResponseSchema.parse({ jobName, startedAt });
+      return mailSnapshotTriggerResponseSchema.parse({ jobName, startedAt, warning: mailTargetBound ? null : LOCAL_ONLY_SNAPSHOT_WARNING });
     }
     throw new ApiError(
       'SNAPSHOT_JOB_CREATE_FAILED',
@@ -411,6 +418,7 @@ export async function triggerMailSnapshot(
   }
 
   return mailSnapshotTriggerResponseSchema.parse({
+    warning: mailTargetBound ? null : LOCAL_ONLY_SNAPSHOT_WARNING,
     jobName,
     startedAt,
   });

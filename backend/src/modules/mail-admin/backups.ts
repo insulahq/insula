@@ -36,6 +36,7 @@ import type {
   MailBackupRestoreResponse,
 } from '@insula/api-contracts';
 import { resolvePlatformImage } from '../../shared/platform-images.js';
+import { SHIM_NAMESPACE } from '../backup-rclone-shim/service.js';
 
 const MAIL_NAMESPACE = 'mail';
 const LIST_JOB_PREFIX = 'mail-backup-list-';
@@ -80,6 +81,59 @@ export async function listMailBackups(deps: {
     };
   }
 
+  // Pre-check: the restic Secret is materialised by the mail-restic
+  // shim reconciler (inline on assignment + 5-min tick). If it doesn't
+  // exist yet the list Pod would sit in CreateContainerConfigError and
+  // the operator would read a scary "repo not reachable" for a target
+  // they assigned seconds ago — say what is actually happening instead.
+  try {
+    await deps.core.readNamespacedSecret({
+      name: 'stalwart-snapshot-restic-repo',
+      namespace: MAIL_NAMESPACE,
+    } as Parameters<CoreV1Api['readNamespacedSecret']>[0]);
+  } catch (err) {
+    const code = (err as { statusCode?: number; code?: number })?.statusCode
+      ?? (err as { code?: number })?.code;
+    if (code === 404) {
+      return {
+        snapshots: [],
+        repoReachable: false,
+        reason:
+          'Backup credentials are still being provisioned for this target ' +
+          '(usually completes within a minute of assigning it). Retry shortly.',
+        targetName,
+      };
+    }
+    // Any other read error: fall through — the list Pod surfaces it.
+  }
+
+  // The restic repo URL points at the backup-rclone-shim's in-cluster S3
+  // façade. Right after a target (re)assignment the shim DaemonSet
+  // restarts to load the new config; during that window every restic op
+  // gets connection-refused and the list Pod dies with a generic scary
+  // error. Endpoints with no ready addresses = that window — say so.
+  try {
+    const ep = (await deps.core.readNamespacedEndpoints({
+      name: 'backup-rclone-shim',
+      namespace: SHIM_NAMESPACE,
+    } as Parameters<CoreV1Api['readNamespacedEndpoints']>[0])) as {
+      subsets?: Array<{ addresses?: Array<unknown> }>;
+    };
+    const shimReady = (ep.subsets ?? []).some((s) => (s.addresses ?? []).length > 0);
+    if (!shimReady) {
+      return {
+        snapshots: [],
+        repoReachable: false,
+        reason:
+          'Backup gateway is restarting (a target change is being applied). ' +
+          'Snapshots are unaffected; retry in about a minute.',
+        targetName,
+      };
+    }
+  } catch {
+    // Endpoint read failure → fall through to the real list attempt.
+  }
+
   // Spawn a one-shot Pod that runs `restic snapshots --json` from the
   // same image + envFrom Secret as the stalwart-snapshot CronJob. We
   // can't read the Secret values directly from platform-api (encrypted
@@ -114,6 +168,20 @@ export async function listMailBackups(deps: {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     const timedOut = msg.includes('did not complete within');
+    // restic's "no repository at this location" wording family — the
+    // target is fine, the repo just hasn't been created yet: the FIRST
+    // completed snapshot upload initialises it.
+    const notInitialised = /Is there a repository at the following location|unable to open config file|no repository/i.test(msg);
+    if (notInitialised) {
+      return {
+        snapshots: [],
+        repoReachable: false,
+        reason:
+          'Backup repository not initialized yet — it is created by the first completed ' +
+          'snapshot upload. Run a snapshot (or wait for the next scheduled one) and refresh.',
+        targetName,
+      };
+    }
     const reason = timedOut
       ? `Restic list timed out after ${LIST_TIMEOUT_MS / 1000}s — usually means the off-site target ` +
         `is reachable but slow (CIFS/SMB backends in particular can stall under load). The snapshot ` +

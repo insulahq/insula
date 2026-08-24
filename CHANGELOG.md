@@ -12,6 +12,38 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Pages refresh themselves when a backup task finishes.** Manual system,
+  tenant and mail backup runs (and restores, snapshots, target switches)
+  now invalidate the affected pages' data the moment the task center sees
+  the task complete — no more manual reload to see the new backup.
+- **Database-restart warning before enabling WAL streaming / base backups.**
+  First-enable now asks for confirmation and explains the CNPG rolling
+  restart (up to ~5 min; hosted websites and tenant databases unaffected).
+- **Mail snapshots without an off-site target warn honestly.** Triggering a
+  mail snapshot with no mail backup target assigned returns (and shows) a
+  "stored on-cluster only" warning instead of looking identical to an
+  uploaded snapshot.
+
+### Fixed
+- **Mail backups page no longer reports a scary "repo not reachable" right
+  after assigning a target.** The restic credentials Secret is now
+  materialised inline during target assignment (previously only a 5-minute
+  reconcile tick created it, and the UI's list pod sat in
+  `CreateContainerConfigError`). The provisioning window and a
+  not-yet-initialized repository now each get an accurate message.
+- **Mail snapshot count / repo size were stuck at 0/0 B.** The snapshot
+  jobs' stats-reporting token Secret (`platform-api-sa-token`) was
+  referenced by the manifests but never created by anything; the
+  mail-restic reconciler now owns it, so completed snapshots report their
+  stats to the overview.
+- **Cluster → Storage no longer claims "no backup target" when class
+  targets are assigned.** The card now shows the three backup-class
+  assignments and scopes the "Active" target to what it actually drives:
+  Longhorn volume-level backups.
+- Assigning a backup target now refreshes the backup pages' target/status
+  panels immediately instead of requiring a reload.
+
 ## [2026.8.15] - 2026-08-24
 
 ### Added

@@ -79,9 +79,13 @@ before relying on it.
   new tab**. If the Longhorn URL isn't set, the page points you at
   [Platform → Integrations](platform-settings.md) to configure it. Access
   is gated — only admins reach it.
-- **Active backup target** — a summary of which Remote Storage Target
-  Longhorn backs up to, or a "none configured" prompt if Longhorn volumes
-  aren't being backed up yet.
+- **Backup targets** — the three backup-class assignments (System,
+  Tenant, Mail) with their bound Remote Storage Targets, plus a separate
+  **Longhorn volume backups** section showing which target is *Activated*
+  for volume-level backups. The two mechanisms are independent: class
+  assignments drive the restic/rclone backups, while the Activated target
+  drives Longhorn's own volume backups — assigning classes does not
+  activate a Longhorn target, and vice versa.
 - **Orphaned volumes** — a maintenance surface for storage drift:
   persistent volumes / Longhorn volumes whose owning tenant is gone, or
   that linger in a Released phase past the stale threshold. The **Manage**
