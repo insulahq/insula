@@ -498,6 +498,20 @@ export async function recreateDriftItemEmpty(
  *     rollback) but holds real user mail.
  */
 /**
+ * Kind of a drift item by id (any resolution state) — used by the
+ * delete-orphan route to dispatch to the right destroyer. A capped list
+ * scan is NOT equivalent: an old item beyond the page would silently
+ * mis-dispatch (review 2026-08-25 HIGH).
+ */
+export async function getDriftItemKindById(db: Database, id: string): Promise<MailDriftKind | null> {
+  const [row] = await db
+    .select({ kind: mailDriftItems.kind })
+    .from(mailDriftItems)
+    .where(eq(mailDriftItems.id, id));
+  return (row?.kind as MailDriftKind | undefined) ?? null;
+}
+
+/**
  * Operator-confirmed deletion of an orphan Stalwart MailingList
  * (kind='orphan-list' — a live forwarding address no email_aliases row
  * owns). Mirrors deleteOrphanDomain's confirm-name safety; there are no

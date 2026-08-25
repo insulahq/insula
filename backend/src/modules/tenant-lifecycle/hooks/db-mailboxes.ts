@@ -15,10 +15,17 @@ import {
  *   - suspended  → status='disabled' + STRIP forwarding/auto-reply from
  *                  the mail server (2026-08-25 drift audit: the Sieve
  *                  script used to keep forwarding a suspended tenant's
- *                  mail — an outbound action on behalf of a tenant the
- *                  platform says is off. Inbound mail keeps being
- *                  STORED, so nothing is lost across a suspension;
- *                  send-only accounts keep their ereject bounce.)
+ *                  mail — an AUTOMATIC outbound action on behalf of a
+ *                  tenant the platform says is off. Inbound mail keeps
+ *                  being STORED, so nothing is lost across a suspension;
+ *                  send-only accounts keep their ereject bounce.
+ *                  Deliberately NOT stripped: mailbox aliases and their
+ *                  send-as identities. Suspension does not disable the
+ *                  account's authenticated sending at all (the primary
+ *                  address can still submit), so revoking only the alias
+ *                  identities would be security theater — if suspension
+ *                  should block sending, that's an account-permission
+ *                  change to make for primary+aliases together.)
  *   - archived   → destroy the Stalwart account principals FIRST, then
  *                  DELETE FROM mailboxes (2026-08-25 drift audit: rows
  *                  used to be deleted with the principals left alive —

@@ -1287,7 +1287,7 @@ function MailboxAliasesSection({
                     catch { /* error rendered below */ }
                     finally { setPendingId(null); }
                   }}
-                  disabled={updateAlias.isPending && pendingId === a.id}
+                  disabled={(updateAlias.isPending || deleteAlias.isPending) && pendingId === a.id}
                   className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
                   data-testid={`toggle-mailbox-alias-${a.id}`}
                 >
@@ -1304,7 +1304,7 @@ function MailboxAliasesSection({
                     catch { /* error rendered below */ }
                     finally { setPendingId(null); }
                   }}
-                  disabled={deleteAlias.isPending && pendingId === a.id}
+                  disabled={(updateAlias.isPending || deleteAlias.isPending) && pendingId === a.id}
                   className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50"
                   data-testid={`delete-mailbox-alias-${a.id}`}
                 >

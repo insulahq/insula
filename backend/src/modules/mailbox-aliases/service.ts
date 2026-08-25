@@ -36,6 +36,12 @@ function aliasNotFound(id: string): ApiError {
   return new ApiError('MAILBOX_ALIAS_NOT_FOUND', `Mailbox alias '${id}' not found`, 404);
 }
 
+// Cap mirrors the mailing-list destination cap (20): every mutation
+// re-pushes the account's whole alias map and the periodic sweep loads
+// all rows, so an unbounded count is a shared-resource abuse vector
+// (security review 2026-08-25). Not a plan quota — a fixed sanity bound.
+export const MAX_ALIASES_PER_MAILBOX = 20;
+
 function mailServerError(op: string, err: unknown): ApiError {
   if (err instanceof JmapError && err.code === 'primaryKeyViolation') {
     return new ApiError(
@@ -169,6 +175,20 @@ export async function createMailboxAlias(
     const localPart = input.local_part.toLowerCase();
     const fullAddress = `${localPart}@${domainName}`;
 
+    const existing = await db
+      .select({ id: mailboxAliases.id })
+      .from(mailboxAliases)
+      .where(eq(mailboxAliases.mailboxId, mailboxId));
+    if (existing.length >= MAX_ALIASES_PER_MAILBOX) {
+      throw new ApiError(
+        'MAILBOX_ALIAS_LIMIT_REACHED',
+        `A mailbox can carry at most ${MAX_ALIASES_PER_MAILBOX} aliases`,
+        409,
+        { limit: MAX_ALIASES_PER_MAILBOX, current: existing.length },
+        'Remove an unused alias first',
+      );
+    }
+
     await assertAddressAvailable(db, fullAddress);
 
     // Push the whole desired map (existing enabled rows + the new alias)
@@ -262,13 +282,23 @@ export async function updateMailboxAlias(
   aliasId: string,
   input: UpdateMailboxAliasInput,
 ) {
-  const [alias] = await db
-    .select()
+  // Pre-lock read resolves the mailboxId for the lock key only.
+  const [preLock] = await db
+    .select({ id: mailboxAliases.id, mailboxId: mailboxAliases.mailboxId })
     .from(mailboxAliases)
     .where(and(eq(mailboxAliases.id, aliasId), eq(mailboxAliases.tenantId, tenantId)));
-  if (!alias) throw aliasNotFound(aliasId);
+  if (!preLock) throw aliasNotFound(aliasId);
 
-  return withMailboxLock(alias.mailboxId, async () => {
+  return withMailboxLock(preLock.mailboxId, async () => {
+    // Re-read INSIDE the lock — a concurrent PATCH that queued ahead of
+    // this one may have flipped the row already, and a no-op decision
+    // against the stale pre-lock snapshot would silently skip the push
+    // (review 2026-08-25 HIGH).
+    const [alias] = await db
+      .select()
+      .from(mailboxAliases)
+      .where(and(eq(mailboxAliases.id, aliasId), eq(mailboxAliases.tenantId, tenantId)));
+    if (!alias) throw aliasNotFound(aliasId);
     const desiredEnabled = input.enabled;
     if ((alias.enabled === 1) === desiredEnabled) {
       return alias; // no-op

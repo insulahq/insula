@@ -924,15 +924,27 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           if (sweepRunning) return;
           sweepRunning = true;
           void (async () => {
+            // Each reconcile is independent — one subsystem's structural
+            // failure must not skip the others' convergence for a tick.
             try {
-              const { reconcileAllMailboxMailRules } = await import('./modules/mailboxes/mail-rules-reconcile.js');
-              const { reconcileAllEmailAliases } = await import('./modules/email-aliases/aliases-reconcile.js');
-              const { reconcileAllMailboxAliases } = await import('./modules/mailbox-aliases/aliases-reconcile.js');
-              await reconcileAllMailboxMailRules(app.db);
-              await reconcileAllEmailAliases(app.db);
-              await reconcileAllMailboxAliases(app.db);
-            } catch (err) {
-              app.log.warn({ err }, 'periodic mail-convergence sweep failed (retried next tick)');
+              try {
+                const { reconcileAllMailboxMailRules } = await import('./modules/mailboxes/mail-rules-reconcile.js');
+                await reconcileAllMailboxMailRules(app.db);
+              } catch (err) {
+                app.log.warn({ err }, 'periodic sweep: mail-rules reconcile failed (retried next tick)');
+              }
+              try {
+                const { reconcileAllEmailAliases } = await import('./modules/email-aliases/aliases-reconcile.js');
+                await reconcileAllEmailAliases(app.db);
+              } catch (err) {
+                app.log.warn({ err }, 'periodic sweep: email-alias reconcile failed (retried next tick)');
+              }
+              try {
+                const { reconcileAllMailboxAliases } = await import('./modules/mailbox-aliases/aliases-reconcile.js');
+                await reconcileAllMailboxAliases(app.db);
+              } catch (err) {
+                app.log.warn({ err }, 'periodic sweep: mailbox-alias reconcile failed (retried next tick)');
+              }
             } finally {
               sweepRunning = false;
             }

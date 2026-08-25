@@ -26,6 +26,7 @@ import {
   recreateDriftItemEmpty,
   deleteOrphanDomain,
   deleteOrphanList,
+  getDriftItemKindById,
 } from './service.js';
 
 const idParamSchema = z.object({ id: z.string().uuid() });
@@ -115,9 +116,8 @@ export async function registerMailDriftRoutes(app: FastifyInstance): Promise<voi
         { userId, driftItemId: parsedParams.data.id, confirmName: parsedBody.data.confirmName },
         'mail-drift: operator-triggered ORPHAN DELETE (destructive)',
       );
-      const kindRow = await listDriftItems(app.db);
-      const target = kindRow.items.find((i) => i.id === parsedParams.data.id);
-      if (target?.kind === 'orphan-list') {
+      const targetKind = await getDriftItemKindById(app.db, parsedParams.data.id);
+      if (targetKind === 'orphan-list') {
         const result = await deleteOrphanList(
           app.db,
           parsedParams.data.id,

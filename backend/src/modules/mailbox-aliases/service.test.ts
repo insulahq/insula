@@ -105,10 +105,10 @@ beforeEach(() => {
 
 describe('createMailboxAlias', () => {
   it('pushes the whole map + identity, then inserts the row', async () => {
-    // selects: mailbox, emailDomain, parentDomain, dup-mailbox, dup-list-alias,
-    // dup-mailbox-alias, desired-map rows, created row
+    // selects: mailbox, emailDomain, parentDomain, alias-count, dup-mailbox,
+    // dup-list-alias, dup-mailbox-alias, desired-map rows, created row
     const { db, insertValues } = createMockDb([
-      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [], [], [ALIAS],
+      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [], [], [], [ALIAS],
     ]);
     const result = await createMailboxAlias(db, 'c1', 'mb1', { local_part: 'Info' });
     expect(result).toEqual(ALIAS);
@@ -129,7 +129,7 @@ describe('createMailboxAlias', () => {
 
   it('409s when the address is already a mailbox', async () => {
     const { db } = createMockDb([
-      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [{ id: 'other-mb' }],
+      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [{ id: 'other-mb' }],
     ]);
     await expect(createMailboxAlias(db, 'c1', 'mb1', { local_part: 'taken' }))
       .rejects.toMatchObject({ code: 'DUPLICATE_ENTRY' });
@@ -138,10 +138,20 @@ describe('createMailboxAlias', () => {
 
   it('409s when the address is already a mailing-list alias', async () => {
     const { db } = createMockDb([
-      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [{ id: 'list-alias' }],
+      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [{ id: 'list-alias' }],
     ]);
     await expect(createMailboxAlias(db, 'c1', 'mb1', { local_part: 'taken' }))
       .rejects.toMatchObject({ code: 'DUPLICATE_ENTRY' });
+  });
+
+  it('409s at the per-mailbox alias cap', async () => {
+    const many = Array.from({ length: 20 }, (_, i) => ({ id: `al${i}` }));
+    const { db } = createMockDb([
+      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], many,
+    ]);
+    await expect(createMailboxAlias(db, 'c1', 'mb1', { local_part: 'extra' }))
+      .rejects.toMatchObject({ code: 'MAILBOX_ALIAS_LIMIT_REACHED' });
+    expect(accountAliases.setAccountAliases).not.toHaveBeenCalled();
   });
 
   it('maps a Stalwart primaryKeyViolation to DUPLICATE_ENTRY and rolls back the map', async () => {
@@ -150,7 +160,7 @@ describe('createMailboxAlias', () => {
       .mockRejectedValueOnce(new JmapError('collision', 'primaryKeyViolation'))
       .mockResolvedValueOnce(undefined); // compensating re-push
     const { db, insertValues } = createMockDb([
-      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [], [], [],
+      [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [], [], [], [],
     ]);
     await expect(createMailboxAlias(db, 'c1', 'mb1', { local_part: 'clash' }))
       .rejects.toMatchObject({ code: 'DUPLICATE_ENTRY' });
@@ -162,7 +172,7 @@ describe('createMailboxAlias', () => {
   it('stores the row unprovisioned when the mailbox has no principal yet', async () => {
     const unprovisioned = { ...MAILBOX, stalwartPrincipalId: null };
     const { db, insertValues } = createMockDb([
-      [unprovisioned], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [], [{ ...ALIAS }],
+      [unprovisioned], [EMAIL_DOMAIN], [PARENT_DOMAIN], [], [], [], [], [{ ...ALIAS }],
     ]);
     await createMailboxAlias(db, 'c1', 'mb1', { local_part: 'info' });
     expect(accountAliases.setAccountAliases).not.toHaveBeenCalled();
@@ -172,9 +182,10 @@ describe('createMailboxAlias', () => {
 
 describe('updateMailboxAlias', () => {
   it('disable pushes the flipped map and destroys the identity', async () => {
-    // selects: alias row, mailbox, emailDomain, parentDomain, desired-map rows, updated row
+    // selects: pre-lock row, in-lock re-read, mailbox, emailDomain,
+    // parentDomain, desired-map rows, updated row
     const { db } = createMockDb([
-      [ALIAS], [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [ALIAS], [{ ...ALIAS, enabled: 0 }],
+      [ALIAS], [ALIAS], [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [ALIAS], [{ ...ALIAS, enabled: 0 }],
     ]);
     const result = await updateMailboxAlias(db, 'c1', 'al1', { enabled: false });
     expect(result.enabled).toBe(0);
@@ -189,7 +200,7 @@ describe('updateMailboxAlias', () => {
   it('enable pushes the map and ensures the identity', async () => {
     const disabled = { ...ALIAS, enabled: 0 };
     const { db } = createMockDb([
-      [disabled], [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [disabled], [ALIAS],
+      [disabled], [disabled], [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [disabled], [ALIAS],
     ]);
     const result = await updateMailboxAlias(db, 'c1', 'al1', { enabled: true });
     expect(result.enabled).toBe(1);
@@ -199,8 +210,8 @@ describe('updateMailboxAlias', () => {
     expect(accountAliases.ensureIdentityForAddress).toHaveBeenCalled();
   });
 
-  it('no-ops when enabled already matches', async () => {
-    const { db } = createMockDb([[ALIAS]]);
+  it('no-ops when enabled already matches (decided on the in-lock re-read)', async () => {
+    const { db } = createMockDb([[ALIAS], [ALIAS]]);
     const result = await updateMailboxAlias(db, 'c1', 'al1', { enabled: true });
     expect(result).toEqual(ALIAS);
     expect(accountAliases.setAccountAliases).not.toHaveBeenCalled();
@@ -209,7 +220,7 @@ describe('updateMailboxAlias', () => {
   it('502s visibly when the Stalwart push fails', async () => {
     vi.mocked(accountAliases.setAccountAliases).mockRejectedValueOnce(new Error('boom'));
     const { db } = createMockDb([
-      [ALIAS], [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [ALIAS],
+      [ALIAS], [ALIAS], [MAILBOX], [EMAIL_DOMAIN], [PARENT_DOMAIN], [ALIAS],
     ]);
     await expect(updateMailboxAlias(db, 'c1', 'al1', { enabled: false }))
       .rejects.toMatchObject({ code: 'MAIL_SERVER_ERROR' });

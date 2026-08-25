@@ -366,7 +366,7 @@ export async function ensureStalwartPrincipals(
           .select()
           .from(mailboxAliasesTable)
           .where(eq(mailboxAliasesTable.mailboxId, dbRow.id));
-        const restoredDomainId = domainIdByName.get(address.split('@')[1] ?? '');
+        const restoredDomainId = domainIdByName.get((address.split('@')[1] ?? '').toLowerCase());
         if (aliasRows.length > 0 && restoredDomainId) {
           const { setAccountAliases, reconcileIdentitiesForAccount } = await import('../../stalwart-jmap/account-aliases.js');
           await setAccountAliases({
