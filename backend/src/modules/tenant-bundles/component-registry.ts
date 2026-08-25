@@ -102,6 +102,7 @@ export const BUNDLE_COMPONENTS: ReadonlyArray<ComponentOwnership> = [
       'emailDomains',
       'mailboxes',
       'emailAliases',
+      'mailboxAliases',
       'mailSubmitCredentials',
       'sshKeys',
       'sftpUsers',

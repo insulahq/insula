@@ -179,6 +179,17 @@ export async function recreateDriftItemEmpty(
       400,
     );
   }
+  // Orphan kinds describe a Stalwart object that EXISTS with no platform
+  // row — there is nothing missing to recreate. Without this guard an
+  // orphan item fell through to the mailbox branch and failed opaquely
+  // on the platform-row lookup (2026-08-25 audit).
+  if (item.kind === 'orphan-domain' || item.kind === 'orphan-list') {
+    throw new ApiError(
+      'INVALID_DRIFT_ACTION',
+      `recreate-empty does not apply to kind='${item.kind}' — the Stalwart entry exists; the remediation is operator-confirmed deletion (delete-orphan).`,
+      400,
+    );
+  }
 
   let newStalwartId: string;
   let followUp: string;
@@ -486,6 +497,96 @@ export async function recreateDriftItemEmpty(
  *     domain that only LOOKS orphaned (e.g. after a platform-DB PITR
  *     rollback) but holds real user mail.
  */
+/**
+ * Operator-confirmed deletion of an orphan Stalwart MailingList
+ * (kind='orphan-list' — a live forwarding address no email_aliases row
+ * owns). Mirrors deleteOrphanDomain's confirm-name safety; there are no
+ * linked objects to clean first, a list destroy is standalone.
+ */
+export async function deleteOrphanList(
+  db: Database,
+  id: string,
+  confirmName: string,
+): Promise<{ item: MailDriftItem }> {
+  const [item] = await db
+    .select()
+    .from(mailDriftItems)
+    .where(and(eq(mailDriftItems.id, id), isNull(mailDriftItems.resolvedAt)));
+  if (!item) {
+    throw new ApiError('DRIFT_ITEM_NOT_FOUND', `No unresolved drift item with id '${id}'`, 404);
+  }
+  if (item.kind !== 'orphan-list') {
+    throw new ApiError(
+      'INVALID_DRIFT_ACTION',
+      `delete-orphan-list only applies to kind='orphan-list' (this item is '${item.kind}')`,
+      400,
+    );
+  }
+  if (confirmName.trim().toLowerCase() !== item.expectedName.toLowerCase()) {
+    throw new ApiError(
+      'CONFIRM_NAME_MISMATCH',
+      `Confirmation token did not match. Expected '${item.expectedName}'.`,
+      400,
+    );
+  }
+  const listId = item.expectedStalwartId;
+  if (!listId) {
+    throw new ApiError('DRIFT_ITEM_INVALID', 'orphan-list item carries no Stalwart id', 409);
+  }
+
+  const { getJmapSession } = await import('../stalwart-jmap/client.js');
+  const { destroyMailingList } = await import('../stalwart-jmap/mailing-lists.js');
+  const baseUrl = process.env.STALWART_MGMT_URL;
+  const session = await getJmapSession(baseUrl, process.env);
+  const accountId = session.primaryAccounts['urn:ietf:params:jmap:principals'];
+  if (!accountId) {
+    throw new ApiError(
+      'STALWART_UNREACHABLE',
+      'Stalwart admin account ID could not be resolved (mail stack down?)',
+      503,
+    );
+  }
+
+  try {
+    await destroyMailingList({ accountId, listId, baseUrl });
+  } catch (err) {
+    throw new ApiError(
+      'ORPHAN_DELETE_FAILED',
+      `Stalwart MailingList destroy failed: ${err instanceof Error ? err.message : String(err)}`,
+      502,
+    );
+  }
+
+  await db
+    .update(mailDriftItems)
+    .set({ resolvedAt: sql`now()`, resolvedVia: 'deleted' })
+    .where(eq(mailDriftItems.id, id));
+
+  log.warn(
+    { driftItemId: id, listAddress: item.expectedName, stalwartListId: listId },
+    'mail-drift: operator-confirmed orphan MailingList DELETED from Stalwart',
+  );
+
+  const [updated] = await db
+    .select()
+    .from(mailDriftItems)
+    .where(eq(mailDriftItems.id, id));
+  return {
+    item: {
+      id: updated.id,
+      kind: updated.kind as MailDriftKind,
+      expectedName: updated.expectedName,
+      expectedStalwartId: updated.expectedStalwartId,
+      platformRowId: updated.platformRowId,
+      firstDetectedAt: updated.firstDetectedAt.toISOString(),
+      lastSeenAt: updated.lastSeenAt.toISOString(),
+      resolvedAt: updated.resolvedAt?.toISOString() ?? null,
+      resolvedVia: (updated.resolvedVia as MailDriftItem['resolvedVia']) ?? null,
+      notes: updated.notes,
+    },
+  };
+}
+
 export async function deleteOrphanDomain(
   db: Database,
   id: string,

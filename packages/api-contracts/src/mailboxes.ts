@@ -80,6 +80,11 @@ export const mailboxResponseSchema = z.object({
   autoReplySubject: z.string().nullable(),
   // null/[] = forwarding off. See forwardingAddressesSchema for semantics.
   forwardingAddresses: z.array(z.string()).nullable(),
+  // ENABLED per-mailbox alias addresses (mailbox_aliases rows — see
+  // mailbox-aliases.ts). Filled on list/get responses so tables can show
+  // them without a second fetch; optional so create/update responses and
+  // older fixtures stay valid.
+  aliases: z.array(z.string()).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

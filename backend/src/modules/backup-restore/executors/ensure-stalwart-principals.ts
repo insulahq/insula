@@ -356,6 +356,46 @@ export async function ensureStalwartPrincipals(
           );
         }
       }
+      // Re-apply per-mailbox aliases + send-as identities — the fresh
+      // principal starts with an empty alias map, which would silently
+      // drop every alias address until the next reconcile sweep.
+      // Best-effort like the rules re-apply above.
+      try {
+        const { mailboxAliases: mailboxAliasesTable } = await import('../../../db/schema.js');
+        const aliasRows = await app.db
+          .select()
+          .from(mailboxAliasesTable)
+          .where(eq(mailboxAliasesTable.mailboxId, dbRow.id));
+        const restoredDomainId = domainIdByName.get(address.split('@')[1] ?? '');
+        if (aliasRows.length > 0 && restoredDomainId) {
+          const { setAccountAliases, reconcileIdentitiesForAccount } = await import('../../stalwart-jmap/account-aliases.js');
+          await setAccountAliases({
+            accountId: principalsAccountId,
+            principalId: newPrincipalId,
+            aliases: aliasRows.map((r) => ({
+              localPart: r.localPart,
+              stalwartDomainId: restoredDomainId,
+              enabled: r.enabled === 1,
+            })),
+            baseUrl: jmapBaseUrl,
+          });
+          await reconcileIdentitiesForAccount({
+            principalId: newPrincipalId,
+            wantAddresses: aliasRows.filter((r) => r.enabled === 1).map((r) => r.fullAddress),
+            dropAddresses: aliasRows.filter((r) => r.enabled !== 1).map((r) => r.fullAddress),
+            baseUrl: jmapBaseUrl,
+          });
+        }
+      } catch (aliasErr) {
+        app.log.warn(
+          {
+            module: 'ensure-stalwart-principals',
+            address,
+            err: aliasErr instanceof Error ? aliasErr.message : String(aliasErr),
+          },
+          'mailbox-alias re-apply failed after principal recreate (reconcile sweep converges)',
+        );
+      }
       // Back-fill the platform DB row's stalwartPrincipalId so the
       // next principals-sync run doesn't see the row as an orphan.
       await app.db
