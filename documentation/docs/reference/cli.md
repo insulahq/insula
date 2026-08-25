@@ -37,6 +37,8 @@ platform-ops <command> [args]
 | `dr verify` | Inspect a disaster-recovery bundle — decrypts and prints the manifest, read-only, works with the cluster down |
 | `dr restore` | Restore from a DR bundle (selected rows or full recovery) |
 | `dr rescue` | Safety snapshots of the system volumes before risky surgery |
+| `operator-key rotate [--recipient age1…] [--yes] [--skip-bundle]` | Re-generate the operator age key (bundle encryption) — the recovery path when the private key is lost. Updates the cluster recipient and triggers a fresh bundle export. Bundles from **before** the rotation stay readable only with the old key |
+| `operator-key status [--json]` | Show the cluster recipient and whether the key file on this host matches it |
 | `self-upgrade [--check] [--force] [--version X.Y.Z]` | Update the binary itself (signature-verified, atomic) |
 | `host-config status` | Report drift between this host and the cluster's host policy |
 | `host-config apply [--dry-run]` | Converge host sysctls, OS packages (additive-only), and host-migration scripts to policy |

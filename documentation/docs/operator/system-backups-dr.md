@@ -56,14 +56,16 @@ everything that matters, and the **key** to decrypt it.
   daily secrets-backup CronJob refreshes it and uploads it to your `system`
   target.
 - **The operator age key** — a keypair generated at first bootstrap. The public
-  half lives on the cluster; the **private half is printed once, at install, and
-  never stored on the cluster.** It is the only thing that can decrypt your
-  backups.
+  half lives on the cluster; the **private half is written once, at install, to
+  `/var/lib/hosting-platform/operator-key/operator-private.key`** on the first
+  server. Pull it off (`make secrets-fetch`), store it offline, and delete it
+  from the host — it is the only thing that can decrypt your backups.
 
 !!! danger "Keep the age key safe — and off the cluster"
-    If you lose your `AGE-SECRET-KEY-1…` private key, **your backups become
-    permanently unrecoverable**. If it leaks, anyone with your backups can read
-    them. Store it in at least two places that are not the cluster:
+    If you lose your `AGE-SECRET-KEY-1…` private key, **every bundle already
+    exported becomes permanently unrecoverable**. If it leaks, anyone with your
+    backups can read them. Store it in at least two places that are not the
+    cluster:
 
     - a password manager (1Password / Bitwarden / Vaultwarden), and
     - an offline paper copy in a safe (recommended for production).
@@ -71,6 +73,19 @@ everything that matters, and the **key** to decrypt it.
     Never paste it into chat, email, or a private repo. Never back it up
     alongside the encrypted backups it unlocks. Full guidance:
     [Operator Key Setup](https://github.com/insulahq/insula/blob/main/docs/operations/OPERATOR_KEY_SETUP.md).
+
+**Lost the key?** Rotate to a new one so future backups are protected again:
+
+```bash
+insula operator-key status          # what do bundles currently encrypt to?
+insula operator-key rotate          # mint a new keypair + update the cluster
+```
+
+`rotate` preserves any old key files on the host (`*.old-<stamp>`), updates the
+cluster recipient, and immediately triggers a fresh bundle export so the newest
+off-site bundle is readable with the new key. Bundles exported **before** the
+rotation stay encrypted to the old key — rotation cannot retroactively rescue
+them, which is exactly why the key belongs in two offline places.
 
 Check which recipient is currently active:
 
