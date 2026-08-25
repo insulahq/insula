@@ -7,7 +7,7 @@
  * `setBossForTesting()`.
  */
 import { PgBoss } from 'pg-boss';
-import { NOTIFICATIONS_EMAIL_QUEUE } from './types.js';
+import { NOTIFICATIONS_EMAIL_QUEUE, NOTIFICATIONS_NTFY_QUEUE } from './types.js';
 
 /** Minimum surface of pg-boss the rest of the queue module relies on.
  *  Lets us inject a fake in tests without polyfilling the whole class. */
@@ -90,6 +90,7 @@ export async function getBoss(): Promise<BossLike> {
     attachErrorHandler(instance);
     await instance.start();
     await instance.createQueue(NOTIFICATIONS_EMAIL_QUEUE);
+    await instance.createQueue(NOTIFICATIONS_NTFY_QUEUE);
   }
   return instance;
 }

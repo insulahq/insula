@@ -3,7 +3,7 @@
  * delivery row is written.
  */
 import { getBoss, type BossLike } from './bootstrap.js';
-import { NOTIFICATIONS_EMAIL_QUEUE, type NotificationSendJob } from './types.js';
+import { NOTIFICATIONS_EMAIL_QUEUE, NOTIFICATIONS_NTFY_QUEUE, type NotificationSendJob } from './types.js';
 
 export interface EnqueueOptions {
   /** Earliest the worker may pick the job up. Used for retry scheduling. */
@@ -27,6 +27,20 @@ export async function enqueueDelivery(
   const b = boss ?? await getBoss();
   const payload: NotificationSendJob = { deliveryId };
   return await b.send(NOTIFICATIONS_EMAIL_QUEUE, payload, {
+    startAfter: options.startAfter,
+    singletonKey: options.singletonKey ?? `delivery:${deliveryId}`,
+  });
+}
+
+/** Enqueue a `notification_deliveries` row for the ntfy worker. */
+export async function enqueueNtfyDelivery(
+  deliveryId: string,
+  options: EnqueueOptions = {},
+  boss?: BossLike,
+): Promise<string | null> {
+  const b = boss ?? await getBoss();
+  const payload: NotificationSendJob = { deliveryId };
+  return await b.send(NOTIFICATIONS_NTFY_QUEUE, payload, {
     startAfter: options.startAfter,
     singletonKey: options.singletonKey ?? `delivery:${deliveryId}`,
   });

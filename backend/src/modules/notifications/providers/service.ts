@@ -18,6 +18,7 @@ import type {
   TestNotificationProviderResponse,
   UpdateNotificationProviderInput,
 } from '@insula/api-contracts';
+import { NTFY_DEFAULT_SERVER_URL } from '@insula/api-contracts';
 
 type Row = typeof notificationProviders.$inferSelect;
 
@@ -39,6 +40,10 @@ function rowToResponse(row: Row): NotificationProviderResponse {
     fromAddress: row.fromAddress,
     fromName: row.fromName ?? null,
     region: row.region ?? null,
+    ntfyServerUrl: row.ntfyServerUrl ?? null,
+    ntfyTopic: row.ntfyTopic ?? null,
+    ntfyAuthMethod: (row.ntfyAuthMethod as 'none' | 'token' | 'basic' | null) ?? null,
+    ntfyTokenSet: row.ntfyTokenEncrypted != null && row.ntfyTokenEncrypted.length > 0,
     lastTestedAt: row.lastTestedAt?.toISOString() ?? null,
     lastTestStatus: (row.lastTestStatus as 'success' | 'failed' | null) ?? null,
     lastTestError: row.lastTestError ?? null,
@@ -156,10 +161,15 @@ export async function createProvider(
   // them defensively here so a refactor that loosens the schema
   // can't accidentally persist credentials we'd silently ignore.
   const isStalwartInternal = input.providerType === 'stalwart-internal';
+  const isNtfy = input.providerType === 'ntfy';
+  const channel = isNtfy ? ('ntfy' as const) : ('email' as const);
   const passwordEncrypted = !isStalwartInternal && input.authPassword
     ? encrypt(input.authPassword, ctx.encryptionKey)
     : null;
-  await ensureSingleDefault(db, { channel: 'email', wantDefault: input.isDefault });
+  const ntfyTokenEncrypted = isNtfy && input.ntfyToken
+    ? encrypt(input.ntfyToken, ctx.encryptionKey)
+    : null;
+  await ensureSingleDefault(db, { channel, wantDefault: input.isDefault });
   const id = crypto.randomUUID();
   await db.insert(notificationProviders).values({
     id,
@@ -167,17 +177,23 @@ export async function createProvider(
     providerType: input.providerType,
     scope: 'platform',
     tenantId: null,
-    channel: 'email',
+    channel,
     isDefault: input.isDefault,
     enabled: input.enabled,
-    smtpHost: input.smtpHost,
+    smtpHost: isNtfy ? null : (input.smtpHost ?? null),
     smtpPort: input.smtpPort,
     smtpSecure: input.smtpSecure,
     authUsername: isStalwartInternal ? null : (input.authUsername ?? null),
     authPasswordEncrypted: passwordEncrypted,
-    fromAddress: input.fromAddress,
+    // fromAddress is NOT NULL in the schema for email semantics; ntfy
+    // providers have no sender address — store the empty string.
+    fromAddress: isNtfy ? '' : (input.fromAddress ?? ''),
     fromName: input.fromName ?? null,
     region: input.region ?? null,
+    ntfyServerUrl: isNtfy ? (input.ntfyServerUrl ?? NTFY_DEFAULT_SERVER_URL) : null,
+    ntfyTopic: isNtfy ? (input.ntfyTopic ?? null) : null,
+    ntfyAuthMethod: isNtfy ? (input.ntfyAuthMethod ?? 'none') : null,
+    ntfyTokenEncrypted,
     createdByUserId: ctx.userId,
   });
   return await getProvider(db, id);
@@ -191,7 +207,7 @@ export async function updateProvider(
 ): Promise<NotificationProviderResponse> {
   const existing = await getProvider(db, id);
   if (input.isDefault === true && !existing.isDefault) {
-    await ensureSingleDefault(db, { channel: 'email', wantDefault: true, excludeId: id });
+    await ensureSingleDefault(db, { channel: existing.channel, wantDefault: true, excludeId: id });
   }
   const patch: Partial<typeof notificationProviders.$inferInsert> = {};
   if (input.name !== undefined) patch.name = input.name;
@@ -205,6 +221,10 @@ export async function updateProvider(
   if (input.region !== undefined) patch.region = input.region;
   if (input.enabled !== undefined) patch.enabled = input.enabled;
   if (input.isDefault !== undefined) patch.isDefault = input.isDefault;
+  if (input.ntfyServerUrl !== undefined) patch.ntfyServerUrl = input.ntfyServerUrl;
+  if (input.ntfyTopic !== undefined) patch.ntfyTopic = input.ntfyTopic;
+  if (input.ntfyAuthMethod !== undefined) patch.ntfyAuthMethod = input.ntfyAuthMethod;
+  if (input.ntfyToken !== undefined) patch.ntfyTokenEncrypted = encrypt(input.ntfyToken, ctx.encryptionKey);
   if (Object.keys(patch).length > 0) {
     await db.update(notificationProviders).set(patch).where(eq(notificationProviders.id, id));
   }
@@ -239,6 +259,12 @@ export async function testProvider(
   if (!row) {
     throw new ApiError('NOTIFICATION_PROVIDER_NOT_FOUND', `Notification provider '${id}' not found`, 404, { provider_id: id });
   }
+  if (row.providerType === 'ntfy') {
+    return await testNtfyProvider(db, row, ctx);
+  }
+  if (!input.recipientEmail) {
+    throw new ApiError('INVALID_FIELD_VALUE', 'recipientEmail is required to test an email provider', 400);
+  }
   const password = row.authPasswordEncrypted ? safeDecrypt(row.authPasswordEncrypted, ctx.encryptionKey) : null;
   const fromName = row.fromName ?? 'Insula';
   const transport = nodemailer.createTransport({
@@ -268,6 +294,42 @@ export async function testProvider(
   }
 }
 
+/** Publish a real test message to the configured topic. */
+async function testNtfyProvider(
+  db: Database,
+  row: Row,
+  ctx: { readonly encryptionKey: string },
+): Promise<TestNotificationProviderResponse> {
+  const now = new Date();
+  const authMethod = (row.ntfyAuthMethod ?? 'none') as 'none' | 'token' | 'basic';
+  const cfg = {
+    serverUrl: row.ntfyServerUrl ?? NTFY_DEFAULT_SERVER_URL,
+    topic: row.ntfyTopic ?? '',
+    authMethod,
+    token: row.ntfyTokenEncrypted ? safeDecrypt(row.ntfyTokenEncrypted, ctx.encryptionKey) : null,
+    username: row.authUsername,
+    password: row.authPasswordEncrypted ? safeDecrypt(row.authPasswordEncrypted, ctx.encryptionKey) : null,
+  };
+  try {
+    const { publishNtfy } = await import('../ntfy/publisher.js');
+    await publishNtfy(cfg, {
+      title: 'Notification provider test',
+      message: `Automated test from the ntfy provider "${row.name}". If you can read this, the server, topic and credentials are working.`,
+      severity: 'info',
+    });
+    await db.update(notificationProviders)
+      .set({ lastTestedAt: now, lastTestStatus: 'success', lastTestError: null })
+      .where(eq(notificationProviders.id, row.id));
+    return { status: 'success', testedAt: now.toISOString(), error: null };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await db.update(notificationProviders)
+      .set({ lastTestedAt: now, lastTestStatus: 'failed', lastTestError: msg })
+      .where(eq(notificationProviders.id, row.id));
+    return { status: 'failed', testedAt: now.toISOString(), error: msg };
+  }
+}
+
 async function getRawRow(db: Database, id: string): Promise<Row | null> {
   const [row] = await db
     .select()
@@ -293,7 +355,7 @@ function safeDecrypt(encrypted: string, key: string): string | null {
  */
 async function ensureSingleDefault(
   db: Database,
-  opts: { channel: 'in_app' | 'email'; wantDefault: boolean; excludeId?: string },
+  opts: { channel: 'in_app' | 'email' | 'ntfy'; wantDefault: boolean; excludeId?: string },
 ): Promise<void> {
   if (!opts.wantDefault) return;
   const filters = [

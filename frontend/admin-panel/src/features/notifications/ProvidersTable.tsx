@@ -42,6 +42,7 @@ const PROVIDER_TYPE_LABEL: Record<NotificationProviderType, string> = {
   'brevo': 'Brevo',
   'mailjet': 'Mailjet',
   'mailgun-eu': 'Mailgun EU',
+  'ntfy': 'ntfy push (topic)',
 };
 
 export default function ProvidersTable() {
@@ -213,6 +214,13 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
   const [fromName, setFromName] = useState(provider?.fromName ?? '');
   const [enabled, setEnabled] = useState(provider?.enabled ?? true);
   const [isDefault, setIsDefault] = useState(provider?.isDefault ?? false);
+  // ─── ntfy fields ───
+  const [ntfyServerUrl, setNtfyServerUrl] = useState(provider?.ntfyServerUrl ?? 'https://ntfy.sh');
+  const [ntfyTopic, setNtfyTopic] = useState(provider?.ntfyTopic ?? '');
+  const [ntfyAuthMethod, setNtfyAuthMethod] = useState<'none' | 'token' | 'basic'>(provider?.ntfyAuthMethod ?? 'none');
+  const [ntfyToken, setNtfyToken] = useState('');
+
+  const isNtfy = providerType === 'ntfy';
 
   const onProviderTypeChange = (next: NotificationProviderType): void => {
     setProviderType(next);
@@ -233,35 +241,62 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
     const authPasswordValue = isStalwartInternal ? undefined : (authPassword || undefined);
     try {
       if (isNew) {
-        const input: CreateNotificationProviderInput = {
-          name,
-          providerType,
-          smtpHost,
-          smtpPort: Number.parseInt(smtpPort, 10),
-          smtpSecure,
-          authUsername: authUsernameValue,
-          authPassword: authPasswordValue,
-          fromAddress,
-          fromName: fromName || null,
-          enabled,
-          isDefault,
-        };
+        const input: CreateNotificationProviderInput = isNtfy
+          ? {
+              name,
+              providerType,
+              enabled,
+              isDefault,
+              ntfyServerUrl,
+              ntfyTopic,
+              ntfyAuthMethod,
+              ntfyToken: ntfyToken || undefined,
+              authUsername: ntfyAuthMethod === 'basic' ? (authUsername || null) : null,
+              authPassword: ntfyAuthMethod === 'basic' ? (authPassword || undefined) : undefined,
+              smtpPort: 587,
+              smtpSecure: false,
+            }
+          : {
+              name,
+              providerType,
+              smtpHost,
+              smtpPort: Number.parseInt(smtpPort, 10),
+              smtpSecure,
+              authUsername: authUsernameValue,
+              authPassword: authPasswordValue,
+              fromAddress,
+              fromName: fromName || null,
+              enabled,
+              isDefault,
+            };
         await create.mutateAsync(input);
       } else {
         await update.mutateAsync({
           id: provider!.id,
-          input: {
-            name,
-            smtpHost,
-            smtpPort: Number.parseInt(smtpPort, 10),
-            smtpSecure,
-            authUsername: authUsernameValue,
-            authPassword: authPasswordValue,
-            fromAddress,
-            fromName: fromName || null,
-            enabled,
-            isDefault,
-          },
+          input: isNtfy
+            ? {
+                name,
+                enabled,
+                isDefault,
+                ntfyServerUrl,
+                ntfyTopic,
+                ntfyAuthMethod,
+                ntfyToken: ntfyToken || undefined,
+                authUsername: ntfyAuthMethod === 'basic' ? (authUsername || null) : null,
+                authPassword: ntfyAuthMethod === 'basic' ? (authPassword || undefined) : undefined,
+              }
+            : {
+                name,
+                smtpHost,
+                smtpPort: Number.parseInt(smtpPort, 10),
+                smtpSecure,
+                authUsername: authUsernameValue,
+                authPassword: authPasswordValue,
+                fromAddress,
+                fromName: fromName || null,
+                enabled,
+                isDefault,
+              },
         });
       }
       onClose();
@@ -310,6 +345,92 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
             className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
           />
         </label>
+        {isNtfy && (
+          <>
+            <label className="block">
+              <span className="text-xs text-gray-600 dark:text-gray-300">ntfy server URL</span>
+              <input
+                required
+                value={ntfyServerUrl}
+                onChange={(e) => setNtfyServerUrl(e.target.value)}
+                data-testid="provider-ntfy-server-url"
+                placeholder="https://ntfy.sh"
+                className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+              />
+              <span className="mt-0.5 block text-[10px] text-gray-400 dark:text-gray-500">
+                Public ntfy.sh or your self-hosted server (any reachable URL, in-cluster included).
+              </span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block">
+                <span className="text-xs text-gray-600 dark:text-gray-300">Topic</span>
+                <input
+                  required
+                  value={ntfyTopic}
+                  onChange={(e) => setNtfyTopic(e.target.value)}
+                  data-testid="provider-ntfy-topic"
+                  placeholder="my-platform-alerts"
+                  pattern="[-_A-Za-z0-9]{1,64}"
+                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs text-gray-600 dark:text-gray-300">Authentication</span>
+                <select
+                  value={ntfyAuthMethod}
+                  onChange={(e) => setNtfyAuthMethod(e.target.value as 'none' | 'token' | 'basic')}
+                  data-testid="provider-ntfy-auth-method"
+                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                >
+                  <option value="none">None (public topic)</option>
+                  <option value="token">Access token (private topic)</option>
+                  <option value="basic">Username + password</option>
+                </select>
+              </label>
+            </div>
+            {ntfyAuthMethod === 'token' && (
+              <label className="block">
+                <span className="text-xs text-gray-600 dark:text-gray-300">
+                  Access token {!isNew && <span className="text-gray-400">(leave empty to keep)</span>}
+                </span>
+                <input
+                  type="password"
+                  value={ntfyToken}
+                  onChange={(e) => setNtfyToken(e.target.value)}
+                  data-testid="provider-ntfy-token"
+                  placeholder="tk_..."
+                  className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                />
+              </label>
+            )}
+            {ntfyAuthMethod === 'basic' && (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block">
+                  <span className="text-xs text-gray-600 dark:text-gray-300">Username</span>
+                  <input
+                    value={authUsername}
+                    onChange={(e) => setAuthUsername(e.target.value)}
+                    data-testid="provider-ntfy-username"
+                    className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs text-gray-600 dark:text-gray-300">
+                    Password {!isNew && <span className="text-gray-400">(leave empty to keep)</span>}
+                  </span>
+                  <input
+                    type="password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    data-testid="provider-ntfy-password"
+                    className="mt-1 w-full rounded border border-gray-300 px-2 py-1.5 font-mono text-xs dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100"
+                  />
+                </label>
+              </div>
+            )}
+          </>
+        )}
+        {!isNtfy && (<>
         <div className="grid grid-cols-3 gap-2">
           <label className="col-span-2 block">
             <span className="text-xs text-gray-600 dark:text-gray-300">SMTP host</span>
@@ -344,7 +465,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
             Implicit TLS (SMTPS — usually port 465)
           </span>
         </label>
-        {providerType === 'stalwart-internal' ? (
+        </>)}
+        {!isNtfy && (providerType === 'stalwart-internal' ? (
           <div
             className="rounded-md border border-blue-200 bg-blue-50 p-2 text-[11px] text-blue-900 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-200"
             data-testid="provider-stalwart-internal-note"
@@ -381,7 +503,8 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
               />
             </label>
           </div>
-        )}
+        ))}
+        {!isNtfy && (
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
             <span className="text-xs text-gray-600 dark:text-gray-300">From address</span>
@@ -404,6 +527,7 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
             />
           </label>
         </div>
+        )}
         <div className="flex items-center gap-4">
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} data-testid="provider-enabled" />
@@ -411,7 +535,7 @@ function ProviderEditDrawer({ provider, onClose }: DrawerProps) {
           </label>
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} data-testid="provider-default" />
-            <span className="text-xs text-gray-700 dark:text-gray-200">Default for email</span>
+            <span className="text-xs text-gray-700 dark:text-gray-200">{isNtfy ? 'Default for ntfy' : 'Default for email'}</span>
           </label>
         </div>
         {mutationError && (
@@ -445,10 +569,16 @@ function ProviderTestDialog({ provider, onClose }: TestDialogProps) {
   const [recipient, setRecipient] = useState('');
   const test = useTestNotificationProvider();
   const result = useMemo(() => test.data?.data, [test.data]);
+  const isNtfy = provider.channel === 'ntfy';
 
   const onSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
-    try { await test.mutateAsync({ id: provider.id, input: { recipientEmail: recipient } }); } catch { /* surfaced */ }
+    try {
+      await test.mutateAsync({
+        id: provider.id,
+        input: isNtfy ? {} : { recipientEmail: recipient },
+      });
+    } catch { /* surfaced */ }
   };
 
   return (
@@ -463,9 +593,11 @@ function ProviderTestDialog({ provider, onClose }: TestDialogProps) {
           Test provider — {provider.name}
         </h3>
         <p className="text-xs text-gray-500 dark:text-gray-400">
-          Sends a brief test message via this provider to the address below. Use your own
-          mailbox to verify credentials before relying on this provider for live notifications.
+          {isNtfy
+            ? `Publishes a test message to the configured topic${provider.ntfyTopic ? ` "${provider.ntfyTopic}"` : ''} — open the topic in your ntfy app to verify server, topic and credentials.`
+            : 'Sends a brief test message via this provider to the address below. Use your own mailbox to verify credentials before relying on this provider for live notifications.'}
         </p>
+        {!isNtfy && (
         <label className="block">
           <span className="text-xs text-gray-600 dark:text-gray-300">Send test to</span>
           <input
@@ -478,6 +610,7 @@ function ProviderTestDialog({ provider, onClose }: TestDialogProps) {
             placeholder="ops@example.test"
           />
         </label>
+        )}
         {result && (
           <div
             className={clsx(
@@ -489,7 +622,9 @@ function ProviderTestDialog({ provider, onClose }: TestDialogProps) {
             data-testid="provider-test-result"
           >
             {result.status === 'success'
-              ? `Test sent successfully at ${new Date(result.testedAt).toLocaleString()}.`
+              ? (isNtfy
+                ? `Published to the topic at ${new Date(result.testedAt).toLocaleString()} — check your ntfy app.`
+                : `Test sent successfully at ${new Date(result.testedAt).toLocaleString()}.`)
               : `Test failed: ${result.error}`}
           </div>
         )}

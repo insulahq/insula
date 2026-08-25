@@ -115,8 +115,22 @@ itself is described in [Tenants](tenants.md).
 - **Sources** — what triggers a notification (one entry per event type),
   with its default channels and rate limit. (Subscription-expiry reminders
   are configured here — see [Plans & subscriptions](plans-and-subscriptions.md).)
-- **Providers** — the transport endpoints that deliver them (today: SMTP
-  relays).
+- **Providers** — the transport endpoints that deliver them: SMTP relays
+  for email, and **ntfy push** for phone/desktop push notifications.
+
+!!! tip "Push notifications via ntfy"
+    Add a provider of type **ntfy push (topic)**: point it at the public
+    [ntfy.sh](https://ntfy.sh) or your own self-hosted ntfy server (any
+    reachable URL, in-cluster included), pick a topic, and — for private
+    topics — an access token or username/password (stored encrypted).
+    Mark it **Default for ntfy**, use **Test** to publish a check message,
+    then enable the *ntfy* channel on the Sources you want pushed.
+    ntfy is a **topic broadcast**: one message per event for everyone
+    subscribed to the topic (it does not appear in per-user notification
+    preferences), with priority mapped from the event severity and a
+    tap-through link into the admin panel. Anyone who knows a public
+    topic's name can subscribe to it — use a private topic (or an
+    unguessable name) for anything sensitive.
 - **Templates** — operator-editable Handlebars templates per (source,
   channel, locale).
 - **Delivery Log** — per-channel delivery outcomes for audit and triage.

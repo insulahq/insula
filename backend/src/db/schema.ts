@@ -140,7 +140,7 @@ export const notificationSeverityEnum = pgEnum('notification_severity_enum', [
 // Channel ids are intentionally narrow in Phase 1 — in_app + email only.
 // SMS/Slack/Telegram/webhook are deferred (separate phase, separate
 // migration). Adding a value here MUST coordinate with channels/registry.ts.
-export const channelIdEnum = pgEnum('channel_id_enum', ['in_app', 'email']);
+export const channelIdEnum = pgEnum('channel_id_enum', ['in_app', 'email', 'ntfy']);
 // GDPR legal basis per category — controls whether opt-out is enforceable.
 export const notificationGdprBasisEnum = pgEnum('notification_gdpr_basis_enum', [
   'contract', 'legitimate_interest', 'consent',
@@ -148,7 +148,7 @@ export const notificationGdprBasisEnum = pgEnum('notification_gdpr_basis_enum', 
 // Dedicated provider type for the notification system (NOT to be
 // confused with smtp_provider_type which is for tenant outbound mail).
 export const notificationProviderTypeEnum = pgEnum('notification_provider_type', [
-  'stalwart-internal', 'smtp', 'postmark', 'brevo', 'mailjet', 'mailgun-eu',
+  'stalwart-internal', 'smtp', 'postmark', 'brevo', 'mailjet', 'mailgun-eu', 'ntfy',
 ]);
 export const upgradeStatusEnum = pgEnum('upgrade_status', [
   'pending', 'backing_up', 'pre_check', 'upgrading', 'health_check',
@@ -2044,6 +2044,11 @@ export const notificationProviders = pgTable('notification_providers', {
   fromAddress: varchar('from_address', { length: 255 }).notNull(),
   fromName: varchar('from_name', { length: 255 }),
   region: varchar('region', { length: 50 }),
+  // ─── ntfy channel fields (NULL for email providers) ───
+  ntfyServerUrl: varchar('ntfy_server_url', { length: 500 }),
+  ntfyTopic: varchar('ntfy_topic', { length: 64 }),
+  ntfyAuthMethod: varchar('ntfy_auth_method', { length: 16 }),
+  ntfyTokenEncrypted: varchar('ntfy_token_encrypted', { length: 500 }),
   lastTestedAt: timestamp('last_tested_at', { withTimezone: true }),
   lastTestStatus: varchar('last_test_status', { length: 32 }),
   lastTestError: text('last_test_error'),

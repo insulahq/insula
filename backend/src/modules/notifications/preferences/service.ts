@@ -68,8 +68,10 @@ export async function getUserPreferences(
     .where(eq(notificationCategories.isActive, true))
     .orderBy(asc(notificationCategories.audience), asc(notificationCategories.id));
 
-  // 2. Load any user overrides for this user.
-  const prefs: PrefRow[] = await db
+  // 2. Load any user overrides for this user. ntfy is a broadcast
+  // channel with no per-user leg — filter any such rows defensively so
+  // the preference matrix stays a strict in_app/email surface.
+  const prefRows = await db
     .select({
       categoryId: userNotificationPreferences.categoryId,
       channel: userNotificationPreferences.channel,
@@ -77,6 +79,9 @@ export async function getUserPreferences(
     })
     .from(userNotificationPreferences)
     .where(eq(userNotificationPreferences.userId, userId));
+  const prefs: PrefRow[] = prefRows.filter(
+    (r): r is typeof r & { channel: Channel } => r.channel !== 'ntfy',
+  );
 
   const overrideMap = new Map<string, boolean>();
   for (const p of prefs) overrideMap.set(`${p.categoryId}::${p.channel}`, p.enabled);
