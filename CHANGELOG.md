@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.16] - 2026-08-25
+
 ### Added
 - **ntfy push notifications.** A new *ntfy* notification channel publishes
   platform events to an [ntfy](https://ntfy.sh) topic — public ntfy.sh or
