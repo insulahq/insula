@@ -33,6 +33,7 @@ import { resolveRecipients, type RecipientScope } from '../recipients.js';
 import { getCategory } from '../categories/service.js';
 import { getActiveTemplate } from '../templates/service.js';
 import { renderTemplateAsync } from '../templates/renderer.js';
+import { emitNtfyForEvent } from './ntfy.js';
 import { isCategoryAllowedForUser } from '../preferences/gate.js';
 import { getUserSettings } from '../preferences/service.js';
 import { isInQuietHours } from '../preferences/quiet-hours.js';
@@ -44,7 +45,7 @@ import type {
 } from '@insula/api-contracts';
 import type { Database } from '../../../db/index.js';
 
-type Channel = 'in_app' | 'email';
+type Channel = 'in_app' | 'email' | 'ntfy';
 
 export interface EmitEventOptions {
   readonly categoryId: string;
@@ -72,7 +73,8 @@ export interface EmitEventOptions {
 }
 
 export interface PerChannelStatus {
-  readonly userId: string;
+  /** NULL for broadcast channels (ntfy) — there is no per-user leg. */
+  readonly userId: string | null;
   readonly channel: Channel;
   readonly status: NotificationDeliveryStatus;
   readonly notificationId?: string;
@@ -219,6 +221,36 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     return { eventId, deliveryCount: 0, perChannelStatuses: [] };
   }
 
+  // 2-pre. ntfy leg — a TOPIC BROADCAST: once per EVENT, before (and
+  // independent of) recipient resolution, so suppressed-tenant or
+  // recipient-less events still reach the operator feed. Never throws:
+  // the per-user channels must not die on a broken ntfy server.
+  if (category.defaultChannels.includes('ntfy')) {
+    const ntfySalt = opts.encryptionKey ?? process.env.PLATFORM_ENCRYPTION_KEY;
+    if (ntfySalt) {
+      try {
+        const s = await emitNtfyForEvent(db, {
+          eventId,
+          category,
+          tenantId: opts.tenantId ?? null,
+          variables: Object.fromEntries(
+            Object.entries({
+              platformName: 'Hosting Platform',
+              userName: 'operator',
+              tenantName: null,
+              ...opts.variables,
+            }).map(([k, v]) => [k, v === undefined ? null : v]),
+          ),
+          dedupeKey,
+          hashSalt: ntfySalt,
+        });
+        statuses.push({ userId: null, channel: 'ntfy', status: s.status === 'queued' ? 'queued' : 'skipped', error: s.error });
+      } catch (err) {
+        statuses.push({ userId: null, channel: 'ntfy', status: 'skipped', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
   // 2. Resolve recipients.
   // suppressTenantNotification only neuters the tenant scope because
   // resolveRecipients for kind='tenant' is scoped strictly to that
@@ -288,6 +320,9 @@ export async function emitEvent(db: Database, opts: EmitEventOptions): Promise<E
     );
 
     for (const channel of category.defaultChannels) {
+      // ntfy is handled once per EVENT above (topic broadcast, no
+      // per-user leg) — skip it here.
+      if (channel === 'ntfy') continue;
       // 3a. Preference gate.
       const allowed = await isCategoryAllowedForUser(db, userId, category.id, channel);
       if (!allowed) {

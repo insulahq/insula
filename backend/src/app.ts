@@ -104,6 +104,7 @@ import { seedTemplatesIfMissing } from './modules/notifications/templates/seed-l
 import { purgeOldDeliveriesSafe } from './modules/notifications/retention/purge.js';
 import { purgeStaleBuckets } from './modules/notifications/rate-limit/service.js';
 import { startEmailWorker } from './modules/notifications/queue/worker.js';
+import { startNtfyWorker } from './modules/notifications/queue/ntfy-worker.js';
 import { stopBoss } from './modules/notifications/queue/bootstrap.js';
 import { startReenqueueScheduler } from './modules/notifications/queue/scanner.js';
 import { startExpiryWarningScheduler } from './modules/subscriptions/expiry-warning-scheduler.js';
@@ -1031,6 +1032,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
             app.log.warn({ err }, '[notifications] email worker: k8s client unavailable — stalwart-internal Provider sends will fail until kubeconfig is wired');
           }
           await startEmailWorker({ db: app.db, k8sCore: workerK8sCore });
+          await startNtfyWorker({ db: app.db });
           app.log.info('[notifications] email send worker started');
         } catch (err) {
           app.log.warn({ err }, '[notifications] email send worker failed to start (deliveries will stay queued)');

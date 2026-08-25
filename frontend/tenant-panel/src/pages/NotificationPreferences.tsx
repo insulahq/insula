@@ -25,7 +25,14 @@ interface PendingChange {
 const CHANNEL_LABELS: Record<NotificationChannelId, string> = {
   in_app: 'In-app',
   email: 'Email',
+  // Never rendered here (see USER_PREF_CHANNELS below) — present only
+  // to keep the Record total over the contract enum.
+  ntfy: 'ntfy',
 };
+
+// ntfy is a broadcast (operator-topic) channel with no per-user leg —
+// the preference matrix stays a strict in_app/email surface.
+const USER_PREF_CHANNELS = NOTIFICATION_CHANNEL_ID.filter((c) => c !== 'ntfy');
 
 const DIGEST_LABELS: Record<NotificationDigestMode, string> = {
   immediate: 'Immediate',
@@ -169,7 +176,7 @@ export default function NotificationPreferences() {
           <thead className="text-gray-500 dark:text-gray-400">
             <tr className="border-b border-gray-200/60 dark:border-gray-700/40">
               <th className="text-left px-5 py-2">Category</th>
-              {NOTIFICATION_CHANNEL_ID.map((c) => (
+              {USER_PREF_CHANNELS.map((c) => (
                 <th key={c} className="text-center px-5 py-2">{CHANNEL_LABELS[c]}</th>
               ))}
             </tr>
@@ -177,7 +184,7 @@ export default function NotificationPreferences() {
           <tbody>
             {categoryIds.length === 0 && (
               <tr>
-                <td colSpan={NOTIFICATION_CHANNEL_ID.length + 1} className="px-5 py-4 text-center text-gray-500">
+                <td colSpan={USER_PREF_CHANNELS.length + 1} className="px-5 py-4 text-center text-gray-500">
                   No notification categories available.
                 </td>
               </tr>
@@ -194,7 +201,7 @@ export default function NotificationPreferences() {
                       <span>{categoryId}</span>
                     </div>
                   </td>
-                  {NOTIFICATION_CHANNEL_ID.map((channel) => {
+                  {USER_PREF_CHANNELS.map((channel) => {
                     const checked = effectiveValue(categoryId, channel);
                     const disabled = entry.mandatory;
                     return (
