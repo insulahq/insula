@@ -236,6 +236,11 @@ PARALLEL=(
   # set/clear, and the usage-sync rewrite — API + live SMTP matrix.
   # Creates a disposable tenant, cleans up via trap. ~1-2 min.
   "email-aliases:integration-email-aliases-e2e.sh"
+  # Per-mailbox aliases (receive + send-as + JMAP identity): API contract
+  # checks + (kubectl-gated) live SMTP inbound, authed :465 submission as
+  # the alias, spoofed-sender rejection, disable/delete matrix. Creates a
+  # disposable tenant, cleans up via trap. ~1-2 min.
+  "mailbox-aliases:integration-mailbox-aliases-e2e.sh"
   "passkey:integration-passkey-e2e.sh"
   # Tenant SFTP reachability at the ADVERTISED files.<apex>:23022 — provisions
   # its own probe tenant, then connects from OFF-cluster and round-trips a file.
