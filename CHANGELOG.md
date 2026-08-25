@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **ntfy push notifications.** A new *ntfy* notification channel publishes
+  platform events to an [ntfy](https://ntfy.sh) topic — public ntfy.sh or
+  any self-hosted server, with private-topic support via access token or
+  username/password (stored encrypted). Configure it under Platform →
+  Notifications → Providers (with a one-click topic test), then enable the
+  channel per Source. ntfy is a topic broadcast: one message per event,
+  priority mapped from severity, with a tap-through link to the relevant
+  admin page; deliveries are queued, retried with backoff, and visible in
+  the Delivery Log (credential errors go straight to the dead-letter state
+  instead of retry-spamming).
 - **Preview a deployment before assigning a route.** Catalog apps and custom
   containers now have a **Preview** button next to Start/Stop (admin and
   tenant panels) that opens the running app in a sandboxed viewer via a
