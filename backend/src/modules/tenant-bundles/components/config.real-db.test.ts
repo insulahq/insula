@@ -129,6 +129,15 @@ function makeFixtureDb(): Database {
       email_domain_id VARCHAR(36) NOT NULL REFERENCES email_domains(id),
       tenant_id       VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
     );
+    CREATE TABLE mailbox_aliases (
+      id              VARCHAR(36) PRIMARY KEY,
+      mailbox_id      VARCHAR(36) NOT NULL REFERENCES mailboxes(id) ON DELETE CASCADE,
+      email_domain_id VARCHAR(36) NOT NULL REFERENCES email_domains(id),
+      tenant_id       VARCHAR(36) NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      local_part      VARCHAR(64) NOT NULL,
+      full_address    VARCHAR(255) NOT NULL,
+      enabled         INTEGER NOT NULL DEFAULT 1
+    );
     CREATE TABLE mail_submit_credentials (
       id        VARCHAR(36) PRIMARY KEY,
       username  VARCHAR(255) NOT NULL,
@@ -236,6 +245,9 @@ function makeFixtureDb(): Database {
     INSERT INTO email_aliases(id, from_addr, to_addr, email_domain_id, tenant_id) VALUES
       ('ea-fix',   'al@mail.fixture.test', 'a@mail.fixture.test', 'ed-fix',   '${FIXTURE_CLIENT_ID}'),
       ('ea-other', 'al@mail.other.test',   'a@mail.other.test',   'ed-other', '${FIXTURE_OTHER_CLIENT_ID}');
+    INSERT INTO mailbox_aliases(id, mailbox_id, email_domain_id, tenant_id, local_part, full_address, enabled) VALUES
+      ('mba-fix',   'mb-fix',   'ed-fix',   '${FIXTURE_CLIENT_ID}',       'info',  'info@mail.fixture.test', 1),
+      ('mba-other', 'mb-other', 'ed-other', '${FIXTURE_OTHER_CLIENT_ID}', 'info',  'info@mail.other.test',   1);
     INSERT INTO mail_submit_credentials(id, username, tenant_id) VALUES
       ('msc-fix',   'submit@fixture.test', '${FIXTURE_CLIENT_ID}'),
       ('msc-other', 'submit@other.test',   '${FIXTURE_OTHER_CLIENT_ID}');

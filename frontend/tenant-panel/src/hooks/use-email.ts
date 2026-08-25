@@ -52,10 +52,20 @@ export interface Mailbox {
   readonly status: string;
   readonly mailboxType: string;
   readonly forwardingAddresses?: readonly string[] | null;
+  /** Enabled per-mailbox alias addresses (filled on list responses). */
+  readonly aliases?: readonly string[];
   readonly autoReply: number;
   readonly autoReplySubject?: string | null;
   readonly autoReplyBody?: string | null;
   readonly createdAt: string;
+}
+
+export interface MailboxAlias {
+  readonly id: string;
+  readonly mailboxId: string;
+  readonly localPart: string;
+  readonly fullAddress: string;
+  readonly enabled: number;
 }
 
 export interface EmailAlias {
@@ -351,6 +361,68 @@ export function useDeleteEmailAlias(tenantId: string) {
   return useMutation({
     mutationFn: (id: string) => apiFetch<void>(`/api/v1/tenants/${tenantId}/email/aliases/${id}`, { method: 'DELETE' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['email-aliases', tenantId] }),
+  });
+}
+
+// ── Per-mailbox aliases (alternate receive+send-as addresses) ────────────────
+// Distinct from the MailingList-backed "mailing lists" above: an alias is
+// attached to ONE mailbox, delivers into it, and the mailbox can reply AS
+// the alias. Mutations also invalidate the mailboxes list — its rows carry
+// the enabled alias addresses.
+
+interface MailboxAliasesResponse { readonly data: readonly MailboxAlias[] }
+interface MailboxAliasResponse { readonly data: MailboxAlias }
+
+export function useMailboxAliases(tenantId?: string, mailboxId?: string) {
+  return useQuery({
+    queryKey: ['mailbox-aliases', tenantId, mailboxId ?? null],
+    queryFn: () =>
+      apiFetch<MailboxAliasesResponse>(
+        `/api/v1/tenants/${tenantId}/email/mailbox-aliases?mailbox_id=${encodeURIComponent(mailboxId ?? '')}`,
+      ),
+    enabled: !!tenantId && !!mailboxId,
+  });
+}
+
+export function useCreateMailboxAlias(tenantId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ mailboxId, localPart }: { mailboxId: string; localPart: string }) =>
+      apiFetch<MailboxAliasResponse>(
+        `/api/v1/tenants/${tenantId}/email/mailboxes/${mailboxId}/aliases`,
+        { method: 'POST', body: JSON.stringify({ local_part: localPart }) },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['mailbox-aliases', tenantId] });
+      void qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] });
+    },
+  });
+}
+
+export function useUpdateMailboxAlias(tenantId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      apiFetch<MailboxAliasResponse>(
+        `/api/v1/tenants/${tenantId}/email/mailbox-aliases/${id}`,
+        { method: 'PATCH', body: JSON.stringify({ enabled }) },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['mailbox-aliases', tenantId] });
+      void qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] });
+    },
+  });
+}
+
+export function useDeleteMailboxAlias(tenantId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<void>(`/api/v1/tenants/${tenantId}/email/mailbox-aliases/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['mailbox-aliases', tenantId] });
+      void qc.invalidateQueries({ queryKey: ['mailboxes', tenantId] });
+    },
   });
 }
 

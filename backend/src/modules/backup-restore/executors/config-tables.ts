@@ -38,6 +38,7 @@ export const ALLOWED_TABLE_TO_SQL: Record<string, string> = {
   emailDomains: 'email_domains',
   mailboxes: 'mailboxes',
   emailAliases: 'email_aliases',
+  mailboxAliases: 'mailbox_aliases',
   mailSubmitCredentials: 'mail_submit_credentials',
   sshKeys: 'ssh_keys',
   sftpUsers: 'sftp_users',
@@ -106,7 +107,18 @@ export async function execConfigTablesItem(args: {
         const safeRow = tenantPolicy
           ? redactRowForTenant(sqlTable, row as Record<string, unknown>, tenantPolicy)
           : row;
-        await upsertRow(tx, sqlTable, safeRow);
+        // Stalwart object ids are CLUSTER-LOCAL (2026-08-25 drift audit):
+        // a bundle restored on another cluster (or after a mail-store
+        // rebuild) carries source-side ids that point at nothing — or
+        // worse, at someone else's object. Null them on replay; the
+        // reconciles re-provision from the authoritative row state.
+        const withoutStalwartIds =
+          sqlTable === 'email_aliases'
+            ? { ...(safeRow as Record<string, unknown>), stalwart_list_id: null }
+            : sqlTable === 'mailboxes'
+              ? { ...(safeRow as Record<string, unknown>), stalwart_principal_id: null }
+              : safeRow;
+        await upsertRow(tx, sqlTable, withoutStalwartIds);
         totalUpserts++;
       }
     }

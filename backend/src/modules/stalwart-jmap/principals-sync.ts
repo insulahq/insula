@@ -223,7 +223,7 @@ async function syncPrincipals(params: {
   // they're no longer in drift, (c) detect NEW items for admin alert
   // fan-out. Each item: kind + platform_row_id is the natural key.
   const driftThisTick: Array<{
-    kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain';
+    kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain' | 'orphan-list';
     expectedName: string;
     expectedStalwartId: string;
     platformRowId: string;
@@ -480,6 +480,40 @@ async function syncPrincipals(params: {
     errors.push(`orphan-domain check failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  // 4b. Inverse MailingList check (kind: 'orphan-list', 2026-08-25 drift
+  // audit): a Stalwart MailingList with no email_aliases row is a LIVE
+  // forwarder nobody owns — before this check it was only ever logged by
+  // the alias reconcile, invisible to the drift UI. Typical sources: an
+  // out-of-band admin-console creation, or alias rows deleted while the
+  // Stalwart destroy failed (pre-2026-08-25 archive hook). DETECT +
+  // SURFACE ONLY — remediation is operator-confirmed from the drift UI.
+  try {
+    const { listMailingLists } = await import('./mailing-lists.js');
+    const { emailAliases } = await import('../../db/schema.js');
+    const lists = await listMailingLists({ accountId, baseUrl, env });
+    if (lists.length > 0) {
+      const aliasRows = await db
+        .select({ sourceAddress: emailAliases.sourceAddress })
+        .from(emailAliases);
+      const owned = new Set(aliasRows.map((r) => r.sourceAddress.toLowerCase()));
+      for (const l of lists) {
+        if (owned.has(l.emailAddress)) continue;
+        driftThisTick.push({
+          kind: 'orphan-list',
+          expectedName: l.emailAddress,
+          expectedStalwartId: l.id,
+          // Synthetic stable natural key — there IS no platform row.
+          platformRowId: `orphan-list:${l.id}`,
+          notes:
+            'Stalwart MailingList with no email_aliases row — a live forwarding address the ' +
+            'platform does not manage. Verify the recipients, then delete it from the drift UI.',
+        });
+      }
+    }
+  } catch (err) {
+    errors.push(`orphan-list check failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   // 5. Persist drift state + alert admins on NEW items.
   try {
     const newItems = await reconcileDriftItems(db, driftThisTick);
@@ -515,7 +549,7 @@ async function syncPrincipals(params: {
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface DriftTickItem {
-  readonly kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain';
+  readonly kind: 'mailbox' | 'domain' | 'master-user' | 'orphan-domain' | 'orphan-list';
   readonly expectedName: string;
   readonly expectedStalwartId: string;
   readonly platformRowId: string;
@@ -633,23 +667,27 @@ async function emitDriftNotification(
       message += `\n\n(Also new this cycle: ${mailboxCount} mailbox + ${domainCount} domain drift item(s).)`;
     }
   } else {
+    const orphanDomainCount = newItems.filter((i) => i.kind === 'orphan-domain').length;
+    const orphanListCount = newItems.filter((i) => i.kind === 'orphan-list').length;
     const parts: string[] = [];
-    if (domainCount > 0) parts.push(`${domainCount} tenant Stalwart Domain${domainCount === 1 ? '' : 's'}`);
-    if (mailboxCount > 0) parts.push(`${mailboxCount} mailbox principal${mailboxCount === 1 ? '' : 's'}`);
-    const summary = parts.join(' + ');
+    if (domainCount > 0) parts.push(`${domainCount} tenant Stalwart Domain${domainCount === 1 ? '' : 's'} missing`);
+    if (mailboxCount > 0) parts.push(`${mailboxCount} mailbox principal${mailboxCount === 1 ? '' : 's'} missing`);
+    if (orphanDomainCount > 0) parts.push(`${orphanDomainCount} orphan Stalwart Domain${orphanDomainCount === 1 ? '' : 's'}`);
+    if (orphanListCount > 0) parts.push(`${orphanListCount} orphan mailing list${orphanListCount === 1 ? '' : 's'}`);
+    const summary = parts.join(' + ') || `${newItems.length} item(s)`;
     const sample = newItems.slice(0, 3).map((i) => i.expectedName).join(', ');
     const more = newItems.length > 3 ? ` (+${newItems.length - 3} more)` : '';
-    title = `Mail data drift detected: ${summary} missing from Stalwart`;
+    title = `Mail data drift detected: ${summary}`;
     message =
-      `The principals-sync reconciler found platform DB rows referencing ` +
-      `Stalwart entries that no longer exist. Likely cause: a failed mail-stack ` +
-      `failover (the silent-loss path was patched 2026-05-27; this alert exists ` +
-      `to surface PRE-EXISTING drift from before that fix).\n\n` +
+      `The principals-sync reconciler found drift between the platform DB and ` +
+      `Stalwart: platform rows referencing Stalwart entries that no longer ` +
+      `exist, and/or Stalwart-side objects (domains, mailing lists) no ` +
+      `platform row owns.\n\n` +
       `New drift this cycle: ${sample}${more}\n\n` +
-      `Inspect via Admin UI → Email → Data Drift. Each item offers two ` +
-      `remediation options: restore the entire Stalwart datastore from a ` +
-      `snapshot (preserves DKIM + mailbox contents), or recreate the missing ` +
-      `entry empty (new DKIM, no messages — last resort).`;
+      `Inspect via Admin UI → Email → Data Drift. Missing entries offer a ` +
+      `snapshot restore (preserves DKIM + mailbox contents) or an empty ` +
+      `recreate (last resort); orphan entries offer operator-confirmed ` +
+      `deletion from Stalwart.`;
   }
 
   for (const a of admins) {

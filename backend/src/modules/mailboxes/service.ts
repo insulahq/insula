@@ -3,7 +3,8 @@ import { eq, and } from 'drizzle-orm';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'mailboxes' });
-import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
+import { mailboxes, mailboxAccess, mailboxAliases, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
+import { inArray } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { getTenantMailboxLimit, getTenantMailboxCount, getTenantMailboxSizeLimit } from './limit.js';
 import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
@@ -486,6 +487,36 @@ export async function createMailbox(
   return { ...created, initialLoginPassword };
 }
 
+/**
+ * Attach each mailbox's ENABLED per-mailbox alias addresses as an
+ * `aliases` array (contract: mailboxResponseSchema.aliases — filled on
+ * LIST responses; single-get callers use the mailbox-aliases endpoints).
+ * One bulk query for the whole page — exported for the admin list route.
+ */
+export async function attachMailboxAliases<T extends { id: string }>(
+  db: Database,
+  rows: readonly T[],
+): Promise<(T & { aliases: string[] })[]> {
+  if (rows.length === 0) return [];
+  const aliasRows = await db
+    .select({
+      mailboxId: mailboxAliases.mailboxId,
+      fullAddress: mailboxAliases.fullAddress,
+    })
+    .from(mailboxAliases)
+    .where(and(
+      inArray(mailboxAliases.mailboxId, rows.map((r) => r.id)),
+      eq(mailboxAliases.enabled, 1),
+    ));
+  const byMailbox = new Map<string, string[]>();
+  for (const a of aliasRows) {
+    const bucket = byMailbox.get(a.mailboxId) ?? [];
+    bucket.push(a.fullAddress);
+    byMailbox.set(a.mailboxId, bucket);
+  }
+  return rows.map((r) => ({ ...r, aliases: (byMailbox.get(r.id) ?? []).sort() }));
+}
+
 export async function listMailboxes(
   db: Database,
   tenantId: string,
@@ -501,7 +532,7 @@ export async function listMailboxes(
     .from(mailboxes)
     .where(and(...conditions));
 
-  return rows;
+  return attachMailboxAliases(db, rows);
 }
 
 export async function getMailbox(
@@ -549,11 +580,22 @@ export async function updateMailbox(
   // Forwarding AND auto-reply both live in the platform-managed Sieve
   // script, so an edit to either regenerates it from the MERGED desired
   // state (input value where present, else the stored row).
-  const rulesTouched =
+  // A status flip also regenerates the script: `disabled` strips
+  // forwarding/auto-reply from the mail server (a disabled mailbox must
+  // not keep redirecting mail — 2026-08-25 drift audit), `active`
+  // re-pushes the stored rules. Send-only keeps its ereject either way.
+  const hasStoredRules =
+    isSendOnly ||
+    ((existingMailbox.forwardingAddresses ?? []) as string[]).length > 0 ||
+    existingMailbox.autoReply === 1;
+  const statusFlipped =
+    input.status !== undefined && input.status !== existingMailbox.status;
+  const inputTouchesRules =
     input.forwarding_addresses !== undefined ||
     input.auto_reply !== undefined ||
     input.auto_reply_subject !== undefined ||
     input.auto_reply_body !== undefined;
+  const rulesTouched = inputTouchesRules || (statusFlipped && hasStoredRules);
 
   let normalizedForwarding: string[] | undefined;
   if (input.forwarding_addresses !== undefined) {
@@ -562,7 +604,9 @@ export async function updateMailbox(
       existingMailbox.fullAddress,
     );
   }
-  if (rulesTouched && !existingMailbox.stalwartPrincipalId) {
+  // Only an explicit rules edit needs a provisioned principal — a pure
+  // status flip on an unprovisioned mailbox has no server state to touch.
+  if (inputTouchesRules && !existingMailbox.stalwartPrincipalId) {
     throw new ApiError(
       'MAILBOX_NOT_PROVISIONED',
       'This mailbox is not provisioned to the mail server yet — forwarding/auto-reply cannot be configured',
@@ -615,8 +659,11 @@ export async function updateMailbox(
   // a partial failure the boot reconcile re-pushes the DB state.
   let forwardingUpdate: string[] | null | undefined;
   if (rulesTouched && existingMailbox.stalwartPrincipalId) {
-    const desiredForwarding =
-      normalizedForwarding ?? (existingMailbox.forwardingAddresses ?? []);
+    const desiredStatus = input.status ?? existingMailbox.status;
+    const desiredDisabled = desiredStatus === 'disabled';
+    const desiredForwarding = desiredDisabled
+      ? []
+      : (normalizedForwarding ?? (existingMailbox.forwardingAddresses ?? []));
     try {
       if (desiredForwarding.length > 0) {
         const accountId = await getJmapAccountId();
@@ -626,7 +673,7 @@ export async function updateMailbox(
         principalId: existingMailbox.stalwartPrincipalId,
         mailboxType: isSendOnly ? 'send_only' : 'mailbox',
         forwardingAddresses: desiredForwarding,
-        autoReply: desiredAutoReplyEnabled && desiredAutoReplyBody
+        autoReply: !desiredDisabled && desiredAutoReplyEnabled && desiredAutoReplyBody
           ? { subject: desiredAutoReplySubject ?? null, body: desiredAutoReplyBody }
           : null,
       });

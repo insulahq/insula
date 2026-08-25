@@ -100,6 +100,10 @@ interface Mailbox {
   readonly usedMb: number;
   readonly status: string;
   readonly mailboxType: string;
+  /** Forwarding targets (null/[] = off). */
+  readonly forwardingAddresses?: readonly string[] | null;
+  /** Enabled per-mailbox alias addresses (filled on list responses). */
+  readonly aliases?: readonly string[];
   readonly autoReply: number;
   readonly autoReplySubject: string | null;
   readonly createdAt: string;

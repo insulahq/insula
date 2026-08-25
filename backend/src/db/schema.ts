@@ -1750,6 +1750,35 @@ export const emailAliases = pgTable('email_aliases', {
   index('email_aliases_domain_idx').on(table.emailDomainId),
 ]);
 
+// Per-mailbox aliases (migration 0088) — alternate receive+send-as
+// addresses attached to an existing mailbox, distinct from
+// `email_aliases` (mailbox-less forwarding via Stalwart MailingLists).
+// The rows for a mailbox are pushed to Stalwart as the account's WHOLE
+// `aliases` map, and the send-as JMAP Identity is resolved by address —
+// no per-row Stalwart id to go stale. Platform DB is authoritative; the
+// boot reconcile converges.
+export const mailboxAliases = pgTable('mailbox_aliases', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  mailboxId: varchar('mailbox_id', { length: 36 })
+    .notNull()
+    .references(() => mailboxes.id, { onDelete: 'cascade' }),
+  emailDomainId: varchar('email_domain_id', { length: 36 })
+    .notNull()
+    .references(() => emailDomains.id, { onDelete: 'cascade' }),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  localPart: varchar('local_part', { length: 64 }).notNull(),
+  fullAddress: varchar('full_address', { length: 255 }).notNull(),
+  enabled: integer('enabled').notNull().default(1),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  uniqueIndex('mailbox_aliases_full_address_uniq').on(table.fullAddress),
+  index('mailbox_aliases_mailbox_id_idx').on(table.mailboxId),
+  index('mailbox_aliases_tenant_id_idx').on(table.tenantId),
+]);
+
 // Phase 2b shipped a per-tenant custom webmail_domains table + CRUD. Phase
 // 2c reverted it in favour of a derived convention: every enabled email
 // domain gets webmail.<domain> automatically. See migration 0006.

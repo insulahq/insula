@@ -41,6 +41,12 @@ function makeFakeDb() {
   };
   return {
     db: {
+      // The mail hooks read rows (principal/list ids, rule state) before
+      // touching Stalwart; an empty result set makes every Stalwart leg
+      // a provable no-op so these tests stay network-free.
+      select: () => ({
+        from: () => ({ where: async () => [] }),
+      }),
       update: (t: unknown) => ({
         set: (patch: Record<string, unknown>) => ({
           where: async (cond: { val?: unknown }) => {

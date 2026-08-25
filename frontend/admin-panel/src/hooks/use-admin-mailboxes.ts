@@ -13,6 +13,10 @@ export interface AdminMailbox {
   readonly usedMb: number;
   readonly status: string;
   readonly mailboxType: string;
+  /** Forwarding targets (null/[] = off). */
+  readonly forwardingAddresses: readonly string[] | null;
+  /** Enabled per-mailbox alias addresses. */
+  readonly aliases?: readonly string[];
   readonly autoReply: number;
   readonly autoReplySubject: string | null;
   readonly createdAt: string;

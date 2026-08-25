@@ -27,7 +27,11 @@ import { z } from 'zod';
 // Remediation is operator-confirmed DELETION from Stalwart — never
 // automatic (after a platform-DB PITR rollback a Stalwart domain with
 // real mailboxes would look orphaned; auto-deletion would destroy mail).
-export const mailDriftKindSchema = z.enum(['domain', 'mailbox', 'master-user', 'orphan-domain']);
+// 'orphan-list' (2026-08-25): a Stalwart MailingList with no email_aliases
+// row — a live forwarding address the platform does not manage. Same
+// detect-and-surface-only stance; remediation is operator-confirmed
+// deletion. (mail_drift_items.kind is varchar(16) — keep names short.)
+export const mailDriftKindSchema = z.enum(['domain', 'mailbox', 'master-user', 'orphan-domain', 'orphan-list']);
 export type MailDriftKind = z.infer<typeof mailDriftKindSchema>;
 
 export const mailDriftResolutionSchema = z.enum(['recreated', 'restored', 'dismissed', 'reappeared', 'deleted']);
@@ -111,7 +115,8 @@ export type MailDriftDeleteOrphanRequest = z.infer<typeof mailDriftDeleteOrphanR
 
 export const mailDriftDeleteOrphanResponseSchema = z.object({
   item: mailDriftItemSchema,
-  /** How many DkimSignature rows were destroyed alongside the Domain. */
+  /** How many DkimSignature rows were destroyed alongside the Domain
+   *  (always 0 for orphan-list deletions — lists carry no DKIM). */
   dkimSignaturesDeleted: z.number().int().min(0),
 });
 export type MailDriftDeleteOrphanResponse = z.infer<typeof mailDriftDeleteOrphanResponseSchema>;

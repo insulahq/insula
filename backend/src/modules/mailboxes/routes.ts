@@ -102,8 +102,10 @@ export async function mailboxRoutes(app: FastifyInstance): Promise<void> {
         .leftJoin(domains, eq(emailDomains.domainId, domains.id))
         .where(countWhere);
 
+      const withAliases = await service.attachMailboxAliases(app.db, data);
+
       return paginated(
-        data.map((r) => ({
+        withAliases.map((r) => ({
           ...r,
           createdAt: r.createdAt.toISOString(),
           updatedAt: r.updatedAt.toISOString(),

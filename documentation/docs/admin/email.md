@@ -116,8 +116,13 @@ that feature in the webmail UI.
 **Email → Data Drift** surfaces mismatches between the platform database
 and Stalwart's own datastore — typically the residue of a failed mail-stack
 operation, where the platform DB has a domain or mailbox that Stalwart is
-missing (or vice versa). The page explains each drift item and offers
-remediation (dismiss, or recreate the missing Stalwart entry empty).
+missing (or vice versa), or Stalwart carries an object no platform row
+owns (an **orphaned domain** or an **orphaned mailing list** — the latter
+is a live forwarding address nobody manages). The page explains each drift
+item and offers remediation: dismiss, recreate the missing Stalwart entry
+empty, or — for orphans — a type-to-confirm **delete from Stalwart**.
+Detection runs continuously (the reconciler sweeps every few minutes and
+alerts admins on new items).
 
 !!! warning "Recreating empty loses messages"
     "Recreate empty" rebuilds the missing Stalwart entry with no data — a
