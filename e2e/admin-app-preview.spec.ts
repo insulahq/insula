@@ -42,3 +42,20 @@ test('admin Applications: Preview opens a sandboxed iframe of the running app', 
   await page.getByTestId('app-preview-close').click();
   await expect(modal).not.toBeVisible();
 });
+
+/**
+ * Regression (2026-08-25): the panels' SPA asset-cache regex location
+ * (`~* \.(js|css|...)$`) used to OUTRANK the plain `/api/` prefix
+ * location, so preview-proxied asset paths like
+ * /api/v1/preview/<token>/styles.css were 404'd by the PANEL nginx and
+ * previewed sites rendered with no CSS/JS. With `^~` on the API
+ * locations, asset-suffixed API paths must reach platform-api — whose
+ * preview handler answers 403 (bad token) WITH the sandbox CSP header.
+ */
+test('asset-suffixed preview paths reach the API proxy, not the SPA asset location', async ({ request, baseURL }) => {
+  for (const path of ['/api/v1/preview/garbage/x.css', '/api/v1/preview/garbage/sub/app.js', '/api/v1/preview/garbage/logo.png']) {
+    const resp = await request.get(`${baseURL}${path}`);
+    expect(resp.status(), path).toBe(403);
+    expect(resp.headers()['content-security-policy'], path).toContain('sandbox');
+  }
+});
