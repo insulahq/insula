@@ -9,6 +9,7 @@ vi.mock('drizzle-orm', () => ({
   isNotNull: vi.fn((_col: unknown) => ({ _type: 'isNotNull' })),
   ne: vi.fn((_col: unknown, _val: unknown) => ({ _type: 'ne' })),
   or: vi.fn((...args: unknown[]) => ({ _type: 'or', args })),
+  inArray: vi.fn((_col: unknown, _vals: unknown) => ({ _type: 'inArray' })),
   sql: vi.fn((_parts: TemplateStringsArray, ..._vals: unknown[]) => ({ _type: 'sql' })),
 }));
 
@@ -27,6 +28,7 @@ vi.mock('../../db/schema.js', () => ({
   cronJobs: { id: 'id', tenantId: 'tenant_id' },
   deployments: { id: 'id', tenantId: 'tenant_id' },
   emailAliases: { id: 'id', mailboxId: 'mailbox_id' },
+  mailboxAliases: { id: 'id', mailboxId: 'mailbox_id', fullAddress: 'full_address', enabled: 'enabled' },
   sftp_users: { id: 'id', tenantId: 'tenant_id' },
   // Referenced by generateWebmailToken for audit-log writes.
   auditLogs: { id: 'id', tenantId: 'tenant_id', actionType: 'action_type', actorId: 'actor_id' },

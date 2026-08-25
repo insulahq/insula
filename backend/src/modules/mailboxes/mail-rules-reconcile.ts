@@ -11,7 +11,7 @@
  * One idempotent sweep per platform-api boot converges all of it without
  * per-tenant action (same pattern as the tenant-netpol boot reconcile).
  */
-import { eq, isNotNull, ne, or, and } from 'drizzle-orm';
+import { eq, isNotNull, or } from 'drizzle-orm';
 import { mailboxes } from '../../db/schema.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { getJmapSession } from '../stalwart-jmap/client.js';
@@ -27,10 +27,15 @@ const log = mailLogger().child({ module: 'mail-rules-reconcile' });
 export async function reconcileAllMailboxMailRules(db: Database): Promise<void> {
   // Rows that declare platform-managed rules: every send-only account
   // (permission profile + inbound script) and every forwarding mailbox.
+  // Disabled rows are INCLUDED (2026-08-25 drift audit): their desired
+  // state is the STRIPPED script (no forwarding/auto-reply; send-only
+  // keeps its ereject) — excluding them left a suspended tenant's
+  // forwarding script unmanaged, silently redirecting mail forever.
   const rows = await db
     .select({
       id: mailboxes.id,
       fullAddress: mailboxes.fullAddress,
+      status: mailboxes.status,
       mailboxType: mailboxes.mailboxType,
       forwardingAddresses: mailboxes.forwardingAddresses,
       autoReply: mailboxes.autoReply,
@@ -39,14 +44,13 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
       stalwartPrincipalId: mailboxes.stalwartPrincipalId,
     })
     .from(mailboxes)
-    .where(and(
+    .where(
       or(
         eq(mailboxes.mailboxType, 'send_only'),
         isNotNull(mailboxes.forwardingAddresses),
         eq(mailboxes.autoReply, 1),
       ),
-      ne(mailboxes.status, 'disabled'),
-    ));
+    );
   if (rows.length === 0) return;
 
   // Resolve the admin principals account once. Unreachable Stalwart =
@@ -75,11 +79,12 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
       if (row.mailboxType === 'send_only') {
         await applySendOnlyPermissions({ accountId, principalId: row.stalwartPrincipalId });
       }
+      const disabled = row.status === 'disabled';
       await applyMailRules({
         principalId: row.stalwartPrincipalId,
         mailboxType: row.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-        forwardingAddresses: row.forwardingAddresses ?? [],
-        autoReply: row.autoReply === 1 && row.autoReplyBody?.trim()
+        forwardingAddresses: disabled ? [] : (row.forwardingAddresses ?? []),
+        autoReply: !disabled && row.autoReply === 1 && row.autoReplyBody?.trim()
           ? { subject: row.autoReplySubject, body: row.autoReplyBody }
           : null,
       });

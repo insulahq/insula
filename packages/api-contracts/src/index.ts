@@ -61,6 +61,7 @@ export * from './export-import.js';
 export * from './email-domains.js';
 export * from './mailboxes.js';
 export * from './email-aliases.js';
+export * from './mailbox-aliases.js';
 export * from './mail-admin.js';
 export * from './mail-storage.js';
 export * from './system-pvc.js';

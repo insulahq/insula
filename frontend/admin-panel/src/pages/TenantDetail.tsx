@@ -1065,7 +1065,7 @@ function ApplicationsTab({ tenantId }: { readonly tenantId: string | undefined }
 
 interface EmailTabProps {
   readonly emailDomains: readonly { readonly id: string; readonly domainName: string; readonly enabled: number; readonly mailboxCount?: number; readonly createdAt: string }[] | undefined;
-  readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string; readonly displayName: string | null; readonly status: string; readonly quotaMb: number; readonly usedMb: number; readonly createdAt: string }[] | undefined;
+  readonly mailboxes: readonly { readonly id: string; readonly fullAddress: string; readonly displayName: string | null; readonly status: string; readonly quotaMb: number; readonly usedMb: number; readonly createdAt: string; readonly aliases?: readonly string[]; readonly forwardingAddresses?: readonly string[] | null }[] | undefined;
   readonly tenantId?: string;
   readonly isLoading: boolean;
   readonly error: Error | null;
@@ -1135,7 +1135,19 @@ function EmailTab({ emailDomains, mailboxes, tenantId, isLoading, error }: Email
             <tbody>
               {sortedMailboxes.map((m) => (
                 <tr key={m.id} className="border-b border-gray-50 dark:border-gray-700">
-                  <td className="py-2 font-medium text-gray-900 dark:text-gray-100">{m.fullAddress}</td>
+                  <td className="py-2 font-medium text-gray-900 dark:text-gray-100">
+                    {m.fullAddress}
+                    {(m.aliases?.length ?? 0) > 0 && (
+                      <div className="text-xs font-normal text-teal-600 dark:text-teal-400" title={(m.aliases ?? []).join(', ')}>
+                        @ {(m.aliases ?? []).join(', ')}
+                      </div>
+                    )}
+                    {(m.forwardingAddresses?.length ?? 0) > 0 && (
+                      <div className="text-xs font-normal text-violet-600 dark:text-violet-400" title={(m.forwardingAddresses ?? []).join(', ')}>
+                        \u2192 {(m.forwardingAddresses ?? []).join(', ')}
+                      </div>
+                    )}
+                  </td>
                   <td className="py-2 text-gray-600 dark:text-gray-400">{m.displayName ?? '\u2014'}</td>
                   <td className="py-2 text-gray-600 dark:text-gray-400">{m.usedMb}/{m.quotaMb} MB</td>
                   <td className="py-2">

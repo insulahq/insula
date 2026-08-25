@@ -138,10 +138,20 @@ export default function EmailAccountsTab() {
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-2">
                           <Mail size={14} className="text-gray-400" />
-                          <div>
+                          <div className="min-w-0">
                             <div className="font-medium text-gray-900 dark:text-gray-100">{mb.fullAddress}</div>
                             {mb.displayName && (
                               <div className="text-xs text-gray-500 dark:text-gray-400">{mb.displayName}</div>
+                            )}
+                            {(mb.aliases?.length ?? 0) > 0 && (
+                              <div className="truncate text-xs text-teal-600 dark:text-teal-400" title={(mb.aliases ?? []).join(', ')} data-testid={`admin-aliases-${mb.id}`}>
+                                @ {(mb.aliases ?? []).join(', ')}
+                              </div>
+                            )}
+                            {(mb.forwardingAddresses?.length ?? 0) > 0 && (
+                              <div className="truncate text-xs text-violet-600 dark:text-violet-400" title={(mb.forwardingAddresses ?? []).join(', ')} data-testid={`admin-forwarding-${mb.id}`}>
+                                → {(mb.forwardingAddresses ?? []).join(', ')}
+                              </div>
                             )}
                           </div>
                         </div>

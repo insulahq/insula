@@ -36,6 +36,10 @@ vi.mock('../hooks/use-email', () => ({
   useCreateEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useUpdateEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useDeleteEmailAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useMailboxAliases: vi.fn(() => ({ data: { data: [] }, isLoading: false })),
+  useCreateMailboxAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useUpdateMailboxAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
+  useDeleteMailboxAlias: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, error: null })),
   useWebmailToken: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useEnableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
   useDisableEmailDomain: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false, isError: false, error: null })),
@@ -141,7 +145,7 @@ describe('Email Page', () => {
     expect(screen.getByTestId('tab-mailboxes')).toBeInTheDocument();
     expect(screen.getByTestId('tab-aliases')).toBeInTheDocument();
     expect(screen.getByText('Mailboxes')).toBeInTheDocument();
-    expect(screen.getByText('Aliases & Forwarding')).toBeInTheDocument();
+    expect(screen.getByText('Mailing Lists')).toBeInTheDocument();
   });
 
   it('shows mailboxes tab content by default when domains exist', () => {
@@ -705,7 +709,7 @@ describe('Aliases tab (unified UX)', () => {
 
   async function openAliases() {
     const { fireEvent } = await import('@testing-library/react');
-    fireEvent.click(screen.getByRole('button', { name: /Aliases/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Mailing Lists/ }));
     return fireEvent;
   }
 

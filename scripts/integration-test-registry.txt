@@ -38,7 +38,8 @@ suite         integration-monitoring-slo.sh
 suite         integration-system-snapshots.sh
 suite         integration-mailbox-quota-e2e.sh
 suite         integration-mailbox-forwarding-e2e.sh      # send-only + forwarding (Sieve) matrix
-suite         integration-email-aliases-e2e.sh           # real aliases (MailingList) + catch-all + usedMb
+suite         integration-email-aliases-e2e.sh           # mailing lists (MailingList fan-out) + catch-all + usedMb
+suite         integration-mailbox-aliases-e2e.sh         # per-mailbox aliases: receive + send-as + identity + disable/delete
 suite         integration-backup-rclone-shim.sh
 suite         integration-cluster-trusted-proxies.sh
 suite         integration-wal-archive-failure-e2e.sh

@@ -64,6 +64,8 @@ export const CONFIG_DUMP_TABLES = [
   'emailDomains',
   'mailboxes',
   'emailAliases',
+  // Must follow `mailboxes` — FK mailbox_id → mailboxes.id.
+  'mailboxAliases',
   'mailSubmitCredentials',
   'sshKeys',
   'sftpUsers',
@@ -208,6 +210,11 @@ async function selectTenantRows(
     case 'emailAliases': {
       // email_aliases has a direct tenant_id column.
       const r = await rawDb.execute(sql`SELECT * FROM email_aliases WHERE tenant_id = ${tenantId}`);
+      return r.rows;
+    }
+    case 'mailboxAliases': {
+      // mailbox_aliases has a direct tenant_id column.
+      const r = await rawDb.execute(sql`SELECT * FROM mailbox_aliases WHERE tenant_id = ${tenantId}`);
       return r.rows;
     }
     case 'mailboxes': {
