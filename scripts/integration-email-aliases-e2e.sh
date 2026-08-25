@@ -38,6 +38,15 @@ ok()   { printf '  %b✓%b %s\n' "$GREEN" "$RESET" "$*"; passed=$((passed+1)); }
 fail() { printf '  %b✗%b %s\n' "$RED"   "$RESET" "$*"; failed=$((failed+1)); }
 passed=0; failed=0
 
+# Cluster access honours the operator profile's $KUBECTL (e.g. an SSH
+# wrapper for the staging cluster) — a bare `kubectl` would silently
+# target whatever cluster the local kubeconfig points at, which is the
+# exact split-target hazard integration-env.sh warns about.
+kctl() {
+  # shellcheck disable=SC2086
+  ${KUBECTL:-kubectl} "$@"
+}
+
 api() {
   local method="$1" path="$2" body="${3:-}"
   if [[ -z "$body" ]]; then
@@ -113,20 +122,20 @@ T3_CODE=$(api_code POST "$AL" "{\"source_address\":\"boxa@$TEST_DOMAIN\",\"desti
 
 # ── Stalwart-side (kubectl-gated) ───────────────────────────────────────
 STALWART_POD=""
-if command -v kubectl >/dev/null 2>&1; then
-  STALWART_POD=$(kubectl get pod -n mail -l app=stalwart-mail \
+if [[ -n "${KUBECTL:-}" ]] || command -v kubectl >/dev/null 2>&1; then
+  STALWART_POD=$(kctl get pod -n mail -l app=stalwart-mail \
     --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 fi
 if [[ -n "$STALWART_POD" ]]; then
-  SW_ADMIN_PW=$(kubectl get secret -n mail stalwart-admin-creds \
+  SW_ADMIN_PW=$(kctl get secret -n mail stalwart-admin-creds \
     -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d || true)
 fi
 if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" ]]; then
   swjmap() {
-    kubectl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
+    kctl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
       -X POST -H "Content-Type: application/json" -d "$1" http://localhost:8080/jmap/ 2>/dev/null
   }
-  SW_ACCT=$(kubectl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
+  SW_ACCT=$(kctl exec -n mail "$STALWART_POD" -c stalwart -- curl -s -u "admin:${SW_ADMIN_PW}" \
     http://localhost:8080/jmap/session 2>/dev/null \
     | python3 -c "import json,sys;print(list(json.load(sys.stdin)['accounts'].keys())[0])")
   ACCTS=$(swjmap "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:Account/get\",{\"accountId\":\"$SW_ACCT\",\"ids\":null,\"properties\":[\"id\",\"emailAddress\"]},\"r0\"]]}")
@@ -134,7 +143,7 @@ if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" ]]; then
   BOXA_SP=$(sw_id_for "boxa@$TEST_DOMAIN"); BOXB_SP=$(sw_id_for "boxb@$TEST_DOMAIN")
 
   send_to() { # send_to <rcpt> <subject> ; echoes curl rc
-    kubectl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
+    kctl exec -n mail "$STALWART_POD" -c stalwart -- sh -c \
       "printf 'From: p@ext-$STAMP.invalid\r\nTo: $1\r\nSubject: $2\r\n\r\nhello\r\n' > /tmp/al.eml; curl -s -m 20 --url smtp://localhost:25 --mail-from p@ext-$STAMP.invalid --mail-rcpt $1 --upload-file /tmp/al.eml >/dev/null 2>&1; echo \$?"
   }
   count_subject() {

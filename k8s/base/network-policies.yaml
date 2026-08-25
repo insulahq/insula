@@ -368,6 +368,26 @@ spec:
       ports:
         - protocol: TCP
           port: 3000
+    # Mail-namespace platform reporters: the stalwart-snapshot Jobs POST
+    # run stats to /api/v1/internal/mail/snapshot-last-run and the
+    # standby-replicate DaemonSet POSTs to
+    # /api/v1/internal/mail/standby-replicate-report (both bearer-gated
+    # by PLATFORM_INTERNAL_SECRET). The mail-side EGRESS for these was
+    # opened long ago, but no platform-side ingress ever admitted them:
+    # uploads worked while every stats report died with curl 000, so the
+    # mail backups page showed 0 snapshots / 0 B forever (2026-08-24).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: mail
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [stalwart-snapshot, mail-stack-standby-replicate]
+      ports:
+        - protocol: TCP
+          port: 3000
 
 # Stalwart -> platform-api webhook ingest (R6 PR 2). The mail server
 # POSTs telemetry batches to /api/v1/internal/mail/events; each request

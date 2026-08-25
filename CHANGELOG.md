@@ -12,6 +12,78 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **ntfy push notifications.** A new *ntfy* notification channel publishes
+  platform events to an [ntfy](https://ntfy.sh) topic — public ntfy.sh or
+  any self-hosted server, with private-topic support via access token or
+  username/password (stored encrypted). Configure it under Platform →
+  Notifications → Providers (with a one-click topic test), then enable the
+  channel per Source. ntfy is a topic broadcast: one message per event,
+  priority mapped from severity, with a tap-through link to the relevant
+  admin page; deliveries are queued, retried with backoff, and visible in
+  the Delivery Log (credential errors go straight to the dead-letter state
+  instead of retry-spamming).
+- **Preview a deployment before assigning a route.** Catalog apps and custom
+  containers now have a **Preview** button next to Start/Stop (admin and
+  tenant panels) that opens the running app in a sandboxed viewer via a
+  short-lived proxy link — no domain, DNS, or ingress route needed. Multi-port
+  deployments get a target picker. The preview is hard-sandboxed (server-sent
+  `CSP: sandbox`, credentials stripped in both directions), so previewed app
+  code can never touch the panel session; app logins inside the preview are
+  disabled by design, and apps that assume they run at a domain root may
+  render without styles — assign a route for full fidelity.
+
+### Changed
+- **Tenant-namespace NetworkPolicy `allow-platform-api` no longer pins
+  ports** (was TCP/8111, file-manager only): the preview proxy reaches
+  arbitrary workload Service ports. The peer selector stays pinned to the
+  platform-api pod; platform-api already holds cluster-admin credentials,
+  so the port pin bounded little — but this IS a deliberate widening of
+  that rule. Existing tenant namespaces converge on the next platform-api
+  start.
+- **`insula operator-key rotate` — recover from a lost operator age key.**
+  Mints a new keypair (old key files are preserved, never deleted), updates
+  the cluster recipient, and immediately triggers a fresh secrets-bundle
+  export so the newest off-site bundle is readable with the new key.
+  Bundles exported before the rotation stay encrypted to the old key.
+  `insula operator-key status` shows the cluster recipient and whether the
+  key file on the host matches it. The DR → Secrets Bundle page and the
+  operator manual now explain the loss-recovery path.
+- **Bootstrap's completion summary now calls out the operator age key** —
+  where it is, why it matters, how to copy it offline and remove it from
+  the server (previously only mentioned in a log line thousands of lines
+  earlier that had long scrolled away).
+- **Pages refresh themselves when a backup task finishes.** Manual system,
+  tenant and mail backup runs (and restores, snapshots, target switches)
+  now invalidate the affected pages' data the moment the task center sees
+  the task complete — no more manual reload to see the new backup.
+- **Database-restart warning before enabling WAL streaming / base backups.**
+  First-enable now asks for confirmation and explains the CNPG rolling
+  restart (up to ~5 min; hosted websites and tenant databases unaffected).
+- **Mail snapshots without an off-site target warn honestly.** Triggering a
+  mail snapshot with no mail backup target assigned returns (and shows) a
+  "stored on-cluster only" warning instead of looking identical to an
+  uploaded snapshot.
+
+### Fixed
+- **Mail backups page no longer reports a scary "repo not reachable" right
+  after assigning a target.** The restic credentials Secret is now
+  materialised inline during target assignment (previously only a 5-minute
+  reconcile tick created it, and the UI's list pod sat in
+  `CreateContainerConfigError`). The provisioning window and a
+  not-yet-initialized repository now each get an accurate message.
+- **Mail snapshot count / repo size were stuck at 0/0 B.** The snapshot
+  jobs' stats-reporting token Secret (`platform-api-sa-token`) was
+  referenced by the manifests but never created by anything; the
+  mail-restic reconciler now owns it, so completed snapshots report their
+  stats to the overview.
+- **Cluster → Storage no longer claims "no backup target" when class
+  targets are assigned.** The card now shows the three backup-class
+  assignments and scopes the "Active" target to what it actually drives:
+  Longhorn volume-level backups.
+- Assigning a backup target now refreshes the backup pages' target/status
+  panels immediately instead of requiring a reload.
+
 ## [2026.8.15] - 2026-08-24
 
 ### Added
@@ -31,7 +103,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   credentials on top) — every request failed silently. It now reads the live
   per-account disk usage in a single query; the mailbox list shows real
   numbers within one sync interval.
-
 
 ## [2026.8.14] - 2026-08-24
 

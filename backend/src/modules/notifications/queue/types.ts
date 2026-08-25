@@ -9,6 +9,10 @@
 /** Single queue for Phase 2 — email only. Other channels join later. */
 export const NOTIFICATIONS_EMAIL_QUEUE = 'notifications.send-email' as const;
 
+/** ntfy topic-broadcast channel (2026-08-25). Same job shape — the
+ *  delivery row referenced by deliveryId carries the payload. */
+export const NOTIFICATIONS_NTFY_QUEUE = 'notifications.send-ntfy' as const;
+
 export interface NotificationSendJob {
   readonly deliveryId: string;
 }

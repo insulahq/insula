@@ -13,9 +13,9 @@
  * Bounded: at most 100 rows per pass to keep the scan window small
  * even after a long pg-boss outage. Subsequent passes catch the rest.
  */
-import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { notificationDeliveries } from '../../../db/schema.js';
-import { enqueueDelivery } from './enqueue.js';
+import { enqueueDelivery, enqueueNtfyDelivery } from './enqueue.js';
 import type { Database } from '../../../db/index.js';
 
 const STUCK_QUEUED_THRESHOLD_SECONDS = 60;
@@ -34,7 +34,7 @@ export interface ReenqueueResult {
  */
 export async function reenqueueStuckDeliveries(
   db: Database,
-  opts: { readonly now?: Date; readonly enqueue?: typeof enqueueDelivery } = {},
+  opts: { readonly now?: Date; readonly enqueue?: typeof enqueueDelivery; readonly enqueueNtfy?: typeof enqueueNtfyDelivery } = {},
 ): Promise<ReenqueueResult> {
   const now = opts.now ?? new Date();
   const enqueue = opts.enqueue ?? enqueueDelivery;
@@ -53,11 +53,14 @@ export async function reenqueueStuckDeliveries(
       id: notificationDeliveries.id,
       status: notificationDeliveries.status,
       attempt: notificationDeliveries.attempt,
+      channel: notificationDeliveries.channel,
     })
     .from(notificationDeliveries)
     .where(
       and(
-        eq(notificationDeliveries.channel, 'email'),
+        // Both async channels — a stuck ntfy broadcast row (pg-boss down
+        // at dispatch time) must recover exactly like a stuck email.
+        inArray(notificationDeliveries.channel, ['email', 'ntfy']),
         or(
           and(
             eq(notificationDeliveries.status, 'queued'),
@@ -82,8 +85,9 @@ export async function reenqueueStuckDeliveries(
       // singletonKey includes a per-scan-tick suffix so consecutive
       // scans don't dedupe against each other (a missed enqueue from
       // the first pass should land on the second).
+      const enq = r.channel === 'ntfy' ? (opts.enqueueNtfy ?? enqueueNtfyDelivery) : enqueue;
       // eslint-disable-next-line no-await-in-loop
-      await enqueue(r.id, {
+      await enq(r.id, {
         singletonKey: `delivery:${r.id}:scan:${Math.floor(now.getTime() / 60000)}:attempt:${r.attempt}`,
       });
       reenqueued++;

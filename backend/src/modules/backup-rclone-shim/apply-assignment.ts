@@ -468,6 +468,37 @@ async function runShimAssignmentPipeline(
       );
     }
 
+    // ─── Mail class: materialise the restic Secret IMMEDIATELY ────
+    // The mail/stalwart-snapshot-restic-repo Secret is owned by the
+    // mail-restic shim reconciler, which otherwise runs on a 5-minute
+    // tick. In that window every restic list/snapshot Pod referencing
+    // the Secret sat in CreateContainerConfigError ("secret not
+    // found") and the UI surfaced a scary repo-unreachable error for
+    // a target the operator had JUST assigned (live incident
+    // 2026-08-24). Reconciling inline closes the window to seconds.
+    if (args.className === 'mail') {
+      await tasks.progress(db, taskId, {
+        pct: 68,
+        text: toSafeText('Provisioning mail restic credentials'),
+      });
+      try {
+        const { reconcileMailResticShim } = await import('./mail-restic.js');
+        await reconcileMailResticShim(
+          db,
+          { core: k8sClients.core },
+          log,
+        );
+      } catch (err) {
+        // Non-fatal: the 5-minute tick converges. The task carries the
+        // note so the operator sees WHY a list might briefly fail.
+        await tasks.progress(db, taskId, {
+          pct: 69,
+          text: toSafeText('Mail restic secret reconcile deferred to the periodic tick'),
+          detailsPatch: { mailResticError: err instanceof Error ? err.message : String(err) },
+        });
+      }
+    }
+
     // ─── Verify shim ready ──────────────────────────────────────
     await tasks.progress(db, taskId, {
       pct: 80,

@@ -14,7 +14,7 @@
 
 import { useMemo, useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertCircle, ArrowUpCircle, Download, FileText, Loader2, MoreVertical, Pencil, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowUpCircle, Download, Eye, FileText, Loader2, MoreVertical, Pencil, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import {
   useCustomDeployments,
@@ -33,6 +33,7 @@ import { SimpleContainerWizard } from './SimpleContainerWizard';
 import { ComposeEditor } from './ComposeEditor';
 import { PrivateRegistryPanel } from './PrivateRegistryPanel';
 import { UpdatesPill } from './UpdatesPill';
+import AppPreviewModal from '@/components/AppPreviewModal';
 
 interface CustomContainersTabProps {
   readonly tenantId: string;
@@ -67,6 +68,7 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
   // Which row is mid-update, so the button can show a spinner + disable
   // rather than letting an impatient operator queue three rolls.
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [previewRow, setPreviewRow] = useState<{ id: string; name: string } | null>(null);
 
   const onUpdateNow = (row: CustomDeploymentRow) => {
     setActionMenuOpen(null);
@@ -267,6 +269,18 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
                               <RefreshCw size={12} className={updatingId === row.id ? 'animate-spin' : undefined} />
                               {updatingId === row.id ? 'Updating…' : 'Update'}
                             </button>
+                            {row.status === 'running' && (
+                              <button
+                                type="button"
+                                onClick={() => setPreviewRow({ id: row.id, name: row.name })}
+                                title="View the running container in a sandboxed preview — no route needed"
+                                data-testid={`custom-preview-${row.id}`}
+                                className="inline-flex items-center gap-1 text-xs font-medium text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200"
+                              >
+                                <Eye size={12} />
+                                Preview
+                              </button>
+                            )}
                             {/* Break a CrashLoopBackOff without deleting: scale to 0.
                                 Start scales back to 1. */}
                             <button
@@ -397,6 +411,14 @@ export function CustomContainersTab({ tenantId, canManage }: CustomContainersTab
             })()
           }
           onClose={() => setActiveModal({ kind: 'none' })}
+        />
+      )}
+      {previewRow && (
+        <AppPreviewModal
+          tenantId={tenantId}
+          deploymentId={previewRow.id}
+          deploymentName={previewRow.name}
+          onClose={() => setPreviewRow(null)}
         />
       )}
     </div>

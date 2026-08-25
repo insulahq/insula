@@ -15,7 +15,7 @@ export type NotificationSeverity = typeof NOTIFICATION_SEVERITY[number];
 export const NOTIFICATION_AUDIENCE = ['tenant', 'admin', 'system'] as const;
 export type NotificationAudience = typeof NOTIFICATION_AUDIENCE[number];
 
-export const NOTIFICATION_CHANNEL_ID = ['in_app', 'email'] as const;
+export const NOTIFICATION_CHANNEL_ID = ['in_app', 'email', 'ntfy'] as const;
 export type NotificationChannelId = typeof NOTIFICATION_CHANNEL_ID[number];
 
 export const NOTIFICATION_GDPR_BASIS = ['contract', 'legitimate_interest', 'consent'] as const;

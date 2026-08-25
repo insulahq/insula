@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import type { TaskRow } from '@insula/api-contracts';
-import { useTaskCenter, useClearTasks } from '@/hooks/use-task-center';
+import { useTaskCenter, useClearTasks, useTaskCompletionRefresher } from '@/hooks/use-task-center';
 import { TaskModalHost } from '@/tasks/modal-registry';
 
 const RECENT_TERMINAL_WINDOW_MS = 5 * 60 * 1000;
@@ -28,6 +28,8 @@ interface SelectedModal {
 
 export default function TaskCenterChip() {
   const { data, isLoading } = useTaskCenter();
+  // Bridge task completions into query refreshes for every open page.
+  useTaskCompletionRefresher();
   const clearTasks = useClearTasks();
   const [open, setOpen] = useState(false);
   const [selectedModal, setSelectedModal] = useState<SelectedModal | null>(null);

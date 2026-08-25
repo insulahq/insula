@@ -156,6 +156,12 @@ function ClusterCard({ cluster }: { cluster: WalArchiveCluster }) {
   );
 }
 
+const DB_RESTART_WARNING =
+  'Enabling this reconfigures the platform database (archive settings) and '
+  + 'performs a rolling restart of its Postgres instance(s). This can take up '
+  + 'to ~5 minutes; the admin panel and API may be briefly unavailable during '
+  + 'it. Hosted websites and tenant databases are NOT affected. Continue?';
+
 // ── WAL Streaming section ──────────────────────────────────────────
 
 function WalStreamingSection({
@@ -193,6 +199,9 @@ function WalStreamingSection({
   const retentionTooShort = !!savedCron && retentionDays < minRetention;
 
   const onEnable = (): void => {
+    // First-time enable flips archive_mode on the CNPG cluster — a
+    // Postgres restart. Saving settings on an active config does not.
+    if (!active && !window.confirm(DB_RESTART_WARNING)) return;
     void enable.mutateAsync({
       clusterNamespace: cluster.clusterNamespace,
       clusterName: cluster.clusterName,
@@ -356,6 +365,10 @@ function ScheduledBackupsSection({
       return;
     }
     setCronError(null);
+    // First-time enable wires the barman object store into the CNPG
+    // cluster — a Postgres restart. Cron edits on an active schedule
+    // do not restart.
+    if (!active && !window.confirm(DB_RESTART_WARNING)) return;
     void enable.mutateAsync({
       clusterNamespace: cluster.clusterNamespace,
       clusterName: cluster.clusterName,
