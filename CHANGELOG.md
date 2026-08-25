@@ -12,6 +12,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **App preview rendered sites without CSS/JS.** The panels' own nginx
+  asset-cache rule (a regex `location` for `.css/.js/.png/…`) outranked the
+  plain `/api/` proxy prefix, so every preview-proxied asset path (e.g.
+  `/api/v1/preview/<token>/styles.css`) was answered 404 by the panel
+  instead of being forwarded — pages loaded, styling and scripts never did.
+  The API locations now use `^~`, which suppresses regex evaluation. Routes
+  were never affected (routed traffic bypasses the panel nginx entirely).
+
 ## [2026.8.16] - 2026-08-25
 
 ### Added
