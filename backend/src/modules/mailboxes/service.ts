@@ -667,35 +667,44 @@ export async function updateMailbox(
         if (accountId) await ensureSieveInterpreterLimits({ accountId });
       }
       // Status flip: apply the access profile (permissions) + alias map
-      // BEFORE the script so a failure leaves nothing half-shut-down
-      // that the periodic reconcile wouldn't converge anyway.
+      // BEFORE the script. An unresolvable admin account is a HARD
+      // failure here — silently skipping would return 200 with the DB
+      // flipped while the account can still authenticate and its aliases
+      // still resolve (fail-open suspension; review 2026-08-26 HIGH).
       if (statusFlipped) {
         const accountId = await getJmapAccountId();
-        if (accountId) {
-          await applyAccountAccessState({
+        if (!accountId) {
+          throw new ApiError(
+            'MAIL_SERVER_ERROR',
+            'Mail server unreachable — the status change was not applied',
+            502,
+            { mailbox_id: mailboxId },
+            'Check Stalwart JMAP API reachability and retry',
+          );
+        }
+        await applyAccountAccessState({
+          accountId,
+          principalId: existingMailbox.stalwartPrincipalId,
+          mailboxType: isSendOnly ? 'send_only' : 'mailbox',
+          suspended: desiredDisabled,
+        });
+        const [emailDomainRow] = await db
+          .select({ stalwartDomainId: emailDomains.stalwartDomainId })
+          .from(emailDomains)
+          .where(eq(emailDomains.id, existingMailbox.emailDomainId));
+        if (emailDomainRow?.stalwartDomainId) {
+          const { desiredAliasesForMailbox } = await import('../mailbox-aliases/service.js');
+          const { setAccountAliases } = await import('../stalwart-jmap/account-aliases.js');
+          const aliasMap = await desiredAliasesForMailbox(
+            db, mailboxId, emailDomainRow.stalwartDomainId, !desiredDisabled,
+          );
+          // Push even an EMPTY map on suspend — it clears any out-of-band
+          // Stalwart aliases immediately instead of waiting for the sweep.
+          await setAccountAliases({
             accountId,
             principalId: existingMailbox.stalwartPrincipalId,
-            mailboxType: isSendOnly ? 'send_only' : 'mailbox',
-            suspended: desiredDisabled,
+            aliases: aliasMap,
           });
-          const [emailDomainRow] = await db
-            .select({ stalwartDomainId: emailDomains.stalwartDomainId })
-            .from(emailDomains)
-            .where(eq(emailDomains.id, existingMailbox.emailDomainId));
-          if (emailDomainRow?.stalwartDomainId) {
-            const { desiredAliasesForMailbox } = await import('../mailbox-aliases/service.js');
-            const { setAccountAliases } = await import('../stalwart-jmap/account-aliases.js');
-            const aliasMap = await desiredAliasesForMailbox(
-              db, mailboxId, emailDomainRow.stalwartDomainId, !desiredDisabled,
-            );
-            if (aliasMap.length > 0) {
-              await setAccountAliases({
-                accountId,
-                principalId: existingMailbox.stalwartPrincipalId,
-                aliases: aliasMap,
-              });
-            }
-          }
         }
       }
       await applyMailRules({

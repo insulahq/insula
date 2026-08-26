@@ -20,7 +20,7 @@
  * disabled, plus any permission-drifted row (the drift is the tell that
  * a lifecycle push failed halfway).
  */
-import { eq, isNotNull, or } from 'drizzle-orm';
+import { isNotNull } from 'drizzle-orm';
 import { mailboxes } from '../../db/schema.js';
 import { mailLogger } from '../../shared/mail-logger.js';
 import { getJmapSession, rawStalwartCall } from '../stalwart-jmap/client.js';
@@ -58,8 +58,10 @@ export function permissionsMatch(
 }
 
 export async function reconcileAllMailboxMailRules(db: Database): Promise<void> {
-  // ALL rows: the permission diff needs every mailbox; the script push
-  // below narrows to rules-bearing / disabled / perm-drifted rows.
+  // Every PROVISIONED mailbox: the permission diff needs all of them,
+  // and unprovisioned rows are skipped in the loop anyway (principals-
+  // sync backfills first). The script push below narrows to
+  // rules-bearing / disabled / perm-drifted rows.
   const rows = await db
     .select({
       id: mailboxes.id,
@@ -73,15 +75,7 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
       stalwartPrincipalId: mailboxes.stalwartPrincipalId,
     })
     .from(mailboxes)
-    .where(
-      or(
-        eq(mailboxes.mailboxType, 'send_only'),
-        isNotNull(mailboxes.forwardingAddresses),
-        eq(mailboxes.autoReply, 1),
-        eq(mailboxes.status, 'disabled'),
-        isNotNull(mailboxes.stalwartPrincipalId),
-      ),
-    );
+    .where(isNotNull(mailboxes.stalwartPrincipalId));
   if (rows.length === 0) return;
 
   // Resolve the admin principals account once. Unreachable Stalwart =

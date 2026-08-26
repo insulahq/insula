@@ -179,13 +179,13 @@ async function pushTenantMailState(
       const stalwartDomainId = stalwartDomainByEmailDomainId.get(r.emailDomainId);
       if (stalwartDomainId) {
         const aliasMap = await desiredAliasesForMailbox(ctx.db, r.id, stalwartDomainId, !suspended);
-        if (aliasMap.length > 0) {
-          await setAccountAliases({
-            accountId,
-            principalId: r.stalwartPrincipalId as string,
-            aliases: aliasMap,
-          });
-        }
+        // Push even an EMPTY map — on suspend it clears any out-of-band
+        // Stalwart aliases immediately instead of waiting for the sweep.
+        await setAccountAliases({
+          accountId,
+          principalId: r.stalwartPrincipalId as string,
+          aliases: aliasMap,
+        });
       }
       pushed += 1;
     }
