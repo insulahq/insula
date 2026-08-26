@@ -60,3 +60,12 @@ exactly one mailbox and additionally authorizes replying *as* the alias.
   them). Tenant bundles carry `mailbox_aliases` in the config-tables
   component; `ensure-stalwart-principals` re-applies the alias map +
   identities when it recreates an account.
+- Suspension (tenant suspend or per-mailbox disable, operator decision
+  2026-08-26): the account's whole mail surface shuts down — the alias
+  map is pushed all-off (RCPT 550 / send-as 501), inbound to the primary
+  is bounced by an ereject script, and the `authenticate` permission is
+  disabled (no submission/IMAP/webmail). Alias rows and identities keep
+  the configuration; reactivation restores everything. Permission writes
+  always compose the FULL desired set via `buildAccountPermissions` —
+  Stalwart stores the last permissions patch verbatim, so incremental
+  patches from different features clobber each other (probed live).

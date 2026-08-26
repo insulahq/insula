@@ -31,11 +31,15 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   destinations) — that is a mailing list, and the new per-mailbox aliases
   made the old name actively confusing. Functionality is unchanged; the
   create button is now "Create Mailing List".
-- **Suspending a tenant (or disabling a mailbox) now strips forwarding and
-  auto-reply on the mail server.** Previously the platform-managed Sieve
-  script kept redirecting a suspended tenant's mail. Inbound mail is still
-  accepted and stored (nothing is lost across a suspension); send-only
-  accounts keep bouncing. Reactivation re-pushes the stored rules.
+- **Suspending a tenant (or disabling a mailbox) now shuts its mail down
+  completely** (operator decision 2026-08-26). Incoming mail — to the
+  mailbox and to its aliases — is refused with a neutral bounce (nothing
+  is silently stored or dropped, senders are informed), and the account
+  cannot authenticate: no SMTP submission, IMAP/POP3, ManageSieve, or
+  webmail sign-in until re-activation. Forwarding and auto-reply stop
+  with it. Previously the platform-managed Sieve script kept redirecting
+  a suspended tenant's mail and the account could still sign in and
+  send. Reactivation restores everything from the stored configuration.
 - **Tenant archive now destroys the Stalwart account principals** (after
   the destroy succeeds, never before) instead of deleting the platform
   rows and leaving live, unmanageable mailboxes behind on the mail server.

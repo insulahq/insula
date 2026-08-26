@@ -1077,6 +1077,10 @@ function EditMailboxModal({
                 <option value="active">Active</option>
                 <option value="disabled">Disabled</option>
               </select>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                Disabled: incoming mail (including aliases) is bounced back to the
+                sender, and sign-in/sending are blocked until re-activated.
+              </p>
             </div>
           </div>
 

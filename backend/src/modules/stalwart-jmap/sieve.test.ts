@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMailRulesScript, PLATFORM_SIEVE_SCRIPT_NAME } from './sieve.js';
+import { buildMailRulesScript, buildAccountPermissions, PLATFORM_SIEVE_SCRIPT_NAME } from './sieve.js';
 
 describe('buildMailRulesScript', () => {
   it('returns null for a normal mailbox without forwarding (no script needed)', () => {
@@ -125,5 +125,68 @@ describe('buildMailRulesScript — vacation auto-reply', () => {
       autoReply: { subject: 'Hi\r\nBcc: x@evil.test\tz', body: 'x' },
     });
     expect(script).toContain('vacation :subject "Hi Bcc: x@evil.test z" text:');
+  });
+});
+
+describe('buildMailRulesScript — suspension (2026-08-26 full mail shutdown)', () => {
+  it('suspended overrides everything with an ereject-only script', () => {
+    for (const mailboxType of ['mailbox', 'send_only'] as const) {
+      const script = buildMailRulesScript({
+        mailboxType,
+        suspended: true,
+        forwardingAddresses: ['keep@example.test'],
+        autoReply: { subject: 'away', body: 'body' },
+      });
+      expect(script).toContain('require ["ereject"];');
+      expect(script).toContain('ereject "This address is currently unavailable.";');
+      expect(script).not.toContain('redirect');
+      expect(script).not.toContain('vacation');
+    }
+  });
+
+  it('suspended:false keeps the normal derivation', () => {
+    const script = buildMailRulesScript({
+      mailboxType: 'mailbox',
+      suspended: false,
+      forwardingAddresses: ['t@example.test'],
+    });
+    expect(script).toContain('redirect :copy "t@example.test";');
+    expect(script).not.toContain('unavailable');
+  });
+});
+
+describe('buildAccountPermissions', () => {
+  it('active mailbox: authenticate force-enabled, nothing disabled', () => {
+    expect(buildAccountPermissions({ mailboxType: 'mailbox', suspended: false })).toEqual({
+      '@type': 'Merge',
+      enabledPermissions: { authenticate: true },
+      disabledPermissions: {},
+    });
+  });
+
+  it('active send-only: profile disables imap/pop3/sieve only', () => {
+    expect(buildAccountPermissions({ mailboxType: 'send_only', suspended: false })).toEqual({
+      '@type': 'Merge',
+      enabledPermissions: { authenticate: true },
+      disabledPermissions: { imapAuthenticate: true, pop3Authenticate: true, sieveAuthenticate: true },
+    });
+  });
+
+  it('suspended composes authenticate-off WITH the send-only profile (patches clobber — full set every write)', () => {
+    expect(buildAccountPermissions({ mailboxType: 'send_only', suspended: true })).toEqual({
+      '@type': 'Merge',
+      enabledPermissions: {},
+      disabledPermissions: {
+        authenticate: true,
+        imapAuthenticate: true,
+        pop3Authenticate: true,
+        sieveAuthenticate: true,
+      },
+    });
+    expect(buildAccountPermissions({ mailboxType: 'mailbox', suspended: true })).toEqual({
+      '@type': 'Merge',
+      enabledPermissions: {},
+      disabledPermissions: { authenticate: true },
+    });
   });
 });

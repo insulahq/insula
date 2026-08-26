@@ -75,6 +75,11 @@ export interface MailRulesState {
   /** Null/absent = auto-reply off. Only meaningful for `mailbox` type
    *  (send-only accounts reject auto-reply at the service layer). */
   readonly autoReply?: MailRulesAutoReply | null;
+  /** Suspended mailbox (tenant suspension or per-mailbox disable):
+   *  the script becomes ereject-only — ALL inbound is refused with a
+   *  bounce, forwarding/auto-reply are ignored (operator decision
+   *  2026-08-26: suspension disables incoming AND outgoing mail). */
+  readonly suspended?: boolean;
 }
 
 /**
@@ -113,6 +118,19 @@ function sieveTextBlock(value: string): string {
  */
 export function buildMailRulesScript(state: MailRulesState): string | null {
   const { mailboxType } = state;
+  if (state.suspended) {
+    // Suspension overrides everything: every inbound message is refused
+    // with a real DSN bounce (ereject — a disabled emailReceive would
+    // silently DROP instead; verified live). The message is deliberately
+    // neutral — it must not leak WHY the account is unavailable.
+    return [
+      '# Managed by the hosting platform — do not edit.',
+      '# Regenerated from the mailbox forwarding/auto-reply settings on every change.',
+      'require ["ereject"];',
+      'ereject "This address is currently unavailable.";',
+      '',
+    ].join('\n');
+  }
   const targets = state.forwardingAddresses.filter((a) => a.trim().length > 0);
   const autoReply = mailboxType === 'mailbox' && state.autoReply?.body?.trim()
     ? state.autoReply
@@ -299,14 +317,78 @@ export async function applyMailRules(params: MailRulesState & {
 }
 
 /**
- * Send-only permission profile: block IMAP/POP3 mailbox access and
- * ManageSieve self-management while keeping `authenticate` + `emailSend`
- * (SMTP submission via login passwords) and `emailReceive` (inbound must
- * still reach the Sieve stage so ereject/redirect run — a disabled
- * emailReceive silently drops mail instead; verified live).
+ * Compose the account's FULL desired permission object from
+ * (mailboxType, suspended). One composer for every path — Stalwart
+ * stores the LAST permissions patch verbatim ("Merge" merges with
+ * role-inherited permissions at evaluation time, NOT with previous
+ * patches; probed live 2026-08-26), so incremental patches from
+ * different features clobber each other. Exported pure for unit tests.
  *
  * Names are Stalwart v0.16 registry camelCase (NOT the kebab-case of the
  * 0.15 directory docs).
+ */
+export function buildAccountPermissions(state: {
+  readonly mailboxType: MailRulesMailboxType;
+  readonly suspended: boolean;
+}): {
+  '@type': 'Merge';
+  enabledPermissions: Record<string, boolean>;
+  disabledPermissions: Record<string, boolean>;
+} {
+  const disabled: Record<string, boolean> = {};
+  if (state.suspended) {
+    // No authentication at all: submission, IMAP, POP3, ManageSieve and
+    // direct JMAP/webmail logins are refused ("550 5.7.1 not authorized",
+    // verified live). Inbound delivery is not auth-gated — the ereject
+    // script (buildMailRulesScript suspended mode) covers that half.
+    disabled.authenticate = true;
+  }
+  if (state.mailboxType === 'send_only') {
+    // Send-only profile: block IMAP/POP3 mailbox access and ManageSieve
+    // self-management while keeping submission + emailReceive (inbound
+    // must still reach Sieve so ereject/redirect run — a disabled
+    // emailReceive silently drops mail instead; verified live).
+    disabled.imapAuthenticate = true;
+    disabled.pop3Authenticate = true;
+    disabled.sieveAuthenticate = true;
+  }
+  return {
+    '@type': 'Merge',
+    // Re-activation force-enables `authenticate` (users have it by
+    // default anyway; the stored object must flip it back after a
+    // suspension because the previous patch disabled it).
+    enabledPermissions: state.suspended ? {} : { authenticate: true },
+    disabledPermissions: disabled,
+  };
+}
+
+/**
+ * Push the account's access state (suspension + send-only profile) as
+ * one whole-object permissions write.
+ */
+export async function applyAccountAccessState(params: {
+  /** Admin principals account id (session primaryAccounts). */
+  accountId: JmapAccountId;
+  /** The USER's Stalwart principal id. */
+  principalId: string;
+  mailboxType: MailRulesMailboxType;
+  suspended: boolean;
+  baseUrl?: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<void> {
+  const { accountId, principalId, mailboxType, suspended, baseUrl, env } = params;
+  await updatePrincipal({
+    accountId,
+    id: principalId,
+    patch: { permissions: buildAccountPermissions({ mailboxType, suspended }) },
+    baseUrl,
+    env,
+  });
+}
+
+/**
+ * Legacy name kept for the create path's readability — the send-only
+ * profile is now just the active-account access state for send_only.
  */
 export async function applySendOnlyPermissions(params: {
   /** Admin principals account id (session primaryAccounts). */
@@ -316,24 +398,7 @@ export async function applySendOnlyPermissions(params: {
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const { accountId, principalId, baseUrl, env } = params;
-  await updatePrincipal({
-    accountId,
-    id: principalId,
-    patch: {
-      permissions: {
-        '@type': 'Merge',
-        enabledPermissions: {},
-        disabledPermissions: {
-          imapAuthenticate: true,
-          pop3Authenticate: true,
-          sieveAuthenticate: true,
-        },
-      },
-    },
-    baseUrl,
-    env,
-  });
+  await applyAccountAccessState({ ...params, mailboxType: 'send_only', suspended: false });
 }
 
 interface SieveUserInterpreterGetResponse {

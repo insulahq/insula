@@ -71,7 +71,19 @@ vi.mock('../tenants/service.js', () => ({
 vi.mock('../stalwart-jmap/sieve.js', () => ({
   applyMailRules: vi.fn().mockResolvedValue(undefined),
   applySendOnlyPermissions: vi.fn().mockResolvedValue(undefined),
+  applyAccountAccessState: vi.fn().mockResolvedValue(undefined),
   ensureSieveInterpreterLimits: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Status-flip path (2026-08-26 full mail shutdown): the alias map is
+// re-derived and pushed alongside the permission profile.
+vi.mock('../mailbox-aliases/service.js', () => ({
+  desiredAliasesForMailbox: vi.fn().mockResolvedValue([
+    { localPart: 'info', stalwartDomainId: 'sd-1', enabled: false },
+  ]),
+}));
+vi.mock('../stalwart-jmap/account-aliases.js', () => ({
+  setAccountAliases: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Track select call results per test
@@ -933,6 +945,7 @@ describe('updateMailbox — send-only + forwarding', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: ['dest@example.net'],
       autoReply: null,
@@ -951,6 +964,7 @@ describe('updateMailbox — send-only + forwarding', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: [],
       autoReply: null,
@@ -1015,6 +1029,7 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: [],
       autoReply: { subject: 'OOO', body: 'Away.' },
@@ -1030,6 +1045,7 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: ['dest@example.net'],
       autoReply: { subject: null, body: 'Away.' },
@@ -1055,6 +1071,7 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: [],
       autoReply: null,
@@ -1066,5 +1083,105 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
     const db = createMockDb();
     await expect(updateMailbox(db as never, 'c1', 'mb1', { auto_reply: true }))
       .rejects.toMatchObject({ code: 'MAILBOX_NOT_PROVISIONED', status: 409 });
+  });
+});
+
+describe('updateMailbox — status flip (2026-08-26 full mail shutdown)', () => {
+  const SESSION = { primaryAccounts: { 'urn:ietf:params:jmap:principals': 'acct-1' } };
+  const activeMailbox = {
+    id: 'mb1', tenantId: 'c1', emailDomainId: 'ed1', fullAddress: 'info@example.com',
+    mailboxType: 'mailbox', status: 'active', stalwartPrincipalId: 'sp1',
+  };
+
+  it('disable applies the suspended profile: perms off, alias map pushed, ereject script', async () => {
+    const jmap = await import('../stalwart-jmap/client.js');
+    vi.mocked(jmap.getJmapSession).mockResolvedValueOnce(SESSION as never);
+    const accountAliases = await import('../stalwart-jmap/account-aliases.js');
+    vi.mocked(accountAliases.setAccountAliases).mockClear();
+    vi.mocked(sieve.applyAccountAccessState).mockClear();
+    // selects: getMailbox, emailDomains stalwartDomainId, updated row
+    selectResults = [
+      [activeMailbox],
+      [{ stalwartDomainId: 'sd-1' }],
+      [{ ...activeMailbox, status: 'disabled' }],
+    ];
+    const db = createMockDb();
+
+    const result = await updateMailbox(db as never, 'c1', 'mb1', { status: 'disabled' });
+
+    expect(sieve.applyAccountAccessState).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: 'acct-1',
+      principalId: 'sp1',
+      mailboxType: 'mailbox',
+      suspended: true,
+    }));
+    expect(accountAliases.setAccountAliases).toHaveBeenCalledWith(expect.objectContaining({
+      principalId: 'sp1',
+      aliases: [{ localPart: 'info', stalwartDomainId: 'sd-1', enabled: false }],
+    }));
+    expect(sieve.applyMailRules).toHaveBeenCalledWith(expect.objectContaining({
+      principalId: 'sp1',
+      suspended: true,
+      forwardingAddresses: [],
+      autoReply: null,
+    }));
+    expect(result.status).toBe('disabled');
+  });
+
+  it('re-enable restores the active profile', async () => {
+    const jmap = await import('../stalwart-jmap/client.js');
+    vi.mocked(jmap.getJmapSession).mockResolvedValueOnce(SESSION as never);
+    vi.mocked(sieve.applyAccountAccessState).mockClear();
+    const disabled = { ...activeMailbox, status: 'disabled' };
+    selectResults = [
+      [disabled],
+      [{ stalwartDomainId: 'sd-1' }],
+      [{ ...disabled, status: 'active' }],
+    ];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', { status: 'active' });
+
+    expect(sieve.applyAccountAccessState).toHaveBeenCalledWith(expect.objectContaining({
+      suspended: false,
+    }));
+    expect(sieve.applyMailRules).toHaveBeenCalledWith(expect.objectContaining({
+      suspended: false,
+    }));
+  });
+
+  it('502s (fail-CLOSED) when the admin account cannot be resolved on a status flip', async () => {
+    // getJmapAccountId caches the admin account for 5 min — earlier tests
+    // in this file prime it. Jump past the TTL so getJmapSession is
+    // consulted again, and RESET its mock (sibling tests may have left
+    // unconsumed mockResolvedValueOnce entries queued) so it rejects.
+    const jmap = await import('../stalwart-jmap/client.js');
+    vi.mocked(jmap.getJmapSession).mockReset().mockRejectedValue(new Error('mail stack down'));
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+    try {
+      vi.mocked(sieve.applyAccountAccessState).mockClear();
+      selectResults = [[activeMailbox]];
+      const db = createMockDb();
+
+      await expect(updateMailbox(db as never, 'c1', 'mb1', { status: 'disabled' }))
+        .rejects.toMatchObject({ code: 'MAIL_SERVER_ERROR', status: 502 });
+      expect(sieve.applyAccountAccessState).not.toHaveBeenCalled();
+      // Nothing written: the DB must not claim a shutdown Stalwart never got.
+      expect((db as unknown as { update: ReturnType<typeof vi.fn> }).update).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a quota-only PATCH never touches the access profile', async () => {
+    vi.mocked(sieve.applyAccountAccessState).mockClear();
+    const mailbox = { ...activeMailbox, quotaMb: 1024 };
+    // selects: getMailbox, size-limit plan row, updated row
+    selectResults = [[mailbox], [{ planLimit: 5120, override: null }], [{ ...mailbox, quotaMb: 2048 }]];
+    const db = createMockDb();
+
+    await updateMailbox(db as never, 'c1', 'mb1', { quota_mb: 2048 });
+    expect(sieve.applyAccountAccessState).not.toHaveBeenCalled();
   });
 });
