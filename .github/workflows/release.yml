@@ -132,9 +132,27 @@ jobs:
           # `version` field MUST equal the tag (the poller binds them) — it's the
           # tag-validated platform/VERSION, so they match by construction.
           python3 - > dist-release/release-manifest.json <<'PY'
-          import json, os, datetime
+          import json, os, datetime, re, sys
           v = os.environ["VERSION"]
           pfx = os.environ["IMAGE_PREFIX"]
+
+          # `breaking` drives the W13 auto-upgrade short-circuit: the poller
+          # persists it as `available_breaking`, and upgrade-planner refuses to
+          # AUTO-apply a breaking release (operator must apply it manually).
+          # The CHANGELOG's `### BREAKING` heading is the definition of record
+          # (see the CHANGELOG header + cut-release.sh --breaking), so derive it
+          # from this version's section rather than carrying a second source of
+          # truth. Until 2026-08-26 this field was never emitted at all, which
+          # made the whole gate dead code — every release looked non-breaking.
+          section = re.search(
+              r"^## \[" + re.escape(v) + r"\][^\n]*\n(.*?)(?=^## \[|\Z)",
+              open("CHANGELOG.md", encoding="utf-8").read(), re.S | re.M,
+          )
+          if section is None:
+              print(f"release-manifest: no CHANGELOG section for {v}", file=sys.stderr)
+              raise SystemExit(1)
+          breaking = bool(re.search(r"^#{3,4} +BREAKING", section.group(1), re.M | re.I))
+
           print(json.dumps({
               "version": v,
               "images": {
@@ -142,6 +160,7 @@ jobs:
                   "adminPanel": f"{pfx}/admin-panel:{v}",
                   "tenantPanel": f"{pfx}/tenant-panel:{v}",
               },
+              "breaking": breaking,
               "releasedAt": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
           }, separators=(",", ":")))
           PY
