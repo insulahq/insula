@@ -12,16 +12,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-### Fixed
-- **Flux no longer fights the DR-CronJob bridge over `spec.suspend`.**
-  The bridged CronJobs (secrets bundle, cluster-state, audit) ship
-  `suspend: true` in their manifests; Flux re-applied that on every sync,
-  reverting the bridge's unsuspend within a minute. The Flux
-  Kustomization now strips `/spec/suspend` from its apply input for the
-  three (same pattern as the mail snapshot CronJob) — fresh installs get
-  it from bootstrap, existing clusters via host-migration
-  2026.8.18/0001.
-
 ### Removed
 - **The legacy backup target-"Activate" path is fully retired**
   (operator decision 2026-08-26). Removed: the Activate/Deactivate
@@ -47,6 +37,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   the two removed RecurringJobs from existing clusters automatically.
 
 ### Fixed
+- **Flux no longer fights the DR-CronJob bridge over `spec.suspend`.**
+  The bridged CronJobs (secrets bundle, cluster-state, audit) ship
+  `suspend: true` in their manifests; Flux re-applied that on every sync,
+  reverting the bridge's unsuspend within a minute. The Flux
+  Kustomization now strips `/spec/suspend` from its apply input for the
+  three (same pattern as the mail snapshot CronJob) — fresh installs get
+  it from bootstrap, existing clusters via host-migration
+  2026.8.18/0001.
 - **Nightly DR CronJobs (secrets bundle, cluster-state dump, backup
   audit) now run on shim-configured clusters.** They were only ever
   unsuspended by the legacy target-"Activate" flow — a cluster
@@ -55,8 +53,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   watcher only sees failed Jobs, and a suspended CronJob never creates
   one). A new bridge reconciler feeds them the shim's own S3 endpoint
   (works for every upstream, CIFS included) and manages their suspend
-  state from the SYSTEM-class binding; the legacy flow keeps precedence
-  where it is in use.
+  state from the SYSTEM-class binding (the bridge is their sole owner —
+  the legacy flow is removed in this same release).
 - **Longhorn volume backups failing for lack of a backup target are no
   longer invisible.** On a shim-only cluster Longhorn's nightly
   recurring backups error on every volume ("backup target default is
@@ -119,6 +117,27 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   per-tenant bundle counts (clickable filter chips), the tenant detail
   page links straight to a tenant's filtered bundle list, and the
   single-tenant trigger lists are sorted alphabetically.
+
+### BREAKING
+- **Longhorn volume-level backups are gone; off-cluster protection is now
+  exclusively the 3-class backup pipeline.** If your cluster was on the
+  legacy "Activate a target" path with a working Longhorn BackupTarget,
+  its nightly `daily-backup`/`weekly-backup` volume backups stop with this
+  release (Flux prunes the RecurringJobs) — existing Longhorn backups in
+  your bucket are untouched and still restorable by Longhorn, but no new
+  ones are taken. **Action:** confirm every class (`tenant`, `system`,
+  `mail`) is bound to a target under *Backups → per class → Targets,
+  Schedules & Retention*, and that the tenant-bundle schedule is enabled;
+  that pipeline covers tenant data, Postgres (base + WAL), and mail. Local
+  `hourly-snap` snapshots and destructive-shrink rollback are unaffected.
+- **The legacy target-activate admin API is removed.** `POST
+  /admin/backup-configs/:id/activate`, `.../deactivate`, `GET
+  /admin/backup-configs/:id/backups` and `POST
+  /admin/backup-configs/:id/backup-now` now return 404 — any operator
+  script calling them must move to the class-assignment endpoint
+  (`PUT /admin/backup-rclone-shim/assignments/:class`). The admin panel
+  moved with them in the same release; migration 0090 clears the retired
+  `active` flag on all target rows.
 
 ## [2026.8.17] - 2026-08-26
 
