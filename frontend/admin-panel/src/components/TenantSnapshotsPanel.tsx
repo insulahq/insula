@@ -13,6 +13,9 @@
 
 import { useState } from 'react';
 import { Camera, Loader2, Trash2, Plus, X, Info, Clock, RotateCcw, AlertTriangle, CheckCircle, ArrowRight } from 'lucide-react';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TimeCell from '@/components/ui/TimeCell';
 import {
   useTenantSnapshots,
   useCreateTenantSnapshot,
@@ -71,6 +74,8 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
   const expiryHours = snapsQ.data?.data?.expiryHours ?? 48;
   const compact = variant === 'compact';
   const snapshots = compact ? allSnapshots.slice(0, 3) : allSnapshots;
+  const { sortedData: sortedSnapshots, sortKey, sortDirection, onSort } = useSortable(snapshots, 'createdAt', 'desc');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-5 !py-3 font-medium text-sm text-gray-500 dark:text-gray-400 normal-case tracking-normal' };
 
   const [createOpen, setCreateOpen] = useState(false);
   const [label, setLabel] = useState('');
@@ -176,16 +181,16 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Label</th>
-                  <th className="px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                  <th className="hidden px-5 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Size</th>
-                  <th className="hidden px-5 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Created</th>
-                  <th className="px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Expires</th>
+                  <SortableHeader label="Label" sortKey="label" {...th} />
+                  <SortableHeader label="Status" sortKey="status" {...th} />
+                  <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} hidden sm:table-cell`} />
+                  <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} hidden lg:table-cell`} />
+                  <SortableHeader label="Expires" sortKey="expiresAt" {...th} />
                   <th className="px-5 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {snapshots.map((s) => (
+                {sortedSnapshots.map((s) => (
                   <tr key={s.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0" data-testid={`admin-snapshot-row-${s.id}`}>
                     <td className="px-5 py-3 text-gray-900 dark:text-gray-100">{s.label || <span className="font-mono text-xs text-gray-400">{s.id.slice(0, 12)}</span>}</td>
                     <td className="px-5 py-3">
@@ -195,7 +200,7 @@ export default function TenantSnapshotsPanel({ tenantId, variant = 'full', onMan
                       )}
                     </td>
                     <td className="hidden px-5 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(s.sizeBytes)}</td>
-                    <td className="hidden px-5 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">{new Date(s.createdAt).toLocaleString()}</td>
+                    <td className="hidden px-5 py-3 text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={s.createdAt} /></td>
                     <td className="px-5 py-3 text-gray-500 dark:text-gray-400">
                       <span className="inline-flex items-center gap-1"><Clock size={12} /> {expiresIn(s.expiresAt)}</span>
                     </td>

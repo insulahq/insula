@@ -16,10 +16,17 @@ import {
 } from './snapshot-cronjob-reconciler.js';
 import type { Database } from '../../db/index.js';
 
-// Reconciler issues two selects per pass: (1) target binding,
-// (2) backup_schedules.mail.cron_expression schedule. Return in order.
-function fakeDb(targetRows: Array<{ enabled: number }>, scheduleRows: Array<{ v: string | null }>): Database {
-  const results: unknown[][] = [targetRows, scheduleRows];
+// Reconciler issues three selects per pass: (1) target binding,
+// (2) backup_schedules.mail.cron_expression, (3) backup_schedules.mail
+// enabled toggle. Return in order. Tests model an operator-enabled
+// cluster by default — the enable-gate cases pass `enabledRows`
+// explicitly.
+function fakeDb(
+  targetRows: Array<{ enabled: number }>,
+  scheduleRows: Array<{ v: string | null }>,
+  enabledRows: Array<{ v: boolean }> = [{ v: true }],
+): Database {
+  const results: unknown[][] = [targetRows, scheduleRows, enabledRows];
   let i = 0;
   const makeChain = (rows: unknown[]): Record<string, unknown> => {
     const chain: Record<string, unknown> = {};
@@ -162,5 +169,28 @@ describe('reconcileMailSnapshotCronJob', () => {
     expect(DEFAULT_MAIL_SNAPSHOT_SCHEDULE).toBe('*/30 * * * *');
     expect(MAIL_SNAPSHOT_CRONJOB_NAME).toBe('stalwart-snapshot');
     expect(MAIL_SNAPSHOT_CRONJOB_NAMESPACE).toBe('mail');
+  });
+
+  it('schedule disabled + target bound + running → suspends (the toggle is finally honored)', async () => {
+    // Pre-fix: backup_schedules.mail.enabled was write-only — an
+    // operator disabling the schedule changed nothing, and
+    // switch-with-pause's enabled=false "pause" paused nothing.
+    const db = fakeDb([{ enabled: 1 }], [{ v: null }], [{ v: false }]);
+    const batch = fakeBatch({ liveSuspend: false, liveSchedule: DEFAULT_MAIL_SNAPSHOT_SCHEDULE });
+    const r = await reconcileMailSnapshotCronJob(db, { batch } as never, log());
+    expect(r.state).toBe('STATE_OK');
+    expect(r.suspended).toBe(true);
+    expect(r.enabled).toBe(false);
+    expect(suspendCalls(batch)).toHaveLength(1);
+    expect((suspendCalls(batch)[0][0] as { body: Array<{ value: boolean }> }).body[0].value).toBe(true);
+  });
+
+  it('missing schedule row reads as disabled → suspended even when bound', async () => {
+    const db = fakeDb([{ enabled: 1 }], [{ v: null }], []);
+    const batch = fakeBatch({ liveSuspend: true, liveSchedule: DEFAULT_MAIL_SNAPSHOT_SCHEDULE });
+    const r = await reconcileMailSnapshotCronJob(db, { batch } as never, log());
+    expect(r.suspended).toBe(true);
+    expect(r.enabled).toBe(false);
+    expect(batch.patchNamespacedCronJob).not.toHaveBeenCalled(); // already suspended — idempotent
   });
 });

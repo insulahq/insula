@@ -20,6 +20,8 @@
  */
 
 import { useMemo, useState } from 'react';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 import { useNavigate } from 'react-router-dom';
 import { Mail, RotateCw, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
@@ -252,6 +254,8 @@ export default function MailBackupsPage() {
 
   const snapshots = backups.data?.data.snapshots ?? [];
   const repoReachable = backups.data?.data.repoReachable ?? false;
+  const { sortedData: sortedSnapshots, sortKey, sortDirection, onSort } = useSortable(snapshots, 'time', 'desc');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!py-2 !pr-3 !px-0 font-medium text-xs uppercase text-gray-500 dark:text-gray-400' };
 
   return (
     <>
@@ -316,15 +320,15 @@ export default function MailBackupsPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-200 text-left text-xs uppercase text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                        <th className="py-2 pr-3 font-medium">Snapshot</th>
-                        <th className="py-2 pr-3 font-medium">Taken</th>
-                        <th className="py-2 pr-3 font-medium">Size</th>
+                        <SortableHeader label="Snapshot" sortKey="id" {...th} />
+                        <SortableHeader label="Taken" sortKey="time" {...th} />
+                        <SortableHeader label="Size" sortKey="sizeBytes" {...th} />
                         <th className="py-2 pr-3 font-medium">Tags</th>
                         <th className="py-2 text-right font-medium">Action</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                      {snapshots.map((s) => (
+                      {sortedSnapshots.map((s) => (
                         <tr key={s.shortId}>
                           <td
                             className="py-2 pr-3 font-mono text-xs text-gray-900 dark:text-gray-100"
@@ -335,7 +339,7 @@ export default function MailBackupsPage() {
                           <td className="py-2 pr-3 text-gray-700 dark:text-gray-300">
                             <time
                               dateTime={s.time}
-                              title={new Date(s.time).toISOString()}
+                              title={new Date(s.time).toLocaleString()}
                             >
                               {formatAgo(s.time)}
                             </time>

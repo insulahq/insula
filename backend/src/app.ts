@@ -1612,6 +1612,32 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           );
         }
 
+        // DR-CronJob bridge (secrets-bundle / cluster-state / audit).
+        // Feeds the legacy backup-credentials consumers from the SYSTEM
+        // shim binding so a shim-only cluster still runs its nightly
+        // DR jobs (production gap 2026-08-26); also surfaces Longhorn
+        // recurring-backup jobs that fail for lack of a BackupTarget.
+        try {
+          const { startDrCronJobsReconciler } = await import(
+            './modules/backup-rclone-shim/dr-cronjobs-scheduler.js'
+          );
+          const drHandle = startDrCronJobsReconciler(
+            app.db,
+            {
+              core: k8sForImapsync.core,
+              batch: k8sForImapsync.batch,
+              custom: k8sForImapsync.custom,
+            },
+            app.log,
+          );
+          app.addHook('onClose', () => drHandle.stop());
+        } catch (err) {
+          app.log.warn(
+            { err },
+            'dr-cronjobs: scheduler start failed (non-blocking)',
+          );
+        }
+
         // stalwart-snapshot CronJob reconciler. Flips spec.suspend false
         // ONLY when a mail-class backup target is bound (no pointless
         // restic churn without a target), and SSA-asserts spec.schedule

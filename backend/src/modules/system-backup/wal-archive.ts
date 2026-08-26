@@ -552,7 +552,7 @@ export async function readScheduledBackup(
 }
 
 async function upsertScheduledBackup(
-  k8s: K8sClients, namespace: string, cluster: string, schedule: string,
+  k8s: Pick<K8sClients, 'custom'>, namespace: string, cluster: string, schedule: string,
 ): Promise<void> {
   const custom = k8s.custom as unknown as {
     getNamespacedCustomObject: (a: { group: string; version: string; namespace: string; plural: string; name: string }) => Promise<unknown>;
@@ -580,6 +580,13 @@ async function upsertScheduledBackup(
       // Triggers a base backup immediately after enable so operators
       // don't wait for the next cron tick.
       immediate: true,
+      // Being upserted BY enableScheduledBackups means "run" — always
+      // state it. The postgres-objectstore safety-net creates this CR
+      // with suspend:true on a no-target cluster; without an explicit
+      // false here the merge-patch path below inherits that stale
+      // suspend forever and the nightly base backup silently never
+      // fires (production, 2026-08-26).
+      suspend: false,
     },
   };
 
@@ -598,6 +605,8 @@ async function upsertScheduledBackup(
   if (exists) {
     // Patch schedule + ensure method=plugin (handles migration from a
     // legacy method=barmanObjectStore CR left over from in-tree era).
+    // suspend:false is load-bearing: the pre-existing CR may be the
+    // postgres-objectstore no-target safety net, which is suspended.
     await custom.patchNamespacedCustomObject({
       group: CNPG_GROUP, version: CNPG_VERSION, namespace,
       plural: 'scheduledbackups', name,
@@ -606,6 +615,7 @@ async function upsertScheduledBackup(
           schedule,
           method: 'plugin',
           pluginConfiguration: { name: BARMAN_PLUGIN_NAME },
+          suspend: false,
         },
       },
     }, MERGE_PATCH);
@@ -628,6 +638,7 @@ async function upsertScheduledBackup(
           schedule,
           method: 'plugin',
           pluginConfiguration: { name: BARMAN_PLUGIN_NAME },
+          suspend: false,
         },
       },
     }, MERGE_PATCH);
@@ -635,7 +646,7 @@ async function upsertScheduledBackup(
 }
 
 async function deleteScheduledBackupIfPresent(
-  k8s: K8sClients, namespace: string, cluster: string,
+  k8s: Pick<K8sClients, 'custom'>, namespace: string, cluster: string,
 ): Promise<void> {
   const name = SCHEDULED_BACKUP_NAME(cluster);
   try {
@@ -650,6 +661,45 @@ async function deleteScheduledBackupIfPresent(
     if (status === 404) return;
     throw err;
   }
+}
+
+/**
+ * Converge the ScheduledBackup CR with the wal-archive DB state. Called
+ * from the postgres-objectstore 5-min tick whenever wal-archive owns
+ * the cluster's CRs (it otherwise skips the ScheduledBackup entirely,
+ * so nothing would ever repair drift — production 2026-08-26: the CR
+ * pre-existed suspend:true from the no-target era and the operator's
+ * enable never cleared it, so the nightly base backup silently never
+ * fired).
+ *
+ * DB state is authoritative both ways: a set base_backup_schedule
+ * asserts the CR (schedule + method + suspend:false); a NULL schedule
+ * removes any leftover CR so a disabled nightly can't keep firing.
+ */
+export async function reconcileWalArchiveScheduledBackup(
+  db: Database,
+  // Only the custom-objects client is needed; callers (the shim
+  // reconciler) hold a narrower client pair than full K8sClients.
+  k8s: Pick<K8sClients, 'custom'>,
+  clusterNamespace: string,
+  clusterName: string,
+): Promise<'asserted' | 'removed' | 'not-owned'> {
+  const rows = await db
+    .select({ baseBackupSchedule: systemWalArchiveState.baseBackupSchedule })
+    .from(systemWalArchiveState)
+    .where(and(
+      eq(systemWalArchiveState.clusterNamespace, clusterNamespace),
+      eq(systemWalArchiveState.clusterName, clusterName),
+    ))
+    .limit(1);
+  if (rows.length === 0) return 'not-owned';
+  const cron = rows[0].baseBackupSchedule;
+  if (cron) {
+    await upsertScheduledBackup(k8s, clusterNamespace, clusterName, cron);
+    return 'asserted';
+  }
+  await deleteScheduledBackupIfPresent(k8s, clusterNamespace, clusterName);
+  return 'removed';
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────

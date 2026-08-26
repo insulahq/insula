@@ -15,6 +15,7 @@ import { runBundle } from './orchestrator.js';
 import { decrypt } from '../oidc/crypto.js';
 import { S3BackupStore } from './s3-backup-store.js';
 import { SshBackupStore } from './ssh-backup-store.js';
+import { resolveShimFirstBackupStore } from './shim-backup-store.js';
 import type { BackupStore } from './bundle-store.js';
 import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -48,33 +49,44 @@ export async function runOneScheduledBundle(app: FastifyInstance, tenantId: stri
   }
   const secretsKeyHex = configuredKey ?? '0'.repeat(64);
 
-  let store: BackupStore;
-  if (cfg.storageType === 's3') {
-    const accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, secretsKeyHex) : '';
-    const secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, secretsKeyHex) : '';
-    store = new S3BackupStore({
-      bucket: cfg.s3Bucket ?? '',
-      region: cfg.s3Region ?? 'us-east-1',
-      endpoint: cfg.s3Endpoint ?? undefined,
-      accessKeyId: accessKey,
-      secretAccessKey: secretKey,
-      pathPrefix: cfg.s3Prefix ?? undefined,
-    });
-  } else if (cfg.storageType === 'ssh') {
-    if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted || !cfg.sshPath) {
-      throw new Error(`SSH target ${cfg.id} missing required fields`);
+  // Transport goes through the R-X20 backup-rclone-shim exactly like
+  // every manual bundle path (admin POST, tenant run-now, prebundle,
+  // internal-upload) — the shim's `tenant` class handles S3/SFTP/CIFS/
+  // NFS upstreams uniformly. The direct s3/ssh construction below is
+  // only the legacy fallback for a cluster whose shim isn't
+  // bootstrapped; anything else (e.g. cifs) without a shim is a hard,
+  // named error instead of the silent per-tenant throw that ate every
+  // scheduled wave on a CIFS-bound cluster (2026-08-26).
+  const store: BackupStore = await resolveShimFirstBackupStore(app, 'tenant', async () => {
+    if (cfg.storageType === 's3') {
+      const accessKey = cfg.s3AccessKeyEncrypted ? decrypt(cfg.s3AccessKeyEncrypted, secretsKeyHex) : '';
+      const secretKey = cfg.s3SecretKeyEncrypted ? decrypt(cfg.s3SecretKeyEncrypted, secretsKeyHex) : '';
+      return new S3BackupStore({
+        bucket: cfg.s3Bucket ?? '',
+        region: cfg.s3Region ?? 'us-east-1',
+        endpoint: cfg.s3Endpoint ?? undefined,
+        accessKeyId: accessKey,
+        secretAccessKey: secretKey,
+        pathPrefix: cfg.s3Prefix ?? undefined,
+      });
     }
-    store = new SshBackupStore({
-      host: cfg.sshHost,
-      port: cfg.sshPort ?? 22,
-      user: cfg.sshUser,
-      privateKey: decrypt(cfg.sshKeyEncrypted, secretsKeyHex),
-      basePath: cfg.sshPath,
-      logFn: (level, ctx, msg) => app.log[level](ctx, msg),
-    });
-  } else {
-    throw new Error(`Unsupported storage type '${cfg.storageType}' for scheduled bundle`);
-  }
+    if (cfg.storageType === 'ssh') {
+      if (!cfg.sshHost || !cfg.sshUser || !cfg.sshKeyEncrypted || !cfg.sshPath) {
+        throw new Error(`SSH target ${cfg.id} missing required fields`);
+      }
+      return new SshBackupStore({
+        host: cfg.sshHost,
+        port: cfg.sshPort ?? 22,
+        user: cfg.sshUser,
+        privateKey: decrypt(cfg.sshKeyEncrypted, secretsKeyHex),
+        basePath: cfg.sshPath,
+        logFn: (level, ctx, msg) => app.log[level](ctx, msg),
+      });
+    }
+    throw new Error(
+      `Storage type '${cfg.storageType}' needs the backup-rclone-shim (BACKUP_TARGET_KEY Secret missing?) — scheduled bundle cannot fire`,
+    );
+  }, 'tenant-bundle scheduled wave');
 
   let k8s;
   try {
@@ -109,7 +121,9 @@ export async function runOneScheduledBundle(app: FastifyInstance, tenantId: stri
       description: null,
       retentionDays,
       targetConfigId: cfg.id,
-      targetUri: `${cfg.storageType}://${cfg.id}`,
+      // Matches the manual admin path: the store kind (s3 when routed
+      // through the shim), not the upstream protocol of the cfg row.
+      targetUri: `${store.kind}://${cfg.id}`,
       components: { files: true, mailboxes: true, config: true, secrets: true },
     },
   );

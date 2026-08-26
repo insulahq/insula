@@ -18,9 +18,9 @@
  */
 
 import { useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2,
+  Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2, Clock,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -33,6 +33,9 @@ import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
 import { AdminBundleProgressModal } from '@/components/AdminBundleProgressModal';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TimeCell from '@/components/ui/TimeCell';
 
 // ── Local types ──────────────────────────────────────────────────────
 
@@ -54,6 +57,8 @@ interface TenantSnapshotRow {
 interface TenantSnapshotListResponse {
   readonly rows: ReadonlyArray<TenantSnapshotRow>;
   readonly hasMore: boolean;
+  /** system_settings.snapshot_expiry_hours — snapshots reap after this. */
+  readonly expiryHours?: number;
 }
 
 // ── Formatters ───────────────────────────────────────────────────────
@@ -63,18 +68,6 @@ function formatBytes(b: number): string {
   if (b >= 1024 ** 3) return `${(b / 1024 ** 3).toFixed(1)} GiB`;
   if (b >= 1024 ** 2) return `${(b / 1024 ** 2).toFixed(0)} MiB`;
   return `${(b / 1024).toFixed(0)} KiB`;
-}
-
-function formatAge(iso: string | null): string {
-  if (!iso) return 'never';
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms <= 0) return 'just now';
-  const min = Math.floor(ms / 60_000);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const d = Math.floor(hr / 24);
-  return `${d}d ago`;
 }
 
 // ── Hooks ────────────────────────────────────────────────────────────
@@ -264,6 +257,8 @@ interface SnapshotsTabProps {
   readonly onDelete: (row: TenantSnapshotRow) => void;
   readonly onRestore: (row: TenantSnapshotRow) => void;
   readonly deletePendingFor: string | null;
+  /** system_settings.snapshot_expiry_hours (undefined while loading). */
+  readonly expiryHours?: number;
 }
 
 function SnapshotsTab(p: SnapshotsTabProps) {
@@ -281,6 +276,8 @@ function SnapshotsTab(p: SnapshotsTabProps) {
       );
     });
   }, [p.rows, p.search, p.selectedTenantId]);
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(filtered, 'createdAt', 'desc');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-4 !py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400' };
 
   return (
     <div className="space-y-4">
@@ -292,6 +289,17 @@ function SnapshotsTab(p: SnapshotsTabProps) {
         selectedTenantId={p.selectedTenantId}
         setSelectedTenantId={p.setSelectedTenantId}
       />
+      <div
+        className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200"
+        data-testid="tenant-snapshots-ttl-notice"
+      >
+        <Clock size={13} className="mt-0.5 flex-shrink-0" />
+        <span>
+          Snapshots are <strong>temporary</strong> on-cluster block copies for quick rollback — each one is
+          automatically reaped {p.expiryHours != null ? `${p.expiryHours} hours` : 'a configured number of hours'} after
+          it was taken (Settings → System → snapshot expiry). For durable, off-site copies use <strong>Backups</strong>.
+        </span>
+      </div>
       <div className="flex items-center justify-end gap-2">
         <button
           type="button"
@@ -318,18 +326,19 @@ function SnapshotsTab(p: SnapshotsTabProps) {
           <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
             <thead className="bg-gray-50 dark:bg-gray-800">
               <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                <th className="px-4 py-2">Tenant</th>
-                <th className="px-4 py-2">Label</th>
-                <th className="px-4 py-2">Subsystem</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2 text-right">Size</th>
-                <th className="px-4 py-2 text-right">Created</th>
+                <SortableHeader label="Tenant" sortKey="tenantName" {...th} />
+                <SortableHeader label="Label" sortKey="label" {...th} />
+                <SortableHeader label="Subsystem" sortKey="subsystem" {...th} />
+                <SortableHeader label="Status" sortKey="status" {...th} />
+                <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} text-right`} />
+                <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} text-right`} />
+                <SortableHeader label="Expires" sortKey="expiresAt" {...th} className={`${th.className} text-right`} />
                 <th className="px-4 py-2">Target</th>
                 <th className="px-4 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-700 dark:bg-gray-900">
-              {filtered.map((r) => {
+              {sortedData.map((r) => {
                 const delBusy = p.deletePendingFor === r.id;
                 return (
                   <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
@@ -338,7 +347,8 @@ function SnapshotsTab(p: SnapshotsTabProps) {
                     <td className="px-4 py-2 text-xs"><code>{r.subsystem}</code></td>
                     <td className="px-4 py-2"><StatusPill status={r.status} /></td>
                     <td className="px-4 py-2 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
-                    <td className="px-4 py-2 text-right text-xs text-gray-500">{formatAge(r.createdAt)}</td>
+                    <td className="px-4 py-2 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
+                    <td className="px-4 py-2 text-right text-xs text-gray-500"><TimeCell iso={r.expiresAt} mode="until" /></td>
                     <td className="px-4 py-2 text-xs">{r.targetName ?? <span className="text-gray-400">none</span>}</td>
                     <td className="px-4 py-2 text-right">
                       <div className="inline-flex items-center gap-1">
@@ -421,6 +431,10 @@ interface BackupsTabProps {
   readonly tenantTargetBound: boolean;
   /** Per-tenant rollup including the inclusion-in-scheduled-bundles flag. */
   readonly rollupRows: ReadonlyArray<TenantBackupOverviewRow>;
+  /** Set/clear the per-tenant scheduled-bundles override. */
+  readonly onSetInclusionOverride: (tenantId: string, override: 'inherit' | 'on' | 'off') => void;
+  /** Tenant id with an inclusion PATCH in flight (spinner). */
+  readonly inclusionPendingFor: string | null;
 }
 
 function BackupsTab(p: BackupsTabProps) {
@@ -437,6 +451,23 @@ function BackupsTab(p: BackupsTabProps) {
       );
     });
   }, [p.rows, p.search, p.selectedTenantId]);
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(filtered, 'createdAt', 'desc');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-4 !py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400' };
+
+  // Per-tenant backup counts across ALL bundles (unfiltered) — makes
+  // "this tenant has N backups" visible at a glance and doubles as a
+  // one-click tenant filter.
+  const perTenant = useMemo(() => {
+    const m = new Map<string, { name: string; count: number }>();
+    for (const r of p.rows) {
+      const cur = m.get(r.tenantId);
+      if (cur) m.set(r.tenantId, { ...cur, count: cur.count + 1 });
+      else m.set(r.tenantId, { name: r.tenantName ?? r.tenantId.slice(0, 8), count: 1 });
+    }
+    return [...m.entries()]
+      .map(([id, v]) => ({ id, ...v }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  }, [p.rows]);
 
   return (
     <div className="space-y-4">
@@ -448,15 +479,36 @@ function BackupsTab(p: BackupsTabProps) {
         selectedTenantId={p.selectedTenantId}
         setSelectedTenantId={p.setSelectedTenantId}
       />
-      {/* Inclusion summary — operator-visible breakdown of which
-          tenants will be picked up by the platform-global daily
-          scheduler (driven by hosting_plans.include_in_scheduled_bundles
-          with per-tenant override). */}
+      {perTenant.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]" data-testid="tenant-bundle-counts">
+          <span className="text-gray-500 dark:text-gray-400">Backups per tenant:</span>
+          {perTenant.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => p.setSelectedTenantId(p.selectedTenantId === t.id ? null : t.id)}
+              className={`rounded-full border px-2 py-0.5 font-mono transition-colors ${
+                p.selectedTenantId === t.id
+                  ? 'border-brand-400 bg-brand-100 text-brand-800 dark:border-brand-600 dark:bg-brand-900/40 dark:text-brand-200'
+                  : 'border-gray-300 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700'
+              }`}
+              data-testid={`tenant-bundle-count-${t.id}`}
+            >
+              {t.name} ×{t.count}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* Inclusion summary + editor — which tenants the platform-global
+          daily scheduler bundles (hosting_plans.include_in_scheduled_bundles
+          with per-tenant override), editable in place. */}
       {(() => {
         const total = p.rollupRows.length;
         const included = p.rollupRows.filter((r) => r.includedInScheduledBundles).length;
-        const excluded = p.rollupRows.filter((r) => !r.includedInScheduledBundles);
+        const excludedCount = total - included;
         if (total === 0) return null;
+        const sortedRollup = [...p.rollupRows]
+          .sort((a, b) => a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
         return (
           <details
             className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-800/50"
@@ -464,25 +516,53 @@ function BackupsTab(p: BackupsTabProps) {
           >
             <summary className="cursor-pointer font-medium text-gray-700 dark:text-gray-300">
               Scheduled inclusion: {included}/{total} tenants in the daily backup cron
-              {excluded.length > 0 && ` (${excluded.length} excluded)`}
+              {excludedCount > 0 && ` (${excludedCount} excluded)`}
             </summary>
-            {excluded.length > 0 && (
-              <div className="mt-2 space-y-0.5 text-gray-600 dark:text-gray-400">
-                <p className="font-medium">Excluded tenants (no scheduled bundles will run for these):</p>
-                <ul className="ml-4 list-disc">
-                  {excluded.map((r) => (
-                    <li key={r.tenantId} className="font-mono text-[11px]" data-testid={`excluded-tenant-${r.tenantId}`}>
-                      {r.tenantName ?? r.tenantId} —{' '}
-                      {r.tenantId.slice(0, 8)}
+            <div className="mt-2 space-y-1 text-gray-600 dark:text-gray-400">
+              <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+                {sortedRollup.map((r) => {
+                  const busy = p.inclusionPendingFor === r.tenantId;
+                  return (
+                    <li
+                      key={r.tenantId}
+                      className="flex items-center justify-between gap-2 py-1"
+                      data-testid={`inclusion-row-${r.tenantId}`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className="font-mono text-[11px]">{r.tenantName}</span>
+                        <span
+                          className={`rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${
+                            r.includedInScheduledBundles
+                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                              : 'bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
+                          }`}
+                        >
+                          {r.includedInScheduledBundles ? 'included' : 'excluded'}
+                        </span>
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        {busy && <Loader2 size={11} className="animate-spin text-gray-400" />}
+                        <select
+                          value={r.scheduledBundlesOverride}
+                          disabled={busy}
+                          onChange={(e) => p.onSetInclusionOverride(r.tenantId, e.target.value as 'inherit' | 'on' | 'off')}
+                          className="rounded border border-gray-300 bg-white px-1.5 py-0.5 text-[11px] disabled:opacity-50 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+                          data-testid={`inclusion-override-${r.tenantId}`}
+                        >
+                          <option value="inherit">Inherit plan{r.planName ? ` (${r.planName})` : ''}</option>
+                          <option value="on">Always include</option>
+                          <option value="off">Exclude from schedule</option>
+                        </select>
+                      </span>
                     </li>
-                  ))}
-                </ul>
-                <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-500">
-                  Operator can change inclusion on the tenant detail page (per-tenant override) or on the plan (default for all
-                  tenants on that plan).
-                </p>
-              </div>
-            )}
+                  );
+                })}
+              </ul>
+              <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-500">
+                “Inherit plan” follows the plan's <code>include_in_scheduled_bundles</code> default; the explicit
+                options override it for this tenant only. Changes take effect at the next scheduled run.
+              </p>
+            </div>
           </details>
         );
       })()}
@@ -514,23 +594,23 @@ function BackupsTab(p: BackupsTabProps) {
           <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
             <thead className="bg-gray-50 dark:bg-gray-800">
               <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                <th className="px-4 py-2">Tenant</th>
-                <th className="px-4 py-2">Label</th>
-                <th className="px-4 py-2">Status</th>
-                <th className="px-4 py-2 text-right">Size</th>
-                <th className="px-4 py-2 text-right">Created</th>
-                <th className="px-4 py-2">Initiator</th>
+                <SortableHeader label="Tenant" sortKey="tenantName" {...th} />
+                <SortableHeader label="Label" sortKey="label" {...th} />
+                <SortableHeader label="Status" sortKey="status" {...th} />
+                <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} text-right`} />
+                <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} text-right`} />
+                <SortableHeader label="Initiator" sortKey="initiator" {...th} />
                 <th className="px-4 py-2 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-700 dark:bg-gray-900">
-              {filtered.map((r) => (
+              {sortedData.map((r) => (
                 <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
                   <td className="px-4 py-2 font-mono text-xs">{r.tenantName ?? '(missing)'}</td>
                   <td className="px-4 py-2 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
                   <td className="px-4 py-2"><StatusPill status={r.status} /></td>
                   <td className="px-4 py-2 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
-                  <td className="px-4 py-2 text-right text-xs text-gray-500">{formatAge(r.createdAt)}</td>
+                  <td className="px-4 py-2 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
                   <td className="px-4 py-2 text-xs"><code>{r.initiator}</code></td>
                   <td className="px-4 py-2 text-right">
                     <button
@@ -594,8 +674,12 @@ function BackupsTab(p: BackupsTabProps) {
 
 export default function TenantsBackupsPage() {
   const [search, setSearch] = useState('');
-  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
+  // Deep-linkable tenant filter (?tenant=<id>) — TenantDetail links here
+  // to show one tenant's full backup history.
+  const [params] = useSearchParams();
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(params.get('tenant'));
   const navigate = useNavigate();
+  const qc = useQueryClient();
 
   const { data: shimResp } = useShimAssignments();
   const tenantTargetId =
@@ -604,9 +688,25 @@ export default function TenantsBackupsPage() {
 
   const { data: rollupData } = useTenantsRollup();
   const tenantOptions = useMemo(
-    () => (rollupData?.data?.rows ?? []).map((r: TenantBackupOverviewRow) => ({ id: r.tenantId, name: r.tenantName })),
+    () => (rollupData?.data?.rows ?? [])
+      .map((r: TenantBackupOverviewRow) => ({ id: r.tenantId, name: r.tenantName }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
     [rollupData],
   );
+
+  // Per-tenant scheduled-bundles override (inclusion editor in BackupsTab).
+  const setInclusion = useMutation({
+    mutationFn: ({ tenantId, override }: { tenantId: string; override: 'inherit' | 'on' | 'off' }) =>
+      // Same route the tenant editor uses (PATCH /api/v1/tenants/:id,
+      // requireRole super_admin|admin) — there is no /admin/tenants path.
+      apiFetch(`/api/v1/tenants/${tenantId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          include_in_scheduled_bundles_override: override === 'inherit' ? null : override === 'on',
+        }),
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'backups', 'tenants', 'overview'] }),
+  });
 
   const snapshotsQ = useTenantSnapshots(selectedTenantId);
   const bundlesQ = useTenantBundles(selectedTenantId);
@@ -743,6 +843,7 @@ export default function TenantsBackupsPage() {
               onDelete={handlers.onDelete}
               onRestore={handlers.onRestoreSnap}
               deletePendingFor={deleteSnapshot.isPending ? (deleteSnapshot.variables?.snapshotId ?? null) : null}
+              expiryHours={snapshotsQ.data?.data?.expiryHours}
             />
           </div>
         }
@@ -764,6 +865,13 @@ export default function TenantsBackupsPage() {
               onRestore={handlers.onRestoreBundle}
               tenantTargetBound={tenantTargetBound}
               rollupRows={rollupData?.data?.rows ?? []}
+              onSetInclusionOverride={(tenantId, override) => {
+                setError(null);
+                setInclusion.mutate({ tenantId, override }, {
+                  onError: (e) => setError(`Inclusion change failed: ${e instanceof Error ? e.message : String(e)}`),
+                });
+              }}
+              inclusionPendingFor={setInclusion.isPending ? (setInclusion.variables?.tenantId ?? null) : null}
             />
           </div>
         }

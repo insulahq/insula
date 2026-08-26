@@ -77,7 +77,7 @@ export function startMailSnapshotCronJobReconciler(
   // Desired state as of the last successful full reconcile. null until
   // the first tick lands (the fast path no-ops until then so it can
   // never act on stale assumptions).
-  let lastDesired: { schedule: string; suspended: boolean; platformFired: boolean; bound: boolean } | null = null;
+  let lastDesired: { schedule: string; suspended: boolean; platformFired: boolean; bound: boolean; enabled: boolean } | null = null;
   let ticking = false;
   let firing = false;
 
@@ -92,6 +92,7 @@ export function startMailSnapshotCronJobReconciler(
           suspended: result.suspended,
           platformFired: result.platformFired === true,
           bound: result.state === 'STATE_OK',
+          enabled: result.enabled === true,
         };
       }
     } catch (err) {
@@ -173,7 +174,10 @@ export function startMailSnapshotCronJobReconciler(
    */
   const fireCheck = async (): Promise<void> => {
     if (cancelled || firing) return;
-    if (!lastDesired?.platformFired || !lastDesired.bound) return;
+    // `enabled` honors the operator's schedule toggle — without it a
+    // disabled mail schedule kept platform-firing (and switch-with-
+    // pause's enabled=false "pause" paused nothing).
+    if (!lastDesired?.platformFired || !lastDesired.bound || !lastDesired.enabled) return;
     firing = true;
     try {
       const now = new Date();

@@ -8,6 +8,9 @@ import {
   downloadTenantDataExport,
 } from '@/hooks/use-tenant-backups';
 import { BundleProgressModal } from '@/components/BundleProgressModal';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TimeCell from '@/components/ui/TimeCell';
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null || bytes === 0) return '-';
@@ -39,6 +42,15 @@ export default function Backups() {
   // Track the in-flight bundle id from the most recent run-now click
   // so we can open BundleProgressModal. Cleared via modal onClose.
   const [progressBundleId, setProgressBundleId] = useState<string | null>(null);
+  // Top-level (Rules of Hooks) — the table renders conditionally below.
+  const { sortedData: sortedBundles, sortKey, sortDirection, onSort } = useSortable(bundles, 'createdAt', 'desc');
+  // SortableHeader defaults to px-5/py-3 — override to this table's px-6.
+  const th = {
+    currentKey: sortKey,
+    direction: sortDirection,
+    onSort,
+    className: '!px-6 !py-3 font-medium text-gray-500 dark:text-gray-400',
+  };
 
   return (
     <div className="space-y-6">
@@ -97,7 +109,7 @@ export default function Backups() {
                 <div className="flex-1">
                   <p className="font-mono text-gray-900 dark:text-gray-100">{c.id.slice(0, 16)}…</p>
                   <p className="text-gray-500 dark:text-gray-400">
-                    {c.description ?? 'no description'} · created {new Date(c.createdAt).toLocaleString()}
+                    {c.description ?? 'no description'} · created <TimeCell iso={c.createdAt} />
                   </p>
                 </div>
                 <span
@@ -146,17 +158,17 @@ export default function Backups() {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Bundle</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Initiator</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Size</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Created</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Expires</th>
+                  <SortableHeader label="Bundle" sortKey="label" {...th} />
+                  <SortableHeader label="Initiator" sortKey="initiator" {...th} />
+                  <SortableHeader label="Status" sortKey="status" {...th} />
+                  <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`hidden sm:table-cell ${th.className}`} />
+                  <SortableHeader label="Created" sortKey="createdAt" {...th} className={`hidden lg:table-cell ${th.className}`} />
+                  <SortableHeader label="Expires" sortKey="expiresAt" {...th} className={`hidden lg:table-cell ${th.className}`} />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {bundles.map((b) => (
+                {sortedBundles.map((b) => (
                   <tr key={b.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0">
                     <td className="px-6 py-3 font-mono text-xs text-gray-900 dark:text-gray-100">
                       {b.label ?? b.id.slice(0, 12)}
@@ -164,9 +176,9 @@ export default function Backups() {
                     <td className="px-6 py-3 text-gray-600 dark:text-gray-400">{b.initiator}</td>
                     <td className="px-6 py-3"><StatusBadge status={b.status} /></td>
                     <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(b.sizeBytes)}</td>
-                    <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">{new Date(b.createdAt).toLocaleString()}</td>
+                    <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={b.createdAt} /></td>
                     <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">
-                      {b.expiresAt ? new Date(b.expiresAt).toLocaleDateString() : '-'}
+                      <TimeCell iso={b.expiresAt} mode="until" />
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2">

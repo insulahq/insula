@@ -110,12 +110,23 @@ spec:
                   valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_BUCKET } }
                 - name: S3_PATH_PREFIX
                   valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_PATH_PREFIX } }
+                # "true" when the credentials point at the backup-rclone-shim
+                # (no wildcard DNS → virtual-hosted bucket addressing can't
+                # resolve). optional: pre-bridge Secrets lack the key.
+                - name: S3_FORCE_PATH_STYLE
+                  valueFrom: { secretKeyRef: { name: backup-credentials, key: S3_FORCE_PATH_STYLE, optional: true } }
               command: [/bin/sh, -c]
               args:
                 - |
                   set -euo pipefail
                   # alpine/k8s already has kubectl + aws + tar + gzip.
                   # No install step required.
+                  # Shim endpoint has no wildcard DNS — force path-style
+                  # bucket addressing when the reconciler says so.
+                  if [ "$${S3_FORCE_PATH_STYLE:-}" = "true" ]; then
+                    export AWS_CONFIG_FILE=/tmp/aws-config
+                    printf '[default]\ns3 =\n  addressing_style = path\n' > "$${AWS_CONFIG_FILE}"
+                  fi
                   OUT=$(mktemp -d)
                   STAMP=$(date -u +%Y%m%dT%H%M%SZ)
                   PREFIX="$${S3_PATH_PREFIX:+$${S3_PATH_PREFIX}/}cluster-state"

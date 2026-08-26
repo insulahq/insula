@@ -9,6 +9,9 @@ import { useState, Fragment } from 'react';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { useSystemSnapshots } from '@/hooks/use-system-snapshots';
 import SystemSnapshotsModal from '@/components/SystemSnapshotsModal';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TimeCell from '@/components/ui/TimeCell';
+import type { SortDirection } from '@/hooks/use-sortable';
 import type { SystemPvcSnapshotSummary } from '@insula/api-contracts';
 
 function formatBytes(bytes: number): string {
@@ -66,6 +69,35 @@ function SystemSnapshotsSection() {
   };
   const totalRows = groups.length + standalone.length;
 
+  // Shared sort across the two row shapes (cluster groups + standalone
+  // PVCs) — one state drives both blocks so the headers behave like a
+  // normal sortable table. Default: newest snapshot first.
+  const [sort, setSort] = useState<{ key: string; direction: SortDirection }>({ key: 'newestSnapshotAt', direction: 'desc' });
+  const onSort = (key: string): void => {
+    setSort((prev) => ({ key, direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc' }));
+  };
+  const th = { currentKey: sort.key, direction: sort.direction, onSort, className: '!px-4 !py-2 text-left text-xs uppercase text-gray-500 dark:text-gray-400' };
+  const accessor = (row: { readonly volumeSizeBytes: number; readonly snapshotCount: number; readonly snapshotBytesTotal: number; readonly newestSnapshotAt: string | null }, workload: string): string | number | null => {
+    switch (sort.key) {
+      case 'workload': return workload;
+      case 'volumeSizeBytes': return row.volumeSizeBytes;
+      case 'snapshotCount': return row.snapshotCount;
+      case 'snapshotBytesTotal': return row.snapshotBytesTotal;
+      default: return row.newestSnapshotAt;
+    }
+  };
+  const cmp = (a: string | number | null, b: string | number | null): number => {
+    if (a == null && b == null) return 0;
+    if (a == null) return 1;
+    if (b == null) return -1;
+    const base = typeof a === 'number' && typeof b === 'number'
+      ? a - b
+      : String(a).localeCompare(String(b), undefined, { sensitivity: 'base' });
+    return sort.direction === 'asc' ? base : -base;
+  };
+  const sortedGroups = [...groups].sort((a, b) => cmp(accessor(a, `${a.clusterNamespace}/${a.clusterName}`), accessor(b, `${b.clusterNamespace}/${b.clusterName}`)));
+  const sortedStandalone = [...standalone].sort((a, b) => cmp(accessor(a, `${a.namespace}/${a.pvcName}`), accessor(b, `${b.namespace}/${b.pvcName}`)));
+
   return (
     <section className="space-y-3" data-testid="system-snapshots-section">
       <div className="flex items-center gap-2">
@@ -100,18 +132,18 @@ function SystemSnapshotsSection() {
           <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm" data-testid="system-snapshots-table">
             <thead className="bg-gray-50 dark:bg-gray-900 text-xs uppercase text-gray-500 dark:text-gray-400">
               <tr>
-                <th className="px-4 py-2 text-left">Workload</th>
-                <th className="px-4 py-2 text-left">Volume size</th>
-                <th className="px-4 py-2 text-right">Snapshots</th>
-                <th className="px-4 py-2 text-right">Total size</th>
-                <th className="px-4 py-2 text-left">Newest</th>
+                <SortableHeader label="Workload" sortKey="workload" {...th} />
+                <SortableHeader label="Volume size" sortKey="volumeSizeBytes" {...th} />
+                <SortableHeader label="Snapshots" sortKey="snapshotCount" {...th} className={`${th.className} !text-right`} />
+                <SortableHeader label="Total size" sortKey="snapshotBytesTotal" {...th} className={`${th.className} !text-right`} />
+                <SortableHeader label="Newest" sortKey="newestSnapshotAt" {...th} />
                 <th className="px-4 py-2 text-left">Schedule</th>
                 <th className="px-4 py-2"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
               {/* CNPG cluster groups */}
-              {groups.map((g) => {
+              {sortedGroups.map((g) => {
                 const isExpanded = expandedClusters.has(g.key);
                 return (
                   <Fragment key={g.key}>
@@ -139,7 +171,7 @@ function SystemSnapshotsSection() {
                       <td className="px-4 py-2.5 text-right tabular-nums">{g.snapshotCount}</td>
                       <td className="px-4 py-2.5 text-right tabular-nums">{formatBytes(g.snapshotBytesTotal)}</td>
                       <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 text-xs">
-                        {g.newestSnapshotAt ? new Date(g.newestSnapshotAt).toISOString().slice(0, 16).replace('T', ' ') : '—'}
+                        {g.newestSnapshotAt ? <TimeCell iso={g.newestSnapshotAt} /> : '—'}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-gray-400">
                         {g.recurringJobs.length > 0 ? g.recurringJobs.join(', ') : <span className="italic">none</span>}
@@ -175,7 +207,7 @@ function SystemSnapshotsSection() {
                         <td className="px-4 py-2 text-right tabular-nums">{r.snapshotCount}</td>
                         <td className="px-4 py-2 text-right tabular-nums">{formatBytes(r.snapshotBytesTotal)}</td>
                         <td className="px-4 py-2 text-gray-500 dark:text-gray-400 text-xs">
-                          {r.newestSnapshotAt ? new Date(r.newestSnapshotAt).toISOString().slice(0, 16).replace('T', ' ') : '—'}
+                          {r.newestSnapshotAt ? <TimeCell iso={r.newestSnapshotAt} /> : '—'}
                         </td>
                         <td className="px-4 py-2 text-xs text-gray-500 dark:text-gray-400">
                           {r.recurringJobs.length > 0 ? r.recurringJobs.join(', ') : <span className="italic text-amber-600 dark:text-amber-400">none (replica)</span>}
@@ -194,7 +226,7 @@ function SystemSnapshotsSection() {
               })}
 
               {/* Standalone PVCs (not CNPG) */}
-              {standalone.map((v) => (
+              {sortedStandalone.map((v) => (
                 <tr
                   key={v.longhornVolumeName}
                   onClick={() => setOpenVolume(v)}
@@ -209,7 +241,7 @@ function SystemSnapshotsSection() {
                   <td className="px-4 py-2.5 text-right tabular-nums">{v.snapshotCount}</td>
                   <td className="px-4 py-2.5 text-right tabular-nums">{formatBytes(v.snapshotBytesTotal)}</td>
                   <td className="px-4 py-2.5 text-gray-500 dark:text-gray-400 text-xs">
-                    {v.newestSnapshotAt ? new Date(v.newestSnapshotAt).toISOString().slice(0, 16).replace('T', ' ') : '—'}
+                    {v.newestSnapshotAt ? <TimeCell iso={v.newestSnapshotAt} /> : '—'}
                   </td>
                   <td className="px-4 py-2.5 text-xs text-gray-500 dark:text-gray-400">
                     {v.recurringJobs.length > 0 ? v.recurringJobs.join(', ') : <span className="italic">none</span>}
