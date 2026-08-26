@@ -149,10 +149,11 @@ function DriftRow({ item }: { readonly item: MailDriftItem }) {
   const rotateMaster = useRotateWebmailMasterPassword();
 
   const isMaster = item.kind === 'master-user';
-  const isOrphan = item.kind === 'orphan-domain';
+  const isOrphan = item.kind === 'orphan-domain' || item.kind === 'orphan-list';
   const kindLabel = isMaster
     ? 'Webmail master user'
-    : isOrphan ? 'Orphaned Stalwart Domain'
+    : item.kind === 'orphan-domain' ? 'Orphaned Stalwart Domain'
+    : item.kind === 'orphan-list' ? 'Orphaned mailing list'
     : item.kind === 'domain' ? 'Stalwart Domain' : 'Stalwart mailbox';
 
   return (
@@ -280,7 +281,7 @@ function DeleteOrphanModal({ item, onClose }: {
         <div className="flex items-center justify-between border-b border-gray-100 dark:border-gray-700 px-6 py-4">
           <h3 className="flex items-center gap-2 text-lg font-semibold text-gray-900 dark:text-gray-100">
             <AlertTriangle size={18} className="text-red-500" />
-            Delete orphaned Stalwart Domain
+            {item.kind === 'orphan-list' ? 'Delete orphaned mailing list' : 'Delete orphaned Stalwart Domain'}
           </h3>
           <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700">
             <X size={18} />
@@ -292,17 +293,28 @@ function DeleteOrphanModal({ item, onClose }: {
             <>
               <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-3 py-2.5 text-sm text-red-800 dark:text-red-200 flex items-start gap-2">
                 <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                <div>
-                  <strong>This permanently deletes the Domain and its DKIM keys from Stalwart.</strong>
-                  <p className="mt-1 text-xs">
-                    Only do this when the domain is a true leftover (a renamed-away
-                    mail hostname&apos;s cert anchor, or a deleted tenant&apos;s domain).
-                    Stalwart will refuse if the Domain still has mailboxes attached —
-                    if it does, the platform DB may have been restored to an earlier
-                    point and this domain holds REAL user mail: investigate before
-                    deleting anything.
-                  </p>
-                </div>
+                {item.kind === 'orphan-list' ? (
+                  <div>
+                    <strong>This permanently deletes the mailing list from Stalwart.</strong>
+                    <p className="mt-1 text-xs">
+                      The address stops accepting mail immediately. Only do this when
+                      no platform mailing-list entry owns it — check the recipients
+                      first if you are unsure where its mail was going.
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <strong>This permanently deletes the Domain and its DKIM keys from Stalwart.</strong>
+                    <p className="mt-1 text-xs">
+                      Only do this when the domain is a true leftover (a renamed-away
+                      mail hostname&apos;s cert anchor, or a deleted tenant&apos;s domain).
+                      Stalwart will refuse if the Domain still has mailboxes attached —
+                      if it does, the platform DB may have been restored to an earlier
+                      point and this domain holds REAL user mail: investigate before
+                      deleting anything.
+                    </p>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">
@@ -345,8 +357,12 @@ function DeleteOrphanModal({ item, onClose }: {
           {deletedDkim !== null && (
             <div className="space-y-3">
               <div className="rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 text-sm text-emerald-800 dark:text-emerald-200">
-                Domain <span className="font-mono">{item.expectedName}</span> deleted from
-                Stalwart ({deletedDkim} DKIM signature{deletedDkim === 1 ? '' : 's'} removed with it).
+                {item.kind === 'orphan-list' ? (
+                  <>Mailing list <span className="font-mono">{item.expectedName}</span> deleted from Stalwart.</>
+                ) : (
+                  <>Domain <span className="font-mono">{item.expectedName}</span> deleted from
+                  Stalwart ({deletedDkim} DKIM signature{deletedDkim === 1 ? '' : 's'} removed with it).</>
+                )}
               </div>
               <div className="flex justify-end">
                 <button

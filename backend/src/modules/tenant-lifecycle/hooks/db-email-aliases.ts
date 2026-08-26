@@ -36,12 +36,15 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
   switch (ctx.transition) {
     case 'archived': {
       const stalwart = await destroyTenantLists(ctx);
-      await ctx.db.delete(emailAliases).where(eq(emailAliases.tenantId, ctx.tenantId));
       if (!stalwart.ok) {
-        // Rows are gone but a list may remain — the retry re-run finds
-        // no rows (idempotent noop), so surface loudly instead.
-        return { status: 'ok', detail: `archived: deleted email_aliases; WARNING: ${stalwart.detail}` };
+        // 2026-08-25 drift audit: rows used to be deleted even when the
+        // destroy failed — the retry re-run then found no rows, leaving a
+        // permanently orphaned live MailingList invisible to the orphan
+        // detection (keyed off email_aliases rows). Retry BEFORE deleting
+        // so the rows keep pointing at the leftover list.
+        return { status: 'retry', detail: `archive blocked on Stalwart list destroy: ${stalwart.detail}` };
       }
+      await ctx.db.delete(emailAliases).where(eq(emailAliases.tenantId, ctx.tenantId));
       return { status: 'ok', detail: `archived: deleted email_aliases (${stalwart.detail})` };
     }
     case 'suspended': {
@@ -71,11 +74,16 @@ async function destroyTenantLists(ctx: HookCtx): Promise<{ ok: boolean; detail: 
   try {
     const { getCachedPrincipalsAccountId } = await import('../../stalwart-jmap/client.js');
     const { destroyMailingList } = await import('../../stalwart-jmap/mailing-lists.js');
-    const accountId = await getCachedPrincipalsAccountId();
-    if (!accountId) return { ok: true, detail: 'Stalwart unreachable — no lists to destroy (dev/no-mail stack)' };
     const rows = await ctx.db.select({ id: emailAliases.id, stalwartListId: emailAliases.stalwartListId })
       .from(emailAliases)
       .where(eq(emailAliases.tenantId, ctx.tenantId));
+    const provisioned = rows.filter((r) => r.stalwartListId);
+    if (provisioned.length === 0) return { ok: true, detail: 'no provisioned lists' };
+    const accountId = await getCachedPrincipalsAccountId();
+    if (!accountId) {
+      // With live list ids an unreachable Stalwart must retry, not proceed.
+      return { ok: false, detail: `Stalwart unreachable with ${provisioned.length} list(s) to destroy` };
+    }
     let destroyed = 0;
     for (const row of rows) {
       if (!row.stalwartListId) continue;
@@ -95,9 +103,10 @@ async function recreateTenantLists(ctx: HookCtx): Promise<{ ok: boolean; detail:
     const { getCachedPrincipalsAccountId } = await import('../../stalwart-jmap/client.js');
     const { createMailingList } = await import('../../stalwart-jmap/mailing-lists.js');
     const { emailDomains } = await import('../../../db/schema.js');
+    const rows = await ctx.db.select().from(emailAliases).where(eq(emailAliases.tenantId, ctx.tenantId));
+    if (rows.every((r) => r.stalwartListId)) return { ok: true, detail: 'no lists to recreate' };
     const accountId = await getCachedPrincipalsAccountId();
     if (!accountId) return { ok: true, detail: 'Stalwart unreachable — boot reconcile converges' };
-    const rows = await ctx.db.select().from(emailAliases).where(eq(emailAliases.tenantId, ctx.tenantId));
     let created = 0;
     for (const row of rows) {
       if (row.stalwartListId) continue;

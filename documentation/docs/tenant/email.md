@@ -11,8 +11,10 @@ migrate an old account in. Open **Email** from the left menu.
 At the top, pick the **domain** you want to manage. The page then shows three
 tabs:
 
-- **Mailboxes** — create and manage individual accounts.
-- **Aliases & Forwarding** — addresses that forward to other addresses.
+- **Mailboxes** — create and manage individual accounts (including each
+  mailbox's **aliases**).
+- **Mailing Lists** — addresses without their own inbox that deliver to one
+  or more destinations.
 - **Settings & DNS** — per-domain settings, the DNS records mail needs, and
   migration tools.
 
@@ -45,10 +47,33 @@ forwarding (below), in which case it is forwarded without keeping a copy.
 
 Each row shows the address, a used/quota bar, and actions. Click a mailbox to
 edit it — you can change the **quota**, enable/disable it, and set an
-**auto-reply (vacation message)** with its own subject and body. The reply is
+**auto-reply (vacation message)** with its own subject and body. A
+**disabled** mailbox is fully shut down: incoming mail (including its
+aliases) is bounced back to the sender, and signing in or sending is
+blocked until you re-enable it — the configuration is kept. The reply is
 sent by the mail server itself: each sender receives it once per vacation
 period, and automated senders (mailing lists, bounces) are never answered.
 A message body is required while auto-reply is enabled.
+
+**Aliases — extra addresses for a mailbox**
+
+In the edit dialog, the **Aliases** section attaches extra addresses to the
+mailbox — for example `info@`, `postmaster@` and `webmaster@` all delivered
+into `you@example.com`, with no separate accounts to maintain. Aliases work
+in **both directions**:
+
+- Mail sent **to** the alias lands straight in the mailbox.
+- The mailbox owner can **reply as** the alias: webmail offers the alias in
+  the From selector (it appears after the next webmail login), and mail
+  clients can send from it too — the server verifies the alias really
+  belongs to the account.
+
+Add an alias by typing its local part and clicking **Add** — it takes
+effect immediately. **Disable** stops both directions at once (incoming
+mail is rejected, sending as the alias is refused) without losing the
+configuration; **Remove** deletes it permanently. A mailbox can carry up
+to 20 aliases; aliases never count against your plan's mailbox limit.
+The enabled aliases are listed under the address on the Mailboxes tab.
 
 **Forward incoming mail**
 
@@ -66,18 +91,24 @@ anything**. Clearing the list turns forwarding off.
 Click the green **Webmail** button on any mailbox row. The platform signs you
 straight into that mailbox's webmail in a new tab — no separate password prompt.
 
-## Aliases & forwarding
+## Mailing lists
 
-An **alias** is an address with no inbox of its own that delivers to one or
-more destinations — local mailboxes or external addresses. For example,
-`sales@example.com` → `you@example.com`, or `team@example.com` → three
+A **mailing list** (previously called "Aliases & Forwarding") is an address
+with no inbox of its own that delivers to one or more destinations — local
+mailboxes or external addresses. For example, `team@example.com` → three
 colleagues at once.
 
-On the **Aliases & Forwarding** tab, create an alias by entering the alias
-address and one or more **Deliver to** addresses (comma-separated, up to 20).
-Click an alias to **edit** its destinations or temporarily **disable** it —
-while disabled, mail to the address is rejected as an unknown recipient.
-Deleting the alias stops delivery permanently.
+On the **Mailing Lists** tab, create one by entering the list address and
+one or more **Deliver to** addresses (comma-separated, up to 20). Click a
+list to **edit** its destinations or temporarily **disable** it — while
+disabled, mail to the address is rejected as an unknown recipient.
+Deleting the list stops delivery permanently.
+
+!!! tip "Alias or mailing list?"
+    Want an extra address for an **existing mailbox** — and to reply from
+    it? Add an **alias** in that mailbox's edit dialog (see above). Want
+    one address that fans out to **several people** or an **external**
+    address? Create a **mailing list** here.
 
 A **catch-all** address (which receives mail sent to any unknown name on the
 domain) is set on the **Settings & DNS** tab. Clearing it returns unknown

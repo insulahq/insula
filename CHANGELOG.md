@@ -12,6 +12,59 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Mailbox aliases (with reply-as).** A mailbox can now carry extra
+  addresses — `info@`, `postmaster@`, `webmaster@`, … — managed in the
+  mailbox's Edit dialog. Mail to an alias is delivered straight into the
+  mailbox (no separate forwarding account), and the mailbox owner can
+  **send as** the alias: the mail server enforces alias ownership on
+  submission, and webmail (Bulwark) offers the alias in the From selector
+  automatically after the next login/identity sync. Disabling an alias
+  stops both directions immediately. Enabled aliases and forwarding
+  targets are shown in the email-account tables of both panels. Aliases
+  never count against any plan quota, ride tenant bundles, and are
+  re-converged automatically (boot + periodic sweep) after restores.
+
+### Changed
+- **"Aliases & Forwarding" is now "Mailing Lists."** The tab managed
+  mailbox-less fan-out addresses (one address delivering to up to 20
+  destinations) — that is a mailing list, and the new per-mailbox aliases
+  made the old name actively confusing. Functionality is unchanged; the
+  create button is now "Create Mailing List".
+- **Suspending a tenant (or disabling a mailbox) now shuts its mail down
+  completely** (operator decision 2026-08-26). Incoming mail — to the
+  mailbox and to its aliases — is refused with a neutral bounce (nothing
+  is silently stored or dropped, senders are informed), and the account
+  cannot authenticate: no SMTP submission, IMAP/POP3, ManageSieve, or
+  webmail sign-in until re-activation. Forwarding and auto-reply stop
+  with it. Previously the platform-managed Sieve script kept redirecting
+  a suspended tenant's mail and the account could still sign in and
+  send. Reactivation restores everything from the stored configuration.
+- **Tenant archive now destroys the Stalwart account principals** (after
+  the destroy succeeds, never before) instead of deleting the platform
+  rows and leaving live, unmanageable mailboxes behind on the mail server.
+  The pre-archive tenant bundle remains the recovery path, matching the
+  existing archive semantics for mailing lists.
+
+### Fixed
+- **Mail drift could go undetected between the platform DB and Stalwart.**
+  A 2026-08-25 audit closed the class: the DB→Stalwart mail reconciles
+  (mail rules, mailing lists + catch-alls, mailbox aliases) now also run
+  on a 15-minute sweep instead of only at boot; orphaned Stalwart
+  MailingLists (a live forwarding address no platform row owns) are
+  surfaced as a new `orphan-list` item on the Data Drift page with an
+  operator-confirmed delete action; archive no longer deletes alias rows
+  when the Stalwart-side destroy failed (it retries first); and restores
+  no longer replay source-cluster Stalwart ids into the target DB —
+  they are nulled on replay and re-resolved by the reconcilers.
+- **App preview rendered sites without CSS/JS.** The panels' own nginx
+  asset-cache rule (a regex `location` for `.css/.js/.png/…`) outranked the
+  plain `/api/` proxy prefix, so every preview-proxied asset path (e.g.
+  `/api/v1/preview/<token>/styles.css`) was answered 404 by the panel
+  instead of being forwarded — pages loaded, styling and scripts never did.
+  The API locations now use `^~`, which suppresses regex evaluation. Routes
+  were never affected (routed traffic bypasses the panel nginx entirely).
+
 ## [2026.8.16] - 2026-08-25
 
 ### Added

@@ -25,6 +25,8 @@ import {
   dismissDriftItem,
   recreateDriftItemEmpty,
   deleteOrphanDomain,
+  deleteOrphanList,
+  getDriftItemKindById,
 } from './service.js';
 
 const idParamSchema = z.object({ id: z.string().uuid() });
@@ -90,11 +92,13 @@ export async function registerMailDriftRoutes(app: FastifyInstance): Promise<voi
   );
 
   // POST /admin/mail/drift/:id/delete-orphan — DESTRUCTIVE (R17.2).
-  //   Deletes an orphaned Stalwart Domain principal + its DkimSignature
-  //   rows. kind='orphan-domain' only; type-to-confirm guarded; the
-  //   service REFUSES domains that still have member principals
-  //   (ORPHAN_HAS_PRINCIPALS) — see deleteOrphanDomain for the safety
-  //   rationale (PITR-rollback false orphans).
+  //   kind='orphan-domain': deletes the orphaned Stalwart Domain
+  //   principal + its DkimSignature rows; the service REFUSES domains
+  //   that still have member principals (ORPHAN_HAS_PRINCIPALS) — see
+  //   deleteOrphanDomain for the PITR-rollback false-orphan rationale.
+  //   kind='orphan-list' (2026-08-25): deletes the orphaned Stalwart
+  //   MailingList (a live forwarder no platform row owns).
+  //   Both type-to-confirm guarded; dispatched by the item's kind.
   app.post(
     '/admin/mail/drift/:id/delete-orphan',
     { preHandler: requireRole('super_admin') },
@@ -110,8 +114,17 @@ export async function registerMailDriftRoutes(app: FastifyInstance): Promise<voi
       const userId = (req as { user?: { sub?: string } }).user?.sub ?? 'unknown';
       app.log.warn(
         { userId, driftItemId: parsedParams.data.id, confirmName: parsedBody.data.confirmName },
-        'mail-drift: operator-triggered ORPHAN DOMAIN DELETE (destructive)',
+        'mail-drift: operator-triggered ORPHAN DELETE (destructive)',
       );
+      const targetKind = await getDriftItemKindById(app.db, parsedParams.data.id);
+      if (targetKind === 'orphan-list') {
+        const result = await deleteOrphanList(
+          app.db,
+          parsedParams.data.id,
+          parsedBody.data.confirmName,
+        );
+        return success({ ...result, dkimSignaturesDeleted: 0 });
+      }
       const result = await deleteOrphanDomain(
         app.db,
         parsedParams.data.id,

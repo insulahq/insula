@@ -42,6 +42,14 @@ vi.mock('../../db/schema.js', () => ({
     id: 'id', userId: 'user_id', type: 'type', title: 'title',
     message: 'message', resourceType: 'resource_type',
   },
+  // 2026-08-25: orphan-list detection reads email_aliases ownership.
+  emailAliases: { id: 'id', sourceAddress: 'source_address' },
+}));
+
+// 2026-08-25: orphan-list check pulls listMailingLists; default = no lists.
+const mockListMailingLists = vi.fn(async (): Promise<unknown[]> => []);
+vi.mock('./mailing-lists.js', () => ({
+  listMailingLists: (...args: unknown[]) => mockListMailingLists(...args),
 }));
 
 // ── JMAP client mock ──────────────────────────────────────────────────────────
@@ -152,13 +160,17 @@ function createMockDb(
         innerJoin: vi.fn().mockResolvedValue(emailDomainRows),
       };
     }
-    // Calls 2+: drift-persistence (active rows) and admin-user fan-out.
+    // Calls 2+: drift-persistence (active rows), admin-user fan-out, and
+    // the orphan-list ownership read (awaited directly, no .where()).
     // Default to empty results so the sync pipeline completes cleanly.
     // Tests that exercise drift state can override the mock.
-    return {
-      where: vi.fn().mockResolvedValue([]),
-      innerJoin: vi.fn().mockResolvedValue([]),
+    const p = Promise.resolve([]) as unknown as Promise<unknown[]> & {
+      innerJoin: ReturnType<typeof vi.fn>;
+      where: ReturnType<typeof vi.fn>;
     };
+    p.where = vi.fn().mockResolvedValue([]);
+    p.innerJoin = vi.fn().mockResolvedValue([]);
+    return p;
   });
 
   return {
@@ -259,6 +271,27 @@ describe('createPrincipalsSyncScheduler — runOnce', () => {
     expect(inserted[0].expectedName).toBe('mail-e2e-1.example.test');
     expect(inserted[0].expectedStalwartId).toBe('dp-orphan');
     expect(inserted[0].platformRowId).toBe('orphan:dp-orphan');
+  });
+
+  it('flags a Stalwart MailingList with no email_aliases row as orphan-list', async () => {
+    mockGetJmapSession.mockResolvedValueOnce(makeSession());
+    mockPrincipalGet.mockResolvedValueOnce(makePrincipalGetResponse([]));
+    mockListMailingLists.mockResolvedValueOnce([
+      { id: 'ml-1', emailAddress: 'ghost@example.com', recipients: { 'x@example.com': true } },
+    ]);
+
+    const db = createMockDb([], []);
+    const scheduler = createPrincipalsSyncScheduler(db, { env: {} as NodeJS.ProcessEnv });
+    const result = await scheduler.runOnce();
+
+    expect(result.errors).toHaveLength(0);
+    const inserted = (db as unknown as { _insertValues: ReturnType<typeof vi.fn> })._insertValues.mock.calls
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((v) => v.kind === 'orphan-list');
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].expectedName).toBe('ghost@example.com');
+    expect(inserted[0].expectedStalwartId).toBe('ml-1');
+    expect(inserted[0].platformRowId).toBe('orphan-list:ml-1');
   });
 
   it('does not flag the mail-hostname anchor or platform-known domains as orphans', async () => {

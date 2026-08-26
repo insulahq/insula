@@ -130,6 +130,7 @@ export async function ensureStalwartPrincipals(
       stalwartPrincipalId: mailboxesTable.stalwartPrincipalId,
       displayName: mailboxesTable.displayName,
       quotaMb: mailboxesTable.quotaMb,
+      status: mailboxesTable.status,
       mailboxType: mailboxesTable.mailboxType,
       forwardingAddresses: mailboxesTable.forwardingAddresses,
       autoReply: mailboxesTable.autoReply,
@@ -322,25 +323,30 @@ export async function ensureStalwartPrincipals(
       // with default permissions and no Sieve script, which would turn a
       // send-only/forwarding mailbox back into a plain stored inbox until
       // the next boot reconcile. Best-effort like the quota patch above.
+      const restoredSuspended = dbRow.status === 'disabled';
       const declaresMailRules =
         dbRow.mailboxType === 'send_only'
         || (dbRow.forwardingAddresses?.length ?? 0) > 0
-        || dbRow.autoReply === 1;
+        || dbRow.autoReply === 1
+        || restoredSuspended;
       if (declaresMailRules) {
         try {
-          const { applyMailRules, applySendOnlyPermissions } = await import('../../stalwart-jmap/sieve.js');
-          if (dbRow.mailboxType === 'send_only') {
-            await applySendOnlyPermissions({
-              accountId: principalsAccountId,
-              principalId: newPrincipalId,
-              baseUrl: jmapBaseUrl,
-            });
-          }
+          const { applyMailRules, applyAccountAccessState } = await import('../../stalwart-jmap/sieve.js');
+          // Full access profile (send-only + suspension composed in one
+          // write — sequential permission patches clobber each other).
+          await applyAccountAccessState({
+            accountId: principalsAccountId,
+            principalId: newPrincipalId,
+            mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
+            suspended: restoredSuspended,
+            baseUrl: jmapBaseUrl,
+          });
           await applyMailRules({
             principalId: newPrincipalId,
             mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-            forwardingAddresses: dbRow.forwardingAddresses ?? [],
-            autoReply: dbRow.autoReply === 1 && dbRow.autoReplyBody?.trim()
+            suspended: restoredSuspended,
+            forwardingAddresses: restoredSuspended ? [] : (dbRow.forwardingAddresses ?? []),
+            autoReply: !restoredSuspended && dbRow.autoReply === 1 && dbRow.autoReplyBody?.trim()
               ? { subject: dbRow.autoReplySubject, body: dbRow.autoReplyBody }
               : null,
             baseUrl: jmapBaseUrl,
@@ -355,6 +361,47 @@ export async function ensureStalwartPrincipals(
             'mail-rules re-apply failed after principal recreate (boot reconcile will converge)',
           );
         }
+      }
+      // Re-apply per-mailbox aliases + send-as identities — the fresh
+      // principal starts with an empty alias map, which would silently
+      // drop every alias address until the next reconcile sweep.
+      // Best-effort like the rules re-apply above.
+      try {
+        const { mailboxAliases: mailboxAliasesTable } = await import('../../../db/schema.js');
+        const aliasRows = await app.db
+          .select()
+          .from(mailboxAliasesTable)
+          .where(eq(mailboxAliasesTable.mailboxId, dbRow.id));
+        const restoredDomainId = domainIdByName.get((address.split('@')[1] ?? '').toLowerCase());
+        if (aliasRows.length > 0 && restoredDomainId) {
+          const { setAccountAliases, reconcileIdentitiesForAccount } = await import('../../stalwart-jmap/account-aliases.js');
+          await setAccountAliases({
+            accountId: principalsAccountId,
+            principalId: newPrincipalId,
+            aliases: aliasRows.map((r) => ({
+              localPart: r.localPart,
+              stalwartDomainId: restoredDomainId,
+              // Suspended/disabled mailbox → every entry off (2026-08-26).
+              enabled: !restoredSuspended && r.enabled === 1,
+            })),
+            baseUrl: jmapBaseUrl,
+          });
+          await reconcileIdentitiesForAccount({
+            principalId: newPrincipalId,
+            wantAddresses: aliasRows.filter((r) => r.enabled === 1).map((r) => r.fullAddress),
+            dropAddresses: aliasRows.filter((r) => r.enabled !== 1).map((r) => r.fullAddress),
+            baseUrl: jmapBaseUrl,
+          });
+        }
+      } catch (aliasErr) {
+        app.log.warn(
+          {
+            module: 'ensure-stalwart-principals',
+            address,
+            err: aliasErr instanceof Error ? aliasErr.message : String(aliasErr),
+          },
+          'mailbox-alias re-apply failed after principal recreate (reconcile sweep converges)',
+        );
       }
       // Back-fill the platform DB row's stalwartPrincipalId so the
       // next principals-sync run doesn't see the row as an orphan.
