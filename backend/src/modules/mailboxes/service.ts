@@ -3,7 +3,8 @@ import { eq, and } from 'drizzle-orm';
 import { mailLogger } from '../../shared/mail-logger.js';
 
 const log = mailLogger().child({ module: 'mailboxes' });
-import { mailboxes, mailboxAccess, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
+import { mailboxes, mailboxAccess, mailboxAliases, emailDomains, domains, users, tenants, auditLogs } from '../../db/schema.js';
+import { inArray } from 'drizzle-orm';
 import { ApiError } from '../../shared/errors.js';
 import { getTenantMailboxLimit, getTenantMailboxCount, getTenantMailboxSizeLimit } from './limit.js';
 import { notifyTenantMailboxLimitReached } from '../notifications/events.js';
@@ -17,6 +18,7 @@ import {
 import {
   applyMailRules,
   applySendOnlyPermissions,
+  applyAccountAccessState,
   ensureSieveInterpreterLimits,
 } from '../stalwart-jmap/sieve.js';
 import type { Database } from '../../db/index.js';
@@ -486,6 +488,36 @@ export async function createMailbox(
   return { ...created, initialLoginPassword };
 }
 
+/**
+ * Attach each mailbox's ENABLED per-mailbox alias addresses as an
+ * `aliases` array (contract: mailboxResponseSchema.aliases — filled on
+ * LIST responses; single-get callers use the mailbox-aliases endpoints).
+ * One bulk query for the whole page — exported for the admin list route.
+ */
+export async function attachMailboxAliases<T extends { id: string }>(
+  db: Database,
+  rows: readonly T[],
+): Promise<(T & { aliases: string[] })[]> {
+  if (rows.length === 0) return [];
+  const aliasRows = await db
+    .select({
+      mailboxId: mailboxAliases.mailboxId,
+      fullAddress: mailboxAliases.fullAddress,
+    })
+    .from(mailboxAliases)
+    .where(and(
+      inArray(mailboxAliases.mailboxId, rows.map((r) => r.id)),
+      eq(mailboxAliases.enabled, 1),
+    ));
+  const byMailbox = new Map<string, string[]>();
+  for (const a of aliasRows) {
+    const bucket = byMailbox.get(a.mailboxId) ?? [];
+    bucket.push(a.fullAddress);
+    byMailbox.set(a.mailboxId, bucket);
+  }
+  return rows.map((r) => ({ ...r, aliases: (byMailbox.get(r.id) ?? []).sort() }));
+}
+
 export async function listMailboxes(
   db: Database,
   tenantId: string,
@@ -501,7 +533,7 @@ export async function listMailboxes(
     .from(mailboxes)
     .where(and(...conditions));
 
-  return rows;
+  return attachMailboxAliases(db, rows);
 }
 
 export async function getMailbox(
@@ -549,11 +581,18 @@ export async function updateMailbox(
   // Forwarding AND auto-reply both live in the platform-managed Sieve
   // script, so an edit to either regenerates it from the MERGED desired
   // state (input value where present, else the stored row).
-  const rulesTouched =
+  // A status flip applies the FULL access profile (operator decision
+  // 2026-08-26: `disabled` = mail shutdown — inbound bounced via ereject,
+  // authentication refused, aliases off; `active` restores everything
+  // from the stored row).
+  const statusFlipped =
+    input.status !== undefined && input.status !== existingMailbox.status;
+  const inputTouchesRules =
     input.forwarding_addresses !== undefined ||
     input.auto_reply !== undefined ||
     input.auto_reply_subject !== undefined ||
     input.auto_reply_body !== undefined;
+  const rulesTouched = inputTouchesRules || statusFlipped;
 
   let normalizedForwarding: string[] | undefined;
   if (input.forwarding_addresses !== undefined) {
@@ -562,7 +601,9 @@ export async function updateMailbox(
       existingMailbox.fullAddress,
     );
   }
-  if (rulesTouched && !existingMailbox.stalwartPrincipalId) {
+  // Only an explicit rules edit needs a provisioned principal — a pure
+  // status flip on an unprovisioned mailbox has no server state to touch.
+  if (inputTouchesRules && !existingMailbox.stalwartPrincipalId) {
     throw new ApiError(
       'MAILBOX_NOT_PROVISIONED',
       'This mailbox is not provisioned to the mail server yet — forwarding/auto-reply cannot be configured',
@@ -615,18 +656,63 @@ export async function updateMailbox(
   // a partial failure the boot reconcile re-pushes the DB state.
   let forwardingUpdate: string[] | null | undefined;
   if (rulesTouched && existingMailbox.stalwartPrincipalId) {
-    const desiredForwarding =
-      normalizedForwarding ?? (existingMailbox.forwardingAddresses ?? []);
+    const desiredStatus = input.status ?? existingMailbox.status;
+    const desiredDisabled = desiredStatus === 'disabled';
+    const desiredForwarding = desiredDisabled
+      ? []
+      : (normalizedForwarding ?? (existingMailbox.forwardingAddresses ?? []));
     try {
       if (desiredForwarding.length > 0) {
         const accountId = await getJmapAccountId();
         if (accountId) await ensureSieveInterpreterLimits({ accountId });
       }
+      // Status flip: apply the access profile (permissions) + alias map
+      // BEFORE the script. An unresolvable admin account is a HARD
+      // failure here — silently skipping would return 200 with the DB
+      // flipped while the account can still authenticate and its aliases
+      // still resolve (fail-open suspension; review 2026-08-26 HIGH).
+      if (statusFlipped) {
+        const accountId = await getJmapAccountId();
+        if (!accountId) {
+          throw new ApiError(
+            'MAIL_SERVER_ERROR',
+            'Mail server unreachable — the status change was not applied',
+            502,
+            { mailbox_id: mailboxId },
+            'Check Stalwart JMAP API reachability and retry',
+          );
+        }
+        await applyAccountAccessState({
+          accountId,
+          principalId: existingMailbox.stalwartPrincipalId,
+          mailboxType: isSendOnly ? 'send_only' : 'mailbox',
+          suspended: desiredDisabled,
+        });
+        const [emailDomainRow] = await db
+          .select({ stalwartDomainId: emailDomains.stalwartDomainId })
+          .from(emailDomains)
+          .where(eq(emailDomains.id, existingMailbox.emailDomainId));
+        if (emailDomainRow?.stalwartDomainId) {
+          const { desiredAliasesForMailbox } = await import('../mailbox-aliases/service.js');
+          const { setAccountAliases } = await import('../stalwart-jmap/account-aliases.js');
+          const aliasMap = await desiredAliasesForMailbox(
+            db, mailboxId, emailDomainRow.stalwartDomainId, !desiredDisabled,
+          );
+          // Push even an EMPTY map on suspend — it clears any out-of-band
+          // Stalwart aliases immediately instead of waiting for the sweep.
+          await setAccountAliases({
+            accountId,
+            principalId: existingMailbox.stalwartPrincipalId,
+            aliases: aliasMap,
+          });
+        }
+      }
       await applyMailRules({
         principalId: existingMailbox.stalwartPrincipalId,
         mailboxType: isSendOnly ? 'send_only' : 'mailbox',
+        suspended: desiredDisabled,
         forwardingAddresses: desiredForwarding,
-        autoReply: desiredAutoReplyEnabled && desiredAutoReplyBody
+        autoReply: !desiredDisabled && desiredAutoReplyEnabled && desiredAutoReplyBody
           ? { subject: desiredAutoReplySubject ?? null, body: desiredAutoReplyBody }
           : null,
       });

@@ -140,6 +140,7 @@ import { mailStatsRoutes } from './modules/mail-stats/routes.js';
 import { mailboxRoutes } from './modules/mailboxes/routes.js';
 import { loginPasswordRoutes } from './modules/login-passwords/routes.js';
 import { emailAliasRoutes } from './modules/email-aliases/routes.js';
+import { mailboxAliasRoutes } from './modules/mailbox-aliases/routes.js';
 import { smtpRelayRoutes, smtpRelayTenantRoutes } from './modules/smtp-relay/routes.js';
 import { mailEventsWebhookRoutes, mailUsageRoutes, mailComplaintRoutes } from './modules/mail-events/routes.js';
 import { pleskMigrationRoutes } from './modules/plesk-migration/routes.js';
@@ -640,6 +641,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(mailboxRoutes, { prefix: '/api/v1' });
   await app.register(loginPasswordRoutes, { prefix: '/api/v1' }); // login passwords (Stalwart app passwords)
   await app.register(emailAliasRoutes, { prefix: '/api/v1' });
+  await app.register(mailboxAliasRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayRoutes, { prefix: '/api/v1' });
   await app.register(smtpRelayTenantRoutes, { prefix: '/api/v1' });
   await app.register(webmailSettingsRoutes, { prefix: '/api/v1' });
@@ -896,6 +898,61 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           app.log.warn({ err }, 'startup: email-alias reconcile skipped');
         }
       })();
+
+      // Converge per-mailbox aliases (account alias maps + send-as
+      // identities) on boot — same authoritative-DB pattern.
+      void (async () => {
+        try {
+          const { reconcileAllMailboxAliases } = await import('./modules/mailbox-aliases/aliases-reconcile.js');
+          await reconcileAllMailboxAliases(app.db);
+        } catch (err) {
+          app.log.warn({ err }, 'startup: mailbox-alias reconcile skipped');
+        }
+      })();
+
+      // Periodic mail-convergence sweep (2026-08-25 drift audit): the
+      // DB→Stalwart reconciles used to run at boot only, so drift
+      // introduced at runtime (restores, out-of-band edits, transient
+      // push failures after the DB write) persisted until the next
+      // platform-api restart. Re-run all three on a 15-min interval —
+      // each is idempotent and no-ops when nothing drifted. A guard
+      // skips a tick while the previous one is still running.
+      {
+        const MAIL_CONVERGENCE_SWEEP_MS = 15 * 60 * 1000;
+        let sweepRunning = false;
+        const sweepTimer = setInterval(() => {
+          if (sweepRunning) return;
+          sweepRunning = true;
+          void (async () => {
+            // Each reconcile is independent — one subsystem's structural
+            // failure must not skip the others' convergence for a tick.
+            try {
+              try {
+                const { reconcileAllMailboxMailRules } = await import('./modules/mailboxes/mail-rules-reconcile.js');
+                await reconcileAllMailboxMailRules(app.db);
+              } catch (err) {
+                app.log.warn({ err }, 'periodic sweep: mail-rules reconcile failed (retried next tick)');
+              }
+              try {
+                const { reconcileAllEmailAliases } = await import('./modules/email-aliases/aliases-reconcile.js');
+                await reconcileAllEmailAliases(app.db);
+              } catch (err) {
+                app.log.warn({ err }, 'periodic sweep: email-alias reconcile failed (retried next tick)');
+              }
+              try {
+                const { reconcileAllMailboxAliases } = await import('./modules/mailbox-aliases/aliases-reconcile.js');
+                await reconcileAllMailboxAliases(app.db);
+              } catch (err) {
+                app.log.warn({ err }, 'periodic sweep: mailbox-alias reconcile failed (retried next tick)');
+              }
+            } finally {
+              sweepRunning = false;
+            }
+          })();
+        }, MAIL_CONVERGENCE_SWEEP_MS);
+        sweepTimer.unref?.();
+        app.addHook('onClose', () => clearInterval(sweepTimer));
+      }
 
       const webcronTimer = startWebcronScheduler(app.db);
       app.addHook('onClose', () => clearInterval(webcronTimer));

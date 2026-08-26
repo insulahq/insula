@@ -1,7 +1,7 @@
 import { useState, useEffect, lazy, Suspense, type FormEvent } from 'react';
 import ConfirmToken from '@/components/ui/ConfirmToken';
 import { useSearchParams } from 'react-router-dom';
-import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle, Send, CornerUpRight } from 'lucide-react';
+import { Mail, Plus, Trash2, Loader2, AlertCircle, X, ExternalLink, ArrowRight, Edit2, Settings, Copy, CheckCircle, Shield, Key, RefreshCw, Gauge, Download, Inbox, AlertTriangle, HelpCircle, Send, CornerUpRight, AtSign } from 'lucide-react';
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useSortable } from '@/hooks/use-sortable';
@@ -30,6 +30,10 @@ import {
   useCreateEmailAlias,
   useUpdateEmailAlias,
   useDeleteEmailAlias,
+  useMailboxAliases,
+  useCreateMailboxAlias,
+  useUpdateMailboxAlias,
+  useDeleteMailboxAlias,
   useWebmailToken,
   useEnableEmailDomain,
   useDisableEmailDomain,
@@ -186,7 +190,7 @@ export default function Email() {
           <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
             {[
               { key: 'mailboxes' as Tab, label: 'Mailboxes' },
-              { key: 'aliases' as Tab, label: 'Aliases & Forwarding' },
+              { key: 'aliases' as Tab, label: 'Mailing Lists' },
               { key: 'settings' as Tab, label: 'Settings & DNS' },
             ].map(t => (
               <button key={t.key} type="button" onClick={() => setTab(t.key)}
@@ -832,6 +836,12 @@ function MailboxesTab({
                       )}
                     </div>
                     {mb.displayName && <div className="text-xs text-gray-500 dark:text-gray-400">{mb.displayName}</div>}
+                    {(mb.aliases?.length ?? 0) > 0 && (
+                      <div className="mt-0.5 flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400" data-testid={`aliases-line-${mb.id}`}>
+                        <AtSign size={10} className="shrink-0 text-teal-500 dark:text-teal-400" />
+                        <span className="truncate" title={(mb.aliases ?? []).join(', ')}>{(mb.aliases ?? []).join(', ')}</span>
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-3.5 text-sm text-gray-600 dark:text-gray-400">
                     {mb.mailboxType === 'send_only' ? (
@@ -1067,8 +1077,14 @@ function EditMailboxModal({
                 <option value="active">Active</option>
                 <option value="disabled">Disabled</option>
               </select>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                Disabled: incoming mail (including aliases) is bounced back to the
+                sender, and sign-in/sending are blocked until re-activated.
+              </p>
             </div>
           </div>
+
+          <MailboxAliasesSection tenantId={tenantId} mailbox={mailbox} />
 
           <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3">
             <label className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -1179,6 +1195,152 @@ function EditMailboxModal({
   );
 }
 
+// ─── Mailbox aliases (inside the Edit Mailbox modal) ───────────────────────
+//
+// Alternate addresses attached to THIS mailbox: mail to the alias lands
+// in the mailbox, and the mailbox can send AS the alias (webmail offers
+// it as a From identity after the next login/sync). Managed live — each
+// action commits immediately, independent of the modal's Save button.
+function MailboxAliasesSection({
+  tenantId,
+  mailbox,
+}: {
+  readonly tenantId: string;
+  readonly mailbox: Mailbox;
+}) {
+  const domainName = mailbox.fullAddress.split('@')[1] ?? '';
+  const { data: res, isLoading } = useMailboxAliases(tenantId, mailbox.id);
+  const createAlias = useCreateMailboxAlias(tenantId);
+  const updateAlias = useUpdateMailboxAlias(tenantId);
+  const deleteAlias = useDeleteMailboxAlias(tenantId);
+  const [newLocalPart, setNewLocalPart] = useState('');
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  const aliases = res?.data ?? [];
+
+  const handleAdd = async () => {
+    const localPart = newLocalPart.trim();
+    if (!localPart) return;
+    try {
+      await createAlias.mutateAsync({ mailboxId: mailbox.id, localPart });
+      setNewLocalPart('');
+    } catch { /* error rendered below */ }
+  };
+
+  return (
+    <div className="rounded-lg border border-gray-200 dark:border-gray-700 p-3 space-y-3" data-testid="mailbox-aliases-section">
+      <div className="flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300">
+        <AtSign size={14} className="text-teal-500 dark:text-teal-400" />
+        Aliases
+        <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+          — extra addresses delivered to this mailbox; replies can be sent as the alias
+        </span>
+      </div>
+
+      <div className="flex gap-2">
+        <div className="flex flex-1">
+          <input
+            className="flex-1 rounded-l-lg border border-r-0 border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500"
+            value={newLocalPart}
+            onChange={(e) => setNewLocalPart(e.target.value)}
+            placeholder="info"
+            data-testid="mailbox-alias-local-part"
+          />
+          <span className="inline-flex items-center rounded-r-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 px-3 text-sm text-gray-500 dark:text-gray-400">@{domainName}</span>
+        </div>
+        <button
+          type="button"
+          onClick={handleAdd}
+          disabled={createAlias.isPending || newLocalPart.trim().length === 0}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+          data-testid="add-mailbox-alias"
+        >
+          {createAlias.isPending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />}
+          Add
+        </button>
+      </div>
+
+      {createAlias.error && (
+        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+          <AlertCircle size={14} />
+          {createAlias.error instanceof Error ? createAlias.error.message : 'Failed to add alias'}
+        </div>
+      )}
+
+      {isLoading && <div className="flex justify-center py-2"><Loader2 size={16} className="animate-spin text-brand-500" /></div>}
+
+      {!isLoading && aliases.length > 0 && (
+        <div className="divide-y divide-gray-100 dark:divide-gray-700 rounded-lg border border-gray-100 dark:border-gray-700">
+          {aliases.map((a) => (
+            <div key={a.id} className="flex items-center justify-between px-3 py-2" data-testid={`mailbox-alias-row-${a.id}`}>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={clsx('truncate text-sm', a.enabled === 1 ? 'text-gray-900 dark:text-gray-100' : 'text-gray-400 dark:text-gray-500 line-through')}>
+                  {a.fullAddress}
+                </span>
+                {a.enabled !== 1 && (
+                  <span className="inline-flex items-center rounded-full bg-gray-100 dark:bg-gray-700 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                    Disabled
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setPendingId(a.id);
+                    try { await updateAlias.mutateAsync({ id: a.id, enabled: a.enabled !== 1 }); }
+                    catch { /* error rendered below */ }
+                    finally { setPendingId(null); }
+                  }}
+                  disabled={(updateAlias.isPending || deleteAlias.isPending) && pendingId === a.id}
+                  className="inline-flex items-center gap-1 rounded-md border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+                  data-testid={`toggle-mailbox-alias-${a.id}`}
+                >
+                  {updateAlias.isPending && pendingId === a.id
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : null}
+                  {a.enabled === 1 ? 'Disable' : 'Enable'}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setPendingId(a.id);
+                    try { await deleteAlias.mutateAsync(a.id); }
+                    catch { /* error rendered below */ }
+                    finally { setPendingId(null); }
+                  }}
+                  disabled={(updateAlias.isPending || deleteAlias.isPending) && pendingId === a.id}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-200 dark:border-red-700 px-2 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50"
+                  data-testid={`delete-mailbox-alias-${a.id}`}
+                >
+                  {deleteAlias.isPending && pendingId === a.id
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : <Trash2 size={11} />}
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(updateAlias.error || deleteAlias.error) && (
+        <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400">
+          <AlertCircle size={14} />
+          {(updateAlias.error ?? deleteAlias.error) instanceof Error
+            ? ((updateAlias.error ?? deleteAlias.error) as Error).message
+            : 'Alias update failed'}
+        </div>
+      )}
+
+      {!isLoading && aliases.length === 0 && (
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          No aliases yet. Example: info@{domainName} delivered into this mailbox.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function AliasesTab({
   tenantId,
   emailDomain,
@@ -1212,10 +1374,10 @@ function AliasesTab({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          {aliases.length} alias{aliases.length !== 1 ? 'es' : ''} — an alias is an address without its own inbox that delivers to one or more destinations
+          {aliases.length} mailing list{aliases.length !== 1 ? 's' : ''} — a mailing list is an address without its own inbox that delivers to one or more destinations. For an extra address on an existing mailbox (with reply-as), add an alias in the mailbox&apos;s Edit dialog instead.
         </p>
         <button type="button" onClick={() => setShowForm(p => !p)} className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600" data-testid="add-alias-button">
-          {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Create Alias'}
+          {showForm ? <X size={14} /> : <Plus size={14} />} {showForm ? 'Cancel' : 'Create Mailing List'}
         </button>
       </div>
 
@@ -1223,7 +1385,7 @@ function AliasesTab({
         <form onSubmit={handleCreate} className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-5 shadow-sm space-y-4" data-testid="create-alias-form">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Alias address</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">List address</label>
               <div className="mt-1 flex">
                 <input className="flex-1 rounded-l-lg border border-r-0 border-gray-300 dark:border-gray-600 px-3 py-2 text-sm dark:bg-gray-700 dark:text-gray-100" value={form.source} onChange={e => setForm({ ...form, source: e.target.value })} required placeholder="support" data-testid="alias-source" />
                 <span className="inline-flex items-center rounded-r-lg border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900 px-3 text-sm text-gray-500 dark:text-gray-400">@{domainName}</span>
@@ -1232,13 +1394,13 @@ function AliasesTab({
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Deliver to (comma-separated, max 20)</label>
               <input className={INPUT_CLASS + ' mt-1'} value={form.destinations} onChange={e => setForm({ ...form, destinations: e.target.value })} required placeholder="john@example.com, jane@example.com" data-testid="alias-destinations" />
-              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Local mailboxes or external addresses. Nothing is stored on the alias itself.</p>
+              <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">Local mailboxes or external addresses. Nothing is stored on the list address itself.</p>
             </div>
           </div>
           {createAlias.error && <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><AlertCircle size={14} />{createAlias.error instanceof Error ? createAlias.error.message : 'Failed'}</div>}
           <div className="flex justify-end">
             <button type="submit" disabled={createAlias.isPending} className="inline-flex items-center gap-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50" data-testid="submit-alias">
-              {createAlias.isPending && <Loader2 size={14} className="animate-spin" />} Create Alias
+              {createAlias.isPending && <Loader2 size={14} className="animate-spin" />} Create Mailing List
             </button>
           </div>
         </form>
@@ -1278,7 +1440,7 @@ function AliasesTab({
             </div>
           ))}
           {aliases.length === 0 && (
-            <div className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No aliases yet. Create one to deliver an extra address into existing inboxes.</div>
+            <div className="px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400">No mailing lists yet. Create one to deliver an extra address to one or more destinations.</div>
           )}
         </div>
       )}

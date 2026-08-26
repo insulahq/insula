@@ -61,7 +61,13 @@ server {
     }
 
     # Reverse-proxy API requests to the backend.
-    location /api/ {
+    # ^~ is LOAD-BEARING: without it, the SPA asset-cache regex location
+    # (~* \.(js|css|...)$) outranks this prefix match, so any API path
+    # ending in an asset extension — e.g. the app-preview proxy's
+    # /api/v1/preview/<token>/styles.css — was served (404) from the
+    # panel docroot instead of being proxied. Previewed sites rendered
+    # with no CSS/JS (caught live 2026-08-25).
+    location ^~ /api/ {
         proxy_pass $backend_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
