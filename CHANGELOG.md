@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.18] - 2026-08-26
+
 ### Removed
 - **The legacy backup target-"Activate" path is fully retired**
   (operator decision 2026-08-26). Removed: the Activate/Deactivate
