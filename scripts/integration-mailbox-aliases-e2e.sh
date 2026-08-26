@@ -17,6 +17,10 @@
 #      (what Bulwark's From selector consumes).
 #   9. Disable → RCPT rejected AND send-as rejected; re-enable → both work.
 #  10. Delete → RCPT rejected; identity gone.
+#  11. Tenant SUSPENSION = full mail shutdown (2026-08-26): primary
+#      inbound ereject-bounced (nothing stored), alias RCPT 550,
+#      authentication refused (no submission).
+#  12. Reactivation restores primary delivery, alias delivery, send-as.
 #
 # USAGE: ADMIN_PASSWORD=<…> ADMIN_HOST=https://admin.<env>.example.test \
 #        ./scripts/integration-mailbox-aliases-e2e.sh
@@ -214,6 +218,42 @@ if [[ -n "$STALWART_POD" && -n "${SW_ADMIN_PW:-}" && -n "${PARENT_PW:-}" && "$PA
   [[ "$RC" != "0" ]] && ok "deleted alias rejected (rc=$RC)" || fail "deleted alias still accepted"
   IDS=$(identity_emails)
   [[ "$IDS" != *"info@$TEST_DOMAIN"* ]] && ok "identity removed" || fail "identity lingers ($IDS)"
+
+  # ── T11: tenant suspension = FULL mail shutdown (2026-08-26) ──────────
+  # Inbound to the PRIMARY is accepted at SMTP then ereject-bounced (the
+  # sender gets a DSN) — assert nothing lands in the store. The alias is
+  # rejected at RCPT, and the account cannot authenticate to submit.
+  log "── T11: suspend → primary bounced, alias 550, AUTH refused ──"
+  api POST "$MA_BASE" '{"local_part":"billing"}' >/dev/null
+  api POST "/admin/tenants/bulk" "{\"tenant_ids\":[\"$CID\"],\"action\":\"suspend\"}" >/dev/null
+  sleep 8
+  RC=$(send_to "myname@$TEST_DOMAIN" "mba-susp-primary-$STAMP")
+  sleep 6
+  [[ "$(count_subject $PARENT_SP mba-susp-primary-$STAMP)" == "0" ]] \
+    && ok "suspended primary stored NOTHING (ereject bounce)" \
+    || fail "suspended primary still stores mail"
+  RC=$(send_to "billing@$TEST_DOMAIN" "mba-susp-alias-$STAMP")
+  [[ "$RC" != "0" ]] && ok "suspended alias rejected at RCPT (rc=$RC)" || fail "suspended alias still accepted"
+  RC=$(submit_as "myname@$TEST_DOMAIN" "peer@$TEST_DOMAIN" "mba-susp-send-$STAMP")
+  [[ "$RC" != "0" ]] && ok "suspended account cannot authenticate/send (rc=$RC)" \
+    || fail "suspended account STILL sends"
+
+  # ── T12: reactivate restores primary + alias + sending ────────────────
+  log "── T12: reactivate → everything restored ──"
+  api POST "/admin/tenants/bulk" "{\"tenant_ids\":[\"$CID\"],\"action\":\"reactivate\"}" >/dev/null
+  sleep 8
+  RC=$(send_to "myname@$TEST_DOMAIN" "mba-react-primary-$STAMP")
+  sleep 6
+  [[ "$(count_subject $PARENT_SP mba-react-primary-$STAMP)" == "1" ]] \
+    && ok "reactivated primary receives" || fail "reactivated primary broken"
+  RC=$(send_to "billing@$TEST_DOMAIN" "mba-react-alias-$STAMP")
+  sleep 6
+  [[ "$(count_subject $PARENT_SP mba-react-alias-$STAMP)" == "1" ]] \
+    && ok "reactivated alias receives" || fail "reactivated alias broken"
+  RC=$(submit_as "billing@$TEST_DOMAIN" "peer@$TEST_DOMAIN" "mba-react-send-$STAMP")
+  sleep 6
+  [[ "$RC" == "0" && "$(count_subject $PEER_SP mba-react-send-$STAMP)" == "1" ]] \
+    && ok "reactivated account sends as its alias again" || fail "reactivated send-as broken (rc=$RC)"
 else
   log "── T6-T10 skipped: kubectl cannot reach the mail namespace (or no initial login password) ──"
 fi

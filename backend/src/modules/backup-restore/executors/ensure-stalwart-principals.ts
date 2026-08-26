@@ -130,6 +130,7 @@ export async function ensureStalwartPrincipals(
       stalwartPrincipalId: mailboxesTable.stalwartPrincipalId,
       displayName: mailboxesTable.displayName,
       quotaMb: mailboxesTable.quotaMb,
+      status: mailboxesTable.status,
       mailboxType: mailboxesTable.mailboxType,
       forwardingAddresses: mailboxesTable.forwardingAddresses,
       autoReply: mailboxesTable.autoReply,
@@ -322,25 +323,30 @@ export async function ensureStalwartPrincipals(
       // with default permissions and no Sieve script, which would turn a
       // send-only/forwarding mailbox back into a plain stored inbox until
       // the next boot reconcile. Best-effort like the quota patch above.
+      const restoredSuspended = dbRow.status === 'disabled';
       const declaresMailRules =
         dbRow.mailboxType === 'send_only'
         || (dbRow.forwardingAddresses?.length ?? 0) > 0
-        || dbRow.autoReply === 1;
+        || dbRow.autoReply === 1
+        || restoredSuspended;
       if (declaresMailRules) {
         try {
-          const { applyMailRules, applySendOnlyPermissions } = await import('../../stalwart-jmap/sieve.js');
-          if (dbRow.mailboxType === 'send_only') {
-            await applySendOnlyPermissions({
-              accountId: principalsAccountId,
-              principalId: newPrincipalId,
-              baseUrl: jmapBaseUrl,
-            });
-          }
+          const { applyMailRules, applyAccountAccessState } = await import('../../stalwart-jmap/sieve.js');
+          // Full access profile (send-only + suspension composed in one
+          // write — sequential permission patches clobber each other).
+          await applyAccountAccessState({
+            accountId: principalsAccountId,
+            principalId: newPrincipalId,
+            mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
+            suspended: restoredSuspended,
+            baseUrl: jmapBaseUrl,
+          });
           await applyMailRules({
             principalId: newPrincipalId,
             mailboxType: dbRow.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-            forwardingAddresses: dbRow.forwardingAddresses ?? [],
-            autoReply: dbRow.autoReply === 1 && dbRow.autoReplyBody?.trim()
+            suspended: restoredSuspended,
+            forwardingAddresses: restoredSuspended ? [] : (dbRow.forwardingAddresses ?? []),
+            autoReply: !restoredSuspended && dbRow.autoReply === 1 && dbRow.autoReplyBody?.trim()
               ? { subject: dbRow.autoReplySubject, body: dbRow.autoReplyBody }
               : null,
             baseUrl: jmapBaseUrl,
@@ -375,7 +381,8 @@ export async function ensureStalwartPrincipals(
             aliases: aliasRows.map((r) => ({
               localPart: r.localPart,
               stalwartDomainId: restoredDomainId,
-              enabled: r.enabled === 1,
+              // Suspended/disabled mailbox → every entry off (2026-08-26).
+              enabled: !restoredSuspended && r.enabled === 1,
             })),
             baseUrl: jmapBaseUrl,
           });

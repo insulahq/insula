@@ -933,6 +933,7 @@ describe('updateMailbox — send-only + forwarding', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: ['dest@example.net'],
       autoReply: null,
@@ -951,6 +952,7 @@ describe('updateMailbox — send-only + forwarding', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: [],
       autoReply: null,
@@ -1015,6 +1017,7 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: [],
       autoReply: { subject: 'OOO', body: 'Away.' },
@@ -1030,6 +1033,7 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: ['dest@example.net'],
       autoReply: { subject: null, body: 'Away.' },
@@ -1055,6 +1059,7 @@ describe('updateMailbox — auto-reply (vacation) push', () => {
 
     expect(sieve.applyMailRules).toHaveBeenCalledWith({
       principalId: 'sp1',
+      suspended: false,
       mailboxType: 'mailbox',
       forwardingAddresses: [],
       autoReply: null,

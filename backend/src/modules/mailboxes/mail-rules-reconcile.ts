@@ -1,36 +1,65 @@
 /**
- * Boot-time reconcile: re-push platform-managed mail rules (Sieve
- * forwarding / send-only scripts + the send-only permission profile)
- * for every mailbox that declares them in the platform DB.
+ * Reconcile: re-push platform-managed mail state (Sieve forwarding /
+ * send-only / suspension scripts + the account access-permission
+ * profile) for every mailbox that declares any of it in the platform DB
+ * (boot + the 15-min periodic sweep).
  *
  * The platform DB is authoritative. Stalwart-side state can drift when:
  *   - a mailbox was recreated empty via the mail-drift remediation UI,
  *   - a tenant restore replayed an old Sieve state,
  *   - a power user replaced their own script via ManageSieve,
- *   - a forwarding edit hit a transient Stalwart error after the DB write.
- * One idempotent sweep per platform-api boot converges all of it without
- * per-tenant action (same pattern as the tenant-netpol boot reconcile).
+ *   - a forwarding edit hit a transient Stalwart error after the DB write,
+ *   - a suspend/reactivate hook run failed mid-tenant.
+ *
+ * Permissions converge by DIFF: ONE bulk x:Account/get of every
+ * account's stored `permissions`, compared against the composed desired
+ * object (buildAccountPermissions) — only drifted accounts get a patch,
+ * so the steady-state sweep writes nothing. This covers ALL mailboxes
+ * (a plain active mailbox stuck with a suspension leftover converges
+ * too); the script push stays scoped to rows that declare rules or are
+ * disabled, plus any permission-drifted row (the drift is the tell that
+ * a lifecycle push failed halfway).
  */
 import { eq, isNotNull, or } from 'drizzle-orm';
 import { mailboxes } from '../../db/schema.js';
 import { mailLogger } from '../../shared/mail-logger.js';
-import { getJmapSession } from '../stalwart-jmap/client.js';
+import { getJmapSession, rawStalwartCall } from '../stalwart-jmap/client.js';
 import {
   applyMailRules,
-  applySendOnlyPermissions,
+  applyAccountAccessState,
+  buildAccountPermissions,
   ensureSieveInterpreterLimits,
 } from '../stalwart-jmap/sieve.js';
 import type { Database } from '../../db/index.js';
 
 const log = mailLogger().child({ module: 'mail-rules-reconcile' });
 
+interface StoredPermissions {
+  readonly enabledPermissions?: Record<string, boolean>;
+  readonly disabledPermissions?: Record<string, boolean>;
+}
+
+/**
+ * Stored-vs-desired permission equivalence. The meaningful signal is the
+ * DISABLED set (what the platform turns off); the enabled set only
+ * exists to flip a previous disable back. An account with NO stored
+ * permissions object equals "nothing disabled".
+ * Exported pure for unit tests.
+ */
+export function permissionsMatch(
+  stored: StoredPermissions | undefined,
+  desired: { enabledPermissions: Record<string, boolean>; disabledPermissions: Record<string, boolean> },
+): boolean {
+  const storedDis = Object.entries(stored?.disabledPermissions ?? {})
+    .filter(([, v]) => v === true).map(([k]) => k).sort();
+  const desiredDis = Object.entries(desired.disabledPermissions)
+    .filter(([, v]) => v === true).map(([k]) => k).sort();
+  return storedDis.length === desiredDis.length && storedDis.every((k, i) => k === desiredDis[i]);
+}
+
 export async function reconcileAllMailboxMailRules(db: Database): Promise<void> {
-  // Rows that declare platform-managed rules: every send-only account
-  // (permission profile + inbound script) and every forwarding mailbox.
-  // Disabled rows are INCLUDED (2026-08-25 drift audit): their desired
-  // state is the STRIPPED script (no forwarding/auto-reply; send-only
-  // keeps its ereject) — excluding them left a suspended tenant's
-  // forwarding script unmanaged, silently redirecting mail forever.
+  // ALL rows: the permission diff needs every mailbox; the script push
+  // below narrows to rules-bearing / disabled / perm-drifted rows.
   const rows = await db
     .select({
       id: mailboxes.id,
@@ -49,6 +78,8 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
         eq(mailboxes.mailboxType, 'send_only'),
         isNotNull(mailboxes.forwardingAddresses),
         eq(mailboxes.autoReply, 1),
+        eq(mailboxes.status, 'disabled'),
+        isNotNull(mailboxes.stalwartPrincipalId),
       ),
     );
   if (rows.length === 0) return;
@@ -65,38 +96,79 @@ export async function reconcileAllMailboxMailRules(db: Database): Promise<void> 
   }
   if (!accountId) return;
 
-  if (rows.some((r) => (r.forwardingAddresses?.length ?? 0) > 0)) {
+  // ONE bulk fetch of every account's stored permissions for the diff.
+  let storedPermsByPrincipal = new Map<string, StoredPermissions | undefined>();
+  try {
+    const res = await rawStalwartCall<{ list?: readonly { id: string; permissions?: StoredPermissions }[] }>({
+      using: ['urn:stalwart:jmap'],
+      method: 'x:Account/get',
+      args: { accountId, ids: null, properties: ['id', 'permissions'] },
+    });
+    storedPermsByPrincipal = new Map((res.list ?? []).map((a) => [a.id, a.permissions]));
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) },
+      'mail-rules reconcile: bulk permissions fetch failed — skipping permission diff this sweep');
+  }
+
+  const anyActiveForwarding = rows.some(
+    (r) => r.status !== 'disabled' && (r.forwardingAddresses?.length ?? 0) > 0,
+  );
+  if (anyActiveForwarding) {
     await ensureSieveInterpreterLimits({ accountId }).catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err) }, 'sieve interpreter limits ensure failed');
     });
   }
 
   let applied = 0;
+  let permsPatched = 0;
   let failed = 0;
   for (const row of rows) {
     if (!row.stalwartPrincipalId) continue; // not provisioned yet — principals-sync backfills first
+    const mailboxType = row.mailboxType === 'send_only' ? 'send_only' : 'mailbox';
+    const suspended = row.status === 'disabled';
     try {
-      if (row.mailboxType === 'send_only') {
-        await applySendOnlyPermissions({ accountId, principalId: row.stalwartPrincipalId });
+      // Permission diff → patch only when drifted.
+      const desired = buildAccountPermissions({ mailboxType, suspended });
+      const stored = storedPermsByPrincipal.get(row.stalwartPrincipalId);
+      const permsDrifted = storedPermsByPrincipal.size > 0
+        && !permissionsMatch(stored, desired);
+      if (permsDrifted) {
+        await applyAccountAccessState({
+          accountId,
+          principalId: row.stalwartPrincipalId,
+          mailboxType,
+          suspended,
+        });
+        permsPatched += 1;
       }
-      const disabled = row.status === 'disabled';
-      await applyMailRules({
-        principalId: row.stalwartPrincipalId,
-        mailboxType: row.mailboxType === 'send_only' ? 'send_only' : 'mailbox',
-        forwardingAddresses: disabled ? [] : (row.forwardingAddresses ?? []),
-        autoReply: !disabled && row.autoReply === 1 && row.autoReplyBody?.trim()
-          ? { subject: row.autoReplySubject, body: row.autoReplyBody }
-          : null,
-      });
-      applied += 1;
+
+      // Script push: rules-bearing rows, disabled rows, and any row whose
+      // permissions drifted (the tell that a lifecycle push died halfway —
+      // its script may be stale too).
+      const rulesBearing =
+        mailboxType === 'send_only' ||
+        (row.forwardingAddresses?.length ?? 0) > 0 ||
+        row.autoReply === 1;
+      if (rulesBearing || suspended || permsDrifted) {
+        await applyMailRules({
+          principalId: row.stalwartPrincipalId,
+          mailboxType,
+          suspended,
+          forwardingAddresses: suspended ? [] : (row.forwardingAddresses ?? []),
+          autoReply: !suspended && row.autoReply === 1 && row.autoReplyBody?.trim()
+            ? { subject: row.autoReplySubject, body: row.autoReplyBody }
+            : null,
+        });
+        applied += 1;
+      }
     } catch (err) {
       failed += 1;
       log.warn({
         mailboxId: row.id,
         fullAddress: row.fullAddress,
         err: err instanceof Error ? err.message : String(err),
-      }, 'mail-rules reconcile failed for mailbox (retried next boot)');
+      }, 'mail-rules reconcile failed for mailbox (retried next sweep)');
     }
   }
-  log.info({ applied, failed, total: rows.length }, 'mailbox mail-rules reconcile complete');
+  log.info({ applied, permsPatched, failed, total: rows.length }, 'mailbox mail-rules reconcile complete');
 }

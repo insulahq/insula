@@ -116,13 +116,19 @@ async function loadMailboxContext(
  * Desired Stalwart alias map for a mailbox = ALL its DB rows, disabled
  * ones included with `enabled:false` (the entry reserves the address
  * server-side and Stalwart enforces the off state for both directions).
- * Every push path derives the map through this one function so the
- * shape can never diverge between create/update/delete/reconcile.
+ * A disabled/suspended mailbox forces EVERY entry off — suspension
+ * disables incoming and outgoing mail for the aliases too (operator
+ * decision 2026-08-26); the rows keep the tenant's intent for
+ * reactivation. Every push path derives the map through this one
+ * function so the shape can never diverge between
+ * create/update/delete/reconcile/lifecycle.
  */
 export async function desiredAliasesForMailbox(
   db: Database,
   mailboxId: string,
   stalwartDomainId: string,
+  /** `mailboxes.status === 'active'` for the owning mailbox. */
+  mailboxActive: boolean,
 ): Promise<DesiredAccountAlias[]> {
   const rows = await db
     .select()
@@ -131,7 +137,7 @@ export async function desiredAliasesForMailbox(
   return rows.map((r) => ({
     localPart: r.localPart,
     stalwartDomainId,
-    enabled: r.enabled === 1,
+    enabled: mailboxActive && r.enabled === 1,
   }));
 }
 
@@ -197,23 +203,29 @@ export async function createMailboxAlias(
     // reconcile converges once principals-sync backfills the principal.
     const accountId = await getCachedPrincipalsAccountId();
     const canPush = Boolean(accountId && mailbox.stalwartPrincipalId && emailDomain.stalwartDomainId);
+    const mailboxActive = mailbox.status === 'active';
     if (canPush) {
-      const desired = await desiredAliasesForMailbox(db, mailboxId, emailDomain.stalwartDomainId as string);
-      desired.push({ localPart, stalwartDomainId: emailDomain.stalwartDomainId as string, enabled: true });
+      const desired = await desiredAliasesForMailbox(db, mailboxId, emailDomain.stalwartDomainId as string, mailboxActive);
+      // On a disabled/suspended mailbox the new entry is pushed OFF (and
+      // no identity is created) — the row records intent; reactivation
+      // turns it on.
+      desired.push({ localPart, stalwartDomainId: emailDomain.stalwartDomainId as string, enabled: mailboxActive });
       try {
         await setAccountAliases({
           accountId: accountId as string,
           principalId: mailbox.stalwartPrincipalId as string,
           aliases: desired,
         });
-        await ensureIdentityForAddress({
-          principalId: mailbox.stalwartPrincipalId as string,
-          address: fullAddress,
-        });
+        if (mailboxActive) {
+          await ensureIdentityForAddress({
+            principalId: mailbox.stalwartPrincipalId as string,
+            address: fullAddress,
+          });
+        }
       } catch (err) {
         // Compensating re-push without the new alias — no live address
         // without a platform row (identity removal rides best-effort).
-        const rollback = await desiredAliasesForMailbox(db, mailboxId, emailDomain.stalwartDomainId as string);
+        const rollback = await desiredAliasesForMailbox(db, mailboxId, emailDomain.stalwartDomainId as string, mailbox.status === 'active');
         await setAccountAliases({
           accountId: accountId as string,
           principalId: mailbox.stalwartPrincipalId as string,
@@ -243,7 +255,7 @@ export async function createMailboxAlias(
       });
     } catch (dbErr) {
       if (canPush) {
-        const rollback = await desiredAliasesForMailbox(db, mailboxId, emailDomain.stalwartDomainId as string);
+        const rollback = await desiredAliasesForMailbox(db, mailboxId, emailDomain.stalwartDomainId as string, mailbox.status === 'active');
         await setAccountAliases({
           accountId: accountId as string,
           principalId: mailbox.stalwartPrincipalId as string,
@@ -308,12 +320,16 @@ export async function updateMailboxAlias(
     const accountId = await getCachedPrincipalsAccountId();
     const canPush = Boolean(accountId && mailbox.stalwartPrincipalId && emailDomain.stalwartDomainId);
 
+    const mailboxActive = mailbox.status === 'active';
     if (canPush) {
-      // Whole desired map with this row's entry flipped.
+      // Whole desired map with this row's entry flipped. On a disabled/
+      // suspended mailbox the SERVER entry stays off regardless of the
+      // requested flag (the DB row records intent for reactivation).
+      const effectiveEnabled = desiredEnabled && mailboxActive;
       const desired: DesiredAccountAlias[] = (
-        await desiredAliasesForMailbox(db, alias.mailboxId, emailDomain.stalwartDomainId as string)
+        await desiredAliasesForMailbox(db, alias.mailboxId, emailDomain.stalwartDomainId as string, mailboxActive)
       ).map((d) =>
-        d.localPart === alias.localPart ? { ...d, enabled: desiredEnabled } : d,
+        d.localPart === alias.localPart ? { ...d, enabled: effectiveEnabled } : d,
       );
       try {
         await setAccountAliases({
@@ -321,7 +337,7 @@ export async function updateMailboxAlias(
           principalId: mailbox.stalwartPrincipalId as string,
           aliases: desired,
         });
-        if (desiredEnabled) {
+        if (effectiveEnabled) {
           await ensureIdentityForAddress({
             principalId: mailbox.stalwartPrincipalId as string,
             address: alias.fullAddress,
@@ -370,7 +386,7 @@ export async function deleteMailboxAlias(db: Database, tenantId: string, aliasId
       : [undefined];
     const accountId = await getCachedPrincipalsAccountId();
     if (accountId && mailbox?.stalwartPrincipalId && emailDomain?.stalwartDomainId) {
-      const desired = (await desiredAliasesForMailbox(db, alias.mailboxId, emailDomain.stalwartDomainId))
+      const desired = (await desiredAliasesForMailbox(db, alias.mailboxId, emailDomain.stalwartDomainId, mailbox.status === 'active'))
         .filter((d) => d.localPart !== alias.localPart);
       await setAccountAliases({
         accountId,

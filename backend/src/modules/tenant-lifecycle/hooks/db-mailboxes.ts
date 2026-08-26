@@ -10,22 +10,21 @@ import {
 /**
  * mailboxes-status hook.
  *
- *   - active     → status='active' + re-push the platform mail rules
- *                  (forwarding/auto-reply Sieve) from the DB state
- *   - suspended  → status='disabled' + STRIP forwarding/auto-reply from
- *                  the mail server (2026-08-25 drift audit: the Sieve
- *                  script used to keep forwarding a suspended tenant's
- *                  mail — an AUTOMATIC outbound action on behalf of a
- *                  tenant the platform says is off. Inbound mail keeps
- *                  being STORED, so nothing is lost across a suspension;
- *                  send-only accounts keep their ereject bounce.
- *                  Deliberately NOT stripped: mailbox aliases and their
- *                  send-as identities. Suspension does not disable the
- *                  account's authenticated sending at all (the primary
- *                  address can still submit), so revoking only the alias
- *                  identities would be security theater — if suspension
- *                  should block sending, that's an account-permission
- *                  change to make for primary+aliases together.)
+ *   - active     → status='active' + restore the full mail state from
+ *                  the DB (permissions re-enabled, forwarding/auto-reply
+ *                  Sieve re-pushed, alias map re-enabled)
+ *   - suspended  → status='disabled' + FULL mail shutdown per mailbox
+ *                  (operator decision 2026-08-26: suspension disables
+ *                  the primary account AND its aliases for incoming and
+ *                  outgoing mail until reactivation):
+ *                    · `authenticate` permission disabled — no
+ *                      submission/IMAP/POP3/ManageSieve/webmail login
+ *                      ("550 5.7.1 not authorized"; probed live)
+ *                    · ereject Sieve script — ALL inbound bounced with a
+ *                      neutral DSN (nothing stored, sender is informed)
+ *                    · alias map pushed all-off — alias RCPT 550 too.
+ *                  Alias rows and send-as identities keep the tenant's
+ *                  configuration for reactivation.
  *   - archived   → destroy the Stalwart account principals FIRST, then
  *                  DELETE FROM mailboxes (2026-08-25 drift audit: rows
  *                  used to be deleted with the principals left alive —
@@ -34,7 +33,7 @@ import {
  *                  retry mirrors the email-aliases archive ordering; the
  *                  tenant bundle taken before archive is the recovery
  *                  path for mail data.)
- *   - restored   → status='active' + re-push mail rules
+ *   - restored   → status='active' + restore the full mail state
  *
  * Stalwart-side failures return `retry` (2-min hook scheduler re-runs);
  * for `archived` the row delete only happens AFTER the destroys
@@ -57,8 +56,8 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       await ctx.db.update(mailboxes)
         .set({ status: 'disabled' })
         .where(eq(mailboxes.tenantId, ctx.tenantId));
-      const stalwart = await pushTenantMailRules(ctx, 'stripped');
-      if (!stalwart.ok) return { status: 'retry', detail: `status=disabled set; rules strip pending: ${stalwart.detail}` };
+      const stalwart = await pushTenantMailState(ctx, 'suspended');
+      if (!stalwart.ok) return { status: 'retry', detail: `status=disabled set; mail shutdown pending: ${stalwart.detail}` };
       return { status: 'ok', detail: `set status=disabled (${stalwart.detail})` };
     }
     case 'active':
@@ -66,8 +65,8 @@ async function runImpl(ctx: HookCtx): Promise<HookResult> {
       await ctx.db.update(mailboxes)
         .set({ status: 'active' })
         .where(eq(mailboxes.tenantId, ctx.tenantId));
-      const stalwart = await pushTenantMailRules(ctx, 'live');
-      if (!stalwart.ok) return { status: 'retry', detail: `status=active set; rules re-push pending: ${stalwart.detail}` };
+      const stalwart = await pushTenantMailState(ctx, 'live');
+      if (!stalwart.ok) return { status: 'retry', detail: `status=active set; mail restore pending: ${stalwart.detail}` };
       return { status: 'ok', detail: `set status=active (${stalwart.detail})` };
     }
     default:
@@ -120,52 +119,77 @@ async function destroyTenantPrincipals(ctx: HookCtx): Promise<{ ok: boolean; det
 }
 
 /**
- * Push every rules-bearing mailbox's Sieve state: `live` = from the DB
- * row (reactivate), `stripped` = forwarding/auto-reply off (suspend;
- * send-only keeps its ereject). Mirrors mail-rules-reconcile's desired-
- * state derivation — keep the two in step.
+ * Push every provisioned mailbox's FULL mail state: `live` = restore
+ * from the DB rows (reactivate), `suspended` = full shutdown (access
+ * permissions off, ereject script, alias map all-off). Mirrors
+ * mail-rules-reconcile's desired-state derivation — keep the two in
+ * step.
  */
-async function pushTenantMailRules(
+async function pushTenantMailState(
   ctx: HookCtx,
-  mode: 'live' | 'stripped',
+  mode: 'live' | 'suspended',
 ): Promise<{ ok: boolean; detail: string }> {
   try {
     const { getCachedPrincipalsAccountId } = await import('../../stalwart-jmap/client.js');
-    const { applyMailRules, ensureSieveInterpreterLimits } = await import('../../stalwart-jmap/sieve.js');
+    const { applyMailRules, applyAccountAccessState, ensureSieveInterpreterLimits } = await import('../../stalwart-jmap/sieve.js');
+    const { setAccountAliases } = await import('../../stalwart-jmap/account-aliases.js');
+    const { desiredAliasesForMailbox } = await import('../../mailbox-aliases/service.js');
+    const { emailDomains } = await import('../../../db/schema.js');
+    const suspended = mode === 'suspended';
     const rows = await ctx.db
       .select()
       .from(mailboxes)
       .where(eq(mailboxes.tenantId, ctx.tenantId));
-    const relevant = rows.filter((r) =>
-      r.stalwartPrincipalId &&
-      (r.mailboxType === 'send_only' ||
-        ((r.forwardingAddresses as string[] | null)?.length ?? 0) > 0 ||
-        r.autoReply === 1),
-    );
-    if (relevant.length === 0) return { ok: true, detail: 'no rules-bearing mailboxes' };
+    const provisioned = rows.filter((r) => r.stalwartPrincipalId);
+    if (provisioned.length === 0) return { ok: true, detail: 'no provisioned mailboxes' };
     const accountId = await getCachedPrincipalsAccountId();
     if (!accountId) {
-      return { ok: false, detail: `Stalwart unreachable with ${relevant.length} mailbox rule set(s) to push` };
+      return { ok: false, detail: `Stalwart unreachable with ${provisioned.length} mailbox state(s) to push` };
     }
-    if (mode === 'live' && relevant.some((r) => ((r.forwardingAddresses as string[] | null)?.length ?? 0) > 0)) {
+    if (!suspended && provisioned.some((r) => ((r.forwardingAddresses as string[] | null)?.length ?? 0) > 0)) {
       await ensureSieveInterpreterLimits({ accountId });
     }
+    const stalwartDomainByEmailDomainId = new Map<string, string>();
+    for (const r of provisioned) {
+      if (stalwartDomainByEmailDomainId.has(r.emailDomainId)) continue;
+      const [ed] = await ctx.db
+        .select({ stalwartDomainId: emailDomains.stalwartDomainId })
+        .from(emailDomains)
+        .where(eq(emailDomains.id, r.emailDomainId));
+      if (ed?.stalwartDomainId) stalwartDomainByEmailDomainId.set(r.emailDomainId, ed.stalwartDomainId);
+    }
     let pushed = 0;
-    for (const r of relevant) {
+    for (const r of provisioned) {
       const mailboxType = r.mailboxType === 'send_only' ? 'send_only' : 'mailbox';
-      const forwarding = mode === 'live' ? ((r.forwardingAddresses as string[] | null) ?? []) : [];
-      const autoReply = mode === 'live' && mailboxType === 'mailbox' && r.autoReply === 1 && r.autoReplyBody
-        ? { subject: r.autoReplySubject ?? null, body: r.autoReplyBody }
-        : null;
+      await applyAccountAccessState({
+        accountId,
+        principalId: r.stalwartPrincipalId as string,
+        mailboxType,
+        suspended,
+      });
       await applyMailRules({
         principalId: r.stalwartPrincipalId as string,
         mailboxType,
-        forwardingAddresses: forwarding,
-        autoReply,
+        suspended,
+        forwardingAddresses: suspended ? [] : ((r.forwardingAddresses as string[] | null) ?? []),
+        autoReply: !suspended && mailboxType === 'mailbox' && r.autoReply === 1 && r.autoReplyBody
+          ? { subject: r.autoReplySubject ?? null, body: r.autoReplyBody }
+          : null,
       });
+      const stalwartDomainId = stalwartDomainByEmailDomainId.get(r.emailDomainId);
+      if (stalwartDomainId) {
+        const aliasMap = await desiredAliasesForMailbox(ctx.db, r.id, stalwartDomainId, !suspended);
+        if (aliasMap.length > 0) {
+          await setAccountAliases({
+            accountId,
+            principalId: r.stalwartPrincipalId as string,
+            aliases: aliasMap,
+          });
+        }
+      }
       pushed += 1;
     }
-    return { ok: true, detail: `${mode === 'live' ? 're-pushed' : 'stripped'} rules on ${pushed} mailbox(es)` };
+    return { ok: true, detail: `${suspended ? 'shut down' : 'restored'} mail state on ${pushed} mailbox(es)` };
   } catch (err) {
     return { ok: false, detail: err instanceof Error ? err.message : String(err) };
   }

@@ -18,6 +18,7 @@ import {
 import {
   applyMailRules,
   applySendOnlyPermissions,
+  applyAccountAccessState,
   ensureSieveInterpreterLimits,
 } from '../stalwart-jmap/sieve.js';
 import type { Database } from '../../db/index.js';
@@ -580,14 +581,10 @@ export async function updateMailbox(
   // Forwarding AND auto-reply both live in the platform-managed Sieve
   // script, so an edit to either regenerates it from the MERGED desired
   // state (input value where present, else the stored row).
-  // A status flip also regenerates the script: `disabled` strips
-  // forwarding/auto-reply from the mail server (a disabled mailbox must
-  // not keep redirecting mail — 2026-08-25 drift audit), `active`
-  // re-pushes the stored rules. Send-only keeps its ereject either way.
-  const hasStoredRules =
-    isSendOnly ||
-    ((existingMailbox.forwardingAddresses ?? []) as string[]).length > 0 ||
-    existingMailbox.autoReply === 1;
+  // A status flip applies the FULL access profile (operator decision
+  // 2026-08-26: `disabled` = mail shutdown — inbound bounced via ereject,
+  // authentication refused, aliases off; `active` restores everything
+  // from the stored row).
   const statusFlipped =
     input.status !== undefined && input.status !== existingMailbox.status;
   const inputTouchesRules =
@@ -595,7 +592,7 @@ export async function updateMailbox(
     input.auto_reply !== undefined ||
     input.auto_reply_subject !== undefined ||
     input.auto_reply_body !== undefined;
-  const rulesTouched = inputTouchesRules || (statusFlipped && hasStoredRules);
+  const rulesTouched = inputTouchesRules || statusFlipped;
 
   let normalizedForwarding: string[] | undefined;
   if (input.forwarding_addresses !== undefined) {
@@ -669,9 +666,42 @@ export async function updateMailbox(
         const accountId = await getJmapAccountId();
         if (accountId) await ensureSieveInterpreterLimits({ accountId });
       }
+      // Status flip: apply the access profile (permissions) + alias map
+      // BEFORE the script so a failure leaves nothing half-shut-down
+      // that the periodic reconcile wouldn't converge anyway.
+      if (statusFlipped) {
+        const accountId = await getJmapAccountId();
+        if (accountId) {
+          await applyAccountAccessState({
+            accountId,
+            principalId: existingMailbox.stalwartPrincipalId,
+            mailboxType: isSendOnly ? 'send_only' : 'mailbox',
+            suspended: desiredDisabled,
+          });
+          const [emailDomainRow] = await db
+            .select({ stalwartDomainId: emailDomains.stalwartDomainId })
+            .from(emailDomains)
+            .where(eq(emailDomains.id, existingMailbox.emailDomainId));
+          if (emailDomainRow?.stalwartDomainId) {
+            const { desiredAliasesForMailbox } = await import('../mailbox-aliases/service.js');
+            const { setAccountAliases } = await import('../stalwart-jmap/account-aliases.js');
+            const aliasMap = await desiredAliasesForMailbox(
+              db, mailboxId, emailDomainRow.stalwartDomainId, !desiredDisabled,
+            );
+            if (aliasMap.length > 0) {
+              await setAccountAliases({
+                accountId,
+                principalId: existingMailbox.stalwartPrincipalId,
+                aliases: aliasMap,
+              });
+            }
+          }
+        }
+      }
       await applyMailRules({
         principalId: existingMailbox.stalwartPrincipalId,
         mailboxType: isSendOnly ? 'send_only' : 'mailbox',
+        suspended: desiredDisabled,
         forwardingAddresses: desiredForwarding,
         autoReply: !desiredDisabled && desiredAutoReplyEnabled && desiredAutoReplyBody
           ? { subject: desiredAutoReplySubject ?? null, body: desiredAutoReplyBody }
