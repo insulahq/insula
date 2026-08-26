@@ -272,10 +272,32 @@ export async function reconcilePostgresObjectStore(
   // gets daily base backups at 03:00.
   let scheduledBackupApplied = false;
   if (walArchiveOwns) {
-    log.info(
-      { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}` },
-      'postgres-objectstore: wal-archive owns ScheduledBackup — skipping reconciliation',
-    );
+    // Delegate to wal-archive's converger instead of skipping outright:
+    // the CR may pre-date the operator's enable (created suspend:true by
+    // the no-target safety net below) and ONLY a periodic re-assert
+    // repairs that — the enable action alone runs once and can race a
+    // stale CR (production 2026-08-26: nightly base backup never fired
+    // because spec.suspend stayed true forever). Dynamic import: this
+    // module and wal-archive.ts import each other's constants.
+    try {
+      const { reconcileWalArchiveScheduledBackup } = await import('../system-backup/wal-archive.js');
+      const outcome = await reconcileWalArchiveScheduledBackup(
+        db, { custom: clients.custom },
+        POSTGRES_NAMESPACE, POSTGRES_CLUSTER_NAME,
+      );
+      scheduledBackupApplied = outcome === 'asserted';
+      log.info(
+        { cluster: `${POSTGRES_NAMESPACE}/${POSTGRES_CLUSTER_NAME}`, outcome },
+        'postgres-objectstore: wal-archive owns ScheduledBackup — converged from wal-archive state',
+      );
+    } catch (err) {
+      // Deliberately NOT a STATE_ERROR return (unlike the sibling
+      // steps): aborting here would skip step 6's Cluster-plugin
+      // reconcile, and a transient converge failure self-heals on the
+      // next 5-min tick. The log line is the observable.
+      const msg = err instanceof Error ? err.message : String(err);
+      log.error({ err: msg }, 'postgres-objectstore: wal-archive ScheduledBackup converge failed');
+    }
   } else {
     try {
       await materializeScheduledBackup(clients.custom, log, { suspended });

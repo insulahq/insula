@@ -149,7 +149,6 @@ export async function resolveSystemStore(
   const rows = await db
     .select({
       id: backupConfigurations.id,
-      active: backupConfigurations.active,
       storageType: backupConfigurations.storageType,
       s3Endpoint: backupConfigurations.s3Endpoint,
       s3Region: backupConfigurations.s3Region,
@@ -168,7 +167,10 @@ export async function resolveSystemStore(
     .limit(1);
   const cfg = rows[0];
   if (!cfg) throw new Error(`backup_configurations row ${targetConfigId} not found`);
-  if (cfg.active === false) throw new Error(`backup_configurations row ${targetConfigId} is not active`);
+  // No `active` gate: the legacy target-activate concept was retired
+  // 2026-08-26 — the caller passes the target the operator selected
+  // (typically the SYSTEM shim assignment), and the writable-guard
+  // covers the DR freeze interlock.
 
   const decryptIfPresent = (s: string | null | undefined): string => {
     if (!s) return '';

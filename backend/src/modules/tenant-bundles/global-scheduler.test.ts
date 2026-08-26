@@ -15,6 +15,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+
+// The failure-notification helper pulls in the whole notifications
+// stack — stub it so this stays a pure scheduler unit test.
+vi.mock('../notifications/events.js', () => ({
+  notifyAdminBackupFailed: vi.fn(async () => {}),
+}));
+
 import { runGlobalBundleTick } from './global-scheduler.js';
 
 interface CapturedQuery {
@@ -81,14 +88,26 @@ function makeApp(opts: {
     },
   });
 
+  // The claim UPDATE uses .returning() — resolve with one row so the
+  // tick believes it won the claim (the replica-dedup behavior itself
+  // is exercised against a real DB in integration).
   const updateChain = {
     set: () => updateChain,
     where: () => updateChain,
+    returning: () => {
+      captured.updateCalls += 1;
+      return Promise.resolve([{ subsystem: 'tenant_bundle' }]);
+    },
     then: (resolve: (v: unknown) => void) => {
       captured.updateCalls += 1;
       resolve(undefined);
     },
-  } as { set: (..._a: unknown[]) => typeof updateChain; where: (..._a: unknown[]) => typeof updateChain; then: (r: (v: unknown) => void) => void };
+  } as {
+    set: (..._a: unknown[]) => typeof updateChain;
+    where: (..._a: unknown[]) => typeof updateChain;
+    returning: (..._a: unknown[]) => Promise<Array<{ subsystem: string }>>;
+    then: (r: (v: unknown) => void) => void;
+  };
 
   const db = {
     select: () => makeChain(),
@@ -217,16 +236,38 @@ describe('runGlobalBundleTick — tenant filter SQL', () => {
     expect(result.fired).toBe(false);
   });
 
-  it('rejects range-syntax cron "0-30 * * * *" (range support intentionally not added)', async () => {
-    // Range syntax is rejected so operators get an unambiguous
-    // failure rather than a silent partial-fire. Will be promoted
-    // to "supported" only when a real schedule needs it.
+  it('accepts range-syntax cron "0-30 * * * *" (shared cron-match parser)', async () => {
+    // The scheduler now uses shared/cron-match.ts — the same grammar
+    // the api-contracts validator accepts on write, so a saved range
+    // cron can never silently "never fire" again.
     const { app } = makeApp({
       schedule: { enabled: true, cronExpression: '0-30 * * * *', lastFiredAt: null, retentionDays: 30 },
       eligibleTenants: [],
     });
     const now = new Date(Date.UTC(2026, 4, 28, 13, 15, 0));
     const result = await runGlobalBundleTick(app as unknown as Parameters<typeof runGlobalBundleTick>[0], now);
-    expect(result.fired).toBe(false);
+    expect(result.fired).toBe(true);
+  });
+
+  it('honors the day-of-week field — a weekly cron does NOT fire daily', async () => {
+    // Pre-fix the parser only looked at minute+hour, so `0 2 * * 0`
+    // (Sundays 02:00) fired EVERY day at 02:00.
+    const { app } = makeApp({
+      schedule: { enabled: true, cronExpression: '0 2 * * 0', lastFiredAt: null, retentionDays: 30 },
+      eligibleTenants: [],
+    });
+    // 2026-05-28 is a Thursday.
+    const thursday = new Date(Date.UTC(2026, 4, 28, 2, 0, 30));
+    const resultThu = await runGlobalBundleTick(app as unknown as Parameters<typeof runGlobalBundleTick>[0], thursday);
+    expect(resultThu.fired).toBe(false);
+
+    // 2026-05-31 is a Sunday.
+    const { app: app2 } = makeApp({
+      schedule: { enabled: true, cronExpression: '0 2 * * 0', lastFiredAt: null, retentionDays: 30 },
+      eligibleTenants: [],
+    });
+    const sunday = new Date(Date.UTC(2026, 4, 31, 2, 0, 30));
+    const resultSun = await runGlobalBundleTick(app2 as unknown as Parameters<typeof runGlobalBundleTick>[0], sunday);
+    expect(resultSun.fired).toBe(true);
   });
 });

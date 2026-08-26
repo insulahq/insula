@@ -57,16 +57,30 @@ The cluster-wide **Secrets bundle** lives on the
 
 ## Tenant backups
 
-**Backups → Tenants** protects customer data, in three areas:
+**Backups → Tenants** protects customer data, in three areas (the
+**Backups** tab comes first — bundles are the durable artifact):
 
-- **Snapshots** — one row per snapshot across all tenants. Per-row
-  **Restore…** (opens the Restoration Wizard) and **Delete**. A global
-  **Snapshot all eligible tenants** button at the top, plus per-tenant
-  snapshot triggers.
-- **Bundles** — per-tenant backup bundles. **Restore…** here opens the
-  granular **restore cart** (below).
+- **Backups** — one row per tenant bundle; a tenant with several bundles
+  shows several rows, and the **Backups per tenant** chips above the
+  table show the count at a glance (click a chip to filter). Each row's
+  **Restore…** opens the granular **restore cart** (below) for exactly
+  that bundle — restores never silently "pick the latest".
+  The **Scheduled inclusion** panel lists every tenant with its
+  include/exclude state for the daily bundle cron and lets you override
+  it per tenant (*Inherit plan* / *Always include* / *Exclude from
+  schedule*).
+- **Snapshots** — one row per snapshot across all tenants. Snapshots are
+  **temporary** on-cluster block copies: each is reaped automatically
+  after the configured snapshot expiry (default 48 hours, Settings →
+  System), which the tab states along with a per-row **Expires** column.
+  Per-row **Restore…** (opens the Restoration Wizard) and **Delete**. A
+  global **Snapshot all eligible tenants** button at the top, plus
+  per-tenant snapshot triggers.
 - **Targets, Schedules & Retention** — bind the `tenant` class to a target
   and set schedule/retention.
+
+All backup and snapshot tables sort by any column (default: newest
+first) and show the exact timestamp when you hover a relative time.
 
 !!! note "Bind a target first"
     Snapshot and bundle actions need a backup target bound to the tenant
@@ -100,6 +114,14 @@ warning that nothing is uploaded off-site.
 Backup pages refresh automatically when a backup, restore, or snapshot
 task finishes — no manual reload needed.
 
+!!! note "Schedule toggles are authoritative"
+    The per-class schedule cards on *Targets, Schedules & Retention*
+    really gate the runs: disabling the **mail** schedule suspends the
+    snapshot cadence, and the **tenant** schedule only bundles when
+    enabled. When a scheduled tenant wave fails for any tenant, an
+    **admin notification** is raised — a silent night is a completed
+    night.
+
 ## Remote Storage Targets
 
 **Backups → Remote Storage Targets** is where you register the off-cluster
@@ -110,9 +132,12 @@ destinations. Click **Add** and pick a type:
 - **SFTP / SSH** — an SSH server.
 - **CIFS / SMB** — a Windows/Samba share.
 
-Each target row has **Test** (verify connectivity), **Activate**,
-**Speedtest**, **Edit**, and **Delete**. When you add new credentials you
-can test the draft before saving.
+Each target row has **Test** (verify connectivity), **Speedtest**,
+**Edit**, and **Delete**. When you add new credentials you can test the
+draft before saving. A target does something once you **assign it to a
+class** on the per-class *Targets, Schedules & Retention* tab — there is
+no separate "activate" step (the legacy Activate flow was retired
+2026-08).
 
 ### Read-only freeze during DR
 

@@ -10,21 +10,15 @@ import {
 import type { TenantSnapshot } from '@insula/api-contracts';
 import { useRefreshTaskCenter } from '@/hooks/use-task-center';
 import SnapshotCreateProgressModal from '@/components/SnapshotCreateProgressModal';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
+import TimeCell from '@/components/ui/TimeCell';
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '-';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-/** "in 41h" / "in 12m" / "expired" — the user-facing TTL countdown. */
-function expiresIn(iso: string): string {
-  const ms = new Date(iso).getTime() - Date.now();
-  if (ms <= 0) return 'expiring…';
-  const h = Math.floor(ms / 3_600_000);
-  if (h >= 1) return `in ${h}h`;
-  return `in ${Math.max(1, Math.floor(ms / 60_000))}m`;
 }
 
 function StatusBadge({ status }: { readonly status: string }) {
@@ -51,6 +45,15 @@ export default function Snapshots() {
 
   const snapshots = snapsQ.data?.data?.snapshots ?? [];
   const expiryHours = snapsQ.data?.data?.expiryHours ?? 48;
+  // Top-level (Rules of Hooks) — the table renders conditionally below.
+  const { sortedData: sortedSnapshots, sortKey, sortDirection, onSort } = useSortable(snapshots, 'createdAt', 'desc');
+  // SortableHeader defaults to px-5/py-3 — override to this table's px-6.
+  const th = {
+    currentKey: sortKey,
+    direction: sortDirection,
+    onSort,
+    className: '!px-6 !py-3 font-medium text-gray-500 dark:text-gray-400',
+  };
 
   const [createOpen, setCreateOpen] = useState(false);
   const [label, setLabel] = useState('');
@@ -152,16 +155,16 @@ export default function Snapshots() {
             <table className="w-full text-left text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/50">
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Label</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Status</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 sm:table-cell">Size</th>
-                  <th className="hidden px-6 py-3 font-medium text-gray-500 dark:text-gray-400 lg:table-cell">Created</th>
-                  <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Expires</th>
+                  <SortableHeader label="Label" sortKey="label" {...th} />
+                  <SortableHeader label="Status" sortKey="status" {...th} />
+                  <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`hidden sm:table-cell ${th.className}`} />
+                  <SortableHeader label="Created" sortKey="createdAt" {...th} className={`hidden lg:table-cell ${th.className}`} />
+                  <SortableHeader label="Expires" sortKey="expiresAt" {...th} />
                   <th className="px-6 py-3 font-medium text-gray-500 dark:text-gray-400">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {snapshots.map((s) => (
+                {sortedSnapshots.map((s) => (
                   <tr key={s.id} className="border-b border-gray-100 dark:border-gray-700 last:border-0" data-testid={`snapshot-row-${s.id}`}>
                     <td className="px-6 py-3 text-gray-900 dark:text-gray-100">{s.label || <span className="font-mono text-xs text-gray-400">{s.id.slice(0, 12)}</span>}</td>
                     <td className="px-6 py-3">
@@ -171,9 +174,9 @@ export default function Snapshots() {
                       )}
                     </td>
                     <td className="hidden px-6 py-3 text-gray-600 dark:text-gray-400 sm:table-cell">{formatBytes(s.sizeBytes)}</td>
-                    <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell">{new Date(s.createdAt).toLocaleString()}</td>
+                    <td className="hidden px-6 py-3 text-gray-500 dark:text-gray-400 lg:table-cell"><TimeCell iso={s.createdAt} /></td>
                     <td className="px-6 py-3 text-gray-500 dark:text-gray-400">
-                      <span className="inline-flex items-center gap-1"><Clock size={12} /> {expiresIn(s.expiresAt)}</span>
+                      <span className="inline-flex items-center gap-1"><Clock size={12} /> <TimeCell iso={s.expiresAt} mode="until" /></span>
                     </td>
                     <td className="px-6 py-3">
                       <div className="flex items-center gap-2">

@@ -1,7 +1,10 @@
-# DR backup CronJobs — etcd, platform DB, cluster state. All three
-# consume the `backup-credentials` Secret in the platform namespace,
-# which is reconciled from the active admin-panel backup target
-# (see backend/src/modules/backup-config/longhorn-reconciler.ts).
+# DR backup CronJobs. The three surviving nightly jobs (cluster-state,
+# secrets-backup, backup-audit) consume the `backup-credentials`
+# Secret, which is reconciled from the SYSTEM-class shim binding by
+# backend/src/modules/backup-rclone-shim/dr-cronjobs.ts (the legacy
+# target-activate path was retired 2026-08-26; its etcd-upload and
+# pg-dump CronJobs were removed with it — their replacements are
+# etcd-snap-via-shim and CNPG base backups + WAL via the barman plugin).
 #
 # Included in the staging + production overlays via base/kustomization.yaml
 # Included wherever Longhorn + platform-api are available. Dev overlay
@@ -11,14 +14,10 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
-  - etcd-snapshot-cronjob.yaml
   # R-X7: etcd snapshot upload via the universal backup-rclone-shim.
   # Suspend-default; platform-api's etcd-cronjob reconciler toggles
   # spec.suspend on/off based on the SYSTEM-class shim target binding.
-  # Coexists with etcd-snapshot-cronjob (R-X13 archives the legacy
-  # CronJob once shim coverage is proven on staging).
   - etcd-snap-via-shim-cronjob.yaml
-  - postgres-dump-cronjob.yaml
   - cluster-state-cronjob.yaml
   - secrets-backup-cronjob.yaml
   - backup-audit-cronjob.yaml
@@ -31,9 +30,5 @@ resources:
   # the scripts/lib/secrets-denylist.jq file enforced by
   # scripts/ci-secrets-denylist-check.sh.
   - secrets-denylist-configmap.yaml
-  # Phase 5 of snapshot-storage overhaul: hostpath-snapshot-cronjob
-  # retired. The per-Job rclone streaming pipeline (Phase 4) uploads
-  # tenant snapshots directly to the assigned target — no second
-  # cron-based copy needed. The cronjob file is preserved on disk
-  # one release as a rollback safety net; remove after staging burn-in.
-  # - hostpath-snapshot-cronjob.yaml
+  # hostpath-snapshot-cronjob (Phase 5 retirement) had its rollback
+  # burn-in — file deleted 2026-08-26 with the legacy-activate cleanup.

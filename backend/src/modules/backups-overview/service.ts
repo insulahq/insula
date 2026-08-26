@@ -459,6 +459,9 @@ export interface TenantSnapshotListRow {
 export interface TenantSnapshotListResponse {
   readonly rows: ReadonlyArray<TenantSnapshotListRow>;
   readonly hasMore: boolean;
+  /** Operator-configured snapshot TTL (system_settings.snapshot_expiry_hours) —
+   *  the admin UI states that snapshots are temporary and when they reap. */
+  readonly expiryHours: number;
 }
 
 export async function listTenantSnapshots(
@@ -493,7 +496,10 @@ export async function listTenantSnapshots(
 
   const hasMore = rows.length > limit;
   const visible = rows.slice(0, limit);
+  const { getSettings } = await import('../system-settings/service.js');
+  const settings = await getSettings(db);
   return {
+    expiryHours: settings.snapshotExpiryHours,
     rows: visible.map((r) => ({
       id: r.id,
       tenantId: r.tenantId,

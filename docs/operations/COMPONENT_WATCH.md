@@ -230,8 +230,9 @@ weekly issue until `status: fixed`. `accepted` requires a `review_by` date.
 
 ## Known hygiene items (non-CVE)
 
-- `postgres-client-backup` runs PG **17** while the server is PG **18** — bump the
-  pg_dump image to `18-alpine` so the dump client major matches the server.
+- ~~`postgres-client-backup` PG 17 vs server PG 18~~ — resolved 2026-08-26: the
+  legacy pg_dump CronJob (and its image) was retired with the target-activate
+  path; CNPG base backups + WAL are the replacement.
 - `alpine/k8s` (1.33.3 vs 1.33.4) and `busybox` (1.36 vs 1.37) each have two tags
   in use — consolidate to one.
 - `roundcube-deployment.yaml` (legacy) still references `:latest-fpm`; the active

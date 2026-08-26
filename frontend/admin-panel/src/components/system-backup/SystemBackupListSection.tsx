@@ -19,11 +19,13 @@
  * BackupSizeTotal cell so TanStack Query dedups the request.
  */
 
-import { useState, type ReactElement } from 'react';
+import { useMemo, useState, type ReactElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Database, RotateCw, AlertTriangle } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import { useCnpgBackupHealth } from '@/hooks/use-cnpg-backup-health';
+import { useSortable } from '@/hooks/use-sortable';
+import SortableHeader from '@/components/ui/SortableHeader';
 import BarmanRestoreWizard from '@/components/backups/BarmanRestoreWizard';
 import type { CnpgBackupCatalogueResponse } from '@insula/api-contracts';
 
@@ -135,6 +137,19 @@ function BackupTable({
     retry: false,
   });
 
+  // Rows enriched with a single comparable timestamp so the table can
+  // sort on it (endedAt OR uploadedAt OR startedAt fallback). Hook is
+  // called before the early returns below — Rules of Hooks.
+  const rows = useMemo(
+    () => (q.data?.data?.backups ?? []).map((b) => ({
+      ...b,
+      sortTime: b.endedAt ?? b.uploadedAt ?? b.startedAt ?? '',
+    })),
+    [q.data],
+  );
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'sortTime', 'desc');
+  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-2 !py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400' };
+
   if (q.isLoading) {
     return <div className="text-sm text-gray-500 dark:text-gray-400">Loading catalogue…</div>;
   }
@@ -162,33 +177,21 @@ function BackupTable({
     );
   }
 
-  // Newest first — endedAt OR uploadedAt OR startedAt fallback. CNPG's
-  // catalogue is typically already ordered but we sort defensively.
-  const sorted = [...cat.backups].sort((a, b) => {
-    const at = a.endedAt ?? a.uploadedAt ?? a.startedAt ?? '';
-    const bt = b.endedAt ?? b.uploadedAt ?? b.startedAt ?? '';
-    return bt.localeCompare(at);
-  });
-
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
         <thead>
           <tr className="border-b border-gray-200 dark:border-gray-700">
-            <th className="px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Date
-            </th>
+            <SortableHeader label="Date" sortKey="sortTime" {...th} />
             <th className="px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
               Description
             </th>
-            <th className="px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-gray-500 dark:text-gray-400">
-              Size
-            </th>
+            <SortableHeader label="Size" sortKey="dataSizeBytes" {...th} />
             <th className="px-2 py-2" />
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-          {sorted.map((b) => {
+          {sortedData.map((b) => {
             const targetTime = b.endedAt ?? b.uploadedAt ?? null;
             const dateStr = targetTime
               ? new Date(targetTime).toLocaleString()
