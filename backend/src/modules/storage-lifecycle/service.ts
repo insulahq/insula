@@ -111,6 +111,47 @@ async function persistQuiesceSnapshot(db: Database, opId: string, snap: QuiesceS
   await db.update(storageOperations).set({ params: { ...params, quiesceSnapshot: snap } }).where(eq(storageOperations.id, opId));
 }
 
+/** The replica snapshot persisted on an op row (pre-mutation), or null. */
+async function loadPersistedQuiesceSnapshot(db: Database, opId: string): Promise<QuiesceSnapshot | null> {
+  try {
+    const [op] = await db.select({ params: storageOperations.params }).from(storageOperations).where(eq(storageOperations.id, opId));
+    return (op?.params as { quiesceSnapshot?: QuiesceSnapshot } | null)?.quiesceSnapshot ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Failure-path unquiesce that survives `quiesce()` throwing MID-scale-down.
+ *
+ * Every orchestrator holds `quiesceSnap` in a local that is only assigned
+ * when `quiesce()` RETURNS — a throw between "persist snapshot" and "all
+ * workloads scaled" left the local null, the old `if (quiesceSnap)` guard
+ * skipped the unquiesce, and the tenant stayed at 0 replicas with no
+ * automatic recovery (operator report #7, 2026-08-26). The snapshot is
+ * persisted on the op row BEFORE any mutation, so fall back to that copy.
+ * Best-effort: never throws.
+ */
+export async function unquiesceBestEffort(
+  db: Database,
+  k8s: K8sClients,
+  opId: string,
+  namespace: string,
+  localSnap: QuiesceSnapshot | null,
+): Promise<void> {
+  const snap = localSnap ?? await loadPersistedQuiesceSnapshot(db, opId);
+  if (snap) {
+    await unquiesce(k8s, namespace, snap).catch((err) => {
+      console.warn(`[storage-lifecycle] failure-path unquiesce for op ${opId} (${namespace}) failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return;
+  }
+  // No snapshot at all (crash raced the persist) — at least clear the
+  // file-manager hold so reactive auto-start works again.
+  const { clearQuiesceHold } = await import('./quiesce.js');
+  await clearQuiesceHold(k8s, namespace);
+}
+
 async function updateOp(
   db: Database,
   opId: string,
@@ -867,10 +908,9 @@ async function runResizeDestructive(
         : { status: 'failed', lastError: persisted })
       .where(eq(storageSnapshots.id, snapId))
       .catch(() => {});
-    // Best-effort unquiesce so the old workloads come back up.
-    if (quiesceSnap) {
-      await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
-    }
+    // Best-effort unquiesce so the old workloads come back up — falls
+    // back to the op-persisted snapshot when quiesce() threw mid-flight.
+    await unquiesceBestEffort(ctx.db, ctx.k8s, opId, namespace, quiesceSnap);
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
   }
@@ -1092,8 +1132,9 @@ async function runRestoreFromSnapshot(
     // Best-effort unquiesce so the old workloads come back up. The volume
     // was never deleted; on failure the tenant remounts it in whatever state
     // the revert reached (either fully reverted, or unchanged if we failed
-    // before the snapshotRevert call landed).
-    if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap).catch(() => {});
+    // before the snapshotRevert call landed). Falls back to the
+    // op-persisted snapshot when quiesce() threw mid-flight.
+    await unquiesceBestEffort(db, k8s, opId, namespace, quiesceSnap);
     const cId = await currentTenantId(db, opId);
     if (cId) await markTenantState(db, cId, 'failed', null);
   }
@@ -1291,8 +1332,9 @@ async function runRestoreFromRetained(
     // Best-effort unquiesce. The current PVC is only deleted once the
     // retained volume is reverted + Available, so a failure before the swap
     // leaves the original volume bound and remountable; a failure after the
-    // swap leaves the (reverted) retained volume bound.
-    if (quiesceSnap) await unquiesce(k8s, namespace, quiesceSnap).catch(() => {});
+    // swap leaves the (reverted) retained volume bound. Falls back to the
+    // op-persisted snapshot when quiesce() threw mid-flight.
+    await unquiesceBestEffort(db, k8s, opId, namespace, quiesceSnap);
     const cId = await currentTenantId(db, opId);
     if (cId) await markTenantState(db, cId, 'failed', null);
   }
@@ -1431,9 +1473,12 @@ async function waitForPvcBound(k8s: K8sClients, namespace: string, pvcName: stri
 export async function clearFailedStorageState(
   db: Database,
   tenantId: string,
+  // Optional so the route can pass the cluster clients; without them the
+  // clear still works but cannot restore scaled-down workloads.
+  k8s?: K8sClients,
 ): Promise<{ previousState: string }> {
   const [c] = await db
-    .select({ state: tenants.storageLifecycleState })
+    .select({ state: tenants.storageLifecycleState, namespace: tenants.kubernetesNamespace })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!c) throw new ApiError('TENANT_NOT_FOUND', `Tenant ${tenantId} not found`, 404);
@@ -1444,6 +1489,28 @@ export async function clearFailedStorageState(
       409,
       { currentState: c.state },
     );
+  }
+  // Restore any workloads the failed op left at 0 replicas. The failed
+  // op cleared tenants.active_storage_op_id, so resolve the tenant's
+  // most recent failed op row and unquiesce from its persisted replica
+  // snapshot. Without this the "clear failed state" valve reset the DB
+  // flag while the tenant's site stayed DOWN (operator report #7).
+  if (k8s && c.namespace) {
+    const [lastFailedOp] = await db
+      .select({ id: storageOperations.id })
+      .from(storageOperations)
+      .where(and(
+        eq(storageOperations.tenantId, tenantId),
+        eq(storageOperations.state, 'failed'),
+      ))
+      .orderBy(desc(storageOperations.createdAt))
+      .limit(1);
+    if (lastFailedOp) {
+      await unquiesceBestEffort(db, k8s, lastFailedOp.id, c.namespace, null);
+    } else {
+      const { clearQuiesceHold } = await import('./quiesce.js');
+      await clearQuiesceHold(k8s, c.namespace);
+    }
   }
   await db
     .update(tenants)
@@ -1805,7 +1872,7 @@ async function runArchive(
         : { status: 'failed', lastError: persisted })
       .where(eq(storageSnapshots.id, snapId))
       .catch(() => {});
-    if (quiesceSnap) await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
+    await unquiesceBestEffort(ctx.db, ctx.k8s, opId, namespace, quiesceSnap);
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);
   }
@@ -2246,12 +2313,11 @@ async function runFsckOp(
       state: 'failed', lastError: persisted, completedAt: new Date(),
     });
     // Best-effort cleanup: drop the explicit attach hold, then
-    // restore workloads, then ensure file-manager scales up so the
-    // PVC has a Pod consumer (Longhorn re-attach).
+    // restore workloads (falling back to the op-persisted snapshot when
+    // quiesce() threw mid-flight), then ensure file-manager scales up so
+    // the PVC has a Pod consumer (Longhorn re-attach).
     await detachLonghornVolumeByPvc(ctx.k8s, namespace, pvcName).catch(() => {});
-    if (quiesceSnap) {
-      await unquiesce(ctx.k8s, namespace, quiesceSnap).catch(() => {});
-    }
+    await unquiesceBestEffort(ctx.db, ctx.k8s, opId, namespace, quiesceSnap);
     await ensureVolumeReattached(ctx.k8s, namespace).catch(() => {});
     const cId = await currentTenantId(ctx.db, opId);
     if (cId) await markTenantState(ctx.db, cId, 'failed', null);

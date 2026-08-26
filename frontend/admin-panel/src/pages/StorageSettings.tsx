@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { HardDrive, Database, Cloud, ExternalLink, Zap, X, AlertTriangle, RefreshCw, Loader2, CheckCircle, AlertCircle, AlertOctagon } from 'lucide-react';
+import { HardDrive, Database, Cloud, ExternalLink, X, AlertTriangle, RefreshCw, Loader2, CheckCircle, AlertCircle, AlertOctagon } from 'lucide-react';
 import OrphanedVolumesModal from '@/components/OrphanedVolumesModal';
-import { useBackupConfigs } from '@/hooks/use-backup-config';
 import { useShimAssignments } from '@/hooks/use-backup-rclone-shim';
 import { usePlatformUrls, resolveLonghornUrl } from '@/hooks/use-platform-urls';
 import StorageInventoryCard from '@/components/StorageInventoryCard';
@@ -13,7 +12,7 @@ import StuckDeprovisionsPanel from '@/components/StuckDeprovisionsPanel';
  * Storage Configuration
  *
  * Landing page for storage-related admin tasks. Shows:
- *   - Active backup target summary (or "none configured" CTA)
+ *   - Backup-class assignment summary (restic/rclone shim routing)
  *   - Link to full backup-target CRUD (BackupSettings)
  *   - "Open Longhorn" button → modal iframe. Gated at the Longhorn
  *     ingress by admin-auth-gate-cookie, so only admins get through.
@@ -34,12 +33,9 @@ const SHIM_CLASS_LABELS = [
 
 export default function StorageSettings({ embedded = false }: StorageSettingsProps = {}) {
   const [showIframe, setShowIframe] = useState(false);
-  const { data: configsResp, isLoading } = useBackupConfigs();
   const { data: assignmentsResp } = useShimAssignments();
   const { data: urls } = usePlatformUrls();
 
-  const configs = configsResp?.data ?? [];
-  const activeConfig = configs.find((c) => c.active);
   const assignments = assignmentsResp?.data.assignments ?? [];
   // Prefer the DB-resolved URL; fall back to the ConfigMap-derived
   // value during the window between first paint and the query resolving.
@@ -161,82 +157,6 @@ export default function StorageSettings({ embedded = false }: StorageSettingsPro
               );
             })}
           </dl>
-        </div>
-
-        {/* Longhorn volume backups — separate mechanism: the ACTIVATED target
-            drives the Longhorn BackupTarget CR (volume-level backups), not the
-            class assignments above. */}
-        <div className="border-t border-gray-200 dark:border-gray-700 pt-4" data-testid="longhorn-volume-backup-target">
-        <h3 className="text-sm font-medium text-gray-900 dark:text-gray-100">Longhorn volume backups</h3>
-        <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-          Volume-level backups use the target marked <em>Active</em> under Backups → Targets —
-          independent of the class assignments above.
-        </p>
-        {isLoading ? (
-          <p className="text-sm text-gray-500 dark:text-gray-400">Loading…</p>
-        ) : activeConfig ? (
-          <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2 text-sm">
-            <div>
-              <dt className="text-gray-500 dark:text-gray-400">Name</dt>
-              <dd className="mt-1 flex items-center gap-2 text-gray-900 dark:text-gray-100">
-                {activeConfig.name}
-                <span className="inline-flex items-center gap-1 rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300">
-                  <Zap size={11} /> Active
-                </span>
-              </dd>
-            </div>
-            <div>
-              <dt className="text-gray-500 dark:text-gray-400">Provider</dt>
-              <dd className="mt-1 text-gray-900 dark:text-gray-100">
-                {activeConfig.storageType === 's3' ? 'S3-compatible' : 'SSH'}
-              </dd>
-            </div>
-            {activeConfig.storageType === 's3' && (
-              <>
-                <div>
-                  <dt className="text-gray-500 dark:text-gray-400">Endpoint</dt>
-                  <dd className="mt-1 font-mono text-xs text-gray-900 dark:text-gray-100 break-all">
-                    {activeConfig.s3Endpoint}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-gray-500 dark:text-gray-400">Bucket</dt>
-                  <dd className="mt-1 font-mono text-xs text-gray-900 dark:text-gray-100">
-                    {activeConfig.s3Bucket}
-                    {activeConfig.s3Prefix ? `/${activeConfig.s3Prefix}` : ''}
-                    {' @ '}
-                    {activeConfig.s3Region}
-                  </dd>
-                </div>
-              </>
-            )}
-            {activeConfig.lastTestedAt && (
-              <div className="sm:col-span-2">
-                <dt className="text-gray-500 dark:text-gray-400">Last tested</dt>
-                <dd className="mt-1 text-gray-900 dark:text-gray-100">
-                  {new Date(activeConfig.lastTestedAt).toLocaleString()} —{' '}
-                  <span className={activeConfig.lastTestStatus === 'ok' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                    {activeConfig.lastTestStatus}
-                  </span>
-                </dd>
-              </div>
-            )}
-          </dl>
-        ) : (
-          <div className="mt-2 rounded-lg bg-gray-50 dark:bg-gray-900/30 p-4 text-sm" data-testid="no-active-target">
-            <p className="text-gray-700 dark:text-gray-300">
-              No target is activated for Longhorn volume-level backups. Class backups
-              (assignments above) are unaffected — but Longhorn volume snapshots won't be
-              copied off-cluster until a target is marked Active.
-            </p>
-            <Link
-              to="/backups/targets"
-              className="mt-2 inline-flex items-center gap-1.5 text-brand-600 dark:text-brand-400 hover:underline"
-            >
-              Activate a target →
-            </Link>
-          </div>
-        )}
         </div>
       </div>
 

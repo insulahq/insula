@@ -12,13 +12,15 @@
  *   - RecentBackupsPanel   → removed (recent activity lives on Dashboard)
  *
  * What remains: the target CRUD form (SSH/S3/CIFS variants), the
- * targets list with per-row test/activate/delete/speedtest actions,
+ * targets list with per-row test/edit/delete/speedtest actions,
  * and the per-target "Used by classes" pill (sourced from R-X shim
- * assignments — Phase 2 legacy purge).
+ * assignments — Phase 2 legacy purge). The legacy Longhorn
+ * "target-activate" path was retired 2026-08 — the 3-class shim
+ * assignments are the only backup routing.
  */
 
 import { useState, lazy, Suspense, type FormEvent } from 'react';
-import { Cloud, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, HardDrive, Zap, CheckCircle, Edit2, Gauge, Snowflake } from 'lucide-react';
+import { Cloud, Plus, Trash2, TestTube, Loader2, AlertCircle, X, Server, HardDrive, CheckCircle, Edit2, Gauge, Snowflake } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import {
   useBackupConfigs,
@@ -27,8 +29,6 @@ import {
   useDeleteBackupConfig,
   useTestBackupConfig,
   useTestBackupDraft,
-  useActivateBackupConfig,
-  useDeactivateBackupConfig,
   useSpeedtest,
 } from '@/hooks/use-backup-config';
 import { useRefreshTaskCenter } from '@/hooks/use-task-center';
@@ -60,8 +60,6 @@ export default function RemoteStorageTargetsPage() {
   const deleteConfig = useDeleteBackupConfig();
   const testConfig = useTestBackupConfig();
   const testDraft = useTestBackupDraft();
-  const activateConfig = useActivateBackupConfig();
-  const deactivateConfig = useDeactivateBackupConfig();
   const [draftResult, setDraftResult] = useState<{
     ok: boolean;
     latencyMs: number;
@@ -759,11 +757,6 @@ export default function RemoteStorageTargetsPage() {
                       <Snowflake size={11} /> Frozen (read-only)
                     </span>
                   )}
-                  {config.active && (
-                    <span className="inline-flex items-center gap-1 rounded-md bg-green-100 dark:bg-green-900/30 px-2 py-0.5 text-xs font-medium text-green-700 dark:text-green-300" data-testid={`active-badge-${config.id}`}>
-                      <Zap size={11} /> Active
-                    </span>
-                  )}
                   <StatusBadge status={config.enabled ? 'active' : 'suspended'} label={config.enabled ? 'Enabled' : 'Disabled'} />
                   {config.lastTestStatus && (
                     <StatusBadge status={config.lastTestStatus === 'ok' ? 'active' : 'error'} label={config.lastTestStatus} />
@@ -838,31 +831,6 @@ export default function RemoteStorageTargetsPage() {
                 >
                   <Edit2 size={12} /> Edit
                 </button>
-                {config.storageType === 's3' && (
-                  config.active ? (
-                    <button
-                      type="button"
-                      onClick={() => deactivateConfig.mutate(config.id)}
-                      disabled={deactivateConfig.isPending}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 dark:border-amber-800 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 disabled:opacity-50"
-                      data-testid={`deactivate-backup-${config.id}`}
-                    >
-                      {deactivateConfig.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
-                      Deactivate
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => activateConfig.mutate(config.id)}
-                      disabled={activateConfig.isPending}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-green-200 dark:border-green-800 px-3 py-1.5 text-xs font-medium text-green-700 dark:text-green-300 hover:bg-green-50 dark:hover:bg-green-900/20 disabled:opacity-50"
-                      data-testid={`activate-backup-${config.id}`}
-                    >
-                      {activateConfig.isPending ? <Loader2 size={12} className="animate-spin" /> : <Zap size={12} />}
-                      Activate
-                    </button>
-                  )
-                )}
                 {deleteConfirmId === config.id ? (
                   <div className="flex gap-1">
                     <button type="button" onClick={() => handleDelete(config.id)} className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700">Confirm</button>
@@ -872,18 +840,11 @@ export default function RemoteStorageTargetsPage() {
                   <button
                     type="button"
                     onClick={() => setDeleteConfirmId(config.id)}
-                    disabled={config.active}
-                    title={config.active ? 'Deactivate before deleting' : undefined}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 dark:border-red-800 px-3 py-1.5 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20"
                     data-testid={`delete-backup-${config.id}`}
                   >
                     <Trash2 size={12} /> Delete
                   </button>
-                )}
-                {activateConfig.error && (
-                  <span className="text-xs text-red-600 dark:text-red-400 w-full">
-                    Activate failed: {activateConfig.error instanceof Error ? activateConfig.error.message : 'unknown error'}
-                  </span>
                 )}
               </div>
             </div>

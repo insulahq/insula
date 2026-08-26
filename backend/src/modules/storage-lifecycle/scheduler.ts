@@ -30,6 +30,10 @@ const LIFECYCLE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 // rehydrated. 30 min is a reasonable detection bound — operators can also
 // trigger a manual repair from the admin UI.
 const INTEGRITY_INTERVAL_MS = 30 * 60 * 1000;
+// Quiesce watchdog: reap abandoned mid-quiesce storage ops and restore
+// workloads left at 0 replicas (operator report #7 2026-08-26). 15 min
+// bounds how long a stranded tenant site can stay down unnoticed.
+const QUIESCE_WATCHDOG_INTERVAL_MS = 15 * 60 * 1000;
 const INITIAL_DELAY_MS = 2 * 60 * 1000; // 2 min after startup
 
 /**
@@ -297,11 +301,29 @@ export function startStorageLifecycleScheduler(
     if (!stopped) orphanSecretTimer = setTimeout(runOrphanSecretSweep, ORPHAN_SWEEP_INTERVAL_MS);
   };
 
+  // Quiesce watchdog — restores tenants stranded at 0 replicas by an
+  // abandoned/crashed storage op. See quiesce-watchdog.ts.
+  let quiesceWatchdogTimer: NodeJS.Timeout | null = null;
+  const runQuiesceWatchdog = async () => {
+    if (stopped) return;
+    try {
+      const { sweepAbandonedQuiesce } = await import('./quiesce-watchdog.js');
+      const result = await sweepAbandonedQuiesce(db, k8s);
+      if (result.abandonedOps > 0 || result.recoveredNamespaces > 0) {
+        console.log(`[quiesce-watchdog] abandonedOps=${result.abandonedOps} recoveredNamespaces=${result.recoveredNamespaces}`);
+      }
+    } catch (err) {
+      console.error('[quiesce-watchdog] sweep failed:', (err as Error).message);
+    }
+    if (!stopped) quiesceWatchdogTimer = setTimeout(runQuiesceWatchdog, QUIESCE_WATCHDOG_INTERVAL_MS);
+  };
+
   expiryTimer = setTimeout(runExpiry, INITIAL_DELAY_MS);
   auditTimer = setTimeout(runAudit, INITIAL_DELAY_MS + 30_000);
   lifecycleTimer = setTimeout(runLifecycle, INITIAL_DELAY_MS + 60_000);
   integrityTimer = setTimeout(runIntegrity, INITIAL_DELAY_MS + 90_000);
   orphanSecretTimer = setTimeout(runOrphanSecretSweep, INITIAL_DELAY_MS + 120_000);
+  quiesceWatchdogTimer = setTimeout(runQuiesceWatchdog, INITIAL_DELAY_MS + 150_000);
 
   return {
     stop: () => {
@@ -311,6 +333,7 @@ export function startStorageLifecycleScheduler(
       if (lifecycleTimer) clearTimeout(lifecycleTimer);
       if (integrityTimer) clearTimeout(integrityTimer);
       if (orphanSecretTimer) clearTimeout(orphanSecretTimer);
+      if (quiesceWatchdogTimer) clearTimeout(quiesceWatchdogTimer);
     },
   };
 }

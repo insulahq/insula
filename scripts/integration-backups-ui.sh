@@ -141,6 +141,13 @@ else
         fail "aggregate has rows but none are subsystem=longhorn — still reading the tar storage_snapshots table?"
       fi
     fi
+    # 2026-08-26: the Snapshots tab states the reap TTL — the response
+    # must carry the live system_settings.snapshot_expiry_hours value.
+    if printf '%s' "$SNAP_RESP" | grep -qE '"expiryHours":[0-9]+'; then
+      pass "snapshots endpoint carries expiryHours (snapshot TTL for the UI notice)"
+    else
+      fail "snapshots endpoint response missing 'expiryHours': $(printf '%s' "$SNAP_RESP" | head -c 200)"
+    fi
   else
     fail "snapshots endpoint response missing 'rows' field: $(printf '%s' "$SNAP_RESP" | head -c 200)"
   fi

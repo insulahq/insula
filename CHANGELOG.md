@@ -12,6 +12,133 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Removed
+- **The legacy backup target-"Activate" path is fully retired**
+  (operator decision 2026-08-26). Removed: the Activate/Deactivate
+  buttons on Remote Storage Targets and the "Active Backup Target" card
+  on Settings → Storage; the `activate`/`deactivate`/Longhorn
+  `backups`/`backup-now` API routes; the Longhorn credential/BackupTarget
+  reconciler; and the legacy `etcd-snapshot`, `postgres-dump` and
+  (long-inactive) `hostpath-snapshot` CronJobs — their replacements
+  (`etcd-snap-via-shim`, CNPG base backups + WAL, the streaming snapshot
+  pipeline) have been the live path for months. Migration 0090 clears
+  any still-active row. Binding a target to a class on *Targets,
+  Schedules & Retention* is the only routing step; the nightly DR
+  CronJobs are fed from the SYSTEM-class binding by the shim bridge.
+- **Longhorn volume-level backup jobs (`daily-backup`, `weekly-backup`)
+  are retired** (operator decision 2026-08-26). Off-cluster protection
+  is the 3-class shim pipeline — nightly tenant bundles, CNPG base
+  backups + WAL, mail restic — which covers every restore path
+  including destructive volume shrink (its rollback source is a
+  files-only tenant bundle, not a Longhorn backup). The volume jobs
+  required a Longhorn BackupTarget that the shim model never
+  configures, so they failed every night while reporting Complete.
+  Local `hourly-snap` snapshots and `daily-fstrim` remain; Flux prunes
+  the two removed RecurringJobs from existing clusters automatically.
+
+### Fixed
+- **Flux no longer fights the DR-CronJob bridge over `spec.suspend`.**
+  The bridged CronJobs (secrets bundle, cluster-state, audit) ship
+  `suspend: true` in their manifests; Flux re-applied that on every sync,
+  reverting the bridge's unsuspend within a minute. The Flux
+  Kustomization now strips `/spec/suspend` from its apply input for the
+  three (same pattern as the mail snapshot CronJob) — fresh installs get
+  it from bootstrap, existing clusters via host-migration
+  2026.8.18/0001.
+- **Nightly DR CronJobs (secrets bundle, cluster-state dump, backup
+  audit) now run on shim-configured clusters.** They were only ever
+  unsuspended by the legacy target-"Activate" flow — a cluster
+  configured purely through the 3-class backup assignments (the normal
+  path) left them suspended forever, with no alert (the backup-health
+  watcher only sees failed Jobs, and a suspended CronJob never creates
+  one). A new bridge reconciler feeds them the shim's own S3 endpoint
+  (works for every upstream, CIFS included) and manages their suspend
+  state from the SYSTEM-class binding (the bridge is their sole owner —
+  the legacy flow is removed in this same release).
+- **Longhorn volume backups failing for lack of a backup target are no
+  longer invisible.** On a shim-only cluster Longhorn's nightly
+  recurring backups error on every volume ("backup target default is
+  not available") while the job pod still reports Complete. The platform
+  now raises a daily admin notification when recurring backup jobs
+  exist with no Longhorn BackupTarget configured. (Longhorn is
+  deliberately not auto-pointed at the shim — that is an explicit
+  operator decision; see the admin manual.)
+- **Scheduled tenant bundles now run on CIFS/SMB (and any other) backup
+  targets.** The nightly tenant-bundle wave built its transport directly
+  and only understood S3/SSH — on a CIFS-bound cluster every scheduled
+  bundle threw `Unsupported storage type 'cifs'` while manual "Bundle
+  now" worked (it routes through the backup shim). The scheduled path
+  now uses the same shim-first store as every manual path. On top of
+  that, a scheduled wave with failures now raises an **admin
+  notification** instead of dying silently in pod logs.
+- **Nightly system (Postgres) base backups actually fire after enabling
+  them.** The CNPG `ScheduledBackup` object is created *suspended* by
+  the no-target safety net; enabling scheduled base backups on the WAL
+  Archive tab patched the schedule but never cleared the suspend flag,
+  so the nightly base backup silently never ran. Enabling now asserts
+  `suspend: false`, and a periodic reconciler re-converges the object
+  from the saved settings (existing clusters self-heal within ~5 min of
+  upgrading, no operator action needed).
+- **The mail schedule's enable toggle is honored.** Disabling the mail
+  schedule previously changed nothing (snapshots kept running whenever a
+  mail target was bound) — including the automatic "pause during a
+  target switch". A data migration keeps currently-snapshotting clusters
+  enabled so nothing stops on upgrade.
+- **Tenant-bundle schedule cron expressions are parsed in full.** The
+  scheduler previously ignored the day-of-month/month/weekday fields (a
+  weekly cron fired daily) and rejected `A-B` ranges outright (the
+  schedule silently never fired). It now uses the same full 5-field
+  matcher as the mail engine, and claims each fire window with a
+  replica-safe update so HA clusters can't double-fire the fleet.
+- **Workloads scaled to 0 by a storage operation always come back up.**
+  Three recovery gaps closed: a failure *during* the scale-down itself
+  now restores from the pre-persisted replica snapshot; the
+  "clear failed state" valve now also scales the workloads back up; and
+  a new 15-minute watchdog reaps operations abandoned by a platform-api
+  restart and restores any tenant left quiesced with no operation in
+  flight.
+- **"Scheduled inclusion" panel is no longer empty when nobody is
+  excluded** — it now lists every tenant with its resolved state and an
+  in-place override editor (*Inherit plan* / *Always include* /
+  *Exclude from schedule*). The old copy pointed at controls that did
+  not exist.
+
+### Changed
+- **Backup tables are sortable and show exact times on hover.** Every
+  backup/snapshot table in both panels (tenant snapshots + bundles, mail
+  snapshots, system backup catalogue, system snapshot rollup, tenant
+  detail) sorts by any column — defaulting to newest first — and
+  hovering a relative "created" time shows the absolute timestamp.
+- **Backups tab now comes before Snapshots** on the per-class backup
+  pages, and the Snapshots tab states that snapshots are temporary
+  (auto-reaped after the configured expiry, default 48 h) with a
+  per-row **Expires** column.
+- **Per-tenant backup history is visible.** The Backups tab shows
+  per-tenant bundle counts (clickable filter chips), the tenant detail
+  page links straight to a tenant's filtered bundle list, and the
+  single-tenant trigger lists are sorted alphabetically.
+
+### BREAKING
+- **Longhorn volume-level backups are gone; off-cluster protection is now
+  exclusively the 3-class backup pipeline.** If your cluster was on the
+  legacy "Activate a target" path with a working Longhorn BackupTarget,
+  its nightly `daily-backup`/`weekly-backup` volume backups stop with this
+  release (Flux prunes the RecurringJobs) — existing Longhorn backups in
+  your bucket are untouched and still restorable by Longhorn, but no new
+  ones are taken. **Action:** confirm every class (`tenant`, `system`,
+  `mail`) is bound to a target under *Backups → per class → Targets,
+  Schedules & Retention*, and that the tenant-bundle schedule is enabled;
+  that pipeline covers tenant data, Postgres (base + WAL), and mail. Local
+  `hourly-snap` snapshots and destructive-shrink rollback are unaffected.
+- **The legacy target-activate admin API is removed.** `POST
+  /admin/backup-configs/:id/activate`, `.../deactivate`, `GET
+  /admin/backup-configs/:id/backups` and `POST
+  /admin/backup-configs/:id/backup-now` now return 404 — any operator
+  script calling them must move to the class-assignment endpoint
+  (`PUT /admin/backup-rclone-shim/assignments/:class`). The admin panel
+  moved with them in the same release; migration 0090 clears the retired
+  `active` flag on all target rows.
+
 ## [2026.8.17] - 2026-08-26
 
 ### Added

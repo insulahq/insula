@@ -27,9 +27,6 @@ interface BackupConfig {
   readonly retentionDays: number;
   readonly scheduleExpression: string | null;
   readonly enabled: number;
-  // Designates the cluster's current Longhorn backup target. At most
-  // one config is active at a time (enforced by DB partial unique index).
-  readonly active: boolean;
   readonly lastTestedAt: string | null;
   readonly lastTestStatus: string | null;
   // Phase 10: speedtest results. NULL until first run.
@@ -133,31 +130,6 @@ export function useTestBackupDraft() {
   });
 }
 
-// Activate this config as the cluster's Longhorn backup target. The
-// backend also reconciles the cluster state (BackupTarget CR + Secret)
-// so a successful response means the target is actually wired up.
-export function useActivateBackupConfig() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<BackupConfigResponse>(`/api/v1/admin/backup-configs/${id}/activate`, {
-        method: 'POST',
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
-  });
-}
-
-export function useDeactivateBackupConfig() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) =>
-      apiFetch<BackupConfigResponse>(`/api/v1/admin/backup-configs/${id}/deactivate`, {
-        method: 'POST',
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
-  });
-}
-
 // DR safety: flip a frozen target back to read-write. The body carries
 // the type-name confirmation + the integrity-acknowledgement checkbox;
 // the backend rejects with CONFIRMATION_MISMATCH if the operator typed
@@ -189,49 +161,6 @@ export function useMarkBackupTargetWritable() {
         body: JSON.stringify({ confirmation, acknowledgeIntegrity: true }),
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-configs'] }),
-  });
-}
-
-// ─── Longhorn Backups (read + manual trigger) ────────────────────────────
-
-interface BackupRecord {
-  readonly name: string;
-  readonly volumeName: string;
-  readonly size: string;
-  readonly state: string;
-  readonly createdAt: string | null;
-  readonly url: string;
-}
-
-interface BackupsResponse {
-  readonly data: readonly BackupRecord[];
-}
-
-interface BackupNowResponse {
-  readonly data: { triggered: string[]; message: string };
-}
-
-export function useBackupList(configId: string | null) {
-  return useQuery({
-    queryKey: ['backup-list', configId],
-    enabled: !!configId,
-    queryFn: () =>
-      apiFetch<BackupsResponse>(`/api/v1/admin/backup-configs/${configId}/backups`),
-    // Backups take seconds-to-minutes — poll every 30s when operators
-    // are watching a Backup-Now trigger land.
-    refetchInterval: 30_000,
-    staleTime: 15_000,
-  });
-}
-
-export function useBackupNow(configId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      apiFetch<BackupNowResponse>(`/api/v1/admin/backup-configs/${configId}/backup-now`, {
-        method: 'POST',
-      }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['backup-list', configId] }),
   });
 }
 

@@ -66,7 +66,9 @@ describe('Snapshots page', () => {
     listData = { data: { expiryHours: 48, snapshots: [readySnap] } };
     render(<Snapshots />, { wrapper });
     expect(screen.getByTestId('snapshot-row-snap-1')).toBeInTheDocument();
-    expect(screen.getByTestId('snapshot-row-snap-1').textContent).toMatch(/in 39h|in 40h/);
+    // TimeCell (shared with the admin panel) rolls to a day tier at >= 24h,
+    // so a 40h TTL renders "in 2d" (ceil), not "in 40h".
+    expect(screen.getByTestId('snapshot-row-snap-1').textContent).toMatch(/in 2d/);
     fireEvent.click(screen.getByTestId('delete-snapshot-snap-1'));
     fireEvent.click(screen.getByTestId('confirm-delete-snapshot'));
     expect(deleteMutate).toHaveBeenCalledWith('snap-1', expect.anything());

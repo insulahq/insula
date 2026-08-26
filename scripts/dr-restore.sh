@@ -249,7 +249,8 @@ phase_etcd_restore() {
   if $SKIP_ETCD; then log "Phase 4/9: SKIPPED (--skip-etcd)"; return 0; fi
   log "Phase 4/9: Restore etcd snapshot"
 
-  # Find the newest etcd snapshot uploaded by etcd-snapshot-cronjob.
+  # Find the newest etcd snapshot pulled from the target (uploaded by
+  # the etcd-snap-via-shim CronJob).
   local snap
   snap=$(find "$WORK_DIR/raw/etcd" -name '*.db' -o -name '*.tar.gz' 2>/dev/null | sort | tail -1 || true)
   if [[ -z "$snap" ]]; then
