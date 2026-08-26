@@ -132,9 +132,12 @@ destinations. Click **Add** and pick a type:
 - **SFTP / SSH** — an SSH server.
 - **CIFS / SMB** — a Windows/Samba share.
 
-Each target row has **Test** (verify connectivity), **Activate**,
-**Speedtest**, **Edit**, and **Delete**. When you add new credentials you
-can test the draft before saving.
+Each target row has **Test** (verify connectivity), **Speedtest**,
+**Edit**, and **Delete**. When you add new credentials you can test the
+draft before saving. A target does something once you **assign it to a
+class** on the per-class *Targets, Schedules & Retention* tab — there is
+no separate "activate" step (the legacy Activate flow was retired
+2026-08).
 
 ### Read-only freeze during DR
 

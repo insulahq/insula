@@ -399,43 +399,7 @@ describe('testDraft', () => {
   });
 });
 
-describe('activateBackupConfig — SSH', () => {
-  it('allows activating a well-formed SSH config', async () => {
-    const { db, mocks } = createMockDb([SSH_ROW]);
-    const result = await activateBackupConfig(db, 'cfg-1');
-    expect(result.storageType).toBe('ssh');
-    // Transaction fired (clears prior active + sets this one active).
-    expect(mocks.txFn).toHaveBeenCalledOnce();
-  });
-
-  it('rejects an SSH config missing required fields', async () => {
-    const incomplete = { ...SSH_ROW, sshHost: null };
-    const { db } = createMockDb([incomplete]);
-    await expect(activateBackupConfig(db, 'cfg-1')).rejects.toMatchObject({
-      code: 'INCOMPLETE_CONFIG',
-      status: 400,
-    });
-  });
-
-  it('rejects an S3 config missing required fields', async () => {
-    const incomplete = { ...S3_ROW, s3Bucket: null };
-    const { db } = createMockDb([incomplete]);
-    await expect(activateBackupConfig(db, 'cfg-2')).rejects.toMatchObject({
-      code: 'INCOMPLETE_CONFIG',
-      status: 400,
-    });
-  });
-
-  it('rejects an unknown storage type with UNSUPPORTED_PROVIDER', async () => {
-    const bogus = { ...S3_ROW, storageType: 'ftp' as unknown as 's3' };
-    const { db } = createMockDb([bogus]);
-    await expect(activateBackupConfig(db, 'cfg-x')).rejects.toMatchObject({
-      code: 'UNSUPPORTED_PROVIDER',
-      status: 400,
-    });
-  });
-});
-
+// activateBackupConfig retired 2026-08-26 — suite removed.
 describe('getActiveBackupConfig', () => {
   it('returns a discriminated SSH variant for an active SSH row', async () => {
     const row = { ...SSH_ROW, active: true };

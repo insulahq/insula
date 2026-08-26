@@ -13,6 +13,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Removed
+- **The legacy backup target-"Activate" path is fully retired**
+  (operator decision 2026-08-26). Removed: the Activate/Deactivate
+  buttons on Remote Storage Targets and the "Active Backup Target" card
+  on Settings → Storage; the `activate`/`deactivate`/Longhorn
+  `backups`/`backup-now` API routes; the Longhorn credential/BackupTarget
+  reconciler; and the legacy `etcd-snapshot`, `postgres-dump` and
+  (long-inactive) `hostpath-snapshot` CronJobs — their replacements
+  (`etcd-snap-via-shim`, CNPG base backups + WAL, the streaming snapshot
+  pipeline) have been the live path for months. Migration 0090 clears
+  any still-active row. Binding a target to a class on *Targets,
+  Schedules & Retention* is the only routing step; the nightly DR
+  CronJobs are fed from the SYSTEM-class binding by the shim bridge.
 - **Longhorn volume-level backup jobs (`daily-backup`, `weekly-backup`)
   are retired** (operator decision 2026-08-26). Off-cluster protection
   is the 3-class shim pipeline — nightly tenant bundles, CNPG base
