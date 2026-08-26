@@ -74,6 +74,8 @@ export interface MailSnapshotCronJobResult {
    * firing engine creates Jobs on `schedule` instead of k8s cron.
    */
   readonly platformFired?: boolean;
+  /** Operator's backup_schedules.mail.enabled toggle (gates firing in BOTH modes). */
+  readonly enabled?: boolean;
   /** Whether any apiserver write was issued this pass. */
   readonly patched: boolean;
 }
@@ -118,8 +120,15 @@ export async function reconcileMailSnapshotCronJob(
   // patch strips /spec/suspend from Flux's apply).
   const bound = await isMailTargetBound(db);
   const desiredSchedule = await resolveDesiredSchedule(db);
+  const enabled = await resolveMailScheduleEnabled(db);
   const platformFired = desiredSchedule !== DEFAULT_MAIL_SNAPSHOT_SCHEDULE;
-  const desiredSuspend = platformFired ? true : !bound;
+  // `enabled` is the operator's schedule toggle (backup_schedules.mail).
+  // Until 2026-08 no executor read it — disabling the mail schedule in
+  // the UI silently changed nothing, and switch-with-pause's "pause"
+  // (enabled=false during a target switch) paused nothing. Migration
+  // 0089 backfills enabled=TRUE on clusters with a bound mail target so
+  // honoring it here cannot stop an actively-snapshotting cluster.
+  const desiredSuspend = platformFired ? true : (!bound || !enabled);
 
   // ─── 2. Read the live CronJob ──────────────────────────────────
   let live: CronJobView;
@@ -142,12 +151,13 @@ export async function reconcileMailSnapshotCronJob(
         suspended: true,
         schedule: desiredSchedule,
         platformFired,
+        enabled,
         patched: false,
       };
     }
     const msg = err instanceof Error ? err.message : String(err);
     log.error({ err: msg }, 'mail-snapshot-cronjob: read failed');
-    return { state: 'STATE_ERROR', errorMessage: msg, suspended: desiredSuspend, schedule: desiredSchedule, platformFired, patched: false };
+    return { state: 'STATE_ERROR', errorMessage: msg, suspended: desiredSuspend, schedule: desiredSchedule, platformFired, enabled, patched: false };
   }
 
   // The manifest ships `suspend: true`, so the field is always present
@@ -188,7 +198,7 @@ export async function reconcileMailSnapshotCronJob(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, 'mail-snapshot-cronjob: suspend patch failed');
-      return { state: 'STATE_ERROR', errorMessage: msg, suspended: liveSuspend, schedule: desiredSchedule, platformFired, patched };
+      return { state: 'STATE_ERROR', errorMessage: msg, suspended: liveSuspend, schedule: desiredSchedule, platformFired, enabled, patched };
     }
   }
 
@@ -198,6 +208,7 @@ export async function reconcileMailSnapshotCronJob(
     platformFired,
     suspended: desiredSuspend,
     schedule: desiredSchedule,
+    enabled,
     patched,
   };
 }
@@ -242,4 +253,21 @@ export async function resolveDesiredSchedule(db: Database): Promise<string> {
     .limit(1);
   const v = row?.v?.trim();
   return v && v.length > 0 ? v : DEFAULT_MAIL_SNAPSHOT_SCHEDULE;
+}
+
+/**
+ * Operator's mail-schedule enable toggle. A missing row reads as
+ * DISABLED — the seed inserts the row, so absence means a cluster that
+ * pre-dates the schedules table entirely; those clusters have no
+ * schedule UI state to honor and the bind-gate alone decided before.
+ * Migration 0089 backfills enabled=TRUE wherever a mail target is
+ * bound, so no running cluster loses its cadence when this gate lands.
+ */
+export async function resolveMailScheduleEnabled(db: Database): Promise<boolean> {
+  const [row] = await db
+    .select({ v: backupSchedules.enabled })
+    .from(backupSchedules)
+    .where(eq(backupSchedules.subsystem, 'mail'))
+    .limit(1);
+  return row?.v === true;
 }

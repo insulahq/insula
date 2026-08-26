@@ -56,10 +56,12 @@ export default function BackupClassPage(props: BackupClassPageProps) {
 
   // Build the active tab list based on which content the caller
   // provided. Routing is always present; snapshots/backups are only
-  // present when the caller has real content to render.
+  // present when the caller has real content to render. Backups lead:
+  // durable off-site bundles are the primary artifact, snapshots are
+  // temporary on-cluster copies (operator request 2026-08-26).
   const tabs: ReadonlyArray<TabSpec> = [
-    ...(props.snapshotsTab != null ? [SNAPSHOTS_TAB] : []),
     ...(props.backupsTab != null ? [BACKUPS_TAB] : []),
+    ...(props.snapshotsTab != null ? [SNAPSHOTS_TAB] : []),
     ROUTING_TAB,
   ];
 

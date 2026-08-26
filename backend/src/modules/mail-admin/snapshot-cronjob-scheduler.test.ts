@@ -21,13 +21,14 @@ import { startMailSnapshotCronJobReconciler } from './snapshot-cronjob-scheduler
 const noopLog = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const DEFAULT = '*/30 * * * *';
 
-function okResult(schedule: string, suspended = false, platformFired = false) {
+function okResult(schedule: string, suspended = false, platformFired = false, enabled = true) {
   return {
     state: 'STATE_OK' as const,
     errorMessage: '',
     suspended,
     schedule,
     platformFired,
+    enabled,
     patched: true,
   };
 }

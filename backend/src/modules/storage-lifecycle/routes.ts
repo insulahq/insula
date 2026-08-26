@@ -424,7 +424,9 @@ export async function storageLifecycleRoutes(app: FastifyInstance): Promise<void
     },
   }, async (request) => {
     const { tenantId } = request.params as { tenantId: string };
-    return success(await service.clearFailedStorageState(app.db, tenantId));
+    // Pass the cluster clients so the valve can also scale the failed
+    // op's quiesced workloads back up (not just reset the DB flag).
+    return success(await service.clearFailedStorageState(app.db, tenantId, (await ctx()).k8s));
   });
 
   // ─── Settings ───────────────────────────────────────────────────────
