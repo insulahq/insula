@@ -47,7 +47,10 @@ forwarding (below), in which case it is forwarded without keeping a copy.
 
 Each row shows the address, a used/quota bar, and actions. Click a mailbox to
 edit it — you can change the **quota**, enable/disable it, and set an
-**auto-reply (vacation message)** with its own subject and body. The reply is
+**auto-reply (vacation message)** with its own subject and body. A
+**disabled** mailbox is fully shut down: incoming mail (including its
+aliases) is bounced back to the sender, and signing in or sending is
+blocked until you re-enable it — the configuration is kept. The reply is
 sent by the mail server itself: each sender receives it once per vacation
 period, and automated senders (mailing lists, bounces) are never answered.
 A message body is required while auto-reply is enabled.
