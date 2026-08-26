@@ -12,6 +12,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Flux no longer fights the DR-CronJob bridge over `spec.suspend`.**
+  The bridged CronJobs (secrets bundle, cluster-state, audit) ship
+  `suspend: true` in their manifests; Flux re-applied that on every sync,
+  reverting the bridge's unsuspend within a minute. The Flux
+  Kustomization now strips `/spec/suspend` from its apply input for the
+  three (same pattern as the mail snapshot CronJob) — fresh installs get
+  it from bootstrap, existing clusters via host-migration
+  2026.8.18/0001.
+
 ### Removed
 - **The legacy backup target-"Activate" path is fully retired**
   (operator decision 2026-08-26). Removed: the Activate/Deactivate

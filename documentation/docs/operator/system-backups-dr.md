@@ -54,7 +54,10 @@ everything that matters, and the **key** to decrypt it.
 - **Bundle-everything semantics** — the secrets bundle captures the full Secret
   inventory across the cluster, age-encrypted to your operator recipient. The
   daily secrets-backup CronJob refreshes it and uploads it to your `system`
-  target.
+  target. The platform manages the CronJob's suspend state itself (it runs
+  whenever a `system`-class backup target is bound — no separate enable
+  step), so don't `kubectl patch` its `spec.suspend` by hand; the
+  reconciler owns that field, and GitOps is configured to leave it alone.
 - **The operator age key** — a keypair generated at first bootstrap. The public
   half lives on the cluster; the **private half is written once, at install, to
   `/var/lib/hosting-platform/operator-key/operator-private.key`** on the first

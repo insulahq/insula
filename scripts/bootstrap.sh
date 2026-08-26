@@ -6125,6 +6125,41 @@ spec:
         version: v1
         kind: CronJob
         name: stalwart-snapshot
+    # 2026-08-26: same strip for the three shim-bridged DR CronJobs —
+    # their /spec/suspend is owned by platform-api's dr-cronjobs bridge
+    # (unsuspended when the SYSTEM class is bound). Without the strip,
+    # Flux re-suspends them on every sync and the bridge fights it
+    # forever (caught live on the DEV cluster: reconciler logged
+    # "unsuspended" while the CronJobs stayed suspended). suspend is
+    # optional (defaults false); a fresh cluster creates them
+    # unsuspended and the bridge's boot tick suspends them within
+    # minutes when no SYSTEM target is bound — hours before their
+    # nightly schedules could fire. Existing clusters get this patch
+    # via host-migration 2026.8.18/0001.
+    - patch: |
+        - op: remove
+          path: /spec/suspend
+      target:
+        group: batch
+        version: v1
+        kind: CronJob
+        name: platform-secrets-backup
+    - patch: |
+        - op: remove
+          path: /spec/suspend
+      target:
+        group: batch
+        version: v1
+        kind: CronJob
+        name: platform-cluster-state-backup
+    - patch: |
+        - op: remove
+          path: /spec/suspend
+      target:
+        group: batch
+        version: v1
+        kind: CronJob
+        name: platform-backup-audit
 KUSTYAML
 
   if [[ "$PLATFORM_ENV" == "staging" ]]; then
