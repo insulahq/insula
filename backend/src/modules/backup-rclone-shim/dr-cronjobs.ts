@@ -120,11 +120,14 @@ async function upsertCredentialsSecret(
   };
   try {
     // replace (not patch) so switching writers leaves no stale keys.
+    // backup-coverage: excluded:derived-from-BACKUP_TARGET_KEY (HKDF creds,
+    // re-materialised every tick — nothing to back up)
     await api.replaceNamespacedSecret({ name: CREDENTIALS_SECRET_NAME, namespace: PLATFORM_NAMESPACE, body });
   } catch (err: unknown) {
     const status = (err as { response?: { statusCode?: number }; code?: number })?.response?.statusCode
       ?? (err as { code?: number })?.code;
     if (status !== 404) throw err;
+    // backup-coverage: excluded:derived-from-BACKUP_TARGET_KEY (see above)
     await api.createNamespacedSecret({ namespace: PLATFORM_NAMESPACE, body });
   }
 }
