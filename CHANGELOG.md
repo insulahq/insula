@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.17] - 2026-08-26
+
 ### Added
 - **Mailbox aliases (with reply-as).** A mailbox can now carry extra
   addresses — `info@`, `postmaster@`, `webmaster@`, … — managed in the
