@@ -34,6 +34,10 @@ const S3_KEYS = [
   'S3_BUCKET',
   'S3_REGION',
   'S3_PATH_PREFIX',
+  // "true" → the DR job scripts force aws-cli path-style addressing.
+  // Required for the backup-rclone-shim endpoint (no wildcard DNS for
+  // virtual-hosted bucket names); empty for real S3 providers.
+  'S3_FORCE_PATH_STYLE',
 ] as const;
 
 const SSH_KEYS = [
@@ -46,12 +50,14 @@ const SSH_KEYS = [
 
 export interface S3BackupTargetInput {
   readonly kind: 's3';
-  readonly endpoint: string;       // e.g. https://fsn1.your-objectstorage.com
+  readonly endpoint: string;       // e.g. https://s3.eu-central.example.test
   readonly region: string;          // e.g. eu-central
-  readonly bucket: string;          // e.g. k8s-staging
+  readonly bucket: string;          // e.g. platform-backups
   readonly accessKeyId: string;     // plaintext, handed to K8s Secret
   readonly secretAccessKey: string; // plaintext, handed to K8s Secret
   readonly pathPrefix?: string;     // optional, e.g. "longhorn-staging"
+  /** Force aws-cli path-style addressing (shim endpoint). */
+  readonly forcePathStyle?: boolean;
 }
 
 export interface SshBackupTargetInput {
@@ -265,6 +271,7 @@ export function buildS3SecretData(input: S3BackupTargetInput): Record<string, st
     S3_BUCKET: input.bucket,
     S3_REGION: input.region,
     S3_PATH_PREFIX: input.pathPrefix ?? '',
+    S3_FORCE_PATH_STYLE: input.forcePathStyle ? 'true' : '',
   };
   for (const k of SSH_KEYS) data[k] = '';
   return data;

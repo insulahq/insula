@@ -13,6 +13,24 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Nightly DR CronJobs (secrets bundle, cluster-state dump, backup
+  audit) now run on shim-configured clusters.** They were only ever
+  unsuspended by the legacy target-"Activate" flow — a cluster
+  configured purely through the 3-class backup assignments (the normal
+  path) left them suspended forever, with no alert (the backup-health
+  watcher only sees failed Jobs, and a suspended CronJob never creates
+  one). A new bridge reconciler feeds them the shim's own S3 endpoint
+  (works for every upstream, CIFS included) and manages their suspend
+  state from the SYSTEM-class binding; the legacy flow keeps precedence
+  where it is in use.
+- **Longhorn volume backups failing for lack of a backup target are no
+  longer invisible.** On a shim-only cluster Longhorn's nightly
+  recurring backups error on every volume ("backup target default is
+  not available") while the job pod still reports Complete. The platform
+  now raises a daily admin notification when recurring backup jobs
+  exist with no Longhorn BackupTarget configured. (Longhorn is
+  deliberately not auto-pointed at the shim — that is an explicit
+  operator decision; see the admin manual.)
 - **Scheduled tenant bundles now run on CIFS/SMB (and any other) backup
   targets.** The nightly tenant-bundle wave built its transport directly
   and only understood S3/SSH — on a CIFS-bound cluster every scheduled
