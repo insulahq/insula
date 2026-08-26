@@ -13,7 +13,7 @@ import { markBackupTargetWritable } from './mark-writable.js';
 import type { ZodError } from 'zod';
 import { z } from 'zod';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
-import type { LonghornTenants } from './longhorn-reconciler.js';
+import type { LonghornTenants } from './target-secret-shape.js';
 
 // Turn a Zod issue list into a single human-readable message that's safe
 // to surface to an operator via the admin panel. We preserve the field
@@ -92,31 +92,10 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('VALIDATION_ERROR', zodMessage(parsed.error), 400);
     }
     const updated = await service.updateBackupConfig(app.db, id, parsed.data, encryptionKey);
-
-    // If the edited row is the active Longhorn target, the cluster
-    // Secret + BackupTarget CR still reference the OLD creds/URL. Re-
-    // reconcile so the UI edit actually takes effect without an extra
-    // Deactivate→Activate dance.
-    if (updated.active) {
-      try {
-        const active = await service.getActiveBackupConfig(app.db, encryptionKey);
-        if (active) {
-          const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
-          if (!longhornTenants) {
-            throw new Error('K8s tenant unavailable — check platform-api pod logs on startup');
-          }
-          await reconcileBackupTarget(longhornTenants, active);
-        }
-      } catch (err) {
-        request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn after PATCH of active config');
-        throw new ApiError(
-          'RECONCILE_FAILED',
-          `Config saved but Longhorn update failed: ${err instanceof Error ? err.message : 'unknown'}. Toggle Deactivate+Activate to retry.`,
-          502,
-        );
-      }
-    }
-
+    // Legacy target-activate retirement (2026-08-26): no Longhorn
+    // reconcile leg — the 3-class shim assignments are the only backup
+    // routing, and credential changes reach the shim via its own
+    // inputHash-driven reconciler.
     return success(updated);
   });
 
@@ -207,68 +186,12 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     return success(result);
   });
 
-  // POST /api/v1/admin/backup-configs/:id/activate — designate this
-  // config as the cluster's active Longhorn backup target. Routes the
-  // decrypted creds through the reconciler to create/update the
-  // BackupTarget CR + credentials Secret. Only one config can be
-  // active at a time — activating a new one deactivates the previous.
-  app.post('/admin/backup-configs/:id/activate', async (request) => {
-    const { id } = request.params as { id: string };
-    const row = await service.activateBackupConfig(app.db, id);
-    const active = await service.getActiveBackupConfig(app.db, encryptionKey);
-    if (active) {
-      try {
-        const { reconcileBackupTarget } = await import('./longhorn-reconciler.js');
-        if (!longhornTenants) {
-          throw new Error('K8s tenant unavailable — check platform-api pod logs on startup');
-        }
-        await reconcileBackupTarget(longhornTenants, active);
-      } catch (err) {
-        request.log.error({ err, configId: id }, 'Failed to reconcile Longhorn BackupTarget on activate');
-        throw new ApiError(
-          'RECONCILE_FAILED',
-          `Config was activated in the DB but Longhorn update failed: ${err instanceof Error ? err.message : 'unknown'}. Fix the issue and POST /activate again.`,
-          502,
-        );
-      }
-    }
-    return success(row);
-  });
-
-  // GET /api/v1/admin/backup-configs/:id/backups — list recent backups.
-  // `id` is the config row id; the scoping for which backups belong to
-  // this config is implicit (Longhorn only has one active BackupTarget
-  // at a time). When multiple historical targets are listed, the UI
-  // can filter tenant-side by `url` prefix if needed.
-  app.get('/admin/backup-configs/:id/backups', async () => {
-    if (!longhornTenants) {
-      throw new ApiError('K8S_UNAVAILABLE', 'K8s tenant unavailable', 502);
-    }
-    const { listBackups } = await import('./longhorn-backups.js');
-    const backups = await listBackups(longhornTenants);
-    return success(backups);
-  });
-
-  // POST /api/v1/admin/backup-configs/:id/backup-now — trigger an
-  // on-demand backup of every PVC carrying the default recurring-job
-  // group label. Returns the list of volumes it triggered; operators
-  // poll /backups to see progress.
-  app.post('/admin/backup-configs/:id/backup-now', async () => {
-    if (!longhornTenants) {
-      throw new ApiError('K8S_UNAVAILABLE', 'K8s tenant unavailable', 502);
-    }
-    const { triggerBackupNow } = await import('./longhorn-backups.js');
-    try {
-      const result = await triggerBackupNow(longhornTenants);
-      return success(result);
-    } catch (err) {
-      throw new ApiError(
-        'BACKUP_TRIGGER_FAILED',
-        err instanceof Error ? err.message : 'Unknown error triggering backup',
-        502,
-      );
-    }
-  });
+  // Legacy target-activate routes retired 2026-08-26 (operator
+  // decision): POST /:id/activate, POST /:id/deactivate,
+  // GET /:id/backups (Longhorn backup list) and POST /:id/backup-now
+  // (Longhorn volume trigger) are gone. Backup routing is the 3-class
+  // shim assignments; Longhorn volume-level backups no longer exist
+  // (base RecurringJobs removed the same day).
 
   // GET /api/v1/admin/backup-health — discovery-driven roll-up of
   // every Job carrying the backup-health-watch=true label. Used by
@@ -285,20 +208,4 @@ export async function backupConfigRoutes(app: FastifyInstance): Promise<void> {
     return success(summary);
   });
 
-  // POST /api/v1/admin/backup-configs/:id/deactivate
-  app.post('/admin/backup-configs/:id/deactivate', async (request) => {
-    const { id } = request.params as { id: string };
-    const row = await service.deactivateBackupConfig(app.db, id);
-    try {
-      const { clearBackupTarget } = await import('./longhorn-reconciler.js');
-      if (longhornTenants) {
-        // Pass the kind so SSH deactivate skips the Longhorn BackupTarget
-        // CR patch (nothing to clear there — SSH never wrote to it).
-        await clearBackupTarget(longhornTenants, { kind: row.storageType });
-      }
-    } catch (err) {
-      request.log.warn({ err, configId: id }, 'Failed to clear Longhorn BackupTarget on deactivate');
-    }
-    return success(row);
-  });
 }

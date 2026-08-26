@@ -8,7 +8,7 @@ import { probeS3 } from './s3-probe.js';
 import { probeSsh } from './ssh-probe.js';
 import { notifyAdminBackupTargetUnreachable } from '../notifications/events.js';
 import { probeCifs } from './cifs-probe.js';
-import type { LonghornBackupTargetInput } from './longhorn-reconciler.js';
+import type { LonghornBackupTargetInput } from './target-secret-shape.js';
 
 // Connectivity-test result returned by testConnection + testDraft. A real
 // HeadBucket / SSH probe is wired in Phase B2; the shape is committed now
@@ -231,65 +231,9 @@ export async function deleteBackupConfig(db: Database, id: string) {
   await db.delete(backupConfigurations).where(eq(backupConfigurations.id, id));
 }
 
-// activateBackupConfig — swap the `active` flag so this row becomes
-// THE cluster backup target. Because the partial unique index enforces
-// at-most-one-active, we explicitly clear other rows in the same
-// transaction.
-//
-// Does NOT call the Longhorn reconciler directly — the route does that
-// after activation succeeds. Separating DB and cluster writes lets tests
-// exercise activation without mocking the k8s tenant.
-//
-// Accepts BOTH s3 and ssh kinds. SSH configs don't drive Longhorn's
-// BackupTarget CR (Longhorn upstream is S3-only); they populate the
-// platform-ns backup-credentials Secret with SSH_* keys + TARGET_KIND=ssh
-// so the DR CronJobs (secrets-backup, hostpath-snapshot, etc.) can rsync
-// over SSH instead of aws-cli.
-export async function activateBackupConfig(db: Database, id: string) {
-  const row = await getRawBackupConfig(db, id);
-  if (row.storageType !== 's3' && row.storageType !== 'ssh') {
-    throw new ApiError(
-      'UNSUPPORTED_PROVIDER',
-      `Unsupported backup target kind: ${row.storageType}`,
-      400,
-    );
-  }
-  // Completeness check before flipping the flag — a half-filled row
-  // activating would corrupt the reconcile. Mirror the testConnection
-  // checks so the admin panel gives matching feedback.
-  if (row.storageType === 's3') {
-    if (!row.s3Endpoint || !row.s3Bucket || !row.s3Region || !row.s3AccessKeyEncrypted || !row.s3SecretKeyEncrypted) {
-      throw new ApiError('INCOMPLETE_CONFIG', 'S3 config missing required fields (endpoint, bucket, region, access/secret key)', 400);
-    }
-  } else {
-    // Phase 12.5 follow-up: SSH accepts EITHER key OR password.
-    if (!row.sshHost || !row.sshUser || !row.sshPath) {
-      throw new ApiError('INCOMPLETE_CONFIG', 'SSH config missing required fields (host, user, path)', 400);
-    }
-    if (!row.sshKeyEncrypted && !row.sshPasswordEncrypted) {
-      throw new ApiError('INCOMPLETE_CONFIG', 'SSH config requires either ssh_key or ssh_password', 400);
-    }
-  }
-  await db.transaction(async (tx) => {
-    await tx.update(backupConfigurations)
-      .set({ active: false })
-      .where(eq(backupConfigurations.active, true));
-    await tx.update(backupConfigurations)
-      .set({ active: true })
-      .where(eq(backupConfigurations.id, id));
-  });
-  return getBackupConfig(db, id);
-}
-
-// deactivateBackupConfig — flip active off. The Longhorn reconciler
-// is called by the route to clear the BackupTarget CR.
-export async function deactivateBackupConfig(db: Database, id: string) {
-  await getRawBackupConfig(db, id);
-  await db.update(backupConfigurations)
-    .set({ active: false })
-    .where(eq(backupConfigurations.id, id));
-  return getBackupConfig(db, id);
-}
+// activateBackupConfig / deactivateBackupConfig removed 2026-08-26 —
+// the legacy target-activate path is retired (backup routing is the
+// 3-class shim assignments; migration 0090 cleared any active row).
 
 // getActiveBackupConfig — returns decrypted creds for the currently
 // active config, or null. Consumed by the Longhorn reconciler to

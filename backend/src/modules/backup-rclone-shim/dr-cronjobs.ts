@@ -14,7 +14,7 @@
  * LEGACY-DEPRECATED.md) was never built.
  *
  * This bridge closes the gap without new upload code: when the SYSTEM
- * class is bound (and no legacy target is active), it materialises
+ * class is bound, it materialises
  * `backup-credentials` pointing at the shim's own S3 endpoint with the
  * HKDF-derived per-cluster credentials — the job scripts run unchanged,
  * and the shim handles whatever upstream the operator picked
@@ -25,10 +25,10 @@
  * base backups via barman plugin, `etcd-snap-via-shim`) already run on
  * the shim; unsuspending them would double-back-up the same data.
  *
- * Ownership: the legacy activate flow still wins. If ANY
- * backup_configurations row is active=true, this bridge does nothing —
- * longhorn-reconciler owns the Secret and the suspend flags
- * (coexistence contract from LEGACY-DEPRECATED.md).
+ * Ownership: this bridge is the SOLE writer of `backup-credentials`
+ * and the suspend flags. The legacy target-activate flow was retired
+ * 2026-08-26 (routes + longhorn-reconciler deleted; migration 0090
+ * cleared any `active` rows), so there is nothing to defer to.
  *
  * Side check — Longhorn volume backups: the same sweep found Longhorn's
  * recurring `backup` jobs fail EVERY run on a shim-only cluster ("backup
@@ -36,7 +36,7 @@
  * Complete. Longhorn cannot be silently pointed at the shim here (perf +
  * the deliberate "no longhorn shim class" decision), but the failure
  * must not stay invisible: when recurring backup jobs exist with no
- * BackupTarget URL and no legacy target, raise a daily admin
+ * BackupTarget URL, raise a daily admin
  * notification.
  */
 
@@ -46,7 +46,7 @@ import type { Logger } from 'pino';
 
 import { backupConfigurations, backupTargetAssignments } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
-import { buildS3SecretData } from '../backup-config/longhorn-reconciler.js';
+import { buildS3SecretData } from '../backup-config/target-secret-shape.js';
 import { notifyAdminBackupTargetUnreachable } from '../notifications/events.js';
 import { loadBackupTargetKey, SHIM_NAMESPACE } from './service.js';
 import { deriveShimAccessKey, deriveShimSecretKey } from './crypto.js';
@@ -64,7 +64,7 @@ export const BRIDGED_DR_CRONJOBS = [
 ] as const;
 
 export interface DrCronJobsResult {
-  readonly state: 'legacy-owned' | 'bridged' | 'unbound' | 'error';
+  readonly state: 'bridged' | 'unbound' | 'error';
   readonly errorMessage: string;
   readonly secretApplied: boolean;
   readonly unsuspended: number;
@@ -75,15 +75,6 @@ interface CronJobClients {
   readonly core: k8s.CoreV1Api;
   readonly batch: k8s.BatchV1Api;
   readonly custom: k8s.CustomObjectsApi;
-}
-
-async function legacyTargetActive(db: Database): Promise<boolean> {
-  const rows = await db
-    .select({ id: backupConfigurations.id })
-    .from(backupConfigurations)
-    .where(eq(backupConfigurations.active, true))
-    .limit(1);
-  return rows.length > 0;
 }
 
 async function systemClassBound(db: Database): Promise<boolean> {
@@ -203,8 +194,8 @@ async function checkLonghornBackupTarget(
       errorMessage:
         'Longhorn recurring backup jobs are scheduled but no Longhorn BackupTarget is configured — every nightly '
         + 'volume backup fails ("backup target default is not available") while the job pod still reports Complete. '
-        + 'Volume backups need a Longhorn-capable target (S3/NFS) activated on the Remote Storage Targets page; the '
-        + '3-class shim assignments do not feed Longhorn.',
+        + 'The platform does not manage Longhorn volume backups (retired 2026-08-26 in favour of tenant bundles); '
+        + 'either remove the custom recurring backup job or configure a Longhorn BackupTarget manually.',
     }, `longhorn-no-backup-target:${new Date().toISOString().slice(0, 10)}`);
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, 'dr-cronjobs: longhorn notification failed');
@@ -219,13 +210,8 @@ export async function reconcileDrCronJobs(
   clients: CronJobClients,
   log: Pick<Logger, 'info' | 'warn' | 'error'>,
 ): Promise<DrCronJobsResult> {
-  // Longhorn visibility runs regardless of who owns the DR CronJobs —
-  // it reports a distinct gap.
+  // Longhorn visibility check first — it reports a distinct gap.
   await checkLonghornBackupTarget(db, clients.custom, log);
-
-  if (await legacyTargetActive(db)) {
-    return { state: 'legacy-owned', errorMessage: '', secretApplied: false, unsuspended: 0, suspended: 0 };
-  }
 
   const bound = await systemClassBound(db);
   if (!bound) {

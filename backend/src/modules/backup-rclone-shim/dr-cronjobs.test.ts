@@ -22,10 +22,10 @@ import { notifyAdminBackupTargetUnreachable } from '../notifications/events.js';
 import { loadBackupTargetKey } from './service.js';
 import type { Database } from '../../db/index.js';
 
-// Two sequential selects per pass: (1) legacy active row, (2) system
-// assignment join. Return in order.
-function fakeDb(legacyRows: unknown[], systemRows: unknown[]): Database {
-  const results = [legacyRows, systemRows];
+// One select per pass: the system assignment join (the legacy
+// active-row check died with the target-activate retirement).
+function fakeDb(systemRows: unknown[]): Database {
+  const results = [systemRows];
   let i = 0;
   const makeChain = (rows: unknown[]): Record<string, unknown> => {
     const chain: Record<string, unknown> = {};
@@ -79,17 +79,8 @@ beforeEach(() => {
 });
 
 describe('reconcileDrCronJobs', () => {
-  it('legacy active target → hands off entirely (no Secret write, no suspend flips)', async () => {
-    const db = fakeDb([{ id: 'legacy' }], []);
-    const clients = fakeClients();
-    const r = await reconcileDrCronJobs(db, clients as never, log());
-    expect(r.state).toBe('legacy-owned');
-    expect(clients.core.replaceNamespacedSecret).not.toHaveBeenCalled();
-    expect(clients.batch.patchNamespacedCronJob).not.toHaveBeenCalled();
-  });
-
   it('system class bound → writes shim-shaped backup-credentials + unsuspends the three bridged CronJobs', async () => {
-    const db = fakeDb([], [{ enabled: 1 }]);
+    const db = fakeDb([{ enabled: 1 }]);
     const clients = fakeClients({ cronJobSuspend: true });
     const r = await reconcileDrCronJobs(db, clients as never, log());
     expect(r.state).toBe('bridged');
@@ -112,7 +103,7 @@ describe('reconcileDrCronJobs', () => {
   });
 
   it('idempotent: already-unsuspended CronJobs get no writes', async () => {
-    const db = fakeDb([], [{ enabled: 1 }]);
+    const db = fakeDb([{ enabled: 1 }]);
     const clients = fakeClients({ cronJobSuspend: false });
     const r = await reconcileDrCronJobs(db, clients as never, log());
     expect(r.state).toBe('bridged');
@@ -121,7 +112,7 @@ describe('reconcileDrCronJobs', () => {
   });
 
   it('system class unbound → suspends the bridged CronJobs, no Secret write', async () => {
-    const db = fakeDb([], []);
+    const db = fakeDb([]);
     const clients = fakeClients({ cronJobSuspend: false });
     const r = await reconcileDrCronJobs(db, clients as never, log());
     expect(r.state).toBe('unbound');
@@ -130,7 +121,7 @@ describe('reconcileDrCronJobs', () => {
   });
 
   it('CronJobs not yet applied by Flux (404) → tolerated, no throw', async () => {
-    const db = fakeDb([], [{ enabled: 1 }]);
+    const db = fakeDb([{ enabled: 1 }]);
     const clients = fakeClients({ cronJobSuspend: 'absent' });
     const r = await reconcileDrCronJobs(db, clients as never, log());
     expect(r.state).toBe('bridged');
@@ -139,7 +130,7 @@ describe('reconcileDrCronJobs', () => {
 
   it('missing BACKUP_TARGET_KEY → error state, jobs stay suspended', async () => {
     vi.mocked(loadBackupTargetKey).mockRejectedValueOnce(new Error('Secret backup-target-key not found'));
-    const db = fakeDb([], [{ enabled: 1 }]);
+    const db = fakeDb([{ enabled: 1 }]);
     const clients = fakeClients();
     const r = await reconcileDrCronJobs(db, clients as never, log());
     expect(r.state).toBe('error');
@@ -147,7 +138,7 @@ describe('reconcileDrCronJobs', () => {
   });
 
   it('Longhorn recurring backup jobs with NO BackupTarget → daily admin notification', async () => {
-    const db = fakeDb([{ id: 'legacy' }], []); // ownership is irrelevant to the check
+    const db = fakeDb([]);
     const clients = fakeClients({ longhornTargetUrl: '', longhornBackupJobs: true });
     await reconcileDrCronJobs(db, clients as never, log());
     expect(notifyAdminBackupTargetUnreachable).toHaveBeenCalledTimes(1);
@@ -157,14 +148,14 @@ describe('reconcileDrCronJobs', () => {
   });
 
   it('Longhorn with a configured target → no notification', async () => {
-    const db = fakeDb([{ id: 'legacy' }], []);
+    const db = fakeDb([]);
     const clients = fakeClients({ longhornTargetUrl: 's3://bucket@auto/prefix', longhornBackupJobs: true });
     await reconcileDrCronJobs(db, clients as never, log());
     expect(notifyAdminBackupTargetUnreachable).not.toHaveBeenCalled();
   });
 
   it('Longhorn with snapshot-only recurring jobs → no notification (nothing tries to upload)', async () => {
-    const db = fakeDb([{ id: 'legacy' }], []);
+    const db = fakeDb([]);
     const clients = fakeClients({ longhornTargetUrl: '', longhornBackupJobs: false });
     await reconcileDrCronJobs(db, clients as never, log());
     expect(notifyAdminBackupTargetUnreachable).not.toHaveBeenCalled();

@@ -1,82 +1,37 @@
-# Legacy backup CronJobs — deprecated path
+# Legacy backup path — RETIRED 2026-08-26
 
-> **Status:** Active during the R-X migration window. Will move to
-> `k8s/base/backup/legacy/` once the shim is proven on staging +
-> R-X9 ↔ R-X11 ↔ R-X12 close the loop.
+The pre-shim "target-activate" backup model is fully retired (operator
+decision 2026-08-26). What it was: the admin-panel **Activate** button
+wrote raw target credentials into the `backup-credentials` /
+`longhorn-backup-credentials` Secrets, pointed Longhorn's BackupTarget
+at the target, and unsuspended the DR CronJobs. The 3-class
+backup-rclone-shim assignments (R-X20) replaced it as the only backup
+routing.
 
-The following CronJobs predate the universal backup-rclone-shim
-(R-X1 through R-X14). They use the legacy `backup-credentials`
-Secret (Phase 2 ADR-032) which is reconciled from the active
-admin-panel "backup target" rather than the new 3-class shim
-binding.
+Removed in the retirement:
 
-| File | Subsystem | Replaced by |
+| Thing | Fate | Replacement |
 |---|---|---|
-| `etcd-snapshot-cronjob.yaml` | `SYSTEM.etcd` | `etcd-snap-via-shim-cronjob.yaml` (R-X7) |
-| `postgres-dump-cronjob.yaml` | `SYSTEM.postgres` | CNPG plugin-barman-cloud via shim (R-X6) |
-| `cluster-state-cronjob.yaml` | `SYSTEM.secrets-bundle` | **shim-bridged** (dr-cronjobs.ts, 2026-08-26) |
-| `secrets-backup-cronjob.yaml` | `SYSTEM.secrets-bundle` | **shim-bridged** (dr-cronjobs.ts, 2026-08-26) |
-| `backup-audit-cronjob.yaml` | DR audit/inventory | **shim-bridged** (unsuspend only — read-only, no upstream IO) |
+| `POST /admin/backup-configs/:id/activate` + `/deactivate` routes | deleted | shim class assignments (`PUT /admin/backup-rclone-shim/assignments/:class`) |
+| `GET /:id/backups` + `POST /:id/backup-now` (Longhorn volume backups) | deleted | tenant bundles / snapshots (Longhorn volume-level backups removed 2026-08-26) |
+| `longhorn-reconciler.ts` (Secret + BackupTarget writer, CronJob label-toggle) | deleted | `backup-rclone-shim/dr-cronjobs.ts` owns `backup-credentials` + suspend flags |
+| `etcd-snapshot-cronjob.yaml` | deleted | `etcd-snap-via-shim-cronjob.yaml` (R-X7) |
+| `postgres-dump-cronjob.yaml` | deleted | CNPG base backups + WAL via barman plugin (R-X6) |
+| the `hostpath-snapshot` CronJob manifest | deleted (was already inactive) | per-Job rclone streaming pipeline |
+| `backup_configurations.active` rows | cleared by migration 0090 | — (column drop is a follow-up schema cleanup) |
+| Admin-panel Activate/Deactivate buttons + "Active Backup Target" card | deleted | Backups → per-class *Targets, Schedules & Retention* |
 
-### 2026-08-26: the shim bridge (dr-cronjobs.ts)
+Still present, shim-bridged (see `dr-cronjobs.ts`):
 
-The "R-X9 secrets-bundle rclone-push" replacement was planned but never
-built — so a cluster configured purely through the 3-class shim
-assignments (the normal path since R-X20) left `secrets-backup`,
-`cluster-state` and `backup-audit` suspended forever: the nightly
-age-encrypted secrets bundle and cluster-state dump silently never ran
-(found on production). `backend/src/modules/backup-rclone-shim/
-dr-cronjobs.ts` now bridges them: when the SYSTEM class is bound and no
-legacy target is active, it materialises `backup-credentials` pointing
-at the shim's own S3 endpoint (path-style, bucket `system`, prefix
-`dr/`) and unsuspends exactly those three. The legacy activate flow
-still takes precedence (coexistence contract below). `postgres-dump`
-and `etcd-snapshot-upload` stay retired — their shim-era replacements
-already run, and unsuspending them would double-back-up the same data.
-
-### Why "deprecated but not removed"
-
-Three reasons the legacy CronJobs ship alongside the R-X path
-during the transition window:
-
-1. **Operator coexistence**: a cluster may have the legacy
-   `backup-credentials` Secret bound to one target (operator-
-   configured pre-R-X) AND the new 3-class shim assignments set
-   to a different target. Removing legacy would force an
-   immediate cutover at upgrade time — too risky for a backup
-   subsystem.
-2. **Rollback path**: if the shim has a regression that breaks
-   uploads, operators can pause the shim and re-enable the
-   legacy CronJob with one `kubectl patch` per file. R-X14 perf
-   benchmark validates the shim against the legacy path's
-   throughput.
-3. **Audit-only CronJobs stay**: `backup-audit-cronjob.yaml`
-   doesn't write upstream — it builds a per-PVC inventory for
-   operator dashboards. Migrating that to the shim has no
-   benefit.
+| File | Subsystem | Fed by |
+|---|---|---|
+| `cluster-state-cronjob.yaml` | cluster-state dump | shim bridge (`backup-credentials` → shim S3, `system/dr/…`) |
+| `secrets-backup-cronjob.yaml` | age-encrypted secrets bundle | shim bridge |
+| `backup-audit-cronjob.yaml` | DR audit/inventory | unsuspend only — read-only, no upstream IO |
 
 ### CI guard: no NEW legacy uses
 
-`scripts/ci-backup-rclone-shim-check.sh` invariant 16 rejects
-**new** code that:
-
-- Adds `backup-credentials` Secret refs (envFrom or secretKeyRef)
-  outside the files listed above + legacy mail paths.
-- Adds `aws s3 cp` / `aws s3 sync` CLI usage to NEW CronJobs.
-- Adds rclone-without-shim usage (i.e. rclone configs that name
-  an upstream backend directly instead of `:s3:<bucket>` against
-  the shim endpoint).
-
-The guard is intentionally allowlist-based — the existing files
-remain, but new uses of the legacy patterns are blocked at PR
-time.
-
-### Archival schedule
-
-- **2026-Q3**: R-X12 E2E DR drill passes on staging for 2 weeks
-  → move legacy CronJobs to `k8s/base/backup/legacy/`.
-- **2026-Q4**: R-X14 perf benchmark + 2 production-equivalent
-  staging cycles → delete the legacy directory entirely.
-
-The CI guard remains in place after archival to prevent
-re-introduction.
+`scripts/ci-backup-rclone-shim-check.sh` invariant 16 rejects **new**
+files that reference the `backup-credentials` Secret or use
+`aws s3 cp`/`sync` outside the three bridged CronJobs above — every new
+backup pipeline must go through the shim. The guard stays permanently.
