@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The BREAKING-release auto-upgrade gate actually works now.** A release
+  flagged `### BREAKING` is supposed to short-circuit auto-update so an
+  operator applies it by hand — but `release.yml` never wrote the
+  `breaking` field into the signed release manifest, so the version
+  poller always recorded "not breaking" and the planner's
+  `blocked-breaking` branch was unreachable. The gate had never fired
+  since it shipped. The manifest now derives `breaking` from the released
+  CHANGELOG section (the definition of record), and a new CI guard
+  (`ci-breaking-release-gate-check.sh`) asserts all four links of the
+  chain — cut-release → manifest → poller → planner — so it cannot come
+  apart silently again. Clusters with auto-update **off** (the default)
+  were never affected.
+
 ## [2026.8.18] - 2026-08-26
 
 ### Removed
