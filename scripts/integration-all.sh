@@ -375,6 +375,10 @@ PARALLEL=(
   # System backup bundle coverage + backups admin UI.
   "bundle-coverage:integration-bundle-coverage.sh"
   "backups-ui:integration-backups-ui.sh"
+  # WAF must let legitimate deploy payloads (docroot params, mount paths,
+  # compose docs, cron/entrypoint commands) reach platform-api while still
+  # blocking traversal/SQLi. Unauthenticated edge probes; nothing created.
+  "waf-deploy-surfaces:integration-waf-deploy-surfaces.sh"
 )
 SERIAL_POST=(
   # waf-crowdsec BANS the shared harness outbound IP (Phase 4, ~3 min) to verify

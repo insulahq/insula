@@ -64,6 +64,7 @@ manual        integration-tenant-bundles-jmap-full-e2e.sh             # canonica
 manual        integration-tenant-bundles-mailbox-engine.sh            # L1 seed harness
 suite        integration-bundle-coverage.sh
 suite        integration-backups-ui.sh
+suite        integration-waf-deploy-surfaces.sh                      # WAF lets deploy payloads through, blocks attacks
 manual        integration-catalog-local.sh
 suite        integration-private-worker.sh
 suite        integration-custom-deployments.sh                       # ADR-036 phase-1

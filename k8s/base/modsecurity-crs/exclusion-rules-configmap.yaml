@@ -122,6 +122,128 @@ data:
          ctl:ruleRemoveById=931100"
         SecRule REQUEST_URI "@rx ^/api/v1/"
 
+    # ── Catalog deploys: parameter VALUES are container config, not
+    #    paths the platform opens ──────────────────────────────────────
+    #
+    # POST /api/v1/tenants/:id/deployments (and PATCH …/deployments/:id)
+    # carry the catalog entry's parameter values as
+    # ARGS:json.configuration.<KEY>. Two catalog entries ship a docroot
+    # default of `/var/www/html` (apache-php APACHE_DOCUMENT_ROOT,
+    # nginx-php NGINX_WEBROOT); CRS 930120 matches the `var/www` entry
+    # of lfi-os-files.data inside that VALUE, scores 5, and 949110
+    # blocks the deploy at the edge — every deploy of either entry
+    # failed before the API ever saw it. Measured 2026-08-26 on a live
+    # cluster (CRS 4.28.0): "Matched Data: var/www found within
+    # ARGS:json.configuration.APACHE_DOCUMENT_ROOT: /var/www/html".
+    # The parameter's own help text recommends `/var/www/html/public`
+    # for Laravel — also blocked — and the PATCH edit path blocks the
+    # same body, so a hit could not even be corrected afterwards.
+    #
+    # Why removing this target costs nothing: configuration values
+    # are rendered into the TENANT's own container spec (env vars) by
+    # the provisioner. platform-api never opens them as paths, never
+    # executes them, and never renders them into an admin page
+    # unescaped. 9000100 already dropped the field-NAME half of this
+    # class; this is the VALUE half, on this endpoint family only.
+    #
+    # Shape note: the precise form — removing only the
+    # ARGS:/^json\.configuration\./ members — is NOT available:
+    # libmodsecurity 3.0.16 rejects regex-form targets in
+    # ctl:ruleRemoveTarget* at config-parse time ("Expecting an
+    # action"), which crash-loops the WAF exactly like the
+    # SanitiseRequestHeader note below. (Verified 2026-08-26 against
+    # owasp/modsecurity-crs:4.28.0-nginx-alpine-202607160307.) So the
+    # whole ARGS collection is dropped from 930120 for THIS endpoint
+    # family only. 930120 keeps its cookie targets here; traversal
+    # (930100/110) and restricted-files (930130) keep full ARGS
+    # coverage even here — `storage_path=../../etc/passwd` still
+    # blocks; only the path-DICTIONARY match is off, and a dictionary
+    # is no real guard for an authenticated config API anyway (any
+    # attacker can name a path not in it).
+    #
+    # Chained host+URI like 9000103: a tenant workload serving its own
+    # /api/v1/tenants/…/deployments on a tenant domain keeps coverage.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000108,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveTargetById=930120;ARGS"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/deployments(/[^/?]+)?(\?|$)"
+
+    # ── Custom containers: env values, commands, mount paths and
+    #    compose documents are the tenant's own container spec ────────
+    #
+    # POST/PUT/PATCH /api/v1/tenants/:id/custom-deployments[/:id] and
+    # …/custom-deployments/validate carry free-text fields that are, by
+    # definition, filesystem paths and shell text for the TENANT's own
+    # container. Measured blocks on a live cluster 2026-08-26
+    # (CRS 4.28.0), all as bare edge 403s the API never saw:
+    #
+    #   volumes[].containerPath /var/lib/mysql        930120 (var/lib/mysql)
+    #   volumes[].containerPath /var/www/html         930120 (var/www)
+    #   env[].value /etc/app/config.yaml              930120 — matched on
+    #       `config.yaml` alone, not the /etc prefix; `wp-config.php`
+    #       in any env value blocks the same way
+    #   command "… migrate --force && exec php-fpm"   932235 — the
+    #       `… && exec <word>` idiom, i.e. the canonical container
+    #       entrypoint pattern for PID-1 signal handling
+    #   compose_yaml with `db_data:/var/lib/mysql`    930120 — the
+    #       canonical WordPress+MySQL compose file; /validate blocks
+    #       too, so the editor could not even preview it
+    #
+    # These fields are opaque data: the backend Zod-validates the
+    # structure (containerPath already rejects `..`, `//` and
+    # system-reserved dirs server-side; env NAMES are regex-locked),
+    # renders them into k8s specs, and never executes or opens any of
+    # it. Same category error as scanning file-manager content
+    # (9000104-9000106).
+    #
+    # Per-field member removal (ARGS:/^json\.env\.array_\d+\.value$/ …)
+    # is the shape we wanted, but libmodsecurity 3.0.16 rejects
+    # regex-form ctl targets at parse time (see 9000108), and the
+    # array_N member names are unbounded, so literals cannot enumerate
+    # them. Fallback: drop the ARGS collection from the two rule ids
+    # measured to fire on legitimate container specs, on this endpoint
+    # family only. Everything else — 941/942/933 injection families on
+    # every field, traversal 930100/110 (a `../` mount path or query
+    # arg still blocks), 930130, and all rules on cookies/URI/headers —
+    # stays on, so e.g. SQLi in `image` still blocks here. Add further
+    # ids ONLY with a measured false positive, like these two.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000109,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveTargetById=930120;ARGS,\
+         ctl:ruleRemoveTargetById=932235;ARGS"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments(/|\?|$)"
+
+    # ── Cron jobs: the command IS shell text for the tenant's pod ────
+    #
+    # POST/PATCH /api/v1/tenants/:id/cron-jobs[/:id] carry
+    # ARGS:json.command — a shell command line run inside the tenant's
+    # own workload container. `php /var/www/html/artisan schedule:run`
+    # (the textbook Laravel cron) blocked via 930120 on `var/www`
+    # (measured 2026-08-26); any `… && exec …` or path-bearing command
+    # would trip the same families. Same data-not-parameter reasoning
+    # and same two measured rule ids as 9000109 (ARGS-collection
+    # removal — see 9000108 for why per-member removal is not
+    # available). `schedule` is regex-locked server-side; traversal
+    # rules and every other family keep full coverage on all fields,
+    # including a webcron `url` with `../` in it.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000110,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain,\
+         ctl:ruleRemoveTargetById=930120;ARGS,\
+         ctl:ruleRemoveTargetById=932235;ARGS"
+        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/cron-jobs(/|\?|$)"
+
     # NOTE — bearer tokens and session cookies in the audit log (FIXED).
     # SecAuditLogParts is ABIJDEFHZ, and part B is request headers, so
     # every blocked request writes the caller's full `Authorization:
