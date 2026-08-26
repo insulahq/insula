@@ -89,12 +89,16 @@ there during M5/M7.
 
 Every new class includes
 `recurringJobSelector: '[{"name":"default","isGroup":true}]'`, so
-PVCs provisioned against these classes auto-enroll in the three
+PVCs provisioned against these classes auto-enroll in the
 RecurringJobs defined in `recurring-jobs.yaml`:
 
-- `hourly-snap` — hourly in-volume snapshots (24 kept)
-- `daily-backup` — daily S3 backup (14 kept)
-- `weekly-backup` — weekly S3 backup (4 kept)
+- `hourly-snap` — hourly in-volume snapshots (6 kept)
+- `daily-fstrim` — daily filesystem trim
+
+The former `daily-backup` / `weekly-backup` Longhorn BACKUP jobs were
+removed 2026-08-26 — off-cluster protection is the 3-class shim
+pipeline (tenant bundles + system + mail), not Longhorn volume
+backups.
 
 Legacy PVCs provisioned against the chart default `longhorn` class
 rely on the direct label (`recurring-job-group.longhorn.io/default:

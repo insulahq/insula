@@ -12,6 +12,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Removed
+- **Longhorn volume-level backup jobs (`daily-backup`, `weekly-backup`)
+  are retired** (operator decision 2026-08-26). Off-cluster protection
+  is the 3-class shim pipeline — nightly tenant bundles, CNPG base
+  backups + WAL, mail restic — which covers every restore path
+  including destructive volume shrink (its rollback source is a
+  files-only tenant bundle, not a Longhorn backup). The volume jobs
+  required a Longhorn BackupTarget that the shim model never
+  configures, so they failed every night while reporting Complete.
+  Local `hourly-snap` snapshots and `daily-fstrim` remain; Flux prunes
+  the two removed RecurringJobs from existing clusters automatically.
+
 ### Fixed
 - **Nightly DR CronJobs (secrets bundle, cluster-state dump, backup
   audit) now run on shim-configured clusters.** They were only ever

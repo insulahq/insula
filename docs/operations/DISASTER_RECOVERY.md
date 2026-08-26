@@ -23,7 +23,7 @@ What it does **not** cover:
 | Objective | Target | Actual (last measured) |
 |---|---|---|
 | RTO (cluster back up) | ≤ 2 hours | _measured during Phase 5 drill — record in DR_DRILL_LOG.md_ |
-| RPO (data loss window) | ≤ 24 hours | bounded by Longhorn `daily-backup` + `secrets-backup` (both daily) |
+| RPO (data loss window) | ≤ 24 hours | bounded by the nightly tenant-bundle wave + CNPG base backup (WAL archiving narrows Postgres to minutes) + `secrets-backup` (daily) |
 
 ## Prerequisites (BEFORE you start)
 
