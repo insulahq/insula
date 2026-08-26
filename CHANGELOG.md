@@ -13,6 +13,14 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The pin-lag guard no longer cries wolf after every release.** It
+  counted the two `[skip ci]` sync commits that `release.yml` pushes back
+  to `development` (platform/VERSION + CHANGELOG) as "code commits whose
+  images should be pinned" — but a commit that skipped CI has no images
+  by definition. Those two alone pushed the last built commit outside the
+  guard's slack, so every PR opened after a release failed the check until
+  some unrelated backend change happened to trigger a rebuild. Commits
+  marked `[skip ci]` are now excluded.
 - **The BREAKING-release auto-upgrade gate actually works now.** A release
   flagged `### BREAKING` is supposed to short-circuit auto-update so an
   operator applies it by hand — but `release.yml` never wrote the
