@@ -291,6 +291,10 @@ export async function reconcilePostgresObjectStore(
         'postgres-objectstore: wal-archive owns ScheduledBackup — converged from wal-archive state',
       );
     } catch (err) {
+      // Deliberately NOT a STATE_ERROR return (unlike the sibling
+      // steps): aborting here would skip step 6's Cluster-plugin
+      // reconcile, and a transient converge failure self-heals on the
+      // next 5-min tick. The log line is the observable.
       const msg = err instanceof Error ? err.message : String(err);
       log.error({ err: msg }, 'postgres-objectstore: wal-archive ScheduledBackup converge failed');
     }

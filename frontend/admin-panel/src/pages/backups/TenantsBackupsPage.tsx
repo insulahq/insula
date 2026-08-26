@@ -697,7 +697,9 @@ export default function TenantsBackupsPage() {
   // Per-tenant scheduled-bundles override (inclusion editor in BackupsTab).
   const setInclusion = useMutation({
     mutationFn: ({ tenantId, override }: { tenantId: string; override: 'inherit' | 'on' | 'off' }) =>
-      apiFetch(`/api/v1/admin/tenants/${tenantId}`, {
+      // Same route the tenant editor uses (PATCH /api/v1/tenants/:id,
+      // requireRole super_admin|admin) — there is no /admin/tenants path.
+      apiFetch(`/api/v1/tenants/${tenantId}`, {
         method: 'PATCH',
         body: JSON.stringify({
           include_in_scheduled_bundles_override: override === 'inherit' ? null : override === 'on',
