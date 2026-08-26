@@ -698,19 +698,10 @@ components:
     owner: platform
     notes: Static-page nginx for suspended tenants + custom error pages. (Frontend panels embed nginx:1.27-alpine separately, see base-images.)
 
-  - id: postgres-client-backup
-    name: postgres client image (pg_dump CronJob)
-    tier: "2"
-    kind: image
-    pinned: "17-alpine"
-    pin_source: k8s/base/backup/postgres-dump-cronjob.yaml
-    pin_check: true
-    watch: { type: github_releases, repo: postgres/postgres, advisories: postgres/postgres }
-    scan: trivy
-    owner: platform
-    notes: >-
-      pg_dump client for logical backups. HYGIENE: this is 17 while the server is 18
-      (postgresql component) — bump to 18-alpine so pg_dump major matches the server.
+  # postgres-client-backup removed 2026-08-26: the legacy pg_dump
+  # CronJob was retired with the target-activate path (its shim-era
+  # replacement is CNPG base backups + WAL; the manual pg-dump export
+  # runs inside the platform-api image, which is already watched).
 
   - id: alpine-k8s
     name: alpine/k8s (kubectl utility image for CronJobs)
