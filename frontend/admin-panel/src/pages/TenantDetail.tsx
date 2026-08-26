@@ -34,6 +34,9 @@ import type { Domain, PaginatedResponse } from '@/types/api';
 import type { Backup } from '@/hooks/use-backups';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
+import TimeCell from '@/components/ui/TimeCell';
+import { useQuery } from '@tanstack/react-query';
+import { apiFetch } from '@/lib/api-client';
 import { useTriggerProvisioning } from '@/hooks/use-provisioning';
 import { useTenantMetrics } from '@/hooks/use-resource-metrics';
 import ProvisioningProgressModal from '@/components/ProvisioningProgressModal';
@@ -638,6 +641,7 @@ export default function TenantDetail() {
           {activeTab === 'email' && <EmailTab tenantId={id} emailDomains={emailDomainsQuery.data?.data} mailboxes={mailboxesQuery.data?.data} isLoading={emailDomainsQuery.isLoading || mailboxesQuery.isLoading} error={emailDomainsQuery.error || mailboxesQuery.error} />}
           {activeTab === 'backups' && (
             <div className="space-y-4">
+              {id && <TenantBundlesSummary tenantId={id} />}
               <BackupsTab data={backupsQuery.data} isLoading={backupsQuery.isLoading} error={backupsQuery.error} />
             </div>
           )}
@@ -1577,11 +1581,55 @@ function DeploymentsTab({ data, isLoading, error, tenantId }: TabContentProps<De
   );
 }
 
+/**
+ * Off-site bundle history for this tenant (backup_jobs) with a jump to
+ * the cross-tenant Backups page pre-filtered to this tenant, where each
+ * bundle row has its own Restore… action. Closes "nowhere shows that
+ * multiple backups exist for this tenant" (operator report #3,
+ * 2026-08-26) — the legacy table below only knows the retired
+ * per-resource `backups` rows.
+ */
+function TenantBundlesSummary({ tenantId }: { readonly tenantId: string }) {
+  const q = useQuery({
+    queryKey: ['admin', 'tenant-bundles', tenantId],
+    queryFn: () => apiFetch<{ data: ReadonlyArray<{ id: string; status: string; sizeBytes: number; createdAt: string; initiator: string }> }>(
+      `/api/v1/admin/tenant-bundles?tenantId=${encodeURIComponent(tenantId)}`,
+    ),
+    staleTime: 15_000,
+  });
+  const bundles = Array.isArray(q.data?.data) ? q.data.data : [];
+  return (
+    <div
+      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm dark:border-gray-700 dark:bg-gray-800/50"
+      data-testid="tenant-bundles-summary"
+    >
+      <div className="text-gray-700 dark:text-gray-300">
+        <span className="font-medium">{q.isLoading ? '…' : bundles.length}</span>{' '}
+        off-site backup bundle{bundles.length === 1 ? '' : 's'} for this tenant
+        {bundles.length > 0 && (
+          <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
+            (latest <TimeCell iso={bundles[0]?.createdAt} />)
+          </span>
+        )}
+      </div>
+      <Link
+        to={`/backups/tenants?tab=backups&tenant=${tenantId}`}
+        className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+        data-testid="tenant-bundles-manage-link"
+      >
+        View & restore bundles →
+      </Link>
+    </div>
+  );
+}
+
 function BackupsTab({ data, isLoading, error }: TabContentProps<Backup>) {
+  // Hook order must not depend on load state (Rules of Hooks) — the
+  // early returns come after every hook call.
+  const items = useMemo(() => data?.data ?? [], [data]);
+  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'createdAt', 'desc');
   if (isLoading) return <TabLoading />;
   if (error) return <TabError message="Failed to load backups." />;
-  const items = data?.data ?? [];
-  const { sortedData: sortedItems, sortKey, sortDirection, onSort } = useSortable(items, 'resourceType');
   if (items.length === 0) return <TabEmpty resource="backups" />;
 
   return (

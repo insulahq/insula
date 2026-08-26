@@ -14,9 +14,25 @@ binding.
 |---|---|---|
 | `etcd-snapshot-cronjob.yaml` | `SYSTEM.etcd` | `etcd-snap-via-shim-cronjob.yaml` (R-X7) |
 | `postgres-dump-cronjob.yaml` | `SYSTEM.postgres` | CNPG plugin-barman-cloud via shim (R-X6) |
-| `cluster-state-cronjob.yaml` | `SYSTEM.secrets-bundle` | R-X9 secrets-bundle rclone-push (planned) |
-| `secrets-backup-cronjob.yaml` | `SYSTEM.secrets-bundle` | R-X9 secrets-bundle rclone-push (planned) |
-| `backup-audit-cronjob.yaml` | DR audit/inventory | unchanged — read-only, no upstream IO |
+| `cluster-state-cronjob.yaml` | `SYSTEM.secrets-bundle` | **shim-bridged** (dr-cronjobs.ts, 2026-08-26) |
+| `secrets-backup-cronjob.yaml` | `SYSTEM.secrets-bundle` | **shim-bridged** (dr-cronjobs.ts, 2026-08-26) |
+| `backup-audit-cronjob.yaml` | DR audit/inventory | **shim-bridged** (unsuspend only — read-only, no upstream IO) |
+
+### 2026-08-26: the shim bridge (dr-cronjobs.ts)
+
+The "R-X9 secrets-bundle rclone-push" replacement was planned but never
+built — so a cluster configured purely through the 3-class shim
+assignments (the normal path since R-X20) left `secrets-backup`,
+`cluster-state` and `backup-audit` suspended forever: the nightly
+age-encrypted secrets bundle and cluster-state dump silently never ran
+(found on production). `backend/src/modules/backup-rclone-shim/
+dr-cronjobs.ts` now bridges them: when the SYSTEM class is bound and no
+legacy target is active, it materialises `backup-credentials` pointing
+at the shim's own S3 endpoint (path-style, bucket `system`, prefix
+`dr/`) and unsuspends exactly those three. The legacy activate flow
+still takes precedence (coexistence contract below). `postgres-dump`
+and `etcd-snapshot-upload` stay retired — their shim-era replacements
+already run, and unsuspending them would double-back-up the same data.
 
 ### Why "deprecated but not removed"
 
