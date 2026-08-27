@@ -309,6 +309,8 @@ jobs:
           shellcheck --version
       - name: Verify runner validation + embedding + per-script authoring contract
         run: ./scripts/ci-host-migrations-check.sh
+      - name: Verify kubelet graceful node shutdown stays wired (bootstrap ≡ host-migration)
+        run: ./scripts/ci-graceful-shutdown-check.sh
 
   platform-ops-embed-guard:
     name: platform-ops embed-and-launch manifest ≡ dispatch ≡ scripts (ADR-045 R18)
@@ -335,6 +337,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify dry-run-default + resolved-source + clean-tag + decision gates
         run: ./scripts/ci-upgrade-repin-check.sh
+      - name: Verify the BREAKING auto-upgrade gate is wired end-to-end
+        run: ./scripts/ci-breaking-release-gate-check.sh
 
   no-dex-in-production:
     name: Dex must not ship in production

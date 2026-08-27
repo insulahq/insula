@@ -110,6 +110,29 @@ and **Delete** unlocks.
 To put a node back into service after maintenance, the platform un-cordons it
 when appropriate; you can also `kubectl uncordon <node>` directly.
 
+### What happens when a node reboots
+
+Insula configures **graceful node shutdown** on every node, so a plain
+`reboot` is safe even when you have not drained first. On shutdown the kubelet
+holds a systemd inhibitor lock and stops pods in waves — tenant workloads
+first, then platform services including the database, and only then Longhorn's
+storage components. That order matters: Longhorn is what unmounts everybody
+else's volumes, so it has to be the last thing standing. Volumes are therefore
+detached cleanly instead of being cut away mid-write.
+
+!!! warning "Nodes bootstrapped before 2026.8.19"
+    Older nodes shut down without draining: containers kept running while the
+    host tore down the iSCSI transport underneath them, which could abort the
+    filesystem journal on a Longhorn volume while Postgres was still writing to
+    it, and added minutes of I/O-timeout stalls to every reboot. The fix is
+    applied automatically by the 2026.8.19 host-migration the next time
+    `platform-ops host-config` converges the node — no operator action needed.
+    To confirm it is armed, run `systemd-inhibit --list` on the host and look
+    for a `kubelet … Kubelet needs time to handle node shutdown … delay` entry.
+
+Draining is still the right move before *planned* maintenance — it moves
+workloads off the node instead of just stopping them politely.
+
 ## Removing a node
 
 1. **Drain** it (above) and wait for tenants to reschedule.

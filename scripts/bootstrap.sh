@@ -1849,6 +1849,168 @@ EOF
   log "Pod capacity: max-pods=500 (kubelet default 110; Calico blockSize 26 supplies the addresses)."
 }
 
+# Kubelet graceful node shutdown. Kept as a constant so bootstrap.sh and
+# host-migration 2026.8.19/0001-graceful-node-shutdown stay byte-identical —
+# the migration content-compares against exactly this text.
+#
+# Ordering, not just duration, is what makes this safe. The groups mirror
+# k8s/base/priority-classes.yaml plus Longhorn's own chart value, and a pod
+# joins the group with the largest `priority` <= its own:
+#
+#   0          tenant-default / unclassified  — and, by the <= rule, also
+#              platform-tenant-overhead (100) and platform-storage-ops (1000)
+#   10000      platform-critical — platform-api, panels, mail, CNPG Postgres
+#   1000000000 longhorn-critical — instance-manager + CSI plugin, i.e. the
+#              iSCSI data plane every volume above is mounted through. It MUST
+#              outlive them, which is exactly what a later group means.
+#   2000000000 system-cluster-critical / system-node-critical — CNI, DNS
+#
+# Total worst case 120s, but kubelet advances as soon as a group's pods are
+# gone, so a healthy node is far quicker.
+GRACEFUL_SHUTDOWN_INHIBIT_SEC="150"
+
+configure_graceful_shutdown() {
+  # Terminate pods and unmount their volumes BEFORE the host powers down.
+  #
+  # Without this the node reboot sequence is actively unsafe, not merely
+  # slow. k3s.service ships `KillMode=process` and orders itself only
+  # `After=network-online.target`, so on shutdown systemd stops the k3s
+  # process while every container keeps running, then tears down iscsid and
+  # the network underneath them. Longhorn's iSCSI sessions cannot log out,
+  # the kernel force-offlines the devices, and the filesystem on top is
+  # ripped away mid-write. Measured on the production node 2026-08-27:
+  #
+  #   12:18:27 iscsid: session 3 in invalid state for logout. Try again later
+  #   12:18:38 sd 4:0:0:1: [sdc] Medium Error / Unrecovered read error
+  #   12:18:38 EXT4-fs error (device sdc): comm postgres: Detected aborted journal
+  #
+  # sdc was the CNPG system-db volume. Postgres WAL replay saved it that
+  # time; that is luck, not a design. The stall also cost 3m28s of the
+  # ~6m50s reboot outage — systemd waiting out I/O timeouts on mounts
+  # nobody unmounted.
+  #
+  # Three pieces, ALL of which are load-bearing (each was verified to be
+  # individually insufficient on the DEV cluster):
+  #
+  #   1. kubelet KubeletConfiguration drop-in. shutdownGracePeriodByPodPriority
+  #      has NO command-line flag — it is config-file-only, so `--kubelet-arg`
+  #      (the mechanism 50-memory-protection.yaml uses) cannot express it. k3s
+  #      reads /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/*.conf and
+  #      merges them over its generated 00-k3s-defaults.conf; k3s rewrites
+  #      only its own 00- file, so ours survives restarts and upgrades.
+  #
+  #      The by-priority form is REQUIRED, not a refinement. The simpler
+  #      shutdownGracePeriod/shutdownGracePeriodCriticalPods pair yields two
+  #      groups split at 2000000000, which lumps longhorn-critical (1e9) in
+  #      with platform-critical (10000) — so Longhorn's instance-manager is
+  #      torn down alongside the Postgres pod whose volume it serves. A real
+  #      DEV reboot on that config failed with "Failed while waiting for all
+  #      the volumes belonging to Pods in this group to unmount ... context
+  #      deadline exceeded" on the system-db-1 PVC.
+  #
+  #   2. logind InhibitDelayMaxSec. kubelet takes a `delay` inhibitor lock
+  #      and REFUSES to arm the shutdown manager unless logind's delay is
+  #      >= shutdownGracePeriod, failing with
+  #        "Failed to start node shutdown manager ... timed out after 5
+  #         attempts waiting for logind InhibitDelayMaxSec to update"
+  #      kubelet tries to self-heal by writing 99-kubelet.conf, and that
+  #      does NOT work: the file it writes is outranked (see below), and it
+  #      never restarts logind.
+  #
+  #      The `zz-` prefix is LOAD-BEARING. systemd merges .conf.d drop-ins
+  #      by FILENAME across /etc, /run and /usr/lib — directory priority
+  #      only breaks ties between identical names. unattended-upgrades ships
+  #      /usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf
+  #      with InhibitDelayMaxSec=30, and "unattended-..." sorts after any
+  #      digit-prefixed name — so a 10- or 99- drop-in silently loses to it
+  #      and the effective delay stays 30s. Only a name sorting after "u"
+  #      wins. Do not renumber this file.
+  #
+  #   3. systemd ordering vs iscsid. `After=iscsid.service` makes systemd
+  #      stop k3s BEFORE iscsid (units stop in reverse start order), so the
+  #      unmounts kubelet triggers still have a live iSCSI transport.
+  #
+  # Cost: shutdown gains a bounded drain (<= 60s, 40s of it for ordinary
+  # pods and 20s reserved for platform-critical ones) and loses the
+  # unbounded I/O-timeout stall. Sequence matters on a FRESH install too —
+  # this runs in phase 1, before k3s is ever installed, so kubelet's very
+  # first start already sees a compliant logind.
+  if [[ "$SKIP_HARDENING" == true ]]; then
+    log "Skipping graceful node shutdown config (--skip-hardening)."
+    return 0
+  fi
+
+  log "Configuring graceful node shutdown (kubelet drain before power-off)..."
+
+  # 1. kubelet config drop-in. The directory is normally created by k3s on
+  #    first start; creating it early is safe and is what lets a fresh
+  #    install arm the shutdown manager on the very first kubelet start.
+  install -d -m 0700 /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
+  cat > /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf <<'EOF'
+# Written by bootstrap.sh (configure_graceful_shutdown) and converged on
+# existing clusters by host-migration 2026.8.19/0001-graceful-node-shutdown.
+# These have no kubelet FLAG — KubeletConfiguration-only, which is why this is
+# a kubelet.conf.d drop-in and not a --kubelet-arg.
+#
+# Groups mirror k8s/base/priority-classes.yaml + Longhorn's chart value. A pod
+# joins the group with the largest `priority` <= its own, and groups are
+# drained in ascending order, so longhorn-critical (the iSCSI data plane)
+# OUTLIVES every pod whose volume it has to unmount. Do not collapse this back
+# to shutdownGracePeriod/shutdownGracePeriodCriticalPods.
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+shutdownGracePeriodByPodPriority:
+  - priority: 0
+    shutdownGracePeriodSeconds: 30
+  - priority: 10000
+    shutdownGracePeriodSeconds: 40
+  - priority: 1000000000
+    shutdownGracePeriodSeconds: 30
+  - priority: 2000000000
+    shutdownGracePeriodSeconds: 20
+EOF
+  chmod 0600 /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf
+
+  # 2. logind inhibit delay. zz- prefix: see the note above — it MUST sort
+  #    after unattended-upgrades-logind-maxdelay.conf.
+  install -d -m 0755 /etc/systemd/logind.conf.d
+  cat > /etc/systemd/logind.conf.d/zz-insula-graceful-shutdown.conf <<EOF
+# Written by bootstrap.sh (configure_graceful_shutdown) and converged on
+# existing clusters by host-migration 2026.8.19/0001-graceful-node-shutdown.
+# MUST be >= kubelet shutdownGracePeriod or kubelet refuses to arm its node
+# shutdown manager. The zz- prefix is load-bearing: systemd merges
+# logind.conf.d drop-ins by FILENAME across /etc, /run and /usr/lib, and
+# unattended-upgrades ships a drop-in pinning this to 30s that outranks any
+# digit-prefixed name. Do not renumber.
+[Login]
+InhibitDelayMaxSec=${GRACEFUL_SHUTDOWN_INHIBIT_SEC}
+EOF
+
+  # 3. Stop k3s before iscsid. Written for both unit names — a node runs one
+  #    or the other, and an unused drop-in directory is inert.
+  local unit
+  for unit in k3s k3s-agent; do
+    install -d -m 0755 "/etc/systemd/system/${unit}.service.d"
+    cat > "/etc/systemd/system/${unit}.service.d/10-insula-iscsid-order.conf" <<'EOF'
+# Written by bootstrap.sh (configure_graceful_shutdown) and converged on
+# existing clusters by host-migration 2026.8.19/0001-graceful-node-shutdown.
+# Units stop in reverse start order, so ordering k3s AFTER iscsid means k3s
+# stops BEFORE it — kubelet's shutdown-time unmounts still have a live iSCSI
+# transport. Ordering only: no Requires=, so a node without open-iscsi (no
+# Longhorn) is unaffected.
+[Unit]
+After=iscsid.service
+EOF
+  done
+
+  systemctl daemon-reload 2>/dev/null || warn "systemctl daemon-reload failed after graceful-shutdown drop-ins."
+  # logind reads InhibitDelayMaxSec at start only. Restarting it is the
+  # supported way to apply the change; sessions survive via its fd store.
+  systemctl restart systemd-logind 2>/dev/null || warn "systemd-logind restart failed — InhibitDelayMaxSec applies on next boot."
+
+  log "Graceful node shutdown configured (ordered drain: tenants 30s → platform 40s → longhorn 30s → system 20s, logind delay ${GRACEFUL_SHUTDOWN_INHIBIT_SEC}s)."
+}
+
 configure_node_net_tuning() {
   # Raise the kernel UDP receive limits so VXLAN, WireGuard, and any
   # tenant UDP workload don't hit rcvbuf overflow under gigabit bursts.
@@ -4527,6 +4689,22 @@ install_calico() {
   calico_mtu=$(detect_calico_mtu)
   log "Calico Installation will use mtu=${calico_mtu}"
 
+  # typha MUST tolerate node.kubernetes.io/network-unavailable or a rebooted
+  # single-node cluster deadlocks and never comes back.
+  #
+  # Since kubelet graceful node shutdown landed, pods are TERMINATED on
+  # shutdown rather than restarted in place, so their controllers create
+  # replacements that have to be SCHEDULED at boot. typha is a Deployment, and
+  # at boot the node still carries network-unavailable:NoSchedule — a taint
+  # only a healthy calico-node clears, while calico-node refuses to start
+  # without a ready Typha ("Typha discovery enabled but discovery failed").
+  # Observed on the DEV cluster 2026-08-27: every workload sat Pending until
+  # the taint was removed by hand. Multi-node clusters hide it because typha
+  # schedules elsewhere.
+  #
+  # Safe because typha runs hostNetwork: true — it does not need the CNI it is
+  # helping to bring up. Tolerations REPLACE the operator's list, so the
+  # server-only taint is restated here.
   cat <<EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
@@ -4534,6 +4712,17 @@ metadata:
   name: default
 spec:
   controlPlaneReplicas: 1
+  typhaDeployment:
+    spec:
+      template:
+        spec:
+          tolerations:
+          - key: insula.host/server-only
+            operator: Exists
+            effect: NoSchedule
+          - key: node.kubernetes.io/network-unavailable
+            operator: Exists
+            effect: NoSchedule
   calicoNetwork:
     bgp: Disabled
     mtu: ${calico_mtu}
@@ -9846,6 +10035,7 @@ main() {
   if [[ "$DRY_RUN" != true ]]; then
     configure_node_logging_caps
     configure_memory_protection
+    configure_graceful_shutdown
     configure_node_net_tuning
   fi
   if [[ "$DRY_RUN" == true ]]; then
