@@ -13,6 +13,16 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A hung API probe no longer defeats the login readiness gate.** The gate
+  classifies a failed `/auth/oidc/status` probe as "API unreachable", but a
+  probe that never *settles* — a TCP connect to a backend that accepts and
+  then goes silent, or an edge whose own connect timeout is 60s — left the
+  hook in its `loading` state, which renders the login form. That is exactly
+  the dead form the gate exists to prevent, reached from the other direction.
+  Probes now carry an 8s abort budget and an aborted probe counts as
+  unreachable; the controller is also aborted on unmount so a navigation away
+  cannot leave a request dangling. Fast failures (an endpoint-less upstream
+  answers 502 immediately) are unaffected.
 - **The login page no longer offers a sign-in form the API cannot honour.**
   Both panels already fetched `/auth/oidc/status` on mount — they need the
   provider list — but caught every failure and fell back to
