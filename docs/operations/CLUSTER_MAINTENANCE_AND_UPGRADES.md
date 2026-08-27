@@ -1382,14 +1382,73 @@ them. Measured on production 2026-08-27:
 `sdc` was the CNPG `system-db` Longhorn volume. That reboot also stalled for
 **3m28s** waiting out I/O timeouts, roughly half a ~6m50s outage.
 
-**The three settings, all required** (each was verified individually
+**The four settings, all required** (each was verified individually
 insufficient):
 
 | File | Setting | Why |
 |---|---|---|
-| `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf` | `shutdownGracePeriod: 60s`, `shutdownGracePeriodCriticalPods: 20s` | No kubelet *flag* exists — KubeletConfiguration only, so `--kubelet-arg` cannot express it |
-| `/etc/systemd/logind.conf.d/zz-insula-graceful-shutdown.conf` | `InhibitDelayMaxSec=90` | kubelet refuses to arm the manager unless logind's delay ≥ grace period |
+| `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf` | `shutdownGracePeriodByPodPriority` (see below) | No kubelet *flag* exists — KubeletConfiguration only, so `--kubelet-arg` cannot express it |
+| `/etc/systemd/logind.conf.d/zz-insula-graceful-shutdown.conf` | `InhibitDelayMaxSec=150` | kubelet refuses to arm the manager unless logind's delay ≥ the total drain budget |
 | `/etc/systemd/system/k3s.service.d/10-insula-iscsid-order.conf` | `After=iscsid.service` | Units stop in reverse start order → k3s stops *before* iscsid |
+| Tigera `Installation/default` | typha tolerates `node.kubernetes.io/network-unavailable` | Otherwise a rebooted **single-node** cluster deadlocks and never returns (see below) |
+
+### Drain order is the point, not drain duration
+
+```yaml
+shutdownGracePeriodByPodPriority:
+  - priority: 0            # tenant-default (and, by the <= rule, 100 / 1000)
+    shutdownGracePeriodSeconds: 30
+  - priority: 10000        # platform-critical — platform-api, panels, mail, Postgres
+    shutdownGracePeriodSeconds: 40
+  - priority: 1000000000   # longhorn-critical — instance-manager + CSI plugin
+    shutdownGracePeriodSeconds: 30
+  - priority: 2000000000   # system-cluster-critical / system-node-critical
+    shutdownGracePeriodSeconds: 20
+```
+
+Groups drain in **ascending priority order**, so the Longhorn data plane
+outlives every pod whose volume it has to unmount. Worst case 120s, but
+kubelet advances as soon as a group's pods are gone.
+
+!!! danger "Do not collapse this to `shutdownGracePeriod` + `shutdownGracePeriodCriticalPods`"
+    That simpler pair splits pods into two groups at `2000000000`, which puts
+    `longhorn-critical` (1e9) in the **same** group as `platform-critical`
+    (10000) — Longhorn's `instance-manager` is then torn down alongside the
+    Postgres pod whose volume it serves. A real DEV reboot on that config
+    failed with:
+
+    ```
+    nodeshutdown_manager.go:204 "Failed while waiting for all the volumes
+    belonging to Pods in this group to unmount"
+    err="mounted volumes=[...longhorn.io^pvc-7d827cd8...]: context deadline exceeded"
+    ```
+
+    `pvc-7d827cd8` was `platform/system-db-1`. The corruption path was still
+    wide open even though the drain "worked".
+
+### The single-node reboot deadlock
+
+Graceful shutdown **terminates** pods rather than leaving them to restart in
+place, so at boot their controllers must **schedule** replacements. `calico-typha`
+is a Deployment; the node boots carrying
+`node.kubernetes.io/network-unavailable:NoSchedule`, which only a healthy
+`calico-node` clears — and `calico-node` refuses to start without a ready Typha:
+
+```
+[FATAL] node-services/startsyncerclient.go 49: Typha discovery enabled but
+discovery failed. error=missing Kubernetes service IP or port
+```
+
+On a single-node cluster that is a closed loop; DEV sat with every workload
+`Pending` until the taint was removed by hand. Typha runs `hostNetwork: true`
+and needs no CNI, so it now tolerates that taint. Multi-node clusters never
+saw it because Typha schedules elsewhere.
+
+Manual break-glass if you ever hit it:
+
+```bash
+kubectl taint node <node> node.kubernetes.io/network-unavailable:NoSchedule-
+```
 
 !!! danger "The `zz-` prefix is load-bearing"
     systemd merges `.conf.d` drop-ins by **filename across all of `/etc`,
@@ -1411,8 +1470,8 @@ systemd-inhibit --list | grep kubelet
 # And confirm the kubelet actually read the config:
 NODE=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
 kubectl get --raw "/api/v1/nodes/$NODE/proxy/configz" \
-  | python3 -c 'import sys,json;k=json.load(sys.stdin)["kubeletconfig"];print(k.get("shutdownGracePeriod"),k.get("shutdownGracePeriodCriticalPods"))'
-# 1m0s 20s
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["kubeletconfig"].get("shutdownGracePeriodByPodPriority"))'
+# [{'priority': 0, 'shutdownGracePeriodSeconds': 30}, {'priority': 10000, ...}, ...]
 ```
 
 **Failure signature** if logind is not compliant — the node looks configured

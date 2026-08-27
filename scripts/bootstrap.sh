@@ -1849,12 +1849,25 @@ EOF
   log "Pod capacity: max-pods=500 (kubelet default 110; Calico blockSize 26 supplies the addresses)."
 }
 
-# Kubelet graceful node shutdown. Kept as constants so bootstrap.sh and
+# Kubelet graceful node shutdown. Kept as a constant so bootstrap.sh and
 # host-migration 2026.8.19/0001-graceful-node-shutdown stay byte-identical —
-# the migration content-compares against exactly these files.
-GRACEFUL_SHUTDOWN_GRACE="60s"
-GRACEFUL_SHUTDOWN_GRACE_CRITICAL="20s"
-GRACEFUL_SHUTDOWN_INHIBIT_SEC="90"
+# the migration content-compares against exactly this text.
+#
+# Ordering, not just duration, is what makes this safe. The groups mirror
+# k8s/base/priority-classes.yaml plus Longhorn's own chart value, and a pod
+# joins the group with the largest `priority` <= its own:
+#
+#   0          tenant-default / unclassified  — and, by the <= rule, also
+#              platform-tenant-overhead (100) and platform-storage-ops (1000)
+#   10000      platform-critical — platform-api, panels, mail, CNPG Postgres
+#   1000000000 longhorn-critical — instance-manager + CSI plugin, i.e. the
+#              iSCSI data plane every volume above is mounted through. It MUST
+#              outlive them, which is exactly what a later group means.
+#   2000000000 system-cluster-critical / system-node-critical — CNI, DNS
+#
+# Total worst case 120s, but kubelet advances as soon as a group's pods are
+# gone, so a healthy node is far quicker.
+GRACEFUL_SHUTDOWN_INHIBIT_SEC="150"
 
 configure_graceful_shutdown() {
   # Terminate pods and unmount their volumes BEFORE the host powers down.
@@ -1879,12 +1892,21 @@ configure_graceful_shutdown() {
   # Three pieces, ALL of which are load-bearing (each was verified to be
   # individually insufficient on the DEV cluster):
   #
-  #   1. kubelet KubeletConfiguration drop-in. shutdownGracePeriod has NO
-  #      command-line flag — it is config-file-only, so `--kubelet-arg` (the
-  #      mechanism 50-memory-protection.yaml uses) cannot express it. k3s
+  #   1. kubelet KubeletConfiguration drop-in. shutdownGracePeriodByPodPriority
+  #      has NO command-line flag — it is config-file-only, so `--kubelet-arg`
+  #      (the mechanism 50-memory-protection.yaml uses) cannot express it. k3s
   #      reads /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/*.conf and
   #      merges them over its generated 00-k3s-defaults.conf; k3s rewrites
   #      only its own 00- file, so ours survives restarts and upgrades.
+  #
+  #      The by-priority form is REQUIRED, not a refinement. The simpler
+  #      shutdownGracePeriod/shutdownGracePeriodCriticalPods pair yields two
+  #      groups split at 2000000000, which lumps longhorn-critical (1e9) in
+  #      with platform-critical (10000) — so Longhorn's instance-manager is
+  #      torn down alongside the Postgres pod whose volume it serves. A real
+  #      DEV reboot on that config failed with "Failed while waiting for all
+  #      the volumes belonging to Pods in this group to unmount ... context
+  #      deadline exceeded" on the system-db-1 PVC.
   #
   #   2. logind InhibitDelayMaxSec. kubelet takes a `delay` inhibitor lock
   #      and REFUSES to arm the shutdown manager unless logind's delay is
@@ -1924,15 +1946,28 @@ configure_graceful_shutdown() {
   #    first start; creating it early is safe and is what lets a fresh
   #    install arm the shutdown manager on the very first kubelet start.
   install -d -m 0700 /var/lib/rancher/k3s/agent/etc/kubelet.conf.d
-  cat > /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf <<EOF
+  cat > /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf <<'EOF'
 # Written by bootstrap.sh (configure_graceful_shutdown) and converged on
 # existing clusters by host-migration 2026.8.19/0001-graceful-node-shutdown.
-# shutdownGracePeriod has no kubelet FLAG — it is KubeletConfiguration-only,
-# which is why this is a kubelet.conf.d drop-in and not a --kubelet-arg.
+# These have no kubelet FLAG — KubeletConfiguration-only, which is why this is
+# a kubelet.conf.d drop-in and not a --kubelet-arg.
+#
+# Groups mirror k8s/base/priority-classes.yaml + Longhorn's chart value. A pod
+# joins the group with the largest `priority` <= its own, and groups are
+# drained in ascending order, so longhorn-critical (the iSCSI data plane)
+# OUTLIVES every pod whose volume it has to unmount. Do not collapse this back
+# to shutdownGracePeriod/shutdownGracePeriodCriticalPods.
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
-shutdownGracePeriod: ${GRACEFUL_SHUTDOWN_GRACE}
-shutdownGracePeriodCriticalPods: ${GRACEFUL_SHUTDOWN_GRACE_CRITICAL}
+shutdownGracePeriodByPodPriority:
+  - priority: 0
+    shutdownGracePeriodSeconds: 30
+  - priority: 10000
+    shutdownGracePeriodSeconds: 40
+  - priority: 1000000000
+    shutdownGracePeriodSeconds: 30
+  - priority: 2000000000
+    shutdownGracePeriodSeconds: 20
 EOF
   chmod 0600 /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf
 
@@ -1973,7 +2008,7 @@ EOF
   # supported way to apply the change; sessions survive via its fd store.
   systemctl restart systemd-logind 2>/dev/null || warn "systemd-logind restart failed — InhibitDelayMaxSec applies on next boot."
 
-  log "Graceful node shutdown configured (drain ${GRACEFUL_SHUTDOWN_GRACE}, critical ${GRACEFUL_SHUTDOWN_GRACE_CRITICAL}, logind delay ${GRACEFUL_SHUTDOWN_INHIBIT_SEC}s)."
+  log "Graceful node shutdown configured (ordered drain: tenants 30s → platform 40s → longhorn 30s → system 20s, logind delay ${GRACEFUL_SHUTDOWN_INHIBIT_SEC}s)."
 }
 
 configure_node_net_tuning() {
@@ -4654,6 +4689,22 @@ install_calico() {
   calico_mtu=$(detect_calico_mtu)
   log "Calico Installation will use mtu=${calico_mtu}"
 
+  # typha MUST tolerate node.kubernetes.io/network-unavailable or a rebooted
+  # single-node cluster deadlocks and never comes back.
+  #
+  # Since kubelet graceful node shutdown landed, pods are TERMINATED on
+  # shutdown rather than restarted in place, so their controllers create
+  # replacements that have to be SCHEDULED at boot. typha is a Deployment, and
+  # at boot the node still carries network-unavailable:NoSchedule — a taint
+  # only a healthy calico-node clears, while calico-node refuses to start
+  # without a ready Typha ("Typha discovery enabled but discovery failed").
+  # Observed on the DEV cluster 2026-08-27: every workload sat Pending until
+  # the taint was removed by hand. Multi-node clusters hide it because typha
+  # schedules elsewhere.
+  #
+  # Safe because typha runs hostNetwork: true — it does not need the CNI it is
+  # helping to bring up. Tolerations REPLACE the operator's list, so the
+  # server-only taint is restated here.
   cat <<EOF | kubectl apply -f -
 apiVersion: operator.tigera.io/v1
 kind: Installation
@@ -4661,6 +4712,17 @@ metadata:
   name: default
 spec:
   controlPlaneReplicas: 1
+  typhaDeployment:
+    spec:
+      template:
+        spec:
+          tolerations:
+          - key: insula.host/server-only
+            operator: Exists
+            effect: NoSchedule
+          - key: node.kubernetes.io/network-unavailable
+            operator: Exists
+            effect: NoSchedule
   calicoNetwork:
     bgp: Disabled
     mtu: ${calico_mtu}

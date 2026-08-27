@@ -114,10 +114,11 @@ when appropriate; you can also `kubectl uncordon <node>` directly.
 
 Insula configures **graceful node shutdown** on every node, so a plain
 `reboot` is safe even when you have not drained first. On shutdown the kubelet
-holds a systemd inhibitor lock and terminates pods in priority order before the
-host powers down — ordinary workloads get up to 40 seconds, platform-critical
-pods (Postgres, mail, ingress) a further 20 — so their volumes are unmounted
-cleanly instead of being cut away mid-write.
+holds a systemd inhibitor lock and stops pods in waves — tenant workloads
+first, then platform services including the database, and only then Longhorn's
+storage components. That order matters: Longhorn is what unmounts everybody
+else's volumes, so it has to be the last thing standing. Volumes are therefore
+detached cleanly instead of being cut away mid-write.
 
 !!! warning "Nodes bootstrapped before 2026.8.19"
     Older nodes shut down without draining: containers kept running while the

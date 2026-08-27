@@ -100,24 +100,60 @@ else
   fail "$logind_name sorts BEFORE $VENDOR — systemd would apply the vendor's 30s and kubelet would refuse to arm. Keep a name sorting after 'u' (e.g. zz-)."
 fi
 
-echo "▸ Invariant 4: InhibitDelayMaxSec >= shutdownGracePeriod"
+echo "▸ Invariant 4: InhibitDelayMaxSec >= the SUM of the per-priority periods"
 # Comment lines are excluded deliberately: both files DOCUMENT the vendor's
 # competing InhibitDelayMaxSec=30 in prose, and matching that instead of the
 # effective setting would make this guard assert the wrong number.
-effective() { grep -vE '^[[:space:]]*#' "$MIGRATION" | grep -oE "$1" | head -1 | grep -oE '[0-9]+' || true; }
-grace=$(effective 'shutdownGracePeriod:[[:space:]]*[0-9]+')
-inhibit=$(effective 'InhibitDelayMaxSec=[0-9]+')
-if [[ -n "$grace" && -n "$inhibit" && "$inhibit" -ge "$grace" ]]; then
-  pass "InhibitDelayMaxSec=${inhibit}s >= shutdownGracePeriod=${grace}s"
+body() { grep -vE '^[[:space:]]*#' "$MIGRATION"; }
+total=$(body | grep -oE 'shutdownGracePeriodSeconds:[[:space:]]*[0-9]+' | grep -oE '[0-9]+' \
+  | awk '{s+=$1} END {print s+0}')
+inhibit=$(body | grep -oE 'InhibitDelayMaxSec=[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+if [[ -n "$inhibit" && "$total" -gt 0 && "$inhibit" -ge "$total" ]]; then
+  pass "InhibitDelayMaxSec=${inhibit}s >= total drain budget ${total}s"
 else
-  fail "InhibitDelayMaxSec (${inhibit:-unset}) must be >= shutdownGracePeriod (${grace:-unset}) or kubelet refuses to start the node shutdown manager"
+  fail "InhibitDelayMaxSec (${inhibit:-unset}) must be >= the sum of shutdownGracePeriodSeconds (${total}s) or kubelet refuses to start the node shutdown manager"
 fi
 
-echo "▸ Invariant 5: shutdownGracePeriod is delivered as KubeletConfiguration, not a flag"
+echo "▸ Invariant 5: the storage data plane drains AFTER the pods it unmounts"
+# THE correctness property. Groups drain in ascending priority order, so
+# longhorn-critical (1000000000) must appear as a LATER group than
+# platform-critical (10000) — otherwise Longhorn's instance-manager dies
+# alongside the Postgres pod whose volume it serves and the unmount times out.
+plat_line=$(body | grep -n 'priority:[[:space:]]*10000$' | head -1 | cut -d: -f1 || true)
+lh_line=$(body | grep -n 'priority:[[:space:]]*1000000000$' | head -1 | cut -d: -f1 || true)
+if [[ -n "$plat_line" && -n "$lh_line" && "$lh_line" -gt "$plat_line" ]]; then
+  pass "longhorn-critical (1000000000) drains after platform-critical (10000)"
+else
+  fail "shutdownGracePeriodByPodPriority must list platform-critical (10000) BEFORE longhorn-critical (1000000000); got platform@${plat_line:-none} longhorn@${lh_line:-none}"
+fi
+if grep -qE '^[[:space:]]*shutdownGracePeriodCriticalPods:' "$BOOTSTRAP" "$MIGRATION" 2>/dev/null; then
+  fail "the two-value shutdownGracePeriod/CriticalPods form collapses longhorn-critical into platform-critical's group — use shutdownGracePeriodByPodPriority"
+else
+  pass "no two-value shutdownGracePeriod form (it cannot express the required ordering)"
+fi
+
+echo "▸ Invariant 6: the setting is delivered as KubeletConfiguration, not a flag"
 if grep -qE 'kubelet-arg.*shutdown-grace-period' "$BOOTSTRAP" "$MIGRATION" 2>/dev/null; then
-  fail "shutdownGracePeriod has NO kubelet command-line flag — it must be a kubelet.conf.d KubeletConfiguration drop-in"
+  fail "shutdownGracePeriodByPodPriority has NO kubelet command-line flag — it must be a kubelet.conf.d KubeletConfiguration drop-in"
 else
   pass "no --kubelet-arg=shutdown-grace-period (correct: config-file-only setting)"
+fi
+
+echo "▸ Invariant 7: calico-typha tolerates network-unavailable (single-node reboot deadlock)"
+# Without it a rebooted single-node cluster never comes back: typha is a
+# Deployment that must be scheduled at boot, the boot taint blocks it, and only
+# a healthy calico-node (which needs typha) clears that taint.
+miss=0
+for f in "$BOOTSTRAP" "$MIGRATION"; do
+  if grep -q 'node.kubernetes.io/network-unavailable' "$f" 2>/dev/null; then
+    pass "$(basename "$f") sets the typha toleration"
+  else
+    fail "$(basename "$f") no longer grants calico-typha the network-unavailable toleration"
+    miss=1
+  fi
+done
+if [[ "$miss" -eq 0 ]] && grep -q 'insula.host/server-only' "$BOOTSTRAP" 2>/dev/null; then
+  pass "the pre-existing server-only toleration is restated (tolerations REPLACE, not merge)"
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then
