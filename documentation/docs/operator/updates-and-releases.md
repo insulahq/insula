@@ -115,6 +115,21 @@ When a node needs attention it expands itself and shows:
   one that will never clear on its own,
 - anything an operator has skipped, with the reason recorded.
 
+!!! danger "\"Never converged\" is the one to act on"
+    A node marked **never converged** has run *no* host-migration at all — not a
+    queue that is waiting, an empty one that nothing is processing. Its hourly
+    converge timer is missing, so unlike every other state on this card it does
+    **not** clear itself, and every migration ever shipped is unapplied.
+
+    The card prints the exact commands to run from a root shell on that node.
+    There is no button, because there is nothing the panel can press: the agent
+    that reports this state is read-only by design and cannot install a systemd
+    timer. The usual cause is a bootstrap before v2026.8.21, where the installer
+    skipped the timers when the CLI binary was already at the released version.
+
+    A newly added node stays quiet for its first couple of hours — that is a
+    normal wait, not this.
+
 !!! note "There is no Retry button, on purpose"
     Migrations re-run **automatically every hour** on each node, and a node also
     converges immediately after it self-upgrades — so host state does not lag the
