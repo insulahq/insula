@@ -12,6 +12,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Flux stopped reconciling entirely on clusters that ran the 2026.8.18
+  converger more than once.** The `0001-flux-strip-dr-cronjob-suspend`
+  host-migration decided "is my patch already applied?" by grepping
+  `kubectl get -o json` output for `"name":"<cronjob>"`. kubectl
+  **pretty-prints** — its output has a space after the colon — so that test
+  could never match, and `platform-ops host-config` appended a fresh copy of
+  all three strip patches on **every enforce pass**. Once a second copy
+  existed, kustomize failed the duplicate `remove` with `error in remove for
+  path: '/spec/suspend': Unable to remove nonexistent key`, which pins the
+  whole `flux-system/platform` Kustomization at `Ready=False` — so *nothing*
+  reconciled, not just the DR CronJobs. Found on staging 2026-08-27 with three
+  duplicates per CronJob. The migration now reads its state with
+  `-o jsonpath` (values come back unquoted, with no whitespace to get wrong),
+  matches with `grep -qx`, and removes any duplicates a previous run left
+  behind, so an affected cluster self-heals on the next pass. A new CI guard
+  (`ci-no-json-text-grep.sh`) rejects `"key":"value"` greps against kubectl
+  output anywhere in the convergers, scoped to kubectl because `helm -o json`
+  and HTTP/JMAP responses are compact and correct to match that way.
+
 ## [2026.8.19] - 2026-08-27
 
 ### Fixed
