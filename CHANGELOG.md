@@ -13,6 +13,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The login page no longer offers a sign-in form the API cannot honour.**
+  Both panels already fetched `/auth/oidc/status` on mount — they need the
+  provider list — but caught every failure and fell back to
+  `{ localAuthEnabled: true, providers: [] }`, rendering a normal-looking
+  password form whenever the API was unreachable. After a node restart that
+  window is real: measured on production 2026-08-27, admin-panel was Ready at
+  10:21:40 and platform-api at 10:24:01, so for **2m21s** the only way to
+  discover the API was down was to type credentials and get an error. The same
+  fallback was also wrong on OIDC-only clusters — `providers: []` hides every
+  SSO button and suppresses the auto-redirect, leaving a local password form
+  that can never succeed and does not self-correct once the API returns. The
+  panels now distinguish "the API answered" from "nothing answered": on
+  502/503/504 or a network error they show **"Waiting for the platform API…"**
+  with an elapsed timer and a Retry button, re-probing with capped exponential
+  backoff (~18 requests over that whole window, stopping on first success), and
+  render the real form the instant it responds. Any other status still falls
+  back permissively so a misconfigured edge gate cannot lock an operator out,
+  and break-glass (`?emergency=true`) bypasses the gate entirely. No new
+  request is added on the healthy path.
 - **The pin-lag guard no longer cries wolf after every release.** It
   counted the two `[skip ci]` sync commits that `release.yml` pushes back
   to `development` (platform/VERSION + CHANGELOG) as "code commits whose
