@@ -1362,6 +1362,77 @@ Data directory: /var/lib/rancher/k3s/
 
 ---
 
+### Runbook 5: Node Reboot & Graceful Node Shutdown
+
+Every node is configured (bootstrap `configure_graceful_shutdown`, converged on
+existing clusters by host-migration `2026.8.19/0001-graceful-node-shutdown`) so
+that the kubelet drains pods before the host powers down.
+
+**Why it matters.** Without it, `KillMode=process` in `k3s.service` plus
+ordering only `After=network-online.target` means systemd stops the k3s process
+while containers keep running, then tears down `iscsid` and the network under
+them. Measured on production 2026-08-27:
+
+```
+12:18:27 iscsid: session 3 in invalid state for logout. Try again later
+12:18:38 sd 4:0:0:1: [sdc] Medium Error / Unrecovered read error
+12:18:38 EXT4-fs error (device sdc): comm postgres: Detected aborted journal
+```
+
+`sdc` was the CNPG `system-db` Longhorn volume. That reboot also stalled for
+**3m28s** waiting out I/O timeouts, roughly half a ~6m50s outage.
+
+**The three settings, all required** (each was verified individually
+insufficient):
+
+| File | Setting | Why |
+|---|---|---|
+| `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf` | `shutdownGracePeriod: 60s`, `shutdownGracePeriodCriticalPods: 20s` | No kubelet *flag* exists — KubeletConfiguration only, so `--kubelet-arg` cannot express it |
+| `/etc/systemd/logind.conf.d/zz-insula-graceful-shutdown.conf` | `InhibitDelayMaxSec=90` | kubelet refuses to arm the manager unless logind's delay ≥ grace period |
+| `/etc/systemd/system/k3s.service.d/10-insula-iscsid-order.conf` | `After=iscsid.service` | Units stop in reverse start order → k3s stops *before* iscsid |
+
+!!! danger "The `zz-` prefix is load-bearing"
+    systemd merges `.conf.d` drop-ins by **filename across all of `/etc`,
+    `/run` and `/usr/lib`** — directory priority only breaks ties between
+    *identical* names. `unattended-upgrades` ships
+    `/usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf`
+    with `InhibitDelayMaxSec=30`, and `unattended-…` sorts after any
+    digit-prefixed name. A `10-` or `99-` drop-in silently loses and the
+    effective delay stays 30s. kubelet's own self-healing
+    `99-kubelet.conf` fails for exactly this reason. **Do not renumber.**
+
+**Verify it is armed** (the only assertion that proves the whole chain — a
+present config file does not mean the manager started):
+
+```bash
+systemd-inhibit --list | grep kubelet
+# kubelet  0  root  <pid>  k3s-server  shutdown  Kubelet needs time to handle node shutdown  delay
+
+# And confirm the kubelet actually read the config:
+NODE=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+kubectl get --raw "/api/v1/nodes/$NODE/proxy/configz" \
+  | python3 -c 'import sys,json;k=json.load(sys.stdin)["kubeletconfig"];print(k.get("shutdownGracePeriod"),k.get("shutdownGracePeriodCriticalPods"))'
+# 1m0s 20s
+```
+
+**Failure signature** if logind is not compliant — the node looks configured
+but is not protected:
+
+```
+kubelet.go:1845 "Failed to start node shutdown manager" err="node shutdown
+manager was timed out after 5 attempts waiting for logind InhibitDelayMaxSec
+to update to 1m0s (ShutdownGracePeriod), current value is 30s"
+```
+
+Fix by re-running the host-migration (`platform-ops host-config --mode enforce`),
+which restarts `systemd-logind` *before* restarting k3s — that ordering is what
+kubelet's own self-heal attempt gets wrong.
+
+Draining is still correct before *planned* maintenance: graceful shutdown stops
+workloads politely, a drain moves them elsewhere first.
+
+---
+
 ## Part 10: Admin Panel Features
 
 ### Features for Cluster Maintenance

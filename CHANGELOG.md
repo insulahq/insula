@@ -32,6 +32,49 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   back permissively so a misconfigured edge gate cannot lock an operator out,
   and break-glass (`?emergency=true`) bypasses the gate entirely. No new
   request is added on the healthy path.
+- **Node reboots no longer rip Longhorn volumes away from running pods.**
+  `k3s.service` ships `KillMode=process` and orders itself only
+  `After=network-online.target`, so on shutdown systemd stopped the k3s
+  process while every container kept running, then tore down `iscsid` and
+  the network underneath them. The kernel force-offlined the devices and
+  the filesystem on top was cut away mid-write — on production 2026-08-27
+  that produced `EXT4-fs error (device sdc): comm postgres: Detected
+  aborted journal` on the CNPG `system-db` volume (Postgres WAL replay
+  recovered it; that is luck, not a design). It also stalled shutdown for
+  **3m28s** waiting out I/O timeouts, about half of a ~6m50s reboot
+  outage. Nodes now run kubelet **graceful node shutdown**, draining pods
+  in an order that matches the platform's PriorityClasses — tenants
+  (`0`, 30s), then platform services including Postgres (`platform-critical`
+  10000, 40s), then the **Longhorn data plane** (`longhorn-critical`
+  1000000000, 30s), then `system-*` (20s). That ordering is the whole
+  point: a first attempt used the simpler `shutdownGracePeriod` pair,
+  which puts Longhorn's `instance-manager` and CSI plugin in the *same*
+  group as the database whose volume they have to unmount, and a real DEV
+  reboot showed the unmount failing with `context deadline exceeded` on
+  the `system-db-1` PVC — the corruption path still open.
+  `shutdownGracePeriodByPodPriority` has no command-line flag (it is
+  `KubeletConfiguration`-only, so `--kubelet-arg` cannot express it), so it
+  ships as a `kubelet.conf.d` drop-in, alongside a logind
+  `InhibitDelayMaxSec` drop-in and `After=iscsid.service` on the k3s unit.
+  The logind file is named `zz-…` deliberately: systemd merges `.conf.d`
+  drop-ins by filename across `/etc`, `/run` **and** `/usr/lib`, and
+  `unattended-upgrades` ships one pinning the delay to 30s that outranks
+  any digit-prefixed name — which is also why kubelet's own self-healing
+  `99-kubelet.conf` never worked. Fresh installs get it from
+  `bootstrap.sh`; existing clusters converge via host-migration
+  `2026.8.19/0001-graceful-node-shutdown`.
+- **A rebooted single-node cluster comes back on its own.** Draining pods
+  properly exposed a latent deadlock: because gracefully-terminated pods
+  are recreated rather than restarted in place, `calico-typha` (a
+  *Deployment*) had to be scheduled at boot — and could not be, because
+  the node still carried `node.kubernetes.io/network-unavailable:NoSchedule`,
+  which only a healthy `calico-node` clears, and `calico-node` refuses to
+  start without a ready Typha. A real DEV reboot sat in that cycle with
+  every workload `Pending` until the taint was removed by hand. Typha runs
+  with `hostNetwork: true` and so needs no CNI; it now tolerates that taint
+  via the Tigera `Installation` CR. Multi-node clusters were never exposed
+  (Typha schedules on another node), which is exactly why a single-node
+  reboot test was the one that found it.
 - **The pin-lag guard no longer cries wolf after every release.** It
   counted the two `[skip ci]` sync commits that `release.yml` pushes back
   to `development` (platform/VERSION + CHANGELOG) as "code commits whose
