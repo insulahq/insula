@@ -291,9 +291,29 @@ phase_platform_ops() {
     install -m 644 "$pub_src" "$pub_dst" && log "platform-ops: cosign trust anchor → ${pub_dst}."
   fi
 
-  # Idempotency: already at the target version → nothing to do, no re-fetch.
+  # Idempotency: already at the target version → no re-fetch. The TIMERS are
+  # still (re)installed, because "the binary is current" says nothing about
+  # whether its units exist.
+  #
+  # This early return used to skip platform_ops_install_timer, and that is how
+  # the production cluster ended up with NO platform-ops units at all. With
+  # `insula bootstrap` (ADR-055) the operator has already put the signed binary
+  # at /usr/local/bin/insula before bootstrap runs, so this check matches on the
+  # very first install and the timers were never laid down. Its bootstrap log
+  # (2026-08-13) shows the single line that decided it:
+  #   "platform-ops: already at 2026.8.3 — skipping (cosign anchor ensured above)."
+  # Consequences, both silent: the CLI never self-upgraded (still 2026.8.3 two
+  # weeks and 17 releases later), and platform-ops-host-config.timer never
+  # existed, so NO host-migration ever ran — an empty
+  # /var/lib/insula/host-migrations ledger, and e.g. the traefik
+  # wait-for-plugin-registry fix for the 2026-08-20 outage never applied.
+  #
+  # platform_ops_install_timer rewrites the units and re-runs `systemctl enable
+  # --now`, both idempotent, so doing this on every pass is free and self-heals
+  # a node whose units were removed.
   if [ "$(platform_ops_installed_version "$bin")" = "$version" ]; then
-    log "platform-ops: already at ${version} — skipping (cosign anchor ensured above)."
+    log "platform-ops: already at ${version} — skipping fetch (cosign anchor ensured above)."
+    platform_ops_install_timer || warn "platform-ops: timer install failed (non-fatal)."
     return 0
   fi
 
