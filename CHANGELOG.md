@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.21] - 2026-08-27
+
 ### Added
 - **The admin panel now reports a node that has never converged, instead of
   calling it "not reported yet".** A node whose `platform-ops-host-config.timer`
