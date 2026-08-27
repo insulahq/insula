@@ -15,6 +15,15 @@ learn *where things live*, then drill in.
 
 ## Signing in and the top bar
 
+!!! info "\"Waiting for the platform API…\""
+    The panels are served by their own pod and come up faster than the API
+    does — after a node restart, roughly two to three minutes faster. Rather
+    than show a sign-in form that would reject your password, the login page
+    shows **Waiting for the platform API…** with an elapsed timer, retries by
+    itself, and swaps in the real sign-in form the moment the API answers.
+    There is nothing to do but wait; **Retry now** just skips the backoff.
+    Emergency (break-glass) sign-in is never gated this way.
+
 After you log in you land on the **Dashboard**. The bar across the top of
 every page carries, from left to right:
 

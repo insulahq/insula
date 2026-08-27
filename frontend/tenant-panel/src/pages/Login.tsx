@@ -3,19 +3,19 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Loader2, Shield, Fingerprint } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { usePasskey } from '@/hooks/use-passkey';
-import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
-
-interface AuthStatus {
-  readonly localAuthEnabled: boolean;
-  readonly proxyProtectionEnabled?: boolean;
-  readonly providers: readonly { id: string; displayName: string }[];
-}
+import { useAuthStatus } from '@/hooks/use-auth-status';
+import ApiUnavailable from '@/components/ApiUnavailable';
+import { API_BASE, ApiError } from '@/lib/api-client';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  // The provider list AND the API-reachability signal come from one request —
+  // see use-auth-status.ts. `null` while loading keeps the pre-gate rendering
+  // (local form, no SSO buttons) byte-identical to what it always was.
+  const { state: authState, retryNow } = useAuthStatus('tenant');
+  const authStatus = authState.kind === 'ready' ? authState.status : null;
 
   const { login, error, setTokenAndUser, token: existingToken, passkeyChallenge, clearPasskeyChallenge } = useAuth();
   const passkey = usePasskey();
@@ -24,14 +24,6 @@ export default function Login() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const from = (location.state as { from?: { pathname: string } })?.from?.pathname ?? '/';
-
-  useEffect(() => {
-    let cancelled = false;
-    apiFetch<{ data: AuthStatus }>('/api/v1/auth/oidc/status?panel=tenant')
-      .then((res) => { if (!cancelled) setAuthStatus(res.data); })
-      .catch(() => { if (!cancelled) setAuthStatus({ localAuthEnabled: true, providers: [] }); });
-    return () => { cancelled = true; };
-  }, []);
 
   useEffect(() => {
     const token = searchParams.get('token');
@@ -122,6 +114,20 @@ export default function Login() {
   const providers = authStatus?.providers ?? [];
   const oidcError = searchParams.get('error');
   const oidcMessage = searchParams.get('message');
+
+  // API-readiness gate. Deliberately placed AFTER every hook — in particular
+  // after the effect that consumes `?token=&user=` — so the OIDC callback leg
+  // still completes while the API is flapping. That leg needs no authStatus.
+  if (authState.kind === 'unreachable') {
+    return (
+      <ApiUnavailable
+        attempts={authState.attempts}
+        since={authState.since}
+        onRetry={retryNow}
+        panelLabel="your account"
+      />
+    );
+  }
 
   // Show spinner while auto-redirecting to SSO
   if (shouldAutoLogin) {

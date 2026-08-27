@@ -3,6 +3,8 @@ import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 import { Loader2, Shield, KeyRound, Fingerprint } from 'lucide-react';
 import { useAuth } from '@/hooks/use-auth';
 import { usePasskey } from '@/hooks/use-passkey';
+import { useAuthStatus } from '@/hooks/use-auth-status';
+import ApiUnavailable from '@/components/ApiUnavailable';
 import { apiFetch, API_BASE, ApiError } from '@/lib/api-client';
 import { sanitizeRedirect } from '@/lib/sanitize-redirect';
 
@@ -42,18 +44,16 @@ function goToTarget(target: string, navigate: (to: string, opts?: { replace?: bo
   navigate('/', { replace: true });
 }
 
-interface AuthStatus {
-  readonly localAuthEnabled: boolean;
-  readonly proxyProtectionEnabled?: boolean;
-  readonly providers: readonly { id: string; displayName: string }[];
-}
-
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [breakGlassSecret, setBreakGlassSecret] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
+  // The provider list AND the API-reachability signal come from one request —
+  // see use-auth-status.ts. `null` while loading keeps the pre-gate rendering
+  // (local form, no SSO buttons) byte-identical to what it always was.
+  const { state: authState, retryNow } = useAuthStatus('admin');
+  const authStatus = authState.kind === 'ready' ? authState.status : null;
 
   const { login, error, setTokenAndUser, token: existingToken, passkeyChallenge, clearPasskeyChallenge } = useAuth();
   const passkey = usePasskey();
@@ -74,14 +74,6 @@ export default function Login() {
   const apex = getPlatformApex();
   const redirectTarget = sanitizeRedirect(searchParams.get('rd'), origin, apex, routerFrom);
   const isEmergency = searchParams.get('emergency') === 'true';
-
-  useEffect(() => {
-    let cancelled = false;
-    apiFetch<{ data: AuthStatus }>('/api/v1/auth/oidc/status?panel=admin')
-      .then((res) => { if (!cancelled) setAuthStatus(res.data); })
-      .catch(() => { if (!cancelled) setAuthStatus({ localAuthEnabled: true, providers: [] }); });
-    return () => { cancelled = true; };
-  }, []);
 
   useEffect(() => {
     const token = searchParams.get('token');
@@ -194,6 +186,24 @@ export default function Login() {
   const providers = authStatus?.providers ?? [];
   const oidcError = searchParams.get('error');
   const oidcMessage = searchParams.get('message');
+
+  // API-readiness gate. Deliberately placed AFTER every hook — in particular
+  // after the effect that consumes `?token=&user=` — so the OIDC callback leg
+  // still completes while the API is flapping. That leg needs no authStatus.
+  //
+  // Break-glass (?emergency=true) bypasses the gate entirely: an emergency
+  // admin login is the last place an operator should be told to wait for a
+  // spinner, and it posts to a different endpoint anyway.
+  if (authState.kind === 'unreachable' && !isEmergency) {
+    return (
+      <ApiUnavailable
+        attempts={authState.attempts}
+        since={authState.since}
+        onRetry={retryNow}
+        panelLabel="admin panel"
+      />
+    );
+  }
 
   // Show spinner while auto-redirecting to SSO
   if (shouldAutoLogin) {
