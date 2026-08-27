@@ -201,6 +201,27 @@ export const hostMigrationNodeStatusSchema = z.object({
   items: z.array(hostMigrationItemSchema),
   /** Why this node has no data, when it has none. */
   note: z.string().nullable().optional(),
+  /**
+   * The node has NEVER converged — no host-migration state has ever been
+   * relayed from it. This is a fault, not a "not yet".
+   *
+   * A converge runs hourly from `platform-ops-host-config.timer`, so a node
+   * that has been up for more than an hour and still reports nothing does not
+   * have that timer. Silence looked identical to health here: the production
+   * cluster was bootstrapped 2026-08-13 with the timer never installed (the
+   * bootstrap "already at <version>" path skipped it), and sat for two weeks
+   * with an EMPTY migration ledger while every page showed green — including
+   * the traefik wait-for-plugin-registry fix for its own 2026-08-20 outage.
+   */
+  neverConverged: z.boolean().optional(),
+  /**
+   * The reconciler itself is not publishing for this node — the node exists in
+   * the cluster but has no host-config-drift ConfigMap at all. Distinct from
+   * `neverConverged`: there, the relay works and has nothing to relay.
+   */
+  reconcilerMissing: z.boolean().optional(),
+  /** Shell commands that fix this node, in order. Rendered verbatim in the UI. */
+  remediation: z.array(z.string()).optional(),
 });
 export type HostMigrationNodeStatus = z.infer<typeof hostMigrationNodeStatusSchema>;
 

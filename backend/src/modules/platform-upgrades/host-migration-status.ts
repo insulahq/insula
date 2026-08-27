@@ -33,6 +33,35 @@ const DRIFT_CM_PREFIX = 'host-config-drift-';
 export const HOST_MIGRATION_RUNBOOK_URL =
   'https://github.com/insulahq/insula/blob/main/docs/operations/HOST_MIGRATION_TROUBLESHOOTING.md';
 
+/**
+ * Fix a node whose converge timer was never installed. Root-shell on the node.
+ *
+ * There is no in-cluster remedy on purpose: the host-config reconciler is
+ * observe-only by design (read-only mounts, all capabilities dropped,
+ * readOnlyRootFilesystem), so nothing in the cluster can write a systemd unit.
+ * Re-running the installer is what lays the timers down; it is idempotent.
+ */
+export const NEVER_CONVERGED_REMEDIATION: string[] = [
+  '# On the affected node, as root:',
+  'insula --version                 # confirm the CLI is present',
+  'systemctl list-timers | grep platform-ops   # expect TWO timers; none means this bug',
+  'insula self-upgrade              # installs/repairs the timers, then converges',
+  '# If the timers are still absent, re-run the installer (idempotent):',
+  'insula bootstrap',
+  '# Verify:',
+  'systemctl start platform-ops-host-config.service',
+  'ls /var/lib/insula/host-migrations   # should no longer be empty',
+];
+
+/** Fix a node the reconciler DaemonSet is not covering at all. */
+export const RECONCILER_REMEDIATION: string[] = [
+  '# The host-config-reconciler DaemonSet has no pod on this node.',
+  'kubectl -n platform-system get ds host-config-reconciler',
+  'kubectl -n platform-system get pods -l app=host-config-reconciler -o wide',
+  '# Usually a taint the DaemonSet does not tolerate, or the node is NotReady:',
+  'kubectl describe node <node> | grep -A5 Taints',
+];
+
 interface RelayedItem {
   key?: unknown;
   state?: unknown;
@@ -62,8 +91,34 @@ const int = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v)
  * reconciler that does not relay migrations at all, and a malformed document,
  * without any of those looking like a failed migration.
  */
-export function interpretNodeSnapshot(node: string, snapshotRaw: string | undefined): HostMigrationNodeStatus {
-  const empty = (note: string): HostMigrationNodeStatus => ({
+/**
+ * How long a node may legitimately show no converge before it counts as broken.
+ *
+ * The converge timer is `OnCalendar=hourly` with `RandomizedDelaySec=900`, so
+ * the worst honest wait after a fresh join is ~75 minutes. Two hours clears
+ * that with room to spare.
+ *
+ * This window is the whole reason the alert is trustworthy. The original relay
+ * deliberately treated "no data" as benign to avoid crying wolf on every fresh
+ * install — correct instinct, wrong conclusion, because it also silenced the
+ * permanent case. Gate on AGE and both are right: quiet while a new node is
+ * still within its first converge, loud once it provably missed one.
+ */
+export const CONVERGE_GRACE_MS = 2 * 60 * 60 * 1000;
+
+export function interpretNodeSnapshot(
+  node: string,
+  snapshotRaw: string | undefined,
+  /** Node age in ms. Unknown/NaN → give the benefit of the doubt (stay quiet). */
+  nodeAgeMs?: number,
+): HostMigrationNodeStatus {
+  const pastGrace = typeof nodeAgeMs === 'number'
+    && Number.isFinite(nodeAgeMs)
+    && nodeAgeMs > CONVERGE_GRACE_MS;
+  const empty = (
+    note: string,
+    extra: Partial<HostMigrationNodeStatus> = {},
+  ): HostMigrationNodeStatus => ({
     node,
     collectedAt: null,
     mode: null,
@@ -78,9 +133,17 @@ export function interpretNodeSnapshot(node: string, snapshotRaw: string | undefi
     reason: null,
     items: [],
     note,
+    ...extra,
   });
 
-  if (!snapshotRaw) return empty('No report from this node yet.');
+  if (!snapshotRaw) {
+    if (!pastGrace) return empty('No report from this node yet.');
+    return empty(
+      'The host-config reconciler is not publishing for this node, so nothing can be reported '
+        + 'about it. It publishes every 60s, so this is not a delay.',
+      { reconcilerMissing: true, remediation: RECONCILER_REMEDIATION },
+    );
+  }
 
   let snap: { hostMigrations?: unknown };
   try {
@@ -91,10 +154,16 @@ export function interpretNodeSnapshot(node: string, snapshotRaw: string | undefi
 
   const hm = snap.hostMigrations as Record<string, unknown> | undefined | null;
   if (!hm || typeof hm !== 'object') {
-    // An older reconciler that predates the relay, or a node that has never
-    // converged. Neither is a migration problem — say so rather than showing a
-    // scary zero.
-    return empty('This node has not reported host-migration state yet.');
+    // Within the grace window this is genuinely "not yet" — a fresh node, or an
+    // older reconciler that predates the relay. Past it, the relay is working
+    // and simply has no host-migration state to carry, which means the converge
+    // has never run here and nothing is going to run it.
+    if (!pastGrace) return empty('This node has not reported host-migration state yet.');
+    return empty(
+      'This node has NEVER converged — no host-migration has ever run on it, and it is well past '
+        + 'the hourly converge window. The converge timer is missing, so this will not fix itself.',
+      { neverConverged: true, remediation: NEVER_CONVERGED_REMEDIATION },
+    );
   }
 
   const rawItems = Array.isArray(hm['items']) ? (hm['items'] as RelayedItem[]) : [];
@@ -172,27 +241,62 @@ export function interpretNodeSnapshot(node: string, snapshotRaw: string | undefi
  */
 export function isDegraded(nodes: readonly HostMigrationNodeStatus[]): boolean {
   return nodes.some(
-    (n) => n.failedCount > 0 || n.blockedCount > 0 || n.invalidCount > 0 || n.ok === false,
+    (n) =>
+      n.failedCount > 0
+      || n.blockedCount > 0
+      || n.invalidCount > 0
+      || n.ok === false
+      // A node that has NEVER converged is the worst case, not a neutral one:
+      // every migration ever shipped is unapplied and nothing is retrying.
+      // Before this, it rendered as "no report yet" and read as healthy.
+      || n.neverConverged === true
+      || n.reconcilerMissing === true,
   );
 }
 
 export async function readHostMigrationStatus(k8s: K8sClients): Promise<HostMigrationStatusResponse> {
-  let nodes: HostMigrationNodeStatus[] = [];
+  let snapshots: Array<{ node: string; raw: string | undefined }> = [];
   try {
     const list = (await k8s.core.listNamespacedConfigMap({
       namespace: DRIFT_NS,
     } as unknown as Parameters<typeof k8s.core.listNamespacedConfigMap>[0])) as {
       items?: Array<{ metadata?: { name?: string }; data?: Record<string, string> }>;
     };
-    nodes = (list.items ?? [])
+    snapshots = (list.items ?? [])
       .filter((cm) => (cm.metadata?.name ?? '').startsWith(DRIFT_CM_PREFIX))
-      .map((cm) => {
-        const node = (cm.metadata?.name ?? '').slice(DRIFT_CM_PREFIX.length) || '(unknown)';
-        return interpretNodeSnapshot(node, cm.data?.['snapshot']);
-      })
-      .sort((a, b) => a.node.localeCompare(b.node));
+      .map((cm) => ({
+        node: (cm.metadata?.name ?? '').slice(DRIFT_CM_PREFIX.length) || '(unknown)',
+        raw: cm.data?.['snapshot'],
+      }));
   } catch {
-    nodes = [];
+    snapshots = [];
   }
+
+  // Node ages, for the grace window, AND coverage: listing only the drift
+  // ConfigMaps means a node the reconciler never publishes for is simply absent
+  // from the response, and an absent row is the one thing an operator cannot
+  // notice. Best-effort — without the node list we still render what we have,
+  // just with no ages (so nothing is accused of never converging).
+  const ages = new Map<string, number>();
+  try {
+    const nodeList = (await k8s.core.listNode()) as {
+      items?: Array<{ metadata?: { name?: string; creationTimestamp?: string | Date } }>;
+    };
+    for (const n of nodeList.items ?? []) {
+      const name = n.metadata?.name;
+      if (!name) continue;
+      const created = n.metadata?.creationTimestamp;
+      const ms = created ? new Date(created).getTime() : NaN;
+      ages.set(name, Number.isFinite(ms) ? Date.now() - ms : Number.NaN);
+      if (!snapshots.some((s) => s.node === name)) snapshots.push({ node: name, raw: undefined });
+    }
+  } catch {
+    /* node list unavailable — keep the ConfigMap-derived view */
+  }
+
+  const nodes = snapshots
+    .map((s) => interpretNodeSnapshot(s.node, s.raw, ages.get(s.node)))
+    .sort((a, b) => a.node.localeCompare(b.node));
+
   return { nodes, degraded: isDegraded(nodes), runbookUrl: HOST_MIGRATION_RUNBOOK_URL };
 }

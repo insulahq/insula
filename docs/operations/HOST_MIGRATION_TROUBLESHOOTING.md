@@ -125,6 +125,48 @@ Two ways out, in order of preference:
 
 ## If a node never converges at all
 
+!!! danger "The timers were never installed (bootstraps before v2026.8.21)"
+    This is the one that hides. `phase_platform_ops` short-circuited on *"already
+    at &lt;version&gt;"* and returned **before** installing the systemd units — and the
+    documented install puts the signed binary at `/usr/local/bin/insula`
+    *before* running `insula bootstrap`, so that branch was taken on the very
+    **first** install. The node then had **no** `platform-ops-update.timer` (the
+    CLI never self-upgrades) and **no** `platform-ops-host-config.timer`
+    (**no host-migration ever runs**).
+
+    Nothing reported it: **Platform → Host migrations** showed *"No node has
+    reported yet"*, which reads as "wait", and every other page was green. The
+    production cluster sat two weeks and 17 releases like this with an empty
+    `/var/lib/insula/host-migrations`, missing — among others — the traefik
+    `wait-for-plugin-registry` fix for its own outage.
+
+    **Detect:**
+    ```bash
+    systemctl list-timers | grep platform-ops   # expect TWO timers
+    ls /var/lib/insula/host-migrations          # empty == never converged
+    insula --version                            # far behind the release? same cause
+    ```
+
+    **Fix** (root shell on the node; both steps idempotent):
+    ```bash
+    insula self-upgrade          # installs/repairs the timers, then converges
+    # if the timers are still absent, re-run the installer:
+    insula bootstrap
+    # verify:
+    systemctl start platform-ops-host-config.service
+    ls /var/lib/insula/host-migrations           # should no longer be empty
+    ```
+
+    There is **no in-cluster remedy** and that is deliberate: the
+    `host-config-reconciler` DaemonSet is observe-only (read-only mounts, all
+    capabilities dropped, `readOnlyRootFilesystem`), so nothing in the cluster
+    can write a systemd unit. The panel therefore shows the commands instead of
+    a button that could not work.
+
+    From **v2026.8.21** the admin panel flags this directly: a node past its
+    first hourly converge window with no host-migration state is marked
+    **never converged** and carries these commands inline.
+
 - **Worker nodes have no k3s admin kubeconfig.** They read desired-state through
   a least-privilege kubeconfig written by the `host-config-kubeconfig` DaemonSet
   at `/etc/platform/host-config/kubeconfig`. If that file is missing, the

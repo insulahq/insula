@@ -66,7 +66,12 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
   // `ok === false` is a WHOLE-RUN refusal (catalog over the script cap): it
   // carries no items, so every count is legitimately zero and only `ok` and
   // `reason` say anything is wrong. `invalid` is a script that will never run.
-  const bad = node.failedCount > 0 || node.blockedCount > 0 || node.invalidCount > 0 || node.ok === false;
+  // A node that has never converged, or that the reconciler does not cover, is
+  // the most severe state on this card — every migration ever shipped is
+  // unapplied and nothing is retrying — so it must read as broken, not quiet.
+  const stalled = node.neverConverged === true || node.reconcilerMissing === true;
+  const bad = node.failedCount > 0 || node.blockedCount > 0 || node.invalidCount > 0
+    || node.ok === false || stalled;
   const [open, setOpen] = useState(bad); // a broken node opens itself
   const panelId = useId();
 
@@ -98,11 +103,15 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
         {bad ? (
           <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:bg-red-900/40 dark:text-red-300">
             {[
+              node.neverConverged === true ? 'never converged' : null,
+              node.reconcilerMissing === true ? 'not reporting' : null,
               node.failedCount > 0 ? `${node.failedCount} failed` : null,
               node.blockedCount > 0 ? `${node.blockedCount} blocked` : null,
               node.invalidCount > 0 ? `${node.invalidCount} invalid` : null,
               // No counts at all means the run itself was refused.
-              node.failedCount + node.blockedCount + node.invalidCount === 0 ? 'run refused' : null,
+              !stalled && node.failedCount + node.blockedCount + node.invalidCount === 0
+                ? 'run refused'
+                : null,
             ]
               .filter(Boolean)
               .join(' · ')}
@@ -116,7 +125,35 @@ function NodeBlock({ node }: { readonly node: HostMigrationNodeStatus }) {
 
       {open && (
         <div className="pl-6 pt-1" id={panelId}>
-          {node.note && <p className="py-1 text-xs text-gray-500 dark:text-gray-400">{node.note}</p>}
+          {node.note && (
+            <p
+              className={
+                stalled
+                  ? 'py-1 text-xs text-red-600 dark:text-red-400'
+                  : 'py-1 text-xs text-gray-500 dark:text-gray-400'
+              }
+            >
+              {node.note}
+            </p>
+          )}
+          {stalled && node.remediation && node.remediation.length > 0 && (
+            // No in-cluster remedy exists: the reconciler is observe-only by
+            // design (read-only mounts, all caps dropped), so nothing here can
+            // write a systemd unit. The honest thing is to hand the operator
+            // the exact commands rather than a button that cannot work.
+            <div
+              className="my-2 rounded-md border border-red-200 bg-red-50 p-2 dark:border-red-800 dark:bg-red-900/20"
+              data-testid="host-migrations-remediation"
+            >
+              <p className="mb-1 text-xs font-medium text-red-800 dark:text-red-200">
+                Fix this from a root shell on <span className="font-mono">{node.node}</span> — it
+                cannot be repaired from the panel:
+              </p>
+              <pre className="overflow-x-auto whitespace-pre rounded bg-white/70 p-2 font-mono text-[11px] leading-relaxed text-gray-800 dark:bg-gray-900/50 dark:text-gray-200">
+                {node.remediation.join('\n')}
+              </pre>
+            </div>
+          )}
           {node.reason && (
             <p className="py-1 text-xs text-red-600 dark:text-red-400" data-testid="host-migrations-reason">
               This node refused the whole run: {node.reason}
@@ -173,7 +210,13 @@ export default function HostMigrationsCard() {
 
       {res && res.nodes.length === 0 && (
         <p className="text-sm text-gray-500 dark:text-gray-400">
-          No node has reported yet. Nodes publish after their next converge (hourly).
+          No node is reporting host-config state at all. On a cluster that has been up for more
+          than an hour this is a fault, not a wait: the reconciler publishes every 60s and the
+          converge runs hourly. Check{' '}
+          <span className="font-mono">kubectl -n platform-system get ds host-config-reconciler</span>
+          {' '}and, on each node,{' '}
+          <span className="font-mono">systemctl list-timers | grep platform-ops</span> (two timers
+          expected).
         </p>
       )}
 
