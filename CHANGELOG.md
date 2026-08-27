@@ -12,6 +12,30 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Bootstrap now always installs the platform-ops timers, even when the
+  binary is already current.** `phase_platform_ops` short-circuited on
+  "already at the target version" and returned *before*
+  `platform_ops_install_timer` — but a current binary says nothing about
+  whether its systemd units exist. With `insula bootstrap` (ADR-055) the
+  operator puts the signed binary at `/usr/local/bin/insula` **before**
+  bootstrap runs, so that branch is taken on the very *first* install and the
+  units were never laid down. Two silent consequences on any cluster
+  installed that way: the CLI never self-upgrades (the production cluster sat
+  on 2026.8.3 for two weeks and 17 releases), and
+  `platform-ops-host-config.timer` never exists — so **no host-migration ever
+  runs**, leaving an empty `/var/lib/insula/host-migrations` ledger and
+  host-side drift that nothing reports. On the affected production cluster
+  that included the traefik `wait-for-plugin-registry` init container, i.e.
+  the fix for the 2026-08-20 outage. Both unit writes and `systemctl enable
+  --now` are idempotent, so they now run on every pass and a node whose units
+  were removed self-heals. Regression asserted in
+  `test-platform-ops-install.sh` (verified failing without the fix).
+
+  **Existing clusters do not self-heal** — the missing timer is exactly what
+  would have repaired it. Re-run bootstrap on the node to install the units;
+  the first converge then applies every pending host-migration at once.
+
 ## [2026.8.20] - 2026-08-27
 
 ### Fixed

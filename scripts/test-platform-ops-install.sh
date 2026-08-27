@@ -215,6 +215,14 @@ yes "service is hardened (NoNewPrivileges + ProtectSystem)" "grep -q 'NoNewPrivi
 printf 'BAD' > "$REL/insula-linux-amd64.sig"
 printf 'BAD' > "$REL/insula-linux-arm64.sig"
 before=$(stat -c '%Y' "$SB/bin/platform-ops")
+# REGRESSION GUARD: wipe the units first. "Already at the target version" must
+# still lay them down — that early return used to skip the timer install, which
+# is how the production cluster ended up with NO platform-ops units: `insula
+# bootstrap` (ADR-055) puts the signed binary in place BEFORE bootstrap runs, so
+# this branch is taken on the very FIRST install. The CLI then never
+# self-upgraded and platform-ops-host-config.timer never existed, so no
+# host-migration ever ran there.
+rm -f "$SB"/sysd/platform-ops-*.service "$SB"/sysd/platform-ops-*.timer
 (
   PLATFORM_OPS_BIN="$SB/bin/platform-ops" \
   PLATFORM_OPS_COSIGN_PUB_SRC="$SB/repo/platform/cosign.pub" \
@@ -226,6 +234,10 @@ before=$(stat -c '%Y' "$SB/bin/platform-ops")
 after=$(stat -c '%Y' "$SB/bin/platform-ops")
 yes "idempotent re-run → returns 0" "[ $rc -eq 0 ]"
 yes "idempotent re-run → binary untouched (no refetch)" "[ '$before' = '$after' ] && [ \"\$('$SB/bin/platform-ops' version)\" = 2026.6.1 ]"
+yes "idempotent re-run → self-upgrade timer STILL installed" \
+  "[ -s '$SB/sysd/platform-ops-update.timer' ]"
+yes "idempotent re-run → host-config converge timer STILL installed" \
+  "[ -s '$SB/sysd/platform-ops-host-config.timer' ]"
 rm -rf "$SB"
 
 # ── 5. Real-repo guard: phase_platform_ops on the actual checkout returns 0
