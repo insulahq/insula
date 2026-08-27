@@ -12,6 +12,29 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **The admin panel now reports a node that has never converged, instead of
+  calling it "not reported yet".** A node whose `platform-ops-host-config.timer`
+  was never installed relays a snapshot with no host-migration state — forever.
+  The Host migrations card read that as *"No node has reported yet. Nodes
+  publish after their next converge (hourly)"*, i.e. it told the operator to
+  wait for something that was never going to happen. That is how the production
+  cluster sat two weeks and 17 releases with an **empty** migration ledger while
+  every page showed green, missing among others the traefik
+  `wait-for-plugin-registry` fix for its own 2026-08-20 outage.
+
+  Such a node is now marked **never converged**, counts as degraded, opens
+  itself, and prints the exact root-shell commands that repair it — there is
+  deliberately no button, because the reporting agent is observe-only (read-only
+  mounts, all capabilities dropped) and cannot write a systemd unit. Nodes the
+  reconciler does not cover at all are also listed now rather than silently
+  omitted, since an absent row is the one thing nobody notices.
+
+  Both states are gated on a **2-hour grace window** derived from the node's own
+  age, so a freshly joined node inside its first hourly converge stays quiet —
+  the original relay treated all "no data" as benign precisely to avoid crying
+  wolf, which was the right instinct and the wrong conclusion.
+
 ### Fixed
 - **Bootstrap now always installs the platform-ops timers, even when the
   binary is already current.** `phase_platform_ops` short-circuited on
