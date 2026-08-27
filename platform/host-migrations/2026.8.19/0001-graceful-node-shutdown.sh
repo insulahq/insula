@@ -228,4 +228,4 @@ else
   echo "${MIG}: no active k3s/k3s-agent unit — config applies on next start."
 fi
 
-echo "${MIG}: graceful node shutdown converged (drain 60s, critical 20s, logind delay 90s, k3s ordered after iscsid)."
+echo "${MIG}: graceful node shutdown converged (ordered drain: tenants 30s → platform 40s → longhorn 30s → system 20s, logind delay 150s, k3s ordered after iscsid)."
