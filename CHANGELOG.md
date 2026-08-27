@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.20] - 2026-08-27
+
 ### Fixed
 - **Flux stopped reconciling entirely on clusters that ran the 2026.8.18
   converger more than once.** The `0001-flux-strip-dr-cronjob-suspend`
