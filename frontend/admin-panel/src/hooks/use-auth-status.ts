@@ -51,6 +51,20 @@ export const AUTH_STATUS_RETRY_BASE_MS = 1_000;
 export const AUTH_STATUS_RETRY_MAX_MS = 10_000;
 
 /**
+ * Give up on a single probe after this long and treat it as unreachable.
+ *
+ * Without it there is a hole in the gate: a probe that HANGS (TCP connect to a
+ * backend that never answers — a partition, or an edge whose connect timeout
+ * is 60s) never settles, so the hook stays in `loading` and the page keeps
+ * showing a login form that cannot work. That is the exact failure this whole
+ * change exists to prevent, arrived at from the other direction.
+ *
+ * A refused connection or an endpoint-less upstream already fails fast (nginx
+ * answers 502), so this only bites the pathological case.
+ */
+export const AUTH_STATUS_PROBE_TIMEOUT_MS = 8_000;
+
+/**
  * True when the failure means "nothing answered on the other end".
  *
  * 502/504 are the edge (nginx/Traefik) reporting no upstream; 503 is the
@@ -98,11 +112,19 @@ export function useAuthStatus(panel: 'admin' | 'tenant'): UseAuthStatusResult {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight: AbortController | null = null;
 
     const probe = async (): Promise<void> => {
+      // AbortSignal.timeout would be tidier but is not available in every
+      // browser the panels support; an explicit controller is portable and
+      // lets the cleanup below cancel an in-flight probe on unmount.
+      const controller = new AbortController();
+      inFlight = controller;
+      const abortTimer = setTimeout(() => controller.abort(), AUTH_STATUS_PROBE_TIMEOUT_MS);
       try {
         const res = await apiFetch<{ data: AuthStatus }>(
           `/api/v1/auth/oidc/status?panel=${panel}`,
+          { signal: controller.signal },
         );
         if (cancelled) return;
         attemptsRef.current = 0;
@@ -120,6 +142,8 @@ export function useAuthStatus(panel: 'admin' | 'tenant'): UseAuthStatusResult {
           since: sinceRef.current,
         });
         timer = setTimeout(() => { void probe(); }, authStatusRetryDelayMs(attemptsRef.current));
+      } finally {
+        clearTimeout(abortTimer);
       }
     };
 
@@ -128,6 +152,7 @@ export function useAuthStatus(panel: 'admin' | 'tenant'): UseAuthStatusResult {
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
+      inFlight?.abort();
     };
   }, [panel, nonce]);
 

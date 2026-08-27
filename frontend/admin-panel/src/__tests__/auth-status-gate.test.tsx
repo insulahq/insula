@@ -8,6 +8,7 @@ import {
   isApiUnreachable,
   authStatusRetryDelayMs,
   AUTH_STATUS_RETRY_MAX_MS,
+  AUTH_STATUS_PROBE_TIMEOUT_MS,
 } from '@/hooks/use-auth-status';
 
 vi.mock('@/lib/api-client', () => ({
@@ -61,6 +62,14 @@ describe('isApiUnreachable', () => {
 
   it('treats a raw network error (fetch TypeError) as unreachable', () => {
     expect(isApiUnreachable(new TypeError('Failed to fetch'))).toBe(true);
+  });
+
+  it('treats an aborted probe as unreachable', () => {
+    // A hung probe is aborted by AUTH_STATUS_PROBE_TIMEOUT_MS. If that landed
+    // in the "answered" bucket the gate would fall back to the permissive
+    // default and render the dead form we are trying to avoid.
+    const abort = new DOMException('The operation was aborted', 'AbortError');
+    expect(isApiUnreachable(abort)).toBe(true);
   });
 });
 
@@ -154,6 +163,34 @@ describe('Login API-readiness gate', () => {
       expect(screen.getByTestId('login-form')).toBeInTheDocument();
     });
     expect(mockApiFetch).toHaveBeenCalledTimes(1);
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/auth/oidc/status?panel=admin');
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/v1/auth/oidc/status?panel=admin',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
   });
+
+  it('bounds a hung probe so it cannot sit in loading showing a dead form', async () => {
+    // The gate's own failure mode: a probe that never settles leaves the hook
+    // in `loading`, which renders the login form. Assert the request carries
+    // an abort signal and that the budget is finite and short.
+    expect(AUTH_STATUS_PROBE_TIMEOUT_MS).toBeGreaterThan(0);
+    expect(AUTH_STATUS_PROBE_TIMEOUT_MS).toBeLessThanOrEqual(15_000);
+
+    let capturedSignal: AbortSignal | undefined;
+    mockApiFetch.mockImplementation((_path: string, opts?: RequestInit) => {
+      capturedSignal = opts?.signal as AbortSignal | undefined;
+      return new Promise(() => { /* never settles */ });
+    });
+
+    render(<Login />, { wrapper: createWrapper() });
+
+    await waitFor(() => { expect(capturedSignal).toBeDefined(); });
+    expect(capturedSignal!.aborted).toBe(false);
+    await waitFor(
+      () => { expect(capturedSignal!.aborted).toBe(true); },
+      { timeout: AUTH_STATUS_PROBE_TIMEOUT_MS + 4_000 },
+    );
+    // Real timers: this test deliberately waits out the actual abort budget
+    // rather than faking it, so the per-test timeout has to clear it.
+  }, AUTH_STATUS_PROBE_TIMEOUT_MS + 12_000);
 });
