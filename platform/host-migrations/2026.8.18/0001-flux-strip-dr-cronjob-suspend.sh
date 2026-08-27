@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# idempotent: greps the flux-system/platform Kustomization for each CronJob
-#             target before appending its strip patch; nodes where all three
-#             are present exit 0 without writing. The JSON-patch append is
-#             guarded per target, so a partial earlier run completes cleanly.
+# idempotent: reads the existing patch TARGET NAMES out of the flux-system/
+#             platform Kustomization with -o jsonpath (never by grepping the
+#             JSON text) and appends only the targets that are missing; a node
+#             where all three are present writes nothing. It also removes any
+#             duplicate strip patches left by the broken pre-2026.8.19 guard.
 # allow-paths: (none — cluster-only change via kube-API, touches no host file)
 # blocks-on-failure: no    # ADR-056: nothing later depends on this. A node
 #                          # that misses it keeps the Flux/bridge suspend
@@ -41,18 +42,48 @@ if ! kube get kustomization -n flux-system platform >/dev/null 2>&1; then
   exit 0
 fi
 
-LIVE=$(kube get kustomization -n flux-system platform -o json)
+# Read the patch target names STRUCTURALLY. The original guard grepped the
+# raw `-o json` text for "name":"<cj>" — kubectl pretty-prints with a space
+# after the colon ("name": "<cj>"), so that pattern could never match and the
+# converger appended a fresh copy of all three patches on EVERY enforce pass.
+# Observed on staging 2026-08-27: three duplicates per CronJob, and kustomize
+# fails the SECOND remove of the same key —
+#   "error in remove for path: '/spec/suspend': Unable to remove nonexistent
+#    key: suspend: missing value"
+# — which pins the whole platform Kustomization at Ready=False, so NOTHING
+# reconciles. jsonpath returns the values themselves, with no quoting or
+# whitespace to be wrong about.
+names_of() {
+  kube get kustomization -n flux-system platform \
+    -o jsonpath='{range .spec.patches[*]}{.target.name}{"\n"}{end}' 2>/dev/null
+}
 
 # If spec.patches is absent entirely, seed an empty list first so the
 # JSON-patch 'add' to /spec/patches/- has a parent to append to.
-if ! printf '%s' "$LIVE" | grep -q '"patches"'; then
+if ! kube get kustomization -n flux-system platform \
+     -o jsonpath='{.spec.patches}' 2>/dev/null | grep -q '.'; then
   kube patch kustomization -n flux-system platform --type=json \
     -p '[{"op":"add","path":"/spec/patches","value":[]}]'
 fi
 
+# ── Repair: drop duplicate targets left by the broken guard ──────────────
+# Keep the FIRST occurrence of each target name, delete the rest. Indices are
+# removed highest-first so the earlier ones stay valid as the list shrinks.
+removed=0
+dupes=$(names_of | awk 'NF { if (seen[$0]++) print NR-1 }' | sort -rn)
+for idx in $dupes; do
+  if kube patch kustomization -n flux-system platform --type=json \
+       -p "[{\"op\":\"remove\",\"path\":\"/spec/patches/${idx}\"}]" >/dev/null 2>&1; then
+    removed=$((removed+1))
+  fi
+done
+if [ "$removed" -gt 0 ]; then
+  echo "${MIG}: removed ${removed} duplicate strip patch(es) left by the pre-2026.8.19 guard"
+fi
+
 applied=0
 for cj in platform-secrets-backup platform-cluster-state-backup platform-backup-audit; do
-  if printf '%s' "$LIVE" | grep -q "\"name\":\"${cj}\""; then
+  if names_of | grep -qx "${cj}"; then
     echo "${MIG}: strip patch for ${cj} already present"
     continue
   fi
@@ -66,4 +97,4 @@ for cj in platform-secrets-backup platform-cluster-state-backup platform-backup-
   echo "${MIG}: appended strip patch for ${cj}"
 done
 
-echo "${MIG}: done (${applied} patch(es) appended)"
+echo "${MIG}: done (${applied} appended, ${removed} duplicate(s) removed)"
