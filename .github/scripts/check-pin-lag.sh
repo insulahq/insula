@@ -74,6 +74,16 @@ while IFS=' ' read -r sha msg_rest; do
     # Legacy 'chore(staging):' prefix kept — pre-rename pin commits
     # remain in the last-100 window for a while (W1 branch rename).
     'chore(development):'* | 'chore(staging):'*) continue ;;
+    # A commit that skipped CI can never be represented in a pin — no
+    # build ran for it, so there are no images to point at. Counting
+    # them consumed the slack and made this guard cry wolf after EVERY
+    # release: release.yml pushes two [skip ci] sync commits back to
+    # development (platform/VERSION + CHANGELOG), which alone are
+    # enough to push the last built commit outside SLACK_N. Every PR
+    # opened afterwards then failed this check until the next
+    # backend/frontend change happened to trigger a rebuild
+    # (observed 2026-08-26 after v2026.8.18).
+    *'[skip ci]'*) continue ;;
     *)
       CODE_COMMITS+=("$sha")
       if [[ ${#CODE_COMMITS[@]} -gt $SLACK_N ]]; then

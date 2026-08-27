@@ -1362,6 +1362,136 @@ Data directory: /var/lib/rancher/k3s/
 
 ---
 
+### Runbook 5: Node Reboot & Graceful Node Shutdown
+
+Every node is configured (bootstrap `configure_graceful_shutdown`, converged on
+existing clusters by host-migration `2026.8.19/0001-graceful-node-shutdown`) so
+that the kubelet drains pods before the host powers down.
+
+**Why it matters.** Without it, `KillMode=process` in `k3s.service` plus
+ordering only `After=network-online.target` means systemd stops the k3s process
+while containers keep running, then tears down `iscsid` and the network under
+them. Measured on production 2026-08-27:
+
+```
+12:18:27 iscsid: session 3 in invalid state for logout. Try again later
+12:18:38 sd 4:0:0:1: [sdc] Medium Error / Unrecovered read error
+12:18:38 EXT4-fs error (device sdc): comm postgres: Detected aborted journal
+```
+
+`sdc` was the CNPG `system-db` Longhorn volume. That reboot also stalled for
+**3m28s** waiting out I/O timeouts, roughly half a ~6m50s outage.
+
+**The four settings, all required** (each was verified individually
+insufficient):
+
+| File | Setting | Why |
+|---|---|---|
+| `/var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-graceful-shutdown.conf` | `shutdownGracePeriodByPodPriority` (see below) | No kubelet *flag* exists — KubeletConfiguration only, so `--kubelet-arg` cannot express it |
+| `/etc/systemd/logind.conf.d/zz-insula-graceful-shutdown.conf` | `InhibitDelayMaxSec=150` | kubelet refuses to arm the manager unless logind's delay ≥ the total drain budget |
+| `/etc/systemd/system/k3s.service.d/10-insula-iscsid-order.conf` | `After=iscsid.service` | Units stop in reverse start order → k3s stops *before* iscsid |
+| Tigera `Installation/default` | typha tolerates `node.kubernetes.io/network-unavailable` | Otherwise a rebooted **single-node** cluster deadlocks and never returns (see below) |
+
+### Drain order is the point, not drain duration
+
+```yaml
+shutdownGracePeriodByPodPriority:
+  - priority: 0            # tenant-default (and, by the <= rule, 100 / 1000)
+    shutdownGracePeriodSeconds: 30
+  - priority: 10000        # platform-critical — platform-api, panels, mail, Postgres
+    shutdownGracePeriodSeconds: 40
+  - priority: 1000000000   # longhorn-critical — instance-manager + CSI plugin
+    shutdownGracePeriodSeconds: 30
+  - priority: 2000000000   # system-cluster-critical / system-node-critical
+    shutdownGracePeriodSeconds: 20
+```
+
+Groups drain in **ascending priority order**, so the Longhorn data plane
+outlives every pod whose volume it has to unmount. Worst case 120s, but
+kubelet advances as soon as a group's pods are gone.
+
+!!! danger "Do not collapse this to `shutdownGracePeriod` + `shutdownGracePeriodCriticalPods`"
+    That simpler pair splits pods into two groups at `2000000000`, which puts
+    `longhorn-critical` (1e9) in the **same** group as `platform-critical`
+    (10000) — Longhorn's `instance-manager` is then torn down alongside the
+    Postgres pod whose volume it serves. A real DEV reboot on that config
+    failed with:
+
+    ```
+    nodeshutdown_manager.go:204 "Failed while waiting for all the volumes
+    belonging to Pods in this group to unmount"
+    err="mounted volumes=[...longhorn.io^pvc-7d827cd8...]: context deadline exceeded"
+    ```
+
+    `pvc-7d827cd8` was `platform/system-db-1`. The corruption path was still
+    wide open even though the drain "worked".
+
+### The single-node reboot deadlock
+
+Graceful shutdown **terminates** pods rather than leaving them to restart in
+place, so at boot their controllers must **schedule** replacements. `calico-typha`
+is a Deployment; the node boots carrying
+`node.kubernetes.io/network-unavailable:NoSchedule`, which only a healthy
+`calico-node` clears — and `calico-node` refuses to start without a ready Typha:
+
+```
+[FATAL] node-services/startsyncerclient.go 49: Typha discovery enabled but
+discovery failed. error=missing Kubernetes service IP or port
+```
+
+On a single-node cluster that is a closed loop; DEV sat with every workload
+`Pending` until the taint was removed by hand. Typha runs `hostNetwork: true`
+and needs no CNI, so it now tolerates that taint. Multi-node clusters never
+saw it because Typha schedules elsewhere.
+
+Manual break-glass if you ever hit it:
+
+```bash
+kubectl taint node <node> node.kubernetes.io/network-unavailable:NoSchedule-
+```
+
+!!! danger "The `zz-` prefix is load-bearing"
+    systemd merges `.conf.d` drop-ins by **filename across all of `/etc`,
+    `/run` and `/usr/lib`** — directory priority only breaks ties between
+    *identical* names. `unattended-upgrades` ships
+    `/usr/lib/systemd/logind.conf.d/unattended-upgrades-logind-maxdelay.conf`
+    with `InhibitDelayMaxSec=30`, and `unattended-…` sorts after any
+    digit-prefixed name. A `10-` or `99-` drop-in silently loses and the
+    effective delay stays 30s. kubelet's own self-healing
+    `99-kubelet.conf` fails for exactly this reason. **Do not renumber.**
+
+**Verify it is armed** (the only assertion that proves the whole chain — a
+present config file does not mean the manager started):
+
+```bash
+systemd-inhibit --list | grep kubelet
+# kubelet  0  root  <pid>  k3s-server  shutdown  Kubelet needs time to handle node shutdown  delay
+
+# And confirm the kubelet actually read the config:
+NODE=$(kubectl get nodes -o jsonpath='{.items[0].metadata.name}')
+kubectl get --raw "/api/v1/nodes/$NODE/proxy/configz" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["kubeletconfig"].get("shutdownGracePeriodByPodPriority"))'
+# [{'priority': 0, 'shutdownGracePeriodSeconds': 30}, {'priority': 10000, ...}, ...]
+```
+
+**Failure signature** if logind is not compliant — the node looks configured
+but is not protected:
+
+```
+kubelet.go:1845 "Failed to start node shutdown manager" err="node shutdown
+manager was timed out after 5 attempts waiting for logind InhibitDelayMaxSec
+to update to 1m0s (ShutdownGracePeriod), current value is 30s"
+```
+
+Fix by re-running the host-migration (`platform-ops host-config --mode enforce`),
+which restarts `systemd-logind` *before* restarting k3s — that ordering is what
+kubelet's own self-heal attempt gets wrong.
+
+Draining is still correct before *planned* maintenance: graceful shutdown stops
+workloads politely, a drain moves them elsewhere first.
+
+---
+
 ## Part 10: Admin Panel Features
 
 ### Features for Cluster Maintenance
