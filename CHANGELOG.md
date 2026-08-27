@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.19] - 2026-08-27
+
 ### Fixed
 - **A hung API probe no longer defeats the login readiness gate.** The gate
   classifies a failed `/auth/oidc/status` probe as "API unreachable", but a
