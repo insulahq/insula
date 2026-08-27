@@ -82,6 +82,16 @@ describe('tenant-panel Login gate', () => {
       expect(screen.getByTestId('password-input')).toBeInTheDocument();
     });
     expect(mockApiFetch).toHaveBeenCalledTimes(1);
-    expect(mockApiFetch).toHaveBeenCalledWith('/api/v1/auth/oidc/status?panel=tenant');
+    expect(mockApiFetch).toHaveBeenCalledWith(
+      '/api/v1/auth/oidc/status?panel=tenant',
+      expect.objectContaining({ signal: expect.anything() }),
+    );
+  });
+
+  it('treats an aborted probe as unreachable', () => {
+    // A hung probe is aborted by AUTH_STATUS_PROBE_TIMEOUT_MS; if that were
+    // classified as "answered" the gate would fall back to the permissive
+    // default and render the dead form this change exists to prevent.
+    expect(isApiUnreachable(new DOMException('aborted', 'AbortError'))).toBe(true);
   });
 });
