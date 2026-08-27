@@ -148,3 +148,72 @@ describe('isDegraded', () => {
     expect(isDegraded([{ ...base, pendingCount: 4 }])).toBe(false);
   });
 });
+
+/**
+ * The case this whole state exists for: a node whose converge timer was never
+ * installed relays a snapshot with NO hostMigrations, forever. It used to read
+ * as "has not reported yet", which is why the production cluster sat two weeks
+ * with an empty migration ledger while every page showed green.
+ *
+ * The grace window is what keeps that honest in both directions — silent for a
+ * fresh node still inside its first hourly converge, loud once it has provably
+ * missed one.
+ */
+describe('never-converged detection', () => {
+  const FRESH = 10 * 60 * 1000; // 10 min old
+  const OLD = 26 * 60 * 60 * 1000; // 26 h old
+  const noMigrations = JSON.stringify({ node: 'n1', sysctls: [] });
+
+  it('stays quiet for a FRESH node with no converge yet', () => {
+    const r = interpretNodeSnapshot('n1', noMigrations, FRESH);
+    expect(r.neverConverged).toBeFalsy();
+    expect(isDegraded([r])).toBe(false);
+    expect(r.note).toMatch(/not reported .* yet/i);
+  });
+
+  it('flags an OLD node that has still never converged', () => {
+    const r = interpretNodeSnapshot('n1', noMigrations, OLD);
+    expect(r.neverConverged).toBe(true);
+    expect(isDegraded([r])).toBe(true);
+    expect(r.note).toMatch(/never converged/i);
+  });
+
+  it('gives an old never-converged node runnable fix steps', () => {
+    const r = interpretNodeSnapshot('n1', noMigrations, OLD);
+    expect(r.remediation?.length ?? 0).toBeGreaterThan(0);
+    // The operator must be told where to run it and what actually repairs it.
+    expect(r.remediation?.join('\n')).toMatch(/self-upgrade/);
+    expect(r.remediation?.join('\n')).toMatch(/list-timers/);
+  });
+
+  it('flags an OLD node the reconciler never publishes for, separately', () => {
+    const r = interpretNodeSnapshot('n1', undefined, OLD);
+    expect(r.reconcilerMissing).toBe(true);
+    expect(r.neverConverged).toBeFalsy();
+    expect(isDegraded([r])).toBe(true);
+    expect(r.remediation?.join('\n')).toMatch(/host-config-reconciler/);
+  });
+
+  it('stays quiet for a fresh node the reconciler has not published for yet', () => {
+    const r = interpretNodeSnapshot('n1', undefined, FRESH);
+    expect(r.reconcilerMissing).toBeFalsy();
+    expect(isDegraded([r])).toBe(false);
+  });
+
+  it('gives the benefit of the doubt when the node age is unknown', () => {
+    // No node list (RBAC, API blip) must not turn every node red.
+    const r = interpretNodeSnapshot('n1', noMigrations, undefined);
+    expect(r.neverConverged).toBeFalsy();
+    expect(isDegraded([r])).toBe(false);
+  });
+
+  it('does not flag a node that HAS converged, however old', () => {
+    const healthy = JSON.stringify({
+      node: 'n1',
+      hostMigrations: { ok: true, appliedCount: 24, items: [] },
+    });
+    const r = interpretNodeSnapshot('n1', healthy, OLD);
+    expect(r.neverConverged).toBeFalsy();
+    expect(isDegraded([r])).toBe(false);
+  });
+});
