@@ -137,3 +137,4 @@ export * from './dns-apex-drift.js';
 export * from './ip.js';
 export * from './dns-resolver.js';
 export * from './app-preview.js';
+export * from './extra-mounts.js';
