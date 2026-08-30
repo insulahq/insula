@@ -12,6 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Every database user created through the panel had a password nobody had
+  ever seen.** Both tenant-panel database screens generated a password in the
+  browser, sent it to the API, and displayed the value they had generated. The
+  API **ignored** the submitted value, generated its own, applied that to the
+  account, and returned it — and the panel discarded the response. So the
+  password shown was never the account's password, on **every** create and
+  **every** regenerate. The only symptom was `Access denied` from the tenant's
+  own application, with a correct username and correct grants, which is close
+  to undiagnosable from the UI.
+
+  Identified from the charset: the panel's generator used `!@#$%^&*` while the
+  server's is `[a-zA-Z0-9_-]`, so a displayed password containing a symbol
+  proved it had never been applied. Both panels now display
+  `response.data.password`; the client-side generators are deleted; and the API
+  **rejects** a submitted password with 400 rather than silently ignoring it,
+  so the divergence cannot return quietly. Guard:
+  `ci-server-generated-credentials-check.sh`.
+- **"All databases" granted no databases.** The user-creation form's default
+  option sent no database, and the backend only issued a `GRANT` when one was
+  named — leaving `GRANT USAGE ON *.*`, which means no privileges at all. The
+  account could authenticate and was then denied everywhere. It now grants
+  `ALL PRIVILEGES ON *.*` on the tenant's own instance (no `GRANT OPTION`), the
+  option says so, and the form preselects a real database so least privilege is
+  the default. PostgreSQL grants on each existing database instead.
+- **Re-creating an existing database user silently kept the old password.**
+  `CREATE USER IF NOT EXISTS … IDENTIFIED BY` is a no-op when the user exists,
+  and PostgreSQL's path skipped creation entirely — so a retry left the old
+  password active while presenting a new one. Both now always apply the
+  password with `ALTER USER`.
+
 ## [2026.8.24] - 2026-08-30
 
 ### Fixed

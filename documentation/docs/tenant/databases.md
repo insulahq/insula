@@ -37,11 +37,26 @@ and click the trash icon (this is permanent).
 **Create a database user**
 
 The sidebar also lists **Users** for the selected engine. To add one, enter a
-username, pick which database it can access, and create it. A strong password is
-generated and **shown once** — copy it immediately. You can also:
+username, pick which database it can access, and create it. The password is
+generated **by the server** and **shown once** — copy it immediately. You can
+also:
 
 - **Regenerate password** for an existing user (also shown once).
 - **Drop** a user to remove its access.
+
+**Which database can it access?** The dropdown preselects a database, which is
+usually what you want: an application needs one database and nothing else.
+Choosing **All databases (full access to this server)** grants the user every
+database on that engine instance, including ones you create later — convenient
+for administration, more access than a single application should have.
+
+!!! tip "If your application reports 'Access denied'"
+    Check which of the two things is missing. `Access denied for user … to
+    database …` means the user exists but has no rights on that database —
+    recreate it with the right database selected, or grant access. `Access
+    denied for user … (using password: YES)` means the password does not match:
+    use **Regenerate password** and copy the new value, rather than creating the
+    same user again — recreating an existing user does not change its password.
 
 !!! warning "Save generated passwords right away"
     Generated database passwords are displayed a single time and can't be
