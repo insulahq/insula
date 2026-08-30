@@ -38,6 +38,43 @@ shows a pulsing **Deploying** status; once ready it shows **Running**.
 To make a deployed website reachable, connect a domain route to it — see
 [Domains & websites](domains-and-websites.md#point-the-route-at-an-app).
 
+### Extra mounts
+
+Every app already has its own folder on your storage, mounted where the app
+expects it (a website's document root, a database's data directory). **Extra
+mounts** let you put an *additional* folder from your storage at another path
+inside the container.
+
+In the deploy dialog, open **Extra Mounts** and add a row:
+
+| Field | Meaning |
+| --- | --- |
+| **Folder** | A folder on your storage, written relative to your storage root — for example `shared-assets`. It is created for you if it does not exist. |
+| **Mount at** | The absolute path inside the container where it should appear — for example `/var/www/html/media`. |
+| **Read-only** | Tick this to let the app read the folder but not change it. |
+
+Because the folder is relative to your **storage root** rather than to the
+app's own folder, two deployments that name the same folder see the same
+files. That is the point: a shared media library, a drop-box one app writes
+and another reads, or a common asset folder behind several sites.
+
+The same property has a consequence worth knowing:
+
+!!! warning "A shared folder outlives the app"
+    Deleting a deployment — even with **delete data** — removes only that
+    app's own folder. A folder you mounted as an extra mount stays, because
+    another deployment may still be using it. Remove it yourself in the
+    **File Manager** when you no longer want it.
+
+A few paths are refused: the container's own system directories (`/usr`,
+`/etc`, `/var` and friends) and kernel interfaces (`/proc`, `/sys`, `/dev`),
+because mounting over them stops the app from starting. Paths *inside* those
+directories are fine. You also cannot mount at a path the app already uses —
+the dialog suggests a path underneath it instead.
+
+You can change the mounts of a running app later. Saving restarts it, because
+the container has to come back with the new folders attached.
+
 ## Manage an installed app
 
 Each deployment is a card on the **Installed Apps** tab showing live CPU,
