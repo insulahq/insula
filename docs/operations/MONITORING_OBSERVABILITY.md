@@ -135,11 +135,25 @@ curl -s $M | grep -E '^(process_resident_memory_bytes|go_memstats_heap_(sys|inus
 curl -s "$M/../api/v1/status/tsdb?topN=20"
 ```
 
-A cache whose `vm_cache_size_bytes` is far above what `vm_cache_entries`
-warrants is allocated capacity, not demand — lower `-memory.allowedBytes`
-rather than raising the container limit. `GOGC` trades CPU for memory, and this
-pod has CPU to spare (6m of a 100m request); do not copy that value to a
-CPU-bound service.
+**What each lever is actually worth**, measured on DEV before and after the
+2026-08-30 change (same workload, ~15.5k series, one pod, no restarts):
+
+| Lever | Effect |
+| --- | --- |
+| `GOGC` + `GOMEMLIMIT` | **the whole reduction** — RSS 294 MiB → ~240 MiB steady state (77% → 63% of the limit), `next_gc` 127 MiB → 77–111 MiB, and the monotonic climb became a normal GC sawtooth |
+| `-memory.allowedBytes` 192→64 MiB | **no change to memory held** — `vm_cache_size_bytes` stayed at ~123 MiB. It lowered the sum of cache *ceilings* from ~530 MiB to ~361 MiB, which bounds the worst case, and nothing else |
+| series drops (−29 %) | small; the caches that dominate are floor-bound, not series-bound |
+
+The obvious inference — "a cache holding far less than its ceiling is
+over-allocated, so lower `allowedBytes`" — **is wrong here, and was tried.**
+VictoriaMetrics enforces internal floors: `storage/tsid`, `metricIDs` and
+`metricName` each sit at 32 MiB whether their ceiling is 128 MiB or 64 MiB.
+Treat ~120 MiB of fastcache as a fixed cost of running VictoriaMetrics at all.
+
+If the pod needs to be smaller than that, the lever is storing **less** —
+shorter retention, or a harder series cut — not this flag, and not a bigger
+limit. `GOGC` trades CPU for memory and this pod has CPU to spare (6m of a 100m
+request); do not copy that value to a CPU-bound service.
 
 **Kills may not be labelled as such.** The kubelet reports a cgroup OOM *group*
 kill as `{exitCode: 137, reason: "Error"}`, so `kubectl get pod` shows no

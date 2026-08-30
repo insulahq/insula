@@ -81,24 +81,38 @@ spec:
             - -promscrape.configCheckInterval=1m
             - -storageDataPath=/storage
             - -retentionPeriod=30d
-            # Sized to the WORKING SET, not to a fraction of the limit.
-            # VM derives every cache ceiling from this number, and it
-            # ALLOCATES toward those ceilings regardless of how little is
-            # actually cached. Measured on the production cluster at
-            # 192MiB (2026-08-30), with 16.2k series total:
-            #   storage/tsid        13505 entries →  32.0 MiB  (max 128 MiB)
-            #   storage/metricName    465 entries →  18.7 MiB  (max  64 MiB)
-            #   storage/metricIDs     465 entries →  18.7 MiB  (max  64 MiB)
-            # i.e. 69 MiB held for a working set of a few MB, and a
-            # PERMITTED ceiling (~530 MiB across all caches) far above the
-            # 384Mi container limit — so a single cache-warming query could
-            # OOM the pod outright. 64MiB keeps every ceiling comfortably
-            # above the real working set (tsid 42 MiB for ~0.8 MB of TSIDs)
-            # while cutting the resident allocation to ~30 MiB.
+            # This bounds the WORST CASE, not the steady state. Read the
+            # measurement before changing it — the obvious assumption is wrong.
+            #
+            # What it does do: every cache CEILING is derived from this number,
+            # and the sum of ceilings fell from ~530 MiB to ~361 MiB when it
+            # went 192MiB → 64MiB. That matters, because ~530 MiB of permitted
+            # cache above a 384 MiB container limit meant a single cache-warming
+            # query could OOM the pod outright.
+            #
+            # What it does NOT do: reduce the memory actually held. Measured on
+            # DEV before and after the change, same workload, ~15.5k series:
+            #   vm_cache_size_bytes total   123.8 MiB  →  ~123 MiB
+            # i.e. no change. VictoriaMetrics enforces internal FLOORS these
+            # caches never drop below — storage/tsid, metricIDs and metricName
+            # each sit at 32 MiB whether the ceiling is 128 MiB or 64 MiB, and
+            # metricIDs/metricName kept a 64 MiB ceiling at BOTH settings. An
+            # earlier version of this comment predicted "~30 MiB" here; that
+            # was a projection from the flag value and the measurement
+            # disproved it.
+            #
+            # So lowering this further buys nothing, and the ~120 MiB of
+            # fastcache is effectively a fixed cost of running VictoriaMetrics
+            # at all. The reduction that actually moved RSS came from GOGC /
+            # GOMEMLIMIT below (294 MiB → ~240 MiB steady state, 77% → 63% of
+            # the limit). If more is needed the lever is storing LESS —
+            # retention, or a harder series cut — not this flag.
+            #
             # These caches are fastcache-backed = anonymous mmap OUTSIDE the
-            # Go heap, so they are invisible to GOMEMLIMIT below and must be
-            # budgeted separately. Do not raise this without re-measuring
-            # vm_cache_size_bytes against vm_cache_entries.
+            # Go heap, so they are invisible to GOMEMLIMIT too and are the
+            # reason GOMEMLIMIT is set well below the container limit.
+            # Re-measure vm_cache_size_bytes against vm_cache_entries before
+            # trusting any prediction about this value, including this one.
             - -memory.allowedBytes=64MiB
             - -search.maxConcurrentRequests=4
             - -storage.minFreeDiskSpaceBytes=209715200
