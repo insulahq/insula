@@ -12,6 +12,7 @@ import { Exec, KubeConfig } from '@kubernetes/client-node';
 import { Readable, Writable } from 'node:stream';
 import { ApiError } from '../../shared/errors.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { isOomTermination, messageIndicatesOom } from '../../lib/container-termination.js';
 
 // ─── Binary Not Found Detection ────────────────────────────────────────────
 
@@ -2030,7 +2031,7 @@ export async function importSqlFromPvcFile(
             phase?: string;
             containerStatuses?: readonly {
               state?: { waiting?: { reason?: string } };
-              lastState?: { terminated?: { reason?: string } };
+              lastState?: { terminated?: { reason?: string; exitCode?: number } };
             }[];
           };
         };
@@ -2038,9 +2039,8 @@ export async function importSqlFromPvcFile(
         for (const pod of healthPodItems) {
           for (const cs of pod.status?.containerStatuses ?? []) {
             const waitingReason = cs.state?.waiting?.reason;
-            const terminatedReason = cs.lastState?.terminated?.reason;
             const restartCount = (cs as { restartCount?: number }).restartCount ?? 0;
-            if (waitingReason === 'CrashLoopBackOff' || terminatedReason === 'OOMKilled') {
+            if (waitingReason === 'CrashLoopBackOff' || isOomTermination(cs.lastState?.terminated)) {
               return {
                 success: false,
                 error: 'Import caused the database to crash (Out of Memory). The database is restarting. Consider splitting the import into smaller files or increasing memory allocation.',
@@ -2069,7 +2069,7 @@ export async function importSqlFromPvcFile(
 
     if (err instanceof ApiError) throw err;
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes('exit code 137') || message.includes('OOMKilled')) {
+    if (messageIndicatesOom(message)) {
       return { success: false, error: 'Import failed: Out of Memory. The database ran out of memory while processing the SQL file. Try splitting the import into smaller files, or increase the deployment memory allocation.' };
     }
     if (message.includes('exit code')) {

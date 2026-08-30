@@ -1,4 +1,5 @@
 import { OPERATOR_ERROR_CODES, type OperatorError } from '@insula/api-contracts';
+import { messageIndicatesOom } from '../lib/container-termination.js';
 
 /**
  * Translate a raw error message (k8s API, Longhorn, cert-manager,
@@ -132,7 +133,7 @@ export function translateOperatorError(
       diagnostics: { raw },
     };
   }
-  if (text.includes('OOMKilled') || text.includes('exit code 137')) {
+  if (messageIndicatesOom(text)) {
     return {
       code: OPERATOR_ERROR_CODES.WORKLOAD_OOM,
       title: 'Workload ran out of memory',

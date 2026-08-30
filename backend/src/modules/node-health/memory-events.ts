@@ -28,6 +28,7 @@ import type { Database } from '../../db/index.js';
 import { nodeMemoryEvents, tenants } from '../../db/schema.js';
 import { notifyAdminNodeMemoryEvents } from '../notifications/events.js';
 import type { NodeMemoryEvent } from '@insula/api-contracts';
+import { classifyOom } from '../../lib/container-termination.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
 
@@ -127,9 +128,13 @@ export function collectOomKilledContainers(
       // state.terminated; a restarting one in lastState.terminated.
       for (const term of [cs.state?.terminated, cs.lastState?.terminated]) {
         if (!term) continue;
-        const oomExplicit = term.reason === 'OOMKilled';
-        const oomInferred = term.reason === 'Error' && term.exitCode === 137;
-        if (!oomExplicit && !oomInferred) continue;
+        // This module got it right before the others did; it now shares the
+        // classifier so the whole platform agrees on what an OOM is. Note the
+        // inferred arm no longer requires reason==='Error' — a SIGKILL with no
+        // reason set at all is still exit 137.
+        const oomKind = classifyOom(term);
+        if (!oomKind) continue;
+        const oomExplicit = oomKind === 'explicit';
         const finished = term.finishedAt ? new Date(term.finishedAt) : null;
         if (!finished || Number.isNaN(finished.getTime()) || finished.getTime() < cutoff) continue;
         out.push({

@@ -21,6 +21,7 @@ import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { recordImageAudit } from './image-audit.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
+import { isOomTermination } from '../../lib/container-termination.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -185,10 +186,12 @@ export async function readFirstPodObservation(
       const terminated = cs.state?.terminated ?? cs.lastState?.terminated;
       const restarts = cs.restartCount ?? 0;
 
-      if (terminated?.reason === 'OOMKilled') {
+      if (isOomTermination(terminated)) {
         // Check OOM FIRST: an out-of-memory crash-loop shows waiting=CrashLoopBackOff
         // too, but "OOMKilled" is the actionable diagnosis (raise the memory limit),
-        // so it must win over the generic backoff message.
+        // so it must win over the generic backoff message. Classified via the shared
+        // helper because the kubelet reports SOME cgroup OOM kills as
+        // {exitCode:137, reason:"Error"} — see lib/container-termination.ts.
         failureReason = `${name}: OOMKilled (restart count ${restarts})`;
       } else if (waitingReason && (waitingReason.includes('Err') || waitingReason.includes('BackOff'))) {
         // Explicit CrashLoopBackOff / ImagePullBackOff / ErrImagePull.
