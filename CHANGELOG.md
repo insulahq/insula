@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.25] - 2026-08-30
+
 ### Fixed
 - **Every database user created through the panel had a password nobody had
   ever seen.** Both tenant-panel database screens generated a password in the
