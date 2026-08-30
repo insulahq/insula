@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.23] - 2026-08-30
+
 ### Added
 - **Extract and archive show real progress.** Both stream NDJSON to the panel
   like `fetch-url` already did, so a multi-minute job reports what it is doing
