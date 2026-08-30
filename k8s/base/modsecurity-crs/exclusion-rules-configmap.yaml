@@ -435,3 +435,51 @@ data:
          ctl:ruleRemoveTargetById=930110;ARGS,\
          ctl:ruleRemoveTargetById=930120;ARGS,\
          ctl:ruleRemoveTargetById=930130;ARGS"
+
+    # ── 930130 restricted-file DICTIONARY vs. a hosting control panel ──
+    #
+    # 930130 matches ARG values against `restricted-files.data`: `.htaccess`,
+    # `.htpasswd`, `web.config`, `.git/*`, `wp-config.php`, … In a hosting
+    # panel those are ordinary DATA, not attack indicators. Measured on DEV
+    # 2026-08-30 — every one of these was a 403 that never reached the API:
+    #
+    #   POST …/files/rename        {"oldPath":"/p/.htaccess"}      (fixed by 9000111)
+    #   POST …/files/copy          {"sourcePath":"/p/.htaccess"}   (fixed by 9000111)
+    #   POST …/files/delete        {"path":"/p/.htaccess"}         (fixed by 9000111)
+    #   POST …/sftp-users          {"homePath":"/.git/config"}
+    #   POST …/databases           {"name":"web.config"}
+    #   POST …/domains             {"domain":".htpasswd.example.test"}
+    #   POST /api/v1/admin/dns/records {"name":".htaccess"}
+    #
+    # A per-endpoint exclusion for each is whack-a-mole: the offending value
+    # can appear in any argument of any endpoint, and the operator only finds
+    # out when a tenant reports that something "fails without error".
+    #
+    # 9000108 already made this argument for 930120 and deliberately kept
+    # 930130 — but it was reasoning about ONE config endpoint family. Across
+    # domains, database names and DNS records the dictionary match is pure
+    # noise, and as that same comment says: a dictionary is no real guard for
+    # an authenticated API, because an attacker simply names a path that is
+    # not in it. The real controls are `safePath()` in the file-manager
+    # sidecar, per-tenant authorization, and input validation.
+    #
+    # DELIBERATELY NARROW:
+    #   * Only 930130, and only its ARGS. Traversal (930100/930110) keeps FULL
+    #     ARGS coverage — `storage_path=../../etc/passwd` still blocks.
+    #   * Only the platform's own API hosts (admin|tenant|api). A tenant's own
+    #     workload on their own domain keeps the complete rule set, so a real
+    #     app being probed for `.git/config` is still protected.
+    #   * REQUEST_URI, headers and cookies are still scanned by 930130 here.
+    #
+    # This is a security-posture change. Reverting it means restricted-file
+    # names in API arguments are blocked again, including the legitimate ones
+    # listed above.
+    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
+        "id:9000112,\
+         phase:1,\
+         pass,\
+         nolog,\
+         chain"
+        SecRule REQUEST_URI "@rx ^/api/v1/" \
+            "t:none,\
+             ctl:ruleRemoveTargetById=930130;ARGS"

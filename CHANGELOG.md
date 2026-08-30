@@ -13,6 +13,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **The WAF blocked ordinary filenames across the whole API, not only in the
+  File Manager.** CRS 930130 matches argument values against a dictionary of
+  restricted filenames (`.htaccess`, `.htpasswd`, `web.config`, `.git/*`,
+  `wp-config.php`). In a hosting control panel those are ordinary data.
+  Measured on DEV, every one of these was a 403 that never reached the API:
+  renaming/copying/deleting such a file, creating an SFTP user with a
+  `/.git/config` home path, a database named `web.config`, a domain
+  `.htpasswd.example.test`, and a DNS record named `.htaccess`. The rule is now
+  scoped away from **ARGS on the platform's own API hosts only** — traversal
+  detection (930100/930110) keeps full coverage, so `../../etc/passwd` still
+  blocks, and a tenant's own workload on their own domain keeps the complete
+  rule set. This is a deliberate posture change; see the note in
+  `exclusion-rules-configmap.yaml`.
 - **The WAF blocked ordinary file operations on ordinary filenames.** After
   extracting a CMS archive, renaming or opening files such as `.htaccess` or
   `web.config` failed with a 403 from the WAF. CRS 930xxx match argument
