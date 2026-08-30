@@ -50,6 +50,7 @@ export interface IngressRouteCurrentSpec {
      *  carve-out shares host + backend with the panel route and is otherwise
      *  indistinguishable from it. */
     readonly uploadCarveOut?: boolean;
+    readonly wafAdminCarveOut?: boolean;
   }>;
   readonly tlsSecret: string | null;
 }
@@ -164,6 +165,30 @@ const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
  * production (Phase 2)". This is that; the static file is removed.
  */
 const UPLOAD_PATH_REGEXP = '^/api/v1/tenants/[^/]+/files/upload-raw$';
+
+/**
+ * The WAF-management API must not sit behind the WAF.
+ *
+ * A rule exclusion describes an attack pattern — that is its entire purpose.
+ * Submitting one therefore puts attack-shaped text in the request body, which
+ * the WAF matches and blocks, so the operator cannot disarm a false positive:
+ * the safety valve is behind the thing it disarms.
+ *
+ * Hit in production 2026-08-30. A tenant could not rename `.htaccess` (CRS
+ * 930120, "OS File Access Attempt" — see exclusion 9000111). The operator went
+ * to Security → WAF Events to whitelist the rule and the whitelist request was
+ * itself blocked, with the platform's own message telling them to go to
+ * Security → WAF Events.
+ *
+ * A CRS exclusion cannot fix this in general: an exclusion for an SQLi rule
+ * contains SQLi-shaped text and would trip the 942xxx family instead. Only
+ * removing WAF inspection from the endpoint works for every rule.
+ *
+ * Safe because these routes are `super_admin` + Bearer-only (`authenticate`,
+ * no cookie fallback), so the WAF is not the access control here — and an
+ * operator who can already reconfigure the WAF gains nothing by evading it.
+ */
+const WAF_ADMIN_PATH_REGEXP = '^/api/v1/admin/security/waf-rule-exclusions';
 
 /**
  * Priority for the upload carve-out. Must beat the `/oauth2` route (100) and the
@@ -297,6 +322,18 @@ export function buildIngressRouteBody(
       services: [{ name: r.serviceName, port: 80 }],
     });
 
+    // Same carve-out, different reason: see WAF_ADMIN_PATH_REGEXP. This one
+    // keeps the body cap — unlike an upload, a rule exclusion is a small JSON
+    // document, so there is no reason to let it be unbounded.
+    const wafAdminMiddlewares = panelMiddlewares.filter(m => m.name !== PLATFORM_WAF_MIDDLEWARE_NAME);
+    traefikRoutes.push({
+      match: `Host(\`${r.host}\`) && PathRegexp(\`${WAF_ADMIN_PATH_REGEXP}\`)`,
+      kind: 'Rule',
+      priority: UPLOAD_ROUTE_PRIORITY,
+      middlewares: wafAdminMiddlewares,
+      services: [{ name: r.serviceName, port: 80 }],
+    });
+
     const panelRoute: Record<string, unknown> = {
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
@@ -427,7 +464,11 @@ export async function reconcileIngressHosts(
           // IngressRoute predates the carve-out looks in-sync forever and the
           // route is never applied — which is exactly what happened on the
           // first rollout: the code was correct, the reconciler just never ran.
-          r.uploadCarveOut
+          r.uploadCarveOut &&
+          // Identical reasoning for the WAF-admin carve-out. Adding a carve-out
+          // without adding its term here is a silent no-op, which is why this
+          // comparison enumerates each one rather than counting routes.
+          r.wafAdminCarveOut
         );
       }) &&
       currentRoute.tlsSecret === input.tlsSecretName;
@@ -505,7 +546,7 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
           // the oauth2Backend field populated, so the desired-vs-current
           // comparison stays symmetrical with the desired-routes shape.
           .reduce<
-            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean }>
+            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean; wafAdminCarveOut: boolean }>
           >((acc, route) => {
             const match = String(route.match ?? '');
             const hostMatch = match.match(/Host\(`([^`]+)`\)/);
@@ -515,10 +556,13 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             const svcName = (services[0]?.name as string | undefined) ?? '';
             const isOauth2Path = /PathPrefix\(`\/oauth2`\)/.test(match);
             const isUpload = match.includes('upload-raw');
+            const isWafAdmin = match.includes('waf-rule-exclusions');
             const existing = acc.find((r) => r.host === host);
             if (existing) {
               if (isUpload) {
                 existing.uploadCarveOut = true;
+              } else if (isWafAdmin) {
+                existing.wafAdminCarveOut = true;
               } else if (isOauth2Path) {
                 existing.oauth2Backend = svcName;
               } else {
@@ -527,9 +571,10 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             } else {
               acc.push({
                 host,
-                serviceName: isOauth2Path || isUpload ? '' : svcName,
+                serviceName: isOauth2Path || isUpload || isWafAdmin ? '' : svcName,
                 oauth2Backend: isOauth2Path ? svcName : null,
                 uploadCarveOut: isUpload,
+                wafAdminCarveOut: isWafAdmin,
               });
             }
             return acc;
