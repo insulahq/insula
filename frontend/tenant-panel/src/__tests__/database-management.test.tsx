@@ -339,10 +339,46 @@ describe('DatabaseManagementModal', () => {
     fireEvent.change(screen.getByTestId('create-user-username'), { target: { value: 'new_user' } });
     fireEvent.click(screen.getByTestId('create-user-submit'));
 
-    expect(mutateFn).toHaveBeenCalledWith(
-      expect.objectContaining({ deploymentId: 'dep-1', username: 'new_user', password: expect.any(String) }),
-      expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
+    // The password must NOT be sent. This test previously asserted
+    // `password: expect.any(String)` — it encoded the bug as the contract.
+    // The panel generated a password, sent it, and displayed its own value;
+    // the API ignored it and applied a different one, so every user created
+    // this way had a password nobody had seen. Symptom: "Access denied" from
+    // the tenant's application with a correct username and correct grants.
+    const [payload, handlers] = mutateFn.mock.calls[0];
+    expect(payload).toEqual({
+      deploymentId: 'dep-1',
+      username: 'new_user',
+      // Preselected because a database exists — least privilege by default.
+      database: 'app_db',
+    });
+    expect(payload).not.toHaveProperty('password');
+    expect(handlers.onSuccess).toEqual(expect.any(Function));
+  });
+
+  it('displays the password the SERVER returned, not one it generated', () => {
+    // The regression that mattered: whatever is shown to the operator must be
+    // the value the API applied.
+    const mutateFn = vi.fn((_vars, opts) => {
+      opts.onSuccess({ data: { username: 'new_user', password: 'SERVER-SIDE-PW', database: 'app_db' } });
+    });
+    mockUseCreateDbUser.mockReturnValue({ mutate: mutateFn, isPending: false });
+
+    renderWithProviders(
+      <DatabaseManagementModal
+        open={true}
+        deployment={mockDeployment}
+        catalogEntry={mockDatabaseEntry}
+        tenantId="tenant-1"
+        onClose={vi.fn()}
+      />,
     );
+
+    fireEvent.click(screen.getByTestId('show-create-user-form'));
+    fireEvent.change(screen.getByTestId('create-user-username'), { target: { value: 'new_user' } });
+    fireEvent.click(screen.getByTestId('create-user-submit'));
+
+    expect(screen.getByText('SERVER-SIDE-PW')).toBeInTheDocument();
   });
 
   it('triggers password regeneration for a user', () => {

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   X, Database, Copy, Check, Eye, EyeOff, RefreshCw, RotateCcw,
@@ -65,12 +65,14 @@ function buildConnectionUrl(connectionInfo: {
   return `${protocol}://${userPart}${connectionInfo.host}:${connectionInfo.port}${dbPart}`;
 }
 
-function generateRandomPassword(): string {
-  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*';
-  const bytes = new Uint8Array(24);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => chars[b % chars.length]).join('');
-}
+// generateRandomPassword() was removed deliberately. Passwords for database
+// users are generated SERVER-side and returned in the response; a client-side
+// generator has nothing to do because the value it produces is never sent
+// anywhere the database can see. Keeping one around invites the exact bug this
+// replaced — the panel displaying a password the account never had, which made
+// every database user it created unusable. Its charset (`!@#$%^&*`) is how the
+// mismatch was finally identified: the server's charset is [a-zA-Z0-9_-], so a
+// displayed password containing a symbol proved it had never been applied.
 
 function CopyButton({
   field,
@@ -302,21 +304,37 @@ function UsersSection({
 
   const users = usersData?.data ?? [];
 
+  // Preselect the first real database when one exists. Granting a single
+  // database is what almost every application needs; "All databases" grants the
+  // whole server and should be a deliberate choice, not the option the form
+  // happens to open on. Only fires while the selection is still untouched.
+  useEffect(() => {
+    if (showCreateForm && newDatabase === '__all__' && databases.length > 0) {
+      setNewDatabase(databases[0].name);
+    }
+    // Keyed on the form opening and the list arriving — NOT on newDatabase, or
+    // it would immediately undo the user picking "All databases".
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCreateForm, databases.length]);
+
+
   const handleCreate = useCallback(() => {
     if (!deploymentId || !newUsername.trim()) return;
     setErrorMessage(null);
     setCreatedPassword(null);
-    const generatedPassword = generateRandomPassword();
     createUser.mutate(
       {
         deploymentId,
         username: newUsername.trim(),
-        password: generatedPassword,
         database: newDatabase === '__all__' ? undefined : newDatabase,
       },
       {
-        onSuccess: () => {
-          setCreatedPassword(generatedPassword);
+        // Show the password the SERVER applied, from the response. This used to
+        // display a password generated here and never sent anywhere — the
+        // account always had a different one, so every user created through
+        // this form was unusable.
+        onSuccess: (res) => {
+          setCreatedPassword(res.data.password);
           setNewUsername('');
           setNewDatabase('__all__');
           setShowCreateForm(false);
@@ -346,12 +364,13 @@ function UsersSection({
       if (!deploymentId) return;
       setErrorMessage(null);
       setRegeneratedPassword(null);
-      const generatedPassword = generateRandomPassword();
       setPassword.mutate(
-        { deploymentId, username, password: generatedPassword },
+        { deploymentId, username },
         {
-          onSuccess: () => {
-            setRegeneratedPassword({ username, password: generatedPassword });
+          // Identical correction to the create path — the displayed value must
+          // be the one the server set.
+          onSuccess: (res) => {
+            setRegeneratedPassword({ username, password: res.data.password });
           },
           onError: (err) => setErrorMessage(err instanceof Error ? err.message : 'Failed to regenerate password'),
         },
@@ -528,7 +547,11 @@ function UsersSection({
                   className="w-full rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                   data-testid="create-user-database"
                 >
-                  <option value="__all__">All databases</option>
+                  {/* Grants ALL PRIVILEGES on every database in this server.
+                      It used to grant NOTHING — the backend only issued a GRANT
+                      when a database was named — so a user created with the
+                      default could authenticate and then be denied everywhere. */}
+                  <option value="__all__">All databases (full access to this server)</option>
                   {databases.map((db) => (
                     <option key={db.name} value={db.name}>
                       {db.name}
