@@ -101,12 +101,12 @@ spec:
             # was a projection from the flag value and the measurement
             # disproved it.
             #
-            # So lowering this further buys nothing, and the ~120 MiB of
-            # fastcache is effectively a fixed cost of running VictoriaMetrics
-            # at all. The reduction that actually moved RSS came from GOGC /
-            # GOMEMLIMIT below (294 MiB → ~240 MiB steady state, 77% → 63% of
-            # the limit). If more is needed the lever is storing LESS —
-            # retention, or a harder series cut — not this flag.
+            # So lowering this further buys nothing, and the ~126 MiB of
+            # fastcache is a fixed cost of running VictoriaMetrics at all. That
+            # number is load-bearing: GOMEMLIMIT below is derived from it,
+            # because it is exactly the part of the cgroup the Go runtime
+            # cannot see. If more headroom is ever needed the lever is storing
+            # LESS — retention, or a harder series cut — not this flag.
             #
             # These caches are fastcache-backed = anonymous mmap OUTSIDE the
             # Go heap, so they are invisible to GOMEMLIMIT too and are the
@@ -147,14 +147,30 @@ spec:
             # free here. Do not copy this value to a CPU-bound service.
             - name: GOGC
               value: "40"
-            # Backstop, not the primary control: a soft ceiling the runtime
-            # GCs harder to stay under, so a query burst degrades into GC
-            # pressure instead of an OOM kill. 256Mi leaves ~128Mi of the
-            # container limit for the off-heap fastcache (~30 MiB at
-            # -memory.allowedBytes=64MiB), the binary, and stacks — none of
-            # which GOMEMLIMIT can see.
+            # A soft ceiling the runtime GCs harder to stay under, so growth
+            # degrades into GC pressure instead of an OOM kill.
+            #
+            # SIZED FROM THE MEASURED off-heap total, not a predicted one. This
+            # was 256Mi for one afternoon and that value was useless:
+            #   GOMEMLIMIT 256 MiB  (Go memory only)
+            # + fastcache  126 MiB  (anonymous mmap, invisible to GOMEMLIMIT)
+            # = 382 MiB             ≈ the 384 MiB cgroup limit
+            # i.e. the backstop sat exactly at the OOM point and could never
+            # fire before the kernel did. RSS climbed straight back to the
+            # pre-change baseline (294 MiB → 292 MiB in two hours) with Go at
+            # 136 MiB, far below its own ceiling, restrained by nothing.
+            #
+            # The error was sizing this against a PREDICTED ~30 MiB of
+            # fastcache. Measurement put fastcache at ~126 MiB and did not move
+            # when -memory.allowedBytes was cut (see the note above it).
+            #
+            #   384 MiB limit − 126 fastcache − ~40 binary/stacks/slab/slack
+            #   ≈ 218 MiB available to the Go runtime
+            #
+            # 192Mi keeps a real margin inside that. Re-derive it — do not
+            # copy it — if vm_cache_size_bytes ever changes materially.
             - name: GOMEMLIMIT
-              value: "268435456"
+              value: "201326592"
           ports:
             - name: http
               containerPort: 8428
