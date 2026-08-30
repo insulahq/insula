@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Search, Loader2, Ban, PlayCircle, Trash2 } from 'lucide-react';
+import { Plus, Search, Loader2, Ban, PlayCircle, Trash2, LogIn } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 import PaginationBar from '@/components/ui/PaginationBar';
 import BulkActionBar, { SelectCheckbox } from '@/components/ui/BulkActionBar';
@@ -10,6 +10,9 @@ import CreateTenantModal from '@/components/CreateTenantModal';
 import { useTenants } from '@/hooks/use-tenants';
 import { useCursorPagination } from '@/hooks/use-cursor-pagination';
 import { useSelection } from '@/hooks/use-selection';
+import { useLoginAsTenant } from '@/hooks/use-impersonate';
+import ErrorPanel from '@/components/ErrorPanel';
+import type { OperatorError } from '@insula/api-contracts';
 import { useBulkSuspendTenants, useBulkReactivateTenants, useBulkDeleteTenants } from '@/hooks/use-bulk-tenants';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
@@ -39,6 +42,45 @@ export default function TenantsListTab() {
   const hasMore = data?.pagination?.has_more ?? false;
   const nextCursor = data?.pagination?.cursor ?? null;
   const { sortedData: sortedTenants, sortKey, sortDirection, onSort } = useSortable(tenants, 'name');
+
+  // "Login as tenant" straight from the list — the same impersonation action as
+  // the tenant detail header, without the detour through it. `pendingLoginId`
+  // keeps the spinner on the row that was actually clicked; the mutation's own
+  // isPending is shared across every row.
+  const loginAs = useLoginAsTenant();
+  const [pendingLoginId, setPendingLoginId] = useState<string | null>(null);
+  const [loginError, setLoginError] = useState<OperatorError | null>(null);
+  const handleLoginAs = async (tenantId: string) => {
+    setPendingLoginId(tenantId);
+    setLoginError(null);
+    try {
+      const opened = await loginAs.open(tenantId);
+      if (!opened) {
+        setLoginError({
+          code: 'TENANT_PANEL_URL_UNSET',
+          title: 'Tenant Panel URL is not configured',
+          detail: 'Logging in as a tenant opens the tenant panel in a new tab, and no address is configured for it.',
+          remediation: ['Set the Tenant Panel URL in System Settings, then try again.'],
+          retryable: false,
+        });
+      }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err);
+      setLoginError({
+        code: 'IMPERSONATION_FAILED',
+        title: 'Could not start a tenant session',
+        detail: raw,
+        remediation: [
+          'Confirm the tenant has an active tenant_admin user — impersonation needs one to sign in as.',
+          'Check that your admin role still carries the impersonate permission.',
+        ],
+        retryable: true,
+        diagnostics: { error: raw },
+      });
+    } finally {
+      setPendingLoginId(null);
+    }
+  };
 
   // ADR-040: SYSTEM tenant is shown in the list but never selectable
   // for bulk suspend / delete / reactivate. Bulk endpoints already
@@ -100,6 +142,16 @@ export default function TenantsListTab() {
 
   return (
     <div className="space-y-6">
+      {loginError && (
+        <ErrorPanel
+          error={loginError}
+          severity="error"
+          testId="login-as-tenant-error"
+          onRetry={loginError.retryable && pendingLoginId === null
+            ? () => setLoginError(null)
+            : undefined}
+        />
+      )}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="relative flex-1 max-w-sm">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -191,6 +243,27 @@ export default function TenantsListTab() {
                               SYSTEM
                             </span>
                           )}
+                          {/* Same action as the tenant detail header, one click
+                              earlier. stopPropagation because the whole row
+                              navigates to the detail page. */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleLoginAs(tenant.id);
+                            }}
+                            disabled={loginAs.isPending}
+                            title={loginAs.isUnconfigured
+                              ? 'Tenant Panel URL is not configured — set it in System Settings'
+                              : `Open the tenant panel as ${tenant.name}`}
+                            className="inline-flex items-center gap-1 rounded-md border border-brand-200 dark:border-brand-800 bg-brand-50 dark:bg-brand-900/20 px-2 py-0.5 text-xs font-medium text-brand-700 dark:text-brand-300 hover:bg-brand-100 dark:hover:bg-brand-900/40 disabled:opacity-50"
+                            data-testid={`login-as-tenant-${tenant.id}`}
+                          >
+                            {loginAs.isPending && pendingLoginId === tenant.id
+                              ? <Loader2 size={11} className="animate-spin" />
+                              : <LogIn size={11} />}
+                            Login
+                          </button>
                         </div>
                         <div className="text-xs text-gray-500 dark:text-gray-400">
                           {tenant.primaryEmail}
