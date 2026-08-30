@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.24] - 2026-08-30
+
 ### Fixed
 - **The WAF blocked ordinary filenames across the whole API, not only in the
   File Manager.** CRS 930130 matches argument values against a dictionary of
