@@ -1,4 +1,5 @@
 import clsx from 'clsx';
+import { resourceBarColor, resourcePercent, resourceRatio } from '@/lib/resource-usage';
 
 interface ResourceBarProps {
   readonly used: number;
@@ -8,9 +9,11 @@ interface ResourceBarProps {
 }
 
 export default function ResourceBar({ used, total, label, unit = '' }: ResourceBarProps) {
-  const percentage = total > 0 ? Math.min((used / total) * 100, 100) : 0;
-  const color =
-    percentage >= 90 ? 'bg-red-500' : percentage >= 70 ? 'bg-amber-500' : 'bg-brand-500';
+  // Shared policy — see lib/resource-usage.ts. Was 70/90 here, 80/100 on the
+  // tenant Resource Usage page and 50/80 in the metrics modal, so the same
+  // utilisation rendered as three different severities depending on the screen.
+  const percentage = resourcePercent(used, total);
+  const color = resourceBarColor(resourceRatio(used, total));
 
   return (
     <div data-testid="resource-bar">

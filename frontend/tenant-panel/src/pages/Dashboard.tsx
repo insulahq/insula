@@ -10,26 +10,13 @@ import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useMyLifecycle } from '@/hooks/use-my-lifecycle';
 import { useDomains } from '@/hooks/use-domains';
 import { useBackups } from '@/hooks/use-backups';
-import { useDeployments, useResourceUsage } from '@/hooks/use-deployments';
+import { useDeployments } from '@/hooks/use-deployments';
+import { useResourceMetrics } from '@/hooks/use-resource-metrics';
+import { resourceBarColor, resourcePercent, resourceRatio, formatCpu, formatGiB } from '@/lib/resource-usage';
 import { useMailboxUsage } from '@/hooks/use-email';
 import { useCatalog } from '@/hooks/use-catalog';
 import { useSubscription } from '@/hooks/use-subscription';
 import { useNotifications } from '@/hooks/use-notifications';
-
-function parseResourceValue(raw: string): number {
-  const trimmed = raw.trim();
-  if (trimmed.endsWith('Gi')) return parseFloat(trimmed) * 1024;
-  if (trimmed.endsWith('Mi')) return parseFloat(trimmed);
-  if (trimmed.endsWith('m')) return parseFloat(trimmed) / 1000;
-  return parseFloat(trimmed) || 0;
-}
-
-function formatPercent(used: string, limit: string): number {
-  const u = parseResourceValue(used);
-  const l = parseResourceValue(limit);
-  if (l <= 0) return 0;
-  return Math.min(Math.round((u / l) * 100), 100);
-}
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -45,7 +32,9 @@ export default function Dashboard() {
   );
   const { data: catalogData } = useCatalog();
   const { data: subscriptionData } = useSubscription(tenantId ?? undefined);
-  const { data: resourceUsageData } = useResourceUsage(tenantId ?? undefined);
+  // Same endpoint the Resource Usage page and the metrics modal read, so the
+  // three screens can no longer disagree about the same tenant's numbers.
+  const { data: resourceUsageData } = useResourceMetrics();
   const { data: notificationsData } = useNotifications(5);
 
   const domainCount = domainsData?.data?.length ?? 0;
@@ -276,26 +265,29 @@ export default function Dashboard() {
                 <ResourceBar
                   label="CPU"
                   icon={<Cpu size={14} className="text-blue-500 dark:text-blue-400" />}
-                  used={resources.cpu.used}
-                  limit={resources.cpu.limit}
-                  percent={formatPercent(resources.cpu.used, resources.cpu.limit)}
-                  barColor="bg-blue-500 dark:bg-blue-400"
+                  inUse={resources.cpu.inUse}
+                  reserved={resources.cpu.reserved}
+                  available={resources.cpu.available}
+                  formatValue={formatCpu}
+                  testId="dashboard-cpu-bar"
                 />
                 <ResourceBar
                   label="Memory"
                   icon={<MemoryStick size={14} className="text-emerald-500 dark:text-emerald-400" />}
-                  used={resources.memory.used}
-                  limit={resources.memory.limit}
-                  percent={formatPercent(resources.memory.used, resources.memory.limit)}
-                  barColor="bg-emerald-500 dark:bg-emerald-400"
+                  inUse={resources.memory.inUse}
+                  reserved={resources.memory.reserved}
+                  available={resources.memory.available}
+                  formatValue={formatGiB}
+                  testId="dashboard-memory-bar"
                 />
                 <ResourceBar
                   label="Storage"
                   icon={<HardDrive size={14} className="text-amber-500 dark:text-amber-400" />}
-                  used={resources.storage.used}
-                  limit={resources.storage.limit}
-                  percent={formatPercent(resources.storage.used, resources.storage.limit)}
-                  barColor="bg-amber-500 dark:bg-amber-400"
+                  inUse={resources.storage.inUse}
+                  reserved={resources.storage.reserved}
+                  available={resources.storage.available}
+                  formatValue={formatGiB}
+                  testId="dashboard-storage-bar"
                 />
               </>
             ) : (
@@ -347,32 +339,58 @@ export default function Dashboard() {
 
 // ─── Resource Bar ──────────────────────────────────────────────────────────
 
-function ResourceBar({ label, icon, used, limit, percent, barColor }: {
+/**
+ * Dashboard usage bar — same data, thresholds and vocabulary as the Resource
+ * Usage page and the metrics modal.
+ *
+ * Two things were wrong here before:
+ *   * `barColor` was passed in per metric, so storage was ALWAYS amber. At 60%
+ *     of plan that reads as a warning; it was decoration and encoded nothing.
+ *   * only used/limit were shown, so the reserved figure — the one that
+ *     explains why a new deployment gets refused while "used" looks low —
+ *     appeared on the detail page and modal but not here.
+ */
+function ResourceBar({ label, icon, inUse, reserved, available, formatValue, testId }: {
   readonly label: string;
   readonly icon: React.ReactNode;
-  readonly used: string;
-  readonly limit: string;
-  readonly percent: number;
-  readonly barColor: string;
+  readonly inUse: number;
+  readonly reserved: number;
+  readonly available: number;
+  readonly formatValue: (v: number) => string;
+  readonly testId: string;
 }) {
+  const ratio = resourceRatio(inUse, available);
+  const percent = Math.round(resourcePercent(inUse, available));
+  const reservedPercent = resourcePercent(reserved, available);
+
   return (
-    <div>
+    <div data-testid={testId}>
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-1.5">
           {icon}
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</span>
         </div>
         <span className="text-xs text-gray-500 dark:text-gray-400">
-          {used} / {limit}
+          {formatValue(inUse)} / {formatValue(available)}
         </span>
       </div>
-      <div className="h-2 w-full rounded-full bg-gray-100 dark:bg-gray-700">
+      {/* Stacked: reserved (grey) behind in-use (status colour) */}
+      <div className="relative h-2 w-full overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
         <div
-          className={clsx('h-2 rounded-full transition-all', barColor)}
+          className="absolute inset-y-0 left-0 bg-gray-300 dark:bg-gray-600"
+          style={{ width: `${reservedPercent}%` }}
+        />
+        <div
+          className={clsx('absolute inset-y-0 left-0 transition-all', resourceBarColor(ratio))}
           style={{ width: `${percent}%` }}
         />
       </div>
-      <p className="mt-0.5 text-right text-xs text-gray-400 dark:text-gray-500">{percent}%</p>
+      <div className="mt-0.5 flex items-center justify-between text-xs text-gray-400 dark:text-gray-500">
+        <span>
+          {formatValue(inUse)} used · {formatValue(reserved)} reserved · {formatValue(available)} available
+        </span>
+        <span>{percent}%</span>
+      </div>
     </div>
   );
 }

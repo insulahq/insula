@@ -33,6 +33,7 @@ import type { OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
 import AiFolderModal from '@/components/AiFolderModal';
 import CloneSiteModal from '@/components/CloneSiteModal';
+import { resourceBarColor } from '@/lib/resource-usage';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -432,7 +433,7 @@ export default function Files() {
           <span className="font-medium text-gray-600 dark:text-gray-300">Storage</span>
           <span>{used} / {total}</span>
           <div className="w-24 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700">
-            <div className={`h-1.5 rounded-full ${usagePct > 90 ? 'bg-red-500' : usagePct > 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
+            <div className={`h-1.5 rounded-full ${resourceBarColor(usagePct / 100)}`}
               style={{ width: `${Math.min(usagePct, 100)}%` }} />
           </div>
         </div>

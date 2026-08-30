@@ -3,6 +3,7 @@ import { Loader2, RefreshCw, X, Cpu, MemoryStick, HardDrive, Mail } from 'lucide
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
 import { useMailboxUsage } from '@/hooks/use-email';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import { resourceBarColor, resourcePercent, resourceRatio } from '@/lib/resource-usage';
 
 interface ResourceMetricsModalProps {
   readonly open: boolean;
@@ -116,16 +117,13 @@ function ResourceSection({
   readonly reservedLabel: string;
   readonly availableLabel: string;
 }) {
-  const inUseRatio = available > 0 ? inUse / available : 0;
-  const reservedRatio = available > 0 ? reserved / available : 0;
-  const inUsePct = Math.min(inUseRatio * 100, 100);
-  const reservedPct = Math.min(reservedRatio * 100, 100);
-
-  // Color for in-use bar
-  let barColor: string;
-  if (inUseRatio >= 0.8) barColor = 'bg-red-500 dark:bg-red-400';
-  else if (inUseRatio >= 0.5) barColor = 'bg-amber-500 dark:bg-amber-400';
-  else barColor = 'bg-green-500 dark:bg-green-400';
+  // Shared policy — see lib/resource-usage.ts. This used to warn at 50% and go
+  // red at 80%, so a tenant at 60% of plan saw an alarming orange bar here and
+  // a normal one on the Resource Usage page, for the same number.
+  const inUseRatio = resourceRatio(inUse, available);
+  const inUsePct = resourcePercent(inUse, available);
+  const reservedPct = resourcePercent(reserved, available);
+  const barColor = resourceBarColor(inUseRatio);
 
   return (
     <div className="space-y-2">
