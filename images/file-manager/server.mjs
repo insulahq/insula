@@ -678,6 +678,38 @@ function formatBytes(bytes) {
   return `${val.toFixed(val < 10 ? 1 : 0)} ${units[i]}`;
 }
 
+/**
+ * Parse `df -B1 <path>` into { totalBytes, availableBytes }.
+ *
+ * busybox df WRAPS a long device name onto its own line and puts the numbers on
+ * the next one, indented:
+ *
+ *   Filesystem           1-blocks       Used Available Use% Mounted on
+ *   /dev/longhorn/pvc-00dd3bb7-3afb-4bc5-bf52-6f460be2af7a
+ *                        2080374784  73768960 2006605824   4% /data
+ *
+ * Every Longhorn PVC device path is long enough to trigger that wrap, so the
+ * old `dfLines[1].split(/\s+/)[1]` read the DEVICE NAME line, got `undefined`,
+ * and `parseInt(undefined) || 0` silently reported **0 B total / 0 B available**
+ * for every tenant. `du` still reported real usage, so the panel drew a quota
+ * bar of "X used of 0 B".
+ *
+ * Parse from the END of the fields instead of the start: the last five columns
+ * are always `1-blocks Used Available Use% MountedOn`, whether or not the device
+ * name wrapped. Joining the lines first makes the wrap irrelevant.
+ */
+function parseDf(dfOut) {
+  const lines = dfOut.trim().split('\n');
+  // Drop the header, then join what remains — a wrapped device name and its
+  // numbers become one logical row.
+  const fields = lines.slice(1).join(' ').trim().split(/\s+/);
+  // …<device> <total> <used> <avail> <use%> <mountpoint>
+  const mountIdx = fields.length - 1;
+  const totalBytes = parseInt(fields[mountIdx - 4], 10) || 0;
+  const availableBytes = parseInt(fields[mountIdx - 2], 10) || 0;
+  return { totalBytes, availableBytes };
+}
+
 async function handleDiskUsage(req, res) {
   try {
     // Use du for actual bytes used — runs as root so it can read all dirs
@@ -688,10 +720,7 @@ async function handleDiskUsage(req, res) {
     // df gives PVC capacity on real block storage (correct in production).
     // On local-path provisioner (local dev), it returns host FS size — acceptable trade-off.
     const { stdout: dfOut } = await execFileAsync('df', ['-B1', BASE], { timeout: 10_000 });
-    const dfLines = dfOut.trim().split('\n');
-    const dfParts = dfLines[1]?.split(/\s+/) || [];
-    const totalBytes = parseInt(dfParts[1], 10) || 0;
-    const availableBytes = parseInt(dfParts[3], 10) || 0;
+    const { totalBytes, availableBytes } = parseDf(dfOut);
 
     sendJson(res, 200, {
       usedBytes,
@@ -1462,4 +1491,4 @@ if (process.env.FM_NO_LISTEN !== '1') {
 // `server` is exported so a test can bind it on an ephemeral port
 // (`server.listen(0)`) and drive real HTTP requests through the router,
 // instead of racing the fixed :8111 with a parallel test file.
-export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE, server };
+export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE, server, parseDf };

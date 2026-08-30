@@ -118,6 +118,43 @@ const PLATFORM_WAF_MIDDLEWARE_NAME = 'modsecurity-crs';
  */
 const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
 
+/**
+ * The file-manager's streaming upload endpoint, carved out of WAF coverage.
+ *
+ * The madebymode ModSecurity plugin does `body, _ := io.ReadAll(req.Body)` with
+ * NO size limit — verified by reading the plugin source off a running Traefik
+ * pod (2026-08-30). Its `maxBodySize` knob, which our Middleware sets to 5 MiB
+ * and which earlier comments here described as a cap, is not in the plugin's
+ * `Config` struct at all: Traefik drops the unknown key and the plugin never
+ * consults it. So EVERY request body on a WAF-covered route is buffered whole
+ * in the Traefik pod, then POSTed to the ModSecurity sidecar, which buffers it
+ * AGAIN to a temp file on disk before the request is finally replayed upstream.
+ * Traefik's limit is 512Mi and it is a DaemonSet fronting the whole cluster.
+ *
+ * That cost buys nothing here. `9000105` in the CRS exclusion ConfigMap already
+ * strips REQUEST_BODY and ARGS_POST from every rule for this exact URI, because
+ * the body IS an arbitrary tenant file — so the bytes are mirrored, spooled and
+ * then deliberately not inspected. The endpoint is Bearer-authenticated in
+ * platform-api before the sidecar sees it, and SFTP writes the same bytes to the
+ * same volume with no WAF in front at all.
+ *
+ * Routing the upload path to the same service WITHOUT the WAF middleware keeps
+ * the transfer streaming end to end. `path` and every other query argument still
+ * flow through CrowdSec and are unaffected — only body mirroring is skipped.
+ *
+ * k8s/overlays/dind/ingress-upload.yaml carried a hand-written version of this
+ * for local dev only, with a note that the reconciler "will emit this for
+ * production (Phase 2)". This is that; the static file is removed.
+ */
+const UPLOAD_PATH_REGEXP = '^/api/v1/tenants/[^/]+/files/upload-raw$';
+
+/**
+ * Priority for the upload carve-out. Must beat the `/oauth2` route (100) and the
+ * bare `Host()` panel route (which falls back to rule-length, far below 100), so
+ * the more specific upload rule wins regardless of Traefik's length heuristic.
+ */
+const UPLOAD_ROUTE_PRIORITY = 101;
+
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
 /**
@@ -225,6 +262,19 @@ export function buildIngressRouteBody(
       panelMiddlewares.push({ name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' });
     }
     panelMiddlewares.push({ name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' });
+
+    // Streaming-upload carve-out: identical chain minus the WAF, so the body is
+    // never buffered in Traefik or spooled to disk in the ModSecurity sidecar.
+    // See UPLOAD_PATH_REGEXP for why that inspection is pure cost here.
+    const uploadMiddlewares = panelMiddlewares.filter(m => m.name !== PLATFORM_WAF_MIDDLEWARE_NAME);
+    traefikRoutes.push({
+      match: `Host(\`${r.host}\`) && PathRegexp(\`${UPLOAD_PATH_REGEXP}\`)`,
+      kind: 'Rule',
+      priority: UPLOAD_ROUTE_PRIORITY,
+      middlewares: uploadMiddlewares,
+      services: [{ name: r.serviceName, port: 80 }],
+    });
+
     const panelRoute: Record<string, unknown> = {
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
