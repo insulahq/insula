@@ -1,0 +1,70 @@
+# Request-body cap that MUST be chained immediately before the WAF.
+#
+# Why this exists
+# ---------------
+# The madebymode ModSecurity plugin buffers the entire request body before it
+# can ask the sidecar for a verdict:
+#
+#     body, err := io.ReadAll(req.Body)      // modsecurity.go, no limit
+#
+# There is no size guard. `maxBodySize` is not a field of the plugin's Config
+# struct, so a value set on the Middleware is silently dropped by Traefik and
+# never consulted. Traefik runs as a DaemonSet fronting the entire cluster with
+# limits.memory=512Mi, so ONE oversized request is a cluster-wide outage.
+#
+# Measured on a live cluster (2026-08-30): a single UNAUTHENTICATED 600 MB POST
+# to /api/v1/auth/login OOM-killed Traefik in ~3s —
+#   lastState.terminated: {exitCode: 137, reason: OOMKilled}
+# taking every site on the platform down with it. No account required.
+#
+# Why a cap rather than "skip the WAF for large bodies"
+# ----------------------------------------------------
+# Skipping inspection above a threshold turns an availability bug into a
+# security one: an attacker pads the payload past the threshold and the WAF
+# stops looking. It also does not even fix the OOM — the size would have to come
+# from Content-Length, and a request with `Transfer-Encoding: chunked` has none,
+# so the unbounded read returns.
+#
+# Capping loses NOTHING, because the WAF already refuses to inspect this far:
+# the sidecar runs `SecRequestBodyLimit 13107200` with
+# `SecRequestBodyLimitAction Reject`. Verified against the live cluster — a
+# 20 MiB POST to a WAF-covered route ALREADY returns 403 from the sidecar today.
+# Matching maxRequestBodyBytes to that exact limit means every request that used
+# to be inspected is still inspected, and every request that used to be rejected
+# is still rejected. The only change is that the rejection now happens at the
+# edge for 413 instead of after Traefik has buffered the body — and that Traefik
+# survives it.
+#
+# Routes that legitimately carry large bodies are handled by ROUTING, not by
+# raising this number: they bypass the WAF chain entirely by path. See
+# UPLOAD_PATH_REGEXP in backend/src/modules/system-settings/ingress-reconciler.ts.
+#
+# Invariant, enforced by scripts/ci-waf-body-limit-check.sh:
+#   `modsecurity-crs` is NEVER attached without `waf-body-limit` before it.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: waf-body-limit
+  namespace: traefik
+  labels:
+    app.kubernetes.io/part-of: hosting-platform
+    app.kubernetes.io/component: waf
+spec:
+  buffering:
+    # Exactly the sidecar's SecRequestBodyLimit. Anything larger is rejected by
+    # the WAF anyway; this just refuses it before it costs us 600 MB of RSS.
+    maxRequestBodyBytes: 13107200
+    # Keep at most 1 MiB per in-flight request in RAM; the remainder spills to
+    # the pod's disk. Bounds aggregate memory under concurrency, which
+    # maxRequestBodyBytes alone does not.
+    memRequestBodyBytes: 1048576
+    # Load-bearing: with maxResponseBodyBytes at 0, responses are NOT buffered,
+    # so streaming endpoints behind this middleware keep streaming. Verified on
+    # a live cluster rather than assumed, because a response-buffering
+    # middleware would have silently broken file downloads and SSE progress:
+    #   * 40 MB download — 200, byte-exact, time_starttransfer 0.46s of 1.19s
+    #     total. A buffered response would have made those two roughly equal.
+    #   * /files/fetch-url — progress events arrive incrementally (20/39/59/79%),
+    #     not as one blob at the end.
+    # Do not set a non-zero value here without re-running both checks.
+    maxResponseBodyBytes: 0

@@ -11,6 +11,8 @@ on:
       # touches ONLY the backend must still trigger this workflow — otherwise
       # the guard silently skips exactly the change it exists to catch.
       - 'backend/src/modules/file-manager/**'
+      - 'backend/src/modules/ingress-routes/**'
+      - 'backend/src/modules/system-settings/**'
       - 'images/file-manager/**'
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
@@ -23,6 +25,8 @@ on:
       - 'scripts/**'
       - 'security/**'
       - 'backend/src/modules/file-manager/**'
+      - 'backend/src/modules/ingress-routes/**'
+      - 'backend/src/modules/system-settings/**'
       - 'images/file-manager/**'
       - '.github/workflows/ci-infrastructure.yml'
 
@@ -242,6 +246,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify every /tenants/:tenantId/ route is scoped to the caller's tenant
         run: ./scripts/ci-tenant-scope-check.sh
+
+  waf-body-limit-guard:
+    name: WAF is never attached without its request-body cap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every modsecurity-crs attachment chains waf-body-limit first
+        run: ./scripts/ci-waf-body-limit-check.sh
 
   file-manager-auth-guard:
     name: Direct file-manager calls carry the sidecar auth header

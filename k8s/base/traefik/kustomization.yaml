@@ -6,6 +6,9 @@ resources:
   - middlewares-admin-auth.yaml
   - middlewares-crowdsec.yaml
   - middlewares-modsecurity.yaml
+  # Must be applied wherever middlewares-modsecurity is: the WAF plugin reads
+  # the whole request body with no limit of its own.
+  - middlewares-waf-body-limit.yaml
   # Runtime self-heal for the plugin-download failure that silently 404s both
   # panels. bootstrap.sh only checks this at install time; see the file header.
   - plugin-guard.yaml

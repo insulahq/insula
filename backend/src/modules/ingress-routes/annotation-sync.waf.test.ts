@@ -42,6 +42,35 @@ describe('buildMiddlewaresForRoute — WAF (ModSecurity-CRS shared sidecar)', ()
     expect(wafRef).toEqual({ name: 'modsecurity-crs', namespace: 'traefik' });
   });
 
+  // The plugin reads the whole request body with an unbounded io.ReadAll before
+  // it can get a verdict, and Traefik is a 512Mi DaemonSet fronting every
+  // tenant. Measured: one unauthenticated 600 MB POST OOM-killed it in ~3s.
+  // A tenant enabling WAF must not be able to take ingress down for everyone.
+  it('chains waf-body-limit IMMEDIATELY BEFORE the WAF when wafEnabled=1', () => {
+    const { referenceList } = buildMiddlewaresForRoute(
+      { ...baseRoute, wafEnabled: 1, wafOwaspCrs: 1 },
+      'route-12345678',
+      'tenant-ns',
+    );
+    const names = referenceList.map((r) => r.name);
+    expect(names).toContain('waf-body-limit');
+    expect(referenceList.find((r) => r.name === 'waf-body-limit'))
+      .toEqual({ name: 'waf-body-limit', namespace: 'traefik' });
+    // Order matters: a cap applied after the plugin has read the body is no cap.
+    expect(names.indexOf('waf-body-limit')).toBe(names.indexOf('modsecurity-crs') - 1);
+  });
+
+  it('does not attach the body cap when the tenant has WAF off', () => {
+    // The cap exists only to bound what the WAF buffers; without the WAF it
+    // would be an unrelated 12.5 MiB ceiling on the tenant's own traffic.
+    const { referenceList } = buildMiddlewaresForRoute(
+      { ...baseRoute, wafEnabled: 0 },
+      'route-12345678',
+      'tenant-ns',
+    );
+    expect(referenceList.map((r) => r.name)).not.toContain('waf-body-limit');
+  });
+
   it('attaches modsecurity-crs even when route would have had per-route overrides (madebymode does not support them)', () => {
     // wafExcludedRules / wafAnomalyThreshold / wafOwaspCrs=0 are read
     // for forwards-compat but have no runtime effect under the current
