@@ -139,7 +139,13 @@ test('a damaged archive reports that it is damaged, not a generic failure', asyn
   assert.ok(res.error, `expected an error event, got: ${res.body.slice(0, 300)}`);
   // The generic "Failed to extract archive" is what sent a real investigation
   // to the wrong place; the message must now name a cause.
-  assert.match(res.error.message ?? '', /damaged or unreadable/,
+  // Match the INTENT, not an exact phrase — the wording is shared with chmod
+  // and chown now, so pinning the sentence makes this test brittle for reasons
+  // that have nothing to do with extraction.
+  assert.match(res.error.message ?? '', /damaged|unreadable/,
     `expected a diagnostic message, got: ${res.error.message}`);
+  // And it must not disclose an internal path: this string reaches the tenant.
+  assert.doesNotMatch(res.error.message ?? '', /\/tmp\/|\/data\//,
+    `failure message leaks a filesystem path: ${res.error.message}`);
   assert.ok(!res.complete, 'a failed extraction must not emit a complete event');
 });
