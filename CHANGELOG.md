@@ -27,10 +27,34 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   and had the same latent limit; `git clone` writes progress to a
   similarly-capped stderr.
 
-  All of them now run through one helper that passes `-q` where the tool is
-  per-file chatty and a 32 MiB buffer everywhere. Failures also report what
-  actually went wrong — damaged archive, timeout, out of space — instead of one
-  generic sentence, which is what sent this investigation to the wrong place.
+  Extraction and archive creation no longer buffer tool output at all. They
+  `spawn` and read line by line, holding one line at a time, so memory is
+  independent of file count and there is no cap left to exceed. The fixed
+  120-second total timeout went with it — the wrong shape for "any size", since
+  it is generous for 14k files and far too short for two million — replaced by
+  an **idle** timeout that fires only when a tool goes silent. `git clone` keeps
+  a bounded buffer with an explicit 32 MiB limit.
+
+  Failures now report what actually went wrong — damaged archive, stalled tool,
+  out of space — instead of one generic sentence, which is what sent this
+  investigation to the wrong place.
+
+### Added
+- **Extract and archive show real progress.** Both stream NDJSON to the panel
+  like `fetch-url` already did, so a multi-minute job reports what it is doing
+  from the first second. Zip extraction shows a true percentage — the member
+  count comes from the archive's central directory, read directly with no
+  subprocess and no full scan. Tar extraction and archive creation report a
+  running file count with **no** percentage, because neither total is knowable
+  without walking the data twice, and an invented percentage is worse than an
+  honest count.
+
+  The per-file chatter that caused the bug above is what feeds this.
+
+  The extract dialog's old progress bar was `width: 70%` with a pulse
+  animation — a fixed decoration that looked identical for a 3-file archive and
+  a 14,191-file one. It now tracks real counts, and falls back to an
+  indeterminate bar only where no total exists.
 
 ### Fixed
 - **The monitoring pod was OOM-killed every ~2 days, and the interval was

@@ -13,12 +13,18 @@
 // for every small archive anyone had tested with, and could never work for a
 // large one. Nothing about the failure pointed at output buffering.
 //
-// The fix is `-q` (don't produce the output) plus an explicit 32 MiB
-// `maxBuffer` (don't die if some tool produces output anyway).
+// THE FIX: stop buffering at all. `spawn` + a line reader consumes the tool's
+// output as it arrives, holding one line at a time, so memory no longer scales
+// with file count and there is no cap to exceed. The fixed 120s total timeout
+// went too — wrong shape for "any size" — replaced by an IDLE timeout that
+// only fires when the tool goes silent. And the per-file chatter that caused
+// the original bug is now the PROGRESS FEED, parsed and streamed to the panel
+// as NDJSON.
 //
-// THIS TEST builds an archive whose non-quiet `unzip` chatter would exceed
-// 1 MiB and drives it through the real HTTP router. It fails against the old
-// code for the real reason, not a mocked one.
+// THIS TEST builds an archive whose chatter would exceed the old 1 MiB cap and
+// drives it through the real HTTP router — no mocks. It asserts every member
+// landed and that progress is real and monotonic, because a bar that moves
+// without meaning is what this replaced.
 
 import { test, after, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -48,9 +54,18 @@ function request(method, path, body) {
         });
         const text = await res.text();
         server.close();
-        let json = null;
-        try { json = JSON.parse(text); } catch { /* non-JSON body */ }
-        resolve({ status: res.status, body: text, json });
+        // NDJSON: one JSON object per line. Collect them all so tests can
+        // assert on the progress sequence, not just the terminal event.
+        const events = text.split('\n').filter(Boolean).map(l => {
+          try { return JSON.parse(l); } catch { return null; }
+        }).filter(Boolean);
+        resolve({
+          status: res.status,
+          body: text,
+          events,
+          complete: events.find(e => e.type === 'complete') ?? null,
+          error: events.find(e => e.type === 'error') ?? null,
+        });
       } catch (err) { server.close(); reject(err); }
     });
   });
@@ -89,7 +104,19 @@ test('extracts a many-entry archive that overflows the default stdout buffer', a
   const res = await request('POST', '/extract', { path: ARCHIVE_REL, destPath: '/out' });
 
   assert.equal(res.status, 200, `expected 200, got ${res.status}: ${res.body}`);
-  assert.equal(res.json?.extracted, true);
+  assert.ok(res.complete, `no complete event; got: ${res.body.slice(0, 400)}`);
+  assert.equal(res.complete.extracted, true);
+  assert.equal(res.complete.files, FILE_COUNT, 'complete event undercounted the members');
+
+  // Progress must be REAL: monotonically increasing, and it must reach the
+  // total. A bar that only ever showed a fixed width is what this replaces.
+  const prog = res.events.filter(e => e.type === 'progress');
+  assert.ok(prog.length > 0, 'no progress events were emitted');
+  assert.equal(prog[0].total, FILE_COUNT, 'total should come from the zip central directory');
+  for (let i = 1; i < prog.length; i++) {
+    assert.ok(prog[i].done >= prog[i - 1].done, 'progress went backwards');
+  }
+  assert.equal(prog[prog.length - 1].done, FILE_COUNT, 'final progress did not reach the total');
 
   // The real assertion: every member landed. A killed unzip leaves a partial
   // tree, so a status check alone would not catch a regression.
@@ -106,12 +133,13 @@ test('a damaged archive reports that it is damaged, not a generic failure', asyn
   writeFileSync(join(BASE, 'broken.zip'), 'PK\x03\x04 this is not really a zip');
   const res = await request('POST', '/extract', { path: '/broken.zip', destPath: '/broken-out' });
 
-  assert.equal(res.status, 500);
+  // The stream opens before the tool runs, so the failure arrives as an error
+  // EVENT on a 200 stream, not a 500 status.
+  assert.equal(res.status, 200);
+  assert.ok(res.error, `expected an error event, got: ${res.body.slice(0, 300)}`);
   // The generic "Failed to extract archive" is what sent a real investigation
   // to the wrong place; the message must now name a cause.
-  assert.match(
-    res.json?.error ?? '',
-    /damaged or unreadable/,
-    `expected a diagnostic message, got: ${res.json?.error}`,
-  );
+  assert.match(res.error.message ?? '', /damaged or unreadable/,
+    `expected a diagnostic message, got: ${res.error.message}`);
+  assert.ok(!res.complete, 'a failed extraction must not emit a complete event');
 });
