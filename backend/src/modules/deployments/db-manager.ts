@@ -443,13 +443,43 @@ async function mysqlCreateUser(
     kp, ns, pod, cn, pw,
     `CREATE USER IF NOT EXISTS '${username}'@'%' IDENTIFIED BY '${password}'`,
   );
+  // ALWAYS set the password, never rely on CREATE to do it.
+  //
+  // `CREATE USER IF NOT EXISTS … IDENTIFIED BY` is a NO-OP when the user
+  // already exists — the stored hash is untouched — but the caller has already
+  // generated a fresh password and returns it to the panel, which displays it
+  // as the credential. The operator then configures their application with a
+  // password that was never applied and gets "Access denied".
+  //
+  // Reproduced on DEV 2026-08-30: create user → retry the same username → the
+  // hash is byte-identical, the newly displayed password fails, and the
+  // ORIGINAL one still works. `CREATE OR REPLACE USER` would fix the password
+  // but DROPS the user first, silently discarding every existing grant, so it
+  // is the wrong tool here.
+  await mysqlExec(
+    kp, ns, pod, cn, pw,
+    `ALTER USER '${username}'@'%' IDENTIFIED BY '${password}'`,
+  );
   if (dbName) {
     await mysqlExec(
       kp, ns, pod, cn, pw,
       `GRANT ALL PRIVILEGES ON \`${dbName}\`.* TO '${username}'@'%'`,
     );
-    await mysqlExec(kp, ns, pod, cn, pw, 'FLUSH PRIVILEGES');
+  } else {
+    // No database chosen = the panel's "All databases" option. It used to fall
+    // through here granting NOTHING, leaving `GRANT USAGE ON *.*` — which means
+    // no privileges at all — so the user could authenticate and then be denied
+    // on every database. An option labelled "All databases" that grants access
+    // to none of them is worse than no option.
+    //
+    // The MariaDB instance belongs to this tenant alone, so *.* is scoped to
+    // their own server. GRANT OPTION is deliberately NOT included.
+    await mysqlExec(
+      kp, ns, pod, cn, pw,
+      `GRANT ALL PRIVILEGES ON *.* TO '${username}'@'%'`,
+    );
   }
+  await mysqlExec(kp, ns, pod, cn, pw, 'FLUSH PRIVILEGES');
 }
 
 async function mysqlDropUser(
@@ -631,12 +661,34 @@ async function pgCreateUser(
   );
   if (!existing.trim()) {
     await pgExec(kp, ns, pod, cn, `CREATE USER "${username}" WITH PASSWORD '${password}'`);
+  } else {
+    // Same defect as the MySQL path: skipping creation for an existing role
+    // also skips setting the password, while the caller still hands the newly
+    // generated one to the panel. ALTER makes the displayed password true.
+    await pgExec(kp, ns, pod, cn, `ALTER USER "${username}" WITH PASSWORD '${password}'`);
   }
   if (dbName) {
     await pgExec(
       kp, ns, pod, cn,
       `GRANT ALL PRIVILEGES ON DATABASE "${dbName}" TO "${username}"`,
     );
+  } else {
+    // "All databases". PostgreSQL has no `*.*`, so grant on each non-template
+    // database that exists. New databases created later are NOT covered — that
+    // is a real limitation of the option, and the panel says so rather than
+    // pretending otherwise.
+    const dbs = await pgExec(
+      kp, ns, pod, cn,
+      'SELECT datname FROM pg_database WHERE datistemplate = false',
+    );
+    for (const raw of dbs.split('\n')) {
+      const name = raw.trim();
+      if (!name || name.startsWith('(')) continue;
+      await pgExec(
+        kp, ns, pod, cn,
+        `GRANT ALL PRIVILEGES ON DATABASE "${name}" TO "${username}"`,
+      );
+    }
   }
 }
 
