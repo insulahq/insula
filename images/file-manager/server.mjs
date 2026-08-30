@@ -217,7 +217,16 @@ function describeToolFailure(err, action) {
     return `Failed to ${action}: timed out after ${TOOL_TIMEOUT_MS / 1000}s.`;
   }
   if (typeof err?.code === 'number' && err.code !== 0) {
-    return `Failed to ${action}: the archive appears to be damaged or unreadable (exit ${err.code}).`;
+    // `action` carries the subject ("extract archive", "change permissions"),
+    // so this branch stays subject-neutral. It used to say "the archive appears
+    // to be damaged", which became "Failed to change permissions: the archive
+    // appears to be damaged" once chmod started using this helper.
+    //
+    // It must NOT relay the tool's stderr: my first correction did, and the
+    // message became "…cannot find /tmp/fm-extract-gXg3JS/broken.zip.ZIP",
+    // disclosing an internal path to the tenant. This string is returned
+    // verbatim to the panel — the exit code is the only detail safe to include.
+    return `Failed to ${action} (exit ${err.code}). The target may be damaged, unreadable, or in an unexpected format.`;
   }
   if (err?.code === 'ENOSPC' || msg.includes('ENOSPC') || msg.includes('No space left')) {
     return `Failed to ${action}: not enough free space.`;
@@ -1064,17 +1073,27 @@ async function handleChmod(req, res) {
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
-    const args = recursive ? ['-R', String(mode), full] : [String(mode), full];
-    await new Promise((resolve, reject) => {
-      execFile('chmod', args, { timeout: 60_000 }, (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr || err.message));
-        else resolve(stdout);
+    let changed = 0;
+    if (recursive) {
+      // Same limits the archive tools hit: a fixed 60s total timeout and
+      // execFile's 1 MiB buffer. `chmod -R` over a CMS tree of tens of
+      // thousands of files can exceed 60s on network storage, and the SIGTERM
+      // leaves permissions HALF APPLIED behind a generic error.
+      //
+      // -v makes busybox emit a line per file, which does two things: it feeds
+      // the idle timer (a silent tool would trip it instantly) and it gives an
+      // accurate count to report back.
+      await runToolStreaming('chmod', ['-Rv', String(mode), full], {
+        onLine: () => { changed++; },
       });
-    });
-    sendJson(res, 200, { path: p, mode: String(mode), recursive: !!recursive });
+    } else {
+      await runTool('chmod', [String(mode), full]);
+      changed = 1;
+    }
+    sendJson(res, 200, { path: p, mode: String(mode), recursive: !!recursive, changed });
   } catch (err) {
     console.error('[handleChmod]', err.message);
-    sendError(res, 500, err.message);
+    sendError(res, 500, describeToolFailure(err, 'change permissions'));
   }
 }
 
@@ -1116,17 +1135,21 @@ async function handleChown(req, res) {
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
-    const args = recursive ? ['-R', ownerSpec, full] : [ownerSpec, full];
-    await new Promise((resolve, reject) => {
-      execFile('chown', args, { timeout: 60_000 }, (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr || err.message));
-        else resolve(stdout);
+    let changed = 0;
+    if (recursive) {
+      // See handleChmod: fixed total timeout + 1 MiB buffer, replaced by an
+      // idle timer that -v keeps alive.
+      await runToolStreaming('chown', ['-Rv', ownerSpec, full], {
+        onLine: () => { changed++; },
       });
-    });
-    sendJson(res, 200, { path: p, uid, gid, recursive: !!recursive });
+    } else {
+      await runTool('chown', [ownerSpec, full]);
+      changed = 1;
+    }
+    sendJson(res, 200, { path: p, uid, gid, recursive: !!recursive, changed });
   } catch (err) {
     console.error('[handleChown]', err.message);
-    sendError(res, 500, err.message);
+    sendError(res, 500, describeToolFailure(err, 'change ownership'));
   }
 }
 

@@ -12,7 +12,40 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Extract and archive show real progress.** Both stream NDJSON to the panel
+  like `fetch-url` already did, so a multi-minute job reports what it is doing
+  from the first second. Zip extraction shows a true percentage — the member
+  count comes from the archive's central directory, read directly with no
+  subprocess and no full scan. Tar extraction and archive creation report a
+  running file count with **no** percentage, because neither total is knowable
+  without walking the data twice, and an invented percentage is worse than an
+  honest count.
+
+  The per-file chatter that caused the bug above is what feeds this.
+
+  The extract dialog's old progress bar was `width: 70%` with a pulse
+  animation — a fixed decoration that looked identical for a 3-file archive and
+  a 14,191-file one. It now tracks real counts, and falls back to an
+  indeterminate bar only where no total exists.
+
 ### Fixed
+- **Recursive permission and ownership changes were capped at 60 seconds.**
+  Applying permissions with *Apply recursively to all contents* ran `chmod -R`
+  under a fixed 60-second total timeout and `execFile`'s 1 MiB output buffer —
+  the same defect that made large archives impossible to extract, in the two
+  handlers the archive fix did not touch. On a CMS tree of tens of thousands of
+  files on network storage the timeout kills the tool partway, leaving
+  permissions **half applied** behind a generic error, which is worse than
+  failing outright because a partly-chmod'ed tree looks fine until something
+  403s. Both now run verbosely through the streaming runner: no total timeout,
+  no buffer to overflow, and an accurate count of what changed.
+- **A failed permission change blamed the archive.** The shared failure helper
+  answered "the archive appears to be damaged or unreadable" for `chmod` and
+  `chown` once they started using it. It is now subject-neutral, and it no
+  longer relays the tool's stderr — an intermediate version did, which put an
+  internal filesystem path into a message shown to the tenant.
+
 - **Archives with many files could not be extracted, and archiving a large
   folder could fail the same way.** A tenant could not extract a 14,191-entry
   zip: the archive was valid, the disk had 4.6 GB free, and the extraction
@@ -39,24 +72,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   out of space — instead of one generic sentence, which is what sent this
   investigation to the wrong place.
 
-### Added
-- **Extract and archive show real progress.** Both stream NDJSON to the panel
-  like `fetch-url` already did, so a multi-minute job reports what it is doing
-  from the first second. Zip extraction shows a true percentage — the member
-  count comes from the archive's central directory, read directly with no
-  subprocess and no full scan. Tar extraction and archive creation report a
-  running file count with **no** percentage, because neither total is knowable
-  without walking the data twice, and an invented percentage is worse than an
-  honest count.
-
-  The per-file chatter that caused the bug above is what feeds this.
-
-  The extract dialog's old progress bar was `width: 70%` with a pulse
-  animation — a fixed decoration that looked identical for a 3-file archive and
-  a 14,191-file one. It now tracks real counts, and falls back to an
-  indeterminate bar only where no total exists.
-
-### Fixed
 - **The monitoring pod was OOM-killed every ~2 days, and the interval was
   shrinking.** VictoriaMetrics died five times in eleven days on the production
   cluster (3d16h → 2d18h → 1d23h → 1d14h between kills), each time losing its
@@ -74,15 +89,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   128 MiB ceiling, so a single cache-warming query could have killed the pod
   outright.
 
-  Fixed by budgeting all three consumers instead of one, with no extra memory:
-  `-memory.allowedBytes` cut to 64MiB (still far above the real working set),
-  `GOGC=40` so the heap collects at 1.4× live instead of 2× — the pod uses 6m
-  of a 100m CPU request, so the trade is free — `GOMEMLIMIT=256Mi` as a
-  backstop that turns a query burst into GC pressure rather than a kill, and
-  `metric_relabel_configs` dropping 4,665 series (29 %) that were never read:
-  Longhorn's and Flux's client-go internals, per-container swap gauges that are
-  constant zero because swap is disabled, VM's own flag list, and one series
-  per Postgres GUC.
+  Addressed by budgeting all three consumers instead of one, with no extra
+  memory: `-memory.allowedBytes` cut to 64MiB, `GOGC=40` so the heap collects
+  at 1.4× live instead of 2× — the pod uses 6m of a 100m CPU request, so the
+  trade is free — `GOMEMLIMIT` as a backstop, and `metric_relabel_configs`
+  dropping 4,665 series (29 %) that were never read: Longhorn's and Flux's
+  client-go internals, per-container swap gauges that are constant zero because
+  swap is disabled, VM's own flag list, and one series per Postgres GUC.
+
+  **Two of those levers did not do what was claimed for them, and the
+  measurements are worth stating.** `-memory.allowedBytes` did not reduce
+  memory held at all — `vm_cache_size_bytes` stayed at ~123 MiB, because
+  VictoriaMetrics enforces internal floors those caches never drop below. It
+  lowered the sum of cache *ceilings* from ~530 MiB to ~361 MiB, which bounds
+  the worst case and nothing else. And `GOMEMLIMIT` was first set to 256Mi,
+  which combined with 126 MiB of off-heap fastcache put the backstop at 382 MiB
+  — effectively at the OOM point, where the kernel always wins first. RSS
+  climbed back to the pre-change baseline within two hours. It is now **192Mi**,
+  derived from the measured off-heap total rather than a predicted one. Whether
+  that holds is unverified: the failure has a 1.6–3.6 day period, so only days
+  of samples can confirm it.
 - **Some OOM kills were invisible to the platform.** The kubelet reports a
   cgroup OOM *group* kill as `{exitCode: 137, reason: "Error"}`, not
   `OOMKilled` — a sweep for the latter across every production namespace
