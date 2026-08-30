@@ -12,6 +12,48 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The monitoring pod was OOM-killed every ~2 days, and the interval was
+  shrinking.** VictoriaMetrics died five times in eleven days on the production
+  cluster (3d16h → 2d18h → 1d23h → 1d14h between kills), each time losing its
+  caches and starting the climb again. Neither usual suspect was involved:
+  16.2k series total and 134 MB on disk.
+
+  `-memory.allowedBytes=192MiB` budgets VM's **caches**, and the comment above
+  it claimed that capped them "well under" the 384Mi limit. It does — and it
+  says nothing about the Go runtime that shares the same cgroup. Measured: 246
+  MiB held by the Go heap for an 89 MiB live working set, plus ~95 MiB of
+  fastcache allocated as anonymous mmap *outside* the Go heap where
+  `allowedBytes` accounting cannot see it either. 341 MiB against a 384 MiB
+  ceiling. The limit only held because the caches never claimed what they had
+  been permitted — `storage/tsid` held 13,505 entries in 32 MiB against a
+  128 MiB ceiling, so a single cache-warming query could have killed the pod
+  outright.
+
+  Fixed by budgeting all three consumers instead of one, with no extra memory:
+  `-memory.allowedBytes` cut to 64MiB (still far above the real working set),
+  `GOGC=40` so the heap collects at 1.4× live instead of 2× — the pod uses 6m
+  of a 100m CPU request, so the trade is free — `GOMEMLIMIT=256Mi` as a
+  backstop that turns a query burst into GC pressure rather than a kill, and
+  `metric_relabel_configs` dropping 4,665 series (29 %) that were never read:
+  Longhorn's and Flux's client-go internals, per-container swap gauges that are
+  constant zero because swap is disabled, VM's own flag list, and one series
+  per Postgres GUC.
+- **Some OOM kills were invisible to the platform.** The kubelet reports a
+  cgroup OOM *group* kill as `{exitCode: 137, reason: "Error"}`, not
+  `OOMKilled` — a sweep for the latter across every production namespace
+  returned zero results while the monitoring pod was being killed every two
+  days. Six modules classified terminations and four disagreed:
+  `node-health/memory-events` already inferred it correctly, `operator-error`
+  matched the rendered text, and the per-tenant OOM alert scan plus three
+  deployment-status paths matched only the literal — so a tenant container
+  killed this way raised no alert and showed as a generic crash loop instead of
+  the actionable "raise the memory limit". All six now share
+  `lib/container-termination.ts`, with `ci-oom-classification-check.sh` failing
+  the build on a new bare comparison, including the narrowed
+  `terminated?: { reason?: string }` type that lets the check compile but never
+  fire.
+
 ## [2026.8.22] - 2026-08-30
 
 ### Security

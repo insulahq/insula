@@ -124,6 +124,11 @@ remove the container.
     When a container can't start — a bad image, a wrong command, or it runs out
     of memory — its status shows **failed** with the reason next to it (for
     example `CrashLoopBackOff — last exit 1`, `ImagePullBackOff`, or `OOMKilled`).
+    `OOMKilled` means the container asked for more memory than its limit allows:
+    raise the memory limit under **Assigned resources**, or find out why the app
+    is using more than expected. A container that was killed outright now reports
+    `OOMKilled` too, rather than the bare `Error` it used to show — the underlying
+    kill looks identical, and memory is nearly always the cause.
     Kubernetes will keep restarting it. Click **Stop** to break the restart loop:
     it scales the container to zero but **keeps your configuration, storage and
     registry credentials**, so you can fix the image or command and then **Start**
