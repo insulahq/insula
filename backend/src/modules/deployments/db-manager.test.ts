@@ -462,8 +462,46 @@ describe('db-manager', () => {
       };
 
       await expect(createUser(ctx, 'new_user', 'pass123', 'mydb')).resolves.toBeUndefined();
-      // Should have called exec 3 times: CREATE USER, GRANT, FLUSH
-      expect(mockExecFn).toHaveBeenCalledTimes(3);
+
+      // Assert the STATEMENTS, not the call count. The previous version
+      // asserted "3 calls", which says nothing about whether the password was
+      // applied or the grant issued — and it broke the moment a genuinely
+      // necessary statement was added.
+      // The SQL lives inside the k8s exec command array, not the last arg
+      // (which is the status callback) — stringify the whole call.
+      const sql = mockExecFn.mock.calls
+        .map((c: unknown[]) => c.map(a => (typeof a === 'function' ? '' : JSON.stringify(a))).join(' '))
+        .join('\n');
+      expect(sql).toContain("CREATE USER IF NOT EXISTS 'new_user'@'%'");
+      // ALTER is load-bearing: CREATE ... IF NOT EXISTS is a NO-OP for an
+      // existing user, so without this the caller's password is never applied
+      // while still being returned to the panel and displayed.
+      expect(sql).toContain("ALTER USER 'new_user'@'%' IDENTIFIED BY 'pass123'");
+      expect(sql).toContain('GRANT ALL PRIVILEGES ON `mydb`.* TO \'new_user\'@\'%\'');
+      expect(sql).toContain('FLUSH PRIVILEGES');
+    });
+
+    it('grants on *.* when no database is given (the panel\'s "All databases")', async () => {
+      setupExecSuccess('');
+      const ctx = {
+        kubeconfigPath: '/tmp/kc',
+        namespace: 'ns',
+        podName: 'pod',
+        containerName: 'mariadb',
+        engine: 'mariadb' as const,
+        rootPassword: 'pw',
+      };
+
+      await expect(createUser(ctx, 'all_user', 'pass123')).resolves.toBeUndefined();
+
+      // Omitting the database used to fall through granting NOTHING, leaving
+      // `GRANT USAGE ON *.*` — which means no privileges — so the account could
+      // authenticate and then be denied on every database.
+      const sql = mockExecFn.mock.calls
+        .map((c: unknown[]) => c.map(a => (typeof a === 'function' ? '' : JSON.stringify(a))).join(' '))
+        .join('\n');
+      expect(sql).toContain("GRANT ALL PRIVILEGES ON *.* TO 'all_user'@'%'");
+      expect(sql).toContain('FLUSH PRIVILEGES');
     });
   });
 
