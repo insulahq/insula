@@ -13,6 +13,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **Archives with many files could not be extracted, and archiving a large
+  folder could fail the same way.** A tenant could not extract a 14,191-entry
+  zip: the archive was valid, the disk had 4.6 GB free, and the extraction
+  itself takes 5 seconds. The panel said only "Failed to extract archive".
+
+  `execFile` buffers a child process's stdout and **kills the child** once it
+  exceeds `maxBuffer`, which defaults to 1 MiB. `unzip -o` prints one line per
+  member — 1,513,063 bytes for that archive, 44% over the cap. Extraction
+  therefore worked for every small archive it was ever tested with and could
+  never work for a large one, and nothing in the failure pointed at output
+  buffering. `zip -r` (creating an archive) is chatty in exactly the same way
+  and had the same latent limit; `git clone` writes progress to a
+  similarly-capped stderr.
+
+  All of them now run through one helper that passes `-q` where the tool is
+  per-file chatty and a 32 MiB buffer everywhere. Failures also report what
+  actually went wrong — damaged archive, timeout, out of space — instead of one
+  generic sentence, which is what sent this investigation to the wrong place.
+
+### Fixed
 - **The monitoring pod was OOM-killed every ~2 days, and the interval was
   shrinking.** VictoriaMetrics died five times in eleven days on the production
   cluster (3d16h → 2d18h → 1d23h → 1d14h between kills), each time losing its

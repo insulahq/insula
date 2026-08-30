@@ -17,6 +17,61 @@ import { lookup as dnsLookup } from 'node:dns';
 
 const execFileAsync = promisify(execFile);
 
+// Node's execFile buffers the child's stdout in memory and KILLS the child when
+// it exceeds `maxBuffer` — which defaults to 1 MiB. The rejection says only
+// "stdout maxBuffer length exceeded", and the work is left half-done.
+//
+// Observed in production 2026-08-30: extracting a 14,191-entry archive
+// (Perfex CRM, 56 MB) failed every time. `unzip -o` prints one line per member,
+// which for that archive is 1,513,063 bytes of stdout — 44% over the cap. The
+// archive was valid, the disk had room, and the extract itself takes 5 seconds;
+// the only thing wrong was that nobody was reading unzip's chatter.
+//
+// Two defences, because either alone leaves a hole:
+//   1. `-q` on zip/unzip so the output is never produced. Fixes the two tools
+//      that are per-file chatty. tar is already quiet without -v.
+//   2. This maxBuffer, for every tool. A future tool, a `git clone` writing
+//      progress to stderr (also capped), or a warning storm from unzip on a
+//      damaged archive would all hit the same wall. 32 MiB is far above any
+//      legitimate output and still bounded.
+const TOOL_MAX_BUFFER = 32 * 1024 * 1024;
+const TOOL_TIMEOUT_MS = 120_000;
+
+/**
+ * Run an external tool with limits that suit "this produces files, not output".
+ * Use this instead of execFileAsync for anything whose output length scales
+ * with the number of files it touches.
+ */
+function runTool(file, args, opts = {}) {
+  return execFileAsync(file, args, {
+    timeout: TOOL_TIMEOUT_MS,
+    maxBuffer: TOOL_MAX_BUFFER,
+    ...opts,
+  });
+}
+
+/**
+ * Turn a child-process rejection into something an operator can act on.
+ * Never includes the command line or filesystem paths — this string is
+ * relayed verbatim to the tenant panel.
+ */
+function describeToolFailure(err, action) {
+  const msg = String(err?.message ?? '');
+  if (msg.includes('maxBuffer')) {
+    return `Failed to ${action}: the tool produced more output than could be read. Please report this.`;
+  }
+  if (err?.killed && (err?.signal === 'SIGTERM' || err?.signal === 'SIGKILL')) {
+    return `Failed to ${action}: timed out after ${TOOL_TIMEOUT_MS / 1000}s. The archive may be too large.`;
+  }
+  if (typeof err?.code === 'number' && err.code !== 0) {
+    return `Failed to ${action}: the archive appears to be damaged or unreadable (exit ${err.code}).`;
+  }
+  if (err?.code === 'ENOSPC' || msg.includes('ENOSPC') || msg.includes('No space left')) {
+    return `Failed to ${action}: not enough free space.`;
+  }
+  return `Failed to ${action}.`;
+}
+
 const PORT = 8111;
 
 // Default ownership for files created by the file-manager (www-data, compatible with PHP apps)
@@ -491,13 +546,15 @@ async function handleArchive(req, res) {
     if (format === 'zip') {
       // zip -r destPath file1 file2 ...  (run from BASE so paths are relative)
       const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
-      await execFileAsync('zip', ['-r', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+      // -q: `zip -r` prints "adding: <path>" per file, the same overflow as
+      // unzip below. A tenant archiving a large site hit an identical wall.
+      await runTool('zip', ['-qr', fullDest, ...relPaths], { cwd: BASE });
     } else if (format === 'tar.gz' || format === 'tgz') {
       const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
-      await execFileAsync('tar', ['czf', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+      await runTool('tar', ['czf', fullDest, ...relPaths], { cwd: BASE });
     } else if (format === 'tar') {
       const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
-      await execFileAsync('tar', ['cf', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+      await runTool('tar', ['cf', fullDest, ...relPaths], { cwd: BASE });
     } else {
       return sendError(res, 400, 'Unsupported format. Use: zip, tar.gz, tar');
     }
@@ -506,7 +563,7 @@ async function handleArchive(req, res) {
     sendJson(res, 201, { path: destPath, size: s.size, format });
   } catch (err) {
     console.error('[handleArchive]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to create archive');
+    if (!res.headersSent) sendError(res, 500, describeToolFailure(err, 'create archive'));
   }
 }
 
@@ -525,11 +582,14 @@ async function handleExtract(req, res) {
     const lower = archivePath.toLowerCase();
 
     if (lower.endsWith('.zip')) {
-      await execFileAsync('unzip', ['-o', fullArchive, '-d', fullDest], { timeout: 120_000 });
+      // -q is load-bearing, not cosmetic: without it unzip prints a line per
+      // member and a 14k-entry archive overflows execFile's stdout buffer,
+      // killing the extraction partway through.
+      await runTool('unzip', ['-oq', fullArchive, '-d', fullDest]);
     } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) {
-      await execFileAsync('tar', ['xzf', fullArchive, '-C', fullDest], { timeout: 120_000 });
+      await runTool('tar', ['xzf', fullArchive, '-C', fullDest]);
     } else if (lower.endsWith('.tar')) {
-      await execFileAsync('tar', ['xf', fullArchive, '-C', fullDest], { timeout: 120_000 });
+      await runTool('tar', ['xf', fullArchive, '-C', fullDest]);
     } else {
       return sendError(res, 400, 'Unsupported archive format. Supports: .zip, .tar.gz, .tgz, .tar');
     }
@@ -538,7 +598,11 @@ async function handleExtract(req, res) {
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Archive not found');
     console.error('[handleExtract]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to extract archive');
+    // Say WHICH failure it was. The generic message cost a production
+    // investigation: "Failed to extract archive" for a valid archive, on a
+    // disk with room, that extracts in 5 seconds, gave the operator nothing to
+    // act on — the real cause was only in the sidecar's own stderr.
+    if (!res.headersSent) sendError(res, 500, describeToolFailure(err, 'extract archive'));
   }
 }
 
@@ -657,7 +721,12 @@ async function handleGitClone(req, res) {
 
   try {
     await mkdir(dirname(fullDest), { recursive: true });
-    await execFileAsync('git', ['clone', '--depth', '1', '--', url, fullDest], {
+    // Same buffer class as the archive tools: git writes clone progress and
+    // every "Cloning into…"/warning to stderr, which execFile caps at the same
+    // 1 MiB. Progress is normally suppressed when stdout is not a TTY, so this
+    // has not bitten — but a repo with thousands of LFS or checkout warnings
+    // would fail with a message about buffers rather than about git.
+    await runTool('git', ['clone', '--depth', '1', '--', url, fullDest], {
       timeout: 300_000, // 5 min for large repos
       // GIT_TERMINAL_PROMPT=0 blocks auth prompts; GIT_ALLOW_PROTOCOL=https
       // restricts git to the https transport (no ext::/file:: smuggling).
@@ -666,7 +735,7 @@ async function handleGitClone(req, res) {
     sendJson(res, 201, { url, destPath, cloned: true });
   } catch (err) {
     console.error('[handleGitClone]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to clone repository');
+    if (!res.headersSent) sendError(res, 500, describeToolFailure(err, 'clone repository'));
   }
 }
 
