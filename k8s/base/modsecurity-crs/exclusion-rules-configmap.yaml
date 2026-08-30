@@ -474,12 +474,18 @@ data:
     # This is a security-posture change. Reverting it means restricted-file
     # names in API arguments are blocked again, including the legitimate ones
     # listed above.
+    # SYNTAX, learned the hard way: the `ctl:` action belongs in the CHAIN
+    # STARTER's action list, next to `chain`. Written with the ctl on the
+    # second rule of the chain it parses, loads, logs nothing — and silently
+    # does not apply. The first version of 9000112 did exactly that: the
+    # ConfigMap deployed, `grep 9000112` found it inside the running container,
+    # and every probe case was still blocked. 9000108/9000109/9000110 all put
+    # the ctl in the starter; copy that shape, not this comment.
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
         "id:9000112,\
          phase:1,\
          pass,\
          nolog,\
-         chain"
-        SecRule REQUEST_URI "@rx ^/api/v1/" \
-            "t:none,\
-             ctl:ruleRemoveTargetById=930130;ARGS"
+         chain,\
+         ctl:ruleRemoveTargetById=930130;ARGS"
+        SecRule REQUEST_URI "@rx ^/api/v1/"
