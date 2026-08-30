@@ -312,9 +312,10 @@ function UsersSection({
     if (showCreateForm && newDatabase === '__all__' && databases.length > 0) {
       setNewDatabase(databases[0].name);
     }
-    // Keyed on the form opening and the list arriving — NOT on newDatabase, or
-    // it would immediately undo the user picking "All databases".
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Keyed on the form opening and the list arriving — deliberately NOT on
+    // newDatabase, or it would immediately undo the user picking "All
+    // databases". (No eslint-disable here: react-hooks/exhaustive-deps is not
+    // configured in this project, so the directive itself is a lint error.)
   }, [showCreateForm, databases.length]);
 
 
