@@ -25,6 +25,16 @@ running, partial, failed, expired), **size**, **created** date, and **expires**
 date. The page note reminds you that scheduling is managed centrally by your
 admins.
 
+!!! info "Scheduled backups do not send you notifications"
+    Scheduled runs are the platform's, not yours — you did not ask for them and
+    the schedule is not yours to change — so neither their success nor their
+    failure appears in your notification bell. It would arrive every night and
+    train you to ignore the bell, hiding the messages that *do* need you.
+
+    Backups you start yourself, and ones an operator starts on your account,
+    still notify you. Every run's outcome is on this page either way, and your
+    provider is alerted when a scheduled run fails.
+
 ## Run a backup on demand
 
 Want a fresh snapshot right now — say, before a risky change?
@@ -71,6 +81,16 @@ exact items you want back to a cart, then run the restore.
 
 The page shows your **Recent restore carts** with their status (done, executing,
 failed) so you can see what you've restored lately.
+
+**Click a cart to pick up where you left off.** A cart keeps whatever you had
+selected, so if you were interrupted part-way through choosing items you do not
+have to start again. A cart with nothing in it yet has nothing to reopen onto,
+so it is not clickable.
+
+**The bin icon discards a cart.** Only the selection is discarded — your backups
+are untouched. A cart that is *currently restoring* cannot be deleted; wait for
+it to finish. Abandoned carts are cleaned up automatically after 7 days, but you
+do not have to wait for that.
 
 ## GDPR / data export
 

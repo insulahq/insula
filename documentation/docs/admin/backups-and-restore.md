@@ -60,15 +60,40 @@ The cluster-wide **Secrets bundle** lives on the
 **Backups → Tenants** protects customer data, in three areas (the
 **Backups** tab comes first — bundles are the durable artifact):
 
-- **Backups** — one row per tenant bundle; a tenant with several bundles
-  shows several rows, and the **Backups per tenant** chips above the
-  table show the count at a glance (click a chip to filter). Each row's
-  **Restore…** opens the granular **restore cart** (below) for exactly
-  that bundle — restores never silently "pick the latest".
+- **Backups** — **grouped by tenant**. Each tenant is one collapsible row
+  showing its bundle count, how many restore carts it has open, and its
+  two size figures; open it for that tenant's bundles, a repo-size
+  refresh, and its restore carts. Each bundle's **Restore…** opens the
+  granular **restore cart** (below) for exactly that bundle — restores
+  never silently "pick the latest".
   The **Scheduled inclusion** panel lists every tenant with its
   include/exclude state for the daily bundle cron and lets you override
   it per tenant (*Inherit plan* / *Always include* / *Exclude from
   schedule*).
+
+    ??? info "The two size figures mean different things"
+        **bundles** is the sum of every bundle's logical size. restic
+        deduplicates across snapshots, so this is **not** the storage the
+        tenant consumes — it is generally larger.
+
+        **repo** is the real size of the tenant's restic repository,
+        measured by `restic stats`. It reads **not measured** until you
+        press **Refresh repo size**, because measuring walks the
+        repository index over the network and cannot run on every page
+        load. It is deliberately never shown as `0` when unmeasured —
+        a zero in a size column reads as "this tenant has no backups".
+
+        A tenant's repository is measured per component (files,
+        mailboxes) and summed. If one component's repository is
+        unreachable, its error is reported and it contributes nothing
+        rather than silently making the total wrong.
+
+    ??? info "Restore carts in the group"
+        Open a tenant's group to see its restore carts. **Resume**
+        reopens a cart exactly where it was left, rather than starting a
+        new one. **Delete** discards it — backups are untouched, only the
+        selection. Both are unavailable while a cart is *executing*: the
+        restore is mid-flight writing into the tenant's live namespace.
 - **Snapshots** — one row per snapshot across all tenants. Snapshots are
   **temporary** on-cluster block copies: each is reaped automatically
   after the configured snapshot expiry (default 48 hours, Settings →
