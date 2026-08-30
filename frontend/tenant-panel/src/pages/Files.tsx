@@ -1475,12 +1475,25 @@ function ExtractDialog({
   const [dest, setDest] = useState(currentPath);
   const [status, setStatus] = useState<'idle' | 'extracting' | 'done' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  // total is null for tar (no cheap member count) — render a running count then,
+  // never a fabricated percentage.
+  const [progress, setProgress] = useState<{ done: number; total: number | null; percent: number | null; current: string } | null>(null);
+  const [extractedCount, setExtractedCount] = useState<number | null>(null);
   const extractArchive = useExtractArchive();
 
   const handleExtract = () => {
     setStatus('extracting');
-    extractArchive.mutate({ path: archivePath, destPath: dest }, {
-      onSuccess: () => setStatus('done'),
+    setProgress(null);
+    extractArchive.mutate({
+      path: archivePath,
+      destPath: dest,
+      onStart: (total) => setProgress({ done: 0, total, percent: total ? 0 : null, current: '' }),
+      onProgress: (p) => setProgress(p),
+    }, {
+      onSuccess: (res) => {
+        setExtractedCount((res as { files?: number }).files ?? null);
+        setStatus('done');
+      },
       onError: (err) => { setStatus('error'); setErrorMsg(err instanceof Error ? err.message : 'Extraction failed'); },
     });
   };
@@ -1500,7 +1513,10 @@ function ExtractDialog({
               <Check size={24} className="text-green-600 dark:text-green-400" />
             </div>
             <p className="mt-3 text-sm font-medium text-gray-900 dark:text-gray-100">Extraction complete</p>
-            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{filename} extracted to {dest}</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+              {filename} extracted to {dest}
+              {extractedCount !== null && ` — ${extractedCount.toLocaleString()} files`}
+            </p>
             <button onClick={onClose} className="mt-4 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600">Done</button>
           </div>
         ) : status === 'error' ? (
@@ -1535,12 +1551,37 @@ function ExtractDialog({
             </div>
 
             {status === 'extracting' && (
+              // This bar used to be `width: 70%` with animate-pulse — a fixed
+              // decoration that moved for every archive and meant nothing for
+              // any of them. It now tracks real extracted-member counts.
               <div className="mb-4">
-                <div className="flex items-center gap-2 text-sm text-brand-600 dark:text-brand-400">
-                  <Loader2 size={14} className="animate-spin" /> Extracting...
+                <div className="flex items-center justify-between gap-2 text-sm text-brand-600 dark:text-brand-400">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <Loader2 size={14} className="animate-spin shrink-0" />
+                    <span className="truncate">
+                      {progress?.current ? `Extracting ${progress.current}` : 'Extracting…'}
+                    </span>
+                  </span>
+                  <span className="shrink-0 tabular-nums text-xs text-gray-500 dark:text-gray-400">
+                    {progress
+                      ? progress.total !== null
+                        ? `${progress.done.toLocaleString()} / ${progress.total.toLocaleString()}`
+                        : `${progress.done.toLocaleString()} files`
+                      : ''}
+                  </span>
                 </div>
                 <div className="mt-2 h-2 rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
-                  <div className="h-2 rounded-full bg-brand-500 animate-pulse" style={{ width: '70%' }} />
+                  {progress?.percent !== null && progress?.percent !== undefined ? (
+                    <div
+                      className="h-2 rounded-full bg-brand-500 transition-[width] duration-200"
+                      style={{ width: `${progress.percent}%` }}
+                    />
+                  ) : (
+                    // No member count available (tar, or an unreadable central
+                    // directory): show an indeterminate bar rather than a
+                    // percentage we cannot compute.
+                    <div className="h-2 w-1/3 rounded-full bg-brand-500 animate-pulse" />
+                  )}
                 </div>
               </div>
             )}
