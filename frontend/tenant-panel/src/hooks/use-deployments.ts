@@ -309,20 +309,27 @@ export function useDbUsers(tenantId: string | undefined, deploymentId: string | 
 export function useCreateDbUser(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
+    // The SERVER generates the password. It is returned in the response and is
+    // the only value that was actually applied to the account.
+    //
+    // This used to accept a `password` and send it. The backend never read it —
+    // it generated its own and returned that — so the panel displayed a
+    // password that had never been set, and every database user it created was
+    // unusable. The field is gone rather than made optional, so no caller can
+    // reintroduce the divergence, and the response type now exposes `password`
+    // (it previously typed only `username`, hiding the real value).
     mutationFn: ({
       deploymentId,
       username,
-      password,
       database,
     }: {
       deploymentId: string;
       username: string;
-      password: string;
       database?: string;
     }) =>
-      apiFetch<{ data: { username: string } }>(
+      apiFetch<{ data: { username: string; password: string; database: string | null } }>(
         `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/db-users`,
-        { method: 'POST', body: JSON.stringify({ username, password, database }) },
+        { method: 'POST', body: JSON.stringify({ username, database }) },
       ),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['db-users', tenantId, variables.deploymentId] });
@@ -412,18 +419,19 @@ export function useStorageFolders(tenantId: string | undefined, entryType: strin
 export function useSetDbUserPassword(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
+    // Same correction as useCreateDbUser: the server generates and returns the
+    // password. Sending one had no effect and the response type ({ message })
+    // did not even expose the real value.
     mutationFn: ({
       deploymentId,
       username,
-      password,
     }: {
       deploymentId: string;
       username: string;
-      password: string;
     }) =>
-      apiFetch<{ data: { message: string } }>(
+      apiFetch<{ data: { username: string; password: string } }>(
         `/api/v1/tenants/${tenantId}/deployments/${deploymentId}/db-users/${encodeURIComponent(username)}/password`,
-        { method: 'POST', body: JSON.stringify({ password }) },
+        { method: 'POST', body: JSON.stringify({}) },
       ),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ['db-users', tenantId, variables.deploymentId] });
