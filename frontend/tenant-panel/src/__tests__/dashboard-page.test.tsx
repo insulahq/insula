@@ -34,9 +34,26 @@ vi.mock('../hooks/use-deployments', async (importOriginal) => {
   return {
     ...actual,
     useDeployments: vi.fn(() => ({ data: { data: [] } })),
-    useResourceUsage: vi.fn(() => ({ data: null, isLoading: false })),
   };
 });
+
+// The dashboard reads the SAME endpoint as the Resource Usage page and the
+// metrics modal. Values below are the operator-reported case: 6 GiB of a 10 GiB
+// storage plan, which is 60% and must NOT render as a warning.
+vi.mock('../hooks/use-resource-metrics', () => ({
+  useResourceMetrics: vi.fn(() => ({
+    data: {
+      data: {
+        tenantId: 't1',
+        cpu: { inUse: 0.25, reserved: 0.5, available: 2 },
+        memory: { inUse: 1.5, reserved: 2, available: 4 },
+        storage: { inUse: 6, reserved: 8, available: 10 },
+        lastUpdatedAt: '2026-08-30T00:00:00.000Z',
+      },
+    },
+    isLoading: false,
+  })),
+}));
 
 vi.mock('../hooks/use-email', () => ({
   useMailboxUsage: vi.fn(() => ({
@@ -137,5 +154,36 @@ describe('Dashboard Page', () => {
     } as unknown as ReturnType<typeof useAuth>);
     renderWithProviders(<Dashboard />);
     expect(screen.getByText(/Welcome back, there/)).toBeInTheDocument();
+  });
+
+  it('shows used / reserved / available on every resource tile', () => {
+    renderWithProviders(<Dashboard />);
+    for (const testId of ['dashboard-cpu-bar', 'dashboard-memory-bar', 'dashboard-storage-bar']) {
+      const tile = screen.getByTestId(testId);
+      expect(tile.textContent).toContain('used');
+      expect(tile.textContent).toContain('reserved');
+      expect(tile.textContent).toContain('available');
+    }
+  });
+
+  it('renders the storage tile at 60% of plan WITHOUT a warning colour', () => {
+    // The reported bug: storage was hardcoded amber, so 6 GB of a 10 GB plan
+    // looked like a warning. Amber must not appear below the 80% threshold.
+    renderWithProviders(<Dashboard />);
+    const tile = screen.getByTestId('dashboard-storage-bar');
+    const bars = tile.querySelectorAll('div[style*="width"]');
+    const classes = Array.from(bars).map((b) => b.className).join(' ');
+    expect(classes).toContain('bg-brand-500');
+    expect(classes).not.toContain('bg-amber');
+    expect(classes).not.toContain('bg-red');
+    expect(tile.textContent).toContain('60%');
+  });
+
+  it('shows the reserved figure that explains a refused deployment', () => {
+    // reserved (8) exceeds in-use (6): the tenant has headroom by usage but not
+    // by allocation. That number was absent from the dashboard entirely.
+    renderWithProviders(<Dashboard />);
+    const tile = screen.getByTestId('dashboard-storage-bar');
+    expect(tile.textContent).toContain('8');
   });
 });
