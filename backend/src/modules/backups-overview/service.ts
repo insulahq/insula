@@ -210,7 +210,9 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       COALESCE(bun.bytes, 0)::bigint AS bundle_bytes,
       bun.newest AS last_bundle_at,
       p.max_snapshot_size_bytes AS quota_max_bytes,
-      cart.id AS open_cart_id
+      cart.id AS open_cart_id,
+      repo.total_bytes AS repo_total_bytes,
+      repo.measured_at AS repo_stats_at
     FROM tenants t
     LEFT JOIN hosting_plans p ON p.id = t.plan_id
     LEFT JOIN LATERAL (
@@ -237,6 +239,17 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       WHERE tenant_id = t.id AND status NOT IN ('done', 'failed')
       ORDER BY created_at DESC LIMIT 1
     ) cart ON TRUE
+    LEFT JOIN LATERAL (
+      -- Summed across components ('files', 'mailboxes'). NULL when no component
+      -- has ever been measured, which the UI renders as "not measured" rather
+      -- than 0. See the contract note for why neither bundle_bytes nor
+      -- last_repo_size_bytes can stand in for this.
+      SELECT
+        SUM(repo_total_bytes) AS total_bytes,
+        MAX(repo_stats_at) AS measured_at
+      FROM tenant_restic_repo_state
+      WHERE tenant_id = t.id AND repo_total_bytes IS NOT NULL
+    ) repo ON TRUE
     WHERE t.status != 'archived'
       ${opts.filter ? sql`AND t.name ILIKE ${'%' + opts.filter + '%'}` : sql``}
     ORDER BY t.is_system DESC, t.name
@@ -257,6 +270,8 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
     last_bundle_at: Date | string | null;
     quota_max_bytes: string | number | null;
     open_cart_id: string | null;
+    repo_total_bytes: string | number | null;
+    repo_stats_at: Date | string | null;
   }> }).rows;
 
   const toIso = (v: Date | string | null): string | null => {
@@ -286,6 +301,8 @@ export async function loadTenantsOverview(db: Database, opts: ListTenantsOpts = 
       lastBundleAt: toIso(r.last_bundle_at),
       snapshotQuotaPct: quotaMax > 0 ? snapshotBytes / quotaMax : null,
       openCartId: r.open_cart_id,
+      repoTotalBytes: r.repo_total_bytes == null ? null : Number(r.repo_total_bytes),
+      repoStatsAt: toIso(r.repo_stats_at),
     };
   });
 

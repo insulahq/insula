@@ -169,6 +169,12 @@ export const restoreJobSummarySchema = z.object({
   lastError: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  /** Bundle the cart's FIRST item was drawn from, or null for an empty cart.
+   *  Derived, not stored: a cart's items each carry their own bundleId, and a
+   *  cart may in principle span bundles. The UI needs one to reopen the cart
+   *  on `/backups/restore/:bundleId`, and the first item is the bundle the
+   *  tenant started from. */
+  bundleId: z.string().nullable().optional(),
 });
 export type RestoreJobSummary = z.infer<typeof restoreJobSummarySchema>;
 

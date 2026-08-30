@@ -416,6 +416,20 @@ export function buildMiddlewaresForRoute(
   // The k8s/base/traefik/middlewares-waf.yaml Coraza scaffold is kept
   // in tree as documented dead code — see its header comment.
   if (route.wafEnabled) {
+    // `waf-body-limit` MUST come first. The ModSecurity plugin buffers the
+    // whole request body with an unbounded `io.ReadAll` before it can get a
+    // verdict, and Traefik is a DaemonSet with limits.memory=512Mi fronting the
+    // entire cluster — so without the cap, one oversized POST to ANY WAF-
+    // enabled tenant route OOM-kills ingress for every tenant. Measured: a
+    // single unauthenticated 600 MB POST killed Traefik in ~3s (exitCode 137).
+    //
+    // The cap costs no coverage: it equals the sidecar's own
+    // `SecRequestBodyLimit 13107200`, which is paired with
+    // `SecRequestBodyLimitAction Reject` — bodies past it are ALREADY refused
+    // (verified: a 20 MiB POST returns 403 today). The cap just moves that
+    // refusal to the edge, as a 413, before the memory is spent.
+    // Guard: scripts/ci-waf-body-limit-check.sh.
+    refs.push({ name: 'waf-body-limit', namespace: 'traefik' });
     refs.push({ name: 'modsecurity-crs', namespace: 'traefik' });
   }
 
