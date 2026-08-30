@@ -110,6 +110,34 @@ For an operator upgrading an existing cluster (none today — the migration assu
 3. Apply `k8s/base/{crowdsec,modsecurity-crs,tenant-errors}/`.
 4. Run the platform-api reconcilers — they re-emit every tenant IngressRoute + Middleware from the DB and the WAF refs flow naturally.
 
+## Detecting false positives
+
+A WAF false positive is **invisible from the inside**. The request never reaches
+the platform API, so nothing is logged application-side and no application error
+is raised. Between 2026-05 and 2026-08 three separate exclusions were added for
+this class (9000100, 9000108, 9000111/9000112) and each was found the same way:
+a user reported that something "failed without error".
+
+`scripts/waf-false-positive-probe.sh` (`make waf-probe`) closes that loop. It
+sends requests an operator or tenant genuinely makes, carrying values that CRS
+dictionaries happen to contain — `.htaccess`, `wp-config.php`, `web.config`,
+`.git/config` as file paths, SFTP home paths, database names, domains and DNS
+record names — and asserts none is refused by the WAF. A 400/404 from the
+application is a pass: the only thing under test is whether the request arrived.
+
+It also asserts the two things that must remain true:
+
+- **The WAF-management endpoint is reachable.** A rule exclusion contains the
+  pattern it excludes, so without the ingress carve-out the operator is told to
+  whitelist a rule and then refused the request that does it.
+- **A genuine attack is still blocked.** `../../../../etc/passwd` in a path
+  argument must still 403 — if it stops doing so, an exclusion has been widened
+  too far, which is worse than the false positives it fixed.
+
+Run it after any change to the CRS rules, the exclusion ConfigMap, or the
+ingress reconciler. Baselined on DEV 2026-08-30 at **11 blocked / 13 cases**
+before the 9000111 + 9000112 exclusions.
+
 ## When to revisit
 
 - **Coraza in-process becomes viable upstream.** Either a Yaegi fork that supports `unsafe`, OR a working WASM build that doesn't crash Traefik's wazero. Flip back to option C hybrid (per-route directives).

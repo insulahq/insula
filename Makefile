@@ -10,7 +10,7 @@
 SHELL := /bin/bash
 .SHELLFLAGS := -euo pipefail -c
 
-.PHONY: help smoke smoke-public failover verdict diagnose secrets-fetch secrets-restore backup-target-key-status backup-target-key-rotate new-host-migration
+.PHONY: help smoke smoke-public waf-probe failover verdict diagnose secrets-fetch secrets-restore backup-target-key-status backup-target-key-rotate new-host-migration
 
 # Default — list targets with one-line descriptions.
 help:
@@ -18,6 +18,9 @@ help:
 
 smoke:        ## Full cluster-network smoke suite (needs KUBECONFIG)
 	@scripts/smoke-test-cluster-network.sh
+
+waf-probe:    ## Assert the WAF blocks no legitimate API call (API_URL=… ADMIN_EMAIL=… ADMIN_PASSWORD=…)
+	@./scripts/waf-false-positive-probe.sh
 
 smoke-public: ## Test 1 only (external-IP DNS probe — no kubeconfig)
 	@scripts/smoke-test-cluster-network.sh --skip 2,3,4,5,6
