@@ -12,6 +12,37 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The WAF blocked ordinary file operations on ordinary filenames.** After
+  extracting a CMS archive, renaming or opening files such as `.htaccess` or
+  `web.config` failed with a 403 from the WAF. CRS 930xxx match argument
+  *values* against a dictionary of interesting OS filenames — and the
+  file-manager API's arguments **are file paths**, so a tenant touching their
+  own `.htaccess` scores 5 per matching argument. Reproduced exactly:
+  `rename .htaccess → .htaccess2` scored **10** (both arguments match) and was
+  blocked; `web.config` scored 5 and was blocked; `normal.txt` passed. An
+  earlier exclusion had removed argument *names* from these rules, which does
+  nothing for a path in the value. Path traversal is refused by `safePath()` in
+  the sidecar regardless, so the WAF was contributing false positives and no
+  defence on these endpoints.
+- **The WAF blocked the request that disarms the WAF.** A rule exclusion
+  describes an attack pattern — that is its purpose — so submitting one put
+  attack-shaped text through the WAF, which blocked it. The operator was told
+  to open Security → WAF Events and whitelist the rule, and *that* request was
+  refused with the same message. The safety valve sat behind the thing it
+  disarms. The WAF-management endpoint is now routed around the WAF (it is
+  `super_admin` + Bearer-only, so the WAF was never the access control), and a
+  CI guard checks both that the carve-out exists and that drift detection
+  tracks it — an untracked carve-out looks in-sync forever and is silently
+  never applied.
+- **File-manager failures were invisible.** Nine mutation call sites passed
+  only `onSuccess`, so a failed rename, move, delete, archive, git-clone or
+  save rendered nothing at all — the dialog simply sat there. The 403 had been
+  classified correctly the whole time; the message had nowhere to go. Every
+  file-manager mutation now reports through one wrapper to a shared banner, so
+  a new operation cannot silently join the class, and a WAF block additionally
+  explains that a filename triggered a security rule.
+
 ## [2026.8.23] - 2026-08-30
 
 ### Added

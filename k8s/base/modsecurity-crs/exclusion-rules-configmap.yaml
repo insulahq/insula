@@ -394,3 +394,44 @@ data:
          ctl:ruleRemoveById=953100,\
          ctl:ruleRemoveById=953110,\
          ctl:ruleRemoveById=953120"
+
+    # ── File-manager path ARGUMENTS are file paths, by definition ──
+    #
+    # CRS 930xxx match ARG VALUES against `lfi-os-files.data`, a dictionary of
+    # interesting OS filenames: `.htaccess`, `.htpasswd`, `web.config`,
+    # `httpd.conf`, `passwd`, `.bash_history`, … The file-manager API takes a
+    # FILE PATH as its argument, so a tenant operating on their own `.htaccess`
+    # — a completely ordinary web file that ships in most PHP applications —
+    # puts that string in an ARG value and scores 5 per match.
+    #
+    # Reproduced on DEV 2026-08-30, POST …/files/rename:
+    #   {"oldPath":"/x/.htaccess","newPath":"/x/.htaccess2"}  → 403 (score 10)
+    #   {"oldPath":"/x/web.config","newPath":"/x/w2"}         → 403 (score  5)
+    #   {"oldPath":"/x/normal.txt","newPath":"/x/n2.txt"}     → 404 (passed)
+    # Two matching arguments score 10, which is why RENAMING a file failed
+    # while most other operations on the same tree succeeded. Reported from
+    # production after extracting a CMS archive that contains `.htaccess`.
+    #
+    # 9000100 above already removed ARGS_NAMES from these rules. That is not
+    # enough here: the offending string is the ARG VALUE, not the field name.
+    #
+    # Why dropping ARGS for these endpoints is safe: path traversal is refused
+    # by `safePath()` in the sidecar, which resolves the real path and rejects
+    # anything outside the tenant's own volume — a check the tenant cannot
+    # influence and which does not depend on pattern matching. The WAF adds no
+    # defence here that survives a rename to a legitimately-named file, and it
+    # is guaranteed to false-positive on ordinary web filenames. REQUEST_URI,
+    # headers and the request body as a whole stay inspected by every other
+    # rule; only these four rules stop looking at ARGS on these paths.
+    #
+    # Deliberately NOT scoped by X-Forwarded-Host: the file-manager API is
+    # reached from both admin.<apex> and tenant.<apex>, and both were failing.
+    SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/files/" \
+        "id:9000111,\
+         phase:1,\
+         pass,\
+         nolog,\
+         ctl:ruleRemoveTargetById=930100;ARGS,\
+         ctl:ruleRemoveTargetById=930110;ARGS,\
+         ctl:ruleRemoveTargetById=930120;ARGS,\
+         ctl:ruleRemoveTargetById=930130;ARGS"
