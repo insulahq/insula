@@ -10,12 +10,229 @@ import { readdir, stat, readFile, writeFile, mkdir, rm, rename, cp, chown as fsC
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve, basename, extname, dirname, relative } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { open as fsOpen } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { lookup as dnsLookup } from 'node:dns';
 
 const execFileAsync = promisify(execFile);
+
+// Node's execFile buffers the child's stdout in memory and KILLS the child when
+// it exceeds `maxBuffer` — which defaults to 1 MiB. The rejection says only
+// "stdout maxBuffer length exceeded", and the work is left half-done.
+//
+// Observed in production 2026-08-30: extracting a 14,191-entry archive
+// (Perfex CRM, 56 MB) failed every time. `unzip -o` prints one line per member,
+// which for that archive is 1,513,063 bytes of stdout — 44% over the cap. The
+// archive was valid, the disk had room, and the extract itself takes 5 seconds;
+// the only thing wrong was that nobody was reading unzip's chatter.
+//
+// Two defences, because either alone leaves a hole:
+//   1. `-q` on zip/unzip so the output is never produced. Fixes the two tools
+//      that are per-file chatty. tar is already quiet without -v.
+//   2. This maxBuffer, for every tool. A future tool, a `git clone` writing
+//      progress to stderr (also capped), or a warning storm from unzip on a
+//      damaged archive would all hit the same wall. 32 MiB is far above any
+//      legitimate output and still bounded.
+const TOOL_MAX_BUFFER = 32 * 1024 * 1024;
+const TOOL_TIMEOUT_MS = 120_000;
+
+/**
+ * Run an external tool with limits that suit "this produces files, not output".
+ * Use this instead of execFileAsync for anything whose output length scales
+ * with the number of files it touches.
+ */
+function runTool(file, args, opts = {}) {
+  return execFileAsync(file, args, {
+    timeout: TOOL_TIMEOUT_MS,
+    maxBuffer: TOOL_MAX_BUFFER,
+    ...opts,
+  });
+}
+
+/**
+ * Turn a child-process rejection into something an operator can act on.
+ * Never includes the command line or filesystem paths — this string is
+ * relayed verbatim to the tenant panel.
+ */
+// An archive of ANY size must extract. That rules out both of execFile's
+// built-in limits, not just the buffer:
+//
+//   maxBuffer — execFile accumulates the whole of stdout in memory. Even at
+//     32 MiB that is a ceiling proportional to the FILE COUNT, and it buys
+//     nothing, because we do not want the output as a blob. spawn + a line
+//     reader consumes it as it arrives and holds one line at a time.
+//
+//   timeout — a fixed total duration is exactly the wrong shape. 120s is
+//     generous for 14k files and far too short for 2 million. What actually
+//     indicates a stuck process is SILENCE, so this is an IDLE timer: it
+//     resets on every line the tool emits. A live extraction, however long,
+//     never trips it; a wedged one still dies.
+//
+// The per-file chatter that caused the original bug is the progress feed here,
+// so the tools are deliberately run in VERBOSE mode and never with -q.
+const TOOL_IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * Spawn a tool and invoke onLine(line) for every line it writes to stdout or
+ * stderr. Resolves when the process exits 0, rejects otherwise. Never buffers
+ * more than a single line, so memory is independent of archive size.
+ */
+function runToolStreaming(file, args, { cwd, env, onLine } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let idle;
+    let settled = false;
+    let stderrTail = '';
+
+    const bump = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill('SIGKILL');
+        const e = new Error(`${file} produced no output for ${TOOL_IDLE_TIMEOUT_MS / 1000}s`);
+        e.idleTimeout = true;
+        reject(e);
+      }, TOOL_IDLE_TIMEOUT_MS);
+    };
+
+    const readLines = (stream, isErr) => {
+      let buf = '';
+      stream.setEncoding('utf8');
+      stream.on('data', chunk => {
+        bump();
+        buf += chunk;
+        let nl;
+        while ((nl = buf.indexOf('\n')) !== -1) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          // Keep only the last few stderr lines for the error message; never
+          // the whole stream, or we reintroduce unbounded buffering.
+          if (isErr) stderrTail = line.slice(0, 300);
+          if (onLine) { try { onLine(line, isErr); } catch { /* progress must never kill the job */ } }
+        }
+        // A pathological tool emitting one enormous line must not grow forever.
+        if (buf.length > 1 << 20) buf = buf.slice(-4096);
+      });
+    };
+
+    readLines(child.stdout, false);
+    readLines(child.stderr, true);
+    bump();
+
+    child.on('error', err => {
+      if (settled) return;
+      settled = true; clearTimeout(idle); reject(err);
+    });
+    child.on('close', code => {
+      if (settled) return;
+      settled = true; clearTimeout(idle);
+      if (code === 0) return resolve();
+      const e = new Error(stderrTail || `${file} exited ${code}`);
+      e.code = code;
+      reject(e);
+    });
+  });
+}
+
+/**
+ * Total member count of a zip, read straight from the End of Central Directory
+ * record — no subprocess, no full scan, a couple of reads regardless of size.
+ * Returns null when it cannot be determined (Zip64 without the locator, huge
+ * trailing comment, damaged file); callers then report indeterminate progress
+ * rather than a wrong percentage.
+ */
+async function zipEntryCount(path) {
+  let fh;
+  try {
+    fh = await fsOpen(path, 'r');
+    const { size } = await fh.stat();
+    // EOCD is 22 bytes plus an optional comment of up to 65535.
+    const tailLen = Math.min(size, 22 + 0xffff);
+    const tail = Buffer.alloc(tailLen);
+    await fh.read(tail, 0, tailLen, size - tailLen);
+
+    let eocd = -1;
+    for (let i = tail.length - 22; i >= 0; i--) {
+      if (tail.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd === -1) return null;
+
+    const count = tail.readUInt16LE(eocd + 10);
+    if (count !== 0xffff) return count;
+
+    // Zip64: the real count lives in the Zip64 EOCD, found via its locator
+    // immediately before the EOCD we just located.
+    const locOff = eocd - 20;
+    if (locOff < 0 || tail.readUInt32LE(locOff) !== 0x07064b50) return null;
+    const z64Off = Number(tail.readBigUInt64LE(locOff + 8));
+    const z64 = Buffer.alloc(56);
+    await fh.read(z64, 0, 56, z64Off);
+    if (z64.readUInt32LE(0) !== 0x06064b50) return null;
+    return Number(z64.readBigUInt64LE(32));
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
+
+/** Emit at most one progress line per tick, so 2M files do not mean 2M writes. */
+function makeProgressEmitter(res, { total, intervalMs = 250 } = {}) {
+  let done = 0;
+  let last = 0;
+  let lastName = '';
+  const write = force => {
+    const now = Date.now();
+    if (!force && now - last < intervalMs) return;
+    last = now;
+    if (res.writableEnded) return;
+    res.write(JSON.stringify({
+      type: 'progress',
+      done,
+      total: total ?? null,
+      percent: total ? Math.min(100, Math.round((done / total) * 100)) : null,
+      current: lastName,
+    }) + '\n');
+  };
+  return {
+    tick(name) { done++; if (name) lastName = name; write(false); },
+    flush() { write(true); },
+    get count() { return done; },
+  };
+}
+
+function describeToolFailure(err, action) {
+  const msg = String(err?.message ?? '');
+  if (msg.includes('maxBuffer')) {
+    return `Failed to ${action}: the tool produced more output than could be read. Please report this.`;
+  }
+  if (err?.idleTimeout) {
+    return `Failed to ${action}: the tool stopped responding (no progress for ${TOOL_IDLE_TIMEOUT_MS / 1000}s).`;
+  }
+  if (err?.killed && (err?.signal === 'SIGTERM' || err?.signal === 'SIGKILL')) {
+    return `Failed to ${action}: timed out after ${TOOL_TIMEOUT_MS / 1000}s.`;
+  }
+  if (typeof err?.code === 'number' && err.code !== 0) {
+    // `action` carries the subject ("extract archive", "change permissions"),
+    // so this branch stays subject-neutral. It used to say "the archive appears
+    // to be damaged", which became "Failed to change permissions: the archive
+    // appears to be damaged" once chmod started using this helper.
+    //
+    // It must NOT relay the tool's stderr: my first correction did, and the
+    // message became "…cannot find /tmp/fm-extract-gXg3JS/broken.zip.ZIP",
+    // disclosing an internal path to the tenant. This string is returned
+    // verbatim to the panel — the exit code is the only detail safe to include.
+    return `Failed to ${action} (exit ${err.code}). The target may be damaged, unreadable, or in an unexpected format.`;
+  }
+  if (err?.code === 'ENOSPC' || msg.includes('ENOSPC') || msg.includes('No space left')) {
+    return `Failed to ${action}: not enough free space.`;
+  }
+  return `Failed to ${action}.`;
+}
 
 const PORT = 8111;
 
@@ -485,28 +702,51 @@ async function handleArchive(req, res) {
     safePaths.push(full);
   }
 
+  if (!['zip', 'tar.gz', 'tgz', 'tar'].includes(format)) {
+    return sendError(res, 400, 'Unsupported format. Use: zip, tar.gz, tar');
+  }
+
+  // Streamed like /extract: creating an archive of a large tree has exactly
+  // the same "runs for minutes, emits a line per file" shape.
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+  // Counting the source tree up front would mean walking it twice, so archive
+  // progress is a running file count with no percentage. Honest beats a
+  // percentage derived from a guess.
+  const progress = makeProgressEmitter(res, { total: null });
+  res.write(JSON.stringify({ type: 'start', total: null, destPath, format }) + '\n');
+
   try {
     await mkdir(dirname(fullDest), { recursive: true });
+    const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
 
     if (format === 'zip') {
-      // zip -r destPath file1 file2 ...  (run from BASE so paths are relative)
-      const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
-      await execFileAsync('zip', ['-r', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
-    } else if (format === 'tar.gz' || format === 'tgz') {
-      const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
-      await execFileAsync('tar', ['czf', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
-    } else if (format === 'tar') {
-      const relPaths = safePaths.map(p => p.replace(BASE + '/', ''));
-      await execFileAsync('tar', ['cf', fullDest, ...relPaths], { cwd: BASE, timeout: 120_000 });
+      // Verbose (no -q): "  adding: <path>" per file is the progress feed.
+      await runToolStreaming('zip', ['-r', fullDest, ...relPaths], {
+        cwd: BASE,
+        onLine: line => {
+          const m = /^\s*adding:\s+(.*?)(?:\s+\(.*\))?$/.exec(line);
+          if (m) progress.tick(basename(m[1].trim()));
+        },
+      });
     } else {
-      return sendError(res, 400, 'Unsupported format. Use: zip, tar.gz, tar');
+      await runToolStreaming('tar', [format === 'tar' ? 'cvf' : 'czvf', fullDest, ...relPaths], {
+        cwd: BASE,
+        onLine: line => progress.tick(basename(line)),
+      });
     }
 
     const s = await stat(fullDest);
-    sendJson(res, 201, { path: destPath, size: s.size, format });
+    progress.flush();
+    res.write(JSON.stringify({
+      type: 'complete', path: destPath, size: s.size, format, files: progress.count,
+    }) + '\n');
+    res.end();
   } catch (err) {
     console.error('[handleArchive]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to create archive');
+    if (!res.writableEnded) {
+      res.write(JSON.stringify({ type: 'error', message: describeToolFailure(err, 'create archive') }) + '\n');
+      res.end();
+    }
   }
 }
 
@@ -520,25 +760,63 @@ async function handleExtract(req, res) {
   const fullDest = await safePath(destPath, { allowHidden: bypass });
   if (!fullArchive || !fullDest) return sendError(res, 404, 'Not found');
 
+  const lower = archivePath.toLowerCase();
+  const isZip = lower.endsWith('.zip');
+  const isTarGz = lower.endsWith('.tar.gz') || lower.endsWith('.tgz');
+  const isTar = lower.endsWith('.tar');
+  if (!isZip && !isTarGz && !isTar) {
+    return sendError(res, 400, 'Unsupported archive format. Supports: .zip, .tar.gz, .tgz, .tar');
+  }
+
+  // NDJSON progress, same shape as /fetch-url and /clone-site so the panel
+  // reuses its existing reader. Headers go out BEFORE the work starts, which
+  // is what lets a multi-minute extraction show something immediately.
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Transfer-Encoding': 'chunked' });
+  const total = isZip ? await zipEntryCount(fullArchive) : null;
+  const progress = makeProgressEmitter(res, { total });
+  res.write(JSON.stringify({ type: 'start', total, path: archivePath, destPath }) + '\n');
+
   try {
     await mkdir(fullDest, { recursive: true });
-    const lower = archivePath.toLowerCase();
 
-    if (lower.endsWith('.zip')) {
-      await execFileAsync('unzip', ['-o', fullArchive, '-d', fullDest], { timeout: 120_000 });
-    } else if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) {
-      await execFileAsync('tar', ['xzf', fullArchive, '-C', fullDest], { timeout: 120_000 });
-    } else if (lower.endsWith('.tar')) {
-      await execFileAsync('tar', ['xf', fullArchive, '-C', fullDest], { timeout: 120_000 });
+    // Verbose on purpose: this chatter IS the progress feed. runToolStreaming
+    // consumes it a line at a time, so its volume no longer bounds the job.
+    if (isZip) {
+      await runToolStreaming('unzip', ['-o', fullArchive, '-d', fullDest], {
+        onLine: line => {
+          // "  inflating: path", "   creating: path", "  extracting: path"
+          const m = /^\s*(?:inflating|extracting|creating|linking):\s+(.*)$/.exec(line);
+          if (m) progress.tick(basename(m[1].trim()));
+        },
+      });
     } else {
-      return sendError(res, 400, 'Unsupported archive format. Supports: .zip, .tar.gz, .tgz, .tar');
+      // tar has no cheap member count, so progress is a running total with
+      // no percentage. Verbose output goes to stdout for GNU tar and stderr
+      // for some busybox builds, so tick on either rather than guessing.
+      await runToolStreaming('tar', [isTarGz ? 'xzvf' : 'xvf', fullArchive, '-C', fullDest], {
+        onLine: line => progress.tick(basename(line)),
+      });
     }
 
-    sendJson(res, 200, { path: archivePath, extractedTo: destPath, extracted: true });
+    progress.flush();
+    res.write(JSON.stringify({
+      type: 'complete', path: archivePath, extractedTo: destPath, extracted: true, files: progress.count,
+    }) + '\n');
+    res.end();
   } catch (err) {
-    if (err.code === 'ENOENT') return sendError(res, 404, 'Archive not found');
     console.error('[handleExtract]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to extract archive');
+    // The stream is already open, so a 500 status can no longer be sent. Say
+    // WHICH failure it was as a stream event instead. The old generic message
+    // cost a production investigation: "Failed to extract archive" for a valid
+    // archive, on a disk with room, that extracts in 5 seconds, told the
+    // operator nothing — the real cause was only in the sidecar's stderr.
+    const message = err.code === 'ENOENT'
+      ? 'Archive not found'
+      : describeToolFailure(err, 'extract archive');
+    if (!res.writableEnded) {
+      res.write(JSON.stringify({ type: 'error', message }) + '\n');
+      res.end();
+    }
   }
 }
 
@@ -657,7 +935,12 @@ async function handleGitClone(req, res) {
 
   try {
     await mkdir(dirname(fullDest), { recursive: true });
-    await execFileAsync('git', ['clone', '--depth', '1', '--', url, fullDest], {
+    // Same buffer class as the archive tools: git writes clone progress and
+    // every "Cloning into…"/warning to stderr, which execFile caps at the same
+    // 1 MiB. Progress is normally suppressed when stdout is not a TTY, so this
+    // has not bitten — but a repo with thousands of LFS or checkout warnings
+    // would fail with a message about buffers rather than about git.
+    await runTool('git', ['clone', '--depth', '1', '--', url, fullDest], {
       timeout: 300_000, // 5 min for large repos
       // GIT_TERMINAL_PROMPT=0 blocks auth prompts; GIT_ALLOW_PROTOCOL=https
       // restricts git to the https transport (no ext::/file:: smuggling).
@@ -666,7 +949,7 @@ async function handleGitClone(req, res) {
     sendJson(res, 201, { url, destPath, cloned: true });
   } catch (err) {
     console.error('[handleGitClone]', err.message);
-    if (!res.headersSent) sendError(res, 500, 'Failed to clone repository');
+    if (!res.headersSent) sendError(res, 500, describeToolFailure(err, 'clone repository'));
   }
 }
 
@@ -790,17 +1073,27 @@ async function handleChmod(req, res) {
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
-    const args = recursive ? ['-R', String(mode), full] : [String(mode), full];
-    await new Promise((resolve, reject) => {
-      execFile('chmod', args, { timeout: 60_000 }, (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr || err.message));
-        else resolve(stdout);
+    let changed = 0;
+    if (recursive) {
+      // Same limits the archive tools hit: a fixed 60s total timeout and
+      // execFile's 1 MiB buffer. `chmod -R` over a CMS tree of tens of
+      // thousands of files can exceed 60s on network storage, and the SIGTERM
+      // leaves permissions HALF APPLIED behind a generic error.
+      //
+      // -v makes busybox emit a line per file, which does two things: it feeds
+      // the idle timer (a silent tool would trip it instantly) and it gives an
+      // accurate count to report back.
+      await runToolStreaming('chmod', ['-Rv', String(mode), full], {
+        onLine: () => { changed++; },
       });
-    });
-    sendJson(res, 200, { path: p, mode: String(mode), recursive: !!recursive });
+    } else {
+      await runTool('chmod', [String(mode), full]);
+      changed = 1;
+    }
+    sendJson(res, 200, { path: p, mode: String(mode), recursive: !!recursive, changed });
   } catch (err) {
     console.error('[handleChmod]', err.message);
-    sendError(res, 500, err.message);
+    sendError(res, 500, describeToolFailure(err, 'change permissions'));
   }
 }
 
@@ -842,17 +1135,21 @@ async function handleChown(req, res) {
   if (!full) return sendError(res, 404, 'Path not found');
 
   try {
-    const args = recursive ? ['-R', ownerSpec, full] : [ownerSpec, full];
-    await new Promise((resolve, reject) => {
-      execFile('chown', args, { timeout: 60_000 }, (err, stdout, stderr) => {
-        if (err) reject(new Error(stderr || err.message));
-        else resolve(stdout);
+    let changed = 0;
+    if (recursive) {
+      // See handleChmod: fixed total timeout + 1 MiB buffer, replaced by an
+      // idle timer that -v keeps alive.
+      await runToolStreaming('chown', ['-Rv', ownerSpec, full], {
+        onLine: () => { changed++; },
       });
-    });
-    sendJson(res, 200, { path: p, uid, gid, recursive: !!recursive });
+    } else {
+      await runTool('chown', [ownerSpec, full]);
+      changed = 1;
+    }
+    sendJson(res, 200, { path: p, uid, gid, recursive: !!recursive, changed });
   } catch (err) {
     console.error('[handleChown]', err.message);
-    sendError(res, 500, err.message);
+    sendError(res, 500, describeToolFailure(err, 'change ownership'));
   }
 }
 

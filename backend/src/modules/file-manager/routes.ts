@@ -445,7 +445,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
   // POST /api/v1/tenants/:tenantId/files/archive — create archive
   app.post('/tenants/:tenantId/files/archive', {
     schema: { tags: ['Files'], summary: 'Create archive from files', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
+  }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = archiveInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
@@ -453,24 +453,22 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sTenants);
     const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/archive', {
-      method: 'POST',
-      body: JSON.stringify(parsed.data),
-      contentType: 'application/json',
-    });
-
-    if (result.status !== 201) {
-      const err = JSON.parse(result.body);
-      throw new ApiError('FILE_ERROR', err.error || 'Failed to create archive', result.status);
-    }
-
-    return success(JSON.parse(result.body));
+    // Streamed NDJSON, not a buffered call: archiving a large tree runs for
+    // minutes and the panel shows a running file count while it does. Same
+    // relay as /fetch-url and /clone-site.
+    const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage());
+    const { proxyToFileManagerStream } = await import('./service.js');
+    reply.hijack();
+    await proxyToFileManagerStream(
+      kubeconfigPath, namespace, '/archive', JSON.stringify(parsed.data), reply.raw,
+      directUrl ? { directUrl } : {},
+    );
   });
 
   // POST /api/v1/tenants/:tenantId/files/extract — extract archive
   app.post('/tenants/:tenantId/files/extract', {
     schema: { tags: ['Files'], summary: 'Extract archive', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
+  }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = extractInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
@@ -478,18 +476,16 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     recordFileManagerAccess(namespace, getK8s().k8sTenants);
     const { k8sTenants, kubeconfigPath } = getK8s();
 
-    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/extract', {
-      method: 'POST',
-      body: JSON.stringify(parsed.data),
-      contentType: 'application/json',
-    });
-
-    if (result.status !== 200) {
-      const err = JSON.parse(result.body);
-      throw new ApiError('FILE_ERROR', err.error || 'Failed to extract archive', result.status);
-    }
-
-    return success(JSON.parse(result.body));
+    // Streamed NDJSON. A buffered call could not report progress AND held the
+    // whole extraction behind one request timeout; a 14k-entry archive took
+    // minutes of silence before failing. Same relay as /fetch-url.
+    const { directUrl } = await ensureFileManagerReady(k8sTenants, namespace, getFileManagerImage());
+    const { proxyToFileManagerStream } = await import('./service.js');
+    reply.hijack();
+    await proxyToFileManagerStream(
+      kubeconfigPath, namespace, '/extract', JSON.stringify(parsed.data), reply.raw,
+      directUrl ? { directUrl } : {},
+    );
   });
 
   // POST /api/v1/tenants/:tenantId/files/git-clone — clone git repository

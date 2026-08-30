@@ -16,6 +16,7 @@ import { eq, and, ne, inArray, desc, sql, or, ilike } from 'drizzle-orm';
 import { catalogEntries, deployments, tenants } from '../../db/schema.js';
 import { fileManagerRequest } from '../file-manager/service.js';
 import { getFileManagerImage } from '../file-manager/image.js';
+import { describeTermination } from '../../lib/container-termination.js';
 
 export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
   // Phase 6: method-aware role guard — read for all tenant roles,
@@ -293,7 +294,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
       namespace,
       labelSelector: `app=${deployment.name}`,
     });
-    const pods = (podList as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string; containerStatuses?: readonly { lastState?: { terminated?: { reason?: string } } }[] } }[] }).items ?? [];
+    const pods = (podList as { items?: readonly { metadata?: { name?: string }; status?: { phase?: string; containerStatuses?: readonly { lastState?: { terminated?: { reason?: string; exitCode?: number } } }[] } }[] }).items ?? [];
     const runningPod = pods.find(p => p.status?.phase === 'Running') ?? pods[0];
 
     if (!runningPod?.metadata?.name) {
@@ -305,7 +306,7 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
     // Detect termination reason from container statuses
     let terminationReason: string | null = null;
     for (const cs of runningPod.status?.containerStatuses ?? []) {
-      const reason = cs.lastState?.terminated?.reason;
+      const reason = describeTermination(cs.lastState?.terminated);
       if (reason) {
         terminationReason = reason;
         break;

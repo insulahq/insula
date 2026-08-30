@@ -31,6 +31,13 @@ data:
         metrics_path: /metrics/metrics
         static_configs:
           - targets: ['localhost:8428']
+        metric_relabel_configs:
+          # `flag` is one series per command-line flag (276 of them) whose
+          # value never changes while the process lives. It is configuration
+          # printed as telemetry — readable any time from the Deployment.
+          - source_labels: [__name__]
+            regex: 'flag'
+            action: drop
 
       # ── kubelet: container CPU/mem/fs (cadvisor) ─────────────────
       # Bearer-token authn against the kubelet's HTTPS port; the k3s
@@ -78,6 +85,15 @@ data:
         relabel_configs:
           - source_labels: [__meta_kubernetes_node_name]
             target_label: node
+        metric_relabel_configs:
+          # Swap is OFF on every supported node (k3s requires it disabled;
+          # verified `Swap: 0` on the production cluster 2026-08-30), so
+          # these 1073 series are a constant zero per container and pod.
+          # If swap support is ever enabled, delete this rule — the
+          # metrics are genuinely useful then.
+          - source_labels: [__name__]
+            regex: '(container|pod|node)_swap_(usage|limit)_bytes'
+            action: drop
 
       # ── kubelet: PVC usage ──────────────────────────────────────
       # kubelet_volume_stats_* live on the kubelet's MAIN /metrics endpoint,
@@ -157,6 +173,15 @@ data:
             target_label: __address__
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
+        metric_relabel_configs:
+          # Longhorn's client-go internals, not Longhorn's storage health:
+          # rest_client_* is latency talking to the kube-apiserver, and
+          # workqueue_* is its controller queue depth. 2772 series — 17% of
+          # the entire TSDB — measuring a library. Volume/replica/snapshot
+          # metrics (longhorn_volume_*, longhorn_snapshot_*) are untouched.
+          - source_labels: [__name__]
+            regex: 'longhorn_(rest_client|workqueue)_.*'
+            action: drop
 
       # ── Flux controllers (reconcile health, :8080 http-prom) ─────
       - job_name: flux
@@ -174,6 +199,13 @@ data:
             target_label: __address__
           - source_labels: [__meta_kubernetes_pod_label_app]
             target_label: controller
+        metric_relabel_configs:
+          # Same client-go queue internals as the Longhorn job. Flux's
+          # actual reconcile health (gotk_reconcile_*) is what the SLO
+          # rules read and is kept.
+          - source_labels: [__name__]
+            regex: 'workqueue_.*|rest_client_.*'
+            action: drop
 
       # ── CNPG / system-db (postgres exporter, :9187) ──────────────
       # CNPG instance pods always serve metrics on 9187; scraped
@@ -195,6 +227,14 @@ data:
             target_label: __address__
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+        metric_relabel_configs:
+          # One series per Postgres GUC (284 of them), constant until the
+          # cluster is reconfigured — configuration, not telemetry, and
+          # readable from the CNPG Cluster CR. Postgres runtime metrics
+          # (cnpg_backends_*, cnpg_pg_replication_*, …) are kept.
+          - source_labels: [__name__]
+            regex: 'cnpg_pg_settings_setting'
+            action: drop
 
       # ── platform-api (:9090 — ADR-051 phase 2) ───────────────────
       # First-party metrics: HTTP histogram, ACME order/renewal

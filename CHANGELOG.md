@@ -12,6 +12,118 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Extract and archive show real progress.** Both stream NDJSON to the panel
+  like `fetch-url` already did, so a multi-minute job reports what it is doing
+  from the first second. Zip extraction shows a true percentage — the member
+  count comes from the archive's central directory, read directly with no
+  subprocess and no full scan. Tar extraction and archive creation report a
+  running file count with **no** percentage, because neither total is knowable
+  without walking the data twice, and an invented percentage is worse than an
+  honest count.
+
+  The per-file chatter that caused the bug above is what feeds this.
+
+  The extract dialog's old progress bar was `width: 70%` with a pulse
+  animation — a fixed decoration that looked identical for a 3-file archive and
+  a 14,191-file one. It now tracks real counts, and falls back to an
+  indeterminate bar only where no total exists.
+
+### Fixed
+- **Recursive permission and ownership changes were capped at 60 seconds.**
+  Applying permissions with *Apply recursively to all contents* ran `chmod -R`
+  under a fixed 60-second total timeout and `execFile`'s 1 MiB output buffer —
+  the same defect that made large archives impossible to extract, in the two
+  handlers the archive fix did not touch. On a CMS tree of tens of thousands of
+  files on network storage the timeout kills the tool partway, leaving
+  permissions **half applied** behind a generic error, which is worse than
+  failing outright because a partly-chmod'ed tree looks fine until something
+  403s. Both now run verbosely through the streaming runner: no total timeout,
+  no buffer to overflow, and an accurate count of what changed.
+- **A failed permission change blamed the archive.** The shared failure helper
+  answered "the archive appears to be damaged or unreadable" for `chmod` and
+  `chown` once they started using it. It is now subject-neutral, and it no
+  longer relays the tool's stderr — an intermediate version did, which put an
+  internal filesystem path into a message shown to the tenant.
+
+- **Archives with many files could not be extracted, and archiving a large
+  folder could fail the same way.** A tenant could not extract a 14,191-entry
+  zip: the archive was valid, the disk had 4.6 GB free, and the extraction
+  itself takes 5 seconds. The panel said only "Failed to extract archive".
+
+  `execFile` buffers a child process's stdout and **kills the child** once it
+  exceeds `maxBuffer`, which defaults to 1 MiB. `unzip -o` prints one line per
+  member — 1,513,063 bytes for that archive, 44% over the cap. Extraction
+  therefore worked for every small archive it was ever tested with and could
+  never work for a large one, and nothing in the failure pointed at output
+  buffering. `zip -r` (creating an archive) is chatty in exactly the same way
+  and had the same latent limit; `git clone` writes progress to a
+  similarly-capped stderr.
+
+  Extraction and archive creation no longer buffer tool output at all. They
+  `spawn` and read line by line, holding one line at a time, so memory is
+  independent of file count and there is no cap left to exceed. The fixed
+  120-second total timeout went with it — the wrong shape for "any size", since
+  it is generous for 14k files and far too short for two million — replaced by
+  an **idle** timeout that fires only when a tool goes silent. `git clone` keeps
+  a bounded buffer with an explicit 32 MiB limit.
+
+  Failures now report what actually went wrong — damaged archive, stalled tool,
+  out of space — instead of one generic sentence, which is what sent this
+  investigation to the wrong place.
+
+- **The monitoring pod was OOM-killed every ~2 days, and the interval was
+  shrinking.** VictoriaMetrics died five times in eleven days on the production
+  cluster (3d16h → 2d18h → 1d23h → 1d14h between kills), each time losing its
+  caches and starting the climb again. Neither usual suspect was involved:
+  16.2k series total and 134 MB on disk.
+
+  `-memory.allowedBytes=192MiB` budgets VM's **caches**, and the comment above
+  it claimed that capped them "well under" the 384Mi limit. It does — and it
+  says nothing about the Go runtime that shares the same cgroup. Measured: 246
+  MiB held by the Go heap for an 89 MiB live working set, plus ~95 MiB of
+  fastcache allocated as anonymous mmap *outside* the Go heap where
+  `allowedBytes` accounting cannot see it either. 341 MiB against a 384 MiB
+  ceiling. The limit only held because the caches never claimed what they had
+  been permitted — `storage/tsid` held 13,505 entries in 32 MiB against a
+  128 MiB ceiling, so a single cache-warming query could have killed the pod
+  outright.
+
+  Addressed by budgeting all three consumers instead of one, with no extra
+  memory: `-memory.allowedBytes` cut to 64MiB, `GOGC=40` so the heap collects
+  at 1.4× live instead of 2× — the pod uses 6m of a 100m CPU request, so the
+  trade is free — `GOMEMLIMIT` as a backstop, and `metric_relabel_configs`
+  dropping 4,665 series (29 %) that were never read: Longhorn's and Flux's
+  client-go internals, per-container swap gauges that are constant zero because
+  swap is disabled, VM's own flag list, and one series per Postgres GUC.
+
+  **Two of those levers did not do what was claimed for them, and the
+  measurements are worth stating.** `-memory.allowedBytes` did not reduce
+  memory held at all — `vm_cache_size_bytes` stayed at ~123 MiB, because
+  VictoriaMetrics enforces internal floors those caches never drop below. It
+  lowered the sum of cache *ceilings* from ~530 MiB to ~361 MiB, which bounds
+  the worst case and nothing else. And `GOMEMLIMIT` was first set to 256Mi,
+  which combined with 126 MiB of off-heap fastcache put the backstop at 382 MiB
+  — effectively at the OOM point, where the kernel always wins first. RSS
+  climbed back to the pre-change baseline within two hours. It is now **192Mi**,
+  derived from the measured off-heap total rather than a predicted one. Whether
+  that holds is unverified: the failure has a 1.6–3.6 day period, so only days
+  of samples can confirm it.
+- **Some OOM kills were invisible to the platform.** The kubelet reports a
+  cgroup OOM *group* kill as `{exitCode: 137, reason: "Error"}`, not
+  `OOMKilled` — a sweep for the latter across every production namespace
+  returned zero results while the monitoring pod was being killed every two
+  days. Six modules classified terminations and four disagreed:
+  `node-health/memory-events` already inferred it correctly, `operator-error`
+  matched the rendered text, and the per-tenant OOM alert scan plus three
+  deployment-status paths matched only the literal — so a tenant container
+  killed this way raised no alert and showed as a generic crash loop instead of
+  the actionable "raise the memory limit". All six now share
+  `lib/container-termination.ts`, with `ci-oom-classification-check.sh` failing
+  the build on a new bare comparison, including the narrowed
+  `terminated?: { reason?: string }` type that lets the check compile but never
+  fire.
+
 ## [2026.8.22] - 2026-08-30
 
 ### Security
