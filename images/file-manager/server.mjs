@@ -543,7 +543,7 @@ async function handleExtract(req, res) {
 }
 
 async function handleWriteRaw(req, res) {
-  const { path: p, offset: offsetParam } = getQuery(req.url);
+  const { path: p, offset: offsetParam, total: totalParam } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
   const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
   if (!full) return sendError(res, 404, 'Not found');
@@ -557,6 +557,22 @@ async function handleWriteRaw(req, res) {
   const offsetN = offsetParam !== undefined ? Number.parseInt(offsetParam, 10) : -1;
   const chunked = Number.isFinite(offsetN) && offsetN >= 0;
 
+  // `?total=` is the FINAL byte length of the whole upload. Without it, a
+  // chunked write over an existing LARGER file leaves the old tail attached:
+  // O_CREAT|O_WRONLY never shortens the file, so re-uploading a 5 MB archive
+  // over a 10 MB one of the same name yields a 10 MB file — 5 MB of new data
+  // followed by 5 MB of the previous file. A zip keeps its central directory
+  // at the END, so the reader finds the OLD directory and the "new" archive
+  // silently reads as the old one.
+  //
+  // Setting the length to exactly `total` is safe from any chunk in any order:
+  // every legitimate write lands inside [0, total), so ftruncate can only ever
+  // discard the stale tail, never in-flight data. Doing it on every chunk
+  // (rather than only offset=0) is idempotent and needs no ordering guarantee
+  // between parallel chunks.
+  const totalN = totalParam !== undefined ? Number.parseInt(totalParam, 10) : -1;
+  const hasTotal = Number.isFinite(totalN) && totalN >= 0;
+
   try {
     const dir = dirname(full);
     await mkdir(dir, { recursive: true });
@@ -567,6 +583,7 @@ async function handleWriteRaw(req, res) {
       // set on Linux).
       const fh = await fs.promises.open(full, fs.constants.O_CREAT | fs.constants.O_WRONLY);
       try {
+        if (hasTotal) await fh.truncate(totalN).catch(() => {});
         let written = 0;
         for await (const chunk of req) {
           const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -1442,4 +1459,7 @@ if (process.env.FM_NO_LISTEN !== '1') {
 
 // Exported for unit tests (node --test). These are pure helpers — importing
 // the module with FM_NO_LISTEN=1 does not start the server.
-export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE };
+// `server` is exported so a test can bind it on an ephemeral port
+// (`server.listen(0)`) and drive real HTTP requests through the router,
+// instead of racing the fixed :8111 with a parallel test file.
+export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE, server };

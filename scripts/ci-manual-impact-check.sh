@@ -39,11 +39,19 @@ if echo "$CHANGED" | grep -q '^documentation/docs/'; then
   exit 0
 fi
 
-if git log "$MERGE_BASE"..HEAD --format=%B | git interpret-trailers --parse \
-     | grep -qiE '^Manual-Impact:[[:space:]]*none'; then
-  echo "manual-impact: waived via 'Manual-Impact: none' trailer — OK"
-  exit 0
-fi
+# Check each commit SEPARATELY. `git log --format=%B` concatenates every body
+# into one stream, and `git interpret-trailers --parse` only reads the trailer
+# block at the END of its input — so on any PR with more than one commit the
+# waiver was silently ignored unless it happened to land in the last body. The
+# documented escape hatch therefore did not work for exactly the PRs most likely
+# to need it. Iterate per commit so position in the range is irrelevant.
+for _c in $(git rev-list "$MERGE_BASE"..HEAD); do
+  if git log -1 --format=%B "$_c" | git interpret-trailers --parse \
+       | grep -qiE '^Manual-Impact:[[:space:]]*none'; then
+    echo "manual-impact: waived via 'Manual-Impact: none' trailer in ${_c} — OK"
+    exit 0
+  fi
+done
 
 echo "manual-impact: user-visible surfaces changed without a manual update:"
 echo "$impacted" | sed 's/^/  - /'

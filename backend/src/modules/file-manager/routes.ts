@@ -590,8 +590,13 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     // ?offset=<absolute byte offset>, the sidecar pwrites at that
     // offset without truncating — so concurrent chunks land in their
     // correct slot and the file is whole when all chunks complete.
+    // `total` carries the FINAL length of the whole file so the sidecar can
+    // set the file's length exactly and drop any tail left by a previous,
+    // larger upload to the same path (see handleWriteRaw). Order-independent,
+    // so it rides on every chunk rather than only the first.
     const fwdQuery: Record<string, string> = { path: query.path };
     if (query.offset !== undefined) fwdQuery.offset = query.offset;
+    if (query.total !== undefined) fwdQuery.total = query.total;
 
     // Stream the raw request body directly to the sidecar
     const result = await streamToFileManager(kubeconfigPath, namespace, '/write-raw', request.raw, {
