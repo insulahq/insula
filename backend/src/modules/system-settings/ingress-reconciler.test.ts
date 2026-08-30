@@ -101,20 +101,89 @@ describe('buildIngressRouteBody', () => {
     const spec = body.spec as Record<string, unknown>;
     expect(spec.entryPoints).toEqual(['websecure']);
     const routes = spec.routes as Array<Record<string, unknown>>;
-    expect(routes).toHaveLength(1);
-    expect(routes[0].match).toBe('Host(`admin.example.com`)');
-    expect(routes[0].kind).toBe('Rule');
-    const services = routes[0].services as Array<Record<string, unknown>>;
+    // [0] = upload carve-out, [1] = panel route.
+    expect(routes).toHaveLength(2);
+    const panel = routes[1];
+    expect(panel.match).toBe('Host(`admin.example.com`)');
+    expect(panel.kind).toBe('Rule');
+    const services = panel.services as Array<Record<string, unknown>>;
     expect(services[0]).toMatchObject({ name: 'admin-panel', port: 80 });
     // Middleware chain — crowdsec runs FIRST so known-bad IPs short-
     // circuit before any other processing. WAF (ModSec) is platform-
     // wide on panel routes regardless of tenant wafEnabled.
-    const middlewares = routes[0].middlewares as Array<{ name: string; namespace: string }>;
+    const middlewares = panel.middlewares as Array<{ name: string; namespace: string }>;
     expect(middlewares).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
+      // The body cap MUST sit immediately before the WAF — the plugin reads the
+      // whole body with no limit, and one oversized POST OOM-kills ingress.
+      { name: 'waf-body-limit', namespace: 'traefik' },
       { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
     expect(spec.tls).toEqual({ secretName: 'platform-tls' });
+  });
+
+  // The ModSecurity plugin buffers the WHOLE request body in the Traefik pod
+  // (unbounded — its `maxBodySize` knob is not a field of the plugin's Config
+  // struct) and mirrors it to the sidecar, which spools it to disk. Traefik is
+  // a DaemonSet with limits.memory=512Mi fronting the entire cluster, and CRS
+  // exclusion 9000105 already strips REQUEST_BODY/ARGS_POST for this URI — so
+  // the mirroring is pure cost. The upload path must bypass the WAF middleware.
+  it('routes /files/upload-raw around the WAF so upload bodies are never buffered', () => {
+    const body = buildIngressRouteBody(
+      [{ host: 'tenant.example.com', serviceName: 'tenant-panel', oauth2: false }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
+    const upload = routes.find(r => String(r.match).includes('upload-raw'));
+    expect(upload).toBeDefined();
+    expect(upload!.match).toBe(
+      'Host(`tenant.example.com`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)',
+    );
+    // Must out-prioritise both the bare Host() panel route and the /oauth2
+    // route (100), or Traefik's rule-length heuristic could pick the wrong one.
+    expect(upload!.priority).toBe(101);
+    const mw = upload!.middlewares as Array<{ name: string }>;
+    expect(mw.map(m => m.name)).not.toContain('modsecurity-crs');
+    // The cap goes too: it exists only to bound what the WAF buffers, and a
+    // 12.5 MiB ceiling on the streaming upload path would defeat the point.
+    expect(mw.map(m => m.name)).not.toContain('waf-body-limit');
+    // CrowdSec still applies — only body mirroring is skipped.
+    expect(mw.map(m => m.name)).toEqual(['crowdsec']);
+    // Same backend as the panel route.
+    expect((upload!.services as Array<Record<string, unknown>>)[0])
+      .toMatchObject({ name: 'tenant-panel', port: 80 });
+  });
+
+  it('keeps ForwardAuth on the upload carve-out when oauth2 is enabled', () => {
+    // Dropping the WAF must not accidentally drop authentication.
+    const body = buildIngressRouteBody(
+      [{ host: 'admin.example.com', serviceName: 'admin-panel', oauth2: true }],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
+    const upload = routes.find(r => String(r.match).includes('upload-raw'))!;
+    const mw = upload.middlewares as Array<{ name: string; namespace: string }>;
+    expect(mw).toEqual([
+      { name: 'crowdsec', namespace: 'traefik' },
+      { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
+    ]);
+  });
+
+  it('emits one upload carve-out per host', () => {
+    const body = buildIngressRouteBody(
+      [
+        { host: 'admin.example.com', serviceName: 'admin-panel', oauth2: false },
+        { host: 'tenant.example.com', serviceName: 'tenant-panel', oauth2: false },
+      ],
+      { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
+    );
+    const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
+    const uploads = routes.filter(r => String(r.match).includes('upload-raw'));
+    expect(uploads).toHaveLength(2);
+    expect(uploads.map(u => u.match)).toEqual([
+      'Host(`admin.example.com`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)',
+      'Host(`tenant.example.com`) && PathRegexp(`^/api/v1/tenants/[^/]+/files/upload-raw$`)',
+    ]);
   });
   it('adds a priority-100 /oauth2 prefix route + crowdsec → ForwardAuth → WAF chain on the panel route when oauth2 is enabled', () => {
     const body = buildIngressRouteBody(
@@ -122,7 +191,8 @@ describe('buildIngressRouteBody', () => {
       { namespace: 'platform', name: 'platform-ingress', tlsSecretName: 'platform-tls' },
     );
     const routes = (body.spec as { routes: Array<Record<string, unknown>> }).routes;
-    expect(routes).toHaveLength(2);
+    // [0] = /oauth2, [1] = upload carve-out, [2] = panel route.
+    expect(routes).toHaveLength(3);
     // /oauth2 priority route — no auth Middleware (oauth2-proxy IS the auth endpoint).
     expect(routes[0].match).toBe('Host(`admin.example.com`) && PathPrefix(`/oauth2`)');
     expect(routes[0].priority).toBe(100);
@@ -131,11 +201,12 @@ describe('buildIngressRouteBody', () => {
       port: 4180,
     });
     // Panel route — crowdsec → ForwardAuth → WAF (in that order).
-    expect(routes[1].match).toBe('Host(`admin.example.com`)');
-    const panelMiddlewares = routes[1].middlewares as Array<{ name: string; namespace: string }>;
+    expect(routes[2].match).toBe('Host(`admin.example.com`)');
+    const panelMiddlewares = routes[2].middlewares as Array<{ name: string; namespace: string }>;
     expect(panelMiddlewares).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
       { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
+      { name: 'waf-body-limit', namespace: 'traefik' },
       { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
   });
@@ -188,15 +259,45 @@ describe('reconcileIngressHosts', () => {
     const certApplied = (deps.applyCertificate as ReturnType<typeof vi.fn>).mock.calls[0][0];
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(certApplied.spec.dnsNames).toEqual(['admin.example.com', 'my.example.com']);
-    expect(ingressApplied.spec.routes).toHaveLength(2);
+    // 2 hosts x (upload carve-out + panel route).
+    expect(ingressApplied.spec.routes).toHaveLength(4);
+  });
+
+  // Regression: the carve-out shares host + backend with the panel route, so the
+  // host/service comparison cannot see it. On the first rollout that made every
+  // existing cluster look permanently in-sync — the route was built correctly and
+  // never applied, and DEV came back with "no upload-raw route in platform-ingress".
+  it('re-applies when the live route predates the upload carve-out', async () => {
+    const deps = mockDeps(
+      {
+        routes: [
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: false },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      {
+        dnsNames: ['admin.example.com'],
+        secretName: 'platform-tls',
+        issuerName: 'letsencrypt-prod-http01',
+      },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: null,
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
+    expect(deps.applyIngressRoute).toHaveBeenCalled();
+    const applied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(applied.spec.routes.some((r: { match: string }) => r.match.includes('upload-raw'))).toBe(true);
   });
 
   it('is a no-op when desired routes + cert match the live resources', async () => {
     const deps = mockDeps(
       {
         routes: [
-          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null },
-          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null },
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true },
         ],
         tlsSecret: 'platform-tls',
       },
@@ -235,8 +336,9 @@ describe('reconcileIngressHosts', () => {
       tlsSecretName: 'platform-tls',
     }, deps);
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(ingressApplied.spec.routes).toHaveLength(1);
-    expect(ingressApplied.spec.routes[0].match).toBe('Host(`admin.example.com`)');
+    // upload carve-out + panel route for the one surviving host.
+    expect(ingressApplied.spec.routes).toHaveLength(2);
+    expect(ingressApplied.spec.routes[1].match).toBe('Host(`admin.example.com`)');
     const certApplied = (deps.applyCertificate as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(certApplied.spec.dnsNames).toEqual(['admin.example.com']);
   });
@@ -249,8 +351,9 @@ describe('reconcileIngressHosts', () => {
       tlsSecretName: 'platform-tls',
     }, deps);
     const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(ingressApplied.spec.routes).toHaveLength(1);
-    expect(ingressApplied.spec.routes[0].match).toBe('Host(`my.example.com`)');
+    // upload carve-out + panel route for the one surviving host.
+    expect(ingressApplied.spec.routes).toHaveLength(2);
+    expect(ingressApplied.spec.routes[1].match).toBe('Host(`my.example.com`)');
   });
 
   describe('oauth2-proxy /oauth2 path routing', () => {
@@ -263,8 +366,8 @@ describe('reconcileIngressHosts', () => {
         protectAdminViaProxy: true,
       }, deps);
       const ingressApplied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
-      // 3 routes: admin /oauth2 + admin /, tenant /
-      expect(ingressApplied.spec.routes).toHaveLength(3);
+      // admin: /oauth2 + upload + panel; tenant: upload + panel.
+      expect(ingressApplied.spec.routes).toHaveLength(5);
       const oauth2Route = ingressApplied.spec.routes.find(
         (r: { match: string }) => r.match === 'Host(`admin.example.com`) && PathPrefix(`/oauth2`)',
       );

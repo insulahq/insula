@@ -311,6 +311,27 @@ function internalAuthHeader(namespace: string): Record<string, string> {
   return { 'X-Platform-Internal': deriveFmSecret(master, namespace) };
 }
 
+/**
+ * Header set for EVERY direct-ClusterIP request to the sidecar.
+ *
+ * The direct path is an optimisation (skips the apiserver proxy) — it is NOT
+ * an auth exemption. Route it through this helper so the auth header can't be
+ * forgotten: when the sidecar's gate landed, only the buffered `proxyDirect`
+ * was updated and the three STREAMING direct branches (upload-raw, download,
+ * fetch-url/clone-site) kept sending bare headers. The sidecar answered
+ * `403 {"error":"Forbidden"}` in ~10 ms and platform-api forwarded that status
+ * verbatim, so every raw upload and every download failed on any in-cluster
+ * deployment while `ls`/`write`/`mkdir` (buffered path) kept working — which is
+ * exactly what made it look like a large-file or chunking problem.
+ *
+ * Callers pass request-specific extras (Content-Type, Content-Length, …); the
+ * auth header is applied first so an extras key can never shadow it by accident.
+ * Guarded by scripts/ci-file-manager-auth-check.sh.
+ */
+function directHeaders(namespace: string, extra: Record<string, string> = {}): Record<string, string> {
+  return { ...internalAuthHeader(namespace), ...extra };
+}
+
 async function proxyDirect(
   baseUrl: string,
   pathAndQuery: string,
@@ -322,7 +343,7 @@ async function proxyDirect(
   },
   namespace: string,
 ): Promise<ProxyResult> {
-  const headers: Record<string, string> = { ...internalAuthHeader(namespace) };
+  const headers: Record<string, string> = directHeaders(namespace);
   if (options.contentType) headers['Content-Type'] = options.contentType;
   if (options.body) {
     const bodyLen = Buffer.isBuffer(options.body) ? options.body.length : Buffer.byteLength(options.body);
@@ -526,10 +547,10 @@ export async function proxyToFileManagerStream(
         path: u.pathname + u.search,
         method: 'POST',
         agent: httpAgent,
-        headers: {
+        headers: directHeaders(namespace, {
           'Content-Type': 'application/json',
           'Content-Length': String(Buffer.byteLength(body)),
-        },
+        }),
       }, (res) => {
         writeUpstream(res);
         res.on('end', resolve);
@@ -661,6 +682,7 @@ export async function streamFromFileManager(
         path: u.pathname + u.search,
         method,
         agent: httpAgent,
+        headers: directHeaders(namespace),
       }, (res) => handleUpstream(res, () => resolve(), reject));
       req.on('error', reject);
       req.end();
@@ -741,7 +763,7 @@ export async function streamToFileManager(
         path: u.pathname + u.search,
         method: 'POST',
         agent: httpAgent,
-        headers: buildHeaders({}),
+        headers: buildHeaders(directHeaders(namespace)),
       }, (res) => {
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => chunks.push(chunk));
