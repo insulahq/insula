@@ -3584,6 +3584,14 @@ export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
   bundleSchemaVersion: integer('bundle_schema_version'),
   sourceRegionId: varchar('source_region_id', { length: 63 }),
   drKeyAddedAt: timestamp('dr_key_added_at'),
+  // TRUE deduplicated repository size from `restic stats --mode raw-data`,
+  // refreshed on demand from the admin Tenant Backups page. Distinct from
+  // `lastRepoSizeBytes` above, which despite its name is the bytes PROCESSED by
+  // the most recent snapshot — for an incremental run that is a small fraction
+  // of the repo, so it must never be presented as the repo's size.
+  // NULL = never measured; the UI says so rather than showing 0.
+  repoTotalBytes: bigint('repo_total_bytes', { mode: 'number' }),
+  repoStatsAt: timestamp('repo_stats_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 }, (table) => [

@@ -16,7 +16,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq, asc, sql, and } from 'drizzle-orm';
+import { eq, asc, sql, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { browseFilesTree } from './browse-files-restic.js';
 import {
@@ -303,7 +303,26 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       .where(where)
       .orderBy(sql`${restoreJobs.createdAt} DESC`)
       .limit(limit);
-    return success(rows.map(toJobSummary));
+
+    // Attach each cart's first-item bundleId so the panel can reopen it at
+    // `/backups/restore/:bundleId?cart=<id>`. One extra query for the whole
+    // page rather than N — the list is capped at 200.
+    const firstBundleByCart = new Map<string, string>();
+    if (rows.length > 0) {
+      const items = await app.db.select({
+        restoreJobId: restoreItems.restoreJobId,
+        bundleId: restoreItems.bundleId,
+        seq: restoreItems.seq,
+      }).from(restoreItems)
+        .where(inArray(restoreItems.restoreJobId, rows.map((r) => r.id)))
+        .orderBy(asc(restoreItems.seq));
+      for (const it of items) {
+        if (!firstBundleByCart.has(it.restoreJobId)) {
+          firstBundleByCart.set(it.restoreJobId, it.bundleId);
+        }
+      }
+    }
+    return success(rows.map((r) => toJobSummary(r, firstBundleByCart.get(r.id) ?? null)));
   });
 
   // ── GET /api/v1/tenants/:tenantId/restore-carts/:id ────────────────
@@ -316,10 +335,41 @@ export async function tenantRestoreRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(restoreItems.restoreJobId, id))
       .orderBy(asc(restoreItems.seq));
     const detail: RestoreJobDetail = {
-      ...toJobSummary(job),
+      ...toJobSummary(job, items[0]?.bundleId ?? null),
       items: items.map(toItemInfo),
     };
     return success(detail);
+  });
+
+  // ── DELETE /api/v1/tenants/:tenantId/restore-carts/:id ─────────────
+  // Discard a cart the tenant no longer wants. Carts already expire after
+  // DRAFT_CART_RETENTION_DAYS, but only DRAFTS do — and waiting a week to
+  // clear a mistake is not a UX. This is the explicit gesture.
+  //
+  // `executing` is refused: the restore is mid-flight writing into the
+  // tenant's live namespace, and deleting the record would orphan it with
+  // nothing left to report status against or roll back from. Every other
+  // status (draft / paused / done / failed) is terminal or resumable-by-
+  // choice, so the tenant may discard it.
+  //
+  // restore_items.restore_job_id is ON DELETE CASCADE, so the child rows go
+  // with the parent in one statement.
+  app.delete('/tenants/:tenantId/restore-carts/:id', {
+    schema: { tags: ['Tenant Restore'], summary: 'Delete a restore cart', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId, id } = request.params as { tenantId: string; id: string };
+    const [job] = await app.db.select().from(restoreJobs).where(eq(restoreJobs.id, id)).limit(1);
+    if (!job) throw new ApiError('NOT_FOUND', 'Restore cart not found', 404);
+    assertOwnership(job.tenantId, tenantId, 'Restore cart');
+    if (job.status === 'executing') {
+      throw new ApiError(
+        'RESTORE_CART_EXECUTING',
+        'This restore is currently running and cannot be deleted. Wait for it to finish, or roll it back first.',
+        409,
+      );
+    }
+    await app.db.delete(restoreJobs).where(eq(restoreJobs.id, id));
+    return reply.status(204).send();
   });
 
   // ── POST /api/v1/tenants/:tenantId/restore-carts/:id/items ─────────

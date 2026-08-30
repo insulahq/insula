@@ -21,6 +21,8 @@ import { useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Package, Search, Loader2, Filter, Camera, Archive, RotateCw, AlertCircle, Trash2, Clock,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
@@ -28,6 +30,7 @@ import type {
   BundleSummary,
   TenantsBackupsOverviewResponse,
   TenantBackupOverviewRow,
+  RestoreJobSummary,
 } from '@insula/api-contracts';
 import BackupClassPage from './BackupClassPage';
 import RestorationWizard, { type RestoreArtifact } from '@/components/backups/RestorationWizard';
@@ -112,6 +115,51 @@ function useTenantBundles(tenantFilter: string | null) {
         return (top as { data: ReadonlyArray<BundleSummary> }).data;
       }
       return [];
+    },
+  });
+}
+
+/** Restore carts across all tenants — grouped per tenant in the Backups tab. */
+function useAllRestoreCarts() {
+  return useQuery({
+    queryKey: ['admin', 'restores', 'carts', 'all'],
+    queryFn: () => apiFetch<{ data: { data: ReadonlyArray<RestoreJobSummary> } }>(
+      '/api/v1/admin/restores/carts?limit=200',
+    ),
+    staleTime: 15_000,
+    select: (raw): ReadonlyArray<RestoreJobSummary> => raw?.data?.data ?? [],
+  });
+}
+
+function useDeleteCart() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cartId: string) =>
+      apiFetch<void>(`/api/v1/admin/restores/carts/${cartId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'restores', 'carts', 'all'] });
+      void qc.invalidateQueries({ queryKey: ['admin', 'backups', 'tenants', 'overview'] });
+    },
+  });
+}
+
+/**
+ * Measure a tenant's true restic repository size.
+ *
+ * Explicitly a button: `restic stats` walks the repository index over the
+ * network. Neither stored size column can stand in for it — see
+ * backend/src/modules/backups-overview/repo-stats.ts.
+ */
+function useRefreshRepoStats() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tenantId: string) =>
+      apiFetch<{ data: { totalBytes: number; measuredAt: string; components: ReadonlyArray<{ component: string; totalBytes: number | null; error: string | null }> } }>(
+        `/api/v1/admin/backups/tenants/${tenantId}/repo-stats/refresh`,
+        { method: 'POST' },
+      ),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['admin', 'backups', 'tenants', 'overview'] });
     },
   });
 }
@@ -428,6 +476,8 @@ interface BackupsTabProps {
   readonly bundleAllPending: boolean;
   readonly onBundle: (tenantId: string) => void;
   readonly onRestore: (row: BundleSummary) => void;
+  /** Reopen an existing restore cart at the bundle it was started from. */
+  readonly onResumeCart: (cart: RestoreJobSummary) => void;
   readonly tenantTargetBound: boolean;
   /** Per-tenant rollup including the inclusion-in-scheduled-bundles flag. */
   readonly rollupRows: ReadonlyArray<TenantBackupOverviewRow>;
@@ -451,8 +501,57 @@ function BackupsTab(p: BackupsTabProps) {
       );
     });
   }, [p.rows, p.search, p.selectedTenantId]);
-  const { sortedData, sortKey, sortDirection, onSort } = useSortable(filtered, 'createdAt', 'desc');
-  const th = { currentKey: sortKey, direction: sortDirection, onSort, className: '!px-4 !py-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400' };
+  const { sortedData } = useSortable(filtered, 'createdAt', 'desc');
+
+  // ── Grouping ───────────────────────────────────────────────────────
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleGroup = (tenantId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(tenantId)) next.delete(tenantId); else next.add(tenantId);
+      return next;
+    });
+  };
+
+  const cartsQ = useAllRestoreCarts();
+  const deleteCart = useDeleteCart();
+  const refreshStats = useRefreshRepoStats();
+
+  const cartsByTenant = useMemo(() => {
+    const m = new Map<string, RestoreJobSummary[]>();
+    for (const c of cartsQ.data ?? []) {
+      const list = m.get(c.tenantId);
+      if (list) list.push(c); else m.set(c.tenantId, [c]);
+    }
+    return m;
+  }, [cartsQ.data]);
+
+  const rollupByTenant = useMemo(
+    () => new Map(p.rollupRows.map((r) => [r.tenantId, r])),
+    [p.rollupRows],
+  );
+
+  // Bundles grouped by tenant, each group's bundles keeping the sorted
+  // (newest-first) order from above.
+  const groups = useMemo(() => {
+    const m = new Map<string, { tenantId: string; tenantName: string; bundles: BundleSummary[]; totalBytes: number }>();
+    for (const r of sortedData) {
+      const g = m.get(r.tenantId);
+      if (g) {
+        g.bundles.push(r);
+        g.totalBytes += r.sizeBytes;
+      } else {
+        m.set(r.tenantId, {
+          tenantId: r.tenantId,
+          tenantName: r.tenantName ?? r.tenantId.slice(0, 8),
+          bundles: [r],
+          totalBytes: r.sizeBytes,
+        });
+      }
+    }
+    return [...m.values()].sort((a, b) =>
+      a.tenantName.localeCompare(b.tenantName, undefined, { sensitivity: 'base' }));
+  }, [sortedData]);
 
   // Per-tenant backup counts across ALL bundles (unfiltered) — makes
   // "this tenant has N backups" visible at a glance and doubles as a
@@ -590,54 +689,190 @@ function BackupsTab(p: BackupsTabProps) {
             : 'No bundles match the filter.'}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-          <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
-            <thead className="bg-gray-50 dark:bg-gray-800">
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
-                <SortableHeader label="Tenant" sortKey="tenantName" {...th} />
-                <SortableHeader label="Label" sortKey="label" {...th} />
-                <SortableHeader label="Status" sortKey="status" {...th} />
-                <SortableHeader label="Size" sortKey="sizeBytes" {...th} className={`${th.className} text-right`} />
-                <SortableHeader label="Created" sortKey="createdAt" {...th} className={`${th.className} text-right`} />
-                <SortableHeader label="Initiator" sortKey="initiator" {...th} />
-                <th className="px-4 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 bg-white dark:divide-gray-700 dark:bg-gray-900">
-              {sortedData.map((r) => (
-                <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
-                  <td className="px-4 py-2 font-mono text-xs">{r.tenantName ?? '(missing)'}</td>
-                  <td className="px-4 py-2 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
-                  <td className="px-4 py-2"><StatusPill status={r.status} /></td>
-                  <td className="px-4 py-2 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
-                  <td className="px-4 py-2 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
-                  <td className="px-4 py-2 text-xs"><code>{r.initiator}</code></td>
-                  <td className="px-4 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={() => p.onRestore(r)}
-                      // `partial` bundles can be restored — they're missing one
-                      // or more components (typically mailboxes when Stalwart
-                      // is misconfigured), but the components that DID complete
-                      // still have valid artifacts on the offsite target and
-                      // are restorable via the cart. The cart will skip items
-                      // whose component is missing.
-                      disabled={r.status !== 'completed' && r.status !== 'partial'}
-                      className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
-                      data-testid={`tenant-bundle-restore-${r.id}`}
-                      title={
-                        r.status === 'completed' ? 'Open the Restoration Wizard'
-                        : r.status === 'partial' ? 'Open the Restoration Wizard (some components are missing — see bundle detail)'
-                        : `Bundles in '${r.status}' state cannot be restored`
-                      }
+        // Grouped by tenant. A flat cross-tenant list answers "what happened
+        // recently"; an operator looking at backups is almost always asking
+        // "how is THIS tenant covered", which meant scanning a mixed table.
+        // Each group collapses to one line and opens onto that tenant's
+        // bundles, sizes and restore carts.
+        <div className="space-y-2" data-testid="tenant-backup-groups">
+          {groups.map((g) => {
+            const open = expanded.has(g.tenantId);
+            const carts = cartsByTenant.get(g.tenantId) ?? [];
+            const roll = rollupByTenant.get(g.tenantId);
+            const statsBusy = refreshStats.isPending && refreshStats.variables === g.tenantId;
+            return (
+              <div
+                key={g.tenantId}
+                className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700"
+                data-testid={`tenant-backup-group-${g.tenantId}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(g.tenantId)}
+                  aria-expanded={open}
+                  className="flex w-full items-center gap-3 bg-gray-50 px-4 py-2 text-left hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700"
+                  data-testid={`tenant-backup-group-toggle-${g.tenantId}`}
+                >
+                  {open ? <ChevronDown size={14} className="shrink-0 text-gray-500" /> : <ChevronRight size={14} className="shrink-0 text-gray-500" />}
+                  <span className="font-medium text-gray-900 dark:text-gray-100">{g.tenantName}</span>
+                  <span className="rounded-full bg-gray-200 px-2 py-0.5 text-[11px] text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                    {g.bundles.length} backup{g.bundles.length === 1 ? '' : 's'}
+                  </span>
+                  {carts.length > 0 && (
+                    <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                      {carts.length} restore cart{carts.length === 1 ? '' : 's'}
+                    </span>
+                  )}
+                  <span className="ml-auto flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
+                    {/* Two DIFFERENT numbers, labelled as such. Total bundle
+                        size is the logical sum; restic dedupes, so it is not
+                        what the repository occupies. Repo size is measured. */}
+                    <span title="Sum of every bundle's logical size. Not storage consumed — restic deduplicates across snapshots.">
+                      bundles {formatBytes(g.totalBytes)}
+                    </span>
+                    <span
+                      className="tabular-nums"
+                      title={roll?.repoStatsAt
+                        ? `Measured ${new Date(roll.repoStatsAt).toLocaleString()} with restic stats`
+                        : 'Never measured — press Refresh to measure the repository'}
+                      data-testid={`tenant-repo-size-${g.tenantId}`}
                     >
-                      <RotateCw size={11} /> Restore…
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                      repo {roll?.repoTotalBytes != null ? formatBytes(roll.repoTotalBytes) : 'not measured'}
+                    </span>
+                  </span>
+                </button>
+
+                {open && (
+                  <div className="space-y-3 border-t border-gray-200 bg-white px-4 py-3 dark:border-gray-700 dark:bg-gray-900">
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => refreshStats.mutate(g.tenantId)}
+                        disabled={statsBusy}
+                        className="inline-flex items-center gap-1 rounded border border-brand-300 bg-brand-50 px-2 py-0.5 text-[11px] font-medium text-brand-700 hover:bg-brand-100 disabled:opacity-50 dark:border-brand-700 dark:bg-brand-900/30 dark:text-brand-300"
+                        data-testid={`tenant-repo-refresh-${g.tenantId}`}
+                        title="Run restic stats against this tenant's repository. Walks the repo index, so it takes a moment."
+                      >
+                        {statsBusy ? <Loader2 size={11} className="animate-spin" /> : <RotateCw size={11} />}
+                        Refresh repo size
+                      </button>
+                      <span className="text-gray-500 dark:text-gray-400">
+                        Last backup size {roll ? formatBytes(roll.bundleBytes / Math.max(roll.bundleCount, 1)) : '—'} avg ·
+                        {' '}{roll?.repoStatsAt ? `repo measured ${new Date(roll.repoStatsAt).toLocaleDateString()}` : 'repo never measured'}
+                      </span>
+                      {refreshStats.isError && refreshStats.variables === g.tenantId && (
+                        <span className="text-red-600 dark:text-red-400">
+                          {refreshStats.error instanceof Error ? refreshStats.error.message : 'Could not measure the repository'}
+                        </span>
+                      )}
+                    </div>
+
+                    {carts.length > 0 && (
+                      <div data-testid={`tenant-carts-${g.tenantId}`}>
+                        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          Restore carts
+                        </h4>
+                        <ul className="space-y-1">
+                          {carts.map((c) => (
+                            <li
+                              key={c.id}
+                              className="flex items-center gap-2 rounded border border-gray-100 px-2 py-1 text-xs dark:border-gray-700"
+                              data-testid={`admin-cart-row-${c.id}`}
+                            >
+                              <span className="font-mono text-gray-700 dark:text-gray-300">{c.id.slice(0, 12)}…</span>
+                              <StatusPill status={c.status} />
+                              <span className="text-gray-500 dark:text-gray-400">{c.description ?? 'no description'}</span>
+                              <span className="ml-auto flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => p.onResumeCart(c)}
+                                  disabled={!c.bundleId || c.status === 'executing'}
+                                  title={!c.bundleId
+                                    ? 'This cart has no items yet — nothing to resume'
+                                    : c.status === 'executing'
+                                      ? 'This restore is already running'
+                                      : 'Reopen this cart where it was left'}
+                                  className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                                  data-testid={`admin-cart-resume-${c.id}`}
+                                >
+                                  <RotateCw size={10} /> Resume
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteCart.mutate(c.id)}
+                                  disabled={c.status === 'executing' || (deleteCart.isPending && deleteCart.variables === c.id)}
+                                  title={c.status === 'executing'
+                                    ? 'A running restore cannot be deleted'
+                                    : 'Delete this restore cart'}
+                                  className="inline-flex items-center gap-1 rounded border border-red-300 px-2 py-0.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-40 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900/30"
+                                  data-testid={`admin-cart-delete-${c.id}`}
+                                >
+                                  {deleteCart.isPending && deleteCart.variables === c.id
+                                    ? <Loader2 size={10} className="animate-spin" />
+                                    : <Trash2 size={10} />}
+                                  Delete
+                                </button>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        {deleteCart.isError && (
+                          <p className="mt-1 text-[11px] text-red-600 dark:text-red-400">
+                            {deleteCart.error instanceof Error ? deleteCart.error.message : 'Could not delete the cart'}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    <table className="min-w-full divide-y divide-gray-200 text-sm dark:divide-gray-700">
+                      <thead>
+                        <tr className="text-left text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                          <th className="px-2 py-1">Label</th>
+                          <th className="px-2 py-1">Status</th>
+                          <th className="px-2 py-1 text-right">Size</th>
+                          <th className="px-2 py-1 text-right">Created</th>
+                          <th className="px-2 py-1">Initiator</th>
+                          <th className="px-2 py-1 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                        {g.bundles.map((r) => (
+                          <tr key={r.id} className="hover:bg-gray-50 dark:hover:bg-gray-800">
+                            <td className="px-2 py-1 text-xs">{r.label ?? <span className="text-gray-400">unlabeled</span>}</td>
+                            <td className="px-2 py-1"><StatusPill status={r.status} /></td>
+                            <td className="px-2 py-1 text-right tabular-nums text-xs">{formatBytes(r.sizeBytes)}</td>
+                            <td className="px-2 py-1 text-right text-xs text-gray-500"><TimeCell iso={r.createdAt} /></td>
+                            <td className="px-2 py-1 text-xs"><code>{r.initiator}</code></td>
+                            <td className="px-2 py-1 text-right">
+                              <button
+                                type="button"
+                                onClick={() => p.onRestore(r)}
+                                // `partial` bundles can be restored — they're missing one
+                                // or more components (typically mailboxes when Stalwart
+                                // is misconfigured), but the components that DID complete
+                                // still have valid artifacts and are restorable via the
+                                // cart, which skips items whose component is missing.
+                                disabled={r.status !== 'completed' && r.status !== 'partial'}
+                                className="inline-flex items-center gap-1 rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-40 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-800"
+                                data-testid={`tenant-bundle-restore-${r.id}`}
+                                title={
+                                  r.status === 'completed' ? 'Open the Restoration Wizard'
+                                  : r.status === 'partial' ? 'Open the Restoration Wizard (some components are missing — see bundle detail)'
+                                  : `Bundles in '${r.status}' state cannot be restored`
+                                }
+                              >
+                                <RotateCw size={11} /> Restore…
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -790,6 +1025,18 @@ export default function TenantsBackupsPage() {
       setError(null);
       setWizardBundle(row);
     },
+    // Reopen an EXISTING cart rather than starting a new one. The admin
+    // RestoreCart page already reads `?cartId=`, so resuming is navigation —
+    // the piece that was missing was surfacing the carts at all.
+    onResumeCart: (cart: RestoreJobSummary) => {
+      setError(null);
+      if (!cart.bundleId) return;
+      navigate(
+        `/backups/restore?bundleId=${encodeURIComponent(cart.bundleId)}`
+        + `&tenantId=${encodeURIComponent(cart.tenantId)}`
+        + `&cartId=${encodeURIComponent(cart.id)}`,
+      );
+    },
   };
 
   const buildSnapArtifact = (row: TenantSnapshotRow): RestoreArtifact => ({
@@ -863,6 +1110,7 @@ export default function TenantsBackupsPage() {
               bundleAllPending={bundleAllPending}
               onBundle={handlers.onBundle}
               onRestore={handlers.onRestoreBundle}
+              onResumeCart={handlers.onResumeCart}
               tenantTargetBound={tenantTargetBound}
               rollupRows={rollupData?.data?.rows ?? []}
               onSetInclusionOverride={(tenantId, override) => {

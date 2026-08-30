@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Archive, Download, Lock, Loader2, AlertCircle, Play, RotateCcw } from 'lucide-react';
+import { Archive, Download, Lock, Loader2, AlertCircle, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import {
   useTenantBundles,
   useTenantRestoreCarts,
+  useDeleteRestoreCart,
   useRunBundleNow,
   downloadTenantDataExport,
 } from '@/hooks/use-tenant-backups';
@@ -36,6 +37,10 @@ function StatusBadge({ status }: { readonly status: string }) {
 export default function Backups() {
   const bundlesQ = useTenantBundles();
   const cartsQ = useTenantRestoreCarts();
+  const deleteCart = useDeleteRestoreCart();
+  // Confirm before discarding — a cart can represent real selection work, and
+  // the action is not undoable.
+  const [cartToDelete, setCartToDelete] = useState<string | null>(null);
   const runNow = useRunBundleNow();
   const bundles = bundlesQ.data?.data ?? [];
   const carts = cartsQ.data?.data ?? [];
@@ -100,34 +105,68 @@ export default function Backups() {
             <RotateCcw className="h-4 w-4" /> Recent restore carts
           </h2>
           <ul className="space-y-1.5">
-            {carts.slice(0, 5).map((c) => (
-              <li
-                key={c.id}
-                className="flex items-center justify-between rounded-md border border-gray-100 px-3 py-1.5 text-xs dark:border-gray-700"
-                data-testid={`cart-history-row-${c.id}`}
-              >
-                <div className="flex-1">
-                  <p className="font-mono text-gray-900 dark:text-gray-100">{c.id.slice(0, 16)}…</p>
-                  <p className="text-gray-500 dark:text-gray-400">
-                    {c.description ?? 'no description'} · created <TimeCell iso={c.createdAt} />
-                  </p>
-                </div>
-                <span
-                  className={
-                    'rounded-full px-2 py-0.5 text-xs font-medium ' +
-                    (c.status === 'done'
-                      ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
-                      : c.status === 'failed'
-                      ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
-                      : c.status === 'executing'
-                      ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
-                      : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300')
-                  }
+            {carts.slice(0, 5).map((c) => {
+              // Resumable only when we know which bundle it was drawn from — an
+              // empty draft has no items and nothing to reopen onto. It can
+              // still be deleted, which is the useful action for one anyway.
+              const resumable = Boolean(c.bundleId) && c.status !== 'executing';
+              const rowBody = (
+                <>
+                  <div className="flex-1 text-left">
+                    <p className="font-mono text-gray-900 dark:text-gray-100">{c.id.slice(0, 16)}…</p>
+                    <p className="text-gray-500 dark:text-gray-400">
+                      {c.description ?? 'no description'} · created <TimeCell iso={c.createdAt} />
+                    </p>
+                  </div>
+                  <span
+                    className={
+                      'rounded-full px-2 py-0.5 text-xs font-medium ' +
+                      (c.status === 'done'
+                        ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                        : c.status === 'failed'
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                        : c.status === 'executing'
+                        ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+                        : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300')
+                    }
+                  >
+                    {c.status}
+                  </span>
+                </>
+              );
+              return (
+                <li
+                  key={c.id}
+                  className="flex items-center gap-2 rounded-md border border-gray-100 px-3 py-1.5 text-xs dark:border-gray-700"
+                  data-testid={`cart-history-row-${c.id}`}
                 >
-                  {c.status}
-                </span>
-              </li>
-            ))}
+                  {resumable ? (
+                    <Link
+                      to={`/backups/restore/${c.bundleId}?cart=${encodeURIComponent(c.id)}`}
+                      className="flex flex-1 items-center justify-between gap-2 rounded hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      title="Open this restore cart where you left off"
+                      data-testid={`cart-resume-${c.id}`}
+                    >
+                      {rowBody}
+                    </Link>
+                  ) : (
+                    <div className="flex flex-1 items-center justify-between gap-2">{rowBody}</div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setCartToDelete(c.id)}
+                    disabled={c.status === 'executing' || deleteCart.isPending}
+                    title={c.status === 'executing'
+                      ? 'A running restore cannot be deleted — wait for it to finish'
+                      : 'Delete this restore cart'}
+                    className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-900/30 dark:hover:text-red-400"
+                    data-testid={`cart-delete-${c.id}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -220,6 +259,59 @@ export default function Backups() {
           bundleId={progressBundleId}
           onClose={() => setProgressBundleId(null)}
         />
+      )}
+
+      {cartToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-cart-title"
+          data-testid="cart-delete-confirm"
+        >
+          <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
+            <h3 id="delete-cart-title" className="text-base font-semibold text-gray-900 dark:text-gray-100">
+              Delete this restore cart?
+            </h3>
+            <p className="mt-2 text-sm text-gray-600 dark:text-gray-400">
+              The cart and everything selected in it are discarded. Your backups are
+              not affected — only this restore selection. This cannot be undone.
+            </p>
+            {deleteCart.isError && (
+              <p className="mt-3 rounded-md bg-red-50 px-3 py-2 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                {deleteCart.error instanceof Error
+                  ? deleteCart.error.message
+                  : 'Could not delete the cart.'}
+              </p>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setCartToDelete(null); deleteCart.reset(); }}
+                disabled={deleteCart.isPending}
+                className="rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  deleteCart.mutate(cartToDelete, {
+                    // Only dismiss on success — a 409 (cart started executing
+                    // between render and click) must stay visible.
+                    onSuccess: () => setCartToDelete(null),
+                  });
+                }}
+                disabled={deleteCart.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50"
+                data-testid="cart-delete-confirm-button"
+              >
+                {deleteCart.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                Delete cart
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

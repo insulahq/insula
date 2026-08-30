@@ -45,8 +45,11 @@ import { execFilesPathsItem } from './executors/files-paths.js';
 import { execMailboxesByAddressItem } from './executors/mailboxes-by-address.js';
 import type { TenantRestorePolicy } from './tenant-restore-policy.js';
 
-export function toJobSummary(j: RestoreJob): RestoreJobSummary {
+export function toJobSummary(j: RestoreJob, bundleId?: string | null): RestoreJobSummary {
   return {
+    // Derived from the cart's first item — see the contract's note. Callers
+    // that have not looked items up pass nothing and get null.
+    bundleId: bundleId ?? null,
     id: j.id,
     tenantId: j.tenantId,
     initiatorUserId: j.initiatorUserId,

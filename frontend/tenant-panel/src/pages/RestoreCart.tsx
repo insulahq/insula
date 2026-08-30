@@ -17,8 +17,8 @@
  *   - Header banner renders a "back to backups" breadcrumb so tenants
  *     navigate back to /backups, not the admin's restore-list.
  */
-import { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useCallback } from 'react';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
 import { RestoreCartLayout, type RestoreCartHooks } from '@insula/ui-restore-cart';
 
@@ -65,15 +65,31 @@ const Breadcrumb = () => (
 
 export default function TenantRestoreCart() {
   const { bundleId } = useParams<{ bundleId: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
   const tenantId = useAuth((s) => s.user?.tenantId) ?? null;
 
-  // Local state holds the cartId after the layout auto-creates it.
-  // We don't persist into the URL — the tenant route is
-  // `/backups/restore/:bundleId`, and tenants don't share restore-cart
-  // links across users. A page reload re-creates a fresh empty cart
-  // (the 7-day cleanup tick sweeps the orphaned draft) — that's the
-  // MVP tradeoff for not adding `?cartId=` URL state.
-  const [cartId, setCartId] = useState<string | null>(null);
+  // The cart id lives in the URL (`?cart=<id>`).
+  //
+  // It used to be component state only, with the note that a reload just
+  // re-created a fresh cart and the 7-day sweep would collect the orphan. Two
+  // consequences that turned out to matter: a half-built cart was lost on any
+  // reload or accidental back-navigation, and every abandoned attempt left a
+  // draft behind — which is what a tenant sees in "Recent restore carts" with
+  // no way to get back into one.
+  //
+  // With the id in the URL the page is resumable: the Backups list links
+  // straight to an existing cart, reloads keep their place, and the layout
+  // only auto-creates when there is genuinely no cart yet.
+  const cartId = searchParams.get('cart');
+
+  const handleCartCreated = useCallback((id: string) => {
+    // `replace` so the empty-cart URL doesn't become a back-button stop.
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('cart', id);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   return (
     <RestoreCartLayout
@@ -83,7 +99,7 @@ export default function TenantRestoreCart() {
       cartId={cartId}
       showRollback={false}
       headerBanner={<Breadcrumb />}
-      onCartCreated={(id) => setCartId(id)}
+      onCartCreated={handleCartCreated}
     />
   );
 }

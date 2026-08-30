@@ -88,6 +88,19 @@ export const tenantBackupOverviewRowSchema = z.object({
   snapshotQuotaPct: z.number().nonnegative().nullable(),
   /** Open restore-cart id (link target). */
   openCartId: z.string().uuid().nullable(),
+  /**
+   * TRUE deduplicated repository size, summed across components, from the last
+   * `restic stats --mode raw-data` run. NULL = never measured — the UI must say
+   * so rather than render 0, which reads as "no backups".
+   *
+   * Deliberately NOT derived from `bundleBytes` (restic dedupes across
+   * snapshots, so the logical sum overstates storage) nor from
+   * `last_repo_size_bytes` (that is bytes PROCESSED by the last snapshot, which
+   * for an incremental run understates it badly).
+   */
+  repoTotalBytes: z.number().nonnegative().nullable(),
+  /** When repoTotalBytes was measured. */
+  repoStatsAt: z.string().datetime().nullable(),
 });
 export type TenantBackupOverviewRow = z.infer<typeof tenantBackupOverviewRowSchema>;
 
