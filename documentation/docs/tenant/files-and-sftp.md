@@ -67,6 +67,19 @@ stopped responding — rather than a generic failure.
     `/public`. Check the destination afterwards and move the contents up a level
     if your site expects them at the root.
 
+### When an action fails
+
+If an operation cannot complete, a red banner appears at the top of the File
+Manager explaining why. It stays until you dismiss it, so a failure can no
+longer pass unnoticed while a dialog sits open.
+
+One cause is worth recognising, because nothing is wrong with your file: the
+platform's web firewall inspects requests for attack patterns, and a few
+ordinary web filenames — `.htaccess`, `web.config` and similar — look like the
+patterns it watches for. If the banner says the request was blocked by the
+firewall, the file is fine and nothing you change about it will help. Ask your
+provider to review the event under Security → WAF Events.
+
 ### Edit files in the browser
 
 Click a text file to open the built-in **editor** (syntax-highlighted). Make

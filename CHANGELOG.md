@@ -12,6 +12,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **The WAF blocked ordinary filenames across the whole API, not only in the
+  File Manager.** CRS 930130 matches argument values against a dictionary of
+  restricted filenames (`.htaccess`, `.htpasswd`, `web.config`, `.git/*`,
+  `wp-config.php`). In a hosting control panel those are ordinary data.
+  Measured on DEV, every one of these was a 403 that never reached the API:
+  renaming/copying/deleting such a file, creating an SFTP user with a
+  `/.git/config` home path, a database named `web.config`, a domain
+  `.htpasswd.example.test`, and a DNS record named `.htaccess`. The rule is now
+  scoped away from **ARGS on the platform's own API hosts only** — traversal
+  detection (930100/930110) keeps full coverage, so `../../etc/passwd` still
+  blocks, and a tenant's own workload on their own domain keeps the complete
+  rule set. This is a deliberate posture change; see the note in
+  `exclusion-rules-configmap.yaml`.
+- **The WAF blocked ordinary file operations on ordinary filenames.** After
+  extracting a CMS archive, renaming or opening files such as `.htaccess` or
+  `web.config` failed with a 403 from the WAF. CRS 930xxx match argument
+  *values* against a dictionary of interesting OS filenames — and the
+  file-manager API's arguments **are file paths**, so a tenant touching their
+  own `.htaccess` scores 5 per matching argument. Reproduced exactly:
+  `rename .htaccess → .htaccess2` scored **10** (both arguments match) and was
+  blocked; `web.config` scored 5 and was blocked; `normal.txt` passed. An
+  earlier exclusion had removed argument *names* from these rules, which does
+  nothing for a path in the value. Path traversal is refused by `safePath()` in
+  the sidecar regardless, so the WAF was contributing false positives and no
+  defence on these endpoints.
+- **The WAF blocked the request that disarms the WAF.** A rule exclusion
+  describes an attack pattern — that is its purpose — so submitting one put
+  attack-shaped text through the WAF, which blocked it. The operator was told
+  to open Security → WAF Events and whitelist the rule, and *that* request was
+  refused with the same message. The safety valve sat behind the thing it
+  disarms. The WAF-management endpoint is now routed around the WAF (it is
+  `super_admin` + Bearer-only, so the WAF was never the access control), and a
+  CI guard checks both that the carve-out exists and that drift detection
+  tracks it — an untracked carve-out looks in-sync forever and is silently
+  never applied.
+- **File-manager failures were invisible.** Nine mutation call sites passed
+  only `onSuccess`, so a failed rename, move, delete, archive, git-clone or
+  save rendered nothing at all — the dialog simply sat there. The 403 had been
+  classified correctly the whole time; the message had nowhere to go. Every
+  file-manager mutation now reports through one wrapper to a shared banner, so
+  a new operation cannot silently join the class, and a WAF block additionally
+  explains that a filename triggered a security rule.
+
 ## [2026.8.23] - 2026-08-30
 
 ### Added

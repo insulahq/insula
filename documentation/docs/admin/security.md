@@ -95,6 +95,24 @@ four tabs:
 - **WAF Settings** — CrowdSec status and Console enrollment, auto-ban
   calibration, and the **L4 host-firewall enforcement** toggle.
 
+!!! note "Adding an exclusion always works, by design"
+    A rule exclusion necessarily contains the pattern it excludes, so the
+    request that saves one looks like an attack to the very rule being
+    excluded. The WAF-management endpoint is therefore routed around the WAF —
+    otherwise a false positive could never be disarmed, and the platform would
+    tell you to whitelist a rule while refusing the request that does it.
+    Access is still `super_admin` and Bearer-token only.
+
+!!! tip "Tenant file operations and OS-filename rules"
+    CRS rules 930100–930130 match request arguments against a list of
+    interesting OS filenames. The File Manager's arguments *are* file paths, so
+    a tenant renaming their own `.htaccess` or `web.config` used to score high
+    enough to be blocked. Exclusion `9000111` scopes those four rules away from
+    `/api/v1/tenants/*/files/*`; traversal is still refused by the file-manager
+    sidecar, which resolves the real path and cannot be influenced by the
+    tenant. If you see WAF Events on file paths, check that exclusion is loaded
+    before adding another.
+
 !!! warning "Read the operator-IP-trust check before enforcing L4"
     The L4 enforcement toggle has cluster-wide blast radius — flipping it
     to `enforce` can lock you out if your own IP isn't trusted. The page

@@ -1,10 +1,37 @@
 import { useState, useCallback } from 'react';
 import type { BulkDeleteResult } from '@insula/api-contracts';
 import type * as React from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
 import { apiFetch, API_BASE } from '@/lib/api-client';
 import { streamNdjsonOperation, type StreamProgress } from '@/lib/ndjson-progress';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import { reportFileManagerError } from '@/hooks/use-file-manager-errors';
+
+/**
+ * Every file-manager mutation goes through this instead of `useMutation`.
+ *
+ * It reports failures to the shared banner (use-file-manager-errors). Nine
+ * call sites in Files.tsx passed only `onSuccess`, so a WAF 403 on rename or
+ * move produced no visible feedback at all — reported from production as
+ * "fails without error". A call site may still add its own `onError`; this
+ * runs first and does not replace it.
+ */
+function useFmMutation<TData = unknown, TError = Error, TVariables = void, TContext = unknown>(
+  options: UseMutationOptions<TData, TError, TVariables, TContext>,
+) {
+  return useMutation<TData, TError, TVariables, TContext>({
+    ...options,
+    // Spread the args rather than naming them: TanStack's onError arity has
+    // changed across versions, and naming three parameters here broke the
+    // build against a four-parameter signature. TVariables defaults to void so
+    // no-argument mutations (startFm.mutate()) keep inferring correctly.
+    onError: (...args: Parameters<NonNullable<typeof options.onError>>) => {
+      reportFileManagerError(args[0]);
+      options.onError?.(...args);
+    },
+  });
+}
+
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -65,7 +92,7 @@ export function useFileManagerStatus() {
 export function useStartFileManager() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: () => apiFetch<{ data: FileManagerStatus }>(`/api/v1/tenants/${tenantId}/files/start`, { method: 'POST' }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['file-manager-status', tenantId] });
@@ -96,7 +123,7 @@ export function useFileContent(path: string, enabled = true) {
 export function useCreateDirectory() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: (path: string) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/mkdir`, {
         method: 'POST',
@@ -109,7 +136,7 @@ export function useCreateDirectory() {
 export function useWriteFile() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ path, content }: { path: string; content: string }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/write`, {
         method: 'POST',
@@ -125,7 +152,7 @@ export function useWriteFile() {
 export function useRenameFile() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ oldPath, newPath }: { oldPath: string; newPath: string }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/rename`, {
         method: 'POST',
@@ -138,7 +165,7 @@ export function useRenameFile() {
 export function useDeleteFile() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: (path: string) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/delete`, {
         method: 'POST',
@@ -159,7 +186,7 @@ export function useDeleteFile() {
 export function useBulkDeleteFiles() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: (paths: string[]) =>
       apiFetch<{ data: BulkDeleteResult }>(`/api/v1/tenants/${tenantId}/files/bulk-delete`, {
         method: 'POST',
@@ -172,7 +199,7 @@ export function useBulkDeleteFiles() {
 export function useCopyFile() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ sourcePath, destPath }: { sourcePath: string; destPath: string }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/copy`, {
         method: 'POST',
@@ -185,7 +212,7 @@ export function useCopyFile() {
 export function useArchiveFiles() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     // Streams NDJSON progress — an archive of a large tree runs for minutes.
     // `onProgress` is optional so existing call sites keep working unchanged.
     mutationFn: ({ paths, destPath, format, onProgress }: {
@@ -201,7 +228,7 @@ export function useArchiveFiles() {
 export function useExtractArchive() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ path, destPath, onStart, onProgress }: {
       path: string; destPath: string;
       onStart?: (total: number | null) => void;
@@ -216,7 +243,7 @@ export function useExtractArchive() {
 export function useGitClone() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ url, destPath }: { url: string; destPath: string }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/git-clone`, {
         method: 'POST',
@@ -229,7 +256,7 @@ export function useGitClone() {
 export function useChmod() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ path, mode, recursive }: { path: string; mode: string; recursive?: boolean }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/chmod`, {
         method: 'POST',
@@ -242,7 +269,7 @@ export function useChmod() {
 export function useChown() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
-  return useMutation({
+  return useFmMutation({
     mutationFn: ({ path, uid, gid, owner, group, recursive }: { path: string; uid?: number; gid?: number; owner?: string; group?: string; recursive?: boolean }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/chown`, {
         method: 'POST',
@@ -622,7 +649,7 @@ export function useDiskUsage() {
 export function useFolderSize() {
   const { tenantId } = useTenantContext();
 
-  return useMutation({
+  return useFmMutation({
     mutationFn: (path: string) =>
       apiFetch<{ data: { path: string; sizeBytes: number; sizeFormatted: string } }>(
         `/api/v1/tenants/${tenantId}/files/folder-size?path=${encodeURIComponent(path)}`
