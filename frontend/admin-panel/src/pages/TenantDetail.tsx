@@ -21,7 +21,7 @@ import { useBackups } from '@/hooks/use-backups';
 import { useDeployments, useRestartDeployment, useBulkRestartDeployments, useDeleteDeployment, useUpdateDeployment, useSetCustomDeploymentAllowRoot } from '@/hooks/use-deployments';
 import type { Deployment } from '@/hooks/use-deployments';
 import { useSubscription, useUpdateSubscription } from '@/hooks/use-subscription';
-import { useImpersonate } from '@/hooks/use-impersonate';
+import { useLoginAsTenant } from '@/hooks/use-impersonate';
 import { useSystemInfo } from '@/hooks/use-system-info';
 import { usePlans } from '@/hooks/use-plans';
 import { formatCurrency } from '@/lib/format-currency';
@@ -115,7 +115,7 @@ export default function TenantDetail() {
 
   const deleteTenant = useDeleteTenant();
   const updateTenant = useUpdateTenant(id ?? '');
-  const impersonate = useImpersonate();
+  const impersonate = useLoginAsTenant();
   // Read once instead of casting `tenant` at four separate call sites.
   const provisioningStatus = (tenant as Record<string, unknown> | undefined)?.provisioningStatus as string | undefined;
   const systemInfo = useSystemInfo();
@@ -293,23 +293,13 @@ export default function TenantDetail() {
           <button
             onClick={async () => {
               if (!id) return;
-              // Prefer the admin-configured tenantPanelUrl from System Settings
-              // (served via /api/v1/system-info) over the build-time env fallback
-              // (config.TENANT_PANEL_URL) — the former is what the operator
-              // actually wants customers to see and what the Ingress reconciler
-              // points at. Trim trailing slash so we don't build "https://x//login".
-              const rawFromDb = systemInfo.data?.tenantPanelUrl ?? '';
-              const tenantPanelUrl = (rawFromDb.trim() || config.TENANT_PANEL_URL).replace(/\/+$/, '');
-              if (!tenantPanelUrl) {
-                // Neither source populated — bail before opening a broken tab.
-                alert('Tenant Panel URL is not configured. Set it in System Settings before using "Login as Tenant".');
-                return;
-              }
               try {
-                const res = await impersonate.mutateAsync(id);
-                const data = res.data;
-                const userJson = encodeURIComponent(JSON.stringify(data.user));
-                window.open(`${tenantPanelUrl}/login?token=${data.token}&user=${userJson}`, '_blank');
+                // URL resolution + trailing-slash handling live in the hook so
+                // the tenants list offers the identical action.
+                const opened = await impersonate.open(id);
+                if (!opened) {
+                  alert('Tenant Panel URL is not configured. Set it in System Settings before using "Login as Tenant".');
+                }
               } catch { /* error shown via impersonate.error */ }
             }}
             disabled={impersonate.isPending}

@@ -22,7 +22,7 @@ list of accounts, and the other tabs are cross-tenant views:
 
 | Tab | What it shows |
 |-----|---------------|
-| **Tenants** | Every account, searchable, with live CPU / memory / storage usage, assigned worker node, and storage tier (local / HA). |
+| **Tenants** | Every account, searchable, with live CPU / memory / storage usage, assigned worker node, and storage tier (local / HA). Each row has a small **Login** button beside the name — the same [Login as Tenant](#header-actions) action as the detail page, without opening it first. |
 | **Domains** | All domains across all tenants — filter by tenant, bulk-verify, bulk-delete. → [Domains & DNS](domains-and-dns.md) |
 | **Workloads** | Every deployment across all tenants, with a `custom` tag for bring-your-own-container deployments. → [Catalogs & applications](catalogs-and-applications.md) |
 | **Users** | Sub-users across all tenants. |
@@ -92,7 +92,7 @@ under the **Actions** menu beside it.
 
 | Action | What it does |
 |--------|--------------|
-| **Login as Tenant** | Opens the tenant panel in a new tab, signed in as that customer (impersonation). Requires the Tenant Panel URL to be set in [Platform → Identity](platform-settings.md). |
+| **Login as Tenant** | Opens the tenant panel in a new tab, signed in as that customer (impersonation). Also available as a **Login** button on each row of the Tenants list. Requires the Tenant Panel URL to be set in [Platform → Identity](platform-settings.md), and an active `tenant_admin` user on the tenant to sign in as — if either is missing the panel tells you which. |
 | **Provision / Re-provision** | Builds (or rebuilds) the tenant's cluster resources. Appears as *Provision* when unprovisioned/failed, *Re-provision* when already provisioned (to repair drifted state). |
 | **Refresh All Apps** | Pulls the latest images and restarts every running deployment for the tenant. |
 | **Edit** | Edits the contact fields (name, emails). |

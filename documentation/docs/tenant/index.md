@@ -109,6 +109,14 @@ The figures are read live from the cluster. The page refreshes itself about once
 a minute while you have it open, and the **Refresh** button fetches immediately.
 It stops polling when you switch to another tab and catches up when you return.
 
+### Disk usage on an application
+
+Expanding an application shows its **Disk usage** — how much space that app's
+own folder occupies, measured against your account's storage limit and shown as
+"X of Y GB". Every application in your account shares one volume, so the limit is
+the account's, not the app's; the bar uses the same colour scale as everything
+else.
+
 ### What the bar colours mean
 
 Every usage bar on every page — dashboard, this page, the file manager, and the
