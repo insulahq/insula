@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { extraMountsSchema } from './extra-mounts.js';
 import { uuidField, paginatedResponseSchema } from './shared.js';
 import { customDeploymentSpecSchema } from './custom-deployments.js';
 
@@ -213,6 +214,8 @@ export const deploymentResponseSchema = z.object({
   deletedAt: z.string().nullable(),
   status: z.string(),
   volumePaths: z.array(volumePathSchema).nullable().optional(),
+  /** Tenant-defined extra mounts. Null/absent for deployments that have none. */
+  extraMounts: extraMountsSchema.nullable().optional(),
   /** Populated for source='custom' (ADR-036); null for catalog deployments. */
   customSpec: customDeploymentSpecSchema.nullable().optional(),
   createdAt: z.string(),
@@ -237,6 +240,8 @@ export const createDeploymentSchema = z.object({
   version: z.string().max(50).optional(),
   storage_mode: z.enum(['default', 'custom']).default('default'),
   storage_path: z.string().max(500).optional(),
+  /** Tenant-defined mounts on top of the catalog manifest's own volumes. */
+  extra_mounts: extraMountsSchema.optional(),
 });
 
 export const updateDeploymentSchema = z.object({
@@ -246,6 +251,9 @@ export const updateDeploymentSchema = z.object({
   memory_request: z.string().max(20).optional(),
   status: z.enum(['running', 'stopped']).optional(),
   configuration: z.record(z.string(), z.unknown()).optional(),
+  /** Replaces the whole list. Editing mounts restarts the pod, because a
+   *  volumeMount change is a pod-template change. */
+  extra_mounts: extraMountsSchema.optional(),
 });
 
 export const updateDeploymentResourcesSchema = z.object({
