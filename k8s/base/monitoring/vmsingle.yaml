@@ -1,8 +1,19 @@
 # VictoriaMetrics single-node — the entire metrics stack in one pod
 # (ADR-051): scraper (-promscrape.config), TSDB, query API, VMUI.
 #
-# Memory is the design constraint: requests 128Mi / limit 384Mi with
-# -memory.allowedBytes capping VM's caches well under the limit. The
+# Memory is the design constraint: requests 128Mi / limit 384Mi, held
+# by THREE budgets that must be read together, because the first one
+# alone does not add up (it OOM-killed this pod every ~2 days until
+# 2026-08-30):
+#   -memory.allowedBytes  VM's own caches, allocated OUTSIDE the Go heap
+#   GOGC / GOMEMLIMIT     the Go runtime, which allowedBytes cannot see
+#   metric_relabel_configs in scrape-config.yaml — series never ingested
+# The original comment claimed allowedBytes capped the caches "well under
+# the limit". True of the caches (192MiB of 384Mi) and irrelevant to the
+# outcome: allowedBytes budgets ONLY the caches, while the Go runtime
+# needs the same cgroup. 192 MiB of caches + ~246 MiB of Go runtime does
+# not fit in 384 MiB, and the limit only held because the caches never
+# claimed what they had been permitted. See the per-flag notes below. The
 # PVC is 2Gi on purpose — ~10-15k series at 60s is ~15-30MB/day at
 # VM's sub-byte/sample compression, so 30d retention fits in <1GB;
 # -storage.minFreeDiskSpaceBytes flips ingestion read-only before the
@@ -70,7 +81,39 @@ spec:
             - -promscrape.configCheckInterval=1m
             - -storageDataPath=/storage
             - -retentionPeriod=30d
-            - -memory.allowedBytes=192MiB
+            # This bounds the WORST CASE, not the steady state. Read the
+            # measurement before changing it — the obvious assumption is wrong.
+            #
+            # What it does do: every cache CEILING is derived from this number,
+            # and the sum of ceilings fell from ~530 MiB to ~361 MiB when it
+            # went 192MiB → 64MiB. That matters, because ~530 MiB of permitted
+            # cache above a 384 MiB container limit meant a single cache-warming
+            # query could OOM the pod outright.
+            #
+            # What it does NOT do: reduce the memory actually held. Measured on
+            # DEV before and after the change, same workload, ~15.5k series:
+            #   vm_cache_size_bytes total   123.8 MiB  →  ~123 MiB
+            # i.e. no change. VictoriaMetrics enforces internal FLOORS these
+            # caches never drop below — storage/tsid, metricIDs and metricName
+            # each sit at 32 MiB whether the ceiling is 128 MiB or 64 MiB, and
+            # metricIDs/metricName kept a 64 MiB ceiling at BOTH settings. An
+            # earlier version of this comment predicted "~30 MiB" here; that
+            # was a projection from the flag value and the measurement
+            # disproved it.
+            #
+            # So lowering this further buys nothing, and the ~126 MiB of
+            # fastcache is a fixed cost of running VictoriaMetrics at all. That
+            # number is load-bearing: GOMEMLIMIT below is derived from it,
+            # because it is exactly the part of the cgroup the Go runtime
+            # cannot see. If more headroom is ever needed the lever is storing
+            # LESS — retention, or a harder series cut — not this flag.
+            #
+            # These caches are fastcache-backed = anonymous mmap OUTSIDE the
+            # Go heap, so they are invisible to GOMEMLIMIT too and are the
+            # reason GOMEMLIMIT is set well below the container limit.
+            # Re-measure vm_cache_size_bytes against vm_cache_entries before
+            # trusting any prediction about this value, including this one.
+            - -memory.allowedBytes=64MiB
             - -search.maxConcurrentRequests=4
             - -storage.minFreeDiskSpaceBytes=209715200
             # Serve EVERYTHING (VMUI, /api/v1/query*, /health, own
@@ -90,6 +133,44 @@ spec:
             # scales it 1↔3 with the system tier) isn't replicating a
             # constant small-write stream across nodes.
             - -inmemoryDataFlushInterval=10m
+          env:
+            # Go's default GOGC=100 lets the heap double before collecting.
+            # Measured in production 2026-08-30: live heap ~89 MiB but
+            # go_memstats_heap_sys 234 MiB with only 66 MiB released back —
+            # ~168 MiB RESIDENT to service an 89 MiB working set. That
+            # headroom is what pushed RSS to 348 MiB against a 384 MiB
+            # limit and OOM-killed the pod every ~2 days.
+            #
+            # GOGC=40 collects at 1.4x live heap instead of 2x. The trade is
+            # CPU for memory, and this pod has CPU to spare: it uses 6m of a
+            # 100m request (0.6% of one core), so even tripling GC work is
+            # free here. Do not copy this value to a CPU-bound service.
+            - name: GOGC
+              value: "40"
+            # A soft ceiling the runtime GCs harder to stay under, so growth
+            # degrades into GC pressure instead of an OOM kill.
+            #
+            # SIZED FROM THE MEASURED off-heap total, not a predicted one. This
+            # was 256Mi for one afternoon and that value was useless:
+            #   GOMEMLIMIT 256 MiB  (Go memory only)
+            # + fastcache  126 MiB  (anonymous mmap, invisible to GOMEMLIMIT)
+            # = 382 MiB             ≈ the 384 MiB cgroup limit
+            # i.e. the backstop sat exactly at the OOM point and could never
+            # fire before the kernel did. RSS climbed straight back to the
+            # pre-change baseline (294 MiB → 292 MiB in two hours) with Go at
+            # 136 MiB, far below its own ceiling, restrained by nothing.
+            #
+            # The error was sizing this against a PREDICTED ~30 MiB of
+            # fastcache. Measurement put fastcache at ~126 MiB and did not move
+            # when -memory.allowedBytes was cut (see the note above it).
+            #
+            #   384 MiB limit − 126 fastcache − ~40 binary/stacks/slab/slack
+            #   ≈ 218 MiB available to the Go runtime
+            #
+            # 192Mi keeps a real margin inside that. Re-derive it — do not
+            # copy it — if vm_cache_size_bytes ever changes materially.
+            - name: GOMEMLIMIT
+              value: "201326592"
           ports:
             - name: http
               containerPort: 8428

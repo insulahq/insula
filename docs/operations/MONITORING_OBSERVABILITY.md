@@ -5,7 +5,7 @@ around **one pod** plus the platform's own modules:
 
 | Pillar | Tool | Memory | Notes |
 | --- | --- | --- | --- |
-| Metrics (scrape + TSDB + query + UI) | **VictoriaMetrics vmsingle** (`k8s/base/monitoring/`) | 128Mi req / 384Mi limit | Built-in scraper — no vmagent |
+| Metrics (scrape + TSDB + query + UI) | **VictoriaMetrics vmsingle** (`k8s/base/monitoring/`) | 128Mi req / 384Mi limit | Built-in scraper — no vmagent. The limit is held by THREE budgets, not one — see [Memory budget](#memory-budget) before changing any of them |
 | Alerting | **platform-api `monitoring` module** | 0 (in-process) | 60s evaluator → existing notification channels (email + in-app) |
 | Object/state health | Built-in `node-health` / `cluster-health` modules | 0 (existing) | K8s-API-driven; node DiskPressure alerts live HERE, not in PromQL |
 | Ad-hoc exploration | **VMUI** at `https://admin.<apex>/metrics/vmui/` | 0 (inside vmsingle) | Path route on the admin host (no own subdomain/cert); admin-cookie gated (`insula.host/admin-ui` label, CI-enforced) |
@@ -101,6 +101,95 @@ gracefully and gate platform behavior:
   the scrape/ingestion alerts surface it.
 - Reset/recovery: delete the PVC and the pod — vmsingle re-scrapes from
   scratch. You lose charts, never platform state.
+
+## Memory budget
+
+vmsingle lives in **384Mi**, and three separate budgets keep it there. Changing
+one without the others is how it got OOM-killed every ~2 days on the production
+cluster until 2026-08-30.
+
+| Budget | Setting | Covers |
+| --- | --- | --- |
+| VM caches | `-memory.allowedBytes=64MiB` | fastcache — anonymous mmap **outside** the Go heap |
+| Go runtime | `GOGC=40`, `GOMEMLIMIT=192Mi` | heap + runtime; cannot see the caches |
+| Ingest volume | `metric_relabel_configs` in `scrape-config.yaml` | series never stored at all |
+
+`GOMEMLIMIT` is **derived**, not chosen. It must leave room for everything in
+the cgroup that the Go runtime cannot see:
+
+```
+384 MiB cgroup limit
+− 126 MiB fastcache (off-heap anonymous mmap; measure it, do not assume)
+−  ~40 MiB binary, goroutine stacks, slab, slack
+= ~218 MiB available to Go   →   GOMEMLIMIT 192Mi
+```
+
+Set to 256Mi it is worse than useless: 256 + 126 ≈ 382 MiB, i.e. the backstop
+sits *at* the OOM point and the kernel always wins first. Re-derive whenever
+`vm_cache_size_bytes` changes materially.
+
+**Why the original single budget failed.** `-memory.allowedBytes=192MiB` capped
+the caches at half the limit, which sounds safe and is not a statement about
+total memory: the Go runtime needs the same cgroup. Measured in production —
+`go_memstats_heap_sys` 234 MiB holding an 89 MiB live heap, plus ~95 MiB of
+off-heap fastcache, for 348 MiB resident against a 384 MiB ceiling. The limit
+only held because the caches never claimed what they were permitted:
+`storage/tsid` had 13,505 entries in 32 MiB against a 128 MiB ceiling.
+
+**Before changing any of these, measure — do not reason from the flag value.**
+
+```bash
+kubectl port-forward -n monitoring deploy/vmsingle 18428:8428 &
+M=http://127.0.0.1:18428/metrics/metrics
+# What the caches actually hold vs what they have been allocated:
+curl -s $M | grep -E '^vm_cache_(entries|size_bytes|size_max_bytes)\{' | sort
+# Where the rest of the RSS is:
+curl -s $M | grep -E '^(process_resident_memory_bytes|go_memstats_heap_(sys|inuse|released)_bytes|go_memstats_next_gc_bytes)'
+# Series count and the worst offenders:
+curl -s "$M/../api/v1/status/tsdb?topN=20"
+```
+
+**What each lever is actually worth**, measured on DEV before and after the
+2026-08-30 change (same workload, ~15.5k series, one pod, no restarts):
+
+| Lever | Effect |
+| --- | --- |
+| `GOGC=40` | slowed the climb — `next_gc` 127 MiB → 77–111 MiB, and the shape became a GC sawtooth rather than a straight line |
+| `GOMEMLIMIT` | **nothing, at first.** It was set to 256Mi, and 256 + 126 MiB of off-heap fastcache ≈ the 384 MiB limit — the backstop sat *at* the OOM point. Re-derived to 192Mi from the measured off-heap total |
+| `-memory.allowedBytes` 192→64 MiB | **no change to memory held** — `vm_cache_size_bytes` stayed at ~123 MiB. It lowered the sum of cache *ceilings* from ~530 MiB to ~361 MiB, which bounds the worst case, and nothing else |
+| series drops (−29 %) | small; the caches that dominate are floor-bound, not series-bound |
+
+!!! warning "Do not read a plateau off one hour"
+    The first version of this table claimed a settled 240 MiB steady state. Ten
+    samples over the following hour went
+    `159 → 229 → 201 → 226 → 265 → 245 → 261 → 240 → 269 → 292` — a **rising**
+    sawtooth that returned to the pre-change baseline. The oscillation is GC
+    working; the envelope is what matters. This failure has a 1.6–3.6 day
+    period, so anything short of a day of samples cannot distinguish "fixed"
+    from "slower".
+
+The obvious inference — "a cache holding far less than its ceiling is
+over-allocated, so lower `allowedBytes`" — **is wrong here, and was tried.**
+VictoriaMetrics enforces internal floors: `storage/tsid`, `metricIDs` and
+`metricName` each sit at 32 MiB whether their ceiling is 128 MiB or 64 MiB.
+Treat ~120 MiB of fastcache as a fixed cost of running VictoriaMetrics at all.
+
+If the pod needs to be smaller than that, the lever is storing **less** —
+shorter retention, or a harder series cut — not this flag, and not a bigger
+limit. `GOGC` trades CPU for memory and this pod has CPU to spare (6m of a 100m
+request); do not copy that value to a CPU-bound service.
+
+**Kills may not be labelled as such.** The kubelet reports a cgroup OOM *group*
+kill as `{exitCode: 137, reason: "Error"}`, so `kubectl get pod` shows no
+`OOMKilled` anywhere. Confirm against the kernel instead:
+
+```bash
+journalctl --since '7 days ago' | grep -E 'Memory cgroup out of memory'
+cat /sys/fs/cgroup/kubepods.slice/.../memory.events   # oom_kill, oom_group_kill
+```
+
+The platform classifies both forms via `backend/src/lib/container-termination.ts`
+(guard: `scripts/ci-oom-classification-check.sh`).
 
 ## Deep-dive recipe (opt-in, NOT deployed)
 

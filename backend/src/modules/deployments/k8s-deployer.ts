@@ -21,6 +21,7 @@ import { buildPasswordResetInitContainer } from './password-reset.js';
 import { STRATEGIC_MERGE_PATCH } from '../../shared/k8s-patch.js';
 import { allocateResources, InsufficientResourceBudgetError } from './resource-allocator.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { describeTermination, isOomTermination } from '../../lib/container-termination.js';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -1238,9 +1239,11 @@ async function getK8sDeploymentStatus(
         };
       }
 
-      // Check terminated state (OOMKilled, Error, etc.)
-      const terminatedReason = cs.state?.terminated?.reason;
-      if (terminatedReason === 'OOMKilled' || terminatedReason === 'Error') {
+      // Check terminated state (OOMKilled, Error, etc.). describeTermination
+      // relabels a bare SIGKILL (exitCode 137, reason "Error") as OOMKilled,
+      // which is what the kubelet reports for some cgroup OOM group kills.
+      const terminatedReason = describeTermination(cs.state?.terminated);
+      if (isOomTermination(cs.state?.terminated) || terminatedReason === 'Error') {
         const exitCode = cs.state?.terminated?.exitCode;
         const terminatedMsg = cs.state?.terminated?.message ?? '';
         const detail = exitCode !== undefined ? `exit code ${exitCode}` : '';
