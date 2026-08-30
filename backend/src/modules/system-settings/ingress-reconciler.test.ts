@@ -114,6 +114,9 @@ describe('buildIngressRouteBody', () => {
     const middlewares = panel.middlewares as Array<{ name: string; namespace: string }>;
     expect(middlewares).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
+      // The body cap MUST sit immediately before the WAF — the plugin reads the
+      // whole body with no limit, and one oversized POST OOM-kills ingress.
+      { name: 'waf-body-limit', namespace: 'traefik' },
       { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
     expect(spec.tls).toEqual({ secretName: 'platform-tls' });
@@ -141,6 +144,9 @@ describe('buildIngressRouteBody', () => {
     expect(upload!.priority).toBe(101);
     const mw = upload!.middlewares as Array<{ name: string }>;
     expect(mw.map(m => m.name)).not.toContain('modsecurity-crs');
+    // The cap goes too: it exists only to bound what the WAF buffers, and a
+    // 12.5 MiB ceiling on the streaming upload path would defeat the point.
+    expect(mw.map(m => m.name)).not.toContain('waf-body-limit');
     // CrowdSec still applies — only body mirroring is skipped.
     expect(mw.map(m => m.name)).toEqual(['crowdsec']);
     // Same backend as the panel route.
@@ -200,6 +206,7 @@ describe('buildIngressRouteBody', () => {
     expect(panelMiddlewares).toEqual([
       { name: 'crowdsec', namespace: 'traefik' },
       { name: 'platform-oauth2-proxy-auth', namespace: 'platform' },
+      { name: 'waf-body-limit', namespace: 'traefik' },
       { name: 'modsecurity-crs', namespace: 'traefik' },
     ]);
   });
@@ -256,12 +263,41 @@ describe('reconcileIngressHosts', () => {
     expect(ingressApplied.spec.routes).toHaveLength(4);
   });
 
+  // Regression: the carve-out shares host + backend with the panel route, so the
+  // host/service comparison cannot see it. On the first rollout that made every
+  // existing cluster look permanently in-sync — the route was built correctly and
+  // never applied, and DEV came back with "no upload-raw route in platform-ingress".
+  it('re-applies when the live route predates the upload carve-out', async () => {
+    const deps = mockDeps(
+      {
+        routes: [
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: false },
+        ],
+        tlsSecret: 'platform-tls',
+      },
+      {
+        dnsNames: ['admin.example.com'],
+        secretName: 'platform-tls',
+        issuerName: 'letsencrypt-prod-http01',
+      },
+    );
+    const result = await reconcileIngressHosts({
+      adminPanelUrl: 'https://admin.example.com',
+      tenantPanelUrl: null,
+      tlsSecretName: 'platform-tls',
+    }, deps);
+    expect(result.changed).toBe(true);
+    expect(deps.applyIngressRoute).toHaveBeenCalled();
+    const applied = (deps.applyIngressRoute as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(applied.spec.routes.some((r: { match: string }) => r.match.includes('upload-raw'))).toBe(true);
+  });
+
   it('is a no-op when desired routes + cert match the live resources', async () => {
     const deps = mockDeps(
       {
         routes: [
-          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null },
-          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null },
+          { host: 'admin.example.com', serviceName: 'admin-panel', oauth2Backend: null, uploadCarveOut: true },
+          { host: 'my.example.com', serviceName: 'tenant-panel', oauth2Backend: null, uploadCarveOut: true },
         ],
         tlsSecret: 'platform-tls',
       },
