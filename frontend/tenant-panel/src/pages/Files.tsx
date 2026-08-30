@@ -28,6 +28,7 @@ import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-edi
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useResourceAvailability } from '@/hooks/use-resource-availability';
 import ErrorPanel from '@/components/ErrorPanel';
+import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-manager-errors';
 import FolderPickerDialog, { joinPath } from '@/components/FolderPickerDialog';
 import type { OperatorError } from '@insula/api-contracts';
 import { config } from '@/lib/runtime-config';
@@ -94,6 +95,10 @@ function modeToRwx(octal: string): string {
 
 export default function Files() {
   const navigate = useNavigate();
+  // Surfaces failures from ANY file-manager mutation. Nine call sites below
+  // pass only onSuccess, so before this a WAF 403 on rename or move produced
+  // no visible feedback whatsoever.
+  const fmError = useFileManagerError();
   const [currentPath, setCurrentPath] = useState('/');
   const [editingFile, setEditingFile] = useState<string | null>(null);
   const [viewingImage, setViewingImage] = useState<string | null>(null);
@@ -426,6 +431,33 @@ export default function Files() {
 
   return (
     <div className="space-y-4">
+      {fmError && (
+        <div
+          key={fmError.seq}
+          role="alert"
+          className="flex items-start gap-3 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-sm dark:border-red-800 dark:bg-red-900/20"
+        >
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-red-500 dark:text-red-400" />
+          <div className="min-w-0 flex-1">
+            <p className="font-medium text-red-800 dark:text-red-200">Operation failed</p>
+            <p className="mt-0.5 break-words text-red-700 dark:text-red-300">{fmError.message}</p>
+            {fmError.wafBlocked && (
+              <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+                A security rule matched this request. Filenames such as
+                {' '}<code className="rounded bg-red-100 px-1 dark:bg-red-900/40">.htaccess</code>{' '}
+                can trigger this. Ask your provider to review Security → WAF Events.
+              </p>
+            )}
+          </div>
+          <button
+            onClick={clearFileManagerError}
+            aria-label="Dismiss error"
+            className="shrink-0 rounded p-1 text-red-500 hover:bg-red-100 dark:text-red-400 dark:hover:bg-red-900/40"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <FilePageHeader />
         <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Storage Utilization">
