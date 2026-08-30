@@ -111,8 +111,22 @@ cluster until 2026-08-30.
 | Budget | Setting | Covers |
 | --- | --- | --- |
 | VM caches | `-memory.allowedBytes=64MiB` | fastcache — anonymous mmap **outside** the Go heap |
-| Go runtime | `GOGC=40`, `GOMEMLIMIT=256Mi` | heap + runtime; cannot see the caches |
+| Go runtime | `GOGC=40`, `GOMEMLIMIT=192Mi` | heap + runtime; cannot see the caches |
 | Ingest volume | `metric_relabel_configs` in `scrape-config.yaml` | series never stored at all |
+
+`GOMEMLIMIT` is **derived**, not chosen. It must leave room for everything in
+the cgroup that the Go runtime cannot see:
+
+```
+384 MiB cgroup limit
+− 126 MiB fastcache (off-heap anonymous mmap; measure it, do not assume)
+−  ~40 MiB binary, goroutine stacks, slab, slack
+= ~218 MiB available to Go   →   GOMEMLIMIT 192Mi
+```
+
+Set to 256Mi it is worse than useless: 256 + 126 ≈ 382 MiB, i.e. the backstop
+sits *at* the OOM point and the kernel always wins first. Re-derive whenever
+`vm_cache_size_bytes` changes materially.
 
 **Why the original single budget failed.** `-memory.allowedBytes=192MiB` capped
 the caches at half the limit, which sounds safe and is not a statement about
@@ -135,11 +149,35 @@ curl -s $M | grep -E '^(process_resident_memory_bytes|go_memstats_heap_(sys|inus
 curl -s "$M/../api/v1/status/tsdb?topN=20"
 ```
 
-A cache whose `vm_cache_size_bytes` is far above what `vm_cache_entries`
-warrants is allocated capacity, not demand — lower `-memory.allowedBytes`
-rather than raising the container limit. `GOGC` trades CPU for memory, and this
-pod has CPU to spare (6m of a 100m request); do not copy that value to a
-CPU-bound service.
+**What each lever is actually worth**, measured on DEV before and after the
+2026-08-30 change (same workload, ~15.5k series, one pod, no restarts):
+
+| Lever | Effect |
+| --- | --- |
+| `GOGC=40` | slowed the climb — `next_gc` 127 MiB → 77–111 MiB, and the shape became a GC sawtooth rather than a straight line |
+| `GOMEMLIMIT` | **nothing, at first.** It was set to 256Mi, and 256 + 126 MiB of off-heap fastcache ≈ the 384 MiB limit — the backstop sat *at* the OOM point. Re-derived to 192Mi from the measured off-heap total |
+| `-memory.allowedBytes` 192→64 MiB | **no change to memory held** — `vm_cache_size_bytes` stayed at ~123 MiB. It lowered the sum of cache *ceilings* from ~530 MiB to ~361 MiB, which bounds the worst case, and nothing else |
+| series drops (−29 %) | small; the caches that dominate are floor-bound, not series-bound |
+
+!!! warning "Do not read a plateau off one hour"
+    The first version of this table claimed a settled 240 MiB steady state. Ten
+    samples over the following hour went
+    `159 → 229 → 201 → 226 → 265 → 245 → 261 → 240 → 269 → 292` — a **rising**
+    sawtooth that returned to the pre-change baseline. The oscillation is GC
+    working; the envelope is what matters. This failure has a 1.6–3.6 day
+    period, so anything short of a day of samples cannot distinguish "fixed"
+    from "slower".
+
+The obvious inference — "a cache holding far less than its ceiling is
+over-allocated, so lower `allowedBytes`" — **is wrong here, and was tried.**
+VictoriaMetrics enforces internal floors: `storage/tsid`, `metricIDs` and
+`metricName` each sit at 32 MiB whether their ceiling is 128 MiB or 64 MiB.
+Treat ~120 MiB of fastcache as a fixed cost of running VictoriaMetrics at all.
+
+If the pod needs to be smaller than that, the lever is storing **less** —
+shorter retention, or a harder series cut — not this flag, and not a bigger
+limit. `GOGC` trades CPU for memory and this pod has CPU to spare (6m of a 100m
+request); do not copy that value to a CPU-bound service.
 
 **Kills may not be labelled as such.** The kubelet reports a cgroup OOM *group*
 kill as `{exitCode: 137, reason: "Error"}`, so `kubectl get pod` shows no
