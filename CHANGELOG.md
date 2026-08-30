@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.22] - 2026-08-30
+
 ### Security
 - **Any unauthenticated request could take every site on the cluster offline.**
   A single 600 MB `POST` to `/api/v1/auth/login` — no account, no token, no
