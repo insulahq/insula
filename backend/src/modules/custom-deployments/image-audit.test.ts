@@ -39,6 +39,11 @@ function stubDb(flagEnabled: boolean, sentinelExists = false): {
     insert: vi.fn(() => ({
       values: vi.fn(async (v: unknown) => { inserts.push(v); }),
     })),
+    // The writer clears NULL sentinels once a digest is known. This stub has no
+    // rows, so nothing is deleted — it exists so the call is not a TypeError.
+    delete: vi.fn(() => ({
+      where: vi.fn(() => ({ returning: vi.fn(async () => []) })),
+    })),
     update: vi.fn(() => ({
       set: vi.fn(() => ({
         where: vi.fn(() => ({

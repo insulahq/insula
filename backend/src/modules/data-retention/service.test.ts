@@ -19,9 +19,17 @@ import type { Database } from '../../db/index.js';
 // Mock the Drizzle delete().where().returning() chain. Resolves each
 // delete to the configured row array keyed by the table object identity,
 // and records which tables delete() was invoked on + in what order.
-function makeDb(rowsByTable: Map<unknown, Array<{ id: string }>>) {
+function makeDb(rowsByTable: Map<unknown, Array<{ id: string }>>, imageAuditRowCount = 0) {
   const deletedTables: unknown[] = [];
+  const executed: string[] = [];
   const db = {
+    // custom_deployment_image_audit is pruned with raw SQL — a window function
+    // is needed to keep rank 1 per (deployment, image), which the Drizzle
+    // delete() builder cannot express.
+    execute: (q: unknown) => {
+      executed.push(String((q as { queryChunks?: unknown }).queryChunks ?? q));
+      return Promise.resolve({ rowCount: imageAuditRowCount });
+    },
     delete: (table: unknown) => {
       deletedTables.push(table);
       return {
@@ -31,7 +39,7 @@ function makeDb(rowsByTable: Map<unknown, Array<{ id: string }>>) {
       };
     },
   } as unknown as Database;
-  return { db, deletedTables };
+  return { db, deletedTables, executed };
 }
 
 const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
@@ -58,6 +66,7 @@ describe('data-retention runDataRetention', () => {
       provisioningTasks: 1,
       emailSendCounters: 4,
       fblComplaints: 2,
+      imageAuditRows: 0,
     });
     // Exactly the six target tables, each deleted once.
     expect(deletedTables).toEqual([
@@ -80,6 +89,7 @@ describe('data-retention runDataRetention', () => {
       provisioningTasks: 0,
       emailSendCounters: 0,
       fblComplaints: 0,
+      imageAuditRows: 0,
     });
   });
 

@@ -18,6 +18,11 @@
 //
 // The windows below were chosen 2026-06-01: 180 days for the audit
 // trail (compliance baseline), 90 days for the operational tables.
+//
+// custom_deployment_image_audit was added after that sweep and had no
+// retention either. It needs a DIFFERENT rule — see the note on
+// IMAGE_AUDIT_RETENTION_DAYS: a plain age cutoff would silently re-break
+// moving-tag update checks.
 
 import { and, sql } from 'drizzle-orm';
 import {
@@ -41,6 +46,18 @@ export const PROVISIONING_TASK_RETENTION_DAYS = 90;
 export const EMAIL_SEND_COUNTER_RETENTION_DAYS = 35;
 // FBL complaints (R4 PR 3) — 90 days covers any threshold review.
 export const FBL_COMPLAINT_RETENTION_DAYS = 90;
+/**
+ * Image-audit history. NOT a plain age cutoff.
+ *
+ * The newest row per (deployment, image) is not history — it is the running
+ * digest that `getRunningDigest` reads, and a moving-tag ("`:latest`") update
+ * check returns "unknown" without it. A container that has been stable for a
+ * year has exactly one row, older than any sane window; deleting it on age
+ * would silently reintroduce the permanent-"unknown" bug this table exists to
+ * prevent. So the prune keeps rank 1 per (deployment, image) FOREVER and only
+ * removes superseded rows once they age out.
+ */
+export const IMAGE_AUDIT_RETENTION_DAYS = 90;
 
 export interface DataRetentionResult {
   readonly auditLogs: number;
@@ -50,6 +67,9 @@ export interface DataRetentionResult {
   readonly provisioningTasks: number;
   readonly emailSendCounters: number;
   readonly fblComplaints: number;
+  /** Superseded image-audit rows. The newest per (deployment, image) is kept
+   *  regardless of age — it is live state, not history. */
+  readonly imageAuditRows: number;
 }
 
 /**
@@ -121,6 +141,26 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     )
     .returning({ id: emailFblComplaints.id });
 
+  // 7. custom_deployment_image_audit — one row per (deployment, digest), so a
+  //    frequently-republished moving tag accumulates rows for the life of the
+  //    deployment. The FK cascades on deployment delete, but nothing bounded it
+  //    over time. Prune SUPERSEDED rows only: rank 1 per (deployment, image) is
+  //    the running digest and must survive at any age (see the constant's note).
+  const imageAudit = await db.execute(sql`
+    DELETE FROM custom_deployment_image_audit a
+     USING (
+       SELECT id,
+              row_number() OVER (
+                PARTITION BY deployment_id, image
+                ORDER BY pulled_at DESC, id DESC
+              ) AS rn
+         FROM custom_deployment_image_audit
+     ) ranked
+     WHERE a.id = ranked.id
+       AND ranked.rn > 1
+       AND a.pulled_at < NOW() - INTERVAL '${sql.raw(String(IMAGE_AUDIT_RETENTION_DAYS))} days'
+  `);
+
   return {
     auditLogs: audit.length,
     lifecycleTransitions: transitions.length,
@@ -128,5 +168,6 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     provisioningTasks: provisioning.length,
     emailSendCounters: sendCounters.length,
     fblComplaints: complaints.length,
+    imageAuditRows: (imageAudit as unknown as { rowCount?: number }).rowCount ?? 0,
   };
 }
