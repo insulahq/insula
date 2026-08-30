@@ -5,7 +5,7 @@ around **one pod** plus the platform's own modules:
 
 | Pillar | Tool | Memory | Notes |
 | --- | --- | --- | --- |
-| Metrics (scrape + TSDB + query + UI) | **VictoriaMetrics vmsingle** (`k8s/base/monitoring/`) | 128Mi req / 384Mi limit | Built-in scraper — no vmagent |
+| Metrics (scrape + TSDB + query + UI) | **VictoriaMetrics vmsingle** (`k8s/base/monitoring/`) | 128Mi req / 384Mi limit | Built-in scraper — no vmagent. The limit is held by THREE budgets, not one — see [Memory budget](#memory-budget) before changing any of them |
 | Alerting | **platform-api `monitoring` module** | 0 (in-process) | 60s evaluator → existing notification channels (email + in-app) |
 | Object/state health | Built-in `node-health` / `cluster-health` modules | 0 (existing) | K8s-API-driven; node DiskPressure alerts live HERE, not in PromQL |
 | Ad-hoc exploration | **VMUI** at `https://admin.<apex>/metrics/vmui/` | 0 (inside vmsingle) | Path route on the admin host (no own subdomain/cert); admin-cookie gated (`insula.host/admin-ui` label, CI-enforced) |
@@ -101,6 +101,57 @@ gracefully and gate platform behavior:
   the scrape/ingestion alerts surface it.
 - Reset/recovery: delete the PVC and the pod — vmsingle re-scrapes from
   scratch. You lose charts, never platform state.
+
+## Memory budget
+
+vmsingle lives in **384Mi**, and three separate budgets keep it there. Changing
+one without the others is how it got OOM-killed every ~2 days on the production
+cluster until 2026-08-30.
+
+| Budget | Setting | Covers |
+| --- | --- | --- |
+| VM caches | `-memory.allowedBytes=64MiB` | fastcache — anonymous mmap **outside** the Go heap |
+| Go runtime | `GOGC=40`, `GOMEMLIMIT=256Mi` | heap + runtime; cannot see the caches |
+| Ingest volume | `metric_relabel_configs` in `scrape-config.yaml` | series never stored at all |
+
+**Why the original single budget failed.** `-memory.allowedBytes=192MiB` capped
+the caches at half the limit, which sounds safe and is not a statement about
+total memory: the Go runtime needs the same cgroup. Measured in production —
+`go_memstats_heap_sys` 234 MiB holding an 89 MiB live heap, plus ~95 MiB of
+off-heap fastcache, for 348 MiB resident against a 384 MiB ceiling. The limit
+only held because the caches never claimed what they were permitted:
+`storage/tsid` had 13,505 entries in 32 MiB against a 128 MiB ceiling.
+
+**Before changing any of these, measure — do not reason from the flag value.**
+
+```bash
+kubectl port-forward -n monitoring deploy/vmsingle 18428:8428 &
+M=http://127.0.0.1:18428/metrics/metrics
+# What the caches actually hold vs what they have been allocated:
+curl -s $M | grep -E '^vm_cache_(entries|size_bytes|size_max_bytes)\{' | sort
+# Where the rest of the RSS is:
+curl -s $M | grep -E '^(process_resident_memory_bytes|go_memstats_heap_(sys|inuse|released)_bytes|go_memstats_next_gc_bytes)'
+# Series count and the worst offenders:
+curl -s "$M/../api/v1/status/tsdb?topN=20"
+```
+
+A cache whose `vm_cache_size_bytes` is far above what `vm_cache_entries`
+warrants is allocated capacity, not demand — lower `-memory.allowedBytes`
+rather than raising the container limit. `GOGC` trades CPU for memory, and this
+pod has CPU to spare (6m of a 100m request); do not copy that value to a
+CPU-bound service.
+
+**Kills may not be labelled as such.** The kubelet reports a cgroup OOM *group*
+kill as `{exitCode: 137, reason: "Error"}`, so `kubectl get pod` shows no
+`OOMKilled` anywhere. Confirm against the kernel instead:
+
+```bash
+journalctl --since '7 days ago' | grep -E 'Memory cgroup out of memory'
+cat /sys/fs/cgroup/kubepods.slice/.../memory.events   # oom_kill, oom_group_kill
+```
+
+The platform classifies both forms via `backend/src/lib/container-termination.ts`
+(guard: `scripts/ci-oom-classification-check.sh`).
 
 ## Deep-dive recipe (opt-in, NOT deployed)
 

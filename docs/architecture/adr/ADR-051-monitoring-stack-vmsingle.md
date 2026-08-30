@@ -36,7 +36,15 @@ platform-api:
    namespace (`k8s/base/monitoring/`, included by the development +
    production overlays). One pod = scraper (built-in `-promscrape.config`,
    so **no vmagent**), TSDB, PromQL/MetricsQL query API, and the VMUI
-   explorer. Requests 128Mi / limit 384Mi (`-memory.allowedBytes=192MiB`).
+   explorer. Requests 128Mi / limit 384Mi, held by THREE budgets that must be
+   read together: `-memory.allowedBytes=64MiB` (VM's caches, allocated as
+   anonymous mmap OUTSIDE the Go heap), `GOGC=40` + `GOMEMLIMIT=256Mi` (the Go
+   runtime, which allowedBytes cannot see), and `metric_relabel_configs` drop
+   rules in `scrape-config.yaml` (series never ingested). The original
+   `allowedBytes=192MiB` budgeted only the first and OOM-killed the pod every
+   ~2 days in production — 192 MiB of caches plus ~246 MiB of Go runtime does
+   not fit in 384 MiB, and the limit only held because the caches never
+   claimed what they had been permitted (2026-08-30).
    PVC **2Gi** on `longhorn-system-local` (single replica), retention 30d:
    ~10–15k series at 60s ≈ 15–30MB/day at VM's sub-byte/sample
    compression; `-storage.minFreeDiskSpaceBytes` flips ingestion read-only

@@ -266,6 +266,14 @@ jobs:
       - name: Verify every direct-ClusterIP sidecar request sends X-Platform-Internal
         run: ./scripts/ci-file-manager-auth-check.sh
 
+  oom-classification-guard:
+    name: Container OOM is classified through one shared helper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no module compares against the OOMKilled literal itself
+        run: ./scripts/ci-oom-classification-check.sh
+
   # 2026-07-28: both guards existed but were never wired into any workflow, so
   # they never ran. ci-node-terminal-check had in fact been FAILING on
   # `development` — its Pino-redact assertion stopped matching when a `jwt`

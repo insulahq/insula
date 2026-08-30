@@ -13,6 +13,7 @@
  */
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
+import { isOomTermination } from '../../lib/container-termination.js';
 
 export interface OomEvent {
   readonly podName: string;
@@ -61,7 +62,11 @@ export function extractOomEvents(
     if (isSystemPod(pod.metadata?.labels)) continue;
     for (const cs of pod.status?.containerStatuses ?? []) {
       const term = cs.lastState?.terminated ?? cs.state?.terminated;
-      if (term?.reason !== 'OOMKilled') continue;
+      // Not `reason !== 'OOMKilled'`: the kubelet reports some cgroup OOM
+      // group-kills as {exitCode:137, reason:"Error"}, and this scan is the
+      // ONLY thing that raises a per-tenant OOM alert — so it silently
+      // skipped exactly the kills that node-health was already inferring.
+      if (!term || !isOomTermination(term)) continue;
       const at = term.finishedAt ?? null;
       if (at) {
         const t = Date.parse(at);
