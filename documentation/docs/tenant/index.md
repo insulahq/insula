@@ -63,7 +63,7 @@ account.
 | **Quick stats** row | Counts of your Domains, Applications, Backups, Deployments, and Email accounts. Click any card to jump straight there. |
 | **Subscription** card | Your current plan and its limits (CPU, memory, storage). Click to open Settings. |
 | **Deployed Applications** card | Your running websites and apps with a status dot. |
-| **Resource Usage** card | Live bars showing how much CPU, memory, and storage you are using against your plan. |
+| **Resource Usage** card | Live bars for CPU, memory and storage, each showing **in use / reserved / available** against your plan — the same three figures as the full [Resource Usage](#resource-usage) page. |
 | **Notifications** card | Your latest account messages. |
 
 If your account is ever **suspended** or a maintenance task is running, an
@@ -108,6 +108,22 @@ The **menu on the left** is how you move around. Here is what each item is for:
 The figures are read live from the cluster. The page refreshes itself about once
 a minute while you have it open, and the **Refresh** button fetches immediately.
 It stops polling when you switch to another tab and catches up when you return.
+
+### What the bar colours mean
+
+Every usage bar on every page — dashboard, this page, the file manager, and the
+metrics pop-up — uses the same scale, measured against your plan limit:
+
+| Colour | Meaning |
+| --- | --- |
+| Normal | Below 80% of your plan limit. Nothing to do. |
+| Amber | 80% or more. Worth a look before you deploy anything large. |
+| Red | You have reached your plan limit — new deployments and resizes will be refused until you free something up or upgrade. |
+
+The grey portion behind the coloured bar is **reserved**. If the grey extends
+past the coloured part, you have capacity in use terms but not in allocation
+terms — that is the number checked when you deploy, so it is the one that
+decides whether a new application fits.
 
 !!! info "Storage shows 0 while everything is stopped"
     Storage in-use is measured from the volume as it is mounted. If every one of
