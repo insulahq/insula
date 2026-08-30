@@ -7,6 +7,13 @@ on:
       - 'k8s/**'
       - 'scripts/**'
       - 'security/**'
+      # file-manager-auth-guard inspects backend source, so an edit that
+      # touches ONLY the backend must still trigger this workflow — otherwise
+      # the guard silently skips exactly the change it exists to catch.
+      - 'backend/src/modules/file-manager/**'
+      - 'backend/src/modules/ingress-routes/**'
+      - 'backend/src/modules/system-settings/**'
+      - 'images/file-manager/**'
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
       # merged without the fix ever running.
@@ -17,6 +24,10 @@ on:
       - 'k8s/**'
       - 'scripts/**'
       - 'security/**'
+      - 'backend/src/modules/file-manager/**'
+      - 'backend/src/modules/ingress-routes/**'
+      - 'backend/src/modules/system-settings/**'
+      - 'images/file-manager/**'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the
@@ -99,6 +110,9 @@ jobs:
       - run: ./.github/scripts/test-pin-image-tag.sh
       - run: ./.github/scripts/test-component-watch-gate.sh
       - run: ./.github/scripts/test-pin-config-image.sh
+      # Guards the DEV cluster against a slow build pinning its older images
+      # over a newer pin — see pin-would-regress.sh for the incident.
+      - run: ./.github/scripts/test-pin-would-regress.sh
       # Runs in a container with NET_ADMIN so the nft operations (and the
       # `flush ruleset` in its fixtures) are isolated from the runner's own
       # networking. Proves the firewall-blacklist host-migration is surgical
@@ -235,6 +249,22 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify every /tenants/:tenantId/ route is scoped to the caller's tenant
         run: ./scripts/ci-tenant-scope-check.sh
+
+  waf-body-limit-guard:
+    name: WAF is never attached without its request-body cap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every modsecurity-crs attachment chains waf-body-limit first
+        run: ./scripts/ci-waf-body-limit-check.sh
+
+  file-manager-auth-guard:
+    name: Direct file-manager calls carry the sidecar auth header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every direct-ClusterIP sidecar request sends X-Platform-Internal
+        run: ./scripts/ci-file-manager-auth-check.sh
 
   # 2026-07-28: both guards existed but were never wired into any workflow, so
   # they never ran. ci-node-terminal-check had in fact been FAILING on

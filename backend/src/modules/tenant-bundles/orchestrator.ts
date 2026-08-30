@@ -67,6 +67,7 @@ import { resolveBaseDomain } from '../../config/domains.js';
 import { backupConfigurations, tenantBackupV2Settings, hostingPlans } from '../../db/schema.js';
 import { captureConfigComponent, type ConfigComponentResult } from './components/config.js';
 import { captureSecretsComponent, type SecretsComponentResult } from './components/secrets.js';
+import { shouldNotifyTenant, shouldNotifyAdmins } from './notification-policy.js';
 
 export interface OrchestratorDeps {
   readonly db: Database;
@@ -754,10 +755,13 @@ export async function runBundle(
           'Backup';
 
         // ── Tenant fan-out ─────────────────────────────────────
+        // Scheduled runs never reach the tenant's bell — see
+        // notification-policy.ts:shouldNotifyTenant for why.
+        //
         // Filter out the triggering user (if tenant_admin) so they
         // don't get this notification AND the per-user one below.
         try {
-          const tenantRecipients = (await resolveRecipients(
+          const tenantRecipients = !shouldNotifyTenant(input.initiator) ? [] : (await resolveRecipients(
             deps.db, { kind: 'tenant', tenantId: input.tenantId },
           )).filter((uid) => uid !== input.triggeredByUserId);
           if (tenantRecipients.length > 0) {
@@ -780,7 +784,7 @@ export async function runBundle(
 
         // ── Admin fan-out (failure only) ───────────────────────
         // Same filter: don't double-notify a triggering admin user.
-        if (failed) {
+        if (shouldNotifyAdmins(input.initiator, failed)) {
           try {
             const adminRecipients = (await resolveRecipients(deps.db, { kind: 'admin' }))
               .filter((uid) => uid !== input.triggeredByUserId);

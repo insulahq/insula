@@ -19,7 +19,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq, asc, sql, and } from 'drizzle-orm';
+import { eq, asc, sql, and, inArray } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { authenticate, requireRole, requirePanel } from '../../middleware/auth.js';
 import { success } from '../../shared/response.js';
@@ -73,7 +73,26 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
     const rows = where
       ? await app.db.select().from(restoreJobs).where(where).orderBy(sql`${restoreJobs.createdAt} DESC`).limit(limit)
       : await app.db.select().from(restoreJobs).orderBy(sql`${restoreJobs.createdAt} DESC`).limit(limit);
-    return success({ data: rows.map(toJobSummary) });
+
+    // First-item bundleId per cart, so the admin panel can reopen a cart. One
+    // query for the page. NOTE: `rows.map(toJobSummary)` would pass the array
+    // INDEX as the second argument — always map with an explicit lambda here.
+    const firstBundleByCart = new Map<string, string>();
+    if (rows.length > 0) {
+      const items = await app.db.select({
+        restoreJobId: restoreItems.restoreJobId,
+        bundleId: restoreItems.bundleId,
+        seq: restoreItems.seq,
+      }).from(restoreItems)
+        .where(inArray(restoreItems.restoreJobId, rows.map((r) => r.id)))
+        .orderBy(asc(restoreItems.seq));
+      for (const it of items) {
+        if (!firstBundleByCart.has(it.restoreJobId)) {
+          firstBundleByCart.set(it.restoreJobId, it.bundleId);
+        }
+      }
+    }
+    return success({ data: rows.map((r) => toJobSummary(r, firstBundleByCart.get(r.id) ?? null)) });
   });
 
   // ── POST /api/v1/admin/restores/carts ──────────────────────────────
@@ -112,7 +131,7 @@ export async function backupRestoreRoutes(app: FastifyInstance): Promise<void> {
       .where(eq(restoreItems.restoreJobId, id))
       .orderBy(asc(restoreItems.seq));
     const detail: RestoreJobDetail = {
-      ...toJobSummary(job),
+      ...toJobSummary(job, items[0]?.bundleId ?? null),
       items: items.map(toItemInfo),
     };
     return success(detail);

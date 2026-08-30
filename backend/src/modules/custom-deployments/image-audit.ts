@@ -185,23 +185,19 @@ export async function recordImageAudit(
       continue;
     }
 
-    // Resolved path: try to update the existing sentinel row first
-    // (replaces NULL digest in place), and if no row was touched
-    // (already had a resolved digest), insert a fresh row.
-    const updated = await db
-      .update(customDeploymentImageAudit)
-      .set({ resolvedDigest: digest, image, pulledAt: new Date() })
-      .where(and(
-        eq(customDeploymentImageAudit.deploymentId, deploymentId),
-        isNull(customDeploymentImageAudit.resolvedDigest),
-      ))
-      .returning({ id: customDeploymentImageAudit.id });
-
-    if (updated.length > 0) {
-      touched++;
-      continue;
-    }
-
+    // Resolved path. Record (deployment, digest) FIRST, then drop the
+    // sentinels — never widen an UPDATE across them.
+    //
+    // This used to be `UPDATE … WHERE deployment_id = $1 AND resolved_digest IS
+    // NULL` with no LIMIT, which set EVERY sentinel to the same digest and so
+    // violated UNIQUE (deployment_id, resolved_digest) the moment a second
+    // sentinel existed. The reconciler invokes this recorder as
+    // `.catch(() => 0)`, so that throw was swallowed every 15 seconds and the
+    // digest was never persisted — 64 rows on production, none with a digest.
+    // `getRunningDigest` filters on NOT NULL, so the moving-tag ("`:latest`")
+    // update check could only ever answer "unknown". Reported four times before
+    // the cause was found in the writer rather than the comparison logic.
+    let recorded = false;
     try {
       await db.insert(customDeploymentImageAudit).values({
         id: randomUUID(),
@@ -209,11 +205,32 @@ export async function recordImageAudit(
         image,
         resolvedDigest: digest,
       });
-      touched++;
+      recorded = true;
     } catch (err: unknown) {
-      // (deployment, digest) already audited — silent dedupe.
+      // (deployment, digest) already audited — this exact image is still
+      // running, which is the common case on every reconcile tick.
       if (!isUniqueViolation(err)) throw err;
+      await db
+        .update(customDeploymentImageAudit)
+        .set({ image, pulledAt: new Date() })
+        .where(and(
+          eq(customDeploymentImageAudit.deploymentId, deploymentId),
+          eq(customDeploymentImageAudit.resolvedDigest, digest),
+        ));
     }
+
+    // The sentinel only ever meant "a pod was seen but had not reported its
+    // imageID yet". Once the digest is known it carries no information, and
+    // leaving it behind is what let them pile up.
+    const cleared = await db
+      .delete(customDeploymentImageAudit)
+      .where(and(
+        eq(customDeploymentImageAudit.deploymentId, deploymentId),
+        isNull(customDeploymentImageAudit.resolvedDigest),
+      ))
+      .returning({ id: customDeploymentImageAudit.id });
+
+    if (recorded || cleared.length > 0) touched++;
   }
 
   return touched;

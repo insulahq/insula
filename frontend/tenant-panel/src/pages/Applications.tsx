@@ -18,6 +18,8 @@ import AppPreviewModal from '@/components/AppPreviewModal';
 import { CustomContainersTab } from '@/components/custom-deployments/CustomContainersTab';
 import { getStatusColor } from '@/lib/status-colors';
 import type { CatalogEntry } from '@/types/api';
+import { useResourceMetrics } from '@/hooks/use-resource-metrics';
+import { resourceBarColor, resourcePercent, resourceRatio, formatGiB } from '@/lib/resource-usage';
 
 type Tab = 'catalog' | 'installed' | 'custom';
 
@@ -1578,20 +1580,39 @@ function DeploymentMetricBar({
   );
 }
 
-function DeploymentStorageDisplay({ deploymentId, enabled }: { readonly deploymentId: string; readonly enabled: boolean }) {
+// Exported for unit tests — the bar's denominator was silently wrong for
+// months precisely because nothing rendered it in isolation.
+export function DeploymentStorageDisplay({ deploymentId, enabled }: { readonly deploymentId: string; readonly enabled: boolean }) {
   const { tenantId } = useTenantContext();
   const { data } = useDeploymentLiveMetrics(tenantId ?? undefined, enabled ? deploymentId : undefined);
+  const { data: metricsData } = useResourceMetrics();
+  const resources = metricsData?.data;
   const metrics = data?.data;
   if (!metrics?.storageUsedBytes || metrics.storageUsedBytes === 0) return null;
 
+  // The denominator used to be a hardcoded `10` ("relative to 10GB reference").
+  // It never tracked anything: it happened to match the old default volume, so
+  // after a tenant's storage was enlarged to 100 GB an app holding 6 GB still
+  // rendered 60% — and amber, because the old thresholds warned from 50%. Divide
+  // by the tenant's real storage limit, which is what the volume is sized to and
+  // what every other bar on the platform uses.
   const usedGb = metrics.storageUsedBytes / (1024 * 1024 * 1024);
-  const pct = Math.min((usedGb / 10) * 100, 100); // relative to 10GB reference
-  const barColor = pct >= 80 ? 'bg-red-500' : pct >= 50 ? 'bg-amber-500' : 'bg-green-500';
+  const limitGb = resources?.storage.available ?? 0;
+  const ratio = resourceRatio(usedGb, limitGb);
+  const pct = resourcePercent(usedGb, limitGb);
+  const barColor = resourceBarColor(ratio);
 
   return (
     <div className="col-span-2 rounded-lg bg-gray-50 dark:bg-gray-700/50 px-2 py-1.5">
       <p className="text-xs text-gray-500 dark:text-gray-400">Disk Usage</p>
-      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{metrics.storageUsedFormatted}</p>
+      <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+        {metrics.storageUsedFormatted}
+        {limitGb > 0 && (
+          <span className="ml-1 text-xs font-normal text-gray-500 dark:text-gray-400">
+            of {formatGiB(limitGb)} GB
+          </span>
+        )}
+      </p>
       <div className="mt-1 h-1.5 w-full rounded-full bg-gray-200 dark:bg-gray-600 overflow-hidden">
         <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
       </div>

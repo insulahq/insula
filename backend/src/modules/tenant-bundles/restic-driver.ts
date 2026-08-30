@@ -1097,6 +1097,107 @@ export interface ResticLsNode {
   readonly mtime: string;
 }
 
+export interface RunResticStatsArgs {
+  readonly target: BackupTarget;
+  readonly passwordHex: string;
+  /** Full per-(tenant, component) restic repo URI (buildResticRepoUri). */
+  readonly repoUri: string;
+  readonly semaphore?: ResticConcurrencySemaphore;
+}
+
+export interface ResticStats {
+  /** Deduplicated size of the repository's data, in bytes. */
+  readonly totalSizeBytes: number;
+  readonly totalFileCount: number;
+  readonly snapshotCount: number;
+}
+
+/**
+ * `restic stats --mode raw-data` — the TRUE size a tenant's repository
+ * occupies on the backup target.
+ *
+ * This is not derivable from anything we already store.
+ * `tenant_restic_repo_state.last_repo_size_bytes` is the bytes PROCESSED by the
+ * most recent snapshot run, which for an incremental backup is a small
+ * fraction of the repo (a production tenant with ~6 GB of files reported
+ * 176 MiB there). Restic deduplicates across snapshots, so summing bundle
+ * sizes overstates it just as badly in the other direction.
+ *
+ * `raw-data` counts the size of the blobs actually stored, which is the number
+ * an operator means by "how much is this tenant costing me". `restore-size`
+ * (the default mode) answers a different question — how big the data would be
+ * if fully restored — and double-counts across snapshots.
+ *
+ * Read-only and `--no-lock`, so it never blocks or is blocked by a backup.
+ * It DOES walk the repository index, which is why this is a button and not
+ * something computed on every page load.
+ */
+export async function runResticStats(args: RunResticStatsArgs): Promise<ResticStats> {
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = {
+      ...buildResticEnv(args.target),
+      RESTIC_PASSWORD: args.passwordHex,
+    };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    cliArgs.push('--no-lock');
+    cliArgs.push('stats', '--mode', 'raw-data', '--json');
+
+    const child = spawnRestic(cliArgs, env);
+    let stdoutBuf = '';
+    let stderrBuf = '';
+    child.stdout.on('data', (c: Buffer) => { stdoutBuf += c.toString('utf8'); });
+    child.stderr.on('data', (c: Buffer) => { stderrBuf += c.toString('utf8'); });
+    const code = await new Promise<number>((resolve) => {
+      const finish = (c: number | null) => resolve(c ?? 0);
+      child.on('exit', finish);
+      child.on('close', finish);
+    });
+    if (code !== 0) {
+      throw new Error(`restic stats exited ${code}: ${stderrBuf.trim()}`);
+    }
+    return parseResticStats(stdoutBuf);
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
+/**
+ * Parse `restic stats --json`. Exported for unit-testing without a repo.
+ *
+ * Restic emits a single JSON object; field names have been stable across 0.16
+ * and 0.17. A missing field means a restic version we do not understand — 0 is
+ * returned rather than NaN, because NaN serialises to null and would render as
+ * an empty cell that looks like "no backups" instead of "unknown".
+ */
+export function parseResticStats(stdout: string): ResticStats {
+  const trimmed = stdout.trim();
+  if (!trimmed) throw new Error('restic stats returned no output');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error(`restic stats returned unparseable JSON: ${trimmed.slice(0, 200)}`);
+  }
+  const o = parsed as Record<string, unknown>;
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  return {
+    totalSizeBytes: num(o.total_size),
+    totalFileCount: num(o.total_file_count),
+    snapshotCount: num(o.snapshots_count),
+  };
+}
+
 export interface RunResticLsArgs {
   readonly target: BackupTarget;
   readonly passwordHex: string;

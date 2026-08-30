@@ -45,6 +45,11 @@ export interface IngressRouteCurrentSpec {
     readonly host: string;
     readonly serviceName: string;
     readonly oauth2Backend?: string | null;
+    /** True when the live IngressRoute already carries this host's
+     *  `/files/upload-raw` carve-out. Part of the drift comparison because the
+     *  carve-out shares host + backend with the panel route and is otherwise
+     *  indistinguishable from it. */
+    readonly uploadCarveOut?: boolean;
   }>;
   readonly tlsSecret: string | null;
 }
@@ -110,6 +115,18 @@ const OAUTH2_PROXY_MIDDLEWARE_NAME = 'platform-oauth2-proxy-auth';
 const PLATFORM_WAF_MIDDLEWARE_NAME = 'modsecurity-crs';
 
 /**
+ * Request-body cap chained immediately BEFORE the WAF, everywhere the WAF is
+ * attached. The ModSecurity plugin does an unbounded `io.ReadAll(req.Body)`
+ * before it can ask the sidecar for a verdict, and Traefik is a DaemonSet with
+ * limits.memory=512Mi fronting the whole cluster: measured on a live cluster, a
+ * single UNAUTHENTICATED 600 MB POST to /api/v1/auth/login OOM-killed it in ~3s
+ * (exitCode 137) and took every site down. Never attach the WAF without this.
+ * See k8s/base/traefik/middlewares-waf-body-limit.yaml; guard:
+ * scripts/ci-waf-body-limit-check.sh.
+ */
+const WAF_BODY_LIMIT_MIDDLEWARE_NAME = 'waf-body-limit';
+
+/**
  * CrowdSec bouncer Middleware — platform-wide IP-reputation gate
  * attached to EVERY route the platform ingresses (admin/tenant panels
  * here, tenant routes via the buildAllRouteSpecs path). Runs first in
@@ -117,6 +134,43 @@ const PLATFORM_WAF_MIDDLEWARE_NAME = 'modsecurity-crs';
  * processing.
  */
 const PLATFORM_CROWDSEC_MIDDLEWARE_NAME = 'crowdsec';
+
+/**
+ * The file-manager's streaming upload endpoint, carved out of WAF coverage.
+ *
+ * The madebymode ModSecurity plugin does `body, _ := io.ReadAll(req.Body)` with
+ * NO size limit — verified by reading the plugin source off a running Traefik
+ * pod (2026-08-30). Its `maxBodySize` knob, which our Middleware sets to 5 MiB
+ * and which earlier comments here described as a cap, is not in the plugin's
+ * `Config` struct at all: Traefik drops the unknown key and the plugin never
+ * consults it. So EVERY request body on a WAF-covered route is buffered whole
+ * in the Traefik pod, then POSTed to the ModSecurity sidecar, which buffers it
+ * AGAIN to a temp file on disk before the request is finally replayed upstream.
+ * Traefik's limit is 512Mi and it is a DaemonSet fronting the whole cluster.
+ *
+ * That cost buys nothing here. `9000105` in the CRS exclusion ConfigMap already
+ * strips REQUEST_BODY and ARGS_POST from every rule for this exact URI, because
+ * the body IS an arbitrary tenant file — so the bytes are mirrored, spooled and
+ * then deliberately not inspected. The endpoint is Bearer-authenticated in
+ * platform-api before the sidecar sees it, and SFTP writes the same bytes to the
+ * same volume with no WAF in front at all.
+ *
+ * Routing the upload path to the same service WITHOUT the WAF middleware keeps
+ * the transfer streaming end to end. `path` and every other query argument still
+ * flow through CrowdSec and are unaffected — only body mirroring is skipped.
+ *
+ * k8s/overlays/dind/ingress-upload.yaml carried a hand-written version of this
+ * for local dev only, with a note that the reconciler "will emit this for
+ * production (Phase 2)". This is that; the static file is removed.
+ */
+const UPLOAD_PATH_REGEXP = '^/api/v1/tenants/[^/]+/files/upload-raw$';
+
+/**
+ * Priority for the upload carve-out. Must beat the `/oauth2` route (100) and the
+ * bare `Host()` panel route (which falls back to rule-length, far below 100), so
+ * the more specific upload rule wins regardless of Traefik's length heuristic.
+ */
+const UPLOAD_ROUTE_PRIORITY = 101;
 
 // ─── Pure helpers (exported for testability) ─────────────────────────────
 
@@ -224,7 +278,25 @@ export function buildIngressRouteBody(
     if (r.oauth2) {
       panelMiddlewares.push({ name: OAUTH2_PROXY_MIDDLEWARE_NAME, namespace: 'platform' });
     }
+    // Body cap immediately before the WAF — the plugin has no limit of its own.
+    panelMiddlewares.push({ name: WAF_BODY_LIMIT_MIDDLEWARE_NAME, namespace: 'traefik' });
     panelMiddlewares.push({ name: PLATFORM_WAF_MIDDLEWARE_NAME, namespace: 'traefik' });
+
+    // Streaming-upload carve-out: identical chain minus the WAF *and* its body
+    // cap, so the upload streams end to end — never buffered in Traefik, never
+    // spooled to disk in the ModSecurity sidecar, and never subject to the
+    // 12.5 MiB request cap that protects the WAF path. See UPLOAD_PATH_REGEXP
+    // for why WAF inspection is pure cost on this route.
+    const uploadMiddlewares = panelMiddlewares.filter(m =>
+      m.name !== PLATFORM_WAF_MIDDLEWARE_NAME && m.name !== WAF_BODY_LIMIT_MIDDLEWARE_NAME);
+    traefikRoutes.push({
+      match: `Host(\`${r.host}\`) && PathRegexp(\`${UPLOAD_PATH_REGEXP}\`)`,
+      kind: 'Rule',
+      priority: UPLOAD_ROUTE_PRIORITY,
+      middlewares: uploadMiddlewares,
+      services: [{ name: r.serviceName, port: 80 }],
+    });
+
     const panelRoute: Record<string, unknown> = {
       match: `Host(\`${r.host}\`)`,
       kind: 'Rule',
@@ -348,7 +420,14 @@ export async function reconcileIngressHosts(
         return (
           r.host === desired[i].host &&
           r.serviceName === desired[i].serviceName &&
-          currentOauth2 === desired[i].oauth2
+          currentOauth2 === desired[i].oauth2 &&
+          // The upload carve-out shares its host and backend with the panel
+          // route, so it collapses into the same entry and is invisible to the
+          // host/service comparison. Without this term, a cluster whose live
+          // IngressRoute predates the carve-out looks in-sync forever and the
+          // route is never applied — which is exactly what happened on the
+          // first rollout: the code was correct, the reconciler just never ran.
+          r.uploadCarveOut
         );
       }) &&
       currentRoute.tlsSecret === input.tlsSecretName;
@@ -426,7 +505,7 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
           // the oauth2Backend field populated, so the desired-vs-current
           // comparison stays symmetrical with the desired-routes shape.
           .reduce<
-            Array<{ host: string; serviceName: string; oauth2Backend: string | null }>
+            Array<{ host: string; serviceName: string; oauth2Backend: string | null; uploadCarveOut: boolean }>
           >((acc, route) => {
             const match = String(route.match ?? '');
             const hostMatch = match.match(/Host\(`([^`]+)`\)/);
@@ -435,9 +514,12 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             const services = (route.services as Array<Record<string, unknown>>) ?? [];
             const svcName = (services[0]?.name as string | undefined) ?? '';
             const isOauth2Path = /PathPrefix\(`\/oauth2`\)/.test(match);
+            const isUpload = match.includes('upload-raw');
             const existing = acc.find((r) => r.host === host);
             if (existing) {
-              if (isOauth2Path) {
+              if (isUpload) {
+                existing.uploadCarveOut = true;
+              } else if (isOauth2Path) {
                 existing.oauth2Backend = svcName;
               } else {
                 existing.serviceName = svcName;
@@ -445,8 +527,9 @@ function defaultDeps(opts: IngressReconcileOptions): IngressReconcileDeps {
             } else {
               acc.push({
                 host,
-                serviceName: isOauth2Path ? '' : svcName,
+                serviceName: isOauth2Path || isUpload ? '' : svcName,
                 oauth2Backend: isOauth2Path ? svcName : null,
+                uploadCarveOut: isUpload,
               });
             }
             return acc;

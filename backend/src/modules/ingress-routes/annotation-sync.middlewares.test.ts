@@ -328,6 +328,7 @@ describe('buildMiddlewaresForRoute — reference ordering', () => {
     const suffixes = referenceList.map((r) => {
       // WAF ref is the shared sidecar — name is fully qualified.
       if (r.name === 'modsecurity-crs') return 'modsecurity-crs';
+      if (r.name === 'waf-body-limit') return 'waf-body-limit';
       // Per-route names use r-<routeId-prefix>-<suffix>.
       const m = r.name.match(/^r-[0-9a-f]{8}-(.+)$/);
       return m ? m[1] : r.name;
@@ -339,6 +340,8 @@ describe('buildMiddlewaresForRoute — reference ordering', () => {
       'inflight',
       'headers',
       'redirect',
+      // Body cap immediately before the WAF — the plugin's read is unbounded.
+      'waf-body-limit',
       'modsecurity-crs',
       'errors',
       'wwwredir',

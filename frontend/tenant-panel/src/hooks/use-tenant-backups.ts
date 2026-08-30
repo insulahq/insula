@@ -47,6 +47,31 @@ export function useTenantRestoreCarts() {
   });
 }
 
+/**
+ * Discard a restore cart the tenant no longer wants.
+ *
+ * Draft carts already expire after 7 days server-side, but that is a sweeper,
+ * not a UX — a tenant who opened a restore by mistake should not have to look
+ * at it for a week. The server refuses `executing` carts with 409; the caller
+ * surfaces that rather than pretending it worked.
+ */
+export function useDeleteRestoreCart() {
+  const tenantId = useAuth((s) => s.user?.tenantId);
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cartId: string) => {
+      if (!tenantId) throw new Error('No tenant id on session');
+      return apiFetch<void>(
+        `/api/v1/tenants/${tenantId}/restore-carts/${cartId}`,
+        { method: 'DELETE' },
+      );
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['tenant-restore-carts', tenantId] });
+    },
+  });
+}
+
 export function useRunBundleNow() {
   const qc = useQueryClient();
   const tenantId = useAuth((s) => s.user?.tenantId);

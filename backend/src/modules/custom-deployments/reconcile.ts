@@ -75,9 +75,22 @@ export async function reconcileCustomRow(
 
   // Capture host node + run audit in parallel with the status read —
   // both are read-only ops and don't depend on the reconcile outcome.
+  //
+  // The audit must not break reconciliation, but it must not fail SILENTLY
+  // either: this was `.catch(() => 0)`, and it swallowed a unique-constraint
+  // violation on every 15-second tick for weeks. The symptom surfaced far away
+  // — a `:latest` container permanently showing "unknown" update status — with
+  // nothing in the logs connecting the two. Log it; keep going.
   const [podObservation] = await Promise.all([
     readFirstPodObservation(k8s, namespace, row.name),
-    recordImageAudit(db, k8s, row.id, namespace, row.name).catch(() => 0),
+    recordImageAudit(db, k8s, row.id, namespace, row.name).catch((err: unknown) => {
+      console.warn(
+        `[custom-deployments] image audit failed for ${row.id} (${row.name}): `
+        + `${err instanceof Error ? err.message : String(err)} — `
+        + 'update status for moving tags will read "unknown" until this succeeds',
+      );
+      return 0;
+    }),
   ]);
 
   // If the Deployment is at-or-above desired replicas, it's running.

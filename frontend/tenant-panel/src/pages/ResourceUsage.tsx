@@ -2,6 +2,10 @@ import { Cpu, MemoryStick, HardDrive, Gauge, Mail, ArrowUpDown, Loader2, Refresh
 import clsx from 'clsx';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useResourceMetrics, useRefreshMetrics } from '@/hooks/use-resource-metrics';
+import {
+  resourceBarColor, resourcePercent, resourceRatio, resourceStatus,
+  formatCpu, formatGiB as formatBytes,
+} from '@/lib/resource-usage';
 import { useMailboxUsage } from '@/hooks/use-email';
 import { useSubscription } from '@/hooks/use-subscription';
 import { useBandwidth, type TenantBandwidthUsage } from '@/hooks/use-bandwidth';
@@ -160,16 +164,14 @@ function ResourceCard({
   readonly formatValue: (v: number) => string;
   readonly testId: string;
 }) {
-  // Progress metric: in-use divided by plan limit (available).
-  const pct = available > 0 ? Math.min(100, (inUse / available) * 100) : 0;
-  const reservedPct = available > 0 ? Math.min(100, (reserved / available) * 100) : 0;
-  const atWarning = pct >= 80;
-  const atCritical = pct >= 100;
-  const barColor = atCritical
-    ? 'bg-red-500 dark:bg-red-400'
-    : atWarning
-      ? 'bg-amber-500 dark:bg-amber-400'
-      : 'bg-brand-500 dark:bg-brand-400';
+  // Shared policy — see lib/resource-usage.ts. `available` is the PLAN LIMIT.
+  const ratio = resourceRatio(inUse, available);
+  const pct = resourcePercent(inUse, available);
+  const reservedPct = resourcePercent(reserved, available);
+  const status = resourceStatus(ratio);
+  const atWarning = status === 'warning';
+  const atCritical = status === 'critical';
+  const barColor = resourceBarColor(ratio);
 
   return (
     <div
@@ -341,19 +343,4 @@ function BandwidthCard({ usage }: { readonly usage: TenantBandwidthUsage }) {
   );
 }
 
-function formatCpu(value: number): string {
-  if (value >= 10) return value.toFixed(0);
-  if (value >= 1) return value.toFixed(1);
-  return value.toFixed(2);
-}
 
-function formatBytes(valueGi: number): string {
-  if (valueGi <= 0) return '0';
-  if (valueGi < 1) {
-    const mi = valueGi * 1024;
-    if (mi >= 100) return `${mi.toFixed(0)} Mi`;
-    return `${mi.toFixed(1)} Mi`;
-  }
-  if (valueGi >= 10) return valueGi.toFixed(0);
-  return valueGi.toFixed(1);
-}

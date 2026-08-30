@@ -505,7 +505,11 @@ function uploadFileChunked(
     if (cancelled) { resolve(); return; }
     const c = chunks[idx];
     const slice = file.slice(c.offset, c.offset + c.size);
-    const url = `${API_BASE}/api/v1/tenants/${tenantId}/files/upload-raw?path=${encodeURIComponent(filePath)}&offset=${c.offset}`;
+    // `total` lets the sidecar set the file's final length, so re-uploading a
+    // smaller file over a bigger one of the same name can't leave the old tail
+    // attached (a zip keeps its central directory at the end, so a stale tail
+    // makes the new archive read as the old one).
+    const url = `${API_BASE}/api/v1/tenants/${tenantId}/files/upload-raw?path=${encodeURIComponent(filePath)}&offset=${c.offset}&total=${total}`;
     const xhr = new XMLHttpRequest();
     inFlight.add(xhr);
     xhr.open('POST', url);
