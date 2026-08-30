@@ -110,6 +110,9 @@ jobs:
       - run: ./.github/scripts/test-pin-image-tag.sh
       - run: ./.github/scripts/test-component-watch-gate.sh
       - run: ./.github/scripts/test-pin-config-image.sh
+      # Guards the DEV cluster against a slow build pinning its older images
+      # over a newer pin — see pin-would-regress.sh for the incident.
+      - run: ./.github/scripts/test-pin-would-regress.sh
       # Runs in a container with NET_ADMIN so the nft operations (and the
       # `flush ruleset` in its fixtures) are isolated from the runner's own
       # networking. Proves the firewall-blacklist host-migration is surgical
