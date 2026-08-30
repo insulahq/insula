@@ -12,6 +12,106 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.22] - 2026-08-30
+
+### Security
+- **Any unauthenticated request could take every site on the cluster offline.**
+  A single 600 MB `POST` to `/api/v1/auth/login` — no account, no token, no
+  tenant — OOM-killed the Traefik pod in about three seconds (`exitCode 137,
+  reason OOMKilled`), and with it every ingress on the cluster. The cause is in
+  the ModSecurity plugin: it calls `io.ReadAll(req.Body)` into memory before any
+  rule runs, so the WAF's own `SecRequestBodyLimit` never gets a say — the body
+  is already resident. The plugin exposes no cap of its own; `maxBodySize` looks
+  like a setting but is not a field on its config struct, so setting it is
+  silently ignored.
+
+  A Traefik `buffering` middleware (`maxRequestBodyBytes: 13107200`) is now
+  attached **ahead of** the WAF on every route that carries it, so an oversized
+  body is refused with **413** at the proxy and never reaches the plugin.
+  Verified live: 600 MB now returns 413 in 0.33 s with no Traefik restart.
+  `ci-waf-body-limit-check.sh` fails the build if the WAF is ever attached
+  without the cap, or ordered after it.
+
+### Fixed
+- **Every file-manager upload and download had been failing with 403 since
+  2026-08-12.** The sidecar's per-tenant auth gate expects an
+  `X-Platform-Internal` header, and only the *buffered* apiserver-proxy path
+  sent it — the three streaming direct-ClusterIP branches did not. Because the
+  buffered operations (listing, rename, delete, small edits) kept working, the
+  panel looked healthy and only the large transfers failed. All direct calls now
+  go through one `directHeaders()` helper, and
+  `ci-file-manager-auth-check.sh` fails the build on any direct `http.request()`
+  that bypasses it.
+- **Replacing a file via chunked upload could silently produce a corrupt
+  archive.** The writer opened the destination for update and wrote each chunk at
+  its offset but never truncated, so replacing a large zip with a smaller one
+  left the previous file's tail in place. The result still opened, still listed
+  entries, and extracted the *old* archive's trailing content — the worst kind of
+  failure, because nothing reports an error. The final length is now passed with
+  the last chunk and the file is truncated to it.
+- **Tenant disk usage read "0 B of 0 B" on every Longhorn volume.** The `df`
+  parser indexed fixed columns from the left, which breaks the moment the device
+  path is long enough for `df` to wrap the row onto two lines — as every Longhorn
+  device path is. It now indexes the five trailing columns from the right, which
+  holds whether or not the row wraps.
+- **`:latest` and other moving tags showed "unknown" update status forever.**
+  The audit writer stored a sentinel row with a `NULL` digest and, once the
+  digest resolved, tried to *update* that row — but a unique index over
+  `(deployment_id, image, digest)` with `NULLS NOT DISTINCT` meant several
+  sentinels could not coexist, and the update spanned more than one row and
+  aborted. Nothing was ever recorded, so every later comparison had nothing to
+  compare against. This is the fourth report of this symptom; the previous three
+  fixes all changed comparison logic *downstream* of data that was never being
+  written. Resolution now inserts the `(deployment, digest)` pair directly,
+  treats a unique violation as "already audited", and deletes the sentinel
+  afterwards. Migration `0091` collapses the duplicate sentinels left behind.
+- **Image-audit rows grew without bound.** Every check appended a row per
+  deployment, forever. Retention now keeps 90 days plus, permanently, the first
+  recorded row per `(deployment_id, image)` — so the "first seen" baseline that
+  update detection depends on is never reaped.
+- **The per-application disk bar was measured against a hardcoded 10 GB.** An app
+  using 6 GB showed an orange 60 % "warning" bar regardless of the tenant's
+  actual storage limit. It now divides by the tenant's real limit.
+- **A slow build could roll the DEV cluster backwards.** `build-deploy` pins
+  images at the *end* of a run, so a 90-minute build finishing after two later
+  merges wrote its own older images over the newer pin — silently reverting DEV
+  by three merges. The workflow now checks whether its pin is an ancestor of the
+  current one and skips the write if so. The guard fails open: an
+  indeterminate ancestry check proceeds rather than blocking a deploy.
+
+### Changed
+- **Usage bars follow one threshold policy everywhere.** Four different schemes
+  were in use across the dashboard, the resource-usage page, the tenant list and
+  the per-app view — plus two invented denominators. All of them now come from a
+  single shared module (warning at 80 %, critical at 100 %), and every tile
+  reports **used / reserved / available** the way the resource-usage modal
+  already did.
+- **File-manager uploads bypass the WAF.** Inspecting an archive upload byte by
+  byte buys nothing — the payload is opaque to request-body rules — while
+  buffering it costs the proxy its memory. The upload path is carved out by a
+  higher-priority route. The carve-out is now part of the reconciler's drift
+  comparison; it shares a host and backend with the main route, which made it
+  invisible to the old comparison and meant it was never actually applied.
+
+### Added
+- **Scheduled backups no longer notify tenants.** A tenant sees notifications for
+  the backups they start; the platform's own scheduled runs are the operator's
+  business and no longer appear in the tenant panel — success or failure.
+  Failures still reach admins.
+- **Restore carts are resumable, deletable, and reaped after 7 days.** An
+  abandoned cart used to sit in the tenant panel with no way to reopen or remove
+  it. Clicking one now reopens it, it can be deleted (409 while a restore is
+  actually executing), and stale carts expire on their own.
+- **Admin tenant backups are grouped by tenant, with a measured repository
+  size.** Each tenant is a collapsible row listing its backups and any open
+  restore carts with Resume and Delete. The size column previously showed bytes
+  processed by the most recent snapshot, which is not a repository size at all;
+  a refresh button now runs `restic stats --mode raw-data` and reports the real
+  figure per component, leaving the cached value untouched if a component fails
+  rather than reporting a confident zero.
+- **A Login action on the admin tenants list**, so an operator can enter a
+  tenant's panel without first opening the tenant.
+
 ## [2026.8.21] - 2026-08-27
 
 ### Added
