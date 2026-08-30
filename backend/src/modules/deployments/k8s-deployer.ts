@@ -78,7 +78,14 @@ export interface DeployCatalogEntryInput {
   readonly storagePath: string;
   readonly namespace: string;
   readonly components: readonly DeployComponentInput[];
-  readonly volumes: Array<{ container_path: string; local_path?: string | null }>;
+  readonly volumes: MountSpec[];
+  /**
+   * Tenant-defined extra mounts. Attached to the PRIMARY component only —
+   * the one serving ingress, else the first. Mounting a tenant's media folder
+   * into the sidecar database of a multi-component app is never what they
+   * meant, and two containers writing the same subPath is a corruption risk.
+   */
+  readonly extraMounts?: ReadonlyArray<{ folder: string; mount_path: string; read_only?: boolean }>;
   readonly replicaCount: number;
   readonly cpuRequest: string;
   readonly memoryRequest: string;
@@ -237,6 +244,82 @@ export function volumeKey(v: { container_path: string; local_path?: string | nul
 }
 
 /**
+ * Defence in depth for tenant-supplied folder names, mirroring what
+ * `volumeKey` does for the catalog's `local_path`.
+ *
+ * The value is validated by `extraMountsSchema` at the API boundary, but it
+ * also lands inside the init container's shell command
+ * (`mkdir -p /data/<subPath>`) and in a Kubernetes subPath. A caller that
+ * skipped validation — a hand-written DB row, a future code path — must not
+ * be able to turn either into something else, so re-check here and throw
+ * rather than emit a pod spec we cannot vouch for.
+ */
+const PVC_ROOT_PATH_RE = /^[a-z0-9][a-z0-9_-]{0,62}(\/[a-z0-9][a-z0-9_-]{0,62}){0,3}$/;
+
+export function assertSafePvcRootPath(value: string): string {
+  if (!PVC_ROOT_PATH_RE.test(value)) {
+    throw new Error(
+      `extra mount: unsafe folder "${value}" — expected up to 4 lowercase path segments`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Index of the component tenant-defined mounts attach to: the first one
+ * publishing an ingress port, else the first component. Mirrors how the
+ * manifest generator picks the primary component for the container image.
+ */
+export function primaryComponentIndex(
+  components: ReadonlyArray<{ ports?: ReadonlyArray<{ ingress?: boolean }> }>,
+): number {
+  const withIngress = components.findIndex(c => c.ports?.some(p => p.ingress));
+  return withIngress >= 0 ? withIngress : 0;
+}
+
+/**
+ * Turn the tenant's extra-mount rows into MountSpecs, ordered so a parent
+ * mount is always emitted before anything nested inside it — kubelet mounts
+ * in list order, and a child mounted first is shadowed by its parent.
+ */
+export function extraMountSpecs(
+  extras: ReadonlyArray<{ folder: string; mount_path: string; read_only?: boolean }>,
+): MountSpec[] {
+  return [...extras]
+    .sort((a, b) => a.mount_path.split('/').length - b.mount_path.split('/').length)
+    .map(e => ({
+      container_path: e.mount_path,
+      pvc_root_path: assertSafePvcRootPath(e.folder),
+      read_only: e.read_only ?? false,
+    }));
+}
+
+/**
+ * One mount against the tenant's shared PVC.
+ *
+ * `local_path` is the catalog manifest's contract: a single segment (or "."),
+ * resolved UNDER the deployment's storagePath.
+ *
+ * `pvc_root_path` is the tenant-defined extra-mount contract: a path resolved
+ * from the PVC ROOT instead, which is what lets two deployments mount the same
+ * folder. Exactly one of the two applies to any given mount.
+ */
+/** A volumeMount entry as Kubernetes wants it. */
+interface PodVolumeMount {
+  name: string;
+  mountPath: string;
+  subPath?: string;
+  readOnly?: boolean;
+}
+
+export interface MountSpec {
+  readonly container_path: string;
+  readonly local_path?: string | null;
+  readonly pvc_root_path?: string;
+  readonly read_only?: boolean;
+}
+
+/**
  * Filter the app-level volumes array down to the set this component actually
  * needs. When `componentVolumes` is undefined (legacy manifests without per-
  * component bindings) the full array is returned — preserves pre-scoping
@@ -249,9 +332,9 @@ export function volumeKey(v: { container_path: string; local_path?: string | nul
  * branch is mainly for correctness.
  */
 function filterVolumesForComponent(
-  appVolumes: Array<{ container_path: string; local_path?: string | null }>,
+  appVolumes: MountSpec[],
   componentVolumes: readonly string[] | undefined,
-): Array<{ container_path: string; local_path?: string | null }> {
+): MountSpec[] {
   if (componentVolumes === undefined) return appVolumes;
   if (componentVolumes.length === 0) return [];
   const want = new Set(componentVolumes);
@@ -273,7 +356,7 @@ function filterVolumesForComponent(
  * single segment (e.g. `"content"`), `subPath` is `<storagePath>/<segment>`.
  */
 function buildVolumeMountSpec(
-  volumes: Array<{ container_path: string; local_path?: string | null }>,
+  volumes: MountSpec[],
   storagePath: string,
   namespace: string,
 ): {
@@ -299,7 +382,20 @@ function buildVolumeMountSpec(
   // PVC root; they keep working but the new layout only applies to fresh
   // deploys. A redeploy would not migrate data — operators wanting the
   // new layout must export → recreate.)
-  const mounts = volumes.map(v => {
+  const mounts: PodVolumeMount[] = volumes.map((v): PodVolumeMount => {
+    // Tenant-defined extra mount: the subPath is resolved from the PVC ROOT,
+    // NOT from this deployment's storagePath. That is what makes the folder
+    // shareable with another deployment, and it is also why deleting this
+    // deployment with its data leaves the folder alone — the delete only
+    // clears the storagePath subtree.
+    if (v.pvc_root_path !== undefined) {
+      return {
+        name: 'tenant-storage',
+        mountPath: v.container_path,
+        subPath: v.pvc_root_path,
+        ...(v.read_only ? { readOnly: true } : {}),
+      };
+    }
     const key = volumeKey(v);
     if (key === null) {
       // PVC-root sentinel ('.' or null) → mount storagePath, no extra key.
@@ -327,6 +423,8 @@ function buildVolumeMountSpec(
   // nothing across-tenant to leak. fsGroup at pod level was considered
   // but rejected: no single GID fits all images, and fsGroup recursively
   // chmods on every pod start which is slow on large PVCs.
+  // This loop covers tenant-defined extra mounts too: their subPath is a
+  // PVC-root-relative folder that may not exist yet on first use.
   const mkdirParts: string[] = [];
   for (const m of mounts) {
     if (m.subPath !== undefined) {
@@ -498,6 +596,8 @@ export async function deployCatalogEntry(
     })),
   );
 
+  const primaryComponent = components[primaryComponentIndex(components)];
+
   for (const component of components) {
     const name = k8sResourceName(deploymentName, component.name, componentCount);
     const labels = deploymentLabels(deploymentName, component.name);
@@ -547,6 +647,11 @@ export async function deployCatalogEntry(
     // Scope volumes to what this component actually needs. Undefined on the
     // component preserves legacy share-all; empty array means mounts nothing.
     const componentVolumes = filterVolumesForComponent(volumes, component.volumes);
+    // Tenant extras ride along with the primary component only.
+    const mountsForComponent = (input.extraMounts && input.extraMounts.length > 0
+      && component === primaryComponent)
+      ? [...componentVolumes, ...extraMountSpecs(input.extraMounts)]
+      : componentVolumes;
 
     // Compute the firewall pod-template annotations once per call. They're
     // identical for every component because the firewall block lives at
@@ -557,7 +662,7 @@ export async function deployCatalogEntry(
 
     switch (component.type) {
       case 'deployment':
-        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, componentVolumes, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
+        await deployK8sDeployment(k8s, namespace, name, labels, container, replicaCount, input.storagePath, mountsForComponent, passwordResetContainer, env, input.nodeName, input.storageTier, firewallAnnotations);
         break;
 
       case 'statefulset':
@@ -572,12 +677,12 @@ export async function deployCatalogEntry(
         break;
 
       case 'cronjob':
-        await deployK8sCronJob(k8s, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, componentVolumes);
+        await deployK8sCronJob(k8s, namespace, name, labels, container, component.schedule ?? '0 * * * *', input.storagePath, mountsForComponent);
         break;
 
       case 'job':
         // Jobs are one-shot; create only
-        await deployK8sJob(k8s, namespace, name, labels, container, input.storagePath, componentVolumes);
+        await deployK8sJob(k8s, namespace, name, labels, container, input.storagePath, mountsForComponent);
         break;
     }
 
@@ -667,7 +772,7 @@ async function deployK8sDeployment(
   container: Record<string, unknown>,
   replicaCount: number,
   storagePath: string,
-  volumes: Array<{ container_path: string; local_path?: string | null }> = [],
+  volumes: MountSpec[] = [],
   passwordResetContainer?: { name: string; image: string; command: readonly string[]; volumeMounts: readonly Record<string, unknown>[]; resources: Record<string, unknown>; securityContext?: Record<string, unknown> } | null,
   envVars?: Array<{ name: string; value: string }>,
   // M3/HA: optional worker pin + tier-aware affinity. Local tier =
@@ -783,7 +888,7 @@ async function deployK8sCronJob(
   container: Record<string, unknown>,
   schedule: string,
   storagePath: string = '',
-  volumes: Array<{ container_path: string; local_path?: string | null }> = [],
+  volumes: MountSpec[] = [],
 ): Promise<void> {
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
   const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
@@ -830,7 +935,7 @@ async function deployK8sJob(
   labels: Record<string, string>,
   container: Record<string, unknown>,
   storagePath: string = '',
-  volumes: Array<{ container_path: string; local_path?: string | null }> = [],
+  volumes: MountSpec[] = [],
 ): Promise<void> {
   const spec = buildVolumeMountSpec(volumes, storagePath, namespace);
   const containerWithMounts = spec ? { ...container, volumeMounts: spec.mounts } : container;
