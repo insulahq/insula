@@ -335,7 +335,29 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Development version → ${VERSION}"
 
+      # Refuse to move the pin BACKWARDS.
+      #
+      # This job writes whatever ITS run built, and the recovery loop below
+      # re-applies those same values after a reset. Correct when builds finish
+      # in the order they started; wrong when they do not. On 2026-08-30 a build
+      # that took 90 minutes finished after three newer ones and pinned its own,
+      # oldest images over them — DEV silently rolled back three merges,
+      # including a fix for an unauthenticated request that could OOM the
+      # ingress, and nothing reported it for 25 minutes.
+      #
+      # Concurrency groups serialise the writes; they do not order them by
+      # content. This does. See .github/scripts/pin-would-regress.sh.
+      - name: Skip if the pin would regress
+        id: regress
+        run: |
+          if ./.github/scripts/pin-would-regress.sh; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Apply development pin
+        if: steps.regress.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BRANCH: ${{ github.ref_name }}
@@ -350,6 +372,7 @@ jobs:
           ./.github/scripts/apply-development-pin.sh
 
       - name: Commit + push (with reset-and-reapply on race)
+        if: steps.regress.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BRANCH: ${{ github.ref_name }}
@@ -408,6 +431,15 @@ jobs:
             echo "push attempt $attempt rejected (rc=$push_rc) — reset to origin/development + re-apply pin"
             git fetch origin development
             git reset --hard origin/development
+            # Re-check AFTER the reset. Whoever won the race may have pinned a
+            # commit that already contains ours, in which case re-applying our
+            # older values here is exactly the rollback this guard exists to
+            # prevent — the pre-step check ran against the previous HEAD and
+            # cannot know that.
+            if ./.github/scripts/pin-would-regress.sh; then
+              echo "the winning pin already contains this commit — leaving it alone"
+              exit 0
+            fi
             ./.github/scripts/apply-development-pin.sh
             stage_and_commit
             had_changes=$?
