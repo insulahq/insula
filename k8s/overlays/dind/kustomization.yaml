@@ -17,10 +17,13 @@ resources:
   - nodeport-services.yaml
   - allow-intra-platform-netpol.yaml
   - allow-mail-to-postgres-netpol.yaml
-  # Dedicated Ingress for the File Manager upload-raw endpoint (WAF off
-  # on this one path so multi-GB uploads don't OOM the controller). See
-  # ingress-upload.yaml header for the design rationale.
-  - ingress-upload.yaml
+  # The File Manager upload-raw WAF carve-out used to live here as a
+  # hand-written, dev-only IngressRoute, with a note that the reconciler
+  # would emit the production equivalent "in Phase 2". It never did, so
+  # production buffered every upload through the WAF. The carve-out is now
+  # a route inside the reconciler-owned platform-ingress and applies to
+  # every environment — see UPLOAD_PATH_REGEXP in
+  # backend/src/modules/system-settings/ingress-reconciler.ts.
   # Dev-only sub-stacks (core only — mail/webmail are opt-in via local.sh)
   - dex/
   # oauth2-proxy ships with Dex (moved out of base — see base/kustomization.yaml).

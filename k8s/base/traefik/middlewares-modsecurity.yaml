@@ -37,13 +37,32 @@ spec:
       # URL the plugin POSTs request bodies to. The modsec-crs Service
       # in the same namespace (Service DNS short form is fine).
       modSecurityUrl: http://modsec-crs.traefik.svc.cluster.local
-      # Request body size cap (bytes) — bodies larger than this skip
-      # WAF inspection. 5 MiB covers typical form posts / JSON APIs;
-      # operators expecting larger payloads can raise this in an
-      # overlay. Tenant routes that DON'T need body inspection (large
-      # uploads, streaming) should not opt into WAF — the
-      # annotation-sync `wafEnabled=0` default is the right setting.
-      maxBodySize: 5242880
+      # NO BODY-SIZE CAP EXISTS. This used to set `maxBodySize: 5242880`
+      # with a comment claiming larger bodies skip inspection. They do
+      # not: `maxBodySize` is not a field of the plugin's Config struct,
+      # so Traefik drops the unknown key and the plugin never reads it.
+      # Verified 2026-08-30 by reading modsecurity.go off a running
+      # Traefik pod — the single source file has no such field, and
+      # ServeHTTP does an unbounded `io.ReadAll(req.Body)` before
+      # forwarding the buffered copy to the sidecar (which then spools it
+      # to a temp file of its own).
+      #
+      # Consequences to weigh before attaching this Middleware anywhere:
+      #   * the FULL request body of every covered request is held in the
+      #     Traefik pod's memory. Traefik is a DaemonSet fronting the
+      #     whole cluster with limits.memory=512Mi, so a large enough
+      #     upload on ANY covered route is a cluster-wide ingress OOM,
+      #     not just a slow request.
+      #   * the body is transferred twice (client→Traefik→sidecar) and
+      #     written to disk once, before the upstream ever sees it.
+      #
+      # The platform's own streaming upload path is therefore routed
+      # around this Middleware — see UPLOAD_PATH_REGEXP in
+      # backend/src/modules/system-settings/ingress-reconciler.ts.
+      # For TENANT routes, `wafEnabled` is the tenant's opt-in: a tenant
+      # that enables WAF and then accepts large uploads (media libraries,
+      # backups) buffers those bodies through the shared ingress. Until
+      # the plugin honours a cap, treat WAF-on as "small bodies only".
       # Timeout (ms) for the ModSec verdict round-trip. Bumped from
       # the initial 1000 to 3000 because:
       #
