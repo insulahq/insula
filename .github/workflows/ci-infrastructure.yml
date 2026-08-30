@@ -7,6 +7,11 @@ on:
       - 'k8s/**'
       - 'scripts/**'
       - 'security/**'
+      # file-manager-auth-guard inspects backend source, so an edit that
+      # touches ONLY the backend must still trigger this workflow — otherwise
+      # the guard silently skips exactly the change it exists to catch.
+      - 'backend/src/modules/file-manager/**'
+      - 'images/file-manager/**'
       # A change to this workflow must be exercised BY this workflow.
       # Without it a broken (or, as here, a hanging) job could be edited and
       # merged without the fix ever running.
@@ -17,6 +22,8 @@ on:
       - 'k8s/**'
       - 'scripts/**'
       - 'security/**'
+      - 'backend/src/modules/file-manager/**'
+      - 'images/file-manager/**'
       - '.github/workflows/ci-infrastructure.yml'
 
 # Least privilege (2026-07-28 security review): these workflows only read the
@@ -235,6 +242,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify every /tenants/:tenantId/ route is scoped to the caller's tenant
         run: ./scripts/ci-tenant-scope-check.sh
+
+  file-manager-auth-guard:
+    name: Direct file-manager calls carry the sidecar auth header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify every direct-ClusterIP sidecar request sends X-Platform-Internal
+        run: ./scripts/ci-file-manager-auth-check.sh
 
   # 2026-07-28: both guards existed but were never wired into any workflow, so
   # they never ran. ci-node-terminal-check had in fact been FAILING on
