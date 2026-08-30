@@ -3,6 +3,7 @@ import type { BulkDeleteResult } from '@insula/api-contracts';
 import type * as React from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch, API_BASE } from '@/lib/api-client';
+import { streamNdjsonOperation, type StreamProgress } from '@/lib/ndjson-progress';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -185,11 +186,14 @@ export function useArchiveFiles() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ paths, destPath, format }: { paths: string[]; destPath: string; format: 'zip' | 'tar.gz' | 'tar' }) =>
-      apiFetch(`/api/v1/tenants/${tenantId}/files/archive`, {
-        method: 'POST',
-        body: JSON.stringify({ paths, destPath, format }),
-      }),
+    // Streams NDJSON progress — an archive of a large tree runs for minutes.
+    // `onProgress` is optional so existing call sites keep working unchanged.
+    mutationFn: ({ paths, destPath, format, onProgress }: {
+      paths: string[]; destPath: string; format: 'zip' | 'tar.gz' | 'tar';
+      onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamNdjsonOperation(`/api/v1/tenants/${tenantId}/files/archive`,
+        { paths, destPath, format }, { onProgress }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
   });
 }
@@ -198,11 +202,13 @@ export function useExtractArchive() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ path, destPath }: { path: string; destPath: string }) =>
-      apiFetch(`/api/v1/tenants/${tenantId}/files/extract`, {
-        method: 'POST',
-        body: JSON.stringify({ path, destPath }),
-      }),
+    mutationFn: ({ path, destPath, onStart, onProgress }: {
+      path: string; destPath: string;
+      onStart?: (total: number | null) => void;
+      onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamNdjsonOperation(`/api/v1/tenants/${tenantId}/files/extract`,
+        { path, destPath }, { onStart, onProgress }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
   });
 }

@@ -30,7 +30,7 @@ and an actions toolbar.
 | **Rename / Delete** | Per-file actions. |
 | **Delete many** | Select items (or **Select all**) → **Delete** in the bulk toolbar. The whole selection is deleted in a single operation, and if any item cannot be removed you are told which ones — the rest still go. |
 | **Copy / Move** | Select items → **Copy** or **Move** in the bulk toolbar. |
-| **Archive (zip/tar)** | Select items → **Archive**. Extract an archive from its row action. |
+| **Archive (zip/tar)** | Select items → **Archive**. Extract an archive from its row action. See [Large archives](#large-archives). |
 | **Permissions / Ownership** | Select items → **Permissions** or **Ownership** (advanced — change file access modes). |
 
 The **Import** menu offers three handy shortcuts:
@@ -39,6 +39,33 @@ The **Import** menu offers three handy shortcuts:
   folder.
 - **Clone Website** — copy an existing website into your storage.
 - **Git Clone** — pull a Git repository into a folder.
+
+### Large archives
+
+There is no size or file-count limit on extracting or creating an archive. A
+CMS or framework release containing tens of thousands of files extracts the
+same way a handful of files does — it simply takes longer.
+
+While it runs you see live progress rather than a spinner:
+
+- **Zip files** show a real percentage and a running count (`4,182 / 14,191`),
+  along with the file currently being written. The total is read from the
+  archive itself before extraction starts.
+- **Tar archives** (`.tar`, `.tar.gz`, `.tgz`) and **archive creation** show a
+  running file count with no percentage. A tar file carries no index of its
+  contents, so the total genuinely is not known until the work finishes — the
+  count is shown instead of a made-up percentage.
+
+Keep the dialog open until it completes. If something goes wrong the message
+names the cause — a damaged archive, not enough free space, or a tool that
+stopped responding — rather than a generic failure.
+
+!!! note "Where an archive extracts to"
+    Extraction preserves the folder structure **inside** the archive. Many
+    downloads wrap everything in a single top-level folder, so extracting into
+    `/public` can produce `/public/product-name/…` rather than files directly in
+    `/public`. Check the destination afterwards and move the contents up a level
+    if your site expects them at the root.
 
 ### Edit files in the browser
 
