@@ -199,6 +199,70 @@ AFTER_PURGE=$(api "$T/disk-usage" | jq -r '.data.trashBytes')
   && pass "trashBytes dropped ($BEFORE_PURGE → $AFTER_PURGE)" \
   || fail "trashBytes did not drop ($BEFORE_PURGE → $AFTER_PURGE)"
 
+note "9. an incidental overwrite is recoverable"
+# The class the bin was extended to cover: the user names a SOURCE (or an
+# archive, or an upload) and something ELSE disappears.
+OW="$STAMP-ow"
+japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/src.txt" --arg c "SOURCE-$STAMP" '{path:$p,content:$c}')" >/dev/null
+japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/victim.txt" --arg c "VICTIM-$STAMP" '{path:$p,content:$c}')" >/dev/null
+
+MV=$(japi -X POST "$T/rename" -d "$(jq -nc --arg o "$OW/src.txt" --arg n "$OW/victim.txt" '{oldPath:$o,newPath:$n}')")
+[[ "$(jq -r '.data.replaced.originalPath // empty' <<<"$MV")" == "$OW/victim.txt" ]] \
+  && pass "a move onto an occupied name reports what it displaced" \
+  || fail "move did not report the displaced file: $(jq -c '.data' <<<"$MV")"
+[[ "$(getp "$T/read" "$OW/victim.txt" | jq -r '.data.content')" == "SOURCE-$STAMP" ]] \
+  && pass "the move itself still happened" || fail "the move did not take effect"
+
+OW_ID=$(jq -r '.data.replaced.id' <<<"$MV")
+RES2=$(japi -X POST "$T/trash/restore" -d "$(jq -nc --arg id "$OW_ID" '{id:$id,autoRename:true}')")
+OW_BACK=$(jq -r '.data.restoredTo' <<<"$RES2")
+[[ "$(getp "$T/read" "$OW_BACK" | jq -r '.data.content')" == "VICTIM-$STAMP" ]] \
+  && pass "the displaced file is recoverable byte for byte" \
+  || fail "displaced content not recoverable from $OW_BACK"
+
+note "10. an editor save does NOT fill the bin"
+# expectExisting marks a deliberate overwrite of an open file. One entry per
+# Ctrl-S would bury the accidents the bin exists to catch.
+japi -X POST "$T/trash/purge" -d '{"all":true}' >/dev/null
+japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/edit.php" --arg c 'v1' '{path:$p,content:$c}')" >/dev/null
+for v in v2 v3 v4; do
+  japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/edit.php" --arg c "$v" '{path:$p,content:$c,expectExisting:true}')" >/dev/null
+done
+[[ "$(getp "$T/read" "$OW/edit.php" | jq -r '.data.content')" == "v4" ]] \
+  && pass "the editor saves took effect" || fail "editor saves did not apply"
+[[ "$(api "$T/trash" | jq '.data.entries | length')" == "0" ]] \
+  && pass "three saves produced no trash entries" \
+  || fail "editor saves polluted the bin: $(api "$T/trash" | jq -c '.data.entries|map(.originalPath)')"
+
+note "11. extracting over a live tree preserves the files it replaces"
+# The worst silent-overwrite case: one action can wipe a whole tree.
+japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/pkg/site/index.php" --arg c 'FROM-ARCHIVE' '{path:$p,content:$c}')" >/dev/null
+japi -X POST "$T/archive" -d "$(jq -nc --arg s "$OW/pkg/site" --arg d "$OW/site.tar.gz" '{paths:[$s],destPath:$d,format:"tar.gz"}')" >/dev/null
+japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/live/site/index.php" --arg c "CUSTOMISED-$STAMP" '{path:$p,content:$c}')" >/dev/null
+japi -X POST "$T/trash/purge" -d '{"all":true}' >/dev/null
+
+curl -sk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "$T/extract" -d "$(jq -nc --arg p "$OW/site.tar.gz" --arg d "$OW/live" '{path:$p,destPath:$d}')" >/dev/null
+
+EXTRA=$(api "$T/trash" | jq -r '[.data.entries[] | select(.origin=="replaced")] | length')
+if [[ "$EXTRA" -ge 1 ]]; then
+  pass "extract backed up the file(s) it replaced ($EXTRA)"
+  RID=$(api "$T/trash" | jq -r '[.data.entries[] | select(.origin=="replaced")][0].id')
+  RPATH=$(japi -X POST "$T/trash/restore" -d "$(jq -nc --arg id "$RID" '{id:$id,autoRename:true}')" | jq -r '.data.restoredTo')
+  [[ "$(getp "$T/read" "$RPATH" | jq -r '.data.content')" == "CUSTOMISED-$STAMP" ]] \
+    && pass "the overwritten customisation is recoverable" \
+    || fail "customisation not recoverable from $RPATH"
+else
+  # Only a real miss if the archive genuinely collided; say which it was.
+  fail "extract recorded no replaced entries (archive may not have collided)"
+fi
+
+note "cleanup"
+japi -X POST "$T/delete" -d "$(jq -nc --arg p "$OW" '{path:$p,permanent:true}')" >/dev/null
+japi -X POST "$T/trash/purge" -d '{"all":true}' >/dev/null
+[[ "$(api "$T/trash" | jq '.data.entries | length')" == "0" ]] \
+  && pass "suite left the bin empty" || fail "suite left entries behind"
+
 echo
 echo "RESULT: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]] || exit 1
