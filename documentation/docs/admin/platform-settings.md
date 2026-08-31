@@ -15,7 +15,7 @@ forget them. This chapter walks each page; some require `super_admin`.
 | **Upgrades** | Guarded platform version upgrades (super_admin). |
 | **Identity** | Platform name, panel URLs, support contacts. |
 | **Hosting Plans** | Plans and resource limits. → [Plans & subscriptions](plans-and-subscriptions.md) |
-| **Limits & Regional** | API rate limit, timezone, currency. |
+| **Limits & Regional** | API rate limit, retention windows (snapshots, deleted-tenant backups, file-manager recycle bin), timezone, currency. |
 | **DNS Providers** | DNS provider groups + servers. → [Domains & DNS](domains-and-dns.md) |
 | **Integrations** | Embedded-service URLs (Longhorn, …). |
 | **AI Providers** | AI model providers + keys. |
@@ -64,7 +64,36 @@ sends a partial update, so it won't disturb Limits or other settings.
 
 **Platform → Limits & Regional** sets the **API rate limit**, the default
 **timezone**, and the **currency** (which is what plan prices and the AI
-budget are displayed in everywhere else).
+budget are displayed in everywhere else), plus three retention windows:
+
+| Setting | What it controls |
+|---|---|
+| **Snapshot Retention** | How long on-server tenant volume snapshots are kept (1–720 hours). |
+| **Deleted-Tenant Backup Retention** | Grace window before a deleted tenant's off-site bundles are reaped (1–3650 days). |
+| **File Manager Recycle Bin** | How long a tenant's deleted files are recoverable (1–365 days, default 14). |
+
+### File-manager recycle bin
+
+Files a tenant deletes in the file manager move to a recycle bin on **that
+tenant's own volume** instead of being erased. They are removed automatically
+once this window passes.
+
+!!! warning "Trashed files consume the tenant's quota"
+
+    The bin lives on the tenant's PVC, so deleting a file frees **no** space
+    until it expires or the tenant empties the bin. There is deliberately no
+    size cap — a size-driven purge would delete one tenant's files because
+    another filled the bin — so a longer window means tenants sit closer to
+    their quota. The tenant panel shows the bin's size next to their storage
+    figure, and every delete dialog offers **Delete permanently** as an opt-in.
+
+Changing this value takes effect immediately; it is not baked into running
+tenant pods. Expiry runs from two places: opportunistically while a tenant is
+using their file manager, and from a background reconciler every six hours
+that covers tenants who deleted something and never came back.
+
+The bin is included in tenant backup bundles, so restoring a bundle also
+restores whatever was recoverable at capture time.
 
 ## DNS Providers
 
