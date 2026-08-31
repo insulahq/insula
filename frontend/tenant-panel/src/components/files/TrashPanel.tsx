@@ -206,13 +206,6 @@ export default function TrashPanel({ onRestored }: { readonly onRestored?: () =>
                         <EntryIcon type={entry.type} />
                         <span className="truncate font-medium text-gray-900 dark:text-gray-100">{entry.name}</span>
                       </div>
-                      {/* Why is this here? An entry the user never explicitly
-                          deleted needs to explain itself. */}
-                      {entry.origin === 'replaced' && (
-                        <span className="ml-6 text-xs text-amber-700 dark:text-amber-400">
-                          replaced by {entry.replacedBy ?? 'another file'} — this is the previous version
-                        </span>
-                      )}
                       {entry.deploymentName && (
                         <span className="ml-6 text-xs text-gray-500 dark:text-gray-400">
                           data folder of deployment “{entry.deploymentName}” — restoring returns the files only, not the deployment

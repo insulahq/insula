@@ -41,17 +41,6 @@ export type FileContentResponse = z.infer<typeof fileContentResponseSchema>;
 export const writeFileInputSchema = z.object({
   path: z.string().min(1),
   content: z.string(),
-  /**
-   * `true` marks a DELIBERATE overwrite of a file the caller already has open —
-   * the inline editor saving what it just loaded. Those skip the recycle bin,
-   * because one entry per Ctrl-S would bury the accidents it exists to catch.
-   *
-   * Absent (the default) means a BLIND write: "New File" onto a name that
-   * already exists, an AI-applied change, a script. Those displace something
-   * the user never named, so the occupant is backed up. The two are
-   * indistinguishable server-side, so intent has to come from the caller.
-   */
-  expectExisting: z.boolean().optional().default(false),
 });
 
 export type WriteFileInput = z.infer<typeof writeFileInputSchema>;
@@ -71,15 +60,6 @@ export const renameInputSchema = z.object({
   newPath: z.string().min(1),
 });
 
-/** A file displaced by an incidental overwrite (rename/copy/upload/extract) and
- *  moved to the recycle bin. `null` when the destination was free. */
-export const replacedEntrySchema = z.object({
-  id: z.string(),
-  originalPath: z.string(),
-  sizeBytes: z.number().nullable(),
-}).nullable();
-
-export type ReplacedEntry = z.infer<typeof replacedEntrySchema>;
 
 export type RenameInput = z.infer<typeof renameInputSchema>;
 
