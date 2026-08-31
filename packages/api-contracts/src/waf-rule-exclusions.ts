@@ -9,13 +9,26 @@
  * hash annotation on the modsec-crs Deployment so it rolls.
  *
  * scope:
- *  - 'args_names_only' — removes ARGS_NAMES from the rule's variable
- *    list. The standard JSON-API false-positive fix (CRS 930xxx / 931xxx
- *    scanning JSON field names against LFI/RFI dictionaries). The rule
- *    still scans ARG values + headers, so real attacks are still caught.
- *  - 'full_disable' — `ctl:ruleRemoveById`. The rule is disabled
- *    entirely for matching hosts. Use sparingly — operators should
- *    prefer 'args_names_only' first.
+ *  - 'args' — removes ARGS **and** ARGS_NAMES. This is the useful default
+ *    and what an operator almost always means by "whitelist this rule for
+ *    this host": the rule stops inspecting request arguments, and still
+ *    scans REQUEST_URI, headers, cookies and body.
+ *  - 'args_names_only' — removes ARGS_NAMES only, i.e. the field NAMES.
+ *    Correct for the narrow case of a rule matching a JSON field name
+ *    (930xxx/931xxx against LFI/RFI dictionaries) and A NO-OP FOR EVERYTHING
+ *    ELSE. Kept for existing rows; not recommended for new ones.
+ *  - 'full_disable' — `ctl:ruleRemoveById`. The rule is disabled entirely
+ *    for matching hosts. Use sparingly.
+ *
+ * WHY 'args' EXISTS. 'args_names_only' was the default, and it silently does
+ * nothing for any rule that matches argument VALUES — which is most of them.
+ * Reported 2026-08-31: a PHP deploy was blocked by 932160 (Unix shell code in
+ * an ARG value), the operator whitelisted 932160 for the host exactly as the
+ * UI offered, the exclusion rendered and loaded correctly, and the deploy was
+ * still blocked. The codebase already knew: waf-log-scraper.ts notes that
+ * "removing an ARGS target is a no-op" for a rule that does not scan ARGS.
+ * An exclusion scope that cannot fix the false positive it is offered for is
+ * worse than none, because it looks like it worked.
  *
  * hostnameRegex is rendered as a `@rx <value>` operator against
  * `REQUEST_HEADERS:X-Forwarded-Host`. Validation:
@@ -36,7 +49,7 @@
 
 import { z } from 'zod';
 
-export const wafRuleExclusionScopeSchema = z.enum(['args_names_only', 'full_disable']);
+export const wafRuleExclusionScopeSchema = z.enum(['args', 'args_names_only', 'full_disable']);
 export type WafRuleExclusionScope = z.infer<typeof wafRuleExclusionScopeSchema>;
 
 const hostnameRegexBase = z

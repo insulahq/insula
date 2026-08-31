@@ -12,6 +12,38 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **WAF no longer blocks ordinary application deploys, cron jobs or the app
+  terminal.** The CRS 932xxx "Remote Command Execution" family matches shell
+  text by design, and the deployment / custom-deployment / cron-job endpoints
+  exist to carry shell text — so the platform's own catalog defaults were
+  refused at the edge. Measured: `PHP_ERROR_LOG=/dev/stderr` (the Apache+PHP
+  catalog default) hit 932160, `/bin/sh -c …` hit 932250,
+  `docker-php-entrypoint apache2-foreground` hit 932260, and
+  `… && exec php-fpm` hit 932235. Exclusions 9000108/9000109/9000110 each
+  carried a *different* subset of the family, so a value allowed on one
+  endpoint was blocked on its sibling. They are now one rule covering
+  deployments (including `…/<id>/terminal`), custom-deployments, tenant
+  cron-jobs and **admin cron-jobs** (`/admin/cron-jobs` and `…/bulk` had no
+  exclusion at all). Traversal, restricted-files and the XSS/SQLi/PHP
+  injection families remain fully enforced on these endpoints.
+- **WAF rule exclusions created from the panel now actually work.** The scope
+  selector defaulted to `args_names_only`, which emits
+  `ctl:ruleRemoveTargetById=<id>;ARGS_NAMES` — a no-op for any rule matching
+  argument *values*, i.e. most of them. An operator could whitelist a rule,
+  see it saved and reconciled, and still be blocked. A new `args` scope
+  (removing both `ARGS` and `ARGS_NAMES`) is now the default and the
+  recommendation in both panels.
+
+### Added
+- `scripts/ci-waf-scope-coverage-check.sh` (CI): every exclusion scope in the
+  shared contract must be selectable in both panels, and neither panel may
+  re-declare the scope union locally.
+- `make waf-probe` now covers the catalog's real default env values, cron and
+  app-terminal commands, and performs a create → verify-unblocked → delete →
+  verify-reblocked round-trip, so "the exclusion saved" can no longer pass for
+  "the exclusion worked".
+
 ## [2026.8.26] - 2026-08-31
 
 ### Added

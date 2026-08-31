@@ -151,10 +151,17 @@ export const renderOneExclusion = (
     );
   }
   const ruleId = DYNAMIC_RULE_ID_BASE + rowIndex;
+  // 'args' removes BOTH the values and the names. Removing only ARGS_NAMES —
+  // which used to be the behaviour for every non-full_disable row — is a no-op
+  // for any rule that matches argument VALUES, so the exclusion rendered,
+  // loaded, and changed nothing while appearing to have worked.
   const ctl =
     exclusion.scope === 'full_disable'
       ? `ctl:ruleRemoveById=${exclusion.ruleId}`
-      : `ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`;
+      : exclusion.scope === 'args_names_only'
+        ? `ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`
+        : `ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS,\
+     ctl:ruleRemoveTargetById=${exclusion.ruleId};ARGS_NAMES`;
 
   // Multi-line comment header so operators can grep the .conf for the reason.
   // Strip any CR/LF from reason just in case (DB CHECK constraint blocks newlines,

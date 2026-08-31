@@ -161,6 +161,71 @@ data:
     # is no real guard for an authenticated config API anyway (any
     # attacker can name a path not in it).
     #
+    # The other half of this class is the 932xxx "Remote Command Execution"
+    # family, which by design matches shell text — and the endpoints below
+    # exist precisely to ACCEPT shell text and container configuration.
+    # Measured on a live cluster 2026-08-31 (CRS 4.28.0), every one a bare
+    # edge 403 the API never saw, read from the modsec audit log:
+    #
+    #   932160  `dev/stderr` in PHP_ERROR_LOG=/dev/stderr — the platform's
+    #           OWN Apache+PHP catalog default. Container logs must go to
+    #           stderr to appear in `kubectl logs`, so EVERY Apache+PHP
+    #           deploy with untouched defaults was refused. Not an edge
+    #           case: the default path.
+    #   932160  `bin/sh` in `/bin/sh -c …`
+    #   932250  `/bin/sh -c` — the canonical container entrypoint
+    #   932260  `docker-` in `docker-php-entrypoint apache2-foreground`,
+    #           the official PHP-Apache image's own entrypoint
+    #   932235  `&& exec ` in `… migrate --force && exec php-fpm`, the
+    #           standard PID-1 signal-handling idiom
+    #
+    # Chasing these one id at a time is a treadmill. 9000108/9000109/9000110
+    # previously carried THREE DIFFERENT subsets of the family across three
+    # sibling endpoints, so /dev/stderr was allowed on /deployments but
+    # blocked on /cron-jobs, while `&& exec` was blocked on /deployments and
+    # allowed on /cron-jobs. Whichever id was not yet listed produced the
+    # next "the WAF blocks my deploy" report. They are now ONE rule.
+    #
+    # So: remove the WHOLE 932000-932999 family from ARGS on this endpoint
+    # group. A cron command, a container entrypoint and an app-terminal
+    # command ARE shell code — an RCE rule matching them is definitionally a
+    # false positive, not a detection. The tenant is authorised to run shell
+    # in their own container; the controls that matter are authn/authz and
+    # the container sandbox, and the WAF was never one of them here.
+    #
+    # STILL fully enforced on these endpoints: traversal 930100/930110
+    # (`../` in any field still blocks — the probe asserts this as a
+    # control), restricted-files 930130, and the 941/942/933 XSS / SQLi /
+    # PHP-injection families on every field. The 932xxx family keeps FULL
+    # coverage on every other endpoint, and on the URI, headers and cookies
+    # even here.
+    #
+    # ⚠ USE ruleRemoveById FOR THE RANGE, NOT ruleRemoveTargetById.
+    # Measured 2026-08-31 on libmodsecurity 3.0.16 / CRS 4.28.0:
+    #
+    #   ctl:ruleRemoveTargetById=932000-932999;ARGS   parses, NO EFFECT
+    #   ctl:ruleRemoveById=932000-932999              parses, WORKS
+    #
+    # Both pass `nginx -t` and both appear in the running container, so
+    # neither "it loaded" nor "the directive is there" distinguishes them —
+    # only a request does. The first form was deployed to DEV and left all
+    # 30 matrix cells at 403 while the 930120 removal in the SAME action
+    # list worked, which is what isolated it. This is the third time a rule
+    # in this file loaded cleanly and did nothing (see 930130 above, and
+    # args_names_only in the DB-backed exclusions); assert the REQUEST,
+    # never the config. `make waf-probe` is the assertion.
+    #
+    # Trade-off of ruleRemoveById: it disables 932xxx entirely for matching
+    # requests, so the family no longer inspects the URI/headers/cookies on
+    # these four endpoint groups either — not just ARGS. Acceptable here:
+    # the URIs are fixed platform API paths, and traversal (930100/930110),
+    # restricted-files (930130) and the 941/942/933 families still cover
+    # every field. The probe asserts SQLi on /deployments still 403s.
+    #
+    # Covers, including all subpaths: deployments (and …/<id>/terminal —
+    # the app terminal), custom-deployments (+ /validate), tenant cron-jobs
+    # (+ /run) and admin cron-jobs (+ /bulk).
+    #
     # Chained host+URI like 9000103: a tenant workload serving its own
     # /api/v1/tenants/…/deployments on a tenant domain keeps coverage.
     SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
@@ -169,8 +234,9 @@ data:
          pass,\
          nolog,\
          chain,\
-         ctl:ruleRemoveTargetById=930120;ARGS"
-        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/deployments(/[^/?]+)?(\?|$)"
+         ctl:ruleRemoveTargetById=930120;ARGS,\
+         ctl:ruleRemoveById=932000-932999"
+        SecRule REQUEST_URI "@rx ^/api/v1/(tenants/[^/]+/(deployments|custom-deployments|cron-jobs)|admin/cron-jobs)(/|\?|$)"
 
     # ── Custom containers: env values, commands, mount paths and
     #    compose documents are the tenant's own container spec ────────
@@ -210,16 +276,12 @@ data:
     # every field, traversal 930100/110 (a `../` mount path or query
     # arg still blocks), 930130, and all rules on cookies/URI/headers —
     # stays on, so e.g. SQLi in `image` still blocks here. Add further
-    # ids ONLY with a measured false positive, like these two.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
-        "id:9000109,\
-         phase:1,\
-         pass,\
-         nolog,\
-         chain,\
-         ctl:ruleRemoveTargetById=930120;ARGS,\
-         ctl:ruleRemoveTargetById=932235;ARGS"
-        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/custom-deployments(/|\?|$)"
+    # ids ONLY with a measured false positive.
+    #
+    # 9000109 (custom-deployments) was RETIRED 2026-08-31 — folded into
+    # 9000108, which now covers this URI with the whole 932xxx family
+    # instead of just 932235. Keeping three sibling endpoints on three
+    # different subsets was the bug, not the fix.
 
     # ── Cron jobs: the command IS shell text for the tenant's pod ────
     #
@@ -234,15 +296,15 @@ data:
     # available). `schedule` is regex-locked server-side; traversal
     # rules and every other family keep full coverage on all fields,
     # including a webcron `url` with `../` in it.
-    SecRule REQUEST_HEADERS:X-Forwarded-Host "@rx ^(admin|tenant|api)\." \
-        "id:9000110,\
-         phase:1,\
-         pass,\
-         nolog,\
-         chain,\
-         ctl:ruleRemoveTargetById=930120;ARGS,\
-         ctl:ruleRemoveTargetById=932235;ARGS"
-        SecRule REQUEST_URI "@rx ^/api/v1/tenants/[^/]+/cron-jobs(/|\?|$)"
+    #
+    # 9000110 (cron-jobs) was RETIRED 2026-08-31 — folded into 9000108.
+    # Two gaps it had, both fixed by the consolidation:
+    #   · it carried 932235 but NOT 932160, so a cron command containing
+    #     `/dev/stderr` or `/bin/sh` was blocked while `&& exec` passed;
+    #   · it matched ONLY `/api/v1/tenants/<id>/cron-jobs`, so the ADMIN
+    #     endpoints `/api/v1/admin/cron-jobs` and `…/bulk` had no
+    #     exclusion at all — an admin-created cron job carrying an
+    #     ordinary shell command was blocked outright.
 
     # NOTE — bearer tokens and session cookies in the audit log (FIXED).
     # SecAuditLogParts is ABIJDEFHZ, and part B is request headers, so
