@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.27] - 2026-08-31
+
 ### Fixed
 - **Expired tenant backups now actually free storage, and their entries leave
   the list.** [ADR-048](docs/architecture/adr/ADR-048-tenant-backup-restic-jmap.md)
