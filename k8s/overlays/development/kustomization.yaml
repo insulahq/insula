@@ -224,7 +224,7 @@ images:
   - name: ghcr.io/insulahq/insula/security-probe
     newTag: "20260831225327-0abc56a"
   - name: ghcr.io/insulahq/insula/firewall-reconciler
-    newTag: "20260821005935-d86a110"
+    newTag: "20260831225336-0abc56a"
   - name: ghcr.io/insulahq/insula/host-config-reconciler
     newTag: "20260831225306-0abc56a"
   - name: ghcr.io/insulahq/insula/backup-rclone
