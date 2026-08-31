@@ -308,6 +308,14 @@ PARALLEL=(
   # and the cap-enforcement redirect Middleware (inject on cap, remove on uncap)
   # on a disposable tenant's live IngressRoute. Self-provisions + trap cleanup.
   "bandwidth:integration-bandwidth-e2e.sh"
+  # File-manager recycle bin (2026-08-31): a delete MOVES the file (gone from the
+  # listing, present in the bin, bytes still charged to the tenant), restore
+  # returns the original content to the original path recreating parents, a
+  # restore onto an occupied path 409s and neither alongside nor replace
+  # clobbers, permanent:true really bypasses the bin, the bin is unreachable via
+  # rm/rename/copy/write, and purge frees the space. Uses an existing
+  # provisioned tenant; every artefact it creates is purged at the end.
+  "file-trash:integration-file-trash.sh"
   # Node memory protection (2026-07-25, ships v2026.7.2): kubelet eviction
   # headroom (allocatable gap + drop-in + swap-off + doctor), tenant-first
   # PriorityClasses, SystemOOM-event → reconciler → API → notification

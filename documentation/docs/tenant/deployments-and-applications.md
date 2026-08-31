@@ -122,7 +122,19 @@ Open **Details** to review and apply the upgrade.
 
 Deleted deployments move to a **Recently Deleted** section. Click **Restore** to
 bring one back, or use the trash button there to remove it permanently. When
-permanently deleting you can also choose to delete its data folder.
+permanently deleting you can also choose to remove its data folder.
+
+That folder goes to the file manager's
+[recycle bin](files-and-sftp.md#recycle-bin), so the files stay recoverable for
+the retention window — but they also keep counting against your storage until
+then. Tick **Delete permanently** in that dialog to skip the bin and free the
+space straight away.
+
+!!! note "Restoring the folder does not restore the app"
+
+    Recovering the data folder from the recycle bin returns the *files* only.
+    The deployment itself is gone once permanently deleted; you would deploy it
+    again and point it at the recovered folder.
 
 ## Custom containers (bring your own)
 

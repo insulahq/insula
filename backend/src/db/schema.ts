@@ -2712,6 +2712,16 @@ export const systemSettings = pgTable('system_settings', {
   // to live longer keeps its later expiry; a retain-forever bundle finally
   // gets one). Default 30 days.
   deletedTenantBundleRetentionDays: integer('deleted_tenant_bundle_retention_days').notNull().default(30),
+  // File-manager recycle bin (migration 0096). Deleted files move to
+  // /data/.trash on the tenant's own PVC and are purged after this many days.
+  // The bin has NO size cap on purpose — a size-driven auto-purge would delete
+  // one person's files because someone else filled it — so this window and the
+  // trash-usage readout in the panel are the whole control. Default 14 days.
+  //
+  // Deliberately NOT injected into the file-manager pod: ensureFileManagerRunning
+  // does not drift-check env, so a pod-baked value would freeze at creation and
+  // never see a change here. The backend reads it and passes it per purge call.
+  fileTrashRetentionDays: integer('file_trash_retention_days').notNull().default(14),
   currencySymbol: varchar('currency_symbol', { length: 5 }).notNull().default('$'),
   // ISO 4217 currency code (USD, EUR, GBP, …). Drives Intl.NumberFormat
   // across both panels for any monetary amount display. The older
@@ -3647,6 +3657,42 @@ export const resticRepoReclaimState = pgTable('restic_repo_reclaim_state', {
 
 export type ResticRepoReclaimState = typeof resticRepoReclaimState.$inferSelect;
 export type NewResticRepoReclaimState = typeof resticRepoReclaimState.$inferInsert;
+
+/**
+ * Per-tenant recycle-bin state (migration 0096).
+ *
+ * A CACHE, not the truth — the bin lives on the tenant PVC and is re-derived
+ * from observed contents on every interaction. It exists so the expiry
+ * reconciler can skip tenants with nothing to expire instead of starting every
+ * tenant's file-manager pod (RWO volume lock) four times a day to find out.
+ *
+ * `oldestDeletedAt` is allowed to run EARLY but never late: an early value
+ * costs one wasted sweep that then self-corrects, a late one would hide an
+ * expired bin from the reconciler indefinitely.
+ */
+export const fileTrashState = pgTable('file_trash_state', {
+  /** LOOSE reference to tenants.id — no FK, matching backupJobs.tenantId. A
+   *  deleted tenant takes its PVC with it, so a stale row is inert. */
+  tenantId: varchar('tenant_id', { length: 36 }).primaryKey(),
+  /** NULL means the bin is known to be empty. */
+  oldestDeletedAt: timestamp('oldest_deleted_at'),
+  usedBytes: bigint('used_bytes', { mode: 'number' }).notNull().default(0),
+  entryCount: integer('entry_count').notNull().default(0),
+  /**
+   * Stamped for EVERY tenant the reconciler examines, whatever the outcome, and
+   * used to order candidates — the starvation lesson from migration 0095.
+   */
+  lastSweepAt: timestamp('last_sweep_at'),
+  lastSweepOutcome: varchar('last_sweep_outcome', { length: 32 }),
+  lastSweepError: text('last_sweep_error'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  index('file_trash_state_last_sweep_idx').on(table.lastSweepAt),
+]);
+
+export type FileTrashState = typeof fileTrashState.$inferSelect;
+export type NewFileTrashState = typeof fileTrashState.$inferInsert;
 
 export const tenantJmapState = pgTable('tenant_jmap_state', {
   tenantId: varchar('tenant_id', { length: 36 })

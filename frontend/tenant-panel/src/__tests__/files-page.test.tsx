@@ -196,7 +196,7 @@ describe('Files Page', () => {
       expect(screen.getByText('Copy')).toBeInTheDocument();
       expect(screen.getByText('Move')).toBeInTheDocument();
       expect(screen.getByText('Archive')).toBeInTheDocument();
-      expect(screen.getByText('Delete')).toBeInTheDocument();
+      expect(screen.getByText('Move to Trash')).toBeInTheDocument();
     });
 
     it('select all toggles all items', async () => {
@@ -248,16 +248,60 @@ describe('Files Page', () => {
       fireEvent.contextMenu(row);
 
       await waitFor(() => {
-        expect(screen.getAllByText('Delete').length).toBeGreaterThan(0);
+        expect(screen.getAllByText('Move to Trash').length).toBeGreaterThan(0);
       });
 
       // Click the delete menu item (last one)
-      const deleteItems = screen.getAllByText('Delete');
+      const deleteItems = screen.getAllByText('Move to Trash');
       await user.click(deleteItems[deleteItems.length - 1]);
+
+      // Default is recoverable, so the dialog must NOT claim finality — it
+      // states the retention window and the storage cost instead.
+      await waitFor(() => {
+        expect(screen.getByText(/Kept in the recycle bin for/i)).toBeInTheDocument();
+      });
+      // The bin costs quota — the dialog must say so, not just imply safety.
+      expect(screen.getByText(/still count toward your storage/i)).toBeInTheDocument();
+      expect(screen.queryByText(/cannot be undone/)).not.toBeInTheDocument();
+    });
+
+    it('the permanent opt-in flips the dialog to the destructive wording', async () => {
+      const user = userEvent.setup();
+      renderFiles();
+      const row = screen.getByText('style.css').closest('tr')!;
+      fireEvent.contextMenu(row);
+      const deleteItems = await screen.findAllByText('Move to Trash');
+      await user.click(deleteItems[deleteItems.length - 1]);
+
+      await user.click(screen.getByTestId('permanent-delete-toggle'));
 
       await waitFor(() => {
         expect(screen.getByText(/cannot be undone/)).toBeInTheDocument();
       });
+      expect(screen.getAllByText('Delete Permanently').length).toBeGreaterThan(0);
+    });
+
+    it('does NOT remember the permanent opt-in across dialogs', async () => {
+      // A remembered opt-out would silently make a later delete unrecoverable
+      // while the dialog still said "Move to Trash".
+      const user = userEvent.setup();
+      renderFiles();
+
+      fireEvent.contextMenu(screen.getByText('style.css').closest('tr')!);
+      let items = await screen.findAllByText('Move to Trash');
+      await user.click(items[items.length - 1]);
+      await user.click(screen.getByTestId('permanent-delete-toggle'));
+      await waitFor(() => expect(screen.getByText(/cannot be undone/)).toBeInTheDocument());
+      await user.click(screen.getByText('Cancel'));
+
+      fireEvent.contextMenu(screen.getByText('index.html').closest('tr')!);
+      items = await screen.findAllByText('Move to Trash');
+      await user.click(items[items.length - 1]);
+
+      await waitFor(() => {
+        expect((screen.getByTestId('permanent-delete-toggle') as HTMLInputElement).checked).toBe(false);
+      });
+      expect(screen.queryByText(/cannot be undone/)).not.toBeInTheDocument();
     });
   });
 
@@ -427,15 +471,16 @@ describe('Files Page', () => {
       const headerRow = screen.getAllByRole('row')[0];
       await user.click(within(headerRow).getAllByRole('button')[0]);
 
-      // The "Delete" in toolbar
-      const deleteButtons = screen.getAllByText('Delete');
+      // The "Move to Trash" in toolbar
+      const deleteButtons = screen.getAllByText('Move to Trash');
       const bulkDelete = deleteButtons.find(b => b.closest('[class*="brand"]'));
       if (bulkDelete) await user.click(bulkDelete);
 
       await waitFor(() => {
-        expect(screen.getByText('Delete Selected')).toBeInTheDocument();
+        expect(screen.getByText(`Move ${dirEntries.length} to Trash`)).toBeInTheDocument();
         expect(screen.getByText(`${dirEntries.length} items`)).toBeInTheDocument();
       });
+      expect(screen.getByTestId('bulk-permanent-delete-toggle')).toBeInTheDocument();
     });
   });
 });

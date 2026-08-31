@@ -10,6 +10,7 @@ import {
   type UrlHealthReport,
 } from './url-health.js';
 import { z } from 'zod';
+import { MIN_TRASH_RETENTION_DAYS, MAX_TRASH_RETENTION_DAYS } from '@insula/api-contracts';
 
 // 60s health cache: DNS lookups + k8s Certificate reads are both cheap but
 // not free, and the UI polls every 30s. Keyed by `${host}::${secretName}`
@@ -52,6 +53,9 @@ const updateSchema = z.object({
   // tenant-bundles-cleanup lifecycle hook to floor each retained bundle's
   // expires_at on delete.
   deletedTenantBundleRetentionDays: z.number().int().min(1).max(3650).optional(),
+  // File-manager recycle-bin retention. Bounded below at 1 day: a 0 would make
+  // every delete permanent while both panels still said "Move to Trash".
+  fileTrashRetentionDays: z.number().int().min(MIN_TRASH_RETENTION_DAYS).max(MAX_TRASH_RETENTION_DAYS).optional(),
   // IANA timezone string. Used as the fallback on new tenants that don't
   // specify their own timezone, and as the global default for UI date
   // rendering when a user has no per-user override.

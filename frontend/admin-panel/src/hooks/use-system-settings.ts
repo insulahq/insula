@@ -17,6 +17,10 @@ export interface SystemSettings {
   // days. On delete the bundles are retained (not purged) and reaped once this
   // window passes. Admin-adjustable (1–3650 days).
   readonly deletedTenantBundleRetentionDays: number;
+  // File-manager recycle bin: days before a trashed file is permanently
+  // removed. The bin lives on the tenant's own PVC, so it keeps consuming
+  // their quota for the whole window. Admin-adjustable (1–365 days).
+  readonly fileTrashRetentionDays: number;
   readonly timezone: string;
   readonly currencySymbol: string;
   // ISO 4217 currency code (USD, EUR, …). Drives Intl.NumberFormat in

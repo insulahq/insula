@@ -3,6 +3,7 @@ import { Loader2, Save, CheckCircle, AlertCircle } from 'lucide-react';
 import { useSystemSettings, useUpdateSystemSettings } from '@/hooks/use-system-settings';
 import { COMMON_CURRENCIES, formatCurrency } from '@/lib/format-currency';
 import TimezoneSelect from '@/components/TimezoneSelect';
+import { MIN_TRASH_RETENTION_DAYS, MAX_TRASH_RETENTION_DAYS, DEFAULT_TRASH_RETENTION_DAYS } from '@insula/api-contracts';
 
 const INPUT_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-gray-100 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
@@ -19,6 +20,7 @@ export default function LimitsPage() {
   const [apiRateLimit, setApiRateLimit] = useState(100);
   const [snapshotExpiryHours, setSnapshotExpiryHours] = useState(48);
   const [deletedTenantBundleRetentionDays, setDeletedTenantBundleRetentionDays] = useState(30);
+  const [fileTrashRetentionDays, setFileTrashRetentionDays] = useState(DEFAULT_TRASH_RETENTION_DAYS);
   const [timezone, setTimezone] = useState('UTC');
   const [currency, setCurrency] = useState('USD');
   const [saved, setSaved] = useState(false);
@@ -29,6 +31,7 @@ export default function LimitsPage() {
       setApiRateLimit(settings.apiRateLimit);
       setSnapshotExpiryHours(settings.snapshotExpiryHours);
       setDeletedTenantBundleRetentionDays(settings.deletedTenantBundleRetentionDays ?? 30);
+      setFileTrashRetentionDays(settings.fileTrashRetentionDays ?? DEFAULT_TRASH_RETENTION_DAYS);
       setTimezone(settings.timezone ?? 'UTC');
       setCurrency(settings.currency ?? 'USD');
     }
@@ -38,7 +41,7 @@ export default function LimitsPage() {
     setSaved(false);
     setSaveError(null);
     updateSettings.mutate(
-      { apiRateLimit, snapshotExpiryHours, deletedTenantBundleRetentionDays, timezone, currency },
+      { apiRateLimit, snapshotExpiryHours, deletedTenantBundleRetentionDays, fileTrashRetentionDays, timezone, currency },
       {
         onSuccess: () => {
           setSaved(true);
@@ -129,6 +132,24 @@ export default function LimitsPage() {
             </div>
             <p className="text-xs text-gray-400 mt-1">
               When a tenant is deleted its off-site backup bundles are retained (not purged) for at least this many days — they are the deleted tenant&apos;s only DR / migration recovery path — then auto-reaped. Existing bundles already scheduled to live longer keep their later expiry (1–3650 days).
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">File Manager Recycle Bin</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                value={fileTrashRetentionDays}
+                onChange={(e) => setFileTrashRetentionDays(Math.max(MIN_TRASH_RETENTION_DAYS, Math.min(MAX_TRASH_RETENTION_DAYS, Number(e.target.value) || MIN_TRASH_RETENTION_DAYS)))}
+                className={INPUT_CLASS}
+                min={MIN_TRASH_RETENTION_DAYS}
+                max={MAX_TRASH_RETENTION_DAYS}
+                data-testid="file-trash-retention-input"
+              />
+              <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">days</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">
+              Files deleted in the tenant file manager move to a recycle bin on the tenant&apos;s own volume and are permanently removed after this many days. The bin is <strong>not</strong> free space — it keeps counting against the tenant&apos;s storage quota until it expires or they empty it ({MIN_TRASH_RETENTION_DAYS}–{MAX_TRASH_RETENTION_DAYS} days).
             </p>
           </div>
           <div>

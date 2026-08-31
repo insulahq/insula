@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
-import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, bulkDeleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema } from '@insula/api-contracts';
+import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, bulkDeleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema, trashRestoreInputSchema, trashPurgeInputSchema } from '@insula/api-contracts';
 import { tenants } from '../../db/schema.js';
 import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -9,6 +9,8 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager, resolveFmServiceUrlForRoute, ensureFileManagerReady } from './service.js';
 import { getFileManagerImage } from './image.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
+import { getTrashRetentionDays, sweepTrashOpportunistically } from './trash-service.js';
+import { noteTrashActivity, recordTrashSummary } from './trash-reconciler.js';
 
 async function resolveNamespace(
   app: FastifyInstance,
@@ -146,7 +148,12 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
       const err = JSON.parse(result.body);
       throw new ApiError('FILE_ERROR', err.error || 'Failed to get disk usage', result.status);
     }
-    return success(JSON.parse(result.body));
+    // Retention rides along here because the panel needs it for the delete
+    // dialog ("kept N days") BEFORE the recycle bin has ever been opened, and
+    // disk-usage is already polled. Fetching the bin just to learn the policy
+    // would list every entry for a single number.
+    const trashRetentionDays = await getTrashRetentionDays(app.db);
+    return success({ ...JSON.parse(result.body), trashRetentionDays });
   });
 
   // GET /api/v1/tenants/:tenantId/files/folder-size — calculate folder size
@@ -357,7 +364,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
 
     const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
       method: 'POST',
-      body: JSON.stringify(parsed.data),
+      body: JSON.stringify({ ...parsed.data, actor: request.user?.sub ?? null }),
       contentType: 'application/json',
     });
 
@@ -366,7 +373,14 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
       throw new ApiError('FILE_ERROR', err.error || 'Failed to delete', result.status);
     }
 
-    return success(JSON.parse(result.body));
+    const payload = JSON.parse(result.body);
+    // Mark the bin non-empty so the reconciler can find this tenant later
+    // without starting their pod just to look.
+    if (payload.trashed) await noteTrashActivity(app.db, tenantId);
+    // Deleting is the natural moment to expire old entries: the pod is warm and
+    // the tenant is already paying attention to their storage.
+    sweepTrashOpportunistically(app.db, k8sTenants, kubeconfigPath, namespace);
+    return success(payload);
   });
 
   // POST /api/v1/tenants/:tenantId/files/bulk-delete — delete many paths
@@ -393,12 +407,15 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
 
     const deleted: string[] = [];
     const failed: Array<{ path: string; error: string }> = [];
+    const actor = request.user?.sub ?? null;
 
     for (const path of parsed.data.paths) {
       try {
         const result = await fileManagerRequest(
           k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/rm',
-          { method: 'POST', body: JSON.stringify({ path }), contentType: 'application/json' },
+          // `permanent` rides on EVERY path in the batch — the opt-out is a
+          // property of the user's choice in the dialog, not of one entry.
+          { method: 'POST', body: JSON.stringify({ path, permanent: parsed.data.permanent, actor }), contentType: 'application/json' },
         );
         if (result.status === 200) {
           deleted.push(path);
@@ -414,7 +431,112 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    if (!parsed.data.permanent && deleted.length > 0) await noteTrashActivity(app.db, tenantId);
+    sweepTrashOpportunistically(app.db, k8sTenants, kubeconfigPath, namespace);
     return success({ deleted, failed });
+  });
+
+  // ─── Recycle bin ───────────────────────────────────────────────────────────
+
+  // GET /api/v1/tenants/:tenantId/files/trash — list trashed entries
+  app.get('/tenants/:tenantId/files/trash', {
+    schema: { tags: ['Files'], summary: 'List recycle-bin entries', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/trash/list', { method: 'GET' });
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to list trash', result.status);
+    }
+
+    // Retention travels with the listing so the UI shows a real "purged in N
+    // days" instead of duplicating the policy client-side.
+    const retentionDays = await getTrashRetentionDays(app.db);
+    const body = JSON.parse(result.body) as { entries: Array<{ deletedAt: string }>; usedBytes: number };
+
+    // Authoritative refresh of the reconciler's cache — this is a real read of
+    // the bin, so it beats anything inferred from delete traffic.
+    const oldest = body.entries.reduce<string | null>(
+      (acc, e) => (acc === null || e.deletedAt < acc ? e.deletedAt : acc), null,
+    );
+    await recordTrashSummary(app.db, tenantId, {
+      count: body.entries.length,
+      oldestDeletedAt: oldest,
+      usedBytes: body.usedBytes,
+    });
+
+    return success({ ...body, retentionDays });
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/trash/restore — restore one entry
+  app.post('/tenants/:tenantId/files/trash/restore', {
+    schema: { tags: ['Files'], summary: 'Restore an entry from the recycle bin', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = trashRestoreInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/trash/restore', {
+      method: 'POST',
+      body: JSON.stringify(parsed.data),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      // 409 carries the occupied path so the panel can offer "restore
+      // alongside" or "overwrite" without a second round-trip.
+      throw new ApiError(
+        result.status === 409 ? 'FILE_EXISTS' : 'FILE_ERROR',
+        err.error || 'Failed to restore',
+        result.status,
+        err.conflictPath ? { conflictPath: err.conflictPath } : undefined,
+      );
+    }
+
+    return success(JSON.parse(result.body));
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/trash/purge — delete entries for good
+  //
+  // The tenant may purge explicit ids or empty the bin. `olderThanDays` is
+  // deliberately NOT accepted here — expiry is platform policy, driven by the
+  // reconciler and the opportunistic sweep, and letting a panel request set it
+  // would let any tenant expire their own bin on someone else's schedule.
+  app.post('/tenants/:tenantId/files/trash/purge', {
+    schema: { tags: ['Files'], summary: 'Permanently delete recycle-bin entries', security: [{ bearerAuth: [] }] },
+  }, async (request) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = trashPurgeInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { k8sTenants, kubeconfigPath } = getK8s();
+
+    const result = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/trash/purge', {
+      method: 'POST',
+      body: JSON.stringify({ ids: parsed.data.ids ?? null, all: parsed.data.all === true }),
+      contentType: 'application/json',
+    });
+
+    if (result.status !== 200) {
+      const err = JSON.parse(result.body);
+      throw new ApiError('FILE_ERROR', err.error || 'Failed to purge trash', result.status);
+    }
+
+    // Re-read the bin so the reconciler's cache reflects the purge instead of
+    // continuing to advertise entries that are gone.
+    const summary = await fileManagerRequest(k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/trash/summary', { method: 'GET' });
+    if (summary.status === 200) await recordTrashSummary(app.db, tenantId, JSON.parse(summary.body));
+
+    return success(JSON.parse(result.body));
   });
 
   // POST /api/v1/tenants/:tenantId/files/copy — copy file or directory
