@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, lt, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, lt, sql } from 'drizzle-orm';
 import { fileTrashState, tenants } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 import { createK8sClients, type K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -134,7 +134,15 @@ export async function runTrashReconcile(
       isNotNull(fileTrashState.oldestDeletedAt),
       lt(fileTrashState.oldestDeletedAt, cutoff),
     ))
-    .orderBy(asc(sql`${fileTrashState.lastSweepAt} NULLS FIRST`))
+    // ASC goes INSIDE the raw fragment. Wrapping it in Drizzle's asc() helper
+    // renders `ORDER BY "last_sweep_at" NULLS FIRST asc`, which Postgres
+    // rejects with `syntax error at or near "asc"` — so every reconcile tick
+    // threw and the sweep never ran once. It failed silently: the tick logs a
+    // warning and moves on, the opportunistic sweep (a different query) kept
+    // working for ACTIVE tenants, and the only symptom was that idle tenants
+    // never had their bins expired — exactly the promise this reconciler
+    // exists to keep. Caught by reading the DEV logs, not by any test.
+    .orderBy(sql`${fileTrashState.lastSweepAt} ASC NULLS FIRST`)
     .limit(MAX_TENANTS_PER_TICK);
 
   let swept = 0;
