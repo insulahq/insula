@@ -74,7 +74,7 @@ note "start the file manager"
 # Keep the /start response: discarding it hid the real reason for a failure
 # once already (a STORAGE_OP_IN_PROGRESS or a mid-rollout image pin looks
 # identical to "never became ready" when the body is thrown away).
-START=$(japi -X POST "$T/start")
+START=$(api -X POST "$T/start")
 for _ in $(seq 1 90); do
   [[ "$(api "$T/status" | jq -r '.data.phase // empty')" == "ready" ]] && break
   sleep 2
