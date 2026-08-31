@@ -3625,6 +3625,14 @@ export const resticRepoReclaimState = pgTable('restic_repo_reclaim_state', {
   component: varchar('component', { length: 32 }).notNull(),
   lastForgetAt: timestamp('last_forget_at'),
   forgottenSnapshotsTotal: bigint('forgotten_snapshots_total', { mode: 'number' }).notNull().default(0),
+  /**
+   * Stamped for EVERY repo the sweep examines, whatever the outcome, and used
+   * to order candidates. Without it, a repo that is only ever skipped never
+   * gets a row and keeps sorting first, starving the tail once there are more
+   * repos than the per-tick cap (migration 0095).
+   */
+  lastSweepAt: timestamp('last_sweep_at'),
+  lastSweepOutcome: varchar('last_sweep_outcome', { length: 32 }),
   /** Durable hand-off from the cheap forget pass to the expensive prune pass. */
   prunePending: boolean('prune_pending').notNull().default(false),
   lastPruneAt: timestamp('last_prune_at'),
