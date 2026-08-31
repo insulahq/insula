@@ -112,7 +112,12 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request.params as { tenantId: string };
     const namespace = await resolveNamespace(app, tenantId);
     const { k8sTenants } = getK8s();
-    await ensureFileManagerRunning(k8sTenants, namespace, getFileManagerImage());
+    // initialReplicas=1: this endpoint's whole job is to START the file
+    // manager, and it was the only "want it running" caller relying on the
+    // default of 0 (service.ts passes 1 in all three of its call sites). With
+    // 0, a spec mismatch recreated the Deployment at zero replicas and the
+    // request reported "Pod is being created" while nothing was scheduled.
+    await ensureFileManagerRunning(k8sTenants, namespace, getFileManagerImage(), 1);
     // Refresh idle timer so the cleanup loop doesn't immediately
     // scale the pod we just asked for back down. /start is a clear
     // user intent to USE the file-manager.

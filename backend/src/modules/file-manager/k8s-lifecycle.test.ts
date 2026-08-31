@@ -46,6 +46,59 @@ describe('File Manager K8s Lifecycle', () => {
       expect(body.spec.template.spec.automountServiceAccountToken).toBe(false);
     });
 
+
+    // Shared fixture: a deployment that exists with a matching spec except for
+    // the image, at `replicas`. An image bump is the common trigger for the
+    // recreate path.
+    const existingWithImage = (image: string, replicas: number) => ({
+      spec: { replicas, template: { spec: {
+        volumes: [{ persistentVolumeClaim: { claimName: 'tenant-test-ns-storage' } }],
+        containers: [{ image, securityContext: { capabilities: { add: ['DAC_OVERRIDE', 'FOWNER', 'CHOWN', 'SYS_CHROOT', 'SETUID', 'SETGID'] } }, imagePullPolicy: 'Always', resources: { limits: { memory: '128Mi' } } }],
+      } } },
+    });
+    const recreatedReplicas = () => (mockK8s.apps.createNamespacedDeployment as unknown as {
+      mock: { calls: Array<[{ body: { spec: { replicas: number } } }]> };
+    }).mock.calls[0][0].body.spec.replicas;
+
+    it('recreates at 1 when the caller wants it running (image bump on a stopped FM)', async () => {
+      // Documents the contract this function offers callers. NOTE: it does not
+      // by itself guard the DEV 2026-08-31 regression — that was /files/start
+      // relying on the initialReplicas DEFAULT of 0, so the guard for it lives
+      // in routes.test.ts ("asks for the pod to actually RUN"). Both were
+      // verified to fail against the pre-fix code.
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>)
+        .mockResolvedValue(existingWithImage('file-manager:OLD', 0));
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:NEW', 1);
+      expect(mockK8s.apps.deleteNamespacedDeployment).toHaveBeenCalled();
+      expect(recreatedReplicas()).toBe(1);
+    });
+
+    it('does not scale down a RUNNING file manager when the image changes', async () => {
+      // The other half: callers that do not force a start (the SFTP gateway,
+      // the provisioner) pass initialReplicas=0. Recreating at that would kill
+      // a file manager the tenant is actively using, mid-session, purely
+      // because the image pin moved.
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>)
+        .mockResolvedValue(existingWithImage('file-manager:OLD', 1));
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:NEW', 0);
+      expect(recreatedReplicas()).toBe(1);
+    });
+
+    it('leaves a stopped FM stopped when the caller did not ask for it to run', async () => {
+      // max(0, 0) — the provisioner creating FM ahead of first use must not
+      // start a pod that grabs the RWO PVC lock.
+      (mockK8s.apps.readNamespacedDeployment as ReturnType<typeof vi.fn>)
+        .mockResolvedValue(existingWithImage('file-manager:OLD', 0));
+      (mockK8s.core.readNamespacedService as ReturnType<typeof vi.fn>).mockResolvedValue({});
+      const { ensureFileManagerRunning } = await import('./k8s-lifecycle.js');
+      await ensureFileManagerRunning(mockK8s, 'tenant-test-ns', 'file-manager:NEW', 0);
+      expect(recreatedReplicas()).toBe(0);
+    });
+
     it('should skip recreation if deployment exists with correct spec and >=1 replica', async () => {
       // ADR-037: deployBody has memory limit 128Mi but NO cpu limit.
       // Match that here so the mismatch check produces resourcesMismatch=false.
