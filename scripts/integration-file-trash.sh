@@ -236,13 +236,25 @@ done
 
 note "11. extracting over a live tree preserves the files it replaces"
 # The worst silent-overwrite case: one action can wipe a whole tree.
+#
+# /archive stores entry names RELATIVE TO THE PVC ROOT (it runs with cwd=BASE),
+# so the archive built below contains "<stamp>/pkg/site/index.php". Extracting
+# it to "/" therefore lands back on that exact path — which is what makes this a
+# genuine collision. Extracting into some other directory would nest the
+# original path underneath it and collide with nothing, quietly turning this
+# case into a vacuous pass.
 japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/pkg/site/index.php" --arg c 'FROM-ARCHIVE' '{path:$p,content:$c}')" >/dev/null
-japi -X POST "$T/archive" -d "$(jq -nc --arg s "$OW/pkg/site" --arg d "$OW/site.tar.gz" '{paths:[$s],destPath:$d,format:"tar.gz"}')" >/dev/null
-japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/live/site/index.php" --arg c "CUSTOMISED-$STAMP" '{path:$p,content:$c}')" >/dev/null
+curl -sk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -X POST "$T/archive" -d "$(jq -nc --arg s "$OW/pkg/site" --arg d "$OW/site.tar.gz" '{paths:[$s],destPath:$d,format:"tar.gz"}')" >/dev/null
+# Customise the very file the archive will replace, then start from a clean bin.
+japi -X POST "$T/write" -d "$(jq -nc --arg p "$OW/pkg/site/index.php" --arg c "CUSTOMISED-$STAMP" '{path:$p,content:$c,expectExisting:true}')" >/dev/null
 japi -X POST "$T/trash/purge" -d '{"all":true}' >/dev/null
 
 curl -sk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -X POST "$T/extract" -d "$(jq -nc --arg p "$OW/site.tar.gz" --arg d "$OW/live" '{path:$p,destPath:$d}')" >/dev/null
+  -X POST "$T/extract" -d "$(jq -nc --arg p "$OW/site.tar.gz" '{path:$p,destPath:"/"}')" >/dev/null
+
+[[ "$(getp "$T/read" "$OW/pkg/site/index.php" | jq -r '.data.content')" == "FROM-ARCHIVE" ]] \
+  && pass "the extraction took effect" || fail "extraction did not overwrite"
 
 EXTRA=$(api "$T/trash" | jq -r '[.data.entries[] | select(.origin=="replaced")] | length')
 if [[ "$EXTRA" -ge 1 ]]; then
