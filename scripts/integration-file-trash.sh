@@ -71,13 +71,22 @@ echo "  subject: tenant $TENANT_ID (isSystem=$IS_SYSTEM)"
 T="$ADMIN_HOST/api/v1/tenants/$TENANT_ID/files"
 
 note "start the file manager"
-japi -X POST "$T/start" >/dev/null
-for _ in $(seq 1 60); do
+# Keep the /start response: discarding it hid the real reason for a failure
+# once already (a STORAGE_OP_IN_PROGRESS or a mid-rollout image pin looks
+# identical to "never became ready" when the body is thrown away).
+START=$(japi -X POST "$T/start")
+for _ in $(seq 1 90); do
   [[ "$(api "$T/status" | jq -r '.data.phase // empty')" == "ready" ]] && break
   sleep 2
 done
-[[ "$(api "$T/status" | jq -r '.data.phase')" == "ready" ]] \
-  && pass "file manager ready" || { fail "file manager never became ready"; exit 1; }
+if [[ "$(api "$T/status" | jq -r '.data.phase')" == "ready" ]]; then
+  pass "file manager ready (one /start call)"
+else
+  fail "file manager never became ready"
+  echo "    /start said : $(jq -c . <<<"$START" 2>/dev/null || printf %s "$START")" >&2
+  echo "    /status says: $(api "$T/status" | jq -c '.data // .' 2>/dev/null)" >&2
+  exit 1
+fi
 
 STAMP="itrash-$$-$RANDOM"
 DIR="$STAMP/nested/deep"
