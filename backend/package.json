@@ -33,7 +33,7 @@
     "@fastify/swagger-ui": "^6.1.1",
     "@fastify/websocket": "^11.3.0",
     "@insula/api-contracts": "*",
-    "@kubernetes/client-node": "^1.4.0",
+    "@kubernetes/client-node": "^2.0.0",
     "@simplewebauthn/server": "^13.3.2",
     "@types/archiver": "^8.0.0",
     "@types/mjml": "^5.0.0",
