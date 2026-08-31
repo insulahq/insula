@@ -16,7 +16,7 @@ function evictedEvent(overrides: Partial<{
     reason: 'Evicted',
     message: overrides.message ?? 'Pod was evicted: memory usage exceeds threshold',
     count: overrides.count,
-    involvedObject: { kind: 'Pod', name: overrides.pod ?? 'web-abc123', namespace: overrides.ns ?? 'client-tenant1' },
+    involvedObject: { kind: 'Pod', name: overrides.pod ?? 'web-abc123', namespace: overrides.ns ?? 'tenant-tenant1' },
     source: { host: overrides.host ?? 'worker' },
     metadata: { uid: overrides.uid ?? 'uid-evict-1' },
     lastTimestamp: overrides.when ?? '2026-07-25T11:55:00Z',
@@ -42,7 +42,7 @@ describe('normalizeMemoryEvents', () => {
     expect(evict).toMatchObject({
       dedupeKey: 'uid-evict-1:1',
       nodeName: 'worker',
-      namespace: 'client-tenant1',
+      namespace: 'tenant-tenant1',
       podName: 'web-abc123',
       systemWorkload: false,
     });
@@ -87,8 +87,8 @@ describe('summarizeForNotification', () => {
   it('groups by node and severity class', () => {
     const events = normalizeMemoryEvents(
       [
-        evictedEvent({ uid: 'e1', pod: 'a', ns: 'client-t1', host: 'worker' }),
-        evictedEvent({ uid: 'e2', pod: 'b', ns: 'client-t2', host: 'worker' }),
+        evictedEvent({ uid: 'e1', pod: 'a', ns: 'tenant-t1', host: 'worker' }),
+        evictedEvent({ uid: 'e2', pod: 'b', ns: 'tenant-t2', host: 'worker' }),
         evictedEvent({ uid: 'e3', pod: 'platform-api-x', ns: 'platform', host: 'staging1' }),
       ],
       [oomEvent({ uid: 'o1', node: 'staging1' })],
@@ -113,10 +113,10 @@ describe('summarizeForNotification', () => {
 
   it('names the tenant, pod, and container, and gives an action path + advice', () => {
     const events = collectOomKilledContainers(
-      [oomPod({ uid: 'u1', ns: 'client-acme', pod: 'acme-web-7d9', container: 'app', restarts: 3, node: 'sv1' })],
+      [oomPod({ uid: 'u1', ns: 'tenant-acme', pod: 'acme-web-7d9', container: 'app', restarts: 3, node: 'sv1' })],
       NOW,
     );
-    const [s] = summarizeForNotification(events, (ns) => (ns === 'client-acme' ? 'Acme Corp' : undefined));
+    const [s] = summarizeForNotification(events, (ns) => (ns === 'tenant-acme' ? 'Acme Corp' : undefined));
     // WHO: resolved tenant display name, not the raw namespace or a bare count.
     expect(s.summary).toContain('tenant "Acme Corp"');
     expect(s.summary).toContain('pod acme-web-7d9');
@@ -129,16 +129,16 @@ describe('summarizeForNotification', () => {
   });
 
   it('falls back to the namespace when no tenant name resolves', () => {
-    const events = collectOomKilledContainers([oomPod({ ns: 'client-ghost', pod: 'p1', container: 'c1' })], NOW);
+    const events = collectOomKilledContainers([oomPod({ ns: 'tenant-ghost', pod: 'p1', container: 'c1' })], NOW);
     const [s] = summarizeForNotification(events); // no resolver
-    expect(s.summary).toContain('tenant "client-ghost"');
+    expect(s.summary).toContain('tenant "tenant-ghost"');
   });
 
   it('names up to MAX_NAMED then summarizes the rest as "+N more"', () => {
     const pods = Array.from({ length: 5 }, (_, i) =>
-      oomPod({ uid: `u${i}`, ns: `client-t${i}`, pod: `pod-${i}`, container: 'app', node: 'sv1' }));
+      oomPod({ uid: `u${i}`, ns: `tenant-t${i}`, pod: `pod-${i}`, container: 'app', node: 'sv1' }));
     const events = collectOomKilledContainers(pods, NOW);
-    const [s] = summarizeForNotification(events, (ns) => ns.replace('client-', 'Tenant '));
+    const [s] = summarizeForNotification(events, (ns) => ns.replace('tenant-', 'Tenant '));
     expect(s.summary).toContain('5 tenant container(s) OOM-killed at their memory limit');
     expect(s.summary).toContain('+2 more'); // 5 named-capped at 3
     expect(s.summary).toContain('pod-0');
@@ -160,6 +160,7 @@ describe('summarizeForNotification', () => {
 function oomPod(overrides: Partial<{
   uid: string; pod: string; ns: string; node: string; container: string;
   restarts: number; reason: string; exitCode: number; finishedAt: string; terminal: boolean;
+  deletionTimestamp: string;
 }> = {}): RawPod {
   const term = {
     reason: overrides.reason ?? 'OOMKilled',
@@ -167,7 +168,12 @@ function oomPod(overrides: Partial<{
     finishedAt: overrides.finishedAt ?? '2026-07-25T11:00:00Z',
   };
   return {
-    metadata: { uid: overrides.uid ?? 'pod-uid-1', name: overrides.pod ?? 'web-x', namespace: overrides.ns ?? 'client-t1' },
+    metadata: {
+      uid: overrides.uid ?? 'pod-uid-1',
+      name: overrides.pod ?? 'web-x',
+      namespace: overrides.ns ?? 'tenant-t1',
+      ...(overrides.deletionTimestamp ? { deletionTimestamp: overrides.deletionTimestamp } : {}),
+    },
     spec: { nodeName: overrides.node ?? 'worker' },
     status: {
       containerStatuses: [{
@@ -187,7 +193,7 @@ describe('collectOomKilledContainers', () => {
     expect(e).toMatchObject({
       kind: 'container-oom',
       nodeName: 'worker',
-      namespace: 'client-t1',
+      namespace: 'tenant-t1',
       podName: 'web-x',
       systemWorkload: false,
     });
@@ -205,10 +211,43 @@ describe('collectOomKilledContainers', () => {
     expect(e?.systemWorkload).toBe(true);
   });
 
-  it('includes Error/137 as an inferred cgroup group-kill', () => {
+  it('includes Error/137 but marks it unconfirmed, never as an OOM', () => {
     const [e] = collectOomKilledContainers([oomPod({ reason: 'Error', exitCode: 137 })], NOW);
     expect(e?.kind).toBe('container-oom');
-    expect(e?.message).toContain('SIGKILLed exit 137');
+    expect(e?.oomConfidence).toBe('unconfirmed');
+    expect(e?.message).toContain('cause unconfirmed');
+    // The old wording asserted an OOM it could not prove, which is how an
+    // admin came to be told to raise a limit on a container at 13% of it.
+    expect(e?.message).not.toContain('OOM-killed at its memory limit');
+  });
+
+  it('marks an explicit OOMKilled as confirmed', () => {
+    const [e] = collectOomKilledContainers([oomPod({ reason: 'OOMKilled' })], NOW);
+    expect(e?.oomConfidence).toBe('confirmed');
+    expect(e?.message).toContain('OOM-killed at its memory limit');
+  });
+
+  it('DROPS an unconfirmed exit-137 on a TERMINATING pod (rollout SIGKILL, not an OOM)', () => {
+    // The production false positive: the modsec-crs audit-redactor ignored the
+    // image's STOPSIGNAL, sat out the 30s grace period and was SIGKILLed on
+    // every rollout, while its cgroup reported oom_kill=0 and an 8.5 MB peak
+    // against a 64 MiB limit.
+    const events = collectOomKilledContainers(
+      [oomPod({ reason: 'Error', exitCode: 137, deletionTimestamp: '2026-07-25T10:59:30Z' })],
+      NOW,
+    );
+    expect(events).toHaveLength(0);
+  });
+
+  it('KEEPS an explicit OOMKilled even on a terminating pod', () => {
+    // kubelet saying OOMKilled is authoritative regardless of pod lifecycle;
+    // only the exit-code guess is suppressed.
+    const events = collectOomKilledContainers(
+      [oomPod({ reason: 'OOMKilled', deletionTimestamp: '2026-07-25T10:59:30Z' })],
+      NOW,
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.oomConfidence).toBe('confirmed');
   });
 
   it('ignores non-OOM terminations and stale kills', () => {
@@ -234,7 +273,7 @@ describe('collectOomKilledContainers', () => {
 
   it('summaries count container-ooms separately per class', () => {
     const events = collectOomKilledContainers([
-      oomPod({ uid: 'u1', ns: 'client-t1', node: 'worker' }),
+      oomPod({ uid: 'u1', ns: 'tenant-t1', node: 'worker' }),
       oomPod({ uid: 'u2', ns: 'platform', pod: 'platform-api-x', node: 'staging1' }),
     ], NOW);
     const summaries = summarizeForNotification(events);

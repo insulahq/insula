@@ -274,6 +274,14 @@ jobs:
       - name: Verify no module compares against the OOMKilled literal itself
         run: ./scripts/ci-oom-classification-check.sh
 
+  namespace-classification-guard:
+    name: Tenant-vs-platform namespace classification is single-sourced
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no module classifies namespaces on its own
+        run: ./scripts/ci-namespace-classification-check.sh
+
   waf-scope-coverage-guard:
     name: Every WAF exclusion scope is selectable in both panels
     runs-on: ubuntu-latest

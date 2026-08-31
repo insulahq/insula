@@ -29,24 +29,17 @@ import { nodeMemoryEvents, tenants } from '../../db/schema.js';
 import { notifyAdminNodeMemoryEvents } from '../notifications/events.js';
 import type { NodeMemoryEvent } from '@insula/api-contracts';
 import { classifyOom } from '../../lib/container-termination.js';
+import { isSystemNamespace } from '../../lib/namespace-tier.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // UI window: 30 days
 
 /**
- * Namespaces whose pods count as SYSTEM workloads. Everything else
- * (client-* tenant namespaces and anything unknown) is tenant-tier.
+ * Tenant vs platform is decided by `lib/namespace-tier.ts` — see there for why
+ * this is a prefix rule and not the allowlist it used to be. In short: the old
+ * list named 9 of production's 27 namespaces and reported the other eleven
+ * platform ones as *tenants*, which is how an admin came to be told that
+ * tenant "traefik" was over its memory limit.
  */
-const SYSTEM_NAMESPACES = new Set([
-  'platform',
-  'platform-system',
-  'platform-tenant-ops',
-  'mail',
-  'kube-system',
-  'flux-system',
-  'longhorn-system',
-  'cert-manager',
-  'cnpg-system',
-]);
 
 /** Raw k8s Event fields the collector reads (superset of the reconciler's RawEvent). */
 export interface RawMemoryEvent {
@@ -77,11 +70,28 @@ export interface NormalizedMemoryEvent {
   readonly systemWorkload: boolean;
   readonly message: string;
   readonly occurredAt: Date;
+  /**
+   * Whether the kill was CONFIRMED an OOM (kubelet said `OOMKilled`) or only
+   * inferred from exit 137. Not persisted — it shapes the notification wording
+   * so an unconfirmed kill never claims to be an OOM. See
+   * collectOomKilledContainers().
+   */
+  readonly oomConfidence?: 'confirmed' | 'unconfirmed';
 }
 
 /** Pod fields the container-OOM collector reads. */
 export interface RawPod {
-  readonly metadata?: { readonly uid?: string; readonly name?: string; readonly namespace?: string };
+  readonly metadata?: {
+    readonly uid?: string;
+    readonly name?: string;
+    readonly namespace?: string;
+    /**
+     * Set the moment a pod starts terminating. Its containers are about to be
+     * SIGKILLed by design, so exit 137 there means nothing — see the
+     * terminating-pod check in collectOomKilledContainers().
+     */
+    readonly deletionTimestamp?: string;
+  };
   readonly spec?: { readonly nodeName?: string };
   readonly status?: {
     readonly containerStatuses?: ReadonlyArray<{
@@ -123,6 +133,10 @@ export function collectOomKilledContainers(
     const podName = pod.metadata?.name ?? null;
     const nodeName = pod.spec?.nodeName ?? '';
     if (!uid || !nodeName) continue;
+    // A terminating pod's containers are SIGKILLed on purpose once the grace
+    // period expires, which is exit 137 — indistinguishable from a cgroup OOM
+    // by exit code alone. Only kubelet's explicit `OOMKilled` reason counts here.
+    const terminating = Boolean(pod.metadata?.deletionTimestamp);
     for (const cs of pod.status?.containerStatuses ?? []) {
       // A terminal pod (restartPolicy Never) carries the kill in
       // state.terminated; a restarting one in lastState.terminated.
@@ -135,6 +149,13 @@ export function collectOomKilledContainers(
         const oomKind = classifyOom(term);
         if (!oomKind) continue;
         const oomExplicit = oomKind === 'explicit';
+        // Drop unconfirmed kills on a terminating pod: that is the rollout
+        // SIGKILL, not an OOM. Measured 2026-08-31 — the modsec-crs
+        // `audit-redactor` sidecar paged an admin as an OOM every time the WAF
+        // exclusion reconciler rolled the deployment, while its cgroup reported
+        // `oom_kill 0` and a peak of 8.5 MB against a 64 MiB limit, and the
+        // node's kernel ring buffer held no cgroup OOM for it at all.
+        if (!oomExplicit && terminating) continue;
         const finished = term.finishedAt ? new Date(term.finishedAt) : null;
         if (!finished || Number.isNaN(finished.getTime()) || finished.getTime() < cutoff) continue;
         out.push({
@@ -144,10 +165,16 @@ export function collectOomKilledContainers(
           namespace,
           podName,
           containerName: cs.name ?? null,
-          systemWorkload: namespace !== null && SYSTEM_NAMESPACES.has(namespace),
+          systemWorkload: isSystemNamespace(namespace),
+          oomConfidence: oomExplicit ? 'confirmed' : 'unconfirmed',
+          // Say only what is known. Exit 137 is 128+SIGKILL from ANY source —
+          // a cgroup OOM group-kill (which some containerd versions report as
+          // reason "Error"), a liveness-probe restart, a node drain. Claiming
+          // "OOM-killed at its memory limit" for all of them sent admins to
+          // raise a limit on a container using 13% of it.
           message: oomExplicit
             ? `container ${cs.name ?? '?'} OOM-killed at its memory limit (restart #${cs.restartCount ?? 0})`
-            : `container ${cs.name ?? '?'} SIGKILLed exit 137 — cgroup OOM group-kill reports as "Error" on some containerd versions (restart #${cs.restartCount ?? 0})`,
+            : `container ${cs.name ?? '?'} SIGKILLed (exit 137, cause unconfirmed — could be a cgroup OOM group-kill, a probe restart or a node drain; check the container's memory.peak against its limit before raising it) (restart #${cs.restartCount ?? 0})`,
           occurredAt: finished,
         });
         break; // one record per container status — state+lastState can hold the same termination
@@ -195,7 +222,7 @@ export function normalizeMemoryEvents(
       namespace,
       podName: e.involvedObject?.name ?? null,
       containerName: null,
-      systemWorkload: namespace !== null && SYSTEM_NAMESPACES.has(namespace),
+      systemWorkload: isSystemNamespace(namespace),
       message: (e.message ?? '').slice(0, 1000),
       occurredAt,
     });
@@ -240,14 +267,24 @@ export function summarizeForNotification(
     tenantEvict: NormalizedMemoryEvent[];
     sysOomk: NormalizedMemoryEvent[];
     tenantOomk: NormalizedMemoryEvent[];
+    sysKill: NormalizedMemoryEvent[];
+    tenantKill: NormalizedMemoryEvent[];
   }
   const groups = new Map<string, Group>();
   for (const e of inserted) {
     const severity: 'critical' | 'warning' = e.systemWorkload ? 'critical' : 'warning';
     const key = `${e.nodeName} ${severity}`;
-    const g = groups.get(key) ?? { nodeName: e.nodeName, severity, oom: 0, sysEvict: [], tenantEvict: [], sysOomk: [], tenantOomk: [] };
+    const g = groups.get(key) ?? { nodeName: e.nodeName, severity, oom: 0, sysEvict: [], tenantEvict: [], sysOomk: [], tenantOomk: [], sysKill: [], tenantKill: [] };
     if (e.kind === 'system-oom') g.oom += 1;
-    else if (e.kind === 'container-oom') (e.systemWorkload ? g.sysOomk : g.tenantOomk).push(e);
+    else if (e.kind === 'container-oom') {
+      // Confirmed OOMs and unconfirmed SIGKILLs are reported separately — they
+      // call for different actions, and merging them is what produced
+      // "raise the tenant's memory limit" for a container that was never
+      // anywhere near its limit.
+      const confirmed = e.oomConfidence !== 'unconfirmed';
+      if (confirmed) (e.systemWorkload ? g.sysOomk : g.tenantOomk).push(e);
+      else (e.systemWorkload ? g.sysKill : g.tenantKill).push(e);
+    }
     else (e.systemWorkload ? g.sysEvict : g.tenantEvict).push(e);
     groups.set(key, g);
   }
@@ -260,11 +297,20 @@ export function summarizeForNotification(
     };
     named('SYSTEM pod(s) evicted', g.sysEvict);
     named('SYSTEM container(s) OOM-killed at their memory limit', g.sysOomk);
+    named('SYSTEM container(s) SIGKILLed (exit 137, cause unconfirmed)', g.sysKill);
     named('tenant pod(s) evicted', g.tenantEvict);
     named('tenant container(s) OOM-killed at their memory limit', g.tenantOomk);
+    named('tenant container(s) SIGKILLed (exit 137, cause unconfirmed)', g.tenantKill);
+    // Only advise raising a limit when something actually hit its limit.
+    // An unconfirmed SIGKILL is not evidence of memory pressure.
+    const confirmedOom = g.oom > 0 || g.sysOomk.length > 0 || g.tenantOomk.length > 0;
     const advice = g.severity === 'warning'
-      ? "Raise the tenant's plan/memory limit if this recurs. Details: Monitoring -> Node health -> Memory events."
-      : 'A SYSTEM workload was hit - investigate now. Details: Monitoring -> Node health -> Memory events.';
+      ? (confirmedOom
+        ? "Raise the tenant's plan/memory limit if this recurs. Details: Monitoring -> Node health -> Memory events."
+        : 'Check the container\'s memory.peak against its limit before changing anything - exit 137 alone is not an OOM. Details: Monitoring -> Node health -> Memory events.')
+      : (confirmedOom
+        ? 'A SYSTEM workload was hit - investigate now. Details: Monitoring -> Node health -> Memory events.'
+        : 'A SYSTEM container was SIGKILLed, cause unconfirmed - check whether it handles SIGTERM before assuming memory. Details: Monitoring -> Node health -> Memory events.');
     return { nodeName: g.nodeName, severity: g.severity, summary: `${parts.join('; ')}. ${advice}` };
   });
 }

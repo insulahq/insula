@@ -35,27 +35,20 @@
 
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { parseResourceValue } from '../../shared/resource-parser.js';
+import { isSystemNamespace, isTenantNamespace } from '../../lib/namespace-tier.js';
 
-// Namespaces whose pod requests count as "system baseline". Tenant
-// namespaces (tenant-*) are intentionally excluded — their requests
-// are the thing we're computing headroom AGAINST. ingress-nginx,
-// calico, longhorn-* are DaemonSets so their per-node footprint is
-// inherent and unavoidable.
-const SYSTEM_NAMESPACES: ReadonlyArray<string> = [
-  'kube-system',
-  'calico-system',
-  'tigera-operator',
-  'cnpg-system',
-  'longhorn-system',
-  'flux-system',
-  'cert-manager',
-  'traefik',
-  'redis-system',
-  'platform',
-  'platform-system',
-  'mail',
-  'hosting',
-];
+// Pod requests that count as the "system baseline" tax: everything that is
+// not a tenant. Tenant namespaces (tenant-*) are excluded because their
+// requests are the thing we compute headroom AGAINST.
+//
+// This used to enumerate 13 system namespaces while computing the TENANT side
+// with `ns.startsWith('tenant-')` — the same function classified one side by
+// prefix and the other by list. The list omitted monitoring, crowdsec, dex,
+// oauth2-proxy, platform-tenant-ops, calico-apiserver, system-upgrade,
+// plesk-migration, kube-public and kube-node-lease, so their requests were
+// counted as NEITHER tax nor tenant load: the platform tax was under-counted
+// and available headroom over-stated. Classifying both sides with the shared
+// helper makes the two halves add up. See lib/namespace-tier.ts.
 
 const SERVER_LABEL_KEY = 'insula.host/node-role';
 const SERVER_LABEL_VAL = 'server';
@@ -72,7 +65,7 @@ export interface FailoverHeadroom {
   /** Sum of allocatable across all ready server nodes. */
   readonly totalCpu: number;
   readonly totalMemoryGi: number;
-  /** Sum of pod requests across SYSTEM_NAMESPACES (the "tax" that must be paid). */
+  /** Sum of pod requests across all non-tenant namespaces (the "tax" that must be paid). */
   readonly systemReservedCpu: number;
   readonly systemReservedMemoryGi: number;
   /** Capacity of the largest single server — kept aside for the 1-server-loss case. */
@@ -191,8 +184,8 @@ export function computeFailoverHeadroom(
     0,
   );
 
-  const systemPredicate = (ns: string): boolean => SYSTEM_NAMESPACES.includes(ns);
-  const tenantPredicate = (ns: string): boolean => ns.startsWith('tenant-');
+  const systemPredicate = (ns: string): boolean => isSystemNamespace(ns);
+  const tenantPredicate = (ns: string): boolean => isTenantNamespace(ns);
 
   const system = sumPodRequests(pods, systemPredicate);
   const tenant = sumPodRequests(pods, tenantPredicate);

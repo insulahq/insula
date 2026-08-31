@@ -12,6 +12,50 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **No more false "tenant OOM-killed" alerts.** Admins were paged that
+  tenant `"traefik"` had a container OOM-killed and told to raise that tenant's
+  plan. `traefik` is a platform namespace, no such tenant exists, and it was
+  not an OOM: the container's cgroup reported `oom_kill 0` with an 8.5 MB peak
+  against a 64 MiB limit, and the node's kernel ring buffer held no cgroup OOM
+  for it at all. Three separate defects, all fixed, none by adding memory:
+  - The `modsec-crs` `audit-redactor` sidecar never handled shutdown. `exec
+    tail … | sed` does not replace the shell (a pipeline runs in subshells), so
+    PID 1 stayed `/bin/sh`; and the image sets `STOPSIGNAL=SIGQUIT`, which
+    busybox `ash` **ignores**. Every rollout therefore sat out the full 30 s
+    grace period and was SIGKILLed. Now traps TERM/INT/**QUIT** and forwards to
+    the process group: measured 31 s → **1.0 s**, exit 137 → **exit 0**.
+  - Exit code 137 is `128+SIGKILL` from *any* cause, so it can no longer be
+    reported as a confirmed OOM. Unconfirmed kills are worded as such, are
+    dropped entirely for pods that are terminating (that SIGKILL is by design),
+    and no longer trigger "raise the tenant's memory limit" advice.
+  - Namespace classification failed **open**: the alert path listed 9 SYSTEM
+    namespaces out of production's 27 and treated everything else as a tenant,
+    misclassifying eleven platform namespaces — including `monitoring`, where
+    the one workload that genuinely does OOM lives. Classification is now a
+    single shared helper keyed on the `tenant-` prefix, so an unknown namespace
+    fails closed to *platform*.
+- **Tenant Secrets are labelled correctly in DR bundles.** `restoreTierForNamespace`
+  still matched a `client-*` namespace convention the platform no longer mints,
+  so every real tenant Secret was tagged `unclassified` instead of
+  `tier-2-tenant`. Bundle contents and restore behaviour were unaffected (both
+  tiers are bundled and applied by the `full` profile) — only the audit UI and
+  bundle summary were wrong.
+- **Platform "tax" headroom was over-stated.** `failover-headroom` classified
+  the tenant side by prefix but the system side by a 13-entry list, so requests
+  from `monitoring`, `crowdsec`, `dex`, `oauth2-proxy` and others counted as
+  neither tenant load nor platform tax.
+- **A staging NetworkPolicy probe had never once run.** It selected a probe
+  namespace with `-l client`, a label nothing sets, and took its "skipping"
+  branch on every execution while reporting success.
+
+### Added
+- `scripts/ci-namespace-classification-check.sh` (CI): tenant-vs-platform is
+  decided in exactly one place, the helper may not regrow an enumeration, and
+  the alerting path must distinguish confirmed OOMs from inferred exit-137
+  kills. Curated *selections* (e.g. which namespaces get PVC snapshots) stay
+  exempt with a stated reason.
+
 ## [2026.8.27] - 2026-08-31
 
 ### Fixed
