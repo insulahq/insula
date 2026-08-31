@@ -111,6 +111,8 @@ export interface ResticRetentionResult {
   readonly reposSkipped: number;
   readonly snapshotsForgotten: number;
   readonly prunesRun: number;
+  /** backup_jobs rows deleted because nothing of them remains in storage. */
+  readonly bundlesPurged: number;
   readonly errors: number;
   readonly repos: ReadonlyArray<ResticRepoResult>;
 }
@@ -240,7 +242,7 @@ export async function runResticRetentionSweep(
     );
     return {
       dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0,
-      prunesRun: 0, errors: 0,
+      prunesRun: 0, bundlesPurged: 0, errors: 0,
       repos: [{
         tenantId: args.tenantId ?? '*', component: '*', repoUri: '',
         snapshotsInRepo: 0, keptCount: 0, forgottenCount: 0, forgottenIds: [],
@@ -280,7 +282,7 @@ export async function runResticRetentionSweep(
   `) as unknown as { rows: Array<{ tenantId: string; component: string }> }).rows;
 
   if (stateRows.length === 0) {
-    return { dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, errors: 0, repos: [] };
+    return { dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, bundlesPurged: 0, errors: 0, repos: [] };
   }
 
   // G3: frozen (read-only / DR) targets, fetched once for the batch.
@@ -300,7 +302,7 @@ export async function runResticRetentionSweep(
     const msg = err instanceof Error ? err.message : String(err);
     logger.error({ err: msg }, 'restic retention: cannot resolve shim backup target — sweep aborted');
     return {
-      dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, errors: 1,
+      dryRun, reposScanned: 0, reposSkipped: 0, snapshotsForgotten: 0, prunesRun: 0, bundlesPurged: 0, errors: 1,
       repos: [{
         tenantId: args.tenantId ?? '*', component: '*', repoUri: '', snapshotsInRepo: 0,
         keptCount: 0, forgottenCount: 0, forgottenIds: [], prunedNow: false,
@@ -426,6 +428,20 @@ export async function runResticRetentionSweep(
           updated_at = now()
       `);
 
+      // Stamp the components whose snapshots are now genuinely gone. This is
+      // what later authorises purging the bundle row: the snapshot id in
+      // backup_components.sha256 must outlive the bundle's expiry and only
+      // becomes disposable once the blob it names has been forgotten.
+      await db.execute(sql`
+        UPDATE backup_components bc
+        SET snapshot_reclaimed_at = ${now()}
+        FROM backup_jobs bj
+        WHERE bj.id = bc.backup_job_id
+          AND bj.tenant_id = ${tenantId}
+          AND bc.component = ${component}
+          AND bc.sha256 = ANY(${candidates})
+      `);
+
       snapshotsForgotten += candidates.length;
       logger.info(
         { tenantId, component, forgotten: candidates.length, kept: kept.length },
@@ -498,8 +514,33 @@ export async function runResticRetentionSweep(
     }
   }
 
+  // ── Purge rows for bundles that no longer exist anywhere ──────────────────
+  // Gated on status='expired', which retention.ts sets ONLY after the
+  // per-bundle directory delete succeeded — so the config/secrets/db-dump
+  // artefacts are already gone. Combined with "no restic component still
+  // awaiting reclamation", the row now describes nothing at all.
+  let bundlesPurged = 0;
+  if (!dryRun) {
+    try {
+      const purgedIds = await purgeFullyReclaimedBundles(db, args.tenantId);
+      bundlesPurged = purgedIds.length;
+      if (bundlesPurged > 0) {
+        logger.info(
+          { count: bundlesPurged },
+          'restic retention: purged bundle rows whose storage is fully reclaimed',
+        );
+      }
+    } catch (err) {
+      // Never fatal: reclamation already happened, and the rows are only
+      // cosmetic at this point. Retried next tick.
+      logger.warn({ err }, 'restic retention: bundle-row purge failed (non-fatal)');
+      errors++;
+    }
+  }
+
   return {
     dryRun,
+    bundlesPurged,
     reposScanned: stateRows.length,
     reposSkipped,
     snapshotsForgotten,
@@ -507,6 +548,56 @@ export async function runResticRetentionSweep(
     errors,
     repos,
   };
+}
+
+/**
+ * Delete backup_jobs rows describing a bundle that no longer exists anywhere.
+ *
+ * Two conditions, both required:
+ *   - `status = 'expired'`, which retention.ts sets ONLY after the per-bundle
+ *     directory delete succeeded, so config/secrets/db-dump artefacts are gone;
+ *   - no restic component of the bundle is still awaiting reclamation.
+ *
+ * The second is what makes a bundle spanning two repos (files + mailboxes)
+ * safe: it survives until BOTH have been swept, so its surviving snapshot id
+ * is never destroyed while the snapshot is still there.
+ *
+ * Returns the purged ids. Exported for direct testing — this statement deletes
+ * user-visible history, so its gating is asserted rather than assumed.
+ */
+export async function purgeFullyReclaimedBundles(
+  db: Pick<Database, 'execute'>,
+  tenantId?: string,
+  limit = 500,
+): Promise<string[]> {
+  // Select-then-delete rather than a correlated DELETE: the two-statement
+  // form is bounded by an explicit LIMIT, returns exactly what it removed,
+  // and keeps the gating condition readable. A row deleted concurrently
+  // between the two statements simply is not deleted twice.
+  const candidates = await db.execute(sql`
+    SELECT bj.id AS id
+    FROM backup_jobs bj
+    WHERE bj.status = 'expired'
+      ${tenantId ? sql`AND bj.tenant_id = ${tenantId}` : sql``}
+      -- Uncorrelated on purpose: the equivalent correlated NOT EXISTS is
+      -- fine in Postgres but unsupported by pg-mem, and this gating deserves
+      -- unit coverage. NOT IN is NULL-safe here because backup_job_id is
+      -- NOT NULL (FK column).
+      AND bj.id NOT IN (
+        SELECT bc.backup_job_id FROM backup_components bc
+        WHERE bc.component IN ('files','mailboxes')
+          AND bc.sha256 IS NOT NULL
+          AND bc.snapshot_reclaimed_at IS NULL
+      )
+    LIMIT ${limit}
+  `) as unknown as { rows: Array<{ id: string }> };
+
+  const ids = candidates.rows.map((r) => r.id);
+  if (ids.length === 0) return [];
+  // backup_components cascades on this delete (FK ON DELETE CASCADE), which
+  // is safe now: every restic snapshot id it held has been reclaimed.
+  await db.execute(sql`DELETE FROM backup_jobs WHERE id = ANY(${ids})`);
+  return ids;
 }
 
 /**

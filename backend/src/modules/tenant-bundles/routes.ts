@@ -1642,6 +1642,41 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
       const handle = await store.open(id);
       if (handle) await store.delete(handle);
     }
+    // Forget the restic snapshots BEFORE dropping the row. backup_components
+    // holds the snapshot ids and cascades on this delete, so doing it in the
+    // other order strands the snapshots in the repo with nothing left in the
+    // platform that knows their ids — which is how the historical orphans
+    // this reclaimer has to hunt for were created.
+    try {
+      const comps = await app.db
+        .select({ component: backupComponents.component, sha256: backupComponents.sha256 })
+        .from(backupComponents)
+        .where(eq(backupComponents.backupJobId, id));
+      const resticComps = comps.filter(
+        (c): c is { component: 'files' | 'mailboxes'; sha256: string } =>
+          (c.component === 'files' || c.component === 'mailboxes') && typeof c.sha256 === 'string' && c.sha256.length > 0,
+      );
+      if (resticComps.length > 0 && configuredKey) {
+        const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+          ?? process.env.KUBECONFIG_PATH;
+        const { resolveShimBackupTarget } = await import('./resolve-backup-target.js');
+        const { buildResticRepoUri, deriveResticPassword, runResticForget } = await import('./restic-driver.js');
+        const target = await resolveShimBackupTarget(createK8sClients(kubeconfigPath).core, 'tenant', app.log);
+        const passwordHex = deriveResticPassword(secretsKeyHex, job.tenantId);
+        for (const c of resticComps) {
+          await runResticForget({
+            target, passwordHex,
+            repoUri: buildResticRepoUri(target, job.tenantId, c.component),
+            snapshotIds: [c.sha256],
+          });
+        }
+      }
+    } catch (err) {
+      // Best-effort: the operator asked for the row to go. The reconciler in
+      // restic-retention.ts finds anything left behind, so log loudly rather
+      // than blocking the delete.
+      app.log.warn({ err, bundleId: id }, 'tenant-bundles: could not forget restic snapshots before delete — reclaimer will catch them');
+    }
     await app.db.delete(backupJobs).where(eq(backupJobs.id, id));
     reply.status(204).send();
   });

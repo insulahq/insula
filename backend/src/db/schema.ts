@@ -3542,6 +3542,10 @@ export const backupComponents = pgTable('backup_components', {
   status: backupComponentStatusEnum('status').notNull().default('pending'),
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull().default(0),
   sha256: varchar('sha256', { length: 64 }),
+  // Stamped by the restic reclaimer once this component's snapshot has
+  // actually been forgotten from the repo. A bundle row is only purged once
+  // every restic component it owns carries this stamp — see migration 0094.
+  snapshotReclaimedAt: timestamp('snapshot_reclaimed_at'),
   startedAt: timestamp('started_at'),
   finishedAt: timestamp('finished_at'),
   lastError: text('last_error'),

@@ -81,3 +81,25 @@ ALTER TABLE tenant_backup_v2_settings
   -- restic --max-repack-size. Bounds one prune pass so a large backlog
   -- converges over several nights instead of one multi-hour stall.
   ADD COLUMN IF NOT EXISTS prune_max_repack_size VARCHAR(16) DEFAULT '4G';
+
+-- ── Purging the DB rows of backups that no longer exist ───────────────────
+--
+-- Once a bundle's restic snapshots are forgotten AND the expiry sweep has
+-- already deleted its per-bundle directory, the backup_jobs row describes
+-- something that does not exist anywhere. Operators reasonably expect a
+-- removed backup to disappear from the list rather than linger as an
+-- 'expired' tombstone forever.
+--
+-- The row cannot simply be deleted at expiry time: backup_components.sha256
+-- holds the restic snapshot id, and destroying it before reclamation is
+-- exactly how DELETE /admin/tenant-bundles/:id orphaned snapshots. So the
+-- reclaimer stamps each component as it is actually reclaimed, and a bundle
+-- row is purged only once every restic component it owns carries the stamp.
+-- A bundle spanning two repos (files + mailboxes) therefore survives until
+-- BOTH have been swept.
+ALTER TABLE backup_components
+  ADD COLUMN IF NOT EXISTS snapshot_reclaimed_at TIMESTAMP;
+
+CREATE INDEX IF NOT EXISTS backup_components_unreclaimed_idx
+  ON backup_components (backup_job_id)
+  WHERE sha256 IS NOT NULL AND snapshot_reclaimed_at IS NULL;
