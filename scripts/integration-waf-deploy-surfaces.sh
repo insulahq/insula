@@ -7,8 +7,15 @@
 # VALUE `/var/www/html`), plus custom-deployment env values / mount
 # paths / compose documents / cron commands, and 932235 blocked the
 # canonical `… && exec …` container entrypoint idiom. Guards the
-# 9000108-9000110 exclusions in
+# 9000108 exclusion in
 # k8s/base/modsecurity-crs/exclusion-rules-configmap.yaml.
+#
+# 2026-08-31: 9000109 (custom-deployments) and 9000110 (cron-jobs) were
+# folded into 9000108. They had carried three different subsets of the
+# 932xxx family across three sibling endpoints, so a value allowed on
+# one endpoint was blocked on the next; 9000108 now covers all of them
+# — plus /admin/cron-jobs, which had no exclusion at all — with the
+# whole family. See `make waf-probe` for the behavioural assertion.
 #
 # DELIBERATELY UNAUTHENTICATED. The WAF is the layer under test and it
 # runs before auth, so the status code is a clean edge discriminator:

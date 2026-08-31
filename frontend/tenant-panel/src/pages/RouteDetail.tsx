@@ -5,6 +5,7 @@ import {
   ArrowLeftRight, Save, ChevronDown, ChevronRight, FolderLock,
 } from 'lucide-react';
 import clsx from 'clsx';
+import type { WafRuleExclusionScope } from '@insula/api-contracts';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import { useDomains } from '@/hooks/use-domains';
 import OidcSection from '@/components/OidcSection';
@@ -1293,11 +1294,13 @@ function WafExclusionsSection({ tenantId, routeId, hostname }: {
             other routes. The platform reconciler propagates changes within ~10 seconds.
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Prefer <code className="text-[11px]">args_names_only</code> first — it
-            keeps the rule scanning request bodies + headers but stops it from
-            firing on JSON / form field <em>names</em>, which is the most common
-            false-positive cause for APIs. Use <code className="text-[11px]">full_disable</code>{' '}
-            only when args_names_only isn't enough.
+            Prefer <code className="text-[11px]">args</code> first — it stops the rule
+            inspecting your form / JSON parameters (names <em>and</em> values), which is
+            where nearly every false positive comes from, while the rule still scans the
+            URI, headers and body and every other rule stays active.{' '}
+            <code className="text-[11px]">args_names_only</code> is narrower but does
+            nothing for rules that match parameter <em>values</em> (930120, 932160, …).
+            Use <code className="text-[11px]">full_disable</code> only as a last resort.
           </p>
           <div className="flex justify-end gap-2">
             <button
@@ -1475,7 +1478,7 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
   readonly onClose: () => void;
 }) {
   const [ruleId, setRuleId] = useState('');
-  const [scope, setScope] = useState<'args_names_only' | 'full_disable'>('args_names_only');
+  const [scope, setScope] = useState<WafRuleExclusionScope>('args');
   const [reason, setReason] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const create = useCreateRouteWafExclusion(tenantId, routeId);
@@ -1509,11 +1512,12 @@ function AddWafExclusionModal({ tenantId, routeId, hostname, onClose }: {
             <span className="text-gray-700 dark:text-gray-200">Scope</span>
             <select
               value={scope}
-              onChange={(e) => setScope(e.target.value as 'args_names_only' | 'full_disable')}
+              onChange={(e) => setScope(e.target.value as WafRuleExclusionScope)}
               className={INPUT_CLASS}
               data-testid="add-waf-exclusion-scope"
             >
-              <option value="args_names_only">args_names_only — keep ARG values + headers scanned (recommended)</option>
+              <option value="args">args — stop this rule scanning parameters (recommended)</option>
+              <option value="args_names_only">args_names_only — parameter names only (no-op for most rules)</option>
               <option value="full_disable">full_disable — disable the rule entirely for this domain</option>
             </select>
           </label>
