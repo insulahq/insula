@@ -15,8 +15,8 @@ describe('restoreTierForNamespace', () => {
   });
 
   it('classifies tenant namespaces as tier-2-tenant', () => {
-    expect(restoreTierForNamespace('client-abc')).toBe('tier-2-tenant');
-    expect(restoreTierForNamespace('client-deadbeef')).toBe('tier-2-tenant');
+    expect(restoreTierForNamespace('tenant-abc')).toBe('tier-2-tenant');
+    expect(restoreTierForNamespace('tenant-deadbeef')).toBe('tier-2-tenant');
   });
 
   it('classifies everything else as unclassified', () => {
