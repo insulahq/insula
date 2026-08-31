@@ -1146,6 +1146,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.addHook('onClose', () => clearInterval(cleanupTimer));
       }
 
+      // File-manager recycle-bin expiry. Covers tenants who trash something and
+      // never reopen the panel — without it the retention setting would be a
+      // promise the code never keeps for exactly the accounts that need it.
+      {
+        const { startTrashReconciler } = await import('./modules/file-manager/trash-reconciler.js');
+        const trashTimer = startTrashReconciler(app.db, kubeconfigPath);
+        app.addHook('onClose', () => clearInterval(trashTimer));
+      }
+
       const metricsTimer = startMetricsScheduler(app.db);
       app.addHook('onClose', () => clearInterval(metricsTimer));
 

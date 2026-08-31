@@ -218,13 +218,21 @@ export function useRestoreDeployment(tenantId: string | undefined) {
 export function usePermanentDeleteDeployment(tenantId: string | undefined) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ deploymentId, deleteData }: { deploymentId: string; deleteData?: boolean }) => {
+    mutationFn: ({ deploymentId, deleteData, permanentData }: {
+      deploymentId: string; deleteData?: boolean; permanentData?: boolean;
+    }) => {
       const params = new URLSearchParams({ force: 'true' });
       if (deleteData) params.set('deleteData', 'true');
+      // The deployment row is destroyed either way; this only governs whether
+      // its data FOLDER goes to the recycle bin or is erased outright.
+      if (permanentData) params.set('permanentData', 'true');
       return apiFetch<void>(`/api/v1/tenants/${tenantId}/deployments/${deploymentId}?${params.toString()}`, { method: 'DELETE' });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['deployments', tenantId] });
+      // The data folder just landed in (or left) the bin.
+      queryClient.invalidateQueries({ queryKey: ['file-trash', tenantId] });
+      queryClient.invalidateQueries({ queryKey: ['disk-usage', tenantId] });
     },
   });
 }

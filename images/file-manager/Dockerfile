@@ -24,7 +24,7 @@ COPY --from=chroot-builder /build/sftp-serve /usr/local/bin/sftp-serve
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/sftp-serve
 WORKDIR /app
-COPY server.mjs .
+COPY server.mjs trash.mjs ./
 EXPOSE 8111
 # Run as root to read all PVC data (database dirs owned by mysql/postgres)
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

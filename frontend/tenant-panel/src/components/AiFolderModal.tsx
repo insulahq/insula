@@ -109,7 +109,10 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
         addLog(`Applying ${i + 1}/${approvedChanges.length}: ${change.path}`);
 
         if (change.action === 'delete') {
-          await deleteFile.mutateAsync(change.path);
+          // Always recoverable: these deletes were proposed by the model and
+          // applied as a batch with no per-file confirmation, which is exactly
+          // where the safety net earns its keep. No permanent opt-out here.
+          await deleteFile.mutateAsync({ path: change.path });
         } else if (change.action === 'modify' && change.summary?.startsWith('Rename →')) {
           const toPath = change.modifiedContent ?? '';
           await renameFile.mutateAsync({ oldPath: change.path, newPath: toPath });
@@ -267,6 +270,7 @@ export default function AiFolderModal({ folderPath, onClose, onApplied }: AiFold
                   {changes.some((c) => c.action === 'delete') && (
                     <div className="rounded-lg border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/10 p-2">
                       <p className="text-xs font-medium text-red-700 dark:text-red-400 mb-1">Destructive operations:</p>
+                      <p className="text-xs text-red-600 dark:text-red-400/80 mb-1">These files move to the recycle bin and can be restored.</p>
                       {changes.map((c, i) => c.action === 'delete' && (
                         <div key={i} className="flex items-center gap-2 px-2 py-1">
                           <input type="checkbox" checked={selectedChanges.has(i)} onChange={() => toggleChange(i)}

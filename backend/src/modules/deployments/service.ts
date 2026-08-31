@@ -930,6 +930,11 @@ export async function hardDeleteDeployment(
   deploymentId: string,
   k8s?: K8sClients,
   deleteData?: boolean,
+  /** Skip the recycle bin for the data folder. Defaults to false so the data is
+   *  recoverable — the deployment ROW is gone either way, this only governs the
+   *  files on the PVC. */
+  permanentData?: boolean,
+  actor?: string,
 ) {
   const deployment = await getDeploymentById(db, tenantId, deploymentId);
 
@@ -959,9 +964,24 @@ export async function hardDeleteDeployment(
           const { fileManagerRequest } = await import('../file-manager/service.js');
           const { getFileManagerImage } = await import('../file-manager/image.js');
           const kubeconfigPath = undefined;
+          // Routes through the recycle bin by default — deleting a deployment
+          // with its data is the most destructive one-click action in the panel
+          // and had no undo at all. The move is a rename on the same PVC, so a
+          // multi-GB data folder costs nothing to trash.
+          //
+          // Provenance is recorded because the DB row is gone by the time
+          // anyone goes looking: without `deploymentName` the bin would show an
+          // opaque storage path. Restoring returns the FILES only — it cannot
+          // resurrect the deployment, and the panel says so.
           await fileManagerRequest(k8s, kubeconfigPath, namespace, getFileManagerImage(), '/rm', {
             method: 'POST',
-            body: JSON.stringify({ path: `/${deployment.storagePath}` }),
+            body: JSON.stringify({
+              path: `/${deployment.storagePath}`,
+              permanent: permanentData === true,
+              actor: actor ?? null,
+              origin: 'deployment',
+              deploymentName: deployment.name,
+            }),
             contentType: 'application/json',
           });
         } catch {
