@@ -3607,6 +3607,35 @@ export const tenantResticRepoState = pgTable('tenant_restic_repo_state', {
   index('tenant_restic_repo_state_target_idx').on(table.targetConfigId),
 ]);
 
+// Reclamation bookkeeping for the per-tenant restic repos (migration 0094).
+//
+// Separate from tenantResticRepoState because that table's tenantId CASCADEs
+// on tenant deletion, while a deleted tenant's restic repo very much still
+// exists and still needs reclaiming — backup_jobs.tenantId is deliberately a
+// LOOSE reference for exactly this reason. Measured on staging: 135 recorded
+// snapshots, zero tenant_restic_repo_state rows. Anchoring the reclaimer to a
+// cascading FK would make it blind to its most important case.
+export const resticRepoReclaimState = pgTable('restic_repo_reclaim_state', {
+  /** LOOSE reference to tenants.id — no FK, matching backupJobs.tenantId. */
+  tenantId: varchar('tenant_id', { length: 36 }).notNull(),
+  component: varchar('component', { length: 32 }).notNull(),
+  lastForgetAt: timestamp('last_forget_at'),
+  forgottenSnapshotsTotal: bigint('forgotten_snapshots_total', { mode: 'number' }).notNull().default(0),
+  /** Durable hand-off from the cheap forget pass to the expensive prune pass. */
+  prunePending: boolean('prune_pending').notNull().default(false),
+  lastPruneAt: timestamp('last_prune_at'),
+  lastPruneError: text('last_prune_error'),
+  lastPruneDurationMs: integer('last_prune_duration_ms'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
+}, (table) => [
+  primaryKey({ columns: [table.tenantId, table.component] }),
+  index('restic_repo_reclaim_state_last_forget_idx').on(table.lastForgetAt),
+]);
+
+export type ResticRepoReclaimState = typeof resticRepoReclaimState.$inferSelect;
+export type NewResticRepoReclaimState = typeof resticRepoReclaimState.$inferInsert;
+
 export const tenantJmapState = pgTable('tenant_jmap_state', {
   tenantId: varchar('tenant_id', { length: 36 })
     .notNull()
@@ -3648,6 +3677,11 @@ export const tenantBackupV2Settings = pgTable('tenant_backup_v2_settings', {
   // disables auto-add of the DR key — operator runs Option B
   // (one-shot migration keys) only.
   drRecoveryKeyEncrypted: text('dr_recovery_key_encrypted'),
+  // Retention reclamation knobs (migration 0094). See restic-retention.ts.
+  forgetEnabled: boolean('forget_enabled').notNull().default(true),
+  forgetMinAgeHours: integer('forget_min_age_hours').notNull().default(48),
+  pruneMinIntervalHours: integer('prune_min_interval_hours').notNull().default(24),
+  pruneMaxRepackSize: varchar('prune_max_repack_size', { length: 16 }).default('4G'),
   updatedAt: timestamp('updated_at').notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

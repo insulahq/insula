@@ -1382,6 +1382,21 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
         app.log.warn({ err }, 'tenant-backup retention: scheduler startup skipped');
       }
 
+      // Restic reclamation sweeper (ADR-048). The sweeper above deletes the
+      // per-bundle directory and flips the row to 'expired'; until this
+      // shipped, NOTHING ever ran `restic forget`/`prune`, so the `files` and
+      // `mailboxes` snapshots — the bulk of the data — were retained forever
+      // and the 30-day retention promise was not kept for tenant content.
+      // Reconciles repo contents against live bundles, so it also reclaims
+      // snapshots orphaned by past expiries and hard-deletes. 6-hour cadence.
+      try {
+        const { startResticRetentionScheduler } = await import('./modules/tenant-bundles/restic-retention.js');
+        const resticRetention = startResticRetentionScheduler(app);
+        app.addHook('onClose', () => resticRetention.stop());
+      } catch (err) {
+        app.log.warn({ err }, 'restic retention: scheduler startup skipped');
+      }
+
       // Legacy per-tenant scheduler retired 2026-05-28. The global
       // scheduler (startGlobalBundleScheduler below) replaces it —
       // single cron drives bundles for every eligible tenant. The

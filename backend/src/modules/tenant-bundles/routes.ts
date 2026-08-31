@@ -1577,6 +1577,50 @@ export async function backupsV2Routes(app: FastifyInstance): Promise<void> {
     return success({ summary, results });
   });
 
+  // ── POST /api/v1/admin/tenant-bundles/restic-retention/run ────────
+  // Manual trigger for the restic reclamation sweep (ADR-048). The
+  // scheduler runs this every 6h; this route exists so an operator can
+  // preview with dryRun before trusting it, scope it to one tenant, and
+  // verify reclamation on demand.
+  app.post('/admin/tenant-bundles/restic-retention/run', {
+    schema: {
+      tags: ['TenantBundles'],
+      summary: 'Run the restic forget/prune reclamation sweep',
+      security: [{ bearerAuth: [] }],
+    },
+  }, async (request) => {
+    const body = z.object({
+      dryRun: z.boolean().optional(),
+      tenantId: z.string().max(36).optional(),
+      force: z.boolean().optional(),
+      maxRepos: z.number().int().min(1).max(500).optional(),
+      maxPrunes: z.number().int().min(0).max(50).optional(),
+    }).parse(request.body ?? {});
+
+    // `force` overrides the no-db-history guard, i.e. it permits deleting
+    // snapshots the DB cannot vouch for. That is a super_admin decision.
+    if (body.force && (request.user as { role?: string } | undefined)?.role !== 'super_admin') {
+      throw new ApiError('FORBIDDEN', 'force requires super_admin', 403);
+    }
+    if (!configuredKey) {
+      throw new ApiError('CONFIG_INVALID', 'PLATFORM_ENCRYPTION_KEY not configured', 500);
+    }
+    const kubeconfigPath = (app.config as Record<string, unknown>).KUBECONFIG_PATH as string | undefined
+      ?? process.env.KUBECONFIG_PATH;
+    const { runResticRetentionSweep } = await import('./restic-retention.js');
+    return success(await runResticRetentionSweep({
+      db: app.db,
+      k8s: createK8sClients(kubeconfigPath),
+      secretsKeyHex,
+      logger: app.log,
+      ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
+      ...(body.tenantId ? { tenantId: body.tenantId } : {}),
+      ...(body.force !== undefined ? { force: body.force } : {}),
+      ...(body.maxRepos !== undefined ? { maxRepos: body.maxRepos } : {}),
+      ...(body.maxPrunes !== undefined ? { maxPrunes: body.maxPrunes } : {}),
+    }));
+  });
+
   // ── DELETE /api/v1/admin/tenant-bundles/:id ───────────────────────
   app.delete('/admin/tenant-bundles/:id', {
     schema: { tags: ['TenantBundles'], summary: 'Delete a bundle (also from store)', security: [{ bearerAuth: [] }] },
