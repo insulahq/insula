@@ -27,4 +27,4 @@ metadata:
   name: platform-version
   namespace: platform
 data:
-  version: "2026.8.27-rc.2"
+  version: "2026.8.27"
