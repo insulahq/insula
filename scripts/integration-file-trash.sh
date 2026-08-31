@@ -46,15 +46,24 @@ TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
 [[ -n "$TOKEN" ]] || { echo "ERROR: login failed against $ADMIN_HOST" >&2; exit 2; }
 pass "admin login"
 
-note "select a provisioned tenant"
+note "select a tenant whose file manager is actually usable"
+# PROBE, don't guess: the tenant LIST response carries `status`, not
+# `provisioningStatus`, so filtering on the latter silently matches nothing and
+# the suite would "pass" against no subject at all. Ask the file-manager
+# endpoint itself — it is the thing that has to work.
 TENANTS=$(api "$ADMIN_HOST/api/v1/tenants?limit=100")
-# Prefer a non-system tenant; the SYSTEM tenant works but is special-cased
-# elsewhere and is a poor default subject for a destructive suite.
-TENANT_ID=$(jq -r '[.data[] | select(.provisioningStatus=="provisioned") | select(.isSystem != true)][0].id // empty' <<<"$TENANTS")
-[[ -n "$TENANT_ID" ]] && SUBJECT=tenant \
-  || { TENANT_ID=$(jq -r '[.data[] | select(.provisioningStatus=="provisioned")][0].id // empty' <<<"$TENANTS"); SUBJECT=system; }
-[[ -n "$TENANT_ID" ]] || { echo "ERROR: no provisioned tenant on this cluster" >&2; exit 2; }
-echo "  subject: $SUBJECT tenant $TENANT_ID"
+# Non-system first: the SYSTEM tenant works but is special-cased elsewhere and
+# is a poor default subject for a destructive suite.
+CANDIDATES=$(jq -r '[.data[] | select(.isSystem != true)][].id, [.data[] | select(.isSystem == true)][].id' <<<"$TENANTS")
+TENANT_ID=""
+for c in $CANDIDATES; do
+  if [[ "$(api -o /dev/null -w '%{http_code}' "$ADMIN_HOST/api/v1/tenants/$c/files/status")" == "200" ]]; then
+    TENANT_ID="$c"; break
+  fi
+done
+[[ -n "$TENANT_ID" ]] || { echo "ERROR: no tenant on this cluster has a usable file manager" >&2; exit 2; }
+IS_SYSTEM=$(jq -r --arg id "$TENANT_ID" '.data[] | select(.id==$id) | .isSystem' <<<"$TENANTS")
+echo "  subject: tenant $TENANT_ID (isSystem=$IS_SYSTEM)"
 T="$ADMIN_HOST/api/v1/tenants/$TENANT_ID/files"
 
 note "start the file manager"
