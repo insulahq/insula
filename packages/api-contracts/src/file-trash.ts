@@ -35,12 +35,11 @@ export const trashEntrySchema = z.object({
   sizeBytes: z.number().nullable(),
   deletedAt: z.string(),
   deletedBy: z.string().nullable(),
-  /** `file-manager` (an explicit delete), `deployment` (a deployment's data
-   *  folder), or `replaced` (displaced by an incidental overwrite). */
+  /** `file-manager` (an explicit delete) or `deployment` (a deployment's data
+   *  folder). The bin covers the DELETE path only — ordinary overwrites by
+   *  rename/copy/write/upload/extract are NOT captured, because retaining a
+   *  copy on every routine write would grow the tenant's PVC without bound. */
   origin: z.string(),
-  /** For origin=replaced: which operation displaced it (rename/copy/upload/
-   *  write/extract), so the bin can say WHY the entry is there. */
-  replacedBy: z.string().optional(),
   deploymentName: z.string().optional(),
   orphaned: z.boolean(),
 });

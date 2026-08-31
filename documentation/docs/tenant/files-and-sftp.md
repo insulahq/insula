@@ -82,31 +82,11 @@ select everything shown) to **Restore selected** or **Delete selected** in one
 action, and use the filter box to narrow a long list by name or original
 location.
 
-### Replaced files are kept too
-
-The bin does not only catch deletions. When an operation *replaces* an existing
-file, the previous version goes to the bin as well, labelled with what replaced
-it:
-
-| Doing this… | …to a name that already exists |
-|---|---|
-| **Move / rename** | the file that was there is kept |
-| **Copy** | the overwritten destination is kept |
-| **Upload** | the previous upload is kept |
-| **Extract an archive** | every file the archive overwrites is kept |
-| **New File** | the existing file is kept |
-
-So re-extracting an application archive over a live site no longer destroys
-your customisations — the previous versions are all recoverable.
-
-The one deliberate exception is **saving in the editor**. That is you
-overwriting a file you have open on purpose, so it does not create a bin entry;
-otherwise every save would fill the bin and bury the accidents it exists to
-catch.
-
-**What the bin does *not* cover.** It protects work done **in the file
-manager**. Files removed or replaced over SFTP, or by your own application
-code, are gone immediately — there is no copy to restore.
+**What the bin does *not* cover.** It holds files you **delete** in the file
+manager. It is not a version history: overwriting a file — by moving or copying
+onto it, uploading over it, saving in the editor, or extracting an archive over
+it — replaces it outright, and the previous contents are not kept. Files removed
+over SFTP or by your own application code are likewise gone immediately.
 
 Deleting an application with **Also remove data folder** ticked sends that
 folder to the bin too, so the files remain recoverable. Restoring returns the

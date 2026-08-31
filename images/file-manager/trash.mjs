@@ -182,9 +182,6 @@ export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, de
       deletedAt: now.toISOString(),
       deletedBy: meta.actor ?? null,
       origin: meta.origin ?? 'file-manager',
-      // Which operation displaced it, so the bin can say WHY an entry the user
-      // never explicitly deleted is sitting there.
-      ...(meta.replacedBy ? { replacedBy: meta.replacedBy } : {}),
       ...(meta.deploymentName ? { deploymentName: meta.deploymentName } : {}),
     };
 
@@ -196,32 +193,6 @@ export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, de
       warn(`[trash] metadata write failed for ${id}: ${err.message}`);
     }
     return entry;
-  }
-
-  /**
-   * Back up a path that is ABOUT to be destroyed by an incidental overwrite,
-   * then report what happened. Returns the trash entry, or null when there was
-   * nothing there (the overwhelmingly common case, so this is a cheap `lstat`
-   * on the happy path).
-   *
-   * "Incidental" is the whole point. A move, a copy, an upload or an archive
-   * extraction that lands on an occupied name destroys the occupant as a SIDE
-   * EFFECT of doing something else — the user never named the file they lost.
-   * An editor save, by contrast, is a deliberate overwrite of the file the user
-   * is looking at, so callers declare that with `expectExisting` and get no
-   * backup (otherwise every Ctrl-S would leave a trash entry behind).
-   *
-   * `lstat`, not `stat`: a dangling symlink at the destination is still an
-   * entry that a rename would silently replace.
-   */
-  async function trashIfExists(abs, rel, meta = {}) {
-    try {
-      await lstat(abs);
-    } catch {
-      return null; // nothing to displace
-    }
-    if (isInsideTrash(abs) || abs === BASE) return null;
-    return moveToTrash(abs, rel, { ...meta, origin: meta.origin ?? 'replaced' });
   }
 
   async function readInfo(shard, id) {
@@ -283,7 +254,6 @@ export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, de
           deletedAt: info?.deletedAt ?? s.ctime.toISOString(),
           deletedBy: info?.deletedBy ?? null,
           origin: info?.origin ?? 'file-manager',
-          ...(info?.replacedBy ? { replacedBy: info.replacedBy } : {}),
           ...(info?.deploymentName ? { deploymentName: info.deploymentName } : {}),
           orphaned: info === null,
         });
@@ -483,7 +453,6 @@ export function createTrash({ BASE, safePath, confineRealpath, execFileAsync, de
     TRASH_ROOT,
     isInsideTrash,
     moveToTrash,
-    trashIfExists,
     listTrash,
     restoreFromTrash,
     purgeTrash,
