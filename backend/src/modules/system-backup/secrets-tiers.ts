@@ -16,6 +16,8 @@
  * secrets-denylist.jq`); CI parity test catches drift.
  */
 
+import { isTenantNamespace } from '../../lib/namespace-tier.js';
+
 export type RestoreTier = 'tier-1-platform' | 'tier-2-tenant' | 'unclassified';
 
 /** Namespaces whose Secrets are needed by the conservative restore
@@ -34,14 +36,27 @@ export const TIER_1_PLATFORM_NAMESPACES: ReadonlySet<string> = new Set([
   'crowdsec',
 ]);
 
-/** Tenant namespace prefix. Mirrors the existing `client-*`
- *  convention used by the nightly secrets-backup CronJob. */
-const TENANT_NAMESPACE_RE = /^client-.+$/;
-
-/** Pure function. Exported for unit testing. */
+/**
+ * Pure function. Exported for unit testing.
+ *
+ * This used to test `/^client-.+$/`, a convention the platform no longer mints
+ * — `tenants/service.ts:generateNamespace()` has produced `tenant-<slug>-<hex>`
+ * for a long time, and production has ZERO `client-*` namespaces and zero
+ * tenant rows outside `tenant-*` (checked 2026-08-31). So every real tenant
+ * Secret was being labelled `unclassified` instead of `tier-2-tenant`.
+ *
+ * Behaviourally this was harmless — both tiers are bundled and both are applied
+ * by the `full` restore profile, so nothing was ever missing from a bundle or
+ * skipped on restore. It made the audit UI and the bundle summary wrong, which
+ * is how an operator would read "0 tenant secrets" off a bundle that in fact
+ * contained all of them.
+ *
+ * Now classified by the shared helper so it cannot drift from the rest of the
+ * platform again. See lib/namespace-tier.ts.
+ */
 export function restoreTierForNamespace(namespace: string): RestoreTier {
   if (TIER_1_PLATFORM_NAMESPACES.has(namespace)) return 'tier-1-platform';
-  if (TENANT_NAMESPACE_RE.test(namespace)) return 'tier-2-tenant';
+  if (isTenantNamespace(namespace)) return 'tier-2-tenant';
   return 'unclassified';
 }
 
