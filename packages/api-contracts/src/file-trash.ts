@@ -35,7 +35,12 @@ export const trashEntrySchema = z.object({
   sizeBytes: z.number().nullable(),
   deletedAt: z.string(),
   deletedBy: z.string().nullable(),
+  /** `file-manager` (an explicit delete), `deployment` (a deployment's data
+   *  folder), or `replaced` (displaced by an incidental overwrite). */
   origin: z.string(),
+  /** For origin=replaced: which operation displaced it (rename/copy/upload/
+   *  write/extract), so the bin can say WHY the entry is there. */
+  replacedBy: z.string().optional(),
   deploymentName: z.string().optional(),
   orphaned: z.boolean(),
 });

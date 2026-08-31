@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Loader2, RotateCcw, Trash2, AlertTriangle, FolderOpen, File as FileIcon, Link2 } from 'lucide-react';
 import type { TrashEntry } from '@insula/api-contracts';
 import { useTrash, useRestoreFromTrash, usePurgeTrash, daysUntilPurge } from '@/hooks/use-trash';
@@ -32,9 +32,45 @@ export default function TrashPanel({ onRestored }: { readonly onRestored?: () =>
   const [confirmEmpty, setConfirmEmpty] = useState(false);
   const [purgeTarget, setPurgeTarget] = useState<TrashEntry | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Bulk selection. Restoring 50 accidentally-deleted files one row at a time
+  // is the difference between a usable bin and a demo.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [query, setQuery] = useState('');
 
-  const entries = data?.entries ?? [];
+  const allEntries = data?.entries ?? [];
   const retentionDays = data?.retentionDays ?? 14;
+  // Filtering matters once a single archive extraction can add dozens of
+  // entries in one go.
+  const entries = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return allEntries;
+    return allEntries.filter(e =>
+      e.name.toLowerCase().includes(q) || (e.originalPath ?? '').toLowerCase().includes(q));
+  }, [allEntries, query]);
+
+  const toggle = (id: string) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const allShownSelected = entries.length > 0 && entries.every(e => selected.has(e.id));
+  const selectedIds = entries.filter(e => selected.has(e.id)).map(e => e.id);
+
+  const bulkRestore = () => {
+    setBulkBusy(true);
+    let done = 0;
+    selectedIds.forEach((id) => {
+      // autoRename: a bulk restore must never clobber whatever occupies the
+      // path now — that would be a second destruction dressed as a recovery.
+      restore.mutate({ id, autoRename: true }, {
+        onSettled: () => {
+          done += 1;
+          if (done === selectedIds.length) { setBulkBusy(false); setSelected(new Set()); onRestored?.(); }
+        },
+      });
+    });
+  };
 
   const handleRestore = (entry: TrashEntry, opts?: { overwrite?: boolean; autoRename?: boolean }) => {
     setBusyId(entry.id);
@@ -89,15 +125,59 @@ export default function TrashPanel({ onRestored }: { readonly onRestored?: () =>
         </button>
       </div>
 
+      {allEntries.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter by name or original location…"
+            className="min-w-[220px] flex-1 rounded-lg border border-gray-300 px-3 py-1.5 text-sm text-gray-900 placeholder:text-gray-400 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+            data-testid="trash-filter"
+          />
+          {selectedIds.length > 0 && (
+            <>
+              <span className="text-sm text-gray-600 dark:text-gray-400">{selectedIds.length} selected</span>
+              <button
+                onClick={bulkRestore}
+                disabled={bulkBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-brand-300 px-3 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:border-brand-700 dark:text-brand-400 dark:hover:bg-brand-900/30"
+                data-testid="bulk-restore"
+              >
+                {bulkBusy ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />} Restore selected
+              </button>
+              <button
+                onClick={() => purge.mutate({ ids: selectedIds }, { onSuccess: () => setSelected(new Set()) })}
+                disabled={purge.isPending || bulkBusy}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-300 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 disabled:opacity-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/30"
+                data-testid="bulk-purge"
+              >
+                <Trash2 size={14} /> Delete selected
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       {entries.length === 0 ? (
         <p className="py-8 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="trash-empty">
-          The recycle bin is empty.
+          {allEntries.length === 0 ? 'The recycle bin is empty.' : 'No entries match that filter.'}
         </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs uppercase tracking-wide text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                <th className="py-2 pr-2 font-medium">
+                  <input
+                    type="checkbox"
+                    checked={allShownSelected}
+                    onChange={() => setSelected(allShownSelected ? new Set() : new Set(entries.map(e => e.id)))}
+                    aria-label="Select all shown"
+                    className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-700"
+                    data-testid="trash-select-all"
+                  />
+                </th>
                 <th className="py-2 pr-3 font-medium">Name</th>
                 <th className="py-2 pr-3 font-medium">Original location</th>
                 <th className="py-2 pr-3 font-medium">Size</th>
@@ -112,11 +192,27 @@ export default function TrashPanel({ onRestored }: { readonly onRestored?: () =>
                 const busy = busyId === entry.id;
                 return (
                   <tr key={entry.id} className="border-b border-gray-100 last:border-0 dark:border-gray-800" data-testid={`trash-row-${entry.id}`}>
+                    <td className="py-2 pr-2 align-top">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(entry.id)}
+                        onChange={() => toggle(entry.id)}
+                        aria-label={`Select ${entry.name}`}
+                        className="mt-1 h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 dark:border-gray-600 dark:bg-gray-700"
+                      />
+                    </td>
                     <td className="py-2 pr-3">
                       <div className="flex items-center gap-2">
                         <EntryIcon type={entry.type} />
                         <span className="truncate font-medium text-gray-900 dark:text-gray-100">{entry.name}</span>
                       </div>
+                      {/* Why is this here? An entry the user never explicitly
+                          deleted needs to explain itself. */}
+                      {entry.origin === 'replaced' && (
+                        <span className="ml-6 text-xs text-amber-700 dark:text-amber-400">
+                          replaced by {entry.replacedBy ?? 'another file'} — this is the previous version
+                        </span>
+                      )}
                       {entry.deploymentName && (
                         <span className="ml-6 text-xs text-gray-500 dark:text-gray-400">
                           data folder of deployment “{entry.deploymentName}” — restoring returns the files only, not the deployment

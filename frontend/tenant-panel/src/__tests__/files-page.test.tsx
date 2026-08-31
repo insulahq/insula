@@ -37,6 +37,12 @@ const mockDirListing = vi.fn(() => ({
   error: null,
   refetch: vi.fn(),
 }));
+// Invokes onSuccess with a realistic envelope so the post-delete Undo
+// affordance is exercised rather than assumed.
+const mockDeleteMutate = vi.fn((_vars: unknown, opts?: { onSuccess?: (r: unknown) => void }) => {
+  opts?.onSuccess?.({ data: { deleted: true, trashed: true, trashEntry: { id: 'trash-entry-1' } } });
+});
+
 const mockFileContent = vi.fn(() => ({
   data: { path: '/index.html', content: '<h1>Hello</h1>', size: 14, modifiedAt: '2026-01-01T00:00:00Z' },
   isLoading: false,
@@ -54,7 +60,7 @@ vi.mock('../hooks/use-file-manager', async (importOriginal) => {
     useCreateDirectory: () => ({ mutate: mockMutate, isPending: false }),
     useWriteFile: () => ({ mutate: mockMutate, isPending: false }),
     useRenameFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
-    useDeleteFile: () => ({ mutate: mockMutate, mutateAsync: mockMutateAsync, isPending: false }),
+    useDeleteFile: () => ({ mutate: mockDeleteMutate, mutateAsync: mockMutateAsync, isPending: false }),
     useDownloadFile: () => vi.fn(),
     useUploadFiles: () => ({
       uploads: [],
@@ -482,5 +488,48 @@ describe('Files Page', () => {
       });
       expect(screen.getByTestId('bulk-permanent-delete-toggle')).toBeInTheDocument();
     });
+  });
+});
+
+describe('Recycle-bin affordances', () => {
+  it('offers a persistent way into the bin, not only when it is non-empty', () => {
+    // The usage chip next to the storage figure only renders when trashBytes
+    // > 0, which hides the bin exactly when someone is asking "where did my
+    // file go?" — the mocked disk-usage here has no trash at all.
+    renderFiles();
+    expect(screen.getByTestId('open-recycle-bin')).toBeInTheDocument();
+  });
+
+  it('offers Undo straight after a delete, without making the user find the bin', async () => {
+    const user = userEvent.setup();
+    renderFiles();
+    fireEvent.contextMenu(screen.getByText('style.css').closest('tr')!);
+    const items = await screen.findAllByText('Move to Trash');
+    await user.click(items[items.length - 1]);
+
+    const confirm = screen.getAllByText('Move to Trash').find(b => b.tagName === 'BUTTON' && b.closest('[class*="bg-brand"]'))
+      ?? screen.getAllByRole('button', { name: 'Move to Trash' }).pop()!;
+    await user.click(confirm);
+
+    const bar = await screen.findByTestId('undo-bar');
+    expect(bar).toHaveTextContent(/Moved "style\.css" to Trash/);
+    expect(screen.getByTestId('undo-delete')).toBeInTheDocument();
+  });
+
+  it('does not offer Undo for a permanent delete — there is nothing to undo', async () => {
+    const user = userEvent.setup();
+    renderFiles();
+    fireEvent.contextMenu(screen.getByText('style.css').closest('tr')!);
+    const items = await screen.findAllByText('Move to Trash');
+    await user.click(items[items.length - 1]);
+    await user.click(screen.getByTestId('permanent-delete-toggle'));
+
+    const confirm = screen.getAllByRole('button', { name: 'Delete Permanently' }).pop()!;
+    await user.click(confirm);
+
+    const bar = await screen.findByTestId('undo-bar');
+    expect(bar).toHaveTextContent(/Permanently deleted/);
+    expect(screen.queryByTestId('undo-delete')).not.toBeInTheDocument();
+    expect(bar).toHaveTextContent(/cannot be undone/i);
   });
 });

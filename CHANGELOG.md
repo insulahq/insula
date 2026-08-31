@@ -12,7 +12,53 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Recycle bin for the file manager.** Deleting a file or folder in the tenant
+  file manager now moves it to a recycle bin on the tenant's own volume instead
+  of erasing it, and it can be restored from there. Because the bin lives on the
+  same volume, a delete is an atomic rename — instant even for a multi-gigabyte
+  folder, and it consumes no extra space.
+  - Every delete dialog now reads **Move to Trash**, with an opt-in *Delete
+    permanently (skip recycle bin)* that switches the dialog's wording, button
+    and styling together. The opt-in resets each time a dialog opens and is
+    never remembered, so it cannot silently make a later delete unrecoverable.
+  - **Undo** appears immediately after a delete, restoring *alongside* anything
+    that has since taken the path rather than overwriting it. The bin also has
+    a persistent toolbar button, multi-select for bulk restore/delete, and a
+    filter.
+  - **Deleting an application with its data folder** routes that folder through
+    the bin too, so the files stay recoverable. Restoring returns the files
+    only — not the application.
+  - The bin has **no size cap**, by design: a size-driven purge would delete one
+    tenant's files because another filled it. Instead its size is shown wherever
+    storage is, because trashed files keep counting against the tenant's quota
+    until they expire or the bin is emptied.
+  - Retention is admin-configurable under **Platform → Limits & Regional**
+    (1–365 days, default 14). Expiry runs both opportunistically while a tenant
+    is using their file manager and from a background reconciler, so the window
+    is honoured for tenants who delete something and never come back.
+  - Trashed files are included in tenant backup bundles, so restoring a bundle
+    also restores what was recoverable at capture time.
+  - The bin covers work done **in the file manager**. Files removed or replaced
+    over SFTP, or by the tenant's own application, are gone immediately.
+
+### Changed
+- **Overwrites are recoverable.** A move, copy, upload, blind write or archive
+  extraction that landed on an existing name used to destroy it silently — the
+  user named a *source*, and the thing they lost was never mentioned. The
+  displaced file is now kept in the recycle bin, labelled with what replaced it.
+  Re-extracting an application archive over a live site therefore no longer
+  destroys the site's customisations. Saving in the editor is deliberately
+  excluded: that is a deliberate overwrite of an open file, and one bin entry
+  per save would bury the accidents the bin exists to catch.
+
 ### Fixed
+- **Opening the file manager works on the first attempt after an update.**
+  The first attempt to open Files after the file-manager image changed was a
+  silent no-op — the panel reported "Pod is being created" while nothing was
+  scheduled, and the tenant had to click again. The same path could also scale
+  down a file manager that a tenant was actively using, mid-session, purely
+  because the image pin had moved.
 - **No more false "tenant OOM-killed" alerts.** Admins were paged that
   tenant `"traefik"` had a container OOM-killed and told to raise that tenant's
   plan. `traefik` is a platform namespace, no such tenant exists, and it was

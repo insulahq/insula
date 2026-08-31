@@ -412,6 +412,8 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
 
     const deleted: string[] = [];
     const failed: Array<{ path: string; error: string }> = [];
+    // Collected so the panel can offer Undo on the whole batch.
+    const trashedIds: string[] = [];
     const actor = request.user?.sub ?? null;
 
     for (const path of parsed.data.paths) {
@@ -424,6 +426,10 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
         );
         if (result.status === 200) {
           deleted.push(path);
+          try {
+            const parsedBody = JSON.parse(result.body) as { trashEntry?: { id?: string } };
+            if (parsedBody.trashEntry?.id) trashedIds.push(parsedBody.trashEntry.id);
+          } catch { /* non-JSON body — the delete still succeeded */ }
         } else {
           let msg = `HTTP ${result.status}`;
           try { msg = JSON.parse(result.body).error || msg; } catch { /* non-JSON body */ }
@@ -438,7 +444,7 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
 
     if (!parsed.data.permanent && deleted.length > 0) await noteTrashActivity(app.db, tenantId);
     sweepTrashOpportunistically(app.db, k8sTenants, kubeconfigPath, namespace);
-    return success({ deleted, failed });
+    return success({ deleted, failed, trashedIds });
   });
 
   // ─── Recycle bin ───────────────────────────────────────────────────────────
