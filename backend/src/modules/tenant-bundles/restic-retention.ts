@@ -262,8 +262,11 @@ export async function runResticRetentionSweep(
   // Union in the reclaim-state table so a repo stays in rotation even after
   // its last bundle row is hard-deleted.
   //
-  // Oldest-swept first (NULL = never swept) so every repo gets a turn under
-  // the per-tick cap.
+  // Least-recently-EXAMINED first. Ordering by last_forget_at instead would
+  // starve every repo that is only ever skipped: those never got a row, so they
+  // kept sorting into the NULLS-FIRST group and the tail was never reached
+  // (staging: 131 pairs, 21 recorded, sweeps stalled). last_sweep_at is stamped
+  // on every outcome, making this a true round robin.
   const stateRows = (await db.execute(sql`
     WITH pairs AS (
       -- ::text on both arms is required, not cosmetic: backup_components.component
@@ -282,7 +285,7 @@ export async function runResticRetentionSweep(
     LEFT JOIN restic_repo_reclaim_state r
       ON r.tenant_id = p.tenant_id AND r.component = p.component
     WHERE ${args.tenantId ? sql`p.tenant_id = ${args.tenantId}` : sql`TRUE`}
-    ORDER BY r.last_forget_at ASC NULLS FIRST
+    ORDER BY r.last_sweep_at ASC NULLS FIRST
     LIMIT ${args.maxRepos ?? DEFAULT_MAX_REPOS}
   `) as unknown as { rows: Array<{ tenantId: string; component: string }> }).rows;
 
@@ -324,8 +327,16 @@ export async function runResticRetentionSweep(
   for (const row of stateRows) {
     const { tenantId, component } = row;
     const base = { tenantId, component, snapshotsInRepo: 0, keptCount: 0, forgottenCount: 0, forgottenIds: [] as string[], prunedNow: false, prunePending: false };
+    // Stamp the examination on every outcome so the round-robin advances. A
+    // dry run deliberately writes nothing, so it must not be used to audit
+    // coverage.
+    const note = async (outcome: string): Promise<void> => {
+      if (dryRun) return;
+      await recordSweepExamination({ db, tenantId, component, outcome, at: now(), logger });
+    };
 
     if (!RESTIC_COMPONENTS.has(component)) {
+      await note('unknown-component');
       repos.push({ ...base, repoUri: '', skipped: 'unknown-component', error: null });
       reposSkipped++;
       continue;
@@ -338,6 +349,7 @@ export async function runResticRetentionSweep(
         WHERE tenant_id = ${tenantId} AND target_config_id IS NOT NULL
       `) as unknown as { rows: Array<{ target_config_id: string }> };
       if (tgt.rows.length > 0 && tgt.rows.every((r) => frozen.has(r.target_config_id))) {
+        await note('frozen-target');
         repos.push({ ...base, repoUri: '', skipped: 'frozen-target', error: null });
         reposSkipped++;
         continue;
@@ -398,6 +410,7 @@ export async function runResticRetentionSweep(
           // longer fronts, and purging those bundle rows would destroy the only
           // record of it. Reclaim it by pointing the shim at that target, or
           // with an explicit forced per-tenant run.
+          await note('repo-missing');
           repos.push({ ...base, repoUri, skipped: 'repo-missing', error: null });
           reposSkipped++;
           continue;
@@ -419,6 +432,7 @@ export async function runResticRetentionSweep(
           { tenantId, component, snapshots: snapshots.length },
           'restic retention: repo has snapshots but the DB has no bundle history for it — skipping (possible DB loss). Use the manual route with force=true if the repo is genuinely abandoned.',
         );
+        await note('no-db-history');
         repos.push({ ...base, repoUri, skipped: 'no-db-history', error: null });
         reposSkipped++;
         continue;
@@ -436,6 +450,7 @@ export async function runResticRetentionSweep(
             logger.warn({ err, tenantId, component }, 'restic retention: stamp reconcile failed (retried next sweep)');
           }
         }
+        await note('nothing-to-forget');
         repos.push({ ...base, repoUri, skipped: 'nothing-to-forget', error: null });
         continue;
       }
@@ -488,6 +503,7 @@ export async function runResticRetentionSweep(
       } catch (err) {
         logger.warn({ err, tenantId, component }, 'restic retention: could not stamp reclaimed components (retried next sweep)');
       }
+      await note('forgot');
       repos.push({
         ...base, repoUri, forgottenCount: candidates.length, forgottenIds: [...candidates],
         prunePending: true, skipped: null, error: null,
@@ -495,6 +511,7 @@ export async function runResticRetentionSweep(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error({ err: msg, tenantId, component }, 'restic retention: repo sweep failed');
+      await note('error');
       repos.push({ ...base, repoUri, skipped: null, error: msg.slice(0, 300) });
       errors++;
     }
@@ -589,6 +606,37 @@ export async function runResticRetentionSweep(
     errors,
     repos,
   };
+}
+
+/**
+ * Record that this repository was examined, whatever the outcome.
+ *
+ * Drives the round-robin ordering. Must be called on EVERY path the sweep can
+ * take for a repo — including skips and errors — or that repo sorts first
+ * forever and the tail starves once there are more repos than the per-tick cap.
+ * Best-effort: bookkeeping must never fail a sweep.
+ */
+async function recordSweepExamination(args: {
+  db: Database;
+  tenantId: string;
+  component: string;
+  outcome: string;
+  at: Date;
+  logger: FastifyBaseLogger;
+}): Promise<void> {
+  try {
+    await args.db.execute(sql`
+      INSERT INTO restic_repo_reclaim_state (tenant_id, component, last_sweep_at, last_sweep_outcome)
+      VALUES (${args.tenantId}, ${args.component}, ${args.at}, ${args.outcome})
+      ON CONFLICT (tenant_id, component) DO UPDATE SET
+        last_sweep_at = EXCLUDED.last_sweep_at,
+        last_sweep_outcome = EXCLUDED.last_sweep_outcome,
+        updated_at = now()
+    `);
+  } catch (err) {
+    args.logger.warn({ err, tenantId: args.tenantId, component: args.component },
+      'restic retention: could not record sweep examination');
+  }
 }
 
 /**
