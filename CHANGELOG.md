@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Extra volume mounts for deployments.** A deployment can now mount an
+  *additional* folder from the tenant's storage at a chosen absolute path
+  inside the container, alongside the folder it already gets. The folder is
+  addressed relative to the **storage root** rather than to the app's own
+  folder, so two deployments naming the same folder see the same files — a
+  shared media library, or a drop-box one app writes and another reads.
+
+  Mount paths are validated by a shared schema **at the API boundary**, not only
+  in the browser: absolute paths only, `.`/`..`/`//`/NUL rejected, kernel
+  interfaces (`/proc`, `/sys`, `/dev`) and container system directories (`/`,
+  `/etc`, `/usr`, `/var`, `/bin`, `/lib`, …) refused, a per-deployment cap, and a
+  collision check against the volumes the platform already mounts.
+
+  A shared folder deliberately **outlives the deployment**: deleting an app —
+  even with *delete data* — removes only that app's own folder, because another
+  deployment may still be using the shared one. Remove it from the File Manager
+  when it is no longer wanted.
+
 ## [2026.8.25] - 2026-08-30
 
 ### Fixed
