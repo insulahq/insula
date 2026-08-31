@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **Dependency currency sweep** (resolves all eight open Dependabot PRs). npm:
+  `@kubernetes/client-node` **2.0.0** (major — the client every cluster
+  operation in the backend goes through), plus the minor/patch group (Fastify,
+  the AWS SDK v3 S3 packages, the Anthropic SDK, Vite 8, ESLint 10,
+  `@vitejs/plugin-react` 6, `lucide-react` 1.33). Go: `k8s.io/client-go`
+  v0.36.4 across the firewall-reconciler, sftp-gateway, host-config-reconciler
+  and security-probe images. GitHub Actions: `docker/setup-buildx-action` v4 and
+  the CodeQL upload action.
+
+  Verified on a live cluster rather than by CI alone: all four Go components
+  reconciling with fresh output, the backend serving on client-node 2.0.0, and
+  the API surface exercised end to end.
+
 ### Added
 - **Recycle bin for the file manager.** Deleting a file or folder in the tenant
   file manager now moves it to a recycle bin on the tenant's own volume instead
