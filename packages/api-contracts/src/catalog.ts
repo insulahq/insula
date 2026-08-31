@@ -47,6 +47,22 @@ export const componentSchema = z.object({
   })).optional(),
   optional: z.boolean().optional(),
   schedule: z.string().optional(),
+  /**
+   * Container entrypoint override — needed by one-shot install jobs that run a
+   * bootstrap script instead of the image's default ENTRYPOINT.
+   */
+  command: z.array(z.string()).optional(),
+  /**
+   * Container args, appended after the entrypoint. Replaces the image CMD, so a
+   * server that takes its configuration as command-line flags (mariadbd/mysqld)
+   * can be tuned from the manifest with no derived image.
+   *
+   * Entry-level only: `supportedVersions[].components[]` carries just
+   * `{ name, image }`, and `resolveComponents()` reads only the image from it —
+   * args declared on a version entry are silently dropped. Any arg placed here
+   * must therefore be accepted by every supported version's image.
+   */
+  args: z.array(z.string()).optional(),
   /** Database engine this component provides — enables SQL Manager access */
   database: z.enum(['mariadb', 'mysql', 'postgresql', 'mongodb']).optional(),
   /**
