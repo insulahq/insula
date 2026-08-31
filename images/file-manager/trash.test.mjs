@@ -12,6 +12,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, readdirSync, lstatSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -396,4 +397,135 @@ test('deletion provenance is recorded for the deployment path', async () => {
   assert.equal(body.trashEntry.deletedBy, 'operator@example.test');
   assert.equal(body.trashEntry.origin, 'deployment');
   assert.equal(body.trashEntry.deploymentName, 'my-wp');
+});
+
+// ─── Overwrites: an incidental replace must be recoverable ───────────────────
+//
+// These are the silent destructions: the user names a SOURCE (or an archive, or
+// a file to upload) and something ELSE disappears. An editor save is excluded
+// on purpose — see handleWrite's `expectExisting`.
+
+test('rename onto an occupied name backs up the occupant', async () => {
+  await post('/trash/purge', { all: true });
+  seedFile('ow/src.txt', 'SOURCE');
+  seedFile('ow/victim.txt', 'VICTIM');
+  const { status, body } = await post('/rename', { oldPath: 'ow/src.txt', newPath: 'ow/victim.txt' });
+
+  assert.equal(status, 200);
+  assert.equal(readFileSync(join(BASE, 'ow/victim.txt'), 'utf8'), 'SOURCE', 'the move happened');
+  assert.ok(body.replaced, 'the displaced file was reported');
+  assert.equal(body.replaced.originalPath, 'ow/victim.txt');
+  assert.equal(body.replaced.origin, 'replaced');
+
+  const { status: rs } = await post('/trash/restore', { id: body.replaced.id, autoRename: true });
+  assert.equal(rs, 200);
+  assert.equal(readFileSync(join(BASE, 'ow/victim (restored).txt'), 'utf8'), 'VICTIM', 'the lost content came back');
+});
+
+test('rename onto a FREE name backs up nothing', async () => {
+  await post('/trash/purge', { all: true });
+  seedFile('ow2/a.txt', 'A');
+  const { body } = await post('/rename', { oldPath: 'ow2/a.txt', newPath: 'ow2/b.txt' });
+  assert.equal(body.replaced, null);
+  assert.equal((await trash.listTrash()).length, 0, 'the bin stays empty for ordinary renames');
+});
+
+test('copy onto an occupied name backs up the occupant', async () => {
+  await post('/trash/purge', { all: true });
+  seedFile('cp/src.txt', 'NEW');
+  seedFile('cp/dest.txt', 'OLD');
+  const { body } = await post('/copy', { sourcePath: 'cp/src.txt', destPath: 'cp/dest.txt' });
+  assert.equal(readFileSync(join(BASE, 'cp/dest.txt'), 'utf8'), 'NEW');
+  assert.equal(body.replaced.originalPath, 'cp/dest.txt');
+});
+
+test('an editor save (expectExisting) does NOT fill the bin', async () => {
+  // One trash entry per Ctrl-S would bury the accidents this exists to catch.
+  await post('/trash/purge', { all: true });
+  seedFile('edit/page.php', 'v1');
+  for (const v of ['v2', 'v3', 'v4']) {
+    await post('/write', { path: 'edit/page.php', content: v, expectExisting: true }); // eslint-disable-line no-await-in-loop
+  }
+  assert.equal(readFileSync(join(BASE, 'edit/page.php'), 'utf8'), 'v4');
+  assert.equal((await trash.listTrash()).length, 0, 'three saves produced no trash entries');
+});
+
+test('a blind write over an existing file DOES back it up', async () => {
+  // "New File" with a name that already exists, an AI-applied change, a script.
+  await post('/trash/purge', { all: true });
+  seedFile('blind/notes.txt', 'IRREPLACEABLE');
+  await post('/write', { path: 'blind/notes.txt', content: 'clobbered' });
+  const entries = await trash.listTrash();
+  assert.equal(entries.length, 1, 'the occupant was backed up');
+  assert.equal(entries[0].originalPath, 'blind/notes.txt');
+});
+
+test('a non-chunked upload over an existing file backs it up', async () => {
+  await post('/trash/purge', { all: true });
+  seedFile('up/data.bin', 'ORIGINAL-UPLOAD');
+  const res = await fetch(`http://127.0.0.1:${port}/write-raw?path=up/data.bin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: 'REPLACEMENT',
+  });
+  assert.equal(res.status, 200);
+  assert.equal(readFileSync(join(BASE, 'up/data.bin'), 'utf8'), 'REPLACEMENT');
+  const entries = await trash.listTrash();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].originalPath, 'up/data.bin');
+});
+
+test('PARALLEL chunks back up exactly once and never corrupt the upload', async () => {
+  // The race that makes a naive "back up at offset 0" wrong: chunks arrive
+  // concurrently and out of order. Two backups would move the half-written NEW
+  // file into the bin and destroy the upload.
+  await post('/trash/purge', { all: true });
+  const CHUNK = '0123456789';
+  const total = CHUNK.length * 4;
+  seedFile('up/par.bin', 'PREVIOUS-CONTENT');
+
+  await Promise.all([3, 1, 0, 2].map((i) =>
+    fetch(`http://127.0.0.1:${port}/write-raw?path=up/par.bin&offset=${i * CHUNK.length}&total=${total}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: CHUNK,
+    })));
+
+  assert.equal(readFileSync(join(BASE, 'up/par.bin'), 'utf8'), CHUNK.repeat(4), 'upload is intact');
+  const entries = await trash.listTrash();
+  assert.equal(entries.length, 1, `exactly one backup, got ${entries.length}`);
+  assert.equal(entries[0].originalPath, 'up/par.bin');
+});
+
+test('extract backs up every file it would overwrite, and nothing it would not', async () => {
+  await post('/trash/purge', { all: true });
+  // A real tar with one colliding file and one new one.
+  const stage = join(BASE, 'stage');
+  mkdirSync(join(stage, 'site'), { recursive: true });
+  writeFileSync(join(stage, 'site', 'index.php'), 'FROM-ARCHIVE');
+  writeFileSync(join(stage, 'site', 'brandnew.php'), 'NEW-FILE');
+  execFileSync('tar', ['-cf', join(BASE, 'site.tar'), '-C', stage, 'site']);
+  rmSync(stage, { recursive: true, force: true });
+
+  // A live install: index.php is customised; other.php is not in the archive.
+  seedFile('live/site/index.php', 'CUSTOMISED-BY-TENANT');
+  seedFile('live/site/other.php', 'UNTOUCHED');
+
+  const res = await fetch(`http://127.0.0.1:${port}/extract`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: 'site.tar', destPath: 'live' }),
+  });
+  await res.text(); // drain the NDJSON stream
+
+  assert.equal(readFileSync(join(BASE, 'live/site/index.php'), 'utf8'), 'FROM-ARCHIVE', 'archive won');
+  assert.equal(readFileSync(join(BASE, 'live/site/other.php'), 'utf8'), 'UNTOUCHED', 'untouched file survived');
+
+  const entries = await trash.listTrash();
+  assert.equal(entries.length, 1, `only the collision is backed up, got ${entries.map(e => e.originalPath).join(',')}`);
+  assert.equal(entries[0].originalPath, 'live/site/index.php');
+
+  // …and the customisation is genuinely recoverable.
+  await post('/trash/restore', { id: entries[0].id, autoRename: true });
+  assert.equal(readFileSync(join(BASE, 'live/site/index (restored).php'), 'utf8'), 'CUSTOMISED-BY-TENANT');
 });
