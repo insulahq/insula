@@ -72,9 +72,41 @@ be undone.
 days — 14 by default. Your provider sets this window; the exact number is
 shown in the bin and in the delete dialog.
 
-**What the bin does *not* cover.** It protects deletions made **in the file
-manager**. Files removed over SFTP, or by your own application code, are gone
-immediately — there is no copy to restore.
+**Undo.** Right after a delete, a bar appears at the top of the page offering
+**Undo**. That is the quickest route back — you do not have to open the bin and
+find the file. It restores *alongside* anything that has taken the path in the
+meantime, so nothing is overwritten.
+
+**Working in bulk.** Tick the checkbox on any row (or the one in the header to
+select everything shown) to **Restore selected** or **Delete selected** in one
+action, and use the filter box to narrow a long list by name or original
+location.
+
+### Replaced files are kept too
+
+The bin does not only catch deletions. When an operation *replaces* an existing
+file, the previous version goes to the bin as well, labelled with what replaced
+it:
+
+| Doing this… | …to a name that already exists |
+|---|---|
+| **Move / rename** | the file that was there is kept |
+| **Copy** | the overwritten destination is kept |
+| **Upload** | the previous upload is kept |
+| **Extract an archive** | every file the archive overwrites is kept |
+| **New File** | the existing file is kept |
+
+So re-extracting an application archive over a live site no longer destroys
+your customisations — the previous versions are all recoverable.
+
+The one deliberate exception is **saving in the editor**. That is you
+overwriting a file you have open on purpose, so it does not create a bin entry;
+otherwise every save would fill the bin and bury the accidents it exists to
+catch.
+
+**What the bin does *not* cover.** It protects work done **in the file
+manager**. Files removed or replaced over SFTP, or by your own application
+code, are gone immediately — there is no copy to restore.
 
 Deleting an application with **Also remove data folder** ticked sends that
 folder to the bin too, so the files remain recoverable. Restoring returns the

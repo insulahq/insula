@@ -28,6 +28,8 @@ import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-edi
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import TrashPanel from '@/components/files/TrashPanel';
 import { PermanentDeleteToggle, DeleteConsequence } from '@/components/files/PermanentDeleteToggle';
+import UndoBar, { type UndoState } from '@/components/files/UndoBar';
+import { useRestoreFromTrash } from '@/hooks/use-trash';
 import { useResourceAvailability } from '@/hooks/use-resource-availability';
 import ErrorPanel from '@/components/ErrorPanel';
 import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-manager-errors';
@@ -117,6 +119,7 @@ export default function Files() {
   // Reset on OPEN, never on close: a remembered "skip recycle bin" would make a
   // later, unrelated delete permanent while the dialog still says Move to Trash.
   const [deletePermanent, setDeletePermanent] = useState(false);
+  const [undo, setUndo] = useState<UndoState | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveFormat, setArchiveFormat] = useState<'zip' | 'tar.gz' | 'tar'>('tar.gz');
   const [archiveName, setArchiveName] = useState('');
@@ -163,6 +166,25 @@ export default function Files() {
   const createFile = useWriteFile();
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
+  const restoreFromTrash = useRestoreFromTrash();
+
+  // Undo restores each entry ALONGSIDE whatever is there now rather than
+  // overwriting: between the delete and the click, something may legitimately
+  // occupy the path again, and silently replacing it would be a second
+  // destruction dressed up as a recovery.
+  const runUndo = useCallback(() => {
+    if (!undo) return;
+    const ids = [...undo.ids];
+    let done = 0;
+    ids.forEach((id) => {
+      restoreFromTrash.mutate({ id, autoRename: true }, {
+        onSettled: () => {
+          done += 1;
+          if (done === ids.length) { setUndo(null); dirListing.refetch(); }
+        },
+      });
+    });
+  }, [undo, restoreFromTrash, dirListing]);
   const downloadFile = useDownloadFile();
   const { uploads, uploadFiles, clearUploads, visible: uploadModalVisible } = useUploadFiles();
   const copyFile = useCopyFile();
@@ -466,6 +488,14 @@ export default function Files() {
           </button>
         </div>
       )}
+      {undo && (
+        <UndoBar
+          state={undo}
+          onUndo={runUndo}
+          onDismiss={() => setUndo(null)}
+          isRestoring={restoreFromTrash.isPending}
+        />
+      )}
       <div className="flex items-center justify-between">
         <FilePageHeader />
         <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Storage Utilization">
@@ -506,6 +536,14 @@ export default function Files() {
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <button onClick={() => dirListing.refetch()} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Refresh"><RefreshCw size={14} /></button>
+          <button
+            onClick={() => setShowTrash(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700/50"
+            title="Files you deleted are kept here and can be restored"
+            data-testid="open-recycle-bin"
+          >
+            <Trash2 size={14} /> Recycle Bin
+          </button>
           <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(e.target.files, currentPath); e.target.value = ''; }} />
           <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Upload size={14} /> Upload
@@ -935,9 +973,20 @@ export default function Files() {
           title={deletePermanent ? 'Delete Permanently' : 'Move to Trash'}
           onClose={() => setDeleteTarget(null)}
           onConfirm={() => {
+            const name = deleteTarget;
             deleteFile.mutate(
-              { path: joinPath(currentPath, deleteTarget), permanent: deletePermanent },
-              { onSuccess: () => setDeleteTarget(null) },
+              { path: joinPath(currentPath, name), permanent: deletePermanent },
+              {
+                onSuccess: (res) => {
+                  setDeleteTarget(null);
+                  const id = (res as { data?: { trashEntry?: { id?: string } } })?.data?.trashEntry?.id;
+                  setUndo({
+                    ids: id ? [id] : [],
+                    label: deletePermanent ? `Permanently deleted "${name}"` : `Moved "${name}" to Trash`,
+                    permanent: deletePermanent,
+                  });
+                },
+              },
             );
           }}
           isPending={deleteFile.isPending}
@@ -958,7 +1007,7 @@ export default function Files() {
           paths={selectedPaths}
           retentionDays={retentionDays}
           onClose={() => setBulkDeleteOpen(false)}
-          onSuccess={() => { setBulkDeleteOpen(false); setSelected(new Set()); }}
+          onSuccess={(u) => { setBulkDeleteOpen(false); setSelected(new Set()); setUndo(u); }}
         />
       )}
 
@@ -1859,7 +1908,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
   const handleSave = useCallback(() => {
     if (!dirty || writeFile.isPending) return;
-    writeFile.mutate({ path, content }, { onSuccess: () => setDirty(false) });
+    writeFile.mutate({ path, content, expectExisting: true }, { onSuccess: () => setDirty(false) });
   }, [dirty, writeFile, path, content]);
 
   const handleClose = useCallback(() => {
@@ -2078,7 +2127,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
                 className="rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
                 Discard
               </button>
-              <button onClick={() => { writeFile.mutate({ path, content }, { onSuccess: () => { setDirty(false); setShowUnsavedDialog(false); onClose(); } }); }}
+              <button onClick={() => { writeFile.mutate({ path, content, expectExisting: true }, { onSuccess: () => { setDirty(false); setShowUnsavedDialog(false); onClose(); } }); }}
                 disabled={writeFile.isPending}
                 className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
                 {writeFile.isPending ? 'Saving...' : 'Save'}
@@ -2094,7 +2143,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
 function BulkDeleteDialog({ paths, retentionDays, onClose, onSuccess }: {
   readonly paths: string[]; readonly retentionDays: number;
-  readonly onClose: () => void; readonly onSuccess: () => void;
+  readonly onClose: () => void; readonly onSuccess: (undo: UndoState) => void;
 }) {
   // ONE request for the whole selection. This used to loop the single-path
   // endpoint: a select-all fired hundreds of sequential requests, tripped the
@@ -2112,7 +2161,17 @@ function BulkDeleteDialog({ paths, retentionDays, onClose, onSuccess }: {
       onSuccess: (res) => {
         // Partial success is a real outcome, not an error: report exactly
         // which paths survived instead of closing as if everything worked.
-        if (res.data.failed.length === 0) { onSuccess(); return; }
+        if (res.data.failed.length === 0) {
+          const n = res.data.deleted.length;
+          onSuccess({
+            ids: res.data.trashedIds ?? [],
+            label: permanent
+              ? `Permanently deleted ${n} item${n === 1 ? '' : 's'}`
+              : `Moved ${n} item${n === 1 ? '' : 's'} to Trash`,
+            permanent,
+          });
+          return;
+        }
         setFailed(res.data.failed);
       },
     });
