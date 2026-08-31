@@ -63,6 +63,48 @@ so you can see exactly which tenants are in or out of the daily run, and a
   ad-hoc and scheduled bundles — a tenant cannot request a longer retention than
   their plan allows.
 
+### Storage reclamation
+
+Expiring a bundle removes its own directory from the target, but the `files` and
+`mailboxes` components live in a shared per-tenant **restic repository** that
+several bundles deduplicate against. Freeing that space is a separate step, so a
+second sweeper reconciles each repository against the bundles the platform still
+vouches for and drops the rest.
+
+- Runs every 6 hours. It compares the snapshots actually in the repository with
+  the bundles that are still live, then `restic forget`s the difference.
+- `forget` only removes references; **`restic prune` reclaims the disk**. Prune
+  is expensive, so it runs on its own cadence — at most once per repository per
+  24 hours, a few repositories per pass. A repository with a large backlog
+  converges over several nights rather than in one long stall.
+- Because it reconciles rather than reacting to each expiry, it also reclaims
+  snapshots left behind by bundles that were deleted directly.
+- **Deleting the oldest snapshot never harms newer ones.** restic is
+  content-addressed: every snapshot is a complete, independently restorable
+  tree, and prune only discards data no remaining snapshot references. There is
+  no "base backup" whose loss breaks the chain.
+
+Once every part of a bundle is genuinely gone from the target, its row is
+removed from **Backups → Tenants** rather than kept as an `expired` entry. A
+bundle whose data spans two repositories stays listed until both have been
+swept, so the list never hides a backup that still exists.
+
+Settings (Backups → Settings) — the defaults suit most installs:
+
+| Setting | Default | Effect |
+|---|---|---|
+| Reclamation enabled | on | Master switch for forget/prune |
+| Minimum snapshot age | 48 h | Snapshots younger than this are never removed, whatever the database says |
+| Prune interval | 24 h | Minimum gap between prunes of the same repository |
+| Max repack size | 4G | Caps the work in one prune pass |
+
+If a repository holds snapshots but the platform has **no record of any bundle**
+for that tenant, the sweeper skips it and logs a warning instead of deleting.
+That combination is the signature of a restored or damaged platform database, so
+it refuses to guess; a tenant that simply aged out still has its expired bundle
+rows and is reclaimed normally. Use the per-tenant run with the force option
+once you have confirmed the repository really is abandoned.
+
 ## Reading bundle status
 
 In **Backups → Tenants**, each bundle shows an overall status and a
@@ -73,7 +115,9 @@ per-component breakdown. The status you care about:
 - **partial** — capture finished but at least one component failed. **Not** a
   safe restore source — see below.
 - **failed** — the bundle did not complete.
-- **expired** — past retention; removed from the target.
+- **expired** — past retention; removed from the target. The entry disappears
+  from the list once its storage has also been reclaimed (see
+  [Storage reclamation](#storage-reclamation)).
 
 ## Partial-failure handling
 

@@ -1640,3 +1640,160 @@ export async function ensureResticRepoInitialised(args: {
 export function randomSuffix(byteLen = 4): string {
   return randomBytes(byteLen).toString('hex');
 }
+
+// ─── Retention: forget + prune (ADR-048) ────────────────────────────────────
+
+// `forget` is metadata-only (rewrites the snapshot list); minutes at worst.
+const DEFAULT_FORGET_TIMEOUT_MS = 10 * 60 * 1000;
+// `prune` repacks blobs and walks the whole index — on a multi-GiB repo over
+// a slow link this legitimately runs for tens of minutes.
+const DEFAULT_PRUNE_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Run a short restic command that produces bounded stdout, with a hard
+ * timeout. Shared by forget/prune so both get identical stall handling:
+ * without the timeout a black-holed S3 endpoint or a stale repo lock would
+ * hold the per-pod semaphore slot forever (cap is 2 — two stalls halt every
+ * restic operation in the pod until restart).
+ */
+async function runBoundedRestic(args: {
+  readonly label: string;
+  readonly cliArgs: ReadonlyArray<string>;
+  readonly env: Record<string, string>;
+  readonly timeoutMs: number;
+}): Promise<string> {
+  const child = spawnRestic(args.cliArgs, args.env);
+  let stdoutBuf = '';
+  let stderrBuf = '';
+  child.stdout.on('data', (c: Buffer) => { stdoutBuf += c.toString('utf8'); });
+  child.stderr.on('data', (c: Buffer) => { stderrBuf += c.toString('utf8'); });
+  const exitPromise = new Promise<number>((resolve) => {
+    const finish = (c: number | null) => resolve(c ?? 0);
+    child.on('exit', finish);
+    child.on('close', finish);
+  });
+  let timeoutTimer: NodeJS.Timeout | undefined;
+  const timeoutP = new Promise<{ kind: 'timeout' }>((res) => {
+    timeoutTimer = setTimeout(() => res({ kind: 'timeout' }), args.timeoutMs);
+  });
+  try {
+    const winner = await Promise.race([
+      exitPromise.then((code) => ({ kind: 'done' as const, code })),
+      timeoutP,
+    ]);
+    if (winner.kind === 'timeout') {
+      try { child.kill('SIGTERM'); } catch { /* ignore */ }
+      await Promise.race([exitPromise, new Promise((r) => setTimeout(r, 5_000))]);
+      throw new Error(`${args.label} timed out after ${Math.round(args.timeoutMs / 1000)}s`);
+    }
+    if (winner.code !== 0) {
+      throw new Error(`${args.label} exited ${winner.code}: ${stderrBuf.trim() || stdoutBuf.trim()}`);
+    }
+    return stdoutBuf;
+  } finally {
+    if (timeoutTimer) clearTimeout(timeoutTimer);
+  }
+}
+
+export interface RunResticForgetArgs {
+  readonly target: BackupTarget;
+  readonly passwordHex: string;
+  /** Full per-(tenant, component) repo URI (buildResticRepoUri). */
+  readonly repoUri: string;
+  /** Snapshot ids to drop. Every id is validated before it reaches argv. */
+  readonly snapshotIds: ReadonlyArray<string>;
+  readonly semaphore?: ResticConcurrencySemaphore;
+  readonly timeoutMs?: number;
+}
+
+/**
+ * `restic forget <id...>` — drop snapshot references. Reclaims NO disk space
+ * on its own; `runResticPrune` does that. Deliberately split so the retention
+ * reconciler can forget across many repos cheaply and prune on a slower,
+ * rate-limited cadence.
+ *
+ * NOT run with `--no-lock`: forget mutates the repo and must take the lock.
+ */
+export async function runResticForget(args: RunResticForgetArgs): Promise<void> {
+  for (const id of args.snapshotIds) {
+    if (!SNAPSHOT_ID_RE.test(id)) {
+      throw new Error(`runResticForget: invalid snapshot id '${id}'`);
+    }
+  }
+  if (args.snapshotIds.length === 0) return;
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = { ...buildResticEnv(args.target), RESTIC_PASSWORD: args.passwordHex };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    cliArgs.push('forget', ...args.snapshotIds);
+    await runBoundedRestic({
+      label: 'restic forget',
+      cliArgs,
+      env,
+      timeoutMs: args.timeoutMs ?? DEFAULT_FORGET_TIMEOUT_MS,
+    });
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
+
+export interface RunResticPruneArgs {
+  readonly target: BackupTarget;
+  readonly passwordHex: string;
+  readonly repoUri: string;
+  /**
+   * Bound the repack work in one pass (restic `--max-repack-size`). A repo
+   * that needs more than this converges over several nightly runs instead of
+   * one multi-hour stall. Accepts restic size syntax, e.g. '2G'.
+   */
+  readonly maxRepackSize?: string;
+  readonly semaphore?: ResticConcurrencySemaphore;
+  readonly timeoutMs?: number;
+}
+
+const MAX_REPACK_SIZE_RE = /^[0-9]{1,6}[KMGT]$/;
+
+/**
+ * `restic prune` — the step that actually frees space. Expensive: walks the
+ * index and repacks partially-used pack files.
+ */
+export async function runResticPrune(args: RunResticPruneArgs): Promise<void> {
+  if (args.maxRepackSize !== undefined && !MAX_REPACK_SIZE_RE.test(args.maxRepackSize)) {
+    throw new Error(`runResticPrune: invalid maxRepackSize '${args.maxRepackSize}'`);
+  }
+  const sem = args.semaphore ?? DEFAULT_SEM;
+  const release = await sem.acquire();
+  let sftpCleanup: (() => Promise<void>) | null = null;
+  try {
+    const env = { ...buildResticEnv(args.target), RESTIC_PASSWORD: args.passwordHex };
+    const cliArgs: string[] = [];
+    if (args.target.kind === 'ssh') {
+      const prepared = await prepareSftpArgs(args.target);
+      sftpCleanup = prepared.cleanup;
+      cliArgs.push(...prepared.args);
+    }
+    cliArgs.push('--repo', args.repoUri);
+    cliArgs.push(...performanceOpts(args.target));
+    cliArgs.push('prune');
+    if (args.maxRepackSize) cliArgs.push('--max-repack-size', args.maxRepackSize);
+    await runBoundedRestic({
+      label: 'restic prune',
+      cliArgs,
+      env,
+      timeoutMs: args.timeoutMs ?? DEFAULT_PRUNE_TIMEOUT_MS,
+    });
+  } finally {
+    if (sftpCleanup) await sftpCleanup();
+    release();
+  }
+}
