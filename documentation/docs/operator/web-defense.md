@@ -48,11 +48,43 @@ When a legitimate request trips a rule, you don't disable the whole WAF — you 
 a narrow **exclusion**. On the **WAF Exclusions** tab you can exclude specific
 CRS rules for a route, and maintain an **IP allowlist**.
 
+Each exclusion has a **scope** that decides how much of the rule is switched
+off for matching hosts:
+
+| Scope | What it does | When to use |
+|-------|--------------|-------------|
+| `args` | Stops the rule inspecting request parameters — both names and values. The rule still scans the URI, headers, cookies and body, and every other rule stays fully active. | **The default.** Almost always what "whitelist this rule for this host" means. |
+| `args_names_only` | Stops the rule inspecting parameter *names* only. | Rare. Only correct when the rule matches a field *name*. |
+| `full_disable` | Disables the rule entirely for matching hosts. | Last resort. |
+
+!!! warning "`args_names_only` does nothing for most rules"
+    Most CRS rules match parameter **values**, not parameter names — 930120
+    (OS file access) and 932160 (Unix shell code) both do. For those,
+    `args_names_only` removes nothing and the request stays blocked, even
+    though the exclusion saves successfully and shows as active. If an
+    exclusion appears to have no effect, check its scope first: it was the
+    default before 2026-08-31 and is the usual cause.
+
 !!! tip "Tenant self-service exclusions are scoped to their own routes"
     Tenants can manage CRS exclusions for *their own* routes from the tenant
     panel. The platform forces each tenant exclusion to a hostname regex
     matching exactly that route's hostname, so a tenant can never write an
     exclusion that affects another tenant's traffic.
+
+### Deploys, cron jobs and the app terminal are never WAF-blocked
+
+Deployment, custom-container, cron-job and app-terminal requests carry values
+that *are* shell commands and filesystem paths — a container entrypoint like
+`docker-php-entrypoint apache2-foreground`, a cron command like
+`php /var/www/html/artisan schedule:run`, or the standard
+`PHP_ERROR_LOG=/dev/stderr`. The CRS "Remote Command Execution" family (932xxx)
+matches shell text by design, so it is excluded from request parameters on
+those endpoints. You do not need to add an exclusion for an ordinary deploy or
+cron job; if one is blocked, that is a bug worth reporting.
+
+Traversal (930100/930110), restricted-files (930130) and the XSS / SQL-injection
+/ PHP-injection families remain fully enforced on those endpoints, and the whole
+rule set remains active everywhere else.
 
 ## CrowdSec: bans
 
