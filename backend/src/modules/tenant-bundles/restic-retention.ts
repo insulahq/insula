@@ -264,13 +264,16 @@ export async function runResticRetentionSweep(
   // the per-tick cap.
   const stateRows = (await db.execute(sql`
     WITH pairs AS (
-      SELECT DISTINCT bj.tenant_id, bc.component
+      -- ::text on both arms is required, not cosmetic: backup_components.component
+      -- is the backup_component_name ENUM while restic_repo_reclaim_state.component
+      -- is varchar, and Postgres refuses to UNION those types.
+      SELECT DISTINCT bj.tenant_id, bc.component::text AS component
       FROM backup_components bc
       JOIN backup_jobs bj ON bj.id = bc.backup_job_id
       WHERE bc.component IN ('files','mailboxes')
         AND bc.sha256 IS NOT NULL
       UNION
-      SELECT tenant_id, component FROM restic_repo_reclaim_state
+      SELECT tenant_id, component::text AS component FROM restic_repo_reclaim_state
     )
     SELECT p.tenant_id AS "tenantId", p.component AS "component"
     FROM pairs p
@@ -351,7 +354,7 @@ export async function runResticRetentionSweep(
         FROM backup_components bc
         JOIN backup_jobs bj ON bj.id = bc.backup_job_id
         WHERE bj.tenant_id = ${tenantId}
-          AND bc.component = ${component}
+          AND bc.component::text = ${component}
           AND bj.status IN ('completed','partial')
           AND (bj.expires_at IS NULL OR bj.expires_at > ${now()})
       `) as unknown as { rows: Array<{ snapshot_id: string | null; bundle_id: string }> };
@@ -369,7 +372,7 @@ export async function runResticRetentionSweep(
         SELECT 1
         FROM backup_components bc
         JOIN backup_jobs bj ON bj.id = bc.backup_job_id
-        WHERE bj.tenant_id = ${tenantId} AND bc.component = ${component}
+        WHERE bj.tenant_id = ${tenantId} AND bc.component::text = ${component}
         LIMIT 1
       `) as unknown as { rows: Array<unknown> };
       const hasHistory = histRows.rows.length > 0;
@@ -438,8 +441,8 @@ export async function runResticRetentionSweep(
         FROM backup_jobs bj
         WHERE bj.id = bc.backup_job_id
           AND bj.tenant_id = ${tenantId}
-          AND bc.component = ${component}
-          AND bc.sha256 = ANY(${candidates})
+          AND bc.component::text = ${component}
+          AND bc.sha256 = ANY(${candidates}::text[])
       `);
 
       snapshotsForgotten += candidates.length;
@@ -596,7 +599,7 @@ export async function purgeFullyReclaimedBundles(
   if (ids.length === 0) return [];
   // backup_components cascades on this delete (FK ON DELETE CASCADE), which
   // is safe now: every restic snapshot id it held has been reclaimed.
-  await db.execute(sql`DELETE FROM backup_jobs WHERE id = ANY(${ids})`);
+  await db.execute(sql`DELETE FROM backup_jobs WHERE id = ANY(${ids}::text[])`);
   return ids;
 }
 
