@@ -4,6 +4,7 @@ import { API_BASE } from '@/lib/api-client';
 import { X, Play, Square, Cpu, HardDrive, Server, Clock, Shield, Eye, EyeOff, AppWindow, Loader2, Database, AlertTriangle, Tag as TagIcon, Save, AlertCircle, Terminal, RefreshCw, Pencil } from 'lucide-react';
 import { getStatusColor } from '@/lib/status-colors';
 import { useUpdateDeploymentResources, useUpdateDeployment, useResourceAvailability, useDeploymentLiveMetrics } from '@/hooks/use-deployments';
+import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
 import NetworkAccessSection from '@/components/NetworkAccessSection';
 import AvailableUpgradesCard from '@/components/AvailableUpgradesCard';
 import { ResourceBreakdown } from '@/components/ResourceBreakdown';
@@ -140,6 +141,8 @@ export default function InstalledAppDetailModal({
   const [editingConfig, setEditingConfig] = useState(false);
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const updateDeployment = useUpdateDeployment(tenantId);
+  const [editingMounts, setEditingMounts] = useState(false);
+  const [mountRows, setMountRows] = useState<ExtraMountRow[]>([]);
 
   if (!open || !deployment) return null;
 
@@ -238,6 +241,26 @@ export default function InstalledAppDetailModal({
       },
     );
   };
+
+  const saveMounts = () => {
+    // Same shape as saveConfigEdit: apply, invalidate, hand the restart to the
+    // parent, close. A mount change restarts the pod, so the UX must match the
+    // config-edit path rather than silently leaving a stale modal open.
+    const filled = mountRows.filter(m => m.folder.trim() !== '' && m.mount_path.trim() !== '');
+    updateDeployment.mutate(
+      { deploymentId: deployment.id, extra_mounts: filled },
+      {
+        onSuccess: () => {
+          setEditingMounts(false);
+          queryClient.invalidateQueries({ queryKey: ['deployments'] });
+          onRestart?.(deployment.id);
+          onClose();
+        },
+      },
+    );
+  };
+
+  const mountsInvalid = Object.keys(extraMountErrors(mountRows)).length > 0;
 
   const toggleSecret = (key: string) => {
     const next = new Set(revealedSecrets);
@@ -586,6 +609,67 @@ export default function InstalledAppDetailModal({
             </p>
           )}
         </div>
+
+        {/* Extra Mounts Section */}
+        <section className="mb-5">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+            Extra Mounts
+          </h3>
+          {!editingMounts ? (
+            <>
+              {(deployment.extraMounts ?? []).length > 0 ? (
+                <ul className="space-y-1" data-testid="extra-mounts-list">
+                  {(deployment.extraMounts ?? []).map((m, i) => (
+                    <li key={i} className="text-sm text-gray-700 dark:text-gray-300 font-mono">
+                      {m.folder} → {m.mount_path}
+                      {m.read_only && (
+                        <span className="ml-2 font-sans text-xs text-gray-500 dark:text-gray-400">(read-only)</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No extra mounts</p>
+              )}
+              <button
+                type="button"
+                onClick={() => { setMountRows([...(deployment.extraMounts ?? [])]); setEditingMounts(true); }}
+                className="mt-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                data-testid="edit-mounts-button"
+              >
+                Edit mounts
+              </button>
+            </>
+          ) : (
+            <div className="space-y-3">
+              <ExtraMountsEditor rows={mountRows} onChange={setMountRows} disabled={updateDeployment.isPending} />
+              <div className="flex items-start gap-2 rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <span>Saving will restart the deployment to apply changes. The application will be briefly unavailable.</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={saveMounts}
+                  disabled={updateDeployment.isPending || mountsInvalid}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 dark:bg-blue-500 dark:hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="save-mounts-button"
+                >
+                  {updateDeployment.isPending ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />}
+                  Apply Changes
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEditingMounts(false); updateDeployment.reset(); }}
+                  className="rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                  data-testid="cancel-mounts-button"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </section>
 
         {/* Resources Section (Issue 7: editable) */}
         <div className="mb-6">

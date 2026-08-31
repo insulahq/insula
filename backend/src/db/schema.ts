@@ -635,6 +635,14 @@ export const deployments = pgTable('deployments', {
   memoryRequest: varchar('memory_request', { length: 20 }).notNull().default('256Mi'),
   configuration: jsonb('configuration').$type<Record<string, unknown> | null>(),
   storagePath: varchar('storage_path', { length: 500 }),
+  /**
+   * Tenant-defined extra volume mounts (migration 0093). Array of
+   * `{ folder, mount_path, read_only }` validated by `extraMountsSchema`.
+   * `folder` is relative to the tenant PVC ROOT so folders can be shared
+   * between deployments — which is also why they are NOT removed when a
+   * deployment is deleted with its data.
+   */
+  extraMounts: jsonb('extra_mounts').$type<Array<{ folder: string; mount_path: string; read_only: boolean }> | null>(),
   helmReleaseName: varchar('helm_release_name', { length: 255 }),
   installedVersion: varchar('installed_version', { length: 50 }),
   targetVersion: varchar('target_version', { length: 50 }),

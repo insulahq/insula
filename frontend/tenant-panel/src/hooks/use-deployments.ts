@@ -1,23 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiFetch } from '@/lib/api-client';
 import type { Deployment, PaginatedResponse } from '@/types/api';
+import type { z } from 'zod';
+import type { createDeploymentSchema, updateDeploymentSchema } from '@insula/api-contracts';
 
-interface CreateDeploymentInput {
-  readonly name: string;
-  readonly catalog_entry_id: string;
-  readonly replica_count?: number;
-  readonly cpu_request?: string;
-  readonly memory_request?: string;
-  readonly configuration?: Record<string, unknown>;
-  readonly version?: string;
-  readonly storage_mode?: 'default' | 'custom';
-  readonly storage_path?: string;
-}
-
-interface UpdateDeploymentInput {
-  readonly status?: 'running' | 'stopped';
-  readonly configuration?: Record<string, unknown>;
-}
+// Derived from the shared Zod schemas rather than restated here — a local
+// copy is exactly how this one drifted (it was missing extra_mounts, and the
+// input the API accepts is the single source of truth in api-contracts).
+type CreateDeploymentInput = z.input<typeof createDeploymentSchema>;
+type UpdateDeploymentInput = z.input<typeof updateDeploymentSchema>;
 
 export function useDeployments(tenantId: string | undefined, options?: { refetchInterval?: number | false }) {
   return useQuery({

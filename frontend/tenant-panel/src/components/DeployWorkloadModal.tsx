@@ -6,6 +6,7 @@ import { useCreateDeployment, useStorageFolders } from '@/hooks/use-deployments'
 import { useDomains } from '@/hooks/use-domains';
 import type { CatalogEntry } from '@/types/api';
 import ParameterForm from './ParameterForm';
+import ExtraMountsEditor, { extraMountErrors, type ExtraMountRow } from './ExtraMountsEditor';
 import ResourceRequirementCheck from './ResourceRequirementCheck';
 
 interface DeployWorkloadModalProps {
@@ -43,6 +44,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
   const [selectedVersion, setSelectedVersion] = useState<string>('');
   const [paramValues, setParamValues] = useState<Record<string, unknown>>({});
   const [storageMode, setStorageMode] = useState<'default' | 'custom'>('default');
+  const [extraMounts, setExtraMounts] = useState<ExtraMountRow[]>([]);
   const [customFolderName, setCustomFolderName] = useState('');
   const [selectedExistingFolder, setSelectedExistingFolder] = useState<string | null>(null);
   const [deployState, setDeployState] = useState<'form' | 'deploying' | 'success' | 'error'>('form');
@@ -194,6 +196,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     setSelectedVersion('');
     setParamValues({});
     setStorageMode('default');
+    setExtraMounts([]);
     setCustomFolderName('');
     setSelectedExistingFolder(null);
     setDeployState('form');
@@ -204,6 +207,13 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
     resetForm();
     onClose();
   };
+
+  // A row the tenant added but never filled in is not an error — it is just
+  // not a mount yet. Only completed rows are sent.
+  const filledExtraMounts = extraMounts.filter(
+    m => m.folder.trim() !== '' && m.mount_path.trim() !== '',
+  );
+  const extraMountsInvalid = Object.keys(extraMountErrors(extraMounts)).length > 0;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -222,6 +232,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
         storage_path: storageMode === 'custom'
           ? (selectedExistingFolder ?? `${selectedImage?.type}/${selectedImage?.code}/${customFolderName}`)
           : undefined,
+        extra_mounts: filledExtraMounts.length > 0 ? filledExtraMounts : undefined,
       });
       setDeployState('success');
     } catch {
@@ -682,6 +693,20 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </div>
           )}
 
+          {/* Optional: extra mounts */}
+          {selectedImageId && (
+            <div>
+              <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                Extra Mounts <span className="font-normal text-gray-500 dark:text-gray-400">(optional)</span>
+              </label>
+              <ExtraMountsEditor
+                rows={extraMounts}
+                onChange={setExtraMounts}
+                disabled={createDeployment.isPending}
+              />
+            </div>
+          )}
+
           {/* Step 4: Connect to Unused Ingress Route */}
           {selectedImageId && (() => {
             const unusedDomains = domains.filter(d => !d.deploymentId);
@@ -731,7 +756,7 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </button>
             <button
               type="submit"
-              disabled={!tenantId || !selectedImageId || !name || !!nameError || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError || !!customFolderNameError || (storageMode === 'custom' && !selectedExistingFolder && !customFolderName)}
+              disabled={!tenantId || !selectedImageId || !name || !!nameError || createDeployment.isPending || hasRequiredMissing || !resourcesFit || !!resourceError || !!customFolderNameError || extraMountsInvalid || (storageMode === 'custom' && !selectedExistingFolder && !customFolderName)}
               className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
               data-testid="deploy-submit-button"
             >

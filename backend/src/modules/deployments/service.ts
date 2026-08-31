@@ -7,6 +7,7 @@
 import { eq, and, ne, desc, asc, lt, gt, sql } from 'drizzle-orm';
 import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNodes, hostingPlans, ingressRoutes, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
+import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
 
 /**
@@ -76,6 +77,50 @@ export function generateSecurePassword(length: number): string {
   const bytes = new Uint8Array(length);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, b => chars[b % chars.length]).join('');
+}
+
+
+/**
+ * Reject a tenant mount that lands on a path the catalog manifest already
+ * mounts. Kubernetes refuses a container with two volumeMounts on one
+ * mountPath, and that surfaces as an opaque admission failure long after the
+ * form is gone. The Zod schema cannot catch this: it only sees the tenant's
+ * own list, never the manifest's volumes.
+ */
+function assertExtraMountsDoNotCollide(
+  extraMounts: ReadonlyArray<{ folder: string; mount_path: string }> | null | undefined,
+  volumes: ReadonlyArray<{ container_path: string }>,
+): void {
+  if (!extraMounts || extraMounts.length === 0) return;
+  const taken = new Map(
+    volumes.map(v => [normalizeMountPath(v.container_path) ?? v.container_path, v.container_path]),
+  );
+  for (const m of extraMounts) {
+    const norm = normalizeMountPath(m.mount_path) ?? m.mount_path;
+    const clash = taken.get(norm);
+    if (clash === undefined) continue;
+    const suggestion = `${clash.replace(/\/+$/, '')}/${m.folder}`;
+    throw new ApiError(
+      'MOUNT_PATH_CONFLICT',
+      `This application already mounts ${clash}, so an extra mount cannot use the same path.`,
+      409,
+      {
+        mount_path: m.mount_path,
+        folder: m.folder,
+        operatorError: {
+          code: 'MOUNT_PATH_CONFLICT',
+          title: 'Mount path already in use',
+          detail: `${clash} is mounted by the application itself. Kubernetes will not start a container with two mounts on the same path.`,
+          remediation: [
+            `Mount the folder beneath it instead, for example ${suggestion}.`,
+            'Or choose a path the application does not already use.',
+          ],
+          retryable: false,
+        },
+      },
+      `Use a different mount path — ${clash} is already mounted by the application.`,
+    );
+  }
 }
 
 // ─── Component Resolution ───────────────────────────────────────────────────
@@ -409,6 +454,8 @@ export async function createDeployment(
   // message ("enable Allow Custom Host Ports on … in System Settings").
   // Returns the firewall block (or null) so we can pass it through to
   // deployCatalogEntry without re-parsing the manifest.
+  assertExtraMountsDoNotCollide(input.extra_mounts, volumes);
+
   const firewall = await enforceHostPortGate(db, entry, components, tenant.nodeName);
 
   const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
@@ -479,6 +526,7 @@ export async function createDeployment(
       memoryRequest: input.memory_request ?? catalogMemory,
       configuration: finalConfiguration,
       storagePath,
+      extraMounts: input.extra_mounts ?? null,
       installedVersion,
       targetVersion: installedVersion,
       status: 'pending',
@@ -519,6 +567,7 @@ export async function createDeployment(
         configuration: finalConfiguration,
         envVars: finalEnvVars,
         configurableEnvKeys,
+        extraMounts: input.extra_mounts ?? undefined,
         reuseExistingData: input.storage_mode === 'custom',
         catalogCode: entry.code,
         passwordEnvVar,
@@ -663,6 +712,9 @@ export async function updateDeployment(
   if (input.cpu_request !== undefined) updateValues.cpuRequest = input.cpu_request;
   if (input.memory_request !== undefined) updateValues.memoryRequest = input.memory_request;
   if (input.configuration !== undefined) updateValues.configuration = input.configuration;
+  // Replaces the whole list. A volumeMount change is a pod-template change,
+  // so the redeploy below is what actually applies it.
+  if (input.extra_mounts !== undefined) updateValues.extraMounts = input.extra_mounts;
   // Status transitions:
   //   stopped from any state → land directly on 'stopped'. Operator/customer
   //     intent is "kill it now" — going via 'pending' would re-show the
@@ -684,6 +736,13 @@ export async function updateDeployment(
   if (Object.keys(updateValues).length > 0) {
     await db.update(deployments).set(updateValues).where(eq(deployments.id, deploymentId));
   }
+
+  // A mount edit is a pod-template change, so it needs an actual redeploy —
+  // persisting it alone would leave the tenant with a saved list that never
+  // takes effect. Done before the status handling below so a combined
+  // "edit mounts + start" call still ends up running the new template.
+  const mountsChanged = input.extra_mounts !== undefined
+    && JSON.stringify(input.extra_mounts) !== JSON.stringify(deployment.extraMounts ?? []);
 
   // Apply K8s changes for status transitions
   if (k8s && input.status) {
@@ -714,6 +773,18 @@ export async function updateDeployment(
           }).where(eq(deployments.id, deploymentId));
         }
       }
+    }
+  }
+
+  // Apply an edited mount list. The row is already updated above, so
+  // redeployWithCurrentConfig re-reads it and emits the new pod template.
+  // Validation runs first so a bad edit is refused before anything is applied
+  // — the row has already been written, but a failed redeploy leaves the
+  // running pod untouched and the tenant sees the OperatorError.
+  if (k8s && mountsChanged) {
+    const fresh = await getDeploymentById(db, tenantId, deploymentId);
+    if (fresh.status !== 'stopped' && fresh.status !== 'deleted') {
+      await redeployWithCurrentConfig(db, fresh as typeof deployments.$inferSelect, k8s);
     }
   }
 
@@ -1084,6 +1155,10 @@ export async function updateDeploymentResources(
         // shouldn't retroactively close ports on a running app, the
         // operator gets explicit control over that via redeploy.
         const reFirewall = readEntryFirewall(entry);
+        // Resource bumps redeploy the pod, so the stored mounts are re-applied
+        // and must still be valid against the (possibly upgraded) manifest.
+        assertExtraMountsDoNotCollide(deployment.extraMounts, resolved.volumes);
+
         await deployCatalogEntry(k8s, {
           deploymentName: deployment.name,
           storagePath: deployment.storagePath ?? '',
@@ -1097,6 +1172,7 @@ export async function updateDeploymentResources(
           configuration: config,
           envVars: { fixed: resolved.fixedEnvVars },
           configurableEnvKeys: resolved.configurableEnvKeys,
+          extraMounts: deployment.extraMounts ?? undefined,
           firewall: reFirewall ?? undefined,
           hostPorts: readEntryHostPorts(entry),
         });
@@ -1346,6 +1422,9 @@ export async function redeployWithCurrentConfig(
     configuration: config,
     envVars: { fixed: resolved.fixedEnvVars },
     configurableEnvKeys: resolved.configurableEnvKeys,
+    // Carried through every redeploy — dropping them here would silently
+    // unmount a tenant's folders on the next credential rotation.
+    extraMounts: deployment.extraMounts ?? undefined,
     // Re-stamp the config root password onto the reused datadir on the DR
     // reconcile path (no-op for non-DB deployments + fresh datadirs).
     reuseExistingData: opts.armPasswordReset === true,
