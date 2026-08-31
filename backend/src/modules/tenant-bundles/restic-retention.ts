@@ -63,10 +63,11 @@
  * recovered on the next tick.
  */
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { FastifyBaseLogger } from 'fastify';
 import type { Database } from '../../db/index.js';
 import {
+  backupComponents,
   backupConfigurations,
   resticRepoReclaimState,
   tenantBackupV2Settings,
@@ -88,6 +89,7 @@ export type RepoSkipReason =
   | 'frozen-target'
   | 'no-db-history'
   | 'unknown-component'
+  | 'repo-missing'
   | 'nothing-to-forget';
 
 export interface ResticRepoResult {
@@ -377,10 +379,31 @@ export async function runResticRetentionSweep(
       `) as unknown as { rows: Array<unknown> };
       const hasHistory = histRows.rows.length > 0;
 
-      const snapshots = await listResticSnapshots({
-        target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId),
-        readOnly: true, repoUri,
-      });
+      let snapshots;
+      try {
+        snapshots = await listResticSnapshots({
+          target, passwordHex: deriveResticPassword(secretsKeyHex, tenantId),
+          readOnly: true, repoUri,
+        });
+      } catch (err) {
+        // restic exits 10 with "repository does not exist" when the repo was
+        // never created here, or when the bundle predates a change of backup
+        // target so the shim no longer fronts the upstream holding it. That is
+        // an expected steady state on older installs, not a fault: reporting it
+        // as an error every 6 hours would train operators to ignore the count.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (/repository does not exist|unable to open config file/i.test(msg)) {
+          // Deliberately NOT stamped as reclaimed. An unreachable repo is not a
+          // reclaimed one — the data may be intact on a target this cluster no
+          // longer fronts, and purging those bundle rows would destroy the only
+          // record of it. Reclaim it by pointing the shim at that target, or
+          // with an explicit forced per-tenant run.
+          repos.push({ ...base, repoUri, skipped: 'repo-missing', error: null });
+          reposSkipped++;
+          continue;
+        }
+        throw err;
+      }
       base.snapshotsInRepo = snapshots.length;
 
       const plan = planRepoReclamation({
@@ -401,6 +424,18 @@ export async function runResticRetentionSweep(
         continue;
       }
       if (candidates.length === 0) {
+        // Still reconcile the stamps: a snapshot may have disappeared by some
+        // other route (interrupted sweep, manual forget), and its component
+        // must not pin the bundle row forever.
+        if (!dryRun) {
+          try {
+            await stampReclaimedComponents({
+              db, tenantId, component, stillPresent: new Set(kept), at: now(),
+            });
+          } catch (err) {
+            logger.warn({ err, tenantId, component }, 'restic retention: stamp reconcile failed (retried next sweep)');
+          }
+        }
         repos.push({ ...base, repoUri, skipped: 'nothing-to-forget', error: null });
         continue;
       }
@@ -431,25 +466,28 @@ export async function runResticRetentionSweep(
           updated_at = now()
       `);
 
-      // Stamp the components whose snapshots are now genuinely gone. This is
-      // what later authorises purging the bundle row: the snapshot id in
-      // backup_components.sha256 must outlive the bundle's expiry and only
-      // becomes disposable once the blob it names has been forgotten.
-      await db.execute(sql`
-        UPDATE backup_components bc
-        SET snapshot_reclaimed_at = ${now()}
-        FROM backup_jobs bj
-        WHERE bj.id = bc.backup_job_id
-          AND bj.tenant_id = ${tenantId}
-          AND bc.component::text = ${component}
-          AND bc.sha256 = ANY(${candidates}::text[])
-      `);
-
+      // The forget is the irreversible part and it has now happened — count it
+      // before any bookkeeping, so a bookkeeping failure cannot report
+      // "forgotten=0" for snapshots that are actually gone.
       snapshotsForgotten += candidates.length;
       logger.info(
         { tenantId, component, forgotten: candidates.length, kept: kept.length },
         'restic retention: forgot expired snapshots',
       );
+
+      // Stamp components whose snapshots are no longer in the repo. Derived
+      // from OBSERVED repo contents rather than from what this run forgot, so
+      // it is self-healing: a snapshot that vanished in an earlier interrupted
+      // sweep, or by any other route, still gets stamped on the next pass.
+      // Bookkeeping failures are logged, never fatal — the reclamation stands.
+      try {
+        const stillPresent = new Set(kept);
+        await stampReclaimedComponents({
+          db, tenantId, component, stillPresent, at: now(),
+        });
+      } catch (err) {
+        logger.warn({ err, tenantId, component }, 'restic retention: could not stamp reclaimed components (retried next sweep)');
+      }
       repos.push({
         ...base, repoUri, forgottenCount: candidates.length, forgottenIds: [...candidates],
         prunePending: true, skipped: null, error: null,
@@ -554,6 +592,41 @@ export async function runResticRetentionSweep(
 }
 
 /**
+ * Mark every component of this (tenant, component) repo whose snapshot is no
+ * longer present in the repository.
+ *
+ * Driven by observed repo contents, not by the ids this run happened to
+ * forget, which makes it converge no matter how a snapshot disappeared —
+ * an interrupted sweep, a manual `restic forget`, a repo restored from
+ * elsewhere. Uses the query builder so array binding is handled properly.
+ */
+async function stampReclaimedComponents(args: {
+  db: Database;
+  tenantId: string;
+  component: string;
+  /** Snapshot ids still in the repository. */
+  stillPresent: ReadonlySet<string>;
+  at: Date;
+}): Promise<number> {
+  const rows = await args.db.execute(sql`
+    SELECT bc.id AS id, bc.sha256 AS sha256
+    FROM backup_components bc
+    JOIN backup_jobs bj ON bj.id = bc.backup_job_id
+    WHERE bj.tenant_id = ${args.tenantId}
+      AND bc.component::text = ${args.component}
+      AND bc.sha256 IS NOT NULL
+      AND bc.snapshot_reclaimed_at IS NULL
+  `) as unknown as { rows: Array<{ id: string; sha256: string }> };
+
+  const gone = rows.rows.filter((r) => !args.stillPresent.has(r.sha256)).map((r) => r.id);
+  if (gone.length === 0) return 0;
+  await args.db.update(backupComponents)
+    .set({ snapshotReclaimedAt: args.at })
+    .where(inArray(backupComponents.id, gone));
+  return gone.length;
+}
+
+/**
  * Delete backup_jobs rows describing a bundle that no longer exists anywhere.
  *
  * Two conditions, both required:
@@ -599,7 +672,10 @@ export async function purgeFullyReclaimedBundles(
   if (ids.length === 0) return [];
   // backup_components cascades on this delete (FK ON DELETE CASCADE), which
   // is safe now: every restic snapshot id it held has been reclaimed.
-  await db.execute(sql`DELETE FROM backup_jobs WHERE id = ANY(${ids}::text[])`);
+  // Bind each id as its own parameter. `ANY(${ids}::text[])` looks tidier but
+  // the driver binds a JS array as a single scalar, producing
+  // `('bkp-...')::text[]` — a cast error at runtime that no pg-mem test sees.
+  await db.execute(sql`DELETE FROM backup_jobs WHERE id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})`);
   return ids;
 }
 
