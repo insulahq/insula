@@ -15,6 +15,7 @@ import { promisify } from 'node:util';
 import { open as fsOpen } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { lookup as dnsLookup } from 'node:dns';
+import { createTrash, FALLBACK_RETENTION_DAYS } from './trash.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -318,6 +319,17 @@ function getMimeType(filename) {
 // in-depth in case a .platform/ dir is ever created on the PVC.
 const HIDDEN_PREFIXES = ['.platform'];
 
+// Hidden ONLY at the PVC root, not at every level. `/data/.trash` is the
+// recycle bin (trash.mjs) and must be unreachable through the ordinary file
+// operations: were it reachable, `rm`/`rename`/`copy`/`write` could desync a
+// payload from its metadata, or delete the bin from inside itself. It gets its
+// own /trash/* endpoints instead.
+//
+// Root-anchored rather than any-segment (the .platform rule) on purpose: a
+// tenant may legitimately keep their own `wp-content/.trash` directory, and
+// hiding it would silently disappear their data from the browser.
+const ROOT_HIDDEN_PREFIXES = ['.trash'];
+
 function relToBase(absPath) {
   // Strip BASE prefix to produce a relative POSIX-style path used by
   // the HIDDEN_PREFIXES check. Paths equal to BASE itself become '.'.
@@ -335,6 +347,10 @@ function isHidden(relPath) {
     // (e.g. "nested/dir/.platform/foo"). Defense-in-depth so a customer
     // can't stash data under a nested .platform directory they create.
     if (norm.split('/').includes(prefix)) return true;
+  }
+  for (const prefix of ROOT_HIDDEN_PREFIXES) {
+    if (norm === prefix) return true;
+    if (norm.startsWith(prefix + '/')) return true;
   }
   return false;
 }
@@ -396,6 +412,19 @@ async function safePath(userPath, opts = {}) {
   if (!opts.allowHidden && isHidden(relToBase(confined))) return null;
   return confined;
 }
+
+// ─── Recycle bin ─────────────────────────────────────────────────────────────
+// Instantiated here because it needs BASE, safePath and confineRealpath. The
+// factory shape avoids a circular import (this module has top-level await).
+const trash = createTrash({
+  BASE,
+  safePath,
+  confineRealpath,
+  execFileAsync,
+  defaultUid: DEFAULT_UID,
+  defaultGid: DEFAULT_GID,
+  log: (...a) => console.warn(...a),
+});
 
 // Shared-secret gate for the platform-internal bypass. The backend
 // injects this secret via the file-manager Secret at pod creation
@@ -642,9 +671,18 @@ async function handleRename(req, res) {
   }
 }
 
+// Deletes route through the recycle bin unless the caller explicitly opts out
+// with `permanent: true`.
+//
+// The default is LOAD-BEARING. An absent flag must mean "trash", so any caller
+// that was never updated fails to the recoverable branch rather than silently
+// hard-deleting a tenant's data. (Three callers reach here: the two file routes
+// and the deployment delete-with-data path.) The sidecar's own internal rm()
+// calls — aborted chunked uploads, fetch-url temp files — deliberately do NOT
+// come through this handler; they are platform scratch, not user data.
 async function handleRm(req, res) {
   const body = await readBody(req);
-  const { path: p } = body;
+  const { path: p, permanent = false, actor = null, origin, deploymentName } = body;
   if (!p) return sendError(res, 400, 'path required');
   if (p === '/' || p === '.') return sendError(res, 403, 'Cannot delete root');
   const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
@@ -652,12 +690,76 @@ async function handleRm(req, res) {
   if (full === BASE) return sendError(res, 403, 'Cannot delete root');
 
   try {
-    await rm(full, { recursive: true });
-    sendJson(res, 200, { path: p, deleted: true });
+    if (permanent === true) {
+      await rm(full, { recursive: true });
+      return sendJson(res, 200, { path: p, deleted: true, trashed: false });
+    }
+    const entry = await trash.moveToTrash(full, relToBase(full), { actor, origin, deploymentName });
+    sendJson(res, 200, { path: p, deleted: true, trashed: true, trashEntry: entry });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Not found');
+    if (err.code === 'ETRASHROOT' || err.code === 'ETRASHSELF') return sendError(res, 403, err.message);
     console.error('[handleDelete]', err.message);
     if (!res.headersSent) sendError(res, 500, 'Failed to delete');
+  }
+}
+
+// ─── Recycle-bin endpoints ───────────────────────────────────────────────────
+
+async function handleTrashList(_req, res) {
+  try {
+    const entries = await trash.listTrash();
+    const usedBytes = await trash.trashUsageBytes();
+    sendJson(res, 200, { entries, usedBytes, usedFormatted: formatBytes(usedBytes) });
+  } catch (err) {
+    console.error('[handleTrashList]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to list trash');
+  }
+}
+
+async function handleTrashSummary(_req, res) {
+  try {
+    sendJson(res, 200, await trash.trashSummary());
+  } catch (err) {
+    console.error('[handleTrashSummary]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to summarise trash');
+  }
+}
+
+async function handleTrashRestore(req, res) {
+  const body = await readBody(req);
+  const { id, overwrite = false, autoRename = false } = body;
+  if (!id || typeof id !== 'string') return sendError(res, 400, 'id required');
+  try {
+    const result = await trash.restoreFromTrash(id, { overwrite: overwrite === true, autoRename: autoRename === true });
+    if (result.status !== 200) {
+      return sendJson(res, result.status, { error: result.error, ...(result.conflictPath ? { conflictPath: result.conflictPath } : {}) });
+    }
+    sendJson(res, 200, { id: result.id, restoredTo: result.restoredTo, renamed: result.renamed });
+  } catch (err) {
+    console.error('[handleTrashRestore]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to restore');
+  }
+}
+
+// Retention is decided by the backend (platform_settings) and arrives as a
+// parameter — never baked into this pod. See FALLBACK_RETENTION_DAYS.
+async function handleTrashPurge(req, res) {
+  const body = await readBody(req);
+  const { ids = null, all = false } = body;
+  const olderThanDays = body.olderThanDays === undefined || body.olderThanDays === null
+    ? (ids || all ? null : FALLBACK_RETENTION_DAYS)
+    : Number(body.olderThanDays);
+  if (olderThanDays !== null && (!Number.isFinite(olderThanDays) || olderThanDays < 0)) {
+    return sendError(res, 400, 'olderThanDays must be a non-negative number');
+  }
+  if (ids !== null && !Array.isArray(ids)) return sendError(res, 400, 'ids must be an array');
+  try {
+    const result = await trash.purgeTrash({ olderThanDays, ids, all: all === true });
+    sendJson(res, 200, { ...result, bytesFreedFormatted: formatBytes(result.bytesFreed) });
+  } catch (err) {
+    console.error('[handleTrashPurge]', err.message);
+    if (!res.headersSent) sendError(res, 500, 'Failed to purge trash');
   }
 }
 
@@ -1005,13 +1107,21 @@ async function handleDiskUsage(req, res) {
     const { stdout: dfOut } = await execFileAsync('df', ['-B1', BASE], { timeout: 10_000 });
     const { totalBytes, availableBytes } = parseDf(dfOut);
 
+    // The recycle bin has NO size cap by design — an automatic size-driven
+    // purge would delete one tenant's files because another filled the bin.
+    // Transparency is the control instead, so the trash share of `usedBytes`
+    // is always reported (it is a SUBSET of it, not an addition).
+    const trashBytes = await trash.trashUsageBytes();
+
     sendJson(res, 200, {
       usedBytes,
       totalBytes,
       availableBytes,
+      trashBytes,
       usedFormatted: formatBytes(usedBytes),
       totalFormatted: formatBytes(totalBytes),
       availableFormatted: formatBytes(availableBytes),
+      trashFormatted: formatBytes(trashBytes),
     });
   } catch (err) {
     console.error('[handleDiskUsage]', err.message);
@@ -1751,6 +1861,10 @@ const server = createServer(async (req, res) => {
     if (path === '/write' && method === 'POST') return handleWrite(req, res);
     if (path === '/rename' && method === 'POST') return handleRename(req, res);
     if (path === '/rm' && (method === 'DELETE' || method === 'POST')) return handleRm(req, res);
+    if (path === '/trash/list' && method === 'GET') return handleTrashList(req, res);
+    if (path === '/trash/summary' && method === 'GET') return handleTrashSummary(req, res);
+    if (path === '/trash/restore' && method === 'POST') return handleTrashRestore(req, res);
+    if (path === '/trash/purge' && method === 'POST') return handleTrashPurge(req, res);
     if (path === '/write-raw' && method === 'POST') return handleWriteRaw(req, res);
     if (path === '/copy' && method === 'POST') return handleCopy(req, res);
     if (path === '/archive' && method === 'POST') return handleArchive(req, res);
@@ -1788,4 +1902,4 @@ if (process.env.FM_NO_LISTEN !== '1') {
 // `server` is exported so a test can bind it on an ephemeral port
 // (`server.listen(0)`) and drive real HTTP requests through the router,
 // instead of racing the fixed :8111 with a parallel test file.
-export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE, server, parseDf };
+export { withinBase, confineRealpath, safePath, ipIsInternal, urlHostIsInternalLiteral, isHidden, relToBase, BASE, server, parseDf, trash };

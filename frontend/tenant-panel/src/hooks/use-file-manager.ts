@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { BulkDeleteResult } from '@insula/api-contracts';
+import type { BulkDeleteResult, DiskUsage } from '@insula/api-contracts';
 import type * as React from 'react';
 import { useQuery, useMutation, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
 import { apiFetch, API_BASE } from '@/lib/api-client';
@@ -162,16 +162,28 @@ export function useRenameFile() {
   });
 }
 
+/**
+ * Delete one path. Moves it to the recycle bin unless `permanent` is set.
+ *
+ * Takes an object rather than a bare string so adding `permanent` was a
+ * COMPILE error at every call site instead of a silent default — the one place
+ * where the trash can be skipped is worth making explicit.
+ */
 export function useDeleteFile() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
   return useFmMutation({
-    mutationFn: (path: string) =>
+    mutationFn: ({ path, permanent }: { path: string; permanent?: boolean }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/delete`, {
         method: 'POST',
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({ path, permanent: permanent === true }),
       }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['files', tenantId] });
+      // The bin and the storage readout both changed.
+      qc.invalidateQueries({ queryKey: ['file-trash', tenantId] });
+      qc.invalidateQueries({ queryKey: ['disk-usage', tenantId] });
+    },
   });
 }
 
@@ -187,12 +199,16 @@ export function useBulkDeleteFiles() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
   return useFmMutation({
-    mutationFn: (paths: string[]) =>
+    mutationFn: ({ paths, permanent }: { paths: string[]; permanent?: boolean }) =>
       apiFetch<{ data: BulkDeleteResult }>(`/api/v1/tenants/${tenantId}/files/bulk-delete`, {
         method: 'POST',
-        body: JSON.stringify({ paths }),
+        body: JSON.stringify({ paths, permanent: permanent === true }),
       }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['files', tenantId] });
+      qc.invalidateQueries({ queryKey: ['file-trash', tenantId] });
+      qc.invalidateQueries({ queryKey: ['disk-usage', tenantId] });
+    },
   });
 }
 
@@ -624,14 +640,10 @@ function uploadFileChunked(
   })();
 }
 
-export interface DiskUsage {
-  readonly usedBytes: number;
-  readonly totalBytes: number;
-  readonly availableBytes: number;
-  readonly usedFormatted: string;
-  readonly totalFormatted: string;
-  readonly availableFormatted: string;
-}
+// Shape lives in @insula/api-contracts (it grew trashBytes/trashFormatted and
+// both panels must agree). Re-exported so existing importers keep working —
+// the contract stays the single source of truth.
+export type { DiskUsage };
 
 export function useDiskUsage() {
   const { tenantId } = useTenantContext();
