@@ -632,18 +632,9 @@ function handleUpload(_req, res) {
   sendError(res, 410, 'Multipart /upload removed — stream to /write-raw instead');
 }
 
-// `expectExisting: true` marks a DELIBERATE overwrite of a file the caller
-// already has open — the inline editor saving what it just loaded. Those get no
-// backup, because one trash entry per Ctrl-S would bury the bin in noise and
-// make it useless for the accidents it exists to catch.
-//
-// Everything else reaching /write is a blind write: "New File" with a name that
-// already exists, an AI-applied change, a script. Those DO displace something
-// the user never named, so the occupant is backed up. Intent has to come from
-// the caller — the two are indistinguishable from here.
 async function handleWrite(req, res) {
   const body = await readBody(req);
-  const { path: p, content, expectExisting = false, actor = null } = body;
+  const { path: p, content } = body;
   if (!p) return sendError(res, 400, 'path required');
   if (content === undefined) return sendError(res, 400, 'content required');
   const full = await safePath(p, { allowHidden: isPlatformBypass(req) });
@@ -651,9 +642,6 @@ async function handleWrite(req, res) {
 
   try {
     await mkdir(dirname(full), { recursive: true });
-    if (expectExisting !== true) {
-      await trash.trashIfExists(full, relToBase(full), { actor, replacedBy: 'write' });
-    }
     await writeFile(full, content, 'utf-8');
     await fsChown(full, DEFAULT_UID, DEFAULT_GID).catch(() => {});
     const s = await stat(full);
@@ -666,7 +654,7 @@ async function handleWrite(req, res) {
 
 async function handleRename(req, res) {
   const body = await readBody(req);
-  const { oldPath, newPath, actor = null } = body;
+  const { oldPath, newPath } = body;
   if (!oldPath || !newPath) return sendError(res, 400, 'oldPath and newPath required');
   const bypass = isPlatformBypass(req);
   const fullOld = await safePath(oldPath, { allowHidden: bypass });
@@ -674,11 +662,8 @@ async function handleRename(req, res) {
   if (!fullOld || !fullNew) return sendError(res, 404, 'Not found');
 
   try {
-    // A rename onto an occupied name silently destroys the occupant — the
-    // user named the SOURCE, never the thing they lost. Back it up first.
-    const replaced = await trash.trashIfExists(fullNew, relToBase(fullNew), { actor, replacedBy: 'rename' });
     await rename(fullOld, fullNew);
-    sendJson(res, 200, { oldPath, newPath, renamed: true, replaced: replaced ?? null });
+    sendJson(res, 200, { oldPath, newPath, renamed: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Source not found');
     console.error('[handleRename]', err.message);
@@ -780,7 +765,7 @@ async function handleTrashPurge(req, res) {
 
 async function handleCopy(req, res) {
   const body = await readBody(req);
-  const { sourcePath, destPath, actor = null } = body;
+  const { sourcePath, destPath } = body;
   if (!sourcePath || !destPath) return sendError(res, 400, 'sourcePath and destPath required');
   const bypass = isPlatformBypass(req);
   const fullSrc = await safePath(sourcePath, { allowHidden: bypass });
@@ -790,11 +775,8 @@ async function handleCopy(req, res) {
   try {
     // Ensure parent directory exists
     await mkdir(dirname(fullDest), { recursive: true });
-    // Same reasoning as rename: `cp` overwrites the destination, and the user
-    // named the SOURCE. Back up whatever is being displaced.
-    const replaced = await trash.trashIfExists(fullDest, relToBase(fullDest), { actor, replacedBy: 'copy' });
     await cp(fullSrc, fullDest, { recursive: true });
-    sendJson(res, 200, { sourcePath, destPath, copied: true, replaced: replaced ?? null });
+    sendJson(res, 200, { sourcePath, destPath, copied: true });
   } catch (err) {
     if (err.code === 'ENOENT') return sendError(res, 404, 'Source not found');
     console.error('[handleCopy]', err.message);
@@ -870,29 +852,6 @@ async function handleArchive(req, res) {
   }
 }
 
-/**
- * Entry NAMES inside an archive, so a caller can tell which existing files an
- * extraction would replace. Names only — the archive is never unpacked here.
- *
- * Returns [] on any failure rather than throwing: a listing we cannot read must
- * not block the extraction the user asked for. The consequence is stated
- * plainly — no listing means no backup — rather than being papered over.
- */
-async function listArchiveEntries(fullArchive, { isZip, isTarGz }) {
-  try {
-    if (isZip) {
-      // -Z1 is "zipinfo, one name per line".
-      const { stdout } = await execFileAsync('unzip', ['-Z1', fullArchive], { maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
-      return stdout.split('\n').map(s => s.trim()).filter(Boolean);
-    }
-    const { stdout } = await execFileAsync('tar', [isTarGz ? '-tzf' : '-tf', fullArchive], { maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
-    return stdout.split('\n').map(s => s.trim()).filter(Boolean);
-  } catch (err) {
-    console.warn('[listArchiveEntries]', err.message);
-    return [];
-  }
-}
-
 async function handleExtract(req, res) {
   const body = await readBody(req);
   const { path: archivePath, destPath = '/' } = body;
@@ -921,36 +880,6 @@ async function handleExtract(req, res) {
 
   try {
     await mkdir(fullDest, { recursive: true });
-
-    // Back up every file the archive is about to overwrite.
-    //
-    // This is the worst of the silent-overwrite cases: `unzip -o` and `tar x`
-    // replace whatever they land on, one action can clobber an entire tree, and
-    // the user cannot see the collision list beforehand. Re-extracting a
-    // WordPress zip over a live install used to destroy every customised file
-    // with no undo.
-    //
-    // Listing the archive first is an extra read, but names only. Directories
-    // are skipped — extracting into an existing directory merges, it does not
-    // destroy. Each backup is a rename, so this stays cheap even for a large
-    // collision set; the count is reported so a big overwrite is never silent.
-    const replacedEntries = [];
-    for (const entryRel of await listArchiveEntries(fullArchive, { isZip, isTarGz })) {
-      const candidate = await safePath(join(destPath, entryRel), { allowHidden: bypass });
-      if (!candidate) continue;
-      let st;
-      try { st = await lstat(candidate); } catch { continue; }   // nothing there — the common case
-      if (st.isDirectory()) continue;                             // merge, not destroy
-      const backed = await trash.trashIfExists(candidate, relToBase(candidate), { replacedBy: 'extract' });
-      if (backed) replacedEntries.push(backed.originalPath);
-    }
-    if (replacedEntries.length > 0) {
-      res.write(JSON.stringify({
-        type: 'info',
-        message: `${replacedEntries.length} existing file(s) replaced — the previous versions are in the recycle bin`,
-        replaced: replacedEntries.length,
-      }) + '\n');
-    }
 
     // Verbose on purpose: this chatter IS the progress feed. runToolStreaming
     // consumes it a line at a time, so its volume no longer bounds the job.
@@ -993,43 +922,6 @@ async function handleExtract(req, res) {
   }
 }
 
-// One backup per upload SESSION, awaited by every chunk before it writes.
-//
-// Chunks of a single upload arrive in PARALLEL and in no particular order, so
-// "back up when offset === 0" is wrong twice over: chunk 5 may land first and
-// have already clobbered the old file, and two chunks racing the check would
-// each try to back up — the second moving the half-written NEW file into the
-// bin and destroying the upload.
-//
-// The map is written SYNCHRONOUSLY (no await between get and set), so
-// concurrent handlers cannot both create an entry; every chunk then awaits the
-// same promise and none writes until the backup has finished.
-//
-// Keyed by path + declared total: a genuinely new upload of a DIFFERENT size
-// backs up again. Same path and same size inside the TTL is treated as the
-// same session — the alternative, expiring mid-upload, would move the
-// partially-written file into the bin and corrupt it. Trade-off: re-uploading
-// a byte-identical-sized file to the same path within the window does not
-// snapshot the intermediate version.
-const uploadBackups = new Map();
-const UPLOAD_BACKUP_TTL_MS = 10 * 60 * 1000;
-
-function backupOnceForUpload(full, rel, sessionKey, meta) {
-  const now = Date.now();
-  if (uploadBackups.size > 256) {
-    for (const [k, v] of uploadBackups) if (now - v.at > UPLOAD_BACKUP_TTL_MS) uploadBackups.delete(k);
-  }
-  const key = `${full} ${sessionKey}`;
-  const existing = uploadBackups.get(key);
-  if (existing && now - existing.at < UPLOAD_BACKUP_TTL_MS) return existing.promise;
-  const promise = trash.trashIfExists(full, rel, meta).catch((err) => {
-    console.warn('[upload-backup]', err.message);
-    return null; // never block the upload on a backup failure
-  });
-  uploadBackups.set(key, { promise, at: now });
-  return promise;
-}
-
 async function handleWriteRaw(req, res) {
   const { path: p, offset: offsetParam, total: totalParam } = getQuery(req.url);
   if (!p) return sendError(res, 400, 'path query parameter required');
@@ -1066,8 +958,6 @@ async function handleWriteRaw(req, res) {
     await mkdir(dir, { recursive: true });
 
     if (chunked) {
-      // MUST complete before any chunk opens an fd — see backupOnceForUpload.
-      await backupOnceForUpload(full, relToBase(full), `t${totalN}`, { replacedBy: 'upload' });
       // pwrite-style write at explicit offset. Don't truncate; don't
       // append-mode (positional writes are ignored when O_APPEND is
       // set on Linux).
@@ -1091,9 +981,6 @@ async function handleWriteRaw(req, res) {
     }
 
     // Default mode (no offset): full overwrite, truncate to 0 first.
-    // Single request, so no session guard is needed — but the truncate is
-    // exactly the silent destruction we are here to prevent.
-    await trash.trashIfExists(full, relToBase(full), { replacedBy: 'upload' });
     const ws = createWriteStream(full);
 
     // Only abort on actual errors — NOT on normal 'close' events.

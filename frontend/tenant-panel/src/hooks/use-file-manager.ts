@@ -133,26 +133,14 @@ export function useCreateDirectory() {
   });
 }
 
-/**
- * Write a file.
- *
- * `expectExisting: true` marks a DELIBERATE overwrite of a file the caller
- * already has open — the inline editor saving what it just loaded. Those are
- * excluded from the recycle bin, because one entry per Ctrl-S would bury the
- * accidents the bin exists to catch.
- *
- * Leave it unset for a BLIND write ("New File" onto a name that already
- * exists, an AI-applied change): those displace something the user never named,
- * so the occupant is backed up.
- */
 export function useWriteFile() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
   return useFmMutation({
-    mutationFn: ({ path, content, expectExisting }: { path: string; content: string; expectExisting?: boolean }) =>
+    mutationFn: ({ path, content }: { path: string; content: string }) =>
       apiFetch(`/api/v1/tenants/${tenantId}/files/write`, {
         method: 'POST',
-        body: JSON.stringify({ path, content, expectExisting: expectExisting === true }),
+        body: JSON.stringify({ path, content }),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['files', tenantId] });

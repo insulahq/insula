@@ -39,18 +39,12 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
     is honoured for tenants who delete something and never come back.
   - Trashed files are included in tenant backup bundles, so restoring a bundle
     also restores what was recoverable at capture time.
-  - The bin covers work done **in the file manager**. Files removed or replaced
-    over SFTP, or by the tenant's own application, are gone immediately.
-
-### Changed
-- **Overwrites are recoverable.** A move, copy, upload, blind write or archive
-  extraction that landed on an existing name used to destroy it silently — the
-  user named a *source*, and the thing they lost was never mentioned. The
-  displaced file is now kept in the recycle bin, labelled with what replaced it.
-  Re-extracting an application archive over a live site therefore no longer
-  destroys the site's customisations. Saving in the editor is deliberately
-  excluded: that is a deliberate overwrite of an open file, and one bin entry
-  per save would bury the accidents the bin exists to catch.
+  - The bin holds files a tenant **deletes** in the file manager. It is not a
+    version history: overwriting a file — moving or copying onto it, uploading
+    over it, saving in the editor, or extracting an archive over it — replaces
+    it outright, and retaining a copy on every routine write would grow the
+    tenant's volume without bound. Files removed over SFTP or by the tenant's
+    own application are likewise gone immediately.
 
 ### Fixed
 - **Opening the file manager works on the first attempt after an update.**

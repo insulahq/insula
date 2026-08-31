@@ -1908,7 +1908,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 
   const handleSave = useCallback(() => {
     if (!dirty || writeFile.isPending) return;
-    writeFile.mutate({ path, content, expectExisting: true }, { onSuccess: () => setDirty(false) });
+    writeFile.mutate({ path, content }, { onSuccess: () => setDirty(false) });
   }, [dirty, writeFile, path, content]);
 
   const handleClose = useCallback(() => {
@@ -2127,7 +2127,7 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
                 className="rounded-lg border border-red-300 dark:border-red-700 px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
                 Discard
               </button>
-              <button onClick={() => { writeFile.mutate({ path, content, expectExisting: true }, { onSuccess: () => { setDirty(false); setShowUnsavedDialog(false); onClose(); } }); }}
+              <button onClick={() => { writeFile.mutate({ path, content }, { onSuccess: () => { setDirty(false); setShowUnsavedDialog(false); onClose(); } }); }}
                 disabled={writeFile.isPending}
                 className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50">
                 {writeFile.isPending ? 'Saving...' : 'Save'}
