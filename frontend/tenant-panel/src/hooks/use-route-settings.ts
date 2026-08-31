@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { WafRuleExclusionScope } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -327,7 +328,7 @@ export interface WafRuleExclusionEntry {
   readonly id: string;
   readonly ruleId: string;
   readonly hostnameRegex: string;
-  readonly scope: 'args_names_only' | 'full_disable';
+  readonly scope: WafRuleExclusionScope;
   readonly reason: string;
   readonly createdBy: string;
   readonly createdAt: string;
@@ -359,7 +360,7 @@ export function useCreateRouteWafExclusion(
   return useMutation({
     mutationFn: (input: {
       readonly ruleId: string;
-      readonly scope: 'args_names_only' | 'full_disable';
+      readonly scope: WafRuleExclusionScope;
       readonly reason: string;
     }) =>
       apiFetch<{ data: WafRuleExclusionEntry }>(

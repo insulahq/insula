@@ -1499,7 +1499,7 @@ interface WhitelistPrefill {
 function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; onClose: () => void }) {
   const [ruleId, setRuleId] = useState(prefill.ruleId);
   const [hostnameRegex, setHostnameRegex] = useState(prefill.hostnameRegex);
-  const [scope, setScope] = useState<WafRuleExclusionScope>('args_names_only');
+  const [scope, setScope] = useState<WafRuleExclusionScope>('args');
   const [reason, setReason] = useState(prefill.reason);
   const [err, setErr] = useState<string | null>(null);
   const mut = useCreateWafRuleExclusion();
@@ -1530,11 +1530,26 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
       <div className="w-full max-w-lg rounded-lg bg-white dark:bg-gray-800 p-5 shadow-xl">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-1">Whitelist WAF rule for host</h3>
         <p className="text-xs text-gray-600 dark:text-gray-400 mb-4">
-          Adds a CRS exclusion that scopes <code>{scope === 'full_disable' ? 'ctl:ruleRemoveById' : 'ctl:ruleRemoveTargetById … ARGS_NAMES'}</code> to
-          requests whose <code>X-Forwarded-Host</code> matches the regex below. Takes
-          effect within ~10s of save (modsec-crs pods roll). Real attacks on
-          ARG values and headers still fire when <em>args_names_only</em> is used.
+          Adds a CRS exclusion that scopes{' '}
+          <code>
+            {scope === 'full_disable'
+              ? 'ctl:ruleRemoveById'
+              : scope === 'args_names_only'
+                ? 'ctl:ruleRemoveTargetById … ARGS_NAMES'
+                : 'ctl:ruleRemoveTargetById … ARGS + ARGS_NAMES'}
+          </code>{' '}
+          to requests whose <code>X-Forwarded-Host</code> matches the regex below. Takes
+          effect within ~10s of save (modsec-crs pods roll). Request headers, body
+          and URI are still scanned by this rule and every other rule stays fully active.
         </p>
+        {scope === 'args_names_only' && (
+          <p className="text-xs text-amber-700 dark:text-amber-400 mb-4">
+            <strong>Heads up:</strong> most CRS rules (930120, 932160, …) match on
+            parameter <em>values</em>, not parameter names — for those,{' '}
+            <code>args_names_only</code> removes nothing and the request stays blocked.
+            Pick <code>args</code> unless you know the rule matches names.
+          </p>
+        )}
         <div className="space-y-3 text-sm">
           <label className="flex flex-col gap-1">
             <span className="text-gray-700 dark:text-gray-200">Rule ID</span>
@@ -1563,7 +1578,8 @@ function WhitelistRuleModal({ prefill, onClose }: { prefill: WhitelistPrefill; o
               className="rounded-md border border-gray-300 dark:border-gray-600 dark:bg-gray-900 px-2 py-1 text-sm"
               data-testid="whitelist-modal-scope"
             >
-              <option value="args_names_only">args_names_only — keep ARG values + headers scanned (recommended)</option>
+              <option value="args">args — stop this rule scanning parameters (recommended)</option>
+              <option value="args_names_only">args_names_only — parameter names only (no-op for most rules)</option>
               <option value="full_disable">full_disable — disable the rule for matching hosts</option>
             </select>
           </label>
@@ -1711,11 +1727,17 @@ export function WafExclusionsTab() {
                   <td className="px-4 py-2 font-mono text-xs text-gray-900 dark:text-gray-100">{x.ruleId}</td>
                   <td className="px-4 py-2 font-mono text-[11px] text-gray-700 dark:text-gray-200 break-all">{x.hostnameRegex}</td>
                   <td className="px-4 py-2 text-xs text-gray-700 dark:text-gray-200">
-                    {x.scope === 'full_disable' ? (
-                      <span className="rounded bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200 px-2 py-0.5 text-[10px] uppercase">full disable</span>
-                    ) : (
-                      <span className="rounded bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-200 px-2 py-0.5 text-[10px] uppercase">args_names</span>
-                    )}
+                    {/* Render the stored scope verbatim — an else-branch that
+                        hardcoded "args_names" mislabelled every `args` row. */}
+                    <span
+                      className={
+                        x.scope === 'full_disable'
+                          ? 'rounded bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-200 px-2 py-0.5 text-[10px] uppercase'
+                          : 'rounded bg-gray-100 dark:bg-gray-700/40 text-gray-700 dark:text-gray-200 px-2 py-0.5 text-[10px] uppercase'
+                      }
+                    >
+                      {x.scope === 'full_disable' ? 'full disable' : x.scope}
+                    </span>
                   </td>
                   <td className="px-4 py-2 text-xs">
                     {/* B2 — tenant-owned rows show the tenant name as a
