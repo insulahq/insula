@@ -362,10 +362,31 @@ export async function ensureFileManagerRunning(
 
     if (pvcMismatch || capsMismatch || imageMismatch || resourcesMismatch || pullPolicyMismatch || nodeSelectorMismatch) {
       // Spec mismatch — delete and recreate (K8s doesn't allow spec.selector changes)
+      //
+      // Recreate at whichever is HIGHER: what the caller asked for, or what was
+      // already running. Two bugs otherwise, both observed on DEV after the
+      // 2026-08-31 sidecar image bump:
+      //
+      //   1. A caller that wants FM running (initialReplicas=1) got a
+      //      Deployment at 0, because the scale-to-1 branch below is an
+      //      `else if` and never runs on the recreate path. The first attempt
+      //      to open the file manager after ANY image change was a silent
+      //      no-op that reported "Pod is being created" while nothing was; the
+      //      tenant had to click again. Measured: start #1 → replicas=0,
+      //      start #2 → replicas=1.
+      //   2. A caller that does NOT want to force a start (initialReplicas=0 —
+      //      the SFTP gateway, the provisioner) would have SCALED DOWN a
+      //      file manager the tenant was actively using, mid-session, just
+      //      because the image pin moved.
+      const desiredReplicas = Math.max(initialReplicas, existingReplicas);
+      const recreateBody = {
+        ...deployBody,
+        body: { ...deployBody.body, spec: { ...deployBody.body.spec, replicas: desiredReplicas } },
+      };
       try {
         await k8s.apps.deleteNamespacedDeployment({ name: FM_NAME, namespace });
       } catch { /* best-effort cleanup */ }
-      await k8s.apps.createNamespacedDeployment(deployBody);
+      await k8s.apps.createNamespacedDeployment(recreateBody);
     } else if (existingReplicas === 0) {
       // Spec matches but the idle-cleanup loop (or operator) scaled
       // the Deployment to 0. Without this branch, /start was a no-op
