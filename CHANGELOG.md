@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.8.26] - 2026-08-31
+
 ### Added
 - **Extra volume mounts for deployments.** A deployment can now mount an
   *additional* folder from the tenant's storage at a chosen absolute path
