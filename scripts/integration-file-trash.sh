@@ -38,6 +38,10 @@ trap 'rm -rf "$WORK"' EXIT
 
 api() { curl -sk -H "Authorization: Bearer $TOKEN" "$@"; }
 japi() { api -H 'Content-Type: application/json' "$@"; }
+# GET with a URL-ENCODED `path` query parameter. Mandatory: autoRename produces
+# names containing a space ("payload (restored).txt"), and sending that raw
+# returns an empty body that looks exactly like "the file does not exist".
+getp() { api --get --data-urlencode "path=$2" "$1"; }
 
 note "authenticate"
 TOKEN=$(curl -sk -X POST "$ADMIN_HOST/api/v1/auth/login" \
@@ -82,7 +86,7 @@ CONTENT="recycle-bin-e2e-$STAMP-$(head -c 64 /dev/urandom | base64 | tr -d '\n/+
 
 note "seed a file"
 japi -X POST "$T/write" -d "$(jq -nc --arg p "$FILE" --arg c "$CONTENT" '{path:$p,content:$c}')" >/dev/null
-[[ "$(api "$T/read?path=$FILE" | jq -r '.data.content')" == "$CONTENT" ]] \
+[[ "$(getp "$T/read" "$FILE" | jq -r '.data.content')" == "$CONTENT" ]] \
   && pass "seed file readable" || fail "seed file did not round-trip"
 
 TRASH_BEFORE=$(api "$T/disk-usage" | jq -r '.data.trashBytes')
@@ -99,7 +103,7 @@ ENTRY_ID=$(jq -r '.data.trashEntry.id' <<<"$DEL")
 
 # User-visible: gone from the listing.
 jq -e --arg n "payload.txt" '.data.entries | map(.name) | index($n) | not' \
-  >/dev/null <<<"$(api "$T?path=$DIR")" \
+  >/dev/null <<<"$(getp "$T" "$DIR")" \
   && pass "file is gone from its directory" || fail "file still listed after delete"
 
 # User-visible: present in the bin, with its original path recorded.
@@ -120,7 +124,7 @@ USED_AFTER=$(api "$T/disk-usage" | jq -r '.data.usedBytes')
   || fail "trashBytes $TRASH_AFTER exceeds usedBytes $USED_AFTER"
 
 note "3. the bin is hidden from ordinary browsing"
-jq -e '.data.entries | map(.name) | index(".trash") | not' >/dev/null <<<"$(api "$T?path=/")" \
+jq -e '.data.entries | map(.name) | index(".trash") | not' >/dev/null <<<"$(getp "$T" "/")" \
   && pass ".trash is not listed at the PVC root" || fail ".trash leaked into the root listing"
 
 note "4. ordinary file operations cannot reach into the bin"
@@ -148,7 +152,7 @@ japi -X POST "$T/delete" -d "$(jq -nc --arg p "$STAMP" '{path:$p,permanent:true}
 RES=$(japi -X POST "$T/trash/restore" -d "$(jq -nc --arg id "$ENTRY_ID" '{id:$id}')")
 [[ "$(jq -r '.data.restoredTo' <<<"$RES")" == "$FILE" ]] \
   && pass "restored to the original path" || fail "restoredTo: $(jq -c '.data' <<<"$RES")"
-[[ "$(api "$T/read?path=$FILE" | jq -r '.data.content')" == "$CONTENT" ]] \
+[[ "$(getp "$T/read" "$FILE" | jq -r '.data.content')" == "$CONTENT" ]] \
   && pass "restored content matches byte for byte" || fail "restored content differs"
 jq -e --arg id "$ENTRY_ID" '.data.entries | map(.id) | index($id) | not' >/dev/null <<<"$(api "$T/trash")" \
   && pass "entry consumed by the restore" || fail "entry still in the bin after restore"
@@ -161,16 +165,16 @@ japi -X POST "$T/write" -d "$(jq -nc --arg p "$FILE" --arg c "$NEWER" '{path:$p,
 CONFLICT=$(japi -X POST "$T/trash/restore" -d "$(jq -nc --arg id "$ID2" '{id:$id}')")
 [[ "$(jq -r '.error.code // empty' <<<"$CONFLICT")" == "FILE_EXISTS" ]] \
   && pass "conflict reported instead of overwriting" || fail "expected FILE_EXISTS: $(jq -c . <<<"$CONFLICT")"
-[[ "$(api "$T/read?path=$FILE" | jq -r '.data.content')" == "$NEWER" ]] \
+[[ "$(getp "$T/read" "$FILE" | jq -r '.data.content')" == "$NEWER" ]] \
   && pass "the occupying file was left untouched" || fail "occupant was modified"
 
 ALONG=$(japi -X POST "$T/trash/restore" -d "$(jq -nc --arg id "$ID2" '{id:$id,autoRename:true}')")
 ALONG_PATH=$(jq -r '.data.restoredTo' <<<"$ALONG")
 [[ "$ALONG_PATH" == *"(restored)"* ]] \
   && pass "restore-alongside renamed to $ALONG_PATH" || fail "autoRename path: $ALONG_PATH"
-[[ "$(api "$T/read?path=$ALONG_PATH" | jq -r '.data.content')" == "$CONTENT" ]] \
+[[ "$(getp "$T/read" "$ALONG_PATH" | jq -r '.data.content')" == "$CONTENT" ]] \
   && pass "the alongside copy holds the recovered content" || fail "alongside copy content wrong"
-[[ "$(api "$T/read?path=$FILE" | jq -r '.data.content')" == "$NEWER" ]] \
+[[ "$(getp "$T/read" "$FILE" | jq -r '.data.content')" == "$NEWER" ]] \
   && pass "and the occupant is still intact" || fail "occupant lost during autoRename"
 
 note "7. permanent:true really bypasses the bin"
@@ -178,7 +182,7 @@ BIN_N=$(api "$T/trash" | jq '.data.entries | length')
 japi -X POST "$T/delete" -d "$(jq -nc --arg p "$ALONG_PATH" '{path:$p,permanent:true}')" >/dev/null
 [[ "$(api "$T/trash" | jq '.data.entries | length')" == "$BIN_N" ]] \
   && pass "permanent delete added nothing to the bin" || fail "permanent delete still trashed"
-[[ "$(api "$T/read?path=$ALONG_PATH" | jq -r '.error.code // empty')" != "" ]] \
+[[ "$(getp "$T/read" "$ALONG_PATH" | jq -r '.data.content // empty')" == "" ]] \
   && pass "permanently deleted file is unreadable" || fail "file survived a permanent delete"
 
 note "8. purge frees the space"

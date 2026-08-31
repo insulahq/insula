@@ -228,6 +228,29 @@ describe('file-manager routes', () => {
     expect(body.data).toBeDefined();
   });
 
+  it('POST …/files/start asks for the pod to actually RUN (initialReplicas=1)', async () => {
+    // Regression, measured on DEV 2026-08-31. This route relied on the
+    // ensureFileManagerRunning default of 0, so when a spec mismatch (an image
+    // bump) sent it down the delete-and-recreate path, the Deployment came
+    // back at ZERO replicas — the scale-to-1 branch is an `else if` and never
+    // runs on that path. The request still answered "Pod is being created"
+    // while nothing was scheduled, so the first attempt to open the file
+    // manager after ANY sidecar image change silently did nothing and the
+    // tenant had to click again. Every other "want it running" caller
+    // (service.ts, three sites) already passed 1.
+    const { ensureFileManagerRunning } = await import('./service.js');
+    (ensureFileManagerRunning as unknown as { mockClear: () => void }).mockClear();
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/tenants/c1/files/start',
+      headers: { authorization: `Bearer ${adminToken}` },
+    });
+
+    const call = (ensureFileManagerRunning as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    expect(call[3]).toBe(1);
+  });
+
   // ─── Stop (admin only) ─────────────────────────────────────────────────
 
   it('POST /tenants/c1/files/stop with tenant token returns 403', async () => {
