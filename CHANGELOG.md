@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.1] - 2026-09-01
+
 ### Changed
 - **Dependency currency sweep** (resolves all eight open Dependabot PRs). npm:
   `@kubernetes/client-node` **2.0.0** (major — the client every cluster
