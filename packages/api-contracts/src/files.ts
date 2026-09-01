@@ -60,12 +60,23 @@ export const renameInputSchema = z.object({
   newPath: z.string().min(1),
 });
 
+
 export type RenameInput = z.infer<typeof renameInputSchema>;
 
 // ─── Delete ──────────────────────────────────────────────────────────────────
 
+/**
+ * `permanent` opts OUT of the recycle bin.
+ *
+ * The default of `false` is load-bearing, not a style choice: an optional flag
+ * with a default makes every un-updated call site silent, so the default must
+ * be the SAFE branch. A caller that never learned about the trash therefore
+ * produces a recoverable delete; the destructive path can only be reached by
+ * asking for it explicitly.
+ */
 export const deleteInputSchema = z.object({
   path: z.string().min(1),
+  permanent: z.boolean().optional().default(false),
 });
 
 export type DeleteInput = z.infer<typeof deleteInputSchema>;
@@ -85,6 +96,8 @@ export const MAX_BULK_DELETE_PATHS = 1000;
 
 export const bulkDeleteInputSchema = z.object({
   paths: z.array(z.string().min(1)).min(1).max(MAX_BULK_DELETE_PATHS),
+  /** See deleteInputSchema — defaults to the recoverable branch. */
+  permanent: z.boolean().optional().default(false),
 });
 
 export type BulkDeleteInput = z.infer<typeof bulkDeleteInputSchema>;
@@ -97,6 +110,10 @@ export type BulkDeleteInput = z.infer<typeof bulkDeleteInputSchema>;
 export const bulkDeleteResultSchema = z.object({
   deleted: z.array(z.string()),
   failed: z.array(z.object({ path: z.string(), error: z.string() })),
+  /** Recycle-bin ids for the paths that were trashed (empty when the caller
+   *  asked for a permanent delete). Carried so the panel can offer a one-click
+   *  Undo without making the user open the bin and match filenames by hand. */
+  trashedIds: z.array(z.string()),
 });
 
 export type BulkDeleteResult = z.infer<typeof bulkDeleteResultSchema>;
@@ -160,6 +177,31 @@ export const chownInputSchema = z.object({
 });
 
 export type ChownInput = z.infer<typeof chownInputSchema>;
+
+// ─── Disk Usage ─────────────────────────────────────────────────────────────
+
+/**
+ * `trashBytes` is a SUBSET of `usedBytes`, not an addition — the recycle bin
+ * lives on the same PVC, so trashing a file frees nothing until it is purged.
+ * The UI must break this out: with no size cap on the bin, showing the tenant
+ * what it costs is the only thing standing between them and a full PVC.
+ */
+export const diskUsageSchema = z.object({
+  usedBytes: z.number(),
+  totalBytes: z.number(),
+  availableBytes: z.number(),
+  trashBytes: z.number(),
+  usedFormatted: z.string(),
+  totalFormatted: z.string(),
+  availableFormatted: z.string(),
+  trashFormatted: z.string(),
+  /** Added by the backend, not the sidecar — the sidecar never owns policy.
+   *  Carried here so the delete dialog can say "kept N days" without listing
+   *  the whole bin for one number. */
+  trashRetentionDays: z.number().int().positive(),
+});
+
+export type DiskUsage = z.infer<typeof diskUsageSchema>;
 
 // ─── File Manager Status ─────────────────────────────────────────────────────
 

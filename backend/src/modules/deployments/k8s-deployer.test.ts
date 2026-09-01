@@ -632,3 +632,42 @@ describe('deployCatalogEntry: asymmetric QoS resource block (ADR-037)', () => {
     expect(r.limits).not.toHaveProperty('cpu');
   });
 });
+
+describe('deployCatalogEntry: component args (server tuning from the manifest)', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  function getContainer(call: unknown): { args?: string[]; command?: string[] } {
+    const body = (call as { body: { spec: { template: { spec: { containers: Array<{ args?: string[]; command?: string[] }> } } } } }).body;
+    return body.spec.template.spec.containers[0];
+  }
+
+  // The mariadb/mysql catalog entries carry their low-footprint tuning as
+  // `components[].args`, which replaces the image CMD. Both server images'
+  // entrypoints re-prepend the daemon when argv[0] starts with '-', so a bare
+  // flag list is the whole contract. If args ever stopped reaching the pod the
+  // databases would silently fall back to upstream defaults (~3x the RSS) with
+  // nothing failing, so pin it.
+  it('component args reach the container spec verbatim', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', {
+        name: 'mariadb',
+        image: 'mariadb:12.3',
+        ports: [{ port: 3306, protocol: 'TCP' }],
+        args: ['--key-buffer-size=8M', '--aria-pagecache-buffer-size=16M'],
+      })],
+    }));
+    expect(getContainer(calls.createDeployment.mock.calls[0][0]).args)
+      .toEqual(['--key-buffer-size=8M', '--aria-pagecache-buffer-size=16M']);
+  });
+
+  it('omits args entirely when the component declares none (image CMD preserved)', async () => {
+    const { k8s, calls } = makeK8sMock();
+    await deployCatalogEntry(k8s, baseInput({
+      components: [makeComponent('deployment', { name: 'web', image: 'nginx:1.29' })],
+    }));
+    const c = getContainer(calls.createDeployment.mock.calls[0][0]);
+    expect(c).not.toHaveProperty('args');
+    expect(c).not.toHaveProperty('command');
+  });
+});

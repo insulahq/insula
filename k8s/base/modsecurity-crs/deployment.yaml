@@ -206,8 +206,39 @@ spec:
                   sleep 60
                 done
               ) &
-              exec tail -F -n0 /var/log/modsec/audit.log 2>/dev/null \
-                | sed -u -E 's/("(Authorization|Cookie|Set-Cookie|Proxy-Authorization|X-Api-Key)":")[^"]*"/\1<redacted>"/g'
+              # Shutdown handling is NOT optional here, and QUIT is the signal
+              # that actually matters.
+              #
+              # Two compounding defects, both measured 2026-08-31:
+              #
+              #  1. `exec cmd | sed` does NOT replace the shell — a pipeline
+              #     runs in subshells, so PID 1 stayed /bin/sh with tail and
+              #     sed as children, and only PID 1 is signalled.
+              #  2. This image sets STOPSIGNAL=SIGQUIT (the nginx convention),
+              #     which containerd honours — and busybox ash IGNORES SIGQUIT
+              #     (/proc/1/status showed SigIgn bit 3 set). So the stop
+              #     signal landed on a process that ignored it.
+              #
+              # Result: every rollout sat out the full 30s grace period and was
+              # SIGKILLed. The resulting exit 137 was then reported to admins
+              # as an OOM kill of `tenant "traefik"` — while the cgroup showed
+              # oom_kill=0 and an 8.5 MB peak against this 64 MiB limit, and the
+              # node's kernel ring buffer held no cgroup OOM for it at all.
+              #
+              # Trapping TERM alone does NOT fix it: verified that `docker stop`
+              # (which, like containerd, sends STOPSIGNAL) still took 30s and
+              # exited 137 until QUIT was added. With QUIT trapped: 1.0s, exit 0.
+              #
+              # `kill -TERM -1` inside a PID namespace signals every process
+              # EXCEPT PID 1 itself — exactly tail + sed + the watchdog.
+              # `trap -` first so the handler cannot re-enter. The poll loop
+              # exists because ash defers a trap until the foreground command
+              # returns, and `wait` on a never-exiting tail never returns.
+              tail -F -n0 /var/log/modsec/audit.log 2>/dev/null \
+                | sed -u -E 's/("(Authorization|Cookie|Set-Cookie|Proxy-Authorization|X-Api-Key)":")[^"]*"/\1<redacted>"/g' &
+              pipeline=$!
+              trap 'trap - TERM INT QUIT; kill -TERM -1 2>/dev/null || true; exit 0' TERM INT QUIT
+              while kill -0 "$pipeline" 2>/dev/null; do sleep 1; done
           resources:
             requests:
               cpu: 5m

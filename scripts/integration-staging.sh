@@ -4052,10 +4052,18 @@ scenario_redis() {
   fi
 
   # ── 5. NetworkPolicy: tenant namespace cannot reach the cache ──
-  # Pick any client-* namespace as a probe origin. If none exists
-  # on this cluster, the test is informational (logged, not failed).
+  # Pick a real tenant namespace as a probe origin. If none exists on this
+  # cluster, the test is informational (logged, not failed).
+  #
+  # This used to select `-l client`, a label NOTHING sets: measured on
+  # production 2026-08-31, zero namespaces carry it, so this probe had never
+  # once run — it took the "skipping" branch every time and reported success.
+  # Tenant namespaces are `tenant-*` (tenants/service.ts:generateNamespace);
+  # match on that. `platform-tenant-ops` is deliberately NOT matched — it
+  # contains "tenant-" but does not start with it, and it is a platform
+  # namespace.
   local tenant_ns
-  tenant_ns=$(ssh_cp "kubectl get ns -l client -o jsonpath='{.items[0].metadata.name}' 2>/dev/null" | tr -d '[:space:]')
+  tenant_ns=$(ssh_cp "kubectl get ns -o jsonpath='{range .items[*]}{.metadata.name}{\"\\n\"}{end}' 2>/dev/null | grep '^tenant-' | head -1" | tr -d '[:space:]')
   if [[ -n "$tenant_ns" ]]; then
     local rc
     rc=$(ssh_cp "kubectl -n ${tenant_ns} run redis-netpol-probe-\$(date +%s) --rm -i --restart=Never --image=alpine:3.20 --quiet --command --timeout=20s -- /bin/sh -c 'apk add --no-cache busybox-extras >/dev/null 2>&1; nc -z -w3 valkey.redis-system.svc.cluster.local 6379 && echo REACHED || echo BLOCKED' 2>&1 | tail -1" | tr -d '[:space:]')
@@ -4067,7 +4075,7 @@ scenario_redis() {
       log "redis/netpol: probe from ${tenant_ns} returned: ${rc:-empty} (treating as inconclusive)"
     fi
   else
-    log "redis/netpol: no client-* namespace on cluster — skipping tenant-block test"
+    log "redis/netpol: no tenant-* namespace on cluster — skipping tenant-block test"
   fi
 
   # ── 6. Stalwart Coordinator wired (soft check) ──
