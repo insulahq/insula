@@ -941,6 +941,8 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const [softDeleteConfirm, setSoftDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [permanentDeleteConfirm, setPermanentDeleteConfirm] = useState<{ id: string; name: string } | null>(null);
   const [deleteDataFolder, setDeleteDataFolder] = useState(false);
+  // Reset alongside deleteDataFolder when the modal OPENS — never remembered.
+  const [permanentDataFolder, setPermanentDataFolder] = useState(false);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
   const [previewDeployment, setPreviewDeployment] = useState<{ id: string; name: string } | null>(null);
 
@@ -1352,7 +1354,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                   </button>
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirm({ id: deployment.id, name: deployment.name }); setDeleteDataFolder(false); }}
+                    onClick={(e) => { e.stopPropagation(); setPermanentDeleteConfirm({ id: deployment.id, name: deployment.name }); setDeleteDataFolder(false); setPermanentDataFolder(false); }}
                     className="rounded-lg bg-red-50 dark:bg-red-900/20 px-3 py-2 text-sm font-medium text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
                     data-testid={`permanent-delete-app-${deployment.id}`}
                   >
@@ -1482,9 +1484,32 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                 data-testid="delete-data-folder-checkbox"
               />
               <span className="text-sm text-gray-700 dark:text-gray-300">
-                Also delete data folder <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-xs">/{allDeployments.find(d => d.id === permanentDeleteConfirm.id)?.storagePath ?? permanentDeleteConfirm.name}</code>
+                Also remove data folder <code className="rounded bg-gray-100 dark:bg-gray-700 px-1 py-0.5 text-xs">/{allDeployments.find(d => d.id === permanentDeleteConfirm.id)?.storagePath ?? permanentDeleteConfirm.name}</code>
               </span>
             </label>
+            {/* The deployment row is destroyed regardless — only the FILES are
+                recoverable, and only while they sit in the bin. Said plainly
+                because a data folder can be many GB and it keeps counting
+                against the tenant's storage for the whole retention window. */}
+            {deleteDataFolder && (
+              <div className="-mt-4 mb-6 ml-6">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  The folder moves to the recycle bin, where it still counts toward your storage until it expires or you empty the bin. Restoring returns the files only — not the deployment.
+                </p>
+                <label className="mt-2 flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={permanentDataFolder}
+                    onChange={(e) => setPermanentDataFolder(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 dark:border-gray-600 text-red-600 focus:ring-red-500"
+                    data-testid="permanent-data-folder-checkbox"
+                  />
+                  <span className="text-sm text-gray-700 dark:text-gray-300">
+                    Delete permanently <span className="text-gray-500 dark:text-gray-400">(skip recycle bin, frees space now)</span>
+                  </span>
+                </label>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -1497,9 +1522,10 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
                 type="button"
                 onClick={async () => {
                   try {
-                    await permanentDeleteDeployment.mutateAsync({ deploymentId: permanentDeleteConfirm.id, deleteData: deleteDataFolder });
+                    await permanentDeleteDeployment.mutateAsync({ deploymentId: permanentDeleteConfirm.id, deleteData: deleteDataFolder, permanentData: permanentDataFolder });
                     setPermanentDeleteConfirm(null);
                     setDeleteDataFolder(false);
+                    setPermanentDataFolder(false);
                     addNotification('success', 'Deployment permanently deleted');
                   } catch {
                     addNotification('error', 'Failed to permanently delete deployment');

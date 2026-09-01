@@ -6,6 +6,7 @@ import type { NodeRole, NodeIngressMode, UpdateClusterNodeInput } from '@insula/
 import { ApiError } from '../../shared/errors.js';
 import { projectNode } from './k8s-sync.js';
 import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
+import { isSystemNamespace } from '../../lib/namespace-tier.js';
 
 // M1: Platform namespaces whose pods block a server→worker demotion
 // unless the caller passes `force: true`. Anything here running on the
@@ -14,10 +15,17 @@ import { STRATEGIC_MERGE_PATCH, MERGE_PATCH } from '../../shared/k8s-patch.js';
 // Keep this list in sync with the system-node-affinity Kustomize
 // component (see k8s/components/system-node-affinity/).
 //
-// IMPORTANT: this list also classifies pods in the drain-impact preview
-// as "system" (info-only) vs "non-system" (will be evicted). Anything
-// missing here gets shown to the operator as a tenant pod — which is
-// wrong for cluster-infra namespaces (calico, tigera, kube-system, etc).
+// This is now an ENUMERATION, not a classification. It survives for
+// `listSystemPodsOnNode()`, which must name concrete namespaces to list pods
+// in — something a prefix rule cannot do.
+//
+// It no longer decides tenant-vs-system: that is `lib/namespace-tier.ts`.
+// The warning this comment used to carry ("Anything missing here gets shown to
+// the operator as a tenant pod") was correct and came true elsewhere — the
+// node-health alerting path had its own 9-entry copy of this list and paged an
+// admin about `tenant "traefik"` on 2026-08-31. Even this longer list was
+// missing crowdsec, redis-system, system-upgrade, hosting and plesk-migration,
+// which is why the classification is now a prefix rule that cannot drift.
 export const SYSTEM_NAMESPACES = Object.freeze([
   'platform',
   'platform-system',
@@ -119,7 +127,7 @@ export async function listNodesEnriched(
     const phase = p.status?.phase;
     if (phase === 'Succeeded' || phase === 'Failed') continue;
     const ns = p.metadata?.namespace ?? '';
-    if ((SYSTEM_NAMESPACES as readonly string[]).includes(ns)) continue;
+    if (isSystemNamespace(ns)) continue;
     const ownerKind = p.metadata?.ownerReferences?.[0]?.kind;
     if (ownerKind === 'DaemonSet' || ownerKind === 'Node') continue;
     const node = p.spec?.nodeName;
@@ -719,7 +727,7 @@ export async function buildDrainImpact(
       hasNodeAffinityToThisNode: detectNodePin(raw.spec, name) !== null,
     };
     const verdict = isUnevictable(lite, name);
-    if (verdict.skip || (SYSTEM_NAMESPACES as readonly string[]).includes(ns)) {
+    if (verdict.skip || isSystemNamespace(ns)) {
       systemPods.push({
         namespace: ns,
         name: podName,
@@ -765,7 +773,7 @@ export async function buildDrainImpact(
     const enumerate = (items: LiteWorkload[] | undefined, kind: 'Deployment' | 'StatefulSet') => {
       for (const w of items ?? []) {
         const ns = w.metadata?.namespace ?? '';
-        if ((SYSTEM_NAMESPACES as readonly string[]).includes(ns)) continue;
+        if (isSystemNamespace(ns)) continue;
         const pin = detectNodePin(w.spec?.template?.spec, name);
         if (!pin) continue;
         const c = tenantByNs.get(ns);

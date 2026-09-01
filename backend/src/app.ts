@@ -312,6 +312,40 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     : deps.config.NODE_ENV === 'production'
       ? [] // No open CORS in production — must be configured
       : true; // Permissive in development/test
+  // An empty body with `Content-Type: application/json` means `{}`.
+  //
+  // Fastify's built-in JSON parser rejects a body-less request that carries the
+  // JSON content-type with FST_ERR_CTP_EMPTY_JSON_BODY (400). That is defensible
+  // in the abstract, but it silently BROKE existing API consumers when the
+  // dependency moved: several endpoints take no body at all (POST …/files/start,
+  // …/files/stop, …/refresh-route-dns), and sending the JSON header on a
+  // body-less POST is an extremely common client default — curl -X POST -H
+  // 'Content-Type: application/json' with no -d, most HTTP libraries with a
+  // default header set, and so on. Measured on DEV: such a call returned 200
+  // before the bump and 400 after it.
+  //
+  // Both panels happen to be immune (their apiFetch only sets the header when
+  // there IS a body), so this was invisible from the UI — it would have surfaced
+  // as external automation breaking after an upgrade, with nothing in the
+  // release notes, because nobody chose the change.
+  //
+  // Restoring the tolerant behaviour keeps the API contract stable. A malformed
+  // (non-empty, non-JSON) body is still a 400, and routes that require fields
+  // still fail their Zod validation exactly as before — an empty object simply
+  // reaches the validator instead of being rejected by the parser.
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (_req, body, done) => {
+    if (typeof body !== 'string' || body.trim() === '') {
+      done(null, {});
+      return;
+    }
+    try {
+      done(null, JSON.parse(body));
+    } catch (err) {
+      (err as Error & { statusCode?: number }).statusCode = 400;
+      done(err as Error);
+    }
+  });
+
   await app.register(fastifyCors, { origin: allowedOrigins });
   await app.register(fastifyCompress, { global: true });
   // @fastify/multipart powers the tenant-bundles import endpoint
@@ -1144,6 +1178,15 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       const cleanupTimer = startIdleCleanup(kubeconfigPath);
       if (cleanupTimer) {
         app.addHook('onClose', () => clearInterval(cleanupTimer));
+      }
+
+      // File-manager recycle-bin expiry. Covers tenants who trash something and
+      // never reopen the panel — without it the retention setting would be a
+      // promise the code never keeps for exactly the accounts that need it.
+      {
+        const { startTrashReconciler } = await import('./modules/file-manager/trash-reconciler.js');
+        const trashTimer = startTrashReconciler(app.db, kubeconfigPath);
+        app.addHook('onClose', () => clearInterval(trashTimer));
       }
 
       const metricsTimer = startMetricsScheduler(app.db);

@@ -787,7 +787,10 @@ export async function deploymentRoutes(app: FastifyInstance): Promise<void> {
 
     if (force) {
       const deleteData = query.deleteData === 'true' || query.deleteData === '1';
-      await service.hardDeleteDeployment(app.db, tenantId, id, getK8s(), deleteData);
+      // Opt-IN skip of the recycle bin for the data folder; absent means the
+      // files stay recoverable.
+      const permanentData = query.permanentData === 'true' || query.permanentData === '1';
+      await service.hardDeleteDeployment(app.db, tenantId, id, getK8s(), deleteData, permanentData, request.user?.sub);
       reply.status(204).send();
     } else {
       const preview = await service.getDeletePreview(app.db, tenantId, id);

@@ -109,9 +109,9 @@ describe('classify — bundle-everything', () => {
       expect(r.category).toBe('tier-1-platform');
     });
 
-    it('client-acme-corp → tier-2-tenant', () => {
+    it('tenant-acme-corp → tier-2-tenant', () => {
       const r = classify({
-        namespace: 'client-acme-corp', name: 'wp-db-password',
+        namespace: 'tenant-acme-corp', name: 'wp-db-password',
         type: opaque, owner: null, allowlistMap: emptyAllowlist,
       });
       expect(r.category).toBe('tier-2-tenant');

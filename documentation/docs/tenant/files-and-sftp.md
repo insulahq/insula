@@ -27,8 +27,8 @@ and an actions toolbar.
 | **Upload** | Click **Upload** (or drag files onto the window). |
 | **New File** / **New Folder** | Buttons in the toolbar. |
 | **Download** | Per-file action. |
-| **Rename / Delete** | Per-file actions. |
-| **Delete many** | Select items (or **Select all**) → **Delete** in the bulk toolbar. The whole selection is deleted in a single operation, and if any item cannot be removed you are told which ones — the rest still go. |
+| **Rename / Move to Trash** | Per-file actions. Deleted files go to the [recycle bin](#recycle-bin) unless you tick **Delete permanently**. |
+| **Delete many** | Select items (or **Select all**) → **Move to Trash** in the bulk toolbar. The whole selection is handled in a single operation, and if any item cannot be removed you are told which ones — the rest still go. |
 | **Copy / Move** | Select items → **Copy** or **Move** in the bulk toolbar. |
 | **Archive (zip/tar)** | Select items → **Archive**. Extract an archive from its row action. See [Large archives](#large-archives). |
 | **Permissions / Ownership** | Select items → **Permissions** or **Ownership** (advanced — change file access modes). |
@@ -39,6 +39,58 @@ The **Import** menu offers three handy shortcuts:
   folder.
 - **Clone Website** — copy an existing website into your storage.
 - **Git Clone** — pull a Git repository into a folder.
+
+### Recycle bin
+
+Deleting a file or folder in the file manager **moves it to a recycle bin**
+rather than erasing it. You can put it back later from the same place you
+deleted it.
+
+!!! warning "The recycle bin is not free space"
+
+    Trashed items stay on your storage and keep counting against your quota
+    until they expire or you empty the bin. **Deleting files does not free
+    space on its own.** If you are trying to make room, either empty the bin
+    afterwards or tick **Delete permanently** when you delete.
+
+**Opening it.** When the bin holds anything, an *"… in bin"* button appears
+next to the storage figure at the top of the Files page. Click it to see
+everything you have deleted, how much space each item uses, and how many days
+are left before it is removed for good.
+
+**Restoring.** Press **Restore** on any row. The file goes back to the exact
+folder it came from, and missing parent folders are recreated for you. If
+something new already occupies that path you are asked whether to **restore
+alongside** it (the recovered copy is renamed) or **replace** what is there
+now — nothing is overwritten without you choosing it.
+
+**Removing things for good.** Use **Delete** on a single row, or **Empty
+recycle bin** to clear everything. Both free the space immediately and cannot
+be undone.
+
+**Automatic clean-up.** Items are removed automatically after a set number of
+days — 14 by default. Your provider sets this window; the exact number is
+shown in the bin and in the delete dialog.
+
+**Undo.** Right after a delete, a bar appears at the top of the page offering
+**Undo**. That is the quickest route back — you do not have to open the bin and
+find the file. It restores *alongside* anything that has taken the path in the
+meantime, so nothing is overwritten.
+
+**Working in bulk.** Tick the checkbox on any row (or the one in the header to
+select everything shown) to **Restore selected** or **Delete selected** in one
+action, and use the filter box to narrow a long list by name or original
+location.
+
+**What the bin does *not* cover.** It holds files you **delete** in the file
+manager. It is not a version history: overwriting a file — by moving or copying
+onto it, uploading over it, saving in the editor, or extracting an archive over
+it — replaces it outright, and the previous contents are not kept. Files removed
+over SFTP or by your own application code are likewise gone immediately.
+
+Deleting an application with **Also remove data folder** ticked sends that
+folder to the bin too, so the files remain recoverable. Restoring returns the
+*files* only — it does not bring the application back.
 
 ### Large archives
 

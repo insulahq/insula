@@ -26,6 +26,10 @@ import {
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import { useTenantContext } from '@/hooks/use-tenant-context';
+import TrashPanel from '@/components/files/TrashPanel';
+import { PermanentDeleteToggle, DeleteConsequence } from '@/components/files/PermanentDeleteToggle';
+import UndoBar, { type UndoState } from '@/components/files/UndoBar';
+import { useRestoreFromTrash } from '@/hooks/use-trash';
 import { useResourceAvailability } from '@/hooks/use-resource-availability';
 import ErrorPanel from '@/components/ErrorPanel';
 import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-manager-errors';
@@ -111,6 +115,11 @@ export default function Files() {
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  // Reset on OPEN, never on close: a remembered "skip recycle bin" would make a
+  // later, unrelated delete permanent while the dialog still says Move to Trash.
+  const [deletePermanent, setDeletePermanent] = useState(false);
+  const [undo, setUndo] = useState<UndoState | null>(null);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveFormat, setArchiveFormat] = useState<'zip' | 'tar.gz' | 'tar'>('tar.gz');
   const [archiveName, setArchiveName] = useState('');
@@ -157,6 +166,25 @@ export default function Files() {
   const createFile = useWriteFile();
   const renameFile = useRenameFile();
   const deleteFile = useDeleteFile();
+  const restoreFromTrash = useRestoreFromTrash();
+
+  // Undo restores each entry ALONGSIDE whatever is there now rather than
+  // overwriting: between the delete and the click, something may legitimately
+  // occupy the path again, and silently replacing it would be a second
+  // destruction dressed up as a recovery.
+  const runUndo = useCallback(() => {
+    if (!undo) return;
+    const ids = [...undo.ids];
+    let done = 0;
+    ids.forEach((id) => {
+      restoreFromTrash.mutate({ id, autoRename: true }, {
+        onSettled: () => {
+          done += 1;
+          if (done === ids.length) { setUndo(null); dirListing.refetch(); }
+        },
+      });
+    });
+  }, [undo, restoreFromTrash, dirListing]);
   const downloadFile = useDownloadFile();
   const { uploads, uploadFiles, clearUploads, visible: uploadModalVisible } = useUploadFiles();
   const copyFile = useCopyFile();
@@ -423,6 +451,8 @@ export default function Files() {
   const pathParts = currentPath.split('/').filter(Boolean);
 
   const used = diskUsage?.data?.usedFormatted ?? '\u2014';
+  const trashBytes = diskUsage?.data?.trashBytes ?? 0;
+  const retentionDays = diskUsage?.data?.trashRetentionDays ?? 14;
   // Use plan storage quota (from resource availability) instead of physical disk total
   const storageLimitGi = resourceAvail.data?.data?.storageLimitGi;
   const total = storageLimitGi ? `${storageLimitGi} GB` : (diskUsage?.data?.totalFormatted ?? '\u2014');
@@ -458,12 +488,34 @@ export default function Files() {
           </button>
         </div>
       )}
+      {undo && (
+        <UndoBar
+          state={undo}
+          onUndo={runUndo}
+          onDismiss={() => setUndo(null)}
+          isRestoring={restoreFromTrash.isPending}
+        />
+      )}
       <div className="flex items-center justify-between">
         <FilePageHeader />
         <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400 shrink-0" title="Storage Utilization">
           <HardDrive size={14} />
           <span className="font-medium text-gray-600 dark:text-gray-300">Storage</span>
           <span>{used} / {total}</span>
+          {/* The recycle bin is a SUBSET of `used`, so trashing frees nothing
+              until it expires or is emptied. With no size cap on the bin, this
+              readout is the only thing that tells the tenant what it costs —
+              surfaced whenever it holds anything at all. */}
+          {trashBytes > 0 && (
+            <button
+              onClick={() => setShowTrash(true)}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-900/30"
+              title="Deleted files still count toward your storage until they are purged"
+              data-testid="trash-usage-chip"
+            >
+              <Trash2 size={12} /> {diskUsage?.data?.trashFormatted} in bin
+            </button>
+          )}
           <div className="w-24 h-1.5 rounded-full bg-gray-200 dark:bg-gray-700">
             <div className={`h-1.5 rounded-full ${resourceBarColor(usagePct / 100)}`}
               style={{ width: `${Math.min(usagePct, 100)}%` }} />
@@ -484,6 +536,14 @@ export default function Files() {
         </div>
         <div className="flex items-center gap-2 shrink-0 flex-wrap">
           <button onClick={() => dirListing.refetch()} className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300" title="Refresh"><RefreshCw size={14} /></button>
+          <button
+            onClick={() => setShowTrash(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700/50"
+            title="Files you deleted are kept here and can be restored"
+            data-testid="open-recycle-bin"
+          >
+            <Trash2 size={14} /> Recycle Bin
+          </button>
           <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => { if (e.target.files) uploadFiles(e.target.files, currentPath); e.target.value = ''; }} />
           <button onClick={() => fileInputRef.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50">
             <Upload size={14} /> Upload
@@ -578,7 +638,7 @@ export default function Files() {
               className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-brand-100 dark:text-gray-300 dark:hover:bg-brand-800/50"
             ><Calculator size={16} /> Calculate Sizes</button>
           )}
-          <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"><Trash2 size={16} /> Delete</button>
+          <button onClick={() => setBulkDeleteOpen(true)} className="inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/30"><Trash2 size={16} /> Move to Trash</button>
           <div className="flex-1" />
           <button onClick={() => setSelected(new Set())} className="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">Clear</button>
         </div>
@@ -855,7 +915,7 @@ export default function Files() {
           onViewImage={(path) => { setViewingImage(path); setContextMenu(null); }}
           onDownload={(path) => { downloadFile(path); setContextMenu(null); }}
           onRename={(name) => { setRenameTarget(name); setRenameName(name); setContextMenu(null); }}
-          onDelete={(name) => { setDeleteTarget(name); setContextMenu(null); }}
+          onDelete={(name) => { setDeletePermanent(false); setDeleteTarget(name); setContextMenu(null); }}
           onCopy={(path) => { setMoveTarget({ paths: [path], mode: 'copy' }); setContextMenu(null); }}
           onMove={(path) => { setMoveTarget({ paths: [path], mode: 'move' }); setContextMenu(null); }}
           onExtract={(path) => { setExtractTarget(path); setContextMenu(null); }}
@@ -905,15 +965,65 @@ export default function Files() {
         </SimpleDialog>
       )}
 
+      {/* Title, button and styling all follow the opt-in: a dialog headed
+          "Move to Trash" with a ticked "delete permanently" box contradicts
+          itself, and the destructive red belongs to the destructive branch. */}
       {deleteTarget && (
-        <SimpleDialog title="Delete" onClose={() => setDeleteTarget(null)}
-          onConfirm={() => { deleteFile.mutate(joinPath(currentPath, deleteTarget), { onSuccess: () => setDeleteTarget(null) }); }}
-          isPending={deleteFile.isPending} confirmLabel="Delete" destructive>
-          <p className="text-sm text-gray-600 dark:text-gray-400">Delete <strong className="text-gray-900 dark:text-gray-100">{deleteTarget}</strong>? This cannot be undone.</p>
+        <SimpleDialog
+          title={deletePermanent ? 'Delete Permanently' : 'Move to Trash'}
+          onClose={() => setDeleteTarget(null)}
+          onConfirm={() => {
+            const name = deleteTarget;
+            deleteFile.mutate(
+              { path: joinPath(currentPath, name), permanent: deletePermanent },
+              {
+                onSuccess: (res) => {
+                  setDeleteTarget(null);
+                  const id = (res as { data?: { trashEntry?: { id?: string } } })?.data?.trashEntry?.id;
+                  setUndo({
+                    ids: id ? [id] : [],
+                    label: deletePermanent ? `Permanently deleted "${name}"` : `Moved "${name}" to Trash`,
+                    permanent: deletePermanent,
+                  });
+                },
+              },
+            );
+          }}
+          isPending={deleteFile.isPending}
+          confirmLabel={deletePermanent ? 'Delete Permanently' : 'Move to Trash'}
+          destructive={deletePermanent}
+        >
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            {deletePermanent ? 'Permanently delete' : 'Move'} <strong className="text-gray-900 dark:text-gray-100">{deleteTarget}</strong>
+            {deletePermanent ? '?' : ' to the recycle bin?'}
+          </p>
+          <DeleteConsequence permanent={deletePermanent} retentionDays={retentionDays} />
+          <PermanentDeleteToggle checked={deletePermanent} onChange={setDeletePermanent} />
         </SimpleDialog>
       )}
 
-      {bulkDeleteOpen && <BulkDeleteDialog paths={selectedPaths} onClose={() => setBulkDeleteOpen(false)} onSuccess={() => { setBulkDeleteOpen(false); setSelected(new Set()); }} />}
+      {bulkDeleteOpen && (
+        <BulkDeleteDialog
+          paths={selectedPaths}
+          retentionDays={retentionDays}
+          onClose={() => setBulkDeleteOpen(false)}
+          onSuccess={(u) => { setBulkDeleteOpen(false); setSelected(new Set()); setUndo(u); }}
+        />
+      )}
+
+      {showTrash && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4" onClick={(e) => { if (e.target === e.currentTarget) setShowTrash(false); }}>
+          <div className="mt-10 w-full max-w-4xl rounded-xl bg-white p-5 shadow-xl dark:bg-gray-800">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Recycle Bin</h3>
+              <button onClick={() => setShowTrash(false)} aria-label="Close recycle bin" className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300">
+                <X size={16} />
+              </button>
+            </div>
+            <TrashPanel onRestored={() => dirListing.refetch()} />
+          </div>
+        </div>
+      )}
 
       {archiveOpen && (
         <SimpleDialog title="Create Archive" onClose={() => setArchiveOpen(false)}
@@ -1402,7 +1512,7 @@ function ContextMenu({
         <button className={itemClass} onClick={() => onMove(fullPath)}><Move size={14} /> Move to...</button>
         <button className={itemClass} onClick={() => onRename(entry.name)}><Edit3 size={14} /> Rename</button>
         <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
-        <button className={`${itemClass} text-red-600! dark:text-red-400!`} onClick={() => onDelete(entry.name)}><Trash2 size={14} /> Delete</button>
+        <button className={`${itemClass} text-red-600! dark:text-red-400!`} onClick={() => onDelete(entry.name)}><Trash2 size={14} /> Move to Trash</button>
       </div>
     </>
   );
@@ -2031,32 +2141,60 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 }
 
 
-function BulkDeleteDialog({ paths, onClose, onSuccess }: { readonly paths: string[]; readonly onClose: () => void; readonly onSuccess: () => void }) {
+function BulkDeleteDialog({ paths, retentionDays, onClose, onSuccess }: {
+  readonly paths: string[]; readonly retentionDays: number;
+  readonly onClose: () => void; readonly onSuccess: (undo: UndoState) => void;
+}) {
   // ONE request for the whole selection. This used to loop the single-path
   // endpoint: a select-all fired hundreds of sequential requests, tripped the
   // API rate limit, and the await-loop threw on the first 429 — leaving files
   // half-deleted with nothing told to the user.
   const bulkDelete = useBulkDeleteFiles();
   const [failed, setFailed] = useState<ReadonlyArray<{ path: string; error: string }>>([]);
+  // Mounted fresh each time the dialog opens, so the opt-in cannot leak from a
+  // previous (possibly cancelled) delete.
+  const [permanent, setPermanent] = useState(false);
 
   const handleDelete = () => {
     setFailed([]);
-    bulkDelete.mutate(paths, {
+    bulkDelete.mutate({ paths, permanent }, {
       onSuccess: (res) => {
         // Partial success is a real outcome, not an error: report exactly
         // which paths survived instead of closing as if everything worked.
-        if (res.data.failed.length === 0) { onSuccess(); return; }
+        if (res.data.failed.length === 0) {
+          const n = res.data.deleted.length;
+          onSuccess({
+            ids: res.data.trashedIds ?? [],
+            label: permanent
+              ? `Permanently deleted ${n} item${n === 1 ? '' : 's'}`
+              : `Moved ${n} item${n === 1 ? '' : 's'} to Trash`,
+            permanent,
+          });
+          return;
+        }
         setFailed(res.data.failed);
       },
     });
   };
 
   return (
-    <SimpleDialog title="Delete Selected" onClose={onClose} onConfirm={handleDelete} isPending={bulkDelete.isPending} confirmLabel="Delete All" destructive>
-      <p className="text-sm text-gray-600 dark:text-gray-400">Delete <strong className="text-gray-900 dark:text-gray-100">{paths.length} item{paths.length > 1 ? 's' : ''}</strong>? This cannot be undone.</p>
+    <SimpleDialog
+      title={permanent ? 'Delete Permanently' : 'Move to Trash'}
+      onClose={onClose}
+      onConfirm={handleDelete}
+      isPending={bulkDelete.isPending}
+      confirmLabel={permanent ? `Delete ${paths.length} Permanently` : `Move ${paths.length} to Trash`}
+      destructive={permanent}
+    >
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        {permanent ? 'Permanently delete' : 'Move'} <strong className="text-gray-900 dark:text-gray-100">{paths.length} item{paths.length > 1 ? 's' : ''}</strong>
+        {permanent ? '?' : ' to the recycle bin?'}
+      </p>
       <ul className="mt-2 max-h-40 overflow-y-auto text-xs text-gray-500 dark:text-gray-400 space-y-0.5">
         {paths.map(p => <li key={p} className="truncate">{p}</li>)}
       </ul>
+      <DeleteConsequence permanent={permanent} retentionDays={retentionDays} />
+      <PermanentDeleteToggle checked={permanent} onChange={setPermanent} testId="bulk-permanent-delete-toggle" />
       {failed.length > 0 && (
         <div className="mt-3 rounded-md border border-red-300 bg-red-50 p-2 dark:border-red-700 dark:bg-red-900/30" data-testid="bulk-delete-failures">
           <p className="text-sm font-medium text-red-800 dark:text-red-300">
