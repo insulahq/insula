@@ -10,8 +10,12 @@
 # ONE file in the whole repository: `k8s/overlays/dind/backend-patch.yaml`,
 # as a hardcoded local-dev literal. Base and the development / staging /
 # production overlays never set it, so mailbox migration had never worked on
-# any real cluster — only in local DinD, where `NODE_ENV=development` also
-# supplied a fallback that masked the gap a second time.
+# any real cluster — only in local DinD, and only because of that literal.
+# (The helper's `NODE_ENV === 'development'` fallback did NOT cover the DinD
+# cluster: the dind overlay sets NODE_ENV=production like every other
+# environment. That fallback only ever applied to unit tests and a raw
+# `npm run dev`, which is why the gap survived so long — the one place the
+# code ran without a real cluster was also the one place it looked fine.)
 #
 # The failure mode is nasty because it is INVISIBLE until a human drives the
 # feature: the code compiles, every unit test passes (they call the pure
