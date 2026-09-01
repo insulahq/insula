@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Mailbox migration (IMAPSync) failed on every real cluster.** Starting a
+  migration returned `STALWART_MASTER_SECRET is required (mail-imapsync
+  routes)`. The backend read Stalwart's master password from an environment
+  variable that was only ever set in the local development overlay, so the
+  feature worked when developing locally and nowhere else. The migration job
+  now reads that password directly from the mail namespace's existing
+  `mail-secrets` Secret, the same way tenant-backup mailbox jobs and the Plesk
+  migration already did. No configuration change is needed on any cluster —
+  existing installations are fixed by upgrading.
+
+  As a side effect the master password no longer passes through the management
+  API or gets copied into the per-migration Secret; only the password for the
+  *source* mailbox being migrated from is stored there, and it is still deleted
+  along with the job.
+
 ## [2026.9.1] - 2026-09-01
 
 ### Changed

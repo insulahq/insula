@@ -133,8 +133,25 @@ describe('buildJobManifest', () => {
     expect(container).toBeDefined();
     expect(container?.image).toBe('gilleslamiral/imapsync:latest');
 
-    // CRITICAL: passwords MUST come from envFrom secretRef, never via args
+    // CRITICAL: passwords MUST come from Secret references, never via args.
+    // SOURCE_PASSWORD via the per-job Secret…
     expect(container?.envFrom).toEqual([{ secretRef: { name: 'imapsync-job-123' } }]);
+    // …DEST_PASSWORD straight from the mail namespace's own Secret, so
+    // platform-api never handles Stalwart's master password. `optional`
+    // MUST be false: a missing Secret has to fail the pod loudly rather
+    // than run imapsync with an empty destination password.
+    expect(container?.env).toEqual([
+      {
+        name: 'DEST_PASSWORD',
+        valueFrom: {
+          secretKeyRef: {
+            name: 'mail-secrets',
+            key: 'STALWART_MASTER_PASSWORD',
+            optional: false,
+          },
+        },
+      },
+    ]);
     const args = container?.args ?? [];
     const argsText = args.join(' ');
     expect(argsText).not.toContain('SOURCE_PASSWORD');
@@ -202,20 +219,31 @@ describe('buildJobManifest', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('buildJobSecret', () => {
-  it('base64-encodes the source and destination passwords into stringData', () => {
+  it('carries ONLY the source password into stringData', () => {
     const sec = service.buildJobSecret({
       jobId: 'job-123',
       namespace: 'mail',
       sourcePassword: 'srcpw',
-      destPassword: 'dstpw',
     });
     expect(sec.metadata?.name).toBe('imapsync-job-123');
     expect(sec.stringData).toEqual({
       SOURCE_PASSWORD: 'srcpw',
-      DEST_PASSWORD: 'dstpw',
     });
     // type defaults to Opaque
     expect(sec.type).toBe('Opaque');
+  });
+
+  // Regression: platform-api used to read Stalwart's master password out
+  // of its own STALWART_MASTER_SECRET env var and copy the cleartext into
+  // this per-job Secret. The Job now reads it from `mail-secrets` via
+  // secretKeyRef, so the master password must never land here.
+  it('never writes DEST_PASSWORD into the per-job Secret', () => {
+    const sec = service.buildJobSecret({
+      jobId: 'job-123',
+      namespace: 'mail',
+      sourcePassword: 'srcpw',
+    });
+    expect(Object.keys(sec.stringData ?? {})).not.toContain('DEST_PASSWORD');
   });
 });
 

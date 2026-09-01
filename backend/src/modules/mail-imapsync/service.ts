@@ -53,11 +53,28 @@ import {
 // notes; imapsync moves fast and talks to tenant mailboxes.
 export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:2.319';
 
+// Stalwart's master principal password, as stored by bootstrap.sh in the
+// `mail` namespace. The imapsync Job runs in that same namespace, so it
+// reads the Secret DIRECTLY via secretKeyRef rather than having
+// platform-api pull the cleartext into its own environment and copy it
+// into the per-job Secret.
+//
+// This is the same wiring every other master-password consumer uses —
+// backup-restore/executors/mailboxes-by-address.ts, tenant-bundles/
+// components/mailboxes.ts and plesk-migration/mail-sync.ts. mail-imapsync
+// was the lone exception: it read `STALWART_MASTER_SECRET` from
+// process.env, and that variable was only ever set in the DinD overlay,
+// so every non-local cluster failed the migration with
+// `IMAPSYNC_NOT_CONFIGURED`.
+export const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
+export const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
+
 // imapsync supports --passfile1 / --passfile2 to read passwords from
-// a file. We mount the per-job Secret as env vars and have the
-// container's command read the env into a temp file before invoking
-// imapsync. This matches the security guarantees in the plan: no
-// passwords in `args`, no passwords in `kubectl describe`, no
+// a file. SOURCE_PASSWORD arrives via the per-job Secret (envFrom),
+// DEST_PASSWORD via a secretKeyRef straight to `mail-secrets`; the
+// container's command reads both from env into temp files before
+// invoking imapsync. This matches the security guarantees in the plan:
+// no passwords in `args`, no passwords in `kubectl describe`, no
 // passwords on the imapsync command line visible to ps.
 const IMAPSYNC_ENTRYPOINT = `
 set -e
@@ -77,6 +94,10 @@ export interface BuildJobManifestInput {
   readonly jobId: string;
   readonly secretName: string;
   readonly namespace: string;
+  /** Secret holding Stalwart's master password. Defaults to `mail-secrets`. */
+  readonly masterSecretName?: string;
+  /** Key within that Secret. Defaults to `STALWART_MASTER_PASSWORD`. */
+  readonly masterSecretKey?: string;
   readonly mailboxAddress: string;
   readonly sourceHost: string;
   readonly sourcePort: number;
@@ -166,7 +187,29 @@ export function buildJobManifest(input: BuildJobManifestInput): V1Job {
               // `kubectl describe`.
               command: ['sh', '-c', IMAPSYNC_ENTRYPOINT, '--'],
               args,
+              // SOURCE_PASSWORD only — the per-job Secret never holds the
+              // Stalwart master password.
               envFrom: [{ secretRef: { name: input.secretName } }],
+              // DEST_PASSWORD is resolved by the kubelet from the `mail`
+              // namespace's own Secret. An explicit `env` entry takes
+              // precedence over `envFrom`, so this is authoritative even
+              // if a stale per-job Secret still carries the key.
+              //
+              // `optional: false` is deliberate: a missing Secret must fail
+              // the pod loudly rather than run imapsync with an empty
+              // destination password and report a confusing auth error.
+              env: [
+                {
+                  name: 'DEST_PASSWORD',
+                  valueFrom: {
+                    secretKeyRef: {
+                      name: input.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
+                      key: input.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
+                      optional: false,
+                    },
+                  },
+                },
+              ],
               resources: {
                 requests: { cpu: '100m', memory: '128Mi' },
                 limits: { cpu: '500m', memory: '512Mi' },
@@ -183,7 +226,6 @@ export interface BuildJobSecretInput {
   readonly jobId: string;
   readonly namespace: string;
   readonly sourcePassword: string;
-  readonly destPassword: string;
 }
 
 export function buildJobSecret(input: BuildJobSecretInput): V1Secret {
@@ -201,8 +243,10 @@ export function buildJobSecret(input: BuildJobSecretInput): V1Secret {
       },
     },
     stringData: {
+      // The user's password on the SOURCE (third-party) server only.
+      // The Stalwart master password is never written here — the Job
+      // reads it straight from `mail-secrets` via secretKeyRef.
       SOURCE_PASSWORD: input.sourcePassword,
-      DEST_PASSWORD: input.destPassword,
     },
   };
 }
