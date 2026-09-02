@@ -24,7 +24,11 @@ resources:
   # 2026-05-18: webmail feature-visibility ConfigMap. Mounted by the
   # Roundcube Pod; without it the volume reference fails on Pod start.
   - ../../../base/mail-feature-css
-  - secret.yaml
+  # secret.yaml (mail-secrets) moved to overlays/dind/stalwart-mail/ on
+  # 2026-09-01 — it is the mail stack's Secret, not Roundcube's, and
+  # `mail-up` must be able to create it without deploying webmail.
+  # Roundcube still consumes it by name, so `mail-up` is a prerequisite
+  # of `webmail-up` (it always was in practice — Roundcube needs Stalwart).
   - ingress.yaml
 
 patches:

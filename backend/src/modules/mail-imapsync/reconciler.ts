@@ -339,8 +339,8 @@ export async function reconcileImapSyncJobs(
         // operator deleted it manually. Mark the row as failed
         // and ALSO clean up the per-job Secret — the Job's
         // ttlSecondsAfterFinished sweep does NOT cascade to
-        // owner-less Secrets, and we don't want the cleartext
-        // STALWART_MASTER_SECRET sitting in the cluster.
+        // owner-less Secrets, and we don't want the user's cleartext
+        // source password sitting in the cluster.
         await db
           .update(imapSyncJobs)
           .set({

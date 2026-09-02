@@ -53,21 +53,67 @@ import {
 // notes; imapsync moves fast and talks to tenant mailboxes.
 export const DEFAULT_IMAPSYNC_IMAGE = 'gilleslamiral/imapsync:2.319';
 
+// Stalwart's master principal password, as stored by bootstrap.sh in the
+// `mail` namespace. The imapsync Job runs in that same namespace, so it
+// reads the Secret DIRECTLY via secretKeyRef rather than having
+// platform-api pull the cleartext into its own environment and copy it
+// into the per-job Secret.
+//
+// This is the same wiring every other master-password consumer uses —
+// backup-restore/executors/mailboxes-by-address.ts, tenant-bundles/
+// components/mailboxes.ts and plesk-migration/mail-sync.ts. mail-imapsync
+// was the lone exception: it read `STALWART_MASTER_SECRET` from
+// process.env, and that variable was only ever set in the DinD overlay,
+// so every non-local cluster failed the migration with
+// `IMAPSYNC_NOT_CONFIGURED`.
+export const MASTER_SECRET_NAME_DEFAULT = 'mail-secrets';
+export const MASTER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_PASSWORD';
+
+// The master principal's FULL address (`master@<apex>`), not the bare
+// `master` short name.
+//
+// Stalwart 0.16 master-proxy auth is `LOGIN <mailbox>%<master-principal>`,
+// and the master principal MUST be the FQDN form. This module used to
+// hardcode the literal string `master`, which Stalwart resolves against its
+// own default domain — on a 2026-09-01 DinD run that produced
+//   NO [AUTHENTICATIONFAILED] localhost.local
+// and every migration failed at the destination login (exit 162,
+// EXIT_AUTHENTICATION_FAILURE_USER2) AFTER transferring nothing. The dev
+// mail-secrets manifest has carried a comment warning about exactly this
+// since 2026-05-16; plesk-migration/mail-sync.ts passes the FQDN correctly.
+//
+// The value is per-cluster, so it comes from the same Secret as the
+// password and is composed into `--user2` by the entrypoint shim.
+export const MASTER_USER_SECRET_KEY_DEFAULT = 'STALWART_MASTER_USER';
+
 // imapsync supports --passfile1 / --passfile2 to read passwords from
-// a file. We mount the per-job Secret as env vars and have the
-// container's command read the env into a temp file before invoking
-// imapsync. This matches the security guarantees in the plan: no
-// passwords in `args`, no passwords in `kubectl describe`, no
+// a file. SOURCE_PASSWORD arrives via the per-job Secret (envFrom),
+// DEST_PASSWORD via a secretKeyRef straight to `mail-secrets`; the
+// container's command reads both from env into temp files before
+// invoking imapsync. This matches the security guarantees in the plan:
+// no passwords in `args`, no passwords in `kubectl describe`, no
 // passwords on the imapsync command line visible to ps.
+//
+// `--user2` is composed HERE rather than in args because it needs
+// DEST_MASTER_USER, which the kubelet resolves from `mail-secrets` at pod
+// start — the manifest builder cannot know it. See the note on
+// MASTER_USER_SECRET_KEY_DEFAULT for why the bare `master` short name
+// does not work.
 const IMAPSYNC_ENTRYPOINT = `
 set -e
 umask 077
+if [ -z "$DEST_MASTER_USER" ]; then
+  echo "FATAL: DEST_MASTER_USER is empty — mail-secrets/STALWART_MASTER_USER is unset or blank." >&2
+  echo "       Stalwart master-proxy auth needs the FQDN form (master@<apex>)." >&2
+  exit 78
+fi
 mkdir -p /tmp/imapsync
 printf '%s' "$SOURCE_PASSWORD" > /tmp/imapsync/p1
 printf '%s' "$DEST_PASSWORD"   > /tmp/imapsync/p2
 exec imapsync \\
   --passfile1 /tmp/imapsync/p1 \\
   --passfile2 /tmp/imapsync/p2 \\
+  --user2 "$DEST_MAILBOX%$DEST_MASTER_USER" \\
   "$@"
 `.trim();
 
@@ -77,6 +123,12 @@ export interface BuildJobManifestInput {
   readonly jobId: string;
   readonly secretName: string;
   readonly namespace: string;
+  /** Secret holding Stalwart's master password. Defaults to `mail-secrets`. */
+  readonly masterSecretName?: string;
+  /** Key within that Secret. Defaults to `STALWART_MASTER_PASSWORD`. */
+  readonly masterSecretKey?: string;
+  /** Key holding the master principal FQDN. Defaults to `STALWART_MASTER_USER`. */
+  readonly masterUserSecretKey?: string;
   readonly mailboxAddress: string;
   readonly sourceHost: string;
   readonly sourcePort: number;
@@ -100,9 +152,10 @@ export function buildJobManifest(input: BuildJobManifestInput): V1Job {
     '--user1', input.sourceUsername,
     '--host2', input.destHost,
     '--port2', String(input.destPort),
-    // Stalwart master SSO — `<mailbox>%master` authenticates as the
-    // mailbox owner using MASTER_SECRET.
-    '--user2', `${input.mailboxAddress}%master`,
+    // NOTE: `--user2` is NOT set here. Stalwart master-proxy auth needs
+    // `<mailbox>%<master-principal-FQDN>`, and the FQDN only exists in
+    // `mail-secrets` — the entrypoint shim composes it from DEST_MAILBOX
+    // and DEST_MASTER_USER once the kubelet has resolved them.
     // Always disable telemetry / pings against the imapsync home
     // server even though the privately-hosted image generally has
     // them off.
@@ -166,7 +219,43 @@ export function buildJobManifest(input: BuildJobManifestInput): V1Job {
               // `kubectl describe`.
               command: ['sh', '-c', IMAPSYNC_ENTRYPOINT, '--'],
               args,
+              // SOURCE_PASSWORD only — the per-job Secret never holds the
+              // Stalwart master password.
               envFrom: [{ secretRef: { name: input.secretName } }],
+              // DEST_PASSWORD is resolved by the kubelet from the `mail`
+              // namespace's own Secret. An explicit `env` entry takes
+              // precedence over `envFrom`, so this is authoritative even
+              // if a stale per-job Secret still carries the key.
+              //
+              // `optional: false` is deliberate: a missing Secret must fail
+              // the pod loudly rather than run imapsync with an empty
+              // destination password and report a confusing auth error.
+              env: [
+                {
+                  name: 'DEST_PASSWORD',
+                  valueFrom: {
+                    secretKeyRef: {
+                      name: input.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
+                      key: input.masterSecretKey ?? MASTER_SECRET_KEY_DEFAULT,
+                      optional: false,
+                    },
+                  },
+                },
+                // The master principal's FQDN, same Secret. Composed with
+                // DEST_MAILBOX into `--user2` by the entrypoint.
+                {
+                  name: 'DEST_MASTER_USER',
+                  valueFrom: {
+                    secretKeyRef: {
+                      name: input.masterSecretName ?? MASTER_SECRET_NAME_DEFAULT,
+                      key: input.masterUserSecretKey ?? MASTER_USER_SECRET_KEY_DEFAULT,
+                      optional: false,
+                    },
+                  },
+                },
+                // Not a secret — the mailbox being migrated INTO.
+                { name: 'DEST_MAILBOX', value: input.mailboxAddress },
+              ],
               resources: {
                 requests: { cpu: '100m', memory: '128Mi' },
                 limits: { cpu: '500m', memory: '512Mi' },
@@ -183,7 +272,6 @@ export interface BuildJobSecretInput {
   readonly jobId: string;
   readonly namespace: string;
   readonly sourcePassword: string;
-  readonly destPassword: string;
 }
 
 export function buildJobSecret(input: BuildJobSecretInput): V1Secret {
@@ -201,8 +289,10 @@ export function buildJobSecret(input: BuildJobSecretInput): V1Secret {
       },
     },
     stringData: {
+      // The user's password on the SOURCE (third-party) server only.
+      // The Stalwart master password is never written here — the Job
+      // reads it straight from `mail-secrets` via secretKeyRef.
       SOURCE_PASSWORD: input.sourcePassword,
-      DEST_PASSWORD: input.destPassword,
     },
   };
 }

@@ -145,8 +145,14 @@ spec:
             # plain SCs (patch fails, deployer continues).
             - name: TENANT_STORAGE_CLASS
               value: local-path
-            - name: STALWART_MASTER_SECRET
-              value: stalwart-dev-master
+            # STALWART_MASTER_SECRET removed: the imapsync Job now reads
+            # Stalwart's master password directly from the mail namespace's
+            # `mail-secrets` Secret via secretKeyRef, exactly like the
+            # tenant-bundle mailbox Jobs and the Plesk migration Jobs.
+            # platform-api never handles the cleartext.
+            #
+            # This variable was ONLY ever set here, so mailbox migration
+            # failed with `IMAPSYNC_NOT_CONFIGURED` on every real cluster.
             - name: STALWART_IMAP_HOST
               # 0.16 service name; v015 was retired in Cut 3 (2026-05-04).
               value: stalwart-mail.mail.svc.cluster.local
