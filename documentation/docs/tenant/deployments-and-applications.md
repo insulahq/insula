@@ -38,6 +38,16 @@ shows a pulsing **Deploying** status; once ready it shows **Running**.
 To make a deployed website reachable, connect a domain route to it — see
 [Domains & websites](domains-and-websites.md#point-the-route-at-an-app).
 
+!!! note "Databases and services are cluster-only"
+    **Databases** and **Services** are reachable only from inside your other
+    applications, never from the internet, so the deploy dialog does not offer
+    the *Connect to Unused Ingress Route* step for them and they never appear
+    in a route's target list. Your apps reach them by service name — see
+    [Environment & connection details](#environment-connection-details).
+
+    This is by design and is not an error condition: a database showing no
+    route is healthy.
+
 ### Extra mounts
 
 Every app already has its own folder on your storage, mounted where the app

@@ -9,6 +9,16 @@ import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNode
 import { ApiError } from '../../shared/errors.js';
 import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
+import {
+  isCustomDeployment,
+  customSpecImages,
+  dispatchCustomStop,
+  dispatchCustomStart,
+  dispatchCustomScale,
+  dispatchCustomHardDelete,
+  dispatchCustomResources,
+  dispatchCustomRedeploy,
+} from './custom-dispatch.js';
 
 /**
  * Translate an allocator INSUFFICIENT_BUDGET error to a 400 ApiError with
@@ -750,28 +760,38 @@ export async function updateDeployment(
     const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
-      const [entry] = await db
-        .select()
-        .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+      try {
+        if (isCustomDeployment(deployment)) {
+          // Custom rows have no catalog entry. Route to the custom
+          // implementation instead of falling through the `if (entry)`
+          // below, which would skip the cluster call in silence and leave
+          // the row claiming a state the pods never entered.
+          if (input.status === 'stopped') {
+            await dispatchCustomStop(db, k8s, tenantId, deploymentId);
+          } else if (input.status === 'running') {
+            await dispatchCustomStart(db, k8s, tenantId, deploymentId);
+          }
+        } else {
+          const [entry] = await db
+            .select()
+            .from(catalogEntries)
+            .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+          if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
-      if (entry) {
-        const components = resolveComponents(entry, null);
-
-        try {
+          const components = resolveComponents(entry, null);
           if (input.status === 'stopped') {
             await stopDeployment(k8s, namespace, deployment.name, components);
           } else if (input.status === 'running') {
             await startDeployment(k8s, namespace, deployment.name, components, deployment.replicaCount ?? 1);
           }
-        } catch (err) {
-          console.error('[deployments] K8s start/stop failed:', err instanceof Error ? err.message : String(err));
-          // Mark as failed so the user sees the error
-          await db.update(deployments).set({
-            status: 'failed',
-            lastError: err instanceof Error ? err.message : String(err),
-          }).where(eq(deployments.id, deploymentId));
         }
+      } catch (err) {
+        console.error('[deployments] K8s start/stop failed:', err instanceof Error ? err.message : String(err));
+        // Mark as failed so the user sees the error
+        await db.update(deployments).set({
+          status: 'failed',
+          lastError: err instanceof Error ? err.message : String(err),
+        }).where(eq(deployments.id, deploymentId));
       }
     }
   }
@@ -805,19 +825,29 @@ export async function deleteDeployment(
     const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
-      const [entry] = await db
-        .select()
-        .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+      try {
+        if (isCustomDeployment(deployment)) {
+          // Soft-delete owns the status write below, so scale without
+          // letting the custom stop helper set 'stopped' over it.
+          await dispatchCustomScale(db, k8s, tenantId, deploymentId, 0);
+        } else {
+          const [entry] = await db
+            .select()
+            .from(catalogEntries)
+            .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+          if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
-      if (entry) {
-        const components = resolveComponents(entry, null);
-
-        try {
+          const components = resolveComponents(entry, null);
           await stopDeployment(k8s, namespace, deployment.name, components);
-        } catch {
-          // K8s stop failed — still mark as deleted in DB
         }
+      } catch (err) {
+        // K8s stop failed — still mark as deleted in DB, but say so. A
+        // silent swallow here is how workloads end up running with no row
+        // that explains why the tenant's quota is consumed.
+        console.error(
+          `[deployments] soft-delete: failed to scale down '${deployment.name}': `
+          + (err instanceof Error ? err.message : String(err)),
+        );
       }
     }
   }
@@ -854,13 +884,19 @@ export async function deleteDeployment(
   if (k8s) {
     void (async () => {
       try {
-        const [entry] = await db
-          .select()
-          .from(catalogEntries)
-          .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
-        if (!entry) return;
-        const components = resolveComponents(entry, null);
-        const images = [...new Set(components.map(c => c.image).filter(Boolean))];
+        let images: string[];
+        if (isCustomDeployment(deployment)) {
+          // Custom images come from the spec, not from catalog components.
+          images = customSpecImages(deployment.customSpec);
+        } else {
+          const [entry] = await db
+            .select()
+            .from(catalogEntries)
+            .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+          if (!entry) return;
+          const components = resolveComponents(entry, null);
+          images = [...new Set(components.map(c => c.image).filter(Boolean))];
+        }
         const { scheduleReap } = await import('../storage/image-reaper.js');
         for (const image of images) {
           scheduleReap(db, k8s, {
@@ -900,19 +936,27 @@ export async function restoreDeployment(
     const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
-      const [entry] = await db
-        .select()
-        .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+      try {
+        if (isCustomDeployment(deployment)) {
+          // Restore owns the status write below ('running'), so scale
+          // directly rather than via the status-writing start helper.
+          await dispatchCustomScale(db, k8s, tenantId, deploymentId, deployment.replicaCount ?? 1);
+        } else {
+          const [entry] = await db
+            .select()
+            .from(catalogEntries)
+            .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+          if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
-      if (entry) {
-        const components = resolveComponents(entry, null);
-
-        try {
+          const components = resolveComponents(entry, null);
           await startDeployment(k8s, namespace, deployment.name, components, deployment.replicaCount ?? 1);
-        } catch {
-          // K8s start failed — still update DB, reconciler will catch up
         }
+      } catch (err) {
+        // K8s start failed — still update DB, reconciler will catch up.
+        console.error(
+          `[deployments] restore: failed to scale up '${deployment.name}': `
+          + (err instanceof Error ? err.message : String(err)),
+        );
       }
     }
   }
@@ -944,19 +988,28 @@ export async function hardDeleteDeployment(
     const namespace = tenant?.kubernetesNamespace;
 
     if (namespace) {
-      const [entry] = await db
-        .select()
-        .from(catalogEntries)
-        .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+      // The DB row is deleted unconditionally below, so anything left behind
+      // here is an ORPHAN: a workload consuming tenant quota with no row left
+      // to explain it, and no UI path to remove it. Both branches must run.
+      try {
+        if (isCustomDeployment(deployment)) {
+          await dispatchCustomHardDelete(db, k8s, tenantId, deployment);
+        } else {
+          const [entry] = await db
+            .select()
+            .from(catalogEntries)
+            .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
+          if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
-      if (entry) {
-        const components = resolveComponents(entry, null);
-
-        try {
+          const components = resolveComponents(entry, null);
           await deleteDeploymentResources(k8s, namespace, deployment.name, components);
-        } catch {
-          // K8s cleanup failed — still delete DB record
         }
+      } catch (err) {
+        console.error(
+          `[deployments] hard-delete: cluster cleanup FAILED for '${deployment.name}' in ${namespace} — `
+          + 'the DB row is being removed anyway, so any surviving objects are now orphans: '
+          + (err instanceof Error ? err.message : String(err)),
+        );
       }
 
       if (deleteData && deployment.storagePath) {
@@ -1147,6 +1200,31 @@ export async function updateDeploymentResources(
     return deployment;
   }
 
+  // ── Custom deployments (ADR-036) ────────────────────────────────────────
+  // Their workload renders from `custom_spec`; the row's cpu/memory columns
+  // are a PROJECTION that custom-deployments/service.ts recomputes from that
+  // spec. Writing the projection here — as the catalog path below does —
+  // would leave the row disagreeing with the spec it is derived from, and
+  // the next redeploy would resurrect the old value from the spec.
+  //
+  // This branch must come BEFORE the row write. It is also why the guard is
+  // on `source`, not on "did the catalog lookup return a row": the old
+  // `if (entry && namespace)` silently skipped the entire cluster half of
+  // this function for every custom deployment, returning 200 with an empty
+  // `last_error` because nothing had failed — nothing had been attempted.
+  if (isCustomDeployment(deployment)) {
+    if (!k8s) {
+      throw new ApiError(
+        'K8S_UNAVAILABLE',
+        'Kubernetes cluster is not reachable; resource changes cannot be applied.',
+        503,
+        { deployment_id: deploymentId },
+      );
+    }
+    await dispatchCustomResources(db, k8s, tenantId, deployment, input);
+    return getDeploymentById(db, tenantId, deploymentId);
+  }
+
   // Set to pending since pod will restart with new resources
   updateValues.status = 'pending';
   updateValues.lastError = null;
@@ -1161,64 +1239,79 @@ export async function updateDeploymentResources(
       .from(catalogEntries)
       .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
-    if (entry && namespace) {
-      // Use version-aware resolver — respects per-version volume/env overrides
-      const resolved = await resolveVersionAwareDeploymentConfig(db, entry, deployment.installedVersion);
-      const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
-      const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
-      const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+    if (!entry || !namespace) {
+      // The row now claims resources the cluster was never told about.
+      // Record it instead of returning a success the pods don't honour.
+      const detail = !namespace
+        ? 'tenant has no Kubernetes namespace'
+        : `catalog entry '${deployment.catalogEntryId ?? ''}' no longer exists`;
+      await db.update(deployments)
+        .set({ status: 'failed', lastError: `Resource change not applied: ${detail}` })
+        .where(eq(deployments.id, deploymentId));
+      throw new ApiError(
+        'DEPLOYMENT_NOT_APPLIABLE',
+        `Resource change could not be applied to '${deployment.name}': ${detail}.`,
+        409,
+        { deployment_id: deploymentId },
+      );
+    }
 
+    // Use version-aware resolver — respects per-version volume/env overrides
+    const resolved = await resolveVersionAwareDeploymentConfig(db, entry, deployment.installedVersion);
+    const resources = parseJsonField<{ recommended?: { cpu?: string; memory?: string; storage?: string }; minimum?: { cpu?: string; memory?: string; storage?: string } }>(entry.resources);
+    const storageRequest = resources?.recommended?.storage ?? resources?.minimum?.storage ?? '1Gi';
+    const config = parseJsonField<Record<string, unknown>>(deployment.configuration) ?? {};
+
+    try {
+      // Re-resolve firewall for the redeploy path so an existing
+      // host-port app keeps its annotations across resource bumps.
+      // We DON'T re-run the gate here — toggling it OFF after deploy
+      // shouldn't retroactively close ports on a running app, the
+      // operator gets explicit control over that via redeploy.
+      const reFirewall = readEntryFirewall(entry);
+      // Resource bumps redeploy the pod, so the stored mounts are re-applied
+      // and must still be valid against the (possibly upgraded) manifest.
+      assertExtraMountsDoNotCollide(deployment.extraMounts, resolved.volumes);
+
+      await deployCatalogEntry(k8s, {
+        deploymentName: deployment.name,
+        storagePath: deployment.storagePath ?? '',
+        namespace,
+        components: resolved.components,
+        volumes: resolved.volumes,
+        replicaCount: deployment.replicaCount ?? 1,
+        cpuRequest: input.cpu_request ?? deployment.cpuRequest,
+        memoryRequest: input.memory_request ?? deployment.memoryRequest,
+        storageRequest,
+        configuration: config,
+        envVars: { fixed: resolved.fixedEnvVars },
+        configurableEnvKeys: resolved.configurableEnvKeys,
+        extraMounts: deployment.extraMounts ?? undefined,
+        firewall: reFirewall ?? undefined,
+        hostPorts: readEntryHostPorts(entry),
+      });
+      // Force pod restart by deleting existing pods — K8s recreates from updated spec.
+      // The patchNamespacedDeployment annotation approach doesn't work reliably
+      // with this K8s tenant version due to content-type issues.
+      const baseName = deployment.name;
       try {
-        // Re-resolve firewall for the redeploy path so an existing
-        // host-port app keeps its annotations across resource bumps.
-        // We DON'T re-run the gate here — toggling it OFF after deploy
-        // shouldn't retroactively close ports on a running app, the
-        // operator gets explicit control over that via redeploy.
-        const reFirewall = readEntryFirewall(entry);
-        // Resource bumps redeploy the pod, so the stored mounts are re-applied
-        // and must still be valid against the (possibly upgraded) manifest.
-        assertExtraMountsDoNotCollide(deployment.extraMounts, resolved.volumes);
-
-        await deployCatalogEntry(k8s, {
-          deploymentName: deployment.name,
-          storagePath: deployment.storagePath ?? '',
+        const podList = await k8s.core.listNamespacedPod({
           namespace,
-          components: resolved.components,
-          volumes: resolved.volumes,
-          replicaCount: deployment.replicaCount ?? 1,
-          cpuRequest: input.cpu_request ?? deployment.cpuRequest,
-          memoryRequest: input.memory_request ?? deployment.memoryRequest,
-          storageRequest,
-          configuration: config,
-          envVars: { fixed: resolved.fixedEnvVars },
-          configurableEnvKeys: resolved.configurableEnvKeys,
-          extraMounts: deployment.extraMounts ?? undefined,
-          firewall: reFirewall ?? undefined,
-          hostPorts: readEntryHostPorts(entry),
+          labelSelector: `app=${baseName}`,
         });
-        // Force pod restart by deleting existing pods — K8s recreates from updated spec.
-        // The patchNamespacedDeployment annotation approach doesn't work reliably
-        // with this K8s tenant version due to content-type issues.
-        const baseName = deployment.name;
-        try {
-          const podList = await k8s.core.listNamespacedPod({
-            namespace,
-            labelSelector: `app=${baseName}`,
-          });
-          const pods = (podList as { items?: readonly { metadata?: { name?: string } }[] }).items ?? [];
-          for (const pod of pods) {
-            if (pod.metadata?.name) {
-              await k8s.core.deleteNamespacedPod({ name: pod.metadata.name, namespace });
-            }
+        const pods = (podList as { items?: readonly { metadata?: { name?: string } }[] }).items ?? [];
+        for (const pod of pods) {
+          if (pod.metadata?.name) {
+            await k8s.core.deleteNamespacedPod({ name: pod.metadata.name, namespace });
           }
-        } catch { /* pod deletion is best-effort */ }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`[deployments] K8s resource update failed for ${deployment.name}:`, message);
-        await db.update(deployments).set({ lastError: message }).where(eq(deployments.id, deploymentId));
-        if (err instanceof InsufficientResourceBudgetError) {
-          rethrowAsApiErrorIfBudget(err);
         }
+      } catch { /* pod deletion is best-effort */ }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[deployments] K8s resource update failed for ${deployment.name}:`, message);
+      await db.update(deployments).set({ lastError: message }).where(eq(deployments.id, deploymentId));
+      if (err instanceof InsufficientResourceBudgetError) {
+        rethrowAsApiErrorIfBudget(err);
       }
     }
   }
@@ -1399,12 +1492,21 @@ export async function redeployWithCurrentConfig(
   k8s: K8sClients,
   opts: { armPasswordReset?: boolean } = {},
 ): Promise<void> {
+  // Custom deployments redeploy from their own spec. Falling through to the
+  // catalog lookup below would hit `if (!entry) return` and no-op silently,
+  // so a mount edit or credential regen would report success and change
+  // nothing in the cluster.
+  if (isCustomDeployment(deployment)) {
+    await dispatchCustomRedeploy(db, k8s, deployment.tenantId, deployment);
+    return;
+  }
+
   const [entry] = await db
     .select()
     .from(catalogEntries)
     .where(eq(catalogEntries.id, deployment.catalogEntryId ?? ''));
 
-  if (!entry) return;
+  if (!entry) throw catalogEntryNotFound(deployment.catalogEntryId ?? '');
 
   const namespace = await getTenantNamespace(db, deployment.tenantId);
   // Use version-aware resolver — respects per-version volume/env overrides

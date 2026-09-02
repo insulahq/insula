@@ -21,6 +21,34 @@ import { ApiError } from '../../shared/errors.js';
 const LIVE_MAX_AGE_MS = 15 * 1000;
 
 /**
+ * Bulk-refresh bounds for the admin tenant list. Each collection makes
+ * several K8s API calls (metrics API, pod list, quota read) plus one
+ * VictoriaMetrics query, so a fan-out across every tenant at once would
+ * hit the API server harder than the staggered hourly scheduler ever does.
+ * Cap the concurrency, and cap how many tenants one request will refresh —
+ * the rest keep their cached sample and are picked up on the next poll,
+ * oldest-first, so nothing starves.
+ */
+const BULK_REFRESH_CONCURRENCY = 8;
+const BULK_REFRESH_MAX = 25;
+
+/** Run `fn` over `items` with at most `limit` in flight. Never rejects —
+ *  `collectSafe` already swallows per-tenant failures. */
+async function runBounded<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (let i = next++; i < items.length; i = next++) {
+      await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
  * Resolve effective plan limits for a tenant, applying per-tenant overrides.
  */
 async function resolvePlanLimits(
@@ -129,13 +157,50 @@ export async function metricsRoutes(app: FastifyInstance): Promise<void> {
     return success(metrics);
   });
 
-  // GET /api/v1/admin/tenants/resource-metrics — bulk get metrics for all tenants
+  // GET /api/v1/admin/tenants/resource-metrics — bulk metrics for the tenant list
+  //
+  // This used to return `getAllCachedMetrics` verbatim: no age check, no
+  // fallback collection. The cache is a per-POD in-memory LRU (shared/redis.ts
+  // — Redis was removed in M14) populated only by the hourly metrics-scheduler,
+  // which runs independently on every replica with no leader election. So the
+  // admin tenant list showed numbers up to an hour old, different numbers
+  // depending on which replica served the request, and nothing at all for a
+  // tenant whose entry that pod had never collected.
+  //
+  // Now: serve cache within the live window, collect the rest concurrently.
+  // Collection is bounded and best-effort — one unreachable tenant namespace
+  // must not blank the whole list.
   app.get('/admin/tenants/resource-metrics', {
     preHandler: [requireRole('admin', 'super_admin', 'read_only')],
   }, async () => {
     const allTenants = await app.db.select({ id: tenants.id }).from(tenants);
     const tenantIds = allTenants.map(c => c.id);
     const metricsMap = await getAllCachedMetrics(tenantIds);
+
+    const ageOf = (id: string): number => {
+      const m = metricsMap[id];
+      return m ? Date.now() - new Date(m.lastUpdatedAt).getTime() : Number.POSITIVE_INFINITY;
+    };
+    const stale = tenantIds
+      .filter(id => ageOf(id) > LIVE_MAX_AGE_MS)
+      .sort((a, b) => ageOf(b) - ageOf(a)); // oldest (and never-collected) first
+
+    if (stale.length > 0) {
+      const batch = stale.slice(0, BULK_REFRESH_MAX);
+      if (stale.length > batch.length) {
+        // Never truncate silently — a capped list still reads as "everything
+        // is current" to whoever is looking at it.
+        app.log.info(
+          { stale: stale.length, refreshed: batch.length },
+          '[metrics] bulk refresh capped; remaining tenants keep their cached sample this round',
+        );
+      }
+      await runBounded(batch, BULK_REFRESH_CONCURRENCY, id => collectSafe(app, id));
+      // collectSafe writes through the cache; re-read so this response carries
+      // the values it just collected rather than the ones it started with.
+      Object.assign(metricsMap, await getAllCachedMetrics(batch));
+    }
+
     return success(metricsMap);
   });
 }
