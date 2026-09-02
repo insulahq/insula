@@ -43,7 +43,7 @@ import { promisify } from 'node:util';
 import { createGzip, createGunzip } from 'node:zlib';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { pack as tarPack, extract as tarExtract } from 'tar-stream';
+import { pack as tarPack, extract as tarExtract } from '../../shared/tar-stream-compat.js';
 import type { BackupStore, BundleHandle } from './bundle-store.js';
 
 // 100k-iter PBKDF2 takes 50–100 ms — too long to block the Node
