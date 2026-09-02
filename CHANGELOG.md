@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.2] - 2026-09-02
+
 ### Fixed
 - **Mailbox migration (IMAPSync) failed on every real cluster.** Starting a
   migration returned `STALWART_MASTER_SECRET is required (mail-imapsync
