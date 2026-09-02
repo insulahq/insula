@@ -40,6 +40,75 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   a real mailbox and checks the messages arrived
   (`scripts/integration-mail-imapsync-e2e.sh`).
 
+- **Resizing, stopping or deleting a custom container silently did nothing.**
+  Changing the CPU or memory of a bring-your-own-container deployment, stopping
+  it, restoring it or deleting it reported success while the running container
+  was never touched. The panel showed the new figure and the new status; the
+  container carried on exactly as before.
+
+  On a tenant that had given a custom container its whole CPU allowance this was
+  not cosmetic. Reducing it to make room for a second application appeared to
+  work, but the original container kept every core — so the new application
+  could never start, and reported a resource-quota error that contradicted what
+  the panel displayed.
+
+  The cause was that all of these actions were written for catalog applications
+  and quietly skipped their Kubernetes half whenever a deployment had no catalog
+  entry, which is by definition true of every custom container. They now perform
+  the change. Deleting a custom container permanently also removes its
+  Kubernetes objects — previously it removed the database record and left the
+  container running, consuming the tenant's quota with nothing left in the panel
+  to explain it.
+
+  A resource change on a custom container now updates the container's own
+  specification rather than a summary field derived from it, so the change
+  survives later redeploys. Multi-service (compose) stacks declare resources per
+  service and are now declined with an explanation pointing at the YAML editor,
+  instead of accepting a change that cannot be applied unambiguously.
+
+- **Databases displayed a permanent "Last error" that was not an error.** Every
+  database and internal service showed *"Catalog type 'database' cannot be
+  exposed via Ingress"*, re-applied whenever any routing in the tenant changed,
+  overwriting genuine errors and never clearing. Databases are reachable only
+  from inside the cluster by design; that is now treated as a normal property
+  rather than a fault. A real misconfiguration — an application that should be
+  routable but declares no web port — is still reported.
+
+- **The deploy dialog offered an ingress route for databases.** Choosing one had
+  no effect, because the platform correctly refuses to route external traffic to
+  a database. The step is now hidden for databases and internal services, with a
+  note explaining that other applications reach them by service name.
+
+- **Resource usage on the admin tenant list could be up to an hour out of date.**
+  The list served whatever a background sweep had last collected, which also
+  meant different figures depending on which API replica answered, and no
+  figures at all for a tenant that replica had never collected. It now collects
+  current usage as the list loads — oldest entries first, in bounded batches so
+  a large fleet does not overload the cluster API.
+
+### Changed
+- **Dependency currency sweep.** npm minor/patch group (20 packages), Go
+  `k8s.io/client-go` and friends across the firewall-reconciler,
+  host-config-reconciler, security-probe and sftp-gateway images, and the
+  GitHub Actions group.
+
+  `tar-stream` 3.2.1 is a patch release that began shipping its own TypeScript
+  declarations, which silently replaced the ones the backup and restore paths
+  were written against and described the library's internal stream types
+  instead of Node's. No runtime behaviour changed, but the mismatch is now
+  contained in one documented place rather than worked around at each call
+  site.
+
+### Fixed (developer tooling)
+- **`local.sh mail-up` did not produce a working mail server.** The local
+  development stack brought Stalwart up without the listeners that IMAP,
+  message submission and certificate issuance need, so anything exercising mail
+  locally failed against a server that looked healthy. It now runs the same
+  configuration sequence `bootstrap.sh` uses on a real cluster. The local apex
+  moved from `k8s-platform.test` to `insula.host`, because certificate issuance
+  rejects a reserved `.test` domain and aborted the sequence before the
+  listeners were ever created. Affects local development only.
+
 ## [2026.9.1] - 2026-09-01
 
 ### Changed
