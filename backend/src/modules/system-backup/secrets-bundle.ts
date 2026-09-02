@@ -27,7 +27,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import * as tar from 'tar-stream';
+import * as tar from '../../shared/tar-stream-compat.js';
 import {
   type BundleManifest,
   type BundleEntry,

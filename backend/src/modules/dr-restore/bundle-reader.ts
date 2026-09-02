@@ -19,7 +19,7 @@ import { spawn } from 'node:child_process';
 import { access, readFile, stat } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import * as path from 'node:path';
-import * as tar from 'tar-stream';
+import * as tar from '../../shared/tar-stream-compat.js';
 import { Readable } from 'node:stream';
 import {
   parseDrInputs,
