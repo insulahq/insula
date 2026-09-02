@@ -25,7 +25,7 @@ data:
   # it. Format is `:<tag>@sha256:<digest>` — the digest is authoritative (proven
   # on k3s v1.31.4: a deliberately WRONG tag with a right digest still ran the
   # digest's image), the tag is there so this line stays readable.
-  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260831225255-be0d606@sha256:06fe9138ab1097722d10ac910e4c2e160529c0ef35bd175d219e2a0a09d6101a"
+  rocksdb-secondary-checkpoint-image: "ghcr.io/insulahq/insula/rocksdb-secondary-checkpoint:20260902103750-7bf47fa@sha256:f42a843ce9aa4e282ac0af646e56cb39a09c760517aa10229e1b11813fbb592f"
   # Private Worker — clients dial in to this WSS host with their token.
   # The wildcard A record `tunnels.${DOMAIN}` must point at cluster
   # ingress (set up at install time, no per-tenant DNS work needed).
