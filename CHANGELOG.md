@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.4] - 2026-09-02
+
 ### Fixed
 - **A route that only redirects now works.** An ingress route with no
   deployment and a redirect URL was accepted and stored, but never turned into
