@@ -11,7 +11,7 @@
 #
 # Dev-only: cert is issued by the local-ca-issuer ClusterIssuer that
 # bootstrap.sh seeds with a self-signed root. Browsers will warn on
-# k8s-platform.test unless the operator imports the CA — that's normal
+# insula.host unless the operator imports the CA — that's normal
 # for the dev loop.
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
