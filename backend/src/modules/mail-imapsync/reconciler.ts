@@ -13,7 +13,7 @@
 import { eq, inArray } from 'drizzle-orm';
 import { imapSyncJobs } from '../../db/schema.js';
 import { notifyTenantImapsyncTerminal } from '../notifications/events.js';
-import { parseImapsyncProgress } from './progress-parser.js';
+import { parseImapsyncProgress, parseImapsyncSummary } from './progress-parser.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
@@ -228,6 +228,8 @@ export async function reconcileImapSyncJobs(
             status: 'succeeded',
             finishedAt: new Date(),
             logTail: truncateTail(log),
+            // Authoritative final counts, not the last progress line.
+            ...summaryUpdates(log),
           })
           .where(eq(imapSyncJobs.id, row.id));
         await deleteJobAndSecret(k8s, row.k8sNamespace, row.k8sJobName);
@@ -250,6 +252,10 @@ export async function reconcileImapSyncJobs(
             finishedAt: new Date(),
             errorMessage: 'imapsync job failed — see logTail',
             logTail: truncateTail(log),
+            // A failed run still has a Statistics block when it got far
+            // enough — showing what DID move matters when deciding whether
+            // a re-sync is safe.
+            ...summaryUpdates(log),
           })
           .where(eq(imapSyncJobs.id, row.id));
         await deleteJobAndSecret(k8s, row.k8sNamespace, row.k8sJobName);
@@ -385,4 +391,18 @@ export async function reconcileImapSyncJobs(
     }
   }
   return { reconciled, finished };
+}
+
+/**
+ * Terminal-state fields derived from imapsync's final Statistics block.
+ * Returns `{}` when the block is absent (pod killed, image failed to start,
+ * logs already rotated) so the caller's other updates still apply.
+ */
+function summaryUpdates(log: string): Record<string, unknown> {
+  const s = parseImapsyncSummary(log);
+  if (!s.line) return {};
+  return {
+    summary: s.line,
+    ...(s.messagesTransferred !== null ? { messagesTransferred: s.messagesTransferred } : {}),
+  };
 }

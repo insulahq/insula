@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { errorHandler } from '../../middleware/error-handler.js';
 import { registerAuth } from '../../middleware/auth.js';
+import { MAX_BULK_PATHS } from '@insula/api-contracts';
 
 const mockTenant = {
   id: 'c1',
@@ -69,6 +70,7 @@ vi.mock('../../db/schema.js', () => ({
 }));
 
 const { fileManagerRoutes } = await import('./routes.js');
+const { fileManagerRequest } = await import('./service.js');
 
 describe('file-manager routes', () => {
   let app: FastifyInstance;
@@ -360,6 +362,201 @@ describe('file-manager routes', () => {
         headers: { authorization: `Bearer ${adminToken}` },
       });
       expect(res.statusCode).toBe(200);
+    });
+  });
+
+  // ─── Bulk operations ──────────────────────────────────────────────────────
+  //
+  // These exist because the panel used to loop the single-path endpoint per
+  // selected file. A production move of ~120 files fired 62 requests in two
+  // seconds, tripped the 100/min rate limit, and reported a partly-succeeded
+  // move as one "Too many requests" error (2026-09-02).
+
+  describe('bulk operations', () => {
+    /** Parse the NDJSON payload of a streamed bulk response. */
+    const frames = (payload: string) =>
+      payload.trim().split('\n').filter(Boolean).map(l => JSON.parse(l) as Record<string, unknown>);
+
+    beforeEach(() => {
+      tenantRows = [mockTenant];
+      vi.mocked(fileManagerRequest).mockReset();
+      vi.mocked(fileManagerRequest).mockResolvedValue({
+        status: 200, body: '{}', bodyBuffer: Buffer.from('{}'), headers: {},
+      } as never);
+    });
+
+    it.each([
+      ['bulk-move', { paths: ['/a/x.txt'], destDir: '/dest' }],
+      ['bulk-copy', { paths: ['/a/x.txt'], destDir: '/dest' }],
+      ['bulk-delete', { paths: ['/a/x.txt'] }],
+      ['bulk-chmod', { paths: ['/a/x.txt'], mode: '755' }],
+      ['bulk-chown', { paths: ['/a/x.txt'], owner: 'www-data' }],
+    ])('POST …/%s requires auth', async (route, body) => {
+      const res = await app.inject({ method: 'POST', url: `/api/v1/tenants/c1/files/${route}`, payload: body });
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('POST …/bulk-move streams start → progress-per-path → complete', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-move',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/src/a.txt', '/src/b.txt'], destDir: '/dest' },
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['content-type']).toBe('application/x-ndjson');
+      const f = frames(res.payload);
+      expect(f[0]).toEqual({ type: 'start', total: 2 });
+      expect(f[1]).toMatchObject({ type: 'progress', done: 1, total: 2, current: '/src/a.txt' });
+      expect(f[2]).toMatchObject({ type: 'progress', done: 2, total: 2, percent: 100 });
+      expect(f[3]).toMatchObject({
+        type: 'complete', succeeded: ['/src/a.txt', '/src/b.txt'], failed: [],
+      });
+    });
+
+    it('POST …/bulk-move joins destDir with each basename, one /rename per path', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-move',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/src/a.txt', '/deep/nested/b.txt'], destDir: '/dest' },
+      });
+
+      const calls = vi.mocked(fileManagerRequest).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect(calls[0][4]).toBe('/rename');
+      expect(JSON.parse(calls[0][5]!.body as string)).toEqual({ oldPath: '/src/a.txt', newPath: '/dest/a.txt' });
+      expect(JSON.parse(calls[1][5]!.body as string)).toEqual({ oldPath: '/deep/nested/b.txt', newPath: '/dest/b.txt' });
+    });
+
+    it('POST …/bulk-copy drives the sidecar /copy endpoint', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-copy',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/src/a.txt'], destDir: '/dest' },
+      });
+      const call = vi.mocked(fileManagerRequest).mock.calls[0];
+      expect(call[4]).toBe('/copy');
+      expect(JSON.parse(call[5]!.body as string)).toEqual({ sourcePath: '/src/a.txt', destPath: '/dest/a.txt' });
+    });
+
+    it('POST …/bulk-chmod sends mode and recursive on EVERY path', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-chmod',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/a', '/b'], mode: '750', recursive: true },
+      });
+      const calls = vi.mocked(fileManagerRequest).mock.calls;
+      expect(calls.map(c => c[4])).toEqual(['/chmod', '/chmod']);
+      expect(JSON.parse(calls[1][5]!.body as string)).toEqual({ path: '/b', mode: '750', recursive: true });
+    });
+
+    it('POST …/bulk-chown sends the ownership fields on EVERY path', async () => {
+      await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-chown',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/a', '/b'], owner: 'www-data', group: 'www-data' },
+      });
+      const calls = vi.mocked(fileManagerRequest).mock.calls;
+      expect(calls.map(c => c[4])).toEqual(['/chown', '/chown']);
+      expect(JSON.parse(calls[0][5]!.body as string)).toMatchObject({ path: '/a', owner: 'www-data', group: 'www-data' });
+    });
+
+    it('reports a per-path failure in complete.failed and still runs the rest', async () => {
+      vi.mocked(fileManagerRequest).mockImplementation(async (
+        ..._args: Parameters<typeof fileManagerRequest>
+      ) => {
+        const body = JSON.parse(_args[5]?.body as string) as { oldPath?: string };
+        if (body.oldPath === '/src/gone.txt') {
+          return { status: 404, body: JSON.stringify({ error: 'Source not found' }), bodyBuffer: Buffer.from(''), headers: {} } as never;
+        }
+        return { status: 200, body: '{}', bodyBuffer: Buffer.from('{}'), headers: {} } as never;
+      });
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-move',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/src/a.txt', '/src/gone.txt', '/src/b.txt'], destDir: '/dest' },
+      });
+
+      const f = frames(res.payload);
+      const complete = f.find(x => x.type === 'complete')!;
+      expect(complete.succeeded).toEqual(['/src/a.txt', '/src/b.txt']);
+      expect(complete.failed).toEqual([{ path: '/src/gone.txt', error: 'Source not found' }]);
+      // The client only throws on an `error` frame. A partial result must not
+      // produce one, or the two files that DID move get reported as a failure.
+      expect(f.some(x => x.type === 'error')).toBe(false);
+    });
+
+    it('POST …/bulk-delete carries permanent + actor and collects trash ids', async () => {
+      vi.mocked(fileManagerRequest).mockResolvedValue({
+        status: 200,
+        body: JSON.stringify({ trashEntry: { id: 'trash-1' } }),
+        bodyBuffer: Buffer.from(''),
+        headers: {},
+      } as never);
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-delete',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/a', '/b'] },
+      });
+
+      const call = vi.mocked(fileManagerRequest).mock.calls[0];
+      expect(call[4]).toBe('/rm');
+      // `permanent` defaults to the RECOVERABLE branch and rides every path.
+      expect(JSON.parse(call[5]!.body as string)).toMatchObject({ path: '/a', permanent: false, actor: 'tenant-1' });
+
+      const complete = frames(res.payload).find(x => x.type === 'complete')!;
+      expect(complete.trashedIds).toEqual(['trash-1', 'trash-1']);
+    });
+
+    it.each([
+      ['an empty selection', { paths: [], destDir: '/d' }],
+      ['more paths than the cap', { paths: Array.from({ length: MAX_BULK_PATHS + 1 }, (_, i) => `/f${i}`), destDir: '/d' }],
+      ['a missing destDir', { paths: ['/a'] }],
+    ])('POST …/bulk-move rejects %s with 400 and never opens a stream', async (_label, payload) => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-move',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload,
+      });
+      expect(res.statusCode).toBe(400);
+      // A JSON error envelope, not a half-open NDJSON stream: validation runs
+      // before reply.hijack().
+      expect(res.json().error.code).toBe('INVALID_FIELD_VALUE');
+      expect(fileManagerRequest).not.toHaveBeenCalled();
+    });
+
+    it('bulk-chown with no ownership field at all is rejected', async () => {
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-chown',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/a'] },
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it('a storage operation blocks bulk routes with a 409 envelope, not a stream', async () => {
+      tenantRows = [{ ...mockTenant, storageLifecycleState: 'resizing' }];
+      const res = await app.inject({
+        method: 'POST',
+        url: '/api/v1/tenants/c1/files/bulk-move',
+        headers: { authorization: `Bearer ${tenantToken}` },
+        payload: { paths: ['/a'], destDir: '/d' },
+      });
+      // resolveNamespace MUST run before the reply is hijacked — otherwise the
+      // error handler has no response left to write this envelope to.
+      expect(res.statusCode).toBe(409);
+      expect(res.json().error.code).toBe('STORAGE_OP_IN_PROGRESS');
     });
   });
 });
