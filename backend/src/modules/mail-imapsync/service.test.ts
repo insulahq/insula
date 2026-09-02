@@ -683,3 +683,50 @@ describe('spam-folder remapping', () => {
     expect(args).not.toContain('--regextrans2');
   });
 });
+
+/**
+ * Re-sync must produce the SAME job spec as a fresh run.
+ *
+ * `resyncImapSyncJob` resets the row and the route then rebuilds the manifest
+ * through `buildJobManifest` with the row's STORED `options` jsonb. Rows
+ * created before the spam remap existed have no `spamFolder` key, so the
+ * default has to apply — otherwise re-syncing an old migration would quietly
+ * reproduce the original mis-filed spam, which is the one case where a user
+ * is most likely to re-sync.
+ */
+describe('re-sync rebuilds the folder mapping', () => {
+  const resyncInput = (storedOptions: Record<string, unknown>) => ({
+    jobId: 'job-1-1756800000000',
+    secretName: 'imapsync-job-1-1756800000000',
+    namespace: 'mail',
+    mailboxAddress: 'alice@acme.com',
+    sourceHost: 'imap.example.test',
+    sourcePort: 993,
+    sourceUsername: 'alice@example.test',
+    sourceSsl: true,
+    destHost: 'stalwart-mail.mail.svc.cluster.local',
+    destPort: 143,
+    image: 'gilleslamiral/imapsync:2.319',
+    options: storedOptions,
+  });
+
+  it('applies the spam remap to a row stored before the feature existed', () => {
+    // Exactly what an pre-existing row's `options` jsonb looks like.
+    const job = service.buildJobManifest(resyncInput({ automap: true }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    expect(args).toContain('--regextrans2');
+    expect(args[args.indexOf('--regextrans2') + 1]).toContain('Junk Mail');
+  });
+
+  it('applies it even when the stored options are empty', () => {
+    const job = service.buildJobManifest(resyncInput({}));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    expect(args).toContain('--regextrans2');
+  });
+
+  it('carries an operator override through a re-sync', () => {
+    const job = service.buildJobManifest(resyncInput({ spamFolder: 'Junk' }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    expect(args[args.indexOf('--regextrans2') + 1]).toContain('{Junk}');
+  });
+});
