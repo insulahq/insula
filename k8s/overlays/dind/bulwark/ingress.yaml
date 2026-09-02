@@ -5,7 +5,7 @@
 # IngressRoute CRD instead.
 #
 # Reachable at:
-#   https://bulwark.k8s-platform.test:2011  (websecure entrypoint, TLS)
+#   https://bulwark.insula.host:2011  (websecure entrypoint, TLS)
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:

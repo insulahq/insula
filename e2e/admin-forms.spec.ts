@@ -218,7 +218,7 @@ test.describe('Admin Form Interactions', () => {
 
       // Scope to the dropdown — there's also a mailto:admin footer link.
       const dropdown = page.getByTestId('user-menu-dropdown');
-      await expect(dropdown.getByTestId('user-menu-email')).toContainText('admin@k8s-platform.test');
+      await expect(dropdown.getByTestId('user-menu-email')).toContainText('admin@insula.host');
     });
   });
 });

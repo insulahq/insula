@@ -74,8 +74,8 @@ fi
 # PLATFORM_BASE_DOMAIN is the apex for all user-facing URLs (admin, tenant,
 # dex, webmail, mail, stalwart subdomains derive from it). The operator's
 # internal DNS must resolve *.<base> to the cluster LB — no /etc/hosts
-# entries required. Dev default: k8s-platform.test.
-PLATFORM_BASE_DOMAIN="${PLATFORM_BASE_DOMAIN:-k8s-platform.test}"
+# entries required. Dev default: insula.host.
+PLATFORM_BASE_DOMAIN="${PLATFORM_BASE_DOMAIN:-insula.host}"
 #
 # DIND_INTERNAL_HOST is the hostname this workspace container uses to reach
 # the DinD daemon / k3s API (e.g., for `docker exec` into the DinD
@@ -90,7 +90,7 @@ DOCKER_HOST_NAME="${DIND_INTERNAL_HOST}"
 PORT_INGRESS_HTTP="${PORT_INGRESS_HTTP:-2010}"
 PORT_INGRESS_HTTPS="${PORT_INGRESS_HTTPS:-2011}"
 # Backend API is not published — reach it via /api/* through the admin or
-# tenant panel ingress (http://admin.k8s-platform.test:${PORT_INGRESS_HTTP}).
+# tenant panel ingress (http://admin.insula.host:${PORT_INGRESS_HTTP}).
 PORT_DB="${PORT_DB:-2013}"
 PORT_REDIS="${PORT_REDIS:-2014}"
 PORT_DEX="${PORT_DEX:-2015}"
@@ -632,6 +632,30 @@ _generate_stalwart_secret() {
   # if mail/stalwart-secrets already exists it's a no-op.
   # We run the helper on the host (this machine) but target k3s inside DinD
   # via `docker exec`.
+  # Pin the master password to the value the dind mail-secrets manifest
+  # asserts, so stalwart-secrets/MASTER_SECRET (the bcrypt hash Stalwart
+  # seeds the principal from) and mail-secrets/STALWART_MASTER_PASSWORD (the
+  # cleartext every master-proxy login uses) agree from the first boot.
+  # Without this the generator invents a random password, the two disagree,
+  # and `<mailbox>%<master>` auth fails — breaking webmail impersonation and
+  # mailbox migration until the principals-sync reconciler heals it.
+  # Read from the manifest so there is ONE literal, not two.
+  # Two candidate paths: mail-secrets moved from the roundcube overlay to the
+  # stalwart-mail overlay (it is the mail stack's Secret, not webmail's).
+  # awk ABORTS on a missing file, so probe them one at a time.
+  local dev_master_pw="" _mf
+  for _mf in "${PROJECT_DIR}/k8s/overlays/dind/stalwart-mail/mail-secrets.yaml" \
+             "${PROJECT_DIR}/k8s/overlays/dind/roundcube/secret.yaml"; do
+    [[ -r "$_mf" ]] || continue
+    dev_master_pw=$(awk -F'"' '/^  STALWART_MASTER_PASSWORD:/{print $2; exit}' "$_mf")
+    [[ -n "$dev_master_pw" ]] && break
+  done
+  if [[ -z "$dev_master_pw" ]]; then
+    echo "  ⊘ could not read STALWART_MASTER_PASSWORD from the dind mail-secrets manifest;" >&2
+    echo "    falling back to a random master password (master-proxy auth will need the" >&2
+    echo "    principals-sync reconciler to converge it)." >&2
+  fi
+  STALWART_MASTER_PASSWORD="$dev_master_pw" \
   KUBECTL="docker exec -i ${K3S_CONTAINER} kubectl" \
     "${SCRIPT_DIR}/generate-stalwart-secret.sh" \
       --hostname="mail.${PLATFORM_BASE_DOMAIN}" \
@@ -900,7 +924,7 @@ cmd_status() {
     fi
   fi
 
-  echo "  Login: admin@k8s-platform.test / admin"
+  echo "  Login: admin@insula.host / admin"
   echo "════════════════════════════════════════════════"
 }
 
@@ -932,6 +956,206 @@ cmd_k3s_status() {
 
 # ─── Mail commands (Stalwart) ────────────────────────────────────────────────
 
+# ─── Stalwart bootstrap/configure (DinD) ────────────────────────────────────
+#
+# WHY THIS EXISTS
+#
+# `mail-up` used to apply the overlay and stop, which left a Stalwart that
+# LOOKS healthy (Deployment Available, Service + Endpoints populated) but is
+# not usable:
+#
+#   · the `stalwart-bootstrap` Job ships `suspend: true` and nothing ever
+#     unsuspended it, so serverHostname/defaultDomain were never set. A bare
+#     `master` principal then resolves against Stalwart's built-in default
+#     domain and every master-proxy auth fails
+#     `NO [AUTHENTICATIONFAILED] localhost.local`;
+#   · Stalwart came up with only its DEFAULT listeners — smtp/25,
+#     submissions/465, imaps/993, pop3s/995, sieve/4190, https/443, http/8080.
+#     There was NO plaintext imap/143, NO submission/587 and NO http-acme/80,
+#     because bootstrap.sh says outright that those three "are ONLY created by
+#     configure_stalwart_full's JMAP calls".
+#
+# A declared containerPort is not proof anything is bound: `kubectl get
+# endpoints` happily listed :143 while connections were refused. That cost
+# real debugging time on 2026-09-01 (mailbox-migration E2E, PR #346).
+#
+# Rather than reimplement the sequence — which would drift from the real
+# thing — this reuses bootstrap.sh's own `bootstrap_stalwart_v016()`. That
+# function is idempotent by design (a three-state auth probe: fully
+# configured → skip, Job ran but configure pending → configure only, both
+# 401 → full bootstrap), so re-running `mail-up` is cheap and safe.
+#
+# bootstrap.sh is explicitly sourceable ("Sourced invocations ... should NOT
+# trigger the full bootstrap path"), but sourcing it has two side effects we
+# must neutralise, hence the subshell:
+#   1. it runs `set -euo pipefail` — isolated to the subshell;
+#   2. it parses "$@" at the top level and then `set --` the remainder, which
+#      would eat local.sh's own arguments — so we clear "$@" before sourcing.
+#
+# It drives the cluster through bootstrap.sh's `kctl`, i.e. a HOST-side
+# `kubectl --kubeconfig`, not `docker exec`. DinD's k3s API is published on
+# ${PORT_K3S_API} with the serving cert's SAN set to ${DOCKER_HOST_NAME}, so a
+# kubeconfig with the server rewritten to that address works from here.
+_configure_stalwart() {
+  local bootstrap="${SCRIPT_DIR}/bootstrap.sh"
+  if [[ ! -r "$bootstrap" ]]; then
+    echo "  ⊘ ${bootstrap} not readable — skipping Stalwart configure." >&2
+    return 0
+  fi
+  if ! command -v kubectl >/dev/null 2>&1; then
+    echo "  ⊘ kubectl not on PATH — skipping Stalwart configure."
+    echo "    Stalwart will have NO imap/143, submission/587 or http-acme/80"
+    echo "    listener, and its bootstrap Job stays suspended. Install kubectl"
+    echo "    and re-run './scripts/local.sh mail-up' to finish the job."
+    return 0
+  fi
+
+  # NOTE: no `trap ... RETURN` here. Under `set -u` the trap body runs after
+  # the function's locals are torn down, so referencing $kubeconfig from it
+  # aborts local.sh with "kubeconfig: unbound variable". Single exit point +
+  # explicit cleanup instead — /tmp leftovers pin node RAM, so this must not
+  # be best-effort.
+  local kubeconfig rc=0
+  kubeconfig="$(mktemp -t local-k3s-kubeconfig.XXXXXX)" || return 0
+
+  if ! docker exec "$K3S_CONTAINER" cat /etc/rancher/k3s/k3s.yaml 2>/dev/null \
+      | sed -E "s|server: https://[^:]+:6443|server: https://${DOCKER_HOST_NAME}:${PORT_K3S_API}|" \
+      > "$kubeconfig" || [[ ! -s "$kubeconfig" ]]; then
+    echo "  ⊘ could not read k3s.yaml from ${K3S_CONTAINER} — skipping Stalwart configure." >&2
+  elif ! KUBECONFIG="$kubeconfig" kubectl get nodes >/dev/null 2>&1; then
+    echo "  ⊘ host kubectl cannot reach ${DOCKER_HOST_NAME}:${PORT_K3S_API} — skipping Stalwart configure." >&2
+    echo "    (The k3s serving cert's SAN must cover ${DOCKER_HOST_NAME}.)" >&2
+  else
+    echo ""
+    echo "Configuring Stalwart (bootstrap Job + JMAP listeners/settings)..."
+    # Subshell: `set --` clears the args bootstrap.sh would otherwise parse
+    # at its top level, and its `set -euo pipefail` cannot leak back here.
+    (
+      set --
+      # shellcheck source=/dev/null
+      source "$bootstrap"
+      PLATFORM_DOMAIN="${PLATFORM_BASE_DOMAIN}"
+      KUBECONFIG="$kubeconfig"
+      export KUBECONFIG
+      # Point ACME at Let's Encrypt STAGING. A local stack is torn down and
+      # rebuilt constantly, and each configure run registers an ACME account;
+      # doing that against production LE burns real new-account rate limits
+      # for no benefit, since a cert can never be issued for a host that only
+      # resolves in the developer's /etc/hosts. Override in .env.local.
+      STALWART_ACME_DIRECTORY="${STALWART_ACME_DIRECTORY:-https://acme-staging-v02.api.letsencrypt.org/directory}"
+      export STALWART_ACME_DIRECTORY
+      bootstrap_stalwart_v016
+    ) || rc=$?
+    if (( rc != 0 )); then
+      echo "  ⊘ Stalwart configure returned ${rc} — see above." >&2
+    fi
+
+    # EXPECTED on a local apex: configure_stalwart_full() aborts at its ACME
+    # step. Let's Encrypt validates the contact email's domain at
+    # account-create time and refuses reserved TLDs, so the derived
+    # hostmaster@<apex> (…@insula.host) is rejected. bootstrap.sh
+    # treats that as fatal ON PURPOSE — silently skipping ACME would ship a
+    # certless mail server — and that is the correct production behaviour, so
+    # it is left exactly as it is.
+    #
+    # The catch is that ACME is step 5 of 8 and the NETWORK LISTENERS are
+    # step 7, so the abort leaves Stalwart with only its built-in defaults
+    # (smtp/25, submissions/465, imaps/993, pop3s/995, sieve/4190, https/443,
+    # http/8080) and NO plaintext imap/143, submission/587 or http-acme/80.
+    # Everything before ACME (SystemSettings, Jmap/Imap/Email limits, spam
+    # retention, CORS, DKIM) has already been applied by then.
+    #
+    # So we finish the job locally: create just those three listeners.
+    _ensure_stalwart_listeners
+  fi
+
+  rm -f "$kubeconfig"
+  return 0
+}
+
+# Create the three listeners configure_stalwart_full() would have made, for
+# local stacks where it cannot get that far (see _configure_stalwart).
+#
+# DRIFT WARNING: these definitions MIRROR bootstrap.sh's step 7 (search
+# `x:NetworkListener/set`). They are duplicated deliberately — the operator's
+# call on 2026-09-02 was to leave bootstrap.sh untouched rather than add an
+# ACME-skip flag, since that would change mail cert strategy. If bootstrap.sh's
+# listener shapes change, change them here too.
+_ensure_stalwart_listeners() {
+  local pod admin_pw acct existing create=""
+  pod=$(k3s_exec kubectl -n mail get pod -l app=stalwart-mail \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+  admin_pw=$(k3s_exec kubectl -n mail get secret stalwart-admin-creds \
+    -o jsonpath='{.data.adminPassword}' 2>/dev/null | base64 -d)
+  if [[ -z "$pod" || -z "$admin_pw" ]]; then
+    echo "  ⊘ cannot reach Stalwart to check listeners — skipping." >&2
+    return 0
+  fi
+
+  # NOTE: the JMAP body goes in `curl -d`, NOT on stdin. Piping it through
+  # `kubectl exec -i` yields `{"type":"...notRequest","status":400}`, which
+  # reads like a schema error and is not one.
+  _sw_jmap() {
+    k3s_exec kubectl -n mail exec "$pod" -c stalwart -- \
+      curl -sS -u "admin:${admin_pw}" --max-time 15 \
+      -H 'Content-Type: application/json' -X POST -d "$1" \
+      http://127.0.0.1:8080/jmap/ 2>/dev/null
+  }
+
+  acct=$(k3s_exec kubectl -n mail exec "$pod" -c stalwart -- \
+    curl -sS -u "admin:${admin_pw}" --max-time 10 \
+    http://127.0.0.1:8080/jmap/session 2>/dev/null \
+    | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); pa=d.get("primaryAccounts",{})
+    print(pa.get("urn:stalwart:jmap","") or next(iter(pa.values()),""))
+except Exception: pass' 2>/dev/null)
+  if [[ -z "$acct" ]]; then
+    echo "  ⊘ could not resolve Stalwart accountId — skipping listener check." >&2
+    return 0
+  fi
+
+  existing=$(_sw_jmap "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:NetworkListener/get\",{\"accountId\":\"${acct}\",\"ids\":null},\"c0\"]]}" \
+    | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+    print(",".join(x.get("name","") for x in d["methodResponses"][0][1].get("list",[])))
+except Exception: pass' 2>/dev/null)
+
+  case ",${existing}," in *,http-acme,*) ;; *)
+    create="${create}\"http-acme\":{\"name\":\"http-acme\",\"bind\":{\"[::]:80\":true},\"protocol\":\"http\",\"tlsImplicit\":false,\"useTls\":false}," ;;
+  esac
+  case ",${existing}," in *,submission,*) ;; *)
+    create="${create}\"submission\":{\"name\":\"submission\",\"bind\":{\"[::]:587\":true},\"protocol\":\"smtp\",\"tlsImplicit\":false}," ;;
+  esac
+  case ",${existing}," in *,imap,*) ;; *)
+    create="${create}\"imap\":{\"name\":\"imap\",\"bind\":{\"[::]:143\":true},\"protocol\":\"imap\",\"tlsImplicit\":false}," ;;
+  esac
+
+  if [[ -z "$create" ]]; then
+    echo "  Stalwart listeners already present (imap/143, submission/587, http-acme/80)."
+    return 0
+  fi
+
+  echo "  Creating missing Stalwart listeners (have: ${existing:-none})..."
+  _sw_jmap "{\"using\":[\"urn:ietf:params:jmap:core\",\"urn:stalwart:jmap\"],\"methodCalls\":[[\"x:NetworkListener/set\",{\"accountId\":\"${acct}\",\"create\":{${create%,}}},\"c0\"]]}" >/dev/null
+
+  # Listeners only bind on start, so the pod has to come back. Delete the pod
+  # and let the ReplicaSet recreate it — never `rollout restart`, which a
+  # Flux-managed cluster treats as drift (harmless here, wrong habit).
+  echo "  Restarting Stalwart so the new listeners bind..."
+  k3s_exec kubectl -n mail delete pod "$pod" --wait=false >/dev/null 2>&1
+  # Wait for the OLD pod to actually go before checking Availability: the
+  # Deployment still reports Available while the terminating pod lingers, so
+  # a bare `wait --for=condition=Available` returns instantly and we would
+  # report success against a Stalwart that has not restarted yet.
+  k3s_exec kubectl -n mail wait --for=delete "pod/$pod" --timeout=120s >/dev/null 2>&1
+  k3s_exec kubectl -n mail rollout status deployment/stalwart-mail --timeout=180s >/dev/null 2>&1 \
+    && echo "  Stalwart back up with imap/143, submission/587 and http-acme/80." \
+    || echo "  ⊘ Stalwart did not return within 180s — check 'local.sh mail-status'." >&2
+  return 0
+}
+
 cmd_mail_up() {
   # M13: mail-up now deploys Stalwart 0.16 (stalwart-mail overlay).
   # The 0.15 overlay (overlays/dind/stalwart/) was removed in M13.
@@ -940,6 +1164,16 @@ cmd_mail_up() {
   echo "Deploying Stalwart 0.16 mail server..."
   _ensure_k3s_running
   _sync_manifests
+  # Stalwart's admin/recovery credential must exist BEFORE the overlay is
+  # applied — the pod reads it at startup and a fresh RocksDB initialises its
+  # admin principal from it. Creating it afterwards leaves Stalwart with a
+  # credential nobody holds: every management call 401s, and the bootstrap Job
+  # reports the misleading "could not reach .../jmap/session" (its `curl -sf`
+  # cannot distinguish 401 from unreachable). bootstrap.sh orders it this way
+  # on real installs; `mail-up` used to rely on `up` having run the helper,
+  # which is false after a `mail-down` (that deletes the namespace's Secrets).
+  # The helper is idempotent — an existing Secret is left untouched.
+  _generate_stalwart_secret
   _dind_render_apply /tmp/k8s-sync/overlays/dind/stalwart-mail stalwart-mail
   echo ""
   echo "Waiting for Stalwart 0.16 pod (up to 3 minutes)..."
@@ -958,17 +1192,21 @@ cmd_mail_up() {
     k3s_exec kubectl -n mail get pvc mail-stack-data 2>/dev/null || true
     return 1
   }
+
+  # A Available Deployment is NOT a usable mail server — see _configure_stalwart.
+  _configure_stalwart
+
   echo ""
   cmd_mail_status
   echo ""
   echo "════════════════════════════════════════════════"
   echo "  Stalwart 0.16 web-admin"
   echo "════════════════════════════════════════════════"
-  echo "  URL: https://mail16-admin.k8s-platform.test:${PORT_INGRESS_HTTPS}/"
+  echo "  URL: https://mail16-admin.insula.host:${PORT_INGRESS_HTTPS}/"
   echo ""
   echo "  Add this line to /etc/hosts (once) so your browser resolves it:"
   echo ""
-  echo "    127.0.0.1  mail16-admin.k8s-platform.test"
+  echo "    127.0.0.1  mail16-admin.insula.host"
   echo ""
   echo "  The subdomain is gated by the platform_session cookie."
   echo "════════════════════════════════════════════════"
@@ -1243,7 +1481,7 @@ spec:
     name: local-ca-issuer
     kind: ClusterIssuer
   dnsNames:
-    - sftp.k8s-platform.test
+    - sftp.insula.host
   duration: 8760h
   renewBefore: 720h
 EOF

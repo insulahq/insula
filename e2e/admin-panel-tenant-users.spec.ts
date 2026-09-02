@@ -10,14 +10,14 @@ const ARTIFACTS_DIR = path.join(__dirname, '..', 'test-artifacts');
 // helpers.ts creates (it's guaranteed to have a tenant_admin user), fall
 // back to the first tenant in the list.
 async function resolveTenantId(): Promise<string> {
-  const API_BASE = process.env.API_URL ?? 'http://admin.k8s-platform.test:2010';
+  const API_BASE = process.env.API_URL ?? 'http://admin.insula.host:2010';
   const authPath = path.join(__dirname, '.auth/admin-auth.json');
   const adminAuth = JSON.parse(fs.readFileSync(authPath, 'utf-8'));
   const res = await fetch(`${API_BASE}/api/v1/tenants?limit=100`, {
     headers: { 'Authorization': `Bearer ${adminAuth.token}` },
   });
   const body = await res.json() as { data: { id: string; companyEmail: string }[] };
-  const e2eTenant = body.data?.find((c) => c.companyEmail === 'e2e-test@k8s-platform.test');
+  const e2eTenant = body.data?.find((c) => c.companyEmail === 'e2e-test@insula.host');
   const tenantId = e2eTenant?.id ?? body.data?.[0]?.id;
   if (!tenantId) throw new Error('No tenants exist — cannot resolve a tenant id for this test');
   return tenantId;

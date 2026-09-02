@@ -11,7 +11,7 @@ import path from 'path';
 // NODE_TLS_REJECT_UNAUTHORIZED export needed for the local CA), and the
 // worker-process global fetch was observed mangling chunked responses
 // from the dev ingress into unparseable JSON (2026-08-24).
-const API_BASE = process.env.API_URL ?? 'https://admin.k8s-platform.test:2011';
+const API_BASE = process.env.API_URL ?? 'https://admin.insula.host:2011';
 
 let _apiCtx: APIRequestContext | null = null;
 async function apiCtx(): Promise<APIRequestContext> {
@@ -37,7 +37,7 @@ export async function loginAsAdmin(page: Page) {
   await page.goto('/login');
   await page.waitForLoadState('networkidle');
 
-  await page.getByTestId('email-input').fill('admin@k8s-platform.test');
+  await page.getByTestId('email-input').fill('admin@insula.host');
   await page.getByTestId('password-input').fill('admin');
   await page.getByTestId('login-button').click();
 
@@ -84,7 +84,7 @@ async function getTenantAuth(): Promise<{ token: string; user: string }> {
   } else {
     // Login as admin to get token
     const loginData = await apiPost(`${API_BASE}/api/v1/auth/login`, {
-      email: 'admin@k8s-platform.test',
+      email: 'admin@insula.host',
       password: 'admin',
     }) as { data: { token: string } };
     adminToken = loginData.data.token;
@@ -99,7 +99,7 @@ async function getTenantAuth(): Promise<{ token: string; user: string }> {
   // The wire field is `primaryEmail` (renamed from the legacy `companyEmail`
   // — matching either keeps this helper working across both shapes).
   const tenantsData = await apiGet(`${API_BASE}/api/v1/tenants?limit=100`, headers) as { data: { id: string; primaryEmail?: string; companyEmail?: string }[] };
-  let tenantId = tenantsData.data?.find((c) => (c.primaryEmail ?? c.companyEmail) === 'e2e-test@k8s-platform.test')?.id;
+  let tenantId = tenantsData.data?.find((c) => (c.primaryEmail ?? c.companyEmail) === 'e2e-test@insula.host')?.id;
 
   // Create test tenant if not exists
   if (!tenantId) {
@@ -113,7 +113,7 @@ async function getTenantAuth(): Promise<{ token: string; user: string }> {
 
     const createData = await apiPost(`${API_BASE}/api/v1/tenants`, {
       name: 'E2E Test Tenant',
-      primary_email: 'e2e-test@k8s-platform.test',
+      primary_email: 'e2e-test@insula.host',
       plan_id: planId,
       region_id: regionId,
     }, headers) as { data: { id: string } };
@@ -123,7 +123,7 @@ async function getTenantAuth(): Promise<{ token: string; user: string }> {
       // Race condition: another worker created the tenant — retry search
       await new Promise(r => setTimeout(r, 1000));
       const retryData = await apiGet(`${API_BASE}/api/v1/tenants?limit=100`, headers) as { data: { id: string; primaryEmail?: string; companyEmail?: string }[] };
-      tenantId = retryData.data?.find((c) => (c.primaryEmail ?? c.companyEmail) === 'e2e-test@k8s-platform.test')?.id;
+      tenantId = retryData.data?.find((c) => (c.primaryEmail ?? c.companyEmail) === 'e2e-test@insula.host')?.id;
       if (!tenantId) {
         throw new Error(`Failed to create or find test tenant: ${JSON.stringify(createData)}`);
       }
@@ -194,7 +194,7 @@ export async function ensureSharedEmailDomain(): Promise<{ tenantId: string; dom
   }
   if (!token) {
     const loginData = await apiPost(`${API_BASE}/api/v1/auth/login`, {
-      email: 'admin@k8s-platform.test',
+      email: 'admin@insula.host',
       password: 'admin',
     }) as { data: { token: string } };
     token = loginData.data.token;
@@ -205,7 +205,7 @@ export async function ensureSharedEmailDomain(): Promise<{ tenantId: string; dom
     data: { id: string; primaryEmail?: string; companyEmail?: string }[];
   };
   let tenantId = tenants.data.find(
-    (t) => (t.primaryEmail ?? t.companyEmail) === 'e2e-test@k8s-platform.test',
+    (t) => (t.primaryEmail ?? t.companyEmail) === 'e2e-test@insula.host',
   )?.id;
   if (!tenantId) {
     const [plans, regions] = await Promise.all([
@@ -214,7 +214,7 @@ export async function ensureSharedEmailDomain(): Promise<{ tenantId: string; dom
     ]);
     const created = await apiPost(`${API_BASE}/api/v1/tenants`, {
       name: 'E2E Test Tenant',
-      primary_email: 'e2e-test@k8s-platform.test',
+      primary_email: 'e2e-test@insula.host',
       plan_id: plans.data[0]?.id,
       region_id: regions.data[0]?.id,
     }, headers) as { data?: { id: string } };

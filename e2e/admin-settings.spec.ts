@@ -46,7 +46,7 @@ test.describe('Admin Settings Page', () => {
     // Scope to the dropdown — there's also a mailto:admin footer link that
     // would cause strict-mode ambiguity if we queried by bare text.
     const dropdown = page.getByTestId('user-menu-dropdown');
-    await expect(dropdown.getByTestId('user-menu-email')).toContainText('admin@k8s-platform.test');
+    await expect(dropdown.getByTestId('user-menu-email')).toContainText('admin@insula.host');
     await expect(dropdown.getByTestId('user-menu-sign-out')).toBeVisible();
   });
 });

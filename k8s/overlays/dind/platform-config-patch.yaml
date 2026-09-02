@@ -9,7 +9,7 @@ data:
   default-storage-class: "local-path"
   # ${DOMAIN} is substituted by Flux postBuild.substituteFrom (or by
   # bootstrap's envsubst pass) from the platform-cluster-config CM in
-  # flux-system. local.sh sets DOMAIN=k8s-platform.test by default.
+  # flux-system. local.sh sets DOMAIN=insula.host by default.
   ingress-base-domain: "${DOMAIN}"
   # Canonical apex domain. Drives admin/tenant/dex/webmail/mail subdomains.
   # Prefer this over ingress-base-domain on new deploys — both are read as
@@ -44,7 +44,7 @@ data:
   passkey-origins: "https://admin.${DOMAIN},https://tenant.${DOMAIN}"
   # Private Worker — local dev uses ws:// (no TLS) so the agent can dial
   # in without a self-signed cert dance. Wildcard host needs an
-  # /etc/hosts line: `127.0.0.1  tunnels.k8s-platform.test`.
+  # /etc/hosts line: `127.0.0.1  tunnels.insula.host`.
   tunnel-base-url: "ws://tunnels.${DOMAIN}:2010"
   private-worker-frps-image: "fatedier/frps:v0.69.1"
   private-worker-agent-image: "private-worker-agent:latest"
