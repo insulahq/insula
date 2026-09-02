@@ -12,6 +12,35 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Search and a list view on the tenant panel's Installed Apps tab.** The tab
+  showed every deployment as a card with no way to find one — workable for
+  three applications, not for thirty. There is now a search box that matches on
+  the deployment name, the application it was installed from, its type and its
+  status (so "the failed one" or "the databases" are findable), and a
+  grid/list switch matching the admin panel's Installed tab. The list is a
+  dense sortable table — name, application, type, status — with the same Start/
+  Stop, Preview, Details and Delete actions as the cards. Your choice of grid or
+  list is remembered between visits.
+
+### Fixed
+- **Staying signed in while a tab is left open.** The tenant and admin panels
+  only renewed a session when the browser had seen mouse, keyboard or scroll
+  activity in the previous 25 minutes. A tab left open on a page you were only
+  reading produced none of those events, so nothing renewed the session and it
+  eventually lapsed. Renewal also gave up entirely once the sign-in had already
+  expired — exactly the state a tab comes back in after sitting in the
+  background — leaving it to the next click to notice.
+
+  An open tab is now enough on its own, and a tab is re-checked the moment you
+  switch back to it. Sessions are also renewed by a single tab at a time:
+  re-using an already-rotated token is treated by the API as a stolen-token
+  signal and ends every session, so several open tabs renewing at once would
+  have signed you out of all of them.
+
+  **Impersonation is unchanged**: "Login as Tenant" still issues a one-hour
+  session that cannot be renewed, and still ends after that hour.
+
 ### Fixed
 - **Moving or copying many files at once could fail partway with "Too many
   requests" while the file manager appeared to restart.** Selecting a large
