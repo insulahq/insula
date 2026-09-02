@@ -56,7 +56,18 @@ set -uo pipefail
 
 export PATH="/home/dev/bin:$PATH"
 K3S=hosting-platform-k3s-server-1
-APEX="${APEX:-${LOCAL_APEX:-k8s-platform.test}}"   # dev-only default; override with APEX=
+# DERIVE the apex — never bake one in (scripts/ci-no-hardcoded-test-apex.sh).
+# For a local DinD run the source of truth is the same .env.local that
+# local.sh reads; otherwise fall back to the shared resolver.
+_IMAPSYNC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/integration-env.sh
+[ -f "$_IMAPSYNC_SCRIPT_DIR/lib/integration-env.sh" ] \
+  && . "$_IMAPSYNC_SCRIPT_DIR/lib/integration-env.sh" && load_integration_env
+if [ -z "${APEX:-}" ] && [ -f "$_IMAPSYNC_SCRIPT_DIR/../.env.local" ]; then
+  APEX=$(awk -F= '/^PLATFORM_BASE_DOMAIN=/{gsub(/["\r]/,"",$2); print $2; exit}' \
+    "$_IMAPSYNC_SCRIPT_DIR/../.env.local")
+fi
+APEX="${APEX:-$(resolve_platform_apex)}"
 API="${API:-https://${DOCKER_HOST_NAME:-dind.local}:2011}"
 ADMIN_EMAIL="admin@${APEX}"
 ADMIN_PASS="${ADMIN_PASS:-admin}"
