@@ -10,7 +10,7 @@
 #
 # Differences from the base:
 #   1. stalwart-mail Service: LoadBalancer → NodePort (DinD has no LB)
-#   2. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
+#   2. Ingress: local-ca-issuer + ${DOMAIN} = insula.host
 #
 # NetworkPolicies are kept AS-IS from the base (2026-06-07). The old
 # "NetworkPolicy deleted — DinD k3s has no NetworkPolicy enforcer"
@@ -119,7 +119,7 @@ patches:
 
   # IngressRoute + Certificate: dev host + local-CA cert. The base
   # IngressRoute matches `Host(stalwart.${DOMAIN})` — on dev,
-  # ${DOMAIN}=k8s-platform.test → stalwart.k8s-platform.test. We rebind
+  # ${DOMAIN}=insula.host → stalwart.insula.host. We rebind
   # to the historical `stalwart16` subdomain so dev users can keep both
   # the old and new admin UIs reachable side-by-side during cutover.
   - patch: |
@@ -130,7 +130,7 @@ patches:
         namespace: mail
       spec:
         routes:
-          - match: "Host(`stalwart16.k8s-platform.test`)"
+          - match: "Host(`stalwart16.insula.host`)"
             kind: Rule
             middlewares:
               - name: admin-auth-cookie
@@ -158,7 +158,7 @@ patches:
       spec:
         secretName: stalwart-webadmin-dev-tls
         dnsNames:
-          - stalwart16.k8s-platform.test
+          - stalwart16.insula.host
         issuerRef:
           name: local-ca-issuer
           kind: ClusterIssuer

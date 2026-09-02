@@ -19,13 +19,13 @@ spec:
   template:
     spec:
       # DinD DNS quirk — cluster pods can't resolve the wildcard
-      # `*.k8s-platform.test` (only the host can). Map the Stalwart
+      # `*.insula.host` (only the host can). Map the Stalwart
       # hostname to localhost; the dev-stalwart-bridge sidecar below
       # listens on :2011 and forwards to Traefik in-cluster.
       hostAliases:
         - ip: "127.0.0.1"
           hostnames:
-            - stalwart.k8s-platform.test
+            - stalwart.insula.host
       containers:
         - name: bulwark
           env:
@@ -44,7 +44,7 @@ spec:
               readOnly: true
         # TLS-passthrough TCP bridge — 127.0.0.1:2011 → Traefik
         # websecure (Service port 443). Bulwark's TLS client sends
-        # SNI `stalwart.k8s-platform.test` to Traefik directly; Traefik
+        # SNI `stalwart.insula.host` to Traefik directly; Traefik
         # terminates and routes via the IngressRoute → rewriter →
         # Stalwart. DinD-only, drops in production where the public
         # DNS works in-cluster.
