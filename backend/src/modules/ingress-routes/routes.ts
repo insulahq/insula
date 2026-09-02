@@ -165,7 +165,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    reply.status(201).send(success(route));
+    reply.status(201).send(success(mapRouteToResponse(route)));
   });
 
   // PATCH /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId
@@ -191,7 +191,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       servicePort: parsed.data.service_port,
     }, tenantId);
     await triggerReconcile(tenantId);
-    return success(updated);
+    return success(mapRouteToResponse(updated));
   });
 
   // DELETE /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId
