@@ -23,6 +23,18 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   Stop, Preview, Details and Delete actions as the cards. Your choice of grid or
   list is remembered between visits.
 
+- **Mailbox migrations now report a one-line outcome when they finish.** A
+  completed migration showed only a status badge: the progress figures came
+  from imapsync's per-message copy lines, so a run that moved nothing produced
+  no figures at all and the panel had nothing to display. Each finished
+  migration now records a summary read from imapsync's own final statistics —
+  for example *"Transferred 1,204 messages across 12 folders (84.2 MiB) in
+  3m 41s"*. **Skipped messages and errors are named in that line on purpose**:
+  imapsync silently skips messages it cannot identify, and a run that reports
+  success while quietly skipping half a mailbox is not something you should
+  have to read logs to discover. Re-running a migration now also clears the
+  previous run's summary along with its logs.
+
 ### Fixed
 - **Staying signed in while a tab is left open.** The tenant and admin panels
   only renewed a session when the browser had seen mouse, keyboard or scroll
@@ -41,7 +53,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   **Impersonation is unchanged**: "Login as Tenant" still issues a one-hour
   session that cannot be renewed, and still ends after that hour.
 
-### Fixed
 - **Moving or copying many files at once could fail partway with "Too many
   requests" while the file manager appeared to restart.** Selecting a large
   group of files and moving them sent one request *per file*, all at once — a
@@ -67,6 +78,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
   Nothing about how files are stored changed, and no action is needed on any
   cluster — existing installations are fixed by upgrading.
+
+- **A custom container deployment could fail to start with no error, no
+  timeout and no feedback at all.** Every diagnostic the custom-deployment
+  reconciler had was read from a Pod. When Kubernetes *refuses* a deployment
+  outright — most commonly because it would exceed the subscription's CPU or
+  memory quota — no Pod is ever created, so there was nothing to read and the
+  deployment simply sat at "pending" indefinitely. The reason exists only on
+  the ReplicaSet, which the catalog deployments already inspected and custom
+  ones did not. Custom deployments now read the same place and report, for
+  example, *"Quota exceeded — CPU request: requesting 4, already using 250m of
+  4 limit. Free up resources or upgrade the plan."* Such a deployment is marked
+  **failed** rather than pending, because a refusal does not clear on its own —
+  something has to change first.
+
+- **Migrating a mailbox left messages in a lowercase `spam` folder behind.**
+  Source folders named `Spam`, `Junk` and `junk` were already mapped correctly;
+  an all-lowercase `spam` was not, and instead created a stray folder on the
+  destination that no spam filter or mail client would ever look in. All four
+  spellings now land in the real junk folder. Existing migrations pick this up
+  when re-synced — no re-configuration needed.
 
 ## [2026.9.2] - 2026-09-02
 
