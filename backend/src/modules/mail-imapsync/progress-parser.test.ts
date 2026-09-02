@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseImapsyncProgress } from './progress-parser.js';
+import { parseImapsyncProgress, parseImapsyncSummary } from './progress-parser.js';
 
 describe('parseImapsyncProgress', () => {
   it('returns null fields for empty input', () => {
@@ -138,5 +138,77 @@ From Folder [Spam]                 Size:     262144 Messages:    123
     // copying — we treat the {brace} folder marker on the copy line
     // as authoritative when present.
     expect(result.currentFolder).toBe('INBOX');
+  });
+});
+
+// ─── Final summary ────────────────────────────────────────────────────────
+//
+// Fixture is VERBATIM from a real imapsync 2.319 run against Stalwart 0.16
+// on the DinD stack, 2026-09-02 — including imapsync's trailing spaces after
+// some values, which a hand-written fixture would have quietly omitted.
+const REAL_STATS = `Host1: folder [spam] selected 1 messages, duplicates 0
+++++ Statistics
+Transfer started on                     : Wednesday 02 September 2026-09-02 13:01:55 +0000 UTC
+Transfer ended on                       : Wednesday 02 September 2026-09-02 13:01:55 +0000 UTC
+Transfer time                           : 0.2 sec
+Folders synced                          : 9/9 synced
+Folders deleted on host2                : 0 
+Messages transferred                    : 4 
+Messages skipped                        : 0
+Total bytes transferred                 : 352 (0.344 KiB)
+Detected 0 errors
+Exiting with return value 0 (EX_OK: successful termination) 0/50 nb_errors/max_errors PID 1`;
+
+describe('parseImapsyncSummary', () => {
+  it('parses a real 2.319 Statistics block', () => {
+    const s = parseImapsyncSummary(REAL_STATS);
+    expect(s.messagesTransferred).toBe(4);
+    expect(s.messagesSkipped).toBe(0);
+    expect(s.foldersSynced).toBe(9);
+    expect(s.foldersTotal).toBe(9);
+    expect(s.bytesTransferred).toBe(352);
+    expect(s.errors).toBe(0);
+    expect(s.line).toBe('Transferred 4 messages across 9 folders (352 B) in <1s');
+  });
+
+  it('returns nulls when there is no Statistics block', () => {
+    expect(parseImapsyncSummary('some unrelated output').line).toBeNull();
+    expect(parseImapsyncSummary(null).line).toBeNull();
+    expect(parseImapsyncSummary('').line).toBeNull();
+  });
+
+  it('surfaces skipped messages — a "success" that moved nothing must say so', () => {
+    const log = REAL_STATS
+      .replace('Messages transferred                    : 4 ', 'Messages transferred                    : 0 ')
+      .replace('Messages skipped                        : 0', 'Messages skipped                        : 4');
+    const s = parseImapsyncSummary(log);
+    expect(s.messagesSkipped).toBe(4);
+    expect(s.line).toContain('4 messages skipped');
+  });
+
+  it('surfaces a non-zero error count', () => {
+    const s = parseImapsyncSummary(REAL_STATS.replace('Detected 0 errors', 'Detected 3 errors'));
+    expect(s.errors).toBe(3);
+    expect(s.line).toContain('3 errors');
+  });
+
+  it('formats large runs readably', () => {
+    const log = REAL_STATS
+      .replace('Transfer time                           : 0.2 sec', 'Transfer time                           : 4512.7 sec')
+      .replace('Messages transferred                    : 4 ', 'Messages transferred                    : 18342 ')
+      .replace('Total bytes transferred                 : 352 (0.344 KiB)', 'Total bytes transferred                 : 2411724800 (2.246 GiB)');
+    expect(parseImapsyncSummary(log).line)
+      .toBe('Transferred 18,342 messages across 9 folders (2.2 GiB) in 1h 15m');
+  });
+
+  it('does not say "1 messages" or "1 folders"', () => {
+    const log = REAL_STATS
+      .replace('Messages transferred                    : 4 ', 'Messages transferred                    : 1 ')
+      .replace('Folders synced                          : 9/9 synced', 'Folders synced                          : 1/1 synced');
+    const line = parseImapsyncSummary(log).line ?? '';
+    expect(line).toContain('1 message ');
+    expect(line).toContain('1 folder ');
+    expect(line).not.toContain('1 messages');
+    expect(line).not.toContain('1 folders');
   });
 });
