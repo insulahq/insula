@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Files from '../pages/Files';
+import { ApiError } from '../lib/api-client';
 
 // ─── Mock hooks ──────────────────────────────────────────────────────────────
 
@@ -30,7 +31,17 @@ const dirEntries = [
   { name: 'style.css', type: 'file' as const, size: 512, modifiedAt: '2026-01-01T00:00:00Z', permissions: '644' },
 ];
 
-const mockFmStatus = vi.fn((): { data: { ready: boolean; phase: string; message?: string } | null; isLoading: boolean; error: null } => ({ data: fmStatusData, isLoading: false, error: null }));
+// `isError`/`isFetching`/`refetch` are optional so the happy-path overrides
+// stay short; the rate-limit tests supply them.
+interface FmStatusMock {
+  data: { ready: boolean; phase: string; message?: string } | null;
+  isLoading: boolean;
+  error: Error | null;
+  isError?: boolean;
+  isFetching?: boolean;
+  refetch?: () => void;
+}
+const mockFmStatus = vi.fn((): FmStatusMock => ({ data: fmStatusData, isLoading: false, error: null }));
 const mockDirListing = vi.fn(() => ({
   data: { path: '/', entries: dirEntries },
   isLoading: false,
@@ -164,6 +175,44 @@ describe('Files Page', () => {
       expect(screen.getByText('File Manager Failed')).toBeInTheDocument();
       expect(screen.getByText('Pod crashed')).toBeInTheDocument();
       expect(screen.getByText('Retry')).toBeInTheDocument();
+    });
+
+    // REGRESSION (production, 2026-09-02): a bulk move exhausted the 100/min
+    // rate limit, /files/status answered 429, and this page rendered
+    // "Starting File Manager" — indistinguishable from a killed pod. The pod
+    // was in fact running the whole time with zero restarts. A FAILED status
+    // poll is not a STARTING file manager and must not be drawn as one.
+    it('a rate-limited status poll is NOT rendered as "starting"', () => {
+      mockFmStatus.mockReturnValue({
+        data: null,
+        isLoading: false,
+        isError: true,
+        isFetching: false,
+        error: new ApiError(429, 'RATE_LIMIT_EXCEEDED', 'Too many requests. Please retry after 41 seconds'),
+        refetch: vi.fn(),
+      });
+      renderFiles();
+
+      expect(screen.getByText('Too Many Requests')).toBeInTheDocument();
+      expect(screen.getByText(/the file manager is still running/i)).toBeInTheDocument();
+      expect(screen.queryByText('Starting File Manager')).not.toBeInTheDocument();
+      expect(screen.getByTestId('fm-status-retry')).toBeInTheDocument();
+    });
+
+    it('a non-429 status failure reports the real error, still not "starting"', () => {
+      mockFmStatus.mockReturnValue({
+        data: null,
+        isLoading: false,
+        isError: true,
+        isFetching: false,
+        error: new Error('Network request failed'),
+        refetch: vi.fn(),
+      });
+      renderFiles();
+
+      expect(screen.getByText('File Manager Status Unavailable')).toBeInTheDocument();
+      expect(screen.getByText('Network request failed')).toBeInTheDocument();
+      expect(screen.queryByText('Starting File Manager')).not.toBeInTheDocument();
     });
   });
 

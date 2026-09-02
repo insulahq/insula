@@ -19,10 +19,13 @@ import Editor, { DiffEditor } from '@monaco-editor/react';
 import {
   useFileManagerStatus, useStartFileManager, useDirectoryListing,
   useFileContent, useCreateDirectory, useWriteFile, useRenameFile,
-  useDeleteFile, useDownloadFile, useUploadFiles, useCopyFile,
+  useDeleteFile, useDownloadFile, useUploadFiles,
   useArchiveFiles, useExtractArchive, useGitClone, useAuthenticatedBlobUrl,
   useDiskUsage, useFolderSize, useChmod, useChown, useBulkDeleteFiles,
+  useBulkMoveFiles, useBulkCopyFiles, useBulkChmod, useBulkChown,
 } from '@/hooks/use-file-manager';
+import { useBulkOperationRunner } from '@/hooks/use-bulk-operation';
+import BulkProgressModal from '@/components/files/BulkProgressModal';
 import type { FileEntry, UploadProgress } from '@/hooks/use-file-manager';
 import { useAiFileEdit, useAiModels, useAiTokenBudget } from '@/hooks/use-ai-editor';
 import { useTenantContext } from '@/hooks/use-tenant-context';
@@ -32,6 +35,7 @@ import UndoBar, { type UndoState } from '@/components/files/UndoBar';
 import { useRestoreFromTrash } from '@/hooks/use-trash';
 import { useResourceAvailability } from '@/hooks/use-resource-availability';
 import ErrorPanel from '@/components/ErrorPanel';
+import { ApiError } from '@/lib/api-client';
 import { useFileManagerError, clearFileManagerError } from '@/hooks/use-file-manager-errors';
 import FolderPickerDialog, { joinPath } from '@/components/FolderPickerDialog';
 import type { OperatorError } from '@insula/api-contracts';
@@ -168,6 +172,17 @@ export default function Files() {
   const deleteFile = useDeleteFile();
   const restoreFromTrash = useRestoreFromTrash();
 
+  // Every multi-select action goes through ONE streamed request and reports
+  // into the shared progress modal. Looping the single-path endpoint per file
+  // is what tripped the API rate limit in production and left partial results
+  // the user was never shown — see use-file-manager.ts.
+  const bulkRun = useBulkOperationRunner();
+  const bulkDelete = useBulkDeleteFiles();
+  const bulkMove = useBulkMoveFiles();
+  const bulkCopy = useBulkCopyFiles();
+  const bulkChmod = useBulkChmod();
+  const bulkChown = useBulkChown();
+
   // Undo restores each entry ALONGSIDE whatever is there now rather than
   // overwriting: between the delete and the click, something may legitimately
   // occupy the path again, and silently replacing it would be a second
@@ -187,7 +202,6 @@ export default function Files() {
   }, [undo, restoreFromTrash, dirListing]);
   const downloadFile = useDownloadFile();
   const { uploads, uploadFiles, clearUploads, visible: uploadModalVisible } = useUploadFiles();
-  const copyFile = useCopyFile();
   const archiveFiles = useArchiveFiles();
   const gitClone = useGitClone();
   const { data: diskUsage } = useDiskUsage();
@@ -381,6 +395,43 @@ export default function Files() {
   );
 
   // ─── Loading states ──────────────────────────────────────────────────────
+
+  // A status poll that FAILED is not the same as a file-manager that is
+  // starting. Falling through to <FmStartingScreen> on an errored query is how
+  // a rate-limited panel came to look exactly like a killed pod: on
+  // 2026-09-02 a bulk move exhausted the 100/min budget, /files/status
+  // answered 429, this branch rendered "Starting file manager…", and the
+  // 2-second retry then hammered the very bucket that was rejecting it — all
+  // while the pod underneath ran untouched with zero restarts.
+  if (!fmStatus.data && fmStatus.isError) {
+    const rateLimited = fmStatus.error instanceof ApiError && fmStatus.error.status === 429;
+    return (
+      <div className="space-y-6">
+        <FilePageHeader />
+        <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-white dark:bg-gray-800 shadow-sm">
+          <div className="px-6 py-16 text-center">
+            <AlertTriangle size={48} className="mx-auto text-amber-400" />
+            <h2 className="mt-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {rateLimited ? 'Too Many Requests' : 'File Manager Status Unavailable'}
+            </h2>
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              {rateLimited
+                ? 'The panel is briefly rate-limited. Your files are not affected and the file manager is still running — this clears on its own within a minute.'
+                : (fmStatus.error instanceof Error ? fmStatus.error.message : 'Could not reach the platform API.')}
+            </p>
+            <button
+              onClick={() => void fmStatus.refetch()}
+              disabled={fmStatus.isFetching}
+              className="mt-4 rounded-lg bg-brand-500 px-4 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+              data-testid="fm-status-retry"
+            >
+              {fmStatus.isFetching ? 'Checking…' : 'Retry'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!fmStatus.data || fmStatus.data.phase === 'not_deployed' || fmStatus.data.phase === 'starting') {
     return <FmStartingScreen status={fmStatus.data} />;
@@ -1007,9 +1058,36 @@ export default function Files() {
           paths={selectedPaths}
           retentionDays={retentionDays}
           onClose={() => setBulkDeleteOpen(false)}
-          onSuccess={(u) => { setBulkDeleteOpen(false); setSelected(new Set()); setUndo(u); }}
+          onConfirm={(permanent) => {
+            const paths = selectedPaths;
+            const noun = `${paths.length} item${paths.length === 1 ? '' : 's'}`;
+            setBulkDeleteOpen(false);
+            void bulkRun.run({
+              label: permanent ? `Deleting ${noun}` : `Moving ${noun} to Trash`,
+              total: paths.length,
+              start: (onProgress) => bulkDelete.mutateAsync({ paths, permanent, onProgress }),
+              // Undo is offered only on a clean sweep. On a partial delete the
+              // progress modal stays open with the failures, and an Undo bar
+              // over it would be about a different set of paths than the one
+              // the user is looking at.
+              onFullSuccess: (result) => {
+                setSelected(new Set());
+                setUndo({
+                  ids: [...(result.trashedIds ?? [])],
+                  label: permanent
+                    ? `Permanently deleted ${noun}`
+                    : `Moved ${noun} to Trash`,
+                  permanent,
+                });
+              },
+            });
+          }}
         />
       )}
+
+      {/* Shared by move, copy, delete, chmod and chown. Auto-closes on a clean
+          sweep; stays open listing the failures when only some paths made it. */}
+      <BulkProgressModal state={bulkRun.state} onClose={bulkRun.reset} />
 
       {showTrash && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4" onClick={(e) => { if (e.target === e.currentTarget) setShowTrash(false); }}>
@@ -1152,13 +1230,21 @@ export default function Files() {
               <button
                 onClick={async () => {
                   if (!chmodMode || chmodMode.length < 3) return;
+                  // A multi-select goes out as one streamed request; a single
+                  // target keeps the plain endpoint (no modal for one file).
                   if (selected.size > 1) {
-                    for (const name of selected) {
-                      await chmod.mutateAsync({ path: joinPath(currentPath, name), mode: chmodMode, recursive: chmodRecursive });
-                    }
-                  } else {
-                    await chmod.mutateAsync({ path: chmodTarget.path, mode: chmodMode, recursive: chmodRecursive });
+                    const paths = [...selected].map(name => joinPath(currentPath, name));
+                    const recursive = chmodRecursive;
+                    setChmodTarget(null);
+                    setChmodRecursive(false);
+                    void bulkRun.run({
+                      label: `Setting permissions on ${paths.length} items`,
+                      total: paths.length,
+                      start: (onProgress) => bulkChmod.mutateAsync({ paths, mode: chmodMode, recursive, onProgress }),
+                    });
+                    return;
                   }
+                  await chmod.mutateAsync({ path: chmodTarget.path, mode: chmodMode, recursive: chmodRecursive });
                   setChmodTarget(null);
                   setChmodRecursive(false);
                 }}
@@ -1236,13 +1322,26 @@ export default function Files() {
                     hasNames
                       ? { path, owner: chownOwnerName || undefined, group: chownGroupName || undefined, recursive: chownRecursive }
                       : { path, uid, gid, recursive: chownRecursive };
+                  // A multi-select goes out as one streamed request; a single
+                  // target keeps the plain endpoint (no modal for one file).
                   if (selected.size > 1) {
-                    for (const name of selected) {
-                      await chown.mutateAsync(makeArgs(joinPath(currentPath, name)));
-                    }
-                  } else {
-                    await chown.mutateAsync(makeArgs(chownTarget.path));
+                    const paths = [...selected].map(name => joinPath(currentPath, name));
+                    const ownership = hasNames
+                      ? { owner: chownOwnerName || undefined, group: chownGroupName || undefined }
+                      : { uid, gid };
+                    const recursive = chownRecursive;
+                    setChownTarget(null);
+                    setChownRecursive(false);
+                    setChownOwnerName('');
+                    setChownGroupName('');
+                    void bulkRun.run({
+                      label: `Setting ownership on ${paths.length} items`,
+                      total: paths.length,
+                      start: (onProgress) => bulkChown.mutateAsync({ paths, ...ownership, recursive, onProgress }),
+                    });
+                    return;
                   }
+                  await chown.mutateAsync(makeArgs(chownTarget.path));
                   setChownTarget(null);
                   setChownRecursive(false);
                   setChownOwnerName('');
@@ -1264,15 +1363,24 @@ export default function Files() {
           description={`${moveTarget.mode === 'copy' ? 'Copy' : 'Move'} ${moveTarget.paths.length} item${moveTarget.paths.length > 1 ? 's' : ''} to:`}
           initialPath={currentPath}
           confirmLabel={moveTarget.mode === 'copy' ? 'Copy Here' : 'Move Here'}
-          isPending={copyFile.isPending || renameFile.isPending}
+          isPending={bulkCopy.isPending || bulkMove.isPending}
           onClose={() => setMoveTarget(null)}
           onConfirm={(destPath) => {
-            const promises = moveTarget.paths.map(sourcePath => {
-              const name = sourcePath.split('/').pop() || '';
-              const dest = joinPath(destPath, name);
-              return moveTarget.mode === 'copy' ? copyFile.mutateAsync({ sourcePath, destPath: dest }) : renameFile.mutateAsync({ oldPath: sourcePath, newPath: dest });
+            // ONE streamed request for the whole selection. This used to be
+            // `paths.map()` + `Promise.all` — every file in flight at once,
+            // which is exactly what tripped the rate limit and then reported a
+            // partly-successful move as a single "Too many requests" error.
+            const { paths, mode } = moveTarget;
+            const isCopy = mode === 'copy';
+            const noun = `${paths.length} item${paths.length === 1 ? '' : 's'}`;
+            setMoveTarget(null);
+            void bulkRun.run({
+              label: isCopy ? `Copying ${noun}` : `Moving ${noun}`,
+              total: paths.length,
+              start: (onProgress) => (isCopy ? bulkCopy : bulkMove)
+                .mutateAsync({ paths, destDir: destPath, onProgress }),
+              onFullSuccess: () => setSelected(new Set()),
             });
-            Promise.all(promises).then(() => { setMoveTarget(null); setSelected(new Set()); });
           }}
         />
       )}
@@ -2141,48 +2249,28 @@ function FileEditor({ path, onClose }: { readonly path: string; readonly onClose
 }
 
 
-function BulkDeleteDialog({ paths, retentionDays, onClose, onSuccess }: {
+/**
+ * Confirmation only — the delete itself runs through the shared bulk runner so
+ * it gets the same streamed progress modal as move, copy, chmod and chown.
+ *
+ * The dialog deliberately owns no result state any more. It used to run the
+ * mutation AND render its own failure list, which meant partial outcomes were
+ * reported in one place for delete and nowhere at all for every other bulk op.
+ */
+function BulkDeleteDialog({ paths, retentionDays, onClose, onConfirm }: {
   readonly paths: string[]; readonly retentionDays: number;
-  readonly onClose: () => void; readonly onSuccess: (undo: UndoState) => void;
+  readonly onClose: () => void; readonly onConfirm: (permanent: boolean) => void;
 }) {
-  // ONE request for the whole selection. This used to loop the single-path
-  // endpoint: a select-all fired hundreds of sequential requests, tripped the
-  // API rate limit, and the await-loop threw on the first 429 — leaving files
-  // half-deleted with nothing told to the user.
-  const bulkDelete = useBulkDeleteFiles();
-  const [failed, setFailed] = useState<ReadonlyArray<{ path: string; error: string }>>([]);
   // Mounted fresh each time the dialog opens, so the opt-in cannot leak from a
   // previous (possibly cancelled) delete.
   const [permanent, setPermanent] = useState(false);
-
-  const handleDelete = () => {
-    setFailed([]);
-    bulkDelete.mutate({ paths, permanent }, {
-      onSuccess: (res) => {
-        // Partial success is a real outcome, not an error: report exactly
-        // which paths survived instead of closing as if everything worked.
-        if (res.data.failed.length === 0) {
-          const n = res.data.deleted.length;
-          onSuccess({
-            ids: res.data.trashedIds ?? [],
-            label: permanent
-              ? `Permanently deleted ${n} item${n === 1 ? '' : 's'}`
-              : `Moved ${n} item${n === 1 ? '' : 's'} to Trash`,
-            permanent,
-          });
-          return;
-        }
-        setFailed(res.data.failed);
-      },
-    });
-  };
 
   return (
     <SimpleDialog
       title={permanent ? 'Delete Permanently' : 'Move to Trash'}
       onClose={onClose}
-      onConfirm={handleDelete}
-      isPending={bulkDelete.isPending}
+      onConfirm={() => onConfirm(permanent)}
+      isPending={false}
       confirmLabel={permanent ? `Delete ${paths.length} Permanently` : `Move ${paths.length} to Trash`}
       destructive={permanent}
     >
@@ -2195,16 +2283,6 @@ function BulkDeleteDialog({ paths, retentionDays, onClose, onSuccess }: {
       </ul>
       <DeleteConsequence permanent={permanent} retentionDays={retentionDays} />
       <PermanentDeleteToggle checked={permanent} onChange={setPermanent} testId="bulk-permanent-delete-toggle" />
-      {failed.length > 0 && (
-        <div className="mt-3 rounded-md border border-red-300 bg-red-50 p-2 dark:border-red-700 dark:bg-red-900/30" data-testid="bulk-delete-failures">
-          <p className="text-sm font-medium text-red-800 dark:text-red-300">
-            {paths.length - failed.length} deleted, {failed.length} failed
-          </p>
-          <ul className="mt-1 max-h-32 overflow-y-auto text-xs text-red-700 dark:text-red-400 space-y-0.5">
-            {failed.map((f) => <li key={f.path} className="truncate">{f.path} — {f.error}</li>)}
-          </ul>
-        </div>
-      )}
     </SimpleDialog>
   );
 }

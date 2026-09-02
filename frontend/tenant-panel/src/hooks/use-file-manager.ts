@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { BulkDeleteResult, DiskUsage } from '@insula/api-contracts';
+import { MAX_BULK_PATHS, type DiskUsage } from '@insula/api-contracts';
 import type * as React from 'react';
 import { useQuery, useMutation, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
 import { apiFetch, API_BASE } from '@/lib/api-client';
@@ -74,6 +74,11 @@ function getAuthHeaders(): Record<string, string> {
 
 // ─── Hooks ───────────────────────────────────────────────────────────────────
 
+/** Follow a file-manager through startup. */
+const STARTUP_POLL_MS = 2_000;
+/** Back-off after a failed status poll — see the note in `refetchInterval`. */
+const ERROR_POLL_MS = 15_000;
+
 export function useFileManagerStatus() {
   const { tenantId } = useTenantContext();
   return useQuery({
@@ -81,9 +86,16 @@ export function useFileManagerStatus() {
     queryFn: () => apiFetch<{ data: FileManagerStatus }>(`/api/v1/tenants/${tenantId}/files/status`),
     select: (res) => res.data,
     refetchInterval: (query) => {
+      // A FAILED poll must never become a FAST poll. The 2s cadence below
+      // exists to follow a file-manager through startup; applying it to an
+      // errored query meant a rate-limited panel retried ten times in
+      // thirteen seconds against the same bucket that was rejecting it
+      // (production, 2026-09-02). Back off instead — the limit window is a
+      // minute, so a slow poll recovers just as fast without feeding it.
+      if (query.state.status === 'error') return ERROR_POLL_MS;
       const raw = query.state.data as { data: FileManagerStatus } | undefined;
       const phase = raw?.data?.phase;
-      if (!phase || phase === 'starting' || phase === 'not_deployed') return 2000;
+      if (!phase || phase === 'starting' || phase === 'not_deployed') return STARTUP_POLL_MS;
       return false;
     },
   });
@@ -187,43 +199,160 @@ export function useDeleteFile() {
   });
 }
 
+// ─── Bulk operations over a selection ───────────────────────────────────────
+
 /**
- * Delete many paths in ONE request.
+ * Every multi-select operation sends the WHOLE selection in one streamed
+ * request instead of one request per path.
  *
- * Looping useDeleteFile() per selected file fired hundreds of sequential
- * requests on a select-all: it tripped the API rate limit (429) and, worse,
- * the awaiting loop threw on the first rejection and left a partial delete
- * with no report of what had gone.
+ * Looping the single-path endpoint is what broke production on 2026-09-02:
+ * move used `paths.map()` + `Promise.all`, so ~120 selected files became 62
+ * concurrent requests in two seconds. That tripped the 100/min API rate limit,
+ * and the resulting 429s hit the panel's own directory listings and
+ * /files/status — the page fell back to "Starting file manager…" while the
+ * moves that had got through carried on succeeding. `Promise.all` then
+ * rejected on the first 429, so the user saw "Too many requests" for a move
+ * that had partly worked, with no way to tell which files had gone.
+ *
+ * The response is an NDJSON progress stream (same reader as archive/extract).
+ * A per-path failure arrives in `complete.failed`, NOT as a thrown error — the
+ * caller must render partial success as the real outcome it is.
  */
-export function useBulkDeleteFiles() {
+export interface BulkFileResult {
+  readonly succeeded: readonly string[];
+  readonly failed: ReadonlyArray<{ path: string; error: string }>;
+  /** Delete only — recycle-bin ids, for the one-click Undo bar. */
+  readonly trashedIds?: readonly string[];
+}
+
+/**
+ * POST a selection to a bulk endpoint, splitting it into consecutive requests
+ * of at most MAX_BULK_PATHS and reporting ONE continuous progress stream.
+ *
+ * The split is forced by the platform's own WAF: ModSecurity turns every JSON
+ * array element into a separate ARGS entry and refuses a request at 1000 of
+ * them (rule 200007), killing it at the edge as a bare nginx 400 that never
+ * reaches the API. See MAX_BULK_PATHS in @insula/api-contracts.
+ *
+ * Chunks run SEQUENTIALLY. Firing them together would recreate the original
+ * bug in coarser units, and `done` has to stay monotonic for the progress bar.
+ */
+async function streamBulkInChunks(
+  endpoint: string,
+  paths: readonly string[],
+  extraBody: Record<string, unknown>,
+  onProgress?: (p: StreamProgress) => void,
+): Promise<BulkFileResult> {
+  const total = paths.length;
+  const succeeded: string[] = [];
+  const failed: Array<{ path: string; error: string }> = [];
+  const trashedIds: string[] = [];
+
+  for (let offset = 0; offset < total; offset += MAX_BULK_PATHS) {
+    const chunk = paths.slice(offset, offset + MAX_BULK_PATHS);
+    const result = await streamNdjsonOperation<BulkFileResult>(endpoint,
+      { ...extraBody, paths: chunk },
+      {
+        // Re-base each chunk's counter onto the whole selection so the bar
+        // does not restart at zero every 500 files.
+        onProgress: onProgress && (p => onProgress({
+          done: offset + p.done,
+          total,
+          percent: Math.round(((offset + p.done) / total) * 100),
+          current: p.current,
+        })),
+      });
+    succeeded.push(...result.succeeded);
+    failed.push(...result.failed);
+    if (result.trashedIds) trashedIds.push(...result.trashedIds);
+  }
+
+  return { succeeded, failed, trashedIds };
+}
+
+/** Queries invalidated after any bulk mutation touches the volume. */
+function useInvalidateFileViews() {
   const { tenantId } = useTenantContext();
   const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: ['files', tenantId] });
+    qc.invalidateQueries({ queryKey: ['file-trash', tenantId] });
+    qc.invalidateQueries({ queryKey: ['disk-usage', tenantId] });
+  };
+}
+
+export function useBulkDeleteFiles() {
+  const { tenantId } = useTenantContext();
+  const invalidate = useInvalidateFileViews();
   return useFmMutation({
-    mutationFn: ({ paths, permanent }: { paths: string[]; permanent?: boolean }) =>
-      apiFetch<{ data: BulkDeleteResult }>(`/api/v1/tenants/${tenantId}/files/bulk-delete`, {
-        method: 'POST',
-        body: JSON.stringify({ paths, permanent: permanent === true }),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['files', tenantId] });
-      qc.invalidateQueries({ queryKey: ['file-trash', tenantId] });
-      qc.invalidateQueries({ queryKey: ['disk-usage', tenantId] });
-    },
+    mutationFn: ({ paths, permanent, onProgress }: {
+      paths: string[]; permanent?: boolean; onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-delete`,
+        paths, { permanent: permanent === true }, onProgress),
+    onSuccess: invalidate,
   });
 }
 
-export function useCopyFile() {
+export function useBulkMoveFiles() {
   const { tenantId } = useTenantContext();
-  const qc = useQueryClient();
+  const invalidate = useInvalidateFileViews();
   return useFmMutation({
-    mutationFn: ({ sourcePath, destPath }: { sourcePath: string; destPath: string }) =>
-      apiFetch(`/api/v1/tenants/${tenantId}/files/copy`, {
-        method: 'POST',
-        body: JSON.stringify({ sourcePath, destPath }),
-      }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['files', tenantId] }); },
+    // `destDir` is a DIRECTORY — the server joins it with each source's
+    // basename. The panel used to compute that join per file at the call site.
+    mutationFn: ({ paths, destDir, onProgress }: {
+      paths: string[]; destDir: string; onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-move`,
+        paths, { destDir }, onProgress),
+    onSuccess: invalidate,
   });
 }
+
+export function useBulkCopyFiles() {
+  const { tenantId } = useTenantContext();
+  const invalidate = useInvalidateFileViews();
+  return useFmMutation({
+    mutationFn: ({ paths, destDir, onProgress }: {
+      paths: string[]; destDir: string; onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-copy`,
+        paths, { destDir }, onProgress),
+    onSuccess: invalidate,
+  });
+}
+
+export function useBulkChmod() {
+  const { tenantId } = useTenantContext();
+  const invalidate = useInvalidateFileViews();
+  return useFmMutation({
+    mutationFn: ({ paths, mode, recursive, onProgress }: {
+      paths: string[]; mode: string; recursive?: boolean; onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-chmod`,
+        paths, { mode, recursive }, onProgress),
+    onSuccess: invalidate,
+  });
+}
+
+export function useBulkChown() {
+  const { tenantId } = useTenantContext();
+  const invalidate = useInvalidateFileViews();
+  return useFmMutation({
+    mutationFn: ({ paths, uid, gid, owner, group, recursive, onProgress }: {
+      paths: string[]; uid?: number; gid?: number; owner?: string; group?: string;
+      recursive?: boolean; onProgress?: (p: StreamProgress) => void;
+    }) =>
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-chown`,
+        paths, { uid, gid, owner, group, recursive }, onProgress),
+    onSuccess: invalidate,
+  });
+}
+
+// `useCopyFile` (single-path POST /files/copy) was removed when the Copy To
+// dialog moved onto useBulkCopyFiles — one selection, one streamed request,
+// whatever its size. The backend `/files/copy` route stays: it is what the
+// bulk endpoint drives per path inside the cluster.
 
 export function useArchiveFiles() {
   const { tenantId } = useTenantContext();

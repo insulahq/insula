@@ -274,6 +274,14 @@ jobs:
       - name: Verify every direct-ClusterIP sidecar request sends X-Platform-Internal
         run: ./scripts/ci-file-manager-auth-check.sh
 
+  file-manager-bulk-guard:
+    name: Multi-select file actions send one request, not one per path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no client-side per-path loop over a selection
+        run: ./scripts/ci-file-manager-bulk-check.sh
+
   oom-classification-guard:
     name: Container OOM is classified through one shared helper
     runs-on: ubuntu-latest

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { authenticate, requireRole, requireTenantRoleByMethod, requireTenantAccess } from '../../middleware/auth.js';
-import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, bulkDeleteInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema, trashRestoreInputSchema, trashPurgeInputSchema } from '@insula/api-contracts';
+import { writeFileInputSchema, createDirectoryInputSchema, renameInputSchema, deleteInputSchema, bulkDeleteInputSchema, bulkMoveInputSchema, bulkCopyInputSchema, bulkChmodInputSchema, bulkChownInputSchema, copyInputSchema, archiveInputSchema, extractInputSchema, gitCloneInputSchema, chmodInputSchema, chownInputSchema, trashRestoreInputSchema, trashPurgeInputSchema } from '@insula/api-contracts';
 import { tenants } from '../../db/schema.js';
 import { success, errorResponse } from '../../shared/response.js';
 import { ApiError } from '../../shared/errors.js';
@@ -9,6 +9,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import { fileManagerRequest, streamToFileManager, streamFromFileManager, getFileManagerStatus, ensureFileManagerRunning, stopFileManager, resolveFmServiceUrlForRoute, ensureFileManagerReady } from './service.js';
 import { getFileManagerImage } from './image.js';
 import { recordFileManagerAccess } from './idle-cleanup.js';
+import { streamBulkPathOperation, failBulkStream, joinDestination, type BulkPathOutcome } from './bulk-stream.js';
 import { getTrashRetentionDays, sweepTrashOpportunistically } from './trash-service.js';
 import { noteTrashActivity, recordTrashSummary } from './trash-reconciler.js';
 
@@ -388,63 +389,160 @@ export async function fileManagerRoutes(app: FastifyInstance): Promise<void> {
     return success(payload);
   });
 
+  // ─── Bulk operations over a selection ──────────────────────────────────────
+  //
+  // ONE request per selection, NDJSON progress streamed back in the same frame
+  // shapes /files/archive and /files/extract already use.
+  //
+  // The panel used to loop the single-path endpoint once per selected file.
+  // Delete looped sequentially; move and copy were worse — `paths.map()` +
+  // `Promise.all` put every request in flight at once. A production move of
+  // ~120 files (2026-09-02) fired 62 requests in two seconds, tripped the
+  // global rate limit (100/window), and the 429s hit the panel's directory
+  // listings and /files/status too — so the page looked dead while the moves
+  // that HAD got through kept running. The `Promise.all` rejected on the first
+  // 429, so the user was told "Too many requests" about a move that had partly
+  // succeeded. See `bulkOperationResultSchema` in @insula/api-contracts.
+  //
+  // Every route below follows the same shape:
+  //   parse → resolve namespace → record last-access ONCE → hijack → stream.
+  //
+  // Order matters: `resolveNamespace` can throw (tenant gone, storage op in
+  // flight) and must do so BEFORE the reply is hijacked, or the error handler
+  // has no response left to write a proper envelope to.
+  //
+  // `recordFileManagerAccess` is called once for the whole batch, never per
+  // path — it PATCHes the file-manager Deployment, and doing that per file
+  // turned one selection into dozens of concurrent writes on one object.
+
+  /** Run one sidecar call and translate its reply into a per-path outcome. */
+  const bulkSidecarCall = async (
+    namespace: string,
+    sidecarPath: string,
+    body: Record<string, unknown>,
+  ): Promise<BulkPathOutcome> => {
+    const { k8sTenants, kubeconfigPath } = getK8s();
+    const result = await fileManagerRequest(
+      k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), sidecarPath,
+      { method: 'POST', body: JSON.stringify(body), contentType: 'application/json' },
+    );
+    if (result.status === 200) {
+      let trashedId: string | undefined;
+      try {
+        trashedId = (JSON.parse(result.body) as { trashEntry?: { id?: string } }).trashEntry?.id;
+      } catch { /* non-JSON body — the operation still succeeded */ }
+      return { ok: true, trashedId };
+    }
+    let error = `HTTP ${result.status}`;
+    try { error = (JSON.parse(result.body) as { error?: string }).error || error; } catch { /* non-JSON body */ }
+    return { ok: false, error };
+  };
+
   // POST /api/v1/tenants/:tenantId/files/bulk-delete — delete many paths
-  //
-  // ONE request for a whole selection. The panel used to loop the single-path
-  // endpoint, so a select-all fired hundreds of sequential requests: it tripped
-  // the global rate limit (100/window) with a 429, and the client loop threw on
-  // the first rejection — leaving a partial delete the user could not see. Each
-  // request also re-patched the file-manager last-access annotation, making one
-  // select-all hundreds of kube-API writes too.
-  //
-  // Per-path results, never all-or-nothing: one undeletable file must not hide
-  // the outcome of the other 499.
   app.post('/tenants/:tenantId/files/bulk-delete', {
     schema: { tags: ['Files'], summary: 'Delete many files or directories', security: [{ bearerAuth: [] }] },
-  }, async (request) => {
+  }, async (request, reply) => {
     const { tenantId } = request.params as { tenantId: string };
     const parsed = bulkDeleteInputSchema.safeParse(request.body);
     if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
     const namespace = await resolveNamespace(app, tenantId);
-    // Touched ONCE for the whole batch, not per path.
     recordFileManagerAccess(namespace, getK8s().k8sTenants);
     const { k8sTenants, kubeconfigPath } = getK8s();
-
-    const deleted: string[] = [];
-    const failed: Array<{ path: string; error: string }> = [];
-    // Collected so the panel can offer Undo on the whole batch.
-    const trashedIds: string[] = [];
+    const { paths, permanent } = parsed.data;
     const actor = request.user?.sub ?? null;
 
-    for (const path of parsed.data.paths) {
-      try {
-        const result = await fileManagerRequest(
-          k8sTenants, kubeconfigPath, namespace, getFileManagerImage(), '/rm',
-          // `permanent` rides on EVERY path in the batch — the opt-out is a
-          // property of the user's choice in the dialog, not of one entry.
-          { method: 'POST', body: JSON.stringify({ path, permanent: parsed.data.permanent, actor }), contentType: 'application/json' },
-        );
-        if (result.status === 200) {
-          deleted.push(path);
-          try {
-            const parsedBody = JSON.parse(result.body) as { trashEntry?: { id?: string } };
-            if (parsedBody.trashEntry?.id) trashedIds.push(parsedBody.trashEntry.id);
-          } catch { /* non-JSON body — the delete still succeeded */ }
-        } else {
-          let msg = `HTTP ${result.status}`;
-          try { msg = JSON.parse(result.body).error || msg; } catch { /* non-JSON body */ }
-          failed.push({ path, error: msg });
-        }
-      } catch (err) {
-        // Keep going: the whole point is that one bad path does not abort the
-        // batch and strand the caller without a report.
-        failed.push({ path, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
+    reply.hijack();
+    try {
+      const summary = await streamBulkPathOperation(reply.raw, paths, (path) =>
+        // `permanent` rides on EVERY path in the batch — the opt-out is a
+        // property of the user's choice in the dialog, not of one entry.
+        bulkSidecarCall(namespace, '/rm', { path, permanent, actor }));
 
-    if (!parsed.data.permanent && deleted.length > 0) await noteTrashActivity(app.db, tenantId);
-    sweepTrashOpportunistically(app.db, k8sTenants, kubeconfigPath, namespace);
-    return success({ deleted, failed, trashedIds });
+      if (!permanent && summary.succeeded.length > 0) await noteTrashActivity(app.db, tenantId);
+      sweepTrashOpportunistically(app.db, k8sTenants, kubeconfigPath, namespace);
+    } catch (err) {
+      failBulkStream(reply.raw, err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/bulk-move — move many paths into a dir
+  app.post('/tenants/:tenantId/files/bulk-move', {
+    schema: { tags: ['Files'], summary: 'Move many files or directories', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = bulkMoveInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { paths, destDir } = parsed.data;
+
+    reply.hijack();
+    try {
+      await streamBulkPathOperation(reply.raw, paths, (path) =>
+        bulkSidecarCall(namespace, '/rename', { oldPath: path, newPath: joinDestination(destDir, path) }));
+    } catch (err) {
+      failBulkStream(reply.raw, err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/bulk-copy — copy many paths into a dir
+  app.post('/tenants/:tenantId/files/bulk-copy', {
+    schema: { tags: ['Files'], summary: 'Copy many files or directories', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = bulkCopyInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { paths, destDir } = parsed.data;
+
+    reply.hijack();
+    try {
+      await streamBulkPathOperation(reply.raw, paths, (path) =>
+        bulkSidecarCall(namespace, '/copy', { sourcePath: path, destPath: joinDestination(destDir, path) }));
+    } catch (err) {
+      failBulkStream(reply.raw, err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/bulk-chmod — chmod many paths
+  app.post('/tenants/:tenantId/files/bulk-chmod', {
+    schema: { tags: ['Files'], summary: 'Change permissions on many entries', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = bulkChmodInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { paths, mode, recursive } = parsed.data;
+
+    reply.hijack();
+    try {
+      await streamBulkPathOperation(reply.raw, paths, (path) =>
+        bulkSidecarCall(namespace, '/chmod', { path, mode, recursive }));
+    } catch (err) {
+      failBulkStream(reply.raw, err instanceof Error ? err.message : String(err));
+    }
+  });
+
+  // POST /api/v1/tenants/:tenantId/files/bulk-chown — chown many paths
+  app.post('/tenants/:tenantId/files/bulk-chown', {
+    schema: { tags: ['Files'], summary: 'Change ownership on many entries', security: [{ bearerAuth: [] }] },
+  }, async (request, reply) => {
+    const { tenantId } = request.params as { tenantId: string };
+    const parsed = bulkChownInputSchema.safeParse(request.body);
+    if (!parsed.success) throw new ApiError('INVALID_FIELD_VALUE', parsed.error.issues[0].message, 400);
+    const namespace = await resolveNamespace(app, tenantId);
+    recordFileManagerAccess(namespace, getK8s().k8sTenants);
+    const { paths, uid, gid, owner, group, recursive } = parsed.data;
+
+    reply.hijack();
+    try {
+      await streamBulkPathOperation(reply.raw, paths, (path) =>
+        bulkSidecarCall(namespace, '/chown', { path, uid, gid, owner, group, recursive }));
+    } catch (err) {
+      failBulkStream(reply.raw, err instanceof Error ? err.message : String(err));
+    }
   });
 
   // ─── Recycle bin ───────────────────────────────────────────────────────────
