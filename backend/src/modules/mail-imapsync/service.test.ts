@@ -133,8 +133,36 @@ describe('buildJobManifest', () => {
     expect(container).toBeDefined();
     expect(container?.image).toBe('gilleslamiral/imapsync:latest');
 
-    // CRITICAL: passwords MUST come from envFrom secretRef, never via args
+    // CRITICAL: passwords MUST come from Secret references, never via args.
+    // SOURCE_PASSWORD via the per-job Secret…
     expect(container?.envFrom).toEqual([{ secretRef: { name: 'imapsync-job-123' } }]);
+    // …DEST_PASSWORD straight from the mail namespace's own Secret, so
+    // platform-api never handles Stalwart's master password. `optional`
+    // MUST be false: a missing Secret has to fail the pod loudly rather
+    // than run imapsync with an empty destination password.
+    expect(container?.env).toEqual([
+      {
+        name: 'DEST_PASSWORD',
+        valueFrom: {
+          secretKeyRef: {
+            name: 'mail-secrets',
+            key: 'STALWART_MASTER_PASSWORD',
+            optional: false,
+          },
+        },
+      },
+      {
+        name: 'DEST_MASTER_USER',
+        valueFrom: {
+          secretKeyRef: {
+            name: 'mail-secrets',
+            key: 'STALWART_MASTER_USER',
+            optional: false,
+          },
+        },
+      },
+      { name: 'DEST_MAILBOX', value: 'alice@acme.com' },
+    ]);
     const args = container?.args ?? [];
     const argsText = args.join(' ');
     expect(argsText).not.toContain('SOURCE_PASSWORD');
@@ -157,15 +185,49 @@ describe('buildJobManifest', () => {
     expect(argsText).toContain('--ssl1');
   });
 
-  it('uses Stalwart master SSO for the destination user (alice@acme.com%master)', () => {
+  it('composes the destination master-SSO user at RUNTIME, not with a literal "master"', () => {
     const job = service.buildJobManifest(baseInput);
-    const args = job.spec?.template.spec?.containers?.[0]?.args ?? [];
-    const argsText = args.join(' ');
+    const container = job.spec?.template.spec?.containers?.[0];
+    const argsText = (container?.args ?? []).join(' ');
 
     expect(argsText).toContain('--host2 stalwart-mail.mail.svc.cluster.local');
     expect(argsText).toContain('--port2 143');
-    // The destination user is the mailbox address with %master appended.
-    expect(argsText).toContain('--user2 alice@acme.com%master');
+
+    // REGRESSION (2026-09-01): this used to be a hardcoded
+    // `--user2 alice@acme.com%master`. Stalwart 0.16 master-proxy auth
+    // needs the master principal's FQDN — the bare short name resolves
+    // against Stalwart's own default domain and fails with
+    // `NO [AUTHENTICATIONFAILED] localhost.local`, so every migration
+    // died at the destination login having moved nothing.
+    expect(argsText).not.toContain('%master');
+    expect(argsText).not.toContain('--user2');
+
+    // It is composed by the entrypoint from the mailbox address plus the
+    // FQDN the kubelet reads out of mail-secrets.
+    const cmd = (container?.command ?? []).join('\n');
+    expect(cmd).toContain('--user2 "$DEST_MAILBOX%$DEST_MASTER_USER"');
+
+    const env = container?.env ?? [];
+    expect(env).toContainEqual({ name: 'DEST_MAILBOX', value: 'alice@acme.com' });
+    expect(env).toContainEqual({
+      name: 'DEST_MASTER_USER',
+      valueFrom: {
+        secretKeyRef: {
+          name: 'mail-secrets',
+          key: 'STALWART_MASTER_USER',
+          optional: false,
+        },
+      },
+    });
+  });
+
+  it('refuses to run if the master principal FQDN is empty', () => {
+    // An empty STALWART_MASTER_USER would silently rebuild the old broken
+    // `<mailbox>%` user. Fail loudly instead of authenticating as nobody.
+    const job = service.buildJobManifest(baseInput);
+    const cmd = (job.spec?.template.spec?.containers?.[0]?.command ?? []).join('\n');
+    expect(cmd).toContain('if [ -z "$DEST_MASTER_USER" ]');
+    expect(cmd).toContain('exit 78');
   });
 
   it('passes optional --automap and --nofoldersizes when set in options', () => {
@@ -202,20 +264,31 @@ describe('buildJobManifest', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('buildJobSecret', () => {
-  it('base64-encodes the source and destination passwords into stringData', () => {
+  it('carries ONLY the source password into stringData', () => {
     const sec = service.buildJobSecret({
       jobId: 'job-123',
       namespace: 'mail',
       sourcePassword: 'srcpw',
-      destPassword: 'dstpw',
     });
     expect(sec.metadata?.name).toBe('imapsync-job-123');
     expect(sec.stringData).toEqual({
       SOURCE_PASSWORD: 'srcpw',
-      DEST_PASSWORD: 'dstpw',
     });
     // type defaults to Opaque
     expect(sec.type).toBe('Opaque');
+  });
+
+  // Regression: platform-api used to read Stalwart's master password out
+  // of its own STALWART_MASTER_SECRET env var and copy the cleartext into
+  // this per-job Secret. The Job now reads it from `mail-secrets` via
+  // secretKeyRef, so the master password must never land here.
+  it('never writes DEST_PASSWORD into the per-job Secret', () => {
+    const sec = service.buildJobSecret({
+      jobId: 'job-123',
+      namespace: 'mail',
+      sourcePassword: 'srcpw',
+    });
+    expect(Object.keys(sec.stringData ?? {})).not.toContain('DEST_PASSWORD');
   });
 });
 
