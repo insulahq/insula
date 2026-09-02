@@ -61,15 +61,34 @@ import type { Database } from '../../db/index.js';
 // ─── Ingress backend resolution ─────────────────────────────────────────────
 
 /**
- * Raised when a catalog entry cannot be exposed via an Ingress — because it
- * is a database/service tier, or because no component declared an
- * `ingress: true` port. Callers use this to skip the entry AND to surface a
- * user-visible error (can't route traffic at a DB).
+ * Raised when a catalog entry cannot be exposed via an Ingress.
+ *
+ * `kind` distinguishes two very different situations that were previously
+ * conflated, with the result that a perfectly healthy database deployment
+ * permanently displayed "Last error: Catalog type 'database' cannot be
+ * exposed via Ingress" in the tenant panel:
+ *
+ *   'by-design'    — the entry is a `database`/`service` tier. Databases are
+ *                    cluster-only BY DEFINITION. This is a classification
+ *                    outcome, not a failure, and must never be written to
+ *                    `deployments.last_error`.
+ *   'misconfigured' — an app-tier entry that SHOULD be routable but declares
+ *                    no `ingress: true` port (or has no components at all).
+ *                    That is a genuine fault worth surfacing to the operator.
+ *
+ * Both still block route creation with a 400 — refusing to point a route at a
+ * database is correct either way. The distinction only governs whether the
+ * condition is recorded as an error against the deployment.
  */
+export type NotIngressableKind = 'by-design' | 'misconfigured';
+
 export class NotIngressableError extends Error {
-  constructor(reason: string) {
+  readonly kind: NotIngressableKind;
+
+  constructor(reason: string, kind: NotIngressableKind = 'misconfigured') {
     super(reason);
     this.name = 'NotIngressableError';
+    this.kind = kind;
   }
 }
 
@@ -105,6 +124,7 @@ export function resolveIngressBackend(
   if (entry.type === 'database' || entry.type === 'service') {
     throw new NotIngressableError(
       `Catalog type '${entry.type}' cannot be exposed via Ingress (databases and internal services are cluster-only).`,
+      'by-design',
     );
   }
 
@@ -279,15 +299,23 @@ export async function reconcileIngress(
     try {
       backendMap.set(d.id, resolveIngressBackend(entry, d.name));
     } catch (err) {
-      // Not ingressable (DB, service, or missing ingress port). Skip — the
-      // reconciler will silently leave this deployment off the Ingress.
-      // Surface it via deployment.lastError so the UI shows the reason.
+      // Not ingressable. Skip — the reconciler leaves this deployment off
+      // the Ingress either way.
+      //
+      // Only a MISCONFIGURED entry is worth recording. A `database`/`service`
+      // tier is cluster-only by definition, and this loop visits every
+      // deployment in the tenant on every reconcile — so stamping it here
+      // meant each Ingress rebuild re-branded every healthy database with a
+      // permanent "Last error", clobbering any real error already on the row
+      // and never clearing.
       if (err instanceof NotIngressableError) {
-        try {
-          await db.update(deployments)
-            .set({ lastError: err.message })
-            .where(eq(deployments.id, d.id));
-        } catch { /* best-effort logging */ }
+        if (err.kind === 'misconfigured') {
+          try {
+            await db.update(deployments)
+              .set({ lastError: err.message })
+              .where(eq(deployments.id, d.id));
+          } catch { /* best-effort logging */ }
+        }
       } else {
         throw err;
       }
