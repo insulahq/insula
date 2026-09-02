@@ -12,6 +12,46 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **A route that only redirects now works.** An ingress route with no
+  deployment and a redirect URL was accepted and stored, but never turned into
+  anything the ingress could serve — the hostname answered 404. Such a route is
+  now published like any other, and answers every path with a permanent
+  redirect (HTTP 301). Use it for a domain you own but do not host, or an
+  address you are retiring. A route with neither an application nor a redirect
+  is still skipped, as before.
+
+- **The route Redirect URL and rate-limit burst settings now save.** Both
+  fields were sent under a different name than the API expects, so saving them
+  returned success and changed nothing — on every route, on every cluster. The
+  settings endpoints now reject an unrecognised field outright instead of
+  quietly ignoring it, so a mismatch can never again look like a successful
+  save.
+
+- **Every route response now has the same shape.** Depending on which endpoint
+  answered, the same route came back with numeric `0`/`1` flags or with
+  true/false. Listing, fetching, creating and updating a route all use one
+  representation now.
+
+- **SQL Manager could permanently lose access to a database that was deleted and
+  re-created under the same name.** A deployment's storage folder is derived from
+  its type, application and name, and deleting a deployment without also deleting
+  its data leaves that folder behind — so re-creating one with the same name
+  mounts the previous data directory. Database engines only apply the configured
+  root password when they initialise an *empty* directory, so the newly generated
+  password was silently ignored and every SQL Manager call failed to authenticate
+  from then on. The password-reset step that already existed for this situation
+  was only armed when an operator explicitly picked an existing folder; it now
+  runs for every database deployment. It costs nothing when there is no previous
+  data (it checks first and exits), and it can no longer take a database offline
+  if it fails — including a PostgreSQL case where an interrupted reset could have
+  left the database trusting every local connection.
+
+- **SQL Manager showed "no databases" instead of the actual error.** When the
+  database list, table list or user list could not be read, the panel discarded
+  the failure and rendered an empty picker — so an authentication or connection
+  problem looked like an empty database. These now show the error, with a retry.
+
 ## [2026.9.3] - 2026-09-02
 
 ### Added

@@ -111,7 +111,11 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
   }, async (request) => {
     const { domainId } = request.params as { domainId: string };
     const routes = await listRoutesForDomain(app.db, domainId);
-    return success(routes);
+    // Same serialiser as GET /routes/:id and the settings PATCHes. This list
+    // used to return raw Drizzle rows, so the identical resource came back
+    // with 0/1 integers here and booleans there — and the shared contract
+    // could only describe one of them.
+    return success(routes.map(mapRouteToResponse));
   });
 
   // POST /api/v1/tenants/:tenantId/domains/:domainId/routes
@@ -161,7 +165,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    reply.status(201).send(success(route));
+    reply.status(201).send(success(mapRouteToResponse(route)));
   });
 
   // PATCH /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId
@@ -187,7 +191,7 @@ export async function ingressRouteRoutes(app: FastifyInstance): Promise<void> {
       servicePort: parsed.data.service_port,
     }, tenantId);
     await triggerReconcile(tenantId);
-    return success(updated);
+    return success(mapRouteToResponse(updated));
   });
 
   // DELETE /api/v1/tenants/:tenantId/domains/:domainId/routes/:routeId

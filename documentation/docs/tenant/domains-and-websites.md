@@ -119,6 +119,28 @@ Both spellings stay reachable when a redirect is on: the non-canonical one is
 served purely to issue the redirect, and the certificate covers both names, so
 `https://` works on either. You do not need a second route for the `www` form.
 
+### Redirect a hostname somewhere else
+
+The same tab has a **Redirect URL**. Set it and every request to this route —
+any path — is answered with a permanent redirect (HTTP 301) to that address.
+
+This works **with or without an application**. A route that has no deployment
+and only a redirect is a valid setup: use it for a domain you own but do not
+host, an old address you are retiring, or a campaign name that should land on
+a page elsewhere. Leave the deployment unset, fill in the redirect, save.
+
+!!! tip "It still needs DNS and a certificate"
+    Point the hostname at the platform like any other route — the redirect is
+    issued by the platform's ingress, so traffic has to arrive here first. A
+    certificate is requested automatically, and `https://` starts working once
+    it has been issued (usually a minute or two after the route is saved).
+
+!!! info "Permanent means browsers remember it"
+    A 301 is cached by browsers, sometimes for a long time. While you are still
+    deciding where a hostname should point, test with a spare hostname first —
+    clearing a cached 301 from every visitor's browser is not something the
+    platform can do for you.
+
 !!! info "Where is the webroot / PHP version setting?"
     There is no separate webroot or PHP-version switch here. Which web server
     and language version your site runs are set by **the application you

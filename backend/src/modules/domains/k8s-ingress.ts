@@ -30,6 +30,13 @@ import { ingressRoutes, deployments, domains, catalogEntries, privateWorkers } f
 import { isAutoTlsEnabled } from '../tls-settings/service.js';
 import { ensureRouteCertificate } from '../certificates/service.js';
 import { createRoute } from '../ingress-routes/service.js';
+import {
+  ensureRedirectSinkService,
+  REDIRECT_SINK_SERVICE_NAME,
+  REDIRECT_SINK_PORT,
+} from './redirect-sink.js';
+import { isRoutable, isRedirectOnly } from '../ingress-routes/route-targets.js';
+import type { RouteTargetFields } from '../ingress-routes/route-targets.js';
 import { buildAllRouteSpecs } from '../ingress-routes/annotation-sync.js';
 import {
   buildIngressRoute,
@@ -217,14 +224,19 @@ export async function reconcileIngress(
     return;
   }
 
-  // Get all ingress routes with an assigned target (deployment OR
-  // private_worker) for this tenant's domains. Migration 0076 added
-  // the private_worker_id polymorphic target column.
+  // Get all routable ingress routes for this tenant's domains. A route is
+  // routable when it has an assigned target (deployment OR private_worker —
+  // migration 0076 added the private_worker_id polymorphic column) OR when it
+  // is redirect-only: a `redirect_url` with no target is a hostname that exists
+  // purely to 301 elsewhere. Requiring a target used to drop those rows here,
+  // so the operator's redirect was accepted by the API, stored, and then never
+  // materialised into an IngressRoute — Traefik had no router for the host and
+  // answered with its own 404.
   const allRoutes = await db.select().from(ingressRoutes);
   const tenantRoutes = allRoutes.filter(
     r =>
       domainIds.includes(r.domainId)
-      && (r.deploymentId || r.privateWorkerId)
+      && isRoutable(r)
       && r.status === 'active',
   );
 
@@ -254,10 +266,27 @@ export async function reconcileIngress(
   const updatedRoutes = updatedAllRoutes.filter(
     r =>
       domainIds.includes(r.domainId)
-      && (r.deploymentId || r.privateWorkerId)
+      && isRoutable(r)
       && r.status === 'active'
       && !suppressedDomainIds.has(r.domainId),
   );
+
+  // A redirect-only route needs a `services[]` entry it can legally reference
+  // from its own namespace. Create the sink once, only when one of these
+  // routes actually exists, so tenants with no redirect routes get no extra
+  // object. Best-effort: a failure here must not stop the tenant's other
+  // routes from reconciling.
+  if (updatedRoutes.some(isRedirectOnly)) {
+    try {
+      await ensureRedirectSinkService(k8s, namespace);
+    } catch (err) {
+      console.warn(
+        `[ingress-reconcile] ${namespace}: redirect-sink Service could not be ensured — `
+        + `redirect-only routes will not serve until it exists: `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   if (updatedRoutes.length === 0) {
     await deleteIngressRoute(k8s.custom, namespace, ingressName);
@@ -352,6 +381,7 @@ export async function reconcileIngress(
     id: string;
     deploymentId: string | null;
     privateWorkerId: string | null;
+    redirectUrl: string | null;
     servicePort: number | null;
     hostname: string;
     path: string | null;
@@ -359,7 +389,13 @@ export async function reconcileIngress(
     domainId: string;
   }
 
-  const resolveBackend = (route: { deploymentId: string | null; privateWorkerId: string | null; servicePort: number | null }): { serviceName: string; port: number } | null => {
+  const resolveBackend = (route: RouteTargetFields & { servicePort: number | null }): { serviceName: string; port: number } | null => {
+    // Redirect-only: nothing of its own to serve. Point at the in-namespace
+    // ExternalName sink purely to satisfy the CRD's required services[]; the
+    // redirect Middleware short-circuits with a 301 first.
+    if (isRedirectOnly(route)) {
+      return { serviceName: REDIRECT_SINK_SERVICE_NAME, port: REDIRECT_SINK_PORT };
+    }
     if (route.privateWorkerId) {
       return privateWorkerBackends.get(route.privateWorkerId) ?? null;
     }
