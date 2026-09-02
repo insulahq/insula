@@ -12,12 +12,12 @@ import { injectAdminAuth } from './helpers';
  *     refresh without a manual reload (task-completion refresher).
  */
 
-const API = process.env.API_URL ?? 'https://admin.k8s-platform.test:2011';
+const API = process.env.API_URL ?? 'https://admin.insula.host:2011';
 
 async function adminToken(): Promise<string> {
   const ctx = await pwRequest.newContext({ ignoreHTTPSErrors: true });
   const resp = await ctx.post(`${API}/api/v1/auth/login`, {
-    data: { email: 'admin@k8s-platform.test', password: 'admin' },
+    data: { email: 'admin@insula.host', password: 'admin' },
   });
   const body = (await resp.json()) as { data?: { token?: string } };
   await ctx.dispose();

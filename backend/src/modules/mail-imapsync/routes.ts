@@ -35,15 +35,6 @@ const encryptionKey = (): string => {
   throw new Error('PLATFORM_ENCRYPTION_KEY is required (mail-imapsync routes)');
 };
 
-const masterSecret = (): string => {
-  const s = process.env.STALWART_MASTER_SECRET ?? process.env.MASTER_SECRET;
-  if (s && s.length > 0) return s;
-  if (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test') {
-    return 'master-dev-secret-not-for-production';
-  }
-  throw new Error('STALWART_MASTER_SECRET is required (mail-imapsync routes)');
-};
-
 const stalwartImapHost = (): string =>
   // Default to the 0.16 Service name. v015 was retired in Cut 3
   // (2026-05-04); clusters still on v015 must set STALWART_IMAP_HOST
@@ -112,14 +103,15 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
 
     // Validate ALL required env vars BEFORE we insert the DB row.
     // Otherwise a misconfiguration leaves a 'pending' row stuck in
-    // the partial unique index and blocks future attempts. Both
-    // helpers throw a clear Error if their env var is missing in a
-    // non-dev environment; we surface that as a 503 instead of
-    // letting it bubble as an unhandled rejection.
-    let resolvedMasterSecret: string;
+    // the partial unique index and blocks future attempts. The helper
+    // throws a clear Error if its env var is missing in a non-dev
+    // environment; we surface that as a 503 instead of letting it
+    // bubble as an unhandled rejection.
+    //
+    // The Stalwart master password is NOT resolved here — the Job
+    // reads it from `mail-secrets` in the mail namespace itself.
     let resolvedEncryptionKey: string;
     try {
-      resolvedMasterSecret = masterSecret();
       resolvedEncryptionKey = encryptionKey();
     } catch (err) {
       throw new ApiError(
@@ -162,7 +154,6 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       jobId: row.id,
       namespace: mailNamespace(),
       sourcePassword: parsed.data.source_password,
-      destPassword: resolvedMasterSecret,
     });
     const job = service.buildJobManifest({
       jobId: row.id,
@@ -192,10 +183,11 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       //   3. The Job UID is only known after createNamespacedJob
       //      returns, so the ownerReference must be patched in.
       //
-      // This guarantees the cleartext STALWART_MASTER_SECRET +
-      // user source password are removed by K8s GC whenever the
-      // Job is deleted (TTL sweep, operator delete, reconciler
-      // cleanup).
+      // This guarantees the user's cleartext source password is
+      // removed by K8s GC whenever the Job is deleted (TTL sweep,
+      // operator delete, reconciler cleanup). The Stalwart master
+      // password is never copied here — the Job reads it from the
+      // long-lived `mail-secrets` Secret via secretKeyRef.
       //
       // backup-coverage: excluded:transient-job-credential
       // (per-imapsync-Job ephemeral Secret tied to the Job's
@@ -407,10 +399,10 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    let resolvedMasterSecret: string;
+    // As in the create path: the master password is resolved by the
+    // kubelet from `mail-secrets`, not here.
     let resolvedEncryptionKey: string;
     try {
-      resolvedMasterSecret = masterSecret();
       resolvedEncryptionKey = encryptionKey();
     } catch (err) {
       throw new ApiError(
@@ -456,7 +448,6 @@ export async function mailImapsyncRoutes(app: FastifyInstance): Promise<void> {
       jobId: k8sJobName.replace('imapsync-', ''),
       namespace: mailNamespace(),
       sourcePassword: sourcePasswordCleartext,
-      destPassword: resolvedMasterSecret,
     });
     // Override the secret name to match the timestamped k8s job name
     secret.metadata!.name = k8sJobName;

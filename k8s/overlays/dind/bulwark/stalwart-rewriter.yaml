@@ -16,7 +16,7 @@
 # This sidecar deploys a thin Node.js reverse proxy that streams
 # requests to stalwart-mgmt:8080 and rewrites any
 # `https://<pod-hostname>` occurrences in the response body to the
-# external `https://stalwart.k8s-platform.test:2011`. The Bulwark
+# external `https://stalwart.insula.host:2011`. The Bulwark
 # IngressRoute is pointed at this proxy instead of stalwart-mgmt.
 #
 # Eval-only — production fixes this at Stalwart bootstrap time, not
@@ -48,7 +48,7 @@ data:
 
     const UPSTREAM_HOST = process.env.UPSTREAM_HOST || 'stalwart-mgmt.mail.svc.cluster.local';
     const UPSTREAM_PORT = parseInt(process.env.UPSTREAM_PORT || '8080', 10);
-    const PUBLIC_HOST   = process.env.PUBLIC_HOST   || 'stalwart.k8s-platform.test';
+    const PUBLIC_HOST   = process.env.PUBLIC_HOST   || 'stalwart.insula.host';
     const PUBLIC_PORT   = process.env.PUBLIC_PORT   || '2011';
     const LISTEN_PORT   = parseInt(process.env.LISTEN_PORT || '8080', 10);
     // Comma-separated list of browser origins permitted by CORS.
@@ -56,7 +56,7 @@ data:
     // but credentialed mode requires an exact match so the SPA will fail
     // unless its origin is whitelisted.
     const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
-      'https://bulwark.k8s-platform.test:2011')
+      'https://bulwark.insula.host:2011')
       .split(',').map(s => s.trim()).filter(Boolean);
 
     const escHost = PUBLIC_HOST.replace(/\./g, '\\.');
@@ -204,14 +204,14 @@ spec:
             - name: UPSTREAM_PORT
               value: "8080"
             - name: PUBLIC_HOST
-              value: "stalwart.k8s-platform.test"
+              value: "stalwart.insula.host"
             - name: PUBLIC_PORT
               value: "2011"
             - name: ALLOWED_ORIGINS
               # Browser origins that may make credentialed JMAP requests.
               # Bulwark is the only consumer in this eval; Stalwart's own
               # WebAdmin is same-origin so doesn't need CORS at all.
-              value: "https://bulwark.k8s-platform.test:2011,https://stalwart.k8s-platform.test:2011"
+              value: "https://bulwark.insula.host:2011,https://stalwart.insula.host:2011"
             - name: LISTEN_PORT
               value: "8080"
           ports:

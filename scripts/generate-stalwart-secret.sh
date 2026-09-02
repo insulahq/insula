@@ -121,7 +121,25 @@ fi
 
 # ─── Generate random passwords (URL-safe, 32 bytes) ──────────────────────
 ADMIN_PW=$(openssl rand -base64 32 | tr -d '\n=+/' | cut -c 1-43)
-MASTER_PW=$(openssl rand -base64 32 | tr -d '\n=+/' | cut -c 1-43)
+
+# MASTER_SECRET here is the bcrypt hash of the master principal's password.
+# `mail-secrets/STALWART_MASTER_PASSWORD` holds the CLEARTEXT of that same
+# password and is the source of truth for it (see
+# backend/src/modules/mail-admin/reconcile-master-credential.ts). If this
+# script invents a random one while mail-secrets already asserts a value, the
+# two disagree and every `<mailbox>%<master>` proxy login fails until the
+# principals-sync reconciler heals it — webmail impersonation and mailbox
+# migration are broken in the meantime.
+#
+# That is exactly what happened on the dev DinD stack: the overlay's
+# mail-secrets hardcodes `stalwart-dev-master` and its comment says the value
+# "must match the cleartext used to generate the MASTER_SECRET bcrypt hash in
+# k8s/overlays/dind/stalwart/secret.yaml" — a file deleted in the 0.15→0.16
+# migration. Nothing has generated a matching hash since.
+#
+# So: honour a caller-supplied password, else keep the previous random
+# behaviour. Callers that do not set it are unaffected.
+MASTER_PW="${STALWART_MASTER_PASSWORD:-$(openssl rand -base64 32 | tr -d '\n=+/' | cut -c 1-43)}"
 
 # ─── Hash via htpasswd (bcrypt cost 12) ───────────────────────────────────
 hash_password() {
