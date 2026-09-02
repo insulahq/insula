@@ -12,6 +12,33 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Moving or copying many files at once could fail partway with "Too many
+  requests" while the file manager appeared to restart.** Selecting a large
+  group of files and moving them sent one request *per file*, all at once — a
+  120-file move produced 62 requests in two seconds. That exceeded the API rate
+  limit, and the rejections spilled over into the rest of the page: the file
+  listing, the task list and the file-manager status check were all refused at
+  the same time. With the status check failing, the Files page fell back to its
+  "Starting file manager…" screen, so a file manager that was running normally
+  the whole time looked as though it had crashed and restarted.
+
+  The move also stopped reporting as soon as the first request was rejected,
+  even though the others kept succeeding in the background. The result was an
+  error message about a move that had partly worked, with no indication of
+  which files had actually moved — and retrying reported "Source not found" for
+  everything the first attempt had already moved.
+
+  Move, copy, delete, permissions and ownership now each send the whole
+  selection as a **single** request, with a progress dialog showing the running
+  count and the file being worked on. It closes itself when everything
+  succeeds, and stays open listing exactly which paths failed and why when only
+  some do. A rate-limited status check no longer renders as "starting", and no
+  longer retries every two seconds against the limit that is rejecting it.
+
+  Nothing about how files are stored changed, and no action is needed on any
+  cluster — existing installations are fixed by upgrading.
+
 ## [2026.9.2] - 2026-09-02
 
 ### Fixed

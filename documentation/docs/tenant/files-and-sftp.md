@@ -28,10 +28,22 @@ and an actions toolbar.
 | **New File** / **New Folder** | Buttons in the toolbar. |
 | **Download** | Per-file action. |
 | **Rename / Move to Trash** | Per-file actions. Deleted files go to the [recycle bin](#recycle-bin) unless you tick **Delete permanently**. |
-| **Delete many** | Select items (or **Select all**) → **Move to Trash** in the bulk toolbar. The whole selection is handled in a single operation, and if any item cannot be removed you are told which ones — the rest still go. |
-| **Copy / Move** | Select items → **Copy** or **Move** in the bulk toolbar. |
+| **Delete many** | Select items (or **Select all**) → **Move to Trash** in the bulk toolbar. |
+| **Copy / Move** | Select items → **Copy** or **Move** in the bulk toolbar, then pick the destination folder. |
 | **Archive (zip/tar)** | Select items → **Archive**. Extract an archive from its row action. See [Large archives](#large-archives). |
 | **Permissions / Ownership** | Select items → **Permissions** or **Ownership** (advanced — change file access modes). |
+
+!!! info "How bulk actions run"
+
+    Move, copy, delete, permissions and ownership each send the **whole
+    selection as one operation**, however many files it contains, and show a
+    progress dialog with a running count and the file currently being handled.
+    Up to 1000 paths can go in a single action.
+
+    The dialog closes itself when every item succeeded. If some items could not
+    be handled it **stays open and lists exactly which ones, and why** — the
+    rest still go through. Partial results are always reported rather than
+    hidden behind a single error, so you never have to guess what moved.
 
 The **Import** menu offers three handy shortcuts:
 
