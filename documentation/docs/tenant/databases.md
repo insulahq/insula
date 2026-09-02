@@ -26,6 +26,30 @@ desktop tools needed.
 For a SQLite-based app, the manager works directly on the SQLite file instead of
 a server selector.
 
+### If the database list, tables, or users cannot be read
+
+When SQL Manager cannot read something from a running engine, it now shows the
+error in place — with a **Retry** button on the database list — instead of an
+empty list. An empty list means the engine really is empty; an error panel means
+the engine could not be asked.
+
+The most common cause is that the platform can no longer sign in to the engine
+as its administrator. That happens when a database deployment is **deleted
+without deleting its data and then re-created under the same name**: the new
+deployment re-uses the old data folder, and database engines only accept a new
+administrator password when they set up an empty one — so the old password stays
+in force. Your data and your own database users are unaffected, and applications
+using the database keep working; only the management tools are locked out.
+
+!!! tip "Avoid this when replacing a database deployment"
+    If you want a clean start, delete the deployment **and** its data, then
+    re-create it. If you want to keep the data, keep the existing deployment
+    rather than deleting and re-creating it under the same name.
+
+If you hit this, contact your administrator — recovering it requires resetting
+the engine's administrator password on the server, which briefly restarts the
+database.
+
 ## Create a database and users
 
 **Create a database**

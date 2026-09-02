@@ -175,7 +175,7 @@ function RedirectsTab({ tenantId, routeId, route, dnsMode }: {
 
   const [forceHttps, setForceHttps] = useState(route.forceHttps);
   const [wwwRedirect, setWwwRedirect] = useState(route.wwwRedirect);
-  const [customRedirectUrl, setCustomRedirectUrl] = useState(route.customRedirectUrl ?? '');
+  const [customRedirectUrl, setCustomRedirectUrl] = useState(route.redirectUrl ?? '');
   const [dirty, setDirty] = useState(false);
 
   const markDirty = () => setDirty(true);
@@ -186,7 +186,7 @@ function RedirectsTab({ tenantId, routeId, route, dnsMode }: {
       await updateRedirects.mutateAsync({
         force_https: forceHttps,
         www_redirect: wwwRedirect,
-        custom_redirect_url: customRedirectUrl || null,
+        redirect_url: customRedirectUrl || null,
       });
       setDirty(false);
     } catch { /* error via updateRedirects.error */ }
@@ -347,7 +347,7 @@ function SecurityTab({ tenantId, routeId, route }: {
   /* ── Rate Limiting state ── */
   const [rateLimitRps, setRateLimitRps] = useState(String(route.rateLimitRps ?? ''));
   const [rateLimitConnections, setRateLimitConnections] = useState(String(route.rateLimitConnections ?? ''));
-  const [rateLimitBurst, setRateLimitBurst] = useState(String(route.rateLimitBurst ?? ''));
+  const [rateLimitBurst, setRateLimitBurst] = useState(String(route.rateLimitBurstMultiplier ?? ''));
   const [rateDirty, setRateDirty] = useState(false);
   const markRateDirty = () => setRateDirty(true);
 
@@ -406,7 +406,7 @@ function SecurityTab({ tenantId, routeId, route }: {
       await updateSecurity.mutateAsync({
         rate_limit_rps: rateLimitRps ? Number(rateLimitRps) : null,
         rate_limit_connections: rateLimitConnections ? Number(rateLimitConnections) : null,
-        rate_limit_burst: rateLimitBurst ? Number(rateLimitBurst) : null,
+        rate_limit_burst_multiplier: rateLimitBurst ? Number(rateLimitBurst) : null,
       });
       setRateDirty(false);
     } catch (err) {
