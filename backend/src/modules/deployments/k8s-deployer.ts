@@ -1241,7 +1241,7 @@ export async function getDeploymentStatus(
  *   Quota exceeded — CPU limit: requested 500m, using 500m of 500m.
  *   Free up resources or upgrade the plan.
  */
-function formatQuotaExceededMessage(raw: string): string {
+export function formatQuotaExceededMessage(raw: string): string {
   const LABEL_MAP: Record<string, string> = {
     'limits.cpu': 'CPU limit',
     'limits.memory': 'memory limit',
