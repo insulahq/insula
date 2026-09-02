@@ -34,6 +34,8 @@ import {
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
+import { isRoutable } from './route-targets.js';
+import type { RouteTargetFields } from './route-targets.js';
 import {
   buildMiddleware,
   middlewareName,
@@ -689,13 +691,17 @@ export async function buildAllRouteSpecs(
   k8s: K8sClients,
   tenantId: string,
   domainIds: string[],
-  backendResolver: (route: { id: string; deploymentId: string | null; privateWorkerId: string | null; servicePort: number | null }) => { serviceName: string; port: number } | null,
+  backendResolver: (route: RouteTargetFields & { id: string; servicePort: number | null }) => { serviceName: string; port: number } | null,
 ): Promise<Map<string, RouteBuildResult>> {
   const out = new Map<string, RouteBuildResult>();
   const allRoutes = await db.select().from(ingressRoutes);
+  // Same admission rule as the domains reconciler — see route-targets.ts. A
+  // redirect-only route must reach this point precisely so its redirect
+  // Middleware gets built; dropping it here would leave the IngressRoute
+  // without the 301 that is its entire purpose.
   const tenantRoutes = allRoutes.filter(
     (r) => domainIds.includes(r.domainId)
-      && (r.deploymentId || r.privateWorkerId)
+      && isRoutable(r)
       && r.status === 'active',
   );
   for (const route of tenantRoutes) {
