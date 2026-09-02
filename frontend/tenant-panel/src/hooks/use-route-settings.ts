@@ -1,64 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import type { WafRuleExclusionScope } from '@insula/api-contracts';
+import type { IngressRouteResponse, WafRuleExclusionScope } from '@insula/api-contracts';
 import { apiFetch } from '@/lib/api-client';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-export interface RouteRedirectSettings {
-  readonly forceHttps: boolean;
-  readonly wwwRedirect: 'none' | 'add-www' | 'remove-www';
-  readonly customRedirectUrl: string | null;
-}
-
-export interface RouteSecuritySettings {
-  readonly ipAllowlist: string | null;
-  readonly rateLimitRps: number | null;
-  readonly rateLimitConnections: number | null;
-  readonly rateLimitBurst: number | null;
-  readonly wafEnabled: boolean;
-  readonly wafOwaspCoreRules: boolean;
-  readonly wafAnomalyThreshold: number;
-  readonly wafExcludedRuleIds: string | null;
-}
-
-export interface RouteAdvancedSettings {
-  readonly customErrorCodes: string | null;
-  readonly customErrorPath: string | null;
-  readonly additionalHeaders: Record<string, string> | null;
-}
-
-export interface RouteDetailResponse {
-  readonly id: string;
-  readonly domainId: string;
-  readonly hostname: string;
-  readonly path: string;
-  readonly deploymentId: string | null;
-  readonly ingressCname: string;
-  readonly nodeHostname: string | null;
-  readonly isApex: number;
-  readonly tlsMode: string;
-  readonly status: string;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly forceHttps: boolean;
-  readonly wwwRedirect: 'none' | 'add-www' | 'remove-www';
-  readonly customRedirectUrl: string | null;
-  readonly ipAllowlist: string | null;
-  readonly rateLimitRps: number | null;
-  readonly rateLimitConnections: number | null;
-  readonly rateLimitBurst: number | null;
-  readonly wafEnabled: boolean;
-  readonly wafOwaspCoreRules: boolean;
-  readonly wafAnomalyThreshold: number;
-  readonly wafExcludedRuleIds: string | null;
-  readonly hstsEnabled: boolean;
-  readonly hstsMaxAge: number;
-  readonly hstsIncludeSubdomains: boolean;
-  readonly hstsPreload: boolean;
-  readonly customErrorCodes: string | null;
-  readonly customErrorPath: string | null;
-  readonly additionalHeaders: Record<string, string> | null;
-}
+// The route detail/settings shape is the contract's, not a local restatement.
+// It used to be a hand-written interface here, and four of its field names were
+// wrong — customRedirectUrl, rateLimitBurst, wafOwaspCoreRules and
+// wafExcludedRuleIds do not exist in any API response. TypeScript could not
+// catch that, because the local type was self-consistent: the page read
+// `route.customRedirectUrl`, got undefined, and rendered an empty box.
+// Deriving from @insula/api-contracts makes the next drift a compile error.
+export type RouteDetailResponse = IngressRouteResponse;
 
 export interface ProtectedDir {
   readonly id: string;
@@ -114,7 +67,7 @@ export function useUpdateRouteRedirects(tenantId: string | undefined, routeId: s
     mutationFn: (input: {
       readonly force_https?: boolean;
       readonly www_redirect?: 'none' | 'add-www' | 'remove-www';
-      readonly custom_redirect_url?: string | null;
+      readonly redirect_url?: string | null;
     }) =>
       apiFetch<{ data: RouteDetailResponse }>(
         `${routeBasePath(tenantId!, routeId!)}/redirects`,
@@ -136,7 +89,7 @@ export function useUpdateRouteSecurity(tenantId: string | undefined, routeId: st
       readonly ip_allowlist?: string | null;
       readonly rate_limit_rps?: number | null;
       readonly rate_limit_connections?: number | null;
-      readonly rate_limit_burst?: number | null;
+      readonly rate_limit_burst_multiplier?: number | null;
       // Only `waf_enabled` is mutated from the tenant UI under the
       // shared-sidecar architecture. The other waf_* fields the backend
       // Zod schema accepts (waf_owasp_crs, waf_anomaly_threshold,

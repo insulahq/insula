@@ -13,6 +13,26 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Fixed
+- **A route that only redirects now works.** An ingress route with no
+  deployment and a redirect URL was accepted and stored, but never turned into
+  anything the ingress could serve — the hostname answered 404. Such a route is
+  now published like any other, and answers every path with a permanent
+  redirect (HTTP 301). Use it for a domain you own but do not host, or an
+  address you are retiring. A route with neither an application nor a redirect
+  is still skipped, as before.
+
+- **The route Redirect URL and rate-limit burst settings now save.** Both
+  fields were sent under a different name than the API expects, so saving them
+  returned success and changed nothing — on every route, on every cluster. The
+  settings endpoints now reject an unrecognised field outright instead of
+  quietly ignoring it, so a mismatch can never again look like a successful
+  save.
+
+- **Route listings and route details now agree.** The same route came back with
+  numeric `0`/`1` flags from the list endpoint and true/false from the detail
+  endpoint; both now use the detail shape.
+
+### Fixed
 - **SQL Manager could permanently lose access to a database that was deleted and
   re-created under the same name.** A deployment's storage folder is derived from
   its type, application and name, and deleting a deployment without also deleting

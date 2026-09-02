@@ -27,7 +27,7 @@ export const ingressRouteResponseSchema = z.object({
   tlsMode: z.enum(['auto', 'custom', 'none']),
   status: z.string(),
   // Redirect settings
-  forceHttps: z.number(),
+  forceHttps: z.boolean(),
   wwwRedirect: z.enum(['none', 'add-www', 'remove-www']),
   redirectUrl: z.string().nullable(),
   // Security settings
@@ -36,12 +36,14 @@ export const ingressRouteResponseSchema = z.object({
   rateLimitConnections: z.number().nullable(),
   rateLimitBurstMultiplier: z.string().nullable(),
   // WAF settings
-  wafEnabled: z.number(),
-  wafOwaspCrs: z.number(),
+  wafEnabled: z.boolean(),
+  wafOwaspCrs: z.boolean(),
   wafAnomalyThreshold: z.number(),
   wafExcludedRules: z.string().nullable(),
-  // HSTS settings. Booleans here because `mapRouteToResponse` coerces the
-  // 0/1 columns before serialising, same as it does for forceHttps/wafEnabled.
+  // Booleans throughout: `mapRouteToResponse` coerces every 0/1 column before
+  // serialising. forceHttps/wafEnabled/wafOwaspCrs used to be declared as
+  // numbers here even though this comment already claimed otherwise — the
+  // contract disagreed with the only code that produces the response.
   hstsEnabled: z.boolean(),
   hstsMaxAge: z.number(),
   hstsIncludeSubdomains: z.boolean(),
@@ -91,11 +93,16 @@ export const updateIngressRouteSchema = z
 
 // ─── Route Settings Inputs ──────────────────────────────────────────────────
 
+// `.strict()` on every settings input below: Zod strips unknown keys by
+// default, so a client sending the wrong field name got HTTP 200 and no write.
+// That is exactly how `custom_redirect_url` and `rate_limit_burst` (both sent
+// by the tenant panel) silently did nothing on every route of every cluster.
+// A typo must 400, not succeed.
 export const updateRedirectSettingsSchema = z.object({
   force_https: z.boolean().optional(),
   www_redirect: z.enum(['none', 'add-www', 'remove-www']).optional(),
   redirect_url: z.string().url().max(2048).nullable().optional(),
-});
+}).strict();
 
 export const updateSecuritySettingsSchema = z.object({
   ip_allowlist: z.string().max(2000).nullable().optional().refine(
@@ -109,7 +116,7 @@ export const updateSecuritySettingsSchema = z.object({
   waf_owasp_crs: z.boolean().optional(),
   waf_anomaly_threshold: z.number().int().min(1).max(100).optional(),
   waf_excluded_rules: z.string().max(2000).nullable().optional(),
-});
+}).strict();
 
 export const updateAdvancedSettingsSchema = z.object({
   custom_error_codes: z.string().max(255).nullable().optional(),
@@ -138,7 +145,7 @@ export const updateAdvancedSettingsSchema = z.object({
   hsts_max_age: z.number().int().min(0).max(63072000).optional(),
   hsts_include_subdomains: z.boolean().optional(),
   hsts_preload: z.boolean().optional(),
-});
+}).strict();
 
 // ─── Protected Directories ──────────────────────────────────────────────────
 
