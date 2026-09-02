@@ -587,3 +587,99 @@ describe('resyncImapSyncJob', () => {
       .rejects.toMatchObject({ code: 'IMAPSYNC_ACTIVE_LIMIT', status: 429 });
   });
 });
+
+/**
+ * Spam-folder remapping. Measured on a real DinD Stalwart 0.16 (2026-09-02)
+ * by running the pinned imapsync image twice against identical seeded
+ * sources — once as shipped, once with the remap:
+ *
+ *   source folders: spam / Spam / Junk / junk, one message each
+ *
+ *   CONTROL (--automap only, as shipped)
+ *     Junk Mail (\Junk) : FROM-2-Spam, FROM-3-Junk, FROM-4-junk
+ *     spam      (no flag): FROM-1-spam          <-- stray folder, the bug
+ *
+ *   WITH --regextrans2
+ *     Junk Mail (\Junk) : all four
+ *     (no stray folder)
+ *
+ * So automap already handles `Spam`, `Junk` and `junk`; only all-lowercase
+ * `spam` escapes it. The remap closes that without disturbing the three that
+ * already worked, and transferred the same 4 messages in both runs.
+ *
+ * Stalwart's junk folder is `Junk Mail` with role `junk` — verified via
+ * Mailbox/get on both a production and a DinD server. It is NOT `Spam`;
+ * targeting `Spam` would create a second, role-less folder.
+ */
+describe('spam-folder remapping', () => {
+  const { buildFolderRemapExpression, SPAM_ALIASES, DEFAULT_SPAM_FOLDER, buildJobManifest } = service;
+  const baseManifestInput = (over: { options: Record<string, unknown> }) => ({
+    jobId: 'job-spam', secretName: 'imapsync-job-spam', namespace: 'mail',
+    mailboxAddress: 'alice@acme.com', sourceHost: 'imap.example.test', sourcePort: 993,
+    sourceUsername: 'alice@example.test', sourceSsl: true,
+    destHost: 'stalwart-mail.mail.svc.cluster.local', destPort: 143,
+    image: 'gilleslamiral/imapsync:2.319',
+    ...over,
+  });
+  const expr = () => buildFolderRemapExpression({ dest: DEFAULT_SPAM_FOLDER, aliases: SPAM_ALIASES });
+
+  it('targets Stalwart\'s real junk folder name, not "Spam"', () => {
+    expect(DEFAULT_SPAM_FOLDER).toBe('Junk Mail');
+  });
+
+  it('is a well-formed anchored, case-insensitive substitution', () => {
+    const e = expr();
+    expect(e.startsWith('s{^')).toBe(true);
+    expect(e.endsWith('}i')).toBe(true);
+    expect(e).toContain('{Junk Mail}');
+  });
+
+  it('covers every reported variant plus the INBOX-prefixed forms', () => {
+    const e = expr();
+    // Mirror Perl's semantics closely enough to assert coverage.
+    const body = e.slice('s{'.length, e.indexOf('}{'));
+    const re = new RegExp(body, 'i');
+    for (const f of ['spam', 'Spam', 'SPAM', 'junk', 'Junk', 'JUNK',
+                     'Junk E-mail', 'Bulk Mail', 'INBOX.spam', 'INBOX/Junk']) {
+      expect(re.test(f), `${f} should remap`).toBe(true);
+    }
+  });
+
+  it('leaves unrelated folders and spam SUBfolders alone', () => {
+    const e = expr();
+    const body = e.slice('s{'.length, e.indexOf('}{'));
+    const re = new RegExp(body, 'i');
+    // Anchoring matters: an unanchored rule would collapse a whole subtree.
+    for (const f of ['INBOX', 'Sent Items', 'Archive', 'Spam/2024', 'Spammers', 'MySpam']) {
+      expect(re.test(f), `${f} must NOT remap`).toBe(false);
+    }
+  });
+
+  it('escapes regex metacharacters in an alias', () => {
+    const e = buildFolderRemapExpression({ dest: 'X', aliases: ['a.b', 'c+d'] });
+    expect(e).toContain('a\\.b');
+    expect(e).toContain('c\\+d');
+  });
+
+  it('emits --regextrans2 in the Job args by default', () => {
+    const job = buildJobManifest(baseManifestInput({ options: { automap: true } }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    const i = args.indexOf('--regextrans2');
+    expect(i).toBeGreaterThan(-1);
+    expect(args[i + 1]).toContain('Junk Mail');
+    // Must come after --automap so the explicit rule wins.
+    expect(i).toBeGreaterThan(args.indexOf('--automap'));
+  });
+
+  it('honours an operator-supplied destination', () => {
+    const job = buildJobManifest(baseManifestInput({ options: { spamFolder: 'Junk' } }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    expect(args[args.indexOf('--regextrans2') + 1]).toContain('{Junk}');
+  });
+
+  it('omits the remap entirely when spamFolder is blank', () => {
+    const job = buildJobManifest(baseManifestInput({ options: { spamFolder: '' } }));
+    const args = job.spec?.template.spec?.containers[0].args ?? [];
+    expect(args).not.toContain('--regextrans2');
+  });
+});
