@@ -19,6 +19,6 @@ test.describe('Admin Users Management', () => {
   test('shows user table with at least the current admin', async ({ page }) => {
     // There should always be at least one admin user (the logged-in user).
     // Use first() since the footer also contains a mailto:admin link.
-    await expect(page.getByText('admin@k8s-platform.test').first()).toBeVisible({ timeout: 2000 });
+    await expect(page.getByText('admin@insula.host').first()).toBeVisible({ timeout: 2000 });
   });
 });

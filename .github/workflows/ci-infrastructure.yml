@@ -226,6 +226,14 @@ jobs:
       - name: Verify SYSTEM tenant scheduler filters + DB invariants
         run: ./scripts/ci-system-tenant-check.sh
 
+  custom-deployment-dispatch-guard:
+    name: Generic deployment lifecycle dispatches on source (ADR-036)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no lifecycle verb silently skips custom deployments
+        run: ./scripts/ci-custom-deployment-dispatch-check.sh
+
   dns-records-invalidation-guard:
     name: DNS-writing mutations invalidate the dns-records query
     runs-on: ubuntu-latest
@@ -281,6 +289,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Verify no module classifies namespaces on its own
         run: ./scripts/ci-namespace-classification-check.sh
+
+  required-env-wired-guard:
+    name: Every env var the backend hard-fails without is wired for real clusters
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Verify no required env var is unset or dind-only
+        run: ./scripts/ci-required-env-wired-check.sh
 
   waf-scope-coverage-guard:
     name: Every WAF exclusion scope is selectable in both panels

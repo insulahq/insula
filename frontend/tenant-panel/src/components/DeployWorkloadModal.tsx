@@ -22,6 +22,13 @@ const INPUT_CLASS =
 
 const DNS_NAME_PATTERN = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 
+/**
+ * Catalog tiers that are never reachable from outside the cluster. Mirrors
+ * the backend invariant in `domains/k8s-ingress.ts:resolveIngressBackend`,
+ * which throws NotIngressableError('by-design') for exactly these two.
+ */
+const CLUSTER_ONLY_ENTRY_TYPES = new Set(['database', 'service']);
+
 export default function DeployWorkloadModal({ open, onClose, preSelectedImageId, onSuccess, existingNames = [] }: DeployWorkloadModalProps) {
   const { tenantId } = useTenantContext();
   const { data: catalogData } = useCatalog();
@@ -707,8 +714,24 @@ export default function DeployWorkloadModal({ open, onClose, preSelectedImageId,
             </div>
           )}
 
-          {/* Step 4: Connect to Unused Ingress Route */}
-          {selectedImageId && (() => {
+          {/* Step 4: Connect to Unused Ingress Route.
+              Hidden for cluster-only tiers — `database` and `service` entries
+              can never be exposed via Ingress (the backend refuses the route
+              with CANNOT_EXPOSE_DEPLOYMENT), so offering the picker here only
+              invites a selection that is silently dropped. */}
+          {selectedImageId && CLUSTER_ONLY_ENTRY_TYPES.has(selectedImage?.type ?? '') && (
+            <div>
+              <label className="block text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
+                4. Connect to Unused Ingress Route
+              </label>
+              <p className="text-sm text-gray-400 dark:text-gray-500 italic rounded-lg bg-gray-50 dark:bg-gray-900 px-4 py-3">
+                {selectedImage?.type === 'database' ? 'Databases' : 'Internal services'} are reachable
+                only from inside the cluster and cannot be attached to a route. Other applications in
+                this tenant connect to it by its service name.
+              </p>
+            </div>
+          )}
+          {selectedImageId && !CLUSTER_ONLY_ENTRY_TYPES.has(selectedImage?.type ?? '') && (() => {
             const unusedDomains = domains.filter(d => !d.deploymentId);
             return (
               <div>

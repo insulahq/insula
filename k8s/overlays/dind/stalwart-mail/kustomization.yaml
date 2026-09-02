@@ -10,7 +10,7 @@
 #
 # Differences from the base:
 #   1. stalwart-mail Service: LoadBalancer → NodePort (DinD has no LB)
-#   2. Ingress: local-ca-issuer + ${DOMAIN} = k8s-platform.test
+#   2. Ingress: local-ca-issuer + ${DOMAIN} = insula.host
 #
 # NetworkPolicies are kept AS-IS from the base (2026-06-07). The old
 # "NetworkPolicy deleted — DinD k3s has no NetworkPolicy enforcer"
@@ -34,6 +34,26 @@ namespace: mail
 
 resources:
   - ../../../base/stalwart-mail
+  # mail-secrets — the MAIL stack's shared Secret, holding (among other
+  # things) STALWART_MASTER_PASSWORD.
+  #
+  # Moved here from overlays/dind/roundcube/ on 2026-09-01. It was named
+  # `roundcube-secrets` until 2026-05-22 and the rename to `mail-secrets`
+  # never moved the dind manifest, so the mail master password stayed
+  # coupled to the WEBMAIL overlay: `local.sh mail-up` alone left the mail
+  # namespace with no master password, and only `webmail-up` created it.
+  #
+  # That went unnoticed because every consumer that needed it happened to
+  # be deployed alongside Roundcube — until mail-imapsync started reading
+  # it via secretKeyRef (optional:false) instead of from platform-api's
+  # env, at which point mailbox migration on a mail-only DinD stack failed
+  # with CreateContainerConfigError.
+  #
+  # bootstrap.sh already treats this as mail-stack state (it creates
+  # mail-secrets in the `mail` namespace next to Stalwart, and its comment
+  # lists platform-api, tenant-bundle mailbox Jobs and mail-imapsync as
+  # consumers). This makes dind match.
+  - mail-secrets.yaml
 
 patches:
   # mail namespace: the 0.15 overlay already created it — skip re-creation.
@@ -99,7 +119,7 @@ patches:
 
   # IngressRoute + Certificate: dev host + local-CA cert. The base
   # IngressRoute matches `Host(stalwart.${DOMAIN})` — on dev,
-  # ${DOMAIN}=k8s-platform.test → stalwart.k8s-platform.test. We rebind
+  # ${DOMAIN}=insula.host → stalwart.insula.host. We rebind
   # to the historical `stalwart16` subdomain so dev users can keep both
   # the old and new admin UIs reachable side-by-side during cutover.
   - patch: |
@@ -110,7 +130,7 @@ patches:
         namespace: mail
       spec:
         routes:
-          - match: "Host(`stalwart16.k8s-platform.test`)"
+          - match: "Host(`stalwart16.insula.host`)"
             kind: Rule
             middlewares:
               - name: admin-auth-cookie
@@ -138,7 +158,7 @@ patches:
       spec:
         secretName: stalwart-webadmin-dev-tls
         dnsNames:
-          - stalwart16.k8s-platform.test
+          - stalwart16.insula.host
         issuerRef:
           name: local-ca-issuer
           kind: ClusterIssuer
