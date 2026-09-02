@@ -117,6 +117,90 @@ exec imapsync \\
   "$@"
 `.trim();
 
+// ─── Special-folder name mapping ─────────────────────────────────────────
+//
+// Source servers name their spam folder whatever they like — `Spam`, `spam`,
+// `Junk`, `junk`, `Junk E-mail` (Exchange/Outlook), `Bulk Mail` (older
+// Netscape/Zimbra) — and Stalwart has exactly one. Without an explicit rule
+// those all arrive as NEW top-level folders next to the real one, so the
+// mailbox owner ends up with `junk` sitting beside `Spam` and their filters,
+// their client's junk button and Stalwart's own classifier all pointing at
+// the wrong place.
+//
+// `--automap` does not close this. It maps via RFC 6154 SPECIAL-USE plus a
+// fixed internal name list, so it only fires when the SOURCE advertises the
+// attribute (many IMAP servers, and every Maildir-derived migration, do not)
+// and the name is one it recognises. Reported on 2026-09-02 with automap ON:
+// `spam`, `Spam`, `Junk` and `junk` all failed to reach Stalwart's `Spam`.
+//
+// `--regextrans2` is applied to the computed DESTINATION folder name, after
+// automap, so an explicit rule here wins. Anchored, with an optional
+// `INBOX.`/`INBOX/` prefix for servers that namespace everything under INBOX
+// (Courier, older Dovecot). Anchoring matters: an unanchored rule would also
+// rewrite `Spam/2024-archive` and collapse a whole subtree onto one folder.
+//
+// WHY ONLY SPAM BY DEFAULT: a rule here OVERRIDES automap. Spam is the case
+// that is confirmed broken and whose destination name is known. Guessing the
+// destination names for Sent/Trash/Drafts/Archive would override an automap
+// that may well be doing the right thing today, turning a reported bug into
+// a regression across every migration. Add a group below once its
+// destination name is confirmed on a real Stalwart — the table is the only
+// thing that needs to change.
+
+interface FolderAliasGroup {
+  /** Destination folder on Stalwart. */
+  readonly dest: string;
+  /** Source names, matched case-insensitively against the whole folder name. */
+  readonly aliases: readonly string[];
+}
+
+// Includes `junk mail`, which equals the default destination — that maps the
+// folder onto itself, a harmless no-op, and keeps the list correct if an
+// operator points `spamFolder` somewhere else.
+export const SPAM_ALIASES: readonly string[] = [
+  'spam',
+  'junk',
+  'junk e-mail',   // Outlook / Exchange
+  'junk email',
+  'junkmail',
+  'junk mail',
+  'bulk mail',     // Netscape / older Zimbra
+  'bulk',
+];
+
+/** Escape a literal for embedding in a Perl regex alternation. */
+function escapeForPerlRegex(literal: string): string {
+  return literal.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&');
+}
+
+/**
+ * Build one `--regextrans2` substitution mapping every alias to `dest`.
+ *
+ * `{}` delimiters avoid escaping the `/` that appears in hierarchy
+ * separators; `i` makes the whole match case-insensitive, which is the
+ * entire point — `spam`, `Spam` and `SPAM` are one folder, not three.
+ */
+export function buildFolderRemapExpression(group: FolderAliasGroup): string {
+  const alternation = group.aliases.map(escapeForPerlRegex).join('|');
+  return `s{^(?:INBOX[./])?(?:${alternation})$}{${group.dest}}i`;
+}
+
+/**
+ * Default spam destination: Stalwart's own default junk folder NAME.
+ *
+ * VERIFIED, not assumed — `Mailbox/get` against a live Stalwart 0.16 returns
+ * the default set as `Inbox` / `Sent Items` / `Junk Mail` (role `junk`) /
+ * `Deleted Items` / `Drafts`. It is NOT called `Spam`; targeting `Spam` would
+ * CREATE a new, role-less folder and deliver spam into it while the real junk
+ * folder — the one the classifier and every mail client's junk button use —
+ * stayed empty. That is strictly worse than leaving the source names alone.
+ *
+ * These names are Stalwart configuration and can differ per server, which is
+ * why `options.spamFolder` exists. Confirm with:
+ *   Mailbox/get {"properties":["name","role"]}  → the entry with role `junk`
+ */
+export const DEFAULT_SPAM_FOLDER = 'Junk Mail';
+
 // ─── Pure manifest builders ──────────────────────────────────────────────
 
 export interface BuildJobManifestInput {
@@ -141,6 +225,13 @@ export interface BuildJobManifestInput {
     readonly noFolderSizes?: boolean;
     readonly dryRun?: boolean;
     readonly excludeFolders?: readonly string[];
+    /**
+     * Destination folder that every spam alias is folded into. Defaults to
+     * `Spam`. Set it when a Stalwart is configured with a different name
+     * (`Junk` is the other common choice) — an empty string disables the
+     * remap entirely for an operator who wants imapsync's raw behaviour.
+     */
+    readonly spamFolder?: string;
   };
   readonly image: string;
 }
@@ -166,6 +257,18 @@ export function buildJobManifest(input: BuildJobManifestInput): V1Job {
   if (input.options.automap) args.push('--automap');
   if (input.options.noFolderSizes) args.push('--nofoldersizes');
   if (input.options.dryRun) args.push('--dry');
+
+  // Fold the source's spam-folder aliases onto Stalwart's single spam folder.
+  // Emitted AFTER --automap so it wins; see SPAM_ALIASES above for why
+  // automap alone does not cover this.
+  const spamFolder = input.options.spamFolder ?? DEFAULT_SPAM_FOLDER;
+  if (spamFolder) {
+    args.push('--regextrans2', buildFolderRemapExpression({
+      dest: spamFolder,
+      aliases: SPAM_ALIASES,
+    }));
+  }
+
   for (const folder of input.options.excludeFolders ?? []) {
     args.push('--exclude', folder);
   }
@@ -318,6 +421,7 @@ function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
     messagesTotal: row.messagesTotal ?? null,
     messagesTransferred: row.messagesTransferred ?? null,
     currentFolder: row.currentFolder ?? null,
+    summary: row.summary ?? null,
     lastProgressAt: row.lastProgressAt ? row.lastProgressAt.toISOString() : null,
     // IMAP Phase 3: pod-level observability from migration 0023.
     podPhase: row.podPhase ?? null,
@@ -593,6 +697,10 @@ export async function resyncImapSyncJob(
       messagesTotal: null,
       messagesTransferred: null,
       currentFolder: null,
+      // The previous run's outcome must not survive into the new one — a
+      // stale "Transferred 4 messages" beside a running job is worse than
+      // no summary at all.
+      summary: null,
       lastProgressAt: null,
       podPhase: null,
       podMessage: null,

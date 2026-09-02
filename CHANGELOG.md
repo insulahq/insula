@@ -12,6 +12,93 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **Search and a list view on the tenant panel's Installed Apps tab.** The tab
+  showed every deployment as a card with no way to find one — workable for
+  three applications, not for thirty. There is now a search box that matches on
+  the deployment name, the application it was installed from, its type and its
+  status (so "the failed one" or "the databases" are findable), and a
+  grid/list switch matching the admin panel's Installed tab. The list is a
+  dense sortable table — name, application, type, status — with the same Start/
+  Stop, Preview, Details and Delete actions as the cards. Your choice of grid or
+  list is remembered between visits.
+
+- **Mailbox migrations now report a one-line outcome when they finish.** A
+  completed migration showed only a status badge: the progress figures came
+  from imapsync's per-message copy lines, so a run that moved nothing produced
+  no figures at all and the panel had nothing to display. Each finished
+  migration now records a summary read from imapsync's own final statistics —
+  for example *"Transferred 1,204 messages across 12 folders (84.2 MiB) in
+  3m 41s"*. **Skipped messages and errors are named in that line on purpose**:
+  imapsync silently skips messages it cannot identify, and a run that reports
+  success while quietly skipping half a mailbox is not something you should
+  have to read logs to discover. Re-running a migration now also clears the
+  previous run's summary along with its logs.
+
+### Fixed
+- **Staying signed in while a tab is left open.** The tenant and admin panels
+  only renewed a session when the browser had seen mouse, keyboard or scroll
+  activity in the previous 25 minutes. A tab left open on a page you were only
+  reading produced none of those events, so nothing renewed the session and it
+  eventually lapsed. Renewal also gave up entirely once the sign-in had already
+  expired — exactly the state a tab comes back in after sitting in the
+  background — leaving it to the next click to notice.
+
+  An open tab is now enough on its own, and a tab is re-checked the moment you
+  switch back to it. Sessions are also renewed by a single tab at a time:
+  re-using an already-rotated token is treated by the API as a stolen-token
+  signal and ends every session, so several open tabs renewing at once would
+  have signed you out of all of them.
+
+  **Impersonation is unchanged**: "Login as Tenant" still issues a one-hour
+  session that cannot be renewed, and still ends after that hour.
+
+- **Moving or copying many files at once could fail partway with "Too many
+  requests" while the file manager appeared to restart.** Selecting a large
+  group of files and moving them sent one request *per file*, all at once — a
+  120-file move produced 62 requests in two seconds. That exceeded the API rate
+  limit, and the rejections spilled over into the rest of the page: the file
+  listing, the task list and the file-manager status check were all refused at
+  the same time. With the status check failing, the Files page fell back to its
+  "Starting file manager…" screen, so a file manager that was running normally
+  the whole time looked as though it had crashed and restarted.
+
+  The move also stopped reporting as soon as the first request was rejected,
+  even though the others kept succeeding in the background. The result was an
+  error message about a move that had partly worked, with no indication of
+  which files had actually moved — and retrying reported "Source not found" for
+  everything the first attempt had already moved.
+
+  Move, copy, delete, permissions and ownership now each send the whole
+  selection as a **single** request, with a progress dialog showing the running
+  count and the file being worked on. It closes itself when everything
+  succeeds, and stays open listing exactly which paths failed and why when only
+  some do. A rate-limited status check no longer renders as "starting", and no
+  longer retries every two seconds against the limit that is rejecting it.
+
+  Nothing about how files are stored changed, and no action is needed on any
+  cluster — existing installations are fixed by upgrading.
+
+- **A custom container deployment could fail to start with no error, no
+  timeout and no feedback at all.** Every diagnostic the custom-deployment
+  reconciler had was read from a Pod. When Kubernetes *refuses* a deployment
+  outright — most commonly because it would exceed the subscription's CPU or
+  memory quota — no Pod is ever created, so there was nothing to read and the
+  deployment simply sat at "pending" indefinitely. The reason exists only on
+  the ReplicaSet, which the catalog deployments already inspected and custom
+  ones did not. Custom deployments now read the same place and report, for
+  example, *"Quota exceeded — CPU request: requesting 4, already using 250m of
+  4 limit. Free up resources or upgrade the plan."* Such a deployment is marked
+  **failed** rather than pending, because a refusal does not clear on its own —
+  something has to change first.
+
+- **Migrating a mailbox left messages in a lowercase `spam` folder behind.**
+  Source folders named `Spam`, `Junk` and `junk` were already mapped correctly;
+  an all-lowercase `spam` was not, and instead created a stray folder on the
+  destination that no spam filter or mail client would ever look in. All four
+  spellings now land in the real junk folder. Existing migrations pick this up
+  when re-synced — no re-configuration needed.
+
 ## [2026.9.2] - 2026-09-02
 
 ### Fixed

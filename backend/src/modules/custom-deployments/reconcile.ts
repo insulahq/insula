@@ -22,6 +22,7 @@ import { recordImageAudit } from './image-audit.js';
 import { isNotFound } from '../../shared/k8s-errors.js';
 import { notifyAdminCustomDeploymentFailed } from '../notifications/events.js';
 import { isOomTermination } from '../../lib/container-termination.js';
+import { formatQuotaExceededMessage } from '../deployments/k8s-deployer.js';
 
 const STALE_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes
 
@@ -111,8 +112,35 @@ export async function reconcileCustomRow(
     status = 'pending';
     statusMessage = podObservation.pendingReason ?? null;
 
+    // Every reason above is read off a POD. When the ReplicaSet is refused
+    // permission to CREATE the pod — exceeded ResourceQuota, a LimitRange
+    // floor/ceiling, Pod Security admission — no Pod object ever exists, so
+    // both pod-derived reasons are null and this lands on bare `pending`
+    // with NO message. The deployment then sits silent until the 60-minute
+    // staleness timeout reports the uninformative "no progress".
+    //
+    // Observed on production 2026-09-02: a custom container was started
+    // whose spec asked for the tenant's entire CPU allowance while a sibling
+    // held part of it. The ReplicaSet logged FailedCreate every few seconds;
+    // the panel showed no error, no timeout and no feedback of any kind.
+    //
+    // The catalog reconciler has always read this (k8s-deployer.ts, the
+    // FailedCreate/ReplicaSet event scan) — this gives custom deployments
+    // the same eyes, reusing its quota-message formatter verbatim.
+    //
+    // Reported as `failed`, not `pending`: admission refusals do not clear
+    // on their own. Something has to change — the request, the quota, or a
+    // neighbour — and the operator is the one who has to do it.
+    if (!statusMessage) {
+      const createFailure = await readReplicaCreateFailure(k8s, namespace, row.name);
+      if (createFailure) {
+        status = 'failed';
+        statusMessage = createFailure;
+      }
+    }
+
     // Staleness escalation — same shape as the catalog reconciler.
-    if (row.status === 'pending' || row.status === 'deploying') {
+    if (status === 'pending' && (row.status === 'pending' || row.status === 'deploying')) {
       const age = Date.now() - row.updatedAt.getTime();
       if (age > STALE_TIMEOUT_MS) {
         status = 'failed';
@@ -132,6 +160,75 @@ interface PodObservation {
   readonly node: string | null;
   readonly failureReason: string | null;
   readonly pendingReason: string | null;
+}
+
+/**
+ * Why a ReplicaSet could not CREATE a Pod, or null if it could.
+ *
+ * Pod-derived diagnostics have a blind spot: an admission refusal (exceeded
+ * ResourceQuota, a LimitRange bound, Pod Security) means no Pod object is ever
+ * created, so there is nothing to inspect. Kubernetes records it on the
+ * ReplicaSet instead — as a `ReplicaFailure` condition and a `FailedCreate`
+ * event — and that is the only place the reason exists.
+ *
+ * Reads the condition first (it is the current state, and survives after the
+ * event's TTL expires), falling back to the event for older API behaviour.
+ * Quota messages get the same operator-friendly formatting the catalog
+ * reconciler already applies.
+ *
+ * Best-effort: a diagnostic read must never fail a reconcile tick, so any
+ * error yields null and the caller keeps its existing verdict.
+ */
+export async function readReplicaCreateFailure(
+  k8s: K8sClients,
+  namespace: string,
+  deploymentName: string,
+): Promise<string | null> {
+  const describe = (raw: string): string =>
+    raw.includes('exceeded quota') ? formatQuotaExceededMessage(raw) : raw;
+
+  try {
+    const rsList = await k8s.apps.listNamespacedReplicaSet({ namespace }) as unknown as {
+      items?: Array<{
+        metadata?: { name?: string };
+        spec?: { replicas?: number };
+        status?: { conditions?: Array<{ type?: string; status?: string; message?: string }> };
+      }>;
+    };
+    // Only ReplicaSets this Deployment currently wants pods from. Scaled-down
+    // historical RSs keep stale conditions forever and would resurrect an old
+    // failure long after it stopped applying.
+    const active = (rsList.items ?? []).filter(
+      rs => (rs.metadata?.name ?? '').startsWith(`${deploymentName}-`) && (rs.spec?.replicas ?? 0) > 0,
+    );
+    for (const rs of active) {
+      const cond = (rs.status?.conditions ?? []).find(
+        c => c.type === 'ReplicaFailure' && c.status === 'True' && c.message,
+      );
+      if (cond?.message) return describe(cond.message);
+    }
+  } catch {
+    // fall through to the event scan
+  }
+
+  try {
+    const events = await k8s.core.listNamespacedEvent({ namespace }) as unknown as {
+      items?: Array<{
+        reason?: string;
+        message?: string;
+        involvedObject?: { kind?: string; name?: string };
+      }>;
+    };
+    const failed = (events.items ?? []).find(
+      e => e.reason === 'FailedCreate'
+        && e.involvedObject?.kind === 'ReplicaSet'
+        && (e.involvedObject?.name ?? '').startsWith(`${deploymentName}-`)
+        && e.message,
+    );
+    return failed?.message ? describe(failed.message) : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function readFirstPodObservation(
