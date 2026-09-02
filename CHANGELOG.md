@@ -28,11 +28,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   quietly ignoring it, so a mismatch can never again look like a successful
   save.
 
-- **Route listings and route details now agree.** The same route came back with
-  numeric `0`/`1` flags from the list endpoint and true/false from the detail
-  endpoint; both now use the detail shape.
+- **Every route response now has the same shape.** Depending on which endpoint
+  answered, the same route came back with numeric `0`/`1` flags or with
+  true/false. Listing, fetching, creating and updating a route all use one
+  representation now.
 
-### Fixed
 - **SQL Manager could permanently lose access to a database that was deleted and
   re-created under the same name.** A deployment's storage folder is derived from
   its type, application and name, and deleting a deployment without also deleting
@@ -51,6 +51,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   database list, table list or user list could not be read, the panel discarded
   the failure and rendered an empty picker — so an authentication or connection
   problem looked like an empty database. These now show the error, with a retry.
+
+## [2026.9.3] - 2026-09-02
 
 ### Added
 - **Search and a list view on the tenant panel's Installed Apps tab.** The tab
