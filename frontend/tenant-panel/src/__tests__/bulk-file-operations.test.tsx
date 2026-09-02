@@ -264,7 +264,10 @@ describe('bulk requests are chunked under the WAF argument ceiling', () => {
     const { useBulkMoveFiles } = await import('@/hooks/use-file-manager');
     const { result } = renderHook(() => useBulkMoveFiles(), { wrapper });
     const paths = Array.from({ length: MAX_BULK_PATHS + 3 }, (_, i) => `/src/f${i}.txt`);
-    const seen: Array<{ done: number; total: number }> = [];
+    // `total` is `number | null` on StreamProgress — archive/extract cannot
+    // always know their member count. A bulk op always can, which is what the
+    // assertion below pins.
+    const seen: Array<{ done: number; total: number | null }> = [];
 
     await act(async () => {
       await result.current.mutateAsync({ paths, destDir: '/dest', onProgress: p => seen.push({ done: p.done, total: p.total }) });
