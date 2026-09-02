@@ -550,6 +550,8 @@ export interface ImapSyncJob {
   readonly messagesTotal: number | null;
   readonly messagesTransferred: number | null;
   readonly currentFolder: string | null;
+  /** One-line outcome for a finished job; null while running. */
+  readonly summary: string | null;
   readonly lastProgressAt: string | null;
   // IMAP Phase 3: pod-level observability from migration 0023.
   // `podPhase` is the K8s Pod phase (Pending / Running / etc.);

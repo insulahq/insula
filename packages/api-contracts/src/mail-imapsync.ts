@@ -90,6 +90,12 @@ export interface ImapSyncJobResponse {
   readonly messagesTotal: number | null;
   readonly messagesTransferred: number | null;
   readonly currentFolder: string | null;
+  /**
+   * One-line outcome for a finished job, e.g.
+   * `Transferred 1,204 messages across 12 folders (84.2 MiB) in 3m 41s`.
+   * Null while running, or when imapsync produced no Statistics block.
+   */
+  readonly summary: string | null;
   readonly lastProgressAt: string | null;
   // IMAP Phase 3: pod-level observability. `podPhase` mirrors the
   // Kubernetes Pod phase (Pending | Running | Succeeded | Failed)

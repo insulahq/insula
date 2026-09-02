@@ -189,6 +189,31 @@ yours.
 4. Click **Start migration** and watch its progress in the list. You can
    re-sync, cancel, or purge a job from its row.
 
+While a migration runs the row shows a progress bar with the number of
+messages copied and the folder currently being worked on. When it finishes it
+is replaced by a one-line result, for example:
+
+> Transferred 1,204 messages across 12 folders (84.2 MiB) in 3m 41s
+
+If the source server had messages the migration could not identify, they are
+counted separately so a run that copied less than you expected says so rather
+than simply reporting success:
+
+> Transferred 0 messages across 9 folders in <1s — 4 messages skipped
+
+**Re-sync** starts the migration again from scratch using the same settings.
+The previous run's logs, progress and result are cleared first, so what you
+see always belongs to the current run.
+
 !!! tip "Limits"
     You can keep up to 10 migration jobs, with up to 3 running at once. Big
     mailboxes take a while — that's normal.
+
+### Spam folders
+
+Mail servers disagree about what to call the spam folder — `Spam`, `spam`,
+`Junk`, `Junk E-mail`, `Bulk Mail`. Migration folds all of those into this
+platform's own **Junk Mail** folder, so your spam ends up where your mail
+client's junk button and the spam filter both expect it, instead of in a
+lookalike folder beside it. Folders whose names merely *contain* the word —
+`Spammers`, or a `Spam/2024` archive — are left exactly as they are.

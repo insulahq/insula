@@ -421,6 +421,7 @@ function rowToResponse(row: ImapSyncJob): ImapSyncJobResponse {
     messagesTotal: row.messagesTotal ?? null,
     messagesTransferred: row.messagesTransferred ?? null,
     currentFolder: row.currentFolder ?? null,
+    summary: row.summary ?? null,
     lastProgressAt: row.lastProgressAt ? row.lastProgressAt.toISOString() : null,
     // IMAP Phase 3: pod-level observability from migration 0023.
     podPhase: row.podPhase ?? null,
@@ -696,6 +697,10 @@ export async function resyncImapSyncJob(
       messagesTotal: null,
       messagesTransferred: null,
       currentFolder: null,
+      // The previous run's outcome must not survive into the new one — a
+      // stale "Transferred 4 messages" beside a running job is worse than
+      // no summary at all.
+      summary: null,
       lastProgressAt: null,
       podPhase: null,
       podMessage: null,

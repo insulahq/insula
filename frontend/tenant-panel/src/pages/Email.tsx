@@ -2481,6 +2481,27 @@ function ImapSyncJobRow({
         </div>
       )}
 
+      {/* Finished: the outcome, in one line. The progress block below is
+          gated on isActive, so without this a completed migration showed
+          nothing but a status badge — no counts, no duration, no indication
+          that anything had been skipped. */}
+      {isTerminal && job.summary && (
+        <p
+          className="mt-2 text-xs text-gray-700 dark:text-gray-300"
+          data-testid={`imapsync-summary-${job.id}`}
+        >
+          {job.summary}
+        </p>
+      )}
+      {isTerminal && !job.summary && job.status === 'succeeded' && (
+        <p
+          className="mt-2 text-xs italic text-gray-500 dark:text-gray-400"
+          data-testid={`imapsync-summary-${job.id}`}
+        >
+          Finished, but imapsync reported no statistics — check the logs.
+        </p>
+      )}
+
       {isActive && (
         <div className="mt-2" data-testid={`imapsync-progress-${job.id}`}>
           {hasProgress ? (

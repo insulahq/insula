@@ -1840,6 +1840,12 @@ export const imapSyncJobs = pgTable('imap_sync_jobs', {
   messagesTransferred: integer('messages_transferred'),
   currentFolder: varchar('current_folder', { length: 255 }),
   lastProgressAt: timestamp('last_progress_at'),
+  // One-line outcome rendered in the tenant panel when the job finishes,
+  // parsed from imapsync's final `++++ Statistics` block. The progress
+  // fields above come from `+ Copying msg N/M` lines and are meaningless
+  // once the run ends — a run that transferred nothing never emits one at
+  // all, which is why a finished job used to show no outcome whatsoever.
+  summary: text('summary'),
   // IMAP Phase 3: pod-level observability. The reconciler polls
   // the pod (not just the Job) and writes its phase + a short
   // human-readable reason so the UI can distinguish a truly

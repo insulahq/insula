@@ -1,0 +1,26 @@
+-- One-line outcome for a finished mailbox migration.
+--
+-- `imap_sync_jobs` already carried progress columns (messages_total,
+-- messages_transferred, current_folder) populated from imapsync's
+-- `+ Copying msg N/M` lines. Those lines only exist WHILE messages are
+-- moving, which left two holes at the end of a run:
+--
+--   1. The final numbers were whatever the last copy line happened to say,
+--      not the run's result.
+--   2. A run that transferred nothing emits no copy line at all, so the
+--      columns stayed NULL and a finished job showed the operator no
+--      outcome whatsoever — just a status badge.
+--
+-- imapsync ends every run with a `++++ Statistics` block carrying the
+-- authoritative totals (messages transferred/skipped, folders synced, bytes,
+-- transfer time, error count). The reconciler now parses that on both
+-- terminal paths and stores a rendered one-liner here, e.g.
+--
+--   Transferred 1,204 messages across 12 folders (84.2 MiB) in 3m 41s
+--   Transferred 0 messages across 9 folders in <1s — 4 messages skipped
+--
+-- Nullable: a pod killed before it printed Statistics, or one whose logs
+-- rotated away, legitimately has no summary. Re-sync clears it so a previous
+-- run's outcome never sits beside a running job.
+ALTER TABLE imap_sync_jobs
+  ADD COLUMN IF NOT EXISTS summary TEXT;
