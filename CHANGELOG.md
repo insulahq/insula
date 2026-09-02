@@ -12,7 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
-## [2026.9.3] - 2026-09-02
+### Fixed
+- **SQL Manager could permanently lose access to a database that was deleted and
+  re-created under the same name.** A deployment's storage folder is derived from
+  its type, application and name, and deleting a deployment without also deleting
+  its data leaves that folder behind — so re-creating one with the same name
+  mounts the previous data directory. Database engines only apply the configured
+  root password when they initialise an *empty* directory, so the newly generated
+  password was silently ignored and every SQL Manager call failed to authenticate
+  from then on. The password-reset step that already existed for this situation
+  was only armed when an operator explicitly picked an existing folder; it now
+  runs for every database deployment. It costs nothing when there is no previous
+  data (it checks first and exits), and it can no longer take a database offline
+  if it fails — including a PostgreSQL case where an interrupted reset could have
+  left the database trusting every local connection.
+
+- **SQL Manager showed "no databases" instead of the actual error.** When the
+  database list, table list or user list could not be read, the panel discarded
+  the failure and rendered an empty picker — so an authentication or connection
+  problem looked like an empty database. These now show the error, with a retry.
 
 ### Added
 - **Search and a list view on the tenant panel's Installed Apps tab.** The tab

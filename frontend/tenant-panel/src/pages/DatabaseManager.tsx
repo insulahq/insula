@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 import Editor from '@monaco-editor/react';
 import clsx from 'clsx';
+import ErrorPanel from '@/components/ErrorPanel';
+import { extractOperatorError } from '@/lib/extract-operator-error';
 import { useTenantContext } from '@/hooks/use-tenant-context';
 import {
   useDeployments,
@@ -243,7 +245,11 @@ export default function DatabaseManager() {
   }, [selectedDeployment?.status]);
 
   // Databases for selected deployment (deployment mode only)
-  const { data: dbData, isLoading: dbLoading } = useDbDatabases(
+  // `error` is deliberately read, not just `data`. A failed request left
+  // `dbData` undefined and `?? []` turned it into "this database has no
+  // schemas" — an authentication failure against the engine then rendered as
+  // an empty, actionless page. Every failure here gets an <ErrorPanel>.
+  const { data: dbData, isLoading: dbLoading, error: dbError, refetch: refetchDatabases } = useDbDatabases(
     isSqlite ? undefined : (tenantId ?? undefined),
     isSqlite ? undefined : (selectedDeploymentId || undefined),
   );
@@ -265,7 +271,7 @@ export default function DatabaseManager() {
 
   // ─── Deployment-mode hooks ────────────────────────────────────────────────
 
-  const { data: deployTablesData, isLoading: deployTablesLoading } = useListTables(
+  const { data: deployTablesData, isLoading: deployTablesLoading, error: deployTablesError } = useListTables(
     isSqlite ? undefined : tenantId,
     isSqlite ? undefined : (selectedDeploymentId || undefined),
     isSqlite ? undefined : (selectedDatabase || undefined),
@@ -304,7 +310,7 @@ export default function DatabaseManager() {
 
   // ─── SQLite-mode hooks ────────────────────────────────────────────────────
 
-  const { data: sqliteTablesData, isLoading: sqliteTablesLoading } = useSqliteTables(
+  const { data: sqliteTablesData, isLoading: sqliteTablesLoading, error: sqliteTablesError } = useSqliteTables(
     isSqlite ? tenantId : undefined,
     sqliteFile,
   );
@@ -358,6 +364,9 @@ export default function DatabaseManager() {
     return a.localeCompare(b);
   });
   const tablesLoading = isSqlite ? sqliteTablesLoading : deployTablesLoading;
+  // Same reason as the database list: a failed table listing must not read as
+  // "this database is empty".
+  const tablesError = isSqlite ? sqliteTablesError : deployTablesError;
 
   const columns: readonly ColumnInfo[] = isSqlite
     ? (sqliteStructureData?.data ?? [])
@@ -384,7 +393,7 @@ export default function DatabaseManager() {
   const [confirmDeleteDb, setConfirmDeleteDb] = useState<string | null>(null);
 
   // User management
-  const { data: usersData, isLoading: usersLoading } = useDbUsers(
+  const { data: usersData, isLoading: usersLoading, error: usersError } = useDbUsers(
     tenantId ?? undefined,
     selectedDeploymentId || undefined,
   );
@@ -1106,6 +1115,14 @@ export default function DatabaseManager() {
               <div className="flex items-center justify-center py-2">
                 <Loader2 size={16} className="animate-spin text-gray-400" />
               </div>
+            ) : dbError ? (
+              <ErrorPanel
+                error={extractOperatorError(dbError)}
+                severity="error"
+                compact
+                onRetry={() => { void refetchDatabases(); }}
+                testId="database-list-error"
+              />
             ) : (
               <div className="flex items-center gap-1">
                 <select
@@ -1276,7 +1293,16 @@ export default function DatabaseManager() {
               </div>
             </div>
 
-            {!tablesLoading && tables.length === 0 && (
+            {!tablesLoading && tablesError && (
+              <ErrorPanel
+                error={extractOperatorError(tablesError)}
+                severity="error"
+                compact
+                testId="table-list-error"
+              />
+            )}
+
+            {!tablesLoading && !tablesError && tables.length === 0 && (
               <p className="text-xs text-gray-400 dark:text-gray-500 py-2">
                 {engine === 'redis' ? 'No keys found.' : engine === 'mongodb' ? 'No collections found.' : 'No tables found.'}
               </p>
@@ -1439,7 +1465,17 @@ export default function DatabaseManager() {
                     </div>
                   )}
 
-                  {!usersLoading && dbUsers.length === 0 && (
+                  {!usersLoading && usersError && (
+                    <ErrorPanel
+                      error={extractOperatorError(usersError)}
+                      severity="error"
+                      compact
+                      testId="database-users-error"
+                    />
+                  )}
+
+                  {/* "No users" is only true when the request actually succeeded. */}
+                  {!usersLoading && !usersError && dbUsers.length === 0 && (
                     <p className="text-xs text-gray-400 dark:text-gray-500 py-1">No users found.</p>
                   )}
 

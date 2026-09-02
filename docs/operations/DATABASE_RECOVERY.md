@@ -218,11 +218,113 @@ injected into the pod as literal env at deploy time. Because of that:
 - A **same-bundle** restore (config + files + dumps all from one bundle) is
   **coherent** — the pod comes back with the same root password the dump/datadir
   expects.
-- The reconcile redeploy path **does not re-arm** the password-reset init
-  container. So a **mixed** restore — e.g. config from one bundle but data from
-  another, or a credential rotated between restore steps — can leave the pod env
-  password out of sync with the on-disk auth. Restore config and data from the
-  **same** bundle to stay coherent.
+- A **mixed** restore — e.g. config from one bundle but data from another, or a
+  credential rotated between restore steps — leaves the pod env password out of
+  sync with the on-disk auth. Restore config and data from the **same** bundle to
+  stay coherent.
+
+**The password-reset init container** (`deployments/password-reset.ts`) exists to
+absorb exactly that mismatch: it starts the engine with authentication disabled
+and re-stamps the password from `deployments.configuration` onto the reused
+datadir. It self-skips when the datadir is empty and is best-effort — it logs a
+`WARNING` and lets the database start rather than crash-looping the pod. It is
+armed on:
+
+- the **create** path, for every database deployment;
+- the **DR reconcile** path (`dr-recover/reconcile.ts` passes
+  `armPasswordReset: true`).
+
+It is *not* armed on a routine env-var edit or config redeploy, so those still
+assume the on-disk password already matches.
+
+---
+
+## 6. Engine admin lockout after a same-name re-create
+
+**Symptom.** SQL Manager cannot read a running database. `platform-api` logs
+`[db-manager] Exec failed: … ERROR 1045 (28000): Access denied for user
+'root'@'localhost'` on `/databases`, `/databases-with-size` and `/db-users`.
+Tenant applications keep working — they use their own DB user, not the admin.
+
+**Cause.** `storagePath` is deterministic (`${entry.type}/${entry.code}/${name}`,
+no uniqueness suffix), and `DELETE …/deployments/<id>` **without**
+`deleteData=true` leaves the data folder behind. Re-creating a deployment with
+the **same name** therefore mounts the previous datadir — and every engine
+applies `*_ROOT_PASSWORD` only when it initialises an *empty* one. The newly
+generated password is ignored; the on-disk one stays in force. If the old
+deployment row was hard-deleted, the original password is gone with it.
+
+**Confirm it in one query.** Compare the datadir's birth time with the row:
+
+```bash
+# datadir age (MariaDB/MySQL)
+kubectl exec -n <tenant-ns> <db-pod> -c <engine> -- \
+  stat -c %y /var/lib/mysql/multi-master.info
+# deployment row age
+kubectl exec -n platform system-db-1 -c postgres -- \
+  psql -U postgres -d platform -c \
+  "SELECT name, created_at, storage_path FROM deployments WHERE id = '<id>';"
+```
+
+A datadir **older** than `created_at` is this failure. (Deployments created after
+the fix in PR #358 arm the reset init container and self-heal on the first roll.)
+
+**Recovery** — re-stamp the configured password onto the existing datadir.
+Non-destructive; costs one database restart.
+
+1. **Snapshot first.** Check for platform backups (`SELECT … FROM backups WHERE
+   tenant_id = …`); tenants with none still have Longhorn hourly snapshots. Take
+   an explicit one:
+
+    ```yaml
+    apiVersion: longhorn.io/v1beta2
+    kind: Snapshot
+    metadata: { name: pre-root-pw-reset-<date>, namespace: longhorn-system }
+    spec: { createSnapshot: true, volume: <pvc-volume-name> }
+    ```
+
+2. **Scale the deployment to 0** and wait for the pod to go away. Never run the
+   reset against a live datadir — the engine holds the lock.
+3. **Stage the configured password** as a temporary Secret, read out of the
+   existing spec so it never lands in your shell history or a manifest:
+
+    ```bash
+    PW=$(kubectl get deploy <name> -n <tenant-ns> -o \
+      jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MARIADB_ROOT_PASSWORD")].value}')
+    kubectl create secret generic <name>-root-reset-pw -n <tenant-ns> --from-literal=password="$PW"
+    ```
+
+4. **Run a one-shot Job** on the same PVC + `subPath`, using the same image and
+   the same buffer-tuning args as the main container, with
+   `--skip-grant-tables`, then
+   `FLUSH PRIVILEGES; CREATE USER IF NOT EXISTS 'root'@'localhost'; ALTER USER
+   'root'@'localhost' IDENTIFIED BY '<pw>'; GRANT ALL PRIVILEGES ON *.* TO
+   'root'@'localhost' WITH GRANT OPTION; ALTER USER IF EXISTS 'root'@'%'
+   IDENTIFIED BY '<pw>';` — then verify **with the new password** before
+   shutting the temporary server down. The `IF EXISTS` / `IF NOT EXISTS` guards
+   matter: a datadir missing either account otherwise aborts the whole reset.
+
+    !!! warning "Size the Job inside the tenant's ResourceQuota"
+        Tenant namespaces cap `limits.memory`. With the database scaled to 0 the
+        headroom is the quota minus whatever else is running — request **the same
+        memory as the database container**, not more. A Job that exceeds it never
+        creates a pod and the Job just sits at `0/1`; `kubectl describe job` shows
+        `FailedCreate … exceeded quota`.
+
+5. **Delete the Job and the Secret, scale back to 1**, then verify through the
+   platform's own path:
+
+    ```bash
+    kubectl exec -n <tenant-ns> <db-pod> -c <engine> -- \
+      sh -c 'mariadb -uroot -p$MARIADB_ROOT_PASSWORD -e "SHOW DATABASES;"'
+    ```
+
+    Then confirm at the API layer — SQL Manager requests for that deployment
+    should return `200`, and the engine log should stop recording `Access denied`.
+
+**Prevention.** Delete the data along with the deployment when you want a clean
+start (`?force=true&deleteData=true`), or keep the existing deployment rather
+than re-creating it under the same name.
 
 ---
 

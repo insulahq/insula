@@ -9,6 +9,7 @@ import { deployments, catalogEntries, catalogEntryVersions, tenants, clusterNode
 import { ApiError } from '../../shared/errors.js';
 import { normalizeMountPath } from '@insula/api-contracts';
 import { InsufficientResourceBudgetError } from './resource-allocator.js';
+import { findAdminPasswordEnvVar } from './password-reset.js';
 import {
   isCustomDeployment,
   customSpecImages,
@@ -559,10 +560,10 @@ export async function createDeployment(
   // Deploy to K8s if cluster is available
   if (k8s && namespace) {
     try {
-      // Detect password env var for password-reset init container
-      const passwordEnvVar = generatedEnvKeys.find(k =>
-        k.includes('PASSWORD') || k.includes('ROOT_PASSWORD'),
-      );
+      // Detect the ADMIN password env var for the password-reset init
+      // container. Shared with the redeploy path below — see
+      // findAdminPasswordEnvVar for why a loose match is wrong.
+      const passwordEnvVar = findAdminPasswordEnvVar(generatedEnvKeys);
 
       await deployCatalogEntry(k8s, {
         deploymentName: input.name,
@@ -578,7 +579,24 @@ export async function createDeployment(
         envVars: finalEnvVars,
         configurableEnvKeys,
         extraMounts: input.extra_mounts ?? undefined,
-        reuseExistingData: input.storage_mode === 'custom',
+        // Arm the password-reset init container for every DB deployment, not
+        // just `storage_mode: custom`. The default storagePath is deterministic
+        // (`type/code/name`), and deleting a deployment WITHOUT deleteData
+        // leaves its datadir behind — so re-creating one with the same name
+        // silently lands on the old data. The engine then ignores the freshly
+        // generated *_ROOT_PASSWORD (it only applies on first init) and the
+        // platform can never authenticate again: SQL Manager returns 500 on
+        // every call. Deriving this from the declared storage_mode missed that
+        // case entirely, because the collision is a physical fact about the
+        // volume, not something the user asked for.
+        //
+        // Cost is near-zero when there is no pre-existing data: every reset
+        // script probes the datadir first and exits immediately (see
+        // password-reset.ts). The ~15s reset startup is only paid when a
+        // datadir is actually being reused — exactly when it is needed. For
+        // non-DB deployments passwordEnvVar is undefined and
+        // buildPasswordResetInitContainer returns null, so this is a no-op.
+        reuseExistingData: true,
         catalogCode: entry.code,
         passwordEnvVar,
         timezone: tenant.timezone ?? undefined,
@@ -1528,7 +1546,7 @@ export async function redeployWithCurrentConfig(
   // datadir the reset scripts self-skip. Only armed on the reconcile path so a
   // routine env-var edit doesn't pay the ~15s reset-startup cost.
   const passwordEnvVar = opts.armPasswordReset
-    ? Object.keys(config).find((k) => /_ROOT_PASSWORD$/.test(k) || k === 'POSTGRES_PASSWORD')
+    ? findAdminPasswordEnvVar(Object.keys(config))
     : undefined;
 
   await deployCatalogEntry(k8s, {
