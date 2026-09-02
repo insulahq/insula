@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { API_BASE } from '@/lib/api-client';
-import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, Eye, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, ArrowUpCircle } from 'lucide-react';
+import { AppWindow, Search, Loader2, AlertCircle, AlertTriangle, X, Globe, HardDrive, Cpu, Heart, Settings2, Network, Box, Play, Square, Eye, ExternalLink, Star, Flame, ChevronDown, Rocket, Trash2, Container, Server, RotateCcw, Check, LayoutGrid, List, ArrowUpCircle } from 'lucide-react';
 import ResourceRequirementCheck from '@/components/ResourceRequirementCheck';
 import { useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
@@ -17,7 +17,7 @@ import InstalledAppDetailModal from '@/components/InstalledAppDetailModal';
 import AppPreviewModal from '@/components/AppPreviewModal';
 import { CustomContainersTab } from '@/components/custom-deployments/CustomContainersTab';
 import { getStatusColor } from '@/lib/status-colors';
-import type { CatalogEntry } from '@/types/api';
+import type { CatalogEntry, Deployment } from '@/types/api';
 import { useResourceMetrics } from '@/hooks/use-resource-metrics';
 import { resourceBarColor, resourcePercent, resourceRatio, formatGiB } from '@/lib/resource-usage';
 
@@ -30,6 +30,21 @@ const TABS: readonly { readonly id: Tab; readonly label: string }[] = [
 ] as const;
 
 const TYPE_FILTERS = ['All', 'Applications', 'Runtimes', 'Static', 'Databases', 'Services'] as const;
+
+// ─── Installed-tab view mode ─────────────────────────────────────────────────
+//
+// Cards are the better default for a handful of apps; a tenant with dozens
+// wants the dense list (the same shape the admin panel's Installed tab uses).
+type ViewMode = 'grid' | 'list';
+const VIEW_MODE_KEY = 'tenant.applications.viewMode';
+
+function readStoredViewMode(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_MODE_KEY) === 'list' ? 'list' : 'grid';
+  } catch {
+    return 'grid';
+  }
+}
 type TypeFilter = typeof TYPE_FILTERS[number];
 const TYPE_FILTER_MAP: Record<TypeFilter, string | null> = {
   All: null,
@@ -929,6 +944,147 @@ function formatTimeAgo(dateStr: string): string {
   return `${diffDays}d ago`;
 }
 
+/**
+ * Dense list rendering of installed deployments — the same shape the admin
+ * panel's Installed tab uses, so an operator moving between the two panels
+ * reads the same table.
+ *
+ * Deliberately NOT a second copy of the card: it carries the identifying
+ * columns and the same four actions, and anything richer (metrics, errors in
+ * full, config) is one click away in the detail modal. Duplicating the card's
+ * metric bars per row is what makes a list view slower than the grid it was
+ * meant to speed up.
+ */
+function DeploymentListView({
+  deployments, getCatalogEntryName, catalogMap, isPending,
+  onSelect, onToggle, onForceStop, onPreview, onDelete,
+}: {
+  readonly deployments: readonly Deployment[];
+  readonly getCatalogEntryName: (catalogEntryId: string | null, source?: string | null) => string;
+  readonly catalogMap: ReadonlyMap<string, CatalogEntry>;
+  readonly isPending: boolean;
+  readonly onSelect: (id: string) => void;
+  readonly onToggle: (id: string, currentStatus: string) => void;
+  readonly onForceStop: (id: string) => void;
+  readonly onPreview: (d: { id: string; name: string }) => void;
+  readonly onDelete: (d: { id: string; name: string }) => void;
+}) {
+  const rows = useMemo(() => deployments.map((d) => ({
+    ...d,
+    // Flattened so useSortable can order by what the column actually shows —
+    // sorting "Application" by catalogEntryId would order by opaque UUID.
+    appName: getCatalogEntryName(d.catalogEntryId, d.source),
+    typeLabel: d.source === 'custom'
+      ? (d.customSpec?.sourceMode === 'compose' ? 'Compose' : 'Docker')
+      : (d.catalogEntryId ? catalogMap.get(d.catalogEntryId)?.type ?? 'unknown' : 'unknown'),
+  })), [deployments, getCatalogEntryName, catalogMap]);
+
+  const { sortedData, sortKey, sortDirection, onSort } = useSortable(rows, 'name');
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+      <table className="w-full text-sm" data-testid="installed-list">
+        <thead className="border-b border-gray-200 dark:border-gray-700 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+          <tr>
+            <SortableHeader label="Name" sortKey="name" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Application" sortKey="appName" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Type" sortKey="typeLabel" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <SortableHeader label="Status" sortKey="status" currentKey={sortKey} direction={sortDirection} onSort={onSort} />
+            <th className="px-5 py-3 text-right">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+          {sortedData.map((deployment) => {
+            const isTransitioning = ['deploying', 'pending', 'upgrading', 'deleting'].includes(deployment.status);
+            const showStopOnStuck = deployment.status === 'failed';
+            return (
+              <tr
+                key={deployment.id}
+                className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700/40"
+                onClick={() => onSelect(deployment.id)}
+                data-testid={`installed-row-${deployment.id}`}
+              >
+                <td className="px-5 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-400">
+                      <AppWindow size={14} />
+                    </div>
+                    <span className="font-medium text-gray-900 dark:text-gray-100">{deployment.name}</span>
+                  </div>
+                </td>
+                <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{deployment.appName}</td>
+                <td className="px-5 py-3">
+                  <span className="inline-flex rounded-full bg-purple-50 dark:bg-purple-900/20 px-2 py-0.5 text-[10px] font-medium text-purple-700 dark:text-purple-300">
+                    {deployment.typeLabel}
+                  </span>
+                </td>
+                <td className="px-5 py-3">
+                  <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${getStatusColor(deployment.status)}`}>
+                    {isTransitioning && <Loader2 size={10} className="animate-spin" />}
+                    {deployment.status}
+                  </span>
+                </td>
+                <td className="px-5 py-3">
+                  <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (showStopOnStuck) onForceStop(deployment.id);
+                        else onToggle(deployment.id, deployment.status);
+                      }}
+                      disabled={isPending || (isTransitioning && !showStopOnStuck)}
+                      className={clsx(
+                        'inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed',
+                        deployment.status === 'running' || showStopOnStuck
+                          ? 'bg-red-50 text-red-600 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/40'
+                          : 'bg-green-50 text-green-600 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-400 dark:hover:bg-green-900/40',
+                      )}
+                      data-testid={`row-toggle-${deployment.id}`}
+                    >
+                      {(deployment.status === 'running' || showStopOnStuck) ? <Square size={11} /> : <Play size={11} />}
+                      {(deployment.status === 'running' || showStopOnStuck) ? 'Stop' : 'Start'}
+                    </button>
+                    {deployment.status === 'running' && (
+                      <button
+                        type="button"
+                        onClick={() => onPreview({ id: deployment.id, name: deployment.name })}
+                        className="rounded-md border border-gray-200 dark:border-gray-700 p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                        title="Preview"
+                        data-testid={`row-preview-${deployment.id}`}
+                      >
+                        <Eye size={13} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onSelect(deployment.id)}
+                      className="rounded-md border border-gray-200 dark:border-gray-700 p-1 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+                      title="Details"
+                      data-testid={`row-details-${deployment.id}`}
+                    >
+                      <Settings2 size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDelete({ id: deployment.id, name: deployment.name })}
+                      disabled={isTransitioning && !showStopOnStuck}
+                      className="rounded-md border border-red-200 dark:border-red-700 p-1 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Delete"
+                      data-testid={`row-delete-${deployment.id}`}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const { tenantId } = useTenantContext();
   const queryClient = useQueryClient();
@@ -945,6 +1101,14 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
   const [permanentDataFolder, setPermanentDataFolder] = useState(false);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null);
   const [previewDeployment, setPreviewDeployment] = useState<{ id: string; name: string } | null>(null);
+  const [search, setSearch] = useState('');
+  // Persisted: a tenant who prefers the dense list should not have to re-pick
+  // it on every visit. Read lazily so the first paint is already correct.
+  const [viewMode, setViewMode] = useState<ViewMode>(() => readStoredViewMode());
+
+  useEffect(() => {
+    try { localStorage.setItem(VIEW_MODE_KEY, viewMode); } catch { /* private mode — in-memory only */ }
+  }, [viewMode]);
 
   // ─── Delete preview for soft-delete modal ─────────────────────────────────
   const deletePreview = useDeletePreview(tenantId ?? undefined, softDeleteConfirm?.id);
@@ -995,6 +1159,32 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
     const entry = catalogMap.get(catalogEntryId);
     return entry?.name ?? 'Unknown';
   };
+
+  // Search matches what the tenant can actually SEE on a card — the deployment
+  // name, the application it came from, its type and its status — rather than
+  // the name alone. Someone hunting "the failed one" or "the databases" is
+  // searching by the label in front of them.
+  const matchesSearch = useCallback((deployment: typeof allDeployments[number]): boolean => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    const type = deployment.source === 'custom'
+      ? (deployment.customSpec?.sourceMode === 'compose' ? 'compose' : 'docker')
+      : (deployment.catalogEntryId ? catalogMap.get(deployment.catalogEntryId)?.type ?? '' : '');
+    return [
+      deployment.name,
+      getCatalogEntryName(deployment.catalogEntryId, deployment.source),
+      deployment.status,
+      type,
+      deployment.source ?? '',
+    ].filter(Boolean).join(' ').toLowerCase().includes(q);
+    // `getCatalogEntryName` closes over `catalogMap`, which IS in the deps —
+    // listing it too would only re-create this on every render.
+  }, [search, catalogMap]);
+
+  const visibleActive = useMemo(() => activeDeployments.filter(matchesSearch), [activeDeployments, matchesSearch]);
+  const visibleDeleted = useMemo(() => deletedDeployments.filter(matchesSearch), [deletedDeployments, matchesSearch]);
+  const totalVisible = visibleActive.length + visibleDeleted.length;
+  const totalDeployments = activeDeployments.length + deletedDeployments.length;
 
   const selectedDeployment = allDeployments.find(d => d.id === selectedDeploymentId) ?? null;
   const selectedCatalogEntry = selectedDeployment?.catalogEntryId
@@ -1073,12 +1263,79 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
         </div>
       )}
 
+      {/* ── Toolbar: search + view mode ── */}
+      {totalDeployments > 0 && (
+        <div className="flex flex-wrap items-center gap-3" data-testid="installed-toolbar">
+          <div className="relative flex-1 min-w-[200px] max-w-sm">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name, application, type, status…"
+              className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 pl-9 pr-3 text-sm text-gray-700 dark:text-gray-300 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              data-testid="installed-search"
+            />
+          </div>
+          <span className="text-sm text-gray-500 dark:text-gray-400" data-testid="installed-count">
+            {search.trim()
+              ? `${totalVisible} of ${totalDeployments}`
+              : `${totalDeployments} deployment${totalDeployments !== 1 ? 's' : ''}`}
+          </span>
+          <div className="ml-auto flex items-center rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-0.5" role="group" aria-label="View mode">
+            {([
+              { mode: 'grid' as const, Icon: LayoutGrid, label: 'Grid view' },
+              { mode: 'list' as const, Icon: List, label: 'List view' },
+            ]).map(({ mode, Icon, label }) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setViewMode(mode)}
+                aria-label={label}
+                aria-pressed={viewMode === mode}
+                title={label}
+                className={clsx(
+                  'rounded-md p-1.5 transition-colors',
+                  viewMode === mode
+                    ? 'bg-brand-50 text-brand-600 dark:bg-brand-900/40 dark:text-brand-300'
+                    : 'text-gray-400 hover:text-gray-600 dark:hover:text-gray-300',
+                )}
+                data-testid={`view-mode-${mode}`}
+              >
+                <Icon size={16} />
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Search that matches nothing is a real answer — say so rather than
+          rendering an empty page that looks like a failed load. */}
+      {totalDeployments > 0 && totalVisible === 0 && (
+        <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 px-5 py-10 text-center text-sm text-gray-500 dark:text-gray-400" data-testid="installed-no-matches">
+          No deployments match “{search.trim()}”.
+        </div>
+      )}
+
       {/* ── Active Deployments ── */}
-      {activeDeployments.length > 0 && (
+      {visibleActive.length > 0 && (
         <div className="space-y-4">
           <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Deployments</h3>
+          {viewMode === 'list' ? (
+            <DeploymentListView
+              deployments={visibleActive}
+              getCatalogEntryName={getCatalogEntryName}
+              catalogMap={catalogMap}
+              isPending={updateDeployment.isPending}
+              onSelect={setSelectedDeploymentId}
+              onToggle={handleToggleStatus}
+              onForceStop={(id) => updateDeployment.mutate({ deploymentId: id, status: 'stopped' })}
+              onPreview={setPreviewDeployment}
+              onDelete={setSoftDeleteConfirm}
+            />
+          ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {activeDeployments.map((deployment) => {
+            {visibleActive.map((deployment) => {
               const isTransitioning = ['deploying', 'pending', 'upgrading', 'deleting'].includes(deployment.status);
               // Long-stuck = pending/deploying with a stale updated_at (>5min) OR
               // any failed row. The status-reconciler escalates pending→failed
@@ -1292,11 +1549,12 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
               );
             })}
           </div>
+          )}
         </div>
       )}
 
       {/* ── Recently Deleted ── */}
-      {deletedDeployments.length > 0 && (
+      {visibleDeleted.length > 0 && (
         <div className="space-y-4" data-testid="deleted-deployments-section">
           <div className="flex items-center gap-3">
             <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
@@ -1304,7 +1562,7 @@ function InstalledTab({ onDeploy }: { readonly onDeploy: () => void }) {
             <div className="h-px flex-1 bg-gray-200 dark:bg-gray-700" />
           </div>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {deletedDeployments.map((deployment) => (
+            {visibleDeleted.map((deployment) => (
               <div
                 key={deployment.id}
                 className="cursor-pointer rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 p-5 opacity-50 transition-opacity hover:opacity-70"

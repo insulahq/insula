@@ -85,6 +85,20 @@ the dialog suggests a path underneath it instead.
 You can change the mounts of a running app later. Saving restarts it, because
 the container has to come back with the new folders attached.
 
+## Find an installed app
+
+The **Installed Apps** tab has a search box and a grid/list switch in its
+toolbar.
+
+- **Search** matches the deployment name, the application it was installed
+  from, its type and its status — so `postgres`, `failed` or `database` all
+  find what you would expect, not just an exact name. The counter next to the
+  box shows how many of your deployments match.
+- **Grid** (the default) shows each deployment as a card with live CPU, memory
+  and storage. **List** shows a compact sortable table — name, application,
+  type, status — with the same actions; click any column heading to sort by it.
+  Whichever you pick is remembered the next time you open the tab.
+
 ## Manage an installed app
 
 Each deployment is a card on the **Installed Apps** tab showing live CPU,
