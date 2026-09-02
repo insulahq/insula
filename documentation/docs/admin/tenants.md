@@ -22,7 +22,7 @@ list of accounts, and the other tabs are cross-tenant views:
 
 | Tab | What it shows |
 |-----|---------------|
-| **Tenants** | Every account, searchable, with live CPU / memory / storage usage, assigned worker node, and storage tier (local / HA). Each row has a small **Login** button beside the name — the same [Login as Tenant](#header-actions) action as the detail page, without opening it first. |
+| **Tenants** | Every account, searchable, with live CPU / memory / storage usage, assigned worker node, and storage tier (local / HA). Usage figures are collected when the list loads and re-used for 15 seconds, so what you see reflects the cluster now rather than the last background sweep. Each row has a small **Login** button beside the name — the same [Login as Tenant](#header-actions) action as the detail page, without opening it first. |
 | **Domains** | All domains across all tenants — filter by tenant, bulk-verify, bulk-delete. → [Domains & DNS](domains-and-dns.md) |
 | **Workloads** | Every deployment across all tenants, with a `custom` tag for bring-your-own-container deployments. → [Catalogs & applications](catalogs-and-applications.md) |
 | **Users** | Sub-users across all tenants. |
