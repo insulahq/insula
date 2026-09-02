@@ -35,10 +35,11 @@ and an actions toolbar.
 
 !!! info "How bulk actions run"
 
-    Move, copy, delete, permissions and ownership each send the **whole
+    Move, copy, delete, permissions and ownership each run the **whole
     selection as one operation**, however many files it contains, and show a
     progress dialog with a running count and the file currently being handled.
-    Up to 1000 paths can go in a single action.
+    Very large selections are sent to the server in consecutive batches behind
+    the scenes; the progress bar counts the whole selection, not the batch.
 
     The dialog closes itself when every item succeeded. If some items could not
     be handled it **stays open and lists exactly which ones, and why** — the

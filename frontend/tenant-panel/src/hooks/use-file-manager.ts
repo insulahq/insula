@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { DiskUsage } from '@insula/api-contracts';
+import { MAX_BULK_PATHS, type DiskUsage } from '@insula/api-contracts';
 import type * as React from 'react';
 import { useQuery, useMutation, useQueryClient, type UseMutationOptions } from '@tanstack/react-query';
 import { apiFetch, API_BASE } from '@/lib/api-client';
@@ -225,6 +225,51 @@ export interface BulkFileResult {
   readonly trashedIds?: readonly string[];
 }
 
+/**
+ * POST a selection to a bulk endpoint, splitting it into consecutive requests
+ * of at most MAX_BULK_PATHS and reporting ONE continuous progress stream.
+ *
+ * The split is forced by the platform's own WAF: ModSecurity turns every JSON
+ * array element into a separate ARGS entry and refuses a request at 1000 of
+ * them (rule 200007), killing it at the edge as a bare nginx 400 that never
+ * reaches the API. See MAX_BULK_PATHS in @insula/api-contracts.
+ *
+ * Chunks run SEQUENTIALLY. Firing them together would recreate the original
+ * bug in coarser units, and `done` has to stay monotonic for the progress bar.
+ */
+async function streamBulkInChunks(
+  endpoint: string,
+  paths: readonly string[],
+  extraBody: Record<string, unknown>,
+  onProgress?: (p: StreamProgress) => void,
+): Promise<BulkFileResult> {
+  const total = paths.length;
+  const succeeded: string[] = [];
+  const failed: Array<{ path: string; error: string }> = [];
+  const trashedIds: string[] = [];
+
+  for (let offset = 0; offset < total; offset += MAX_BULK_PATHS) {
+    const chunk = paths.slice(offset, offset + MAX_BULK_PATHS);
+    const result = await streamNdjsonOperation<BulkFileResult>(endpoint,
+      { ...extraBody, paths: chunk },
+      {
+        // Re-base each chunk's counter onto the whole selection so the bar
+        // does not restart at zero every 500 files.
+        onProgress: onProgress && (p => onProgress({
+          done: offset + p.done,
+          total,
+          percent: Math.round(((offset + p.done) / total) * 100),
+          current: p.current,
+        })),
+      });
+    succeeded.push(...result.succeeded);
+    failed.push(...result.failed);
+    if (result.trashedIds) trashedIds.push(...result.trashedIds);
+  }
+
+  return { succeeded, failed, trashedIds };
+}
+
 /** Queries invalidated after any bulk mutation touches the volume. */
 function useInvalidateFileViews() {
   const { tenantId } = useTenantContext();
@@ -243,8 +288,8 @@ export function useBulkDeleteFiles() {
     mutationFn: ({ paths, permanent, onProgress }: {
       paths: string[]; permanent?: boolean; onProgress?: (p: StreamProgress) => void;
     }) =>
-      streamNdjsonOperation<BulkFileResult>(`/api/v1/tenants/${tenantId}/files/bulk-delete`,
-        { paths, permanent: permanent === true }, { onProgress }),
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-delete`,
+        paths, { permanent: permanent === true }, onProgress),
     onSuccess: invalidate,
   });
 }
@@ -258,8 +303,8 @@ export function useBulkMoveFiles() {
     mutationFn: ({ paths, destDir, onProgress }: {
       paths: string[]; destDir: string; onProgress?: (p: StreamProgress) => void;
     }) =>
-      streamNdjsonOperation<BulkFileResult>(`/api/v1/tenants/${tenantId}/files/bulk-move`,
-        { paths, destDir }, { onProgress }),
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-move`,
+        paths, { destDir }, onProgress),
     onSuccess: invalidate,
   });
 }
@@ -271,8 +316,8 @@ export function useBulkCopyFiles() {
     mutationFn: ({ paths, destDir, onProgress }: {
       paths: string[]; destDir: string; onProgress?: (p: StreamProgress) => void;
     }) =>
-      streamNdjsonOperation<BulkFileResult>(`/api/v1/tenants/${tenantId}/files/bulk-copy`,
-        { paths, destDir }, { onProgress }),
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-copy`,
+        paths, { destDir }, onProgress),
     onSuccess: invalidate,
   });
 }
@@ -284,8 +329,8 @@ export function useBulkChmod() {
     mutationFn: ({ paths, mode, recursive, onProgress }: {
       paths: string[]; mode: string; recursive?: boolean; onProgress?: (p: StreamProgress) => void;
     }) =>
-      streamNdjsonOperation<BulkFileResult>(`/api/v1/tenants/${tenantId}/files/bulk-chmod`,
-        { paths, mode, recursive }, { onProgress }),
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-chmod`,
+        paths, { mode, recursive }, onProgress),
     onSuccess: invalidate,
   });
 }
@@ -298,8 +343,8 @@ export function useBulkChown() {
       paths: string[]; uid?: number; gid?: number; owner?: string; group?: string;
       recursive?: boolean; onProgress?: (p: StreamProgress) => void;
     }) =>
-      streamNdjsonOperation<BulkFileResult>(`/api/v1/tenants/${tenantId}/files/bulk-chown`,
-        { paths, uid, gid, owner, group, recursive }, { onProgress }),
+      streamBulkInChunks(`/api/v1/tenants/${tenantId}/files/bulk-chown`,
+        paths, { uid, gid, owner, group, recursive }, onProgress),
     onSuccess: invalidate,
   });
 }

@@ -249,6 +249,41 @@ else
   err "bulk-stream must emit both a 'complete' and an 'error' terminal frame"
 fi
 
+# ── 4b. The per-request cap must stay under the WAF's argument ceiling ──────
+#
+# ModSecurity's JSON body processor turns every array element into its own
+# ARGS entry, and rule 200007 refuses a request once the count reaches 1000:
+#
+#   ModSecurity: Access denied with code 400 (phase 2). Matched "Operator
+#   `Ge' with parameter `1000' against variable `ARGS' (Value: `1000')
+#   [id "200007"] [msg "Failed to fully parse request body due to large
+#   argument count"]
+#
+# That refusal happens at the EDGE — a bare nginx 400, no error envelope, the
+# API never sees it. Measured on a live cluster (2026-09-02): 900 paths pass,
+# 1000 are refused. Raising the cap back to 1000 would make the documented
+# maximum unreachable, so the guard pins it.
+CONTRACTS="$REPO_ROOT/packages/api-contracts/src/files.ts"
+if [ -f "$CONTRACTS" ]; then
+  cap=$(grep -oP 'export const MAX_BULK_PATHS = \K[0-9]+' "$CONTRACTS" || echo "")
+  if [ -z "$cap" ]; then
+    err "MAX_BULK_PATHS not found in api-contracts"
+  elif [ "$cap" -ge 1000 ]; then
+    err "MAX_BULK_PATHS=$cap reaches the ModSecurity 200007 ARGS ceiling (1000) — requests would die at the edge as a bare nginx 400"
+  else
+    note "OK  MAX_BULK_PATHS=$cap is under the WAF 1000-ARG ceiling"
+  fi
+else
+  err "missing $CONTRACTS"
+fi
+
+# The panel must SPLIT a larger selection rather than refuse it.
+if grep -q 'streamBulkInChunks' "$PANEL_SRC/hooks/use-file-manager.ts"; then
+  note "OK  panel chunks a selection larger than the cap"
+else
+  err "panel must split selections larger than MAX_BULK_PATHS into consecutive requests"
+fi
+
 # ── 5. A failed status poll must not become a fast status poll ──────────────
 #
 # The Files page polls /files/status every 2s while the file-manager starts.

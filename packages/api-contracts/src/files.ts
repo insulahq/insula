@@ -102,11 +102,28 @@ export type DeleteInput = z.infer<typeof deleteInputSchema>;
  *      turning one selection into dozens of concurrent kube-API writes on a
  *      single Deployment object.
  *
- * The cap is per REQUEST, not per selection: it bounds one operation's
- * server-side work, and the panel reports it as a real limit rather than
- * silently truncating.
+ * The cap is per REQUEST, not per selection: the panel splits a larger
+ * selection into consecutive requests of this size and reports one continuous
+ * progress bar across them. A 5000-file move is therefore 10 requests, not
+ * 5000.
+ *
+ * 500 is set by the platform's OWN WAF, not by anything in this codebase.
+ * ModSecurity's JSON body processor flattens every array element into a
+ * separate ARGS entry, and `modsecurity.conf` rule **200007** rejects a
+ * request whose argument count reaches 1000:
+ *
+ *   ModSecurity: Access denied with code 400 (phase 2). Matched "Operator
+ *   `Ge' with parameter `1000' against variable `ARGS' (Value: `1000')
+ *   [id "200007"] [msg "Failed to fully parse request body due to large
+ *   argument count"]
+ *
+ * So `paths` + the sibling fields must stay under 1000 entries or the request
+ * never reaches the API at all — it dies at the edge as a bare nginx 400 with
+ * no error envelope. Measured on a live cluster (2026-09-02): 900 paths pass,
+ * 1000 are refused. 500 leaves room for the extra fields on bulk-chown and for
+ * a future CRS tightening, without weakening the WAF for everyone else.
  */
-export const MAX_BULK_PATHS = 1000;
+export const MAX_BULK_PATHS = 500;
 
 /** @deprecated Use {@link MAX_BULK_PATHS} — kept so older imports still resolve. */
 export const MAX_BULK_DELETE_PATHS = MAX_BULK_PATHS;
