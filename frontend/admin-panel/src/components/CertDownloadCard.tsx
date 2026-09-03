@@ -1,22 +1,32 @@
 import { useState } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Download, Key, Loader2, Trash2, AlertCircle, ShieldAlert } from 'lucide-react';
-import { apiFetch, API_BASE } from '@/lib/api-client';
-import type { CertToken, CertDownloadAvailability } from '@insula/api-contracts';
+import {
+  useCertDownloadAvailability,
+  useCertTokens,
+  useRevokeCertToken,
+  downloadCertBundle,
+} from '@/hooks/use-cert-download';
+import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
 
 /**
  * Admin-side certificate download for a tenant's domain.
  *
  * Narrower than the tenant panel's section on purpose:
  *
- *   download   yes — support routinely needs a customer's certificate to
- *              diagnose a TLS problem on their external server.
- *   list       yes — "which of my tokens is still live?" is a support question.
- *   revoke     yes — "I leaked a token" is a support emergency.
- *   create     NO. The secret is shown exactly once, and it belongs to the
+ *   download   yes, for admin/super_admin — diagnosing a TLS problem on a
+ *              server the customer runs themselves needs the real certificate.
+ *   list       yes, for everyone who can see the page.
+ *   revoke     yes, for admin/super_admin — "I leaked a token" is urgent.
+ *   create     NO. The secret is shown exactly once and belongs to the
  *              customer. Minting it into an admin's browser puts a live
  *              credential somewhere the customer never sees and cannot audit.
  *              The API permits it; the admin UI deliberately does not.
+ *
+ * `support` gets the LIST only. It is excluded from download and revoke by
+ * `requireRole` on the backend, so the controls are hidden rather than left
+ * enabled to 403 on click. An earlier revision of this comment claimed support
+ * could download and revoke — it never could; the backend and
+ * docs/architecture/TLS_CERTIFICATE_MANAGEMENT.md always said otherwise.
  */
 
 interface Props {
@@ -25,69 +35,45 @@ interface Props {
   readonly domainName: string;
 }
 
-function base(tenantId: string, domainId: string): string {
-  return `/api/v1/tenants/${tenantId}/domains/${domainId}`;
-}
-
 export default function CertDownloadCard({ tenantId, domainId, domainName }: Props) {
-  const qc = useQueryClient();
+  const canManageCerts = useCanManageCerts();
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
 
-  const availability = useQuery({
-    queryKey: ['cert-download-availability', tenantId, domainId],
-    queryFn: () => apiFetch<{ data: CertDownloadAvailability }>(
-      `${base(tenantId, domainId)}/ssl-cert/download-availability`,
-    ),
-  });
-  const tokensQuery = useQuery({
-    queryKey: ['cert-tokens', tenantId, domainId],
-    queryFn: () => apiFetch<{ data: CertToken[] }>(`${base(tenantId, domainId)}/cert-tokens`),
-  });
-  const revoke = useMutation({
-    mutationFn: (tokenId: string) =>
-      apiFetch<void>(`${base(tenantId, domainId)}/cert-tokens/${tokenId}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['cert-tokens', tenantId, domainId] }),
-  });
-
-  const avail = availability.data?.data;
-  const tokens = tokensQuery.data?.data ?? [];
+  const availability = useCertDownloadAvailability(tenantId, domainId);
+  const tokensQuery = useCertTokens(tenantId, domainId);
+  const revoke = useRevokeCertToken(tenantId, domainId);
 
   async function handleDownload() {
     setDownloading(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}${base(tenantId, domainId)}/ssl-cert/download`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('auth_token') ?? ''}` },
-      });
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const body = await res.json() as { error?: { message?: string } };
-          if (body?.error?.message) detail = body.error.message;
-        } catch { /* non-JSON body — keep the status */ }
-        throw new Error(detail);
-      }
-      const pem = await res.text();
-      const url = URL.createObjectURL(new Blob([pem], { type: 'application/x-pem-file' }));
-      try {
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${domainName.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 100) || 'certificate'}.pem`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-      } finally {
-        // Always release it — the blob holds a private key in memory.
-        URL.revokeObjectURL(url);
-      }
+      await downloadCertBundle(tenantId, domainId, domainName);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setDownloading(false);
     }
   }
+
+  // Revoke failures were previously invisible: the rejection surfaced only as
+  // an unhandled promise, the confirm state never reset, and the operator got
+  // no feedback on a screen whose whole purpose is credential management.
+  async function handleRevoke(tokenId: string) {
+    setRevokeError(null);
+    try {
+      await revoke.mutateAsync(tokenId);
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirmRevoke(null);
+    }
+  }
+
+  const avail = availability.data?.data;
+  const tokens = tokensQuery.data?.data ?? [];
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800" data-testid="admin-cert-download-card">
@@ -106,7 +92,7 @@ export default function CertDownloadCard({ tenantId, domainId, domainName }: Pro
           <button
             type="button"
             onClick={handleDownload}
-            disabled={!avail?.available || downloading}
+            disabled={!canManageCerts || !avail?.available || downloading}
             className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-sm font-medium text-white hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50"
             data-testid="admin-download-cert-button"
           >
@@ -124,6 +110,11 @@ export default function CertDownloadCard({ tenantId, domainId, domainName }: Pro
           <p className="mt-2 flex items-start gap-1.5 text-xs text-gray-500 dark:text-gray-400">
             <AlertCircle size={12} className="mt-0.5 shrink-0" />
             {avail.reason}
+          </p>
+        )}
+        {!canManageCerts && (
+          <p className="mt-2 text-xs text-gray-500 dark:text-gray-400" data-testid="admin-cert-readonly">
+            Your role can view certificate details but not download the private key.
           </p>
         )}
         {error && (
@@ -173,11 +164,11 @@ export default function CertDownloadCard({ tenantId, domainId, domainName }: Pro
                     {t.lastUsedAt ? `last used ${new Date(t.lastUsedAt).toLocaleDateString()}` : 'never used'}
                   </p>
                 </div>
-                {confirmRevoke === t.id ? (
+                {!canManageCerts ? null : confirmRevoke === t.id ? (
                   <div className="flex shrink-0 items-center gap-1">
                     <button
                       type="button"
-                      onClick={async () => { await revoke.mutateAsync(t.id); setConfirmRevoke(null); }}
+                      onClick={() => handleRevoke(t.id)}
                       disabled={revoke.isPending}
                       className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
                       data-testid={`admin-confirm-revoke-${t.id}`}
@@ -206,6 +197,11 @@ export default function CertDownloadCard({ tenantId, domainId, domainName }: Pro
               </li>
             ))}
           </ul>
+        )}
+        {revokeError && (
+          <p className="mt-3 text-xs text-red-600 dark:text-red-400" data-testid="admin-revoke-error">
+            Could not revoke the token: {revokeError}
+          </p>
         )}
       </div>
     </div>

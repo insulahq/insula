@@ -1,5 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
-import { buildCertBundle, type DomainRef } from './bundle.js';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { execSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { buildCertBundle, probeCertAvailability, type DomainRef } from './bundle.js';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
 
@@ -125,5 +129,104 @@ describe('buildCertBundle', () => {
       },
     } as unknown as K8sClients;
     expect(await buildCertBundle(dbWith([]), k8s, DOMAIN, KEY)).toBeNull();
+  });
+});
+
+
+/**
+ * REGRESSION GUARD for a bug that shipped and passed every test.
+ *
+ * `parseExpiry` used to lazily `require('node:crypto')`. The backend is ESM, so
+ * `require` is undefined at runtime and the call threw into parseExpiry's own
+ * catch — `expiresAt` was null for EVERY managed certificate in production.
+ * The old fixtures could not catch it twice over: Vitest's runner polyfills
+ * `require`, AND every fixture PEM was fake, so parseExpiry returned null
+ * either way and nothing asserted on it.
+ *
+ * This suite therefore uses a REAL certificate and asserts a real Date.
+ * Mirrors the openssl fixture pattern in ingress-mtls/service.test.ts.
+ */
+describe('expiry parsing (real X.509)', () => {
+  let dir = '';
+  let realCert = '';
+  let realKey = '';
+
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cert-dl-test-'));
+    execSync(
+      `openssl req -x509 -newkey rsa:2048 -nodes -keyout "${dir}/k.pem" -out "${dir}/c.pem" -days 90 -subj "/CN=example.test"`,
+      { stdio: 'pipe' },
+    );
+    realCert = readFileSync(join(dir, 'c.pem'), 'utf-8');
+    realKey = readFileSync(join(dir, 'k.pem'), 'utf-8');
+  });
+
+  // Every script that writes to /tmp must clean up after itself.
+  afterAll(() => { if (dir) rmSync(dir, { recursive: true, force: true }); });
+
+  it('returns a real expiry for a managed bundle — not null', async () => {
+    const k8s = k8sWith({ 'example-test-wildcard-tls': { crt: realCert, key: realKey } });
+    const bundle = await buildCertBundle(dbWith([]), k8s, DOMAIN, KEY);
+
+    expect(bundle?.expiresAt).toBeInstanceOf(Date);
+    expect(bundle!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+    // ~90 days out, allowing a day for openssl's notBefore/notAfter rounding.
+    const days = (bundle!.expiresAt!.getTime() - Date.now()) / 86_400_000;
+    expect(days).toBeGreaterThan(88);
+    expect(days).toBeLessThan(91);
+  });
+
+  it('the availability probe reports the same real expiry', async () => {
+    const k8s = k8sWith({ 'example-test-wildcard-tls': { crt: realCert, key: realKey } });
+    const probe = await probeCertAvailability(dbWith([]), k8s, DOMAIN);
+    expect(probe?.source).toBe('managed');
+    expect(probe?.expiresAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('probeCertAvailability', () => {
+  // The probe runs on every SSL-tab page load, including for `support`, who is
+  // barred from ever holding the key. It must answer from the certificate
+  // alone.
+  it('never reads the private key', async () => {
+    const readSecret = vi.fn(async () => ({
+      data: { 'tls.crt': Buffer.from(MANAGED_CRT).toString('base64') },
+      // deliberately NO tls.key — the probe must still succeed
+    }));
+    const k8s = { core: { readNamespacedSecret: readSecret } } as unknown as K8sClients;
+    const probe = await probeCertAvailability(dbWith([]), k8s, DOMAIN);
+    expect(probe?.source).toBe('managed');
+  });
+
+  it('does not decrypt the uploaded private key', async () => {
+    const db = dbWith([{ certificate: 'UPLOADED', expiresAt: new Date('2027-01-01') }]);
+    const probe = await probeCertAvailability(db, k8sWith({}), DOMAIN);
+    expect(probe).toMatchObject({ source: 'uploaded', expiresAt: new Date('2027-01-01') });
+  });
+
+  it('returns null when the domain has no certificate', async () => {
+    expect(await probeCertAvailability(dbWith([]), k8sWith({}), DOMAIN)).toBeNull();
+  });
+});
+
+describe('k8s error handling', () => {
+  // An RBAC 403 silently degrading a managed domain to its (possibly
+  // superseded) uploaded certificate is worse than failing loudly.
+  it('propagates a non-404 k8s error instead of falling back to the uploaded cert', async () => {
+    const k8s = {
+      core: {
+        readNamespacedSecret: vi.fn(async () => {
+          throw Object.assign(new Error('forbidden'), { statusCode: 403 });
+        }),
+      },
+    } as unknown as K8sClients;
+    const db = dbWith([{ certificate: 'UPLOADED', privateKeyEncrypted: 'enc:UPKEY', caBundle: null, expiresAt: null }]);
+    await expect(buildCertBundle(db, k8s, DOMAIN, KEY)).rejects.toThrow(/forbidden/);
+  });
+
+  it('still treats a genuine 404 as "not here, try the next variant"', async () => {
+    const db = dbWith([{ certificate: 'UPLOADED', privateKeyEncrypted: 'enc:UPKEY', caBundle: null, expiresAt: null }]);
+    const bundle = await buildCertBundle(db, k8sWith({}), DOMAIN, KEY);
+    expect(bundle?.source).toBe('uploaded');
   });
 });

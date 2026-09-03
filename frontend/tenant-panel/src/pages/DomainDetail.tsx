@@ -2049,12 +2049,7 @@ function SslTlsTab({ tenantId, domainId, sslAutoRenew, domainName }: {
         )}
       </div>
 
-      <CertDownloadSection
-        tenantId={tenantId}
-        domainId={domainId}
-        domainName={domainName}
-        canManage={canManage}
-      />
+      <CertDownloadSection tenantId={tenantId} domainId={domainId} domainName={domainName} />
     </div>
   );
 }

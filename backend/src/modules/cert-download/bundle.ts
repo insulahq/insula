@@ -16,6 +16,7 @@
  * the Secret authoritative.
  */
 
+import { X509Certificate } from 'node:crypto';
 import { eq, and } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import type { K8sClients } from '../k8s-provisioner/k8s-client.js';
@@ -23,6 +24,22 @@ import { domains, tenants, sslCertificates } from '../../db/schema.js';
 import { decrypt } from '../oidc/crypto.js';
 import { tlsSecretNameFor } from '../certificates/service.js';
 import type { CertBundleSource } from '@insula/api-contracts';
+
+/** Mirrors certificates/cert-reconciler.ts — a 404 is "absent", anything else is a fault. */
+function k8sStatusCode(err: unknown): number | undefined {
+  const e = err as { statusCode?: number; response?: { statusCode?: number } };
+  if (typeof e?.statusCode === 'number') return e.statusCode;
+  if (typeof e?.response?.statusCode === 'number') return e.response.statusCode;
+  if (err instanceof Error) {
+    const m = err.message.match(/HTTP-Code:\s*(\d{3})/);
+    if (m) return parseInt(m[1], 10);
+  }
+  return undefined;
+}
+
+function isK8s404(err: unknown): boolean {
+  return k8sStatusCode(err) === 404;
+}
 
 export interface CertBundle {
   readonly source: CertBundleSource;
@@ -88,12 +105,18 @@ export async function resolveDomainByName(
   return row ?? null;
 }
 
+/**
+ * Leaf expiry, or null when the PEM cannot be parsed.
+ *
+ * Uses a TOP-LEVEL import. An earlier revision lazily `require()`d node:crypto
+ * here, which is a silent no-op trap: the backend is ESM (`"type": "module"`),
+ * so `require` is not defined at runtime and the call threw `ReferenceError`
+ * into this function's own catch — meaning `expiresAt` was null for EVERY
+ * managed certificate in production while every test passed, because Vitest's
+ * runner polyfills `require`. Keep this a static import.
+ */
 function parseExpiry(certPem: string): Date | null {
   try {
-    // Imported lazily so this module stays usable in tests without the
-    // node:crypto X509 surface being exercised on every import.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
-    const { X509Certificate } = require('node:crypto') as typeof import('node:crypto');
     return new Date(new X509Certificate(certPem).validTo);
   } catch {
     return null;
@@ -115,29 +138,67 @@ function joinPem(...parts: Array<string | null | undefined>): string {
  * `cert-reconciler` — a domain in HTTP-01 mode has no wildcard, and a domain
  * that just moved to DNS-01 may briefly have both.
  */
-async function readManagedBundle(
+async function readManagedSecret(
   k8s: K8sClients,
   namespace: string,
   domainName: string,
-): Promise<{ certPem: string; keyPem: string } | null> {
+  want: 'cert-only' | 'cert-and-key',
+): Promise<{ certPem: string; keyPem: string | null } | null> {
   for (const wildcard of [true, false]) {
     const name = tlsSecretNameFor(domainName, wildcard);
+    let secret: { data?: Record<string, string> };
     try {
-      const secret = await k8s.core.readNamespacedSecret({ name, namespace }) as {
-        data?: Record<string, string>;
-      };
-      const crt = secret.data?.['tls.crt'];
-      const key = secret.data?.['tls.key'];
-      if (!crt || !key) continue;
-      return {
-        certPem: Buffer.from(crt, 'base64').toString('utf8'),
-        keyPem: Buffer.from(key, 'base64').toString('utf8'),
-      };
-    } catch {
-      // 404 or unreadable — try the other variant.
+      secret = await k8s.core.readNamespacedSecret({ name, namespace }) as typeof secret;
+    } catch (err) {
+      // Only "the Secret isn't there" means try the next variant. Anything
+      // else — an RBAC 403, a network blip, a malformed response — must NOT
+      // masquerade as "no certificate exists": that silently degrades a
+      // managed domain to its (possibly superseded) uploaded certificate, or
+      // to a 404, with nothing for an operator to go on.
+      if (!isK8s404(err)) throw err;
+      continue;
     }
+    const crt = secret.data?.['tls.crt'];
+    if (!crt) continue;
+    const key = secret.data?.['tls.key'];
+    // A Secret with no key cannot produce a usable bundle; keep looking.
+    if (want === 'cert-and-key' && !key) continue;
+    return {
+      certPem: Buffer.from(crt, 'base64').toString('utf8'),
+      keyPem: key ? Buffer.from(key, 'base64').toString('utf8') : null,
+    };
   }
   return null;
+}
+
+/**
+ * Does this domain have something downloadable, and when does it expire?
+ *
+ * Deliberately separate from `buildCertBundle`: the availability probe fires
+ * on every SSL-tab page load, including for `support`, who is barred from ever
+ * holding the private key. Reusing the full builder decrypted the customer's
+ * key into process memory just to render a boolean and a date. This path
+ * touches `tls.crt` / `certificate` only and never the key.
+ */
+export async function probeCertAvailability(
+  db: Database,
+  k8s: K8sClients | null,
+  domain: DomainRef,
+): Promise<{ source: CertBundleSource; expiresAt: Date | null } | null> {
+  if (k8s && domain.namespace) {
+    const managed = await readManagedSecret(k8s, domain.namespace, domain.domainName, 'cert-only');
+    if (managed) return { source: 'managed', expiresAt: parseExpiry(managed.certPem) };
+  }
+  const [row] = await db
+    .select({ certificate: sslCertificates.certificate, expiresAt: sslCertificates.expiresAt })
+    .from(sslCertificates)
+    .where(and(
+      eq(sslCertificates.domainId, domain.domainId),
+      eq(sslCertificates.tenantId, domain.tenantId),
+    ))
+    .limit(1);
+  if (!row) return null;
+  return { source: 'uploaded', expiresAt: row.expiresAt ?? parseExpiry(row.certificate) };
 }
 
 /**
@@ -155,8 +216,8 @@ export async function buildCertBundle(
 ): Promise<CertBundle | null> {
   // 1. Managed (cert-manager) — what the ingress is actually serving.
   if (k8s && domain.namespace) {
-    const managed = await readManagedBundle(k8s, domain.namespace, domain.domainName);
-    if (managed) {
+    const managed = await readManagedSecret(k8s, domain.namespace, domain.domainName, 'cert-and-key');
+    if (managed?.keyPem) {
       return {
         source: 'managed',
         // Key first: nginx/apache/haproxy all accept key-then-cert, and it

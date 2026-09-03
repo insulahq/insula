@@ -11,6 +11,7 @@ import {
   downloadCertBundle,
   type CreateCertTokenResponse,
 } from '@/hooks/use-cert-download';
+import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
 
 /**
  * Certificate download + API access for one domain.
@@ -40,11 +41,13 @@ interface Props {
   readonly tenantId: string;
   readonly domainId: string;
   readonly domainName: string;
-  /** False for read-only roles — they may look but not mint or download. */
-  readonly canManage: boolean;
 }
 
-export default function CertDownloadSection({ tenantId, domainId, domainName, canManage }: Props) {
+export default function CertDownloadSection({ tenantId, domainId, domainName }: Props) {
+  // NOT the page's broader `useCanManage` — that includes `support`, which the
+  // backend excludes from every key-bearing route. Using it here renders
+  // enabled buttons that 403 on click.
+  const canManage = useCanManageCerts();
   const availability = useCertDownloadAvailability(tenantId, domainId);
   const tokensQuery = useCertTokens(tenantId, domainId);
   const createToken = useCreateCertToken(tenantId, domainId);
@@ -58,6 +61,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName, ca
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const avail = availability.data?.data;
   const tokens = tokensQuery.data?.data ?? [];
@@ -81,6 +85,20 @@ export default function CertDownloadSection({ tenantId, domainId, domainName, ca
     setName('');
     setExpiry('90d');
     setShowCreate(false);
+  }
+
+  // Revoke failures were previously invisible: the rejection surfaced only as
+  // an unhandled promise, the confirm state never reset, and the customer got
+  // no feedback on a screen whose whole purpose is credential management.
+  async function handleRevoke(tokenId: string) {
+    setRevokeError(null);
+    try {
+      await revokeToken.mutateAsync(tokenId);
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConfirmRevoke(null);
+    }
   }
 
   async function handleCopy(token: string) {
@@ -323,7 +341,7 @@ export default function CertDownloadSection({ tenantId, domainId, domainName, ca
                     <div className="flex shrink-0 items-center gap-1">
                       <button
                         type="button"
-                        onClick={async () => { await revokeToken.mutateAsync(t.id); setConfirmRevoke(null); }}
+                        onClick={() => handleRevoke(t.id)}
                         disabled={revokeToken.isPending}
                         className="rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
                         data-testid={`confirm-revoke-${t.id}`}
@@ -353,6 +371,12 @@ export default function CertDownloadSection({ tenantId, domainId, domainName, ca
               </li>
             ))}
           </ul>
+        )}
+
+        {revokeError && (
+          <p className="mt-3 text-xs text-red-600 dark:text-red-400" data-testid="revoke-error">
+            Could not revoke the token: {revokeError}
+          </p>
         )}
 
         <details className="mt-4 text-xs text-gray-500 dark:text-gray-400">

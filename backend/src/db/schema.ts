@@ -2245,7 +2245,8 @@ export const certDownloadTokens = pgTable('cert_download_tokens', {
   expiresAt: timestamp('expires_at', { withTimezone: true }),
   /** Bumped on every successful download so a stale token is identifiable. */
   lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
-  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  // No revoked_at: revocation hard-deletes the row. The durable record that a
+  // token existed and was revoked is the `cert_download_token` audit entry.
   createdBy: varchar('created_by', { length: 36 }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [

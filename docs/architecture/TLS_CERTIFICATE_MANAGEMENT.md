@@ -394,7 +394,11 @@ The material comes from whichever source is authoritative for that domain:
 | `support` | **no** | no | no |
 | `tenant_user` | **no** | no | no |
 
-`support` can read certificate metadata but has no business holding a customer's private key. The admin panel deliberately offers **no create-token control** even though the API permits it: the secret is displayed exactly once, and minting it into an admin's browser puts a live credential somewhere the customer never sees.
+`support` can read certificate metadata and list tokens, but has no business holding a customer's private key — it is excluded from download and revoke, and both panels hide those controls rather than leaving them enabled to 403 on click. The admin panel deliberately offers **no create-token control** even though the API permits it: the secret is displayed exactly once, and minting it into an admin's browser puts a live credential somewhere the customer never sees.
+
+Both the **mint** and the **revoke** are audited under `resourceType: 'cert_download_token'` with the token id. The generic audit middleware would otherwise bucket them as ordinary `domain` writes and drop the token id, making a credential's lifecycle indistinguishable from a DNS-record edit on the same domain.
+
+The **availability probe** (which the panels call on every SSL-tab load, and which `support` can reach) deliberately does **not** use the bundle builder — it reads `tls.crt` / `certificate` only and never decrypts the private key.
 
 ### Download via API
 
@@ -440,7 +444,7 @@ A token is bound to one domain **and** one tenant. The handler resolves the requ
 | Retrieval | shown once at creation; unrecoverable afterwards |
 | Scope | one domain, read-only, this route only |
 | Expiry | never / 30d / 90d / 1 year (panel default 90d, matching LE renewal) |
-| Revocation | immediate — the row is deleted |
+| Revocation | immediate — the row is deleted (no tombstone; the audit row is the record) |
 | Limit | 20 per domain |
 
 **Example — curl:**

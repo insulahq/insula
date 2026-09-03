@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CertDownloadSection from '../components/CertDownloadSection';
 import { apiFetch } from '@/lib/api-client';
+import { useCanManageCerts } from '@/hooks/use-can-manage-certs';
+
+vi.mock('@/hooks/use-can-manage-certs', () => ({ useCanManageCerts: vi.fn(() => true) }));
 
 vi.mock('@/lib/api-client', () => ({
   API_BASE: 'http://localhost:3000',
@@ -17,10 +20,11 @@ const AVAILABLE = {
 };
 
 function renderSection(canManage = true) {
+  vi.mocked(useCanManageCerts).mockReturnValue(canManage);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <CertDownloadSection tenantId="t-1" domainId="d-1" domainName="example.test" canManage={canManage} />
+      <CertDownloadSection tenantId="t-1" domainId="d-1" domainName="example.test" />
     </QueryClientProvider>,
   );
 }
@@ -38,7 +42,10 @@ function route(handlers: { availability?: unknown; tokens?: unknown; create?: un
 }
 
 describe('CertDownloadSection', () => {
-  beforeEach(() => { vi.resetAllMocks(); });
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(useCanManageCerts).mockReturnValue(true);
+  });
 
   it('enables the download button when a certificate exists', async () => {
     route({});
@@ -134,6 +141,49 @@ describe('CertDownloadSection', () => {
     renderSection();
     expect(await screen.findByTestId('cert-tokens-error')).toBeTruthy();
     expect(screen.queryByTestId('no-cert-tokens')).toBeNull();
+  });
+
+  // Revoke failures used to surface only as an unhandled promise rejection,
+  // leaving the Confirm/Cancel state stuck with no explanation.
+  it('surfaces a revoke failure instead of silently leaving the row confirming', async () => {
+    mockApiFetch.mockImplementation((path: string, opts?: { method?: string }) => {
+      if (path.includes('download-availability')) return Promise.resolve(AVAILABLE);
+      if (path.includes('cert-tokens') && opts?.method === 'DELETE') return Promise.reject(new Error('token is gone'));
+      if (path.includes('cert-tokens')) {
+        return Promise.resolve({ data: [{ id: 'tok-9', domainId: 'd-1', name: 'x', expiresAt: null, lastUsedAt: null, createdAt: '2026-08-01T00:00:00Z', expired: false }] });
+      }
+      return Promise.resolve({ data: [] });
+    });
+    renderSection();
+    fireEvent.click(await screen.findByTestId('revoke-tok-9'));
+    fireEvent.click(screen.getByTestId('confirm-revoke-tok-9'));
+
+    expect((await screen.findByTestId('revoke-error')).textContent).toContain('token is gone');
+    // ...and the confirm state is cleared rather than stuck.
+    await waitFor(() => expect(screen.queryByTestId('confirm-revoke-tok-9')).toBeNull());
+  });
+
+  // Drives the click through to fetch — the earlier tests only asserted the
+  // button's disabled state, so a broken URL or missing auth header would not
+  // have been caught.
+  it('actually fetches the PEM and triggers a file download on click', async () => {
+    route({});
+    const fetchMock = vi.fn(async () => new Response('-----BEGIN PRIVATE KEY-----\nX\n-----END PRIVATE KEY-----', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const createUrl = vi.fn(() => 'blob:stub');
+    const revokeUrl = vi.fn();
+    vi.stubGlobal('URL', { ...URL, createObjectURL: createUrl, revokeObjectURL: revokeUrl });
+
+    renderSection();
+    fireEvent.click(await screen.findByTestId('download-cert-button'));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { headers: Record<string, string> }];
+    expect(url).toContain('/tenants/t-1/domains/d-1/ssl-cert/download');
+    expect(init.headers.Authorization).toMatch(/^Bearer /);
+    // The blob holds a private key — it must be released, not left dangling.
+    await waitFor(() => expect(revokeUrl).toHaveBeenCalledWith('blob:stub'));
+    vi.unstubAllGlobals();
   });
 
   it('shows the curl example against the token endpoint', async () => {

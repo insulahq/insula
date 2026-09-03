@@ -16,6 +16,11 @@
 -- Only the sha256 of the token is stored, like refresh_tokens: a database leak
 -- does not yield usable credentials. The plaintext is shown once at creation.
 --
+-- Revocation is a HARD DELETE — no revoked_at tombstone. A tombstone would keep
+-- dead credentials in every list query and grow the table forever. The durable
+-- record that a token existed and was revoked is the `cert_download_token`
+-- audit_logs entry the API writes on both mint and revoke.
+--
 -- No FK on domain_id: `domains` rows are removed by the tenant cascade, and a
 -- token whose domain has gone simply stops resolving (the download route joins
 -- through domains and 404s). tenant_id DOES cascade so deleting a tenant takes
@@ -28,7 +33,6 @@ CREATE TABLE IF NOT EXISTS cert_download_tokens (
   token_hash    VARCHAR(64) NOT NULL,
   expires_at    TIMESTAMPTZ,
   last_used_at  TIMESTAMPTZ,
-  revoked_at    TIMESTAMPTZ,
   created_by    VARCHAR(36),
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

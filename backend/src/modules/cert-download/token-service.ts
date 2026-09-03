@@ -10,12 +10,12 @@
  *   - bound to one domain      → cannot read any other domain's certificate
  *   - bound to one tenant      → cannot cross a tenant boundary
  *   - read-only, one route     → cannot mutate anything or reach the panel
- *   - revocable instantly      → a row update kills it, unlike a JWT
+ *   - revocable instantly      → deleting the row kills it, unlike a JWT
  *   - optional expiry          → the panel defaults to 90d, matching LE renewal
  */
 
 import crypto from 'crypto';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, count, desc, eq } from 'drizzle-orm';
 import type { Database } from '../../db/index.js';
 import { certDownloadTokens, domains } from '../../db/schema.js';
 import { ApiError } from '../../shared/errors.js';
@@ -74,9 +74,6 @@ export async function listTokens(
     .where(and(
       eq(certDownloadTokens.tenantId, tenantId),
       eq(certDownloadTokens.domainId, domainId),
-      // Revoked tokens are deleted, not tombstoned — a revoked credential in a
-      // list is just noise, and the audit trail records the revocation.
-      isNull(certDownloadTokens.revokedAt),
     ))
     .orderBy(desc(certDownloadTokens.createdAt));
   return rows.map((r) => toDto(r, now));
@@ -100,43 +97,61 @@ export async function createToken(
     throw new ApiError('DOMAIN_NOT_FOUND', `Domain '${domainId}' not found for this tenant`, 404);
   }
 
-  const existing = await listTokens(db, tenantId, domainId);
-  if (existing.length >= MAX_TOKENS_PER_DOMAIN) {
-    throw new ApiError(
-      'CERT_TOKEN_LIMIT_REACHED',
-      `A domain can have at most ${MAX_TOKENS_PER_DOMAIN} certificate tokens. Revoke one you no longer use.`,
-      409,
-    );
-  }
-
   const now = new Date();
   const token = mintToken();
   const id = crypto.randomUUID();
 
-  await db.insert(certDownloadTokens).values({
-    id,
-    tenantId,
-    domainId,
-    name: input.name,
-    tokenHash: hashToken(token),
-    expiresAt: expiryToDate(input.expiry, now),
-    createdBy,
-    createdAt: now,
+  // Count and insert in one transaction. Without it two concurrent creates can
+  // both pass the check and land at 21+ — a quota bypass rather than a
+  // security hole, but the cap exists to bound the table and the blast radius
+  // of a compromised panel session, so it should actually hold.
+  const row = await db.transaction(async (tx) => {
+    const [{ n }] = await tx
+      .select({ n: count() })
+      .from(certDownloadTokens)
+      .where(and(
+        eq(certDownloadTokens.tenantId, tenantId),
+        eq(certDownloadTokens.domainId, domainId),
+      ));
+    if (Number(n) >= MAX_TOKENS_PER_DOMAIN) {
+      throw new ApiError(
+        'CERT_TOKEN_LIMIT_REACHED',
+        `A domain can have at most ${MAX_TOKENS_PER_DOMAIN} certificate tokens. Revoke one you no longer use.`,
+        409,
+      );
+    }
+    await tx.insert(certDownloadTokens).values({
+      id,
+      tenantId,
+      domainId,
+      name: input.name,
+      tokenHash: hashToken(token),
+      expiresAt: expiryToDate(input.expiry, now),
+      createdBy,
+      createdAt: now,
+    });
+    const [created] = await tx
+      .select().from(certDownloadTokens).where(eq(certDownloadTokens.id, id)).limit(1);
+    return created;
   });
-
-  const [row] = await db
-    .select().from(certDownloadTokens).where(eq(certDownloadTokens.id, id)).limit(1);
 
   // The only time the plaintext leaves this function. Nothing persists it.
   return { ...toDto(row, now), token };
 }
 
+/**
+ * Revoke by HARD DELETE, returning the deleted row so the caller can audit it.
+ *
+ * A tombstone would keep a dead credential in every list query and grow the
+ * table forever; the durable record that the token existed and was revoked is
+ * the `cert_download_token` audit row the route writes.
+ */
 export async function revokeToken(
   db: Database,
   tenantId: string,
   domainId: string,
   tokenId: string,
-): Promise<void> {
+): Promise<{ id: string; name: string }> {
   const deleted = await db
     .delete(certDownloadTokens)
     .where(and(
@@ -144,10 +159,11 @@ export async function revokeToken(
       eq(certDownloadTokens.tenantId, tenantId),
       eq(certDownloadTokens.domainId, domainId),
     ))
-    .returning({ id: certDownloadTokens.id });
+    .returning({ id: certDownloadTokens.id, name: certDownloadTokens.name });
   if (deleted.length === 0) {
     throw new ApiError('CERT_TOKEN_NOT_FOUND', `Certificate token '${tokenId}' not found`, 404);
   }
+  return deleted[0];
 }
 
 export interface VerifiedToken {
@@ -183,7 +199,8 @@ export async function verifyToken(
     .limit(1);
 
   if (!row) return null;
-  if (row.revokedAt !== null) return null;
+  // No revoked check: revocation hard-deletes the row, so a revoked token
+  // simply has no match above. (The table has no revoked_at column.)
   if (row.expiresAt !== null && row.expiresAt.getTime() <= now.getTime()) return null;
 
   return {

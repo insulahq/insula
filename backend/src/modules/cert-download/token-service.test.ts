@@ -7,7 +7,7 @@ const { hashToken, mintToken, TOKEN_PREFIX } = __testing;
 
 type Row = {
   id: string; tenantId: string; domainId: string; name: string;
-  tokenHash: string; expiresAt: Date | null; revokedAt: Date | null;
+  tokenHash: string; expiresAt: Date | null;
 };
 
 /**
@@ -35,7 +35,7 @@ function dbWith(rows: Row[]): { db: Database; lookups: () => number } {
 function row(over: Partial<Row> = {}): Row {
   return {
     id: 'tok-1', tenantId: 't-1', domainId: 'd-1', name: 'deploy-pipeline',
-    tokenHash: 'x', expiresAt: null, revokedAt: null, ...over,
+    tokenHash: 'x', expiresAt: null, ...over,
   };
 }
 
@@ -80,8 +80,10 @@ describe('verifyToken', () => {
     expect(await verifyToken(db, mintToken())).toBeNull();
   });
 
-  it('rejects a revoked token', async () => {
-    const { db } = dbWith([row({ tokenHash: hashToken(good), revokedAt: new Date() })]);
+  // Revocation is a HARD DELETE — there is no revoked_at tombstone — so a
+  // revoked token is simply a hash with no matching row.
+  it('rejects a revoked token (its row no longer exists)', async () => {
+    const { db } = dbWith([]);
     expect(await verifyToken(db, good)).toBeNull();
   });
 

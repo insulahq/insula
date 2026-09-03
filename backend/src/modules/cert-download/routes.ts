@@ -32,6 +32,7 @@ import { createK8sClients } from '../k8s-provisioner/k8s-client.js';
 import type { Database } from '../../db/index.js';
 import {
   buildCertBundle,
+  probeCertAvailability,
   resolveDomainById,
   resolveDomainByName,
   type CertBundle,
@@ -92,6 +93,51 @@ function auditDownload(
       ipAddress: opts.ip,
     })
     .catch((err) => opts.log.error({ err }, 'Failed to write certificate-download audit log'));
+}
+
+/**
+ * Audit a token being minted or revoked.
+ *
+ * The generic audit middleware buckets `/tenants/:t/domains/:d/cert-tokens/:id`
+ * as resourceType `domain` with the DOMAIN id, dropping the token id entirely —
+ * so mint/revoke would be indistinguishable from an unrelated DNS-record edit
+ * on the same domain. These are the credential-lifecycle events this feature
+ * exists to make auditable, so they get their own resourceType and carry the
+ * token id.
+ */
+function auditTokenLifecycle(
+  db: Database,
+  opts: {
+    tenantId: string;
+    domainId: string;
+    tokenId: string;
+    tokenName?: string;
+    action: 'create' | 'delete';
+    actorId: string;
+    ip: string;
+    path: string;
+    log: { error: (o: unknown, m: string) => void };
+  },
+): void {
+  db.insert(auditLogs)
+    .values({
+      id: crypto.randomUUID(),
+      tenantId: opts.tenantId,
+      actionType: opts.action,
+      resourceType: 'cert_download_token',
+      resourceId: opts.tokenId.slice(0, 36),
+      actorId: opts.actorId.slice(0, 36),
+      actorType: 'user',
+      httpMethod: opts.action === 'create' ? 'POST' : 'DELETE',
+      httpPath: opts.path.slice(0, 500),
+      httpStatus: opts.action === 'create' ? 201 : 204,
+      changes: {
+        domain_id: opts.domainId,
+        ...(opts.tokenName ? { token_name: opts.tokenName } : {}),
+      },
+      ipAddress: opts.ip,
+    })
+    .catch((err) => opts.log.error({ err }, 'Failed to write cert-token audit log'));
 }
 
 /** Filename-safe form of a hostname, for Content-Disposition. */
@@ -199,13 +245,17 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
     }, async (request) => {
       const { tenantId, domainId } = request.params as { tenantId: string; domainId: string };
       const ref = await domainOr404(tenantId, domainId);
-      const bundle = await buildCertBundle(scoped.db, getK8s(), ref, encryptionKey);
-      return success(bundle
+      // probeCertAvailability, NOT buildCertBundle: this fires on every
+      // SSL-tab page load (including for `support`, who may never hold the
+      // key) and only needs a boolean and a date. The full builder would
+      // decrypt the customer's private key into memory to answer that.
+      const probe = await probeCertAvailability(scoped.db, getK8s(), ref);
+      return success(probe
         ? {
           available: true,
-          source: bundle.source,
+          source: probe.source,
           reason: null,
-          expiresAt: bundle.expiresAt?.toISOString() ?? null,
+          expiresAt: probe.expiresAt?.toISOString() ?? null,
         }
         : {
           available: false,
@@ -274,6 +324,11 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
       const created = await tokens.createToken(
         scoped.db, tenantId, domainId, parsed.data, user?.sub ?? null,
       );
+      auditTokenLifecycle(scoped.db, {
+        tenantId, domainId, tokenId: created.id, tokenName: created.name,
+        action: 'create', actorId: user?.sub ?? 'unknown',
+        ip: request.ip, path: request.url, log: request.log,
+      });
       reply.status(201);
       return success(created);
     });
@@ -285,7 +340,15 @@ export async function certDownloadRoutes(app: FastifyInstance): Promise<void> {
       const { tenantId, domainId, tokenId } = request.params as {
         tenantId: string; domainId: string; tokenId: string;
       };
-      await tokens.revokeToken(scoped.db, tenantId, domainId, tokenId);
+      const revoked = await tokens.revokeToken(scoped.db, tenantId, domainId, tokenId);
+      const user = request.user as { sub?: string } | undefined;
+      // The row is hard-deleted, so this audit entry is the ONLY durable
+      // record that the credential ever existed and was revoked.
+      auditTokenLifecycle(scoped.db, {
+        tenantId, domainId, tokenId, tokenName: revoked.name,
+        action: 'delete', actorId: user?.sub ?? 'unknown',
+        ip: request.ip, path: request.url, log: request.log,
+      });
       reply.status(204).send();
     });
   });
