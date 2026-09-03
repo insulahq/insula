@@ -12,6 +12,17 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Fixed
+- **Rebooting a node no longer leaves hundreds of failed pods behind.** After a
+  restart the pod list filled up with pods in a failed state, all reporting
+  that they had been rejected because the node was shutting down — 822 of them
+  from a single production reboot. They were harmless leftovers rather than a
+  fault, but they buried real failures and made a healthy cluster look broken.
+  All of them came from the Calico operator, which was being stopped in the
+  very first shutdown wave and then repeatedly restarted onto a node that was
+  already going down. It is now stopped in the same wave as the rest of the
+  cluster's core networking components, so the loop no longer happens.
+
 ## [2026.9.4] - 2026-09-02
 
 ### Fixed
