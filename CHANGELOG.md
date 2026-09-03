@@ -12,6 +12,8 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+## [2026.9.5] - 2026-09-03
+
 ### Added
 - **ntfy push notifications now have their own editable templates.** The ntfy
   channel shipped with a provider, a publisher, a delivery queue and an admin
