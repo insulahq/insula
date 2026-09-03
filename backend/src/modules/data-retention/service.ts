@@ -32,6 +32,10 @@ import {
   provisioningTasks,
   emailSendCounters,
   emailFblComplaints,
+  deploymentUpgrades,
+  platformStorageApplyRuns,
+  drDrillRuns,
+  imageReapLog,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -58,6 +62,30 @@ export const FBL_COMPLAINT_RETENTION_DAYS = 90;
  * removes superseded rows once they age out.
  */
 export const IMAGE_AUDIT_RETENTION_DAYS = 90;
+// Per-event operational history added after the 2026-06-01 sweep and missed by
+// it (2026-09-03 re-audit). All four are pure per-event logs on a busy cluster:
+// an upgrade attempt, an Apply HA/Local invocation, a DR drill, an image reap.
+export const DEPLOYMENT_UPGRADE_RETENTION_DAYS = 90;
+export const STORAGE_APPLY_RUN_RETENTION_DAYS = 90;
+// DR drills are the evidence that restore actually works — kept as long as the
+// audit trail rather than the 90d operational window.
+export const DR_DRILL_RUN_RETENTION_DAYS = 180;
+export const IMAGE_REAP_LOG_RETENTION_DAYS = 90;
+
+/**
+ * DELIBERATELY NOT PRUNED — read this before "finishing the sweep".
+ *
+ * `platform_upgrade_snapshots` looks like per-event history and is not: it is
+ * the rollback manifest. `platform-ops rollback` reads the most recent
+ * `captured` row to find the Flux ref and the Longhorn rescue snapshots to
+ * restore from. A cluster that has been happily running one version for a year
+ * has exactly one row, older than any sane window — an age cutoff would delete
+ * the only thing standing between a bad upgrade and an unrecoverable cluster.
+ *
+ * Same shape of trap as IMAGE_AUDIT_RETENTION_DAYS above, with a worse blast
+ * radius. If this ever does need bounding, it needs a keep-newest-N rule keyed
+ * on status, never a plain `created_at <` cutoff.
+ */
 
 export interface DataRetentionResult {
   readonly auditLogs: number;
@@ -70,6 +98,11 @@ export interface DataRetentionResult {
   /** Superseded image-audit rows. The newest per (deployment, image) is kept
    *  regardless of age — it is live state, not history. */
   readonly imageAuditRows: number;
+  /** Terminal upgrade attempts only; an in-flight row is never touched. */
+  readonly deploymentUpgrades: number;
+  readonly storageApplyRuns: number;
+  readonly drDrillRuns: number;
+  readonly imageReapLogRows: number;
 }
 
 /**
@@ -161,6 +194,54 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
        AND a.pulled_at < NOW() - INTERVAL '${sql.raw(String(IMAGE_AUDIT_RETENTION_DAYS))} days'
   `);
 
+  // 8. deployment_upgrades — TERMINAL statuses only. The EOL scanner reads
+  //    this table to decide whether an upgrade is already in flight
+  //    (`status IN ('pending','backing_up','pre_check','upgrading',
+  //    'health_check','rolling_back')`); deleting a stuck in-flight row would
+  //    make it start a SECOND upgrade of the same deployment.
+  const upgrades = await db
+    .delete(deploymentUpgrades)
+    .where(
+      and(
+        sql`${deploymentUpgrades.status} IN ('completed','failed','rolled_back')`,
+        sql`${deploymentUpgrades.createdAt} < NOW() - INTERVAL '${sql.raw(String(DEPLOYMENT_UPGRADE_RETENTION_DAYS))} days'`,
+      ),
+    )
+    .returning({ id: deploymentUpgrades.id });
+
+  // 9. platform_storage_apply_runs — one row per Apply HA / Apply Local
+  //    invocation. `finished_at IS NOT NULL` is the terminal marker, so a run
+  //    whose progress modal is still open is never deleted under it.
+  const applyRuns = await db
+    .delete(platformStorageApplyRuns)
+    .where(
+      and(
+        sql`${platformStorageApplyRuns.finishedAt} IS NOT NULL`,
+        sql`${platformStorageApplyRuns.finishedAt} < NOW() - INTERVAL '${sql.raw(String(STORAGE_APPLY_RUN_RETENTION_DAYS))} days'`,
+      ),
+    )
+    .returning({ id: platformStorageApplyRuns.id });
+
+  // 10. dr_drill_runs — drill execution history. The admin UI reads the most
+  //     recent 12, so a 180-day window never empties a populated panel.
+  const drills = await db
+    .delete(drDrillRuns)
+    .where(
+      and(
+        sql`${drDrillRuns.finishedAt} IS NOT NULL`,
+        sql`${drDrillRuns.finishedAt} < NOW() - INTERVAL '${sql.raw(String(DR_DRILL_RUN_RETENTION_DAYS))} days'`,
+      ),
+    )
+    .returning({ id: drDrillRuns.id });
+
+  // 11. image_reap_log — pure per-reap log, nothing reads it as live state.
+  const reapLog = await db
+    .delete(imageReapLog)
+    .where(
+      sql`${imageReapLog.createdAt} < NOW() - INTERVAL '${sql.raw(String(IMAGE_REAP_LOG_RETENTION_DAYS))} days'`,
+    )
+    .returning({ id: imageReapLog.id });
+
   return {
     auditLogs: audit.length,
     lifecycleTransitions: transitions.length,
@@ -169,5 +250,9 @@ export async function runDataRetention(db: Database): Promise<DataRetentionResul
     emailSendCounters: sendCounters.length,
     fblComplaints: complaints.length,
     imageAuditRows: (imageAudit as unknown as { rowCount?: number }).rowCount ?? 0,
+    deploymentUpgrades: upgrades.length,
+    storageApplyRuns: applyRuns.length,
+    drDrillRuns: drills.length,
+    imageReapLogRows: reapLog.length,
   };
 }
