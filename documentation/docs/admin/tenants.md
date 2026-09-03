@@ -80,6 +80,9 @@ buttons (below). Underneath are several cards and a tabbed resource view.
 - **Storage Lifecycle** — current storage state and grow/shrink controls.
 - **Placement** — which node the tenant is pinned to.
 
+A **namespace health banner** appears above Storage Lifecycle only when
+something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-quota).
+
 **Resource tabs:** Domains, Applications, Deployments, Files, Email,
 Backups, Users. Each shows that tenant's resources with a count. The
 **Files** tab is intentionally a pointer — the file browser lives in the
@@ -175,3 +178,57 @@ set a tenant-specific value.
 
 See [Plans & subscriptions](plans-and-subscriptions.md) for what each
 plan field means.
+
+## When a tenant has more than their plan allows
+
+Changing a tenant's plan does **not** resize anything they already have.
+Move a customer from a 2 GiB plan down to a 512 MiB one and the 2 GiB
+volume stays exactly as it is — the subscription says one thing, the
+cluster holds another, and nothing announces the difference.
+
+That gap is easy to miss, because the tenant's own storage figure is
+**bytes written**, not volume size. A 2 GiB volume holding 79 MB of files
+reads as comfortably inside a 512 MiB plan from the tenant panel, and the
+admin panel used to show only the plan values. The first real symptom is
+usually a new volume or application being refused, which surfaces as a
+deployment stuck pending.
+
+The tenant detail page now compares all three numbers. When they
+disagree, a banner appears above **Storage Lifecycle**:
+
+| Resource | Subscription | Enforced quota | Provisioned |
+|----------|--------------|----------------|-------------|
+| Storage  | 512Mi        | 512Mi          | **2Gi** — over plan |
+| CPU      | 0.1          | 100m           | — |
+| Memory   | 102.4Mi      | 102.4Mi        | — |
+
+- **Subscription** — the effective limit: the tenant's per-resource
+  override if you have set one, otherwise their plan's value.
+- **Enforced quota** — what Kubernetes is enforcing right now. It can
+  briefly lag the subscription after a plan change.
+- **Provisioned** — the size the volume *requests*. This is the column
+  that was missing, and the reason an oversized volume stayed invisible.
+  CPU and memory have no standing equivalent, so they show `—`.
+
+Every resource is listed, not just the offending one, so you can compare
+the three columns at a glance.
+
+!!! note "Two ways this shows up"
+    If the quota was lowered along with the plan, Kubernetes is already
+    refusing new resources and the banner says so. If the quota was never
+    re-applied, nothing is being refused yet — but the tenant is still
+    holding more than they are entitled to, and the banner still flags it.
+
+**Run reconciler** is deliberately not offered here. The reconciler
+recreates *missing* objects; this object exists and is simply the wrong
+size. Resolve it one of two ways, both under **Resource Limits**:
+
+- **Raise the limit** — turn on the override for that resource and set it
+  to at least what is provisioned. Immediate, and the right choice if the
+  customer should keep the space.
+- **Shrink the volume** — reduce the storage override to the intended
+  size. This is a destructive resize (snapshot → drop → recreate →
+  restore) and the platform will confirm before running it.
+
+The banner clears on its own once the numbers agree; it re-checks every
+minute.
