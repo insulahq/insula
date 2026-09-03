@@ -25,11 +25,27 @@ export function startDataRetention(db: Database): NodeJS.Timeout {
 async function runOnce(db: Database): Promise<void> {
   try {
     const r = await runDataRetention(db);
-    const total = r.auditLogs + r.lifecycleTransitions + r.storageOperations + r.provisioningTasks;
+    // Sum EVERY counter — a table missing from this total is a table whose
+    // pruning is invisible in the logs, which is how the 2026-06-01 sweep's
+    // gaps went unnoticed for three months.
+    const total = r.auditLogs + r.lifecycleTransitions + r.storageOperations
+      + r.provisioningTasks + r.emailSendCounters + r.fblComplaints + r.imageAuditRows
+      + r.deploymentUpgrades + r.storageApplyRuns + r.drDrillRuns + r.imageReapLogRows;
     if (total > 0) {
-      console.log(
-        `[data-retention] pruned ${r.auditLogs} audit_logs · ${r.lifecycleTransitions} lifecycle_transitions(+cascaded hook_runs) · ${r.storageOperations} storage_operations · ${r.provisioningTasks} provisioning_tasks`,
-      );
+      const parts = Object.entries({
+        audit_logs: r.auditLogs,
+        'lifecycle_transitions(+cascaded hook_runs)': r.lifecycleTransitions,
+        storage_operations: r.storageOperations,
+        provisioning_tasks: r.provisioningTasks,
+        email_send_counters: r.emailSendCounters,
+        email_fbl_complaints: r.fblComplaints,
+        custom_deployment_image_audit: r.imageAuditRows,
+        deployment_upgrades: r.deploymentUpgrades,
+        platform_storage_apply_runs: r.storageApplyRuns,
+        dr_drill_runs: r.drDrillRuns,
+        image_reap_log: r.imageReapLogRows,
+      }).filter(([, n]) => n > 0).map(([k, n]) => `${n} ${k}`);
+      console.log(`[data-retention] pruned ${parts.join(' · ')}`);
     }
   } catch (err) {
     console.warn('[data-retention] cycle failed:', err instanceof Error ? err.message : String(err));
