@@ -295,13 +295,16 @@ pass "Invariant 15: rclone-push via shim wired"
 # new backup pipeline is forced to go through the shim.
 LEGACY_ALLOWLIST=(
   # 2026-08-26: etcd-snapshot / postgres-dump / hostpath-snapshot
-  # CronJobs deleted with the target-activate retirement. The three
+  # CronJobs deleted with the target-activate retirement. The
   # survivors are shim-BRIDGED (dr-cronjobs.ts writes their
   # backup-credentials against the shim's S3 endpoint) but still use
   # the aws-cli pattern internally, so they stay allowlisted.
+  # 2026-09-03: backup-audit-cronjob.yaml deleted — it audited
+  # membership of a Longhorn recurring-job group that no longer
+  # governs any backup (Longhorn volume backups were retired
+  # 2026-08-26). See LEGACY-DEPRECATED.md.
   "k8s/base/backup/cluster-state-cronjob.yaml"          # shim-bridged
   "k8s/base/backup/secrets-backup-cronjob.yaml"         # shim-bridged
-  "k8s/base/backup/backup-audit-cronjob.yaml"           # read-only, no IO
   "k8s/base/stalwart-mail/stalwart/snapshot-cronjob.yaml" # legacy mail-target-sync owns
 )
 LEGACY_DOC="$ROOT/k8s/base/backup/LEGACY-DEPRECATED.md"

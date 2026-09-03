@@ -2,7 +2,7 @@
 # idempotent: reads the existing patch TARGET NAMES out of the flux-system/
 #             platform Kustomization with -o jsonpath (never by grepping the
 #             JSON text) and appends only the targets that are missing; a node
-#             where all three are present writes nothing. It also removes any
+#             where they are all present writes nothing. It also removes any
 #             duplicate strip patches left by the broken pre-2026.8.19 guard.
 # allow-paths: (none — cluster-only change via kube-API, touches no host file)
 # blocks-on-failure: no    # ADR-056: nothing later depends on this. A node
@@ -14,8 +14,8 @@ set -euo pipefail
 # 2026.8.18 — stop Flux re-suspending the shim-bridged DR CronJobs.
 #
 # platform-api's dr-cronjobs bridge owns /spec/suspend on
-# platform-secrets-backup, platform-cluster-state-backup and
-# platform-backup-audit (unsuspends them when the SYSTEM backup class is
+# platform-secrets-backup and platform-cluster-state-backup (unsuspends them
+# when the SYSTEM backup class is
 # bound). The base manifests ship `suspend: true`, so without a strip
 # patch Flux reverts the bridge's unsuspend on every sync — the nightly
 # secrets bundle / cluster-state dump / audit never get a stable window
@@ -82,7 +82,13 @@ if [ "$removed" -gt 0 ]; then
 fi
 
 applied=0
-for cj in platform-secrets-backup platform-cluster-state-backup platform-backup-audit; do
+# 2026-09-03: platform-backup-audit removed from this list. EDITED IN PLACE
+# rather than superseded by a later migration, because this script is a
+# CONVERGER — the host-config enforcer re-runs it on every pass, so a
+# superseding migration would delete the orphan patch and this one would
+# immediately re-add it. (The "never edit a shipped migration" rule is about
+# paths and numbering, not about a converger's target list.)
+for cj in platform-secrets-backup platform-cluster-state-backup; do
   if names_of | grep -qx "${cj}"; then
     echo "${MIG}: strip patch for ${cj} already present"
     continue

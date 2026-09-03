@@ -19,6 +19,7 @@ import {
   useRestoreNotificationTemplate,
 } from '@/hooks/use-notification-templates';
 import type {
+  NotificationChannelId,
   NotificationTemplateVariable,
   PreviewNotificationTemplateResponse,
 } from '@insula/api-contracts';
@@ -29,6 +30,17 @@ interface TemplateEditorProps {
   readonly templateId: string;
   readonly onClose: () => void;
 }
+
+/**
+ * One field, three names. `subjectTemplate` is the email Subject header,
+ * the in-app notification title, and the ntfy push title — calling it
+ * "Subject" on a phone push reads as a mistake.
+ */
+const SUBJECT_LABEL: Record<NotificationChannelId, string> = {
+  email: 'Subject template',
+  in_app: 'Title template',
+  ntfy: 'Push title template',
+};
 
 function buildSampleVars(
   schema: ReadonlyArray<NotificationTemplateVariable> | null,
@@ -201,9 +213,17 @@ export default function TemplateEditor({ templateId, onClose }: TemplateEditorPr
               onSubmit={onSave}
               className="col-span-2 flex flex-col overflow-y-auto rounded border border-gray-200 p-3 dark:border-gray-700"
             >
-              {template.channel === 'email' && (
+              {/*
+                Gated on the template HAVING a subject, not on channel ===
+                'email'. Every channel uses this field, just under a
+                different name: it is the email Subject header, the in-app
+                notification title, and — most visibly — the ntfy push
+                title shown on the lock screen. Restricting the input to
+                email left those two uneditable.
+              */}
+              {template.subjectTemplate !== null && (
                 <label className="block text-xs text-gray-600 dark:text-gray-300">
-                  Subject template (Handlebars)
+                  {SUBJECT_LABEL[template.channel] ?? 'Subject template'} (Handlebars)
                   <input
                     type="text"
                     value={subject}

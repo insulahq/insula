@@ -4,7 +4,8 @@
 # Memory is the design constraint: requests 128Mi / limit 384Mi, held
 # by THREE budgets that must be read together, because the first one
 # alone does not add up (it OOM-killed this pod every ~2 days until
-# 2026-08-30):
+# 2026-08-30, and once more on 2026-09-03 — see MEASURED 2026-09-03
+# below):
 #   -memory.allowedBytes  VM's own caches, allocated OUTSIDE the Go heap
 #   GOGC / GOMEMLIMIT     the Go runtime, which allowedBytes cannot see
 #   metric_relabel_configs in scrape-config.yaml — series never ingested
@@ -19,6 +20,34 @@
 # -storage.minFreeDiskSpaceBytes flips ingestion read-only before the
 # disk fills (queries keep working, scrape-target alerts surface it)
 # instead of crash-looping.
+#
+# ─── MEASURED 2026-09-03, after the 08-30 three-budget fix ───────────
+# The fix reduced the OOM cadence (~2 days → ~4) but did not end it: one
+# more kill at 05:03 on 2026-09-03. Live numbers from the running pod:
+#   vm_cache_size_bytes total        105.8 MiB   (was ~126)
+#     ...of which storage/tsid 32 + metricIDs 31.2 + metricName 31.2
+#        = 94.4 MiB is fastcache's hard 32-MiB-per-cache FLOOR
+#   go_memstats_heap_inuse_bytes     144.8 MiB
+#   go_memstats_heap_sys_bytes       220.2 MiB  (51.7 released)
+#   process_resident_memory_bytes    294.6 MiB
+#   cgroup working set               325 MiB of the 384 MiB limit (85%)
+#   live series                      6742
+# So steady state leaves ~59 MiB of headroom and any transient crosses it.
+#
+# The limit was deliberately NOT raised — the platform's whole footprint is
+# the budget, and this pod is ~10% of it (operator decision 2026-09-03).
+# Acting on this file's own guidance ("the lever is storing LESS —
+# retention, or a harder series cut"), and with retention held at 30d by
+# the same decision, the change is a series cut in scrape-config.yaml:
+# unqueried histogram _bucket families on the four jobs that had no
+# metric_relabel_configs at all, plus Go-runtime histograms everywhere.
+#
+# GOGC and GOMEMLIMIT were left alone ON PURPOSE. Both are derived from
+# measurements recorded below, GOGC's target scales off live heap (so the
+# series cut lowers the absolute target for free), and this file has a
+# history of predictions here being wrong twice over. Re-derive them from
+# a fresh vm_cache_size_bytes reading if the cut proves insufficient —
+# do not guess.
 #
 # Version pin: latest stable OSS release (golden rule). The original
 # ADR-051 intent was the v1.136.x LTS line, but VictoriaMetrics ships
@@ -114,7 +143,16 @@ spec:
             # Re-measure vm_cache_size_bytes against vm_cache_entries before
             # trusting any prediction about this value, including this one.
             - -memory.allowedBytes=64MiB
-            - -search.maxConcurrentRequests=4
+            # 4 → 2 (2026-09-03). The -memory.allowedBytes note above records
+            # that the failure mode is "a single cache-warming query could OOM
+            # the pod outright"; this is the flag that bounds how many of those
+            # can be in flight at once. The consumers are the admin panel's
+            # monitoring tab and the SLO rule evaluator — neither issues
+            # anything like 4 concurrent queries, and VM queues rather than
+            # rejects beyond the limit, so the only cost is serialisation on a
+            # burst. Bounds the transient; the steady-state lever is the series
+            # cut in scrape-config.yaml.
+            - -search.maxConcurrentRequests=2
             - -storage.minFreeDiskSpaceBytes=209715200
             # Serve EVERYTHING (VMUI, /api/v1/query*, /health, own
             # /metrics) under /metrics so the UI rides the admin host

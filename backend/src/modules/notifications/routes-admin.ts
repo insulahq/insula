@@ -28,6 +28,8 @@ import {
   createNotificationProviderSchema,
   updateNotificationProviderSchema,
   testNotificationProviderSchema,
+  NOTIFICATION_CHANNEL_ID,
+  isNotificationChannelId,
 } from '@insula/api-contracts';
 import * as categoryService from './categories/service.js';
 import * as templateService from './templates/service.js';
@@ -81,10 +83,22 @@ export async function notificationAdminRoutes(app: FastifyInstance): Promise<voi
   app.get('/admin/notifications/templates', async (request) => {
     const q = request.query as {
       categoryId?: string;
-      channel?: 'in_app' | 'email';
+      channel?: string;
       locale?: string;
       includeInactive?: string;
     };
+    // Validate against the contract enum rather than a hand-listed union:
+    // the old `'in_app' | 'email'` type made `?channel=ntfy` a lie the
+    // compiler could not see, and an unknown value now 400s instead of
+    // silently filtering the list down to nothing.
+    if (q.channel !== undefined && !isNotificationChannelId(q.channel)) {
+      throw new ApiError(
+        'INVALID_CHANNEL',
+        `Unknown notification channel '${q.channel}'. Expected one of: ${NOTIFICATION_CHANNEL_ID.join(', ')}`,
+        400,
+        { channel: q.channel },
+      );
+    }
     const data = await templateService.listTemplates(app.db, {
       categoryId: q.categoryId,
       channel: q.channel,

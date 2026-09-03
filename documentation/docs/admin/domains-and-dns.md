@@ -162,6 +162,24 @@ shows issuer, type, and expiry once a cert is in place.
     own certificate's SAN — that's managed from
     [Email → Settings](email.md), not here.
 
+#### Certificate files
+
+The **Certificate files** card lets you download a tenant's certificate when
+you are diagnosing a TLS problem on a server they run themselves. The file
+contains the customer's **private key**, so treat it accordingly — every
+download is written to the audit log with the domain, who did it, and where
+from.
+
+It also lists the download tokens the customer has issued, with when each was
+last used, and lets you **revoke** one. That is the support path for "I think
+my token leaked" — revocation is immediate.
+
+You cannot create a token from the admin panel. The secret is displayed exactly
+once, and it belongs to the customer; minting it into your browser would put a
+live credential somewhere they never see and cannot audit. Walk them through
+creating it in their own panel instead — the steps are in
+[Domains & websites](../tenant/domains-and-websites.md#fetching-it-automatically-api-access).
+
 ## Reserved platform hostnames
 
 Some hostnames are reserved for the platform itself — the apex domain, and

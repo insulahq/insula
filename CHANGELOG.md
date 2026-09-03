@@ -12,6 +12,113 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **ntfy push notifications now have their own editable templates.** The ntfy
+  channel shipped with a provider, a publisher, a delivery queue and an admin
+  card — but not a single template. Nothing looked broken, because the
+  dispatcher quietly borrowed each source's in-app wording instead, so pushes
+  did arrive; ntfy was simply the one channel whose text an operator could not
+  change, preview, version or restore, and **Settings → Notifications →
+  Templates** listed nothing at all for it. Every source now ships an ntfy
+  template of its own, seeded automatically on the next start. The template
+  editor's subject field is also no longer email-only: it is the email Subject
+  header, the in-app notification title and the ntfy push title — the string on
+  a phone's lock screen — and all three are now editable, each under its own
+  label. Two coverage gaps found on the way are closed in the same change:
+  `tls.certificate_issued` had no email template despite email being one admin
+  toggle away, and template lists silently ignored an unknown `channel` filter
+  instead of reporting it.
+- **A tenant holding more than their plan allows now says so on its detail
+  page.** Changing a plan does not resize anything the tenant already has, so
+  moving a customer from a 2 GiB plan to a 512 MiB one leaves the 2 GiB volume
+  exactly as it was — the subscription says one thing and the cluster holds
+  another, with nothing to announce the difference. It is easy to miss because
+  the tenant's own storage figure is bytes *written*: a 2 GiB volume holding
+  79 MB of files reads as comfortably inside a 512 MiB plan, while the first
+  real symptom is a new volume being refused and a deployment stuck pending.
+  The tenant detail page now compares all three numbers — what the
+  subscription allows, what Kubernetes is enforcing, and what is actually
+  provisioned — and flags the rows that disagree. It catches both shapes: the
+  one where the quota was lowered too (so new resources are already being
+  rejected) and the one where it was not (so nothing looks wrong yet, but the
+  tenant is still over their entitlement). **Run reconciler** is deliberately
+  not offered, since it recreates missing objects and this object exists and is
+  simply the wrong size; the banner points to the two things that do work —
+  raise the limit, or shrink the volume.
+- **Tenants can download their own SSL certificates.** The certificate and
+  private key for a domain were only ever reachable from inside the cluster, so
+  a customer who also runs their own mail server or appliance on that domain
+  had no way to get them. The domain's **SSL/TLS** tab now has a
+  **Certificate files** panel with a download button, and an **API access**
+  section for creating scoped tokens so an external server can fetch the
+  renewed certificate on its own — platform-issued certificates renew about
+  every 60 days, and clicking a button that often is not a plan. A token is
+  bound to a single domain, is read-only, can be revoked instantly, and is
+  shown exactly once. It also works when the platform uses single sign-on,
+  where there is no password for a script to log in with. Admins get the same
+  download plus the ability to revoke a customer's token for support, but
+  cannot create one — that secret belongs to the customer. Every download,
+  by button or token, is recorded in the audit log.
+
+### Changed
+- **The metrics database now collects a smaller, more useful set of data.** It
+  had been running close enough to its memory ceiling to be killed and
+  restarted every few days, leaving short gaps in the graphs. Rather than give
+  it more memory — it is already about a tenth of the platform's whole
+  footprint — it has stopped collecting series that nothing reads: per-backend
+  and per-API-route latency percentile breakdowns, and the Go runtime's
+  internal garbage-collection and scheduler timings from every component. That
+  is roughly a fifth of everything collected. Nothing shown in the dashboards
+  or used by the alerts and service-level objectives changed, including the
+  request-latency percentiles for public traffic. Average request duration per
+  backend is still available; only the percentile detail for those two
+  families is gone. Metric retention stays at 30 days.
+
+### Removed
+- **The nightly "backup coverage audit" job has been retired.** It checked
+  whether storage volumes carried a label that used to control Longhorn's
+  own off-cluster volume backups. That mechanism was retired in August, when
+  protection moved entirely to the tenant, mail and system backup targets you
+  assign under **Backups** — which is why there is no longer any way to
+  configure a Longhorn backup target in the admin panel. Since then the audit
+  had been reporting a missing *backup* for volumes that were at most missing
+  a local hourly snapshot, and because of the storage classes it filtered on
+  it could not see tenant volumes at all. It therefore failed every night
+  without ever reporting anything true — 21 nights in a row on one production
+  cluster. Nothing about what is actually backed up changes. Hourly local
+  snapshots and the daily filesystem trim continue exactly as before.
+
+### Fixed
+- **Rebooting a node no longer leaves hundreds of failed pods behind.** After a
+  restart the pod list filled up with pods in a failed state, all reporting
+  that they had been rejected because the node was shutting down — 822 of them
+  from a single production reboot. They were harmless leftovers rather than a
+  fault, but they buried real failures and made a healthy cluster look broken.
+  All of them came from the Calico operator, which was being stopped in the
+  very first shutdown wave and then repeatedly restarted onto a node that was
+  already going down. It is now stopped in the same wave as the rest of the
+  cluster's core networking components, so the loop no longer happens.
+- **A storage operation that cannot restart your applications now fails
+  visibly instead of leaving them stopped.** Snapshots, resizes, restores and
+  filesystem checks briefly stop a tenant's applications so the volume can be
+  worked on safely, then start them again. If that restart failed — most often
+  because the tenant was at its memory limit and the platform was not allowed
+  to start the pod — the error was discarded: the operation reported success
+  and the applications simply stayed stopped, with nothing anywhere to say
+  why. The self-healing watchdog could not find them either, because the
+  marker it searches for had already been removed a moment earlier. Now the
+  applications are started first and the marker is only cleared once they are
+  back, every failure is logged with the reason, and an operation that cannot
+  bring an application back is marked **failed** so it is visible in the panel
+  and retried automatically.
+- **Four more operational history tables are now pruned on a schedule.** The
+  platform already pruned its audit trail and most per-event tables, but the
+  record of upgrade attempts, Apply HA/Local runs, DR drills and image reaps
+  had no retention at all and would grow for the life of a cluster. They are
+  now cleaned up alongside everything else — 90 days for the operational ones,
+  180 for DR drills, which are the evidence that restore actually works. An
+  upgrade or apply that is still running is never removed, however old it is.
+
 ## [2026.9.4] - 2026-09-02
 
 ### Fixed
