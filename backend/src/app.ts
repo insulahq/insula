@@ -65,6 +65,7 @@ import { oidcRoutes } from './modules/oidc/routes.js';
 import { dnsServerRoutes } from './modules/dns-servers/routes.js';
 import { dnsApexDriftRoutes } from './modules/dns-apex-drift/routes.js';
 import { certificateRoutes } from './modules/certificates/routes.js';
+import { certDownloadRoutes } from './modules/cert-download/routes.js';
 import { k8sManifestRoutes } from './modules/k8s-manifests/routes.js';
 import { provisioningRoutes } from './modules/k8s-provisioner/routes.js';
 import { nodeRoutes } from './modules/nodes/routes.js';
@@ -603,6 +604,7 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   await app.register(dnsServerRoutes, { prefix: '/api/v1' });
   await app.register(dnsApexDriftRoutes, { prefix: '/api/v1' });
   await app.register(certificateRoutes, { prefix: '/api/v1' });
+  await app.register(certDownloadRoutes, { prefix: '/api/v1' });
   await app.register(k8sManifestRoutes, { prefix: '/api/v1' });
   await app.register(provisioningRoutes, { prefix: '/api/v1' });
   await app.register(nodeRoutes, { prefix: '/api/v1' });
