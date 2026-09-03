@@ -264,3 +264,62 @@ it, or **Delete Certificate** to go back to automatic certificates.
 
 The domain list also shows a small SSL badge per domain. Hover it to see the
 issuer, type (single-hostname or wildcard), and days until expiry at a glance.
+
+### Download the certificate files
+
+Sometimes you need the certificate somewhere the platform doesn't run — your
+own mail server, an appliance, a service hosted elsewhere on the same domain.
+The **Certificate files** panel on the domain's **SSL/TLS** tab gives you both
+a one-off download and a way to automate it.
+
+!!! warning "The file contains your private key"
+    Anyone holding it can impersonate your site. Store it where only your
+    servers can read it, and never commit it to a repository.
+
+**For a one-off copy**, click **Download certificate**. You get a single `.pem`
+file containing, in order: the private key, the certificate, and the full
+chain. That is the layout nginx, Apache and HAProxy expect, so it drops
+straight into an existing configuration.
+
+#### Fetching it automatically (API access)
+
+Certificates issued by the platform renew roughly every 60 days. If another
+server uses the certificate, it needs the new one each time — clicking a button
+every two months is not a plan. Create a token instead:
+
+1. **SSL/TLS** tab → **Certificate files** → **API access** → **New token**.
+2. Give it a name you'll recognise later — one per server is a good habit.
+3. Choose an expiry. 90 days matches the renewal cycle; **Never** is available
+   if rotating the token is more disruption than it's worth.
+4. **Copy the token now.** It is shown once and cannot be retrieved again. If
+   you lose it, revoke it and create another.
+
+Then fetch the certificate from anywhere:
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+     https://admin.example.test/api/v1/certs/example.com/download \
+     -o example.com.pem
+```
+
+A renewal hook on your own server might look like:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+curl -sfS -H "Authorization: Bearer ${CERT_TOKEN}" \
+     https://admin.example.test/api/v1/certs/example.com/download \
+     -o /etc/nginx/certs/example.com.pem
+nginx -s reload
+```
+
+**What a token can and cannot do.** It is bound to one domain and can only
+download that domain's certificate. It gives no access to your panel, no access
+to any other domain, and cannot change anything. Revoke it at any time from the
+same panel — revocation takes effect immediately.
+
+Tokens keep working when your platform uses single sign-on, because they are
+checked independently of the normal login. That is the reason they exist: with
+SSO there is no password for a script to log in with.
+
+Every download — button or token — is recorded in the platform's audit log.

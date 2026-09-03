@@ -368,7 +368,37 @@ Both Admin and Tenant Panel domain list views show a compact certificate status 
 
 ## Certificate Download
 
-Certificate files (private key + certificate + full chain) are available exclusively via the API using a scoped token. There is no panel download button — the API-only approach avoids casual exposure of private key material through a browser and is better suited to the primary use case: automated pickup by external servers and deploy pipelines.
+**Status: implemented 2026-09-03.** Two ways in — a scoped API token for unattended pickup, and a panel button for a one-off copy.
+
+> **Revised from the original design.** This section previously said *"There is no panel download button — the API-only approach avoids casual exposure of private key material through a browser."* The reasoning still holds for the automated case, which is why tokens exist and are the documented primary path. But requiring a customer to mint a token just to copy a file once is disproportionate, so a download button was added by operator decision 2026-09-03. The mitigations that made API-only attractive are kept on both paths: `Cache-Control: private, no-store`, an audit row carrying `private_key_downloaded`, and a visible warning that the file holds the private key.
+
+### What a bundle contains
+
+`application/x-pem-file`, in this order: **private key, leaf certificate, then any chain**. Key-first is what `certbot` writes and what nginx/apache/haproxy accept, so the file drops straight into an existing config.
+
+The material comes from whichever source is authoritative for that domain:
+
+| Source | Where it lives | Notes |
+|---|---|---|
+| `managed` | the tenant namespace's cert-manager TLS Secret | wildcard Secret first, per-hostname second (HTTP-01 mode) |
+| `uploaded` | `ssl_certificates`, key encrypted at rest | used only when no managed Secret exists |
+
+`managed` wins when both exist — it is what the ingress actually serves.
+
+### Who may download
+
+| Role | Download | Create token | Revoke token |
+|---|---|---|---|
+| `tenant_admin` | yes | yes | yes |
+| `admin` / `super_admin` | yes | via API only | yes |
+| `support` | **no** | no | no |
+| `tenant_user` | **no** | no | no |
+
+`support` can read certificate metadata and list tokens, but has no business holding a customer's private key — it is excluded from download and revoke, and both panels hide those controls rather than leaving them enabled to 403 on click. The admin panel deliberately offers **no create-token control** even though the API permits it: the secret is displayed exactly once, and minting it into an admin's browser puts a live credential somewhere the customer never sees.
+
+Both the **mint** and the **revoke** are audited under `resourceType: 'cert_download_token'` with the token id. The generic audit middleware would otherwise bucket them as ordinary `domain` writes and drop the token id, making a credential's lifecycle indistinguishable from a DNS-record edit on the same domain.
+
+The **availability probe** (which the panels call on every SSL-tab load, and which `support` can reach) deliberately does **not** use the bundle builder — it reads `tls.crt` / `certificate` only and never decrypts the private key.
 
 ### Download via API
 
@@ -398,6 +428,24 @@ Authorization: Bearer <cert-download-token>
 ```
 
 Response: `application/x-pem-file` — PEM bundle containing the private key, certificate, and full chain.
+
+**This route deliberately sits outside the JWT/OIDC path.** It is registered with `config: { skipAuth: true }`, so the global JWT hook does not run and the handler verifies its own opaque token against `cert_download_tokens`. That is the whole point: on an OIDC-only deployment there is no password grant for a script to authenticate with, so without this an external server could never fetch its own renewed certificate. **Do not add a JWT fallback to this route** — it would re-couple the two and break unattended pickup under SSO.
+
+Token verification returns a single indistinguishable `401` for every failure — absent, malformed, unknown, revoked, expired — so probing cannot enumerate valid tokens. A presented value without the `insula_cert_` prefix is rejected before any database lookup, so a JWT presented here never reaches the token table.
+
+A token is bound to one domain **and** one tenant. The handler resolves the requested hostname *within the token's tenant* and requires it to be the token's own domain, so a token for `example.com` cannot fetch `example.org` even inside the same tenant.
+
+#### Token properties
+
+| Property | Value |
+|---|---|
+| Format | `insula_cert_` + 256 bits of randomness (base64url) |
+| Storage | sha256 only — a database leak yields no usable credential |
+| Retrieval | shown once at creation; unrecoverable afterwards |
+| Scope | one domain, read-only, this route only |
+| Expiry | never / 30d / 90d / 1 year (panel default 90d, matching LE renewal) |
+| Revocation | immediate — the row is deleted (no tombstone; the audit row is the record) |
+| Limit | 20 per domain |
 
 **Example — curl:**
 
