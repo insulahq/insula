@@ -179,41 +179,54 @@ set a tenant-specific value.
 See [Plans & subscriptions](plans-and-subscriptions.md) for what each
 plan field means.
 
-## When a tenant is over quota
+## When a tenant has more than their plan allows
 
-Lowering a tenant's limits does **not** shrink what the tenant already
-has. If a customer is moved to a smaller plan while holding a volume
-bigger than the new limit allows, the namespace ends up consuming more
-than its quota permits. Kubernetes will not delete anything, but it stops
-accepting anything *new* of that kind — the next volume, or the next
-application, is refused with an "exceeded quota" error that surfaces as a
+Changing a tenant's plan does **not** resize anything they already have.
+Move a customer from a 2 GiB plan down to a 512 MiB one and the 2 GiB
+volume stays exactly as it is — the subscription says one thing, the
+cluster holds another, and nothing announces the difference.
+
+That gap is easy to miss, because the tenant's own storage figure is
+**bytes written**, not volume size. A 2 GiB volume holding 79 MB of files
+reads as comfortably inside a 512 MiB plan from the tenant panel, and the
+admin panel used to show only the plan values. The first real symptom is
+usually a new volume or application being refused, which surfaces as a
 deployment stuck pending.
 
-This is easy to miss, because the tenant panel reports **bytes written**
-against the plan. A 2 GiB volume on a 512 MiB plan with only 79 MB of
-files in it reads as comfortably under limit there, while every new
-volume in that namespace is being rejected.
+The tenant detail page now compares all three numbers. When they
+disagree, a banner appears above **Storage Lifecycle**:
 
-The tenant detail page now says so directly. When it happens, a red
-banner appears above **Storage Lifecycle** listing each affected
-resource:
+| Resource | Subscription | Enforced quota | Provisioned |
+|----------|--------------|----------------|-------------|
+| Storage  | 512Mi        | 512Mi          | **2Gi** — over plan |
+| CPU      | 0.1          | 100m           | — |
+| Memory   | 102.4Mi      | 102.4Mi        | — |
 
-| Resource | Provisioned | Allowed |
-|----------|-------------|---------|
-| `requests.storage` | 2.0 GiB | 512.0 MiB |
+- **Subscription** — the effective limit: the tenant's per-resource
+  override if you have set one, otherwise their plan's value.
+- **Enforced quota** — what Kubernetes is enforcing right now. It can
+  briefly lag the subscription after a plan change.
+- **Provisioned** — the size the volume *requests*. This is the column
+  that was missing, and the reason an oversized volume stayed invisible.
+  CPU and memory have no standing equivalent, so they show `—`.
 
-**Provisioned** is what the tenant's objects *request*, not what has been
-written into them — which is why a nearly-empty volume still counts in
-full.
+Every resource is listed, not just the offending one, so you can compare
+the three columns at a glance.
 
-**Run reconciler** is deliberately not offered for this. The reconciler
-recreates *missing* objects; here the object exists and is simply too
-big, so there is nothing for it to repair. Resolve it one of two ways:
+!!! note "Two ways this shows up"
+    If the quota was lowered along with the plan, Kubernetes is already
+    refusing new resources and the banner says so. If the quota was never
+    re-applied, nothing is being refused yet — but the tenant is still
+    holding more than they are entitled to, and the banner still flags it.
 
-- **Raise the limit** — open **Resource Limits**, turn on the override
-  for that resource, and set it to at least what is provisioned. This is
-  the quick fix and takes effect immediately.
-- **Shrink what exists** — reduce the storage override to the intended
+**Run reconciler** is deliberately not offered here. The reconciler
+recreates *missing* objects; this object exists and is simply the wrong
+size. Resolve it one of two ways, both under **Resource Limits**:
+
+- **Raise the limit** — turn on the override for that resource and set it
+  to at least what is provisioned. Immediate, and the right choice if the
+  customer should keep the space.
+- **Shrink the volume** — reduce the storage override to the intended
   size. This is a destructive resize (snapshot → drop → recreate →
   restore) and the platform will confirm before running it.
 

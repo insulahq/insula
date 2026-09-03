@@ -348,15 +348,15 @@ describe('TenantDetail resource limits — plan defaults', () => {
 });
 
 /**
- * Over-quota surfacing.
+ * Subscription-vs-cluster surfacing.
  *
- * Production 2026-09-03: a tenant sat on a 512Mi storage plan while holding a
- * 2Gi PVC, so `requests.storage` read 2Gi/512Mi and Kubernetes rejected every
- * new volume in that namespace. Nothing in the admin panel said so — the
- * tenant-facing view reports bytes WRITTEN against the plan, which showed a
- * reassuring "78.8 MB of 512Mi". These assert the numbers are on screen.
+ * Production 2026-09-03: a tenant was moved to a 512 MiB storage plan while
+ * still holding the 2 GiB volume created under the old plan — it was never
+ * shrunk. Nothing said so. The tenant panel reports bytes WRITTEN against the
+ * plan ("78.8 MB of 512Mi", reassuring) and the admin panel showed the plan
+ * values straight from the DB. These assert the three columns are on screen.
  */
-describe('TenantDetail namespace integrity — over quota', () => {
+describe('TenantDetail namespace integrity — subscription vs cluster', () => {
   function setupIntegrityApi(report: unknown) {
     mockApiFetch.mockImplementation((path: string) => {
       if (path.includes('/namespace-integrity')) return Promise.resolve({ data: report });
@@ -368,64 +368,87 @@ describe('TenantDetail namespace integrity — over quota', () => {
     });
   }
 
-  const OVER_QUOTA = {
-    tenantId: 'tenant-001',
-    name: 'Acme Corp',
-    namespace: 'acme-ns',
-    findings: ['resource_quota_exceeded'],
-    repaired: [],
-    errors: [],
-    quota: [
-      { resource: 'requests.cpu', used: '100m', hard: '100m', usedRatio: 1, exceeded: false },
-      { resource: 'requests.storage', used: '2Gi', hard: '512Mi', usedRatio: 4, exceeded: true },
-    ],
+  const ROWS = [
+    { resource: 'storage', label: 'Storage', subscription: '512Mi', enforced: '512Mi', provisioned: '2Gi', exceedsSubscription: true, enforcedDiffers: false, blocked: true },
+    { resource: 'cpu', label: 'CPU', subscription: '0.1', enforced: '100m', provisioned: null, exceedsSubscription: false, enforcedDiffers: false, blocked: false },
+    { resource: 'memory', label: 'Memory', subscription: '102.4Mi', enforced: '107374182400m', provisioned: null, exceedsSubscription: false, enforcedDiffers: false, blocked: false },
+  ];
+
+  const OVER_PLAN = {
+    tenantId: 'tenant-001', name: 'Acme Corp', namespace: 'acme-ns',
+    findings: ['provisioned_exceeds_plan', 'resource_quota_exceeded'],
+    repaired: [], errors: [], quota: ROWS,
   };
 
   beforeEach(() => { vi.resetAllMocks(); });
 
-  it('shows the over-quota resource with what is provisioned and what is allowed', async () => {
-    setupIntegrityApi(OVER_QUOTA);
+  it('shows subscription, enforced quota and provisioned size side by side', async () => {
+    setupIntegrityApi(OVER_PLAN);
     renderTenantDetail();
 
-    const detail = await screen.findByTestId('quota-exceeded-detail');
-    expect(detail).toBeTruthy();
-    expect(detail.textContent).toContain('requests.storage');
-    expect(detail.textContent).toContain('2Gi');
-    expect(detail.textContent).toContain('512Mi');
+    const detail = await screen.findByTestId('quota-mismatch-detail');
+    expect(detail.textContent).toContain('Subscription');
+    expect(detail.textContent).toContain('Enforced quota');
+    expect(detail.textContent).toContain('Provisioned');
+
+    const storage = await screen.findByTestId('quota-row-storage');
+    expect(storage.textContent).toContain('512Mi');   // what the plan allows
+    expect(storage.textContent).toContain('2Gi');     // what actually exists
+    expect(storage.textContent).toContain('over plan');
   });
 
-  it('lists ONLY the exceeded resource, not every quota row', async () => {
-    setupIntegrityApi(OVER_QUOTA);
+  it('renders every resource row, so the three columns can be compared', async () => {
+    setupIntegrityApi(OVER_PLAN);
     renderTenantDetail();
 
-    const detail = await screen.findByTestId('quota-exceeded-detail');
-    // requests.cpu is at exactly 100% — full, but not exceeded, so it is noise here.
-    expect(detail.textContent).not.toContain('requests.cpu');
+    await screen.findByTestId('quota-mismatch-detail');
+    expect(screen.getByTestId('quota-row-cpu')).toBeTruthy();
+    expect(screen.getByTestId('quota-row-memory')).toBeTruthy();
   });
 
-  it('does NOT offer "Run reconciler" — it cannot repair an over-quota namespace', async () => {
-    setupIntegrityApi(OVER_QUOTA);
+  it('marks only the offending row as over plan', async () => {
+    setupIntegrityApi(OVER_PLAN);
     renderTenantDetail();
 
-    await screen.findByTestId('quota-exceeded-detail');
+    await screen.findByTestId('quota-mismatch-detail');
+    expect(screen.getByTestId('quota-row-cpu').textContent).not.toContain('over plan');
+  });
+
+  // The case that would otherwise stay invisible: the plan was lowered but the
+  // quota was never re-applied, so the live quota is NOT exceeded. Comparing
+  // against the subscription is the only thing that catches it.
+  it('surfaces an over-plan volume even when the quota is not being exceeded', async () => {
+    setupIntegrityApi({
+      ...OVER_PLAN,
+      findings: ['provisioned_exceeds_plan'],
+      quota: [{ resource: 'storage', label: 'Storage', subscription: '512Mi', enforced: '2Gi', provisioned: '2Gi', exceedsSubscription: true, enforcedDiffers: true, blocked: false }],
+    });
+    renderTenantDetail();
+
+    const storage = await screen.findByTestId('quota-row-storage');
+    expect(storage.textContent).toContain('over plan');
+  });
+
+  it('does NOT offer "Run reconciler" — it cannot resize an existing volume', async () => {
+    setupIntegrityApi(OVER_PLAN);
+    renderTenantDetail();
+
+    await screen.findByTestId('quota-mismatch-detail');
     expect(screen.queryByTestId('namespace-integrity-repair-button')).toBeNull();
   });
 
   it('DOES offer "Run reconciler" when a repairable finding is present too', async () => {
-    setupIntegrityApi({
-      ...OVER_QUOTA,
-      findings: ['resource_quota_exceeded', 'network_policy_missing'],
-    });
+    setupIntegrityApi({ ...OVER_PLAN, findings: ['provisioned_exceeds_plan', 'network_policy_missing'] });
     renderTenantDetail();
 
     expect(await screen.findByTestId('namespace-integrity-repair-button')).toBeTruthy();
   });
 
-  it('renders no banner at all for a healthy namespace', async () => {
+  it('renders no banner at all when subscription and cluster agree', async () => {
     setupIntegrityApi({
       tenantId: 'tenant-001', name: 'Acme Corp', namespace: 'acme-ns',
       findings: [], repaired: [], errors: [],
-      quota: [{ resource: 'requests.storage', used: '256Mi', hard: '512Mi', usedRatio: 0.5, exceeded: false }],
+      quota: [{ resource: 'storage', label: 'Storage', subscription: '1Gi', enforced: '1Gi', provisioned: '1Gi', exceedsSubscription: false, enforcedDiffers: false, blocked: false }],
     });
     renderTenantDetail();
 

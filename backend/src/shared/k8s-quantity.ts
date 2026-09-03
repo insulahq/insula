@@ -86,6 +86,28 @@ export function compareK8sQuantities(a: string, b: string): number | null {
   return x === y ? 0 : x < y ? -1 : 1;
 }
 
+/**
+ * Render a GiB figure as a canonical binary Kubernetes quantity.
+ *
+ * Plan limits are stored as decimal GiB (`0.50`), which reads badly beside a
+ * real quantity — "0.5Gi" next to "2Gi" invites a misread at exactly the
+ * moment the operator is comparing them. Snapping to the largest unit that
+ * lands on a whole-ish number gives `512Mi` vs `2Gi`, which is what kubectl
+ * would print and what the plan editor talks about.
+ */
+export function formatGiBQuantity(gi: number): string {
+  if (!Number.isFinite(gi) || gi <= 0) return '0';
+  const bytes = gi * 1024 ** 3;
+  for (const [suffix, factor] of [['Ti', 1024 ** 4], ['Gi', 1024 ** 3], ['Mi', 1024 ** 2], ['Ki', 1024]] as const) {
+    if (bytes >= factor) {
+      const n = bytes / factor;
+      // Keep it exact when it divides cleanly; otherwise one decimal.
+      return `${Number.isInteger(n) ? n : Number(n.toFixed(1))}${suffix}`;
+    }
+  }
+  return `${Math.round(bytes)}`;
+}
+
 /** used ÷ hard, or null if either is unparseable or hard is zero. */
 export function quantityRatio(used: string, hard: string): number | null {
   const u = parseK8sQuantity(used);

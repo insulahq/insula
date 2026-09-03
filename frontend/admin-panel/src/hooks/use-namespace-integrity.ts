@@ -10,7 +10,7 @@ import { apiFetch } from '@/lib/api-client';
 export type {
   IntegrityFinding,
   NamespaceIntegrityReport,
-  QuotaUsage,
+  QuotaComparison,
 } from '@insula/api-contracts';
 import type { NamespaceIntegrityReport } from '@insula/api-contracts';
 

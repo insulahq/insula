@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseK8sQuantity, compareK8sQuantities, quantityRatio } from './k8s-quantity.js';
+import { parseK8sQuantity, compareK8sQuantities, quantityRatio, formatGiBQuantity } from './k8s-quantity.js';
 
 describe('parseK8sQuantity', () => {
   it('parses bare numbers', () => {
@@ -84,5 +84,28 @@ describe('quantityRatio', () => {
   it('returns null on a zero or unparseable denominator', () => {
     expect(quantityRatio('1Gi', '0')).toBeNull();
     expect(quantityRatio('1Gi', 'junk')).toBeNull();
+  });
+});
+
+describe('formatGiBQuantity', () => {
+  it('renders a plan limit as the unit an operator would compare against', () => {
+    // 0.5 sitting beside "2Gi" invites a misread at exactly the wrong moment.
+    expect(formatGiBQuantity(0.5)).toBe('512Mi');
+    expect(formatGiBQuantity(0.1)).toBe('102.4Mi');
+    expect(formatGiBQuantity(1)).toBe('1Gi');
+    expect(formatGiBQuantity(2)).toBe('2Gi');
+    expect(formatGiBQuantity(100)).toBe('100Gi');
+    expect(formatGiBQuantity(2048)).toBe('2Ti');
+  });
+
+  it('round-trips through the parser', () => {
+    for (const gi of [0.5, 0.1, 1, 2, 100]) {
+      expect(parseK8sQuantity(formatGiBQuantity(gi))).toBeCloseTo(gi * 1024 ** 3, 0);
+    }
+  });
+
+  it('handles zero and nonsense without throwing', () => {
+    expect(formatGiBQuantity(0)).toBe('0');
+    expect(formatGiBQuantity(Number.NaN)).toBe('0');
   });
 });

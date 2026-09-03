@@ -1,9 +1,9 @@
 import { z } from 'zod';
 
 /**
- * Namespace integrity — the audit that compares a tenant's DESIRED cluster
- * state (namespace, PVC, ResourceQuota, NetworkPolicies) against what is
- * actually there.
+ * Namespace integrity — the audit that compares a tenant's DESIRED state
+ * (namespace, PVC, ResourceQuota, NetworkPolicies, and the limits on their
+ * subscription) against what is actually on the cluster.
  *
  * These types lived only in the admin panel's `use-namespace-integrity.ts`
  * hook until 2026-09-03, hand-declared and never checked against the server.
@@ -16,47 +16,60 @@ import { z } from 'zod';
  * `*_missing` findings are auto-repairable — the reconciler recreates the
  * resource from the tenant's plan.
  *
- * `resource_quota_exceeded` is NOT. It means the namespace's live
- * ResourceQuota reports `used > hard` for at least one resource, so the
- * apiserver is REJECTING new objects of that kind. Re-applying the quota
- * cannot fix it: the over-consumption is already on the cluster (typically a
- * PVC provisioned larger than the plan the tenant was later moved to). The
- * operator has to raise the plan or shrink the object, so this finding is
- * reported and never auto-repaired.
+ * The two quota findings are NOT:
+ *
+ * `provisioned_exceeds_plan` — the tenant HOLDS more than their subscription
+ * allows. Lowering a plan does not shrink anything the tenant already has, so
+ * a tenant moved from a 2 GiB plan to a 512 MiB one keeps the 2 GiB volume.
+ * Nothing breaks immediately, which is exactly why it goes unnoticed: the
+ * tenant panel reports bytes WRITTEN against the plan, so a 2 GiB volume with
+ * 79 MB in it reads as comfortably inside a 512 MiB limit. Only the operator
+ * can decide between raising the plan and running a (destructive) shrink.
+ *
+ * `resource_quota_exceeded` — the live ResourceQuota reports `used > hard`, so
+ * the apiserver is REJECTING new objects of that kind right now. Usually the
+ * same root cause, one step further along.
  */
 export const integrityFindingSchema = z.enum([
   'namespace_missing',
   'pvc_missing',
   'resource_quota_missing',
   'network_policy_missing',
+  'provisioned_exceeds_plan',
   'resource_quota_exceeded',
 ]);
 export type IntegrityFinding = z.infer<typeof integrityFindingSchema>;
 
 /**
- * One row of the live ResourceQuota, straight from `status.used` /
- * `status.hard` — NOT the plan values in the `resource_quotas` DB table.
+ * One resource, compared across the three places it is expressed. All values
+ * are Kubernetes quantity strings (`512Mi`, `2Gi`, `100m`) or null when that
+ * column does not apply.
  *
- * The distinction is the whole point of surfacing this: the tenant panel
- * reports consumed bytes against the PLAN, so a PVC provisioned larger than
- * the plan is invisible there. `requests.storage` counts what the PVC
- * REQUESTED, not what has been written into it, which is how a tenant can
- * read as "78.8 MB of 512Mi used" while being hard-blocked from creating any
- * new volume.
+ *   subscription — the effective plan limit: the tenant's per-resource
+ *                  override if set, otherwise the hosting plan's value. What
+ *                  the customer is entitled to.
+ *   enforced     — `status.hard` on the live ResourceQuota. What Kubernetes
+ *                  is actually enforcing. Lags `subscription` until the quota
+ *                  reconciler runs.
+ *   provisioned  — what physically exists. Storage only: the tenant PVC's
+ *                  `spec.resources.requests.storage`. This is the column the
+ *                  admin panel never showed, and the reason a 2 GiB volume on
+ *                  a 512 MiB plan was invisible from every screen.
  */
-export const quotaUsageSchema = z.object({
-  /** Quota key exactly as Kubernetes reports it, e.g. `requests.storage`. */
-  resource: z.string(),
-  /** `status.used`, verbatim (e.g. `2Gi`, `100m`, `33554432`). */
-  used: z.string(),
-  /** `status.hard`, verbatim. */
-  hard: z.string(),
-  /** used ÷ hard. Null when either side could not be parsed. */
-  usedRatio: z.number().nullable(),
-  /** True when used > hard — admission for this resource is blocked. */
-  exceeded: z.boolean(),
+export const quotaComparisonSchema = z.object({
+  resource: z.enum(['storage', 'cpu', 'memory']),
+  label: z.string(),
+  subscription: z.string(),
+  enforced: z.string().nullable(),
+  provisioned: z.string().nullable(),
+  /** provisioned > subscription — the tenant holds more than the plan allows. */
+  exceedsSubscription: z.boolean(),
+  /** enforced ≠ subscription — the cluster quota has not caught up with the plan. */
+  enforcedDiffers: z.boolean(),
+  /** Live quota `used > hard` — the apiserver is rejecting new objects. */
+  blocked: z.boolean(),
 });
-export type QuotaUsage = z.infer<typeof quotaUsageSchema>;
+export type QuotaComparison = z.infer<typeof quotaComparisonSchema>;
 
 export const namespaceIntegrityReportSchema = z.object({
   tenantId: z.string(),
@@ -66,10 +79,11 @@ export const namespaceIntegrityReportSchema = z.object({
   repaired: z.array(integrityFindingSchema),
   errors: z.array(z.string()),
   /**
-   * Every resource in the namespace's ResourceQuota. Empty when the quota is
-   * missing or unreadable — an empty array is NOT "quota is fine", so gate any
-   * "all good" rendering on the absence of findings, not on this being empty.
+   * Subscription-vs-cluster comparison, one row per resource. Empty when the
+   * namespace or its quota could not be read — an empty array is NOT "this
+   * tenant is consistent", so gate any reassuring rendering on the absence of
+   * findings, never on this being empty.
    */
-  quota: z.array(quotaUsageSchema),
+  quota: z.array(quotaComparisonSchema),
 });
 export type NamespaceIntegrityReport = z.infer<typeof namespaceIntegrityReportSchema>;

@@ -13,20 +13,23 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
-- **A tenant that is over its quota now says so on its detail page.** Lowering
-  a tenant's limits does not shrink what the tenant already has, so a customer
-  moved to a smaller plan can end up holding a volume bigger than the new plan
-  allows. Kubernetes then refuses anything *new* of that kind — the next
-  volume or application is rejected — while the tenant-facing view, which
-  reports bytes *written* against the plan, still reads as comfortably under
-  limit. A 2 GiB volume on a 512 MiB plan holding 79 MB of files looked fine
-  from every screen while quietly blocking the namespace. The tenant detail
-  page now shows a banner naming each affected resource with what is
-  provisioned against what is allowed, and explains that "provisioned" means
-  what the volume asked for, not what is in it. **Run reconciler** is
-  deliberately not offered — it recreates missing objects, and here the object
-  exists and is simply too big — so the banner points to the two things that
-  do work: raise the limit, or shrink the volume.
+- **A tenant holding more than their plan allows now says so on its detail
+  page.** Changing a plan does not resize anything the tenant already has, so
+  moving a customer from a 2 GiB plan to a 512 MiB one leaves the 2 GiB volume
+  exactly as it was — the subscription says one thing and the cluster holds
+  another, with nothing to announce the difference. It is easy to miss because
+  the tenant's own storage figure is bytes *written*: a 2 GiB volume holding
+  79 MB of files reads as comfortably inside a 512 MiB plan, while the first
+  real symptom is a new volume being refused and a deployment stuck pending.
+  The tenant detail page now compares all three numbers — what the
+  subscription allows, what Kubernetes is enforcing, and what is actually
+  provisioned — and flags the rows that disagree. It catches both shapes: the
+  one where the quota was lowered too (so new resources are already being
+  rejected) and the one where it was not (so nothing looks wrong yet, but the
+  tenant is still over their entitlement). **Run reconciler** is deliberately
+  not offered, since it recreates missing objects and this object exists and is
+  simply the wrong size; the banner points to the two things that do work —
+  raise the limit, or shrink the volume.
 
 ### Changed
 - **The metrics database now collects a smaller, more useful set of data.** It

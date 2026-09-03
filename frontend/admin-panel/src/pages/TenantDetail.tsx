@@ -2880,33 +2880,20 @@ const FINDING_LABEL: Record<IntegrityFinding, string> = {
   pvc_missing: 'Tenant PVC missing',
   resource_quota_missing: 'ResourceQuota missing',
   network_policy_missing: 'NetworkPolicies missing',
+  provisioned_exceeds_plan: 'Provisioned resources exceed the subscription',
   resource_quota_exceeded: 'Over quota — new resources are being rejected',
 };
 
 /**
  * Findings the reconciler cannot fix. Everything else is a missing object it
- * recreates from the plan; being over quota is an object that already exists
- * and is too big, so only the operator can resolve it (raise the plan, or
- * shrink the object). The banner must not offer "Run reconciler" as the
- * remedy for these.
+ * recreates from the plan; these two are objects that exist and are the wrong
+ * size, so only the operator can resolve them (raise the plan, or shrink what
+ * exists). The banner must not offer "Run reconciler" as the remedy.
  */
 const UNREPAIRABLE_FINDINGS: ReadonlySet<IntegrityFinding> = new Set<IntegrityFinding>([
+  'provisioned_exceeds_plan',
   'resource_quota_exceeded',
 ]);
-
-/** `2Gi` / `100m` / `33554432` → something an operator can read at a glance. */
-function formatQuantity(raw: string): string {
-  const n = Number(raw);
-  // A bare integer is bytes for storage/memory quotas. Anything with a suffix
-  // is already human-readable, so pass it straight through.
-  if (!Number.isFinite(n) || raw.trim() === '') return raw;
-  if (n === 0) return '0';
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let v = n;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
-  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
-}
 
 function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
   const { data, isLoading } = useTenantNamespaceIntegrity(tenantId);
@@ -2920,9 +2907,10 @@ function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
   const stillBroken = report.findings ?? [];
   const justRepaired = repair.data?.data.repaired ?? [];
   const repairErrors = repair.data?.data.errors ?? [];
-  // Rows the apiserver is actively rejecting on. `quota` may be absent on an
-  // in-flight rollout where the API predates this field.
-  const exceededRows = (report.quota ?? []).filter((q) => q.exceeded);
+  // Rows where the subscription and the cluster disagree. `quota` may be
+  // absent on an in-flight rollout where the API predates this field.
+  const quotaRows = report.quota ?? [];
+  const mismatchedRows = quotaRows.filter((q) => q.exceedsSubscription || q.enforcedDiffers || q.blocked);
   // Only offer "Run reconciler" when at least one finding is something it can
   // actually repair — otherwise the button is a dead end that reports success
   // while the tenant stays blocked.
@@ -2961,35 +2949,57 @@ function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
                 ))}
               </ul>
             )}
-            {exceededRows.length > 0 && (
-              <div className="mt-3" data-testid="quota-exceeded-detail">
+            {mismatchedRows.length > 0 && (
+              <div className="mt-3" data-testid="quota-mismatch-detail">
                 <p className="text-xs text-red-800 dark:text-red-300">
-                  The namespace has already consumed more than its quota allows, so Kubernetes is
-                  rejecting new resources of these kinds. This is not something the reconciler can
-                  repair — either raise the tenant&apos;s plan limits, or shrink what already exists.
+                  What this tenant actually has does not match what their subscription allows.
+                  Lowering a plan does not shrink anything the tenant already holds, so a volume
+                  created under a bigger plan stays at its old size until someone resizes it.
                 </p>
-                <table className="mt-2 w-full max-w-lg text-left text-xs">
-                  <thead>
-                    <tr className="text-red-900/70 dark:text-red-300/70">
-                      <th scope="col" className="pb-1 pr-4 font-medium">Resource</th>
-                      <th scope="col" className="pb-1 pr-4 font-medium">Provisioned</th>
-                      <th scope="col" className="pb-1 font-medium">Allowed</th>
-                    </tr>
-                  </thead>
-                  <tbody className="font-mono text-red-800 dark:text-red-300">
-                    {exceededRows.map((q) => (
-                      <tr key={q.resource}>
-                        <td className="pr-4">{q.resource}</td>
-                        <td className="pr-4 font-semibold">{formatQuantity(q.used)}</td>
-                        <td>{formatQuantity(q.hard)}</td>
+                <div className="mt-2 overflow-x-auto">
+                  <table className="w-full min-w-[26rem] max-w-xl text-left text-xs">
+                    <thead>
+                      <tr className="text-red-900/70 dark:text-red-300/70">
+                        <th scope="col" className="pb-1 pr-4 font-medium">Resource</th>
+                        <th scope="col" className="pb-1 pr-4 font-medium">Subscription</th>
+                        <th scope="col" className="pb-1 pr-4 font-medium">Enforced quota</th>
+                        <th scope="col" className="pb-1 font-medium">Provisioned</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody className="font-mono text-red-800 dark:text-red-300">
+                      {/* Every row, not just the mismatched ones — the point is
+                          to let the operator compare the three columns. */}
+                      {quotaRows.map((q) => (
+                        <tr key={q.resource} data-testid={`quota-row-${q.resource}`}>
+                          <td className="pr-4 font-sans">{q.label}</td>
+                          <td className="pr-4">{q.subscription}</td>
+                          <td className={`pr-4 ${q.enforcedDiffers ? 'font-semibold' : 'opacity-70'}`}>
+                            {q.enforced ?? '—'}
+                          </td>
+                          <td className={q.exceedsSubscription ? 'font-semibold' : 'opacity-70'}>
+                            {q.provisioned ?? '—'}
+                            {q.exceedsSubscription && (
+                              <span className="ml-1.5 font-sans font-normal">over plan</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
                 <p className="mt-2 text-xs text-red-800/80 dark:text-red-300/80">
-                  &ldquo;Provisioned&rdquo; is what the tenant&apos;s objects <em>request</em>, not
-                  what has been written into them — a volume asking for more than the plan allows
-                  counts in full even while nearly empty.
+                  <strong>Provisioned</strong> is the size the volume <em>requests</em>, not how
+                  much has been written into it — which is why the tenant&apos;s own storage figure
+                  can look comfortably inside the plan while this does not.
+                  {mismatchedRows.some((q) => q.blocked) && (
+                    <> Kubernetes is already refusing new resources in this namespace.</>
+                  )}
+                </p>
+                <p className="mt-2 text-xs text-red-800 dark:text-red-300">
+                  The reconciler cannot fix this — it recreates missing objects, and here the
+                  object exists and is the wrong size. Either raise the limit under{' '}
+                  <strong>Resource Limits</strong>, or shrink the volume there (a destructive
+                  resize, which will ask you to confirm).
                 </p>
               </div>
             )}

@@ -19,9 +19,9 @@ import {
 // This module audits a single tenant (or the full fleet) for missing
 // resources and repairs the gap.
 
-export type { IntegrityFinding, NamespaceIntegrityReport, QuotaUsage } from '@insula/api-contracts';
-import type { IntegrityFinding, NamespaceIntegrityReport, QuotaUsage } from '@insula/api-contracts';
-import { compareK8sQuantities, quantityRatio } from '../../shared/k8s-quantity.js';
+export type { IntegrityFinding, NamespaceIntegrityReport, QuotaComparison } from '@insula/api-contracts';
+import type { IntegrityFinding, NamespaceIntegrityReport, QuotaComparison } from '@insula/api-contracts';
+import { compareK8sQuantities, formatGiBQuantity } from '../../shared/k8s-quantity.js';
 
 const REQUIRED_NETPOLS = ['default-deny-ingress', 'allow-intra-namespace'] as const;
 
@@ -36,55 +36,161 @@ async function exists(call: () => Promise<unknown>): Promise<boolean> {
   }
 }
 
+/** Effective plan limits, as the tenant's subscription expresses them. */
+export interface SubscriptionLimits {
+  /** GiB */ readonly storageGi: number;
+  /** cores */ readonly cpuCores: number;
+  /** GiB */ readonly memoryGi: number;
+}
+
+/** The live cluster side of the comparison. */
+export interface ClusterState {
+  /** Merged `status.hard` across EVERY ResourceQuota in the namespace. */
+  readonly hard: Record<string, string>;
+  /** Merged `status.used`. */
+  readonly used: Record<string, string>;
+  /** The tenant PVC's requested size, e.g. `2Gi`. Null if absent/unreadable. */
+  readonly pvcRequest: string | null;
+  /** False when nothing could be read — the caller must not render "healthy". */
+  readonly readable: boolean;
+}
+
 /**
- * Read the namespace's live ResourceQuota and pair every `status.used` with
- * its `status.hard`.
+ * Read every ResourceQuota in the namespace plus the tenant PVC.
+ *
+ * MUST list rather than read one name. `applyResourceQuota` deliberately
+ * writes TWO objects (k8s rejects a scoped quota that carries
+ * `requests.storage`, so pod resources and storage are split):
+ *
+ *   <ns>-quota          scoped   requests.cpu, requests.memory, limits.memory
+ *   <ns>-storage-quota  unscoped requests.storage
+ *
+ * An earlier revision of this function read only `<ns>-quota` and would have
+ * missed the storage case entirely — which is the case this whole feature
+ * exists for.
  *
  * Reads `status.hard`, not `spec.hard`: the status copy is what the quota
- * controller is actually enforcing right now. They differ for as long as it
- * takes a quota edit to be observed, and enforcement is what the operator
- * needs to see.
- *
- * Returns [] when the quota is missing or unreadable — `resource_quota_missing`
- * already covers the missing case, and an empty list must never be rendered as
- * "quota is healthy".
+ * controller is actually enforcing. They differ until a quota edit is
+ * observed, and enforcement is what the operator needs to see.
  */
-export async function readQuotaUsage(k8s: K8sClients, namespace: string): Promise<QuotaUsage[]> {
-  let quota: { status?: { used?: Record<string, string>; hard?: Record<string, string> } };
-  try {
-    quota = await k8s.core.readNamespacedResourceQuota({
-      name: `${namespace}-quota`,
-      namespace,
-    }) as typeof quota;
-  } catch {
-    return [];
-  }
-  const used = quota.status?.used ?? {};
-  const hard = quota.status?.hard ?? {};
+export async function readClusterState(k8s: K8sClients, namespace: string): Promise<ClusterState> {
+  const hard: Record<string, string> = {};
+  const used: Record<string, string> = {};
+  let readable = false;
 
-  return Object.keys(hard)
-    .sort()
-    .map((resource) => {
-      const u = used[resource] ?? '0';
-      const h = hard[resource];
-      // compare returns null when either side is unparseable. Treat that as
-      // "not known to be exceeded" but keep the raw strings on the row so the
-      // operator can still read them — never silently drop the resource.
-      const cmp = compareK8sQuantities(u, h);
-      return {
-        resource,
-        used: u,
-        hard: h,
-        usedRatio: quantityRatio(u, h),
-        exceeded: cmp !== null && cmp > 0,
-      };
-    });
+  try {
+    const list = await (k8s.core as unknown as {
+      listNamespacedResourceQuota: (a: { namespace: string }) => Promise<{
+        items?: Array<{ status?: { hard?: Record<string, string>; used?: Record<string, string> } }>;
+      }>;
+    }).listNamespacedResourceQuota({ namespace });
+    for (const q of list.items ?? []) {
+      Object.assign(hard, q.status?.hard ?? {});
+      Object.assign(used, q.status?.used ?? {});
+    }
+    readable = true;
+  } catch {
+    // leave readable=false
+  }
+
+  let pvcRequest: string | null = null;
+  try {
+    const pvc = await k8s.core.readNamespacedPersistentVolumeClaim({
+      name: `${namespace}-storage`,
+      namespace,
+    }) as { spec?: { resources?: { requests?: Record<string, string> } } };
+    pvcRequest = pvc.spec?.resources?.requests?.storage ?? null;
+  } catch {
+    // `pvc_missing` already covers this.
+  }
+
+  return { hard, used, pvcRequest, readable };
+}
+
+/**
+ * Compare each resource across subscription / enforced quota / what actually
+ * exists.
+ *
+ * The headline column is `provisioned`. A plan change does not shrink anything
+ * the tenant already holds, so a tenant moved down to a 512 MiB plan keeps its
+ * 2 GiB volume — and every existing screen hides that, because the tenant panel
+ * reports bytes WRITTEN (79 MB) against the plan (512 MiB) and the admin panel
+ * showed the plan values from the DB. Production 2026-09-03.
+ */
+export function compareSubscriptionToCluster(
+  limits: SubscriptionLimits,
+  cluster: ClusterState,
+): QuotaComparison[] {
+  if (!cluster.readable) return [];
+
+  const rows: Array<{
+    resource: QuotaComparison['resource'];
+    label: string;
+    subscription: string;
+    quotaKey: string;
+    provisioned: string | null;
+  }> = [
+    {
+      resource: 'storage',
+      label: 'Storage',
+      subscription: formatGiBQuantity(limits.storageGi),
+      quotaKey: 'requests.storage',
+      // The PVC request IS the provisioned size — the quota counts what a
+      // volume ASKED for, not what has been written into it.
+      provisioned: cluster.pvcRequest,
+    },
+    {
+      resource: 'cpu',
+      label: 'CPU',
+      subscription: String(limits.cpuCores),
+      quotaKey: 'requests.cpu',
+      // No standing "provisioned" figure: CPU is consumed by pods, which come
+      // and go, and that is exactly what the quota's own `used` tracks.
+      provisioned: null,
+    },
+    {
+      resource: 'memory',
+      label: 'Memory',
+      subscription: formatGiBQuantity(limits.memoryGi),
+      quotaKey: 'limits.memory',
+      provisioned: null,
+    },
+  ];
+
+  return rows.map((r) => {
+    const enforced = cluster.hard[r.quotaKey] ?? null;
+    const usedVal = cluster.used[r.quotaKey] ?? null;
+
+    // Each comparison is null-safe: an unparseable side yields `false`, never
+    // a silent "fine". An unreadable quota must not look healthy.
+    const exceeds = r.provisioned !== null
+      ? compareK8sQuantities(r.provisioned, r.subscription)
+      : null;
+    const differs = enforced !== null
+      ? compareK8sQuantities(enforced, r.subscription)
+      : null;
+    const overQuota = enforced !== null && usedVal !== null
+      ? compareK8sQuantities(usedVal, enforced)
+      : null;
+
+    return {
+      resource: r.resource,
+      label: r.label,
+      subscription: r.subscription,
+      enforced,
+      provisioned: r.provisioned,
+      exceedsSubscription: exceeds !== null && exceeds > 0,
+      enforcedDiffers: differs !== null && differs !== 0,
+      blocked: overQuota !== null && overQuota > 0,
+    };
+  });
 }
 
 async function inspect(
   k8s: K8sClients,
   namespace: string,
-): Promise<{ findings: IntegrityFinding[]; quota: QuotaUsage[] }> {
+  limits: SubscriptionLimits,
+): Promise<{ findings: IntegrityFinding[]; quota: QuotaComparison[] }> {
   const findings: IntegrityFinding[] = [];
 
   if (!(await exists(() => k8s.core.readNamespace({ name: namespace })))) {
@@ -117,19 +223,20 @@ async function inspect(
     }
   }
 
-  // Over-quota detection. Distinct from `resource_quota_missing`: the quota
-  // object is present and correct, but the namespace has already consumed more
-  // than it allows, so the apiserver rejects new objects of that kind with
-  // "exceeded quota". Seen on production 2026-09-03: a tenant on a 512Mi
-  // storage plan holding a 2Gi PVC (requests.storage 2Gi/512Mi), which blocked
-  // every new volume in that namespace while the tenant panel — which reports
-  // bytes WRITTEN against the plan — showed a reassuring "78.8 MB of 512Mi".
+  // Subscription-vs-cluster comparison. Two findings, neither auto-repairable
+  // — the reconciler recreates MISSING objects, and both of these are objects
+  // that exist and are the wrong size.
   //
-  // Deliberately NOT auto-repaired. Re-applying the quota would not help: the
-  // over-consumption is an object that already exists. Only the operator can
-  // decide between raising the plan and shrinking the object.
-  const quota = await readQuotaUsage(k8s, namespace);
-  if (quota.some((q) => q.exceeded)) {
+  // Production 2026-09-03: a tenant was moved to a 512 MiB storage plan while
+  // holding a 2 GiB PVC that was never shrunk. Every screen hid it — the
+  // tenant panel reports bytes WRITTEN against the plan ("78.8 MB of 512Mi"),
+  // and the admin panel showed the plan values straight from the DB. The only
+  // symptom was new volumes in that namespace being silently refused.
+  const quota = compareSubscriptionToCluster(limits, await readClusterState(k8s, namespace));
+  if (quota.some((q) => q.exceedsSubscription)) {
+    findings.push('provisioned_exceeds_plan');
+  }
+  if (quota.some((q) => q.blocked)) {
     findings.push('resource_quota_exceeded');
   }
 
@@ -163,7 +270,18 @@ export async function checkTenantNamespaceIntegrity(
     };
   }
 
-  const { findings, quota } = await inspect(k8s, tenant.kubernetesNamespace);
+  // The plan is now needed BEFORE inspect() — the subscription-vs-cluster
+  // comparison is the point of the audit, and the effective limit is the
+  // tenant's per-resource override falling back to the plan (same resolution
+  // the quota reconciler and provisioner use).
+  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
+  const limits: SubscriptionLimits = {
+    storageGi: Number(tenant.storageLimitOverride ?? plan?.storageLimit ?? 0),
+    cpuCores: Number(tenant.cpuLimitOverride ?? plan?.cpuLimit ?? 0),
+    memoryGi: Number(tenant.memoryLimitOverride ?? plan?.memoryLimit ?? 0),
+  };
+
+  const { findings, quota } = await inspect(k8s, tenant.kubernetesNamespace, limits);
   if (findings.length === 0 || !repair) {
     return {
       tenantId,
@@ -176,7 +294,6 @@ export async function checkTenantNamespaceIntegrity(
     };
   }
 
-  const [plan] = await db.select().from(hostingPlans).where(eq(hostingPlans.id, tenant.planId)).limit(1);
   // Unified tenant SC; tier is encoded as Volume.spec.numberOfReplicas
   // and patched live by applyTenantTier rather than baked into the SC.
   const storageClass = 'longhorn-tenant';
