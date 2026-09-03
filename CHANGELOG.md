@@ -12,6 +12,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Changed
+- **The metrics database now collects a smaller, more useful set of data.** It
+  had been running close enough to its memory ceiling to be killed and
+  restarted every few days, leaving short gaps in the graphs. Rather than give
+  it more memory — it is already about a tenth of the platform's whole
+  footprint — it has stopped collecting series that nothing reads: per-backend
+  and per-API-route latency percentile breakdowns, and the Go runtime's
+  internal garbage-collection and scheduler timings from every component. That
+  is roughly a fifth of everything collected. Nothing shown in the dashboards
+  or used by the alerts and service-level objectives changed, including the
+  request-latency percentiles for public traffic. Average request duration per
+  backend is still available; only the percentile detail for those two
+  families is gone. Metric retention stays at 30 days.
+
 ### Fixed
 - **Rebooting a node no longer leaves hundreds of failed pods behind.** After a
   restart the pod list filled up with pods in a failed state, all reporting
