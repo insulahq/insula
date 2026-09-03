@@ -3234,6 +3234,28 @@ pin_system_components_to_servers() {
   # Tigera operator — sole calico-operator pod, ships with no requests.
   bump_request_memory tigera-operator tigera-operator tigera-operator 50m 128Mi
 
+  # ...and with no priorityClassName either, which makes every graceful reboot
+  # emit a flood of rejected pods. At priority 0 the operator is in the FIRST
+  # group kubelet drains (30s of the 120s shutdownGracePeriodByPodPriority
+  # budget). It reaches a terminal phase while the node is still Ready and
+  # schedulable, its ReplicaSet creates a replacement, the scheduler binds that
+  # back onto the draining node — the operator tolerates every taint by design
+  # — and kubelet rejects it with "Pod was rejected as the node is shutting
+  # down". The loop then repeats for the rest of the drain: 822 Failed pod
+  # objects from ONE production reboot, ~9/second (2026-09-03).
+  #
+  # system-cluster-critical is what the rest of the Calico stack in
+  # calico-system already carries; it moves the operator to the LAST drain
+  # group, so the node is gone before a replacement can be bound.
+  #
+  # NOT fixable by narrowing the tolerations — the blanket NoSchedule/NoExecute
+  # tolerations are what let CNI bootstrap past
+  # node.kubernetes.io/network-unavailable on a cold boot. Existing clusters get
+  # this via host-migration 2026.9.5/0001.
+  kubectl patch deployment tigera-operator -n tigera-operator --type=strategic \
+    --patch='{"spec":{"template":{"spec":{"priorityClassName":"system-cluster-critical"}}}}' \
+    2>/dev/null || true
+
   # M12: scale CoreDNS to 2 replicas + spread across servers.
   # k3s ships CoreDNS=1 by default; on a 3-server cluster that's a
   # single point of DNS failure. Bump to 2 and topology-spread so
@@ -6314,7 +6336,7 @@ spec:
         version: v1
         kind: CronJob
         name: stalwart-snapshot
-    # 2026-08-26: same strip for the three shim-bridged DR CronJobs —
+    # 2026-08-26: same strip for the shim-bridged DR CronJobs —
     # their /spec/suspend is owned by platform-api's dr-cronjobs bridge
     # (unsuspended when the SYSTEM class is bound). Without the strip,
     # Flux re-suspends them on every sync and the bridge fights it
@@ -6325,6 +6347,11 @@ spec:
     # minutes when no SYSTEM target is bound — hours before their
     # nightly schedules could fire. Existing clusters get this patch
     # via host-migration 2026.8.18/0001.
+    # 2026-09-03: platform-backup-audit dropped from this list with the
+    # CronJob itself. Host-migration 2026.9.5/0001 removes the orphaned
+    # patch entry from already-bootstrapped clusters; 2026.8.18/0001 was
+    # edited in place to stop re-adding it (it is a converger, re-run on
+    # every enforce pass, so superseding it would not have been enough).
     - patch: |
         - op: remove
           path: /spec/suspend
@@ -6341,14 +6368,6 @@ spec:
         version: v1
         kind: CronJob
         name: platform-cluster-state-backup
-    - patch: |
-        - op: remove
-          path: /spec/suspend
-      target:
-        group: batch
-        version: v1
-        kind: CronJob
-        name: platform-backup-audit
 KUSTYAML
 
   if [[ "$PLATFORM_ENV" == "staging" ]]; then

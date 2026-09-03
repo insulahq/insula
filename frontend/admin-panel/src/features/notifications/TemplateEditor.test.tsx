@@ -136,4 +136,42 @@ describe('TemplateEditor', () => {
     expect(call.id).toBe(SEED_TEMPLATE.id);
     expect(call.input.bodyTemplate).toBe('updated');
   });
+
+  // The subject input used to be gated on `channel === 'email'`, which left
+  // the ntfy push title — the single most visible string on a phone lock
+  // screen — with no way to edit it.
+  describe.each([
+    { channel: 'ntfy' as const, label: /Push title template/i },
+    { channel: 'in_app' as const, label: /Title template/i },
+    { channel: 'email' as const, label: /Subject template/i },
+  ])('subject field on the $channel channel', ({ channel, label }) => {
+    it('is editable and labelled for the channel', async () => {
+      const user = userEvent.setup();
+      detailMock.mockReturnValue({
+        data: {
+          data: {
+            ...SEED_TEMPLATE,
+            id: `t-${channel}`,
+            channel,
+            bodyFormat: channel === 'email' ? ('mjml' as const) : ('plaintext' as const),
+            bodyTemplate: 'Backup for {{tenantName}} failed: {{message}}',
+          },
+        },
+        isLoading: false,
+        error: null,
+      });
+
+      render(<TemplateEditor templateId={`t-${channel}`} onClose={vi.fn()} />, { wrapper: createWrapper() });
+
+      expect(screen.getByText(label)).toBeInTheDocument();
+      const subject = screen.getByTestId('template-subject');
+      await user.clear(subject);
+      await user.type(subject, 'New title');
+      await user.click(screen.getByTestId('template-save'));
+
+      await waitFor(() => expect(updateMutate).toHaveBeenCalledTimes(1));
+      const call = updateMutate.mock.calls[0][0] as { input: { subjectTemplate?: string } };
+      expect(call.input.subjectTemplate).toBe('New title');
+    });
+  });
 });

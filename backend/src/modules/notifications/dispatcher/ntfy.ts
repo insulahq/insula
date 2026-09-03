@@ -6,8 +6,9 @@
  *     'ntfy' and a platform-scope default ntfy provider is enabled;
  *   - NOT gated by per-user preferences (an ntfy topic has no user —
  *     it's an operator integration, like a webhook);
- *   - renders the category's in_app template (locale 'en') so the 50+
- *     existing categories need no new template set;
+ *   - renders the category's OWN `ntfy` template (locale 'en'), so the
+ *     push text is editable, previewable, versioned and restorable in
+ *     Settings → Notifications → Templates like every other channel's;
  *   - reuses the notification_deliveries queue machinery (userId NULL)
  *     so sends are async, retried, and visible in the delivery log.
  */
@@ -82,8 +83,12 @@ export async function emitNtfyForEvent(db: Database, input: NtfyEmitInput): Prom
     if (dupe) return { status: 'skipped', error: 'duplicate' };
   }
 
-  // Render the in_app template — same wording the bell icon shows.
-  const tpl = await getActiveTemplate(db, category.id, 'in_app', 'en');
+  // The category's own ntfy template. The in_app fallback covers the gap
+  // between an upgrade landing and the boot seed pass inserting the new
+  // ntfy rows (app.ts runs seedTemplatesIfMissing at startup, so in
+  // practice this is only reachable if an operator deactivated the row).
+  const tpl = await getActiveTemplate(db, category.id, 'ntfy', 'en')
+    ?? await getActiveTemplate(db, category.id, 'in_app', 'en');
   if (!tpl) return { status: 'skipped', error: 'no_template' };
   let rendered: { subject?: string | null; body: string };
   try {

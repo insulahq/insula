@@ -38,15 +38,35 @@ data:
           - source_labels: [__name__]
             regex: 'flag'
             action: drop
+          # vmsingle's self-scrape was the largest job in the TSDB after Flux
+          # (1366 series on production 2026-09-03), and its histograms are the
+          # bulk of it: vm_promscrape_push_data_duration_seconds_bucket 96,
+          # vm_rows_read_per_query_bucket 53, vmselect_request_duration_seconds_bucket
+          # 51, vm_rows_scanned_per_query_bucket 50, vm_rows_per_insert_bucket 44,
+          # plus the go_* runtime families.
+          #
+          # Nothing queries any of them, and they are not what you reach for
+          # when this pod is in trouble — diagnosing the OOM-kills that
+          # motivated this change used vm_cache_size_bytes, vm_data_size_bytes,
+          # go_memstats_heap_inuse_bytes and process_resident_memory_bytes,
+          # every one of which is a GAUGE and survives this rule. A monitoring
+          # system's own percentile distributions are the first thing to cut
+          # when the monitoring system is the thing running out of memory.
+          - source_labels: [__name__]
+            regex: '.*_bucket'
+            action: drop
 
       # ── kubelet: container CPU/mem/fs (cadvisor) ─────────────────
       # Bearer-token authn against the kubelet's HTTPS port; the k3s
       # kubelet serving cert is not verifiable from the SA CA bundle,
       # so verification is skipped (authn stays cryptographic — same
       # posture kube-prometheus-stack ships on k3s).
-      # CARDINALITY GUARD: cadvisor is the only job whose series count
-      # grows with tenant count — keep ONLY what the SLO rule pack
-      # reads. Extend the regex deliberately, never wholesale.
+      # CARDINALITY GUARD: keep ONLY what the SLO rule pack reads. Extend
+      # the regex deliberately, never wholesale.
+      # (This used to claim cadvisor was the ONLY job that scales with tenant
+      # count. It is not — traefik_service_* is per backend service and grew
+      # to 115 bucket series at 6 tenants before it was dropped, 2026-09-03.
+      # Any new job that carries a per-workload label belongs on that list.)
       - job_name: kubelet-cadvisor
         scheme: https
         metrics_path: /metrics/cadvisor
@@ -141,6 +161,28 @@ data:
             target_label: __address__
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
+        metric_relabel_configs:
+          # CARDINALITY: traefik_service_* is per BACKEND SERVICE, so it grows
+          # with tenant workloads exactly like cadvisor does — the header
+          # comment above calling cadvisor "the only job whose series count
+          # grows with tenant count" was wrong. The _bucket family alone was
+          # 115 series on production at 6 tenants (2026-09-03), the single
+          # largest metric name in this job, and NOTHING queries it: the only
+          # histogram_quantile() in the codebase reads the *entrypoint*
+          # histogram (monitoring/routes.ts + rules.ts, the p95 latency SLO).
+          # _sum and _count survive, so per-service average latency is still
+          # derivable; only the per-le percentile detail is gone.
+          - source_labels: [__name__]
+            regex: 'traefik_service_request_duration_seconds_bucket'
+            action: drop
+          # Go runtime histograms — GC pause / scheduler latency distributions
+          # of the Traefik process. Never queried, and dropped on every Go
+          # target in this file for the same reason. Gauges (go_memstats_*,
+          # go_goroutines) are kept: they are what you actually read when a
+          # component looks unhealthy.
+          - source_labels: [__name__]
+            regex: 'go_.*_bucket'
+            action: drop
 
       # ── cert-manager (certificate expiry/readiness, :9402) ──────
       - job_name: cert-manager
@@ -156,6 +198,12 @@ data:
             regex: '([^:]+)(?::\d+)?'
             replacement: '$1:9402'
             target_label: __address__
+        metric_relabel_configs:
+          # Go runtime histograms — see the traefik job. certmanager_* (the
+          # expiry/readiness metrics this job exists for) is untouched.
+          - source_labels: [__name__]
+            regex: 'go_.*_bucket'
+            action: drop
 
       # ── Longhorn (volume/node storage metrics, :9500) ────────────
       - job_name: longhorn
@@ -182,6 +230,10 @@ data:
           - source_labels: [__name__]
             regex: 'longhorn_(rest_client|workqueue)_.*'
             action: drop
+          # Go runtime histograms — see the traefik job.
+          - source_labels: [__name__]
+            regex: 'go_.*_bucket'
+            action: drop
 
       # ── Flux controllers (reconcile health, :8080 http-prom) ─────
       - job_name: flux
@@ -205,6 +257,20 @@ data:
           # rules read and is kept.
           - source_labels: [__name__]
             regex: 'workqueue_.*|rest_client_.*'
+            action: drop
+          # The four Flux controllers were the single largest job in the TSDB
+          # (1226 series on production 2026-09-03) and most of it is Go runtime
+          # internals: go_gc_heap_allocs_by_size_bytes_bucket and its _frees
+          # twin are 48 series EACH per controller, plus five go_sched_pauses_*
+          # families at 32 each. None of it is queried.
+          - source_labels: [__name__]
+            regex: 'go_.*_bucket'
+            action: drop
+          # controller-runtime's own reconcile-duration histogram (82 series).
+          # gotk_reconcile_* — what the SLO rules actually read — is a
+          # different family and is kept, as is controller_runtime_reconcile_total.
+          - source_labels: [__name__]
+            regex: 'controller_runtime_reconcile_time_seconds_bucket'
             action: drop
 
       # ── CNPG / system-db (postgres exporter, :9187) ──────────────
@@ -235,6 +301,10 @@ data:
           - source_labels: [__name__]
             regex: 'cnpg_pg_settings_setting'
             action: drop
+          # Go runtime histograms — see the traefik job.
+          - source_labels: [__name__]
+            regex: 'go_.*_bucket'
+            action: drop
 
       # ── platform-api (:9090 — ADR-051 phase 2) ───────────────────
       # First-party metrics: HTTP histogram, ACME order/renewal
@@ -256,6 +326,23 @@ data:
             target_label: __address__
           - source_labels: [__meta_kubernetes_pod_name]
             target_label: pod
+        metric_relabel_configs:
+          # 570 series on production 2026-09-03 — 72% of everything this job
+          # produces, and the largest single metric name in the whole TSDB.
+          # It is one series per (route × method × status × le) and grows with
+          # the API surface, not with load. Nothing reads it: there is no
+          # histogram_quantile() over platform_http_* anywhere in the codebase,
+          # and the p95 latency SLO is computed from Traefik's entrypoint
+          # histogram instead. _sum and _count are kept, so average request
+          # duration per route is still available if a panel ever wants it.
+          #
+          # If a percentile over first-party HTTP latency is ever needed,
+          # re-enable this deliberately AND cut the label set at the same time
+          # (drop `route`, or bucket statuses into 2xx/4xx/5xx) — restoring it
+          # as-is puts the biggest single contributor straight back.
+          - source_labels: [__name__]
+            regex: 'platform_(http_request_duration_seconds|nodejs_gc_duration_seconds)_bucket'
+            action: drop
 
       # ── CoreDNS (:9153) ──────────────────────────────────────────
       - job_name: coredns
@@ -271,3 +358,10 @@ data:
             regex: '([^:]+)(?::\d+)?'
             replacement: '$1:9153'
             target_label: __address__
+        metric_relabel_configs:
+          # Go runtime histograms — see the traefik job. CoreDNS's own
+          # coredns_dns_request_duration_seconds histogram is a different
+          # family and is kept; it is the only latency signal for cluster DNS.
+          - source_labels: [__name__]
+            regex: 'go_.*_bucket'
+            action: drop
