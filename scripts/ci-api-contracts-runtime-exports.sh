@@ -25,7 +25,7 @@ fi
 # Value exports (functions/consts) that panels or the backend call at runtime.
 # Add to this list when a new one becomes load-bearing; a symbol here that
 # vanishes from the build is a release-blocking regression, not a lint nit.
-REQUIRED_EXPORTS="${API_CONTRACTS_REQUIRED_EXPORTS:-dnsRecordFieldsFor MAX_PAGE_LIMIT MAX_DNS_RESOLVER_SERVERS isBareIpAddress partitionByFamily}"
+REQUIRED_EXPORTS="${API_CONTRACTS_REQUIRED_EXPORTS:-dnsRecordFieldsFor MAX_PAGE_LIMIT MAX_DNS_RESOLVER_SERVERS isBareIpAddress partitionByFamily NOTIFICATION_CHANNEL_ID isNotificationChannelId}"
 
 REQ="$REQUIRED_EXPORTS" DIST="$DIST" node --input-type=module -e "
 const required = process.env.REQ.split(' ').filter(Boolean);
