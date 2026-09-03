@@ -12,6 +12,22 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **A tenant that is over its quota now says so on its detail page.** Lowering
+  a tenant's limits does not shrink what the tenant already has, so a customer
+  moved to a smaller plan can end up holding a volume bigger than the new plan
+  allows. Kubernetes then refuses anything *new* of that kind — the next
+  volume or application is rejected — while the tenant-facing view, which
+  reports bytes *written* against the plan, still reads as comfortably under
+  limit. A 2 GiB volume on a 512 MiB plan holding 79 MB of files looked fine
+  from every screen while quietly blocking the namespace. The tenant detail
+  page now shows a banner naming each affected resource with what is
+  provisioned against what is allowed, and explains that "provisioned" means
+  what the volume asked for, not what is in it. **Run reconciler** is
+  deliberately not offered — it recreates missing objects, and here the object
+  exists and is simply too big — so the banner points to the two things that
+  do work: raise the limit, or shrink the volume.
+
 ### Changed
 - **The metrics database now collects a smaller, more useful set of data.** It
   had been running close enough to its memory ceiling to be killed and

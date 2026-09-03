@@ -346,3 +346,90 @@ describe('TenantDetail resource limits — plan defaults', () => {
     });
   });
 });
+
+/**
+ * Over-quota surfacing.
+ *
+ * Production 2026-09-03: a tenant sat on a 512Mi storage plan while holding a
+ * 2Gi PVC, so `requests.storage` read 2Gi/512Mi and Kubernetes rejected every
+ * new volume in that namespace. Nothing in the admin panel said so — the
+ * tenant-facing view reports bytes WRITTEN against the plan, which showed a
+ * reassuring "78.8 MB of 512Mi". These assert the numbers are on screen.
+ */
+describe('TenantDetail namespace integrity — over quota', () => {
+  function setupIntegrityApi(report: unknown) {
+    mockApiFetch.mockImplementation((path: string) => {
+      if (path.includes('/namespace-integrity')) return Promise.resolve({ data: report });
+      if (path.includes('/deployments')) return Promise.resolve(MOCK_DEPLOYMENTS);
+      if (path.includes('/databases')) return Promise.resolve(MOCK_DATABASES);
+      if (path.includes('/domains')) return Promise.resolve(MOCK_DOMAINS);
+      if (path.match(/\/tenants\/tenant-001$/)) return Promise.resolve(MOCK_CLIENT);
+      return Promise.resolve({ data: [] });
+    });
+  }
+
+  const OVER_QUOTA = {
+    tenantId: 'tenant-001',
+    name: 'Acme Corp',
+    namespace: 'acme-ns',
+    findings: ['resource_quota_exceeded'],
+    repaired: [],
+    errors: [],
+    quota: [
+      { resource: 'requests.cpu', used: '100m', hard: '100m', usedRatio: 1, exceeded: false },
+      { resource: 'requests.storage', used: '2Gi', hard: '512Mi', usedRatio: 4, exceeded: true },
+    ],
+  };
+
+  beforeEach(() => { vi.resetAllMocks(); });
+
+  it('shows the over-quota resource with what is provisioned and what is allowed', async () => {
+    setupIntegrityApi(OVER_QUOTA);
+    renderTenantDetail();
+
+    const detail = await screen.findByTestId('quota-exceeded-detail');
+    expect(detail).toBeTruthy();
+    expect(detail.textContent).toContain('requests.storage');
+    expect(detail.textContent).toContain('2Gi');
+    expect(detail.textContent).toContain('512Mi');
+  });
+
+  it('lists ONLY the exceeded resource, not every quota row', async () => {
+    setupIntegrityApi(OVER_QUOTA);
+    renderTenantDetail();
+
+    const detail = await screen.findByTestId('quota-exceeded-detail');
+    // requests.cpu is at exactly 100% — full, but not exceeded, so it is noise here.
+    expect(detail.textContent).not.toContain('requests.cpu');
+  });
+
+  it('does NOT offer "Run reconciler" — it cannot repair an over-quota namespace', async () => {
+    setupIntegrityApi(OVER_QUOTA);
+    renderTenantDetail();
+
+    await screen.findByTestId('quota-exceeded-detail');
+    expect(screen.queryByTestId('namespace-integrity-repair-button')).toBeNull();
+  });
+
+  it('DOES offer "Run reconciler" when a repairable finding is present too', async () => {
+    setupIntegrityApi({
+      ...OVER_QUOTA,
+      findings: ['resource_quota_exceeded', 'network_policy_missing'],
+    });
+    renderTenantDetail();
+
+    expect(await screen.findByTestId('namespace-integrity-repair-button')).toBeTruthy();
+  });
+
+  it('renders no banner at all for a healthy namespace', async () => {
+    setupIntegrityApi({
+      tenantId: 'tenant-001', name: 'Acme Corp', namespace: 'acme-ns',
+      findings: [], repaired: [], errors: [],
+      quota: [{ resource: 'requests.storage', used: '256Mi', hard: '512Mi', usedRatio: 0.5, exceeded: false }],
+    });
+    renderTenantDetail();
+
+    await screen.findByText('Acme Corp');
+    expect(screen.queryByTestId('namespace-integrity-banner')).toBeNull();
+  });
+});

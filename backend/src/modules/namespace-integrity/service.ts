@@ -19,20 +19,9 @@ import {
 // This module audits a single tenant (or the full fleet) for missing
 // resources and repairs the gap.
 
-export type IntegrityFinding =
-  | 'namespace_missing'
-  | 'pvc_missing'
-  | 'resource_quota_missing'
-  | 'network_policy_missing';
-
-export interface NamespaceIntegrityReport {
-  readonly tenantId: string;
-  readonly name: string;
-  readonly namespace: string;
-  readonly findings: readonly IntegrityFinding[];
-  readonly repaired: readonly IntegrityFinding[];
-  readonly errors: readonly string[];
-}
+export type { IntegrityFinding, NamespaceIntegrityReport, QuotaUsage } from '@insula/api-contracts';
+import type { IntegrityFinding, NamespaceIntegrityReport, QuotaUsage } from '@insula/api-contracts';
+import { compareK8sQuantities, quantityRatio } from '../../shared/k8s-quantity.js';
 
 const REQUIRED_NETPOLS = ['default-deny-ingress', 'allow-intra-namespace'] as const;
 
@@ -47,16 +36,61 @@ async function exists(call: () => Promise<unknown>): Promise<boolean> {
   }
 }
 
+/**
+ * Read the namespace's live ResourceQuota and pair every `status.used` with
+ * its `status.hard`.
+ *
+ * Reads `status.hard`, not `spec.hard`: the status copy is what the quota
+ * controller is actually enforcing right now. They differ for as long as it
+ * takes a quota edit to be observed, and enforcement is what the operator
+ * needs to see.
+ *
+ * Returns [] when the quota is missing or unreadable — `resource_quota_missing`
+ * already covers the missing case, and an empty list must never be rendered as
+ * "quota is healthy".
+ */
+export async function readQuotaUsage(k8s: K8sClients, namespace: string): Promise<QuotaUsage[]> {
+  let quota: { status?: { used?: Record<string, string>; hard?: Record<string, string> } };
+  try {
+    quota = await k8s.core.readNamespacedResourceQuota({
+      name: `${namespace}-quota`,
+      namespace,
+    }) as typeof quota;
+  } catch {
+    return [];
+  }
+  const used = quota.status?.used ?? {};
+  const hard = quota.status?.hard ?? {};
+
+  return Object.keys(hard)
+    .sort()
+    .map((resource) => {
+      const u = used[resource] ?? '0';
+      const h = hard[resource];
+      // compare returns null when either side is unparseable. Treat that as
+      // "not known to be exceeded" but keep the raw strings on the row so the
+      // operator can still read them — never silently drop the resource.
+      const cmp = compareK8sQuantities(u, h);
+      return {
+        resource,
+        used: u,
+        hard: h,
+        usedRatio: quantityRatio(u, h),
+        exceeded: cmp !== null && cmp > 0,
+      };
+    });
+}
+
 async function inspect(
   k8s: K8sClients,
   namespace: string,
-): Promise<IntegrityFinding[]> {
+): Promise<{ findings: IntegrityFinding[]; quota: QuotaUsage[] }> {
   const findings: IntegrityFinding[] = [];
 
   if (!(await exists(() => k8s.core.readNamespace({ name: namespace })))) {
     findings.push('namespace_missing');
     // No point checking children if the parent is gone.
-    return findings;
+    return { findings, quota: [] };
   }
 
   if (!(await exists(() =>
@@ -83,7 +117,23 @@ async function inspect(
     }
   }
 
-  return findings;
+  // Over-quota detection. Distinct from `resource_quota_missing`: the quota
+  // object is present and correct, but the namespace has already consumed more
+  // than it allows, so the apiserver rejects new objects of that kind with
+  // "exceeded quota". Seen on production 2026-09-03: a tenant on a 512Mi
+  // storage plan holding a 2Gi PVC (requests.storage 2Gi/512Mi), which blocked
+  // every new volume in that namespace while the tenant panel — which reports
+  // bytes WRITTEN against the plan — showed a reassuring "78.8 MB of 512Mi".
+  //
+  // Deliberately NOT auto-repaired. Re-applying the quota would not help: the
+  // over-consumption is an object that already exists. Only the operator can
+  // decide between raising the plan and shrinking the object.
+  const quota = await readQuotaUsage(k8s, namespace);
+  if (quota.some((q) => q.exceeded)) {
+    findings.push('resource_quota_exceeded');
+  }
+
+  return { findings, quota };
 }
 
 /**
@@ -109,10 +159,11 @@ export async function checkTenantNamespaceIntegrity(
       findings: [],
       repaired: [],
       errors: [],
+      quota: [],
     };
   }
 
-  const findings = await inspect(k8s, tenant.kubernetesNamespace);
+  const { findings, quota } = await inspect(k8s, tenant.kubernetesNamespace);
   if (findings.length === 0 || !repair) {
     return {
       tenantId,
@@ -121,6 +172,7 @@ export async function checkTenantNamespaceIntegrity(
       findings,
       repaired: [],
       errors: [],
+      quota,
     };
   }
 
@@ -218,6 +270,7 @@ export async function checkTenantNamespaceIntegrity(
     findings,
     repaired,
     errors,
+    quota,
   };
 }
 

@@ -2880,7 +2880,33 @@ const FINDING_LABEL: Record<IntegrityFinding, string> = {
   pvc_missing: 'Tenant PVC missing',
   resource_quota_missing: 'ResourceQuota missing',
   network_policy_missing: 'NetworkPolicies missing',
+  resource_quota_exceeded: 'Over quota — new resources are being rejected',
 };
+
+/**
+ * Findings the reconciler cannot fix. Everything else is a missing object it
+ * recreates from the plan; being over quota is an object that already exists
+ * and is too big, so only the operator can resolve it (raise the plan, or
+ * shrink the object). The banner must not offer "Run reconciler" as the
+ * remedy for these.
+ */
+const UNREPAIRABLE_FINDINGS: ReadonlySet<IntegrityFinding> = new Set<IntegrityFinding>([
+  'resource_quota_exceeded',
+]);
+
+/** `2Gi` / `100m` / `33554432` → something an operator can read at a glance. */
+function formatQuantity(raw: string): string {
+  const n = Number(raw);
+  // A bare integer is bytes for storage/memory quotas. Anything with a suffix
+  // is already human-readable, so pass it straight through.
+  if (!Number.isFinite(n) || raw.trim() === '') return raw;
+  if (n === 0) return '0';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let v = n;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${units[i]}`;
+}
 
 function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
   const { data, isLoading } = useTenantNamespaceIntegrity(tenantId);
@@ -2894,6 +2920,13 @@ function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
   const stillBroken = report.findings ?? [];
   const justRepaired = repair.data?.data.repaired ?? [];
   const repairErrors = repair.data?.data.errors ?? [];
+  // Rows the apiserver is actively rejecting on. `quota` may be absent on an
+  // in-flight rollout where the API predates this field.
+  const exceededRows = (report.quota ?? []).filter((q) => q.exceeded);
+  // Only offer "Run reconciler" when at least one finding is something it can
+  // actually repair — otherwise the button is a dead end that reports success
+  // while the tenant stays blocked.
+  const hasRepairable = stillBroken.some((f) => !UNREPAIRABLE_FINDINGS.has(f));
 
   if (stillBroken.length === 0 && justRepaired.length === 0 && repairErrors.length === 0 && !repair.error) {
     // Healthy + nothing repaired this session — render nothing to keep the page tight.
@@ -2916,7 +2949,7 @@ function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
             <div className="font-semibold text-gray-900 dark:text-gray-100">
               {stillBroken.length > 0 ? 'Namespace integrity issues detected' : 'Namespace integrity restored'}
             </div>
-            {stillBroken.length > 0 && (
+            {hasRepairable && (
               <p className="mt-0.5 text-xs text-red-800 dark:text-red-300">
                 The reconciler will retry every 30 minutes. You can also run it now.
               </p>
@@ -2927,6 +2960,38 @@ function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
                   <li key={f} className="text-red-800 dark:text-red-300">• {FINDING_LABEL[f]}</li>
                 ))}
               </ul>
+            )}
+            {exceededRows.length > 0 && (
+              <div className="mt-3" data-testid="quota-exceeded-detail">
+                <p className="text-xs text-red-800 dark:text-red-300">
+                  The namespace has already consumed more than its quota allows, so Kubernetes is
+                  rejecting new resources of these kinds. This is not something the reconciler can
+                  repair — either raise the tenant&apos;s plan limits, or shrink what already exists.
+                </p>
+                <table className="mt-2 w-full max-w-lg text-left text-xs">
+                  <thead>
+                    <tr className="text-red-900/70 dark:text-red-300/70">
+                      <th scope="col" className="pb-1 pr-4 font-medium">Resource</th>
+                      <th scope="col" className="pb-1 pr-4 font-medium">Provisioned</th>
+                      <th scope="col" className="pb-1 font-medium">Allowed</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono text-red-800 dark:text-red-300">
+                    {exceededRows.map((q) => (
+                      <tr key={q.resource}>
+                        <td className="pr-4">{q.resource}</td>
+                        <td className="pr-4 font-semibold">{formatQuantity(q.used)}</td>
+                        <td>{formatQuantity(q.hard)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <p className="mt-2 text-xs text-red-800/80 dark:text-red-300/80">
+                  &ldquo;Provisioned&rdquo; is what the tenant&apos;s objects <em>request</em>, not
+                  what has been written into them — a volume asking for more than the plan allows
+                  counts in full even while nearly empty.
+                </p>
+              </div>
             )}
             {justRepaired.length > 0 && (
               <ul className="mt-2 space-y-0.5 text-xs">
@@ -2944,16 +3009,18 @@ function NamespaceIntegrityBanner({ tenantId }: { readonly tenantId: string }) {
             )}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => repair.mutate()}
-          disabled={repair.isPending}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
-          data-testid="namespace-integrity-repair-button"
-        >
-          {repair.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          Run reconciler
-        </button>
+        {(hasRepairable || justRepaired.length > 0 || repairErrors.length > 0) && (
+          <button
+            type="button"
+            onClick={() => repair.mutate()}
+            disabled={repair.isPending}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-600 disabled:opacity-50"
+            data-testid="namespace-integrity-repair-button"
+          >
+            {repair.isPending ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+            Run reconciler
+          </button>
+        )}
       </div>
     </div>
   );

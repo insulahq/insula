@@ -80,6 +80,9 @@ buttons (below). Underneath are several cards and a tabbed resource view.
 - **Storage Lifecycle** — current storage state and grow/shrink controls.
 - **Placement** — which node the tenant is pinned to.
 
+A **namespace health banner** appears above Storage Lifecycle only when
+something is wrong — see [When a tenant is over quota](#when-a-tenant-is-over-quota).
+
 **Resource tabs:** Domains, Applications, Deployments, Files, Email,
 Backups, Users. Each shows that tenant's resources with a count. The
 **Files** tab is intentionally a pointer — the file browser lives in the
@@ -175,3 +178,44 @@ set a tenant-specific value.
 
 See [Plans & subscriptions](plans-and-subscriptions.md) for what each
 plan field means.
+
+## When a tenant is over quota
+
+Lowering a tenant's limits does **not** shrink what the tenant already
+has. If a customer is moved to a smaller plan while holding a volume
+bigger than the new limit allows, the namespace ends up consuming more
+than its quota permits. Kubernetes will not delete anything, but it stops
+accepting anything *new* of that kind — the next volume, or the next
+application, is refused with an "exceeded quota" error that surfaces as a
+deployment stuck pending.
+
+This is easy to miss, because the tenant panel reports **bytes written**
+against the plan. A 2 GiB volume on a 512 MiB plan with only 79 MB of
+files in it reads as comfortably under limit there, while every new
+volume in that namespace is being rejected.
+
+The tenant detail page now says so directly. When it happens, a red
+banner appears above **Storage Lifecycle** listing each affected
+resource:
+
+| Resource | Provisioned | Allowed |
+|----------|-------------|---------|
+| `requests.storage` | 2.0 GiB | 512.0 MiB |
+
+**Provisioned** is what the tenant's objects *request*, not what has been
+written into them — which is why a nearly-empty volume still counts in
+full.
+
+**Run reconciler** is deliberately not offered for this. The reconciler
+recreates *missing* objects; here the object exists and is simply too
+big, so there is nothing for it to repair. Resolve it one of two ways:
+
+- **Raise the limit** — open **Resource Limits**, turn on the override
+  for that resource, and set it to at least what is provisioned. This is
+  the quick fix and takes effect immediately.
+- **Shrink what exists** — reduce the storage override to the intended
+  size. This is a destructive resize (snapshot → drop → recreate →
+  restore) and the platform will confirm before running it.
+
+The banner clears on its own once the numbers agree; it re-checks every
+minute.
