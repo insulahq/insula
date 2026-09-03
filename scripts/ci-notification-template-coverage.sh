@@ -97,28 +97,55 @@ fi
 #
 # tsc is not available in every job that wants this guard, and the seed
 # files are plain data — node's type-stripping loader is enough. Both
-# files import only `type` from @insula/api-contracts, which strips away,
-# so no build of the contracts package is required.
+# import only `type` from @insula/api-contracts, which strips away, so no
+# npm install and no build of the contracts package is required.
+#
+# The contracts file itself is the exception: it imports zod at RUNTIME,
+# so it is read as TEXT and the enum pulled from its single literal line.
+# That is the one parse in this script, it is kept to one line, and it is
+# validated below — an unparsed or empty enum aborts rather than quietly
+# checking a matrix with no columns.
 TMP_OUT="$(mktemp)"
 trap 'rm -f "$TMP_OUT"' EXIT
 
 CATEGORIES="$CATEGORIES" TEMPLATES="$TEMPLATES" CONTRACTS="$CONTRACTS" \
 node --experimental-strip-types --no-warnings --input-type=module -e '
+import { readFileSync } from "node:fs";
+
 const cats = await import(process.env.CATEGORIES);
 const tpls = await import(process.env.TEMPLATES);
-const contracts = await import(process.env.CONTRACTS);
 
 const ALL_CATEGORIES = cats.ALL_CATEGORIES;
 const ALL_SEED_TEMPLATES = tpls.ALL_SEED_TEMPLATES;
-const CHANNELS = contracts.NOTIFICATION_CHANNEL_ID;
 const LOCALE = "en";
+
+// NOTIFICATION_CHANNEL_ID = ["in_app", "email", "ntfy"] as const;
+const src = readFileSync(process.env.CONTRACTS, "utf8");
+const m = src.match(/NOTIFICATION_CHANNEL_ID\s*=\s*\[([^\]]*)\]\s*as const/);
+if (!m) {
+  console.error("FAIL: could not read NOTIFICATION_CHANNEL_ID from " + process.env.CONTRACTS);
+  console.error("      The declaration moved or changed shape. Fix this parse —");
+  console.error("      do NOT let the guard fall back to a hardcoded channel list.");
+  process.exit(1);
+}
+const CHANNELS = [...m[1].matchAll(/[\x27\x22]([a-z_]+)[\x27\x22]/g)].map((x) => x[1]);
 
 if (!Array.isArray(ALL_CATEGORIES) || ALL_CATEGORIES.length === 0) {
   console.error("FAIL: ALL_CATEGORIES is empty — a guard over nothing passes trivially.");
   process.exit(1);
 }
-if (!Array.isArray(CHANNELS) || CHANNELS.length === 0) {
-  console.error("FAIL: NOTIFICATION_CHANNEL_ID is empty.");
+if (CHANNELS.length === 0) {
+  console.error("FAIL: parsed an EMPTY channel list — every check below would pass vacuously.");
+  process.exit(1);
+}
+// Cross-check the parse against reality: any channel the seed data already
+// uses must have come out of the enum. If the regex silently under-matched,
+// this catches it instead of reporting full coverage of a short list.
+const seeded = [...new Set(ALL_SEED_TEMPLATES.map((t) => t.channel))];
+const unparsed = seeded.filter((c) => !CHANNELS.includes(c));
+if (unparsed.length) {
+  console.error("FAIL: seed data uses channel(s) absent from the parsed enum: " + unparsed.join(", "));
+  console.error("      The NOTIFICATION_CHANNEL_ID parse is under-matching.");
   process.exit(1);
 }
 
