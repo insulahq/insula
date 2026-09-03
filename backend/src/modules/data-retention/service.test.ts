@@ -5,6 +5,10 @@ import {
   LIFECYCLE_TRANSITION_RETENTION_DAYS,
   STORAGE_OPERATION_RETENTION_DAYS,
   PROVISIONING_TASK_RETENTION_DAYS,
+  DEPLOYMENT_UPGRADE_RETENTION_DAYS,
+  STORAGE_APPLY_RUN_RETENTION_DAYS,
+  DR_DRILL_RUN_RETENTION_DAYS,
+  IMAGE_REAP_LOG_RETENTION_DAYS,
 } from './service.js';
 import {
   auditLogs,
@@ -13,6 +17,11 @@ import {
   provisioningTasks,
   emailSendCounters,
   emailFblComplaints,
+  deploymentUpgrades,
+  platformStorageApplyRuns,
+  drDrillRuns,
+  imageReapLog,
+  platformUpgradeSnapshots,
 } from '../../db/schema.js';
 import type { Database } from '../../db/index.js';
 
@@ -45,7 +54,7 @@ function makeDb(rowsByTable: Map<unknown, Array<{ id: string }>>, imageAuditRowC
 const rows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
 
 describe('data-retention runDataRetention', () => {
-  it('prunes all six unbounded tables and reports per-table counts', async () => {
+  it('prunes every unbounded table and reports per-table counts', async () => {
     const { db, deletedTables } = makeDb(
       new Map<unknown, Array<{ id: string }>>([
         [auditLogs, rows(5)],
@@ -54,6 +63,10 @@ describe('data-retention runDataRetention', () => {
         [provisioningTasks, rows(1)],
         [emailSendCounters, rows(4)],
         [emailFblComplaints, rows(2)],
+        [deploymentUpgrades, rows(7)],
+        [platformStorageApplyRuns, rows(3)],
+        [drDrillRuns, rows(1)],
+        [imageReapLog, rows(6)],
       ]),
     );
 
@@ -67,8 +80,12 @@ describe('data-retention runDataRetention', () => {
       emailSendCounters: 4,
       fblComplaints: 2,
       imageAuditRows: 0,
+      deploymentUpgrades: 7,
+      storageApplyRuns: 3,
+      drDrillRuns: 1,
+      imageReapLogRows: 6,
     });
-    // Exactly the six target tables, each deleted once.
+    // Exactly the target tables, each deleted once.
     expect(deletedTables).toEqual([
       auditLogs,
       tenantLifecycleTransitions,
@@ -76,7 +93,21 @@ describe('data-retention runDataRetention', () => {
       provisioningTasks,
       emailSendCounters,
       emailFblComplaints,
+      deploymentUpgrades,
+      platformStorageApplyRuns,
+      drDrillRuns,
+      imageReapLog,
     ]);
+  });
+
+  // platform_upgrade_snapshots is the rollback manifest, not history:
+  // `platform-ops rollback` reads the most recent captured row, and a cluster
+  // stable on one version for a year has exactly one row older than any
+  // window. Age-pruning it would delete the only path back from a bad upgrade.
+  it('NEVER prunes platform_upgrade_snapshots — it is rollback state', async () => {
+    const { db, deletedTables } = makeDb(new Map());
+    await runDataRetention(db);
+    expect(deletedTables).not.toContain(platformUpgradeSnapshots);
   });
 
   it('reports zeros when nothing is old enough to prune', async () => {
@@ -90,6 +121,10 @@ describe('data-retention runDataRetention', () => {
       emailSendCounters: 0,
       fblComplaints: 0,
       imageAuditRows: 0,
+      deploymentUpgrades: 0,
+      storageApplyRuns: 0,
+      drDrillRuns: 0,
+      imageReapLogRows: 0,
     });
   });
 
@@ -98,5 +133,10 @@ describe('data-retention runDataRetention', () => {
     expect(LIFECYCLE_TRANSITION_RETENTION_DAYS).toBe(90);
     expect(STORAGE_OPERATION_RETENTION_DAYS).toBe(90);
     expect(PROVISIONING_TASK_RETENTION_DAYS).toBe(90);
+    expect(DEPLOYMENT_UPGRADE_RETENTION_DAYS).toBe(90);
+    expect(STORAGE_APPLY_RUN_RETENTION_DAYS).toBe(90);
+    expect(IMAGE_REAP_LOG_RETENTION_DAYS).toBe(90);
+    // DR drills are restore evidence — kept as long as the audit trail.
+    expect(DR_DRILL_RUN_RETENTION_DAYS).toBe(180);
   });
 });

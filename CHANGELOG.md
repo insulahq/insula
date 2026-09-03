@@ -82,6 +82,13 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   back, every failure is logged with the reason, and an operation that cannot
   bring an application back is marked **failed** so it is visible in the panel
   and retried automatically.
+- **Four more operational history tables are now pruned on a schedule.** The
+  platform already pruned its audit trail and most per-event tables, but the
+  record of upgrade attempts, Apply HA/Local runs, DR drills and image reaps
+  had no retention at all and would grow for the life of a cluster. They are
+  now cleaned up alongside everything else — 90 days for the operational ones,
+  180 for DR drills, which are the evidence that restore actually works. An
+  upgrade or apply that is still running is never removed, however old it is.
 
 ## [2026.9.4] - 2026-09-02
 
