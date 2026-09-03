@@ -12,6 +12,25 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 
 ## [Unreleased]
 
+### Added
+- **A tenant holding more than their plan allows now says so on its detail
+  page.** Changing a plan does not resize anything the tenant already has, so
+  moving a customer from a 2 GiB plan to a 512 MiB one leaves the 2 GiB volume
+  exactly as it was — the subscription says one thing and the cluster holds
+  another, with nothing to announce the difference. It is easy to miss because
+  the tenant's own storage figure is bytes *written*: a 2 GiB volume holding
+  79 MB of files reads as comfortably inside a 512 MiB plan, while the first
+  real symptom is a new volume being refused and a deployment stuck pending.
+  The tenant detail page now compares all three numbers — what the
+  subscription allows, what Kubernetes is enforcing, and what is actually
+  provisioned — and flags the rows that disagree. It catches both shapes: the
+  one where the quota was lowered too (so new resources are already being
+  rejected) and the one where it was not (so nothing looks wrong yet, but the
+  tenant is still over their entitlement). **Run reconciler** is deliberately
+  not offered, since it recreates missing objects and this object exists and is
+  simply the wrong size; the banner points to the two things that do work —
+  raise the limit, or shrink the volume.
+
 ### Changed
 - **The metrics database now collects a smaller, more useful set of data.** It
   had been running close enough to its memory ceiling to be killed and
