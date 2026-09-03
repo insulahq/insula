@@ -17,6 +17,7 @@ import { useDeployments } from '@/hooks/use-deployments';
 import { useSortable } from '@/hooks/use-sortable';
 import SortableHeader from '@/components/ui/SortableHeader';
 import { useSslCert, useUploadSslCert, useDeleteSslCert } from '@/hooks/use-ssl-certs';
+import CertDownloadCard from '@/components/CertDownloadCard';
 import ErrorPanel from '@/components/ErrorPanel';
 import { extractOperatorError } from '@/lib/extract-operator-error';
 
@@ -236,7 +237,7 @@ export default function DomainDetail() {
         </>
       )}
       {activeTab === 'dns' && <DnsRecordsTab tenantId={tenantId!} domainId={domainId!} />}
-      {activeTab === 'ssl' && <SslTlsTab tenantId={tenantId!} domainId={domainId!} sslAutoRenew={domain.sslAutoRenew} />}
+      {activeTab === 'ssl' && <SslTlsTab tenantId={tenantId!} domainId={domainId!} sslAutoRenew={domain.sslAutoRenew} domainName={domain.domainName} />}
     </div>
   );
 }
@@ -714,9 +715,10 @@ function DnsRecordsTab({ tenantId, domainId }: { readonly tenantId: string; read
 const TEXTAREA_CLASS =
   'w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm font-mono text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-700 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500';
 
-function SslTlsTab({ tenantId, domainId, sslAutoRenew }: {
+function SslTlsTab({ tenantId, domainId, sslAutoRenew, domainName }: {
   readonly tenantId: string;
   readonly domainId: string;
+  readonly domainName: string;
   readonly sslAutoRenew: number;
 }) {
   const { data: certData, isLoading, isError, error } = useSslCert(tenantId, domainId);
@@ -993,6 +995,8 @@ function SslTlsTab({ tenantId, domainId, sslAutoRenew }: {
           </form>
         )}
       </div>
+
+      <CertDownloadCard tenantId={tenantId} domainId={domainId} domainName={domainName} />
     </div>
   );
 }

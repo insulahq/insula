@@ -2210,6 +2210,55 @@ export const sslCertificates = pgTable('ssl_certificates', {
   index('ssl_certs_status_idx').on(table.status),
 ]);
 
+// ─── Certificate download tokens (migration 0098) ───────────────────────────
+//
+// Scoped credentials for `GET /api/v1/certs/:domain/download`, so an external
+// web server or deploy pipeline can pick up a renewed certificate on its own.
+// Let's Encrypt renews every 90 days; without this the customer has to notice
+// and re-copy the files by hand.
+//
+// Deliberately NOT a JWT and deliberately not tied to a user session:
+//
+//   * It must keep working when the platform is configured for OIDC. A token
+//     is an opaque random string checked against this table, so the download
+//     route never touches the JWT/OIDC path at all — an SSO-only deployment
+//     can still automate certificate pickup.
+//   * It must be revocable instantly. A stateless JWT cannot be; a row can.
+//   * It is bound to ONE domain. A leaked token exposes that domain's
+//     certificate and nothing else — no panel access, no other domain.
+//
+// Only the sha256 of the token is stored, like refresh_tokens: a database
+// leak does not yield usable credentials. The plaintext is shown once at
+// creation and is unrecoverable afterwards.
+export const certDownloadTokens = pgTable('cert_download_tokens', {
+  id: varchar('id', { length: 36 }).primaryKey(),
+  tenantId: varchar('tenant_id', { length: 36 })
+    .notNull()
+    .references(() => tenants.id, { onDelete: 'cascade' }),
+  /** Bound to exactly one domain — the token cannot be used for any other. */
+  domainId: varchar('domain_id', { length: 36 }).notNull(),
+  /** Operator-chosen label, e.g. "staging-server" or "deploy-pipeline". */
+  name: varchar('name', { length: 100 }).notNull(),
+  /** sha256 of the plaintext token. The plaintext is never stored. */
+  tokenHash: varchar('token_hash', { length: 64 }).notNull(),
+  /** NULL = never expires (an explicit customer choice in the UI). */
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+  /** Bumped on every successful download so a stale token is identifiable. */
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdBy: varchar('created_by', { length: 36 }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  // The download route's only lookup is by hash — unique so a collision is a
+  // constraint error rather than an ambiguous multi-row match.
+  uniqueIndex('cert_download_tokens_hash_unique').on(table.tokenHash),
+  index('cert_download_tokens_domain_idx').on(table.domainId),
+  index('cert_download_tokens_tenant_idx').on(table.tenantId),
+]);
+
+export type CertDownloadToken = typeof certDownloadTokens.$inferSelect;
+export type NewCertDownloadToken = typeof certDownloadTokens.$inferInsert;
+
 // ─── Platform Settings ───
 
 export const platformSettings = pgTable('platform_settings', {
