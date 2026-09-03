@@ -21,7 +21,7 @@ import {
 
 export type { IntegrityFinding, NamespaceIntegrityReport, QuotaComparison } from '@insula/api-contracts';
 import type { IntegrityFinding, NamespaceIntegrityReport, QuotaComparison } from '@insula/api-contracts';
-import { compareK8sQuantities, formatGiBQuantity } from '../../shared/k8s-quantity.js';
+import { compareK8sQuantities, formatGiBQuantity, parseK8sQuantity } from '../../shared/k8s-quantity.js';
 
 const REQUIRED_NETPOLS = ['default-deny-ingress', 'allow-intra-namespace'] as const;
 
@@ -123,10 +123,23 @@ export function compareSubscriptionToCluster(
 ): QuotaComparison[] {
   if (!cluster.readable) return [];
 
+  const BYTES_PER_GI = 1024 ** 3;
+
+  // `subscription` is a DISPLAY string and `exact` is the value to COMPARE
+  // against. They must stay separate: formatGiBQuantity rounds to one decimal
+  // so a plan reads as "10.2Mi" rather than "10.24Mi", and comparing through
+  // that rounding mis-judges 170 of the 200 two-decimal GiB values a
+  // numeric(10,2) plan column can hold — about half of them as FALSE
+  // POSITIVES, flagging a volume that exactly matches its plan as over it.
+  // Every storage plan currently in production (0.5/1/2/5/100 GiB) happens to
+  // land on a clean binary boundary, which is precisely why a check against
+  // live data came back clean and did not catch this.
   const rows: Array<{
     resource: QuotaComparison['resource'];
     label: string;
     subscription: string;
+    /** Exact value in the resource's base unit — bytes, or cores for CPU. */
+    exact: number;
     quotaKey: string;
     provisioned: string | null;
   }> = [
@@ -134,6 +147,7 @@ export function compareSubscriptionToCluster(
       resource: 'storage',
       label: 'Storage',
       subscription: formatGiBQuantity(limits.storageGi),
+      exact: limits.storageGi * BYTES_PER_GI,
       quotaKey: 'requests.storage',
       // The PVC request IS the provisioned size — the quota counts what a
       // volume ASKED for, not what has been written into it.
@@ -143,6 +157,7 @@ export function compareSubscriptionToCluster(
       resource: 'cpu',
       label: 'CPU',
       subscription: String(limits.cpuCores),
+      exact: limits.cpuCores,
       quotaKey: 'requests.cpu',
       // No standing "provisioned" figure: CPU is consumed by pods, which come
       // and go, and that is exactly what the quota's own `used` tracks.
@@ -152,23 +167,40 @@ export function compareSubscriptionToCluster(
       resource: 'memory',
       label: 'Memory',
       subscription: formatGiBQuantity(limits.memoryGi),
+      exact: limits.memoryGi * BYTES_PER_GI,
       quotaKey: 'limits.memory',
       provisioned: null,
     },
   ];
 
+  /**
+   * Compare a cluster quantity against the exact subscription value.
+   * Returns null when unparseable — the caller must treat that as "unknown",
+   * never as "within limits".
+   *
+   * Both sides are floats derived from binary multiplications, so an exact
+   * `===` would call 1Gi and 1.00Gi different on some inputs. A relative
+   * epsilon of 1e-9 is far tighter than any real quota difference (the
+   * smallest meaningful storage step is a byte, ~1e-9 of a GiB) while
+   * absorbing representation noise.
+   */
+  const cmpToExact = (value: string | null, exact: number): number | null => {
+    if (value === null) return null;
+    const v = parseK8sQuantity(value);
+    if (v === null) return null;
+    const tolerance = Math.max(Math.abs(exact), Math.abs(v)) * 1e-9;
+    if (Math.abs(v - exact) <= tolerance) return 0;
+    return v < exact ? -1 : 1;
+  };
+
   return rows.map((r) => {
     const enforced = cluster.hard[r.quotaKey] ?? null;
     const usedVal = cluster.used[r.quotaKey] ?? null;
 
-    // Each comparison is null-safe: an unparseable side yields `false`, never
-    // a silent "fine". An unreadable quota must not look healthy.
-    const exceeds = r.provisioned !== null
-      ? compareK8sQuantities(r.provisioned, r.subscription)
-      : null;
-    const differs = enforced !== null
-      ? compareK8sQuantities(enforced, r.subscription)
-      : null;
+    const exceeds = cmpToExact(r.provisioned, r.exact);
+    const differs = cmpToExact(enforced, r.exact);
+    // used-vs-hard is a like-for-like cluster comparison, so it stays on the
+    // string comparator — no subscription rounding is involved.
     const overQuota = enforced !== null && usedVal !== null
       ? compareK8sQuantities(usedVal, enforced)
       : null;

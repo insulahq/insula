@@ -90,6 +90,37 @@ describe('compareSubscriptionToCluster', () => {
     expect(mem.enforcedDiffers).toBe(false);
   });
 
+
+  // REGRESSION: the comparison used to run through the DISPLAY string, which
+  // formatGiBQuantity rounds to one decimal. That mis-judged 170 of the 200
+  // two-decimal GiB values a numeric(10,2) plan column can hold — roughly half
+  // of them as FALSE POSITIVES, flagging a volume that exactly matches its
+  // plan as over it. Every storage plan in production (0.5/1/2/5/100 GiB)
+  // lands on a clean binary boundary, so live data could never have caught it.
+  it('never flags a volume that exactly matches its plan, at ANY 2-dp plan size', () => {
+    const offenders: string[] = [];
+    for (let hundredths = 1; hundredths <= 200; hundredths++) {
+      const gi = hundredths / 100;
+      const rows = compareSubscriptionToCluster(
+        { storageGi: gi, cpuCores: 1, memoryGi: 1 },
+        // applyPVC / applyResourceQuota write the RAW value, not the display one.
+        cluster({ hard: { 'requests.storage': `${gi}Gi` }, pvcRequest: `${gi}Gi` }),
+      );
+      const storage = rows.find((r) => r.resource === 'storage')!;
+      if (storage.exceedsSubscription) offenders.push(`${gi}Gi flagged over plan`);
+      if (storage.enforcedDiffers) offenders.push(`${gi}Gi flagged as quota drift`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('still catches a genuinely oversized volume at an awkward plan size', () => {
+    const rows = compareSubscriptionToCluster(
+      { storageGi: 0.03, cpuCores: 1, memoryGi: 1 },
+      cluster({ hard: { 'requests.storage': '0.03Gi' }, pvcRequest: '2Gi' }),
+    );
+    expect(rows.find((r) => r.resource === 'storage')!.exceedsSubscription).toBe(true);
+  });
+
   it('returns nothing when the cluster could not be read — never a false all-clear', () => {
     expect(compareSubscriptionToCluster(PLAN_512MI, cluster({ readable: false }))).toEqual([]);
   });
