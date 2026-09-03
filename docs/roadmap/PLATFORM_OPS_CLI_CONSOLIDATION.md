@@ -84,7 +84,7 @@ Each imports the existing backend module (no logic re-implementation) and gets a
 | `dr-restore.sh` (610), `dr-restore-bundle.sh` (77) | **Parity-check against `platform-ops dr restore`, then delete.** |
 | `make diagnose` | Reconcile with `cluster diagnostics`; keep one. |
 | `migrate-cluster-to-substituteFrom.sh`, `migrate-stalwart-default-hostname.sh`, `migrate-stalwart-tls-bootstrap.sh`, `migrate-valkey-bootstrap.sh`, `cutover-stalwart-v015-to-v016.sh`, `mail-stack-consolidate.sh` | One-time migrations already applied. Move to `scripts/archive/` (or delete — git history retains). |
-| `apply-backup-labels.sh`, `backfill-tenant-namespace-pss.sh`, `storage-snapshot-backfill.sh` | One-shot backfills. Same disposition. |
+| ~~`apply-backup-labels.sh`~~ (deleted 2026-09-03 with the backup-audit CronJob), `backfill-tenant-namespace-pss.sh`, `storage-snapshot-backfill.sh` | One-shot backfills. Same disposition. |
 | `spike-*.sh`, `stalwart-016-spike.sh`, `rclone-shim-eval/*`, perf benches (`bench-*`, `*-perf.sh`) | Research artifacts. Archive. |
 
 ## 4. Break-glass policy (the load-bearing rule)
@@ -132,9 +132,10 @@ fallback — CLI only.
   validate, spike-restic-jmap, migrate-cluster-to-substituteFrom, migrate-stalwart-default-
   hostname, migrate-stalwart-tls-bootstrap, storage-snapshot-backfill). The rest stay —
   `migrate-valkey-bootstrap`, `cutover-stalwart-v015-to-v016`, `mail-stack-consolidate`,
-  `apply-backup-labels`, `backfill-tenant-namespace-pss`, `stalwart-016-spike` are still
+  `backfill-tenant-namespace-pss`, `stalwart-016-spike` are still
   referenced by bootstrap / CI / kustomize / backend code, so archiving them would break
-  those callers.
+  those callers. (`apply-backup-labels` was on this list until 2026-09-03; its only caller
+  was the backup-audit CronJob's error message, and both are now deleted.)
 
 ## 6. Guardrail (prevent regrowth)
 

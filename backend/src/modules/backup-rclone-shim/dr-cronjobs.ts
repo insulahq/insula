@@ -3,7 +3,7 @@
  * from the 3-class shim binding.
  *
  * The nightly DR CronJobs (`platform-secrets-backup`,
- * `platform-cluster-state-backup`, `platform-backup-audit`) predate the
+ * `platform-cluster-state-backup`) predate the
  * shim: they read the `backup-credentials` Secret and are unsuspended
  * ONLY by the legacy "Activate" flow (backup-config/longhorn-reconciler).
  * A cluster configured purely through the shim assignments — the normal
@@ -56,11 +56,20 @@ import { JSON_PATCH } from '../../shared/k8s-patch.js';
 const PLATFORM_NAMESPACE = 'platform';
 const CREDENTIALS_SECRET_NAME = 'backup-credentials';
 
-/** The three legacy DR CronJobs with NO live shim-era replacement. */
+/**
+ * The legacy DR CronJobs with NO live shim-era replacement.
+ *
+ * `platform-backup-audit` was the third entry until 2026-09-03. It audited
+ * membership of Longhorn's `default` recurring-job group, which stopped
+ * governing any backup when Longhorn volume backups were retired 2026-08-26 —
+ * the group now drives only local hourly snapshots and fstrim. Deleted rather
+ * than reworded, because its PVC filter (`storageClassName=="longhorn"`) never
+ * matched a tenant volume (`longhorn-tenant`), so it could not perform the
+ * check it existed for. See k8s/base/backup/LEGACY-DEPRECATED.md.
+ */
 export const BRIDGED_DR_CRONJOBS = [
   'platform-secrets-backup',
   'platform-cluster-state-backup',
-  'platform-backup-audit',
 ] as const;
 
 export interface DrCronJobsResult {

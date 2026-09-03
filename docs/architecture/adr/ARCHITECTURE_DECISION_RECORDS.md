@@ -2385,8 +2385,12 @@ ConfigMap on first install. Secrets-backup CronJob enumerates platform +
 tenant Secrets daily, age-encrypts to operator recipient, uploads to
 S3 or SSH target per backup-credentials Secret's `TARGET_KIND`. Dual
 S3/SSH target supports both cloud and colo deployments. Tenant opt-in
-to backup via `insula.host/backup-excluded` annotation;
-backup-audit CronJob daily enforces via Kubernetes Warning events.
+to backup via `insula.host/backup-excluded` annotation; a backup-audit
+CronJob enforced this daily via Kubernetes Warning events until
+2026-09-03, when it was deleted — it audited a Longhorn recurring-job
+group that stopped governing backups in the 2026-08-26 retirement, and
+its storage-class filter never matched a tenant volume. Backup coverage
+is now the 3-class shim pipeline's own concern.
 
 ---
 

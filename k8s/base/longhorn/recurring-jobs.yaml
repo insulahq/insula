@@ -1,5 +1,13 @@
-# Longhorn RecurringJobs — periodic snapshot + backup schedule for any
-# volume opted into the `default` job group.
+# Longhorn RecurringJobs — LOCAL snapshot + fstrim schedule for any volume
+# opted into the `default` job group.
+#
+# READ THIS BEFORE CALLING THE GROUP LABEL A "BACKUP" SETTING: it is not one,
+# and has not been since 2026-08-26. Membership of the `default` group buys a
+# volume exactly two things — an hourly in-volume snapshot (retain 6) and a
+# daily filesystem trim. Both are local to this cluster and neither survives
+# losing the node. Off-cluster protection is the tenant-bundle / system / mail
+# 3-class shim pipeline, which is driven by backup target ASSIGNMENTS in the
+# admin panel and knows nothing about this label.
 #
 # A volume opts in by either:
 #   (a) carrying label `recurring-job-group.longhorn.io/default: enabled`
@@ -27,13 +35,15 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  # Top of the hour + 5 minutes so snapshots don't pile up at the same
-  # wall-clock second as the daily-backup.
+  # Top of the hour + 5 minutes, out of the way of the other jobs.
   cron: "5 * * * *"
   task: snapshot
-  # 6 hourly snapshots kept — last six hours of in-volume rollback.
-  # Older recovery comes from the daily/weekly off-cluster backups.
-  # Shorter chain dramatically speeds up Longhorn replica rebuilds.
+  # 6 hourly snapshots kept — last six hours of in-volume rollback. A
+  # shorter chain dramatically speeds up Longhorn replica rebuilds.
+  # Anything older than six hours must come from the shim pipeline's
+  # off-cluster bundles, NOT from here. These snapshots earn their keep
+  # regardless: the 2026-09-02 tenant-database datadir recovery was only
+  # possible because an hourly snapshot existed to fall back on.
   retain: 6
   concurrency: 2
   groups:
@@ -47,8 +57,9 @@ metadata:
   labels:
     app.kubernetes.io/part-of: hosting-platform
 spec:
-  # 01:30 — BEFORE the 02:00 daily-backup, so the backup captures the
-  # trimmed block set instead of carrying dead blocks off-cluster.
+  # 01:30 — early, quiet, and clear of the nightly DR CronJobs so a trim
+  # and a bundle upload never contend for the same volume. (It used to be
+  # timed against a 02:00 Longhorn backup job; that job is gone.)
   #
   # Why this job exists (2026-06-05 audit): deleted-file blocks are
   # never returned to Longhorn without an explicit trim — the staging

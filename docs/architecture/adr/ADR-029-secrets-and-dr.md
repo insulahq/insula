@@ -98,9 +98,12 @@ This closes the silent-footgun where a forgotten label meant a tenant's data was
 
 - `scripts/bootstrap.sh` — age keypair handling, stores recipient in `platform-operator-recipient` ConfigMap
 - `k8s/base/backup/secrets-backup-cronjob.yaml` — daily enumeration + age-encrypt + upload
-- `k8s/base/backup/backup-audit-cronjob.yaml` — daily un-labeled-PVC audit
 - `k8s/base/backup/hostpath-snapshot-cronjob.yaml` — ships `/var/lib/platform/snapshots` off-node
 - `backend/src/modules/k8s-provisioner/service.ts` — tenant PVCs labeled at creation
-- `scripts/apply-backup-labels.sh` — one-shot migration for legacy PVCs
+- ~~`k8s/base/backup/backup-audit-cronjob.yaml`~~ / ~~`scripts/apply-backup-labels.sh`~~ — **deleted
+  2026-09-03.** Both audited membership of Longhorn's `default` recurring-job group and reported a
+  gap as missing *backups*. Volume-level Longhorn backups were retired 2026-08-26, so that label now
+  governs only local hourly snapshots and fstrim; and both filtered on `storageClassName=="longhorn"`,
+  which never matches a tenant volume (`longhorn-tenant`). See `k8s/base/backup/LEGACY-DEPRECATED.md`.
 - `scripts/dr-restore.sh` — scripted restore flow
 - `docs/operations/DISASTER_RECOVERY.md` — runbook

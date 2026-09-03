@@ -26,6 +26,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   backend is still available; only the percentile detail for those two
   families is gone. Metric retention stays at 30 days.
 
+### Removed
+- **The nightly "backup coverage audit" job has been retired.** It checked
+  whether storage volumes carried a label that used to control Longhorn's
+  own off-cluster volume backups. That mechanism was retired in August, when
+  protection moved entirely to the tenant, mail and system backup targets you
+  assign under **Backups** — which is why there is no longer any way to
+  configure a Longhorn backup target in the admin panel. Since then the audit
+  had been reporting a missing *backup* for volumes that were at most missing
+  a local hourly snapshot, and because of the storage classes it filtered on
+  it could not see tenant volumes at all. It therefore failed every night
+  without ever reporting anything true — 21 nights in a row on one production
+  cluster. Nothing about what is actually backed up changes. Hourly local
+  snapshots and the daily filesystem trim continue exactly as before.
+
 ### Fixed
 - **Rebooting a node no longer leaves hundreds of failed pods behind.** After a
   restart the pod list filled up with pods in a failed state, all reporting

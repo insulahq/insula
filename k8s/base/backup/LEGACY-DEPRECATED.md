@@ -27,7 +27,31 @@ Still present, shim-bridged (see `dr-cronjobs.ts`):
 |---|---|---|
 | `cluster-state-cronjob.yaml` | cluster-state dump | shim bridge (`backup-credentials` → shim S3, `system/dr/…`) |
 | `secrets-backup-cronjob.yaml` | age-encrypted secrets bundle | shim bridge |
-| `backup-audit-cronjob.yaml` | DR audit/inventory | unsuspend only — read-only, no upstream IO |
+
+### Second pass — `backup-audit-cronjob.yaml` deleted 2026-09-03
+
+The audit outlived the thing it audited. It flagged every Longhorn PVC missing
+`recurring-job-group.longhorn.io/default=enabled` and told the operator
+*"Backups will skip it"* — but volume-level Longhorn backups went away in the
+2026-08-26 retirement above. Since then that label has governed only the local
+`hourly-snap` and `daily-fstrim` RecurringJobs, so the warning named a
+mechanism that no longer existed.
+
+It could not have done its stated job in any case. Its filter was
+`select(.spec.storageClassName=="longhorn")`, and there are seven Longhorn
+storage classes on a real cluster — tenant volumes are `longhorn-tenant`,
+platform volumes `longhorn-system-local`. **The audit was structurally unable
+to see a single tenant PVC**, which is precisely the case its own header said
+it existed to catch. On production the only PVC it could ever match was
+`crowdsec/crowdsec-data`, an infra cache that wants no snapshots, so the job
+exited non-zero every night for 21 days and had never once succeeded
+(`lastSuccessfulTime` empty).
+
+Removed with it: `scripts/apply-backup-labels.sh` (same wrong filter, same
+retired premise) and the `platform-backup-audit` entry in
+`BRIDGED_DR_CRONJOBS`. Backup *coverage* is the 3-class shim pipeline's own
+concern and is surfaced by `insula.host/backup-health-watch`; snapshot-group
+membership is set by `k8s-provisioner` when a tenant PVC is created.
 
 ### CI guard: no NEW legacy uses
 

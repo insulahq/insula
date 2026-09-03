@@ -1,5 +1,5 @@
-# DR backup CronJobs. The three surviving nightly jobs (cluster-state,
-# secrets-backup, backup-audit) consume the `backup-credentials`
+# DR backup CronJobs. The two surviving nightly jobs (cluster-state,
+# secrets-backup) consume the `backup-credentials`
 # Secret, which is reconciled from the SYSTEM-class shim binding by
 # backend/src/modules/backup-rclone-shim/dr-cronjobs.ts (the legacy
 # target-activate path was retired 2026-08-26; its etcd-upload and
@@ -20,7 +20,16 @@ resources:
   - etcd-snap-via-shim-cronjob.yaml
   - cluster-state-cronjob.yaml
   - secrets-backup-cronjob.yaml
-  - backup-audit-cronjob.yaml
+  # backup-audit-cronjob.yaml removed 2026-09-03. It flagged Longhorn PVCs
+  # missing `recurring-job-group.longhorn.io/default=enabled` and told the
+  # operator "Backups will skip it" — but Longhorn volume backups were
+  # retired 2026-08-26, so that label governs only the local hourly-snap
+  # and daily-fstrim jobs. Worse, its filter was
+  # `storageClassName=="longhorn"`, and tenant volumes are `longhorn-tenant`
+  # — the job could never see the tenant PVCs it was written to protect. It
+  # exited non-zero every night for 21 days on production over one infra
+  # PVC (crowdsec-data) that wants no snapshots, and had never once
+  # succeeded. Off-cluster protection is the 3-class shim pipeline.
   # DR-bundle roadmap Phase 0 — differential secrets-audit allowlist.
   # Empty ConfigMap by default; backend reads + patches the
   # `allowlist.yaml` data key on writes from the admin UI.
