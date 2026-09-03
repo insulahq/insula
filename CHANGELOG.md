@@ -30,6 +30,20 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   not offered, since it recreates missing objects and this object exists and is
   simply the wrong size; the banner points to the two things that do work —
   raise the limit, or shrink the volume.
+- **Tenants can download their own SSL certificates.** The certificate and
+  private key for a domain were only ever reachable from inside the cluster, so
+  a customer who also runs their own mail server or appliance on that domain
+  had no way to get them. The domain's **SSL/TLS** tab now has a
+  **Certificate files** panel with a download button, and an **API access**
+  section for creating scoped tokens so an external server can fetch the
+  renewed certificate on its own — platform-issued certificates renew about
+  every 60 days, and clicking a button that often is not a plan. A token is
+  bound to a single domain, is read-only, can be revoked instantly, and is
+  shown exactly once. It also works when the platform uses single sign-on,
+  where there is no password for a script to log in with. Admins get the same
+  download plus the ability to revoke a customer's token for support, but
+  cannot create one — that secret belongs to the customer. Every download,
+  by button or token, is recorded in the audit log.
 
 ### Changed
 - **The metrics database now collects a smaller, more useful set of data.** It
@@ -89,20 +103,6 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   now cleaned up alongside everything else — 90 days for the operational ones,
   180 for DR drills, which are the evidence that restore actually works. An
   upgrade or apply that is still running is never removed, however old it is.
-- **Tenants can download their own SSL certificates.** The certificate and
-  private key for a domain were only ever reachable from inside the cluster, so
-  a customer who also runs their own mail server or appliance on that domain
-  had no way to get them. The domain's **SSL/TLS** tab now has a
-  **Certificate files** panel with a download button, and an **API access**
-  section for creating scoped tokens so an external server can fetch the
-  renewed certificate on its own — platform-issued certificates renew about
-  every 60 days, and clicking a button that often is not a plan. A token is
-  bound to a single domain, is read-only, can be revoked instantly, and is
-  shown exactly once. It also works when the platform uses single sign-on,
-  where there is no password for a script to log in with. Admins get the same
-  download plus the ability to revoke a customer's token for support, but
-  cannot create one — that secret belongs to the customer. Every download,
-  by button or token, is recorded in the audit log.
 
 ## [2026.9.4] - 2026-09-02
 
