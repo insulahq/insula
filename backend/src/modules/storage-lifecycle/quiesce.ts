@@ -30,13 +30,42 @@ async function setQuiesceHold(k8s: K8sClients, namespace: string, name: string, 
 }
 
 /**
- * Best-effort clear of the quiesce-hold on the file-manager Deployment.
- * Called by the cancel / clear-failed recovery valves so a force-cancelled op
- * (which doesn't unquiesce) doesn't leave the file-manager permanently
- * unable to auto-start.
+ * Best-effort clear of the quiesce-hold across a namespace.
+ *
+ * Called by the cancel / clear-failed recovery valves and by quiesce-watchdog
+ * Leg B when there is no replica snapshot to restore from, so a force-cancelled
+ * op doesn't leave workloads permanently held.
+ *
+ * Sweeps EVERY held Deployment by default. It used to default to the single
+ * name `file-manager`, but `quiesce()` stamps the hold on every Deployment it
+ * scales down — so the recovery valves cleared one annotation and left the rest
+ * behind. Those leftovers are individually inert (only ensureFileManagerRunning
+ * reads the annotation), but they make watchdog Leg B re-report the namespace
+ * as held on every sweep forever. Pass `name` to target one Deployment.
  */
-export async function clearQuiesceHold(k8s: K8sClients, namespace: string, name = 'file-manager'): Promise<void> {
-  try { await setQuiesceHold(k8s, namespace, name, false); } catch { /* best-effort */ }
+export async function clearQuiesceHold(k8s: K8sClients, namespace: string, name?: string): Promise<void> {
+  if (name !== undefined) {
+    try { await setQuiesceHold(k8s, namespace, name, false); } catch { /* best-effort */ }
+    return;
+  }
+  let held: string[] = [];
+  try {
+    const list = await (k8s.apps as unknown as {
+      listNamespacedDeployment: (a: { namespace: string }) => Promise<{
+        items?: Array<{ metadata?: { name?: string; annotations?: Record<string, string> } }>;
+      }>;
+    }).listNamespacedDeployment({ namespace });
+    held = (list.items ?? [])
+      .filter((d) => d.metadata?.annotations?.[STORAGE_QUIESCED_ANNOTATION] === 'true')
+      .flatMap((d) => (d.metadata?.name ? [d.metadata.name] : []));
+  } catch {
+    // Can't list — fall back to the one Deployment that is always present and
+    // is the only one whose auto-start the annotation actually gates.
+    held = ['file-manager'];
+  }
+  for (const n of held) {
+    try { await setQuiesceHold(k8s, namespace, n, false); } catch { /* best-effort */ }
+  }
 }
 
 async function setCronJobSuspend(k8s: K8sClients, namespace: string, name: string, suspend: boolean): Promise<void> {
@@ -271,31 +300,89 @@ export async function waitForQuiesced(
 }
 
 /**
+ * A Deployment that genuinely no longer exists is not a restore failure — the
+ * op itself may have removed it. Anything else is.
+ *
+ * `scaleDeploymentReplicas` throws with the HTTP status in the message (it is a
+ * raw https request, not an SDK error object), and `setQuiesceHold` goes
+ * through the SDK, so check both shapes.
+ */
+function isGone(err: unknown): boolean {
+  if (err instanceof Error && /HTTP 404\b/.test(err.message)) return true;
+  const code = (err as { statusCode?: number; code?: number; response?: { statusCode?: number } } | null);
+  return code?.statusCode === 404 || code?.code === 404 || code?.response?.statusCode === 404;
+}
+
+/**
  * Restore pre-quiesce replica counts and unsuspend CronJobs.
  *
- * Best-effort on each workload: if a Deployment was deleted between
- * quiesce and unquiesce (e.g. platform removed it as part of the op),
- * we skip silently. We don't want one missing workload to block the
- * other 99 % of the namespace from coming back up.
+ * ORDER IS LOAD-BEARING — scale up FIRST, drop the hold annotation SECOND.
+ *
+ * The hold annotation (`insula.host/storage-quiesced`) is the ONLY marker
+ * quiesce-watchdog Leg B uses to find namespaces stranded at 0 replicas. The
+ * original order cleared it before the scale-up, so a scale-up that failed
+ * (or a pod death in the microseconds between the two calls) left the tenant
+ * DOWN with the evidence already erased: Leg B could not see it because the
+ * annotation was gone, and Leg A could not see it because the op row had been
+ * marked terminal. That is a tenant outage invisible to every recovery path
+ * and to the operator — exactly the "it doesn't scale them back up" report.
+ * On a failed scale-up we now KEEP the hold, so the watchdog still owns it.
+ *
+ * Failures are no longer swallowed. The old `catch { /* gone — ignore *\/ }`
+ * assumed the only possible cause was a deleted Deployment, but it equally
+ * absorbed a 409 conflict, a 5xx, a transient network error, and — the one
+ * that actually matters here — a ResourceQuota rejection, which is a routine
+ * way for a tenant at its memory ceiling to fail to come back up.
+ *
+ * Throws if any workload could not be restored, so the caller marks the op
+ * FAILED rather than reporting success over a tenant that is still down. The
+ * loop always completes first: one unrestorable workload must not stop the
+ * rest of the namespace from coming back.
  */
 export async function unquiesce(
   k8s: K8sClients,
   namespace: string,
   snap: QuiesceSnapshot,
 ): Promise<void> {
+  const failures: string[] = [];
+
   for (const d of snap.deployments) {
-    // Clear the quiesce-hold first so ensureFileManagerRunning can auto-start
-    // the file-manager again once the op is done.
+    if (d.replicas > 0) {
+      try {
+        await scaleDeployment(k8s, namespace, d.name, d.replicas);
+      } catch (err) {
+        if (!isGone(err)) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[unquiesce] ${namespace}/${d.name} scale->${d.replicas} FAILED: ${msg} — leaving the quiesce-hold in place so the watchdog retries`,
+          );
+          failures.push(`${d.name}->${d.replicas}: ${msg}`);
+          // Deliberately do NOT clear the hold: it is the watchdog's handle.
+          continue;
+        }
+        // 404 — the op removed it. Fall through and clear the (now moot) hold.
+      }
+    }
+    // Only once the workload is back (or provably gone) is it safe to drop the
+    // hold, which re-enables reactive ensureFileManagerRunning auto-start.
     try { await setQuiesceHold(k8s, namespace, d.name, false); } catch { /* gone — ignore */ }
-    if (d.replicas === 0) continue;
-    try {
-      await scaleDeployment(k8s, namespace, d.name, d.replicas);
-    } catch { /* gone — ignore */ }
   }
+
   for (const cj of snap.cronJobs) {
     if (cj.wasSuspended) continue;
     try {
       await setCronJobSuspend(k8s, namespace, cj.name, false);
-    } catch { /* gone — ignore */ }
+    } catch (err) {
+      if (isGone(err)) continue;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[unquiesce] ${namespace}/${cj.name} unsuspend FAILED: ${msg}`);
+      failures.push(`cronjob ${cj.name}: ${msg}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    throw new Error(
+      `unquiesce: ${failures.length} workload(s) in ${namespace} could not be restored — the tenant is still scaled down: ${failures.join('; ')}`,
+    );
   }
 }

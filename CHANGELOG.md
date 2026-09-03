@@ -50,6 +50,19 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   very first shutdown wave and then repeatedly restarted onto a node that was
   already going down. It is now stopped in the same wave as the rest of the
   cluster's core networking components, so the loop no longer happens.
+- **A storage operation that cannot restart your applications now fails
+  visibly instead of leaving them stopped.** Snapshots, resizes, restores and
+  filesystem checks briefly stop a tenant's applications so the volume can be
+  worked on safely, then start them again. If that restart failed — most often
+  because the tenant was at its memory limit and the platform was not allowed
+  to start the pod — the error was discarded: the operation reported success
+  and the applications simply stayed stopped, with nothing anywhere to say
+  why. The self-healing watchdog could not find them either, because the
+  marker it searches for had already been removed a moment earlier. Now the
+  applications are started first and the marker is only cleared once they are
+  back, every failure is logged with the reason, and an operation that cannot
+  bring an application back is marked **failed** so it is visible in the panel
+  and retried automatically.
 
 ## [2026.9.4] - 2026-09-02
 

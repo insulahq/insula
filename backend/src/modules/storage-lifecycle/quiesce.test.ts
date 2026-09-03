@@ -14,7 +14,8 @@ vi.mock('../../shared/scale-deployment.js', () => ({
 }));
 beforeEach(() => { scaleReplicaCalls.length = 0; });
 
-import { quiesce, unquiesce, waitForQuiesced } from './quiesce.js';
+import { quiesce, unquiesce, waitForQuiesced, clearQuiesceHold } from './quiesce.js';
+import { scaleDeploymentReplicas } from '../../shared/scale-deployment.js';
 
 function mockK8s(opts: {
   deployments?: Array<{ name: string; replicas: number }>;
@@ -241,7 +242,7 @@ describe('unquiesce', () => {
     expect(m.cronPatchCalls).toEqual([{ name: 'wp-cron', suspend: false }]);
   });
 
-  it('best-effort: a Deployment that 404s during restore does not block the rest', async () => {
+  it('best-effort: a hold-clear that 404s during restore does not block the rest', async () => {
     const m = mockK8s();
     (m.tenant.apps as unknown as { patchNamespacedDeployment: ReturnType<typeof vi.fn> })
       .patchNamespacedDeployment
@@ -251,5 +252,105 @@ describe('unquiesce', () => {
       deployments: [{ name: 'gone', replicas: 1 }, { name: 'alive', replicas: 2 }],
       cronJobs: [],
     })).resolves.not.toThrow();
+  });
+
+  // ── restore-ordering + failure-visibility regression suite ──────────
+  // The bug: unquiesce cleared the quiesce-hold annotation BEFORE scaling
+  // back up, and swallowed scale-up failures. A failed scale-up therefore
+  // left the tenant at 0 replicas with the watchdog's only marker already
+  // erased and the op reported as successful — a silent tenant outage.
+
+  it('scales UP before clearing the hold (the hold is the watchdog handle)', async () => {
+    const m = mockK8s();
+    const order: string[] = [];
+    vi.mocked(scaleDeploymentReplicas).mockImplementationOnce(async () => { order.push('scale'); });
+    (m.tenant.apps as unknown as { patchNamespacedDeployment: ReturnType<typeof vi.fn> })
+      .patchNamespacedDeployment.mockImplementationOnce(async () => { order.push('clear-hold'); });
+
+    await unquiesce(m.tenant, 'ns', { deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [] });
+
+    expect(order).toEqual(['scale', 'clear-hold']);
+  });
+
+  it('a failed scale-up KEEPS the hold so the watchdog can still find the tenant', async () => {
+    const m = mockK8s();
+    vi.mocked(scaleDeploymentReplicas).mockRejectedValueOnce(
+      new Error('scaleDeploymentReplicas: ns/wp scale->1 HTTP 403: exceeded quota'),
+    );
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    })).rejects.toThrow(/could not be restored/);
+
+    // The hold must NOT have been cleared for the workload that stayed down.
+    expect(m.holdCalls).not.toContainEqual({ name: 'wp', held: false });
+  });
+
+  it('throws so the caller marks the op FAILED instead of reporting success over a down tenant', async () => {
+    const m = mockK8s();
+    vi.mocked(scaleDeploymentReplicas).mockRejectedValueOnce(new Error('HTTP 500: boom'));
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'wp', replicas: 1 }], cronJobs: [],
+    })).rejects.toThrow(/still scaled down/);
+  });
+
+  it('a genuine 404 on scale-up is NOT a failure — the op removed the Deployment', async () => {
+    const m = mockK8s();
+    vi.mocked(scaleDeploymentReplicas).mockRejectedValueOnce(
+      new Error('scaleDeploymentReplicas: ns/gone scale->1 HTTP 404: not found'),
+    );
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'gone', replicas: 1 }], cronJobs: [],
+    })).resolves.not.toThrow();
+    // ...and its now-moot hold is still cleaned up.
+    expect(m.holdCalls).toContainEqual({ name: 'gone', held: false });
+  });
+
+  it('one unrestorable workload does not stop the rest of the namespace coming back', async () => {
+    const m = mockK8s();
+    vi.mocked(scaleDeploymentReplicas).mockRejectedValueOnce(new Error('HTTP 403: exceeded quota'));
+    await expect(unquiesce(m.tenant, 'ns', {
+      deployments: [{ name: 'broken', replicas: 1 }, { name: 'fine', replicas: 2 }],
+      cronJobs: [{ name: 'wp-cron', wasSuspended: false }],
+    })).rejects.toThrow(/1 workload/);
+
+    // The healthy one still came back, and CronJobs were still unsuspended.
+    expect(scaleReplicaCalls).toContainEqual({ namespace: 'ns', name: 'fine', replicas: 2 });
+    expect(m.cronPatchCalls).toEqual([{ name: 'wp-cron', suspend: false }]);
+  });
+});
+
+describe('clearQuiesceHold', () => {
+  it('sweeps EVERY held Deployment, not just file-manager', async () => {
+    const m = mockK8s();
+    (m.tenant.apps as unknown as { listNamespacedDeployment: ReturnType<typeof vi.fn> })
+      .listNamespacedDeployment.mockResolvedValue({
+        items: [
+          { metadata: { name: 'file-manager', annotations: { 'insula.host/storage-quiesced': 'true' } } },
+          { metadata: { name: 'website', annotations: { 'insula.host/storage-quiesced': 'true' } } },
+          { metadata: { name: 'untouched', annotations: {} } },
+        ],
+      });
+
+    await clearQuiesceHold(m.tenant, 'ns');
+
+    expect(m.holdCalls).toContainEqual({ name: 'file-manager', held: false });
+    expect(m.holdCalls).toContainEqual({ name: 'website', held: false });
+    expect(m.holdCalls.map((h) => h.name)).not.toContain('untouched');
+  });
+
+  it('falls back to file-manager when the Deployment list fails', async () => {
+    const m = mockK8s();
+    (m.tenant.apps as unknown as { listNamespacedDeployment: ReturnType<typeof vi.fn> })
+      .listNamespacedDeployment.mockRejectedValue(new Error('API down'));
+
+    await clearQuiesceHold(m.tenant, 'ns');
+
+    expect(m.holdCalls).toEqual([{ name: 'file-manager', held: false }]);
+  });
+
+  it('targets a single Deployment when a name is given', async () => {
+    const m = mockK8s();
+    await clearQuiesceHold(m.tenant, 'ns', 'website');
+    expect(m.holdCalls).toEqual([{ name: 'website', held: false }]);
   });
 });
