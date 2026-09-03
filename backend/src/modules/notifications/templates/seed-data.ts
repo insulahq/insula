@@ -1,8 +1,11 @@
 /**
- * Seed templates — one row per (category, channel, locale='en').
+ * Seed templates — one row per (category, channel, locale='en'), for
+ * EVERY channel in `NOTIFICATION_CHANNEL_ID`. See `CHANNEL_SEED_STRATEGY`
+ * at the foot of this file for how a channel declares where its rows come
+ * from, and why that Record is total over the contract enum.
  *
  * Email bodies are compact MJML (h1 + paragraph + optional CTA). In-app
- * bodies are short markdown.
+ * bodies are short plaintext. ntfy bodies are derived from in-app.
  *
  * Variables follow a small convention:
  *   {{userName}}     — recipient's full name (or email local part)
@@ -459,6 +462,23 @@ const TENANT_TEMPLATES: readonly SeedTemplate[] = [
       ...COMMON_VARS,
       { name: 'hostname', type: 'string', required: true },
       { name: 'errorMessage', type: 'string', required: false },
+    ],
+  },
+  {
+    categoryId: 'tls.certificate_issued',
+    channel: 'email',
+    locale: 'en',
+    subjectTemplate: 'Certificate active for {{hostname}}',
+    bodyTemplate: emailMjml(
+      'Certificate active',
+      'A TLS certificate for {{hostname}} is active until {{expiresAt}}. '
+        + 'Renewal is automatic — no action is needed.',
+    ),
+    bodyFormat: 'mjml',
+    variablesSchema: [
+      ...COMMON_VARS,
+      { name: 'hostname', type: 'string', required: true },
+      { name: 'expiresAt', type: 'string', required: false },
     ],
   },
   {
@@ -1358,8 +1378,104 @@ const LEGACY_TEMPLATES: readonly SeedTemplate[] = ['legacy.info', 'legacy.warnin
   ],
 );
 
-export const ALL_SEED_TEMPLATES: readonly SeedTemplate[] = [
+/**
+ * Rows written by hand, one per (category, channel) for the two channels
+ * whose bodies genuinely differ: MJML for email, short plaintext for the
+ * in-app feed.
+ */
+const HAND_AUTHORED_TEMPLATES: readonly SeedTemplate[] = [
   ...TENANT_TEMPLATES,
   ...ADMIN_TEMPLATES,
   ...LEGACY_TEMPLATES,
 ];
+
+/**
+ * ── Channel seed strategy ──────────────────────────────────────────────
+ *
+ * EVERY delivery channel needs a seed template for EVERY category. A
+ * channel with no template is not "unconfigured" — the dispatcher looks
+ * one up, finds nothing, and drops the message with `no_template`. The
+ * operator sees an enabled channel producing silence, and the only trace
+ * is a row in the delivery log.
+ *
+ * That is exactly what shipped with the ntfy channel: `ntfy` joined
+ * `NOTIFICATION_CHANNEL_ID` and `notification_providers` with zero
+ * template rows behind it, and the dispatcher quietly borrowed the
+ * `in_app` body instead — so ntfy messages could never be edited,
+ * previewed, versioned or restored like every other channel's.
+ *
+ * This Record is `Record<NotificationChannelId, …>` on purpose: it is
+ * TOTAL over the contract enum, so adding a channel to
+ * `NOTIFICATION_CHANNEL_ID` in @insula/api-contracts is a **compile
+ * error here** until that channel declares how its templates are
+ * produced. `npm run typecheck` fails before any test runs.
+ *
+ * The companion runtime guard (notifications/seed-consistency.test.ts)
+ * then asserts the strategy actually yielded one row per category — a
+ * `hand-authored` declaration alone proves nothing.
+ */
+type ChannelSeedStrategy =
+  /** Bodies are written out per category in the arrays above. */
+  | { readonly kind: 'hand-authored' }
+  /**
+   * Bodies are generated from another channel's rows. Derivation — not a
+   * second hand-written set — is what keeps `variablesSchema` identical
+   * to the source: Handlebars runs in strict mode, so a body referencing
+   * a variable the dispatcher does not pass throws, and the send is
+   * silently skipped. A hand-maintained copy drifts; a derived one cannot.
+   */
+  | {
+      readonly kind: 'derived';
+      readonly from: NotificationChannelId;
+      readonly transform: (source: SeedTemplate) => SeedTemplate;
+    };
+
+/**
+ * ntfy is a phone push: a title, a short plaintext line, and a tap
+ * target. The in-app feed entry is already written to that shape (median
+ * body 80 chars, longest 215), so it is the right source — the push says
+ * what the bell says. Click-through, priority and severity tags are added
+ * by the publisher from the category, not by the template.
+ */
+function toNtfyTemplate(source: SeedTemplate): SeedTemplate {
+  return {
+    categoryId: source.categoryId,
+    channel: 'ntfy',
+    locale: source.locale,
+    // ntfy clamps titles around 250 bytes; the publisher slices at 200.
+    subjectTemplate: source.subjectTemplate,
+    bodyTemplate: source.bodyTemplate,
+    // Never markdown: ntfy renders markdown only for clients that opted in
+    // via the X-Markdown header, which the publisher does not send.
+    bodyFormat: 'plaintext',
+    variablesSchema: source.variablesSchema,
+  };
+}
+
+const CHANNEL_SEED_STRATEGY: Record<NotificationChannelId, ChannelSeedStrategy> = {
+  in_app: { kind: 'hand-authored' },
+  email: { kind: 'hand-authored' },
+  ntfy: { kind: 'derived', from: 'in_app', transform: toNtfyTemplate },
+};
+
+function buildSeedTemplates(): readonly SeedTemplate[] {
+  const derived: SeedTemplate[] = [];
+  for (const [channel, strategy] of Object.entries(CHANNEL_SEED_STRATEGY)) {
+    if (strategy.kind !== 'derived') continue;
+    for (const source of HAND_AUTHORED_TEMPLATES) {
+      if (source.channel !== strategy.from) continue;
+      const row = strategy.transform(source);
+      if (row.channel !== channel) {
+        // A transform that mislabels its output would silently produce a
+        // duplicate of the source channel instead of the derived one.
+        throw new Error(
+          `notification seed: '${channel}' transform emitted channel '${row.channel}'`,
+        );
+      }
+      derived.push(row);
+    }
+  }
+  return [...HAND_AUTHORED_TEMPLATES, ...derived];
+}
+
+export const ALL_SEED_TEMPLATES: readonly SeedTemplate[] = buildSeedTemplates();

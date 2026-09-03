@@ -161,7 +161,13 @@ itself is described in [Tenants](tenants.md).
     topic's name can subscribe to it — use a private topic (or an
     unguessable name) for anything sensitive.
 - **Templates** — operator-editable Handlebars templates per (source,
-  channel, locale).
+  channel, locale). Every source ships a template on **every** channel,
+  so enabling a channel on a source never leaves it delivering silence.
+  The *subject* field is the email Subject header, the in-app notification
+  title, and the ntfy push title respectively — edit it per channel. ntfy
+  bodies are plaintext (the push is not rendered as markdown); the tap
+  link, priority and severity icon are added automatically and are not
+  part of the template.
 - **Delivery Log** — per-channel delivery outcomes for audit and triage.
 
 ## Export / Import (super_admin)

@@ -30,12 +30,18 @@ import type {
   UpdateNotificationTemplateInput,
   PreviewNotificationTemplateInput,
   NotificationBodyFormat,
+  NotificationChannelId,
 } from '@insula/api-contracts';
 import type { Database } from '../../../db/index.js';
 
 interface ListTemplatesQuery {
   readonly categoryId?: string;
-  readonly channel?: 'in_app' | 'email';
+  /**
+   * Any channel in the contract enum — NOT a hand-listed subset. A
+   * narrower union here silently made `ntfy` un-listable and
+   * un-lookupable while the channel itself was already shipping.
+   */
+  readonly channel?: NotificationChannelId;
   readonly locale?: string;
   readonly includeInactive?: boolean;
 }
@@ -99,7 +105,7 @@ export async function getTemplate(db: Database, id: string): Promise<Notificatio
 export async function getActiveTemplate(
   db: Database,
   categoryId: string,
-  channel: 'in_app' | 'email',
+  channel: NotificationChannelId,
   locale: string,
 ): Promise<NotificationTemplateResponse | null> {
   const [exact] = await db

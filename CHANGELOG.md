@@ -13,6 +13,21 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
 ## [Unreleased]
 
 ### Added
+- **ntfy push notifications now have their own editable templates.** The ntfy
+  channel shipped with a provider, a publisher, a delivery queue and an admin
+  card — but not a single template. Nothing looked broken, because the
+  dispatcher quietly borrowed each source's in-app wording instead, so pushes
+  did arrive; ntfy was simply the one channel whose text an operator could not
+  change, preview, version or restore, and **Settings → Notifications →
+  Templates** listed nothing at all for it. Every source now ships an ntfy
+  template of its own, seeded automatically on the next start. The template
+  editor's subject field is also no longer email-only: it is the email Subject
+  header, the in-app notification title and the ntfy push title — the string on
+  a phone's lock screen — and all three are now editable, each under its own
+  label. Two coverage gaps found on the way are closed in the same change:
+  `tls.certificate_issued` had no email template despite email being one admin
+  toggle away, and template lists silently ignored an unknown `channel` filter
+  instead of reporting it.
 - **A tenant holding more than their plan allows now says so on its detail
   page.** Changing a plan does not resize anything the tenant already has, so
   moving a customer from a 2 GiB plan to a 512 MiB one leaves the 2 GiB volume

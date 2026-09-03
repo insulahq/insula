@@ -15,8 +15,23 @@ export type NotificationSeverity = typeof NOTIFICATION_SEVERITY[number];
 export const NOTIFICATION_AUDIENCE = ['tenant', 'admin', 'system'] as const;
 export type NotificationAudience = typeof NOTIFICATION_AUDIENCE[number];
 
+/**
+ * Every delivery channel the platform can route a notification through.
+ *
+ * This list is load-bearing well beyond validation: the backend seeds one
+ * template per (category × channel) off it, and a guard fails the build
+ * when a channel here has no templates behind it. Adding an entry is
+ * therefore a commitment to ship its templates in the same change — see
+ * `backend/src/modules/notifications/templates/seed-data.ts`.
+ */
 export const NOTIFICATION_CHANNEL_ID = ['in_app', 'email', 'ntfy'] as const;
 export type NotificationChannelId = typeof NOTIFICATION_CHANNEL_ID[number];
+
+/** Narrow an untrusted string (query param, DB column) to a known channel. */
+export function isNotificationChannelId(value: unknown): value is NotificationChannelId {
+  return typeof value === 'string'
+    && (NOTIFICATION_CHANNEL_ID as readonly string[]).includes(value);
+}
 
 export const NOTIFICATION_GDPR_BASIS = ['contract', 'legitimate_interest', 'consent'] as const;
 export type NotificationGdprBasis = typeof NOTIFICATION_GDPR_BASIS[number];
