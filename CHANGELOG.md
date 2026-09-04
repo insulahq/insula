@@ -25,8 +25,10 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   deployment**, in both the single-container wizard and the compose editor.
   The credential is stored and the pull Secret materialised *before* the first
   deploy, so a private image now pulls on the first attempt. When a token is
-  given, the pre-flight image check uses it — a wrong token fails at create
-  instead of surfacing later as ImagePullBackOff.
+  given, the pre-flight image check uses it, and a registry that rejects the
+  token fails the create with `IMAGE_CREDENTIAL_REJECTED` instead of the
+  container surfacing it later as ImagePullBackOff. A creds-less 401 still only
+  warns — that just means the image is private.
 - **Image-pull Secret reconciler.** An idempotent hourly sweep (plus one at
   startup) recreates any `image-pull-<id>` Secret that is missing for a stored
   credential. Scoped per tenant on the restore path.

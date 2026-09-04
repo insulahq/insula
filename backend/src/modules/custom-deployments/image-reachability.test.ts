@@ -50,3 +50,66 @@ describe('checkImageReachable', () => {
     expect(issues).toEqual([]);
   });
 });
+
+// A credential-rejected pull is the one case where 401 is NOT just "this image
+// is private". The tenant supplied a token for this registry and the registry
+// refused it, so the kubelet will fail the identical pull moments later —
+// blocking at create is strictly more useful than an ImagePullBackOff.
+describe('checkImageReachable — denied WITH credentials', () => {
+  const denied = async () => ({ digest: null, reason: 'registry denied access (401)' });
+
+  it('is an ERROR when credentials were supplied', async () => {
+    const issues = await checkImageReachable(
+      'ghcr.io/acme/app:1', 'services.web.image',
+      { username: 'u', password: 'wrong' },
+      { resolve: denied as never },
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('error');
+    expect(issues[0].code).toBe('IMAGE_CREDENTIAL_REJECTED');
+  });
+
+  // Creds-less, 401 only means the image is private. Erroring there would
+  // block every legitimate private-image create that adds the PAT afterwards.
+  it('stays a WARNING when no credentials were supplied', async () => {
+    const issues = await checkImageReachable(
+      'ghcr.io/acme/app:1', 'services.web.image',
+      undefined,
+      { resolve: denied as never },
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].code).toBe('IMAGE_ACCESS_DENIED');
+  });
+
+  it('never puts the token in the message or hint', async () => {
+    const issues = await checkImageReachable(
+      'ghcr.io/acme/app:1', 'services.web.image',
+      { username: 'u', password: 'super-secret-pat' },
+      { resolve: denied as never },
+    );
+    expect(JSON.stringify(issues)).not.toContain('super-secret-pat');
+  });
+
+  // 403 takes the same branch as 401.
+  it('treats 403 the same way', async () => {
+    const issues = await checkImageReachable(
+      'ghcr.io/acme/app:1', 'services.web.image',
+      { username: 'u', password: 'wrong' },
+      { resolve: (async () => ({ digest: null, reason: 'registry denied access (403)' })) as never },
+    );
+    expect(issues[0].severity).toBe('error');
+  });
+
+  // A transient outage must NOT become a hard error just because a credential
+  // was attached — that would block creates during any registry blip.
+  it('leaves an inconclusive result a warning even with credentials', async () => {
+    const issues = await checkImageReachable(
+      'ghcr.io/acme/app:1', 'services.web.image',
+      { username: 'u', password: 'tok' },
+      { resolve: (async () => ({ digest: null, reason: 'registry unreachable or timed out' })) as never },
+    );
+    expect(issues[0].severity).toBe('warning');
+    expect(issues[0].code).toBe('IMAGE_CHECK_INCONCLUSIVE');
+  });
+});
