@@ -150,6 +150,45 @@ export function resolveLine(yaml: string, path: string): number | null {
 }
 
 /**
+ * The validator runs on the NORMALIZED spec, so its paths are in spec
+ * coordinates (`services.db.resources.memoryLimit`) while the tenant's document
+ * is in compose coordinates (`services.db.deploy.resources.limits.memory`).
+ * Without translation those issues silently lost their line while their
+ * parser-emitted siblings kept one — the tenant saw two errors about the same
+ * field, one with a line and one without, which reads as a bug.
+ *
+ * Only exact, unambiguous renames belong here. Anything whose mapping depends
+ * on which compose form the tenant used (e.g. `env[3]`, which may be a list or
+ * a map) is deliberately absent — a guess would point at the wrong row.
+ */
+const SPEC_TO_COMPOSE: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^(services\.[^.]+)\.resources\.cpuRequest$/, '$1.deploy.resources.reservations.cpus'],
+  [/^(services\.[^.]+)\.resources\.memoryRequest$/, '$1.deploy.resources.reservations.memory'],
+  [/^(services\.[^.]+)\.resources\.cpuLimit$/, '$1.deploy.resources.limits.cpus'],
+  [/^(services\.[^.]+)\.resources\.memoryLimit$/, '$1.deploy.resources.limits.memory'],
+  [/^(services\.[^.]+)\.volumeMounts(\[\d+\])?$/, '$1.volumes$2'],
+  [/^(services\.[^.]+)\.healthCheck\b/, '$1.healthcheck'],
+  [/^(services\.[^.]+)\.restartPolicy$/, '$1.restart'],
+  [/^(services\.[^.]+)\.workingDir$/, '$1.working_dir'],
+  [/^(services\.[^.]+)\.readOnlyRootFilesystem$/, '$1.read_only'],
+  [/^(services\.[^.]+)\.runAsUser$/, '$1.user'],
+  [/^(services\.[^.]+)\.stopGracePeriodSeconds$/, '$1.stop_grace_period'],
+];
+
+/** Candidate paths to try, most specific first. */
+export function composeCandidates(path: string): string[] {
+  const out = [path];
+  for (const [re, repl] of SPEC_TO_COMPOSE) {
+    if (re.test(path)) {
+      const translated = path.replace(re, repl).replace(/\$2/, '');
+      if (!out.includes(translated)) out.push(translated);
+      break;
+    }
+  }
+  return out;
+}
+
+/**
  * Attach `line` to every issue whose path resolves. Issues with no path, or a
  * path that does not resolve (form fields like `name`, or a key the document
  * never contained because it failed to parse), are returned untouched.
@@ -160,7 +199,10 @@ export function withResolvedLines<T extends { path?: string; line?: number }>(
 ): T[] {
   return issues.map((issue) => {
     if (!issue.path || issue.line !== undefined) return issue;
-    const line = resolveLine(yaml, issue.path);
-    return line === null ? issue : { ...issue, line };
+    for (const candidate of composeCandidates(issue.path)) {
+      const line = resolveLine(yaml, candidate);
+      if (line !== null) return { ...issue, line };
+    }
+    return issue;
   });
 }

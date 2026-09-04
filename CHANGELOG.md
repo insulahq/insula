@@ -19,7 +19,11 @@ Releases are cut ad-hoc with `scripts/cut-release.sh` (see [RELEASING.md](RELEAS
   can hover, and each entry in the Issues pane gets a **line N** button that
   scrolls the editor to it. Previously an issue said *what* was wrong but never
   *where*, so finding it in a 60-line stack meant reading the whole file.
-  Unresolvable paths get no line rather than a guessed one.
+  Unresolvable paths get no line rather than a guessed one. Validator issues
+  are translated from normalized-spec coordinates
+  (`services.db.resources.memoryLimit`) back to compose ones
+  (`…deploy.resources.limits.memory`) first, so two errors about the same field
+  no longer disagree about whether it has a line.
 
 ### Fixed
 - **Clicking Validate on an untouched compose editor failed with a raw regex.**
