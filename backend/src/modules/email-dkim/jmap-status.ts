@@ -58,6 +58,59 @@ export interface DkimStatusResponse {
  *
  * Exported for unit tests.
  */
+/**
+ * Join RFC 1035 parenthesised multi-line records into one logical line each.
+ *
+ * WHY: Stalwart wraps any TXT value too long for one line in parentheses, and
+ * an RSA DKIM public key always is. The record it emits looks like
+ *
+ *     dkim-1._domainkey.example.test. IN TXT (
+ *         "v=DKIM1; k=rsa; h=sha256; p=MIIBIjANBg…"
+ *         "…IDAQAB"
+ *     )
+ *
+ * The selector parser works line by line, so it matched only the FIRST line —
+ * the one carrying `_domainkey` and `TXT`. That line holds no quoted
+ * fragments, so `txtValue` came out empty, `p=` was never found, and every RSA
+ * selector was reported **invalid with a blank TXT value**. The continuation
+ * lines were skipped entirely because they do not contain `_domainkey`.
+ *
+ * Ed25519 keys are short enough to fit on one line unwrapped, which is why the
+ * platform's own apex looked healthy while every tenant domain — which gets
+ * only the RSA selector — showed invalid. Signing was never affected; Stalwart
+ * neither knows nor cares how we parse the zone file it prints.
+ *
+ * Parentheses are only counted OUTSIDE quoted strings: a `(` inside a TXT
+ * value is data, not grouping. Unbalanced input is emitted as-is rather than
+ * swallowing the rest of the file.
+ */
+export function foldParenthesisedRecords(zoneFile: string): string[] {
+  const out: string[] = [];
+  let buffer: string | null = null;
+  let depth = 0;
+
+  for (const line of zoneFile.split('\n')) {
+    let inQuote = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (ch === '"') inQuote = !inQuote;
+      else if (!inQuote && ch === '(') depth += 1;
+      else if (!inQuote && ch === ')') depth = Math.max(0, depth - 1);
+    }
+
+    if (buffer === null) {
+      if (depth > 0) buffer = line;   // record continues on the next line
+      else out.push(line);
+    } else {
+      buffer += ' ' + line.trim();
+      if (depth === 0) { out.push(buffer); buffer = null; }
+    }
+  }
+  // Unterminated "(" — emit what we have instead of dropping it silently.
+  if (buffer !== null) out.push(buffer);
+  return out;
+}
+
 export function parseDkimSelectorsFromZoneFile(zoneFile: string): {
   selectors: DkimSelector[];
   rawLines: string[];
@@ -66,7 +119,7 @@ export function parseDkimSelectorsFromZoneFile(zoneFile: string): {
   const rawLines: string[] = [];
   const selectors: DkimSelector[] = [];
 
-  for (const rawLine of zoneFile.split('\n')) {
+  for (const rawLine of foldParenthesisedRecords(zoneFile)) {
     const line = rawLine.trim();
     if (!line || line.startsWith(';')) continue;
     if (!/\bTXT\b/i.test(line)) continue;
